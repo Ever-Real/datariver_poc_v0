@@ -621,6 +621,7 @@ class KnowledgeStudioService:
         proposal_id: UUID,
         merge_strategy: TBoxMergeStrategy,
         resolutions: tuple[dict[str, str], ...],
+        excluded_stable_element_ids: tuple[str, ...] = (),
         expected_version: int,
         idempotency_key: str,
         request_hash: str,
@@ -651,7 +652,18 @@ class KnowledgeStudioService:
         )
         if proposal.state != "READY":
             raise ConflictError("Only a READY T-Box proposal can be applied.")
-        proposed = tuple(self._tbox_input(item) for item in proposal.elements)
+        proposal_elements = tuple(self._tbox_input(item) for item in proposal.elements)
+        excluded = set(excluded_stable_element_ids)
+        if len(excluded) != len(excluded_stable_element_ids):
+            raise ValidationError("A proposed T-Box element can be excluded only once.")
+        proposal_ids = {item.stable_element_id for item in proposal_elements}
+        if not excluded.issubset(proposal_ids):
+            raise ValidationError("Only an element from this proposal can be excluded.")
+        proposed = tuple(
+            item for item in proposal_elements if item.stable_element_id not in excluded
+        )
+        if not proposed:
+            raise ValidationError("At least one proposed T-Box element must be applied.")
         grouped: dict[UUID, dict[str, TBoxElementInput]] = {
             block.block_id: {
                 item.stable_element_id: self._tbox_input(item) for item in block.elements
@@ -1068,6 +1080,41 @@ class KnowledgeStudioService:
             request_id=request_id,
         )
 
+    async def search_tbox_catalog_sources(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        query: str,
+        cursor: str | None,
+        limit: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioSourcePage:
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        self._require_tbox_step(current)
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._source_reader().search_datasets(
+            subject=subject,
+            maximum_classification=current.classification,
+            query=query,
+            cursor=cursor,
+            limit=limit,
+            environment=environment,
+            request_id=request_id,
+        )
+
     async def get_abox_source(
         self,
         *,
@@ -1084,6 +1131,37 @@ class KnowledgeStudioService:
             draft_id=draft_id,
         )
         self._require_abox_step(current)
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._require_source(
+            draft=current,
+            subject=subject,
+            asset_id=asset_id,
+            environment=environment,
+            request_id=request_id,
+        )
+
+    async def get_tbox_catalog_source(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        asset_id: UUID,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioSourceDetail:
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        self._require_tbox_step(current)
         await self._authorize_draft(
             draft=current,
             subject=subject,
@@ -1476,6 +1554,7 @@ class KnowledgeStudioService:
             "canonical_name": item.canonical_name,
             "display_name": item.display_name,
             "parent_stable_element_id": item.parent_stable_element_id,
+            "hierarchy_relation": item.hierarchy_relation,
             "source_stable_element_id": item.source_stable_element_id,
             "target_stable_element_id": item.target_stable_element_id,
             "data_type": item.data_type,
@@ -1499,6 +1578,7 @@ class KnowledgeStudioService:
                 canonical_name=item.canonical_name,
                 display_name=item.display_name,
                 parent_stable_element_id=item.parent_stable_element_id,
+                hierarchy_relation=item.hierarchy_relation,
                 source_stable_element_id=item.source_stable_element_id,
                 target_stable_element_id=item.target_stable_element_id,
                 data_type=item.data_type,
@@ -1606,6 +1686,11 @@ class KnowledgeStudioService:
     def _require_abox_step(draft: KnowledgeStudioDraftRecord) -> None:
         if draft.current_step != "ABOX":
             raise ConflictError("Open Data Enricher before reading or editing A-Box mappings.")
+
+    @staticmethod
+    def _require_tbox_step(draft: KnowledgeStudioDraftRecord) -> None:
+        if draft.current_step != "TBOX":
+            raise ConflictError("Open Graph Builder before reading T-Box catalog sources.")
 
     async def _require_draft(
         self,

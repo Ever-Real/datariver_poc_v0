@@ -374,6 +374,7 @@ class TBoxClassModel(
             "workspace_id",
             "draft_id",
             "parent_stable_class_id",
+            "stable_class_id",
         ),
         {"schema": "knowledge"},
     )
@@ -382,6 +383,11 @@ class TBoxClassModel(
     draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     stable_class_id: Mapped[str] = mapped_column(String(128), nullable=False)
     parent_stable_class_id: Mapped[str | None] = mapped_column(String(128))
+    hierarchy_relation: Mapped[str] = mapped_column(
+        String(255),
+        default="SUBCLASS_OF",
+        nullable=False,
+    )
     metadata_reference_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     metadata_reference_urn: Mapped[str | None] = mapped_column(String(2_000))
 

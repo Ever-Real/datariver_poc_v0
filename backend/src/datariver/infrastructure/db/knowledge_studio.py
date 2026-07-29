@@ -127,6 +127,7 @@ def _tbox_input_document(value: TBoxElementInput) -> dict[str, object]:
         "canonical_name": value.canonical_name,
         "display_name": value.display_name,
         "parent_stable_element_id": value.parent_stable_element_id,
+        "hierarchy_relation": value.hierarchy_relation,
         "source_stable_element_id": value.source_stable_element_id,
         "target_stable_element_id": value.target_stable_element_id,
         "data_type": value.data_type,
@@ -214,6 +215,11 @@ def _tbox_element_record(
         canonical_name=model.canonical_name,
         display_name=model.display_name,
         parent_stable_element_id=parent_stable_element_id,
+        hierarchy_relation=(
+            class_detail.hierarchy_relation
+            if class_detail is not None and class_detail.parent_stable_class_id is not None
+            else None
+        ),
         source_stable_element_id=(
             relationship_detail.source_stable_class_id if relationship_detail is not None else None
         ),
@@ -305,6 +311,7 @@ def _proposal_element_record(
         canonical_name=str(document["canonical_name"]),
         display_name=str(document["display_name"]),
         parent_stable_element_id=_optional_document_string(document, "parent_stable_element_id"),
+        hierarchy_relation=_optional_document_string(document, "hierarchy_relation"),
         source_stable_element_id=_optional_document_string(document, "source_stable_element_id"),
         target_stable_element_id=_optional_document_string(document, "target_stable_element_id"),
         data_type=_optional_document_string(document, "data_type"),
@@ -486,6 +493,7 @@ def _element_document(model: KnowledgeStudioTBoxElementRecord) -> dict[str, obje
         "canonical_name": model.canonical_name,
         "display_name": model.display_name,
         "parent_stable_element_id": model.parent_stable_element_id,
+        "hierarchy_relation": model.hierarchy_relation,
         "source_stable_element_id": model.source_stable_element_id,
         "target_stable_element_id": model.target_stable_element_id,
         "data_type": model.data_type,
@@ -2057,6 +2065,10 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                     parent_stable_element_id=_optional_document_string(
                         document,
                         "parent_stable_element_id",
+                    ),
+                    hierarchy_relation=_optional_document_string(
+                        document,
+                        "hierarchy_relation",
                     ),
                     source_stable_element_id=_optional_document_string(
                         document,
@@ -3864,6 +3876,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                             draft_id=draft_id,
                             stable_class_id=element.stable_element_id,
                             parent_stable_class_id=element.parent_stable_element_id,
+                            hierarchy_relation=element.hierarchy_relation or "SUBCLASS_OF",
                             metadata_reference_id=element.metadata_reference_id,
                             metadata_reference_urn=element.metadata_reference_urn,
                             created_at=now,

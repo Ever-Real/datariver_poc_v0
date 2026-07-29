@@ -126,6 +126,8 @@ handling, durable A-Box ingestion and release-scoped Neo4j vector shadow are def
 The normalized Class/Property/Relationship Draft schema, canonical `subClassOf` hierarchy and
 forward-only layer dependency locks are defined by
 [ADR-0070](adr/0070-normalized-tbox-hierarchy-and-layer-dependencies.md).
+Unicode schema identifiers, named Class hierarchy edges and the unified Proposal entry are defined
+by [ADR-0071](adr/0071-unicode-tbox-and-integrated-proposal-entry.md).
 
 ## Change control
 

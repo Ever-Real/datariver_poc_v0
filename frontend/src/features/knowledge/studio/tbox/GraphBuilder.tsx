@@ -27,17 +27,18 @@ import {
 } from '@xyflow/react'
 import {
   Bot,
-  ChevronDown,
-  ChevronUp,
+  Check,
   Database,
   FileUp,
   FolderTree,
   GitBranch,
-  Layers3,
   LockKeyhole,
+  Pencil,
   Plus,
   Save,
+  Search,
   Trash2,
+  X,
 } from 'lucide-react'
 import type { ApiClient } from '../../../../api/client'
 import { Dialog } from '../../../../components/common/Dialog'
@@ -54,6 +55,7 @@ import {
   createKnowledgeStudioTBoxProposal,
   deleteKnowledgeStudioTBoxBlock,
   getKnowledgeStudioTBox,
+  searchKnowledgeStudioTBoxCatalogSources,
   newKnowledgeStudioIdempotencyKey,
   updateKnowledgeStudioTBoxBlock,
   type KnowledgeStudioDraft,
@@ -63,6 +65,7 @@ import {
   type KnowledgeStudioTBoxElement,
   type KnowledgeStudioTBoxOperation,
   type KnowledgeStudioTBoxProposal,
+  type KnowledgeStudioSourceDataset,
 } from '../knowledgeStudioApi'
 
 interface SchemaNodeData extends Record<string, unknown> {
@@ -71,11 +74,15 @@ interface SchemaNodeData extends Record<string, unknown> {
   editable: boolean
   locked: boolean
   selected: boolean
+  editorOpen: boolean
   blockLabel: string
-  properties: Array<{ id: string; label: string }>
+  properties: Array<{ id: string; label: string; dataType: string }>
+  onToggleEditor: () => void
   onRename: (value: string) => void
   onDelete: () => void
   onAddProperty: (value: string) => void
+  onUpdateProperty: (id: string, value: string, dataType: string) => void
+  onDeleteProperty: (id: string) => void
 }
 
 type SchemaNode = Node<SchemaNodeData, 'schemaClass'>
@@ -97,37 +104,97 @@ interface GraphBuilderProps {
   onContinue: () => void
 }
 
-const blockOptions: Array<{
+const directBlockOption: {
   kind: KnowledgeStudioTBoxBlockKind
   title: string
   description: string
   icon: typeof Plus
-}> = [
-  {
-    kind: 'DIRECT',
-    title: '직접 정의',
-    description: 'Typed Class, Property, Relation을 직접 설계합니다.',
-    icon: Plus,
-  },
-  {
-    kind: 'DOCUMENT_SCHEMA',
-    title: '데이터 주입(문서)',
-    description: 'PDF, DOCX, XLSX에서 인스턴스가 아닌 구조만 제안받습니다.',
-    icon: FileUp,
-  },
-  {
-    kind: 'CATALOG_METADATA',
-    title: 'DB 활용',
-    description: '승인된 카탈로그 스키마와 계보 버전을 선택합니다.',
-    icon: Database,
-  },
-  {
-    kind: 'ASSET_RELEASE',
-    title: '다른 Asset 붙이기',
-    description: '기존 Asset의 불변 버전을 새 레이어로 결합합니다.',
-    icon: Layers3,
-  },
-]
+} = {
+  kind: 'DIRECT',
+  title: '직접 정의',
+  description: '직접 편집, 문서 및 카탈로그 Proposal을 하나의 통합 레이어에서 다룹니다.',
+  icon: Plus,
+}
+
+const propertyDataTypes = ['STRING', 'TEXT', 'INTEGER', 'FLOAT', 'BOOLEAN', 'DATE', 'DATETIME']
+
+interface PropertyRowProps {
+  classLabel: string
+  property: { id: string; label: string; dataType: string }
+  disabled: boolean
+  onUpdate: (id: string, value: string, dataType: string) => void
+  onDelete: (id: string) => void
+}
+
+function PropertyRow({
+  classLabel,
+  property,
+  disabled,
+  onUpdate,
+  onDelete,
+}: PropertyRowProps) {
+  const [name, setName] = useState(property.label)
+  const [dataType, setDataType] = useState(property.dataType)
+
+  useEffect(() => {
+    setName(property.label)
+    setDataType(property.dataType)
+  }, [property.dataType, property.label])
+
+  const commit = () => {
+    const nextName = schemaIdentifier(name, 'Property')
+    if (!nextName) {
+      setName(property.label)
+      return
+    }
+    if (nextName !== property.label || dataType !== property.dataType) {
+      onUpdate(property.id, nextName, dataType)
+    }
+  }
+
+  return (
+    <li className="grid grid-cols-[minmax(0,1fr)_78px_24px] items-center gap-1">
+      <input
+        aria-label={`${classLabel} ${property.label} Property 이름`}
+        className="input min-w-0 py-1 text-[10px]"
+        value={name}
+        disabled={disabled}
+        onChange={(event) => setName(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            commit()
+          } else if (event.key === 'Escape') {
+            setName(property.label)
+          }
+        }}
+      />
+      <select
+        aria-label={`${classLabel} ${property.label} Property 타입`}
+        className="input min-w-0 py-1 text-[9px]"
+        value={dataType}
+        disabled={disabled}
+        onChange={(event) => {
+          const value = event.target.value
+          setDataType(value)
+          onUpdate(property.id, schemaIdentifier(name, 'Property') || property.label, value)
+        }}
+      >
+        {propertyDataTypes.map((value) => <option key={value}>{value}</option>)}
+      </select>
+      <button
+        type="button"
+        className="rounded p-1 text-red-600 hover:bg-red-50 disabled:text-slate-300"
+        aria-label={`${classLabel} ${property.label} Property 삭제`}
+        disabled={disabled}
+        onClick={() => onDelete(property.id)}
+      >
+        <Trash2 size={11} aria-hidden="true" />
+      </button>
+    </li>
+  )
+}
 
 function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
   const [propertyName, setPropertyName] = useState('')
@@ -136,7 +203,7 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
   useEffect(() => setDisplayName(data.label), [data.label])
 
   return (
-    <div className={`relative w-[156px] rounded-md border bg-[#10253d] px-3 py-2 text-[11px] font-extrabold text-slate-50 shadow-lg ${
+    <div className={`relative w-[138px] rounded-md border bg-[#10253d] px-2.5 py-1.5 text-[10px] font-extrabold text-slate-50 shadow-lg ${
       selected || data.selected ? 'border-amber-300 ring-2 ring-amber-300/40' : 'border-sky-400'
     }`}>
       <span className="absolute -left-2 -top-2 rounded-full border border-sky-200 bg-sky-500 px-2 py-0.5 text-[9px] font-black text-white shadow">
@@ -150,11 +217,21 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
           <LockKeyhole size={9} aria-hidden="true" />
         </span>
       )}
-      <span className="block truncate pt-1">{data.label}</span>
+      <button
+        type="button"
+        className="nodrag nowheel block w-full truncate rounded pt-1 text-left hover:text-cyan-200 focus:outline-none focus:ring-1 focus:ring-cyan-300"
+        aria-label={`${data.label} Class 편집기 ${data.editorOpen ? '닫기' : '열기'}`}
+        onClick={(event) => {
+          event.stopPropagation()
+          data.onToggleEditor()
+        }}
+      >
+        {data.label}
+      </button>
       <span className="mt-0.5 block truncate text-[8px] font-semibold text-sky-200">
         {data.blockLabel}
       </span>
-      {(selected || data.selected) && (
+      {data.editorOpen && (
         <div className="mt-2 border-t border-slate-600 pt-1.5">
           {data.properties.length === 0 ? (
             <span className="block text-[8px] font-medium text-slate-400">Properties 없음</span>
@@ -170,13 +247,19 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
           )}
         </div>
       )}
-      <Handle type="target" position={Position.Left} className="border-sky-200! bg-sky-500!" />
-      <Handle type="source" position={Position.Right} className="border-sky-200! bg-sky-500!" />
+      <Handle id="target-top" type="target" position={Position.Top} style={{ left: '42%' }} className="border-sky-200! bg-sky-500!" />
+      <Handle id="source-top" type="source" position={Position.Top} style={{ left: '58%' }} className="border-cyan-200! bg-cyan-400!" />
+      <Handle id="target-right" type="target" position={Position.Right} style={{ top: '42%' }} className="border-sky-200! bg-sky-500!" />
+      <Handle id="source-right" type="source" position={Position.Right} style={{ top: '58%' }} className="border-cyan-200! bg-cyan-400!" />
+      <Handle id="target-bottom" type="target" position={Position.Bottom} style={{ left: '42%' }} className="border-sky-200! bg-sky-500!" />
+      <Handle id="source-bottom" type="source" position={Position.Bottom} style={{ left: '58%' }} className="border-cyan-200! bg-cyan-400!" />
+      <Handle id="target-left" type="target" position={Position.Left} style={{ top: '42%' }} className="border-sky-200! bg-sky-500!" />
+      <Handle id="source-left" type="source" position={Position.Left} style={{ top: '58%' }} className="border-cyan-200! bg-cyan-400!" />
       <NodeToolbar
-        isVisible={selected || data.selected}
+        isVisible={data.editorOpen}
         position={Position.Right}
-        offset={12}
-        className="w-[230px] rounded-enterprise border border-slate-300 bg-white p-3 text-slate-800 shadow-2xl"
+        offset={10}
+        className="w-[218px] rounded-enterprise border border-slate-300 bg-white p-2.5 text-[10px] text-slate-800 shadow-2xl"
       >
         <div
           className="grid gap-2"
@@ -185,7 +268,7 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
           onPointerDown={(event) => event.stopPropagation()}
         >
           <div className="flex items-center justify-between gap-2">
-            <strong className="truncate text-xs text-navy-900">Class 빠른 편집</strong>
+            <strong className="truncate text-[11px] text-navy-900">Class 빠른 편집</strong>
             {data.locked && (
               <span className="flex items-center gap-1 rounded bg-amber-100 px-2 py-1 text-[9px] font-black text-amber-800">
                 <LockKeyhole size={10} aria-hidden="true" />
@@ -193,10 +276,10 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
               </span>
             )}
           </div>
-          <label className="text-[10px] font-bold text-slate-600">
+          <label className="text-[10px] font-bold leading-4 text-slate-600">
             표시 이름
             <input
-              className="input mt-1 py-1 text-xs"
+              className="input mt-1 py-1 text-[10px]"
               value={displayName}
               disabled={!data.editable}
               onChange={(event) => setDisplayName(event.target.value)}
@@ -211,9 +294,16 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
             {data.properties.length === 0 ? (
               <p className="mb-2 mt-1 text-[9px] text-slate-500">등록된 Property가 없습니다.</p>
             ) : (
-              <ul className="mb-2 mt-1 max-h-24 overflow-auto pl-4 text-[9px] text-slate-600">
+              <ul className="mb-2 mt-1 grid max-h-28 list-none gap-1 overflow-auto p-0 text-[9px] text-slate-600">
                 {data.properties.map((property) => (
-                  <li key={property.id}>{property.label}</li>
+                  <PropertyRow
+                    key={property.id}
+                    classLabel={data.label}
+                    property={property}
+                    disabled={!data.editable}
+                    onUpdate={data.onUpdateProperty}
+                    onDelete={data.onDeleteProperty}
+                  />
                 ))}
               </ul>
             )}
@@ -228,7 +318,7 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
                 onKeyDown={(event) => {
                   if (event.key === 'Enter') {
                     event.preventDefault()
-                    const value = canonicalName(propertyName)
+                    const value = schemaIdentifier(propertyName, 'Property')
                     if (value) {
                       data.onAddProperty(value)
                       setPropertyName('')
@@ -240,9 +330,9 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
                 type="button"
                 className="button px-2 py-1"
                 aria-label={`${data.label} Property 추가`}
-                disabled={!data.editable || !canonicalName(propertyName)}
+                disabled={!data.editable || !schemaIdentifier(propertyName, 'Property')}
                 onClick={() => {
-                  const value = canonicalName(propertyName)
+                  const value = schemaIdentifier(propertyName, 'Property')
                   if (!value) return
                   data.onAddProperty(value)
                   setPropertyName('')
@@ -295,6 +385,7 @@ interface ClassHierarchyTreeProps {
   onSelect: (id: string) => void
   onAdd: (name: string, parentId?: string) => void
   onReparent: (id: string, parentId?: string) => void
+  onRenameHierarchy: (id: string, relation: string) => void
 }
 
 function ClassHierarchyTree({
@@ -306,9 +397,12 @@ function ClassHierarchyTree({
   onSelect,
   onAdd,
   onReparent,
+  onRenameHierarchy,
 }: ClassHierarchyTreeProps) {
   const [newClassName, setNewClassName] = useState('')
   const [parentForNewClass, setParentForNewClass] = useState<string>()
+  const [editingRelationId, setEditingRelationId] = useState('')
+  const [relationName, setRelationName] = useState('')
   const draggedId = useRef('')
   const newClassInput = useRef<HTMLInputElement>(null)
   const classById = useMemo(
@@ -353,10 +447,63 @@ function ClassHierarchyTree({
 
   const renderBranch = (parentId = '', depth = 0): ReactNode => (
     (childrenByParent.get(parentId) ?? []).map((item) => {
-      const editable = item.block_id === activeBlockId && !item.locked_by_later_block
+      const editable = (
+        (item.block_id === activeBlockId || item.block_id === undefined)
+        && !item.locked_by_later_block
+      )
       const children = childrenByParent.get(item.stable_element_id) ?? []
+      const hierarchyRelation = item.hierarchy_relation ?? 'SUBCLASS_OF'
       return (
         <li key={item.stable_element_id}>
+          {parentId && (
+            <div
+              className="flex h-5 items-center gap-1 text-[9px] text-emerald-700"
+              style={{ marginLeft: Math.max(4, depth * 12 - 8) }}
+              title={`${item.display_name} → ${classById.get(parentId)?.display_name ?? parentId}: ${hierarchyRelation}`}
+            >
+              <span
+                aria-hidden="true"
+                className="h-5 w-3 rounded-bl border-b border-l border-emerald-400"
+              />
+              {editingRelationId === item.stable_element_id ? (
+                <input
+                  autoFocus
+                  aria-label={`${item.display_name} 계층 관계 이름`}
+                  className="input h-5 min-w-0 flex-1 py-0 text-[9px]"
+                  value={relationName}
+                  onChange={(event) => setRelationName(event.target.value)}
+                  onBlur={() => {
+                    const value = schemaIdentifier(relationName, 'Relation')
+                    if (value && value !== hierarchyRelation) {
+                      onRenameHierarchy(item.stable_element_id, value)
+                    }
+                    setEditingRelationId('')
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter') {
+                      event.preventDefault()
+                      event.currentTarget.blur()
+                    } else if (event.key === 'Escape') {
+                      setEditingRelationId('')
+                    }
+                  }}
+                />
+              ) : (
+                <button
+                  type="button"
+                  className="truncate rounded px-1 font-bold hover:bg-emerald-50 hover:text-emerald-900 disabled:text-slate-400"
+                  aria-label={`${item.display_name} 계층 관계 ${hierarchyRelation} 편집`}
+                  disabled={!editable || disabled}
+                  onClick={() => {
+                    setRelationName(hierarchyRelation)
+                    setEditingRelationId(item.stable_element_id)
+                  }}
+                >
+                  {hierarchyRelation}
+                </button>
+              )}
+            </div>
+          )}
           <div
             className={`group flex items-center gap-1 rounded px-1 py-1 ${
               selectedId === item.stable_element_id
@@ -421,7 +568,7 @@ function ClassHierarchyTree({
         className="flex gap-1 border-b border-slate-200 p-2"
         onSubmit={(event) => {
           event.preventDefault()
-          const name = canonicalName(newClassName)
+          const name = schemaIdentifier(newClassName, 'Class')
           if (!name) return
           onAdd(name, parentForNewClass)
           setNewClassName('')
@@ -453,7 +600,7 @@ function ClassHierarchyTree({
           type="submit"
           className="button px-2 py-1"
           aria-label={parentForNewClass ? '하위 Class 추가' : '최상위 Class 추가'}
-          disabled={disabled || !canonicalName(newClassName)}
+          disabled={disabled || !schemaIdentifier(newClassName, 'Class')}
         >
           <Plus size={12} aria-hidden="true" />
         </button>
@@ -474,7 +621,7 @@ function ClassHierarchyTree({
         )}
       </div>
       <p className="m-0 border-t border-slate-200 p-2 text-[9px] leading-4 text-slate-500">
-        Class를 드래그해 다른 Class에 놓으면 subClassOf 계층이 형성됩니다.
+        Sibling도 자유롭게 드래그할 수 있습니다. 연결 라벨을 눌러 계층 관계 이름을 편집하세요.
       </p>
     </aside>
   )
@@ -498,7 +645,7 @@ function asSafeGraph(elements: KnowledgeStudioTBoxElement[]): {
       id: `hierarchy:${item.stable_element_id}`,
       source: item.stable_element_id,
       target: parent,
-      relation: 'SUBCLASS_OF',
+      relation: item.hierarchy_relation ?? 'SUBCLASS_OF',
       sourceAlias: aliasById.get(item.stable_element_id),
       targetAlias: aliasById.get(parent),
     }]
@@ -595,6 +742,7 @@ function flowGraph(
       editable,
       locked: item.locked_by_later_block,
       selected: item.stable_element_id === selectedElementId,
+      editorOpen: false,
       blockLabel: block?.title ?? '현재 블록',
       properties: elements
         .filter(
@@ -604,10 +752,14 @@ function flowGraph(
         .map((property) => ({
           id: property.stable_element_id,
           label: property.display_name,
+          dataType: property.data_type ?? 'STRING',
         })),
       onRename: () => undefined,
       onDelete: () => undefined,
       onAddProperty: () => undefined,
+      onToggleEditor: () => undefined,
+      onUpdateProperty: () => undefined,
+      onDeleteProperty: () => undefined,
     },
     draggable: editable,
     connectable: true,
@@ -638,9 +790,9 @@ function flowGraph(
       id: `hierarchy:${item.stable_element_id}`,
       source: item.stable_element_id,
       target: parent,
-      label: 'subClassOf',
+      label: item.hierarchy_relation ?? 'SUBCLASS_OF',
       data: {
-        relation: 'SUBCLASS_OF',
+        relation: item.hierarchy_relation ?? 'SUBCLASS_OF',
         hierarchy: true,
         editable: item.block_id === editableBlockId && !item.locked_by_later_block,
       },
@@ -667,6 +819,7 @@ function elementPayload(
     canonical_name: item.canonical_name,
     display_name: item.display_name,
     parent_stable_element_id: item.parent_stable_element_id,
+    hierarchy_relation: item.hierarchy_relation,
     source_stable_element_id: item.source_stable_element_id,
     target_stable_element_id: item.target_stable_element_id,
     data_type: item.data_type,
@@ -695,6 +848,7 @@ function createdClass(
     canonical_name: label,
     display_name: label,
     parent_stable_element_id: parentId,
+    hierarchy_relation: parentId ? 'SUBCLASS_OF' : undefined,
     ordinal,
     version: 1,
     aliases: [],
@@ -705,10 +859,75 @@ function createdClass(
   }
 }
 
-function canonicalName(value: string): string {
-  const cleaned = value.trim().replace(/[^A-Za-z0-9_]/g, '_')
+export function schemaIdentifier(value: string, prefix = 'Class'): string {
+  const cleaned = value
+    .trim()
+    .normalize('NFC')
+    .replace(/[^\p{L}\p{N}_]+/gu, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_+|_+$/g, '')
   if (!cleaned) return ''
-  return /^[A-Za-z]/.test(cleaned) ? cleaned : `Class_${cleaned}`
+  return /^\p{L}/u.test(cleaned) ? cleaned : `${prefix}_${cleaned}`
+}
+
+interface EditableBlockTitleProps {
+  block: KnowledgeStudioTBoxBlock
+  disabled: boolean
+  onSave: (title: string) => void
+}
+
+function EditableBlockTitle({ block, disabled, onSave }: EditableBlockTitleProps) {
+  const [value, setValue] = useState(block.title)
+  useEffect(() => setValue(block.title), [block.title])
+  const nextTitle = value.trim()
+  const dirty = Boolean(nextTitle && nextTitle !== block.title)
+
+  const save = () => {
+    if (dirty) onSave(nextTitle)
+    else setValue(block.title)
+  }
+
+  return (
+    <div className="flex min-w-[220px] flex-1 items-center gap-1">
+      <Pencil size={11} className="shrink-0 text-slate-400" aria-hidden="true" />
+      <input
+        aria-label={`${block.ordinal + 1}번 블록 이름`}
+        className="input min-w-0 flex-1 border-transparent bg-transparent py-1 text-xs font-black text-navy-900 hover:border-slate-300 focus:bg-white"
+        value={value}
+        maxLength={120}
+        disabled={disabled}
+        onChange={(event) => setValue(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter') {
+            event.preventDefault()
+            save()
+          } else if (event.key === 'Escape') {
+            setValue(block.title)
+          }
+        }}
+      />
+      <button
+        type="button"
+        className="rounded p-1 text-emerald-700 hover:bg-emerald-50 disabled:text-slate-300"
+        aria-label={`${block.title} 블록 이름 확인`}
+        title="저장"
+        disabled={disabled || !dirty}
+        onClick={save}
+      >
+        <Check size={13} aria-hidden="true" />
+      </button>
+      <button
+        type="button"
+        className="rounded p-1 text-slate-500 hover:bg-slate-100 disabled:text-slate-300"
+        aria-label={`${block.title} 블록 이름 취소`}
+        title="취소"
+        disabled={disabled || value === block.title}
+        onClick={() => setValue(block.title)}
+      >
+        <X size={13} aria-hidden="true" />
+      </button>
+    </div>
+  )
 }
 
 export function GraphBuilder({
@@ -734,12 +953,22 @@ export function GraphBuilder({
     column: number
   }>()
   const [selectedElementId, setSelectedElementId] = useState('')
+  const [editorOpenId, setEditorOpenId] = useState('')
   const [status, setStatus] = useState('T-Box 정본을 불러오는 중입니다.')
   const [working, setWorking] = useState(false)
   const [showBlockMenu, setShowBlockMenu] = useState(false)
   const [assistantPrompt, setAssistantPrompt] = useState('')
   const [proposal, setProposal] = useState<KnowledgeStudioTBoxProposal>()
+  const [proposalExcluded, setProposalExcluded] = useState<Set<string>>(new Set())
   const [conflictOpen, setConflictOpen] = useState(false)
+  const [catalogOpen, setCatalogOpen] = useState(false)
+  const [catalogQuery, setCatalogQuery] = useState('')
+  const [catalogResults, setCatalogResults] = useState<KnowledgeStudioSourceDataset[]>([])
+  const [selectedCatalog, setSelectedCatalog] = useState<KnowledgeStudioSourceDataset>()
+  const [selectedCatalogFields, setSelectedCatalogFields] = useState<Set<string>>(new Set())
+  const [catalogLoading, setCatalogLoading] = useState(false)
+  const [documentCapabilityOpen, setDocumentCapabilityOpen] = useState(false)
+  const [validationPhase, setValidationPhase] = useState<'CHECKING' | 'VALID' | 'INVALID'>('VALID')
   const [blockPendingDelete, setBlockPendingDelete] = useState<KnowledgeStudioTBoxBlock>()
   const [conflictActions, setConflictActions] = useState<Record<string, 'KEEP_ORIGINAL' | 'ACCEPT_PROPOSAL'>>({})
   const locked = lifecycleState !== 'DRAFT'
@@ -768,6 +997,7 @@ export function GraphBuilder({
     setEditorText(formatSafeCypherDraft(safe.nodes, safe.edges))
     setEditorError(undefined)
     setSelectedElementId('')
+    setEditorOpenId('')
   }, [setEdges, setNodes])
 
   const applyResponse = useCallback((
@@ -802,6 +1032,16 @@ export function GraphBuilder({
     return () => controller.abort()
   }, [applyBlock, client, draftId])
 
+  useEffect(() => {
+    if (editorError) {
+      setValidationPhase('INVALID')
+      return
+    }
+    setValidationPhase('CHECKING')
+    const timeout = window.setTimeout(() => setValidationPhase('VALID'), 220)
+    return () => window.clearTimeout(timeout)
+  }, [editorError, editorText])
+
   const syncCanvasAndEditor = useCallback((next: KnowledgeStudioTBoxElement[]) => {
     const graph = flowGraph(next, selectedBlockId, record?.blocks ?? [], selectedElementId)
     const safe = asSafeGraph(next)
@@ -830,8 +1070,19 @@ export function GraphBuilder({
     const parsedNodes = new Map(parsed.nodes.map((item) => [item.id, item]))
     const parsedEdges = new Map(parsed.edges.map((item) => [item.id, item]))
     const hierarchyParentByClass = new Map<string, string>()
+    const hierarchyRelationByClass = new Map<string, string>()
+    const priorHierarchyEdgeIds = new Set(
+      elements
+        .filter((item) => item.kind === 'CLASS' && item.parent_stable_element_id)
+        .map((item) => `hierarchy:${item.stable_element_id}`),
+    )
+    const hierarchyEdgeIds = new Set<string>()
     for (const edge of parsed.edges) {
-      if (edge.relation !== 'SUBCLASS_OF') continue
+      const hierarchy = priorHierarchyEdgeIds.has(edge.id)
+        || (edge.relation === 'SUBCLASS_OF' && !elements.some(
+          (item) => item.kind === 'RELATION' && item.stable_element_id === edge.id,
+        ))
+      if (!hierarchy) continue
       if (edge.source === edge.target || hierarchyParentByClass.has(edge.source)) {
         setEditorError({
           message: 'Class hierarchy는 Class당 하나의 부모만 가지며 순환할 수 없습니다.',
@@ -841,6 +1092,8 @@ export function GraphBuilder({
         return
       }
       hierarchyParentByClass.set(edge.source, edge.target)
+      hierarchyRelationByClass.set(edge.source, edge.relation)
+      hierarchyEdgeIds.add(edge.id)
     }
     for (const classId of hierarchyParentByClass.keys()) {
       const visited = new Set<string>()
@@ -864,6 +1117,11 @@ export function GraphBuilder({
           parsedNodes.get(item.stable_element_id)?.label !== item.canonical_name
           || hierarchyParentByClass.get(item.stable_element_id)
             !== item.parent_stable_element_id
+          || (
+            item.parent_stable_element_id !== undefined
+            && hierarchyRelationByClass.get(item.stable_element_id)
+              !== (item.hierarchy_relation ?? 'SUBCLASS_OF')
+          )
         )
       }
       if (item.kind === 'RELATION') {
@@ -896,6 +1154,9 @@ export function GraphBuilder({
         canonical_name: item.label,
         display_name: prior?.display_name ?? item.label,
         parent_stable_element_id: hierarchyParentByClass.get(item.id),
+        hierarchy_relation: hierarchyParentByClass.has(item.id)
+          ? hierarchyRelationByClass.get(item.id) ?? 'SUBCLASS_OF'
+          : undefined,
         definition: prior?.definition,
         aliases: prior?.aliases ?? [],
         vector_index_enabled: false,
@@ -914,7 +1175,7 @@ export function GraphBuilder({
         && Boolean(item.parent_stable_element_id && classIds.has(item.parent_stable_element_id)),
     )
     const nextRelations = parsed.edges
-      .filter((item) => item.relation !== 'SUBCLASS_OF')
+      .filter((item) => !hierarchyEdgeIds.has(item.id))
       .map((item): KnowledgeStudioTBoxElement => {
       const prior = priorById.get(item.id)
       return {
@@ -943,7 +1204,7 @@ export function GraphBuilder({
   }
 
   const addClass = (rawName: string, parentId?: string) => {
-    const name = canonicalName(rawName)
+    const name = schemaIdentifier(rawName, 'Class')
     if (!name || locked || working) return
     if (elements.some(
       (item) => item.kind === 'CLASS' && item.canonical_name.toLowerCase() === name.toLowerCase(),
@@ -1056,7 +1317,7 @@ export function GraphBuilder({
       || locked
       || working
     ) return
-    const name = canonicalName(rawName)
+    const name = schemaIdentifier(rawName, 'Property')
     if (!name) return
     if (elements.some(
       (item) => item.kind === 'PROPERTY'
@@ -1082,6 +1343,39 @@ export function GraphBuilder({
     }
     syncCanvasAndEditor([...elements, property])
     setSelectedElementId(classId)
+  }
+
+  const updateProperty = (
+    propertyId: string,
+    rawName: string,
+    dataType: string,
+  ) => {
+    const property = elements.find((item) => item.stable_element_id === propertyId)
+    const name = schemaIdentifier(rawName, 'Property')
+    if (
+      property?.kind !== 'PROPERTY'
+      || !name
+      || !propertyDataTypes.includes(dataType)
+      || locked
+      || working
+    ) return
+    if (elements.some(
+      (item) => item.kind === 'PROPERTY'
+        && item.stable_element_id !== propertyId
+        && item.parent_stable_element_id === property.parent_stable_element_id
+        && item.canonical_name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+    )) {
+      setStatus(`Property '${name}'은(는) 이미 존재합니다.`)
+      return
+    }
+    updateElement(propertyId, {
+      canonical_name: name,
+      display_name: name,
+      data_type: dataType,
+      vector_index_enabled: property.vector_index_enabled
+        && (dataType === 'STRING' || dataType === 'TEXT'),
+    })
+    setStatus(`Property '${name}'을(를) 수정했습니다. 저장 시 Typed Operation으로 반영됩니다.`)
   }
 
   const save = async () => {
@@ -1132,7 +1426,7 @@ export function GraphBuilder({
     }
   }
 
-  const createBlock = async (option: typeof blockOptions[number]) => {
+  const createBlock = async (option: typeof directBlockOption) => {
     if (locked || working) return
     setWorking(true)
     try {
@@ -1227,6 +1521,7 @@ export function GraphBuilder({
               action: conflictActions[conflict.conflict_id] ?? 'KEEP_ORIGINAL',
             }))
             : [],
+          excluded_stable_element_ids: [...proposalExcluded],
         },
         responseEtag,
         newKnowledgeStudioIdempotencyKey(),
@@ -1235,6 +1530,7 @@ export function GraphBuilder({
       applyResponse(response.data, response.etag)
       setConflictOpen(false)
       setProposal(undefined)
+      setProposalExcluded(new Set())
       setAssistantPrompt('')
       setStatus('LLM Proposal을 Typed T-Box에 반영했습니다.')
     } catch (error) {
@@ -1246,31 +1542,71 @@ export function GraphBuilder({
 
   const requestProposal = async (
     mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER',
+    promptOverride?: string,
   ) => {
-    if (!assistantPrompt.trim() || working || locked || !selectedBlock) return
+    const prompt = promptOverride?.trim() || assistantPrompt.trim()
+    if (!prompt || working || locked || !selectedBlock) return
     setWorking(true)
     setStatus('서버의 승인된 LLM 런타임에서 T-Box Proposal을 생성 중입니다.')
     try {
       const next = await createKnowledgeStudioTBoxProposal(client, draftId, {
         target_block_id: mode === 'MERGE_INTO_CURRENT' ? selectedBlock.id : undefined,
         mode,
-        prompt: assistantPrompt.trim(),
+        prompt,
       }, responseEtag)
       setProposal(next)
+      setProposalExcluded(new Set())
       setConflictActions(Object.fromEntries(
         next.conflicts.map((item) => [item.conflict_id, 'KEEP_ORIGINAL']),
       ))
-      if (next.conflicts.length > 0) {
-        setWorking(false)
-        setConflictOpen(true)
-        setStatus(`${next.conflicts.length}개의 병합 충돌을 확인해야 합니다.`)
-      } else {
-        await applyProposal(next, 'KEEP_ORIGINAL')
-      }
+      setWorking(false)
+      setStatus(
+        next.conflicts.length > 0
+          ? `${next.conflicts.length}개의 충돌이 포함된 Proposal을 미리보기로 불러왔습니다.`
+          : `${next.elements.length}개의 Typed 요소 Proposal을 미리보기로 불러왔습니다.`,
+      )
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'LLM Proposal 생성에 실패했습니다.')
       setWorking(false)
     }
+  }
+
+  const searchCatalog = async () => {
+    if (catalogLoading) return
+    setCatalogLoading(true)
+    try {
+      const result = await searchKnowledgeStudioTBoxCatalogSources(
+        client,
+        draftId,
+        catalogQuery,
+      )
+      setCatalogResults(result.items)
+      setStatus(`권한 범위의 카탈로그 ${result.items.length}건을 조회했습니다.`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '카탈로그를 조회하지 못했습니다.')
+    } finally {
+      setCatalogLoading(false)
+    }
+  }
+
+  const proposeSelectedCatalog = (mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER') => {
+    if (!selectedCatalog || selectedCatalogFields.size === 0) return
+    const prompt = [
+      '권한이 확인된 DataRiver 카탈로그 메타데이터를 논리 T-Box로 제안하세요.',
+      `Dataset: ${selectedCatalog.name}`,
+      `Asset ID: ${selectedCatalog.id}`,
+      `Type: ${selectedCatalog.asset_type}`,
+      `Platform: ${selectedCatalog.platform ?? 'unknown'}`,
+      `Database: ${selectedCatalog.database_name ?? 'unknown'}`,
+      `Schema: ${selectedCatalog.schema_name ?? 'unknown'}`,
+      `Source version: ${selectedCatalog.source_version}`,
+      `Projection version: ${selectedCatalog.projection_source_version}`,
+      `Selected fields: ${JSON.stringify([...selectedCatalogFields].sort())}`,
+      '실제 행 데이터는 만들지 말고 Class와 Property 구조만 반환하세요.',
+    ].join('\n')
+    setAssistantPrompt(prompt)
+    setCatalogOpen(false)
+    void requestProposal(mode, prompt)
   }
 
   const updateElement = (
@@ -1320,11 +1656,30 @@ export function GraphBuilder({
       || target.locked_by_later_block
       || (parentId && !allowedParentIds.has(parentId))
     ) return
-    updateElement(classId, { parent_stable_element_id: parentId })
+    updateElement(classId, {
+      parent_stable_element_id: parentId,
+      hierarchy_relation: parentId
+        ? target.hierarchy_relation ?? 'SUBCLASS_OF'
+        : undefined,
+    })
     setSelectedElementId(classId)
     setStatus(parentId
       ? `${target.display_name} Class의 subClassOf 계층을 변경했습니다.`
       : `${target.display_name} Class를 최상위로 이동했습니다.`)
+  }
+
+  const renameHierarchy = (classId: string, rawRelation: string) => {
+    const relation = schemaIdentifier(rawRelation, 'Relation')
+    const target = elements.find((item) => item.stable_element_id === classId)
+    if (
+      !relation
+      || target?.kind !== 'CLASS'
+      || !target.parent_stable_element_id
+      || (target.block_id !== selectedBlockId && target.block_id !== undefined)
+      || target.locked_by_later_block
+    ) return
+    updateElement(classId, { hierarchy_relation: relation })
+    setStatus(`계층 관계 이름을 '${relation}'(으)로 변경했습니다.`)
   }
 
   const renderedNodes = nodes.map((node): CanvasNode => {
@@ -1345,6 +1700,7 @@ export function GraphBuilder({
         editable,
         locked: item.locked_by_later_block,
         selected: item.stable_element_id === selectedElementId,
+        editorOpen: item.stable_element_id === editorOpenId,
         properties: elements
           .filter(
             (property) => property.kind === 'PROPERTY'
@@ -1353,12 +1709,34 @@ export function GraphBuilder({
           .map((property) => ({
             id: property.stable_element_id,
             label: property.display_name,
+            dataType: property.data_type ?? 'STRING',
           })),
-        onRename: (value) => updateElement(item.stable_element_id, {
-          display_name: value,
-        }),
+        onToggleEditor: () => {
+          setSelectedElementId(item.stable_element_id)
+          setEditorOpenId((current) => (
+            current === item.stable_element_id ? '' : item.stable_element_id
+          ))
+        },
+        onRename: (value) => {
+          const name = schemaIdentifier(value, 'Class')
+          if (!name) return
+          if (elements.some(
+            (candidate) => candidate.kind === 'CLASS'
+              && candidate.stable_element_id !== item.stable_element_id
+              && candidate.canonical_name.toLocaleLowerCase() === name.toLocaleLowerCase(),
+          )) {
+            setStatus(`Class '${name}'은(는) 이미 존재합니다.`)
+            return
+          }
+          updateElement(item.stable_element_id, {
+            canonical_name: name,
+            display_name: name,
+          })
+        },
         onDelete: () => deleteElement(item.stable_element_id),
         onAddProperty: (value) => addProperty(item.stable_element_id, value),
+        onUpdateProperty: updateProperty,
+        onDeleteProperty: deleteElement,
       },
     }
   })
@@ -1425,18 +1803,10 @@ export function GraphBuilder({
                   {block.ordinal + 1}
                 </span>
               </button>
-              <input
-                aria-label={`${block.ordinal + 1}번 블록 이름`}
-                className="input min-w-[180px] flex-1 border-transparent bg-transparent py-1 text-sm font-black text-navy-900 hover:border-slate-300 focus:bg-white"
-                defaultValue={block.title}
-                maxLength={120}
+              <EditableBlockTitle
+                block={block}
                 disabled={locked || working}
-                onClick={(event) => event.stopPropagation()}
-                onBlur={(event) => {
-                  const title = event.currentTarget.value.trim()
-                  if (title && title !== block.title) void updateBlock(block, { title })
-                  else event.currentTarget.value = block.title
-                }}
+                onSave={(title) => void updateBlock(block, { title })}
               />
               <span className="rounded bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-500">
                 {block.kind}
@@ -1471,20 +1841,51 @@ export function GraphBuilder({
               >
                 <Trash2 size={13} aria-hidden="true" />
               </button>
-              <button
-                type="button"
-                className="button button-secondary px-2 py-1.5"
-                aria-label={block.collapsed ? `${block.title} 펼치기` : `${block.title} 접기`}
-                disabled={locked || working}
-                onClick={() => void updateBlock(block, { collapsed: !block.collapsed })}
-              >
-                {block.collapsed
-                  ? <ChevronDown size={14} aria-hidden="true" />
-                  : <ChevronUp size={14} aria-hidden="true" />}
-              </button>
             </header>
-            {block.id === selectedBlockId && !block.collapsed && (
+            {block.id === selectedBlockId && (
               <div className="border-t border-slate-200 p-3">
+                <div className="mb-3 flex flex-wrap items-center gap-2 rounded-enterprise border border-blue-200 bg-blue-50 p-2">
+                  <strong className="mr-auto text-[11px] text-blue-950">
+                    통합 Schema Proposal Pipeline
+                  </strong>
+                  <button
+                    type="button"
+                    className="button button-secondary py-1.5 text-[10px]"
+                    disabled={locked || working}
+                    onClick={() => setDocumentCapabilityOpen(true)}
+                  >
+                    <FileUp size={13} aria-hidden="true" />
+                    데이터 업로드
+                  </button>
+                  <button
+                    type="button"
+                    className="button button-secondary py-1.5 text-[10px]"
+                    disabled={locked || working}
+                    onClick={() => {
+                      setCatalogOpen(true)
+                      if (catalogResults.length === 0) void searchCatalog()
+                    }}
+                  >
+                    <Database size={13} aria-hidden="true" />
+                    DB 테이블 검색
+                  </button>
+                  <span
+                    className={`rounded px-2 py-1 text-[9px] font-black ${
+                      validationPhase === 'VALID'
+                        ? 'bg-emerald-100 text-emerald-800'
+                        : validationPhase === 'INVALID'
+                          ? 'bg-red-100 text-red-800'
+                          : 'bg-amber-100 text-amber-800'
+                    }`}
+                    role="status"
+                  >
+                    {validationPhase === 'VALID'
+                      ? 'TYPED VALID'
+                      : validationPhase === 'INVALID'
+                        ? 'INVALID'
+                        : 'VALIDATING…'}
+                  </span>
+                </div>
                 <div className="grid min-h-[520px] gap-3 xl:grid-cols-[270px_minmax(0,1fr)]">
                   <ClassHierarchyTree
                     classes={classes}
@@ -1495,6 +1896,7 @@ export function GraphBuilder({
                     onSelect={setSelectedElementId}
                     onAdd={addClass}
                     onReparent={reparentClass}
+                    onRenameHierarchy={renameHierarchy}
                   />
                   <div className="relative min-h-[520px] overflow-hidden rounded-enterprise border border-slate-700 bg-[#0b1d31]">
                     <header className="absolute left-3 top-3 z-10 rounded border border-slate-600 bg-[#10253d]/95 px-3 py-2 text-xs font-black text-slate-100 shadow">
@@ -1510,6 +1912,67 @@ export function GraphBuilder({
                         </p>
                       </div>
                     )}
+                    {proposal && (
+                      <aside
+                        className="absolute right-3 top-3 z-20 w-[230px] rounded-enterprise border border-violet-300 bg-white/95 p-2.5 text-slate-800 shadow-2xl backdrop-blur"
+                        aria-label="T-Box Proposal 미리보기"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <strong className="text-[10px] text-violet-950">
+                            Proposal · {proposal.elements.length} elements
+                          </strong>
+                          <button
+                            type="button"
+                            className="rounded p-1 text-slate-500 hover:bg-slate-100"
+                            aria-label="Proposal 미리보기 닫기"
+                            onClick={() => {
+                              setProposal(undefined)
+                              setProposalExcluded(new Set())
+                            }}
+                          >
+                            <X size={12} aria-hidden="true" />
+                          </button>
+                        </div>
+                        <p className="my-1 text-[9px] leading-4 text-slate-500">
+                          불필요한 요소를 제외한 뒤 적용하세요. 정본은 적용 전까지 바뀌지 않습니다.
+                        </p>
+                        <ul className="m-0 grid max-h-48 list-none gap-1 overflow-auto p-0">
+                          {proposal.elements.map((item) => (
+                            <li key={item.stable_element_id}>
+                              <label className="flex items-center gap-1 rounded border border-slate-200 px-2 py-1 text-[9px]">
+                                <input
+                                  type="checkbox"
+                                  checked={!proposalExcluded.has(item.stable_element_id)}
+                                  onChange={(event) => {
+                                    setProposalExcluded((current) => {
+                                      const next = new Set(current)
+                                      if (event.target.checked) next.delete(item.stable_element_id)
+                                      else next.add(item.stable_element_id)
+                                      return next
+                                    })
+                                  }}
+                                />
+                                <span className="truncate font-bold">{item.display_name}</span>
+                                <span className="ml-auto text-[8px] text-slate-400">{item.kind}</span>
+                              </label>
+                            </li>
+                          ))}
+                        </ul>
+                        <div className="mt-2 flex gap-1">
+                          <button
+                            type="button"
+                            className="button flex-1 justify-center py-1 text-[9px]"
+                            disabled={proposalExcluded.size === proposal.elements.length || working}
+                            onClick={() => {
+                              if (proposal.conflicts.length > 0) setConflictOpen(true)
+                              else void applyProposal(proposal, 'KEEP_ORIGINAL')
+                            }}
+                          >
+                            {proposal.mode === 'APPEND_LAYER' ? '새 블록 생성' : '현재 블록 적용'}
+                          </button>
+                        </div>
+                      </aside>
+                    )}
                     <ReactFlow<CanvasNode, SchemaEdge>
                       aria-label="T-Box 그래프 캔버스"
                       nodes={renderedNodes}
@@ -1522,7 +1985,10 @@ export function GraphBuilder({
                         if (node.type === 'schemaClass') setSelectedElementId(node.id)
                       }}
                       onEdgeClick={(_, edge) => setSelectedElementId(edge.id)}
-                      onPaneClick={() => setSelectedElementId('')}
+                      onPaneClick={() => {
+                        setSelectedElementId('')
+                        setEditorOpenId('')
+                      }}
                       nodesDraggable={!locked && !working}
                       nodesConnectable={!locked && !working}
                       deleteKeyCode={null}
@@ -1555,7 +2021,7 @@ export function GraphBuilder({
                   <header className="flex items-center justify-between border-b border-slate-700 px-3 py-2 text-xs font-black text-slate-100">
                     <span>SchemaCypherEditor · safe CREATE subset · 실행되지 않음</span>
                     <span className="text-[9px] font-semibold text-slate-400">
-                      Class hierarchy = SUBCLASS_OF
+                      계층선 이름 편집 가능 · PostgreSQL Class parent 정본
                     </span>
                   </header>
                   <textarea
@@ -1593,23 +2059,19 @@ export function GraphBuilder({
         </button>
         {showBlockMenu && (
           <div className="mt-2 grid gap-2 rounded-enterprise border border-slate-300 bg-white p-3 shadow-lg md:grid-cols-2 xl:grid-cols-4">
-            {blockOptions.map((option) => {
-              const Icon = option.icon
-              return (
-                <button
-                  key={option.kind}
-                  type="button"
-                  className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
-                  onClick={() => void createBlock(option)}
-                >
-                  <Icon size={16} className="text-enterprise-blue" aria-hidden="true" />
-                  <strong className="mt-2 block text-xs text-navy-900">{option.title}</strong>
-                  <span className="mt-1 block text-[11px] leading-4 text-slate-500">
-                    {option.description}
-                  </span>
-                </button>
-              )
-            })}
+            <button
+              type="button"
+              className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
+              onClick={() => void createBlock(directBlockOption)}
+            >
+              <Plus size={16} className="text-enterprise-blue" aria-hidden="true" />
+              <strong className="mt-2 block text-xs text-navy-900">
+                통합 직접 정의 블록
+              </strong>
+              <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                직접 편집, 문서, 카탈로그 Proposal을 한 레이어에서 누적합니다.
+              </span>
+            </button>
           </div>
         )}
       </div>
@@ -1653,6 +2115,154 @@ export function GraphBuilder({
           </div>
         </div>
       </section>
+
+      <Dialog
+        open={catalogOpen}
+        title="DB 카탈로그에서 T-Box 제안"
+        description="현재 사용자의 권한과 지식 자산 보안등급 범위 안에서만 Dataset과 컬럼을 조회합니다."
+        onRequestClose={() => {
+          if (!catalogLoading && !working) setCatalogOpen(false)
+        }}
+        footer={<>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={working}
+            onClick={() => setCatalogOpen(false)}
+          >
+            취소
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={!selectedCatalog || selectedCatalogFields.size === 0 || working}
+            onClick={() => proposeSelectedCatalog('APPEND_LAYER')}
+          >
+            새 블록 Proposal
+          </button>
+          <button
+            type="button"
+            className="button"
+            disabled={!selectedCatalog || selectedCatalogFields.size === 0 || working}
+            onClick={() => proposeSelectedCatalog('MERGE_INTO_CURRENT')}
+          >
+            현재 블록 Proposal
+          </button>
+        </>}
+      >
+        <div className="grid gap-3">
+          <form
+            className="flex gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void searchCatalog()
+            }}
+          >
+            <input
+              aria-label="T-Box 카탈로그 검색어"
+              className="input min-w-0 flex-1"
+              value={catalogQuery}
+              maxLength={200}
+              placeholder="테이블, 플랫폼, 스키마 검색"
+              onChange={(event) => setCatalogQuery(event.target.value)}
+            />
+            <button type="submit" className="button" disabled={catalogLoading}>
+              <Search size={13} aria-hidden="true" />
+              검색
+            </button>
+          </form>
+          <div className="grid max-h-[48vh] gap-3 overflow-auto md:grid-cols-[220px_minmax(0,1fr)]">
+            <ul className="m-0 grid content-start gap-1 list-none p-0">
+              {catalogResults.length === 0 && (
+                <li className="rounded border border-dashed border-slate-300 p-4 text-center text-xs text-slate-500">
+                  검색 결과가 없습니다.
+                </li>
+              )}
+              {catalogResults.map((item) => (
+                <li key={item.id}>
+                  <button
+                    type="button"
+                    className={`w-full rounded border p-2 text-left ${
+                      selectedCatalog?.id === item.id
+                        ? 'border-enterprise-blue bg-blue-50'
+                        : 'border-slate-200 hover:bg-slate-50'
+                    }`}
+                    onClick={() => {
+                      setSelectedCatalog(item)
+                      setSelectedCatalogFields(new Set(item.field_paths))
+                    }}
+                  >
+                    <strong className="block truncate text-xs text-navy-900">{item.name}</strong>
+                    <span className="mt-1 block truncate text-[9px] text-slate-500">
+                      {[item.platform, item.database_name, item.schema_name]
+                        .filter(Boolean)
+                        .join(' / ')}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            <section className="rounded border border-slate-200 p-3">
+              <h4 className="m-0 text-xs font-black text-navy-900">
+                {selectedCatalog?.name ?? 'Dataset을 선택하세요'}
+              </h4>
+              {selectedCatalog && (
+                <>
+                  <p className="my-2 text-[10px] leading-4 text-slate-500">
+                    Source {selectedCatalog.source_version} · Projection{' '}
+                    {selectedCatalog.projection_source_version}
+                  </p>
+                  <div className="grid max-h-64 gap-1 overflow-auto">
+                    {selectedCatalog.field_paths.map((field) => (
+                      <label
+                        key={field}
+                        className="flex items-center gap-2 rounded px-2 py-1 text-[10px] hover:bg-slate-50"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={selectedCatalogFields.has(field)}
+                          onChange={(event) => {
+                            setSelectedCatalogFields((current) => {
+                              const next = new Set(current)
+                              if (event.target.checked) next.add(field)
+                              else next.delete(field)
+                              return next
+                            })
+                          }}
+                        />
+                        <span className="truncate">{field}</span>
+                      </label>
+                    ))}
+                  </div>
+                </>
+              )}
+            </section>
+          </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={documentCapabilityOpen}
+        title="문서 기반 T-Box Proposal"
+        description="PDF, DOCX, XLSX 전용 내구성 분석 Worker가 필요한 기능입니다."
+        onRequestClose={() => setDocumentCapabilityOpen(false)}
+        footer={(
+          <button
+            type="button"
+            className="button"
+            onClick={() => setDocumentCapabilityOpen(false)}
+          >
+            확인
+          </button>
+        )}
+      >
+        <p className="m-0 text-sm leading-6 text-slate-700">
+          현재 배포에는 보안 파서와 별도 권한으로 실행되는 Proposal Worker가 활성화되지
+          않았습니다. 브라우저에서 파일을 읽거나 파일명만으로 가짜 스키마를 만들지 않으며,
+          Worker capability가 준비되면 이 통합 진입점에서만 업로드가 활성화됩니다.
+          구형 DOC/XLS는 지원하지 않습니다.
+        </p>
+      </Dialog>
 
       <Dialog
         open={Boolean(blockPendingDelete)}

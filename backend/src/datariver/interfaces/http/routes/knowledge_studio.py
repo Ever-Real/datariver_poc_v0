@@ -326,6 +326,7 @@ def _tbox_element_response(
         canonical_name=item.canonical_name,
         display_name=item.display_name,
         parent_stable_element_id=item.parent_stable_element_id,
+        hierarchy_relation=item.hierarchy_relation,
         source_stable_element_id=item.source_stable_element_id,
         target_stable_element_id=item.target_stable_element_id,
         data_type=item.data_type,
@@ -376,6 +377,7 @@ def _tbox_element_input(
         canonical_name=value.canonical_name,
         display_name=value.display_name,
         parent_stable_element_id=value.parent_stable_element_id,
+        hierarchy_relation=value.hierarchy_relation,
         source_stable_element_id=value.source_stable_element_id,
         target_stable_element_id=value.target_stable_element_id,
         data_type=value.data_type,
@@ -768,6 +770,7 @@ async def apply_knowledge_studio_tbox_proposal(
             }
             for item in payload.resolutions
         ),
+        excluded_stable_element_ids=tuple(payload.excluded_stable_element_ids),
         expected_version=expected_version,
         idempotency_key=idempotency_key,
         request_hash=request_hash,
@@ -1244,6 +1247,65 @@ async def get_knowledge_studio_ingestion_job(
     )
     response.headers["Cache-Control"] = "no-store"
     return _ingestion_response(record)
+
+
+@router.get(
+    "/drafts/{draft_id}/tbox/catalog-sources",
+    response_model=KnowledgeStudioSourcePageResponse,
+)
+async def list_knowledge_studio_tbox_catalog_sources(
+    draft_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    q: Annotated[str, Query(max_length=200)] = "",
+    cursor: Annotated[str | None, Query(max_length=2_000)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> KnowledgeStudioSourcePageResponse:
+    response.headers["Cache-Control"] = "no-store"
+    page = await _service(request, session).search_tbox_catalog_sources(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        query=q,
+        cursor=cursor,
+        limit=limit,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return KnowledgeStudioSourcePageResponse(
+        items=[_source_response(item) for item in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.get(
+    "/drafts/{draft_id}/tbox/catalog-sources/{asset_id}",
+    response_model=KnowledgeStudioSourceDetailResponse,
+)
+async def get_knowledge_studio_tbox_catalog_source(
+    draft_id: UUID,
+    asset_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> KnowledgeStudioSourceDetailResponse:
+    response.headers["Cache-Control"] = "no-store"
+    source = await _service(request, session).get_tbox_catalog_source(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        asset_id=asset_id,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return KnowledgeStudioSourceDetailResponse(
+        dataset=_source_response(source.dataset),
+        observed_at=source.observed_at,
+        stale_at=source.stale_at,
+    )
 
 
 @router.get(

@@ -78,28 +78,25 @@ class CypherSubsetError extends Error {
 }
 
 export function isSafeCypherIdentifier(value: string): boolean {
-  if (value.length < 1 || value.length > 64) return false
-  if (!isAsciiLetter(value[0])) return false
-  for (let index = 1; index < value.length; index += 1) {
-    const character = value[index]
-    if (!(isAsciiLetter(character) || isAsciiDigit(character) || character === '_')) {
-      return false
-    }
-  }
-  return true
+  if (value.normalize('NFC') !== value) return false
+  const characters = Array.from(value)
+  if (characters.length < 1 || characters.length > 255) return false
+  return isUnicodeLetter(characters[0])
+    && characters.slice(1).every(isIdentifierContinuation)
 }
 
-function isAsciiLetter(value: string | undefined): boolean {
-  if (!value) return false
-  return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z')
+function isUnicodeLetter(value: string | undefined): boolean {
+  return Boolean(value && /^\p{L}$/u.test(value))
 }
 
-function isAsciiDigit(value: string | undefined): boolean {
-  return Boolean(value && value >= '0' && value <= '9')
+function isUnicodeNumber(value: string | undefined): boolean {
+  return Boolean(value && /^\p{N}$/u.test(value))
 }
 
 function isIdentifierContinuation(value: string | undefined): boolean {
-  return isAsciiLetter(value) || isAsciiDigit(value) || value === '_'
+  return isUnicodeLetter(value)
+    || isUnicodeNumber(value)
+    || value === '_'
 }
 
 function lexCypherSubset(source: string): Token[] {
@@ -113,9 +110,11 @@ function lexCypherSubset(source: string): Token[] {
   }
 
   while (index < source.length) {
-    const character = source[index]
+    const codePoint = source.codePointAt(index)
+    const character = codePoint === undefined ? undefined : String.fromCodePoint(codePoint)
+    const characterWidth = character?.length ?? 1
     if (character === ' ' || character === '\t') {
-      index += 1
+      index += characterWidth
       column += 1
       continue
     }
@@ -138,18 +137,23 @@ function lexCypherSubset(source: string): Token[] {
       }
       continue
     }
-    if (isAsciiLetter(character)) {
+    if (isUnicodeLetter(character)) {
       const tokenLine = line
       const tokenColumn = column
       const start = index
-      while (isIdentifierContinuation(source[index])) {
-        index += 1
+      while (index < source.length) {
+        const nextCodePoint = source.codePointAt(index)
+        const nextCharacter = nextCodePoint === undefined
+          ? undefined
+          : String.fromCodePoint(nextCodePoint)
+        if (!isIdentifierContinuation(nextCharacter)) break
+        index += nextCharacter?.length ?? 1
         column += 1
       }
       const value = source.slice(start, index)
-      if (value.length > 64) {
+      if (Array.from(value).length > 255) {
         throw new CypherSubsetError(
-          `${tokenLine}번째 줄 ${tokenColumn}번째 식별자는 64자를 초과할 수 없습니다.`,
+          `${tokenLine}번째 줄 ${tokenColumn}번째 식별자는 255자를 초과할 수 없습니다.`,
           tokenLine,
           tokenColumn,
         )
@@ -169,7 +173,7 @@ function lexCypherSubset(source: string): Token[] {
     const singleKind = singleCharacterKinds[character ?? '']
     if (singleKind) {
       push(singleKind, character ?? '')
-      index += 1
+      index += characterWidth
       column += 1
       continue
     }

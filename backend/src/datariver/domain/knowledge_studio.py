@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID
@@ -153,17 +154,14 @@ def validate_stable_element_id(value: str) -> str:
 def validate_tbox_name(value: str, *, field_name: str) -> str:
     if value != value.strip() or not 1 <= len(value) <= 255:
         raise ValidationError(f"{field_name} must contain between 1 and 255 characters.")
-    if not (("A" <= value[0] <= "Z") or ("a" <= value[0] <= "z")):
-        raise ValidationError(f"{field_name} must start with an ASCII letter.")
+    if unicodedata.normalize("NFC", value) != value:
+        raise ValidationError(f"{field_name} must use normalized Unicode (NFC).")
+    if not value[0].isalpha():
+        raise ValidationError(f"{field_name} must start with a Unicode letter.")
     for character in value[1:]:
-        if not (
-            "A" <= character <= "Z"
-            or "a" <= character <= "z"
-            or "0" <= character <= "9"
-            or character == "_"
-        ):
+        if not (character.isalpha() or character.isdigit() or character == "_"):
             raise ValidationError(
-                f"{field_name} may contain ASCII letters, digits and underscores."
+                f"{field_name} may contain Unicode letters, digits and underscores."
             )
     return value
 
@@ -191,6 +189,7 @@ class TBoxElementInput:
     canonical_name: str
     display_name: str
     parent_stable_element_id: str | None = None
+    hierarchy_relation: str | None = None
     source_stable_element_id: str | None = None
     target_stable_element_id: str | None = None
     data_type: str | None = None
@@ -251,11 +250,18 @@ class TBoxElementInput:
                 validate_stable_element_id(self.parent_stable_element_id)
                 if self.parent_stable_element_id == self.stable_element_id:
                     raise ValidationError("A Class cannot be its own parent.")
+                validate_tbox_name(
+                    self.hierarchy_relation or "SUBCLASS_OF",
+                    field_name="Hierarchy relation",
+                )
+            elif self.hierarchy_relation is not None:
+                raise ValidationError("A root Class cannot carry a hierarchy relation.")
             if self.vector_index_enabled:
                 raise ValidationError("Only a textual Property can target a Vector Index.")
         elif self.kind is TBoxElementKind.PROPERTY:
             if (
                 self.parent_stable_element_id is None
+                or self.hierarchy_relation is not None
                 or self.source_stable_element_id is not None
                 or self.target_stable_element_id is not None
                 or self.data_type is None
@@ -272,6 +278,7 @@ class TBoxElementInput:
         else:
             if (
                 self.parent_stable_element_id is not None
+                or self.hierarchy_relation is not None
                 or self.source_stable_element_id is None
                 or self.target_stable_element_id is None
                 or self.data_type is not None

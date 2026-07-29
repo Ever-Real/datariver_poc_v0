@@ -232,7 +232,7 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 | `knowledge.studio_drafts` | `id`, workspace/author, CREATE/EDIT, `DRAFT/REVIEW/PUBLISHED/DISCARDED`, current step, name/endpoint alias, exact DOMAIN UUID/source version, classification, optional EDIT base pins, exact submitted receipt/reviewer/materialized graph/ontology/Studio Release references, autosave/review/publish/discard times, optimistic version | full-screen Studio aggregate; mutable author scope in DRAFT, reviewer-readable and locked in REVIEW, immutable evidence after Publish/Discard |
 | `knowledge.tbox_draft_blocks` | workspace/draft ordinal, `DIRECT/DOCUMENT_SCHEMA/CATALOG_METADATA/ASSET_RELEASE/LLM_ASSISTANT`, weight, collapsed state, optional typed source reference, version | ordered T-Box authoring layers; a block never contains executable provider query text |
 | `knowledge.tbox_draft_elements` | workspace/draft/block-scoped stable ID UQ, `CLASS/PROPERTY/RELATION`, canonical/display name, definition/aliases, bounded layout and deterministic ordinal/version | common folded identity and block-ownership registry; subtype shape is normalized below, editor text is not canonical and A-Box writes cannot edit it |
-| `knowledge.tbox_classes` | workspace/draft/stable Class UQ, optional single parent Class, nullable opaque metadata reference ID/URN, version | canonical Class hierarchy; `SUBCLASS_OF` is a derived editor/canvas edge and cycles are rejected by the domain service |
+| `knowledge.tbox_classes` | workspace/draft/stable Class UQ, optional single parent Class, named hierarchy relation, nullable opaque metadata reference ID/URN, version; parent lookup index also carries child stable ID | canonical named Class hierarchy; `SUBCLASS_OF` is the default parent-edge label and cycles are rejected by the domain service |
 | `knowledge.tbox_properties` | workspace/draft/stable Property UQ, exact owner Class, datatype/nullability/unit/vector target flag, nullable opaque metadata reference ID/URN, version | normalized Class-owned Property schema; future rich metadata management resolves the reference instead of expanding Graph Builder |
 | `knowledge.tbox_relationships` | workspace/draft/stable Relationship UQ, exact source/target Classes, fixed `ASSOCIATION` kind, nullable opaque metadata reference ID/URN, version | normalized non-taxonomic Class relationship schema |
 | `knowledge.tbox_proposals` | exact Draft/base version and optional target block, typed proposal/conflict documents, model binding, `READY/APPLIED/REJECTED/FAILED`, merge strategy and timestamps | LLM output remains a Proposal until an authorized, version-fenced acceptance command applies it |
@@ -327,6 +327,12 @@ Workspace/Draft foreign keys enforce Class parent, Property owner and Relationsh
 `RESTRICT`; Class hierarchy is the single parent reference and `SUBCLASS_OF` remains derived.
 Every subtype has forced Workspace RLS and owner-restricted insert/delete grants without an update
 grant. Downgrade refuses while hierarchy or external metadata-reference evidence would be lost.
+
+Revision `0065` adds the NFC Unicode-safe named `hierarchy_relation` to every normalized Class
+detail, backfills `SUBCLASS_OF`, and expands the parent lookup index to
+`workspace + draft + parent + stable child`. The parent column remains the only topology truth;
+the relation name is edge semantics and is never duplicated in `tbox_relationships`. Downgrade
+refuses while a non-default hierarchy label would be lost.
 
 PostgreSQL releases remain canonical; Neo4j can be deleted and rebuilt. Graph classification is a
 maximum envelope enforced on changeset operations, complete submission/review, publication,

@@ -2076,6 +2076,7 @@ class KnowledgeStudioTBoxElementResponse(BaseModel):
     canonical_name: str
     display_name: str
     parent_stable_element_id: str | None
+    hierarchy_relation: str | None
     source_stable_element_id: str | None
     target_stable_element_id: str | None
     data_type: str | None
@@ -2102,10 +2103,10 @@ class KnowledgeStudioTBoxElementRequest(BaseModel):
     canonical_name: str = Field(
         min_length=1,
         max_length=255,
-        pattern="^[A-Za-z][A-Za-z0-9_]*$",
     )
     display_name: str = Field(min_length=1, max_length=255)
     parent_stable_element_id: str | None = Field(default=None, max_length=128)
+    hierarchy_relation: str | None = Field(default=None, max_length=255)
     source_stable_element_id: str | None = Field(default=None, max_length=128)
     target_stable_element_id: str | None = Field(default=None, max_length=128)
     data_type: str | None = Field(
@@ -2236,7 +2237,6 @@ class KnowledgeStudioTBoxConflictResolutionRequest(BaseModel):
     renamed_canonical_name: str | None = Field(
         default=None,
         max_length=255,
-        pattern="^[A-Za-z][A-Za-z0-9_]*$",
     )
     renamed_display_name: str | None = Field(default=None, max_length=255)
 
@@ -2248,6 +2248,10 @@ class KnowledgeStudioTBoxProposalApplyRequest(BaseModel):
     resolutions: list[KnowledgeStudioTBoxConflictResolutionRequest] = Field(
         default_factory=list,
         max_length=100,
+    )
+    excluded_stable_element_ids: list[str] = Field(
+        default_factory=list,
+        max_length=200,
     )
 
 

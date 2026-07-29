@@ -1113,6 +1113,7 @@ class KnowledgeStudioTBoxElementRecord:
     nullable: bool | None
     ordinal: int
     version: int
+    hierarchy_relation: str | None = None
     block_id: UUID | None = None
     definition: str | None = None
     aliases: tuple[str, ...] = ()

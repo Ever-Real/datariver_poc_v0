@@ -3383,6 +3383,7 @@ def upgrade() -> None:
         sa.Column('draft_id', sa.Uuid(), nullable=False),
         sa.Column('stable_class_id', sa.String(length=128), nullable=False),
         sa.Column('parent_stable_class_id', sa.String(length=128), nullable=True),
+        sa.Column('hierarchy_relation', sa.String(length=255), nullable=False),
         sa.Column('metadata_reference_id', sa.Uuid(), nullable=True),
         sa.Column('metadata_reference_urn', sa.String(length=2000), nullable=True),
         sa.Column('id', sa.Uuid(), nullable=False),
@@ -3398,7 +3399,7 @@ def upgrade() -> None:
         sa.UniqueConstraint('workspace_id', 'draft_id', 'stable_class_id', name=op.f('uq_tbox_classes_workspace_id_draft_id_stable_class_id')),
         schema='knowledge'
         )
-        op.create_index('ix_tbox_classes_parent', 'tbox_classes', ['workspace_id', 'draft_id', 'parent_stable_class_id'], unique=False, schema='knowledge')
+        op.create_index('ix_tbox_classes_parent', 'tbox_classes', ['workspace_id', 'draft_id', 'parent_stable_class_id', 'stable_class_id'], unique=False, schema='knowledge')
         op.execute('ALTER TABLE knowledge.tbox_classes ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE knowledge.tbox_classes FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON knowledge.tbox_classes USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")

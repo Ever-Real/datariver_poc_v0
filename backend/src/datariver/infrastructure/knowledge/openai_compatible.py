@@ -226,10 +226,10 @@ class _TBoxElementProposal(_StrictModel):
     canonical_name: str = Field(
         min_length=1,
         max_length=255,
-        pattern="^[A-Za-z][A-Za-z0-9_]*$",
     )
     display_name: str = Field(min_length=1, max_length=255)
     parent_stable_element_id: str | None = Field(default=None, max_length=128)
+    hierarchy_relation: str | None = Field(default=None, max_length=255)
     source_stable_element_id: str | None = Field(default=None, max_length=128)
     target_stable_element_id: str | None = Field(default=None, max_length=128)
     data_type: str | None = Field(
@@ -508,6 +508,7 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                 "canonical_name": item.canonical_name,
                 "display_name": item.display_name,
                 "parent_stable_element_id": item.parent_stable_element_id,
+                "hierarchy_relation": item.hierarchy_relation,
                 "source_stable_element_id": item.source_stable_element_id,
                 "target_stable_element_id": item.target_stable_element_id,
                 "data_type": item.data_type,
@@ -526,8 +527,8 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                         "Design only a logical T-Box schema. Never emit Cypher, instance data, "
                         "credentials, URLs, or executable content. Return Classes, Properties and "
                         "Relations through the supplied JSON schema. Stable IDs and canonical "
-                        "names use ASCII letters, digits, underscore, dash, dot or colon as "
-                        "allowed by the schema contract. Properties must reference a proposed "
+                        "canonical names use normalized Unicode letters, digits and underscores "
+                        "as allowed by the schema contract. Properties must reference a proposed "
                         "or current Class; Relations must reference proposed or current Classes. "
                         "Mark vector_index_enabled only for STRING or TEXT Properties whose "
                         "semantic text is useful for retrieval. Keep the proposal bounded and "
@@ -567,6 +568,7 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                     canonical_name=item.canonical_name,
                     display_name=item.display_name,
                     parent_stable_element_id=item.parent_stable_element_id,
+                    hierarchy_relation=item.hierarchy_relation,
                     source_stable_element_id=item.source_stable_element_id,
                     target_stable_element_id=item.target_stable_element_id,
                     data_type=item.data_type,

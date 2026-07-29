@@ -142,6 +142,39 @@ def test_tbox_class_hierarchy_requires_classes_and_rejects_cycles() -> None:
         )
 
 
+def test_tbox_unicode_names_and_named_hierarchy_relations_are_nfc_safe() -> None:
+    root = TBoxElementInput(
+        stable_element_id="class:data-asset",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="데이터자산",
+        display_name="데이터 자산",
+    )
+    child = TBoxElementInput(
+        stable_element_id="class:table",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="테이블",
+        display_name="테이블",
+        parent_stable_element_id=root.stable_element_id,
+        hierarchy_relation="PART_OF",
+    )
+    property_element = TBoxElementInput(
+        stable_element_id="property:table-name",
+        kind=TBoxElementKind.PROPERTY,
+        canonical_name="한글명",
+        display_name="한글명",
+        parent_stable_element_id=child.stable_element_id,
+        data_type="STRING",
+        nullable=False,
+    )
+    validate_tbox_element_set((root, child, property_element))
+
+    with pytest.raises(ValidationError, match="normalized Unicode"):
+        replace(root, canonical_name="e\u0301ntity").validate()
+
+    with pytest.raises(ValidationError, match="root Class"):
+        replace(root, hierarchy_relation="SUBCLASS_OF").validate()
+
+
 def test_tbox_external_metadata_reference_is_opaque_but_bounded() -> None:
     referenced = TBoxElementInput(
         stable_element_id="class:Dataset",

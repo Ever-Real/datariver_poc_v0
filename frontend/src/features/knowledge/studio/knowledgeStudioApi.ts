@@ -43,6 +43,7 @@ export interface KnowledgeStudioTBoxElement {
   canonical_name: string
   display_name: string
   parent_stable_element_id?: string
+  hierarchy_relation?: string
   source_stable_element_id?: string
   target_stable_element_id?: string
   data_type?: string
@@ -529,6 +530,7 @@ export async function applyKnowledgeStudioTBoxProposal(
       renamed_canonical_name?: string
       renamed_display_name?: string
     }>
+    excluded_stable_element_ids: string[]
   },
   etag: string,
   idempotencyKey: string,
@@ -593,6 +595,19 @@ export async function searchKnowledgeStudioSources(
   const params = new URLSearchParams({ q: query.trim(), limit: '25' })
   return client.request<KnowledgeStudioSourcePage>(
     `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/sources?${params.toString()}`,
+    { cache: 'no-store', signal },
+  )
+}
+
+export async function searchKnowledgeStudioTBoxCatalogSources(
+  client: ApiClient,
+  draftId: string,
+  query: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeStudioSourcePage> {
+  const params = new URLSearchParams({ q: query.trim(), limit: '25' })
+  return client.request<KnowledgeStudioSourcePage>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/catalog-sources?${params.toString()}`,
     { cache: 'no-store', signal },
   )
 }

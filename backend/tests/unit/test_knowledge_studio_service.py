@@ -19,6 +19,7 @@ from datariver.application.dto import (
     KnowledgeStudioReleaseRecord,
     KnowledgeStudioSourceDataset,
     KnowledgeStudioSourceDetail,
+    KnowledgeStudioSourcePage,
     KnowledgeStudioTBoxBlockRecord,
     KnowledgeStudioTBoxElementRecord,
     KnowledgeStudioTBoxRecord,
@@ -735,6 +736,49 @@ async def test_abox_binding_uses_authorized_exact_source_contract_and_tbox_targe
         idempotency_key="idempotency-key",
         request_hash="request-hash",
     )
+
+
+@pytest.mark.asyncio
+async def test_tbox_catalog_search_preserves_source_policy_scope() -> None:
+    current = replace(draft(), current_step="TBOX")
+    page = KnowledgeStudioSourcePage(items=(source_detail().dataset,), next_cursor=None)
+    sources = SimpleNamespace(search_datasets=AsyncMock(return_value=page))
+    store = SimpleNamespace(get_draft=AsyncMock(return_value=current))
+
+    result = await service(store, sources=sources).search_tbox_catalog_sources(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+        draft_id=DRAFT_ID,
+        query="employee",
+        cursor=None,
+        limit=25,
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+    assert result == page
+    sources.search_datasets.assert_awaited_once_with(
+        subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+        maximum_classification=Classification.INTERNAL,
+        query="employee",
+        cursor=None,
+        limit=25,
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+    store.get_draft.return_value = draft()
+    with pytest.raises(ConflictError, match="Open Graph Builder"):
+        await service(store, sources=sources).search_tbox_catalog_sources(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+            draft_id=DRAFT_ID,
+            query="employee",
+            cursor=None,
+            limit=25,
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="request",
+        )
 
 
 @pytest.mark.asyncio

@@ -55,7 +55,7 @@ def _table(name: str) -> Table:
 
 def test_studio_draft_model_is_separate_persistent_author_state() -> None:
     draft = _table("knowledge.studio_drafts")
-    assert REQUIRED_DATABASE_REVISION == "0064"
+    assert REQUIRED_DATABASE_REVISION == "0065"
     assert {
         "workspace_id",
         "author_id",

@@ -50,8 +50,20 @@ describe('safe local Cypher draft subset', () => {
     expect(parseSafeCypherDraft('MATCH (n) RETURN n').error).toMatch(/CREATE/)
     expect(parseSafeCypherDraft('CALL db.labels()').error).toMatch(/CREATE/)
     expect(parseSafeCypherDraft('LOAD CSV FROM "https://example.invalid/data.csv"').error).toMatch(/CREATE/)
-    expect(parseSafeCypherDraft(`CREATE (p:${'A'.repeat(65)})`).error).toMatch(/64자/)
+    expect(parseSafeCypherDraft(`CREATE (p:${'A'.repeat(256)})`).error).toMatch(/255자/)
     expect(parseSafeCypherDraft('CREATE (p:Product)\nCREATE (p)-[:USES]->(missing)').error).toMatch(/선언되지 않은/)
+  })
+
+  it('round trips NFC Korean Class, Property-safe labels and relationship names', () => {
+    const result = parseSafeCypherDraft(`
+      CREATE (d:데이터자산)
+      CREATE (o:소유조직)
+      CREATE (d)-[:관리주체]->(o)
+    `)
+    expect(result.error).toBeUndefined()
+    expect(result.nodes.map((node) => node.label)).toEqual(['데이터자산', '소유조직'])
+    expect(result.edges[0]?.relation).toBe('관리주체')
+    expect(formatSafeCypherDraft(result.nodes, result.edges)).toContain('CREATE (d:데이터자산)')
   })
 
   it('returns a line and column diagnostic so an invalid editor buffer can retain the last canvas', () => {

@@ -2,6 +2,22 @@
 
 ## Current verification status
 
+### Knowledge Studio Phase 2.5 Unicode and integrated Proposal increment — 2026-07-29
+
+Revision `0065` adds the named Class hierarchy edge and covering parent/child lookup index. Domain,
+safe-editor and UI tests cover Korean NFC Class/Property round trips, invalid-buffer retention,
+name-click-only floating editing, Property create/update/delete, sibling re-parenting,
+hierarchy-label synchronization, explicit block-title confirmation, read-only groups and
+latest-only block deletion. Service tests cover TBOX-step catalog authorization scope.
+
+Ruff, strict mypy over `222` backend source files and static architecture/security/documentation
+verification pass. The complete backend suite passes `1,743 passed / 97 environment-gated
+skipped`; frontend strict TypeScript, zero-warning ESLint, `56 files / 321 tests` and the Vite
+production build pass. Two consecutive canonical `0001` generations are byte-identical at
+SHA-256 `22ec1c62f87b0c5679a93eb8ea2bd0d4a5c6c598908e36a8dd3b4a5fc681c949`.
+Document Proposal inference remains capability-closed until the separately fenced ADR-0069 worker
+is deployed; no browser or API path fabricates a successful document analysis.
+
 ### Knowledge Studio normalized hierarchy and layer dependency increment — 2026-07-29
 
 Revision `0064` normalizes the accepted T-Box Draft shape into the common element registry plus
