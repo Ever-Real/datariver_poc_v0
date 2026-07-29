@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import pytest
 
 from datariver.domain.common import ConflictError, PreconditionFailedError, ValidationError
@@ -105,6 +107,53 @@ def test_tbox_typed_operations_enforce_shape_and_text_only_vector_targets() -> N
 
     with pytest.raises(ValidationError, match="accepted Class"):
         validate_tbox_element_set((description,))
+
+
+def test_tbox_class_hierarchy_requires_classes_and_rejects_cycles() -> None:
+    root = TBoxElementInput(
+        stable_element_id="class:Asset",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="Asset",
+        display_name="Asset",
+    )
+    dataset = TBoxElementInput(
+        stable_element_id="class:Dataset",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="Dataset",
+        display_name="Dataset",
+        parent_stable_element_id=root.stable_element_id,
+    )
+    validate_tbox_element_set((root, dataset))
+
+    with pytest.raises(ValidationError, match="accepted Class"):
+        validate_tbox_element_set(
+            (
+                replace(dataset, parent_stable_element_id="class:Missing"),
+                root,
+            )
+        )
+
+    with pytest.raises(ValidationError, match="cycle"):
+        validate_tbox_element_set(
+            (
+                replace(root, parent_stable_element_id=dataset.stable_element_id),
+                dataset,
+            )
+        )
+
+
+def test_tbox_external_metadata_reference_is_opaque_but_bounded() -> None:
+    referenced = TBoxElementInput(
+        stable_element_id="class:Dataset",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="Dataset",
+        display_name="Dataset",
+        metadata_reference_urn="urn:li:dataset:(urn:li:dataPlatform:postgres,orders,PROD)",
+    )
+    referenced.validate()
+
+    with pytest.raises(ValidationError, match="metadata reference URN"):
+        replace(referenced, metadata_reference_urn=" unsafe ").validate()
 
 
 def test_studio_lifecycle_requires_review_before_publication() -> None:

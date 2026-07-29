@@ -167,11 +167,13 @@ stable ID 또는 canonical name 충돌은 자동으로 덮어쓰지 않는다. �
 | ASSET_RELEASE | 다른 Asset 붙이기 | 검색으로 찾은 다른 Asset의 정확한 release | release-pinned schema reference |
 
 block N을 펼치면 이전 enabled block의 ACCEPTED operation을 순서대로 fold한 base graph가
-editor/canvas에 나타난다. 현재 block의 변경은 별도 operation layer로 저장하므로 이전 block
-row를 복사·수정하지 않는다. block 순서/가중치 변경은 결정적인 표시·평가 순서를 바꾸지만
-element 소유권을 바꾸지 않는다. 같은 canonical element, element kind 또는 relation endpoint
-충돌은 Proposal conflict로 남기며 기본 `KEEP_ORIGINAL` 또는 사용자의 명시적 resolution 없이는
-accepted graph에 반영하지 않는다.
+Hierarchy Tree/canvas/editor에 나타난다. 현재 block의 변경은 별도 operation layer로
+저장하므로 이전 block row를 복사·수정하지 않는다. 현재 block은 자신의 element 또는 이전
+block의 Class만 참조할 수 있다. 후속 block에서 참조한 과거 Class는 과거 block으로 돌아가도
+이름·부모·위치 변경과 삭제가 잠기며, block 삭제는 최고 ordinal의 최신 block에만 허용한다.
+block 순서/가중치 변경은 결정적인 표시·평가 순서를 바꾸지만 element 소유권을 바꾸지 않는다.
+같은 canonical element, element kind 또는 relation endpoint 충돌은 Proposal conflict로 남기며
+기본 `KEEP_ORIGINAL` 또는 사용자의 명시적 resolution 없이는 accepted graph에 반영하지 않는다.
 
 `DB 활용` picker는 권한 처리된 table Asset을 복수 선택하고 identity/read-only URN,
 table name, domain, description/term/tag, field path, field description/term/tag aspect를
@@ -181,13 +183,21 @@ exact source version과 server-returned aspect/field token만 보낸다. `다른
 
 #### 직접 정의
 
-- 좌측 editor의 라벨은 `Schema Cypher (안전 subset · 실행되지 않음)`이며 CREATE-only
-  schema subset만 다룬다. MATCH, MERGE, DELETE, CALL, LOAD CSV,
+- 화면은 좌측 Class Hierarchy Tree, 우측 React Flow Class Canvas, 하단
+  `Schema Cypher (안전 subset · 실행되지 않음)` editor의 3분할이다. 트리 Class 추가와
+  drag/drop re-parent는 canvas와 safe text를 즉시 갱신한다.
+- CREATE-only schema subset만 다룬다. MATCH, MERGE, DELETE, CALL, LOAD CSV,
   procedure, parameter, URL, escape된 임의 label은 parse 오류다.
-- canonical draft element는 `CLASS`, `PROPERTY`, `RELATION`, `CONSTRAINT`다. Class는 이름,
-  의미/정의, 동의어, category/subcategory와 hierarchy를, Property는 owner class,
-  datatype/unit/cardinality를, Relation은 source/target/domain/range/direction/cardinality를
-  typed field로 가진다. Constraint는 승인된 enum/parameter만 허용하고 실행식을 받지 않는다.
+- canonical draft element는 현재 `CLASS`, `PROPERTY`, `RELATION`이다. Class는 이름,
+  정의와 하나의 parent hierarchy를, Property는 owner Class와 datatype/nullability/unit/vector
+  policy를, Relation은 source/target Class를 typed field로 가진다. `SUBCLASS_OF`는 Class
+  parent에서 파생되는 editor/canvas edge이며 별도 Relation으로 중복 저장하지 않는다.
+- Canvas Class 선택 시 노드 인접 floating editor가 나타나고 노드 하단에 현재 Properties를
+  펼친다. 이 화면은 inline Property 이름 추가까지만 담당한다. 동의어, 단위, profile 등
+  rich metadata는 향후 Asset 관리 화면의 별도 수명주기로 관리하며 Draft에는 nullable
+  reference ID/URN mapping slot만 둔다.
+- 이전/후속 비활성 block은 한 개의 read-only group hull로 표시한다. 현재 block은 이전
+  Class로 Relationship/parent를 연결할 수 있지만 다른 block 소유 요소를 변경·삭제할 수 없다.
 - 우측 canvas에서 수정하면 canonical typed operation을 바탕으로 editor text를 재생성한다.
 - editor text 변경 시 versioned parser와 기존 alias-to-stable-ID symbol table이 만든 typed
   operation만 canvas를 갱신한다. parse할 때마다 UUID를 재생성하지 않는다. 오류 시 마지막
@@ -463,6 +473,10 @@ source version을 pin한다. Knowledge authorization은 이를 `ResourceAttribut
 | knowledge.studio_drafts | workspace, author, kind CREATE/EDIT, name, endpoint alias, domain ref/version, classification, base graph/ontology/release nullable refs, state, step, version, last autosave/discard times | Step 1~3 author-scoped aggregate. 명시적 Discard 전 만료 없이 보존하고 신규 CREATE draft의 graph type은 server intent로 결정한다. materialize 전 Registry/GraphRAG에서 보이지 않음 |
 | knowledge.source_references | workspace, kind UPLOAD_MANIFEST/CATALOG_ASSET/GRAPH_RELEASE, exactly-one local ref, exact version/hash/classification, bounded typed selection document/hash | T-Box input과 A-Box binding이 공유하는 immutable source pin. URL/URN/object coordinate 대신 local UUID와 opaque evidence만 외부 노출 |
 | knowledge.tbox_draft_blocks | draft, ordinal, kind, title, weight, collapse state, version | 아코디언/layer 설계 provenance. draft+ordinal unique, weight는 `0..100` 정수이며 결정적인 표시·평가 순서를 정하지만 element를 자동 overwrite하지 않음 |
+| knowledge.tbox_draft_elements | draft, block, stable ID, kind, canonical/display name, definition/aliases, layout, ordinal/version | accepted typed operation의 공통 identity/소유권/presentation registry. subtype 의미 필드는 아래 정규 테이블이 소유함 |
+| knowledge.tbox_classes | draft, stable Class ID, optional parent stable Class ID, optional metadata reference ID/URN | canonical single-parent Class hierarchy. self/missing parent와 cycle 거부, `SUBCLASS_OF`는 파생 edge |
+| knowledge.tbox_properties | draft, stable Property ID, owner Class ID, datatype/nullability/unit/vector flag, optional metadata reference ID/URN | 정확히 한 Class가 소유하는 Property schema. rich metadata는 향후 Asset 관리 aggregate를 참조 |
+| knowledge.tbox_relationships | draft, stable Relationship ID, source/target Class ID, typed kind, optional metadata reference ID/URN | non-taxonomic Class-to-Class schema relationship |
 | knowledge.tbox_block_inputs | block, source reference, purpose, ordinal | immutable source와 block 연결. 같은 input의 중복 연결을 금지 |
 | knowledge.tbox_draft_operations | draft, block, proposal nullable, sequence, element kind, stable element ID, typed document, provenance, state | CLASS/PROPERTY/RELATION/CONSTRAINT UPSERT/DELETE. PROPOSED는 preview 전용, ACCEPTED만 materialize 대상 |
 | knowledge.tbox_proposals | draft/block, proposal kind, source/model/parser binding hash, input/output hash, state, confidence summary, expiry | LLM/file/catalog/asset 제안 envelope. provider response/secret 저장 금지 |

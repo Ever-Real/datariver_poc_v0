@@ -123,6 +123,9 @@ refined by
 The route-backed Knowledge Studio modal, bidirectional typed T-Box editor, proposal conflict
 handling, durable A-Box ingestion and release-scoped Neo4j vector shadow are defined by
 [ADR-0069](adr/0069-route-backed-ontology-builder-and-vector-shadow.md).
+The normalized Class/Property/Relationship Draft schema, canonical `subClassOf` hierarchy and
+forward-only layer dependency locks are defined by
+[ADR-0070](adr/0070-normalized-tbox-hierarchy-and-layer-dependencies.md).
 
 ## Change control
 

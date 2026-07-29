@@ -54,6 +54,9 @@ export interface KnowledgeStudioTBoxElement {
   aliases: string[]
   unit?: string
   vector_index_enabled: boolean
+  metadata_reference_id?: string
+  metadata_reference_urn?: string
+  locked_by_later_block: boolean
   layout_x?: number
   layout_y?: number
 }
@@ -88,7 +91,10 @@ export type KnowledgeStudioTBoxOperation =
   | {
       operation: 'UPSERT_ELEMENT'
       stable_element_id: string
-      element: Omit<KnowledgeStudioTBoxElement, 'ordinal' | 'version' | 'block_id'>
+      element: Omit<
+        KnowledgeStudioTBoxElement,
+        'ordinal' | 'version' | 'block_id' | 'locked_by_later_block'
+      >
     }
   | {
       operation: 'DELETE_ELEMENT'
@@ -444,6 +450,24 @@ export async function updateKnowledgeStudioTBoxBlock(
     {
       method: 'PATCH',
       body: JSON.stringify(payload),
+      cache: 'no-store',
+      ifMatch: etag,
+      idempotencyKey,
+    },
+  ))
+}
+
+export async function deleteKnowledgeStudioTBoxBlock(
+  client: ApiClient,
+  draftId: string,
+  blockId: string,
+  etag: string,
+  idempotencyKey: string,
+): Promise<ApiResponse<KnowledgeStudioTBox>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioTBox>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/blocks/${encodeURIComponent(blockId)}`,
+    {
+      method: 'DELETE',
       cache: 'no-store',
       ifMatch: etag,
       idempotencyKey,

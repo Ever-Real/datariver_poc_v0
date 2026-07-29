@@ -259,7 +259,7 @@ class TBoxDraftElementModel(
     TimestampMixin,
     VersionMixin,
 ):
-    """Typed read index of accepted Draft operations; never an A-Box mutation target."""
+    """Stable identity and block ownership shared by normalized T-Box element tables."""
 
     __tablename__ = "tbox_draft_elements"
     __table_args__ = (
@@ -285,18 +285,6 @@ class TBoxDraftElementModel(
             name="display_name_valid",
         ),
         CheckConstraint("ordinal >= 0", name="ordinal_nonnegative"),
-        CheckConstraint(
-            "(kind = 'CLASS' AND parent_stable_element_id IS NULL "
-            "AND source_stable_element_id IS NULL AND target_stable_element_id IS NULL "
-            "AND data_type IS NULL AND nullable IS NULL) OR "
-            "(kind = 'PROPERTY' AND parent_stable_element_id IS NOT NULL "
-            "AND source_stable_element_id IS NULL AND target_stable_element_id IS NULL "
-            "AND data_type IS NOT NULL AND nullable IS NOT NULL) OR "
-            "(kind = 'RELATION' AND parent_stable_element_id IS NULL "
-            "AND source_stable_element_id IS NOT NULL AND target_stable_element_id IS NOT NULL "
-            "AND data_type IS NULL AND nullable IS NULL)",
-            name="element_shape",
-        ),
         ForeignKeyConstraint(
             ("workspace_id", "draft_id"),
             ("knowledge.studio_drafts.workspace_id", "knowledge.studio_drafts.id"),
@@ -310,39 +298,6 @@ class TBoxDraftElementModel(
                 "knowledge.tbox_draft_blocks.id",
             ),
             ondelete="RESTRICT",
-        ),
-        ForeignKeyConstraint(
-            ("workspace_id", "draft_id", "parent_stable_element_id"),
-            (
-                "knowledge.tbox_draft_elements.workspace_id",
-                "knowledge.tbox_draft_elements.draft_id",
-                "knowledge.tbox_draft_elements.stable_element_id",
-            ),
-            ondelete="RESTRICT",
-            deferrable=True,
-            initially="DEFERRED",
-        ),
-        ForeignKeyConstraint(
-            ("workspace_id", "draft_id", "source_stable_element_id"),
-            (
-                "knowledge.tbox_draft_elements.workspace_id",
-                "knowledge.tbox_draft_elements.draft_id",
-                "knowledge.tbox_draft_elements.stable_element_id",
-            ),
-            ondelete="RESTRICT",
-            deferrable=True,
-            initially="DEFERRED",
-        ),
-        ForeignKeyConstraint(
-            ("workspace_id", "draft_id", "target_stable_element_id"),
-            (
-                "knowledge.tbox_draft_elements.workspace_id",
-                "knowledge.tbox_draft_elements.draft_id",
-                "knowledge.tbox_draft_elements.stable_element_id",
-            ),
-            ondelete="RESTRICT",
-            deferrable=True,
-            initially="DEFERRED",
         ),
         Index(
             "ix_tbox_draft_elements_draft_kind_ordinal",
@@ -361,26 +316,211 @@ class TBoxDraftElementModel(
     kind: Mapped[str] = mapped_column(String(16), nullable=False)
     canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    parent_stable_element_id: Mapped[str | None] = mapped_column(String(128))
-    source_stable_element_id: Mapped[str | None] = mapped_column(String(128))
-    target_stable_element_id: Mapped[str | None] = mapped_column(String(128))
-    data_type: Mapped[str | None] = mapped_column(String(100))
-    nullable: Mapped[bool | None] = mapped_column(Boolean)
     definition: Mapped[str | None] = mapped_column(Text)
     aliases: Mapped[list[str]] = mapped_column(
         JSON_DOCUMENT,
         default=list,
         nullable=False,
     )
-    unit: Mapped[str | None] = mapped_column(String(100))
-    vector_index_enabled: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-        nullable=False,
-    )
     layout_x: Mapped[float | None] = mapped_column(Float)
     layout_y: Mapped[float | None] = mapped_column(Float)
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+
+
+class TBoxClassModel(
+    Base,
+    UuidPrimaryKeyMixin,
+    TimestampMixin,
+    VersionMixin,
+):
+    """Normalized T-Box Class schema, including the canonical class hierarchy."""
+
+    __tablename__ = "tbox_classes"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "draft_id", "id"),
+        UniqueConstraint("workspace_id", "draft_id", "stable_class_id"),
+        CheckConstraint(
+            "parent_stable_class_id IS NULL OR parent_stable_class_id <> stable_class_id",
+            name="parent_not_self",
+        ),
+        CheckConstraint(
+            "metadata_reference_urn IS NULL OR "
+            "(char_length(metadata_reference_urn) BETWEEN 1 AND 2000 "
+            "AND metadata_reference_urn = btrim(metadata_reference_urn))",
+            name="metadata_reference_urn_valid",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id", "stable_class_id"),
+            (
+                "knowledge.tbox_draft_elements.workspace_id",
+                "knowledge.tbox_draft_elements.draft_id",
+                "knowledge.tbox_draft_elements.stable_element_id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id", "parent_stable_class_id"),
+            (
+                "knowledge.tbox_classes.workspace_id",
+                "knowledge.tbox_classes.draft_id",
+                "knowledge.tbox_classes.stable_class_id",
+            ),
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        Index(
+            "ix_tbox_classes_parent",
+            "workspace_id",
+            "draft_id",
+            "parent_stable_class_id",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    stable_class_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    parent_stable_class_id: Mapped[str | None] = mapped_column(String(128))
+    metadata_reference_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    metadata_reference_urn: Mapped[str | None] = mapped_column(String(2_000))
+
+
+class TBoxPropertyModel(
+    Base,
+    UuidPrimaryKeyMixin,
+    TimestampMixin,
+    VersionMixin,
+):
+    """Normalized Property schema owned by exactly one T-Box Class."""
+
+    __tablename__ = "tbox_properties"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "draft_id", "id"),
+        UniqueConstraint("workspace_id", "draft_id", "stable_property_id"),
+        CheckConstraint(
+            "char_length(data_type) BETWEEN 1 AND 100 AND data_type = btrim(data_type)",
+            name="data_type_valid",
+        ),
+        CheckConstraint(
+            "metadata_reference_urn IS NULL OR "
+            "(char_length(metadata_reference_urn) BETWEEN 1 AND 2000 "
+            "AND metadata_reference_urn = btrim(metadata_reference_urn))",
+            name="metadata_reference_urn_valid",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id", "stable_property_id"),
+            (
+                "knowledge.tbox_draft_elements.workspace_id",
+                "knowledge.tbox_draft_elements.draft_id",
+                "knowledge.tbox_draft_elements.stable_element_id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id", "owner_stable_class_id"),
+            (
+                "knowledge.tbox_classes.workspace_id",
+                "knowledge.tbox_classes.draft_id",
+                "knowledge.tbox_classes.stable_class_id",
+            ),
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        Index(
+            "ix_tbox_properties_owner",
+            "workspace_id",
+            "draft_id",
+            "owner_stable_class_id",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    stable_property_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    owner_stable_class_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    data_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    nullable: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    unit: Mapped[str | None] = mapped_column(String(100))
+    vector_index_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    metadata_reference_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    metadata_reference_urn: Mapped[str | None] = mapped_column(String(2_000))
+
+
+class TBoxRelationshipModel(
+    Base,
+    UuidPrimaryKeyMixin,
+    TimestampMixin,
+    VersionMixin,
+):
+    """Normalized non-taxonomic Class relationship schema."""
+
+    __tablename__ = "tbox_relationships"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "draft_id", "id"),
+        UniqueConstraint("workspace_id", "draft_id", "stable_relationship_id"),
+        CheckConstraint("relationship_kind = 'ASSOCIATION'", name="relationship_kind_vocabulary"),
+        CheckConstraint(
+            "metadata_reference_urn IS NULL OR "
+            "(char_length(metadata_reference_urn) BETWEEN 1 AND 2000 "
+            "AND metadata_reference_urn = btrim(metadata_reference_urn))",
+            name="metadata_reference_urn_valid",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id", "stable_relationship_id"),
+            (
+                "knowledge.tbox_draft_elements.workspace_id",
+                "knowledge.tbox_draft_elements.draft_id",
+                "knowledge.tbox_draft_elements.stable_element_id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id", "source_stable_class_id"),
+            (
+                "knowledge.tbox_classes.workspace_id",
+                "knowledge.tbox_classes.draft_id",
+                "knowledge.tbox_classes.stable_class_id",
+            ),
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id", "target_stable_class_id"),
+            (
+                "knowledge.tbox_classes.workspace_id",
+                "knowledge.tbox_classes.draft_id",
+                "knowledge.tbox_classes.stable_class_id",
+            ),
+            ondelete="RESTRICT",
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        Index(
+            "ix_tbox_relationships_endpoints",
+            "workspace_id",
+            "draft_id",
+            "source_stable_class_id",
+            "target_stable_class_id",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    stable_relationship_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_stable_class_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_stable_class_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    relationship_kind: Mapped[str] = mapped_column(
+        String(24),
+        default="ASSOCIATION",
+        nullable=False,
+    )
+    metadata_reference_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    metadata_reference_urn: Mapped[str | None] = mapped_column(String(2_000))
 
 
 class TBoxDraftBlockModel(

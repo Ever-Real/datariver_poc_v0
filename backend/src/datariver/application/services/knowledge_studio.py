@@ -317,6 +317,41 @@ class KnowledgeStudioService:
             request_hash=request_hash,
         )
 
+    async def delete_tbox_block(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        block_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.delete_tbox_block(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            block_id=block_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
     async def apply_tbox_operations(
         self,
         *,
@@ -358,6 +393,28 @@ class KnowledgeStudioService:
         target = elements_by_block.get(block_id)
         if target is None:
             raise NotFoundError("The T-Box block does not exist.")
+        block_ordinal = {block.block_id: block.ordinal for block in record.blocks}
+        target_ordinal = block_ordinal[block_id]
+        locked_ids: set[str] = set()
+        for block in record.blocks:
+            if block.ordinal <= target_ordinal:
+                continue
+            for item in block.elements:
+                for reference in (
+                    item.parent_stable_element_id,
+                    item.source_stable_element_id,
+                    item.target_stable_element_id,
+                ):
+                    if reference in target:
+                        locked_ids.add(reference)
+        locked_ids.update(
+            item.stable_element_id
+            for item in target.values()
+            if (
+                item.kind is TBoxElementKind.PROPERTY
+                and item.parent_stable_element_id in locked_ids
+            )
+        )
         ownership = {
             stable_id: owner_id
             for owner_id, elements in elements_by_block.items()
@@ -372,9 +429,27 @@ class KnowledgeStudioService:
                         "A typed operation cannot overwrite an element owned by another block."
                     )
                 assert operation.element is not None
+                if (
+                    operation.element.kind is TBoxElementKind.PROPERTY
+                    and operation.element.parent_stable_element_id in locked_ids
+                ):
+                    raise ConflictError(
+                        "A later T-Box block references this Property's Class, so it is locked."
+                    )
+                if (
+                    operation.stable_element_id in locked_ids
+                    and target[operation.stable_element_id] != operation.element
+                ):
+                    raise ConflictError(
+                        "A later T-Box block references this element, so it is locked."
+                    )
                 target[operation.stable_element_id] = operation.element
                 ownership[operation.stable_element_id] = block_id
             elif operation.operation is TBoxOperationKind.DELETE_ELEMENT:
+                if operation.stable_element_id in locked_ids:
+                    raise ConflictError(
+                        "A later T-Box block references this element, so it cannot be deleted."
+                    )
                 if owner_id != block_id:
                     raise ConflictError(
                         "A typed operation can delete only an element owned by its block."
@@ -382,6 +457,13 @@ class KnowledgeStudioService:
                 del target[operation.stable_element_id]
                 ownership.pop(operation.stable_element_id, None)
             else:
+                if operation.stable_element_id in locked_ids and (
+                    target[operation.stable_element_id].layout_x != operation.layout_x
+                    or target[operation.stable_element_id].layout_y != operation.layout_y
+                ):
+                    raise ConflictError(
+                        "A later T-Box block references this element, so it cannot be moved."
+                    )
                 if owner_id != block_id:
                     raise ConflictError(
                         "A typed operation can move only an element owned by its block."
@@ -398,8 +480,32 @@ class KnowledgeStudioService:
             )
             for block in record.blocks
         )
+        owner_ordinal = {
+            element.stable_element_id: block_ordinal[owner_id]
+            for owner_id, block_elements in ordered_blocks
+            for element in block_elements
+        }
+        for owner_id, block_elements in ordered_blocks:
+            for element in block_elements:
+                for reference in (
+                    element.parent_stable_element_id,
+                    element.source_stable_element_id,
+                    element.target_stable_element_id,
+                ):
+                    if (
+                        reference is not None
+                        and owner_ordinal.get(reference, block_ordinal[owner_id])
+                        > block_ordinal[owner_id]
+                    ):
+                        raise ConflictError(
+                            "A T-Box block can reference only its own or an earlier block."
+                        )
         validate_tbox_element_set(
             tuple(element for _owner, elements in ordered_blocks for element in elements)
+        )
+        self._validate_tbox_layer_dependencies(
+            record=record,
+            elements_by_block=ordered_blocks,
         )
         return await self._store.save_tbox_block_elements(
             workspace_id=workspace_id,
@@ -571,6 +677,13 @@ class KnowledgeStudioService:
                 resolution_by_conflict=resolution_by_conflict,
             )
             validate_tbox_element_set((*current, *appended_elements))
+            appended_ids = {item.stable_element_id for item in appended_elements}
+            if any(
+                item.kind is TBoxElementKind.PROPERTY
+                and item.parent_stable_element_id not in appended_ids
+                for item in appended_elements
+            ):
+                raise ConflictError("An appended block can add Properties only to Classes it owns.")
         else:
             if proposal.target_block_id is None or proposal.target_block_id not in grouped:
                 raise ConflictError("The proposal target block is unavailable.")
@@ -602,6 +715,10 @@ class KnowledgeStudioService:
             )
         ordered = tuple(
             (block.block_id, tuple(grouped[block.block_id].values())) for block in record.blocks
+        )
+        self._validate_tbox_layer_dependencies(
+            record=record,
+            elements_by_block=ordered,
         )
         return await self._store.apply_tbox_proposal(
             workspace_id=workspace_id,
@@ -1367,6 +1484,10 @@ class KnowledgeStudioService:
             "aliases": list(item.aliases),
             "unit": item.unit,
             "vector_index_enabled": item.vector_index_enabled,
+            "metadata_reference_id": (
+                str(item.metadata_reference_id) if item.metadata_reference_id else None
+            ),
+            "metadata_reference_urn": item.metadata_reference_urn,
         }
 
     @staticmethod
@@ -1386,11 +1507,100 @@ class KnowledgeStudioService:
                 aliases=item.aliases,
                 unit=item.unit,
                 vector_index_enabled=item.vector_index_enabled,
+                metadata_reference_id=item.metadata_reference_id,
+                metadata_reference_urn=item.metadata_reference_urn,
                 layout_x=item.layout_x,
                 layout_y=item.layout_y,
             )
         except ValueError as error:
             raise ConflictError("The accepted T-Box element is invalid.") from error
+
+    @staticmethod
+    def _validate_tbox_layer_dependencies(
+        *,
+        record: KnowledgeStudioTBoxRecord,
+        elements_by_block: tuple[tuple[UUID, tuple[TBoxElementInput, ...]], ...],
+    ) -> None:
+        block_ordinal = {block.block_id: block.ordinal for block in record.blocks}
+        original_by_block = {
+            block.block_id: {
+                item.stable_element_id: KnowledgeStudioService._tbox_input(item)
+                for item in block.elements
+            }
+            for block in record.blocks
+        }
+        original_owner = {
+            stable_id: block_id
+            for block_id, elements in original_by_block.items()
+            for stable_id in elements
+        }
+        locked_ids: set[str] = set()
+        for owner_id, elements in original_by_block.items():
+            for item in elements.values():
+                for reference in (
+                    item.parent_stable_element_id,
+                    item.source_stable_element_id,
+                    item.target_stable_element_id,
+                ):
+                    if reference is None:
+                        continue
+                    target_owner = original_owner.get(reference)
+                    if (
+                        target_owner is not None
+                        and block_ordinal[owner_id] > block_ordinal[target_owner]
+                    ):
+                        locked_ids.add(reference)
+        locked_ids.update(
+            item.stable_element_id
+            for elements in original_by_block.values()
+            for item in elements.values()
+            if (
+                item.kind is TBoxElementKind.PROPERTY
+                and item.parent_stable_element_id in locked_ids
+            )
+        )
+
+        candidate_by_block = {
+            block_id: {item.stable_element_id: item for item in elements}
+            for block_id, elements in elements_by_block
+        }
+        candidate_owner = {
+            stable_id: block_id
+            for block_id, elements in candidate_by_block.items()
+            for stable_id in elements
+        }
+        for stable_id in locked_ids:
+            original_block_id = original_owner[stable_id]
+            if (
+                candidate_by_block.get(original_block_id, {}).get(stable_id)
+                != original_by_block[original_block_id][stable_id]
+            ):
+                raise ConflictError("A later T-Box block references this element, so it is locked.")
+        for owner_id, elements in candidate_by_block.items():
+            for item in elements.values():
+                if (
+                    item.kind is TBoxElementKind.PROPERTY
+                    and candidate_owner.get(item.parent_stable_element_id or "") != owner_id
+                    and original_by_block.get(owner_id, {}).get(item.stable_element_id) != item
+                ):
+                    raise ConflictError(
+                        "A T-Box Property must be owned by a Class in the same block."
+                    )
+                for reference in (
+                    item.parent_stable_element_id,
+                    item.source_stable_element_id,
+                    item.target_stable_element_id,
+                ):
+                    if reference is None:
+                        continue
+                    target_owner = candidate_owner.get(reference)
+                    if (
+                        target_owner is not None
+                        and block_ordinal[target_owner] > block_ordinal[owner_id]
+                    ):
+                        raise ConflictError(
+                            "A T-Box block can reference only its own or an earlier block."
+                        )
 
     @staticmethod
     def _require_abox_step(draft: KnowledgeStudioDraftRecord) -> None:

@@ -251,15 +251,15 @@ describe('KnowledgeStudioPage Draft recovery', () => {
     expect(await screen.findByRole('heading', {
       name: 'Ontology Graph Builder',
     })).toBeInTheDocument()
-    expect(screen.getByText(/첫 Class를 추가하세요/)).toBeInTheDocument()
+    expect(screen.getByText('(+)로 첫 Class를 추가하세요.')).toBeInTheDocument()
     expect(screen.getByText(/Typed T-Box Draft를 불러왔습니다/)).toBeInTheDocument()
     expect(window.location.search).toContain('step=tbox')
     expect(queue.records.size).toBe(0)
 
-    fireEvent.change(screen.getByLabelText('Class canonical name'), {
+    fireEvent.change(screen.getByLabelText('최상위 Class 이름'), {
       target: { value: 'Employee' },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'Class 추가' }))
+    fireEvent.click(screen.getByRole('button', { name: '최상위 Class 추가' }))
     fireEvent.click(screen.getByRole('button', { name: 'T-Box 저장' }))
     await screen.findByText(/Typed T-Box 저장 완료/)
 

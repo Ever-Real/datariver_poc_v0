@@ -337,6 +337,9 @@ def _tbox_element_response(
         aliases=list(item.aliases),
         unit=item.unit,
         vector_index_enabled=item.vector_index_enabled,
+        metadata_reference_id=item.metadata_reference_id,
+        metadata_reference_urn=item.metadata_reference_urn,
+        locked_by_later_block=item.locked_by_later_block,
         layout_x=item.layout_x,
         layout_y=item.layout_y,
     )
@@ -381,6 +384,8 @@ def _tbox_element_input(
         aliases=tuple(value.aliases),
         unit=value.unit,
         vector_index_enabled=value.vector_index_enabled,
+        metadata_reference_id=value.metadata_reference_id,
+        metadata_reference_urn=value.metadata_reference_urn,
         layout_x=value.layout_x,
         layout_y=value.layout_y,
     )
@@ -805,6 +810,43 @@ async def update_knowledge_studio_tbox_block(
         title=payload.title,
         weight=payload.weight,
         collapsed=payload.collapsed,
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_draft_headers(response, record.draft)
+    return _tbox_response(record)
+
+
+@router.delete(
+    "/drafts/{draft_id}/tbox/blocks/{block_id}",
+    response_model=KnowledgeStudioTBoxResponse,
+    responses={status.HTTP_200_OK: ETAG_RESPONSE},
+)
+async def delete_knowledge_studio_tbox_block(
+    draft_id: UUID,
+    block_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgeStudioTBoxResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "block_id": str(block_id),
+            "expected_version": expected_version,
+        }
+    )
+    record = await _service(request, session).delete_tbox_block(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        block_id=block_id,
         expected_version=expected_version,
         idempotency_key=idempotency_key,
         request_hash=request_hash,

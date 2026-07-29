@@ -314,10 +314,11 @@ cannot re-enter the ordinary workflow.
 | `GET /knowledge/studio/drafts/{draft_id}` | author `kg.read`; independent reviewer `kg.review` | read an author Draft or a REVIEW/PUBLISHED Draft visible to a permitted reviewer with `Cache-Control: no-store` and ETag; hidden Drafts are not disclosed |
 | `PATCH /knowledge/studio/drafts/{draft_id}` | `kg.edit` | idempotent Step 1 auto-save; requires exact `If-Match` and returns `412` on a stale version |
 | `POST /knowledge/studio/drafts/{draft_id}/advance` | `kg.edit` | idempotently advance to `TBOX`, or from T-Box to `ABOX` only when at least one accepted Class/Relation exists; requires exact `If-Match` |
-| `GET /knowledge/studio/drafts/{draft_id}/tbox` | author `kg.read`; independent reviewer `kg.review` | read ordered T-Box blocks and their typed Class/Property/Relation elements; returns the Draft ETag and never accepts or returns executable Cypher |
+| `GET /knowledge/studio/drafts/{draft_id}/tbox` | author `kg.read`; independent reviewer `kg.review` | read ordered T-Box blocks and their normalized typed Class/Property/Relation elements; Class includes its optional parent, every element may carry an opaque metadata reference, and `locked_by_later_block` is server-derived; returns the Draft ETag and never accepts or returns executable Cypher |
 | `POST /knowledge/studio/drafts/{draft_id}/tbox/blocks` | author `kg.edit` | create one ordered `DIRECT`, `DOCUMENT_SCHEMA`, `CATALOG_METADATA` or `ASSET_RELEASE` block with bounded weight; exact `If-Match` and `Idempotency-Key` are required |
 | `PATCH /knowledge/studio/drafts/{draft_id}/tbox/blocks/{block_id}` | author `kg.edit` | update block title, weight and collapsed presentation state under exact version fencing |
-| `POST /knowledge/studio/drafts/{draft_id}/tbox/blocks/{block_id}/operations` | author `kg.edit` | apply only typed `UPSERT_ELEMENT`, `DELETE_ELEMENT` or `SET_LAYOUT` operations; the server validates stable identity, endpoints, block ownership and text-only vector targets before replacing the Draft projection |
+| `DELETE /knowledge/studio/drafts/{draft_id}/tbox/blocks/{block_id}` | author `kg.edit` | delete only the highest-ordinal (newest) block and its owned Draft elements; exact `If-Match` and `Idempotency-Key` are required, older blocks and a newest block targeted by retained Proposal evidence are rejected |
+| `POST /knowledge/studio/drafts/{draft_id}/tbox/blocks/{block_id}/operations` | author `kg.edit` | apply only typed `UPSERT_ELEMENT`, `DELETE_ELEMENT` or `SET_LAYOUT` operations; the server validates stable identity, normalized Class parent/Property owner/Relationship endpoints, cycle freedom, block ownership, forward-only references and text-only vector targets before replacing the Draft projection; an earlier element referenced by a later block cannot be changed, moved or deleted |
 | `POST /knowledge/studio/drafts/{draft_id}/tbox/proposals` | author `kg.edit` | invoke the governed schema-assistant binding against an exact `If-Match` Draft and persist a bounded typed proposal plus conflict preview; persistence rechecks the same base version after provider latency and the proposal cannot mutate the accepted Draft |
 | `GET /knowledge/studio/drafts/{draft_id}/tbox/proposals/{proposal_id}` | author `kg.read`; independent reviewer `kg.review` | read one typed proposal and its sanitized conflict documents |
 | `POST /knowledge/studio/drafts/{draft_id}/tbox/proposals/{proposal_id}/apply` | author `kg.edit` | one-time, exact-version, idempotent proposal acceptance; default `KEEP_ORIGINAL` rewires dependent proposal references to the retained human-authored stable IDs, while explicit `RESOLVE` requires one decision per conflict |
@@ -372,7 +373,10 @@ The T-Box editor text is a safe UI projection, not a query endpoint. Invalid or 
 remains a browser-local buffer and the last valid typed graph remains unchanged. Canvas changes
 regenerate the projection from typed elements. Proposal conflicts default to `KEEP_ORIGINAL`;
 non-conflicting dependants are rewired to the retained stable identity, so a model-generated ID
-cannot orphan a Property or Relation.
+cannot orphan a Property or Relation. Class hierarchy is persisted as one optional parent Class;
+the displayed `SUBCLASS_OF` edge is derived rather than stored as a duplicate Relationship. A block
+can reference only itself or an earlier block, the read model derives dependency locks, and only the
+newest block can be deleted.
 
 The A-Box PATCH accepts only a local catalog asset UUID, exact detailed schema and projection
 versions, and a bounded list of typed field-to-stable-element rules. The server re-reads the

@@ -1118,6 +1118,9 @@ class KnowledgeStudioTBoxElementRecord:
     aliases: tuple[str, ...] = ()
     unit: str | None = None
     vector_index_enabled: bool = False
+    metadata_reference_id: UUID | None = None
+    metadata_reference_urn: str | None = None
+    locked_by_later_block: bool = False
     layout_x: float | None = None
     layout_y: float | None = None
 

@@ -1504,6 +1504,18 @@ class KnowledgeStudioStore(Protocol):
         request_hash: str,
     ) -> KnowledgeStudioTBoxRecord: ...
 
+    async def delete_tbox_block(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        block_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord: ...
+
     async def save_tbox_block_elements(
         self,
         *,

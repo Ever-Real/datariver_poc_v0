@@ -80,6 +80,11 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 ## Phase 3 — T-Box Graph Builder
 
 - [ ] block, input, typed T-Box operation, proposal, layout model을 approved lifecycle에 맞게 추가한다.
+- [x] accepted Draft identity registry와 `tbox_classes`, `tbox_properties`,
+  `tbox_relationships` subtype을 정규화하고 composite Workspace/Draft FK, FORCE RLS,
+  owner insert/delete grant, additive `0064` 및 canonical `0001`에 반영한다.
+- [x] Class single-parent hierarchy, missing/non-Class parent, self-parent와 cycle 거부를 domain
+  validation으로 고정하고 `SUBCLASS_OF`는 parent에서 파생되는 editor/canvas edge로만 둔다.
 - [x] RC 화면 검증을 위해 빈 React Flow canvas, 사용자 입력 기반 로컬 node 추가,
   drag/connect/선택 삭제 scaffold를 Studio Step 2 route에 연결한다. 이 요소는 브라우저
   메모리에만 존재하고 Accepted operation이나 schema 저장 성공으로 표시하지 않는다.
@@ -92,12 +97,17 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
   node label/relation rename에서 identity를 보존함을 test한다. alias rename/delete의 server
   typed-operation 충돌 처리는 operation API와 함께 완료한다.
 - [ ] Cypher source가 server/Neo4j로 전달·실행되지 않음을 HTTP/adapter test로 증명한다.
-- [ ] editor/canvas 양방향 동기화, parse-error last-valid graph, stable element ID, layout-only update를 test한다.
+- [x] Hierarchy Tree/React Flow/safe editor 양방향 동기화, parse-error last-valid graph,
+  stable element ID와 tree drag/drop `SUBCLASS_OF` 갱신을 component/domain test한다.
+- [x] Class 선택 시 node-adjacent floating editor와 inline Property 추가를 제공하고 rich
+  Property metadata는 향후 Asset 관리 reference ID/URN 계약으로 분리한다.
+- [x] 이전/후속 block을 read-only group으로 표시하고 current-to-earlier reference만 허용하며,
+  later-reference lock과 latest-only block delete를 UI와 service/API 양쪽에서 강제한다.
 - [ ] block 순서/enable 변경이 이전 block을 수정하지 않고 `(weight, ordinal)` deterministic
   fold를 수행하며 동률은 최신 block(LIFO)이 우선함을 test한다.
 - [ ] LLM/file/catalog/asset-release proposal의 dotted overlay와 Accept/Reject/Expired/Conflict UI를 구현한다.
-- [ ] invalid Cypher buffer가 마지막 valid canvas를 유지하고 line/column diagnostic을 즉시
-  표시하며 canvas add/edit/delete가 safe text를 재생성함을 test한다.
+- [x] invalid Cypher buffer가 마지막 valid canvas를 유지하고 line/column diagnostic을 즉시
+  표시하며 canvas/tree add/edit/delete가 safe text를 재생성함을 test한다.
 - [ ] proposal conflict dialog가 `KEEP_ORIGINAL`을 기본값으로 사용하고 KIND/ENDPOINT 충돌을
   자동 overwrite하지 않음을 test한다.
 - [ ] provider/file inference는 별도 durable proposal job/attempt/event와 `202` API로 실행하고

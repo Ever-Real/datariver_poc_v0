@@ -44,6 +44,7 @@ PUBLICATION_MIGRATION = (
 )
 QA_MIGRATION = ROOT / "backend/alembic/versions/0062_knowledge_qa_domain_archive.py"
 BUILDER_MIGRATION = ROOT / "backend/alembic/versions/0063_ontology_builder_and_ingestion_jobs.py"
+HIERARCHY_MIGRATION = ROOT / "backend/alembic/versions/0064_normalize_tbox_hierarchy.py"
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
@@ -54,7 +55,7 @@ def _table(name: str) -> Table:
 
 def test_studio_draft_model_is_separate_persistent_author_state() -> None:
     draft = _table("knowledge.studio_drafts")
-    assert REQUIRED_DATABASE_REVISION == "0063"
+    assert REQUIRED_DATABASE_REVISION == "0064"
     assert {
         "workspace_id",
         "author_id",
@@ -155,6 +156,9 @@ def test_qa_domain_seed_and_graph_archive_are_deterministic_and_auditable() -> N
 def test_ontology_builder_and_ingestion_models_are_typed_and_rls_governed() -> None:
     blocks = _table("knowledge.tbox_draft_blocks")
     elements = _table("knowledge.tbox_draft_elements")
+    classes = _table("knowledge.tbox_classes")
+    properties = _table("knowledge.tbox_properties")
+    relationships = _table("knowledge.tbox_relationships")
     proposals = _table("knowledge.tbox_proposals")
     jobs = _table("knowledge.studio_ingestion_jobs")
 
@@ -171,11 +175,39 @@ def test_ontology_builder_and_ingestion_models_are_typed_and_rls_governed() -> N
         "block_id",
         "definition",
         "aliases",
-        "unit",
-        "vector_index_enabled",
         "layout_x",
         "layout_y",
     } <= set(elements.c.keys())
+    assert {
+        "parent_stable_class_id",
+        "metadata_reference_id",
+        "metadata_reference_urn",
+    } <= set(classes.c.keys())
+    assert {
+        "owner_stable_class_id",
+        "data_type",
+        "nullable",
+        "unit",
+        "vector_index_enabled",
+        "metadata_reference_id",
+        "metadata_reference_urn",
+    } <= set(properties.c.keys())
+    assert {
+        "source_stable_class_id",
+        "target_stable_class_id",
+        "relationship_kind",
+        "metadata_reference_id",
+        "metadata_reference_urn",
+    } <= set(relationships.c.keys())
+    assert {
+        "parent_stable_element_id",
+        "source_stable_element_id",
+        "target_stable_element_id",
+        "data_type",
+        "nullable",
+        "unit",
+        "vector_index_enabled",
+    }.isdisjoint(elements.c.keys())
     assert elements.c.block_id.nullable is False
     assert {
         "base_draft_version",
@@ -202,6 +234,15 @@ def test_ontology_builder_and_ingestion_models_are_typed_and_rls_governed() -> N
     assert "GRANT SELECT, INSERT" in migration
     assert "knowledge.studio_ingestion_jobs" in migration
     assert "vector_index_enabled" in migration
+    hierarchy_migration = HIERARCHY_MIGRATION.read_text(encoding="utf-8")
+    assert 'revision: str = "0064"' in hierarchy_migration
+    assert 'down_revision: str | Sequence[str] | None = "0063"' in hierarchy_migration
+    assert "knowledge.tbox_classes" in hierarchy_migration
+    assert "knowledge.tbox_properties" in hierarchy_migration
+    assert "knowledge.tbox_relationships" in hierarchy_migration
+    assert "FORCE ROW LEVEL SECURITY" in hierarchy_migration
+    assert "GRANT SELECT, INSERT, DELETE ON knowledge.tbox_classes" in hierarchy_migration
+    assert "GRANT UPDATE ON knowledge.tbox_classes" not in hierarchy_migration
     assert '"preflight_receipt_id": str(preflight.id)' in (
         ROOT / "backend/src/datariver/infrastructure/db/knowledge_studio.py"
     ).read_text(encoding="utf-8")
@@ -252,6 +293,9 @@ async def test_resumable_draft_lookup_is_scoped_to_workspace_author_alias_and_dr
 def test_abox_mapping_is_a_normalized_child_aggregate_not_draft_json() -> None:
     draft = _table("knowledge.studio_drafts")
     elements = _table("knowledge.tbox_draft_elements")
+    classes = _table("knowledge.tbox_classes")
+    properties = _table("knowledge.tbox_properties")
+    relationships = _table("knowledge.tbox_relationships")
     sources = _table("knowledge.source_references")
     bindings = _table("knowledge.abox_binding_drafts")
     rules = _table("knowledge.abox_mapping_rule_drafts")
@@ -261,11 +305,11 @@ def test_abox_mapping_is_a_normalized_child_aggregate_not_draft_json() -> None:
     assert {
         "stable_element_id",
         "kind",
-        "parent_stable_element_id",
-        "source_stable_element_id",
-        "target_stable_element_id",
         "version",
     } <= set(elements.c.keys())
+    assert "parent_stable_class_id" in classes.c
+    assert "owner_stable_class_id" in properties.c
+    assert {"source_stable_class_id", "target_stable_class_id"} <= set(relationships.c.keys())
     assert {
         "catalog_asset_id",
         "source_version",
@@ -306,7 +350,7 @@ def test_abox_mapping_is_a_normalized_child_aggregate_not_draft_json() -> None:
     assert "CATALOG_DATASET" in source_checks["ck_source_references_kind_vocabulary"]
     assert "IDENTITY" in rule_checks["ck_abox_mapping_rule_drafts_identity_transform_only"]
     assert "EDGE_LINK" in rule_checks["ck_abox_mapping_rule_drafts_method_vocabulary"]
-    for table in (elements, sources, bindings, rules):
+    for table in (elements, classes, properties, relationships, sources, bindings, rules):
         for constraint in table.constraints:
             if isinstance(constraint, ForeignKeyConstraint):
                 assert constraint.ondelete == "RESTRICT"
@@ -355,15 +399,24 @@ def test_abox_rls_allows_review_reads_but_keeps_draft_writes_owner_only() -> Non
     migration = ABOX_MIGRATION.read_text(encoding="utf-8")
     publication = PUBLICATION_MIGRATION.read_text(encoding="utf-8")
     initial = INITIAL_MIGRATION.read_text(encoding="utf-8")
-    table_names = (
+    abox_table_names = (
         "tbox_draft_elements",
         "source_references",
         "abox_binding_drafts",
         "abox_mapping_rule_drafts",
     )
+    normalized_table_names = (
+        "tbox_classes",
+        "tbox_properties",
+        "tbox_relationships",
+    )
+    hierarchy = HIERARCHY_MIGRATION.read_text(encoding="utf-8")
     assert 'f"ALTER TABLE knowledge.{table} FORCE ROW LEVEL SECURITY"' in migration
-    for table in table_names:
+    for table in abox_table_names:
         assert f'"{table}"' in migration
+        assert f"ALTER TABLE knowledge.{table} FORCE ROW LEVEL SECURITY" in initial
+    for table in normalized_table_names:
+        assert f'"{table}"' in hierarchy
         assert f"ALTER TABLE knowledge.{table} FORCE ROW LEVEL SECURITY" in initial
     assert "source_reference_owner_access" in migration
     assert "studio_draft_owner_access" in migration
@@ -377,21 +430,23 @@ def test_abox_rls_allows_review_reads_but_keeps_draft_writes_owner_only() -> Non
         assert "app.subject_id" in source
         assert "GRANT DELETE ON knowledge.abox_binding_drafts" not in source
         assert "GRANT UPDATE ON knowledge.tbox_draft_elements" not in source
+        assert "GRANT UPDATE ON knowledge.tbox_classes" not in source
     for source in (migration, initial):
         assert "GRANT DELETE ON knowledge.abox_mapping_rule_drafts" in source or (
             "GRANT SELECT, INSERT, DELETE" in source
             and "ON knowledge.abox_mapping_rule_drafts" in source
         )
-    for field in (
-        "parent_stable_element_id",
-        "source_stable_element_id",
-        "target_stable_element_id",
-    ):
+    assert (
+        initial.count("fk_tbox_classes_workspace_id_draft_id_parent_stable_class_id_tbox_classes")
+        == 1
+    )
+    assert (
+        initial.count("fk_tbox_properties_workspace_id_draft_id_owner_stable_class_id_tbox_classes")
+        == 1
+    )
+    for field in ("source_stable_class_id", "target_stable_class_id"):
         assert (
-            initial.count(
-                f"fk_tbox_draft_elements_workspace_id_draft_id_{field}_tbox_draft_elements"
-            )
-            == 1
+            initial.count(f"fk_tbox_relationships_workspace_id_draft_id_{field}_tbox_classes") == 1
         )
     assert "downgrade would destroy state" in migration
 

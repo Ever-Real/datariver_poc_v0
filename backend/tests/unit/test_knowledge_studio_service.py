@@ -39,6 +39,8 @@ from datariver.domain.knowledge_studio import (
     TBoxElementInput,
     TBoxElementKind,
     TBoxMergeStrategy,
+    TBoxOperationInput,
+    TBoxOperationKind,
 )
 
 WORKSPACE_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1")
@@ -51,6 +53,8 @@ STUDIO_RELEASE_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b6")
 GRAPH_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b7")
 ONTOLOGY_VERSION_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b8")
 NOW = datetime(2026, 7, 28, 1, 2, 3, tzinfo=UTC)
+FIRST_BLOCK_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3c0")
+SECOND_BLOCK_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3c1")
 
 
 class MemoryDecisionWriter:
@@ -151,6 +155,69 @@ def tbox(*, vector_index_enabled: bool) -> KnowledgeStudioTBoxRecord:
                 version=1,
                 source_reference=None,
                 elements=elements,
+                created_at=NOW,
+                updated_at=NOW,
+            ),
+        ),
+    )
+
+
+def layered_tbox() -> KnowledgeStudioTBoxRecord:
+    asset = KnowledgeStudioTBoxElementRecord(
+        stable_element_id="class.asset",
+        kind="CLASS",
+        canonical_name="Asset",
+        display_name="Asset",
+        parent_stable_element_id=None,
+        source_stable_element_id=None,
+        target_stable_element_id=None,
+        data_type=None,
+        nullable=None,
+        ordinal=0,
+        version=1,
+        block_id=FIRST_BLOCK_ID,
+        locked_by_later_block=True,
+    )
+    dataset = KnowledgeStudioTBoxElementRecord(
+        stable_element_id="class.dataset",
+        kind="CLASS",
+        canonical_name="Dataset",
+        display_name="Dataset",
+        parent_stable_element_id=asset.stable_element_id,
+        source_stable_element_id=None,
+        target_stable_element_id=None,
+        data_type=None,
+        nullable=None,
+        ordinal=1,
+        version=1,
+        block_id=SECOND_BLOCK_ID,
+    )
+    return KnowledgeStudioTBoxRecord(
+        draft=replace(draft(), current_step="TBOX", version=4),
+        blocks=(
+            KnowledgeStudioTBoxBlockRecord(
+                block_id=FIRST_BLOCK_ID,
+                kind="DIRECT",
+                title="Core",
+                weight=50,
+                ordinal=0,
+                collapsed=False,
+                version=1,
+                source_reference=None,
+                elements=(asset,),
+                created_at=NOW,
+                updated_at=NOW,
+            ),
+            KnowledgeStudioTBoxBlockRecord(
+                block_id=SECOND_BLOCK_ID,
+                kind="DIRECT",
+                title="Catalog",
+                weight=60,
+                ordinal=1,
+                collapsed=False,
+                version=1,
+                source_reference=None,
+                elements=(dataset,),
                 created_at=NOW,
                 updated_at=NOW,
             ),
@@ -296,6 +363,154 @@ def test_keep_original_rewires_nonconflicting_proposal_dependants() -> None:
             parent_stable_element_id=original.stable_element_id,
         ),
     )
+
+
+def test_proposal_candidate_cannot_rewrite_a_later_referenced_class() -> None:
+    current = layered_tbox()
+    first = tuple(
+        replace(
+            KnowledgeStudioService._tbox_input(item),
+            display_name="Changed Asset",
+        )
+        for item in current.blocks[0].elements
+    )
+    second = tuple(KnowledgeStudioService._tbox_input(item) for item in current.blocks[1].elements)
+
+    with pytest.raises(ConflictError, match="locked"):
+        KnowledgeStudioService._validate_tbox_layer_dependencies(
+            record=current,
+            elements_by_block=(
+                (FIRST_BLOCK_ID, first),
+                (SECOND_BLOCK_ID, second),
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_later_block_reference_locks_earlier_class_mutations() -> None:
+    current = layered_tbox()
+    store = SimpleNamespace(
+        get_tbox=AsyncMock(return_value=current),
+        save_tbox_block_elements=AsyncMock(),
+    )
+
+    with pytest.raises(ConflictError, match="later T-Box block references"):
+        await service(store).apply_tbox_operations(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+            draft_id=DRAFT_ID,
+            block_id=FIRST_BLOCK_ID,
+            operations=(
+                TBoxOperationInput(
+                    operation=TBoxOperationKind.DELETE_ELEMENT,
+                    stable_element_id="class.asset",
+                ),
+            ),
+            expected_version=4,
+            idempotency_key="delete-locked-class",
+            request_hash="delete-locked-class-hash",
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="request",
+        )
+
+    with pytest.raises(ConflictError, match="Property's Class"):
+        await service(store).apply_tbox_operations(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+            draft_id=DRAFT_ID,
+            block_id=FIRST_BLOCK_ID,
+            operations=(
+                TBoxOperationInput(
+                    operation=TBoxOperationKind.UPSERT_ELEMENT,
+                    stable_element_id="property.asset.description",
+                    element=TBoxElementInput(
+                        stable_element_id="property.asset.description",
+                        kind=TBoxElementKind.PROPERTY,
+                        canonical_name="description",
+                        display_name="Description",
+                        parent_stable_element_id="class.asset",
+                        data_type="TEXT",
+                        nullable=True,
+                    ),
+                ),
+            ),
+            expected_version=4,
+            idempotency_key="modify-locked-class-property",
+            request_hash="modify-locked-class-property-hash",
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="request",
+        )
+
+    store.save_tbox_block_elements.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_current_block_can_reference_an_earlier_class() -> None:
+    current = layered_tbox()
+    stored = replace(current, draft=replace(current.draft, version=5))
+    store = SimpleNamespace(
+        get_tbox=AsyncMock(return_value=current),
+        save_tbox_block_elements=AsyncMock(return_value=stored),
+    )
+    table = TBoxElementInput(
+        stable_element_id="class.table",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="Table",
+        display_name="Table",
+        parent_stable_element_id="class.asset",
+    )
+
+    with pytest.raises(ConflictError, match="same block"):
+        await service(store).apply_tbox_operations(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+            draft_id=DRAFT_ID,
+            block_id=SECOND_BLOCK_ID,
+            operations=(
+                TBoxOperationInput(
+                    operation=TBoxOperationKind.UPSERT_ELEMENT,
+                    stable_element_id="property.asset.description",
+                    element=TBoxElementInput(
+                        stable_element_id="property.asset.description",
+                        kind=TBoxElementKind.PROPERTY,
+                        canonical_name="description",
+                        display_name="Description",
+                        parent_stable_element_id="class.asset",
+                        data_type="TEXT",
+                        nullable=True,
+                    ),
+                ),
+            ),
+            expected_version=4,
+            idempotency_key="cross-block-property",
+            request_hash="cross-block-property-hash",
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="request",
+        )
+
+    result = await service(store).apply_tbox_operations(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+        draft_id=DRAFT_ID,
+        block_id=SECOND_BLOCK_ID,
+        operations=(
+            TBoxOperationInput(
+                operation=TBoxOperationKind.UPSERT_ELEMENT,
+                stable_element_id=table.stable_element_id,
+                element=table,
+            ),
+        ),
+        expected_version=4,
+        idempotency_key="reference-earlier-class",
+        request_hash="reference-earlier-class-hash",
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request",
+    )
+
+    assert result.draft.version == 5
+    store.save_tbox_block_elements.assert_awaited_once()
+    stored_blocks = store.save_tbox_block_elements.await_args.kwargs["elements_by_block"]
+    assert table in stored_blocks[1][1]
 
 
 @pytest.mark.asyncio

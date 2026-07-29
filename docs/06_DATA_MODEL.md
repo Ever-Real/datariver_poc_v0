@@ -231,7 +231,10 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 | `knowledge.ontology_versions` | `id`, graph/version/schema/checksum/status, nullable schema-contract/base-ontology/creator provenance, timestamps | immutable typed ontology versions |
 | `knowledge.studio_drafts` | `id`, workspace/author, CREATE/EDIT, `DRAFT/REVIEW/PUBLISHED/DISCARDED`, current step, name/endpoint alias, exact DOMAIN UUID/source version, classification, optional EDIT base pins, exact submitted receipt/reviewer/materialized graph/ontology/Studio Release references, autosave/review/publish/discard times, optimistic version | full-screen Studio aggregate; mutable author scope in DRAFT, reviewer-readable and locked in REVIEW, immutable evidence after Publish/Discard |
 | `knowledge.tbox_draft_blocks` | workspace/draft ordinal, `DIRECT/DOCUMENT_SCHEMA/CATALOG_METADATA/ASSET_RELEASE/LLM_ASSISTANT`, weight, collapsed state, optional typed source reference, version | ordered T-Box authoring layers; a block never contains executable provider query text |
-| `knowledge.tbox_draft_elements` | workspace/draft/block-scoped stable ID UQ, `CLASS/PROPERTY/RELATION`, typed ownership/endpoints, datatype/nullability, definition/aliases/unit, vector-index target flag, bounded layout and deterministic ordinal/version | folded read index of accepted typed T-Box operations; editor text is not canonical and A-Box writes cannot edit this table |
+| `knowledge.tbox_draft_elements` | workspace/draft/block-scoped stable ID UQ, `CLASS/PROPERTY/RELATION`, canonical/display name, definition/aliases, bounded layout and deterministic ordinal/version | common folded identity and block-ownership registry; subtype shape is normalized below, editor text is not canonical and A-Box writes cannot edit it |
+| `knowledge.tbox_classes` | workspace/draft/stable Class UQ, optional single parent Class, nullable opaque metadata reference ID/URN, version | canonical Class hierarchy; `SUBCLASS_OF` is a derived editor/canvas edge and cycles are rejected by the domain service |
+| `knowledge.tbox_properties` | workspace/draft/stable Property UQ, exact owner Class, datatype/nullability/unit/vector target flag, nullable opaque metadata reference ID/URN, version | normalized Class-owned Property schema; future rich metadata management resolves the reference instead of expanding Graph Builder |
+| `knowledge.tbox_relationships` | workspace/draft/stable Relationship UQ, exact source/target Classes, fixed `ASSOCIATION` kind, nullable opaque metadata reference ID/URN, version | normalized non-taxonomic Class relationship schema |
 | `knowledge.tbox_proposals` | exact Draft/base version and optional target block, typed proposal/conflict documents, model binding, `READY/APPLIED/REJECTED/FAILED`, merge strategy and timestamps | LLM output remains a Proposal until an authorized, version-fenced acceptance command applies it |
 | `knowledge.studio_ingestion_jobs` | exact Draft/binding request, vector-target-conditional embedding binding and Property/Class/binding/source-field pins, durable `PENDING/RUNNING/FAILED/SUCCESS` progress, reserved lease and terminal result/error | background A-Box materialization contract; API requests enqueue only and never impersonate completion |
 | `knowledge.source_references` | immutable local catalog asset UUID, exact provider schema version, exact catalog projection version, classification, typed selected-field document/hash and creator | provider-opaque physical Dataset snapshot pin; no external URN, query, endpoint or credential |
@@ -273,8 +276,9 @@ restrictive command-specific actor policies. The author owns DRAFT writes and ca
 Discard the same aggregate; a different active human with the required workspace attributes can
 read REVIEW/PUBLISHED rows, while publication additionally requires `kg.publish`. The application
 service enforces fresh Hardware WebAuthn for the high-risk command. The Draft cannot be deleted.
-T-Box block and element mutation is permitted only through server-validated Typed Operations;
-the application role receives row-level insert/update/delete grants but no raw SQL/Cypher path. Source references
+T-Box block and element mutation is permitted only through server-validated Typed Operations.
+Element replacement uses owner-restricted insert/delete on the common registry and normalized subtype
+tables; the application role has no raw SQL/Cypher or subtype update path. Source references
 are immutable after insert, A-Box binding headers have a column-bounded update grant, and only Draft
 mapping-rule rows can be deleted so one selected target can be atomically replaced. All child
 foreign keys are `RESTRICT`, and a locked Draft ETag serializes target updates.
@@ -315,6 +319,14 @@ adds proposal and ingestion ledgers. All three new tables use forced workspace R
 governs reviewer reads; only the author of a mutable DRAFT can create or change blocks/proposals, and
 the browser role cannot update ingestion progress. Downgrade refuses while proposal, ingestion,
 non-default block or semantic/vector evidence would be lost.
+
+Revision `0064` deterministically backfills the 0063 union-shaped element rows into
+`tbox_classes`, `tbox_properties` and `tbox_relationships`, then reduces
+`tbox_draft_elements` to common identity, ownership and presentation fields. Composite
+Workspace/Draft foreign keys enforce Class parent, Property owner and Relationship endpoints with
+`RESTRICT`; Class hierarchy is the single parent reference and `SUBCLASS_OF` remains derived.
+Every subtype has forced Workspace RLS and owner-restricted insert/delete grants without an update
+grant. Downgrade refuses while hierarchy or external metadata-reference evidence would be lost.
 
 PostgreSQL releases remain canonical; Neo4j can be deleted and rebuilt. Graph classification is a
 maximum envelope enforced on changeset operations, complete submission/review, publication,

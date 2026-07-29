@@ -2087,6 +2087,9 @@ class KnowledgeStudioTBoxElementResponse(BaseModel):
     aliases: list[str] = Field(max_length=50)
     unit: str | None
     vector_index_enabled: bool
+    metadata_reference_id: UUID | None
+    metadata_reference_urn: str | None
+    locked_by_later_block: bool
     layout_x: float | None
     layout_y: float | None
 
@@ -2115,6 +2118,8 @@ class KnowledgeStudioTBoxElementRequest(BaseModel):
     aliases: list[str] = Field(default_factory=list, max_length=50)
     unit: str | None = Field(default=None, max_length=100)
     vector_index_enabled: bool = False
+    metadata_reference_id: UUID | None = None
+    metadata_reference_urn: str | None = Field(default=None, max_length=2_000)
     layout_x: float | None = Field(default=None, ge=-100_000, le=100_000)
     layout_y: float | None = Field(default=None, ge=-100_000, le=100_000)
 

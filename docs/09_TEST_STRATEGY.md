@@ -2,6 +2,25 @@
 
 ## Current verification status
 
+### Knowledge Studio normalized hierarchy and layer dependency increment — 2026-07-29
+
+Revision `0064` normalizes the accepted T-Box Draft shape into the common element registry plus
+Class, Property and Relationship subtype tables. Focused domain/service/UI tests cover single-parent
+hierarchy, cycle and missing-parent rejection, tree drag/drop `SUBCLASS_OF` synchronization,
+invalid-editor last-valid retention, floating Property addition, read-only layer groups,
+later-reference locks, current-to-earlier references and latest-only block deletion.
+
+Repository Ruff format/lint, strict mypy over `425` source/test files and static
+architecture/security/documentation verification pass. The complete backend suite passes
+`1,741 passed / 97 environment-gated skipped`. Frontend strict TypeScript, zero-warning ESLint,
+`56 files / 318 tests` and the production build pass. Three consecutive canonical `0001`
+generations are byte-identical at SHA-256
+`95ba1cd1046c8b1a625e6cb095c3b5b89ca28e190852db40d831186597e2751c`.
+
+These source gates do not by themselves claim a target PostgreSQL migration or authenticated
+browser acceptance. The stable `dev-publish` runtime migration/health pass and an authorized
+Graph Builder interaction remain separate execution evidence.
+
 ### Knowledge Phase 6 cutover QA remediation — 2026-07-28
 
 Revision `0062` adds deterministic workspace DOMAIN seed data and an auditable graph Archive

@@ -3212,15 +3212,8 @@ def upgrade() -> None:
         sa.Column('kind', sa.String(length=16), nullable=False),
         sa.Column('canonical_name', sa.String(length=255), nullable=False),
         sa.Column('display_name', sa.String(length=255), nullable=False),
-        sa.Column('parent_stable_element_id', sa.String(length=128), nullable=True),
-        sa.Column('source_stable_element_id', sa.String(length=128), nullable=True),
-        sa.Column('target_stable_element_id', sa.String(length=128), nullable=True),
-        sa.Column('data_type', sa.String(length=100), nullable=True),
-        sa.Column('nullable', sa.Boolean(), nullable=True),
         sa.Column('definition', sa.Text(), nullable=True),
         sa.Column('aliases', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
-        sa.Column('unit', sa.String(length=100), nullable=True),
-        sa.Column('vector_index_enabled', sa.Boolean(), nullable=False),
         sa.Column('layout_x', sa.Float(), nullable=True),
         sa.Column('layout_y', sa.Float(), nullable=True),
         sa.Column('ordinal', sa.Integer(), nullable=False),
@@ -3228,16 +3221,12 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('version', sa.Integer(), nullable=False),
-        sa.CheckConstraint("(kind = 'CLASS' AND parent_stable_element_id IS NULL AND source_stable_element_id IS NULL AND target_stable_element_id IS NULL AND data_type IS NULL AND nullable IS NULL) OR (kind = 'PROPERTY' AND parent_stable_element_id IS NOT NULL AND source_stable_element_id IS NULL AND target_stable_element_id IS NULL AND data_type IS NOT NULL AND nullable IS NOT NULL) OR (kind = 'RELATION' AND parent_stable_element_id IS NULL AND source_stable_element_id IS NOT NULL AND target_stable_element_id IS NOT NULL AND data_type IS NULL AND nullable IS NULL)", name=op.f('ck_tbox_draft_elements_element_shape')),
         sa.CheckConstraint("kind IN ('CLASS', 'PROPERTY', 'RELATION')", name=op.f('ck_tbox_draft_elements_kind_vocabulary')),
         sa.CheckConstraint('char_length(canonical_name) BETWEEN 1 AND 255 AND canonical_name = btrim(canonical_name)', name=op.f('ck_tbox_draft_elements_canonical_name_valid')),
         sa.CheckConstraint('char_length(display_name) BETWEEN 1 AND 255 AND display_name = btrim(display_name)', name=op.f('ck_tbox_draft_elements_display_name_valid')),
         sa.CheckConstraint('char_length(stable_element_id) BETWEEN 1 AND 128 AND stable_element_id = btrim(stable_element_id)', name=op.f('ck_tbox_draft_elements_stable_element_id_valid')),
         sa.CheckConstraint('ordinal >= 0', name=op.f('ck_tbox_draft_elements_ordinal_nonnegative')),
         sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'block_id'], ['knowledge.tbox_draft_blocks.workspace_id', 'knowledge.tbox_draft_blocks.draft_id', 'knowledge.tbox_draft_blocks.id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_block_id_tbox_draft_blocks'), ondelete='RESTRICT'),
-        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'parent_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_parent_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
-        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'source_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_source_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
-        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'target_stable_element_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_target_stable_element_id_tbox_draft_elements'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
         sa.ForeignKeyConstraint(['workspace_id', 'draft_id'], ['knowledge.studio_drafts.workspace_id', 'knowledge.studio_drafts.id'], name=op.f('fk_tbox_draft_elements_workspace_id_draft_id_studio_drafts'), ondelete='RESTRICT'),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_tbox_draft_elements')),
         sa.UniqueConstraint('workspace_id', 'draft_id', 'id', name=op.f('uq_tbox_draft_elements_workspace_id_draft_id_id')),
@@ -3389,6 +3378,30 @@ def upgrade() -> None:
         op.execute('ALTER TABLE knowledge.abox_binding_versions ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE knowledge.abox_binding_versions FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON knowledge.abox_binding_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('tbox_classes',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('draft_id', sa.Uuid(), nullable=False),
+        sa.Column('stable_class_id', sa.String(length=128), nullable=False),
+        sa.Column('parent_stable_class_id', sa.String(length=128), nullable=True),
+        sa.Column('metadata_reference_id', sa.Uuid(), nullable=True),
+        sa.Column('metadata_reference_urn', sa.String(length=2000), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint('metadata_reference_urn IS NULL OR (char_length(metadata_reference_urn) BETWEEN 1 AND 2000 AND metadata_reference_urn = btrim(metadata_reference_urn))', name=op.f('ck_tbox_classes_metadata_reference_urn_valid')),
+        sa.CheckConstraint('parent_stable_class_id IS NULL OR parent_stable_class_id <> stable_class_id', name=op.f('ck_tbox_classes_parent_not_self')),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'parent_stable_class_id'], ['knowledge.tbox_classes.workspace_id', 'knowledge.tbox_classes.draft_id', 'knowledge.tbox_classes.stable_class_id'], name=op.f('fk_tbox_classes_workspace_id_draft_id_parent_stable_class_id_tbox_classes'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'stable_class_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_classes_workspace_id_draft_id_stable_class_id_tbox_draft_elements'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_tbox_classes')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'id', name=op.f('uq_tbox_classes_workspace_id_draft_id_id')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'stable_class_id', name=op.f('uq_tbox_classes_workspace_id_draft_id_stable_class_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_tbox_classes_parent', 'tbox_classes', ['workspace_id', 'draft_id', 'parent_stable_class_id'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.tbox_classes ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.tbox_classes FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.tbox_classes USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('api_invocation_monthly_usage',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('grant_id', sa.Uuid(), nullable=False),
@@ -3520,6 +3533,61 @@ def upgrade() -> None:
         op.execute('ALTER TABLE knowledge.abox_mapping_rule_versions ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE knowledge.abox_mapping_rule_versions FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON knowledge.abox_mapping_rule_versions USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('tbox_properties',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('draft_id', sa.Uuid(), nullable=False),
+        sa.Column('stable_property_id', sa.String(length=128), nullable=False),
+        sa.Column('owner_stable_class_id', sa.String(length=128), nullable=False),
+        sa.Column('data_type', sa.String(length=100), nullable=False),
+        sa.Column('nullable', sa.Boolean(), nullable=False),
+        sa.Column('unit', sa.String(length=100), nullable=True),
+        sa.Column('vector_index_enabled', sa.Boolean(), nullable=False),
+        sa.Column('metadata_reference_id', sa.Uuid(), nullable=True),
+        sa.Column('metadata_reference_urn', sa.String(length=2000), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint('char_length(data_type) BETWEEN 1 AND 100 AND data_type = btrim(data_type)', name=op.f('ck_tbox_properties_data_type_valid')),
+        sa.CheckConstraint('metadata_reference_urn IS NULL OR (char_length(metadata_reference_urn) BETWEEN 1 AND 2000 AND metadata_reference_urn = btrim(metadata_reference_urn))', name=op.f('ck_tbox_properties_metadata_reference_urn_valid')),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'owner_stable_class_id'], ['knowledge.tbox_classes.workspace_id', 'knowledge.tbox_classes.draft_id', 'knowledge.tbox_classes.stable_class_id'], name=op.f('fk_tbox_properties_workspace_id_draft_id_owner_stable_class_id_tbox_classes'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'stable_property_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_properties_workspace_id_draft_id_stable_property_id_tbox_draft_elements'), ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_tbox_properties')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'id', name=op.f('uq_tbox_properties_workspace_id_draft_id_id')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'stable_property_id', name=op.f('uq_tbox_properties_workspace_id_draft_id_stable_property_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_tbox_properties_owner', 'tbox_properties', ['workspace_id', 'draft_id', 'owner_stable_class_id'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.tbox_properties ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.tbox_properties FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.tbox_properties USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('tbox_relationships',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('draft_id', sa.Uuid(), nullable=False),
+        sa.Column('stable_relationship_id', sa.String(length=128), nullable=False),
+        sa.Column('source_stable_class_id', sa.String(length=128), nullable=False),
+        sa.Column('target_stable_class_id', sa.String(length=128), nullable=False),
+        sa.Column('relationship_kind', sa.String(length=24), nullable=False),
+        sa.Column('metadata_reference_id', sa.Uuid(), nullable=True),
+        sa.Column('metadata_reference_urn', sa.String(length=2000), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("relationship_kind = 'ASSOCIATION'", name=op.f('ck_tbox_relationships_relationship_kind_vocabulary')),
+        sa.CheckConstraint('metadata_reference_urn IS NULL OR (char_length(metadata_reference_urn) BETWEEN 1 AND 2000 AND metadata_reference_urn = btrim(metadata_reference_urn))', name=op.f('ck_tbox_relationships_metadata_reference_urn_valid')),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'source_stable_class_id'], ['knowledge.tbox_classes.workspace_id', 'knowledge.tbox_classes.draft_id', 'knowledge.tbox_classes.stable_class_id'], name=op.f('fk_tbox_relationships_workspace_id_draft_id_source_stable_class_id_tbox_classes'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'stable_relationship_id'], ['knowledge.tbox_draft_elements.workspace_id', 'knowledge.tbox_draft_elements.draft_id', 'knowledge.tbox_draft_elements.stable_element_id'], name=op.f('fk_tbox_relationships_workspace_id_draft_id_stable_relationship_id_tbox_draft_elements'), ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'draft_id', 'target_stable_class_id'], ['knowledge.tbox_classes.workspace_id', 'knowledge.tbox_classes.draft_id', 'knowledge.tbox_classes.stable_class_id'], name=op.f('fk_tbox_relationships_workspace_id_draft_id_target_stable_class_id_tbox_classes'), ondelete='RESTRICT', initially='DEFERRED', deferrable=True),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_tbox_relationships')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'id', name=op.f('uq_tbox_relationships_workspace_id_draft_id_id')),
+        sa.UniqueConstraint('workspace_id', 'draft_id', 'stable_relationship_id', name=op.f('uq_tbox_relationships_workspace_id_draft_id_stable_relationship_id')),
+        schema='knowledge'
+        )
+        op.create_index('ix_tbox_relationships_endpoints', 'tbox_relationships', ['workspace_id', 'draft_id', 'source_stable_class_id', 'target_stable_class_id'], unique=False, schema='knowledge')
+        op.execute('ALTER TABLE knowledge.tbox_relationships ENABLE ROW LEVEL SECURITY')
+        op.execute('ALTER TABLE knowledge.tbox_relationships FORCE ROW LEVEL SECURITY')
+        op.execute("CREATE POLICY workspace_isolation ON knowledge.tbox_relationships USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
         op.create_table('api_invocation_results',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('invocation_id', sa.Uuid(), nullable=False),
@@ -3738,10 +3806,13 @@ def downgrade() -> None:
         op.drop_constraint('fk_catalog_export_requests_workspace_job', 'export_requests', schema='catalog', type_='foreignkey')
         op.drop_constraint(op.f('fk_api_products_workspace_id_id_current_version_id_api_product_versions'), 'api_products', schema='sharing', type_='foreignkey')
         op.drop_table('api_invocation_results', schema='sharing')
+        op.drop_table('tbox_relationships', schema='knowledge')
+        op.drop_table('tbox_properties', schema='knowledge')
         op.drop_table('abox_mapping_rule_versions', schema='knowledge')
         op.drop_table('abox_mapping_rule_drafts', schema='knowledge')
         op.drop_table('api_invocations', schema='sharing')
         op.drop_table('api_invocation_monthly_usage', schema='sharing')
+        op.drop_table('tbox_classes', schema='knowledge')
         op.drop_table('abox_binding_versions', schema='knowledge')
         op.drop_table('abox_binding_drafts', schema='knowledge')
         op.drop_table('consumer_grants', schema='sharing')

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -51,6 +51,7 @@ from datariver.domain.knowledge_studio import (
     StudioDraftState,
     StudioStep,
     TBoxElementInput,
+    TBoxElementKind,
     default_knowledge_domain_id,
     require_studio_transition,
     require_studio_version,
@@ -76,9 +77,12 @@ from datariver.infrastructure.db.models.knowledge_studio import (
     KnowledgeStudioPreflightCheckModel,
     KnowledgeStudioReleaseModel,
     OntologyElementModel,
+    TBoxClassModel,
     TBoxDraftBlockModel,
     TBoxDraftElementModel,
+    TBoxPropertyModel,
     TBoxProposalModel,
+    TBoxRelationshipModel,
 )
 
 CREATE_OPERATION = "knowledge.studio_draft.create"
@@ -101,6 +105,16 @@ def _optional_document_number(document: dict[str, object], key: str) -> float | 
     return float(value) if isinstance(value, int | float) else None
 
 
+def _optional_document_uuid(document: dict[str, object], key: str) -> UUID | None:
+    value = document.get(key)
+    if not isinstance(value, str):
+        return None
+    try:
+        return UUID(value)
+    except ValueError:
+        return None
+
+
 def _document_string_list(document: dict[str, object], key: str) -> list[str]:
     value = document.get(key)
     return [item for item in value if isinstance(item, str)] if isinstance(value, list) else []
@@ -121,6 +135,10 @@ def _tbox_input_document(value: TBoxElementInput) -> dict[str, object]:
         "aliases": list(value.aliases),
         "unit": value.unit,
         "vector_index_enabled": value.vector_index_enabled,
+        "metadata_reference_id": (
+            str(value.metadata_reference_id) if value.metadata_reference_id else None
+        ),
+        "metadata_reference_urn": value.metadata_reference_urn,
         "layout_x": value.layout_x,
         "layout_y": value.layout_y,
     }
@@ -158,24 +176,63 @@ def _draft_record(model: KnowledgeStudioDraftModel) -> KnowledgeStudioDraftRecor
     )
 
 
-def _tbox_element_record(model: TBoxDraftElementModel) -> KnowledgeStudioTBoxElementRecord:
+def _tbox_element_record(
+    model: TBoxDraftElementModel,
+    *,
+    class_detail: TBoxClassModel | None = None,
+    property_detail: TBoxPropertyModel | None = None,
+    relationship_detail: TBoxRelationshipModel | None = None,
+) -> KnowledgeStudioTBoxElementRecord:
+    parent_stable_element_id = (
+        class_detail.parent_stable_class_id
+        if class_detail is not None
+        else property_detail.owner_stable_class_id
+        if property_detail is not None
+        else None
+    )
+    metadata_reference_id = (
+        class_detail.metadata_reference_id
+        if class_detail is not None
+        else property_detail.metadata_reference_id
+        if property_detail is not None
+        else relationship_detail.metadata_reference_id
+        if relationship_detail is not None
+        else None
+    )
+    metadata_reference_urn = (
+        class_detail.metadata_reference_urn
+        if class_detail is not None
+        else property_detail.metadata_reference_urn
+        if property_detail is not None
+        else relationship_detail.metadata_reference_urn
+        if relationship_detail is not None
+        else None
+    )
     return KnowledgeStudioTBoxElementRecord(
         stable_element_id=model.stable_element_id,
         kind=model.kind,
         canonical_name=model.canonical_name,
         display_name=model.display_name,
-        parent_stable_element_id=model.parent_stable_element_id,
-        source_stable_element_id=model.source_stable_element_id,
-        target_stable_element_id=model.target_stable_element_id,
-        data_type=model.data_type,
-        nullable=model.nullable,
+        parent_stable_element_id=parent_stable_element_id,
+        source_stable_element_id=(
+            relationship_detail.source_stable_class_id if relationship_detail is not None else None
+        ),
+        target_stable_element_id=(
+            relationship_detail.target_stable_class_id if relationship_detail is not None else None
+        ),
+        data_type=property_detail.data_type if property_detail is not None else None,
+        nullable=property_detail.nullable if property_detail is not None else None,
         ordinal=model.ordinal,
         version=model.version,
         block_id=model.block_id,
         definition=model.definition,
         aliases=tuple(model.aliases),
-        unit=model.unit,
-        vector_index_enabled=model.vector_index_enabled,
+        unit=property_detail.unit if property_detail is not None else None,
+        vector_index_enabled=(
+            property_detail.vector_index_enabled if property_detail is not None else False
+        ),
+        metadata_reference_id=metadata_reference_id,
+        metadata_reference_urn=metadata_reference_urn,
         layout_x=model.layout_x,
         layout_y=model.layout_y,
     )
@@ -184,12 +241,39 @@ def _tbox_element_record(model: TBoxDraftElementModel) -> KnowledgeStudioTBoxEle
 def _tbox_record(
     draft: KnowledgeStudioDraftModel,
     blocks: Sequence[TBoxDraftBlockModel],
-    elements: Sequence[TBoxDraftElementModel],
+    elements: Sequence[KnowledgeStudioTBoxElementRecord],
 ) -> KnowledgeStudioTBoxRecord:
+    block_ordinal = {block.id: block.ordinal for block in blocks}
+    element_by_id = {element.stable_element_id: element for element in elements}
+    referenced_from_later: set[str] = set()
+    for element in elements:
+        owner_ordinal = (
+            block_ordinal.get(element.block_id, -1) if element.block_id is not None else -1
+        )
+        for reference in (
+            element.parent_stable_element_id,
+            element.source_stable_element_id,
+            element.target_stable_element_id,
+        ):
+            if reference is None:
+                continue
+            target = element_by_id.get(reference)
+            target_ordinal = (
+                block_ordinal.get(target.block_id, -1)
+                if target is not None and target.block_id is not None
+                else -1
+            )
+            if target is not None and owner_ordinal > target_ordinal:
+                referenced_from_later.add(reference)
     elements_by_block: dict[UUID, list[KnowledgeStudioTBoxElementRecord]] = {}
     for element in elements:
         if element.block_id is not None:
-            elements_by_block.setdefault(element.block_id, []).append(_tbox_element_record(element))
+            elements_by_block.setdefault(element.block_id, []).append(
+                replace(
+                    element,
+                    locked_by_later_block=element.stable_element_id in referenced_from_later,
+                )
+            )
     return KnowledgeStudioTBoxRecord(
         draft=_draft_record(draft),
         blocks=tuple(
@@ -233,6 +317,11 @@ def _proposal_element_record(
         else (),
         unit=_optional_document_string(document, "unit"),
         vector_index_enabled=bool(document.get("vector_index_enabled", False)),
+        metadata_reference_id=_optional_document_uuid(document, "metadata_reference_id"),
+        metadata_reference_urn=_optional_document_string(
+            document,
+            "metadata_reference_urn",
+        ),
         layout_x=_optional_document_number(document, "layout_x"),
         layout_y=_optional_document_number(document, "layout_y"),
     )
@@ -390,7 +479,7 @@ def _studio_release_record(
     )
 
 
-def _element_document(model: TBoxDraftElementModel) -> dict[str, object]:
+def _element_document(model: KnowledgeStudioTBoxElementRecord) -> dict[str, object]:
     return {
         "stable_element_id": model.stable_element_id,
         "kind": model.kind,
@@ -402,9 +491,13 @@ def _element_document(model: TBoxDraftElementModel) -> dict[str, object]:
         "data_type": model.data_type,
         "nullable": model.nullable,
         "definition": model.definition,
-        "aliases": model.aliases,
+        "aliases": list(model.aliases),
         "unit": model.unit,
         "vector_index_enabled": model.vector_index_enabled,
+        "metadata_reference_id": (
+            str(model.metadata_reference_id) if model.metadata_reference_id else None
+        ),
+        "metadata_reference_urn": model.metadata_reference_urn,
         "layout_x": model.layout_x,
         "layout_y": model.layout_y,
         "ordinal": model.ordinal,
@@ -479,7 +572,7 @@ def _version_binding_document(
 
 @dataclass(frozen=True, slots=True)
 class _StudioContract:
-    elements: tuple[TBoxDraftElementModel, ...]
+    elements: tuple[KnowledgeStudioTBoxElementRecord, ...]
     bindings: tuple[tuple[ABoxBindingDraftModel, KnowledgeSourceReferenceModel], ...]
     rules_by_binding: dict[UUID, tuple[ABoxMappingRuleDraftModel, ...]]
     tbox_document: dict[str, object]
@@ -1088,6 +1181,112 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             request_hash=request_hash,
         )
 
+    async def delete_tbox_block(
+        self,
+        *,
+        workspace_id: UUID,
+        author_id: UUID,
+        draft_id: UUID,
+        block_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        operation = f"knowledge.studio_tbox.block.delete:{draft_id}:{block_id}"
+        replay = await self._tbox_mutation_replay(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+        if replay is not None:
+            return replay
+        draft = await self._locked_draft(
+            workspace_id=workspace_id,
+            author_id=author_id,
+            draft_id=draft_id,
+        )
+        self._require_expected_version(draft, expected_version)
+        self._require_mutable(draft)
+        if draft.current_step != StudioStep.TBOX.value:
+            raise ConflictError("T-Box blocks can be deleted only in Graph Builder.")
+        blocks = tuple(
+            (
+                await self._session.scalars(
+                    select(TBoxDraftBlockModel)
+                    .where(
+                        TBoxDraftBlockModel.workspace_id == workspace_id,
+                        TBoxDraftBlockModel.draft_id == draft_id,
+                    )
+                    .order_by(TBoxDraftBlockModel.ordinal, TBoxDraftBlockModel.id)
+                    .with_for_update()
+                )
+            ).all()
+        )
+        if not blocks or blocks[-1].id != block_id:
+            raise ConflictError("Only the newest T-Box block can be deleted.")
+        proposal_reference = await self._session.scalar(
+            select(TBoxProposalModel.id)
+            .where(
+                TBoxProposalModel.workspace_id == workspace_id,
+                TBoxProposalModel.draft_id == draft_id,
+                TBoxProposalModel.target_block_id == block_id,
+            )
+            .limit(1)
+        )
+        if proposal_reference is not None:
+            raise ConflictError(
+                "The newest block has retained proposal evidence and cannot be deleted."
+            )
+        element_ids = tuple(
+            (
+                await self._session.scalars(
+                    select(TBoxDraftElementModel.stable_element_id)
+                    .where(
+                        TBoxDraftElementModel.workspace_id == workspace_id,
+                        TBoxDraftElementModel.draft_id == draft_id,
+                        TBoxDraftElementModel.block_id == block_id,
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+        if element_ids:
+            for model, field in (
+                (TBoxRelationshipModel, TBoxRelationshipModel.stable_relationship_id),
+                (TBoxPropertyModel, TBoxPropertyModel.stable_property_id),
+                (TBoxClassModel, TBoxClassModel.stable_class_id),
+            ):
+                await self._session.execute(
+                    delete(model).where(
+                        model.workspace_id == workspace_id,
+                        model.draft_id == draft_id,
+                        field.in_(element_ids),
+                    )
+                )
+            await self._session.execute(
+                delete(TBoxDraftElementModel).where(
+                    TBoxDraftElementModel.workspace_id == workspace_id,
+                    TBoxDraftElementModel.draft_id == draft_id,
+                    TBoxDraftElementModel.block_id == block_id,
+                )
+            )
+        await self._session.delete(blocks[-1])
+        now = utc_now()
+        draft.updated_at = now
+        draft.last_autosaved_at = now
+        draft.version += 1
+        return await self._save_tbox_mutation(
+            draft=draft,
+            workspace_id=workspace_id,
+            author_id=author_id,
+            operation=operation,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
     async def save_tbox_block_elements(
         self,
         *,
@@ -1137,43 +1336,12 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         if block_id not in block_ids or supplied_block_ids != block_ids:
             raise ConflictError("The T-Box block set changed before the operation was saved.")
         now = utc_now()
-        await self._session.execute(
-            delete(TBoxDraftElementModel).where(
-                TBoxDraftElementModel.workspace_id == workspace_id,
-                TBoxDraftElementModel.draft_id == draft_id,
-            )
+        await self._replace_tbox_elements(
+            workspace_id=workspace_id,
+            draft_id=draft_id,
+            elements_by_block=elements_by_block,
+            now=now,
         )
-        ordinal = 0
-        for owning_block_id, block_elements in elements_by_block:
-            for element in block_elements:
-                self._session.add(
-                    TBoxDraftElementModel(
-                        id=uuid7(),
-                        workspace_id=workspace_id,
-                        draft_id=draft_id,
-                        block_id=owning_block_id,
-                        stable_element_id=element.stable_element_id,
-                        kind=element.kind.value,
-                        canonical_name=element.canonical_name,
-                        display_name=element.display_name,
-                        parent_stable_element_id=element.parent_stable_element_id,
-                        source_stable_element_id=element.source_stable_element_id,
-                        target_stable_element_id=element.target_stable_element_id,
-                        data_type=element.data_type,
-                        nullable=element.nullable,
-                        definition=element.definition,
-                        aliases=list(element.aliases),
-                        unit=element.unit,
-                        vector_index_enabled=element.vector_index_enabled,
-                        layout_x=element.layout_x,
-                        layout_y=element.layout_y,
-                        ordinal=ordinal,
-                        created_at=now,
-                        updated_at=now,
-                        version=1,
-                    )
-                )
-                ordinal += 1
         for block in blocks:
             if block.id == block_id:
                 block.updated_at = now
@@ -1499,13 +1667,22 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             )
         vector_targets = tuple(
             (
-                await self._session.scalars(
-                    select(TBoxDraftElementModel)
+                await self._session.execute(
+                    select(TBoxDraftElementModel, TBoxPropertyModel)
+                    .join(
+                        TBoxPropertyModel,
+                        (TBoxPropertyModel.workspace_id == TBoxDraftElementModel.workspace_id)
+                        & (TBoxPropertyModel.draft_id == TBoxDraftElementModel.draft_id)
+                        & (
+                            TBoxPropertyModel.stable_property_id
+                            == TBoxDraftElementModel.stable_element_id
+                        ),
+                    )
                     .where(
                         TBoxDraftElementModel.workspace_id == workspace_id,
                         TBoxDraftElementModel.draft_id == draft_id,
                         TBoxDraftElementModel.kind == "PROPERTY",
-                        TBoxDraftElementModel.vector_index_enabled.is_(True),
+                        TBoxPropertyModel.vector_index_enabled.is_(True),
                     )
                     .order_by(TBoxDraftElementModel.stable_element_id)
                 )
@@ -1522,7 +1699,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                             ABoxMappingRuleDraftModel.draft_id == draft_id,
                             ABoxMappingRuleDraftModel.method == ABoxMappingMethod.PROPERTY.value,
                             ABoxMappingRuleDraftModel.target_stable_element_id.in_(
-                                tuple(item.stable_element_id for item in vector_targets)
+                                tuple(item[0].stable_element_id for item in vector_targets)
                             ),
                         )
                         .order_by(
@@ -1534,9 +1711,9 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             )
         vector_rule_by_target = {item.target_stable_element_id: item for item in vector_rules}
         unmapped_vector_targets = [
-            item.stable_element_id
+            item[0].stable_element_id
             for item in vector_targets
-            if item.stable_element_id not in vector_rule_by_target
+            if item[0].stable_element_id not in vector_rule_by_target
         ]
         if unmapped_vector_targets:
             raise ConflictError("Every Vector Index Property requires an exact persisted mapping.")
@@ -1563,12 +1740,14 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 "embedding_binding": embedding_binding,
                 "targets": [
                     {
-                        "stable_element_id": item.stable_element_id,
-                        "parent_stable_element_id": item.parent_stable_element_id,
-                        "data_type": item.data_type,
-                        "binding_id": str(vector_rule_by_target[item.stable_element_id].binding_id),
+                        "stable_element_id": item[0].stable_element_id,
+                        "parent_stable_element_id": item[1].owner_stable_class_id,
+                        "data_type": item[1].data_type,
+                        "binding_id": str(
+                            vector_rule_by_target[item[0].stable_element_id].binding_id
+                        ),
                         "source_field_path": vector_rule_by_target[
-                            item.stable_element_id
+                            item[0].stable_element_id
                         ].source_field_path,
                     }
                     for item in vector_targets
@@ -1866,16 +2045,13 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 )
             )
         ).all()
+        imported_elements: list[TBoxElementInput] = []
         for element in elements:
             document = element.element_document
-            self._session.add(
-                TBoxDraftElementModel(
-                    id=uuid7(),
-                    workspace_id=workspace_id,
-                    draft_id=draft.id,
-                    block_id=direct_block.id,
+            imported_elements.append(
+                TBoxElementInput(
                     stable_element_id=element.stable_element_id,
-                    kind=element.kind,
+                    kind=TBoxElementKind(element.kind),
                     canonical_name=element.canonical_name,
                     display_name=element.display_name,
                     parent_stable_element_id=_optional_document_string(
@@ -1893,17 +2069,27 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                     data_type=_optional_document_string(document, "data_type"),
                     nullable=_optional_document_bool(document, "nullable"),
                     definition=_optional_document_string(document, "definition"),
-                    aliases=_document_string_list(document, "aliases"),
+                    aliases=tuple(_document_string_list(document, "aliases")),
                     unit=_optional_document_string(document, "unit"),
                     vector_index_enabled=bool(document.get("vector_index_enabled", False)),
+                    metadata_reference_id=_optional_document_uuid(
+                        document,
+                        "metadata_reference_id",
+                    ),
+                    metadata_reference_urn=_optional_document_string(
+                        document,
+                        "metadata_reference_urn",
+                    ),
                     layout_x=_optional_document_number(document, "layout_x"),
                     layout_y=_optional_document_number(document, "layout_y"),
-                    ordinal=element.ordinal,
-                    created_at=now,
-                    updated_at=now,
-                    version=1,
                 )
             )
+        await self._replace_tbox_elements(
+            workspace_id=workspace_id,
+            draft_id=draft.id,
+            elements_by_block=((direct_block.id, tuple(imported_elements)),),
+            now=now,
+        )
         await self._session.flush()
         binding_versions = tuple(
             (
@@ -2276,20 +2462,11 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         if draft_model is None:
             return None
         element_models = list(
-            (
-                await self._session.scalars(
-                    select(TBoxDraftElementModel)
-                    .where(
-                        TBoxDraftElementModel.workspace_id == workspace_id,
-                        TBoxDraftElementModel.draft_id == draft_id,
-                    )
-                    .order_by(
-                        TBoxDraftElementModel.ordinal,
-                        TBoxDraftElementModel.stable_element_id,
-                    )
-                    .limit(501)
-                )
-            ).all()
+            await self._load_tbox_element_records(
+                workspace_id=workspace_id,
+                draft_id=draft_id,
+                limit=501,
+            )
         )
         if len(element_models) > 500:
             raise ConflictError("The accepted T-Box exceeds the Data Enricher display bound.")
@@ -2355,7 +2532,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             rules_by_binding.setdefault(rule.binding_id, []).append(rule)
         return KnowledgeStudioABoxRecord(
             draft=_draft_record(draft_model),
-            tbox_elements=tuple(_tbox_element_record(item) for item in element_models),
+            tbox_elements=tuple(element_models),
             bindings=tuple(
                 _binding_record(
                     binding,
@@ -3182,18 +3359,6 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         draft: KnowledgeStudioDraftModel,
         lock: bool,
     ) -> _StudioContract:
-        elements_statement = (
-            select(TBoxDraftElementModel)
-            .where(
-                TBoxDraftElementModel.workspace_id == workspace_id,
-                TBoxDraftElementModel.draft_id == draft.id,
-            )
-            .order_by(
-                TBoxDraftElementModel.ordinal,
-                TBoxDraftElementModel.stable_element_id,
-            )
-            .limit(501)
-        )
         bindings_statement = (
             select(ABoxBindingDraftModel, KnowledgeSourceReferenceModel)
             .join(
@@ -3209,9 +3374,13 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             .limit(501)
         )
         if lock:
-            elements_statement = elements_statement.with_for_update(read=True)
             bindings_statement = bindings_statement.with_for_update(read=True)
-        elements = tuple((await self._session.scalars(elements_statement)).all())
+        elements = await self._load_tbox_element_records(
+            workspace_id=workspace_id,
+            draft_id=draft.id,
+            lock=lock,
+            limit=501,
+        )
         binding_rows = tuple(
             (row[0], row[1]) for row in (await self._session.execute(bindings_statement)).all()
         )
@@ -3546,23 +3715,85 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         )
         self._session.add(block)
         await self._session.flush((block,))
-        await self._session.execute(
-            update(TBoxDraftElementModel)
+        return block
+
+    async def _load_tbox_element_records(
+        self,
+        *,
+        workspace_id: UUID,
+        draft_id: UUID,
+        lock: bool = False,
+        limit: int | None = None,
+    ) -> tuple[KnowledgeStudioTBoxElementRecord, ...]:
+        elements_statement = (
+            select(TBoxDraftElementModel)
             .where(
                 TBoxDraftElementModel.workspace_id == workspace_id,
                 TBoxDraftElementModel.draft_id == draft_id,
-                TBoxDraftElementModel.block_id.is_(None),
             )
-            .values(block_id=block.id)
+            .order_by(
+                TBoxDraftElementModel.ordinal,
+                TBoxDraftElementModel.stable_element_id,
+            )
         )
-        return block
+        if limit is not None:
+            elements_statement = elements_statement.limit(limit)
+        if lock:
+            elements_statement = elements_statement.with_for_update(read=True)
+        elements = tuple((await self._session.scalars(elements_statement)).all())
+        if not elements:
+            return ()
+
+        async def load_details(model: type[Any]) -> tuple[Any, ...]:
+            statement = select(model).where(
+                model.workspace_id == workspace_id,
+                model.draft_id == draft_id,
+            )
+            if lock:
+                statement = statement.with_for_update(read=True)
+            return tuple((await self._session.scalars(statement)).all())
+
+        classes = await load_details(TBoxClassModel)
+        properties = await load_details(TBoxPropertyModel)
+        relationships = await load_details(TBoxRelationshipModel)
+        class_by_id = {item.stable_class_id: item for item in classes}
+        property_by_id = {item.stable_property_id: item for item in properties}
+        relationship_by_id = {item.stable_relationship_id: item for item in relationships}
+        records: list[KnowledgeStudioTBoxElementRecord] = []
+        for element in elements:
+            class_detail = class_by_id.get(element.stable_element_id)
+            property_detail = property_by_id.get(element.stable_element_id)
+            relationship_detail = relationship_by_id.get(element.stable_element_id)
+            detail_count = sum(
+                detail is not None
+                for detail in (class_detail, property_detail, relationship_detail)
+            )
+            expected_detail_present = (
+                (element.kind == "CLASS" and class_detail is not None)
+                or (element.kind == "PROPERTY" and property_detail is not None)
+                or (element.kind == "RELATION" and relationship_detail is not None)
+            )
+            if detail_count != 1 or not expected_detail_present:
+                raise ConflictError("The normalized T-Box element shape is incomplete.")
+            records.append(
+                _tbox_element_record(
+                    element,
+                    class_detail=class_detail,
+                    property_detail=property_detail,
+                    relationship_detail=relationship_detail,
+                )
+            )
+        return tuple(records)
 
     async def _load_tbox_models(
         self,
         *,
         workspace_id: UUID,
         draft_id: UUID,
-    ) -> tuple[tuple[TBoxDraftBlockModel, ...], tuple[TBoxDraftElementModel, ...]]:
+    ) -> tuple[
+        tuple[TBoxDraftBlockModel, ...],
+        tuple[KnowledgeStudioTBoxElementRecord, ...],
+    ]:
         blocks = tuple(
             (
                 await self._session.scalars(
@@ -3575,20 +3806,9 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 )
             ).all()
         )
-        elements = tuple(
-            (
-                await self._session.scalars(
-                    select(TBoxDraftElementModel)
-                    .where(
-                        TBoxDraftElementModel.workspace_id == workspace_id,
-                        TBoxDraftElementModel.draft_id == draft_id,
-                    )
-                    .order_by(
-                        TBoxDraftElementModel.ordinal,
-                        TBoxDraftElementModel.stable_element_id,
-                    )
-                )
-            ).all()
+        elements = await self._load_tbox_element_records(
+            workspace_id=workspace_id,
+            draft_id=draft_id,
         )
         return blocks, elements
 
@@ -3600,13 +3820,20 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         elements_by_block: tuple[tuple[UUID, tuple[TBoxElementInput, ...]], ...],
         now: datetime,
     ) -> None:
-        await self._session.execute(
-            delete(TBoxDraftElementModel).where(
-                TBoxDraftElementModel.workspace_id == workspace_id,
-                TBoxDraftElementModel.draft_id == draft_id,
+        for model in (
+            TBoxRelationshipModel,
+            TBoxPropertyModel,
+            TBoxClassModel,
+            TBoxDraftElementModel,
+        ):
+            await self._session.execute(
+                delete(model).where(
+                    model.workspace_id == workspace_id,
+                    model.draft_id == draft_id,
+                )
             )
-        )
         ordinal = 0
+        detail_rows: list[TBoxClassModel | TBoxPropertyModel | TBoxRelationshipModel] = []
         for block_id, elements in elements_by_block:
             for element in elements:
                 self._session.add(
@@ -3619,15 +3846,8 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                         kind=element.kind.value,
                         canonical_name=element.canonical_name,
                         display_name=element.display_name,
-                        parent_stable_element_id=element.parent_stable_element_id,
-                        source_stable_element_id=element.source_stable_element_id,
-                        target_stable_element_id=element.target_stable_element_id,
-                        data_type=element.data_type,
-                        nullable=element.nullable,
                         definition=element.definition,
                         aliases=list(element.aliases),
-                        unit=element.unit,
-                        vector_index_enabled=element.vector_index_enabled,
                         layout_x=element.layout_x,
                         layout_y=element.layout_y,
                         ordinal=ordinal,
@@ -3636,7 +3856,65 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                         version=1,
                     )
                 )
+                if element.kind.value == "CLASS":
+                    detail_rows.append(
+                        TBoxClassModel(
+                            id=uuid7(),
+                            workspace_id=workspace_id,
+                            draft_id=draft_id,
+                            stable_class_id=element.stable_element_id,
+                            parent_stable_class_id=element.parent_stable_element_id,
+                            metadata_reference_id=element.metadata_reference_id,
+                            metadata_reference_urn=element.metadata_reference_urn,
+                            created_at=now,
+                            updated_at=now,
+                            version=1,
+                        )
+                    )
+                elif element.kind.value == "PROPERTY":
+                    assert element.parent_stable_element_id is not None
+                    assert element.data_type is not None
+                    assert element.nullable is not None
+                    detail_rows.append(
+                        TBoxPropertyModel(
+                            id=uuid7(),
+                            workspace_id=workspace_id,
+                            draft_id=draft_id,
+                            stable_property_id=element.stable_element_id,
+                            owner_stable_class_id=element.parent_stable_element_id,
+                            data_type=element.data_type,
+                            nullable=element.nullable,
+                            unit=element.unit,
+                            vector_index_enabled=element.vector_index_enabled,
+                            metadata_reference_id=element.metadata_reference_id,
+                            metadata_reference_urn=element.metadata_reference_urn,
+                            created_at=now,
+                            updated_at=now,
+                            version=1,
+                        )
+                    )
+                else:
+                    assert element.source_stable_element_id is not None
+                    assert element.target_stable_element_id is not None
+                    detail_rows.append(
+                        TBoxRelationshipModel(
+                            id=uuid7(),
+                            workspace_id=workspace_id,
+                            draft_id=draft_id,
+                            stable_relationship_id=element.stable_element_id,
+                            source_stable_class_id=element.source_stable_element_id,
+                            target_stable_class_id=element.target_stable_element_id,
+                            relationship_kind="ASSOCIATION",
+                            metadata_reference_id=element.metadata_reference_id,
+                            metadata_reference_urn=element.metadata_reference_urn,
+                            created_at=now,
+                            updated_at=now,
+                            version=1,
+                        )
+                    )
                 ordinal += 1
+        await self._session.flush()
+        self._session.add_all(detail_rows)
 
     async def _tbox_mutation_replay(
         self,

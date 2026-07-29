@@ -1,8 +1,11 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
+  useRef,
   useState,
-  type FormEvent,
+  type DragEvent,
+  type ReactNode,
 } from 'react'
 import {
   Background,
@@ -11,6 +14,7 @@ import {
   Handle,
   MarkerType,
   MiniMap,
+  NodeToolbar,
   Position,
   ReactFlow,
   addEdge,
@@ -27,8 +31,10 @@ import {
   ChevronUp,
   Database,
   FileUp,
+  FolderTree,
   GitBranch,
   Layers3,
+  LockKeyhole,
   Plus,
   Save,
   Trash2,
@@ -46,6 +52,7 @@ import {
   applyKnowledgeStudioTBoxProposal,
   createKnowledgeStudioTBoxBlock,
   createKnowledgeStudioTBoxProposal,
+  deleteKnowledgeStudioTBoxBlock,
   getKnowledgeStudioTBox,
   newKnowledgeStudioIdempotencyKey,
   updateKnowledgeStudioTBoxBlock,
@@ -58,8 +65,27 @@ import {
   type KnowledgeStudioTBoxProposal,
 } from '../knowledgeStudioApi'
 
-type SchemaNode = Node<{ label: string; ordinal: number; editable: boolean }, 'schemaClass'>
-type SchemaEdge = Edge<{ relation: string }>
+interface SchemaNodeData extends Record<string, unknown> {
+  label: string
+  ordinal: number
+  editable: boolean
+  locked: boolean
+  selected: boolean
+  blockLabel: string
+  properties: Array<{ id: string; label: string }>
+  onRename: (value: string) => void
+  onDelete: () => void
+  onAddProperty: (value: string) => void
+}
+
+type SchemaNode = Node<SchemaNodeData, 'schemaClass'>
+interface LayerGroupData extends Record<string, unknown> {
+  label: string
+  later: boolean
+}
+type LayerGroupNode = Node<LayerGroupData, 'layerGroup'>
+type CanvasNode = SchemaNode | LayerGroupNode
+type SchemaEdge = Edge<{ relation: string; hierarchy?: boolean; editable: boolean }>
 
 interface GraphBuilderProps {
   client: ApiClient
@@ -104,21 +130,355 @@ const blockOptions: Array<{
 ]
 
 function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
+  const [propertyName, setPropertyName] = useState('')
+  const [displayName, setDisplayName] = useState(data.label)
+
+  useEffect(() => setDisplayName(data.label), [data.label])
+
   return (
-    <div className={`relative w-[190px] rounded-md border bg-[#10253d] px-4 py-3 text-xs font-extrabold text-slate-50 shadow-xl ${
-      selected ? 'border-amber-300 ring-2 ring-amber-300/40' : 'border-sky-400'
+    <div className={`relative w-[156px] rounded-md border bg-[#10253d] px-3 py-2 text-[11px] font-extrabold text-slate-50 shadow-lg ${
+      selected || data.selected ? 'border-amber-300 ring-2 ring-amber-300/40' : 'border-sky-400'
     }`}>
       <span className="absolute -left-2 -top-2 rounded-full border border-sky-200 bg-sky-500 px-2 py-0.5 text-[9px] font-black text-white shadow">
         No. {data.ordinal}
       </span>
+      {data.locked && (
+        <span
+          className="absolute -right-2 -top-2 rounded-full border border-amber-200 bg-amber-500 p-1 text-white"
+          title="후속 블록에서 참조 중"
+        >
+          <LockKeyhole size={9} aria-hidden="true" />
+        </span>
+      )}
       <span className="block truncate pt-1">{data.label}</span>
+      <span className="mt-0.5 block truncate text-[8px] font-semibold text-sky-200">
+        {data.blockLabel}
+      </span>
+      {(selected || data.selected) && (
+        <div className="mt-2 border-t border-slate-600 pt-1.5">
+          {data.properties.length === 0 ? (
+            <span className="block text-[8px] font-medium text-slate-400">Properties 없음</span>
+          ) : data.properties.slice(0, 4).map((property) => (
+            <span key={property.id} className="block truncate text-[8px] font-medium text-cyan-100">
+              · {property.label}
+            </span>
+          ))}
+          {data.properties.length > 4 && (
+            <span className="block text-[8px] text-slate-400">
+              +{data.properties.length - 4}
+            </span>
+          )}
+        </div>
+      )}
       <Handle type="target" position={Position.Left} className="border-sky-200! bg-sky-500!" />
       <Handle type="source" position={Position.Right} className="border-sky-200! bg-sky-500!" />
+      <NodeToolbar
+        isVisible={selected || data.selected}
+        position={Position.Right}
+        offset={12}
+        className="w-[230px] rounded-enterprise border border-slate-300 bg-white p-3 text-slate-800 shadow-2xl"
+      >
+        <div
+          className="grid gap-2"
+          role="dialog"
+          aria-label={`${data.label} Class 빠른 편집`}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-center justify-between gap-2">
+            <strong className="truncate text-xs text-navy-900">Class 빠른 편집</strong>
+            {data.locked && (
+              <span className="flex items-center gap-1 rounded bg-amber-100 px-2 py-1 text-[9px] font-black text-amber-800">
+                <LockKeyhole size={10} aria-hidden="true" />
+                LOCKED
+              </span>
+            )}
+          </div>
+          <label className="text-[10px] font-bold text-slate-600">
+            표시 이름
+            <input
+              className="input mt-1 py-1 text-xs"
+              value={displayName}
+              disabled={!data.editable}
+              onChange={(event) => setDisplayName(event.target.value)}
+              onBlur={() => {
+                const value = displayName.trim()
+                if (value && value !== data.label) data.onRename(value)
+              }}
+            />
+          </label>
+          <div className="rounded border border-slate-200 bg-slate-50 p-2">
+            <strong className="text-[10px] text-slate-700">Properties</strong>
+            {data.properties.length === 0 ? (
+              <p className="mb-2 mt-1 text-[9px] text-slate-500">등록된 Property가 없습니다.</p>
+            ) : (
+              <ul className="mb-2 mt-1 max-h-24 overflow-auto pl-4 text-[9px] text-slate-600">
+                {data.properties.map((property) => (
+                  <li key={property.id}>{property.label}</li>
+                ))}
+              </ul>
+            )}
+            <div className="flex gap-1">
+              <input
+                aria-label={`${data.label} 새 Property 이름`}
+                className="input min-w-0 flex-1 py-1 text-[10px]"
+                value={propertyName}
+                placeholder="description"
+                disabled={!data.editable}
+                onChange={(event) => setPropertyName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault()
+                    const value = canonicalName(propertyName)
+                    if (value) {
+                      data.onAddProperty(value)
+                      setPropertyName('')
+                    }
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="button px-2 py-1"
+                aria-label={`${data.label} Property 추가`}
+                disabled={!data.editable || !canonicalName(propertyName)}
+                onClick={() => {
+                  const value = canonicalName(propertyName)
+                  if (!value) return
+                  data.onAddProperty(value)
+                  setPropertyName('')
+                }}
+              >
+                <Plus size={11} aria-hidden="true" />
+              </button>
+            </div>
+          </div>
+          <button
+            type="button"
+            className="button button-danger justify-center py-1.5 text-[10px]"
+            disabled={!data.editable}
+            onClick={data.onDelete}
+          >
+            <Trash2 size={11} aria-hidden="true" />
+            Class 삭제
+          </button>
+        </div>
+      </NodeToolbar>
     </div>
   )
 }
 
-const schemaNodeTypes = { schemaClass: SchemaClassNode }
+function LayerGroup({ data }: NodeProps<LayerGroupNode>) {
+  return (
+    <div className={`h-full w-full rounded-xl border-2 border-dashed ${
+      data.later
+        ? 'border-violet-400/60 bg-violet-950/15'
+        : 'border-slate-400/50 bg-slate-800/20'
+    }`}>
+      <span className="absolute left-3 top-2 rounded bg-slate-950/80 px-2 py-1 text-[9px] font-black text-slate-200">
+        {data.label}
+      </span>
+    </div>
+  )
+}
+
+const schemaNodeTypes = {
+  schemaClass: SchemaClassNode,
+  layerGroup: LayerGroup,
+}
+
+interface ClassHierarchyTreeProps {
+  classes: KnowledgeStudioTBoxElement[]
+  selectedId: string
+  activeBlockId: string
+  allowedParentIds: ReadonlySet<string>
+  disabled: boolean
+  onSelect: (id: string) => void
+  onAdd: (name: string, parentId?: string) => void
+  onReparent: (id: string, parentId?: string) => void
+}
+
+function ClassHierarchyTree({
+  classes,
+  selectedId,
+  activeBlockId,
+  allowedParentIds,
+  disabled,
+  onSelect,
+  onAdd,
+  onReparent,
+}: ClassHierarchyTreeProps) {
+  const [newClassName, setNewClassName] = useState('')
+  const [parentForNewClass, setParentForNewClass] = useState<string>()
+  const draggedId = useRef('')
+  const newClassInput = useRef<HTMLInputElement>(null)
+  const classById = useMemo(
+    () => new Map(classes.map((item) => [item.stable_element_id, item])),
+    [classes],
+  )
+  const childrenByParent = useMemo(() => {
+    const result = new Map<string, KnowledgeStudioTBoxElement[]>()
+    for (const item of classes) {
+      const parent = item.parent_stable_element_id
+      const key = parent && classById.has(parent) ? parent : ''
+      result.set(key, [...(result.get(key) ?? []), item])
+    }
+    for (const children of result.values()) {
+      children.sort((left, right) => left.ordinal - right.ordinal)
+    }
+    return result
+  }, [classById, classes])
+
+  const createsCycle = (classId: string, parentId: string): boolean => {
+    let cursor: string | undefined = parentId
+    const visited = new Set<string>()
+    while (cursor) {
+      if (cursor === classId || visited.has(cursor)) return true
+      visited.add(cursor)
+      cursor = classById.get(cursor)?.parent_stable_element_id
+    }
+    return false
+  }
+
+  const drop = (event: DragEvent<HTMLElement>, parentId?: string) => {
+    event.preventDefault()
+    const classId = draggedId.current
+    draggedId.current = ''
+    if (
+      !classId
+      || disabled
+      || (parentId && (!allowedParentIds.has(parentId) || createsCycle(classId, parentId)))
+    ) return
+    onReparent(classId, parentId)
+  }
+
+  const renderBranch = (parentId = '', depth = 0): ReactNode => (
+    (childrenByParent.get(parentId) ?? []).map((item) => {
+      const editable = item.block_id === activeBlockId && !item.locked_by_later_block
+      const children = childrenByParent.get(item.stable_element_id) ?? []
+      return (
+        <li key={item.stable_element_id}>
+          <div
+            className={`group flex items-center gap-1 rounded px-1 py-1 ${
+              selectedId === item.stable_element_id
+                ? 'bg-blue-100 text-blue-950'
+                : 'text-slate-700 hover:bg-slate-100'
+            }`}
+            style={{ marginLeft: depth * 12 }}
+            draggable={editable && !disabled}
+            onDragStart={() => {
+              draggedId.current = item.stable_element_id
+            }}
+            onDragOver={(event) => {
+              if (allowedParentIds.has(item.stable_element_id)) event.preventDefault()
+            }}
+            onDrop={(event) => drop(event, item.stable_element_id)}
+          >
+            <button
+              type="button"
+              className="min-w-0 flex-1 truncate text-left text-[11px] font-bold"
+              onClick={() => onSelect(item.stable_element_id)}
+            >
+              {children.length > 0 ? '▾ ' : '· '}
+              {item.display_name}
+            </button>
+            {item.locked_by_later_block && (
+              <LockKeyhole
+                size={10}
+                className="shrink-0 text-amber-600"
+                aria-label={`${item.display_name} 후속 블록 참조 잠금`}
+              />
+            )}
+            {allowedParentIds.has(item.stable_element_id) && (
+              <button
+                type="button"
+                className="rounded p-1 opacity-0 hover:bg-blue-100 group-hover:opacity-100 focus:opacity-100"
+                aria-label={`${item.display_name} 하위 Class 추가`}
+                disabled={disabled}
+                onClick={() => {
+                  setParentForNewClass(item.stable_element_id)
+                  newClassInput.current?.focus()
+                }}
+              >
+                <Plus size={10} aria-hidden="true" />
+              </button>
+            )}
+          </div>
+          {children.length > 0 && <ul className="m-0 list-none p-0">
+            {renderBranch(item.stable_element_id, depth + 1)}
+          </ul>}
+        </li>
+      )
+    })
+  )
+
+  return (
+    <aside className="flex min-h-[500px] flex-col rounded-enterprise border border-slate-300 bg-white">
+      <header className="flex items-center gap-2 border-b border-slate-200 px-3 py-2">
+        <FolderTree size={14} className="text-enterprise-blue" aria-hidden="true" />
+        <strong className="text-xs text-navy-900">Class Hierarchy</strong>
+      </header>
+      <form
+        className="flex gap-1 border-b border-slate-200 p-2"
+        onSubmit={(event) => {
+          event.preventDefault()
+          const name = canonicalName(newClassName)
+          if (!name) return
+          onAdd(name, parentForNewClass)
+          setNewClassName('')
+          setParentForNewClass(undefined)
+        }}
+      >
+        <input
+          ref={newClassInput}
+          aria-label={parentForNewClass ? '하위 Class 이름' : '최상위 Class 이름'}
+          className="input min-w-0 flex-1 py-1 text-[11px]"
+          value={newClassName}
+          placeholder={parentForNewClass
+            ? `${classById.get(parentForNewClass)?.display_name ?? ''} 하위 Class`
+            : '최상위 Class'}
+          disabled={disabled}
+          onChange={(event) => setNewClassName(event.target.value)}
+        />
+        {parentForNewClass && (
+          <button
+            type="button"
+            className="rounded px-1 text-[10px] text-slate-500 hover:bg-slate-100"
+            aria-label="하위 Class 추가 취소"
+            onClick={() => setParentForNewClass(undefined)}
+          >
+            ×
+          </button>
+        )}
+        <button
+          type="submit"
+          className="button px-2 py-1"
+          aria-label={parentForNewClass ? '하위 Class 추가' : '최상위 Class 추가'}
+          disabled={disabled || !canonicalName(newClassName)}
+        >
+          <Plus size={12} aria-hidden="true" />
+        </button>
+      </form>
+      <div
+        className="min-h-0 flex-1 overflow-auto p-2"
+        onDragOver={(event) => event.preventDefault()}
+        onDrop={(event) => drop(event)}
+      >
+        {classes.length === 0 ? (
+          <p className="p-3 text-center text-[11px] leading-5 text-slate-500">
+            (+)로 첫 Class를 추가하세요.
+          </p>
+        ) : (
+          <ul className="m-0 list-none p-0" aria-label="T-Box Class 계층">
+            {renderBranch()}
+          </ul>
+        )}
+      </div>
+      <p className="m-0 border-t border-slate-200 p-2 text-[9px] leading-4 text-slate-500">
+        Class를 드래그해 다른 Class에 놓으면 subClassOf 계층이 형성됩니다.
+      </p>
+    </aside>
+  )
+}
 
 function asSafeGraph(elements: KnowledgeStudioTBoxElement[]): {
   nodes: SafeCypherNode[]
@@ -131,7 +491,19 @@ function asSafeGraph(elements: KnowledgeStudioTBoxElement[]): {
     alias: `n${index}`,
   }))
   const aliasById = new Map(nodes.map((item) => [item.id, item.alias ?? '']))
-  const edges = elements
+  const hierarchyEdges = classes.flatMap((item): SafeCypherEdge[] => {
+    const parent = item.parent_stable_element_id
+    if (!parent || !aliasById.has(parent)) return []
+    return [{
+      id: `hierarchy:${item.stable_element_id}`,
+      source: item.stable_element_id,
+      target: parent,
+      relation: 'SUBCLASS_OF',
+      sourceAlias: aliasById.get(item.stable_element_id),
+      targetAlias: aliasById.get(parent),
+    }]
+  })
+  const relationEdges = elements
     .filter((item) => item.kind === 'RELATION')
     .flatMap((item) => {
       const source = item.source_stable_element_id
@@ -146,7 +518,7 @@ function asSafeGraph(elements: KnowledgeStudioTBoxElement[]): {
         targetAlias: aliasById.get(target),
       }]
     })
-  return { nodes, edges }
+  return { nodes, edges: [...hierarchyEdges, ...relationEdges] }
 }
 
 function effectiveElements(record: KnowledgeStudioTBox): KnowledgeStudioTBoxElement[] {
@@ -157,33 +529,91 @@ function effectiveElements(record: KnowledgeStudioTBox): KnowledgeStudioTBoxElem
       block_id: item.block_id ?? block.id,
       aliases: item.aliases ?? [],
       vector_index_enabled: item.vector_index_enabled ?? false,
+      locked_by_later_block: item.locked_by_later_block ?? false,
     })))
 }
 
 function flowGraph(
   elements: KnowledgeStudioTBoxElement[],
   editableBlockId: string,
+  blocks: KnowledgeStudioTBoxBlock[],
+  selectedElementId: string,
 ): {
-  nodes: SchemaNode[]
+  nodes: CanvasNode[]
   edges: SchemaEdge[]
 } {
+  const blockById = new Map(blocks.map((block) => [block.id, block]))
+  const activeOrdinal = blockById.get(editableBlockId)?.ordinal ?? 0
   const classes = elements.filter((item) => item.kind === 'CLASS')
-  const nodes = classes.map((item, index): SchemaNode => ({
+  const classPositions = new Map(classes.map((item, index) => [
+    item.stable_element_id,
+    {
+      x: item.layout_x ?? 70 + (index % 3) * 220,
+      y: item.layout_y ?? 90 + Math.floor(index / 3) * 150,
+    },
+  ]))
+  const groupNodes: LayerGroupNode[] = blocks
+    .filter((block) => block.id !== editableBlockId)
+    .flatMap((block): LayerGroupNode[] => {
+      const blockClasses = classes.filter((item) => item.block_id === block.id)
+      if (blockClasses.length === 0) return []
+      const positions = blockClasses.map((item) => classPositions.get(item.stable_element_id)!)
+      const minX = Math.min(...positions.map((position) => position.x)) - 28
+      const minY = Math.min(...positions.map((position) => position.y)) - 38
+      const maxX = Math.max(...positions.map((position) => position.x)) + 184
+      const maxY = Math.max(...positions.map((position) => position.y)) + 112
+      return [{
+        id: `group:${block.id}`,
+        type: 'layerGroup',
+        position: { x: minX, y: minY },
+        data: {
+          label: `${block.ordinal + 1}. ${block.title} · 읽기 전용`,
+          later: block.ordinal > activeOrdinal,
+        },
+        style: { width: maxX - minX, height: maxY - minY },
+        draggable: false,
+        selectable: false,
+        connectable: false,
+        focusable: false,
+        zIndex: -1,
+        ariaLabel: `${block.title} 읽기 전용 그룹`,
+      }]
+    })
+  const classNodes = classes.map((item): SchemaNode => {
+    const editable = (
+      (item.block_id === editableBlockId || item.block_id === undefined)
+      && !item.locked_by_later_block
+    )
+    const block = item.block_id ? blockById.get(item.block_id) : undefined
+    return {
     id: item.stable_element_id,
     type: 'schemaClass',
-    position: {
-      x: item.layout_x ?? 70 + (index % 3) * 245,
-      y: item.layout_y ?? 90 + Math.floor(index / 3) * 165,
-    },
+    position: classPositions.get(item.stable_element_id)!,
     data: {
       label: item.display_name,
       ordinal: item.ordinal + 1,
-      editable: item.block_id === editableBlockId || item.block_id === undefined,
+      editable,
+      locked: item.locked_by_later_block,
+      selected: item.stable_element_id === selectedElementId,
+      blockLabel: block?.title ?? '현재 블록',
+      properties: elements
+        .filter(
+          (property) => property.kind === 'PROPERTY'
+            && property.parent_stable_element_id === item.stable_element_id,
+        )
+        .map((property) => ({
+          id: property.stable_element_id,
+          label: property.display_name,
+        })),
+      onRename: () => undefined,
+      onDelete: () => undefined,
+      onAddProperty: () => undefined,
     },
-    draggable: item.block_id === editableBlockId || item.block_id === undefined,
+    draggable: editable,
+    connectable: true,
     ariaLabel: `No. ${item.ordinal + 1}, ${item.display_name} 클래스`,
-  }))
-  const edges = elements
+  }})
+  const relationshipEdges = elements
     .filter((item) => item.kind === 'RELATION')
     .flatMap((item): SchemaEdge[] => {
       if (!item.source_stable_element_id || !item.target_stable_element_id) return []
@@ -192,18 +622,45 @@ function flowGraph(
         source: item.source_stable_element_id,
         target: item.target_stable_element_id,
         label: item.display_name,
-        data: { relation: item.canonical_name },
+        data: {
+          relation: item.canonical_name,
+          editable: item.block_id === editableBlockId,
+        },
         markerEnd: { type: MarkerType.ArrowClosed, color: '#7dd3fc' },
         style: { stroke: '#7dd3fc', strokeWidth: 1.6 },
         labelStyle: { fill: '#e2e8f0', fontWeight: 700 },
       }]
     })
-  return { nodes, edges }
+  const hierarchyEdges = classes.flatMap((item): SchemaEdge[] => {
+    const parent = item.parent_stable_element_id
+    if (!parent || !classPositions.has(parent)) return []
+    return [{
+      id: `hierarchy:${item.stable_element_id}`,
+      source: item.stable_element_id,
+      target: parent,
+      label: 'subClassOf',
+      data: {
+        relation: 'SUBCLASS_OF',
+        hierarchy: true,
+        editable: item.block_id === editableBlockId && !item.locked_by_later_block,
+      },
+      markerEnd: { type: MarkerType.ArrowClosed, color: '#34d399' },
+      style: { stroke: '#34d399', strokeWidth: 1.5, strokeDasharray: '6 4' },
+      labelStyle: { fill: '#a7f3d0', fontWeight: 800 },
+    }]
+  })
+  return {
+    nodes: [...groupNodes, ...classNodes],
+    edges: [...hierarchyEdges, ...relationshipEdges],
+  }
 }
 
 function elementPayload(
   item: KnowledgeStudioTBoxElement,
-): Omit<KnowledgeStudioTBoxElement, 'ordinal' | 'version' | 'block_id'> {
+): Omit<
+  KnowledgeStudioTBoxElement,
+  'ordinal' | 'version' | 'block_id' | 'locked_by_later_block'
+> {
   return {
     stable_element_id: item.stable_element_id,
     kind: item.kind,
@@ -218,6 +675,8 @@ function elementPayload(
     aliases: item.aliases,
     unit: item.unit,
     vector_index_enabled: item.vector_index_enabled,
+    metadata_reference_id: item.metadata_reference_id,
+    metadata_reference_urn: item.metadata_reference_urn,
     layout_x: item.layout_x,
     layout_y: item.layout_y,
   }
@@ -227,6 +686,7 @@ function createdClass(
   label: string,
   position: { x: number; y: number },
   ordinal: number,
+  parentId?: string,
 ): KnowledgeStudioTBoxElement {
   const id = `class:${crypto.randomUUID()}`
   return {
@@ -234,10 +694,12 @@ function createdClass(
     kind: 'CLASS',
     canonical_name: label,
     display_name: label,
+    parent_stable_element_id: parentId,
     ordinal,
     version: 1,
     aliases: [],
     vector_index_enabled: false,
+    locked_by_later_block: false,
     layout_x: position.x,
     layout_y: position.y,
   }
@@ -247,21 +709,6 @@ function canonicalName(value: string): string {
   const cleaned = value.trim().replace(/[^A-Za-z0-9_]/g, '_')
   if (!cleaned) return ''
   return /^[A-Za-z]/.test(cleaned) ? cleaned : `Class_${cleaned}`
-}
-
-function aliasesFromInput(value: string): string[] {
-  const seen = new Set<string>()
-  return value
-    .split(',')
-    .map((item) => item.trim())
-    .filter((item) => {
-      if (!item) return false
-      const identity = item.toLocaleLowerCase()
-      if (seen.has(identity)) return false
-      seen.add(identity)
-      return true
-    })
-    .slice(0, 50)
 }
 
 export function GraphBuilder({
@@ -278,7 +725,7 @@ export function GraphBuilder({
   const [selectedBlockId, setSelectedBlockId] = useState('')
   const [elements, setElements] = useState<KnowledgeStudioTBoxElement[]>([])
   const [baseline, setBaseline] = useState<KnowledgeStudioTBoxElement[]>([])
-  const [nodes, setNodes, onNodesChange] = useNodesState<SchemaNode>([])
+  const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([])
   const [edges, setEdges, onEdgesChange] = useEdgesState<SchemaEdge>([])
   const [editorText, setEditorText] = useState('')
   const [editorError, setEditorError] = useState<{
@@ -287,29 +734,18 @@ export function GraphBuilder({
     column: number
   }>()
   const [selectedElementId, setSelectedElementId] = useState('')
-  const [newClassName, setNewClassName] = useState('')
-  const [newPropertyName, setNewPropertyName] = useState('')
   const [status, setStatus] = useState('T-Box 정본을 불러오는 중입니다.')
   const [working, setWorking] = useState(false)
   const [showBlockMenu, setShowBlockMenu] = useState(false)
   const [assistantPrompt, setAssistantPrompt] = useState('')
   const [proposal, setProposal] = useState<KnowledgeStudioTBoxProposal>()
   const [conflictOpen, setConflictOpen] = useState(false)
+  const [blockPendingDelete, setBlockPendingDelete] = useState<KnowledgeStudioTBoxBlock>()
   const [conflictActions, setConflictActions] = useState<Record<string, 'KEEP_ORIGINAL' | 'ACCEPT_PROPOSAL'>>({})
   const locked = lifecycleState !== 'DRAFT'
 
   const selectedBlock = record?.blocks.find((item) => item.id === selectedBlockId)
-  const selectedElement = elements.find((item) => item.stable_element_id === selectedElementId)
-  const selectedElementEditable = Boolean(
-    selectedElement
-    && (selectedElement.block_id === selectedBlockId || selectedElement.block_id === undefined),
-  )
-  const properties = selectedElement?.kind === 'CLASS'
-    ? elements.filter(
-      (item) => item.kind === 'PROPERTY'
-        && item.parent_stable_element_id === selectedElement.stable_element_id,
-    )
-    : []
+  const lastBlockId = record?.blocks.at(-1)?.id
 
   const applyBlock = useCallback((
     block: KnowledgeStudioTBoxBlock,
@@ -322,7 +758,7 @@ export function GraphBuilder({
       aliases: item.aliases ?? [],
       vector_index_enabled: item.vector_index_enabled ?? false,
     }))
-    const graph = flowGraph(nextElements, block.id)
+    const graph = flowGraph(nextElements, block.id, source.blocks, '')
     const safe = asSafeGraph(nextElements)
     setSelectedBlockId(block.id)
     setElements(nextElements)
@@ -367,14 +803,14 @@ export function GraphBuilder({
   }, [applyBlock, client, draftId])
 
   const syncCanvasAndEditor = useCallback((next: KnowledgeStudioTBoxElement[]) => {
-    const graph = flowGraph(next, selectedBlockId)
+    const graph = flowGraph(next, selectedBlockId, record?.blocks ?? [], selectedElementId)
     const safe = asSafeGraph(next)
     setElements(next)
     setNodes(graph.nodes)
     setEdges(graph.edges)
     setEditorText(formatSafeCypherDraft(safe.nodes, safe.edges))
     setEditorError(undefined)
-  }, [selectedBlockId, setEdges, setNodes])
+  }, [record?.blocks, selectedBlockId, selectedElementId, setEdges, setNodes])
 
   const changeEditor = (value: string) => {
     setEditorText(value)
@@ -393,9 +829,42 @@ export function GraphBuilder({
     )
     const parsedNodes = new Map(parsed.nodes.map((item) => [item.id, item]))
     const parsedEdges = new Map(parsed.edges.map((item) => [item.id, item]))
+    const hierarchyParentByClass = new Map<string, string>()
+    for (const edge of parsed.edges) {
+      if (edge.relation !== 'SUBCLASS_OF') continue
+      if (edge.source === edge.target || hierarchyParentByClass.has(edge.source)) {
+        setEditorError({
+          message: 'Class hierarchy는 Class당 하나의 부모만 가지며 순환할 수 없습니다.',
+          line: 1,
+          column: 1,
+        })
+        return
+      }
+      hierarchyParentByClass.set(edge.source, edge.target)
+    }
+    for (const classId of hierarchyParentByClass.keys()) {
+      const visited = new Set<string>()
+      let cursor: string | undefined = classId
+      while (cursor) {
+        if (visited.has(cursor)) {
+          setEditorError({
+            message: 'Class hierarchy에는 순환 subClassOf 관계를 만들 수 없습니다.',
+            line: 1,
+            column: 1,
+          })
+          return
+        }
+        visited.add(cursor)
+        cursor = hierarchyParentByClass.get(cursor)
+      }
+    }
     const inheritedChanged = inherited.some((item) => {
       if (item.kind === 'CLASS') {
-        return parsedNodes.get(item.stable_element_id)?.label !== item.canonical_name
+        return (
+          parsedNodes.get(item.stable_element_id)?.label !== item.canonical_name
+          || hierarchyParentByClass.get(item.stable_element_id)
+            !== item.parent_stable_element_id
+        )
       }
       if (item.kind === 'RELATION') {
         const edge = parsedEdges.get(item.stable_element_id)
@@ -426,12 +895,16 @@ export function GraphBuilder({
         kind: 'CLASS',
         canonical_name: item.label,
         display_name: prior?.display_name ?? item.label,
+        parent_stable_element_id: hierarchyParentByClass.get(item.id),
         definition: prior?.definition,
         aliases: prior?.aliases ?? [],
         vector_index_enabled: false,
+        metadata_reference_id: prior?.metadata_reference_id,
+        metadata_reference_urn: prior?.metadata_reference_urn,
+        locked_by_later_block: prior?.locked_by_later_block ?? false,
         block_id: prior?.block_id,
-        layout_x: node?.position.x ?? 70 + (index % 3) * 245,
-        layout_y: node?.position.y ?? 90 + Math.floor(index / 3) * 165,
+        layout_x: node?.position.x ?? 70 + (index % 3) * 220,
+        layout_y: node?.position.y ?? 90 + Math.floor(index / 3) * 150,
         ordinal: prior?.ordinal ?? nextOrdinal++,
         version: prior?.version ?? 1,
       }
@@ -440,7 +913,9 @@ export function GraphBuilder({
       (item) => item.kind === 'PROPERTY'
         && Boolean(item.parent_stable_element_id && classIds.has(item.parent_stable_element_id)),
     )
-    const nextRelations = parsed.edges.map((item): KnowledgeStudioTBoxElement => {
+    const nextRelations = parsed.edges
+      .filter((item) => item.relation !== 'SUBCLASS_OF')
+      .map((item): KnowledgeStudioTBoxElement => {
       const prior = priorById.get(item.id)
       return {
         stable_element_id: item.id,
@@ -451,34 +926,57 @@ export function GraphBuilder({
         target_stable_element_id: item.target,
         aliases: prior?.aliases ?? [],
         vector_index_enabled: false,
+        metadata_reference_id: prior?.metadata_reference_id,
+        metadata_reference_urn: prior?.metadata_reference_urn,
+        locked_by_later_block: prior?.locked_by_later_block ?? false,
         block_id: prior?.block_id,
         ordinal: prior?.ordinal ?? nextOrdinal++,
         version: prior?.version ?? 1,
       }
     })
     const next = [...nextClasses, ...nextProperties, ...nextRelations]
-    const graph = flowGraph(next, selectedBlockId)
+    const graph = flowGraph(next, selectedBlockId, record?.blocks ?? [], selectedElementId)
     setElements(next)
     setNodes(graph.nodes)
     setEdges(graph.edges)
     setEditorError(undefined)
   }
 
-  const addClass = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    const name = canonicalName(newClassName)
+  const addClass = (rawName: string, parentId?: string) => {
+    const name = canonicalName(rawName)
     if (!name || locked || working) return
+    if (elements.some(
+      (item) => item.kind === 'CLASS' && item.canonical_name.toLowerCase() === name.toLowerCase(),
+    )) {
+      setStatus(`Class '${name}'은(는) 이미 존재합니다.`)
+      return
+    }
+    const classCount = elements.filter((item) => item.kind === 'CLASS').length
     const item = createdClass(name, {
-      x: 80 + (nodes.length % 3) * 245,
-      y: 100 + Math.floor(nodes.length / 3) * 165,
-    }, Math.max(-1, ...elements.map((element) => element.ordinal)) + 1)
+      x: 80 + (classCount % 3) * 220,
+      y: 100 + Math.floor(classCount / 3) * 150,
+    }, Math.max(-1, ...elements.map((element) => element.ordinal)) + 1, parentId)
     syncCanvasAndEditor([...elements, item])
     setSelectedElementId(item.stable_element_id)
-    setNewClassName('')
   }
 
   const connect = useCallback((connection: Connection) => {
-    if (locked || !connection.source || !connection.target) return
+    if (locked || !connection.source || !connection.target || !selectedBlock) return
+    const blockOrdinalById = new Map(
+      (record?.blocks ?? []).map((block) => [block.id, block.ordinal]),
+    )
+    const endpointIsAvailable = [connection.source, connection.target].every((id) => {
+      const endpoint = elements.find((item) => item.stable_element_id === id)
+      if (!endpoint || endpoint.kind !== 'CLASS') return false
+      const ordinal = endpoint.block_id
+        ? blockOrdinalById.get(endpoint.block_id)
+        : selectedBlock.ordinal
+      return ordinal !== undefined && ordinal <= selectedBlock.ordinal
+    })
+    if (!endpointIsAvailable) {
+      setStatus('현재 블록은 자신의 Class 또는 이전 블록의 Class에만 연결할 수 있습니다.')
+      return
+    }
     const stableId = `relation:${crypto.randomUUID()}`
     const relation: KnowledgeStudioTBoxElement = {
       stable_element_id: stableId,
@@ -489,6 +987,7 @@ export function GraphBuilder({
       target_stable_element_id: connection.target,
       aliases: [],
       vector_index_enabled: false,
+      locked_by_later_block: false,
       ordinal: Math.max(-1, ...elements.map((item) => item.ordinal)) + 1,
       version: 1,
     }
@@ -498,39 +997,46 @@ export function GraphBuilder({
       ...connection,
       id: stableId,
       label: 'RELATED_TO',
-      data: { relation: 'RELATED_TO' },
+      data: { relation: 'RELATED_TO', editable: true },
       markerEnd: { type: MarkerType.ArrowClosed, color: '#7dd3fc' },
       style: { stroke: '#7dd3fc', strokeWidth: 1.6 },
     }, current))
     const safe = asSafeGraph(next)
     setEditorText(formatSafeCypherDraft(safe.nodes, safe.edges))
     setEditorError(undefined)
-  }, [elements, locked, setEdges])
+  }, [elements, locked, record?.blocks, selectedBlock, setEdges])
 
-  const deleteSelected = () => {
-    if (!selectedElement || !selectedElementEditable || locked || working) return
-    const inheritedDependants = elements.filter((item) => (
+  const deleteElement = (elementId: string) => {
+    const target = elements.find((item) => item.stable_element_id === elementId)
+    const editable = target
+      && (target.block_id === selectedBlockId || target.block_id === undefined)
+      && !target.locked_by_later_block
+    if (!target || !editable || locked || working) return
+    const externalDependants = elements.filter((item) => (
       item.block_id !== undefined
       && item.block_id !== selectedBlockId
       && (
-        item.parent_stable_element_id === selectedElement.stable_element_id
-        || item.source_stable_element_id === selectedElement.stable_element_id
-        || item.target_stable_element_id === selectedElement.stable_element_id
+        item.parent_stable_element_id === target.stable_element_id
+        || item.source_stable_element_id === target.stable_element_id
+        || item.target_stable_element_id === target.stable_element_id
       )
     ))
-    if (inheritedDependants.length > 0) {
+    if (externalDependants.length > 0) {
       setStatus(
-        '다른 블록이 참조하는 요소입니다. 참조 블록을 먼저 정리한 뒤 삭제하세요.',
+        '후속 블록이 참조하는 Class입니다. 참조 블록을 먼저 정리해야 합니다.',
       )
       return
     }
-    const removed = new Set([selectedElement.stable_element_id])
-    if (selectedElement.kind === 'CLASS') {
+    const removed = new Set([target.stable_element_id])
+    if (target.kind === 'CLASS') {
       for (const item of elements) {
         if (
-          item.parent_stable_element_id === selectedElement.stable_element_id
-          || item.source_stable_element_id === selectedElement.stable_element_id
-          || item.target_stable_element_id === selectedElement.stable_element_id
+          (item.block_id === selectedBlockId || item.block_id === undefined)
+          && (
+            item.parent_stable_element_id === target.stable_element_id
+            || item.source_stable_element_id === target.stable_element_id
+            || item.target_stable_element_id === target.stable_element_id
+          )
         ) removed.add(item.stable_element_id)
       }
     }
@@ -538,26 +1044,44 @@ export function GraphBuilder({
     setSelectedElementId('')
   }
 
-  const addProperty = () => {
-    if (selectedElement?.kind !== 'CLASS' || locked || working) return
-    const name = canonicalName(newPropertyName)
+  const addProperty = (classId: string, rawName: string) => {
+    const classElement = elements.find((item) => item.stable_element_id === classId)
+    if (
+      classElement?.kind !== 'CLASS'
+      || (
+        classElement.block_id !== selectedBlockId
+        && classElement.block_id !== undefined
+      )
+      || classElement.locked_by_later_block
+      || locked
+      || working
+    ) return
+    const name = canonicalName(rawName)
     if (!name) return
+    if (elements.some(
+      (item) => item.kind === 'PROPERTY'
+        && item.parent_stable_element_id === classId
+        && item.canonical_name.toLowerCase() === name.toLowerCase(),
+    )) {
+      setStatus(`Property '${name}'은(는) 이미 존재합니다.`)
+      return
+    }
     const property: KnowledgeStudioTBoxElement = {
       stable_element_id: `property:${crypto.randomUUID()}`,
       kind: 'PROPERTY',
       canonical_name: name,
       display_name: name,
-      parent_stable_element_id: selectedElement.stable_element_id,
+      parent_stable_element_id: classId,
       data_type: 'STRING',
       nullable: true,
       aliases: [],
       vector_index_enabled: false,
+      locked_by_later_block: false,
       ordinal: Math.max(-1, ...elements.map((item) => item.ordinal)) + 1,
       version: 1,
     }
     syncCanvasAndEditor([...elements, property])
-    setSelectedElementId(property.stable_element_id)
-    setNewPropertyName('')
+    setSelectedElementId(classId)
   }
 
   const save = async () => {
@@ -633,7 +1157,7 @@ export function GraphBuilder({
 
   const updateBlock = async (
     block: KnowledgeStudioTBoxBlock,
-    values: { weight?: number; collapsed?: boolean },
+    values: { title?: string; weight?: number; collapsed?: boolean },
   ) => {
     if (locked || working) return
     setWorking(true)
@@ -643,7 +1167,7 @@ export function GraphBuilder({
         draftId,
         block.id,
         {
-          title: block.title,
+          title: values.title ?? block.title,
           weight: values.weight ?? block.weight,
           collapsed: values.collapsed ?? block.collapsed,
         },
@@ -654,6 +1178,32 @@ export function GraphBuilder({
       applyResponse(response.data, response.etag)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '블록 설정을 저장하지 못했습니다.')
+    } finally {
+      setWorking(false)
+    }
+  }
+
+  const deleteBlock = async (block: KnowledgeStudioTBoxBlock) => {
+    if (locked || working || block.id !== lastBlockId) return
+    setWorking(true)
+    try {
+      const response = await deleteKnowledgeStudioTBoxBlock(
+        client,
+        draftId,
+        block.id,
+        responseEtag,
+        newKnowledgeStudioIdempotencyKey(),
+      )
+      if (!response.etag) return
+      applyResponse(
+        response.data,
+        response.etag,
+        response.data.blocks.at(-1)?.id,
+      )
+      setBlockPendingDelete(undefined)
+      setStatus(`최신 블록 '${block.title}'을 삭제했습니다.`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '블록을 삭제하지 못했습니다.')
     } finally {
       setWorking(false)
     }
@@ -723,15 +1273,95 @@ export function GraphBuilder({
     }
   }
 
-  const updateSelected = (patch: Partial<KnowledgeStudioTBoxElement>) => {
-    if (!selectedElement || !selectedElementEditable) return
+  const updateElement = (
+    elementId: string,
+    patch: Partial<KnowledgeStudioTBoxElement>,
+  ) => {
+    const target = elements.find((item) => item.stable_element_id === elementId)
+    if (
+      !target
+      || (
+        target.block_id !== selectedBlockId
+        && target.block_id !== undefined
+      )
+      || target.locked_by_later_block
+    ) return
     const next = elements.map((item) => (
-      item.stable_element_id === selectedElement.stable_element_id
+      item.stable_element_id === elementId
         ? { ...item, ...patch }
         : item
     ))
     syncCanvasAndEditor(next)
   }
+
+  const classes = elements.filter((item) => item.kind === 'CLASS')
+  const blockOrdinalById = new Map(
+    (record?.blocks ?? []).map((block) => [block.id, block.ordinal]),
+  )
+  const allowedParentIds = new Set(
+    classes
+      .filter((item) => {
+        const ownerOrdinal = item.block_id
+          ? blockOrdinalById.get(item.block_id)
+          : selectedBlock?.ordinal
+        return ownerOrdinal !== undefined && ownerOrdinal <= (selectedBlock?.ordinal ?? -1)
+      })
+      .map((item) => item.stable_element_id),
+  )
+
+  const reparentClass = (classId: string, parentId?: string) => {
+    const target = elements.find((item) => item.stable_element_id === classId)
+    if (
+      target?.kind !== 'CLASS'
+      || (
+        target.block_id !== selectedBlockId
+        && target.block_id !== undefined
+      )
+      || target.locked_by_later_block
+      || (parentId && !allowedParentIds.has(parentId))
+    ) return
+    updateElement(classId, { parent_stable_element_id: parentId })
+    setSelectedElementId(classId)
+    setStatus(parentId
+      ? `${target.display_name} Class의 subClassOf 계층을 변경했습니다.`
+      : `${target.display_name} Class를 최상위로 이동했습니다.`)
+  }
+
+  const renderedNodes = nodes.map((node): CanvasNode => {
+    if (node.type !== 'schemaClass') return node
+    const item = elements.find((element) => element.stable_element_id === node.id)
+    if (!item) return node
+    const editable = (
+      (item.block_id === selectedBlockId || item.block_id === undefined)
+      && !item.locked_by_later_block
+      && !locked
+      && !working
+    )
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        label: item.display_name,
+        editable,
+        locked: item.locked_by_later_block,
+        selected: item.stable_element_id === selectedElementId,
+        properties: elements
+          .filter(
+            (property) => property.kind === 'PROPERTY'
+              && property.parent_stable_element_id === item.stable_element_id,
+          )
+          .map((property) => ({
+            id: property.stable_element_id,
+            label: property.display_name,
+          })),
+        onRename: (value) => updateElement(item.stable_element_id, {
+          display_name: value,
+        }),
+        onDelete: () => deleteElement(item.stable_element_id),
+        onAddProperty: (value) => addProperty(item.stable_element_id, value),
+      },
+    }
+  })
 
   if (!record) {
     return (
@@ -784,23 +1414,38 @@ export function GraphBuilder({
             key={block.id}
             className={`rounded-enterprise border bg-white ${block.id === selectedBlockId ? 'border-enterprise-blue shadow-sm' : 'border-slate-300'}`}
           >
-            <header className="flex flex-wrap items-center gap-3 p-3">
+            <header className="flex min-h-12 flex-wrap items-center gap-2 px-3 py-2">
               <button
                 type="button"
-                className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                className="flex min-w-24 items-center gap-2 text-left"
+                aria-label={`${block.title} ${block.kind} 블록 열기`}
                 onClick={() => applyBlock(block, record)}
               >
                 <span className="rounded bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-600">
                   {block.ordinal + 1}
                 </span>
-                <strong className="truncate text-sm text-navy-900">{block.title}</strong>
-                <span className="text-[10px] font-bold text-slate-400">{block.kind}</span>
               </button>
+              <input
+                aria-label={`${block.ordinal + 1}번 블록 이름`}
+                className="input min-w-[180px] flex-1 border-transparent bg-transparent py-1 text-sm font-black text-navy-900 hover:border-slate-300 focus:bg-white"
+                defaultValue={block.title}
+                maxLength={120}
+                disabled={locked || working}
+                onClick={(event) => event.stopPropagation()}
+                onBlur={(event) => {
+                  const title = event.currentTarget.value.trim()
+                  if (title && title !== block.title) void updateBlock(block, { title })
+                  else event.currentTarget.value = block.title
+                }}
+              />
+              <span className="rounded bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-500">
+                {block.kind}
+              </span>
               <label className="flex items-center gap-2 text-xs font-bold text-slate-600">
-                가중치
+                W
                 <input
                   aria-label={`${block.title} 가중치`}
-                  className="input w-20 py-1"
+                  className="input w-16 py-1"
                   type="number"
                   min={0}
                   max={100}
@@ -811,12 +1456,24 @@ export function GraphBuilder({
                     if (Number.isInteger(weight) && weight >= 0 && weight <= 100 && weight !== block.weight) {
                       void updateBlock(block, { weight })
                     }
-                  }}
-                />
+                }}
+              />
               </label>
               <button
                 type="button"
-                className="button button-secondary px-2"
+                className="button button-danger px-2 py-1.5"
+                aria-label={`${block.title} 블록 삭제`}
+                title={block.id === lastBlockId
+                  ? '최신 블록 삭제'
+                  : '의존성 보호: 가장 최신 블록만 삭제할 수 있습니다.'}
+                disabled={locked || working || block.id !== lastBlockId}
+                onClick={() => setBlockPendingDelete(block)}
+              >
+                <Trash2 size={13} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="button button-secondary px-2 py-1.5"
                 aria-label={block.collapsed ? `${block.title} 펼치기` : `${block.title} 접기`}
                 disabled={locked || working}
                 onClick={() => void updateBlock(block, { collapsed: !block.collapsed })}
@@ -828,52 +1485,42 @@ export function GraphBuilder({
             </header>
             {block.id === selectedBlockId && !block.collapsed && (
               <div className="border-t border-slate-200 p-3">
-                <div className="grid min-h-[620px] gap-3 xl:grid-cols-[minmax(300px,.8fr)_minmax(460px,1.2fr)_260px]">
-                  <section className="flex min-h-0 flex-col rounded-enterprise border border-slate-700 bg-[#081525]">
-                    <header className="border-b border-slate-700 px-3 py-2 text-xs font-black text-slate-100">
-                      SchemaCypherEditor · safe CREATE subset
-                    </header>
-                    <textarea
-                      aria-label="T-Box Cypher 편집기"
-                      className="min-h-[500px] flex-1 resize-none bg-transparent p-4 font-mono text-xs leading-6 text-cyan-100 outline-none"
-                      spellCheck={false}
-                      value={editorText}
-                      disabled={locked || working}
-                      onChange={(event) => changeEditor(event.target.value)}
-                    />
-                    <div
-                      className={`min-h-16 border-t p-3 text-xs leading-5 ${editorError ? 'border-red-700 bg-red-950/70 text-red-100' : 'border-slate-700 text-emerald-300'}`}
-                      role={editorError ? 'alert' : 'status'}
-                    >
-                      {editorError
-                        ? `Line ${editorError.line}, Column ${editorError.column} · ${editorError.message}`
-                        : 'Validation OK · 캔버스와 마지막 정상 AST가 동기화되었습니다.'}
-                    </div>
-                  </section>
-
-                  <div className="relative min-h-[620px] overflow-hidden rounded-enterprise border border-slate-700 bg-[#0b1d31]">
+                <div className="grid min-h-[520px] gap-3 xl:grid-cols-[270px_minmax(0,1fr)]">
+                  <ClassHierarchyTree
+                    classes={classes}
+                    selectedId={selectedElementId}
+                    activeBlockId={selectedBlockId}
+                    allowedParentIds={allowedParentIds}
+                    disabled={locked || working}
+                    onSelect={setSelectedElementId}
+                    onAdd={addClass}
+                    onReparent={reparentClass}
+                  />
+                  <div className="relative min-h-[520px] overflow-hidden rounded-enterprise border border-slate-700 bg-[#0b1d31]">
                     <header className="absolute left-3 top-3 z-10 rounded border border-slate-600 bg-[#10253d]/95 px-3 py-2 text-xs font-black text-slate-100 shadow">
                       <span className="flex items-center gap-2">
                         <GitBranch size={14} aria-hidden="true" />
-                        TBoxGraphCanvas
+                        TBoxGraphCanvas · Class schema
                       </span>
                     </header>
-                    {nodes.length === 0 && (
+                    {classes.length === 0 && (
                       <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center p-8 text-center">
                         <p className="rounded border border-dashed border-slate-600 bg-[#10253d]/95 p-5 text-xs leading-5 text-slate-300">
-                          왼쪽 에디터 또는 오른쪽 보드에서 첫 Class를 추가하세요.
+                          좌측 Class Hierarchy의 (+)로 첫 Class를 추가하세요.
                         </p>
                       </div>
                     )}
-                    <ReactFlow
+                    <ReactFlow<CanvasNode, SchemaEdge>
                       aria-label="T-Box 그래프 캔버스"
-                      nodes={nodes}
+                      nodes={renderedNodes}
                       edges={edges}
                       nodeTypes={schemaNodeTypes}
                       onNodesChange={onNodesChange}
                       onEdgesChange={onEdgesChange}
                       onConnect={connect}
-                      onNodeClick={(_, node) => setSelectedElementId(node.id)}
+                      onNodeClick={(_, node) => {
+                        if (node.type === 'schemaClass') setSelectedElementId(node.id)
+                      }}
                       onEdgeClick={(_, edge) => setSelectedElementId(edge.id)}
                       onPaneClick={() => setSelectedElementId('')}
                       nodesDraggable={!locked && !working}
@@ -891,197 +1538,43 @@ export function GraphBuilder({
                         size={1}
                       />
                       <Controls showInteractive={!locked && !working} />
-                      {nodes.length > 0 && (
+                      {classes.length > 0 && (
                         <MiniMap
                           pannable
                           zoomable
-                          nodeColor="#0ea5e9"
+                          nodeColor={(node) => (
+                            node.type === 'layerGroup' ? '#334155' : '#0ea5e9'
+                          )}
                           maskColor="rgba(2, 12, 27, .72)"
                         />
                       )}
                     </ReactFlow>
                   </div>
-
-                  <aside className="rounded-enterprise border border-slate-300 bg-slate-50 p-3">
-                    <h3 className="m-0 text-sm font-black text-navy-900">Schema board</h3>
-                    <form className="mt-3 grid gap-2" onSubmit={addClass}>
-                      <label className="text-xs font-bold text-slate-600" htmlFor="tbox-class-name">
-                        Class canonical name
-                      </label>
-                      <input
-                        id="tbox-class-name"
-                        className="input"
-                        value={newClassName}
-                        placeholder="BusinessTerm"
-                        maxLength={255}
-                        disabled={locked || working}
-                        onChange={(event) => setNewClassName(event.target.value)}
-                      />
-                      <button
-                        type="submit"
-                        className="button justify-center"
-                        disabled={!canonicalName(newClassName) || locked || working}
-                      >
-                        <Plus size={14} aria-hidden="true" />
-                        Class 추가
-                      </button>
-                    </form>
-
-                    {selectedElement ? (
-                      <div className="mt-4 grid gap-2 border-t border-slate-300 pt-4">
-                        <span className="text-[10px] font-black tracking-wider text-enterprise-blue">
-                          {selectedElement.kind}
-                        </span>
-                        {!selectedElementEditable && (
-                          <p className="m-0 rounded border border-slate-300 bg-white p-2 text-[11px] leading-4 text-slate-600">
-                            이전 블록에서 상속된 요소입니다. 원본 블록에서만 수정·삭제할 수 있습니다.
-                          </p>
-                        )}
-                        <label className="text-xs font-bold text-slate-600">
-                          표시 이름
-                          <input
-                            className="input mt-1"
-                            value={selectedElement.display_name}
-                            disabled={locked || working || !selectedElementEditable}
-                            onChange={(event) => updateSelected({ display_name: event.target.value })}
-                          />
-                        </label>
-                        <label className="text-xs font-bold text-slate-600">
-                          정의
-                          <textarea
-                            className="input mt-1 min-h-20"
-                            value={selectedElement.definition ?? ''}
-                            disabled={locked || working || !selectedElementEditable}
-                            onChange={(event) => updateSelected({
-                              definition: event.target.value || undefined,
-                            })}
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          className="button button-danger mt-1 justify-center"
-                          disabled={locked || working || !selectedElementEditable}
-                          onClick={deleteSelected}
-                        >
-                          <Trash2 size={14} aria-hidden="true" />
-                          선택 요소 삭제
-                        </button>
-                        {selectedElement.kind === 'CLASS' && (
-                          <div className="mt-2 border-t border-slate-300 pt-3">
-                            <strong className="text-xs text-navy-900">Properties</strong>
-                            <div className="mt-2 flex gap-1">
-                              <input
-                                aria-label="새 Property 이름"
-                                className="input min-w-0 flex-1 py-1"
-                                value={newPropertyName}
-                                placeholder="description"
-                                disabled={locked || working}
-                                onChange={(event) => setNewPropertyName(event.target.value)}
-                              />
-                              <button
-                                type="button"
-                                className="button px-2"
-                                aria-label="Property 추가"
-                                disabled={!canonicalName(newPropertyName) || locked || working}
-                                onClick={addProperty}
-                              >
-                                <Plus size={13} aria-hidden="true" />
-                              </button>
-                            </div>
-                            {properties.length === 0
-                              ? <p className="text-[11px] text-slate-500">등록된 속성이 없습니다.</p>
-                              : properties.map((item) => (
-                                <button
-                                  key={item.stable_element_id}
-                                  type="button"
-                                  className="mt-2 block w-full rounded border border-slate-200 bg-white p-2 text-left text-xs hover:border-enterprise-blue"
-                                  disabled={working}
-                                  onClick={() => setSelectedElementId(item.stable_element_id)}
-                                >
-                                  <strong>{item.display_name}</strong>
-                                  {item.vector_index_enabled && (
-                                    <span className="ml-2 rounded bg-violet-100 px-1.5 py-0.5 text-[9px] font-black text-violet-800">
-                                      VECTOR
-                                    </span>
-                                  )}
-                                </button>
-                              ))}
-                          </div>
-                        )}
-                        {selectedElement.kind === 'PROPERTY' && (
-                          <>
-                            <label className="text-xs font-bold text-slate-600">
-                              데이터 타입
-                              <select
-                                className="input mt-1"
-                                value={selectedElement.data_type ?? 'STRING'}
-                                disabled={locked || working || !selectedElementEditable}
-                                onChange={(event) => updateSelected({
-                                  data_type: event.target.value,
-                                  vector_index_enabled: (
-                                    event.target.value === 'STRING'
-                                    || event.target.value === 'TEXT'
-                                  ) ? selectedElement.vector_index_enabled : false,
-                                })}
-                              >
-                                <option value="STRING">STRING</option>
-                                <option value="TEXT">TEXT</option>
-                                <option value="INTEGER">INTEGER</option>
-                                <option value="FLOAT">FLOAT</option>
-                                <option value="BOOLEAN">BOOLEAN</option>
-                                <option value="DATE">DATE</option>
-                              </select>
-                            </label>
-                            <label className="flex items-center gap-2 text-xs font-bold text-slate-700">
-                              <input
-                                type="checkbox"
-                                checked={selectedElement.vector_index_enabled}
-                                disabled={
-                                  locked
-                                  || working
-                                  || !selectedElementEditable
-                                  || !['STRING', 'TEXT'].includes(selectedElement.data_type ?? '')
-                                }
-                                onChange={(event) => updateSelected({
-                                  vector_index_enabled: event.target.checked,
-                                })}
-                              />
-                              GraphRAG Vector Index 대상
-                            </label>
-                            <label className="text-xs font-bold text-slate-600">
-                              단위
-                              <input
-                                className="input mt-1"
-                                value={selectedElement.unit ?? ''}
-                                disabled={locked || working || !selectedElementEditable}
-                                onChange={(event) => updateSelected({
-                                  unit: event.target.value || undefined,
-                                })}
-                              />
-                            </label>
-                          </>
-                        )}
-                        <label className="text-xs font-bold text-slate-600">
-                          동의어
-                          <input
-                            className="input mt-1"
-                            value={selectedElement.aliases.join(', ')}
-                            placeholder="한글명, 약어, synonym"
-                            disabled={locked || working || !selectedElementEditable}
-                            onChange={(event) => updateSelected({
-                              aliases: aliasesFromInput(event.target.value),
-                            })}
-                          />
-                        </label>
-                      </div>
-                    ) : (
-                      <p className="mt-4 text-xs leading-5 text-slate-500">
-                        노드 또는 관계를 선택하면 의미, 동의어, 단위, Vector Index 정책을
-                        편집할 수 있습니다.
-                      </p>
-                    )}
-                  </aside>
                 </div>
+                <section className="mt-3 flex min-h-0 flex-col rounded-enterprise border border-slate-700 bg-[#081525]">
+                  <header className="flex items-center justify-between border-b border-slate-700 px-3 py-2 text-xs font-black text-slate-100">
+                    <span>SchemaCypherEditor · safe CREATE subset · 실행되지 않음</span>
+                    <span className="text-[9px] font-semibold text-slate-400">
+                      Class hierarchy = SUBCLASS_OF
+                    </span>
+                  </header>
+                  <textarea
+                    aria-label="T-Box Cypher 편집기"
+                    className="min-h-[220px] resize-y bg-transparent p-4 font-mono text-xs leading-6 text-cyan-100 outline-none"
+                    spellCheck={false}
+                    value={editorText}
+                    disabled={locked || working}
+                    onChange={(event) => changeEditor(event.target.value)}
+                  />
+                  <div
+                    className={`min-h-12 border-t p-3 text-xs leading-5 ${editorError ? 'border-red-700 bg-red-950/70 text-red-100' : 'border-slate-700 text-emerald-300'}`}
+                    role={editorError ? 'alert' : 'status'}
+                  >
+                    {editorError
+                      ? `Line ${editorError.line}, Column ${editorError.column} · ${editorError.message}`
+                      : 'Validation OK · 트리, 캔버스와 마지막 정상 AST가 동기화되었습니다.'}
+                  </div>
+                </section>
               </div>
             )}
           </article>
@@ -1160,6 +1653,40 @@ export function GraphBuilder({
           </div>
         </div>
       </section>
+
+      <Dialog
+        open={Boolean(blockPendingDelete)}
+        title="최신 T-Box 블록 삭제"
+        description="블록 의존성 보호를 위해 가장 마지막 블록만 삭제할 수 있습니다."
+        onRequestClose={() => {
+          if (!working) setBlockPendingDelete(undefined)
+        }}
+        footer={<>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={working}
+            onClick={() => setBlockPendingDelete(undefined)}
+          >
+            취소
+          </button>
+          <button
+            type="button"
+            className="button button-danger"
+            disabled={working || !blockPendingDelete}
+            onClick={() => {
+              if (blockPendingDelete) void deleteBlock(blockPendingDelete)
+            }}
+          >
+            최신 블록 삭제
+          </button>
+        </>}
+      >
+        <p className="m-0 text-sm leading-6 text-slate-700">
+          <strong>{blockPendingDelete?.title}</strong> 블록과 이 블록이 소유한 Class,
+          Property, Relationship 초안을 삭제합니다. 이전 블록은 변경하지 않습니다.
+        </p>
+      </Dialog>
 
       <Dialog
         open={conflictOpen && Boolean(proposal)}

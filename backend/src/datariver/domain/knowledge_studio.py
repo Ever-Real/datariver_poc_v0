@@ -199,6 +199,8 @@ class TBoxElementInput:
     aliases: tuple[str, ...] = ()
     unit: str | None = None
     vector_index_enabled: bool = False
+    metadata_reference_id: UUID | None = None
+    metadata_reference_urn: str | None = None
     layout_x: float | None = None
     layout_y: float | None = None
 
@@ -216,6 +218,17 @@ class TBoxElementInput:
             self.unit != self.unit.strip() or not 1 <= len(self.unit) <= 100
         ):
             raise ValidationError("A T-Box unit must contain between 1 and 100 characters.")
+        if self.metadata_reference_urn is not None and (
+            self.metadata_reference_urn != self.metadata_reference_urn.strip()
+            or not 1 <= len(self.metadata_reference_urn) <= 2_000
+            or any(
+                ord(character) < 32 or ord(character) == 127
+                for character in self.metadata_reference_urn
+            )
+        ):
+            raise ValidationError(
+                "A T-Box metadata reference URN must contain between 1 and 2,000 safe characters."
+            )
         if (self.layout_x is None) != (self.layout_y is None):
             raise ValidationError("T-Box layout coordinates must be supplied together.")
         if self.layout_x is not None and (
@@ -226,7 +239,6 @@ class TBoxElementInput:
             if any(
                 value is not None
                 for value in (
-                    self.parent_stable_element_id,
                     self.source_stable_element_id,
                     self.target_stable_element_id,
                     self.data_type,
@@ -235,6 +247,10 @@ class TBoxElementInput:
                 )
             ):
                 raise ValidationError("A Class cannot carry Property or Relation shape fields.")
+            if self.parent_stable_element_id is not None:
+                validate_stable_element_id(self.parent_stable_element_id)
+                if self.parent_stable_element_id == self.stable_element_id:
+                    raise ValidationError("A Class cannot be its own parent.")
             if self.vector_index_enabled:
                 raise ValidationError("Only a textual Property can target a Vector Index.")
         elif self.kind is TBoxElementKind.PROPERTY:
@@ -315,7 +331,13 @@ def validate_tbox_element_set(elements: tuple[TBoxElementInput, ...]) -> None:
         by_id[element.stable_element_id] = element
         names.add(name_identity)
     for element in elements:
-        if element.kind is TBoxElementKind.PROPERTY:
+        if element.kind is TBoxElementKind.CLASS:
+            if element.parent_stable_element_id is None:
+                continue
+            parent = by_id.get(element.parent_stable_element_id)
+            if parent is None or parent.kind is not TBoxElementKind.CLASS:
+                raise ValidationError("A Class parent must be an accepted Class.")
+        elif element.kind is TBoxElementKind.PROPERTY:
             parent = by_id.get(element.parent_stable_element_id or "")
             if parent is None or parent.kind is not TBoxElementKind.CLASS:
                 raise ValidationError("A Property parent must be an accepted Class.")
@@ -329,6 +351,19 @@ def validate_tbox_element_set(elements: tuple[TBoxElementInput, ...]) -> None:
                 or target.kind is not TBoxElementKind.CLASS
             ):
                 raise ValidationError("Relation endpoints must be accepted Classes.")
+    class_parent_by_id = {
+        element.stable_element_id: element.parent_stable_element_id
+        for element in elements
+        if element.kind is TBoxElementKind.CLASS
+    }
+    for class_id in class_parent_by_id:
+        visited: set[str] = set()
+        cursor: str | None = class_id
+        while cursor is not None:
+            if cursor in visited:
+                raise ValidationError("A Class hierarchy cannot contain a cycle.")
+            visited.add(cursor)
+            cursor = class_parent_by_id.get(cursor)
 
 
 def validate_source_field_path(value: str) -> str:
