@@ -14,6 +14,20 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## GX Quality Phase 4 read-dashboard addendum — 2026-07-30
+
+This addendum accepts the local Phase 4 authorization-pruned read API and React dashboard at
+revision `0070`. It does not accept Rule mutations, target source execution, manual browser
+accessibility, WSL artifact parity or production enablement.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Authorization and privacy | PASS (local source) | Human-only `quality.read`, independently audited Profile access, Catalog-equivalent asset pruning, scope-bound cursors and no-store responses apply before aggregation. SAMPLE/raw values, failure rows and provider/source locators are absent from API types. |
+| Read model | PASS (local source) | Current ACTIVE Version plus latest same-Version terminal Run determines the snapshot; only latest `SUCCEEDED` contributes. Overview/assets/Rule Sets/Runs/results/issues are bounded and hidden details return 404. |
+| React dashboard | PASS (local source) | Capability-first 30-second authorization lease, four keyboard tabs, server-only KPI/trend plus equivalent table, cursor lists, lazy Rule detail and selected-Run-only bounded polling are implemented. Unattested mutations show unavailable capability instead of fake data. |
+| Regression and migration | PASS (Mac development) | Ruff `482` files; strict mypy `473` files; backend `1,871 passed / 103 skipped`; static verification; frontend TypeScript/ESLint, `63 files / 348 tests`, production build. PostgreSQL `17.10` passed `0069 -> 0070 -> 0069 -> 0070`; deterministic canonical SHA-256 is `cbae1511f3431f77c422da52b95a79d3d1cdda209e96ad84142927b39ee79f56`. |
+| Residual gates | OPEN | Rule mutation readiness, target DataHub/source/Airflow execution, representative query/load/soak, real multi-identity revocation, zoom/screen-reader/target browsers and WSL amd64 remain explicit gates. |
+
 ## GX Quality Phase 1 control-plane addendum — 2026-07-30
 
 This addendum accepts the Phase 1 development-source and isolated PostgreSQL 17 control-plane

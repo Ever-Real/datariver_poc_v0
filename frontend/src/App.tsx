@@ -335,7 +335,13 @@ export function App() {
         {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} onQueryChange={searchCatalog} catalogExportWorkerEnabled={catalogExportWorkerEnabled} />}
         {page === 'registration' && <RegistrationPage client={client} />}
         {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
-        {page === 'quality' && <QualityPage />}
+        {page === 'quality' && <QualityPage
+          client={client}
+          workspaceId={activeWorkspace}
+          subjectId={authenticatedSubject}
+          securityEpoch={auth.securityEpoch}
+          authorizationRevision={auth.authorizationRevision}
+        />}
         {(page === 'knowledge'
           || page === 'knowledge-chat'
           || page === 'knowledge-instances'

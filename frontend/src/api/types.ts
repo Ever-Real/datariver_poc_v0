@@ -1753,3 +1753,222 @@ export interface RestrictedSearchGrantProposal {
   expires_at: string
   reason: string
 }
+
+export type QualityCapabilityAxisId =
+  | 'read_access'
+  | 'profile_readiness'
+  | 'rule_authoring'
+  | 'activation'
+  | 'manual_execution'
+  | 'scheduling'
+  | 'operations'
+
+export type QualityCapabilityState = 'AVAILABLE' | 'DENIED' | 'UNAVAILABLE'
+
+export interface QualityCapabilityAxis {
+  id: QualityCapabilityAxisId
+  state: QualityCapabilityState
+  reason_code?: string | null
+}
+
+export interface QualityCapability {
+  contract_version: 'QUALITY_CAPABILITY_V1'
+  observed_at: string
+  valid_until: string
+  cache_scope: string
+  axes: QualityCapabilityAxis[]
+}
+
+export type QualityAvailability = 'AVAILABLE' | 'PARTIAL' | 'UNAVAILABLE'
+export type QualityFreshness = 'CURRENT' | 'STALE' | 'UNKNOWN'
+export type QualityOutcome = 'PASS' | 'WARN' | 'FAIL' | 'UNKNOWN'
+export type QualityOverallState = QualityOutcome
+export type QualityRunState =
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'RETRY_WAIT'
+  | 'CANCEL_REQUESTED'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'STALE'
+  | 'CANCELLED'
+export type QualityRuleSetState = 'ACTIVE' | 'ARCHIVED'
+export type QualityRuleSetVersionState =
+  | 'PROPOSED'
+  | 'APPROVED'
+  | 'REJECTED'
+  | 'ACTIVE'
+  | 'SUPERSEDED'
+  | 'REVOKED'
+export type QualityRuleKind = 'NOT_NULL' | 'RANGE' | 'REGEX'
+export type QualityRuleSeverity = 'BLOCKING' | 'ADVISORY'
+export type QualityExpectationOutcome = 'PASS' | 'ADVISORY_FAIL' | 'BLOCKING_FAIL'
+export type QualityProfileReadiness = 'READY' | 'STALE' | 'UNAVAILABLE' | 'REDACTED'
+
+export interface QualityTrendPoint {
+  bucket_start: string
+  passed_count: number
+  advisory_failed_count: number
+  blocking_failed_count: number
+  evaluated_rule_count: number
+  score_basis_points: number | null
+}
+
+export interface QualityOverview {
+  availability: QualityAvailability
+  freshness: QualityFreshness
+  as_of: string
+  authorization_valid_until: string
+  overall_state: QualityOverallState
+  active_rule_set_count: number
+  evaluated_rule_set_count: number
+  unknown_rule_set_count: number
+  passed_count: number
+  advisory_failed_count: number
+  blocking_failed_count: number
+  evaluated_rule_count: number
+  score_basis_points: number | null
+  coverage_basis_points: number | null
+  trend: QualityTrendPoint[]
+  failure_code: string | null
+}
+
+export interface QualityPageMeta {
+  next_cursor: string | null
+  limit: number
+}
+
+export interface QualityListResponse<T> {
+  items: T[]
+  page: QualityPageMeta
+  cache_scope: string
+  observed_at: string
+  authorization_valid_until: string
+}
+
+export interface QualityResourceResponse<T> {
+  item: T
+  cache_scope: string
+  observed_at: string
+  authorization_valid_until: string
+}
+
+export interface QualityAsset {
+  asset_id: string
+  name: string
+  platform?: string | null
+  database_name?: string | null
+  schema_name?: string | null
+  classification: Classification
+  lifecycle: string
+  profile_readiness: QualityProfileReadiness
+  profile_observed_at: string | null
+  active_rule_set_count: number
+  latest_run_state: QualityRunState | null
+  latest_quality_outcome: QualityOutcome | null
+  latest_score_basis_points: number | null
+}
+
+export interface QualityRuleDefinitionCapability {
+  kind: QualityRuleKind
+  available: boolean
+  reason_code: string | null
+  parameter_contract: Record<string, unknown>
+}
+
+export interface QualityRuleDefinitionCatalog {
+  contract_version: 'QUALITY_TYPED_RULES_V1'
+  items: QualityRuleDefinitionCapability[]
+}
+
+export interface QualityRuleSetSummary {
+  rule_set_id: string
+  name: string
+  asset_id: string
+  asset_name: string
+  state: QualityRuleSetState
+  active_version_id: string | null
+  active_version_number: number | null
+  active_version_state: QualityRuleSetVersionState | null
+  rule_count: number
+  created_at: string
+  updated_at: string
+  version: number
+}
+
+export interface QualityRuleSetVersionSummary {
+  version_id: string
+  version_number: number
+  state: QualityRuleSetVersionState
+  author_id: string
+  reviewed_by: string | null
+  activated_by: string | null
+  rule_count: number
+  schedule_mode: string
+  created_at: string
+  updated_at: string
+  version: number
+}
+
+export interface QualityRuleDefinition {
+  rule_definition_id: string
+  version_id: string
+  ordinal: number
+  field_identifier: string
+  kind: QualityRuleKind
+  severity: QualityRuleSeverity
+  parameters: Record<string, unknown>
+}
+
+export interface QualityRuleSetDetail {
+  rule_set: QualityRuleSetSummary
+  versions: QualityRuleSetVersionSummary[]
+  definitions: QualityRuleDefinition[]
+}
+
+export interface QualityRunSummary {
+  run_id: string
+  rule_set_id: string
+  rule_set_name: string
+  asset_id: string
+  asset_name: string
+  trigger_kind: 'MANUAL' | 'SCHEDULED' | 'RETRY'
+  state: QualityRunState
+  quality_outcome: QualityOutcome
+  score_basis_points: number | null
+  passed_count: number | null
+  advisory_failed_count: number | null
+  blocking_failed_count: number | null
+  created_at: string
+  completed_at: string | null
+  failure_code: string | null
+  version: number
+}
+
+export interface QualityExpectationResult {
+  result_id: string
+  rule_definition_id: string
+  field_identifier: string
+  kind: QualityRuleKind
+  severity: QualityRuleSeverity
+  outcome: QualityExpectationOutcome
+  evaluated_count: number
+  missing_count: number
+  unexpected_count: number
+  missing_ratio: number
+  unexpected_ratio: number
+  duration_ms: number
+  occurred_at: string
+}
+
+export interface QualityIssueSummary {
+  issue_id: string
+  asset_id: string
+  asset_name: string
+  field_identifier: string
+  kind: QualityRuleKind
+  severity: QualityRuleSeverity
+  outcome: Exclude<QualityExpectationOutcome, 'PASS'>
+  occurrence_count: number
+  last_observed_at: string
+}

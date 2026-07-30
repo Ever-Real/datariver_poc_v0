@@ -47,7 +47,7 @@
 | 48 | [Air-gapped source-free amd64 Pilot PRD/checklist](48_AIR_GAPPED_SOURCE_FREE_PILOT_PRD_CHECKLIST.md) | exact-commit image bundle, source-free target, one-shot migration and external gates | Local implementation complete; target gates open |
 | 50 | [Pilot deployment and integration guide](50_PILOT_DEPLOYMENT_AND_INTEGRATION_GUIDE.md) | copy/paste artifact transfer, environment/secret setup, deployment, integration and Day 2 operations | Operator runbook; target gates open |
 | 51 | [Knowledge Phase 6 cutover QA remediation](51_KNOWLEDGE_PHASE6_QA_REMEDIATION.md) | domain safety net, persistent Knowledge shell, resizable/version-focused Registry drawer and governed edit/archive actions | Local source verified; target browser/PostgreSQL gates open |
-| 52 | [GX quality management PRD/checklist](52_GX_QUALITY_MANAGEMENT_PRD_CHECKLIST.md) | governed DataHub Profile, typed Rule, isolated GX execution and authorization-pruned dashboard contract | Phases 1–3 source complete; target Profile/source execution gates open |
+| 52 | [GX quality management PRD/checklist](52_GX_QUALITY_MANAGEMENT_PRD_CHECKLIST.md) | governed DataHub Profile, typed Rule, isolated GX execution and authorization-pruned dashboard contract | Phases 1–4 source complete; mutations and target Profile/source gates remain closed |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and

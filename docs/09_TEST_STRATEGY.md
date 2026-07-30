@@ -2,6 +2,44 @@
 
 ## Current verification status
 
+### GX Quality Phase 4 authorized read model and dashboard — 2026-07-30
+
+Revision `0070` adds only three bounded read-path indexes. The human Quality API authorizes
+`quality.read` on every resource request, records the separate `quality.profile.read` decision
+before returning approved FULL/PARTITION Profile readiness, rejects service identities and joins
+the Catalog authorization-pruned asset relation before every count, score, trend, list, detail,
+result and issue aggregate. Cursor material binds the Workspace, permission/classification scope,
+resource and page size. Responses are `private, no-store`; no sample value, failure row, provider
+locator or source credential enters the contract.
+
+The React surface performs a capability-first read with a database-time lease no longer than 30
+seconds, binds query memory to Workspace/Subject/security epoch/authorization revision/cache scope,
+and provides four roving tabs. Score and coverage use only server values; the chart has an
+equivalent table. Rule Set detail is fetched lazily. Only the selected non-terminal Run uses
+immediate `1/2/5/10` second polling, bounded to 20 reads or 120 visible seconds and paused while
+hidden. Rule authoring, activation, manual execution and scheduling remain visibly
+capability-closed because portable source has no trusted field-directory or deployment-readiness
+attestation.
+
+Repository Ruff format/lint passed over `482` files, strict mypy passed over `473` source/test
+files, the complete backend suite passed `1,871` with `103` explicitly environment-gated skips,
+and static architecture/security/documentation verification passed. Frontend TypeScript and ESLint
+passed; `63` files / `348` tests passed and the production build emitted the lazy Quality chunk at
+`38.10 kB` (`10.31 kB` gzip). Two consecutive canonical `0001` generations were byte-identical at
+SHA-256 `cbae1511f3431f77c422da52b95a79d3d1cdda209e96ad84142927b39ee79f56`.
+
+The running PostgreSQL `17.10` Mac development database passed the actual `0069 -> 0070` upgrade.
+All three indexes were present; `0070 -> 0069` removed exactly those indexes and the immediate
+re-upgrade restored revision `0070` and all three. One repository-wide frontend run observed a
+pre-existing Knowledge Studio timeout assertion choose its alternate bounded timeout message; the
+unchanged file then passed `12/12` alone and the complete frontend suite passed `348/348`. This
+intermittent message-choice assertion is retained as a medium/low-priority test-stability item and
+was not patched as part of Quality.
+
+Target browser zoom/screen-reader acceptance, representative dashboard `EXPLAIN (ANALYZE,
+BUFFERS)`, multi-workspace count-leakage load, real Profile/source execution and WSL amd64 remain
+later external gates. This phase does not claim mutation or production enablement.
+
 ### GX Quality Phase 3 execution plane — 2026-07-30
 
 Revision `0069` adds the service-only execution plane without adding another canonical table:
