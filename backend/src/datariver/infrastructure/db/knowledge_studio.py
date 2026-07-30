@@ -91,6 +91,12 @@ from datariver.infrastructure.db.models.knowledge_studio import (
 from datariver.infrastructure.db.models.platform import SubjectModel
 
 CREATE_OPERATION = "knowledge.studio_draft.create"
+TBOX_BLOCK_CREATE_OPERATION = "kg.tbox.block.create.v1"
+TBOX_BLOCK_UPDATE_OPERATION = "kg.tbox.block.update.v1"
+TBOX_BLOCK_DELETE_OPERATION = "kg.tbox.block.delete.v1"
+TBOX_OPERATIONS_OPERATION = "kg.tbox.operations.v1"
+TBOX_PROPOSAL_APPLY_OPERATION = "kg.tbox.proposal.apply.v1"
+ABOX_BINDING_OPERATION = "kg.studio.abox.bind.v1"
 PREFLIGHT_CONTRACT_VERSION = "KNOWLEDGE_STUDIO_PREFLIGHT_V1"
 RELEASE_CONTRACT_VERSION = "KNOWLEDGE_STUDIO_RELEASE_V1"
 
@@ -1522,7 +1528,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         idempotency_key: str,
         request_hash: str,
     ) -> KnowledgeStudioTBoxRecord:
-        operation = f"knowledge.studio_tbox.block.create:{draft_id}"
+        operation = TBOX_BLOCK_CREATE_OPERATION
         replay = await self._tbox_mutation_replay(
             workspace_id=workspace_id,
             author_id=author_id,
@@ -1596,7 +1602,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         idempotency_key: str,
         request_hash: str,
     ) -> KnowledgeStudioTBoxRecord:
-        operation = f"knowledge.studio_tbox.block.update:{draft_id}:{block_id}"
+        operation = TBOX_BLOCK_UPDATE_OPERATION
         replay = await self._tbox_mutation_replay(
             workspace_id=workspace_id,
             author_id=author_id,
@@ -1656,7 +1662,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         idempotency_key: str,
         request_hash: str,
     ) -> KnowledgeStudioTBoxRecord:
-        operation = f"knowledge.studio_tbox.block.delete:{draft_id}:{block_id}"
+        operation = TBOX_BLOCK_DELETE_OPERATION
         replay = await self._tbox_mutation_replay(
             workspace_id=workspace_id,
             author_id=author_id,
@@ -1691,19 +1697,28 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         )
         if not blocks or blocks[-1].id != block_id:
             raise ConflictError("Only the newest T-Box block can be deleted.")
-        proposal_reference = await self._session.scalar(
-            select(TBoxProposalModel.id)
-            .where(
-                TBoxProposalModel.workspace_id == workspace_id,
-                TBoxProposalModel.draft_id == draft_id,
-                TBoxProposalModel.target_block_id == block_id,
-            )
-            .limit(1)
+        now = utc_now()
+        proposal_references = tuple(
+            (
+                await self._session.scalars(
+                    select(TBoxProposalModel)
+                    .where(
+                        TBoxProposalModel.workspace_id == workspace_id,
+                        TBoxProposalModel.draft_id == draft_id,
+                        TBoxProposalModel.target_block_id == block_id,
+                    )
+                    .with_for_update()
+                )
+            ).all()
         )
-        if proposal_reference is not None:
-            raise ConflictError(
-                "The newest block has retained proposal evidence and cannot be deleted."
-            )
+        for proposal in proposal_references:
+            source_reference = dict(proposal.source_reference_document or {})
+            source_reference["retired_target_block_id"] = str(block_id)
+            source_reference["retired_target_block_at"] = now.isoformat()
+            proposal.target_block_id = None
+            proposal.source_reference_document = source_reference
+            proposal.updated_at = now
+            proposal.version += 1
         element_ids = tuple(
             (
                 await self._session.scalars(
@@ -1738,7 +1753,6 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 )
             )
         await self._session.delete(blocks[-1])
-        now = utc_now()
         draft.updated_at = now
         draft.last_autosaved_at = now
         draft.version += 1
@@ -1763,7 +1777,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         idempotency_key: str,
         request_hash: str,
     ) -> KnowledgeStudioTBoxRecord:
-        operation = f"knowledge.studio_tbox.operations:{draft_id}:{block_id}"
+        operation = TBOX_OPERATIONS_OPERATION
         replay = await self._tbox_mutation_replay(
             workspace_id=workspace_id,
             author_id=author_id,
@@ -1935,7 +1949,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         idempotency_key: str,
         request_hash: str,
     ) -> KnowledgeStudioTBoxRecord:
-        operation = f"knowledge.studio_tbox.proposal.apply:{draft_id}:{proposal_id}"
+        operation = TBOX_PROPOSAL_APPLY_OPERATION
         replay = await self._tbox_mutation_replay(
             workspace_id=workspace_id,
             author_id=author_id,
@@ -3039,7 +3053,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         idempotency_key: str,
         request_hash: str,
     ) -> tuple[KnowledgeStudioDraftRecord, KnowledgeStudioBindingRecord]:
-        operation = f"knowledge.studio_draft.abox_binding:{draft_id}:{target_stable_element_id}"
+        operation = ABOX_BINDING_OPERATION
         idempotency = SqlIdempotencyStore(self._session)
         await idempotency.acquire_key_lock(
             workspace_id=workspace_id,

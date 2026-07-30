@@ -7,7 +7,6 @@ import {
   knowledgeStudioUrl,
 } from '../routes/knowledgeLocation'
 import { BasicInformationStep, basicInformationValid } from './basic/BasicInformationStep'
-import { DomainManagementDialog } from './basic/DomainManagementDialog'
 import {
   createDraftRecoveryQueue,
   knowledgeDraftRecoveryScope,
@@ -28,7 +27,6 @@ import {
   type KnowledgeStudioBasicInformation,
   type KnowledgeStudioDomainOption,
   type KnowledgeStudioDraft,
-  type KnowledgeStudioManagedDomain,
 } from './knowledgeStudioApi'
 import { useKnowledgeStudioSessionStore } from './knowledgeStudioSessionStore'
 import { StudioShell } from './StudioShell'
@@ -143,7 +141,6 @@ export function KnowledgeStudioPage({
   const [domainsLoading, setDomainsLoading] = useState(true)
   const [domainsError, setDomainsError] = useState('')
   const [domainLoadSequence, setDomainLoadSequence] = useState(0)
-  const [domainManagementOpen, setDomainManagementOpen] = useState(false)
   const [initialized, setInitialized] = useState(false)
   const [initializationError, setInitializationError] = useState('')
   const [initializationSequence, setInitializationSequence] = useState(0)
@@ -862,34 +859,6 @@ export function KnowledgeStudioPage({
     }
   }
 
-  const domainChanged = async (
-    selected?: KnowledgeStudioManagedDomain,
-    archivedId?: string,
-  ) => {
-    const refreshed = await reloadDomains()
-    if (selected) {
-      if (!refreshed.some((item) => item.id === selected.id)) {
-        throw new Error('변경된 도메인이 현재 작성자의 PostgreSQL 조회 범위에 없습니다.')
-      }
-      if (formRef.current.domain_id === selected.id || !formRef.current.domain_id) {
-        queueForm({
-          ...formRef.current,
-          domain_id: selected.id,
-          domain_source_version: selected.source_version,
-        })
-      }
-      return
-    }
-    if (!archivedId) return
-    if (formRef.current.domain_id === archivedId) {
-      queueForm({
-        ...formRef.current,
-        domain_id: '',
-        domain_source_version: '',
-      })
-    }
-  }
-
   const handleBack = useCallback(() => {
     if (
       pendingRef.current
@@ -957,7 +926,6 @@ export function KnowledgeStudioPage({
           onChange={queueForm}
           onDomainQueryChange={setDomainQuery}
           onRetryDomains={retryDomains}
-          onManageDomains={() => setDomainManagementOpen(true)}
           onCreateDomain={createDomain}
           onSave={() => { void flushLatest() }}
           onContinue={() => { void continueToTbox() }}
@@ -1006,16 +974,5 @@ export function KnowledgeStudioPage({
         서버의 최신 ETag를 다시 읽은 뒤 보존된 로컬 입력을 새 version fence로 저장합니다.
       </p>
     </Dialog>
-    <DomainManagementDialog
-      client={client}
-      open={domainManagementOpen}
-      items={domains}
-      loading={domainsLoading}
-      onRequestClose={() => setDomainManagementOpen(false)}
-      onChanged={domainChanged}
-      onStepUp={onStepUp}
-      onPasswordReauth={onPasswordReauth}
-      onEnroll={onEnroll}
-    />
   </StudioShell>
 }

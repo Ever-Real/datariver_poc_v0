@@ -172,7 +172,7 @@ describe('GraphBuilder', () => {
       name: 'Employee → Department',
     })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'REPORTS_TO' })).toBeInTheDocument()
-    expect(canvas.querySelectorAll('.react-flow__handle')).toHaveLength(6)
+    expect(canvas.querySelectorAll('.react-flow__handle')).toHaveLength(22)
   })
 
   it('shows prior layers in a new block and keeps inherited elements read-only', async () => {
@@ -238,6 +238,111 @@ describe('GraphBuilder', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('이전 블록의 요소')
     expect(within(canvas).getByText('Employee')).toBeInTheDocument()
+  })
+
+  it('allows active-owned relationships in both directions across an earlier layer and projects SUBCLASS_OF once', async () => {
+    const inheritedClass = {
+      stable_element_id: 'class:employee',
+      kind: 'CLASS',
+      canonical_name: 'Employee',
+      display_name: 'Employee',
+      ordinal: 0,
+      version: 1,
+      block_id: blockId,
+      aliases: [],
+      vector_index_enabled: false,
+      layout_x: 80,
+      layout_y: 100,
+    }
+    const layered = tbox([inheritedClass])
+    layered.blocks.push({
+      id: secondBlockId,
+      kind: 'DIRECT',
+      title: '확장 레이어',
+      weight: 60,
+      ordinal: 1,
+      collapsed: false,
+      version: 1,
+      source_reference: null,
+      elements: [],
+      created_at: '2026-07-29T01:01:00Z',
+      updated_at: '2026-07-29T01:01:00Z',
+    })
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`)) {
+        return Promise.resolve(json(layered))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    fireEvent.click(screen.getByRole('button', {
+      name: '확장 레이어 DIRECT 블록 열기',
+    }))
+    const classInput = screen.getByLabelText('최상위 Class 이름')
+    fireEvent.change(classInput, { target: { value: 'Department' } })
+    fireEvent.click(screen.getByRole('button', { name: '최상위 Class 추가' }))
+
+    const canvas = screen.getByLabelText('T-Box 그래프 캔버스')
+    const employeeNode = within(canvas).getByText('Employee').closest('.react-flow__node')
+    const departmentNode = within(canvas).getByText('Department').closest('.react-flow__node')
+    expect(employeeNode?.querySelectorAll('.react-flow__handle.source.connectable').length)
+      .toBeGreaterThan(0)
+    expect(departmentNode?.querySelectorAll('.react-flow__handle.source.connectable').length)
+      .toBeGreaterThan(0)
+
+    fireEvent.change(screen.getByLabelText('T-Box Cypher 편집기'), {
+      target: {
+        value: 'CREATE (n0:Employee)\n'
+          + 'CREATE (n1:Department)\n'
+          + 'CREATE (n0)-[:LEGACY_TO_CURRENT]->(n1)\n'
+          + 'CREATE (n1)-[:REPORTS_TO]->(n0)',
+      },
+    })
+
+    expect(await screen.findByRole('button', {
+      name: 'LEGACY_TO_CURRENT Relationship 편집',
+    })).toBeEnabled()
+    expect(screen.getByRole('button', {
+      name: 'REPORTS_TO Relationship 편집',
+    })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('button', {
+      name: 'REPORTS_TO Relationship 편집',
+    }))
+    const relationshipName = screen.getByLabelText('REPORTS_TO Relationship 이름')
+    fireEvent.change(relationshipName, { target: { value: 'SUBCLASS_OF' } })
+    fireEvent.keyDown(relationshipName, { key: 'Enter' })
+
+    expect(await screen.findByRole('button', {
+      name: 'SUBCLASS_OF Relationship 편집',
+    })).toBeEnabled()
+    expect(screen.getByLabelText<HTMLTextAreaElement>('T-Box Cypher 편집기').value)
+      .toContain('CREATE (n1)-[:SUBCLASS_OF]->(n0)')
+    expect(screen.getAllByText('SUBCLASS_OF')).toHaveLength(2)
+
+    fireEvent.click(screen.getByRole('button', {
+      name: 'LEGACY_TO_CURRENT Relationship 삭제',
+    }))
+    await waitFor(() => {
+      expect(screen.queryByRole('button', {
+        name: 'LEGACY_TO_CURRENT Relationship 편집',
+      })).not.toBeInTheDocument()
+    })
   })
 
   it('retains unsaved per-block graph and editor state while switching layer headers', async () => {
@@ -548,12 +653,62 @@ describe('GraphBuilder', () => {
     await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
     const title = screen.getByLabelText('1번 블록 이름')
     fireEvent.change(title, { target: { value: '핵심 스키마' } })
-    expect(screen.getByRole('button', { name: '직접 정의 블록 이름 확인' })).toBeEnabled()
+    const editingCheck = screen.getByLabelText('직접 정의 블록 이름 입력 중')
+    expect(editingCheck.tagName).toBe('SPAN')
+    expect(editingCheck).toHaveClass('text-slate-300')
     expect(screen.getByRole('button', { name: '직접 정의 블록 이름 취소' })).toBeEnabled()
     fireEvent.keyDown(title, { key: 'Enter' })
 
     await waitFor(() => expect(title).toHaveValue('핵심 스키마'))
+    expect(title).toHaveClass('border-slate-100')
+    expect(screen.getByLabelText('핵심 스키마 블록 이름 저장됨')).toHaveClass('text-emerald-600')
     const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')
     expect(new Headers(patch?.[1]?.headers).get('If-Match')).toBe('"2"')
+  })
+
+  it('uses the governed global catalog search surface in a wide database modal', async () => {
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`)) {
+        return Promise.resolve(json(tbox()))
+      }
+      if (path.includes(`/drafts/${draftId}/tbox/catalog-sources?`)) {
+        return Promise.resolve(json({
+          items: [],
+          page: { next_cursor: null, limit: 50 },
+        }))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    fireEvent.click(screen.getByRole('button', { name: 'DB 테이블 검색' }))
+    const dialog = await screen.findByRole('dialog', {
+      name: 'DB 카탈로그에서 T-Box 제안',
+    })
+    expect(dialog).toHaveClass('app-dialog-large')
+    const query = screen.getByLabelText('T-Box 카탈로그 검색어')
+    fireEvent.change(query, { target: { value: 'orders' } })
+    fireEvent.submit(query.closest('form')!)
+
+    await waitFor(() => {
+      const requested = fetchMock.mock.calls.map(([input]) => requestUrl(input))
+      expect(requested).toContainEqual(expect.stringContaining(
+        `/tbox/catalog-sources?q=orders&limit=50`,
+      ))
+    })
   })
 })

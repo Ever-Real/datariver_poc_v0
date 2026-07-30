@@ -1,4 +1,4 @@
-import { ArrowRight, Info, Plus, Save, Settings2 } from 'lucide-react'
+import { ArrowRight, Info, Plus, Save } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type {
   KnowledgeClassification,
@@ -74,7 +74,6 @@ interface BasicInformationStepProps {
   onChange: (value: KnowledgeStudioBasicInformation) => void
   onDomainQueryChange: (value: string) => void
   onRetryDomains?: () => void
-  onManageDomains: () => void
   onCreateDomain: (displayName: string) => Promise<void>
   onSave: () => void
   onContinue: () => void
@@ -91,7 +90,6 @@ export function BasicInformationStep({
   onChange,
   onDomainQueryChange,
   onRetryDomains,
-  onManageDomains,
   onCreateDomain,
   onSave,
   onContinue,
@@ -147,13 +145,6 @@ export function BasicInformationStep({
             Graph type과 lifecycle은 서버 정책이 관리합니다.
           </p>
         </div>
-        <button
-          type="button"
-          className="button button-secondary"
-          onClick={onManageDomains}
-        >
-          <Settings2 size={14} /> 도메인 관리
-        </button>
       </header>
       <div className="grid gap-4 md:grid-cols-2">
         <label className="grid gap-1 text-xs font-black text-navy-900">

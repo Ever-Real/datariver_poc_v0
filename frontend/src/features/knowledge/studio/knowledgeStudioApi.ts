@@ -737,7 +737,7 @@ export async function searchKnowledgeStudioTBoxCatalogSources(
   },
   signal?: AbortSignal,
 ): Promise<KnowledgeStudioSourcePage> {
-  const params = new URLSearchParams({ q: query.trim(), limit: '25' })
+  const params = new URLSearchParams({ q: query.trim(), limit: '50' })
   if (filters?.domain?.trim()) params.set('domain', filters.domain.trim())
   if (filters?.search_fields?.length) {
     params.set('search_fields', filters.search_fields.join(','))

@@ -55,6 +55,7 @@ export function TopNavigation({
   const [navigation, setNavigation] = useState<HTMLElement | null>(null)
   const activePrimaryPage = page === 'knowledge-chat'
     || page === 'knowledge-instances'
+    || page === 'knowledge-profiles'
     || page === 'knowledge-studio'
     ? 'knowledge'
     : page

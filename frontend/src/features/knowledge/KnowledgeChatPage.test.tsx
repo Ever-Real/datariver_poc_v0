@@ -52,7 +52,7 @@ describe('KnowledgeChatPage', () => {
     render(<KnowledgeChatPage client={client} onNavigate={vi.fn()} />)
 
     expect(screen.getByRole('navigation', { name: '지식관리 메뉴' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /지식 챗/ })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByRole('button', { name: /Chat Test/ })).toHaveAttribute('aria-current', 'page')
     await screen.findByRole('option', { name: /ETCH-01/ })
     fireEvent.change(screen.getByLabelText('질문'), { target: { value: '연결 관계를 보여줘' } })
     fireEvent.click(screen.getByRole('button', { name: 'GraphRAG 질의' }))

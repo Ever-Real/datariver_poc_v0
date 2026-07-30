@@ -1,8 +1,13 @@
-import { BookOpen, Boxes, MessageSquareText } from 'lucide-react'
+import { BookOpen, Boxes, MessageSquareText, Settings2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { Page } from '../../app/navigation'
 
-export type KnowledgeWorkspaceSection = 'REGISTRY' | 'INSTANCES' | 'CHAT' | 'STUDIO'
+export type KnowledgeWorkspaceSection =
+  | 'REGISTRY'
+  | 'INFORMATION'
+  | 'INSTANCES'
+  | 'CHAT'
+  | 'STUDIO'
 
 const items: Array<{
   section: KnowledgeWorkspaceSection
@@ -10,14 +15,20 @@ const items: Array<{
   description: string
   icon: typeof BookOpen
 }> = [
-  { section: 'REGISTRY', title: '지식 레지스트리', description: '에셋 관리 및 이력', icon: BookOpen },
+  { section: 'REGISTRY', title: '조회 및 생성', description: '에셋 조회·생성 및 이력', icon: BookOpen },
+  {
+    section: 'INFORMATION',
+    title: '정보 관리',
+    description: '업무 도메인 CRUD',
+    icon: Settings2,
+  },
   {
     section: 'INSTANCES',
-    title: '지식 자산 인스턴스 관리',
-    description: '도메인·Property 프로필·동기화',
+    title: '인스턴스 관리',
+    description: 'Property 프로필·A-Box 동기화',
     icon: Boxes,
   },
-  { section: 'CHAT', title: '지식 챗', description: '별도 GraphRAG 질의', icon: MessageSquareText },
+  { section: 'CHAT', title: 'Chat Test', description: '별도 GraphRAG 질의', icon: MessageSquareText },
 ]
 
 export function KnowledgeWorkspaceLayout({
@@ -35,6 +46,10 @@ export function KnowledgeWorkspaceLayout({
       return
     }
     if (section === 'INSTANCES') {
+      onNavigate('knowledge-profiles')
+      return
+    }
+    if (section === 'INFORMATION') {
       onNavigate('knowledge-instances')
       return
     }

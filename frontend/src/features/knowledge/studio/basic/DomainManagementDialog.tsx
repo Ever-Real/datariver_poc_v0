@@ -18,12 +18,10 @@ import {
   type KnowledgeStudioManagedDomain,
 } from '../knowledgeStudioApi'
 
-interface DomainManagementDialogProps {
+interface DomainManagementPanelProps {
   client: ApiClient
-  open: boolean
   items: KnowledgeStudioDomainOption[]
   loading: boolean
-  onRequestClose: () => void
   onChanged: (
     selected?: KnowledgeStudioManagedDomain,
     archivedId?: string,
@@ -31,6 +29,11 @@ interface DomainManagementDialogProps {
   onStepUp?: () => Promise<void>
   onPasswordReauth?: () => Promise<void>
   onEnroll?: () => Promise<void>
+}
+
+interface DomainManagementDialogProps extends DomainManagementPanelProps {
+  open: boolean
+  onRequestClose: () => void
 }
 
 const columnHelper = createColumnHelper<KnowledgeStudioDomainOption>()
@@ -98,29 +101,20 @@ function DomainNameCell({
   )
 }
 
-export function DomainManagementDialog({
+export function DomainManagementPanel({
   client,
-  open,
   items,
   loading,
-  onRequestClose,
   onChanged,
   onStepUp,
   onPasswordReauth,
   onEnroll,
-}: DomainManagementDialogProps) {
+}: DomainManagementPanelProps) {
   const [newName, setNewName] = useState('')
   const [editingId, setEditingId] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
   const [managementError, setManagementError] = useState<unknown>()
-
-  useEffect(() => {
-    if (open) {
-      setStatus('')
-      setManagementError(undefined)
-    }
-  }, [open])
 
   const createDomain = async () => {
     const name = newName.trim()
@@ -293,19 +287,7 @@ export function DomainManagementDialog({
   })
 
   return (
-    <Dialog
-      open={open}
-      title="도메인 관리"
-      description="Workspace의 등록된 업무 도메인을 관리합니다. 삭제는 기존 Asset 참조를 보존하는 비활성화입니다."
-      onRequestClose={() => {
-        if (!busy) onRequestClose()
-      }}
-      footer={(
-        <button type="button" className="button" disabled={busy} onClick={onRequestClose}>
-          닫기
-        </button>
-      )}
-    >
+    <section aria-label="업무 도메인 관리" className="grid gap-3">
       <form
         className="mb-3 flex gap-2"
         onSubmit={(event) => {
@@ -373,6 +355,42 @@ export function DomainManagementDialog({
           onEnroll={onEnroll}
         />
       )}
+    </section>
+  )
+}
+
+export function DomainManagementDialog({
+  client,
+  open,
+  items,
+  loading,
+  onRequestClose,
+  onChanged,
+  onStepUp,
+  onPasswordReauth,
+  onEnroll,
+}: DomainManagementDialogProps) {
+  return (
+    <Dialog
+      open={open}
+      title="도메인 관리"
+      description="Workspace의 등록된 업무 도메인을 관리합니다. 삭제는 기존 Asset 참조를 보존하는 비활성화입니다."
+      onRequestClose={onRequestClose}
+      footer={(
+        <button type="button" className="button" onClick={onRequestClose}>
+          닫기
+        </button>
+      )}
+    >
+      <DomainManagementPanel
+        client={client}
+        items={items}
+        loading={loading}
+        onChanged={onChanged}
+        onStepUp={onStepUp}
+        onPasswordReauth={onPasswordReauth}
+        onEnroll={onEnroll}
+      />
     </Dialog>
   )
 }

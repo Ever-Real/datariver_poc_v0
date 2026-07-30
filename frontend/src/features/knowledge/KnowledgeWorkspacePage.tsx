@@ -6,12 +6,17 @@ import { PageTitle } from '../../components/layout/PageTitle'
 import { KnowledgeChatContent } from './KnowledgeChatPage'
 import { KnowledgeRegistry } from './KnowledgeRegistry'
 import { KnowledgeInstanceManagementPage } from './KnowledgeInstanceManagementPage'
+import { KnowledgeInformationManagementPage } from './KnowledgeInformationManagementPage'
 import { KnowledgeWorkspaceLayout, type KnowledgeWorkspaceSection } from './KnowledgeWorkspaceLayout'
 import { KnowledgeStudioPage } from './studio/KnowledgeStudioPage'
 
 type KnowledgePage = Extract<
   Page,
-  'knowledge' | 'knowledge-chat' | 'knowledge-instances' | 'knowledge-studio'
+  | 'knowledge'
+  | 'knowledge-chat'
+  | 'knowledge-instances'
+  | 'knowledge-profiles'
+  | 'knowledge-studio'
 >
 
 interface KnowledgeWorkspacePageProps {
@@ -29,7 +34,8 @@ interface KnowledgeWorkspacePageProps {
 
 function activeSection(page: KnowledgePage): KnowledgeWorkspaceSection {
   if (page === 'knowledge-chat') return 'CHAT'
-  if (page === 'knowledge-instances') return 'INSTANCES'
+  if (page === 'knowledge-instances') return 'INFORMATION'
+  if (page === 'knowledge-profiles') return 'INSTANCES'
   if (page === 'knowledge-studio') return 'STUDIO'
   return 'REGISTRY'
 }
@@ -78,7 +84,15 @@ export function KnowledgeWorkspacePage({
           </div>
         )}
         {page === 'knowledge-chat' && <KnowledgeChatContent client={client} />}
-        {page === 'knowledge-instances' && <KnowledgeInstanceManagementPage />}
+        {page === 'knowledge-instances' && (
+          <KnowledgeInformationManagementPage
+            client={client}
+            onStepUp={onStepUp}
+            onPasswordReauth={onPasswordReauth}
+            onEnroll={onEnroll}
+          />
+        )}
+        {page === 'knowledge-profiles' && <KnowledgeInstanceManagementPage />}
         {page === 'knowledge-studio' && (
           <KnowledgeStudioPage
             client={client}

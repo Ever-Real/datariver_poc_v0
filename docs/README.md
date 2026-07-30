@@ -113,6 +113,9 @@ multipart ingress, exact catalog Proposal pin and React Flow projection refineme
 The isolated `admin.manage` assurance and development password-reauth boundary for domain rename
 and archive is defined by
 [ADR-0075](adr/0075-knowledge-domain-administrator-assurance.md).
+The active-layer bidirectional connection rule, canonical hierarchy projection, bounded provider
+grammar, auditable latest-block deletion and separate information/profile workspaces are defined by
+[ADR-0076](adr/0076-knowledge-studio-interaction-provider-and-profile-boundaries.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

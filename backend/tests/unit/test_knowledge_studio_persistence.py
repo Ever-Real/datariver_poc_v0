@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
-from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, Table
+from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, String, Table
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,6 +28,12 @@ from datariver.domain.knowledge_studio import (
 from datariver.infrastructure.db import models  # noqa: F401
 from datariver.infrastructure.db.base import Base
 from datariver.infrastructure.db.knowledge_studio import (
+    ABOX_BINDING_OPERATION,
+    TBOX_BLOCK_CREATE_OPERATION,
+    TBOX_BLOCK_DELETE_OPERATION,
+    TBOX_BLOCK_UPDATE_OPERATION,
+    TBOX_OPERATIONS_OPERATION,
+    TBOX_PROPOSAL_APPLY_OPERATION,
     SqlKnowledgeStudioStore,
     abox_binding_result,
     resolve_abox_idempotent_replay,
@@ -270,6 +276,24 @@ def test_ontology_builder_and_ingestion_models_are_typed_and_rls_governed() -> N
     assert '"preflight_receipt_id": str(preflight.id)' in (
         ROOT / "backend/src/datariver/infrastructure/db/knowledge_studio.py"
     ).read_text(encoding="utf-8")
+
+
+def test_studio_typed_mutation_operation_names_fit_the_persisted_bound() -> None:
+    operation_column = _table("integration.idempotency_keys").c.operation
+    operation_type = operation_column.type
+    assert isinstance(operation_type, String)
+    assert operation_type.length == 100
+    assert operation_type.length is not None
+    operations = {
+        TBOX_BLOCK_CREATE_OPERATION,
+        TBOX_BLOCK_UPDATE_OPERATION,
+        TBOX_BLOCK_DELETE_OPERATION,
+        TBOX_OPERATIONS_OPERATION,
+        TBOX_PROPOSAL_APPLY_OPERATION,
+        ABOX_BINDING_OPERATION,
+    }
+    assert all(len(operation) <= operation_type.length for operation in operations)
+    assert len(operations) == 6
 
 
 @pytest.mark.asyncio

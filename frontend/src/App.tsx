@@ -339,6 +339,7 @@ export function App() {
         {(page === 'knowledge'
           || page === 'knowledge-chat'
           || page === 'knowledge-instances'
+          || page === 'knowledge-profiles'
           || page === 'knowledge-studio') && (
           <KnowledgeWorkspacePage
             page={page}

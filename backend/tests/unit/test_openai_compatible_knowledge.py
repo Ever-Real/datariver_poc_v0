@@ -314,6 +314,64 @@ async def test_tbox_schema_assistant_rejects_duplicate_model_identities() -> Non
 
 
 @pytest.mark.asyncio
+async def test_tbox_schema_assistant_uses_bounded_grammar_compatible_schema() -> None:
+    transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "elements": [
+                                    {
+                                        "stable_element_id": "class:document",
+                                        "kind": "CLASS",
+                                        "canonical_name": "Document",
+                                        "display_name": "Document",
+                                    }
+                                ]
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+
+    result = await OpenAICompatibleTBoxSchemaAssistant(transport=transport).propose(
+        prompt="Document schema를 제안해 줘.",
+        current_elements=(),
+        binding=_binding("gemma4:latest"),
+    )
+
+    assert len(result) == 1
+    request = transport.calls[0][1]
+    response_format = request["response_format"]
+    assert isinstance(response_format, dict)
+    schema_contract = response_format["json_schema"]
+    assert isinstance(schema_contract, dict)
+    schema = schema_contract["schema"]
+    assert isinstance(schema, dict)
+    serialized = json.dumps(schema)
+    assert "$ref" not in serialized
+    assert "$defs" not in serialized
+    assert "anyOf" not in serialized
+    assert "maxLength" not in serialized
+    elements = schema["properties"]
+    assert isinstance(elements, dict)
+    element_items = elements["elements"]
+    assert isinstance(element_items, dict)
+    item_schema = element_items["items"]
+    assert isinstance(item_schema, dict)
+    item_properties = item_schema["properties"]
+    assert isinstance(item_properties, dict)
+    kind = item_properties["kind"]
+    assert isinstance(kind, dict)
+    assert kind["enum"] == ["CLASS", "PROPERTY", "RELATION"]
+    assert item_schema["additionalProperties"] is False
+
+
+@pytest.mark.asyncio
 async def test_extractor_drops_edges_with_model_invented_endpoints() -> None:
     transport = _Transport(
         {

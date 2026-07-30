@@ -10,8 +10,10 @@ import {
 import {
   Background,
   BackgroundVariant,
+  BaseEdge,
   ConnectionMode,
   Controls,
+  EdgeLabelRenderer,
   Handle,
   MarkerType,
   MiniMap,
@@ -19,11 +21,14 @@ import {
   Position,
   ReactFlow,
   applyEdgeChanges,
+  getBezierPath,
+  useConnection,
   useEdgesState,
   useNodesState,
   type Connection,
   type Edge,
   type EdgeChange,
+  type EdgeProps,
   type Node,
   type NodeChange,
   type NodeProps,
@@ -37,6 +42,7 @@ import {
   FolderTree,
   GitBranch,
   LockKeyhole,
+  Pencil,
   Plus,
   Save,
   Search,
@@ -88,6 +94,7 @@ interface SchemaNodeData extends Record<string, unknown> {
   editorOpen: boolean
   editorScale: number
   canStartConnection: boolean
+  canReceiveConnection: boolean
   blockLabel: string
   properties: Array<{ id: string; label: string; dataType: string }>
   onToggleEditor: () => void
@@ -105,7 +112,14 @@ interface LayerGroupData extends Record<string, unknown> {
 }
 type LayerGroupNode = Node<LayerGroupData, 'layerGroup'>
 type CanvasNode = SchemaNode | LayerGroupNode
-type SchemaEdge = Edge<{ relation: string; hierarchy?: boolean; editable: boolean }>
+interface SchemaEdgeData extends Record<string, unknown> {
+  relation: string
+  hierarchy?: boolean
+  editable: boolean
+  onRename?: (value: string) => void
+  onDelete?: () => void
+}
+type SchemaEdge = Edge<SchemaEdgeData, 'schemaEdge'>
 
 interface GraphBuilderProps {
   client: ApiClient
@@ -131,15 +145,6 @@ const directBlockOption: {
 }
 
 const propertyDataTypes = ['STRING', 'TEXT', 'INTEGER', 'FLOAT', 'BOOLEAN', 'DATE', 'DATETIME']
-const catalogSearchFieldOptions = [
-  ['TABLE', '테이블명'],
-  ['SCHEMA', '스키마'],
-  ['COLUMN', '컬럼'],
-  ['TAG', '태그'],
-  ['TERM', '용어'],
-  ['DESCRIPTION', '설명'],
-] as const
-
 interface PropertyRowProps {
   classLabel: string
   property: { id: string; label: string; dataType: string }
@@ -221,13 +226,46 @@ function PropertyRow({
 function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
   const [propertyName, setPropertyName] = useState('')
   const [displayName, setDisplayName] = useState(data.label)
+  const [hovered, setHovered] = useState(false)
+  const [hoverPoint, setHoverPoint] = useState<{
+    x: number
+    y: number
+    side: Position
+  }>({ x: 69, y: 0, side: Position.Top })
+  const connectionInProgress = useConnection((state) => state.inProgress)
+  const connectionSourceId = useConnection((state) => (
+    state.inProgress ? state.fromNode.id : null
+  ))
 
   useEffect(() => setDisplayName(data.label), [data.label])
 
   return (
-    <div className={`relative w-[138px] rounded-md border bg-[#10253d] px-2.5 py-1.5 text-[10px] font-extrabold text-slate-50 shadow-lg ${
-      selected || data.selected ? 'border-amber-300 ring-2 ring-amber-300/40' : 'border-sky-400'
-    }`}>
+    <div
+      className={`relative w-[138px] rounded-md border bg-[#10253d] px-2.5 py-1.5 text-[10px] font-extrabold text-slate-50 shadow-lg ${
+        selected || data.selected ? 'border-amber-300 ring-2 ring-amber-300/40' : 'border-sky-400'
+      }`}
+      onPointerEnter={() => setHovered(true)}
+      onPointerLeave={() => setHovered(false)}
+      onPointerMove={(event) => {
+        const bounds = event.currentTarget.getBoundingClientRect()
+        const x = Math.max(0, Math.min(bounds.width, event.clientX - bounds.left))
+        const y = Math.max(0, Math.min(bounds.height, event.clientY - bounds.top))
+        const distances = [
+          [Position.Top, y],
+          [Position.Right, bounds.width - x],
+          [Position.Bottom, bounds.height - y],
+          [Position.Left, x],
+        ] as const
+        const [side] = distances.reduce((closest, candidate) => (
+          candidate[1] < closest[1] ? candidate : closest
+        ))
+        setHoverPoint({
+          side,
+          x: side === Position.Left ? 0 : side === Position.Right ? bounds.width : x,
+          y: side === Position.Top ? 0 : side === Position.Bottom ? bounds.height : y,
+        })
+      }}
+    >
       <span className="absolute -left-2 -top-2 rounded-full border border-sky-200 bg-sky-500 px-2 py-0.5 text-[9px] font-black text-white shadow">
         No. {data.ordinal}
       </span>
@@ -239,23 +277,70 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
           <LockKeyhole size={9} aria-hidden="true" />
         </span>
       )}
+      {([
+        { position: Position.Top, id: 'source-top', style: { left: 8, right: 8, top: -5, height: 10 } },
+        { position: Position.Right, id: 'source-right', style: { right: -5, top: 8, bottom: 8, width: 10 } },
+        { position: Position.Bottom, id: 'source-bottom', style: { left: 8, right: 8, bottom: -5, height: 10 } },
+        { position: Position.Left, id: 'source-left', style: { left: -5, top: 8, bottom: 8, width: 10 } },
+      ] as const).map(({ position, id, style }) => (
+        <Handle
+          key={id}
+          id={id}
+          type="source"
+          position={position}
+          isConnectable={data.canStartConnection}
+          isConnectableStart={data.canStartConnection}
+          isConnectableEnd={false}
+          className="border-transparent! bg-transparent!"
+          style={{
+            ...style,
+            transform: 'none',
+            borderRadius: 0,
+            opacity: 0,
+            zIndex: 24,
+          }}
+        />
+      ))}
       <Handle
-        id="body"
-        type="source"
-        position={Position.Bottom}
-        isConnectable
-        isConnectableStart={data.canStartConnection}
-        isConnectableEnd
+        id="body-target"
+        type="target"
+        position={Position.Top}
+        isConnectable={
+          data.canReceiveConnection
+          && connectionInProgress
+          && connectionSourceId !== undefined
+          && connectionSourceId !== null
+        }
+        isConnectableStart={false}
+        isConnectableEnd={data.canReceiveConnection}
         className="border-transparent! bg-transparent!"
         style={{
-          inset: -5,
-          width: 'calc(100% + 10px)',
-          height: 'calc(100% + 10px)',
+          inset: -1,
+          width: 'calc(100% + 2px)',
+          height: 'calc(100% + 2px)',
           transform: 'none',
-          borderRadius: 9,
-          zIndex: 0,
+          borderRadius: 7,
+          opacity: 0,
+          pointerEvents: connectionInProgress ? 'all' : 'none',
+          zIndex: 23,
         }}
       />
+      {([
+        { position: Position.Top, id: 'target-top' },
+        { position: Position.Right, id: 'target-right' },
+        { position: Position.Bottom, id: 'target-bottom' },
+        { position: Position.Left, id: 'target-left' },
+      ] as const).map(({ position, id }) => (
+        <Handle
+          key={id}
+          id={id}
+          type="target"
+          position={position}
+          isConnectable={false}
+          className="border-transparent! bg-transparent!"
+          style={{ width: 1, height: 1, minWidth: 1, minHeight: 1 }}
+        />
+      ))}
       <Handle
         id="hierarchy-source-bottom"
         type="source"
@@ -302,10 +387,42 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
           )}
         </div>
       )}
-      <span aria-hidden="true" className="pointer-events-none absolute -top-1 left-1/2 z-20 size-2 -translate-x-1/2 rounded-full border border-sky-100 bg-cyan-400" />
-      <span aria-hidden="true" className="pointer-events-none absolute -bottom-1 left-1/2 z-20 size-2 -translate-x-1/2 rounded-full border border-sky-100 bg-cyan-400" />
-      <span aria-hidden="true" className="pointer-events-none absolute -left-1 top-1/2 z-20 size-2 -translate-y-1/2 rounded-full border border-sky-100 bg-cyan-400" />
-      <span aria-hidden="true" className="pointer-events-none absolute -right-1 top-1/2 z-20 size-2 -translate-y-1/2 rounded-full border border-sky-100 bg-cyan-400" />
+      {(hovered || connectionInProgress) && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute z-30 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-100 bg-cyan-400 shadow-[0_0_0_3px_rgba(34,211,238,.16)]"
+          style={{ left: hoverPoint.x, top: hoverPoint.y }}
+          data-side={hoverPoint.side}
+        />
+      )}
+      {hovered && !data.editorOpen && (
+        <div className="nodrag nowheel absolute -right-1 -top-8 z-40 flex gap-1 rounded border border-slate-300 bg-white p-1 shadow-lg">
+          <button
+            type="button"
+            className="rounded p-1 text-enterprise-blue hover:bg-blue-50 disabled:text-slate-300"
+            aria-label={`${data.label} Class 편집`}
+            disabled={!data.editable}
+            onClick={(event) => {
+              event.stopPropagation()
+              data.onToggleEditor()
+            }}
+          >
+            <Pencil size={11} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="rounded p-1 text-red-700 hover:bg-red-50 disabled:text-slate-300"
+            aria-label={`${data.label} Class 삭제`}
+            disabled={!data.editable}
+            onClick={(event) => {
+              event.stopPropagation()
+              data.onDelete()
+            }}
+          >
+            <Trash2 size={11} aria-hidden="true" />
+          </button>
+        </div>
+      )}
       <NodeToolbar
         isVisible={data.editorOpen}
         position={Position.Right}
@@ -412,6 +529,126 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
   )
 }
 
+function EditableSchemaEdge({
+  id,
+  data,
+  selected,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  markerEnd,
+  style,
+}: EdgeProps<SchemaEdge>) {
+  const [hovered, setHovered] = useState(false)
+  const [editing, setEditing] = useState(false)
+  const [name, setName] = useState(data?.relation ?? '')
+  const [path, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+    curvature: 0.34,
+  })
+
+  useEffect(() => setName(data?.relation ?? ''), [data?.relation])
+
+  const commit = () => {
+    const value = schemaIdentifier(name, 'Relation')
+    if (value && value !== data?.relation) data?.onRename?.(value)
+    else setName(data?.relation ?? '')
+    setEditing(false)
+  }
+
+  return (
+    <>
+      <g
+        onPointerEnter={() => setHovered(true)}
+        onPointerLeave={() => setHovered(false)}
+      >
+        <BaseEdge
+          id={id}
+          path={path}
+          markerEnd={markerEnd}
+          style={style}
+          interactionWidth={28}
+        />
+        <circle
+          cx={targetX}
+          cy={targetY}
+          r={3.2}
+          fill={data?.hierarchy ? '#34d399' : '#7dd3fc'}
+          stroke="#e0f2fe"
+          strokeWidth={1}
+          pointerEvents="none"
+        />
+      </g>
+      <EdgeLabelRenderer>
+        <div
+          className={`nodrag nopan absolute flex -translate-x-1/2 -translate-y-1/2 items-center gap-1 rounded border px-1.5 py-1 text-[9px] font-black shadow ${
+            data?.hierarchy
+              ? 'border-emerald-300 bg-emerald-950/90 text-emerald-100'
+              : 'border-sky-300 bg-[#10253d]/95 text-sky-100'
+          }`}
+          style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, pointerEvents: 'all' }}
+          onPointerEnter={() => setHovered(true)}
+          onPointerLeave={() => setHovered(false)}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {editing ? (
+            <input
+              autoFocus
+              aria-label={`${data?.relation ?? 'Relationship'} Edge 이름`}
+              className="input h-6 w-28 py-0 text-[9px] text-slate-900"
+              value={name}
+              maxLength={255}
+              onChange={(event) => setName(event.target.value)}
+              onBlur={commit}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') {
+                  event.preventDefault()
+                  commit()
+                } else if (event.key === 'Escape') {
+                  setName(data?.relation ?? '')
+                  setEditing(false)
+                }
+              }}
+            />
+          ) : (
+            <span className="max-w-32 truncate">{data?.relation}</span>
+          )}
+          {(hovered || selected) && (
+            <>
+              <button
+                type="button"
+                className="rounded p-0.5 text-cyan-200 hover:text-white disabled:text-slate-500"
+                aria-label={`${data?.relation ?? 'Relationship'} Edge 편집`}
+                disabled={!data?.editable}
+                onClick={() => setEditing(true)}
+              >
+                <Pencil size={10} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="rounded p-0.5 text-red-300 hover:text-red-100 disabled:text-slate-500"
+                aria-label={`${data?.relation ?? 'Relationship'} Edge 삭제`}
+                disabled={!data?.editable}
+                onClick={() => data?.onDelete?.()}
+              >
+                <Trash2 size={10} aria-hidden="true" />
+              </button>
+            </>
+          )}
+        </div>
+      </EdgeLabelRenderer>
+    </>
+  )
+}
+
 function LayerGroup({ data }: NodeProps<LayerGroupNode>) {
   return (
     <div className={`h-full w-full rounded-xl border-2 border-dashed ${
@@ -430,6 +667,9 @@ const schemaNodeTypes = {
   schemaClass: SchemaClassNode,
   layerGroup: LayerGroup,
 }
+const schemaEdgeTypes = {
+  schemaEdge: EditableSchemaEdge,
+}
 
 interface ClassHierarchyTreeProps {
   classes: KnowledgeStudioTBoxElement[]
@@ -443,6 +683,7 @@ interface ClassHierarchyTreeProps {
   onReparent: (id: string, parentId?: string) => void
   onRenameHierarchy: (id: string, relation: string) => void
   onRenameRelationship: (id: string, relation: string) => void
+  onDeleteRelationship: (id: string) => void
 }
 
 function ClassHierarchyTree({
@@ -457,6 +698,7 @@ function ClassHierarchyTree({
   onReparent,
   onRenameHierarchy,
   onRenameRelationship,
+  onDeleteRelationship,
 }: ClassHierarchyTreeProps) {
   const [newClassName, setNewClassName] = useState('')
   const [parentForNewClass, setParentForNewClass] = useState<string>()
@@ -481,6 +723,22 @@ function ClassHierarchyTree({
     }
     return result
   }, [classById, classes])
+  const relationshipRows = useMemo(() => [
+    ...classes.flatMap((item): KnowledgeStudioTBoxElement[] => (
+      item.parent_stable_element_id
+        ? [{
+            ...item,
+            stable_element_id: `hierarchy:${item.stable_element_id}`,
+            kind: 'RELATION',
+            canonical_name: item.hierarchy_relation ?? 'SUBCLASS_OF',
+            display_name: item.hierarchy_relation ?? 'SUBCLASS_OF',
+            source_stable_element_id: item.stable_element_id,
+            target_stable_element_id: item.parent_stable_element_id,
+          }]
+        : []
+    )),
+    ...relationships,
+  ], [classes, relationships])
 
   const createsCycle = (classId: string, parentId: string): boolean => {
     let cursor: string | undefined = parentId
@@ -706,13 +964,16 @@ function ClassHierarchyTree({
           </ul>
         )}
       </div>
-      {relationships.length > 0 && (
-        <section className="border-t border-slate-200 p-2" aria-label="T-Box 일반 관계">
+      {relationshipRows.length > 0 && (
+        <section className="border-t border-slate-200 p-2" aria-label="T-Box 관계">
           <strong className="mb-1 block text-[9px] font-black text-slate-500 uppercase">
             Relationships
           </strong>
           <ul className="m-0 grid max-h-28 list-none gap-1 overflow-auto p-0">
-            {relationships.map((relationship) => {
+            {relationshipRows.map((relationship) => {
+              const hierarchyClassId = relationship.stable_element_id.startsWith('hierarchy:')
+                ? relationship.stable_element_id.replace(/^hierarchy:/, '')
+                : undefined
               const editable = (
                 (relationship.block_id === activeBlockId || relationship.block_id === undefined)
                 && !relationship.locked_by_later_block
@@ -747,7 +1008,8 @@ function ClassHierarchyTree({
                       onBlur={() => {
                         const value = schemaIdentifier(relationName, 'Relation')
                         if (value && value !== relationship.canonical_name) {
-                          onRenameRelationship(relationship.stable_element_id, value)
+                          if (hierarchyClassId) onRenameHierarchy(hierarchyClassId, value)
+                          else onRenameRelationship(relationship.stable_element_id, value)
                         }
                         setEditingRelationId('')
                       }}
@@ -761,17 +1023,40 @@ function ClassHierarchyTree({
                       }}
                     />
                   ) : (
-                    <button
-                      type="button"
-                      className="mt-1 truncate font-black text-violet-700 disabled:text-slate-400"
-                      disabled={!editable}
-                      onClick={() => {
-                        setRelationName(relationship.canonical_name)
-                        setEditingRelationId(relationship.stable_element_id)
-                      }}
-                    >
-                      {relationship.display_name}
-                    </button>
+                    <div className="mt-1 flex items-center gap-1">
+                      <button
+                        type="button"
+                        className="min-w-0 flex-1 truncate text-left font-black text-violet-700 disabled:text-slate-400"
+                        disabled={!editable}
+                        onClick={() => {
+                          setRelationName(relationship.canonical_name)
+                          setEditingRelationId(relationship.stable_element_id)
+                        }}
+                      >
+                        {relationship.display_name}
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded p-0.5 text-enterprise-blue hover:bg-blue-50 disabled:text-slate-300"
+                        aria-label={`${relationship.display_name} Relationship 편집`}
+                        disabled={!editable}
+                        onClick={() => {
+                          setRelationName(relationship.canonical_name)
+                          setEditingRelationId(relationship.stable_element_id)
+                        }}
+                      >
+                        <Pencil size={10} aria-hidden="true" />
+                      </button>
+                      <button
+                        type="button"
+                        className="rounded p-0.5 text-red-700 hover:bg-red-50 disabled:text-slate-300"
+                        aria-label={`${relationship.display_name} Relationship 삭제`}
+                        disabled={!editable}
+                        onClick={() => onDeleteRelationship(relationship.stable_element_id)}
+                      >
+                        <Trash2 size={10} aria-hidden="true" />
+                      </button>
+                    </div>
                   )}
                 </li>
               )
@@ -859,6 +1144,21 @@ function effectiveSessionElements(
   return [...merged.values()].sort((left, right) => left.ordinal - right.ordinal)
 }
 
+function relationshipHandles(
+  source: { x: number; y: number },
+  target: { x: number; y: number },
+): { sourceHandle: string; targetHandle: string } {
+  const horizontal = Math.abs(target.x - source.x) >= Math.abs(target.y - source.y)
+  if (horizontal) {
+    return target.x >= source.x
+      ? { sourceHandle: 'source-right', targetHandle: 'target-left' }
+      : { sourceHandle: 'source-left', targetHandle: 'target-right' }
+  }
+  return target.y >= source.y
+    ? { sourceHandle: 'source-bottom', targetHandle: 'target-top' }
+    : { sourceHandle: 'source-top', targetHandle: 'target-bottom' }
+}
+
 function flowGraph(
   elements: KnowledgeStudioTBoxElement[],
   editableBlockId: string,
@@ -911,6 +1211,8 @@ function flowGraph(
       && !item.locked_by_later_block
     )
     const block = item.block_id ? blockById.get(item.block_id) : undefined
+    const ownerOrdinal = block?.ordinal ?? activeOrdinal
+    const connectableInActiveView = ownerOrdinal <= activeOrdinal
     return {
     id: item.stable_element_id,
     type: 'schemaClass',
@@ -923,7 +1225,8 @@ function flowGraph(
       selected: item.stable_element_id === selectedElementId,
       editorOpen: false,
       editorScale: 1,
-      canStartConnection: editable,
+      canStartConnection: connectableInActiveView,
+      canReceiveConnection: connectableInActiveView,
       blockLabel: block?.title ?? '현재 블록',
       properties: elements
         .filter(
@@ -950,20 +1253,23 @@ function flowGraph(
     .filter((item) => item.kind === 'RELATION')
     .flatMap((item): SchemaEdge[] => {
       if (!item.source_stable_element_id || !item.target_stable_element_id) return []
+      const sourcePosition = classPositions.get(item.source_stable_element_id)
+      const targetPosition = classPositions.get(item.target_stable_element_id)
+      if (!sourcePosition || !targetPosition) return []
+      const handles = relationshipHandles(sourcePosition, targetPosition)
       return [{
         id: item.stable_element_id,
+        type: 'schemaEdge',
         source: item.source_stable_element_id,
         target: item.target_stable_element_id,
-        label: item.display_name,
         data: {
           relation: item.canonical_name,
           editable: item.block_id === editableBlockId,
         },
         markerEnd: { type: MarkerType.ArrowClosed, color: '#7dd3fc' },
-        sourceHandle: 'body',
-        targetHandle: 'body',
+        sourceHandle: handles.sourceHandle,
+        targetHandle: handles.targetHandle,
         style: { stroke: '#7dd3fc', strokeWidth: 1.6 },
-        labelStyle: { fill: '#e2e8f0', fontWeight: 700 },
       }]
     })
   const hierarchyEdges = classes.flatMap((item): SchemaEdge[] => {
@@ -971,11 +1277,11 @@ function flowGraph(
     if (!parent || !classPositions.has(parent)) return []
     return [{
       id: `hierarchy:${item.stable_element_id}`,
+      type: 'schemaEdge',
       source: parent,
       target: item.stable_element_id,
       sourceHandle: 'hierarchy-source-bottom',
       targetHandle: 'hierarchy-target-top',
-      label: item.hierarchy_relation ?? 'SUBCLASS_OF',
       data: {
         relation: item.hierarchy_relation ?? 'SUBCLASS_OF',
         hierarchy: true,
@@ -983,7 +1289,6 @@ function flowGraph(
       },
       markerEnd: { type: MarkerType.ArrowClosed, color: '#34d399' },
       style: { stroke: '#34d399', strokeWidth: 1.5, strokeDasharray: '6 4' },
-      labelStyle: { fill: '#a7f3d0', fontWeight: 800 },
     }]
   })
   return {
@@ -1092,7 +1397,7 @@ function EditableBlockTitle({ block, disabled, onSave }: EditableBlockTitleProps
         className={`input min-w-0 flex-1 py-1 text-xs font-black text-navy-900 ${
           dirty
             ? 'border-enterprise-blue bg-white'
-            : 'border-slate-200 bg-slate-50/60'
+            : 'border-slate-100 bg-slate-50/30'
         }`}
         value={value}
         maxLength={120}
@@ -1107,16 +1412,15 @@ function EditableBlockTitle({ block, disabled, onSave }: EditableBlockTitleProps
           }
         }}
       />
-      <button
-        type="button"
-        className="rounded bg-transparent p-1 text-emerald-700 shadow-none hover:bg-transparent active:bg-transparent disabled:text-emerald-700"
-        aria-label={`${block.title} 블록 이름 ${dirty ? '확인' : '저장됨'}`}
-        title={dirty ? '저장' : '저장됨'}
-        disabled={disabled || !dirty}
-        onClick={save}
+      <span
+        className={`grid size-6 place-items-center bg-transparent ${
+          dirty ? 'text-slate-300' : 'text-emerald-600'
+        }`}
+        aria-label={`${block.title} 블록 이름 ${dirty ? '입력 중' : '저장됨'}`}
+        title={dirty ? 'Enter로 저장' : '저장됨'}
       >
         <Check size={13} aria-hidden="true" />
-      </button>
+      </span>
       <button
         type="button"
         className="rounded p-1 text-slate-500 hover:bg-slate-100 disabled:text-slate-300"
@@ -1177,10 +1481,6 @@ export function GraphBuilder({
   const [conflictOpen, setConflictOpen] = useState(false)
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [catalogQuery, setCatalogQuery] = useState('')
-  const [catalogDomain, setCatalogDomain] = useState('')
-  const [catalogSearchFields, setCatalogSearchFields] = useState<Set<string>>(
-    () => new Set(catalogSearchFieldOptions.map(([value]) => value)),
-  )
   const [catalogResults, setCatalogResults] = useState<KnowledgeStudioSourceDataset[]>([])
   const [selectedCatalog, setSelectedCatalog] = useState<KnowledgeStudioSourceDataset>()
   const [selectedCatalogFields, setSelectedCatalogFields] = useState<Set<string>>(new Set())
@@ -1204,6 +1504,7 @@ export function GraphBuilder({
   )
   const removeSessionBlock = useKnowledgeStudioSessionStore((state) => state.removeBlock)
   const locked = lifecycleState !== 'DRAFT'
+  const nodePositionsRef = useRef(new Map<string, { x: number; y: number }>())
 
   const setOpenEditor = useCallback((nextId: string) => {
     editorOpenIdRef.current = nextId
@@ -1222,7 +1523,10 @@ export function GraphBuilder({
   }, [setNodes])
 
   const selectedBlock = record?.blocks.find((item) => item.id === selectedBlockId)
-  const lastBlockId = record?.blocks.at(-1)?.id
+  const lastBlockId = record?.blocks.reduce<KnowledgeStudioTBoxBlock | undefined>(
+    (latest, block) => !latest || block.ordinal > latest.ordinal ? block : latest,
+    undefined,
+  )?.id
 
   const applyBlock = useCallback((
     block: KnowledgeStudioTBoxBlock,
@@ -1243,6 +1547,11 @@ export function GraphBuilder({
     setSessionSelectedBlock(draftId, block.id)
     setElements(restored)
     setBaseline(blockElements)
+    nodePositionsRef.current = new Map(
+      graph.nodes
+        .filter((node) => node.type === 'schemaClass')
+        .map((node) => [node.id, node.position]),
+    )
     setNodes(graph.nodes)
     setEdges(graph.edges)
     const cachedParse = cached
@@ -1364,11 +1673,10 @@ export function GraphBuilder({
   }, [editorError, editorText])
 
   const syncCanvasAndEditor = useCallback((next: KnowledgeStudioTBoxElement[]) => {
-    const positions = new Map(
-      nodes
-        .filter((node) => node.type === 'schemaClass')
-        .map((node) => [node.id, node.position]),
-    )
+    const positions = new Map(nodePositionsRef.current)
+    for (const node of nodes) {
+      if (node.type === 'schemaClass') positions.set(node.id, node.position)
+    }
     const positioned = next.map((item) => {
       const position = positions.get(item.stable_element_id)
       return position
@@ -1382,6 +1690,11 @@ export function GraphBuilder({
       selectedElementId,
     )
     const safe = asSafeGraph(positioned)
+    nodePositionsRef.current = new Map(
+      graph.nodes
+        .filter((node) => node.type === 'schemaClass')
+        .map((node) => [node.id, node.position]),
+    )
     setElements(positioned)
     setNodes(graph.nodes)
     setEdges(graph.edges)
@@ -1484,7 +1797,7 @@ export function GraphBuilder({
     let nextOrdinal = Math.max(-1, ...elements.map((item) => item.ordinal)) + 1
     const nextClasses = parsed.nodes.map((item, index): KnowledgeStudioTBoxElement => {
       const prior = priorById.get(item.id)
-      const node = nodes.find((candidate) => candidate.id === item.id)
+      const position = nodePositionsRef.current.get(item.id)
       return {
         stable_element_id: item.id,
         kind: 'CLASS',
@@ -1501,8 +1814,8 @@ export function GraphBuilder({
         metadata_reference_urn: prior?.metadata_reference_urn,
         locked_by_later_block: prior?.locked_by_later_block ?? false,
         block_id: prior?.block_id,
-        layout_x: node?.position.x ?? 70 + (index % 3) * 220,
-        layout_y: node?.position.y ?? 90 + Math.floor(index / 3) * 150,
+        layout_x: position?.x ?? 70 + (index % 3) * 220,
+        layout_y: position?.y ?? 90 + Math.floor(index / 3) * 150,
         ordinal: prior?.ordinal ?? nextOrdinal++,
         version: prior?.version ?? 1,
       }
@@ -1534,6 +1847,11 @@ export function GraphBuilder({
     })
     const next = [...nextClasses, ...nextProperties, ...nextRelations]
     const graph = flowGraph(next, selectedBlockId, record?.blocks ?? [], selectedElementId)
+    nodePositionsRef.current = new Map(
+      graph.nodes
+        .filter((node) => node.type === 'schemaClass')
+        .map((node) => [node.id, node.position]),
+    )
     setElements(next)
     setNodes(graph.nodes)
     setEdges(graph.edges)
@@ -1571,19 +1889,24 @@ export function GraphBuilder({
     )
     const source = elements.find((item) => item.stable_element_id === connection.source)
     const target = elements.find((item) => item.stable_element_id === connection.target)
-    const sourceIsCurrent = source?.kind === 'CLASS' && (
-      source.block_id === selectedBlock.id || source.block_id === undefined
-    )
+    const sourceOrdinal = source?.block_id
+      ? blockOrdinalById.get(source.block_id)
+      : selectedBlock.ordinal
     const targetOrdinal = target?.block_id
       ? blockOrdinalById.get(target.block_id)
       : selectedBlock.ordinal
+    const sourceIsCurrent = source?.block_id === selectedBlock.id || source?.block_id === undefined
+    const targetIsCurrent = target?.block_id === selectedBlock.id || target?.block_id === undefined
     if (
-      !sourceIsCurrent
+      source?.kind !== 'CLASS'
       || target?.kind !== 'CLASS'
+      || sourceOrdinal === undefined
       || targetOrdinal === undefined
+      || sourceOrdinal > selectedBlock.ordinal
       || targetOrdinal > selectedBlock.ordinal
+      || (!sourceIsCurrent && !targetIsCurrent)
     ) {
-      setStatus('Relationship는 현재 블록 Class에서 현재 또는 이전 블록 Class 방향으로만 연결할 수 있습니다.')
+      setStatus('현재 블록이 소유하는 Relationship는 현재 Class와 현재/이전 Class 사이에서 양방향으로 연결할 수 있습니다.')
       return
     }
     const stableId = `relation:${crypto.randomUUID()}`
@@ -1655,6 +1978,9 @@ export function GraphBuilder({
       )),
     )
     if (positions.size === 0) return
+    for (const [id, position] of positions) {
+      nodePositionsRef.current.set(id, position)
+    }
     setElements((current) => current.map((item) => {
       const position = positions.get(item.stable_element_id)
       return position
@@ -1823,7 +2149,10 @@ export function GraphBuilder({
         newKnowledgeStudioIdempotencyKey(),
       )
       if (!response.etag) return
-      const createdBlockId = response.data.blocks.at(-1)?.id
+      const createdBlockId = response.data.blocks.reduce<KnowledgeStudioTBoxBlock | undefined>(
+        (latest, block) => !latest || block.ordinal > latest.ordinal ? block : latest,
+        undefined,
+      )?.id
       applyResponse(response.data, response.etag, createdBlockId)
       setShowBlockMenu(false)
       setStatus(`${option.title} 블록을 생성했습니다.`)
@@ -1877,7 +2206,10 @@ export function GraphBuilder({
       applyResponse(
         response.data,
         response.etag,
-        response.data.blocks.at(-1)?.id,
+        response.data.blocks.reduce<KnowledgeStudioTBoxBlock | undefined>(
+          (latest, item) => !latest || item.ordinal > latest.ordinal ? item : latest,
+          undefined,
+        )?.id,
       )
       removeSessionBlock(draftId, block.id)
       setBlockPendingDelete(undefined)
@@ -2016,10 +2348,6 @@ export function GraphBuilder({
         client,
         draftId,
         catalogQuery,
-        {
-          domain: catalogDomain,
-          search_fields: [...catalogSearchFields],
-        },
       )
       setCatalogResults(result.items)
       setStatus(`권한 범위의 카탈로그 ${result.items.length}건을 조회했습니다.`)
@@ -2131,6 +2459,19 @@ export function GraphBuilder({
       .map((item) => item.stable_element_id),
   )
 
+  const createsHierarchyCycle = (classId: string, parentId: string): boolean => {
+    let cursor: string | undefined = parentId
+    const visited = new Set<string>()
+    while (cursor) {
+      if (cursor === classId || visited.has(cursor)) return true
+      visited.add(cursor)
+      cursor = elements.find(
+        (item) => item.kind === 'CLASS' && item.stable_element_id === cursor,
+      )?.parent_stable_element_id
+    }
+    return false
+  }
+
   const reparentClass = (classId: string, parentId?: string) => {
     const target = elements.find((item) => item.stable_element_id === classId)
     if (
@@ -2141,6 +2482,7 @@ export function GraphBuilder({
       )
       || target.locked_by_later_block
       || (parentId && !allowedParentIds.has(parentId))
+      || (parentId && createsHierarchyCycle(classId, parentId))
     ) return
     updateElement(classId, {
       parent_stable_element_id: parentId,
@@ -2177,6 +2519,35 @@ export function GraphBuilder({
       || (target.block_id !== selectedBlockId && target.block_id !== undefined)
       || target.locked_by_later_block
     ) return
+    if (relation.toLocaleUpperCase() === 'SUBCLASS_OF') {
+      const childId = target.source_stable_element_id
+      const parentId = target.target_stable_element_id
+      const child = elements.find((item) => item.stable_element_id === childId)
+      if (
+        !childId
+        || !parentId
+        || child?.kind !== 'CLASS'
+        || (child.block_id !== selectedBlockId && child.block_id !== undefined)
+        || child.locked_by_later_block
+        || !allowedParentIds.has(parentId)
+        || createsHierarchyCycle(childId, parentId)
+      ) {
+        setStatus('SUBCLASS_OF는 현재 블록의 하위 Class에서 허용된 현재/이전 부모 Class 방향으로만 변환할 수 있습니다.')
+        return
+      }
+      syncCanvasAndEditor(elements
+        .filter((item) => item.stable_element_id !== relationshipId)
+        .map((item) => item.stable_element_id === childId
+          ? {
+              ...item,
+              parent_stable_element_id: parentId,
+              hierarchy_relation: 'SUBCLASS_OF',
+            }
+          : item))
+      setSelectedElementId(`hierarchy:${childId}`)
+      setStatus('Relationship를 Class의 정본 SUBCLASS_OF 계층으로 변환했습니다.')
+      return
+    }
     updateElement(relationshipId, {
       canonical_name: relation,
       display_name: relation,
@@ -2208,19 +2579,24 @@ export function GraphBuilder({
     ) return
     const source = elements.find((item) => item.stable_element_id === connection.source)
     const target = elements.find((item) => item.stable_element_id === connection.target)
-    const sourceIsCurrent = source?.kind === 'CLASS' && (
-      source.block_id === selectedBlock.id || source.block_id === undefined
-    )
+    const sourceOrdinal = source?.block_id
+      ? blockOrdinalById.get(source.block_id)
+      : selectedBlock.ordinal
     const targetOrdinal = target?.block_id
       ? blockOrdinalById.get(target.block_id)
       : selectedBlock.ordinal
+    const sourceIsCurrent = source?.block_id === selectedBlock.id || source?.block_id === undefined
+    const targetIsCurrent = target?.block_id === selectedBlock.id || target?.block_id === undefined
     if (
-      !sourceIsCurrent
+      source?.kind !== 'CLASS'
       || target?.kind !== 'CLASS'
+      || sourceOrdinal === undefined
       || targetOrdinal === undefined
+      || sourceOrdinal > selectedBlock.ordinal
       || targetOrdinal > selectedBlock.ordinal
+      || (!sourceIsCurrent && !targetIsCurrent)
     ) {
-      setStatus('Relationship는 현재 블록 Class에서 현재 또는 이전 블록 Class 방향으로만 연결할 수 있습니다.')
+      setStatus('현재 블록이 소유하는 Relationship는 현재 Class와 현재/이전 Class 사이에서 양방향으로 연결할 수 있습니다.')
       return
     }
     updateElement(relation.stable_element_id, {
@@ -2230,36 +2606,44 @@ export function GraphBuilder({
     setSelectedElementId(relation.stable_element_id)
   }
 
-  const deleteSelection = useCallback(() => {
-    if (!selectedElementId || locked || working) return
-    if (selectedElementId.startsWith('hierarchy:')) {
-      const classId = selectedElementId.replace(/^hierarchy:/, '')
+  const deleteRelationship = useCallback((relationshipId: string) => {
+    if (relationshipId.startsWith('hierarchy:')) {
+      const classId = relationshipId.replace(/^hierarchy:/, '')
       const target = elements.find((item) => item.stable_element_id === classId)
       if (
-        target?.kind === 'CLASS'
-        && (target.block_id === selectedBlockId || target.block_id === undefined)
-        && !target.locked_by_later_block
-      ) {
-        const next = elements.map((item) => item.stable_element_id === classId
-          ? {
-              ...item,
-              parent_stable_element_id: undefined,
-              hierarchy_relation: undefined,
-            }
-          : item)
-        syncCanvasAndEditor(next)
-        setSelectedElementId('')
-      }
+        target?.kind !== 'CLASS'
+        || (target.block_id !== selectedBlockId && target.block_id !== undefined)
+        || target.locked_by_later_block
+        || locked
+        || working
+      ) return
+      syncCanvasAndEditor(elements.map((item) => item.stable_element_id === classId
+        ? {
+            ...item,
+            parent_stable_element_id: undefined,
+            hierarchy_relation: undefined,
+          }
+        : item))
+      setSelectedElementId('')
       return
     }
-    deleteElement(selectedElementId)
+    deleteElement(relationshipId)
   }, [
-    elements,
     deleteElement,
+    elements,
     locked,
     selectedBlockId,
-    selectedElementId,
     syncCanvasAndEditor,
+    working,
+  ])
+
+  const deleteSelection = useCallback(() => {
+    if (!selectedElementId || locked || working) return
+    deleteRelationship(selectedElementId)
+  }, [
+    deleteRelationship,
+    locked,
+    selectedElementId,
     working,
   ])
 
@@ -2290,6 +2674,15 @@ export function GraphBuilder({
       && !locked
       && !working
     )
+    const ownerOrdinal = item.block_id
+      ? blockOrdinalById.get(item.block_id)
+      : selectedBlock?.ordinal
+    const connectable = (
+      ownerOrdinal !== undefined
+      && ownerOrdinal <= (selectedBlock?.ordinal ?? -1)
+      && !locked
+      && !working
+    )
     return {
       ...node,
       data: {
@@ -2300,7 +2693,8 @@ export function GraphBuilder({
         selected: item.stable_element_id === selectedElementId,
         editorOpen: item.stable_element_id === editorOpenId,
         editorScale: Math.max(0.65, Math.min(1.25, viewport.zoom / 0.8)),
-        canStartConnection: editable,
+        canStartConnection: connectable,
+        canReceiveConnection: connectable,
         properties: elements
           .filter(
             (property) => property.kind === 'PROPERTY'
@@ -2339,6 +2733,29 @@ export function GraphBuilder({
         onAddProperty: (value) => addProperty(item.stable_element_id, value),
         onUpdateProperty: updateProperty,
         onDeleteProperty: deleteElement,
+      },
+    }
+  })
+  const renderedEdges = edges.map((edge): SchemaEdge => {
+    const hierarchyClassId = edge.id.startsWith('hierarchy:')
+      ? edge.id.replace(/^hierarchy:/, '')
+      : undefined
+    const editable = Boolean(edge.data?.editable) && !locked && !working
+    return {
+      ...edge,
+      type: 'schemaEdge',
+      selected: edge.id === selectedElementId,
+      data: {
+        ...edge.data,
+        relation: edge.data?.relation ?? '',
+        editable,
+        onRename: editable
+          ? (value) => {
+              if (hierarchyClassId) renameHierarchy(hierarchyClassId, value)
+              else renameRelationship(edge.id, value)
+            }
+          : undefined,
+        onDelete: editable ? () => deleteRelationship(edge.id) : undefined,
       },
     }
   })
@@ -2513,6 +2930,7 @@ export function GraphBuilder({
                     onReparent={reparentClass}
                     onRenameHierarchy={renameHierarchy}
                     onRenameRelationship={renameRelationship}
+                    onDeleteRelationship={deleteRelationship}
                   />
                   <div className="relative min-h-[520px] overflow-hidden rounded-enterprise border border-slate-700 bg-[#0b1d31]">
                     <header className="absolute left-3 top-3 z-10 rounded border border-slate-600 bg-[#10253d]/95 px-3 py-2 text-xs font-black text-slate-100 shadow">
@@ -2646,8 +3064,9 @@ export function GraphBuilder({
                     <ReactFlow<CanvasNode, SchemaEdge>
                       aria-label="T-Box 그래프 캔버스"
                       nodes={renderedNodes}
-                      edges={edges}
+                      edges={renderedEdges}
                       nodeTypes={schemaNodeTypes}
+                      edgeTypes={schemaEdgeTypes}
                       onNodesChange={handleNodesChange}
                       onEdgesChange={handleEdgesChange}
                       onConnect={connect}
@@ -2664,6 +3083,11 @@ export function GraphBuilder({
                       nodesConnectable={!locked && !working}
                       edgesReconnectable={!locked && !working}
                       connectionMode={ConnectionMode.Loose}
+                      connectionLineStyle={{
+                        stroke: '#67e8f9',
+                        strokeWidth: 1.8,
+                        strokeDasharray: '6 4',
+                      }}
                       deleteKeyCode={null}
                       viewport={viewport}
                       onViewportChange={setViewport}
@@ -2792,8 +3216,9 @@ export function GraphBuilder({
 
       <Dialog
         open={catalogOpen}
+        size="large"
         title="DB 카탈로그에서 T-Box 제안"
-        description="현재 사용자의 권한과 지식 자산 보안등급 범위 안에서만 Dataset과 컬럼을 조회합니다."
+        description="상단 검색과 동일하게 테이블명, 스키마, 컬럼, 태그, 용어, 설명 전체에서 검색합니다."
         onRequestClose={() => {
           if (!catalogLoading && !working) setCatalogOpen(false)
         }}
@@ -2836,56 +3261,26 @@ export function GraphBuilder({
       >
         <div className="grid gap-3">
           <form
-            className="flex gap-2"
+            className="flex min-w-0 gap-2"
             onSubmit={(event) => {
               event.preventDefault()
               void searchCatalog()
             }}
           >
-            <div className="grid min-w-0 flex-1 gap-2 md:grid-cols-[minmax(0,2fr)_minmax(160px,1fr)]">
-              <input
-                aria-label="T-Box 카탈로그 검색어"
-                className="input min-w-0"
-                value={catalogQuery}
-                maxLength={200}
-                placeholder="테이블명, 컬럼, 태그, 용어, 설명 검색"
-                onChange={(event) => setCatalogQuery(event.target.value)}
-              />
-              <input
-                aria-label="T-Box 카탈로그 도메인 필터"
-                className="input min-w-0"
-                value={catalogDomain}
-                maxLength={1000}
-                placeholder="도메인 필터 (선택)"
-                onChange={(event) => setCatalogDomain(event.target.value)}
-              />
-            </div>
+            <input
+              aria-label="T-Box 카탈로그 검색어"
+              className="input min-w-0 flex-1"
+              value={catalogQuery}
+              maxLength={200}
+              placeholder="테이블명, 스키마, 컬럼, 태그, 용어, 설명 검색"
+              onChange={(event) => setCatalogQuery(event.target.value)}
+            />
             <button type="submit" className="button" disabled={catalogLoading}>
               <Search size={13} aria-hidden="true" />
               검색
             </button>
           </form>
-          <fieldset className="flex flex-wrap gap-2 rounded border border-slate-200 px-3 py-2">
-            <legend className="px-1 text-[10px] font-black text-slate-600">검색 범위</legend>
-            {catalogSearchFieldOptions.map(([value, label]) => (
-              <label key={value} className="flex items-center gap-1 text-[10px] text-slate-600">
-                <input
-                  type="checkbox"
-                  checked={catalogSearchFields.has(value)}
-                  onChange={(event) => {
-                    setCatalogSearchFields((current) => {
-                      const next = new Set(current)
-                      if (event.target.checked) next.add(value)
-                      else if (next.size > 1) next.delete(value)
-                      return next
-                    })
-                  }}
-                />
-                {label}
-              </label>
-            ))}
-          </fieldset>
-          <div className="grid max-h-[48vh] gap-3 overflow-auto md:grid-cols-[220px_minmax(0,1fr)]">
+          <div className="grid max-h-[58vh] min-w-0 gap-3 overflow-auto md:grid-cols-[minmax(280px,0.9fr)_minmax(0,1.6fr)]">
             <ul className="m-0 grid content-start gap-1 list-none p-0">
               {catalogResults.length === 0 && (
                 <li className="rounded border border-dashed border-slate-300 p-4 text-center text-xs text-slate-500">
@@ -2968,6 +3363,7 @@ export function GraphBuilder({
 
       <Dialog
         open={documentCapabilityOpen}
+        size="large"
         title="문서 기반 T-Box Proposal"
         description="파일은 filefolder Object Storage에 create-only로 저장되고, 문서 내용은 A-Box가 아닌 Typed T-Box Proposal로만 분석됩니다."
         onRequestClose={() => {

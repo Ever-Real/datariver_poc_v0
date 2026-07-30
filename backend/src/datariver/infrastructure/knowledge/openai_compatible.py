@@ -232,11 +232,18 @@ class _TBoxElementProposal(_StrictModel):
     hierarchy_relation: str | None = Field(default=None, max_length=255)
     source_stable_element_id: str | None = Field(default=None, max_length=128)
     target_stable_element_id: str | None = Field(default=None, max_length=128)
-    data_type: str | None = Field(
-        default=None,
-        max_length=100,
-        pattern="^[A-Za-z][A-Za-z0-9_]*$",
-    )
+    data_type: (
+        Literal[
+            "STRING",
+            "TEXT",
+            "INTEGER",
+            "FLOAT",
+            "BOOLEAN",
+            "DATE",
+            "DATETIME",
+        ]
+        | None
+    ) = None
     nullable: bool | None = None
     definition: str | None = Field(default=None, max_length=4_000)
     aliases: list[str] = Field(default_factory=list, max_length=50)
@@ -322,6 +329,89 @@ def _json_schema(model: type[BaseModel], *, name: str) -> dict[str, object]:
     return {
         "type": "json_schema",
         "json_schema": {"name": name, "strict": True, "schema": model.model_json_schema()},
+    }
+
+
+_GRAMMAR_UNSUPPORTED_SCHEMA_KEYS = frozenset(
+    {
+        "$schema",
+        "default",
+        "description",
+        "examples",
+        "format",
+        "maxItems",
+        "maxLength",
+        "maximum",
+        "minItems",
+        "minLength",
+        "minimum",
+        "pattern",
+        "title",
+    }
+)
+
+
+def _bounded_grammar_json_schema(
+    model: type[BaseModel],
+    *,
+    name: str,
+) -> dict[str, object]:
+    """Flatten Pydantic schema constructs rejected by bounded local grammar engines.
+
+    Structural object/array types, enums, required fields and additional-property
+    denial remain provider-enforced. Pydantic validates every returned bound and
+    pattern again before a proposal can enter the application layer.
+    """
+
+    raw = model.model_json_schema()
+    definitions = raw.get("$defs")
+    defs = definitions if isinstance(definitions, dict) else {}
+
+    def normalize(value: object) -> object:
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+        reference = value.get("$ref")
+        if isinstance(reference, str) and reference.startswith("#/$defs/"):
+            target = defs.get(reference.removeprefix("#/$defs/"))
+            if isinstance(target, dict):
+                return normalize(target)
+        alternatives = value.get("anyOf")
+        if isinstance(alternatives, list) and alternatives:
+            typed = [
+                item
+                for item in alternatives
+                if isinstance(item, dict) and isinstance(item.get("type"), str)
+            ]
+            if len(typed) == len(alternatives):
+                preferred = next(
+                    (item for item in typed if item.get("type") != "null"),
+                    typed[0],
+                )
+                normalized = {
+                    key: normalize(item)
+                    for key, item in preferred.items()
+                    if key != "type" and key not in _GRAMMAR_UNSUPPORTED_SCHEMA_KEYS
+                }
+                normalized["type"] = [str(item["type"]) for item in typed]
+                return normalized
+        return {
+            key: normalize(item)
+            for key, item in value.items()
+            if key != "$defs" and key not in _GRAMMAR_UNSUPPORTED_SCHEMA_KEYS
+        }
+
+    schema = normalize(raw)
+    if not isinstance(schema, dict):  # pragma: no cover - BaseModel always yields an object
+        raise TypeError("A Pydantic response schema must be an object.")
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": name,
+            "strict": True,
+            "schema": schema,
+        },
     }
 
 
@@ -530,6 +620,12 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                         "canonical names use normalized Unicode letters, digits and underscores "
                         "as allowed by the schema contract. Properties must reference a proposed "
                         "or current Class; Relations must reference proposed or current Classes. "
+                        "Apply these shape rules exactly: CLASS uses none of parent/source/target/"
+                        "data_type/nullable unless it has an optional parent Class; PROPERTY puts "
+                        "its owner Class only in parent_stable_element_id, uses no source/target, "
+                        "sets nullable to true or false, and selects data_type only from STRING, "
+                        "TEXT, INTEGER, FLOAT, BOOLEAN, DATE, DATETIME; RELATION uses source and "
+                        "target Classes only and has no parent/data_type/nullable. "
                         "Mark vector_index_enabled only for STRING or TEXT Properties whose "
                         "semantic text is useful for retrieval. Keep the proposal bounded and "
                         "omit uncertain elements."
@@ -548,7 +644,7 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                     ),
                 },
             ],
-            "response_format": _json_schema(
+            "response_format": _bounded_grammar_json_schema(
                 _TBoxSchemaProposalResponse,
                 name="knowledge_studio_tbox_proposal_v1",
             ),
