@@ -460,15 +460,18 @@ appends and mutation of retention evidence. The application role retains only se
 `version`/`updated_at` update privilege and no Chat delete privilege. Clean installations validate
 the canonical `0001` contract, upgrades install it atomically, and partial schemas fail closed.
 
-## Governed Quality schema (Phase 1 implemented at revision `0067`)
+## Governed Quality schema (Phases 1–3 implemented through revision `0069`)
 
 ADR-0077 defines the `quality` bounded context and the bounded Catalog Profile projection.
 Revision `0067` implements the 13 Quality control-plane tables below in SQLAlchemy and Alembic,
 together with `QUALITY_RULE/QUALITY_RESULT/QUALITY_AUDIT` retention classes, typed RuleSet/Run
 Legal Hold targets, forced RLS, least-privilege grants and fixed lifecycle functions. This Phase 1
-schema does not claim a GX execution worker, DataHub Profile projection, API or dashboard. Phase 2
-owns the separate additive Catalog Profile and `QUALITY_PROFILE` retention-target revision refined
-by ADR-0078. `POLICY_BOOK_V3` remains the valid exact Phase 1 contract;
+schema does not itself claim a GX execution worker, DataHub Profile projection, API or dashboard.
+Phase 2 owns the separate additive Catalog Profile and `QUALITY_PROFILE` retention-target revision
+refined by ADR-0078. Phase 3 adds only the service execution plane: authenticated due dispatch,
+fenced claim/source execution and sanitized terminal completion through fixed functions. Human
+Rule APIs, schedule activation and dashboards remain capability-closed for later phases.
+`POLICY_BOOK_V3` remains the valid exact Phase 1 contract;
 `POLICY_BOOK_V4 = POLICY_BOOK_V3 + QUALITY_PROFILE`.
 
 ```mermaid
@@ -517,13 +520,13 @@ current authorization/RLS, live Catalog target revalidation, server-derived deci
 optimistic concurrency and canonical-request idempotency are the only lifecycle write path.
 Activation atomically supersedes the prior ACTIVE version, emits a server-derived `SUPERSEDE`
 event, activates the approved candidate and appends decision/audit evidence. Phase 1 activation
-accepts `MANUAL_ONLY` versions only; scheduled activation and schedule materialization remain
-capability-closed until the Phase 3 scheduler/worker contract is implemented. The quality-worker role is
-NOBYPASSRLS and should claim/complete through fixed,
-claim-scoped functions or equivalently narrow column grants; it receives no cross-context mutation
-right. The separate Phase 2 `catalog-profile-collector` has only `catalog.profile.collect`, a
-different NOBYPASSRLS role and one fixed Catalog projection-write function; it has no Quality write
-grant or source-database credential.
+accepts `MANUAL_ONLY` versions only. Revision `0069` can dispatch an already governed, materialized
+schedule, but human scheduled activation and schedule materialization remain capability-closed
+until Phase 4. The NOBYPASSRLS quality-worker role has no direct table DML and can execute exactly
+the five fixed dispatch/claim/freeze/fence/complete-or-fail functions; it receives no cross-context
+mutation right. The separate Phase 2 `catalog-profile-collector` has only
+`catalog.profile.collect`, a different NOBYPASSRLS role and one fixed Catalog projection-write
+function; it has no Quality write grant or source-database credential.
 
 Run state is `QUEUED/RUNNING/RETRY_WAIT/CANCEL_REQUESTED/SUCCEEDED/FAILED/STALE/CANCELLED`.
 Attempt state is
@@ -568,11 +571,19 @@ mounted `file:` secret available only to the quality worker. The independent
 DataHub-profile-context ID/source watermark records freshness context and is never a GX evaluation
 input. A separate deployment-approved workload-profile ID/version/hash pins the full-source-access
 hard timeout, per-statement timeout, cancellation/close margins, pool/concurrency and scan budgets;
-changing it requires a new Rule Set Version. Phase 1 added the Quality SQLAlchemy metadata and
+changing it requires a new Rule Set Version. The Phase 3 worker opens a PostgreSQL
+`REPEATABLE READ`, read-only source transaction, accepts only exact manifest-pinned literal IPs and
+approved base relations, rechecks the lease fence before every aggregate statement, and closes the
+source transaction/connection before publishing a sanitized result. DNS endpoints remain
+fail-closed until a pinned resolver contract is approved.
+
+Phase 1 added the Quality SQLAlchemy metadata and
 revision `0067` from head `0066`, plus the
 `QUALITY_RULE/QUALITY_RESULT/QUALITY_AUDIT` retention kinds and typed RuleSet/Run hold targets in
 the same revision. Phase 2 adds the two Catalog tables,
 `QUALITY_PROFILE` kind and typed `PROFILE_SNAPSHOT` hold target in its own additive revision.
+Phase 3 revision `0069` adds no tables and no raw execution evidence: it installs the fixed
+service-only execution functions and grants the quality worker exactly that function allowlist.
 `POLICY_BOOK_V3` stays frozen and valid for the Phase 1 classes; Profile creation requires an
 explicit active `POLICY_BOOK_V4` policy with the exact added `QUALITY_PROFILE` class. Existing
 Phase 1 Quality classes remain valid under V3 or V4. Each revision

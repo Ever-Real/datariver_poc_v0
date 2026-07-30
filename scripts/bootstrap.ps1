@@ -15,6 +15,8 @@ $secretsDirectory = Join-Path $root "secrets"
 $envFile = Join-Path $root ".env"
 $runtimeDirectory = Join-Path $root "runtime"
 $keycloakRuntimeDirectory = Join-Path $runtimeDirectory "keycloak"
+$qualityRuntimeDirectory = Join-Path $runtimeDirectory "quality"
+$qualitySourceSecretDirectory = Join-Path $secretsDirectory "quality-sources"
 $retentionControlFile = Join-Path $runtimeDirectory "retention-execution.enabled"
 $nativeWindows = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [Runtime.InteropServices.OSPlatform]::Windows
@@ -33,6 +35,8 @@ $managedPaths = @(
     $secretsDirectory,
     $runtimeDirectory,
     $keycloakRuntimeDirectory,
+    $qualityRuntimeDirectory,
+    $qualitySourceSecretDirectory,
     (Join-Path $keycloakRuntimeDirectory "datariver-realm.json"),
     $retentionControlFile
 )
@@ -167,8 +171,12 @@ function Set-OwnerOnlyWindowsAcl([string]$Path, [switch]$Directory) {
 
 New-Item -ItemType Directory -Force -Path $secretsDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $keycloakRuntimeDirectory | Out-Null
+New-Item -ItemType Directory -Force -Path $qualityRuntimeDirectory | Out-Null
+New-Item -ItemType Directory -Force -Path $qualitySourceSecretDirectory | Out-Null
 Set-OwnerOnlyWindowsAcl -Path $secretsDirectory -Directory
 Set-OwnerOnlyWindowsAcl -Path $keycloakRuntimeDirectory -Directory
+Set-OwnerOnlyWindowsAcl -Path $qualityRuntimeDirectory -Directory
+Set-OwnerOnlyWindowsAcl -Path $qualitySourceSecretDirectory -Directory
 if ($IsLinux -or $IsMacOS) {
     [IO.File]::SetUnixFileMode(
         $secretsDirectory,
@@ -290,6 +298,7 @@ $keycloakDatabasePassword = Get-OrCreateSecret "keycloak_db_password"
 $airflowDatabasePassword = Get-OrCreateSecret "airflow_db_password"
 $airflowApiSecret = Get-OrCreateSecret "airflow_api_secret" 48
 $airflowClientSecret = Get-OrCreateSecret "airflow_client_secret"
+$qualityDispatchClientSecret = Get-OrCreateSecret "quality_dispatch_client_secret"
 $identityAdminClientSecret = Get-OrCreateSecret "keycloak_identity_admin_client_secret"
 $airflowAdminPassword = Get-OrCreateSecret "airflow_admin_password" 24
 $keycloakDemoPassword = Get-OrCreateSecret "keycloak_demo_password" 18
@@ -431,6 +440,7 @@ $realmTemplate = [IO.File]::ReadAllText(
 $realmDocument = $realmTemplate.Replace(
     "__DEMO_PASSWORD__", $keycloakDemoPassword
 ).Replace("__AIRFLOW_CLIENT_SECRET__", $airflowClientSecret
+).Replace("__QUALITY_DISPATCH_CLIENT_SECRET__", $qualityDispatchClientSecret
 ).Replace("__IDENTITY_ADMIN_CLIENT_SECRET__", $identityAdminClientSecret
 ).Replace("__WEB_PUBLIC_ORIGIN__", $WebPublicOrigin)
 $realmPath = Join-Path $keycloakRuntimeDirectory "datariver-realm.json"
@@ -449,6 +459,8 @@ if ($IsLinux -or $IsMacOS) {
         [IO.UnixFileMode]::GroupRead -bor [IO.UnixFileMode]::OtherRead
     [IO.File]::SetUnixFileMode($secretsDirectory, $ownerDirectoryMode)
     [IO.File]::SetUnixFileMode($keycloakRuntimeDirectory, $ownerDirectoryMode)
+    [IO.File]::SetUnixFileMode($qualityRuntimeDirectory, $ownerDirectoryMode)
+    [IO.File]::SetUnixFileMode($qualitySourceSecretDirectory, $ownerDirectoryMode)
     [IO.File]::SetUnixFileMode(
         (Join-Path $keycloakRuntimeDirectory "datariver-realm.json"),
         $readOnlyFileMode

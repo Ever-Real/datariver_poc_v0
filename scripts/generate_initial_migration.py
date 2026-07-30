@@ -159,6 +159,26 @@ def _load_catalog_profile_phase2_revision() -> ModuleType:
     return module
 
 
+def _load_quality_phase3_revision() -> ModuleType:
+    """Load the self-contained Quality execution-plane function contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0069_quality_execution_plane.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_quality_phase3_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Quality Phase 3 migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -582,6 +602,12 @@ def build_upgrade() -> ops.UpgradeOps:
         ):
             continue
         operations.append(ops.ExecuteSQLOp(statement))
+    quality_phase3 = _load_quality_phase3_revision()
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in _sql_statements(quality_phase3._FUNCTION_SQL)
+    )
+    operations.append(ops.ExecuteSQLOp(quality_phase3._GRANT_SQL.strip()))
     return ops.UpgradeOps(ops=operations)
 
 
@@ -1007,6 +1033,37 @@ def build_downgrade() -> ops.DowngradeOps:
     phase5 = _load_phase5_revision()
     quality_phase1 = _load_quality_phase1_revision()
     operations: list[ops.MigrateOperation] = [
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.fail_validation_run_v1("
+            "uuid, uuid, uuid, bigint, text, text, text, boolean)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.complete_validation_run_v1("
+            "uuid, uuid, uuid, bigint, text, text, text, text, text, jsonb)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.assert_source_statement_fence_v1("
+            "uuid, uuid, uuid, bigint, text)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.freeze_source_access_v1("
+            "uuid, uuid, uuid, bigint, text, integer, integer, integer, integer)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.claim_validation_run_v1(uuid, text, text, integer)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.dispatch_due_validation_runs_v1("
+            "uuid, text, integer, integer)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.current_quality_target_matches_v1("
+            "uuid, uuid, integer, uuid, uuid, text, text)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.current_quality_service_can_v1("
+            "uuid, text, integer, uuid, uuid)"
+        ),
         ops.ExecuteSQLOp("DROP FUNCTION catalog.project_asset_profile_v1(uuid, uuid, jsonb)"),
         ops.ExecuteSQLOp("DROP FUNCTION catalog.read_profile_target_v1(uuid, uuid)"),
         ops.ExecuteSQLOp(

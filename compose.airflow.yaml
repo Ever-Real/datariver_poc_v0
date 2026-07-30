@@ -23,6 +23,11 @@ x-airflow-common: &airflow-common
     DATARIVER_OIDC_TOKEN_URL: http://keycloak:8080/realms/datariver/protocol/openid-connect/token
     DATARIVER_OIDC_CLIENT_ID: datariver-airflow
     DATARIVER_OIDC_CLIENT_SECRET_FILE: /run/secrets/airflow_client_secret
+    DATARIVER_QUALITY_DISPATCH_API_BASE_URL: ${DATARIVER_QUALITY_DISPATCH_API_BASE_URL:-http://api:8000}
+    DATARIVER_QUALITY_DISPATCH_WORKSPACE_ID: ${AIRFLOW_WORKSPACE_ID:-00000000-0000-4000-8000-000000000100}
+    DATARIVER_QUALITY_DISPATCH_OIDC_TOKEN_URL: http://keycloak:8080/realms/datariver/protocol/openid-connect/token
+    DATARIVER_QUALITY_DISPATCH_OIDC_CLIENT_ID: datariver-quality-dispatch
+    DATARIVER_QUALITY_DISPATCH_OIDC_CLIENT_SECRET_FILE: /run/secrets/quality_dispatch_client_secret
     # Airflow's urllib calls must stay on the private Compose/host-development
     # path even when a developer workstation supplies a corporate HTTP proxy.
     # The external DataHub request is made only by the DataRiver API, never by
@@ -32,6 +37,7 @@ x-airflow-common: &airflow-common
   secrets:
     - airflow_db_password
     - airflow_client_secret
+    - quality_dispatch_client_secret
     - airflow_api_secret
     - airflow_admin_password
   volumes:

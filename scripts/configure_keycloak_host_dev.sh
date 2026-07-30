@@ -130,6 +130,71 @@ docker exec "$container" bash -ec '
     -s standardFlowEnabled=false -s directAccessGrantsEnabled=false \
     -s implicitFlowEnabled=false -s serviceAccountsEnabled=true \
     -s "secret=$(cat /run/secrets/airflow_client_secret)" >/dev/null
+  quality_client_id=$(
+    /opt/keycloak/bin/kcadm.sh get clients \
+      --config "$config" -r datariver \
+      -q clientId=datariver-quality-dispatch --fields id --format csv --noquotes
+  )
+  quality_secret=$(cat /run/secrets/quality_dispatch_client_secret)
+  if [ -z "$quality_client_id" ]; then
+    /opt/keycloak/bin/kcadm.sh create clients \
+      --config "$config" -r datariver \
+      -s clientId=datariver-quality-dispatch \
+      -s name="DataRiver Quality Dispatch Service" \
+      -s enabled=true -s publicClient=false \
+      -s standardFlowEnabled=false -s directAccessGrantsEnabled=false \
+      -s implicitFlowEnabled=false -s serviceAccountsEnabled=true \
+      -s "defaultClientScopes=[\"acr\",\"roles\"]" \
+      -s "secret=$quality_secret" >/dev/null
+    quality_client_id=$(
+      /opt/keycloak/bin/kcadm.sh get clients \
+        --config "$config" -r datariver \
+        -q clientId=datariver-quality-dispatch --fields id --format csv --noquotes
+    )
+  else
+    /opt/keycloak/bin/kcadm.sh update "clients/$quality_client_id" \
+      --config "$config" -r datariver \
+      -s enabled=true -s publicClient=false \
+      -s standardFlowEnabled=false -s directAccessGrantsEnabled=false \
+      -s implicitFlowEnabled=false -s serviceAccountsEnabled=true \
+      -s "defaultClientScopes=[\"acr\",\"roles\"]" \
+      -s "secret=$quality_secret" >/dev/null
+  fi
+  unset quality_secret
+  test -n "$quality_client_id"
+  quality_mapper_ids=$(
+    /opt/keycloak/bin/kcadm.sh get \
+      "clients/$quality_client_id/protocol-mappers/models" \
+      --config "$config" -r datariver --fields id --format csv --noquotes
+  )
+  set -- $quality_mapper_ids
+  quality_mapper_id=${1:-}
+  if [ -z "$quality_mapper_id" ]; then
+    /opt/keycloak/bin/kcadm.sh create \
+      "clients/$quality_client_id/protocol-mappers/models" \
+      --config "$config" -r datariver \
+      -s name=datariver-api-audience \
+      -s protocol=openid-connect \
+      -s protocolMapper=oidc-audience-mapper \
+      -s consentRequired=false \
+      -s "config={\"included.client.audience\":\"datariver-api\",\"id.token.claim\":\"false\",\"access.token.claim\":\"true\"}" \
+      >/dev/null
+  else
+    /opt/keycloak/bin/kcadm.sh update \
+      "clients/$quality_client_id/protocol-mappers/models/$quality_mapper_id" \
+      --config "$config" -r datariver \
+      -s name=datariver-api-audience \
+      -s protocol=openid-connect \
+      -s protocolMapper=oidc-audience-mapper \
+      -s consentRequired=false \
+      -s "config={\"included.client.audience\":\"datariver-api\",\"id.token.claim\":\"false\",\"access.token.claim\":\"true\"}" \
+      >/dev/null
+  fi
+  quality_user_id=$(
+    /opt/keycloak/bin/kcadm.sh get "clients/$quality_client_id/service-account-user" \
+      --config "$config" -r datariver --fields id --format csv --noquotes
+  )
+  test -n "$quality_user_id"
   identity_client_id=$(
     /opt/keycloak/bin/kcadm.sh get clients \
       --config "$config" -r datariver \
@@ -218,13 +283,20 @@ EOF
   test -n "$minjae_id"
   printf "__DATARIVER_DEMO_IDENTITIES__%s|%s|%s\n" \
     "$jihoon_id" "$sua_id" "$minjae_id"
+  printf "__DATARIVER_SERVICE_IDENTITIES__%s\n" "$quality_user_id"
 ' -- "$web_origin"
 )
 
-printf '%s\n' "$sync_output" | sed '/^__DATARIVER_DEMO_IDENTITIES__/d'
+printf '%s\n' "$sync_output" |
+  sed '/^__DATARIVER_DEMO_IDENTITIES__/d;/^__DATARIVER_SERVICE_IDENTITIES__/d'
 identity_state=$(
   printf '%s\n' "$sync_output" |
     sed -n 's/^__DATARIVER_DEMO_IDENTITIES__//p' |
+    tail -n 1
+)
+quality_user_id=$(
+  printf '%s\n' "$sync_output" |
+    sed -n 's/^__DATARIVER_SERVICE_IDENTITIES__//p' |
     tail -n 1
 )
 IFS="|" read -r jihoon_id sua_id minjae_id extra <<EOF
@@ -247,18 +319,35 @@ if [ -n "${extra:-}" ]; then
   echo "Keycloak returned an invalid local demo identity state." >&2
   exit 3
 fi
+case "$quality_user_id" in
+  ""|*[!0-9a-fA-F-]*)
+    echo "Keycloak returned an invalid Quality service identity id." >&2
+    exit 3
+    ;;
+esac
+if [ "${#quality_user_id}" -ne 36 ]; then
+  echo "Keycloak returned an invalid Quality service identity id." >&2
+  exit 3
+fi
 
 state_directory="$root/runtime/identity"
 state_file="$state_directory/local-demo-identities.json"
 state_tmp="$state_file.tmp.$$"
+service_state_file="$state_directory/local-service-identities.json"
+service_state_tmp="$service_state_file.tmp.$$"
 mkdir -p "$state_directory"
-trap 'rm -f "$state_tmp"' EXIT HUP INT TERM
+trap 'rm -f "$state_tmp" "$service_state_tmp"' EXIT HUP INT TERM
 (
   umask 077
   printf '{"jihoon.choi":"%s","sua.han":"%s","minjae.oh":"%s"}\n' \
     "$jihoon_id" "$sua_id" "$minjae_id" >"$state_tmp"
 )
+(
+  umask 077
+  printf '{"quality_dispatch":"%s"}\n' "$quality_user_id" >"$service_state_tmp"
+)
 mv "$state_tmp" "$state_file"
+mv "$service_state_tmp" "$service_state_file"
 trap - EXIT HUP INT TERM
 
-echo "Keycloak web redirects, login theme, governed identity client and local demo identities configured for $web_origin."
+echo "Keycloak web redirects, service clients and local identities configured for $web_origin."

@@ -2,6 +2,32 @@
 
 ## Current verification status
 
+### GX Quality Phase 3 execution plane — 2026-07-30
+
+Revision `0069` adds the service-only execution plane without adding another canonical table:
+authenticated bounded Airflow dispatch, database-time schedule/run creation, fenced claim and
+source-access functions, immutable execution receipts/events/outbox, a disabled-by-default
+quality-worker, a fixed GX `1.19.1` compiler, strict result sanitizer and an exact-hash source
+manifest. The worker uses a separate NOBYPASSRLS database role, a read-only PostgreSQL
+`REPEATABLE READ` transaction and no DataHub credential; Airflow has a different OIDC client and
+has neither GX nor source credentials.
+
+Repository Ruff format/lint passed over `473` files, strict mypy passed over `464` source/test
+files, the complete backend suite passed `1,865` with `103` explicitly environment-gated skips,
+and static architecture/security/documentation verification passed. Two consecutive canonical
+`0001` generations were byte-identical at SHA-256
+`0634ea3c75f5b9004973c1525a05f88983bcb9516993681beaaca44031123096`. The arm64
+quality-worker image built with GX `1.19.1`.
+
+The existing PostgreSQL `17.10` development database passed the actual `0068 -> 0069` upgrade.
+Catalog probes show zero direct Quality table grants to `datariver_quality`, exactly five approved
+execution functions granted to that role and zero PUBLIC execution grants. A real Airflow
+service-account OIDC call reached the internal API and, because this development Workspace has no
+active Quality retention policy, failed closed as a sanitized retryable `503` without exposing the
+database error. A target read-only source execution remains a deployment acceptance gate until an
+operator supplies the approved retention binding, source manifest, secret, target mapping and scan
+budget; no synthetic business policy or credential was seeded to manufacture a portable pass.
+
 ### GX Quality Phase 2 DataHub Profile integration — 2026-07-30
 
 Revision `0068` adds a privacy-allowlisted DataHub v1.6 Profile adapter, explicit

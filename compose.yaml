@@ -100,6 +100,7 @@ services:
     command: ["/app/.venv/bin/python", "-m", "datariver.bootstrap", "local-identity"]
     volumes:
       - ./runtime/identity/local-demo-identities.json:/run/datariver/local-demo-identities.json:ro
+      - ./runtime/identity/local-service-identities.json:/run/datariver/local-service-identities.json:ro
     secrets:
       - postgres_bootstrap_password
     depends_on:
@@ -230,6 +231,37 @@ services:
     read_only: true
     tmpfs:
       - /tmp:size=32m,noexec,nosuid
+
+  quality-worker:
+    build:
+      context: .
+      dockerfile: backend/quality-worker.Dockerfile
+    profiles: ["quality-execution"]
+    env_file:
+      - ${DATARIVER_ENV_FILE:-.env}
+    environment:
+      QUALITY_SOURCE_SECRET_ROOT: /run/secrets/quality-sources
+    secrets:
+      - postgres_quality_password
+      - redis_delivery_password
+    volumes:
+      - ./runtime/quality:/run/datariver/quality:ro
+      - ./secrets/quality-sources:/run/secrets/quality-sources:ro
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.quality"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+      - connectors
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
 
   knowledge-source-worker:
     <<: *backend
@@ -409,6 +441,8 @@ secrets:
     file: ./secrets/keycloak_admin_password
   airflow_client_secret:
     file: ./secrets/airflow_client_secret
+  quality_dispatch_client_secret:
+    file: ./secrets/quality_dispatch_client_secret
   keycloak_identity_admin_client_secret:
     file: ./secrets/keycloak_identity_admin_client_secret
   keycloak_demo_password:

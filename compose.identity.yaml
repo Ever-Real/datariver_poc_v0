@@ -30,6 +30,7 @@ services:
       - keycloak_db_password
       - keycloak_admin_password
       - airflow_client_secret
+      - quality_dispatch_client_secret
       - keycloak_identity_admin_client_secret
       - keycloak_demo_password
     volumes:

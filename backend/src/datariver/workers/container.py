@@ -70,6 +70,11 @@ class CatalogProfileCollectorContainer:
         await self.database.close()
 
 
+@dataclass(slots=True)
+class QualityWorkerContainer(RelayWorkerContainer):
+    pass
+
+
 def retention_archive_configuration_fingerprint(settings: Settings) -> str:
     return canonical_json_hash(
         {
@@ -223,6 +228,26 @@ def build_catalog_profile_collector_container(
             provenance_key_id=provenance_key_id,
             provenance_key=resolver.resolve(provenance_key_secret_ref).encode("utf-8"),
         ),
+    )
+
+
+def build_quality_container(settings: Settings) -> QualityWorkerContainer:
+    required = (
+        settings.quality_database_url,
+        settings.quality_database_secret_ref,
+        settings.quality_worker_subject_id,
+        settings.quality_worker_workspace_id,
+        settings.quality_source_manifest_file,
+        settings.quality_worker_fingerprint,
+    )
+    if not settings.quality_worker_enabled or any(value is None for value in required):
+        raise RuntimeError(
+            "Quality worker requires explicit enablement, an exact manifest and dedicated identity."
+        )
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
+    return QualityWorkerContainer(
+        database=_database(settings, role="quality"),
+        event_delivery=_delivery(settings, resolver),
     )
 
 

@@ -1966,6 +1966,30 @@ The bundled Airflow password file and `SimpleAuthManager` are strictly loopback 
 
 OpenAPI is available at `http://localhost:38101/api/docs` in source-host development, at the deployment-selected API port in other non-production topologies, or through the web proxy at `/api/docs` when enabled. The container API continues to listen on its internal port `8000`.
 
+## Optional GX Quality execution plane
+
+The `quality-execution` profile is disabled by default. Enabling it requires an operator-owned
+`QUALITY_SOURCE_MANIFEST_V1`, separate read-only source credentials, exact source IP allowlists,
+approved full-scan workload budgets, active Quality retention bindings, and the dedicated
+`datariver_quality` database credential. The API, Airflow and browser never receive a source
+credential; the worker never receives a DataHub token.
+
+Install each source secret below the deployment-owned `QUALITY_SOURCE_SECRET_ROOT` with an exact
+basename referenced by the manifest. On Linux, supply a deployment Compose override or secret
+driver that makes only those files readable by container UID `10001`; do not weaken the host
+`secrets/` parent permissions. Then set the `QUALITY_WORKER_*` values shown in `.env.example` and
+start the explicit profile:
+
+```bash
+scripts/compose.sh --env-file .env --profile quality-execution up -d quality-worker
+```
+
+The `datariver_quality_dispatch` Airflow DAG remains paused on creation and has no schedule unless
+`DATARIVER_QUALITY_DISPATCH_SCHEDULE` is deployment-approved. Airflow uses its own
+`datariver-quality-dispatch` client credential and sends only a call ID; PostgreSQL remains the
+schedule/run ledger. A missing active retention policy, source manifest, target mapping or scan
+budget is an unavailable capability, never an implicit default or sampled execution.
+
 ## Optional semiconductor seed
 
 The seed is deterministic synthetic reference data and never installs by default. It contains 12 catalog assets and a 257-node/279-edge semiconductor value-chain release, including 168 monthly facility-capacity and product-demand observations with assertion-level provenance. Apply records separate maker/checker and authorized-publisher evidence, 536 immutable changeset operations, a canonical PostgreSQL read-back receipt and the published lineage before setting the active release. Verify rechecks the active release, role permissions, the exact operation ledger and a canonical row reconstruction hash; seed data is not a governance bypass.

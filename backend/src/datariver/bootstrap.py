@@ -28,9 +28,14 @@ from datariver.infrastructure.secrets import SecretResolver
 LOCAL_WORKSPACE_ID = UUID("00000000-0000-4000-8000-000000000100")
 LOCAL_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000101")
 LOCAL_AIRFLOW_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000102")
+LOCAL_QUALITY_DISPATCH_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000103")
+LOCAL_QUALITY_WORKER_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000104")
 LOCAL_KEYCLOAK_SUBJECT = "00000000-0000-4000-8000-000000000001"
 LOCAL_KEYCLOAK_AIRFLOW_SUBJECT = "00000000-0000-4000-8000-000000000002"
+LOCAL_KEYCLOAK_QUALITY_DISPATCH_SUBJECT = "00000000-0000-4000-8000-000000000004"
+LOCAL_QUALITY_WORKER_EXTERNAL_SUBJECT = "urn:datariver:service:quality-worker"
 LOCAL_DEMO_IDENTITIES_PATH = Path("/run/datariver/local-demo-identities.json")
+LOCAL_SERVICE_IDENTITIES_PATH = Path("/run/datariver/local-service-identities.json")
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,6 +157,28 @@ def _local_demo_identities(
         external_subjects.add(external_subject)
         resolved.append(replace(demo, external_subject=external_subject))
     return tuple(resolved)
+
+
+def _local_quality_dispatch_external_subject(
+    state_path: Path = LOCAL_SERVICE_IDENTITIES_PATH,
+) -> str:
+    if not state_path.exists():
+        return LOCAL_KEYCLOAK_QUALITY_DISPATCH_SUBJECT
+    if not state_path.is_file() or state_path.stat().st_size > 1_024:
+        raise RuntimeError("The local service identity state file is invalid.")
+    try:
+        document = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("The local service identity state file is invalid.") from error
+    if not isinstance(document, dict) or set(document) != {"quality_dispatch"}:
+        raise RuntimeError("The local service identity state file is invalid.")
+    value = document["quality_dispatch"]
+    if not isinstance(value, str):
+        raise RuntimeError("The local service identity state file is invalid.")
+    try:
+        return str(UUID(value))
+    except ValueError as error:
+        raise RuntimeError("The local service identity state file is invalid.") from error
 
 
 def _resolve_local_subject(
@@ -317,6 +344,91 @@ async def bootstrap_local_identity() -> dict[str, object]:
                 airflow_membership.clearance = int(Classification.RESTRICTED)
                 airflow_membership.attributes = airflow_attributes
                 airflow_membership.active = True
+            for service_definition in (
+                (
+                    LOCAL_QUALITY_DISPATCH_SUBJECT_ID,
+                    _local_quality_dispatch_external_subject(),
+                    "DataRiver Quality Dispatch Service",
+                    ["service-accounts", "quality-dispatchers"],
+                    [Action.QUALITY_DISPATCH.value],
+                ),
+                (
+                    LOCAL_QUALITY_WORKER_SUBJECT_ID,
+                    LOCAL_QUALITY_WORKER_EXTERNAL_SUBJECT,
+                    "DataRiver Quality Worker",
+                    ["service-accounts", "quality-workers"],
+                    [Action.QUALITY_EXECUTE.value],
+                ),
+            ):
+                (
+                    service_subject_id,
+                    external_subject,
+                    display_name,
+                    groups,
+                    allowed_actions,
+                ) = service_definition
+                fixed_service_subject = await session.get(SubjectModel, service_subject_id)
+                identity_service_subject = (
+                    await session.scalars(
+                        select(SubjectModel).where(
+                            SubjectModel.issuer == settings.oidc_issuer,
+                            SubjectModel.external_subject == external_subject,
+                        )
+                    )
+                ).one_or_none()
+                service_subject = _resolve_local_subject(
+                    fixed_service_subject,
+                    identity_service_subject,
+                    label=display_name,
+                )
+                if service_subject is None:
+                    service_subject = SubjectModel(
+                        id=service_subject_id,
+                        issuer=settings.oidc_issuer,
+                        external_subject=external_subject,
+                        display_name=display_name,
+                        active=True,
+                    )
+                    session.add(service_subject)
+                    await session.flush()
+                else:
+                    service_subject.issuer = settings.oidc_issuer
+                    service_subject.external_subject = external_subject
+                    service_subject.display_name = display_name
+                    service_subject.active = True
+                service_membership = await session.get(
+                    WorkspaceMembershipModel,
+                    {"workspace_id": workspace.id, "subject_id": service_subject.id},
+                )
+                service_attributes = {
+                    "groups": groups,
+                    "allowed_actions": allowed_actions,
+                    "denied_actions": [],
+                    # Empty scopes intentionally restrict the local service to PUBLIC
+                    # assets until an operator assigns exact governed scopes.
+                    "allowed_system_ids": [],
+                    "allowed_domain_ids": [],
+                    "bootstrap": "local-quality-service-v1",
+                }
+                if service_membership is None:
+                    session.add(
+                        WorkspaceMembershipModel(
+                            workspace_id=workspace.id,
+                            subject_id=service_subject.id,
+                            department_id=None,
+                            job_function="SERVICE_ACCOUNT",
+                            clearance=int(Classification.RESTRICTED),
+                            attributes=service_attributes,
+                            active=True,
+                            access_expires_at=None,
+                        )
+                    )
+                else:
+                    service_membership.job_function = "SERVICE_ACCOUNT"
+                    service_membership.clearance = int(Classification.RESTRICTED)
+                    service_membership.attributes = service_attributes
+                    service_membership.active = True
+                    service_membership.access_expires_at = None
             for demo in _local_demo_identities():
                 fixed_demo_subject = await session.get(SubjectModel, demo.subject_id)
                 identity_demo_subject = (

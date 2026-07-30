@@ -298,6 +298,18 @@ class Settings(BaseSettings):
         default=None,
         max_length=512,
     )
+    # Phase 3 separates the OIDC dispatcher, the API DB role and the source-reading worker.
+    quality_dispatch_max_due_schedules: int = Field(default=25, ge=1, le=100)
+    quality_dispatch_max_created_runs: int = Field(default=100, ge=1, le=100)
+    quality_worker_enabled: bool = False
+    quality_database_url: str | None = None
+    quality_database_secret_ref: str | None = Field(default=None, max_length=512)
+    quality_worker_subject_id: UUID | None = None
+    quality_worker_workspace_id: UUID | None = None
+    quality_source_manifest_file: str | None = Field(default=None, max_length=512)
+    quality_source_secret_root: str = "/run/secrets"  # noqa: S105 - filesystem path
+    quality_worker_fingerprint: str | None = Field(default=None, max_length=255)
+    quality_worker_lease_seconds: int = Field(default=360, ge=60, le=90_000)
     ui_datahub_url: HttpUrl | None = None
     ui_airflow_url: HttpUrl | None = None
     ui_grafana_url: HttpUrl | None = None
@@ -575,6 +587,36 @@ class Settings(BaseSettings):
             raise ValueError("System configuration secret root must be one absolute safe path.")
         return str(path)
 
+    @field_validator("quality_source_secret_root")
+    @classmethod
+    def validate_quality_source_secret_root(cls, value: str) -> str:
+        normalized = value.strip()
+        path = PurePosixPath(normalized)
+        if not normalized or not path.is_absolute() or ".." in path.parts:
+            raise ValueError("Quality source secret root must be one absolute safe path.")
+        return str(path)
+
+    @field_validator("quality_source_manifest_file")
+    @classmethod
+    def validate_quality_source_manifest_file(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        path = PurePosixPath(normalized)
+        if not normalized or not path.is_absolute() or ".." in path.parts:
+            raise ValueError("Quality source manifest must be one absolute safe path.")
+        return str(path)
+
+    @field_validator("quality_worker_fingerprint")
+    @classmethod
+    def validate_quality_worker_fingerprint(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,254}", normalized) is None:
+            raise ValueError("Quality worker fingerprint is invalid.")
+        return normalized
+
     @field_validator("datahub_expected_version")
     @classmethod
     def require_exact_stable_datahub_version(cls, value: str) -> str:
@@ -803,6 +845,8 @@ class Settings(BaseSettings):
             credential_urls["archive_database_url"] = self.archive_database_url
         if self.catalog_profile_database_url is not None:
             credential_urls["catalog_profile_database_url"] = self.catalog_profile_database_url
+        if self.quality_database_url is not None:
+            credential_urls["quality_database_url"] = self.quality_database_url
         embedded_passwords = [
             name for name, url in credential_urls.items() if urlsplit(url).password is not None
         ]
@@ -868,6 +912,8 @@ class Settings(BaseSettings):
             references["catalog_profile_provenance_key"] = (
                 self.catalog_profile_provenance_key_secret_ref
             )
+        if self.quality_database_secret_ref is not None:
+            references["quality_database"] = self.quality_database_secret_ref
         invalid_references = [
             name for name, reference in references.items() if not reference.startswith("file:")
         ]
@@ -949,6 +995,59 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "Catalog Profile collector requires enforced DataHub version pinning."
                 )
+        quality_worker_settings = {
+            "database URL": self.quality_database_url,
+            "database secret": self.quality_database_secret_ref,
+            "service Subject": self.quality_worker_subject_id,
+            "Workspace": self.quality_worker_workspace_id,
+            "source manifest": self.quality_source_manifest_file,
+            "worker fingerprint": self.quality_worker_fingerprint,
+        }
+        if self.quality_worker_enabled:
+            missing_quality_settings = sorted(
+                name for name, value in quality_worker_settings.items() if value is None
+            )
+            if missing_quality_settings:
+                raise ValueError(
+                    "Enabled Quality worker requires all dedicated settings: "
+                    + ", ".join(missing_quality_settings)
+                )
+            assert self.quality_database_url is not None
+            assert self.quality_database_secret_ref is not None
+            if urlsplit(self.quality_database_url).username != "datariver_quality":
+                raise ValueError("Quality worker must use the dedicated database principal.")
+            shared_database_urls = {
+                self.database_url,
+                self.migration_database_url,
+                self.relay_database_url,
+                self.upload_database_url,
+                self.governance_database_url,
+                self.bootstrap_database_url,
+                self.knowledge_database_url,
+                self.export_database_url,
+                self.retention_scheduler_database_url,
+                self.archive_database_url,
+                self.catalog_profile_database_url,
+            }
+            if self.quality_database_url in shared_database_urls:
+                raise ValueError("Quality worker database URL must be separate.")
+            shared_database_secrets = {
+                self.database_secret_ref,
+                self.migration_database_secret_ref,
+                self.relay_database_secret_ref,
+                self.upload_database_secret_ref,
+                self.governance_database_secret_ref,
+                self.bootstrap_database_secret_ref,
+                self.knowledge_database_secret_ref,
+                self.export_database_secret_ref,
+                self.retention_scheduler_database_secret_ref,
+                self.archive_database_secret_ref,
+                self.catalog_profile_database_secret_ref,
+                self.catalog_profile_datahub_secret_ref,
+                self.catalog_profile_provenance_key_secret_ref,
+            }
+            if self.quality_database_secret_ref in shared_database_secrets:
+                raise ValueError("Quality worker database secret must be dedicated.")
         if self.retention_archive_execution_enabled:
             if self.retention_worker_subject_id != UUID("00000000-0000-7000-8000-000000000003"):
                 raise ValueError(

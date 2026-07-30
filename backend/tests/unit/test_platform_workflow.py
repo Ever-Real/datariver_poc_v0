@@ -898,6 +898,7 @@ def test_classify_changes_limits_restarts_to_affected_services() -> None:
         "governance-apply-worker",
         "knowledge-source-worker",
         "outbox-relay",
+        "quality-worker",
         "retention-archive-worker",
         "retention-scheduler",
         "upload-validation-worker",

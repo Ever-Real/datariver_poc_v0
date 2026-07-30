@@ -236,6 +236,72 @@ BEGIN
 END
 $datariver$;
 
+-- Reconcile the Quality worker to five fixed execution functions. The worker receives no
+-- direct table/sequence capability in Quality, Catalog or Integration.
+SELECT 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA quality, catalog, integration FROM datariver_quality'
+WHERE to_regnamespace('quality') IS NOT NULL
+  AND to_regnamespace('catalog') IS NOT NULL
+  AND to_regnamespace('integration') IS NOT NULL \gexec
+SELECT 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA quality, catalog, integration FROM datariver_quality'
+WHERE to_regnamespace('quality') IS NOT NULL
+  AND to_regnamespace('catalog') IS NOT NULL
+  AND to_regnamespace('integration') IS NOT NULL \gexec
+SELECT 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA quality FROM datariver_quality'
+WHERE to_regnamespace('quality') IS NOT NULL \gexec
+SELECT 'REVOKE ALL PRIVILEGES ON SCHEMA quality FROM datariver_quality'
+WHERE to_regnamespace('quality') IS NOT NULL \gexec
+SELECT 'GRANT USAGE ON SCHEMA quality TO datariver_quality'
+WHERE to_regprocedure('quality.claim_validation_run_v1(uuid,text,text,integer)') IS NOT NULL \gexec
+DO $datariver$
+DECLARE
+  execution_function record;
+  overloaded_execution_function text;
+BEGIN
+  SELECT procedure.proname
+  INTO overloaded_execution_function
+  FROM pg_proc AS procedure
+  JOIN pg_namespace AS namespace
+    ON namespace.oid = procedure.pronamespace
+  WHERE namespace.nspname = 'quality'
+    AND procedure.proname IN (
+      'claim_validation_run_v1',
+      'freeze_source_access_v1',
+      'assert_source_statement_fence_v1',
+      'complete_validation_run_v1',
+      'fail_validation_run_v1'
+    )
+  GROUP BY procedure.proname
+  HAVING count(*) > 1
+  LIMIT 1;
+
+  IF overloaded_execution_function IS NOT NULL THEN
+    RAISE EXCEPTION
+      'quality.% must have exactly one canonical signature',
+      overloaded_execution_function;
+  END IF;
+
+  FOR execution_function IN
+    SELECT procedure.oid::regprocedure AS function_identity
+    FROM pg_proc AS procedure
+    JOIN pg_namespace AS namespace
+      ON namespace.oid = procedure.pronamespace
+    WHERE namespace.nspname = 'quality'
+      AND procedure.proname IN (
+        'claim_validation_run_v1',
+        'freeze_source_access_v1',
+        'assert_source_statement_fence_v1',
+        'complete_validation_run_v1',
+        'fail_validation_run_v1'
+      )
+  LOOP
+    EXECUTE format(
+      'GRANT EXECUTE ON FUNCTION %s TO datariver_quality',
+      execution_function.function_identity
+    );
+  END LOOP;
+END
+$datariver$;
+
 SELECT 'CREATE DATABASE keycloak OWNER keycloak'
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'keycloak') \gexec
 SQL

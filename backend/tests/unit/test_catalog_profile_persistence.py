@@ -25,7 +25,7 @@ def _load(path: Path, name: str) -> ModuleType:
 
 
 def test_profile_metadata_is_tenant_bound_and_immutable_by_shape() -> None:
-    assert REQUIRED_DATABASE_REVISION == "0068"
+    assert REQUIRED_DATABASE_REVISION == "0069"
     snapshots = Base.metadata.tables["catalog.asset_profile_snapshots"]
     metrics = Base.metadata.tables["catalog.column_profile_metrics"]
     for table in (snapshots, metrics):

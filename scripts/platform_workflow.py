@@ -38,6 +38,7 @@ BACKEND_RUNTIME_SERVICES = (
     "knowledge-source-worker",
     "retention-scheduler",
     "retention-archive-worker",
+    "quality-worker",
 )
 RUNTIME_SERVICES = (
     *DEFAULT_RUNTIME_SERVICES,
@@ -45,6 +46,7 @@ RUNTIME_SERVICES = (
     "knowledge-source-worker",
     "retention-scheduler",
     "retention-archive-worker",
+    "quality-worker",
     "keycloak",
 )
 AIRFLOW_SERVICES = (
@@ -756,6 +758,12 @@ def classify_environment_changes(
             # Consumed only by the explicitly invoked, disabled-by-default one-target
             # collector. No long-running Compose service reads these settings.
             pass
+        elif key.startswith("QUALITY_DISPATCH_"):
+            services.add("api")
+        elif key.startswith("QUALITY_"):
+            # The optional worker is restarted only when already running; the
+            # environment workflow never enables its explicit Compose profile.
+            services.add("quality-worker")
         elif key == "CATALOG_EXPORT_WORKER_ENABLED":
             services.update(("api", "catalog-export-worker"))
         elif key in {

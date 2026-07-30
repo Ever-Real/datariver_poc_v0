@@ -402,6 +402,10 @@ def verify_multiarch_release_contract() -> None:
         'attributes.\\"default.acr.values\\"',
         "clientId=datariver-airflow",
         "/run/secrets/airflow_client_secret",
+        "clientId=datariver-quality-dispatch",
+        "/run/secrets/quality_dispatch_client_secret",
+        "datariver-api-audience",
+        "__DATARIVER_SERVICE_IDENTITIES__",
         "trap '\\''rm -f",
     ):
         if fragment not in keycloak_host_dev:
@@ -503,6 +507,32 @@ def verify_identity_assurance_contract() -> None:
     )
     if not isinstance(web_client, dict):
         raise AssertionError("Keycloak realm has no datariver-web client")
+    quality_dispatch_client = next(
+        (
+            client
+            for client in clients
+            if client.get("clientId") == "datariver-quality-dispatch"
+        ),
+        None,
+    )
+    if not isinstance(quality_dispatch_client, dict):
+        raise AssertionError("Keycloak realm has no dedicated Quality dispatch client")
+    if (
+        quality_dispatch_client.get("publicClient") is not False
+        or quality_dispatch_client.get("serviceAccountsEnabled") is not True
+        or quality_dispatch_client.get("standardFlowEnabled") is not False
+        or quality_dispatch_client.get("directAccessGrantsEnabled") is not False
+    ):
+        raise AssertionError("Quality dispatch client must be service-account-only")
+    quality_audiences: set[object] = set()
+    for mapper in quality_dispatch_client.get("protocolMappers", []):
+        if not isinstance(mapper, dict):
+            continue
+        mapper_config = mapper.get("config")
+        if isinstance(mapper_config, dict):
+            quality_audiences.add(mapper_config.get("included.client.audience"))
+    if quality_audiences != {"datariver-api"}:
+        raise AssertionError("Quality dispatch client must emit only the DataRiver API audience")
     mapper_ids = {
         mapper.get("protocolMapper")
         for mapper in web_client.get("protocolMappers", [])

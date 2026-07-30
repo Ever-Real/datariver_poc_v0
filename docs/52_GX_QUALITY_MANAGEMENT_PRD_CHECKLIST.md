@@ -550,11 +550,13 @@ chart library는 실제 요구와 bundle 측정 후 별도 승인한다.
 
 ### Phase 3 — GX worker와 Airflow
 
-- [ ] isolated quality-worker dependency/runtime, fixed compiler와 sanitizer를 구현한다.
-- [ ] deployment-owned source resolver, read-only transaction, egress와 workload gate를 구현한다.
-- [ ] outbox, run-independent dispatch receipt/mapping, exact current claim/lease/source-start
-  fence, execution receipt, 새-Run retry/cancel/crash recovery를 구현한다.
-- [ ] Airflow OIDC dispatch DAG와 service-only endpoint를 paused-by-default로 구현한다.
+- [x] isolated quality-worker dependency/runtime, fixed compiler와 sanitizer를 구현한다.
+- [x] deployment-owned source resolver, read-only transaction, egress와 workload gate를 구현한다.
+- [x] outbox, run-independent dispatch receipt/mapping, exact current claim/lease/source-start
+  fence, execution receipt와 expired-lease reclaim을 구현한다. Human cancel과 새-Run retry API는
+  Phase 4 mutation surface에서 닫는다.
+- [x] 별도 Keycloak client/Subject를 쓰는 Airflow OIDC dispatch DAG와 service-only endpoint를
+  paused-by-default로 구현한다.
 - [ ] 전체 source-access hard timeout + cancel/reconcile/completion margin을 frozen lease
   안에 두고 statement별 epoch 재확인/timeout, connection-close-before-reclaim, 실제 PostgreSQL
   full-table, revocation-before-query, duplicate full-scan 방지와 kill/reclaim을 검증한다.
@@ -609,6 +611,9 @@ Phase 0 완료 검증은 문서 링크, ADR/requirement traceability, Markdown/s
 Dashboard, RLS/migration 또는 target acceptance 증거로 사용하지 않는다.
 
 이 제한은 Phase 0에서 지켜졌으며 이후 연속 실행 승인을 받았다. Phase 1은 optional
-dependency lock, SQLAlchemy/Alembic과 backend control-plane만 변경했다. Compose의
-quality-worker 실행, Airflow quality DAG, API/frontend capability와 runtime enablement는
-각 후속 Phase gate 전까지 계속 비활성이다.
+dependency lock, SQLAlchemy/Alembic과 backend control-plane을 추가했고 Phase 2는
+privacy-allowlisted DataHub Profile projection을 추가했다. Phase 3는 `0069` service-only
+dispatch/claim/fence/completion functions, isolated Quality worker, source manifest, sanitized
+result boundary와 paused Airflow DAG를 추가했다. Worker와 DAG schedule은 계속
+disabled/paused-by-default이며 실제 target source full-scan과 kill/reclaim은 Phase 5
+acceptance gate로 남는다. API/frontend human capability는 Phase 4까지 비활성이다.

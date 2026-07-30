@@ -13,6 +13,7 @@ from datariver.interfaces.http.routes import (
     knowledge_studio,
     manual_registration,
     operations,
+    quality_internal,
     registration,
     retention,
     sharing,
@@ -34,4 +35,5 @@ api_router.include_router(knowledge_studio.router)
 api_router.include_router(knowledge_studio.domains_router)
 api_router.include_router(chat.router)
 api_router.include_router(operations.router)
+api_router.include_router(quality_internal.router)
 api_router.include_router(sharing.router)
