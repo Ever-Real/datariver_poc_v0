@@ -61,6 +61,9 @@ def asset() -> CatalogAssetIndex:
         observed_at=NOW,
         database_name="hr",
         schema_name="public",
+        domain="Finance",
+        tags=("PII",),
+        glossary_terms=("Employee",),
         column_names=("fallback_id",),
     )
 
@@ -93,12 +96,52 @@ async def test_studio_source_search_uses_the_authorized_dataset_projection_only(
     assert page.items[0].fields_truncated is True
     assert page.items[0].source_version == "projection-v1"
     assert page.items[0].projection_source_version == "projection-v1"
+    assert page.items[0].domain == "Finance"
+    assert page.items[0].tags == ("PII",)
     catalog.search.assert_awaited_once_with(
         subject=subject(),
         query="employee",
         filters={
             "asset_types": sorted(DATASET_ASSET_TYPES),
             "classification_ceiling": int(Classification.INTERNAL),
+        },
+        cursor=None,
+        limit=25,
+        environment=environment,
+        request_id="request",
+    )
+
+
+@pytest.mark.asyncio
+async def test_studio_source_search_forwards_catalog_domain_and_search_fields() -> None:
+    catalog = SimpleNamespace(
+        search=AsyncMock(
+            return_value=CatalogPage(items=(asset(),), next_cursor=None, observed_at=NOW)
+        )
+    )
+    reader = CatalogKnowledgeStudioSourceReader(cast(CatalogService, catalog))
+    environment = EnvironmentAttributes(requested_at=NOW)
+
+    await reader.search_datasets(
+        subject=subject(),
+        maximum_classification=Classification.INTERNAL,
+        query="PII employee",
+        cursor=None,
+        limit=25,
+        environment=environment,
+        request_id="request",
+        domain="Finance",
+        search_fields="TABLE,COLUMN,TAG,TERM",
+    )
+
+    catalog.search.assert_awaited_once_with(
+        subject=subject(),
+        query="PII employee",
+        filters={
+            "asset_types": sorted(DATASET_ASSET_TYPES),
+            "classification_ceiling": int(Classification.INTERNAL),
+            "domain": "Finance",
+            "search_fields": "TABLE,COLUMN,TAG,TERM",
         },
         cursor=None,
         limit=25,

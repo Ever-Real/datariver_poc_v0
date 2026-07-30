@@ -49,7 +49,10 @@ server {
         proxy_connect_timeout 3s;
         proxy_read_timeout ${API_PROXY_READ_TIMEOUT_SECONDS}s;
         proxy_send_timeout 30s;
-        client_max_body_size 2m;
+        # The interactive Studio parser remains fail-closed at 10 MiB.  This
+        # edge allowance includes multipart framing without creating an
+        # unbounded upload path.
+        client_max_body_size 12m;
     }
 
     location /assets/ {

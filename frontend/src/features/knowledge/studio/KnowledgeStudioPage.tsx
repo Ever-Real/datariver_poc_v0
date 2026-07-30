@@ -132,6 +132,20 @@ export function KnowledgeStudioPage({
   const setSessionBasic = useKnowledgeStudioSessionStore((state) => state.setBasic)
   const setSessionStep = useKnowledgeStudioSessionStore((state) => state.setStep)
 
+  const reloadDomains = useCallback(async (
+    classification = formRef.current.classification,
+    signal?: AbortSignal,
+  ) => {
+    const refreshed = await listKnowledgeStudioDomains(
+      client,
+      classification,
+      undefined,
+      signal,
+    )
+    setDomains(refreshed)
+    return refreshed
+  }, [client])
+
   const applyServerDraft = useCallback((
     value: KnowledgeStudioDraft,
     responseEtag: string,
@@ -293,13 +307,7 @@ export function KnowledgeStudioPage({
     const controller = new AbortController()
     setDomainsLoading(true)
     const timer = window.setTimeout(() => {
-      void listKnowledgeStudioDomains(
-        client,
-        form.classification,
-        undefined,
-        controller.signal,
-      )
-        .then(setDomains)
+      void reloadDomains(form.classification, controller.signal)
         .catch((error: unknown) => {
           if (controller.signal.aborted) return
           setDomains([])
@@ -313,7 +321,7 @@ export function KnowledgeStudioPage({
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [client, form.classification, initialized, location.valid])
+  }, [form.classification, initialized, location.valid, reloadDomains])
 
   useEffect(() => {
     const online = () => {
@@ -734,10 +742,7 @@ export function KnowledgeStudioPage({
         displayName,
         newKnowledgeStudioIdempotencyKey(),
       )
-      const refreshed = await listKnowledgeStudioDomains(
-        client,
-        formRef.current.classification,
-      )
+      const refreshed = await reloadDomains()
       if (!refreshed.some((item) => item.id === created.id)) {
         throw new Error('등록된 도메인이 현재 작성자 범위에 반영되지 않았습니다.')
       }
@@ -756,15 +761,15 @@ export function KnowledgeStudioPage({
     }
   }
 
-  const domainChanged = (
+  const domainChanged = async (
     selected?: KnowledgeStudioManagedDomain,
     archivedId?: string,
   ) => {
+    const refreshed = await reloadDomains()
     if (selected) {
-      setDomains((current) => [
-        ...current.filter((item) => item.id !== selected.id),
-        selected,
-      ].sort((left, right) => left.display_name.localeCompare(right.display_name, 'ko')))
+      if (!refreshed.some((item) => item.id === selected.id)) {
+        throw new Error('변경된 도메인이 현재 작성자의 PostgreSQL 조회 범위에 없습니다.')
+      }
       if (formRef.current.domain_id === selected.id || !formRef.current.domain_id) {
         queueForm({
           ...formRef.current,
@@ -775,7 +780,6 @@ export function KnowledgeStudioPage({
       return
     }
     if (!archivedId) return
-    setDomains((current) => current.filter((item) => item.id !== archivedId))
     if (formRef.current.domain_id === archivedId) {
       queueForm({
         ...formRef.current,
@@ -875,6 +879,8 @@ export function KnowledgeStudioPage({
     <DomainManagementDialog
       client={client}
       open={domainManagementOpen}
+      items={domains}
+      loading={domainsLoading}
       onRequestClose={() => setDomainManagementOpen(false)}
       onChanged={domainChanged}
     />

@@ -1822,6 +1822,8 @@ class KnowledgeStudioSourceReader(Protocol):
         limit: int,
         environment: EnvironmentAttributes,
         request_id: str,
+        domain: str | None = None,
+        search_fields: str | None = None,
     ) -> KnowledgeStudioSourcePage: ...
 
     async def get_dataset(

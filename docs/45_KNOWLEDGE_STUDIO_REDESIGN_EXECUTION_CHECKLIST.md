@@ -99,6 +99,8 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 - [ ] Cypher source가 server/Neo4j로 전달·실행되지 않음을 HTTP/adapter test로 증명한다.
 - [x] Hierarchy Tree/React Flow/safe editor 양방향 동기화, parse-error last-valid graph,
   stable element ID와 tree drag/drop `SUBCLASS_OF` 갱신을 component/domain test한다.
+- [x] React Flow semantic edge add/reconnect/delete와 Tree Relationship 목록을 typed element
+  정본에 동기화하고, unsaved node layout/viewport가 새 Class 추가 때 초기화되지 않게 한다.
 - [x] Class 선택 시 node-adjacent floating editor와 inline Property 추가를 제공하고 rich
   Property metadata는 향후 Asset 관리 reference ID/URN 계약으로 분리한다.
 - [x] 이전/후속 block을 read-only group으로 표시하고 current-to-earlier reference만 허용하며,
@@ -114,7 +116,7 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
   API process가 provider latency를 기다리지 않음을 test한다.
 - [ ] proposal Accept가 one-time/version-fenced이고 source/classification/base pin을 재검증함을 integration test한다.
 - [ ] unavailable file inference/catalog picker가 provider 호출 없이 사유를 표시함을 test한다.
-- [ ] catalog picker가 local Asset UUID/source version과 server-returned aspect/field token만
+- [x] catalog picker가 local Asset UUID/source version과 server-returned aspect/field token만
   받고 arbitrary URN/field path/provider query를 거부함을 test한다.
 - [ ] asset attach가 permitted exact release/version/hash만 pin하고 hidden/over-clearance/retired asset을 찾지 못함을 test한다.
 - [ ] hierarchy cycle, alias collision, domain/range/cardinality, unit/transform, classification/source drift negative cases를 만든다.

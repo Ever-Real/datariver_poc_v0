@@ -11,26 +11,31 @@ import { Dialog } from '../../../../components/common/Dialog'
 import {
   createKnowledgeStudioManagedDomain,
   deleteKnowledgeStudioManagedDomain,
-  listKnowledgeStudioManagedDomains,
   newKnowledgeStudioIdempotencyKey,
   updateKnowledgeStudioManagedDomain,
+  type KnowledgeStudioDomainOption,
   type KnowledgeStudioManagedDomain,
 } from '../knowledgeStudioApi'
 
 interface DomainManagementDialogProps {
   client: ApiClient
   open: boolean
+  items: KnowledgeStudioDomainOption[]
+  loading: boolean
   onRequestClose: () => void
-  onChanged: (selected?: KnowledgeStudioManagedDomain, archivedId?: string) => void
+  onChanged: (
+    selected?: KnowledgeStudioManagedDomain,
+    archivedId?: string,
+  ) => Promise<void>
 }
 
-const columnHelper = createColumnHelper<KnowledgeStudioManagedDomain>()
+const columnHelper = createColumnHelper<KnowledgeStudioDomainOption>()
 
 interface DomainNameCellProps {
-  domain: KnowledgeStudioManagedDomain
+  domain: KnowledgeStudioDomainOption
   editing: boolean
   disabled: boolean
-  onSave: (domain: KnowledgeStudioManagedDomain, name: string) => Promise<void>
+  onSave: (domain: KnowledgeStudioDomainOption, name: string) => Promise<void>
   onCancel: () => void
 }
 
@@ -92,30 +97,19 @@ function DomainNameCell({
 export function DomainManagementDialog({
   client,
   open,
+  items,
+  loading,
   onRequestClose,
   onChanged,
 }: DomainManagementDialogProps) {
-  const [items, setItems] = useState<KnowledgeStudioManagedDomain[]>([])
   const [newName, setNewName] = useState('')
   const [editingId, setEditingId] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
 
-  const load = useCallback(async () => {
-    setBusy(true)
-    try {
-      setItems(await listKnowledgeStudioManagedDomains(client))
-      setStatus('')
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : '도메인 목록을 불러오지 못했습니다.')
-    } finally {
-      setBusy(false)
-    }
-  }, [client])
-
   useEffect(() => {
-    if (open) void load()
-  }, [load, open])
+    if (open) setStatus('')
+  }, [open])
 
   const createDomain = async () => {
     const name = newName.trim()
@@ -127,10 +121,9 @@ export function DomainManagementDialog({
         name,
         newKnowledgeStudioIdempotencyKey(),
       )
-      setItems((current) => [...current, created].sort(compareDomains))
+      await onChanged(created)
       setNewName('')
       setStatus(`'${created.display_name}' 도메인을 등록했습니다.`)
-      onChanged(created)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '도메인을 등록하지 못했습니다.')
     } finally {
@@ -139,12 +132,16 @@ export function DomainManagementDialog({
   }
 
   const saveDomain = useCallback(async (
-    domain: KnowledgeStudioManagedDomain,
+    domain: KnowledgeStudioDomainOption,
     rawName: string,
   ) => {
     const name = rawName.trim()
     if (!name || name === domain.display_name) {
       setEditingId('')
+      return
+    }
+    if (!domain.managed || domain.version === undefined) {
+      setStatus('외부에서 동기화된 도메인은 DataRiver Studio에서 수정할 수 없습니다.')
       return
     }
     setBusy(true)
@@ -156,12 +153,9 @@ export function DomainManagementDialog({
         domain.version,
         newKnowledgeStudioIdempotencyKey(),
       )
-      setItems((current) => (
-        current.map((item) => item.id === updated.id ? updated : item).sort(compareDomains)
-      ))
+      await onChanged(updated)
       setEditingId('')
       setStatus(`'${updated.display_name}' 도메인을 수정했습니다.`)
-      onChanged(updated)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '도메인을 수정하지 못했습니다.')
     } finally {
@@ -169,7 +163,11 @@ export function DomainManagementDialog({
     }
   }, [client, onChanged])
 
-  const archiveDomain = useCallback(async (domain: KnowledgeStudioManagedDomain) => {
+  const archiveDomain = useCallback(async (domain: KnowledgeStudioDomainOption) => {
+    if (!domain.managed || domain.version === undefined) {
+      setStatus('외부에서 동기화된 도메인은 DataRiver Studio에서 비활성화할 수 없습니다.')
+      return
+    }
     if (
       !window.confirm(`'${domain.display_name}' 도메인을 삭제(비활성화)하시겠습니까?`)
     ) return
@@ -181,9 +179,8 @@ export function DomainManagementDialog({
         domain.version,
         newKnowledgeStudioIdempotencyKey(),
       )
-      setItems((current) => current.filter((item) => item.id !== domain.id))
+      await onChanged(undefined, domain.id)
       setStatus(`'${domain.display_name}' 도메인을 비활성화했습니다.`)
-      onChanged(undefined, domain.id)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '도메인을 삭제하지 못했습니다.')
     } finally {
@@ -212,13 +209,13 @@ export function DomainManagementDialog({
     }),
     columnHelper.accessor('asset_count', {
       header: '소속 Asset',
-      cell: ({ getValue }) => <span className="font-bold">{getValue()}</span>,
+      cell: ({ getValue }) => <span className="font-bold">{getValue() ?? '—'}</span>,
     }),
     columnHelper.accessor('created_at', {
       header: '생성일',
       cell: ({ getValue }) => (
         <time className="whitespace-nowrap text-[10px] text-slate-600">
-          {new Date(getValue()).toLocaleDateString('ko-KR')}
+          {getValue() ? new Date(getValue()!).toLocaleDateString('ko-KR') : '—'}
         </time>
       ),
     }),
@@ -231,7 +228,7 @@ export function DomainManagementDialog({
             type="button"
             className="rounded p-1 text-enterprise-blue hover:bg-blue-50"
             aria-label={`${row.original.display_name} 도메인 수정`}
-            disabled={busy}
+            disabled={busy || !row.original.managed || row.original.version === undefined}
             onClick={() => {
               setEditingId(row.original.id)
             }}
@@ -242,7 +239,7 @@ export function DomainManagementDialog({
             type="button"
             className="rounded p-1 text-red-700 hover:bg-red-50"
             aria-label={`${row.original.display_name} 도메인 삭제`}
-            disabled={busy}
+            disabled={busy || !row.original.managed || row.original.version === undefined}
             onClick={() => void archiveDomain(row.original)}
           >
             <Trash2 size={13} />
@@ -255,7 +252,7 @@ export function DomainManagementDialog({
   // TanStack Table owns mutable table methods; React Compiler must not memoize this hook.
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
-    data: items,
+    data: [...items].sort(compareDomains),
     columns,
     getCoreRowModel: getCoreRowModel(),
   })
@@ -319,7 +316,7 @@ export function DomainManagementDialog({
                 ))}
               </tr>
             ))}
-            {!busy && items.length === 0 && (
+            {!busy && !loading && items.length === 0 && (
               <tr>
                 <td colSpan={5} className="p-8 text-center text-xs text-slate-500">
                   등록된 도메인이 없습니다.
@@ -330,15 +327,15 @@ export function DomainManagementDialog({
         </table>
       </div>
       <p role="status" className="mb-0 mt-3 min-h-5 text-xs text-slate-600">
-        {busy ? '처리 중…' : status}
+        {busy || loading ? 'PostgreSQL 도메인 정본을 동기화하는 중…' : status}
       </p>
     </Dialog>
   )
 }
 
 function compareDomains(
-  left: KnowledgeStudioManagedDomain,
-  right: KnowledgeStudioManagedDomain,
+  left: KnowledgeStudioDomainOption,
+  right: KnowledgeStudioDomainOption,
 ): number {
   return left.display_name.localeCompare(right.display_name, 'ko')
 }

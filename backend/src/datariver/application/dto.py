@@ -1067,6 +1067,13 @@ class KnowledgeStudioDomainOption:
     domain_id: UUID
     display_name: str
     source_version: str
+    created_by: UUID | None = None
+    asset_count: int = 0
+    lifecycle: str = "ACTIVE"
+    version: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    managed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1264,6 +1271,9 @@ class KnowledgeStudioSourceDataset:
     projection_source_version: str
     field_paths: tuple[str, ...]
     fields_truncated: bool
+    domain: str | None = None
+    tags: tuple[str, ...] = ()
+    glossary_terms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

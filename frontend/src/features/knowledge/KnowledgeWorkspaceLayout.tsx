@@ -14,8 +14,8 @@ const items: Array<{
   { section: 'REGISTRY', title: '지식 레지스트리', description: '에셋 관리 및 이력', icon: BookOpen },
   {
     section: 'INSTANCES',
-    title: '지식 인스턴스 관리',
-    description: 'URN 기반 Property 상세 메타',
+    title: '인스턴스 관리',
+    description: 'Property URN·자산 프로파일',
     icon: Boxes,
     nested: true,
   },

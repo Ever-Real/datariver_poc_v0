@@ -588,8 +588,10 @@ materialize/execute 때 다시 확인한다. 달라지면 STALE로 끝내며 최
 | `GET /knowledge/registry/assets/{id}/preview?...` | graph preview | active governed release, server node/edge cap와 truncation evidence |
 | `POST /knowledge/studio/drafts` | Step 1 create/edit draft | kg.create 또는 kg.edit, Idempotency-Key, author-bound response |
 | `GET/PATCH /knowledge/studio/drafts/{id}` | Studio recovery/save | actor policy와 ETag; REVIEW/PUBLISHED는 independent reviewer read만, text Cypher body 없음 |
-| `GET /knowledge/studio/domains?...` | Step 1 DOMAIN picker | local UUID/display/source version, active/authorized entries만 |
+| `GET /knowledge/domains?...` | Step 1 DOMAIN picker/관리 공통 resource | local UUID/display/source version과 nullable 관리 메타, active/authorized entries만 |
+| `POST/PATCH/DELETE /knowledge/domains[/{id}]` | DOMAIN 생성/관리 | create는 ADR-0073 author bootstrap, rename/archive는 admin.manage + idempotency/ETag |
 | `GET /knowledge/studio-options/catalog-assets?...` | DB/metadata source picker | permitted bounded summary와 opaque cursor; provider query/credential 없음 |
+| `POST .../tbox/catalog-proposals` | 선택 Catalog metadata Proposal | local Asset UUID, exact source/projection version과 server-returned field path 재검증; raw browser prompt 금지 |
 | `GET /knowledge/studio-options/graph-releases?...` | 다른 Asset picker | governed exact release ID/hash만 |
 | `GET /knowledge/studio-options/uploads?...` | file source picker | requester가 사용할 수 있는 accepted immutable manifest만 |
 | block/input/operation child commands | T-Box 작성 | fixed enum/typed schema, source UUID, raw query 금지 |

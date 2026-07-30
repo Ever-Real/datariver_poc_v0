@@ -43,6 +43,7 @@ from datariver.domain.knowledge_studio import (
     TBoxMergeStrategy,
     TBoxOperationInput,
     TBoxOperationKind,
+    TBoxProposalMode,
 )
 
 WORKSPACE_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1")
@@ -366,6 +367,48 @@ def test_keep_original_rewires_nonconflicting_proposal_dependants() -> None:
             parent_stable_element_id=original.stable_element_id,
         ),
     )
+
+
+def test_proposal_integrity_materializes_only_the_hierarchy_default() -> None:
+    parent = TBoxElementInput(
+        stable_element_id="class.asset",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="Asset",
+        display_name="Asset",
+    )
+    child = TBoxElementInput(
+        stable_element_id="class.dataset",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="Dataset",
+        display_name="Dataset",
+        parent_stable_element_id=parent.stable_element_id,
+    )
+
+    validated, corrected = KnowledgeStudioService._validate_proposal_integrity(
+        current=(parent,),
+        proposed=(child,),
+    )
+
+    assert corrected == 1
+    assert validated[0].hierarchy_relation == "SUBCLASS_OF"
+
+
+def test_proposal_integrity_rejects_an_unknown_class_reference() -> None:
+    invalid = TBoxElementInput(
+        stable_element_id="property.ghost.name",
+        kind=TBoxElementKind.PROPERTY,
+        canonical_name="name",
+        display_name="Name",
+        parent_stable_element_id="class.ghost",
+        data_type="TEXT",
+        nullable=True,
+    )
+
+    with pytest.raises(ValidationError, match="unknown Class"):
+        KnowledgeStudioService._validate_proposal_integrity(
+            current=(),
+            proposed=(invalid,),
+        )
 
 
 def test_proposal_element_override_accepts_unicode_name_and_property_type() -> None:
@@ -877,6 +920,8 @@ async def test_tbox_catalog_search_preserves_source_policy_scope() -> None:
         limit=25,
         environment=EnvironmentAttributes(requested_at=NOW),
         request_id="request",
+        domain=None,
+        search_fields=None,
     )
 
     assert result == page
@@ -888,6 +933,8 @@ async def test_tbox_catalog_search_preserves_source_policy_scope() -> None:
         limit=25,
         environment=EnvironmentAttributes(requested_at=NOW),
         request_id="request",
+        domain=None,
+        search_fields=None,
     )
 
     store.get_draft.return_value = draft()
@@ -901,6 +948,27 @@ async def test_tbox_catalog_search_preserves_source_policy_scope() -> None:
             limit=25,
             environment=EnvironmentAttributes(requested_at=NOW),
             request_id="request",
+        )
+
+
+@pytest.mark.asyncio
+async def test_tbox_catalog_proposal_rejects_a_field_outside_the_exact_source() -> None:
+    current = replace(draft(), current_step="TBOX")
+    sources = SimpleNamespace(get_dataset=AsyncMock(return_value=source_detail()))
+    store = SimpleNamespace(get_draft=AsyncMock(return_value=current))
+
+    with pytest.raises(ValidationError, match="authorized source version"):
+        await service(store, sources=sources).create_tbox_catalog_proposal(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+            draft_id=DRAFT_ID,
+            source_asset_id=SOURCE_ASSET_ID,
+            selected_field_paths=("not_a_real_field",),
+            target_block_id=FIRST_BLOCK_ID,
+            mode=TBoxProposalMode.MERGE_INTO_CURRENT,
+            expected_version=1,
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="catalog-proposal",
         )
 
 

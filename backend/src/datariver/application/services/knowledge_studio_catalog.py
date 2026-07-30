@@ -39,6 +39,9 @@ def _dataset(
         fields_truncated=(
             fields_truncated if fields_truncated is not None else asset.column_names_truncated
         ),
+        domain=asset.domain,
+        tags=asset.tags,
+        glossary_terms=asset.glossary_terms,
     )
 
 
@@ -74,14 +77,21 @@ class CatalogKnowledgeStudioSourceReader:
         limit: int,
         environment: EnvironmentAttributes,
         request_id: str,
+        domain: str | None = None,
+        search_fields: str | None = None,
     ) -> KnowledgeStudioSourcePage:
+        filters: dict[str, object] = {
+            "asset_types": sorted(DATASET_ASSET_TYPES),
+            "classification_ceiling": int(maximum_classification),
+        }
+        if domain:
+            filters["domain"] = domain
+        if search_fields:
+            filters["search_fields"] = search_fields
         page = await self._catalog.search(
             subject=subject,
             query=query,
-            filters={
-                "asset_types": sorted(DATASET_ASSET_TYPES),
-                "classification_ceiling": int(maximum_classification),
-            },
+            filters=filters,
             cursor=cursor,
             limit=limit,
             environment=environment,

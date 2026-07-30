@@ -1015,11 +1015,23 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         query: str | None,
         limit: int,
     ) -> tuple[KnowledgeStudioDomainOption, ...]:
+        graph_count = (
+            select(
+                GraphModel.domain_ref_id.label("domain_id"),
+                func.count(GraphModel.id).label("asset_count"),
+            )
+            .where(GraphModel.workspace_id == workspace_id)
+            .group_by(GraphModel.domain_ref_id)
+            .subquery()
+        )
         statement = (
             select(
-                CatalogVocabularyEntryModel.id,
-                CatalogVocabularyEntryModel.display_name,
-                CatalogVocabularyEntryModel.source_version,
+                CatalogVocabularyEntryModel,
+                func.coalesce(graph_count.c.asset_count, 0),
+            )
+            .outerjoin(
+                graph_count,
+                graph_count.c.domain_id == CatalogVocabularyEntryModel.id,
             )
             .where(
                 CatalogVocabularyEntryModel.workspace_id == workspace_id,
@@ -1055,11 +1067,18 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         rows = (await self._session.execute(statement)).all()
         values = tuple(
             KnowledgeStudioDomainOption(
-                domain_id=row.id,
-                display_name=row.display_name,
-                source_version=row.source_version,
+                domain_id=model.id,
+                display_name=model.display_name,
+                source_version=model.source_version,
+                created_by=model.created_by,
+                asset_count=int(asset_count),
+                lifecycle=model.lifecycle,
+                version=model.version,
+                created_at=model.observed_at,
+                updated_at=model.updated_at,
+                managed=model.provider_ref.startswith("urn:li:domain:datariver-"),
             )
-            for row in rows
+            for model, asset_count in rows
         )
         if values:
             return values

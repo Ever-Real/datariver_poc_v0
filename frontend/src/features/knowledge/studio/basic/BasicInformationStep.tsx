@@ -165,7 +165,16 @@ export function BasicInformationStep({
           <small className="font-normal text-slate-500">레지스트리와 검색에 표시되는 이름입니다.</small>
         </label>
         <label className="grid gap-1 text-xs font-black text-navy-900">
-          Endpoint alias
+          <span className="flex items-center gap-1">
+            API Endpoint 별칭
+            <span
+              className="inline-flex text-enterprise-blue"
+              title="발행된 지식 그래프를 API와 GraphRAG 라우팅에서 안정적으로 찾는 URL-safe 식별자입니다."
+              aria-label="API Endpoint 별칭 설명"
+            >
+              <Info size={12} aria-hidden="true" />
+            </span>
+          </span>
           <input
             aria-label="Endpoint alias"
             required
@@ -185,7 +194,10 @@ export function BasicInformationStep({
             placeholder="semiconductor_materials, materials_kg"
           />
           <small className={aliasError ? 'font-normal text-red-700' : 'font-normal text-slate-500'}>
-            {aliasError ?? '콤마로 구분합니다. 첫 번째 alias가 발행 후 canonical API 식별자입니다.'}
+            {aliasError ?? (
+              'API·GraphRAG에서 이 자산을 찾는 고정 식별자입니다. 콤마로 여러 별칭을 '
+              + '등록할 수 있고, 첫 번째 값이 발행 후 대표 주소가 됩니다.'
+            )}
           </small>
         </label>
         <fieldset className="grid gap-1 border-0 p-0 text-xs font-black text-navy-900 md:col-span-2">

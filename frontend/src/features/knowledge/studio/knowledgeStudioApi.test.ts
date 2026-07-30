@@ -5,6 +5,8 @@ import {
   autosaveKnowledgeStudioDraft,
   createKnowledgeStudioDraft,
   createKnowledgeStudioEditDraft,
+  createKnowledgeStudioTBoxCatalogProposal,
+  createKnowledgeStudioManagedDomain,
   discardKnowledgeStudioDraft,
   getResumableKnowledgeStudioDraft,
   listKnowledgeStudioDomains,
@@ -208,6 +210,71 @@ describe('Knowledge Studio API', () => {
     expect((body as FormData).get('mode')).toBe('MERGE_INTO_CURRENT')
     expect((body as FormData).get('target_block_id')).toBe(proposal.target_block_id)
     expect((body as FormData).get('file')).toBeInstanceOf(File)
+  })
+
+  it('uses the unified domain resource and a typed fenced catalog Proposal contract', async () => {
+    const managedDomain = {
+      id: payload.domain_id,
+      display_name: '반도체',
+      source_version: payload.domain_source_version,
+      asset_count: 0,
+      lifecycle: 'ACTIVE',
+      version: 1,
+      created_at: '2026-07-30T01:00:00Z',
+      updated_at: '2026-07-30T01:00:00Z',
+      managed: true,
+    }
+    const proposal = {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c9',
+      draft_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
+      state: 'READY',
+      mode: 'MERGE_INTO_CURRENT',
+      merge_strategy: 'KEEP_ORIGINAL',
+      base_draft_version: 3,
+      prompt: 'server-owned catalog prompt',
+      elements: [],
+      conflicts: [],
+      source_reference: { contract_version: 'KNOWLEDGE_STUDIO_CATALOG_SOURCE_V1' },
+      version: 1,
+      created_at: '2026-07-30T01:00:00Z',
+      updated_at: '2026-07-30T01:00:00Z',
+    }
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(managedDomain), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(proposal), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    await createKnowledgeStudioManagedDomain(client, '반도체', 'domain-create-key')
+    await createKnowledgeStudioTBoxCatalogProposal(
+      client,
+      proposal.draft_id,
+      {
+        asset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cc',
+        selected_field_paths: ['emp_id', 'emp_name'],
+        mode: 'MERGE_INTO_CURRENT',
+      },
+      '"3"',
+    )
+
+    expect(requestUrl(fetchMock.mock.calls[0]?.[0])).toContain('/knowledge/domains')
+    expect(requestUrl(fetchMock.mock.calls[0]?.[0])).not.toContain('/manage')
+    expect(requestUrl(fetchMock.mock.calls[1]?.[0])).toContain('/tbox/catalog-proposals')
+    const catalogHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers)
+    expect(catalogHeaders.get('If-Match')).toBe('"3"')
+    const catalogBody = fetchMock.mock.calls[1]?.[1]?.body
+    expect(typeof catalogBody).toBe('string')
+    expect(JSON.parse(typeof catalogBody === 'string' ? catalogBody : '{}')).toEqual({
+      asset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cc',
+      selected_field_paths: ['emp_id', 'emp_name'],
+      mode: 'MERGE_INTO_CURRENT',
+    })
   })
 
   it('fences dry-run preview and pre-flight reads without sending provider queries', async () => {

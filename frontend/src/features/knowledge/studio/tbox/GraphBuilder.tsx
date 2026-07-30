@@ -10,6 +10,7 @@ import {
 import {
   Background,
   BackgroundVariant,
+  ConnectionMode,
   Controls,
   Handle,
   MarkerType,
@@ -17,11 +18,14 @@ import {
   NodeToolbar,
   Position,
   ReactFlow,
+  applyEdgeChanges,
   useEdgesState,
   useNodesState,
   type Connection,
   type Edge,
+  type EdgeChange,
   type Node,
+  type NodeChange,
   type NodeProps,
   type Viewport,
 } from '@xyflow/react'
@@ -56,8 +60,10 @@ import {
   applyKnowledgeStudioTBoxOperations,
   applyKnowledgeStudioTBoxProposal,
   createKnowledgeStudioTBoxBlock,
+  createKnowledgeStudioTBoxCatalogProposal,
   createKnowledgeStudioTBoxProposal,
   deleteKnowledgeStudioTBoxBlock,
+  getKnowledgeStudioTBoxCatalogSource,
   getKnowledgeStudioTBox,
   searchKnowledgeStudioTBoxCatalogSources,
   newKnowledgeStudioIdempotencyKey,
@@ -81,6 +87,7 @@ interface SchemaNodeData extends Record<string, unknown> {
   selected: boolean
   editorOpen: boolean
   editorScale: number
+  canStartConnection: boolean
   blockLabel: string
   properties: Array<{ id: string; label: string; dataType: string }>
   onToggleEditor: () => void
@@ -123,6 +130,14 @@ const directBlockOption: {
 }
 
 const propertyDataTypes = ['STRING', 'TEXT', 'INTEGER', 'FLOAT', 'BOOLEAN', 'DATE', 'DATETIME']
+const catalogSearchFieldOptions = [
+  ['TABLE', '테이블명'],
+  ['SCHEMA', '스키마'],
+  ['COLUMN', '컬럼'],
+  ['TAG', '태그'],
+  ['TERM', '용어'],
+  ['DESCRIPTION', '설명'],
+] as const
 
 interface PropertyRowProps {
   classLabel: string
@@ -223,9 +238,42 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
           <LockKeyhole size={9} aria-hidden="true" />
         </span>
       )}
+      <Handle
+        id="body"
+        type="source"
+        position={Position.Bottom}
+        isConnectable
+        isConnectableStart={data.canStartConnection}
+        isConnectableEnd
+        className="border-transparent! bg-transparent!"
+        style={{
+          inset: -5,
+          width: 'calc(100% + 10px)',
+          height: 'calc(100% + 10px)',
+          transform: 'none',
+          borderRadius: 9,
+          zIndex: 0,
+        }}
+      />
+      <Handle
+        id="hierarchy-source-bottom"
+        type="source"
+        position={Position.Bottom}
+        isConnectable={false}
+        className="border-transparent! bg-transparent!"
+        style={{ width: 1, height: 1, minWidth: 1, minHeight: 1 }}
+      />
+      <Handle
+        id="hierarchy-target-top"
+        type="target"
+        position={Position.Top}
+        isConnectable={false}
+        className="border-transparent! bg-transparent!"
+        style={{ width: 1, height: 1, minWidth: 1, minHeight: 1 }}
+      />
       <button
         type="button"
-        className="nodrag nowheel block w-full truncate rounded pt-1 text-left hover:text-cyan-200 focus:outline-none focus:ring-1 focus:ring-cyan-300"
+        className="nodrag nowheel relative z-10 block w-full truncate rounded pt-1 text-left hover:text-cyan-200 focus:outline-none focus:ring-1 focus:ring-cyan-300"
         aria-label={`${data.label} Class 편집기 ${data.editorOpen ? '닫기' : '열기'}`}
         onClick={(event) => {
           event.stopPropagation()
@@ -253,14 +301,10 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
           )}
         </div>
       )}
-      <Handle id="target-top" type="target" position={Position.Top} style={{ left: '42%' }} className="border-sky-200! bg-sky-500!" />
-      <Handle id="source-top" type="source" position={Position.Top} style={{ left: '58%' }} className="border-cyan-200! bg-cyan-400!" />
-      <Handle id="target-right" type="target" position={Position.Right} style={{ top: '42%' }} className="border-sky-200! bg-sky-500!" />
-      <Handle id="source-right" type="source" position={Position.Right} style={{ top: '58%' }} className="border-cyan-200! bg-cyan-400!" />
-      <Handle id="target-bottom" type="target" position={Position.Bottom} style={{ left: '42%' }} className="border-sky-200! bg-sky-500!" />
-      <Handle id="source-bottom" type="source" position={Position.Bottom} style={{ left: '58%' }} className="border-cyan-200! bg-cyan-400!" />
-      <Handle id="target-left" type="target" position={Position.Left} style={{ top: '42%' }} className="border-sky-200! bg-sky-500!" />
-      <Handle id="source-left" type="source" position={Position.Left} style={{ top: '58%' }} className="border-cyan-200! bg-cyan-400!" />
+      <span aria-hidden="true" className="pointer-events-none absolute -top-1 left-1/2 z-20 size-2 -translate-x-1/2 rounded-full border border-sky-100 bg-cyan-400" />
+      <span aria-hidden="true" className="pointer-events-none absolute -bottom-1 left-1/2 z-20 size-2 -translate-x-1/2 rounded-full border border-sky-100 bg-cyan-400" />
+      <span aria-hidden="true" className="pointer-events-none absolute -left-1 top-1/2 z-20 size-2 -translate-y-1/2 rounded-full border border-sky-100 bg-cyan-400" />
+      <span aria-hidden="true" className="pointer-events-none absolute -right-1 top-1/2 z-20 size-2 -translate-y-1/2 rounded-full border border-sky-100 bg-cyan-400" />
       <NodeToolbar
         isVisible={data.editorOpen}
         position={Position.Right}
@@ -388,6 +432,7 @@ const schemaNodeTypes = {
 
 interface ClassHierarchyTreeProps {
   classes: KnowledgeStudioTBoxElement[]
+  relationships: KnowledgeStudioTBoxElement[]
   selectedId: string
   activeBlockId: string
   allowedParentIds: ReadonlySet<string>
@@ -396,10 +441,12 @@ interface ClassHierarchyTreeProps {
   onAdd: (name: string, parentId?: string) => void
   onReparent: (id: string, parentId?: string) => void
   onRenameHierarchy: (id: string, relation: string) => void
+  onRenameRelationship: (id: string, relation: string) => void
 }
 
 function ClassHierarchyTree({
   classes,
+  relationships,
   selectedId,
   activeBlockId,
   allowedParentIds,
@@ -408,6 +455,7 @@ function ClassHierarchyTree({
   onAdd,
   onReparent,
   onRenameHierarchy,
+  onRenameRelationship,
 }: ClassHierarchyTreeProps) {
   const [newClassName, setNewClassName] = useState('')
   const [parentForNewClass, setParentForNewClass] = useState<string>()
@@ -471,7 +519,7 @@ function ClassHierarchyTree({
             <div
               className="flex h-5 items-center gap-1 text-[9px] text-emerald-700"
               style={{ marginLeft: Math.max(4, depth * 12 - 8) }}
-              title={`${item.display_name} → ${classById.get(parentId)?.display_name ?? parentId}: ${hierarchyRelation}`}
+              title={`${classById.get(parentId)?.display_name ?? parentId} → ${item.display_name}: ${hierarchyRelation}`}
             >
               <span
                 aria-hidden="true"
@@ -657,6 +705,79 @@ function ClassHierarchyTree({
           </ul>
         )}
       </div>
+      {relationships.length > 0 && (
+        <section className="border-t border-slate-200 p-2" aria-label="T-Box 일반 관계">
+          <strong className="mb-1 block text-[9px] font-black text-slate-500 uppercase">
+            Relationships
+          </strong>
+          <ul className="m-0 grid max-h-28 list-none gap-1 overflow-auto p-0">
+            {relationships.map((relationship) => {
+              const editable = (
+                (relationship.block_id === activeBlockId || relationship.block_id === undefined)
+                && !relationship.locked_by_later_block
+                && !disabled
+              )
+              const source = classById.get(relationship.source_stable_element_id ?? '')
+              const target = classById.get(relationship.target_stable_element_id ?? '')
+              return (
+                <li
+                  key={relationship.stable_element_id}
+                  className={`rounded border px-2 py-1 text-[9px] ${
+                    selectedId === relationship.stable_element_id
+                      ? 'border-enterprise-blue bg-blue-50'
+                      : 'border-slate-200'
+                  }`}
+                >
+                  <button
+                    type="button"
+                    className="block w-full truncate text-left text-slate-500"
+                    title={`${source?.display_name ?? '?'} → ${target?.display_name ?? '?'}`}
+                    onClick={() => onSelect(relationship.stable_element_id)}
+                  >
+                    {source?.display_name ?? '?'} → {target?.display_name ?? '?'}
+                  </button>
+                  {editingRelationId === relationship.stable_element_id ? (
+                    <input
+                      autoFocus
+                      aria-label={`${relationship.display_name} Relationship 이름`}
+                      className="input mt-1 h-5 w-full py-0 text-[9px]"
+                      value={relationName}
+                      onChange={(event) => setRelationName(event.target.value)}
+                      onBlur={() => {
+                        const value = schemaIdentifier(relationName, 'Relation')
+                        if (value && value !== relationship.canonical_name) {
+                          onRenameRelationship(relationship.stable_element_id, value)
+                        }
+                        setEditingRelationId('')
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault()
+                          event.currentTarget.blur()
+                        } else if (event.key === 'Escape') {
+                          setEditingRelationId('')
+                        }
+                      }}
+                    />
+                  ) : (
+                    <button
+                      type="button"
+                      className="mt-1 truncate font-black text-violet-700 disabled:text-slate-400"
+                      disabled={!editable}
+                      onClick={() => {
+                        setRelationName(relationship.canonical_name)
+                        setEditingRelationId(relationship.stable_element_id)
+                      }}
+                    >
+                      {relationship.display_name}
+                    </button>
+                  )}
+                </li>
+              )
+            })}
+          </ul>
+        </section>
+      )}
       <p className="m-0 border-t border-slate-200 p-2 text-[9px] leading-4 text-slate-500">
         Sibling도 자유롭게 드래그할 수 있습니다. 연결 라벨을 눌러 계층 관계 이름을 편집하세요.
       </p>
@@ -801,6 +922,7 @@ function flowGraph(
       selected: item.stable_element_id === selectedElementId,
       editorOpen: false,
       editorScale: 1,
+      canStartConnection: editable,
       blockLabel: block?.title ?? '현재 블록',
       properties: elements
         .filter(
@@ -837,6 +959,8 @@ function flowGraph(
           editable: item.block_id === editableBlockId,
         },
         markerEnd: { type: MarkerType.ArrowClosed, color: '#7dd3fc' },
+        sourceHandle: 'body',
+        targetHandle: 'body',
         style: { stroke: '#7dd3fc', strokeWidth: 1.6 },
         labelStyle: { fill: '#e2e8f0', fontWeight: 700 },
       }]
@@ -846,8 +970,10 @@ function flowGraph(
     if (!parent || !classPositions.has(parent)) return []
     return [{
       id: `hierarchy:${item.stable_element_id}`,
-      source: item.stable_element_id,
-      target: parent,
+      source: parent,
+      target: item.stable_element_id,
+      sourceHandle: 'hierarchy-source-bottom',
+      targetHandle: 'hierarchy-target-top',
       label: item.hierarchy_relation ?? 'SUBCLASS_OF',
       data: {
         relation: item.hierarchy_relation ?? 'SUBCLASS_OF',
@@ -917,6 +1043,19 @@ function createdClass(
   }
 }
 
+function hasProposalValidationEvidence(proposal: KnowledgeStudioTBoxProposal): boolean {
+  const source = proposal.source_reference
+  const evidence = source?.pipeline_evidence
+  return (
+    typeof evidence === 'object'
+    && evidence !== null
+    && Reflect.get(evidence, 'typed_schema_parse') === 'PASSED'
+    && Reflect.get(evidence, 'deterministic_correction_passes') === 1
+    && Reflect.get(evidence, 'aggregate_validation_passes') === 1
+    && Reflect.get(evidence, 'cypher_execution') === false
+  )
+}
+
 export function schemaIdentifier(value: string, prefix = 'Class'): string {
   const cleaned = value
     .trim()
@@ -967,20 +1106,11 @@ function EditableBlockTitle({ block, disabled, onSave }: EditableBlockTitleProps
           }
         }}
       />
-      {!dirty && (
-        <span
-          className="shrink-0 text-[13px] text-emerald-700"
-          aria-label={`${block.title} 블록 이름 저장됨`}
-          title="저장됨"
-        >
-          ✅
-        </span>
-      )}
       <button
         type="button"
-        className="rounded p-1 text-emerald-700 hover:bg-emerald-50 disabled:text-slate-300"
-        aria-label={`${block.title} 블록 이름 확인`}
-        title="저장"
+        className="rounded bg-transparent p-1 text-emerald-700 shadow-none hover:bg-transparent active:bg-transparent disabled:text-emerald-700"
+        aria-label={`${block.title} 블록 이름 ${dirty ? '확인' : '저장됨'}`}
+        title={dirty ? '저장' : '저장됨'}
         disabled={disabled || !dirty}
         onClick={save}
       >
@@ -1015,7 +1145,7 @@ export function GraphBuilder({
   const [elements, setElements] = useState<KnowledgeStudioTBoxElement[]>([])
   const [baseline, setBaseline] = useState<KnowledgeStudioTBoxElement[]>([])
   const [nodes, setNodes, applyNodeChanges] = useNodesState<CanvasNode>([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState<SchemaEdge>([])
+  const [edges, setEdges] = useEdgesState<SchemaEdge>([])
   const [viewport, setViewport] = useState<Viewport>(defaultKnowledgeStudioViewport)
   const [editorText, setEditorText] = useState('')
   const [editorError, setEditorError] = useState<{
@@ -1042,10 +1172,15 @@ export function GraphBuilder({
   const [conflictOpen, setConflictOpen] = useState(false)
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [catalogQuery, setCatalogQuery] = useState('')
+  const [catalogDomain, setCatalogDomain] = useState('')
+  const [catalogSearchFields, setCatalogSearchFields] = useState<Set<string>>(
+    () => new Set(catalogSearchFieldOptions.map(([value]) => value)),
+  )
   const [catalogResults, setCatalogResults] = useState<KnowledgeStudioSourceDataset[]>([])
   const [selectedCatalog, setSelectedCatalog] = useState<KnowledgeStudioSourceDataset>()
   const [selectedCatalogFields, setSelectedCatalogFields] = useState<Set<string>>(new Set())
   const [catalogLoading, setCatalogLoading] = useState(false)
+  const [catalogDetailLoading, setCatalogDetailLoading] = useState(false)
   const [documentCapabilityOpen, setDocumentCapabilityOpen] = useState(false)
   const [documentFile, setDocumentFile] = useState<File>()
   const [documentProposalMode, setDocumentProposalMode] = useState<
@@ -1189,14 +1324,30 @@ export function GraphBuilder({
   }, [editorError, editorText])
 
   const syncCanvasAndEditor = useCallback((next: KnowledgeStudioTBoxElement[]) => {
-    const graph = flowGraph(next, selectedBlockId, record?.blocks ?? [], selectedElementId)
-    const safe = asSafeGraph(next)
-    setElements(next)
+    const positions = new Map(
+      nodes
+        .filter((node) => node.type === 'schemaClass')
+        .map((node) => [node.id, node.position]),
+    )
+    const positioned = next.map((item) => {
+      const position = positions.get(item.stable_element_id)
+      return position
+        ? { ...item, layout_x: position.x, layout_y: position.y }
+        : item
+    })
+    const graph = flowGraph(
+      positioned,
+      selectedBlockId,
+      record?.blocks ?? [],
+      selectedElementId,
+    )
+    const safe = asSafeGraph(positioned)
+    setElements(positioned)
     setNodes(graph.nodes)
     setEdges(graph.edges)
     setEditorText(formatSafeCypherDraft(safe.nodes, safe.edges))
     setEditorError(undefined)
-  }, [record?.blocks, selectedBlockId, selectedElementId, setEdges, setNodes])
+  }, [nodes, record?.blocks, selectedBlockId, selectedElementId, setEdges, setNodes])
 
   const changeEditor = (value: string) => {
     setEditorText(value)
@@ -1368,20 +1519,31 @@ export function GraphBuilder({
   }
 
   const connect = useCallback((connection: Connection) => {
-    if (locked || !connection.source || !connection.target || !selectedBlock) return
+    if (
+      locked
+      || !connection.source
+      || !connection.target
+      || connection.source === connection.target
+      || !selectedBlock
+    ) return
     const blockOrdinalById = new Map(
       (record?.blocks ?? []).map((block) => [block.id, block.ordinal]),
     )
-    const endpointIsAvailable = [connection.source, connection.target].every((id) => {
-      const endpoint = elements.find((item) => item.stable_element_id === id)
-      if (!endpoint || endpoint.kind !== 'CLASS') return false
-      const ordinal = endpoint.block_id
-        ? blockOrdinalById.get(endpoint.block_id)
-        : selectedBlock.ordinal
-      return ordinal !== undefined && ordinal <= selectedBlock.ordinal
-    })
-    if (!endpointIsAvailable) {
-      setStatus('현재 블록은 자신의 Class 또는 이전 블록의 Class에만 연결할 수 있습니다.')
+    const source = elements.find((item) => item.stable_element_id === connection.source)
+    const target = elements.find((item) => item.stable_element_id === connection.target)
+    const sourceIsCurrent = source?.kind === 'CLASS' && (
+      source.block_id === selectedBlock.id || source.block_id === undefined
+    )
+    const targetOrdinal = target?.block_id
+      ? blockOrdinalById.get(target.block_id)
+      : selectedBlock.ordinal
+    if (
+      !sourceIsCurrent
+      || target?.kind !== 'CLASS'
+      || targetOrdinal === undefined
+      || targetOrdinal > selectedBlock.ordinal
+    ) {
+      setStatus('Relationship는 현재 블록 Class에서 현재 또는 이전 블록 Class 방향으로만 연결할 수 있습니다.')
       return
     }
     const stableId = `relation:${crypto.randomUUID()}`
@@ -1440,6 +1602,53 @@ export function GraphBuilder({
     syncCanvasAndEditor(elements.filter((item) => !removed.has(item.stable_element_id)))
     setSelectedElementId('')
   }, [elements, locked, selectedBlockId, syncCanvasAndEditor, working])
+
+  const handleNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
+    const removals = changes.filter((change) => change.type === 'remove')
+    for (const change of removals) deleteElement(change.id)
+    applyNodeChanges(changes.filter((change) => change.type !== 'remove'))
+    const positions = new Map(
+      changes.flatMap((change) => (
+        change.type === 'position' && change.position
+          ? [[change.id, change.position] as const]
+          : []
+      )),
+    )
+    if (positions.size === 0) return
+    setElements((current) => current.map((item) => {
+      const position = positions.get(item.stable_element_id)
+      return position
+        ? { ...item, layout_x: position.x, layout_y: position.y }
+        : item
+    }))
+  }, [applyNodeChanges, deleteElement])
+
+  const handleEdgesChange = useCallback((changes: EdgeChange<SchemaEdge>[]) => {
+    const removals = changes.filter((change) => change.type === 'remove')
+    const hierarchyClassIds = new Set(
+      removals
+        .filter((change) => change.id.startsWith('hierarchy:'))
+        .map((change) => change.id.replace(/^hierarchy:/, '')),
+    )
+    if (hierarchyClassIds.size > 0) {
+      syncCanvasAndEditor(elements.map((item) => (
+        hierarchyClassIds.has(item.stable_element_id)
+          ? {
+              ...item,
+              parent_stable_element_id: undefined,
+              hierarchy_relation: undefined,
+            }
+          : item
+      )))
+    }
+    for (const change of removals) {
+      if (!change.id.startsWith('hierarchy:')) deleteElement(change.id)
+    }
+    const presentationChanges = changes.filter((change) => change.type !== 'remove')
+    if (presentationChanges.length > 0) {
+      setEdges((current) => applyEdgeChanges(presentationChanges, current))
+    }
+  }, [deleteElement, elements, setEdges, syncCanvasAndEditor])
 
   const addProperty = (classId: string, rawName: string) => {
     const classElement = elements.find((item) => item.stable_element_id === classId)
@@ -1734,6 +1943,9 @@ export function GraphBuilder({
         },
         responseEtag,
       )
+      if (!hasProposalValidationEvidence(next)) {
+        throw new Error('서버가 Typed T-Box 검증 증거를 반환하지 않아 Proposal을 표시하지 않았습니다.')
+      }
       setProposal(next)
       setProposalExcluded(new Set())
       setProposalOverrides({})
@@ -1764,6 +1976,10 @@ export function GraphBuilder({
         client,
         draftId,
         catalogQuery,
+        {
+          domain: catalogDomain,
+          search_fields: [...catalogSearchFields],
+        },
       )
       setCatalogResults(result.items)
       setStatus(`권한 범위의 카탈로그 ${result.items.length}건을 조회했습니다.`)
@@ -1774,24 +1990,69 @@ export function GraphBuilder({
     }
   }
 
-  const proposeSelectedCatalog = (mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER') => {
-    if (!selectedCatalog || selectedCatalogFields.size === 0) return
-    const prompt = [
-      '권한이 확인된 DataRiver 카탈로그 메타데이터를 논리 T-Box로 제안하세요.',
-      `Dataset: ${selectedCatalog.name}`,
-      `Asset ID: ${selectedCatalog.id}`,
-      `Type: ${selectedCatalog.asset_type}`,
-      `Platform: ${selectedCatalog.platform ?? 'unknown'}`,
-      `Database: ${selectedCatalog.database_name ?? 'unknown'}`,
-      `Schema: ${selectedCatalog.schema_name ?? 'unknown'}`,
-      `Source version: ${selectedCatalog.source_version}`,
-      `Projection version: ${selectedCatalog.projection_source_version}`,
-      `Selected fields: ${JSON.stringify([...selectedCatalogFields].sort())}`,
-      '실제 행 데이터는 만들지 말고 Class와 Property 구조만 반환하세요.',
-    ].join('\n')
-    setAssistantPrompt(prompt)
-    setCatalogOpen(false)
-    void requestProposal(mode, prompt)
+  const selectCatalogSource = async (summary: KnowledgeStudioSourceDataset) => {
+    if (catalogDetailLoading) return
+    setSelectedCatalog(summary)
+    setSelectedCatalogFields(new Set())
+    setCatalogDetailLoading(true)
+    try {
+      const detail = await getKnowledgeStudioTBoxCatalogSource(
+        client,
+        draftId,
+        summary.id,
+      )
+      setSelectedCatalog(detail.dataset)
+      setSelectedCatalogFields(new Set(detail.dataset.field_paths))
+      setStatus(
+        `${detail.dataset.name}의 실제 컬럼 ${detail.dataset.field_paths.length}개를 불러왔습니다.`,
+      )
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '카탈로그 컬럼을 불러오지 못했습니다.')
+    } finally {
+      setCatalogDetailLoading(false)
+    }
+  }
+
+  const proposeSelectedCatalog = async (
+    mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER',
+  ) => {
+    if (
+      !selectedCatalog
+      || selectedCatalogFields.size === 0
+      || selectedCatalogFields.size > 100
+      || working
+      || locked
+      || !selectedBlock
+    ) return
+    setWorking(true)
+    setStatus('서버에서 카탈로그 Asset·버전·선택 컬럼을 재검증하고 Proposal을 생성 중입니다.')
+    try {
+      const next = await createKnowledgeStudioTBoxCatalogProposal(
+        client,
+        draftId,
+        {
+          asset_id: selectedCatalog.id,
+          selected_field_paths: [...selectedCatalogFields].sort(),
+          target_block_id: mode === 'MERGE_INTO_CURRENT' ? selectedBlock.id : undefined,
+          mode,
+        },
+        responseEtag,
+      )
+      setProposal(next)
+      setProposalExcluded(new Set())
+      setProposalOverrides({})
+      setConflictActions(Object.fromEntries(
+        next.conflicts.map((item) => [item.conflict_id, 'KEEP_ORIGINAL']),
+      ))
+      setCatalogOpen(false)
+      setStatus(
+        `${selectedCatalog.name}의 검증된 메타데이터에서 ${next.elements.length}개 Typed 요소를 제안했습니다.`,
+      )
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '카탈로그 Proposal 생성에 실패했습니다.')
+    } finally {
+      setWorking(false)
+    }
   }
 
   const updateElement = (
@@ -1867,6 +2128,22 @@ export function GraphBuilder({
     setStatus(`계층 관계 이름을 '${relation}'(으)로 변경했습니다.`)
   }
 
+  const renameRelationship = (relationshipId: string, rawRelation: string) => {
+    const relation = schemaIdentifier(rawRelation, 'Relation')
+    const target = elements.find((item) => item.stable_element_id === relationshipId)
+    if (
+      !relation
+      || target?.kind !== 'RELATION'
+      || (target.block_id !== selectedBlockId && target.block_id !== undefined)
+      || target.locked_by_later_block
+    ) return
+    updateElement(relationshipId, {
+      canonical_name: relation,
+      display_name: relation,
+    })
+    setStatus(`Relationship 이름을 '${relation}'(으)로 변경했습니다.`)
+  }
+
   const reconnect = (edge: SchemaEdge, connection: Connection) => {
     if (
       locked
@@ -1877,11 +2154,11 @@ export function GraphBuilder({
     ) return
     if (edge.data?.hierarchy) {
       const classId = edge.id.replace(/^hierarchy:/, '')
-      if (connection.source !== classId || !allowedParentIds.has(connection.target)) {
-        setStatus('계층선은 현재 Class에서 허용된 이전/현재 Class 부모로만 변경할 수 있습니다.')
+      if (connection.target !== classId || !allowedParentIds.has(connection.source)) {
+        setStatus('계층선은 허용된 이전/현재 부모의 아래에서 현재 Class의 위로만 변경할 수 있습니다.')
         return
       }
-      reparentClass(classId, connection.target)
+      reparentClass(classId, connection.source)
       return
     }
     const relation = elements.find((item) => item.stable_element_id === edge.id)
@@ -1889,16 +2166,21 @@ export function GraphBuilder({
       relation?.kind !== 'RELATION'
       || (relation.block_id !== selectedBlockId && relation.block_id !== undefined)
     ) return
-    const available = [connection.source, connection.target].every((id) => {
-      const item = elements.find((candidate) => candidate.stable_element_id === id)
-      if (item?.kind !== 'CLASS') return false
-      const ownerOrdinal = item.block_id
-        ? blockOrdinalById.get(item.block_id)
-        : selectedBlock.ordinal
-      return ownerOrdinal !== undefined && ownerOrdinal <= selectedBlock.ordinal
-    })
-    if (!available) {
-      setStatus('Relationship는 현재 또는 이전 블록의 Class에만 연결할 수 있습니다.')
+    const source = elements.find((item) => item.stable_element_id === connection.source)
+    const target = elements.find((item) => item.stable_element_id === connection.target)
+    const sourceIsCurrent = source?.kind === 'CLASS' && (
+      source.block_id === selectedBlock.id || source.block_id === undefined
+    )
+    const targetOrdinal = target?.block_id
+      ? blockOrdinalById.get(target.block_id)
+      : selectedBlock.ordinal
+    if (
+      !sourceIsCurrent
+      || target?.kind !== 'CLASS'
+      || targetOrdinal === undefined
+      || targetOrdinal > selectedBlock.ordinal
+    ) {
+      setStatus('Relationship는 현재 블록 Class에서 현재 또는 이전 블록 Class 방향으로만 연결할 수 있습니다.')
       return
     }
     updateElement(relation.stable_element_id, {
@@ -1978,6 +2260,7 @@ export function GraphBuilder({
         selected: item.stable_element_id === selectedElementId,
         editorOpen: item.stable_element_id === editorOpenId,
         editorScale: Math.max(0.65, Math.min(1.25, viewport.zoom / 0.8)),
+        canStartConnection: editable,
         properties: elements
           .filter(
             (property) => property.kind === 'PROPERTY'
@@ -2166,6 +2449,7 @@ export function GraphBuilder({
                 <div className="grid min-h-[520px] gap-3 xl:grid-cols-[270px_minmax(0,1fr)]">
                   <ClassHierarchyTree
                     classes={classes}
+                    relationships={elements.filter((item) => item.kind === 'RELATION')}
                     selectedId={selectedElementId}
                     activeBlockId={selectedBlockId}
                     allowedParentIds={allowedParentIds}
@@ -2174,6 +2458,7 @@ export function GraphBuilder({
                     onAdd={addClass}
                     onReparent={reparentClass}
                     onRenameHierarchy={renameHierarchy}
+                    onRenameRelationship={renameRelationship}
                   />
                   <div className="relative min-h-[520px] overflow-hidden rounded-enterprise border border-slate-700 bg-[#0b1d31]">
                     <header className="absolute left-3 top-3 z-10 rounded border border-slate-600 bg-[#10253d]/95 px-3 py-2 text-xs font-black text-slate-100 shadow">
@@ -2309,8 +2594,8 @@ export function GraphBuilder({
                       nodes={renderedNodes}
                       edges={edges}
                       nodeTypes={schemaNodeTypes}
-                      onNodesChange={applyNodeChanges}
-                      onEdgesChange={onEdgesChange}
+                      onNodesChange={handleNodesChange}
+                      onEdgesChange={handleEdgesChange}
                       onConnect={connect}
                       onReconnect={reconnect}
                       onNodeClick={(_, node) => {
@@ -2324,9 +2609,8 @@ export function GraphBuilder({
                       nodesDraggable={!locked && !working}
                       nodesConnectable={!locked && !working}
                       edgesReconnectable={!locked && !working}
+                      connectionMode={ConnectionMode.Loose}
                       deleteKeyCode={null}
-                      fitView
-                      fitViewOptions={{ padding: 0.2, maxZoom: 0.8 }}
                       viewport={viewport}
                       onViewportChange={setViewport}
                       minZoom={0.2}
@@ -2471,16 +2755,26 @@ export function GraphBuilder({
           <button
             type="button"
             className="button button-secondary"
-            disabled={!selectedCatalog || selectedCatalogFields.size === 0 || working}
-            onClick={() => proposeSelectedCatalog('APPEND_LAYER')}
+            disabled={
+              !selectedCatalog
+              || selectedCatalogFields.size === 0
+              || selectedCatalogFields.size > 100
+              || working
+            }
+            onClick={() => void proposeSelectedCatalog('APPEND_LAYER')}
           >
             새 블록 Proposal
           </button>
           <button
             type="button"
             className="button"
-            disabled={!selectedCatalog || selectedCatalogFields.size === 0 || working}
-            onClick={() => proposeSelectedCatalog('MERGE_INTO_CURRENT')}
+            disabled={
+              !selectedCatalog
+              || selectedCatalogFields.size === 0
+              || selectedCatalogFields.size > 100
+              || working
+            }
+            onClick={() => void proposeSelectedCatalog('MERGE_INTO_CURRENT')}
           >
             현재 블록 Proposal
           </button>
@@ -2494,19 +2788,49 @@ export function GraphBuilder({
               void searchCatalog()
             }}
           >
-            <input
-              aria-label="T-Box 카탈로그 검색어"
-              className="input min-w-0 flex-1"
-              value={catalogQuery}
-              maxLength={200}
-              placeholder="테이블, 플랫폼, 스키마 검색"
-              onChange={(event) => setCatalogQuery(event.target.value)}
-            />
+            <div className="grid min-w-0 flex-1 gap-2 md:grid-cols-[minmax(0,2fr)_minmax(160px,1fr)]">
+              <input
+                aria-label="T-Box 카탈로그 검색어"
+                className="input min-w-0"
+                value={catalogQuery}
+                maxLength={200}
+                placeholder="테이블명, 컬럼, 태그, 용어, 설명 검색"
+                onChange={(event) => setCatalogQuery(event.target.value)}
+              />
+              <input
+                aria-label="T-Box 카탈로그 도메인 필터"
+                className="input min-w-0"
+                value={catalogDomain}
+                maxLength={1000}
+                placeholder="도메인 필터 (선택)"
+                onChange={(event) => setCatalogDomain(event.target.value)}
+              />
+            </div>
             <button type="submit" className="button" disabled={catalogLoading}>
               <Search size={13} aria-hidden="true" />
               검색
             </button>
           </form>
+          <fieldset className="flex flex-wrap gap-2 rounded border border-slate-200 px-3 py-2">
+            <legend className="px-1 text-[10px] font-black text-slate-600">검색 범위</legend>
+            {catalogSearchFieldOptions.map(([value, label]) => (
+              <label key={value} className="flex items-center gap-1 text-[10px] text-slate-600">
+                <input
+                  type="checkbox"
+                  checked={catalogSearchFields.has(value)}
+                  onChange={(event) => {
+                    setCatalogSearchFields((current) => {
+                      const next = new Set(current)
+                      if (event.target.checked) next.add(value)
+                      else if (next.size > 1) next.delete(value)
+                      return next
+                    })
+                  }}
+                />
+                {label}
+              </label>
+            ))}
+          </fieldset>
           <div className="grid max-h-[48vh] gap-3 overflow-auto md:grid-cols-[220px_minmax(0,1fr)]">
             <ul className="m-0 grid content-start gap-1 list-none p-0">
               {catalogResults.length === 0 && (
@@ -2523,16 +2847,17 @@ export function GraphBuilder({
                         ? 'border-enterprise-blue bg-blue-50'
                         : 'border-slate-200 hover:bg-slate-50'
                     }`}
-                    onClick={() => {
-                      setSelectedCatalog(item)
-                      setSelectedCatalogFields(new Set(item.field_paths))
-                    }}
+                    disabled={catalogDetailLoading}
+                    onClick={() => void selectCatalogSource(item)}
                   >
                     <strong className="block truncate text-xs text-navy-900">{item.name}</strong>
                     <span className="mt-1 block truncate text-[9px] text-slate-500">
                       {[item.platform, item.database_name, item.schema_name]
                         .filter(Boolean)
                         .join(' / ')}
+                    </span>
+                    <span className="mt-1 block truncate text-[9px] text-slate-500">
+                      {[item.domain, ...(item.tags ?? []).slice(0, 2)].filter(Boolean).join(' · ')}
                     </span>
                   </button>
                 </li>
@@ -2548,6 +2873,16 @@ export function GraphBuilder({
                     Source {selectedCatalog.source_version} · Projection{' '}
                     {selectedCatalog.projection_source_version}
                   </p>
+                  {selectedCatalogFields.size > 100 && (
+                    <p role="alert" className="text-[10px] text-red-700">
+                      Typed Proposal 입력은 최대 100개 컬럼입니다. 선택을 줄여 주세요.
+                    </p>
+                  )}
+                  {catalogDetailLoading && (
+                    <p role="status" className="text-[10px] text-enterprise-blue">
+                      실제 카탈로그 컬럼을 조회하는 중…
+                    </p>
+                  )}
                   <div className="grid max-h-64 gap-1 overflow-auto">
                     {selectedCatalog.field_paths.map((field) => (
                       <label
@@ -2651,10 +2986,10 @@ export function GraphBuilder({
             aria-label="문서 T-Box 분석 진행 상태"
           >
             {[
-              '문서 파싱 중',
-              'T-Box 스키마 추출 중',
-              'Cypher 유효성 검증 중(Loop)',
-              '제안 완료',
+              'Object Storage 저장 및 문서 파싱',
+              '승인된 Schema Assistant로 T-Box 추출',
+              'Typed AST 기본값 보정 및 무결성 검증(1회)',
+              '검증 증거가 포함된 Proposal 준비',
             ].map((label, index) => {
               const completed = documentWorkflow === 'COMPLETE'
               const active = documentWorkflow === 'PARSING' && index === 0

@@ -2041,6 +2041,13 @@ class KnowledgeStudioDomainOptionResponse(BaseModel):
     id: UUID
     display_name: str
     source_version: str
+    created_by: UUID | None = None
+    asset_count: int = Field(default=0, ge=0)
+    lifecycle: Literal["ACTIVE", "INACTIVE"] = "ACTIVE"
+    version: int | None = Field(default=None, ge=1)
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+    managed: bool = False
 
 
 class KnowledgeStudioDomainOptionsResponse(BaseModel):
@@ -2060,6 +2067,7 @@ class KnowledgeStudioManagedDomainResponse(KnowledgeStudioDomainOptionResponse):
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
+    managed: Literal[True] = True
 
 
 class KnowledgeStudioManagedDomainListResponse(BaseModel):
@@ -2220,6 +2228,15 @@ class KnowledgeStudioTBoxProposalRequest(BaseModel):
     target_block_id: UUID | None = None
     mode: Literal["MERGE_INTO_CURRENT", "APPEND_LAYER"]
     prompt: str = Field(min_length=1, max_length=4_000)
+
+
+class KnowledgeStudioTBoxCatalogProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: UUID
+    selected_field_paths: list[str] = Field(min_length=1, max_length=100)
+    target_block_id: UUID | None = None
+    mode: Literal["MERGE_INTO_CURRENT", "APPEND_LAYER"]
 
 
 class KnowledgeStudioTBoxProposalConflictResponse(BaseModel):
@@ -2393,6 +2410,9 @@ class KnowledgeStudioSourceDatasetResponse(BaseModel):
     projection_source_version: str
     field_paths: list[str] = Field(max_length=1_000)
     fields_truncated: bool
+    domain: str | None = None
+    tags: list[str] = Field(default_factory=list, max_length=100)
+    glossary_terms: list[str] = Field(default_factory=list, max_length=100)
 
 
 class KnowledgeStudioSourcePageResponse(BaseModel):

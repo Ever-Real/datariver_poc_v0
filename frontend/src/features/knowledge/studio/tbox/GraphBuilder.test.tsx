@@ -128,6 +128,20 @@ describe('GraphBuilder', () => {
       expect(within(canvas).getByText('Department')).toBeInTheDocument()
     })
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('T-Box Cypher 편집기'), {
+      target: {
+        value: 'CREATE (n0:Employee)\n'
+          + 'CREATE (n1:Department)\n'
+          + 'CREATE (n0)-[:REPORTS_TO]->(n1)',
+      },
+    })
+
+    expect(await screen.findByRole('button', {
+      name: 'Employee → Department',
+    })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'REPORTS_TO' })).toBeInTheDocument()
+    expect(canvas.querySelectorAll('.react-flow__handle')).toHaveLength(6)
   })
 
   it('shows prior layers in a new block and keeps inherited elements read-only', async () => {

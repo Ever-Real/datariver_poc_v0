@@ -15,15 +15,22 @@ export interface KnowledgeStudioDomainOption {
   id: string
   display_name: string
   source_version: string
+  created_by?: string
+  asset_count?: number
+  lifecycle?: 'ACTIVE' | 'INACTIVE'
+  version?: number
+  created_at?: string
+  updated_at?: string
+  managed?: boolean
 }
 
 export interface KnowledgeStudioManagedDomain extends KnowledgeStudioDomainOption {
-  created_by?: string
   asset_count: number
   lifecycle: 'ACTIVE' | 'INACTIVE'
   version: number
   created_at: string
   updated_at: string
+  managed: true
 }
 
 export interface KnowledgeStudioDraft extends KnowledgeStudioBasicInformation {
@@ -222,6 +229,9 @@ export interface KnowledgeStudioSourceDataset {
   projection_source_version: string
   field_paths: string[]
   fields_truncated: boolean
+  domain?: string
+  tags?: string[]
+  glossary_terms?: string[]
 }
 
 export interface KnowledgeStudioSourcePage {
@@ -322,22 +332,12 @@ export async function listKnowledgeStudioDomains(
   return response.items
 }
 
-export async function listKnowledgeStudioManagedDomains(
-  client: ApiClient,
-): Promise<KnowledgeStudioManagedDomain[]> {
-  const response = await client.request<{ items: KnowledgeStudioManagedDomain[] }>(
-    '/knowledge/domains/manage?limit=100',
-    { cache: 'no-store' },
-  )
-  return response.items
-}
-
 export async function createKnowledgeStudioManagedDomain(
   client: ApiClient,
   displayName: string,
   idempotencyKey: string,
 ): Promise<KnowledgeStudioManagedDomain> {
-  return client.request<KnowledgeStudioManagedDomain>('/knowledge/domains/manage', {
+  return client.request<KnowledgeStudioManagedDomain>('/knowledge/domains', {
     method: 'POST',
     cache: 'no-store',
     idempotencyKey,
@@ -353,7 +353,7 @@ export async function updateKnowledgeStudioManagedDomain(
   idempotencyKey: string,
 ): Promise<KnowledgeStudioManagedDomain> {
   return client.request<KnowledgeStudioManagedDomain>(
-    `/knowledge/domains/manage/${encodeURIComponent(domainId)}`,
+    `/knowledge/domains/${encodeURIComponent(domainId)}`,
     {
       method: 'PATCH',
       cache: 'no-store',
@@ -371,7 +371,7 @@ export async function deleteKnowledgeStudioManagedDomain(
   idempotencyKey: string,
 ): Promise<void> {
   await client.request<void>(
-    `/knowledge/domains/manage/${encodeURIComponent(domainId)}`,
+    `/knowledge/domains/${encodeURIComponent(domainId)}`,
     {
       method: 'DELETE',
       cache: 'no-store',
@@ -587,6 +587,28 @@ export async function createKnowledgeStudioTBoxProposal(
   )
 }
 
+export async function createKnowledgeStudioTBoxCatalogProposal(
+  client: ApiClient,
+  draftId: string,
+  payload: {
+    asset_id: string
+    selected_field_paths: string[]
+    target_block_id?: string
+    mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
+  },
+  etag: string,
+): Promise<KnowledgeStudioTBoxProposal> {
+  return client.request<KnowledgeStudioTBoxProposal>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/catalog-proposals`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      ifMatch: etag,
+    },
+  )
+}
+
 export async function uploadKnowledgeStudioTBoxDocumentProposal(
   client: ApiClient,
   draftId: string,
@@ -706,12 +728,31 @@ export async function searchKnowledgeStudioTBoxCatalogSources(
   client: ApiClient,
   draftId: string,
   query: string,
+  filters?: {
+    domain?: string
+    search_fields?: string[]
+  },
   signal?: AbortSignal,
 ): Promise<KnowledgeStudioSourcePage> {
   const params = new URLSearchParams({ q: query.trim(), limit: '25' })
+  if (filters?.domain?.trim()) params.set('domain', filters.domain.trim())
+  if (filters?.search_fields?.length) {
+    params.set('search_fields', filters.search_fields.join(','))
+  }
   return client.request<KnowledgeStudioSourcePage>(
     `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/catalog-sources?${params.toString()}`,
     { cache: 'no-store', signal },
+  )
+}
+
+export async function getKnowledgeStudioTBoxCatalogSource(
+  client: ApiClient,
+  draftId: string,
+  assetId: string,
+): Promise<KnowledgeStudioSourceDetail> {
+  return client.request<KnowledgeStudioSourceDetail>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/catalog-sources/${encodeURIComponent(assetId)}`,
+    { cache: 'no-store' },
   )
 }
 

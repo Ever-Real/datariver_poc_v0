@@ -107,7 +107,9 @@ Its auto-save concurrency and browser recovery boundary is defined by
 The in-memory layer/step continuity, managed-domain CRUD, alias-array contract and bounded real
 document Proposal path are defined by
 [ADR-0072](adr/0072-knowledge-studio-session-domains-and-bounded-document-proposals.md) and
-[ADR-0073](adr/0073-knowledge-domain-author-bootstrap.md).
+[ADR-0073](adr/0073-knowledge-domain-author-bootstrap.md). The single domain resource, bounded
+multipart ingress, exact catalog Proposal pin and React Flow projection refinements are defined by
+[ADR-0074](adr/0074-knowledge-studio-unified-domain-and-proposal-integrity.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

@@ -86,6 +86,7 @@ from datariver.interfaces.http.schemas import (
     KnowledgeStudioTBoxBlockCreateRequest,
     KnowledgeStudioTBoxBlockResponse,
     KnowledgeStudioTBoxBlockUpdateRequest,
+    KnowledgeStudioTBoxCatalogProposalRequest,
     KnowledgeStudioTBoxElementRequest,
     KnowledgeStudioTBoxElementResponse,
     KnowledgeStudioTBoxOperationsRequest,
@@ -292,6 +293,7 @@ def _managed_domain_response(
         version=record.version,
         created_at=record.created_at,
         updated_at=record.updated_at,
+        managed=True,
     )
 
 
@@ -341,6 +343,9 @@ def _source_response(
         projection_source_version=source.projection_source_version,
         field_paths=list(source.field_paths),
         fields_truncated=source.fields_truncated,
+        domain=source.domain,
+        tags=list(source.tags),
+        glossary_terms=list(source.glossary_terms),
     )
 
 
@@ -560,6 +565,13 @@ async def list_knowledge_studio_domains(
                 id=value.domain_id,
                 display_name=value.display_name,
                 source_version=value.source_version,
+                created_by=value.created_by,
+                asset_count=value.asset_count,
+                lifecycle=value.lifecycle,
+                version=value.version,
+                created_at=value.created_at,
+                updated_at=value.updated_at,
+                managed=value.managed,
             )
             for value in values
         ]
@@ -591,9 +603,16 @@ async def list_managed_knowledge_domains(
 
 
 @domains_router.post(
+    "/domains",
+    response_model=KnowledgeStudioManagedDomainResponse,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="create_knowledge_domain",
+)
+@domains_router.post(
     "/domains/manage",
     response_model=KnowledgeStudioManagedDomainResponse,
     status_code=status.HTTP_201_CREATED,
+    include_in_schema=False,
 )
 async def create_managed_knowledge_domain(
     payload: KnowledgeStudioManagedDomainRequest,
@@ -619,8 +638,14 @@ async def create_managed_knowledge_domain(
 
 
 @domains_router.patch(
+    "/domains/{domain_id}",
+    response_model=KnowledgeStudioManagedDomainResponse,
+    operation_id="update_knowledge_domain",
+)
+@domains_router.patch(
     "/domains/manage/{domain_id}",
     response_model=KnowledgeStudioManagedDomainResponse,
+    include_in_schema=False,
 )
 async def update_managed_knowledge_domain(
     domain_id: UUID,
@@ -657,8 +682,14 @@ async def update_managed_knowledge_domain(
 
 
 @domains_router.delete(
+    "/domains/{domain_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    operation_id="archive_knowledge_domain",
+)
+@domains_router.delete(
     "/domains/manage/{domain_id}",
     status_code=status.HTTP_204_NO_CONTENT,
+    include_in_schema=False,
 )
 async def delete_managed_knowledge_domain(
     domain_id: UUID,
@@ -887,6 +918,38 @@ async def create_knowledge_studio_tbox_proposal(
         target_block_id=payload.target_block_id,
         mode=TBoxProposalMode(payload.mode),
         prompt=payload.prompt,
+        expected_version=expected_version,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return _proposal_response(record)
+
+
+@router.post(
+    "/drafts/{draft_id}/tbox/catalog-proposals",
+    response_model=KnowledgeStudioTBoxProposalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_knowledge_studio_tbox_catalog_proposal(
+    draft_id: UUID,
+    payload: KnowledgeStudioTBoxCatalogProposalRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: IfMatch,
+) -> KnowledgeStudioTBoxProposalResponse:
+    expected_version = _expected_version(if_match)
+    service = _runtime_service(request, session)
+    record = await service.create_tbox_catalog_proposal(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        source_asset_id=payload.asset_id,
+        selected_field_paths=tuple(payload.selected_field_paths),
+        target_block_id=payload.target_block_id,
+        mode=TBoxProposalMode(payload.mode),
         expected_version=expected_version,
         environment=context.environment,
         request_id=context.request_id,
@@ -1557,6 +1620,8 @@ async def list_knowledge_studio_tbox_catalog_sources(
     context: ContextDep,
     session: SessionDep,
     q: Annotated[str, Query(max_length=200)] = "",
+    domain: Annotated[str | None, Query(max_length=1_000)] = None,
+    search_fields: Annotated[str | None, Query(max_length=100)] = None,
     cursor: Annotated[str | None, Query(max_length=2_000)] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
 ) -> KnowledgeStudioSourcePageResponse:
@@ -1566,6 +1631,8 @@ async def list_knowledge_studio_tbox_catalog_sources(
         subject=context.subject,
         draft_id=draft_id,
         query=q,
+        domain=domain,
+        search_fields=search_fields,
         cursor=cursor,
         limit=limit,
         environment=context.environment,

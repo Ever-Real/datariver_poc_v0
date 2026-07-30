@@ -75,6 +75,7 @@ def test_nginx_merges_security_headers_into_every_location_and_normalizes_api() 
     )
     assert 'add_header Cache-Control "no-store" always;' in _location(source, "location / {")
     assert 'add_header Cache-Control "public, immutable";' in _location(source, "location /assets/")
+    assert "client_max_body_size 12m;" in api
     assert "strict-transport-security" not in source.casefold()
 
 
