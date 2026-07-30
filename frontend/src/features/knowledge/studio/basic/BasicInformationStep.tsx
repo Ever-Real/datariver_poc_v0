@@ -67,11 +67,13 @@ interface BasicInformationStepProps {
   value: KnowledgeStudioBasicInformation
   domains: KnowledgeStudioDomainOption[]
   domainsLoading: boolean
+  domainsError?: string
   domainQuery: string
   busy: boolean
   saveStatus: string
   onChange: (value: KnowledgeStudioBasicInformation) => void
   onDomainQueryChange: (value: string) => void
+  onRetryDomains?: () => void
   onManageDomains: () => void
   onCreateDomain: (displayName: string) => Promise<void>
   onSave: () => void
@@ -82,11 +84,13 @@ export function BasicInformationStep({
   value,
   domains,
   domainsLoading,
+  domainsError,
   domainQuery,
   busy,
   saveStatus,
   onChange,
   onDomainQueryChange,
+  onRetryDomains,
   onManageDomains,
   onCreateDomain,
   onSave,
@@ -267,6 +271,22 @@ export function BasicInformationStep({
           <small className="font-normal text-slate-500">
             active DOMAIN UUID와 source version을 서버가 함께 고정합니다.
           </small>
+          {domainsError && (
+            <div
+              className="mt-1 flex flex-wrap items-center justify-between gap-2 rounded border border-red-200 bg-red-50 p-2 text-red-900"
+              role="alert"
+            >
+              <span className="font-normal">{domainsError}</span>
+              <button
+                type="button"
+                className="button button-secondary px-2 py-1 text-[10px]"
+                disabled={domainsLoading}
+                onClick={onRetryDomains}
+              >
+                업무 도메인 다시 불러오기
+              </button>
+            </div>
+          )}
         </fieldset>
         <label className="grid gap-1 text-xs font-black text-navy-900">
           보안등급

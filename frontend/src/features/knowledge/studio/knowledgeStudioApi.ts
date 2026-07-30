@@ -474,10 +474,11 @@ export async function advanceKnowledgeStudioDraft(
 export async function getKnowledgeStudioTBox(
   client: ApiClient,
   draftId: string,
+  signal?: AbortSignal,
 ): Promise<ApiResponse<KnowledgeStudioTBox>> {
   return requireEtag(await client.requestWithMeta<KnowledgeStudioTBox>(
     `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox`,
-    { cache: 'no-store' },
+    { cache: 'no-store', signal },
   ))
 }
 

@@ -46,23 +46,25 @@ class IndexedDbDraftRecoveryQueue implements DraftRecoveryQueue {
   async read(scopeHash: string, draftId?: string): Promise<DraftRecoveryRecord | undefined> {
     const database = await this.open()
     const transaction = database.transaction(STORE_NAME, 'readonly')
+    const completed = transactionDone(transaction)
     const value = await requestResult(
       transaction.objectStore(STORE_NAME).get(
         recoveryKey(scopeHash, draftId),
       ) as IDBRequest<unknown>,
     )
-    await transactionDone(transaction)
+    await completed
     return value as DraftRecoveryRecord | undefined
   }
 
   async put(record: DraftRecoveryRecord): Promise<void> {
     const database = await this.open()
     const transaction = database.transaction(STORE_NAME, 'readwrite')
+    const completed = transactionDone(transaction)
     transaction.objectStore(STORE_NAME).put({
       ...record,
       key: recoveryKey(record.scopeHash, record.draftId),
     })
-    await transactionDone(transaction)
+    await completed
   }
 
   async remove(
@@ -72,13 +74,14 @@ class IndexedDbDraftRecoveryQueue implements DraftRecoveryQueue {
   ): Promise<void> {
     const database = await this.open()
     const transaction = database.transaction(STORE_NAME, 'readwrite')
+    const completed = transactionDone(transaction)
     const store = transaction.objectStore(STORE_NAME)
     const key = recoveryKey(scopeHash, draftId)
     const current = await requestResult(
       store.get(key) as IDBRequest<unknown>,
     ) as DraftRecoveryRecord | undefined
     if (current?.idempotencyKey === idempotencyKey) store.delete(key)
-    await transactionDone(transaction)
+    await completed
   }
 
   private open(): Promise<IDBDatabase> {

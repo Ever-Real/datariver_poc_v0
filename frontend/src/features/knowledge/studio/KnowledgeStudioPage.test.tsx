@@ -35,6 +35,12 @@ class FailingRecoveryQueue extends MemoryRecoveryQueue {
   }
 }
 
+class HangingRecoveryQueue extends MemoryRecoveryQueue {
+  override read(): Promise<DraftRecoveryRecord | undefined> {
+    return new Promise(() => undefined)
+  }
+}
+
 function draft(version: number, name = '서버 그래프', currentStep = 'BASIC') {
   return {
     id: draftId,
@@ -102,6 +108,68 @@ afterEach(() => {
 })
 
 describe('KnowledgeStudioPage Draft recovery', () => {
+  it('ends a stalled recovery read with an actionable retry state', async () => {
+    window.history.replaceState({}, '', '/?page=knowledge-studio&workspace=workspace')
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(domains()))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <KnowledgeStudioPage
+        client={client}
+        workspaceId="workspace"
+        subjectId="subject"
+        onNavigate={vi.fn()}
+        recoveryQueue={new HangingRecoveryQueue()}
+        initializationTimeoutMs={100}
+      />,
+    )
+
+    expect(await screen.findByRole('heading', {
+      name: 'Knowledge Studio 초기화 실패',
+    })).toBeInTheDocument()
+    expect(screen.getByText(/복구 저장소가 제한 시간 안에 응답하지 않았습니다/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '초기화 다시 시도' })).toBeEnabled()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('ends a stalled domain request and reloads it only after an explicit retry', async () => {
+    window.history.replaceState({}, '', '/?page=knowledge-studio&workspace=workspace')
+    let stallDomains = true
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const path = requestUrl(input)
+      if (!path.includes('/domains?')) {
+        return Promise.reject(new Error(`Unexpected request: ${path}`))
+      }
+      return stallDomains
+        ? new Promise(() => undefined)
+        : Promise.resolve(domains())
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <KnowledgeStudioPage
+        client={client}
+        workspaceId="workspace"
+        subjectId="subject"
+        onNavigate={vi.fn()}
+        recoveryQueue={new MemoryRecoveryQueue()}
+        domainRequestTimeoutMs={20}
+      />,
+    )
+
+    const retry = await screen.findByRole('button', {
+      name: '업무 도메인 다시 불러오기',
+    })
+    expect(within(screen.getByRole('alert')).getByText(
+      /업무 도메인 조회가 제한 시간 안에 완료되지 않았습니다/,
+    )).toBeInTheDocument()
+    stallDomains = false
+    fireEvent.click(retry)
+    expect(await screen.findByRole('option', { name: '반도체' })).toBeInTheDocument()
+  })
+
   it('converts an asset route into its server-issued EDIT Draft route', async () => {
     const assetId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3c0'
     window.history.replaceState(

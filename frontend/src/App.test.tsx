@@ -79,6 +79,12 @@ vi.mock('./features/admin/AdminPage', () => ({
   ),
 }))
 
+vi.mock('./features/knowledge/KnowledgeWorkspacePage', () => ({
+  KnowledgeWorkspacePage: ({ page }: { page: string }) => (
+    <section aria-label="Knowledge workspace route">{page}</section>
+  ),
+}))
+
 import { App } from './App'
 
 const WORKSPACE_ONE = '00000000-0000-4000-8000-000000000100'
@@ -180,6 +186,40 @@ describe('App authentication-bound Admin orchestration', () => {
       expect(requestOptions?.cache).toBe('no-store')
       expect(requestOptions?.signal).toBeInstanceOf(AbortSignal)
     }
+  })
+
+  it('synchronizes the controlled page after an OIDC callback restores its return URL', async () => {
+    window.history.replaceState({}, '', '/')
+    const profile = appTest.auth.profile
+    appTest.auth.profile = undefined as unknown as MutableAuth['profile']
+    appTest.auth.loading = true
+    appTest.request.mockImplementation((path: string) => {
+      if (path === '/admin/me') return Promise.resolve(adminContext())
+      if (path === '/capabilities') {
+        return Promise.resolve({
+          items: [],
+          external_system_links: [],
+          grafana_embed: { state: 'DISABLED' },
+          deployment_tier: 'SINGLE_NODE_PILOT',
+        })
+      }
+      if (path === '/catalog/export-capability') return Promise.resolve({ enabled: false })
+      throw new Error(`unexpected request: ${path}`)
+    })
+    const view = render(<App />)
+
+    window.history.replaceState(
+      {},
+      '',
+      `/?page=knowledge-studio&workspace=${WORKSPACE_ONE}`,
+    )
+    appTest.auth.profile = profile
+    appTest.auth.loading = false
+    view.rerender(<App />)
+
+    expect(await screen.findByRole('region', {
+      name: 'Knowledge workspace route',
+    })).toHaveTextContent('knowledge-studio')
   })
 })
 

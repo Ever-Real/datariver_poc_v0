@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
 import { ArrowRight, ShieldCheck } from 'lucide-react'
 import { remediationKind } from './api/client'
 import type { AdminOperation, AdminReadContext, CapabilitiesResponse, ExternalSystemLink } from './api/types'
@@ -77,6 +77,14 @@ export function App() {
     window.addEventListener('popstate', restore)
     return () => window.removeEventListener('popstate', restore)
   }, [])
+
+  useEffect(() => {
+    if (!authenticatedSubject) return
+    const routePage = pageFromLocation()
+    setPage((current) => current === routePage ? current : routePage)
+    setCatalogQuery(new URL(window.location.href).searchParams.get('q') ?? '')
+    setLocationRevision((current) => current + 1)
+  }, [authenticatedSubject])
 
   useEffect(() => {
     // The URL selection is only a convenience value; it never grants a
@@ -198,19 +206,19 @@ export function App() {
     client,
   ])
 
-  const navigate = (next: Page) => {
+  const navigate = useCallback((next: Page) => {
     window.history.pushState({}, '', pageUrl(next))
     setCatalogQuery('')
     setPage(next)
-  }
+  }, [])
 
-  const navigateKnowledgeStudio = (assetId?: string) => {
+  const navigateKnowledgeStudio = useCallback((assetId?: string) => {
     window.history.pushState({}, '', knowledgeStudioUrl({ assetId }))
     setCatalogQuery('')
     setPage('knowledge-studio')
-  }
+  }, [])
 
-  const navigateAdmin = (adminSection: string) => {
+  const navigateAdmin = useCallback((adminSection: string) => {
     const url = new URL(window.location.href)
     url.searchParams.set('page', 'admin')
     url.searchParams.set('adminSection', adminSection)
@@ -218,13 +226,13 @@ export function App() {
     window.history.pushState({}, '', `${url.pathname}${url.search}${url.hash}`)
     setCatalogQuery('')
     setPage('admin')
-  }
+  }, [])
 
-  const searchCatalog = (query: string) => {
+  const searchCatalog = useCallback((query: string) => {
     window.history.pushState({}, '', pageUrl('catalog', { query }))
     setCatalogQuery(query)
     setPage('catalog')
-  }
+  }, [])
 
   if (auth.loading) return <main className="centered"><div className="loader" /><p>인증 상태를 확인하고 있습니다.</p></main>
   if (!auth.user) return (

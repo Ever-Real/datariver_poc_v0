@@ -76,6 +76,30 @@ afterEach(() => {
 })
 
 describe('GraphBuilder', () => {
+  it('ends a stalled T-Box read with a retry action', async () => {
+    const fetchMock = vi.fn<typeof fetch>(() => new Promise(() => undefined))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        loadTimeoutMs={20}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    expect(await screen.findByRole('heading', {
+      name: 'Graph Builder를 열지 못했습니다.',
+    })).toBeInTheDocument()
+    expect(screen.getByText(/T-Box 정본 조회가 제한 시간 안에 완료되지 않았습니다/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'T-Box 다시 불러오기' })).toBeEnabled()
+  })
+
   it('synchronizes canvas changes to safe text and retains the last valid canvas on syntax error', async () => {
     const fetchMock = vi.fn<typeof fetch>((input) => {
       const path = requestUrl(input)

@@ -34,6 +34,9 @@ import { useKnowledgeStudioSessionStore } from './knowledgeStudioSessionStore'
 import { StudioShell } from './StudioShell'
 import { GraphBuilder } from './tbox/GraphBuilder'
 
+const DEFAULT_INITIALIZATION_TIMEOUT_MS = 8_000
+const DEFAULT_DOMAIN_REQUEST_TIMEOUT_MS = 10_000
+
 const EMPTY_BASIC_INFORMATION: KnowledgeStudioBasicInformation = {
   name: '',
   endpoint_alias: '',
@@ -62,6 +65,26 @@ function isNetworkFailure(error: unknown): boolean {
   return !navigator.onLine || error instanceof TypeError
 }
 
+function rejectAfter<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  message: string,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error(message)), timeoutMs)
+    promise.then(
+      (value) => {
+        window.clearTimeout(timeout)
+        resolve(value)
+      },
+      (error: unknown) => {
+        window.clearTimeout(timeout)
+        reject(error instanceof Error ? error : new Error('비동기 작업이 실패했습니다.'))
+      },
+    )
+  })
+}
+
 interface ConflictState {
   local: KnowledgeStudioBasicInformation
 }
@@ -77,6 +100,8 @@ interface KnowledgeStudioPageProps {
   onEnroll?: () => Promise<void>
   recoveryQueue?: DraftRecoveryQueue
   debounceMs?: number
+  initializationTimeoutMs?: number
+  domainRequestTimeoutMs?: number
 }
 
 export function KnowledgeStudioPage({
@@ -90,6 +115,8 @@ export function KnowledgeStudioPage({
   onEnroll,
   recoveryQueue,
   debounceMs = 1500,
+  initializationTimeoutMs = DEFAULT_INITIALIZATION_TIMEOUT_MS,
+  domainRequestTimeoutMs = DEFAULT_DOMAIN_REQUEST_TIMEOUT_MS,
 }: KnowledgeStudioPageProps) {
   const location = useMemo(
     () => {
@@ -114,8 +141,12 @@ export function KnowledgeStudioPage({
   const [domains, setDomains] = useState<KnowledgeStudioDomainOption[]>([])
   const [domainQuery, setDomainQuery] = useState('')
   const [domainsLoading, setDomainsLoading] = useState(true)
+  const [domainsError, setDomainsError] = useState('')
+  const [domainLoadSequence, setDomainLoadSequence] = useState(0)
   const [domainManagementOpen, setDomainManagementOpen] = useState(false)
   const [initialized, setInitialized] = useState(false)
+  const [initializationError, setInitializationError] = useState('')
+  const [initializationSequence, setInitializationSequence] = useState(0)
   const [busy, setBusy] = useState(false)
   const [saveStatus, setSaveStatus] = useState('서버 연결을 준비하고 있습니다.')
   const [scopeHash, setScopeHash] = useState<string>()
@@ -181,23 +212,42 @@ export function KnowledgeStudioPage({
   }, [location.valid, onNavigate])
 
   useEffect(() => {
-    if (!location.valid || !workspaceId || !subjectId) return
+    if (!location.valid || !workspaceId || !subjectId || scopeHash) return
     let active = true
-    void knowledgeDraftRecoveryScope(workspaceId, subjectId)
+    setInitialized(false)
+    setInitializationError('')
+    void rejectAfter(
+      knowledgeDraftRecoveryScope(workspaceId, subjectId),
+      initializationTimeoutMs,
+      '브라우저 Draft 복구 범위를 제한 시간 안에 계산하지 못했습니다.',
+    )
       .then((value) => { if (active) setScopeHash(value) })
-      .catch(() => {
+      .catch((error: unknown) => {
         if (active) {
-          setSaveStatus('브라우저 복구 범위를 만들 수 없어 저장을 중단했습니다.')
+          const message = error instanceof Error
+            ? error.message
+            : '브라우저 Draft 복구 범위를 만들 수 없습니다.'
+          setInitializationError(message)
+          setSaveStatus(message)
           setInitialized(true)
         }
       })
     return () => { active = false }
-  }, [location.valid, subjectId, workspaceId])
+  }, [
+    initializationSequence,
+    initializationTimeoutMs,
+    location.valid,
+    scopeHash,
+    subjectId,
+    workspaceId,
+  ])
 
   useEffect(() => {
     if (!location.valid || !scopeHash) return
     let active = true
     const hydrate = async () => {
+      setInitialized(false)
+      setInitializationError('')
       setStep(location.step)
       if (location.draftId) setSessionStep(location.draftId, location.step)
       setDraftId(location.draftId)
@@ -263,10 +313,18 @@ export function KnowledgeStudioPage({
       }
       try {
         if (!queue) {
-          if (active) setSaveStatus('IndexedDB 복구 큐를 사용할 수 없어 저장이 비활성화되었습니다.')
+          if (active) {
+            const message = '브라우저 Draft 복구 저장소를 사용할 수 없습니다.'
+            setInitializationError(message)
+            setSaveStatus(`${message} 편집을 시작하지 않습니다.`)
+          }
           return
         }
-        const recovered = await queue.read(scopeHash, recoveryDraftId)
+        const recovered = await rejectAfter(
+          queue.read(scopeHash, recoveryDraftId),
+          initializationTimeoutMs,
+          '브라우저 Draft 복구 저장소가 제한 시간 안에 응답하지 않았습니다.',
+        )
         if (!active) return
         if (recovered) {
           pendingRef.current = recovered
@@ -281,9 +339,13 @@ export function KnowledgeStudioPage({
               : '입력을 시작하면 복구 큐에 보존됩니다.',
           )
         }
-      } catch {
+      } catch (error) {
         if (!active) return
-        setSaveStatus('브라우저 복구 큐를 읽지 못해 저장을 중단했습니다.')
+        const message = error instanceof Error
+          ? error.message
+          : '브라우저 복구 큐를 읽지 못했습니다.'
+        setInitializationError(message)
+        setSaveStatus(`${message} 재시도하기 전까지 편집을 시작하지 않습니다.`)
       } finally {
         if (active) setInitialized(true)
       }
@@ -297,31 +359,58 @@ export function KnowledgeStudioPage({
     location.draftId,
     location.step,
     location.valid,
+    initializationSequence,
+    initializationTimeoutMs,
     queue,
     scopeHash,
     setSessionStep,
   ])
 
   useEffect(() => {
-    if (!location.valid || !initialized) return
+    if (!location.valid || !initialized || initializationError) return
     const controller = new AbortController()
+    let active = true
+    let timedOut = false
+    setDomainsError('')
     setDomainsLoading(true)
     const timer = window.setTimeout(() => {
+      const requestTimeout = window.setTimeout(() => {
+        timedOut = true
+        controller.abort()
+        if (!active) return
+        const message = '업무 도메인 조회가 제한 시간 안에 완료되지 않았습니다.'
+        setDomains([])
+        setDomainsError(message)
+        setSaveStatus(message)
+        setDomainsLoading(false)
+      }, domainRequestTimeoutMs)
       void reloadDomains(form.classification, controller.signal)
         .catch((error: unknown) => {
-          if (controller.signal.aborted) return
+          if (!active || timedOut) return
           setDomains([])
-          setSaveStatus(error instanceof Error ? error.message : '업무 도메인을 불러오지 못했습니다.')
+          const message = error instanceof Error ? error.message : '업무 도메인을 불러오지 못했습니다.'
+          setDomainsError(message)
+          setSaveStatus(message)
         })
         .finally(() => {
-          if (!controller.signal.aborted) setDomainsLoading(false)
+          window.clearTimeout(requestTimeout)
+          if (active && !timedOut) setDomainsLoading(false)
         })
     }, 250)
     return () => {
+      active = false
       window.clearTimeout(timer)
       controller.abort()
     }
-  }, [form.classification, initialized, location.valid, reloadDomains])
+  }, [
+    domainLoadSequence,
+    domainRequestTimeoutMs,
+    form.classification,
+    initialized,
+    initializationError,
+    location.valid,
+    reloadDomains,
+  ])
 
   useEffect(() => {
     const online = () => {
@@ -799,6 +888,15 @@ export function KnowledgeStudioPage({
     onNavigate('knowledge')
   }, [onNavigate])
 
+  const retryInitialization = useCallback(() => {
+    setSaveStatus('Draft와 브라우저 복구 큐를 다시 확인하고 있습니다.')
+    setInitializationSequence((value) => value + 1)
+  }, [])
+
+  const retryDomains = useCallback(() => {
+    setDomainLoadSequence((value) => value + 1)
+  }, [])
+
   if (!location.valid) return null
 
   return <StudioShell
@@ -808,7 +906,25 @@ export function KnowledgeStudioPage({
     onBack={handleBack}
     onStepSelect={selectStep}
   >
-    {step === 'basic' && !initialized
+    {initializationError
+      ? <section
+          className="grid min-h-[320px] place-items-center rounded-enterprise border border-red-200 bg-white p-8 text-center"
+          role="alert"
+        >
+          <div className="max-w-xl">
+            <h2 className="m-0 text-base font-black text-red-900">Knowledge Studio 초기화 실패</h2>
+            <p className="mb-4 mt-2 text-sm leading-6 text-slate-600">{initializationError}</p>
+            <div className="flex justify-center gap-2">
+              <button type="button" className="button button-secondary" onClick={handleBack}>
+                레지스트리로 돌아가기
+              </button>
+              <button type="button" className="button" onClick={retryInitialization}>
+                초기화 다시 시도
+              </button>
+            </div>
+          </div>
+        </section>
+      : step === 'basic' && !initialized
       ? <section className="grid min-h-[320px] place-items-center rounded-enterprise border border-slate-300 bg-white p-8 text-sm text-slate-500">
           Draft와 브라우저 복구 큐를 확인하고 있습니다.
         </section>
@@ -822,11 +938,13 @@ export function KnowledgeStudioPage({
           value={form}
           domains={domains}
           domainsLoading={domainsLoading}
+          domainsError={domainsError}
           domainQuery={domainQuery}
           busy={busy || !initialized || !queue}
           saveStatus={saveStatus}
           onChange={queueForm}
           onDomainQueryChange={setDomainQuery}
+          onRetryDomains={retryDomains}
           onManageDomains={() => setDomainManagementOpen(true)}
           onCreateDomain={createDomain}
           onSave={() => { void flushLatest() }}

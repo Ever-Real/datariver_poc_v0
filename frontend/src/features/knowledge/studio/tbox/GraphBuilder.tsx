@@ -115,6 +115,7 @@ interface GraphBuilderProps {
   lifecycleState?: 'DRAFT' | 'REVIEW' | 'PUBLISHED' | 'DISCARDED'
   onDraftUpdate: (draft: KnowledgeStudioDraft, etag: string) => void
   onContinue: () => void
+  loadTimeoutMs?: number
 }
 
 const directBlockOption: {
@@ -1138,6 +1139,7 @@ export function GraphBuilder({
   lifecycleState = 'DRAFT',
   onDraftUpdate,
   onContinue,
+  loadTimeoutMs = 10_000,
 }: GraphBuilderProps) {
   const [record, setRecord] = useState<KnowledgeStudioTBox>()
   const [responseEtag, setResponseEtag] = useState(etag)
@@ -1157,6 +1159,8 @@ export function GraphBuilder({
   const [editorOpenId, setEditorOpenId] = useState('')
   const editorOpenIdRef = useRef('')
   const [status, setStatus] = useState('T-Box 정본을 불러오는 중입니다.')
+  const [loadError, setLoadError] = useState('')
+  const [loadSequence, setLoadSequence] = useState(0)
   const [working, setWorking] = useState(false)
   const [showBlockMenu, setShowBlockMenu] = useState(false)
   const [assistantPrompt, setAssistantPrompt] = useState('')
@@ -1280,9 +1284,21 @@ export function GraphBuilder({
 
   useEffect(() => {
     const controller = new AbortController()
-    void getKnowledgeStudioTBox(client, draftId)
+    let active = true
+    let timedOut = false
+    setLoadError('')
+    setStatus('T-Box 정본을 불러오는 중입니다.')
+    const timeout = window.setTimeout(() => {
+      timedOut = true
+      controller.abort()
+      if (!active) return
+      const message = 'T-Box 정본 조회가 제한 시간 안에 완료되지 않았습니다.'
+      setLoadError(message)
+      setStatus(message)
+    }, loadTimeoutMs)
+    void getKnowledgeStudioTBox(client, draftId, controller.signal)
       .then((response) => {
-        if (controller.signal.aborted || !response.etag) return
+        if (!active || timedOut || !response.etag) return
         setRecord(response.data)
         setResponseEtag(response.etag)
         const cachedBlockId = useKnowledgeStudioSessionStore
@@ -1295,12 +1311,18 @@ export function GraphBuilder({
         setStatus('Typed T-Box Draft를 불러왔습니다.')
       })
       .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          setStatus(error instanceof Error ? error.message : 'T-Box Draft를 불러오지 못했습니다.')
-        }
+        if (!active || timedOut) return
+        const message = error instanceof Error ? error.message : 'T-Box Draft를 불러오지 못했습니다.'
+        setLoadError(message)
+        setStatus(message)
       })
-    return () => controller.abort()
-  }, [applyBlock, client, draftId])
+      .finally(() => window.clearTimeout(timeout))
+    return () => {
+      active = false
+      window.clearTimeout(timeout)
+      controller.abort()
+    }
+  }, [applyBlock, client, draftId, loadSequence, loadTimeoutMs])
 
   useEffect(() => {
     if (!record || !selectedBlock) return
@@ -2324,7 +2346,19 @@ export function GraphBuilder({
   if (!record) {
     return (
       <section className="grid min-h-[520px] place-items-center rounded-enterprise border border-slate-300 bg-white p-8">
-        <p role="status" className="text-sm text-slate-600">{status}</p>
+        {loadError
+          ? <div className="max-w-xl text-center" role="alert">
+              <h2 className="m-0 text-base font-black text-red-900">Graph Builder를 열지 못했습니다.</h2>
+              <p className="mb-4 mt-2 text-sm leading-6 text-slate-600">{loadError}</p>
+              <button
+                type="button"
+                className="button"
+                onClick={() => setLoadSequence((value) => value + 1)}
+              >
+                T-Box 다시 불러오기
+              </button>
+            </div>
+          : <p role="status" className="text-sm text-slate-600">{status}</p>}
       </section>
     )
   }
