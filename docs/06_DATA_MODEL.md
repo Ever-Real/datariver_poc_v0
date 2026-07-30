@@ -309,7 +309,10 @@ Revision `0062` seeds five deterministic, workspace-scoped DOMAIN vocabulary row
 `Data Governance`, `R&D`, `Finance`, `Space System`) for existing workspaces. The same UUID derivation
 is used by local bootstrap and the empty-table API safety net; choosing a fallback inserts/reactivates
 that exact canonical vocabulary row before a Draft FK is written. Non-PUBLIC options remain filtered
-by the Subject's `allowed_domain_ids`. The revision also adds the graph `ARCHIVED` lifecycle shape:
+by the Subject's `allowed_domain_ids`, plus the narrow ADR-0073 author-bootstrap scope for an active
+DataRiver-managed domain whose membership-bound creator is that Subject. The creator exception is
+matched against the exact pinned source version, does not mutate membership scope and does not apply
+to another Subject or governed review/publish. The revision also adds the graph `ARCHIVED` lifecycle shape:
 `archived_at` and `archived_by` must be set together only in that state, the actor is membership-bound,
 and downgrade refuses while archive evidence exists.
 

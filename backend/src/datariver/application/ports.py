@@ -1459,9 +1459,19 @@ class KnowledgeStudioStore(Protocol):
         *,
         workspace_id: UUID,
         allowed_domain_ids: frozenset[UUID] | None,
+        creator_id: UUID | None,
         query: str | None,
         limit: int,
     ) -> tuple[KnowledgeStudioDomainOption, ...]: ...
+
+    async def is_managed_domain_creator(
+        self,
+        *,
+        workspace_id: UUID,
+        domain_id: UUID,
+        creator_id: UUID,
+        source_version: str,
+    ) -> bool: ...
 
     async def list_managed_domains(
         self,

@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, Table
+from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.dto import (
@@ -283,6 +284,7 @@ async def test_empty_domain_table_uses_only_deterministic_abac_scoped_fallbacks(
     values = await store.list_domains(
         workspace_id=workspace_id,
         allowed_domain_ids=frozenset({finance_id}),
+        creator_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b2"),
         query=None,
         limit=100,
     )
@@ -291,6 +293,28 @@ async def test_empty_domain_table_uses_only_deterministic_abac_scoped_fallbacks(
         (finance_id, "Finance"),
     )
     assert values[0].source_version == DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION
+    statement = str(session.execute.await_args.args[0])
+    assert "vocabulary_entries.created_by" in statement
+
+
+@pytest.mark.asyncio
+async def test_alias_availability_uses_jsonb_containment_instead_of_string_like() -> None:
+    session = SimpleNamespace(
+        execute=AsyncMock(),
+        scalar=AsyncMock(side_effect=(None, None)),
+    )
+    store = SqlKnowledgeStudioStore(cast(AsyncSession, session))
+
+    await store._require_alias_available(
+        workspace_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1"),
+        endpoint_alias="semiconductor_materials",
+    )
+
+    statement = session.scalar.await_args_list[1].args[0]
+    dialect = postgresql.dialect()  # type: ignore[no-untyped-call]
+    compiled = str(statement.compile(dialect=dialect))
+    assert "CAST(knowledge.studio_drafts.endpoint_aliases AS JSONB) @>" in compiled
+    assert " LIKE " not in compiled
 
 
 @pytest.mark.asyncio

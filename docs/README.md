@@ -106,7 +106,8 @@ Its auto-save concurrency and browser recovery boundary is defined by
 [Knowledge Studio offline recovery and ETag conflicts](adr/0059-knowledge-studio-offline-recovery-and-etag-conflicts.md).
 The in-memory layer/step continuity, managed-domain CRUD, alias-array contract and bounded real
 document Proposal path are defined by
-[ADR-0072](adr/0072-knowledge-studio-session-domains-and-bounded-document-proposals.md).
+[ADR-0072](adr/0072-knowledge-studio-session-domains-and-bounded-document-proposals.md) and
+[ADR-0073](adr/0073-knowledge-domain-author-bootstrap.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

@@ -6,10 +6,12 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import and_, cast, delete, func, or_, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from datariver.application.dto import (
     IdempotencyRecord,
@@ -1009,11 +1011,10 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         *,
         workspace_id: UUID,
         allowed_domain_ids: frozenset[UUID] | None,
+        creator_id: UUID | None,
         query: str | None,
         limit: int,
     ) -> tuple[KnowledgeStudioDomainOption, ...]:
-        if allowed_domain_ids is not None and not allowed_domain_ids:
-            return ()
         statement = (
             select(
                 CatalogVocabularyEntryModel.id,
@@ -1032,7 +1033,21 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             .limit(limit)
         )
         if allowed_domain_ids is not None:
-            statement = statement.where(CatalogVocabularyEntryModel.id.in_(allowed_domain_ids))
+            scope_filters: list[ColumnElement[bool]] = []
+            if allowed_domain_ids:
+                scope_filters.append(CatalogVocabularyEntryModel.id.in_(allowed_domain_ids))
+            if creator_id is not None:
+                scope_filters.append(
+                    and_(
+                        CatalogVocabularyEntryModel.created_by == creator_id,
+                        CatalogVocabularyEntryModel.provider_ref.startswith(
+                            "urn:li:domain:datariver-managed-"
+                        ),
+                    )
+                )
+            if not scope_filters:
+                return ()
+            statement = statement.where(or_(*scope_filters))
         if query:
             statement = statement.where(
                 CatalogVocabularyEntryModel.display_name.contains(query, autoescape=True)
@@ -1063,6 +1078,29 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             if (allowed_domain_ids is None or option.domain_id in allowed_domain_ids)
             and (normalized_query is None or normalized_query in option.display_name.casefold())
         )[:limit]
+
+    async def is_managed_domain_creator(
+        self,
+        *,
+        workspace_id: UUID,
+        domain_id: UUID,
+        creator_id: UUID,
+        source_version: str,
+    ) -> bool:
+        value = await self._session.scalar(
+            select(CatalogVocabularyEntryModel.id).where(
+                CatalogVocabularyEntryModel.workspace_id == workspace_id,
+                CatalogVocabularyEntryModel.id == domain_id,
+                CatalogVocabularyEntryModel.kind == "DOMAIN",
+                CatalogVocabularyEntryModel.lifecycle == "ACTIVE",
+                CatalogVocabularyEntryModel.created_by == creator_id,
+                CatalogVocabularyEntryModel.source_version == source_version,
+                CatalogVocabularyEntryModel.provider_ref.startswith(
+                    "urn:li:domain:datariver-managed-"
+                ),
+            )
+        )
+        return value is not None
 
     async def list_managed_domains(
         self,
@@ -4474,7 +4512,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         statement = select(KnowledgeStudioDraftModel.id).where(
             KnowledgeStudioDraftModel.workspace_id == workspace_id,
             KnowledgeStudioDraftModel.state.in_(("DRAFT", "REVIEW")),
-            KnowledgeStudioDraftModel.endpoint_aliases.contains([endpoint_alias]),
+            cast(KnowledgeStudioDraftModel.endpoint_aliases, JSONB).contains([endpoint_alias]),
         )
         if exclude_draft_id is not None:
             statement = statement.where(KnowledgeStudioDraftModel.id != exclude_draft_id)

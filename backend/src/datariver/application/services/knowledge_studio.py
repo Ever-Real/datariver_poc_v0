@@ -108,6 +108,7 @@ class KnowledgeStudioService:
         return await self._store.list_domains(
             workspace_id=workspace_id,
             allowed_domain_ids=allowed_domains,
+            creator_id=subject.subject_id,
             query=query,
             limit=limit,
         )
@@ -144,9 +145,17 @@ class KnowledgeStudioService:
         request_id: str,
     ) -> KnowledgeStudioManagedDomainRecord:
         normalized = validate_knowledge_domain_name(display_name)
-        await self._authorize_domain_management(
-            workspace_id=workspace_id,
+        await self._authorization.authorize(
             subject=subject,
+            resource=self._resource(
+                resource_id=workspace_id,
+                workspace_id=workspace_id,
+                owner_subject_id=subject.subject_id,
+                domain_id=None,
+                classification=Classification.INTERNAL,
+                lifecycle="ACTIVE",
+            ),
+            action=Action.KG_CREATE,
             environment=environment,
             request_id=request_id,
         )
@@ -935,13 +944,21 @@ class KnowledgeStudioService:
         validate_endpoint_aliases(endpoint_aliases)
         if endpoint_aliases[0] != endpoint_alias:
             raise ValidationError("The first endpoint alias must be the canonical endpoint alias.")
+        authorization_domain_id = await self._authorization_domain_id(
+            workspace_id=workspace_id,
+            subject=subject,
+            owner_subject_id=subject.subject_id,
+            domain_id=domain_id,
+            domain_source_version=domain_source_version,
+            classification=classification,
+        )
         await self._authorization.authorize(
             subject=subject,
             resource=self._resource(
                 resource_id=workspace_id,
                 workspace_id=workspace_id,
                 owner_subject_id=subject.subject_id,
-                domain_id=domain_id,
+                domain_id=authorization_domain_id,
                 classification=classification,
                 lifecycle="DRAFT",
             ),
@@ -990,13 +1007,21 @@ class KnowledgeStudioService:
             author_id=subject.subject_id,
             draft_id=draft_id,
         )
+        authorization_domain_id = await self._authorization_domain_id(
+            workspace_id=workspace_id,
+            subject=subject,
+            owner_subject_id=current.author_id,
+            domain_id=domain_id,
+            domain_source_version=domain_source_version,
+            classification=classification,
+        )
         await self._authorization.authorize(
             subject=subject,
             resource=self._resource(
                 resource_id=draft_id,
                 workspace_id=workspace_id,
                 owner_subject_id=current.author_id,
-                domain_id=domain_id,
+                domain_id=authorization_domain_id,
                 classification=classification,
                 lifecycle=current.state,
             ),
@@ -1894,13 +1919,21 @@ class KnowledgeStudioService:
         environment: EnvironmentAttributes,
         request_id: str,
     ) -> None:
+        authorization_domain_id = await self._authorization_domain_id(
+            workspace_id=draft.workspace_id,
+            subject=subject,
+            owner_subject_id=draft.author_id,
+            domain_id=draft.domain_id,
+            domain_source_version=draft.domain_source_version,
+            classification=draft.classification,
+        )
         await self._authorization.authorize(
             subject=subject,
             resource=self._resource(
                 resource_id=draft.draft_id,
                 workspace_id=draft.workspace_id,
                 owner_subject_id=draft.author_id,
-                domain_id=draft.domain_id,
+                domain_id=authorization_domain_id,
                 classification=draft.classification,
                 lifecycle=draft.state,
             ),
@@ -1908,6 +1941,30 @@ class KnowledgeStudioService:
             environment=environment,
             request_id=request_id,
         )
+
+    async def _authorization_domain_id(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        owner_subject_id: UUID,
+        domain_id: UUID,
+        domain_source_version: str,
+        classification: Classification,
+    ) -> UUID | None:
+        if (
+            classification is Classification.PUBLIC
+            or domain_id in subject.allowed_domain_ids
+            or owner_subject_id != subject.subject_id
+        ):
+            return domain_id
+        is_creator = await self._store.is_managed_domain_creator(
+            workspace_id=workspace_id,
+            domain_id=domain_id,
+            creator_id=subject.subject_id,
+            source_version=domain_source_version,
+        )
+        return None if is_creator else domain_id
 
     async def _authorize_visible_draft(
         self,

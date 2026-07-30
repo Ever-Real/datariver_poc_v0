@@ -734,10 +734,14 @@ export function KnowledgeStudioPage({
         displayName,
         newKnowledgeStudioIdempotencyKey(),
       )
-      setDomains((current) => [
-        ...current.filter((item) => item.id !== created.id),
-        created,
-      ].sort((left, right) => left.display_name.localeCompare(right.display_name, 'ko')))
+      const refreshed = await listKnowledgeStudioDomains(
+        client,
+        formRef.current.classification,
+      )
+      if (!refreshed.some((item) => item.id === created.id)) {
+        throw new Error('등록된 도메인이 현재 작성자 범위에 반영되지 않았습니다.')
+      }
+      setDomains(refreshed)
       queueForm({
         ...formRef.current,
         domain_id: created.id,

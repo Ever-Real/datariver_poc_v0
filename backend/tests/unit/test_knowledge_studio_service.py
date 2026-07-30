@@ -16,6 +16,7 @@ from datariver.application.dto import (
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
     KnowledgeStudioIngestionJobRecord,
+    KnowledgeStudioManagedDomainRecord,
     KnowledgeStudioReleaseRecord,
     KnowledgeStudioSourceDataset,
     KnowledgeStudioSourceDetail,
@@ -584,8 +585,45 @@ async def test_domain_picker_applies_nonpublic_subject_domain_scope() -> None:
     store.list_domains.assert_awaited_once_with(
         workspace_id=WORKSPACE_ID,
         allowed_domain_ids=frozenset({DOMAIN_ID}),
+        creator_id=SUBJECT_ID,
         query=None,
         limit=50,
+    )
+
+
+@pytest.mark.asyncio
+async def test_knowledge_author_can_create_a_managed_domain_without_admin_manage() -> None:
+    created = KnowledgeStudioManagedDomainRecord(
+        domain_id=DOMAIN_ID,
+        workspace_id=WORKSPACE_ID,
+        display_name="반도체",
+        source_version="domain-v1",
+        created_by=SUBJECT_ID,
+        asset_count=0,
+        lifecycle="ACTIVE",
+        version=1,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    store = SimpleNamespace(create_managed_domain=AsyncMock(return_value=created))
+
+    result = await service(store).create_managed_domain(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(allowed_domains=frozenset()),
+        display_name="반도체",
+        idempotency_key="create-domain",
+        request_hash="create-domain-hash",
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="create-domain-request",
+    )
+
+    assert result == created
+    store.create_managed_domain.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        actor_id=SUBJECT_ID,
+        display_name="반도체",
+        idempotency_key="create-domain",
+        request_hash="create-domain-hash",
     )
 
 
@@ -683,7 +721,10 @@ async def test_resumable_draft_does_not_disclose_another_author_or_graph_alias()
 
 @pytest.mark.asyncio
 async def test_create_rejects_a_nonpublic_domain_outside_subject_scope() -> None:
-    store = SimpleNamespace(create_draft=AsyncMock(return_value=draft()))
+    store = SimpleNamespace(
+        create_draft=AsyncMock(return_value=draft()),
+        is_managed_domain_creator=AsyncMock(return_value=False),
+    )
 
     with pytest.raises(ForbiddenError):
         await service(store).create_draft(
@@ -702,6 +743,39 @@ async def test_create_rejects_a_nonpublic_domain_outside_subject_scope() -> None
         )
 
     store.create_draft.assert_not_awaited()
+    store.is_managed_domain_creator.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        domain_id=DOMAIN_ID,
+        creator_id=SUBJECT_ID,
+        source_version="domain-v3",
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_allows_the_author_exact_creator_managed_domain() -> None:
+    current = draft()
+    store = SimpleNamespace(
+        create_draft=AsyncMock(return_value=current),
+        is_managed_domain_creator=AsyncMock(return_value=True),
+    )
+
+    result = await service(store).create_draft(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(allowed_domains=frozenset()),
+        name=current.name,
+        endpoint_alias=current.endpoint_alias,
+        endpoint_aliases=current.endpoint_aliases,
+        domain_id=current.domain_id,
+        domain_source_version=current.domain_source_version,
+        classification=current.classification,
+        idempotency_key="creator-domain-draft",
+        request_hash="creator-domain-draft-hash",
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="creator-domain-draft-request",
+    )
+
+    assert result is current
+    store.create_draft.assert_awaited_once()
 
 
 @pytest.mark.asyncio
