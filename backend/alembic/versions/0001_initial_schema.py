@@ -1938,6 +1938,7 @@ def upgrade() -> None:
         schema='quality'
         )
         op.create_index('ix_quality_rule_sets_asset', 'rule_sets', ['workspace_id', 'asset_id', 'state', 'id'], unique=False, schema='quality')
+        op.create_index('ix_quality_rule_sets_list', 'rule_sets', ['workspace_id', sa.literal_column('created_at DESC'), sa.literal_column('id DESC')], unique=False, schema='quality')
         op.execute('ALTER TABLE quality.rule_sets ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE quality.rule_sets FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON quality.rule_sets USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
@@ -3667,6 +3668,7 @@ def upgrade() -> None:
         sa.UniqueConstraint('workspace_id', 'schedule_id', 'canonical_window_key', name='uq_quality_runs_schedule_window'),
         schema='quality'
         )
+        op.create_index('ix_quality_validation_runs_list', 'validation_runs', ['workspace_id', sa.literal_column('created_at DESC'), sa.literal_column('id DESC')], unique=False, schema='quality')
         op.create_index('ix_quality_validation_runs_runnable', 'validation_runs', ['workspace_id', 'state', 'next_attempt_at', 'lease_until', 'id'], unique=False, schema='quality', postgresql_where=sa.text("state IN ('QUEUED','RETRY_WAIT') OR (state IN ('RUNNING','CANCEL_REQUESTED') AND lease_until IS NOT NULL)"))
         op.create_index('ix_quality_validation_runs_terminal_dashboard', 'validation_runs', ['workspace_id', 'rule_set_version_id', sa.literal_column('completed_at DESC'), sa.literal_column('id DESC')], unique=False, schema='quality', postgresql_where=sa.text("state IN ('SUCCEEDED','FAILED','STALE','CANCELLED')"))
         op.execute('ALTER TABLE quality.validation_runs ENABLE ROW LEVEL SECURITY')
@@ -3970,6 +3972,7 @@ def upgrade() -> None:
         sa.UniqueConstraint('workspace_id', 'run_id', 'rule_definition_id', name='uq_quality_results_run_rule'),
         schema='quality'
         )
+        op.create_index('ix_quality_expectation_results_issues', 'expectation_results', ['workspace_id', sa.literal_column('occurred_at DESC'), sa.literal_column('id DESC')], unique=False, schema='quality', postgresql_where=sa.text("outcome IN ('ADVISORY_FAIL','BLOCKING_FAIL')"))
         op.execute('ALTER TABLE quality.expectation_results ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE quality.expectation_results FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON quality.expectation_results USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")

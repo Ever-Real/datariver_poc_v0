@@ -61,6 +61,13 @@ _IMMUTABLE_TABLES = (
 )
 _STATEMENT_BOUNDARY = "-- datariver-statement-boundary"
 _QUALITY_SCHEMA_CONTRACT_HASH = "76d6d89959da297d70117ebc3ce0fb023416be6cf5ecf26e361d4bb7e0320477"
+_POST_0067_INDEX_NAMES = frozenset(
+    {
+        "ix_quality_expectation_results_issues",
+        "ix_quality_rule_sets_list",
+        "ix_quality_validation_runs_list",
+    }
+)
 _QUALITY_CATALOG_CONTRACT_HASH = "43149d67578f8f1e59c3739e9a8c16ae736103f685a3ad50a28e4014a49ab343"
 
 _RETENTION_ALLOWLIST_SQL = """
@@ -2118,6 +2125,21 @@ def _quality_deferred_foreign_keys() -> tuple[object, ...]:
     )
 
 
+def _create_phase1_quality_tables(bind: object) -> None:
+    """Create the frozen 0067 table/index set from mutable head metadata."""
+    for table in _quality_tables():
+        post_phase_indexes = {
+            index
+            for index in table.indexes  # type: ignore[attr-defined]
+            if index.name in _POST_0067_INDEX_NAMES
+        }
+        table.indexes.difference_update(post_phase_indexes)  # type: ignore[attr-defined]
+        try:
+            table.create(bind=bind, checkfirst=False)  # type: ignore[attr-defined]
+        finally:
+            table.indexes.update(post_phase_indexes)  # type: ignore[attr-defined]
+
+
 def _execute_script(sql: str) -> None:
     for statement in sql.split(_STATEMENT_BOUNDARY):
         cleaned = statement.strip()
@@ -2145,6 +2167,7 @@ def _schema_contract_hash() -> str:
         rendered.extend(
             str(CreateIndex(index).compile(dialect=dialect)).strip()
             for index in sorted(table.indexes, key=lambda value: value.name or "")
+            if index.name not in _POST_0067_INDEX_NAMES
         )
     rendered.extend(
         str(AddConstraint(constraint).compile(dialect=dialect)).strip()
@@ -2220,6 +2243,11 @@ def _catalog_contract_document(bind: object) -> list[list[str]]:
                  AND relation.relname = managed.table_name
                 JOIN pg_index AS index_value ON index_value.indrelid = relation.oid
                 JOIN pg_class AS index_relation ON index_relation.oid = index_value.indexrelid
+                WHERE index_relation.relname NOT IN (
+                    'ix_quality_expectation_results_issues',
+                    'ix_quality_rule_sets_list',
+                    'ix_quality_validation_runs_list'
+                )
 
                 UNION ALL
                 SELECT
@@ -2447,8 +2475,7 @@ def upgrade() -> None:
     op.execute(_QUALITY_ROLE_ASSERTION_SQL)
     _execute_script(_RETENTION_ALLOWLIST_SQL)
     Base.metadata.tables["retention.legal_hold_generations"].create(bind=bind, checkfirst=False)
-    for table in _quality_tables():
-        table.create(bind=bind, checkfirst=False)  # type: ignore[attr-defined]
+    _create_phase1_quality_tables(bind)
     for constraint in _quality_deferred_foreign_keys():
         bind.execute(AddConstraint(constraint))  # type: ignore[arg-type]
     _execute_script(_HOLD_GENERATION_SQL)

@@ -111,6 +111,12 @@ class QualityRuleSetModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixi
         CheckConstraint("version > 0", name="version_positive"),
         *_sha256_checks("rule_retention_policy_hash", "rule_hold_hash"),
         Index("ix_quality_rule_sets_asset", "workspace_id", "asset_id", "state", "id"),
+        Index(
+            "ix_quality_rule_sets_list",
+            "workspace_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
         {"schema": "quality"},
     )
 
@@ -894,6 +900,12 @@ class QualityValidationRunModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versi
             text("id DESC"),
             postgresql_where=text("state IN ('SUCCEEDED','FAILED','STALE','CANCELLED')"),
         ),
+        Index(
+            "ix_quality_validation_runs_list",
+            "workspace_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
         {"schema": "quality"},
     )
 
@@ -1154,6 +1166,13 @@ class QualityExpectationResultModel(Base, UuidPrimaryKeyMixin):
         ),
         CheckConstraint("duration_ms >= 0", name="duration_nonnegative"),
         *_sha256_checks("result_hash", "result_retention_policy_hash", "result_hold_hash"),
+        Index(
+            "ix_quality_expectation_results_issues",
+            "workspace_id",
+            text("occurred_at DESC"),
+            text("id DESC"),
+            postgresql_where=text("outcome IN ('ADVISORY_FAIL','BLOCKING_FAIL')"),
+        ),
         {"schema": "quality"},
     )
 

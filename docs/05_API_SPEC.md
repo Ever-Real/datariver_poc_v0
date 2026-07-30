@@ -15,6 +15,7 @@ authoritative even when APISIX is present.
 | Catalog | `/catalog/assets*`, `/catalog/tree*`, `/catalog/facets*`, `/catalog/exports*`, `/catalog/sync*` | cursor-bounded, authorization before enrichment, opaque provider state |
 | Registration | `/uploads*`, `/registration*` | typed profiles, idempotent intent, receipt/hash/version fencing, no object key in ordinary responses |
 | Governance | `/change-requests*` | optimistic `If-Match`, declared idempotency, actor separation, immutable transition/approval evidence |
+| Quality | `/quality*` | human-only authorization-pruned reads, 30-second capability lease, scope-bound cursors, normalized results only |
 | Knowledge/Chat | `/knowledge*`, `/chat*` | governed release/source binding, classification/retention/provider checks, bounded evidence |
 | Sharing | `/api-products*` | published version + subject/issuer/client grant, atomic quota/result ledger and exact replay |
 | Administration | `/admin*` | eligible human administrator, operation-specific assurance, bounded keyset pages and typed commands |
@@ -85,6 +86,35 @@ version, canonical contract hash and independent reviewer remain exact.
 | `GET /capabilities` | `operations.read` | sanitized capability states plus optional server-validated external UI links and a disabled-first Grafana embed descriptor; no credential-bearing or client-supplied URL |
 | `GET /operations/summary` | `operations.read` | current workspace counts for jobs, uploads, changes, outbox lag and non-deleted typed DataHub projections; the bounded (200 branches + explicit truncation) platform/database/schema coverage reports only asset and non-blank-description counts, never catalog rows, classification, tags, glossary terms or provider documents; includes the fail-closed retention-automation state |
 | `GET /operations/metrics` | `operations.read` | bounded-label Prometheus HTTP metrics |
+
+### Quality read model
+
+All implemented public Quality routes are `GET`, require an active human identity and return
+`Cache-Control: private, no-store` with `Vary: Authorization, X-Workspace-Id`. Every resource read
+requires `quality.read`; Profile readiness is returned only after the separate
+`quality.profile.read` decision. Service identities use the internal execution routes and are
+rejected from this surface. Hidden resources return `404`.
+
+| Method/path | Purpose and bound |
+|---|---|
+| `GET /quality/capability` | independent read/Profile/authoring/activation/manual/scheduling/operations axes; database-time `valid_until` is no more than 30 seconds |
+| `GET /quality/rule-definitions` | fixed `NOT_NULL`, typed `RANGE` and safety-disabled `REGEX` contracts; no GX JSON/kwargs |
+| `GET /quality/overview?days=` | authorization-pruned current snapshot and at most 90 daily server trend points; `days` is 1–90 |
+| `GET /quality/assets?limit=&cursor=` | permission-scoped active assets and redacted or approved Profile readiness; default 25, maximum 100 |
+| `GET /quality/assets/{asset_id}` | exact authorized asset summary; no DataHub URN or source coordinate |
+| `GET /quality/rule-sets?limit=&cursor=` | bounded Rule Set summaries |
+| `GET /quality/rule-sets/{rule_set_id}` | immutable version and typed Rule detail with an aggregate ETag |
+| `GET /quality/runs?limit=&cursor=` | bounded execution state and separate quality outcome summaries |
+| `GET /quality/runs/{run_id}` | exact Run status for selected bounded polling, with a Run ETag |
+| `GET /quality/runs/{run_id}/results?limit=&cursor=` | sanitized counts/ratios/duration per typed Rule; no unexpected rows or values |
+| `GET /quality/issues?limit=&cursor=` | server-side failure aggregate with opaque issue IDs |
+
+List wrappers return `cache_scope`, `observed_at`, `authorization_valid_until` and an opaque next
+cursor bound to the exact Workspace and caller scope. Malformed, cross-resource, cross-scope or
+page-size-mismatched cursors fail closed. Rule authoring, review, activation, manual Run, cancel,
+retry and scheduling mutations are intentionally absent until trusted field identity and
+deployment readiness attestations exist; the browser displays those axes as unavailable rather
+than inventing values.
 
 ### Catalog facade
 

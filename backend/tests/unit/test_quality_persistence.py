@@ -32,7 +32,7 @@ EXPECTED_TABLES = {
 
 
 def test_quality_metadata_and_revision_are_complete() -> None:
-    assert REQUIRED_DATABASE_REVISION == "0069"
+    assert REQUIRED_DATABASE_REVISION == "0070"
     assert "quality" in MANAGED_DATABASE_SCHEMAS
     assert EXPECTED_TABLES <= set(Base.metadata.tables)
     assert "retention.legal_hold_generations" in Base.metadata.tables

@@ -469,8 +469,11 @@ Legal Hold targets, forced RLS, least-privilege grants and fixed lifecycle funct
 schema does not itself claim a GX execution worker, DataHub Profile projection, API or dashboard.
 Phase 2 owns the separate additive Catalog Profile and `QUALITY_PROFILE` retention-target revision
 refined by ADR-0078. Phase 3 adds only the service execution plane: authenticated due dispatch,
-fenced claim/source execution and sanitized terminal completion through fixed functions. Human
-Rule APIs, schedule activation and dashboards remain capability-closed for later phases.
+fenced claim/source execution and sanitized terminal completion through fixed functions. Phase 4
+adds an authorization-pruned human read model over the existing canonical rows; it introduces no
+parallel Quality truth. Rule authoring, schedule activation and manual execution remain
+capability-closed until their server-owned field-directory and deployment-readiness attestations
+exist.
 `POLICY_BOOK_V3` remains the valid exact Phase 1 contract;
 `POLICY_BOOK_V4 = POLICY_BOOK_V3 + QUALITY_PROFILE`.
 
@@ -510,6 +513,13 @@ erDiagram
 | `quality.execution_call_receipts` | workspace/service Subject/run/call hash UQs, canonical request/result/idempotency hashes and exact claim/attempt binding; composite FK inherits the Run's `QUALITY_AUDIT` binding; raw token absent | authenticated worker replay fence for one current claim |
 | `catalog.asset_profile_snapshots` | workspace/local asset FK and `(workspace, asset, snapshot_identity_hash)` UQ; exact `asset_source_version`; normalized `FULL/SAMPLE/PARTITION/QUERY/UNKNOWN` and `COMPLETE/PARTIAL`; profiled/first-observed/last-observed/stale times; nullable non-negative row/column/byte counts; nullable PARTITION/QUERY-only HMAC-SHA-256 key ID/fingerprint without raw partition text; bounded provider version and provider-contract/query/config/local-source-watermark/normalized-payload SHA-256 hashes; copied classification/System/Domain and target-scope hash; exact `QUALITY_PROFILE` policy ID/number/hash/basis/deadline and Legal Hold generation/hash; latest and retention indexes | rebuildable DataHub table-profile projection; the local Catalog `source_version` is the canonical watermark input, and an exact identity replay advances only `last_observed_at` through the fixed collector function |
 | `catalog.column_profile_metrics` | `(workspace, snapshot, field_path)` UQ; bounded non-blank field path; nullable non-negative null/unique counts and fixed-precision proportions with an explicit availability flag per metric; copied classification/target-scope and exact `QUALITY_PROFILE` policy/deadline/hold binding inherited through one composite snapshot FK; snapshot/field index | rebuildable field-profile allowlist containing no sample values, raw partitions, top values or distribution statistics |
+
+Revision `0070` adds only read-path indexes: descending workspace/time keysets for Rule Sets and
+Runs, plus a partial descending failure-result index for the server-side Quality Issue aggregate.
+Every card, trend, list and issue query first joins the same authorization-pruned Catalog asset
+relation used by Catalog search, with quarantine review explicitly disabled. Cursors bind the
+workspace, caller permission/classification scope, resource kind and page size; PostgreSQL RLS
+remains an independent lower-bound check.
 
 All protected rows require `workspace_id`, composite tenant foreign keys and forced RLS. Rebuildable
 profile rows reference the local Catalog asset; immutable Quality evidence additionally stores the
