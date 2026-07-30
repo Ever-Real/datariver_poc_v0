@@ -503,6 +503,7 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
         assert "schemaFieldEntity" in body["query"]
         assert "latestFullTableProfile: datasetProfiles" in body["query"]
         assert "FULL_TABLE_SNAPSHOT" in body["query"]
+        assert "partitionSpec" in body["query"]
         assert "\n          label\n" in body["query"]
         return httpx.Response(
             200,
@@ -582,6 +583,10 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
                                 "columnCount": 8,
                                 "sizeInBytes": 8192,
                                 "timestampMillis": 1767229200000,
+                                "partitionSpec": {
+                                    "type": "FULL_TABLE",
+                                    "partition": "FULL_TABLE_SNAPSHOT",
+                                },
                             }
                         ],
                     }
@@ -626,6 +631,23 @@ async def test_asset_contract_uses_fixed_graphql_and_service_identity() -> None:
     assert asset.created_at.isoformat() == "2026-01-01T00:00:00+00:00"
     assert asset.description == "governed description"
     await client.aclose()
+
+
+def test_asset_quality_rejects_sample_or_ambiguous_profile_provenance() -> None:
+    from datariver.infrastructure.datahub.http import _dataset_quality
+
+    sample = {
+        "rowCount": 1,
+        "timestampMillis": 1767229200000,
+        "partitionSpec": {"type": "QUERY", "partition": "SAMPLE"},
+    }
+    ambiguous = {
+        "rowCount": 1,
+        "timestampMillis": 1767229200000,
+    }
+
+    assert _dataset_quality([sample]) == {}
+    assert _dataset_quality([ambiguous]) == {}
 
 
 async def test_asset_contract_rejects_a_provider_entity_for_another_urn() -> None:

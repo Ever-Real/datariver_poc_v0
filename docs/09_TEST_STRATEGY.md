@@ -2,6 +2,22 @@
 
 ## Current verification status
 
+### GX Quality Phase 2 DataHub Profile integration — 2026-07-30
+
+Revision `0068` adds a privacy-allowlisted DataHub v1.6 Profile adapter, explicit
+`FULL/SAMPLE/PARTITION/QUERY/UNKNOWN` and `COMPLETE/PARTIAL` semantics, a disabled-by-default
+one-target collector, dedicated NOBYPASSRLS role, immutable Catalog projection and exact
+`QUALITY_PROFILE` retention/Legal Hold binding. Sample values, top values, distribution payloads
+and raw partition/query text are not persisted or returned.
+
+Repository Ruff format/lint passed over `453` files, strict mypy passed over `447` source/test
+files, the complete backend suite passed `1,819` with `103` explicitly environment-gated skips,
+and static architecture/security/documentation verification passed. Isolated PostgreSQL `17.10`
+passed clean canonical `0001`, `0067 -> 0068`, canonical re-entry, exact service-role
+positive/negative projection, immutable replay and both evidence-refusing and empty-development
+downgrade paths. The pinned DataHub v1.6 service accepted the fixed GraphQL schema; the target
+least-privilege service token and recipe ingestion report remain an explicit deployment gate.
+
 ### GX Quality Phase 1 domain, authorization and PostgreSQL control plane — 2026-07-30
 
 Revision `0067` adds the framework-free Quality aggregate/contracts, dedicated human and

@@ -7,6 +7,7 @@ upload_password=$(cat /run/secrets/postgres_upload_password)
 governance_password=$(cat /run/secrets/postgres_governance_password)
 knowledge_password=$(cat /run/secrets/postgres_knowledge_password)
 quality_password=$(cat /run/secrets/postgres_quality_password)
+catalog_profile_password=$(cat /run/secrets/postgres_catalog_profile_password)
 export_password=$(cat /run/secrets/postgres_export_password)
 retention_scheduler_password=$(cat /run/secrets/postgres_retention_scheduler_password)
 archive_password=$(cat /run/secrets/postgres_archive_password)
@@ -21,6 +22,7 @@ psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set=governance_password="$governance_password" \
   --set=knowledge_password="$knowledge_password" \
   --set=quality_password="$quality_password" \
+  --set=catalog_profile_password="$catalog_profile_password" \
   --set=export_password="$export_password" \
   --set=retention_scheduler_password="$retention_scheduler_password" \
   --set=archive_password="$archive_password" \
@@ -38,6 +40,14 @@ SELECT format('CREATE ROLE datariver_knowledge LOGIN PASSWORD %L', :'knowledge_p
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_knowledge') \gexec
 SELECT format('CREATE ROLE datariver_quality LOGIN PASSWORD %L', :'quality_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_quality') \gexec
+SELECT format(
+  'CREATE ROLE datariver_catalog_profile LOGIN PASSWORD %L '
+  'NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
+  :'catalog_profile_password'
+)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_roles WHERE rolname = 'datariver_catalog_profile'
+) \gexec
 SELECT format('CREATE ROLE datariver_export LOGIN PASSWORD %L', :'export_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_export') \gexec
 SELECT format('CREATE ROLE datariver_retention_scheduler LOGIN PASSWORD %L', :'retention_scheduler_password')
@@ -107,6 +117,31 @@ BEGIN
   END IF;
 END
 $datariver$;
+ALTER ROLE datariver_catalog_profile WITH LOGIN PASSWORD :'catalog_profile_password'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+DO $datariver$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_catalog_profile'
+      AND pg_has_role('datariver_catalog_profile', candidate.oid, 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_catalog_profile must not inherit or SET ROLE to another principal';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_catalog_profile'
+      AND NOT candidate.rolsuper
+      AND pg_has_role(candidate.oid, 'datariver_catalog_profile', 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_catalog_profile must not be assumable by another non-superuser principal';
+  END IF;
+END
+$datariver$;
 ALTER ROLE datariver_export WITH LOGIN PASSWORD :'export_password'
   NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
 ALTER ROLE datariver_retention_scheduler WITH LOGIN PASSWORD :'retention_scheduler_password'
@@ -140,6 +175,66 @@ SELECT 'GRANT UPDATE (state, next_attempt_at, attempt_count, lease_epoch, lease_
 WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
 SELECT 'GRANT UPDATE (state, stage, evidence_hash, external_response_hash, failure_code, finished_at) ON retention.execution_attempts TO datariver_archive'
 WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
+
+-- Reconcile the profile collector to one fixed projection-function capability. The schema USAGE
+-- privilege only permits name resolution; all direct catalog/quality object access stays revoked.
+SELECT 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA catalog, quality FROM datariver_catalog_profile'
+WHERE to_regnamespace('catalog') IS NOT NULL
+  AND to_regnamespace('quality') IS NOT NULL \gexec
+SELECT 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA catalog, quality FROM datariver_catalog_profile'
+WHERE to_regnamespace('catalog') IS NOT NULL
+  AND to_regnamespace('quality') IS NOT NULL \gexec
+SELECT 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA catalog, quality FROM datariver_catalog_profile'
+WHERE to_regnamespace('catalog') IS NOT NULL
+  AND to_regnamespace('quality') IS NOT NULL \gexec
+SELECT 'REVOKE ALL PRIVILEGES ON SCHEMA catalog, quality FROM datariver_catalog_profile'
+WHERE to_regnamespace('catalog') IS NOT NULL
+  AND to_regnamespace('quality') IS NOT NULL \gexec
+SELECT 'GRANT USAGE ON SCHEMA catalog TO datariver_catalog_profile'
+WHERE to_regnamespace('catalog') IS NOT NULL \gexec
+DO $datariver$
+DECLARE
+  profile_function record;
+  overloaded_profile_function text;
+BEGIN
+  SELECT procedure.proname
+  INTO overloaded_profile_function
+  FROM pg_proc AS procedure
+  JOIN pg_namespace AS namespace
+    ON namespace.oid = procedure.pronamespace
+  WHERE namespace.nspname = 'catalog'
+    AND procedure.proname IN (
+      'read_profile_target_v1',
+      'project_asset_profile_v1'
+    )
+  GROUP BY procedure.proname
+  HAVING count(*) > 1
+  LIMIT 1;
+
+  IF overloaded_profile_function IS NOT NULL THEN
+    RAISE EXCEPTION
+      'catalog.% must have exactly one canonical signature',
+      overloaded_profile_function;
+  END IF;
+
+  FOR profile_function IN
+    SELECT procedure.oid::regprocedure AS function_identity
+    FROM pg_proc AS procedure
+    JOIN pg_namespace AS namespace
+      ON namespace.oid = procedure.pronamespace
+    WHERE namespace.nspname = 'catalog'
+      AND procedure.proname IN (
+        'read_profile_target_v1',
+        'project_asset_profile_v1'
+      )
+  LOOP
+    EXECUTE format(
+      'GRANT EXECUTE ON FUNCTION %s TO datariver_catalog_profile',
+      profile_function.function_identity
+    );
+  END LOOP;
+END
+$datariver$;
 
 SELECT 'CREATE DATABASE keycloak OWNER keycloak'
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'keycloak') \gexec

@@ -752,6 +752,10 @@ def classify_environment_changes(
             services.add("api")
         elif key.startswith(("CACHE_", "CATALOG_SEARCH_")):
             services.add("api")
+        elif key.startswith("CATALOG_PROFILE_"):
+            # Consumed only by the explicitly invoked, disabled-by-default one-target
+            # collector. No long-running Compose service reads these settings.
+            pass
         elif key == "CATALOG_EXPORT_WORKER_ENABLED":
             services.update(("api", "catalog-export-worker"))
         elif key in {

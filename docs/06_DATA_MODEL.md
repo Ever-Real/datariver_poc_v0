@@ -462,12 +462,14 @@ the canonical `0001` contract, upgrades install it atomically, and partial schem
 
 ## Governed Quality schema (Phase 1 implemented at revision `0067`)
 
-ADR-0077 defines the `quality` bounded context and two later Catalog profile-projection tables.
+ADR-0077 defines the `quality` bounded context and the bounded Catalog Profile projection.
 Revision `0067` implements the 13 Quality control-plane tables below in SQLAlchemy and Alembic,
 together with `QUALITY_RULE/QUALITY_RESULT/QUALITY_AUDIT` retention classes, typed RuleSet/Run
 Legal Hold targets, forced RLS, least-privilege grants and fixed lifecycle functions. This Phase 1
 schema does not claim a GX execution worker, DataHub Profile projection, API or dashboard. Phase 2
-owns a separate additive Catalog Profile and `QUALITY_PROFILE` retention-target revision.
+owns the separate additive Catalog Profile and `QUALITY_PROFILE` retention-target revision refined
+by ADR-0078. `POLICY_BOOK_V3` remains the valid exact Phase 1 contract;
+`POLICY_BOOK_V4 = POLICY_BOOK_V3 + QUALITY_PROFILE`.
 
 ```mermaid
 erDiagram
@@ -503,8 +505,8 @@ erDiagram
 | `quality.dispatch_call_receipts` | workspace/service Subject/call-ID hash UQ, canonical request/result/idempotency hashes, DB-time cutoff, pinned dispatch evaluator/tzdb/max-due/max-created contract ID/version/hash, bounded created/skipped counts and run-list/skipped-range hashes, exact workspace-scoped `QUALITY_AUDIT` policy ID/version/hash/deadline and Legal Hold resolution generation/hash, DB times; no Run FK or raw token | authenticated Airflow replay fence for no-work, one-run and multi-run dispatch |
 | `quality.dispatch_run_links` | workspace/dispatch-receipt/ordinal UQ plus validation-run UQ; composite FKs inherit receipt AUDIT and Run RESULT/AUDIT bindings | bounded immutable dispatch-to-Run mapping |
 | `quality.execution_call_receipts` | workspace/service Subject/run/call hash UQs, canonical request/result/idempotency hashes and exact claim/attempt binding; composite FK inherits the Run's `QUALITY_AUDIT` binding; raw token absent | authenticated worker replay fence for one current claim |
-| `catalog.asset_profile_snapshots` | workspace/local asset/deterministic snapshot identity UQ, normalized `FULL/SAMPLE/PARTITION/QUERY/UNKNOWN`, profiled/first/last-observed times, row/column/byte counts, nullable partition/query HMAC-SHA-256 key ID/fingerprint without raw partition text, DataHub/query/config/source-watermark/normalized-payload hashes, COMPLETE/PARTIAL state, exact `QUALITY_PROFILE` policy ID/version/hash/deadline and Legal Hold generation/hash | rebuildable DataHub table-profile projection; repeated identical observation advances only `last_observed_at` through the fixed collector function |
-| `catalog.column_profile_metrics` | workspace/snapshot/field-path UQ, null/unique count and proportion with per-metric availability; target classification/System/Domain and `QUALITY_PROFILE` binding inherited by composite FK | rebuildable field-profile allowlist |
+| `catalog.asset_profile_snapshots` | workspace/local asset FK and `(workspace, asset, snapshot_identity_hash)` UQ; exact `asset_source_version`; normalized `FULL/SAMPLE/PARTITION/QUERY/UNKNOWN` and `COMPLETE/PARTIAL`; profiled/first-observed/last-observed/stale times; nullable non-negative row/column/byte counts; nullable PARTITION/QUERY-only HMAC-SHA-256 key ID/fingerprint without raw partition text; bounded provider version and provider-contract/query/config/local-source-watermark/normalized-payload SHA-256 hashes; copied classification/System/Domain and target-scope hash; exact `QUALITY_PROFILE` policy ID/number/hash/basis/deadline and Legal Hold generation/hash; latest and retention indexes | rebuildable DataHub table-profile projection; the local Catalog `source_version` is the canonical watermark input, and an exact identity replay advances only `last_observed_at` through the fixed collector function |
+| `catalog.column_profile_metrics` | `(workspace, snapshot, field_path)` UQ; bounded non-blank field path; nullable non-negative null/unique counts and fixed-precision proportions with an explicit availability flag per metric; copied classification/target-scope and exact `QUALITY_PROFILE` policy/deadline/hold binding inherited through one composite snapshot FK; snapshot/field index | rebuildable field-profile allowlist containing no sample values, raw partitions, top values or distribution statistics |
 
 All protected rows require `workspace_id`, composite tenant foreign keys and forced RLS. Rebuildable
 profile rows reference the local Catalog asset; immutable Quality evidence additionally stores the
@@ -546,12 +548,19 @@ generation `1` with the canonical empty-set hash before locking and returning it
 DDL checks and the retention resolver all reject cross-type combinations.
 
 The deterministic Profile snapshot identity is the canonical hash of workspace/local asset,
-profiled time, normalized kind, provider/query/config/source-watermark hashes, normalized
+profiled time, normalized kind, provider-contract/query/config/source-watermark hashes, normalized
 allowlisted payload hash, and—only for PARTITION/QUERY—the HMAC key ID/fingerprint. The collector
 computes HMAC-SHA-256 with a deployment-owned `file:` key, stores only key ID/fingerprint, and
 discards raw partition text before DTO construction; an unkeyed raw-partition digest is prohibited.
 A same-identity observation may update only `last_observed_at`; changed metrics or a deliberate HMAC
 key rotation create a different immutable snapshot.
+
+The Profile `source_watermark_hash` is not a fabricated DataHub cursor. It is the existing canonical
+JSON SHA-256 of contract `CATALOG_ASSET_SOURCE_WATERMARK_V1`, workspace ID, local asset ID and the
+exact current `catalog.assets_projection.source_version`; the snapshot stores that source version
+alongside the hash. The projection revalidates the current active local asset and exact source
+version before writing. A missing or changed version makes collection unavailable rather than
+falling back to the profile timestamp or payload hash.
 
 The source endpoint and secret are not modeled here. A deployment-owned immutable manifest maps the
 pinned non-secret source-connection-profile identity/version/hash to an allowlisted source and
@@ -563,11 +572,22 @@ changing it requires a new Rule Set Version. Phase 1 added the Quality SQLAlchem
 revision `0067` from head `0066`, plus the
 `QUALITY_RULE/QUALITY_RESULT/QUALITY_AUDIT` retention kinds and typed RuleSet/Run hold targets in
 the same revision. Phase 2 adds the two Catalog tables,
-`QUALITY_PROFILE` kind and ProfileSnapshot hold target in its own additive revision. Each revision
+`QUALITY_PROFILE` kind and typed `PROFILE_SNAPSHOT` hold target in its own additive revision.
+`POLICY_BOOK_V3` stays frozen and valid for the Phase 1 classes; Profile creation requires an
+explicit active `POLICY_BOOK_V4` policy with the exact added `QUALITY_PROFILE` class. Existing
+Phase 1 Quality classes remain valid under V3 or V4. Each revision
 must regenerate deterministic `0001`, update this document and pass PostgreSQL 17
 blank/current-head/canonical re-entry/RLS/grant/drift tests. Downgrade must refuse to drop a Quality
 or Profile schema containing immutable evidence; destructive rollback is permitted only for a
 provably empty development schema.
+
+Ordinary application and collector roles have no direct Profile-table DML. The separate
+disabled-by-default one-shot collector writes only through a fixed `SECURITY DEFINER` Catalog
+projection function with a pinned `search_path`; the function revalidates service-only
+`catalog.profile.collect`, workspace, current target/source version, V4 retention, typed hold,
+scope and deterministic identity. Missing target deployment identity, recipe/configuration hash,
+capacity/timeouts, freshness SLA, HMAC material or active V4 binding is an enablement failure, not
+a portable default.
 
 Revision `0067` also pins a PostgreSQL 17 semantic catalog fingerprint covering Quality tables and
 their governed retention policy/rule/hold dependencies: managed columns by name, constraints,

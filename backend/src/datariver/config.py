@@ -277,6 +277,27 @@ class Settings(BaseSettings):
         default=None,
         max_length=500,
     )
+    # Phase 2 Profile collection is an operator-dispatched one-target process. It remains
+    # unavailable until every dedicated identity, credential, SLA and provenance input exists.
+    catalog_profile_collector_enabled: bool = False
+    catalog_profile_database_url: str | None = None
+    catalog_profile_database_secret_ref: str | None = Field(default=None, max_length=512)
+    catalog_profile_datahub_secret_ref: str | None = Field(default=None, max_length=512)
+    catalog_profile_subject_id: UUID | None = None
+    catalog_profile_freshness_sla_seconds: int | None = Field(
+        default=None,
+        ge=60,
+        le=31_536_000,
+    )
+    catalog_profile_provider_config_hash: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    catalog_profile_provenance_key_id: str | None = Field(default=None, max_length=128)
+    catalog_profile_provenance_key_secret_ref: str | None = Field(
+        default=None,
+        max_length=512,
+    )
     ui_datahub_url: HttpUrl | None = None
     ui_airflow_url: HttpUrl | None = None
     ui_grafana_url: HttpUrl | None = None
@@ -572,6 +593,16 @@ class Settings(BaseSettings):
             raise ValueError("DataHub allowed versions must be non-empty and unique.")
         return normalized
 
+    @field_validator("catalog_profile_provenance_key_id")
+    @classmethod
+    def validate_catalog_profile_provenance_key_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", normalized) is None:
+            raise ValueError("Catalog Profile provenance key ID is invalid.")
+        return normalized
+
     @field_validator(
         "ui_datahub_url",
         "ui_airflow_url",
@@ -770,6 +801,8 @@ class Settings(BaseSettings):
             )
         if self.archive_database_url is not None:
             credential_urls["archive_database_url"] = self.archive_database_url
+        if self.catalog_profile_database_url is not None:
+            credential_urls["catalog_profile_database_url"] = self.catalog_profile_database_url
         embedded_passwords = [
             name for name, url in credential_urls.items() if urlsplit(url).password is not None
         ]
@@ -827,6 +860,14 @@ class Settings(BaseSettings):
             )
         if self.archive_database_secret_ref is not None:
             references["archive_database"] = self.archive_database_secret_ref
+        if self.catalog_profile_database_secret_ref is not None:
+            references["catalog_profile_database"] = self.catalog_profile_database_secret_ref
+        if self.catalog_profile_datahub_secret_ref is not None:
+            references["catalog_profile_datahub"] = self.catalog_profile_datahub_secret_ref
+        if self.catalog_profile_provenance_key_secret_ref is not None:
+            references["catalog_profile_provenance_key"] = (
+                self.catalog_profile_provenance_key_secret_ref
+            )
         invalid_references = [
             name for name, reference in references.items() if not reference.startswith("file:")
         ]
@@ -839,6 +880,75 @@ class Settings(BaseSettings):
             raise ValueError("Retention workspace allowlist values must be unique.")
         if len(self.retention_workspace_ids) > 32:
             raise ValueError("At most 32 retention workspaces may be allowlisted per worker.")
+        profile_settings = {
+            "database URL": self.catalog_profile_database_url,
+            "database secret": self.catalog_profile_database_secret_ref,
+            "DataHub token": self.catalog_profile_datahub_secret_ref,
+            "service Subject": self.catalog_profile_subject_id,
+            "freshness SLA": self.catalog_profile_freshness_sla_seconds,
+            "provider configuration hash": self.catalog_profile_provider_config_hash,
+            "provenance key ID": self.catalog_profile_provenance_key_id,
+            "provenance key": self.catalog_profile_provenance_key_secret_ref,
+        }
+        if self.catalog_profile_collector_enabled:
+            missing_profile_settings = sorted(
+                name for name, value in profile_settings.items() if value is None
+            )
+            if missing_profile_settings:
+                raise ValueError(
+                    "Enabled Catalog Profile collector requires all dedicated settings: "
+                    + ", ".join(missing_profile_settings)
+                )
+            assert self.catalog_profile_database_url is not None
+            assert self.catalog_profile_database_secret_ref is not None
+            assert self.catalog_profile_datahub_secret_ref is not None
+            assert self.catalog_profile_provenance_key_secret_ref is not None
+            if urlsplit(self.catalog_profile_database_url).username != (
+                "datariver_catalog_profile"
+            ):
+                raise ValueError(
+                    "Catalog Profile collector must use the dedicated database principal."
+                )
+            shared_database_urls = {
+                self.database_url,
+                self.migration_database_url,
+                self.relay_database_url,
+                self.upload_database_url,
+                self.governance_database_url,
+                self.bootstrap_database_url,
+                self.knowledge_database_url,
+                self.export_database_url,
+                self.retention_scheduler_database_url,
+                self.archive_database_url,
+            }
+            if self.catalog_profile_database_url in shared_database_urls:
+                raise ValueError("Catalog Profile collector database URL must be separate.")
+            profile_secrets = {
+                self.catalog_profile_database_secret_ref,
+                self.catalog_profile_datahub_secret_ref,
+                self.catalog_profile_provenance_key_secret_ref,
+            }
+            shared_secrets = {
+                self.database_secret_ref,
+                self.migration_database_secret_ref,
+                self.relay_database_secret_ref,
+                self.upload_database_secret_ref,
+                self.governance_database_secret_ref,
+                self.bootstrap_database_secret_ref,
+                self.knowledge_database_secret_ref,
+                self.export_database_secret_ref,
+                self.retention_scheduler_database_secret_ref,
+                self.archive_database_secret_ref,
+                self.datahub_secret_ref,
+            }
+            if len(profile_secrets) != 3 or profile_secrets & shared_secrets:
+                raise ValueError(
+                    "Catalog Profile collector credentials must use three separate secret files."
+                )
+            if self.datahub_version_enforcement != "enforce":
+                raise ValueError(
+                    "Catalog Profile collector requires enforced DataHub version pinning."
+                )
         if self.retention_archive_execution_enabled:
             if self.retention_worker_subject_id != UUID("00000000-0000-7000-8000-000000000003"):
                 raise ValueError(

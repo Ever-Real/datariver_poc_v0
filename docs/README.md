@@ -47,7 +47,7 @@
 | 48 | [Air-gapped source-free amd64 Pilot PRD/checklist](48_AIR_GAPPED_SOURCE_FREE_PILOT_PRD_CHECKLIST.md) | exact-commit image bundle, source-free target, one-shot migration and external gates | Local implementation complete; target gates open |
 | 50 | [Pilot deployment and integration guide](50_PILOT_DEPLOYMENT_AND_INTEGRATION_GUIDE.md) | copy/paste artifact transfer, environment/secret setup, deployment, integration and Day 2 operations | Operator runbook; target gates open |
 | 51 | [Knowledge Phase 6 cutover QA remediation](51_KNOWLEDGE_PHASE6_QA_REMEDIATION.md) | domain safety net, persistent Knowledge shell, resizable/version-focused Registry drawer and governed edit/archive actions | Local source verified; target browser/PostgreSQL gates open |
-| 52 | [GX quality management PRD/checklist](52_GX_QUALITY_MANAGEMENT_PRD_CHECKLIST.md) | governed DataHub Profile, typed Rule, isolated GX execution and authorization-pruned dashboard contract | Phase 0 contract complete; Phase 1 user approval pending |
+| 52 | [GX quality management PRD/checklist](52_GX_QUALITY_MANAGEMENT_PRD_CHECKLIST.md) | governed DataHub Profile, typed Rule, isolated GX execution and authorization-pruned dashboard contract | Phases 1–2 source complete; target Profile ingestion gate open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and
@@ -122,6 +122,9 @@ grammar, auditable latest-block deletion and separate information/profile worksp
 The governed Quality bounded context, DataHub Profile projection, PostgreSQL-first GX execution,
 isolated worker, typed Rule and sanitized dashboard/result boundary are defined by
 [ADR-0077](adr/0077-governed-gx-quality-control-plane.md).
+The additive Profile collector boundary, local Catalog source-version watermark, frozen
+`POLICY_BOOK_V3`, exact `POLICY_BOOK_V4` extension and typed Profile Snapshot hold are defined by
+[ADR-0078](adr/0078-quality-profile-retention-v4-and-collector-boundary.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

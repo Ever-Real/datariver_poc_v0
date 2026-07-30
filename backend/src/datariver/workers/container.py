@@ -6,6 +6,7 @@ from datariver.config import Settings
 from datariver.domain.common import canonical_json_hash
 from datariver.infrastructure.cache.redis import RedisEventDelivery
 from datariver.infrastructure.datahub.http import HttpDataHubGateway
+from datariver.infrastructure.datahub.profile_http import HttpDataHubProfileGateway
 from datariver.infrastructure.db.session import Database
 from datariver.infrastructure.object_store.archive_s3 import S3ImmutableArchiveStore
 from datariver.infrastructure.object_store.s3 import S3ObjectStore
@@ -57,6 +58,16 @@ class RetentionSchedulerContainer:
 @dataclass(slots=True)
 class RetentionArchiveContainer(RetentionSchedulerContainer):
     archive: S3ImmutableArchiveStore
+
+
+@dataclass(slots=True)
+class CatalogProfileCollectorContainer:
+    database: Database
+    datahub: HttpDataHubProfileGateway
+
+    async def close(self) -> None:
+        await self.datahub.close()
+        await self.database.close()
 
 
 def retention_archive_configuration_fingerprint(settings: Settings) -> str:
@@ -149,6 +160,68 @@ def build_governance_container(settings: Settings) -> GovernanceWorkerContainer:
             catalog_scan_snapshot_evidence_reference=(
                 settings.datahub_catalog_pit_evidence_reference
             ),
+        ),
+    )
+
+
+def build_catalog_profile_collector_container(
+    settings: Settings,
+) -> CatalogProfileCollectorContainer:
+    required = (
+        settings.catalog_profile_database_url,
+        settings.catalog_profile_database_secret_ref,
+        settings.catalog_profile_datahub_secret_ref,
+        settings.catalog_profile_subject_id,
+        settings.catalog_profile_freshness_sla_seconds,
+        settings.catalog_profile_provider_config_hash,
+        settings.catalog_profile_provenance_key_id,
+        settings.catalog_profile_provenance_key_secret_ref,
+    )
+    if not settings.catalog_profile_collector_enabled or any(value is None for value in required):
+        raise RuntimeError(
+            "Catalog Profile collector requires explicit enablement and dedicated credentials."
+        )
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
+    database_url = settings.catalog_profile_database_url
+    database_secret_ref = settings.catalog_profile_database_secret_ref
+    datahub_secret_ref = settings.catalog_profile_datahub_secret_ref
+    freshness_sla_seconds = settings.catalog_profile_freshness_sla_seconds
+    provider_config_hash = settings.catalog_profile_provider_config_hash
+    provenance_key_id = settings.catalog_profile_provenance_key_id
+    provenance_key_secret_ref = settings.catalog_profile_provenance_key_secret_ref
+    assert database_url is not None
+    assert database_secret_ref is not None
+    assert datahub_secret_ref is not None
+    assert freshness_sla_seconds is not None
+    assert provider_config_hash is not None
+    assert provenance_key_id is not None
+    assert provenance_key_secret_ref is not None
+    return CatalogProfileCollectorContainer(
+        database=Database(
+            database_url,
+            password=resolver.resolve(database_secret_ref),
+            pool_size=1,
+            max_overflow=0,
+            pool_timeout_seconds=settings.worker_database_pool_timeout_seconds,
+            application_name="datariver-next-catalog-profile",
+        ),
+        datahub=HttpDataHubProfileGateway(
+            base_url=settings.datahub_base_url,
+            token=resolver.resolve(datahub_secret_ref),
+            timeout_seconds=settings.datahub_timeout_seconds,
+            expected_version=settings.datahub_expected_version,
+            allowed_versions=settings.datahub_allowed_versions,
+            version_enforcement=settings.datahub_version_enforcement,
+            development_version_bypass=False,
+            version_probe_ttl_seconds=settings.datahub_version_probe_ttl_seconds,
+            maximum_concurrency=1,
+            queue_timeout_seconds=settings.datahub_queue_timeout_seconds,
+            circuit_failure_threshold=settings.datahub_circuit_failure_threshold,
+            circuit_open_seconds=settings.datahub_circuit_open_seconds,
+            provider_config_hash=provider_config_hash,
+            freshness_sla_seconds=freshness_sla_seconds,
+            provenance_key_id=provenance_key_id,
+            provenance_key=resolver.resolve(provenance_key_secret_ref).encode("utf-8"),
         ),
     )
 

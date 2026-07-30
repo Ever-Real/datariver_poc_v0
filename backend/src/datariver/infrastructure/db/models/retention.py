@@ -76,7 +76,7 @@ class RetentionPolicyVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
             "(contract_version = 'SINGLE_DEADLINE_V1' "
             "AND effective_from IS NULL AND effective_until IS NULL "
             "AND execution_authorization_hours IS NULL) OR "
-            "(contract_version IN ('POLICY_BOOK_V2', 'POLICY_BOOK_V3') "
+            "(contract_version IN ('POLICY_BOOK_V2', 'POLICY_BOOK_V3', 'POLICY_BOOK_V4') "
             "AND effective_from IS NOT NULL "
             "AND (effective_until IS NULL OR effective_until > effective_from) "
             "AND execution_authorization_hours BETWEEN 1 AND 168)",
@@ -177,7 +177,7 @@ class RetentionPolicyClassRuleModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
         CheckConstraint(
             "data_class IN ('COMPLETED_OPERATIONS', 'CHAT_CONTENT', "
             "'AUDIT_EVIDENCE', 'OBJECT_DATA', 'QUALITY_RULE', "
-            "'QUALITY_RESULT', 'QUALITY_AUDIT')",
+            "'QUALITY_RESULT', 'QUALITY_AUDIT', 'QUALITY_PROFILE')",
             name="data_class",
         ),
         CheckConstraint("unit IN ('DAYS', 'MONTHS', 'YEARS')", name="unit"),
@@ -239,7 +239,7 @@ class LegalHoldModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
         CheckConstraint(
             "data_class IN ('COMPLETED_OPERATIONS', 'CHAT_CONTENT', "
             "'AUDIT_EVIDENCE', 'OBJECT_DATA', 'QUALITY_RULE', "
-            "'QUALITY_RESULT', 'QUALITY_AUDIT')",
+            "'QUALITY_RESULT', 'QUALITY_AUDIT', 'QUALITY_PROFILE')",
             name="data_class",
         ),
         CheckConstraint("scope IN ('WORKSPACE', 'SUBJECT', 'RESOURCE')", name="scope"),
@@ -248,7 +248,7 @@ class LegalHoldModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
             "(scope = 'SUBJECT' AND scope_id IS NOT NULL AND resource_type IS NULL) OR "
             "(scope = 'RESOURCE' AND scope_id IS NOT NULL AND resource_type IN "
             "('LEGACY_UNTYPED', 'CHAT_SESSION', 'UPLOAD_OBJECT', "
-            "'QUALITY_RULE_SET', 'QUALITY_VALIDATION_RUN'))",
+            "'QUALITY_RULE_SET', 'QUALITY_VALIDATION_RUN', 'PROFILE_SNAPSHOT'))",
             name="scope_shape",
         ),
         CheckConstraint(
@@ -261,7 +261,9 @@ class LegalHoldModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
             "(resource_type = 'QUALITY_RULE_SET' "
             "AND data_class IN ('QUALITY_RULE', 'QUALITY_AUDIT')) OR "
             "(resource_type = 'QUALITY_VALIDATION_RUN' "
-            "AND data_class IN ('QUALITY_RESULT', 'QUALITY_AUDIT'))",
+            "AND data_class IN ('QUALITY_RESULT', 'QUALITY_AUDIT')) OR "
+            "(resource_type = 'PROFILE_SNAPSHOT' "
+            "AND data_class = 'QUALITY_PROFILE')",
             name="resource_semantics",
         ),
         CheckConstraint(
@@ -355,7 +357,7 @@ class LegalHoldGenerationModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versio
         CheckConstraint(
             "data_class IN ('COMPLETED_OPERATIONS', 'CHAT_CONTENT', "
             "'AUDIT_EVIDENCE', 'OBJECT_DATA', 'QUALITY_RULE', "
-            "'QUALITY_RESULT', 'QUALITY_AUDIT')",
+            "'QUALITY_RESULT', 'QUALITY_AUDIT', 'QUALITY_PROFILE')",
             name="data_class",
         ),
         CheckConstraint("generation > 0", name="generation_positive"),

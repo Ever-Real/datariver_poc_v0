@@ -9,10 +9,12 @@ from datariver.infrastructure.db.models.authz import (
     ResourceModel,
 )
 from datariver.infrastructure.db.models.catalog import (
+    AssetProfileSnapshotModel,
     AssetProjectionModel,
     CatalogExportModel,
     CatalogProjectionWatermarkModel,
     CatalogSyncRunModel,
+    ColumnProfileMetricModel,
 )
 from datariver.infrastructure.db.models.classification_access import (
     ClassificationAccessGenerationModel,
@@ -158,6 +160,7 @@ __all__ = [
     "ApiProductVersionModel",
     "ApprovalModel",
     "ArchiveCapabilityAttestationModel",
+    "AssetProfileSnapshotModel",
     "AssetProjectionModel",
     "AssistantRunModel",
     "CatalogExportModel",
@@ -176,6 +179,7 @@ __all__ = [
     "ClassificationAccessGenerationModel",
     "ClassificationAccessPolicyRuleModel",
     "ClassificationAccessPolicyVersionModel",
+    "ColumnProfileMetricModel",
     "ConsumerGrantModel",
     "DataSystemModel",
     "ErasureRequestEventModel",

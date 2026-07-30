@@ -2135,7 +2135,13 @@ def _schema_contract_hash() -> str:
     dialect = postgresql.dialect()
     for table_name in table_names:
         table = Base.metadata.tables[table_name]
-        rendered.append(str(CreateTable(table).compile(dialect=dialect)).strip())
+        create_table_sql = str(CreateTable(table).compile(dialect=dialect)).strip()
+        if table_name == "retention.legal_hold_generations":
+            # Freeze the 0067 exact set even after the additive 0068 ORM model adds
+            # QUALITY_PROFILE.  Historical migration verification must not depend on
+            # the mutable head metadata.
+            create_table_sql = create_table_sql.replace(", 'QUALITY_PROFILE'", "")
+        rendered.append(create_table_sql)
         rendered.extend(
             str(CreateIndex(index).compile(dialect=dialect)).strip()
             for index in sorted(table.indexes, key=lambda value: value.name or "")

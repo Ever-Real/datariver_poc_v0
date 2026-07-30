@@ -139,6 +139,26 @@ def _load_quality_phase1_revision() -> ModuleType:
     return module
 
 
+def _load_catalog_profile_phase2_revision() -> ModuleType:
+    """Load the self-contained Catalog Profile security contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0068_catalog_profile_projection.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_catalog_profile_phase2_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Catalog Profile Phase 2 migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -524,6 +544,40 @@ def build_upgrade() -> ops.UpgradeOps:
             )
             or normalized.startswith(
                 "CREATE POLICY workspace_isolation ON retention.legal_hold_generations"
+            )
+        ):
+            continue
+        operations.append(ops.ExecuteSQLOp(statement))
+    catalog_profile_phase2 = _load_catalog_profile_phase2_revision()
+    operations.append(ops.ExecuteSQLOp(catalog_profile_phase2._PROFILE_ROLE_ASSERTION_SQL.strip()))
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in _sql_statements(catalog_profile_phase2._RESOLVER_V4_SQL)
+    )
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in _sql_statements(catalog_profile_phase2._PROFILE_FUNCTION_SQL)
+    )
+    for statement in _sql_statements(catalog_profile_phase2._PROFILE_RLS_AND_GRANTS_SQL):
+        normalized = statement.lstrip()
+        if (
+            normalized.startswith(
+                "ALTER TABLE catalog.asset_profile_snapshots ENABLE ROW LEVEL SECURITY"
+            )
+            or normalized.startswith(
+                "ALTER TABLE catalog.asset_profile_snapshots FORCE ROW LEVEL SECURITY"
+            )
+            or normalized.startswith(
+                "CREATE POLICY workspace_isolation ON catalog.asset_profile_snapshots"
+            )
+            or normalized.startswith(
+                "ALTER TABLE catalog.column_profile_metrics ENABLE ROW LEVEL SECURITY"
+            )
+            or normalized.startswith(
+                "ALTER TABLE catalog.column_profile_metrics FORCE ROW LEVEL SECURITY"
+            )
+            or normalized.startswith(
+                "CREATE POLICY workspace_isolation ON catalog.column_profile_metrics"
             )
         ):
             continue
@@ -953,6 +1007,11 @@ def build_downgrade() -> ops.DowngradeOps:
     phase5 = _load_phase5_revision()
     quality_phase1 = _load_quality_phase1_revision()
     operations: list[ops.MigrateOperation] = [
+        ops.ExecuteSQLOp("DROP FUNCTION catalog.project_asset_profile_v1(uuid, uuid, jsonb)"),
+        ops.ExecuteSQLOp("DROP FUNCTION catalog.read_profile_target_v1(uuid, uuid)"),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION catalog.current_profile_collector_can_v1(uuid, integer, uuid, uuid)"
+        ),
         ops.ExecuteSQLOp("DROP TRIGGER enforce_run_results_shape ON quality.expectation_results"),
         ops.ExecuteSQLOp("DROP TRIGGER enforce_run_results_shape ON quality.validation_runs"),
         ops.ExecuteSQLOp("DROP TRIGGER enforce_run_attempt_shape ON quality.validation_attempts"),

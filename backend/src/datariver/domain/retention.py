@@ -42,6 +42,7 @@ class RetentionDataClass(StrEnum):
     QUALITY_RULE = "QUALITY_RULE"
     QUALITY_RESULT = "QUALITY_RESULT"
     QUALITY_AUDIT = "QUALITY_AUDIT"
+    QUALITY_PROFILE = "QUALITY_PROFILE"
 
 
 LEGACY_RETENTION_DATA_CLASSES = frozenset(
@@ -59,6 +60,7 @@ QUALITY_RETENTION_DATA_CLASSES = frozenset(
         RetentionDataClass.QUALITY_AUDIT,
     }
 )
+PROFILE_RETENTION_DATA_CLASSES = frozenset({RetentionDataClass.QUALITY_PROFILE})
 
 
 class RetentionPeriodUnit(StrEnum):
@@ -93,6 +95,7 @@ class LegalHoldResourceType(StrEnum):
     UPLOAD_OBJECT = "UPLOAD_OBJECT"
     QUALITY_RULE_SET = "QUALITY_RULE_SET"
     QUALITY_VALIDATION_RUN = "QUALITY_VALIDATION_RUN"
+    PROFILE_SNAPSHOT = "PROFILE_SNAPSHOT"
 
 
 class LegalHoldState(StrEnum):
@@ -333,6 +336,11 @@ class RetentionPolicyContract:
         expected_classes = {
             "POLICY_BOOK_V2": LEGACY_RETENTION_DATA_CLASSES,
             "POLICY_BOOK_V3": LEGACY_RETENTION_DATA_CLASSES | QUALITY_RETENTION_DATA_CLASSES,
+            "POLICY_BOOK_V4": (
+                LEGACY_RETENTION_DATA_CLASSES
+                | QUALITY_RETENTION_DATA_CLASSES
+                | PROFILE_RETENTION_DATA_CLASSES
+            ),
         }.get(self.contract_version)
         if expected_classes is None:
             raise ValidationError("The retention policy contract version is unsupported.")
@@ -587,7 +595,7 @@ class LegalHold:
         now: datetime,
     ) -> LegalHold:
         if (
-            data_class in QUALITY_RETENTION_DATA_CLASSES
+            data_class in QUALITY_RETENTION_DATA_CLASSES | PROFILE_RETENTION_DATA_CLASSES
             and scope is LegalHoldScope.RESOURCE
             and resource_type in {None, LegalHoldResourceType.LEGACY_UNTYPED}
         ):
@@ -1290,6 +1298,9 @@ def _validate_hold_resource_semantics(
         RetentionDataClass.QUALITY_AUDIT: {
             LegalHoldResourceType.QUALITY_RULE_SET,
             LegalHoldResourceType.QUALITY_VALIDATION_RUN,
+        },
+        RetentionDataClass.QUALITY_PROFILE: {
+            LegalHoldResourceType.PROFILE_SNAPSHOT,
         },
     }[data_class]
     if resource_type not in allowed_types:

@@ -539,13 +539,13 @@ chart library는 실제 요구와 bundle 측정 후 별도 승인한다.
 
 ### Phase 2 — DataHub Profile
 
-- [ ] conflicting PostgreSQL recipe를 field-profile allowlist에 맞게 교정한다.
-- [ ] 별도 `catalog-profile-collector` identity/Action/NOBYPASSRLS role, fixed profile GraphQL
+- [x] conflicting PostgreSQL recipe를 field-profile allowlist에 맞게 교정한다.
+- [x] 별도 `catalog-profile-collector` identity/Action/NOBYPASSRLS role, fixed profile GraphQL
   adapter/DTO/parser와 projection을 구현한다.
-- [ ] 별도 additive migration으로 Catalog Profile tables, `QUALITY_PROFILE` retention kind와
+- [x] 별도 additive migration으로 Catalog Profile tables, `QUALITY_PROFILE` retention kind와
   ProfileSnapshot Legal Hold target을 구현하고 regenerated `0001`/Data Model을 동기화한다.
-- [ ] profile kind/provenance/freshness/partial/oversize/contract-drift를 검증한다.
-- [ ] sample/top/distribution 값이 모든 ingress/storage/response/log에 없음을 검증한다.
+- [x] profile kind/provenance/freshness/partial/oversize/contract-drift를 검증한다.
+- [x] sample/top/distribution 값이 모든 ingress/storage/response/log에 없음을 검증한다.
 - [ ] 실제 DataHub v1.6 service principal과 target PostgreSQL recipe run report를 확보한다.
 
 ### Phase 3 — GX worker와 Airflow

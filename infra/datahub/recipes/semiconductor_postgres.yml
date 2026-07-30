@@ -16,12 +16,23 @@ source:
     include_view_lineage: true
     profiling:
       enabled: true
-      profile_table_level_only: true
+      method: sqlalchemy
+      profile_table_level_only: false
       profile_table_row_count_estimate_only: false
-      max_workers: 4
+      report_dropped_profiles: true
+      max_workers: "${SEMICONDUCTOR_POSTGRES_PROFILE_MAX_WORKERS}"
+      max_number_of_fields_to_profile: "${SEMICONDUCTOR_POSTGRES_PROFILE_MAX_FIELDS}"
       include_field_null_count: true
+      include_field_distinct_count: true
       include_field_min_value: false
       include_field_max_value: false
+      include_field_mean_value: false
+      include_field_median_value: false
+      include_field_stddev_value: false
+      include_field_quantiles: false
+      include_field_distinct_value_frequencies: false
+      include_field_histogram: false
+      include_field_sample_values: false
 sink:
   type: datahub-rest
   config:

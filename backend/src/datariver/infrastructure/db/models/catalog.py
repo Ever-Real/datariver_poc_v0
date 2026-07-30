@@ -5,12 +5,14 @@ from uuid import UUID
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     Computed,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
     Integer,
+    Numeric,
     String,
     Text,
     UniqueConstraint,
@@ -167,6 +169,284 @@ Index(
     postgresql_ops={"name_lower": "text_pattern_ops"},
     postgresql_where=text("deleted_at IS NULL AND lifecycle = 'ACTIVE'"),
 )
+
+
+class AssetProfileSnapshotModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "asset_profile_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "id",
+            name="uq_asset_profile_snapshots_workspace_id",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "asset_id",
+            "snapshot_identity_hash",
+            name="uq_asset_profile_snapshots_identity",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "id",
+            "classification",
+            "target_scope_hash",
+            "profile_retention_policy_id",
+            "profile_retention_policy_number",
+            "profile_retention_policy_hash",
+            "profile_retain_until",
+            "profile_hold_generation",
+            "profile_hold_hash",
+            name="uq_asset_profile_snapshots_child_binding",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "asset_id"),
+            ("catalog.assets_projection.workspace_id", "catalog.assets_projection.id"),
+            name="fk_asset_profile_snapshots_asset",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "profile_retention_policy_id",
+                "profile_retention_policy_hash",
+                "profile_retention_policy_number",
+            ),
+            (
+                "retention.policy_versions.workspace_id",
+                "retention.policy_versions.id",
+                "retention.policy_versions.payload_hash",
+                "retention.policy_versions.policy_number",
+            ),
+            name="fk_asset_profile_snapshots_policy",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "profile_kind IN ('FULL', 'SAMPLE', 'PARTITION', 'QUERY', 'UNKNOWN')",
+            name="profile_kind",
+        ),
+        CheckConstraint(
+            "completeness IN ('COMPLETE', 'PARTIAL')",
+            name="completeness",
+        ),
+        CheckConstraint(
+            "classification BETWEEN 0 AND 3",
+            name="classification",
+        ),
+        CheckConstraint(
+            "row_count IS NULL OR row_count >= 0",
+            name="row_count_nonnegative",
+        ),
+        CheckConstraint(
+            "column_count IS NULL OR column_count >= 0",
+            name="column_count_nonnegative",
+        ),
+        CheckConstraint(
+            "size_bytes IS NULL OR size_bytes >= 0",
+            name="size_bytes_nonnegative",
+        ),
+        CheckConstraint(
+            "(profile_kind IN ('PARTITION', 'QUERY') "
+            "AND provenance_key_id IS NOT NULL "
+            "AND provenance_fingerprint ~ '^[0-9a-f]{64}$') OR "
+            "(profile_kind NOT IN ('PARTITION', 'QUERY') "
+            "AND provenance_key_id IS NULL AND provenance_fingerprint IS NULL)",
+            name="provenance_shape",
+        ),
+        CheckConstraint(
+            "snapshot_identity_hash ~ '^[0-9a-f]{64}$' "
+            "AND target_scope_hash ~ '^[0-9a-f]{64}$' "
+            "AND provider_contract_hash ~ '^[0-9a-f]{64}$' "
+            "AND provider_query_hash ~ '^[0-9a-f]{64}$' "
+            "AND provider_config_hash ~ '^[0-9a-f]{64}$' "
+            "AND source_watermark_hash ~ '^[0-9a-f]{64}$' "
+            "AND normalized_payload_hash ~ '^[0-9a-f]{64}$' "
+            "AND profile_retention_policy_hash ~ '^[0-9a-f]{64}$' "
+            "AND profile_hold_hash ~ '^[0-9a-f]{64}$'",
+            name="hashes_sha256",
+        ),
+        CheckConstraint(
+            "profile_retention_kind = 'QUALITY_PROFILE'",
+            name="retention_kind",
+        ),
+        CheckConstraint(
+            "profile_retention_policy_number > 0 "
+            "AND profile_hold_generation > 0 "
+            "AND profile_retain_until > profile_retention_basis_at",
+            name="retention_binding",
+        ),
+        CheckConstraint(
+            "first_observed_at <= last_observed_at AND stale_at > profiled_at",
+            name="time_order",
+        ),
+        Index(
+            "ix_asset_profile_snapshots_latest",
+            "workspace_id",
+            "asset_id",
+            text("profiled_at DESC"),
+            text("last_observed_at DESC"),
+            "id",
+        ),
+        Index(
+            "ix_asset_profile_snapshots_retention",
+            "workspace_id",
+            "profile_retain_until",
+            "id",
+        ),
+        {"schema": "catalog"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    asset_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    asset_source_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    snapshot_identity_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    completeness: Mapped[str] = mapped_column(String(16), nullable=False)
+    profiled_at: Mapped[datetime] = mapped_column(nullable=False)
+    first_observed_at: Mapped[datetime] = mapped_column(nullable=False)
+    last_observed_at: Mapped[datetime] = mapped_column(nullable=False)
+    stale_at: Mapped[datetime] = mapped_column(nullable=False)
+    row_count: Mapped[int | None] = mapped_column(BigInteger)
+    column_count: Mapped[int | None] = mapped_column(BigInteger)
+    size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    provenance_key_id: Mapped[str | None] = mapped_column(String(128))
+    provenance_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    provider_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_contract_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_query_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_watermark_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    normalized_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    classification: Mapped[int] = mapped_column(Integer, nullable=False)
+    system_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    domain_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    target_scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_retention_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    profile_retention_policy_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    profile_retention_policy_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile_retention_policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_retention_basis_at: Mapped[datetime] = mapped_column(nullable=False)
+    profile_retain_until: Mapped[datetime] = mapped_column(nullable=False)
+    profile_hold_generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    profile_hold_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class ColumnProfileMetricModel(Base, UuidPrimaryKeyMixin):
+    __tablename__ = "column_profile_metrics"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "snapshot_id",
+            "field_path",
+            name="uq_column_profile_metrics_field",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "snapshot_id",
+                "classification",
+                "target_scope_hash",
+                "profile_retention_policy_id",
+                "profile_retention_policy_number",
+                "profile_retention_policy_hash",
+                "profile_retain_until",
+                "profile_hold_generation",
+                "profile_hold_hash",
+            ),
+            (
+                "catalog.asset_profile_snapshots.workspace_id",
+                "catalog.asset_profile_snapshots.id",
+                "catalog.asset_profile_snapshots.classification",
+                "catalog.asset_profile_snapshots.target_scope_hash",
+                "catalog.asset_profile_snapshots.profile_retention_policy_id",
+                "catalog.asset_profile_snapshots.profile_retention_policy_number",
+                "catalog.asset_profile_snapshots.profile_retention_policy_hash",
+                "catalog.asset_profile_snapshots.profile_retain_until",
+                "catalog.asset_profile_snapshots.profile_hold_generation",
+                "catalog.asset_profile_snapshots.profile_hold_hash",
+            ),
+            name="fk_column_profile_metrics_snapshot_binding",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "char_length(field_path) BETWEEN 1 AND 4096 AND field_path = btrim(field_path)",
+            name="field_path",
+        ),
+        CheckConstraint(
+            "(null_count_available AND null_count IS NOT NULL AND null_count >= 0) OR "
+            "(NOT null_count_available AND null_count IS NULL)",
+            name="null_count_shape",
+        ),
+        CheckConstraint(
+            "(null_proportion_available AND null_proportion IS NOT NULL "
+            "AND null_proportion BETWEEN 0 AND 1) OR "
+            "(NOT null_proportion_available AND null_proportion IS NULL)",
+            name="null_proportion_shape",
+        ),
+        CheckConstraint(
+            "(unique_count_available AND unique_count IS NOT NULL AND unique_count >= 0) OR "
+            "(NOT unique_count_available AND unique_count IS NULL)",
+            name="unique_count_shape",
+        ),
+        CheckConstraint(
+            "(unique_proportion_available AND unique_proportion IS NOT NULL "
+            "AND unique_proportion BETWEEN 0 AND 1) OR "
+            "(NOT unique_proportion_available AND unique_proportion IS NULL)",
+            name="unique_proportion_shape",
+        ),
+        CheckConstraint(
+            "classification BETWEEN 0 AND 3",
+            name="classification",
+        ),
+        CheckConstraint(
+            "target_scope_hash ~ '^[0-9a-f]{64}$' "
+            "AND profile_retention_policy_hash ~ '^[0-9a-f]{64}$' "
+            "AND profile_hold_hash ~ '^[0-9a-f]{64}$'",
+            name="hashes_sha256",
+        ),
+        CheckConstraint(
+            "profile_retention_policy_number > 0 AND profile_hold_generation > 0",
+            name="retention_binding",
+        ),
+        Index(
+            "ix_column_profile_metrics_snapshot",
+            "workspace_id",
+            "snapshot_id",
+            "field_path",
+        ),
+        {"schema": "catalog"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    snapshot_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    field_path: Mapped[str] = mapped_column(String(4096), nullable=False)
+    null_count_available: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    null_count: Mapped[int | None] = mapped_column(BigInteger)
+    null_proportion_available: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    null_proportion: Mapped[float | None] = mapped_column(Numeric(20, 18))
+    unique_count_available: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    unique_count: Mapped[int | None] = mapped_column(BigInteger)
+    unique_proportion_available: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    unique_proportion: Mapped[float | None] = mapped_column(Numeric(20, 18))
+    classification: Mapped[int] = mapped_column(Integer, nullable=False)
+    target_scope_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_retention_policy_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    profile_retention_policy_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    profile_retention_policy_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    profile_retain_until: Mapped[datetime] = mapped_column(nullable=False)
+    profile_hold_generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    profile_hold_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        server_default=text("CURRENT_TIMESTAMP"),
+        nullable=False,
+    )
 
 
 class CatalogVocabularyEntryModel(Base, UuidPrimaryKeyMixin):

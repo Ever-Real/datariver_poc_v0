@@ -94,6 +94,10 @@ query DataRiverAsset($urn: String!) {
         columnCount
         sizeInBytes
         timestampMillis
+        partitionSpec {
+          type
+          partition
+        }
       }
     }
   }
@@ -653,6 +657,13 @@ def _schema_fields(
 def _dataset_quality(value: object) -> dict[str, Any]:
     profiles = value if isinstance(value, list) else []
     profile = profiles[0] if profiles and isinstance(profiles[0], dict) else {}
+    partition_spec = profile.get("partitionSpec")
+    if (
+        not isinstance(partition_spec, dict)
+        or partition_spec.get("type") != "FULL_TABLE"
+        or partition_spec.get("partition") != "FULL_TABLE_SNAPSHOT"
+    ):
+        return {}
     quality: dict[str, Any] = {}
     for source_key, response_key in (
         ("rowCount", "rowCount"),
@@ -865,6 +876,10 @@ class HttpDataHubGateway:
         self._circuit_open_until = 0.0
         self._half_open_in_flight = False
         self._telemetry = telemetry
+
+    @property
+    def observed_version(self) -> str | None:
+        return self._observed_version
 
     async def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         operation = self._operation(url)

@@ -327,7 +327,7 @@ def test_0051_migration_is_forced_rls_append_only_and_least_privilege() -> None:
         root / "backend/alembic/versions/0051_typed_catalog_metadata_evidence.py"
     ).read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0067"
+    assert REQUIRED_DATABASE_REVISION == "0068"
     assert 'down_revision: str | Sequence[str] | None = "0050"' in migration
     for schema, table in (
         ("catalog", "vocabulary_entries"),
