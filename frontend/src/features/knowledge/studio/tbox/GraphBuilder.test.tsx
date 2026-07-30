@@ -110,7 +110,10 @@ describe('GraphBuilder', () => {
       'CREATE (n0:Employee)',
     )
     fireEvent.click(screen.getByLabelText('Employee Class 편집기 열기'))
-    expect(screen.getByLabelText('Employee Class 빠른 편집')).toBeInTheDocument()
+    const quickEditor = screen.getByLabelText('Employee Class 빠른 편집')
+    expect(quickEditor).toBeInTheDocument()
+    expect(quickEditor).toHaveStyle({ transform: 'scale(1)' })
+    expect(quickEditor.parentElement?.style.transform).not.toContain('scale')
     fireEvent.click(screen.getByLabelText('Employee Class 편집기 닫기'))
     expect(screen.queryByLabelText('Employee Class 빠른 편집')).not.toBeInTheDocument()
 

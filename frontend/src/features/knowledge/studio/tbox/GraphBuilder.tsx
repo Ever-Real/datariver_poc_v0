@@ -310,15 +310,15 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
         position={Position.Right}
         offset={10}
         className="w-[218px] rounded-enterprise border border-slate-300 bg-white p-2.5 text-[10px] text-slate-800 shadow-2xl"
-        style={{
-          transform: `scale(${data.editorScale})`,
-          transformOrigin: 'left center',
-        }}
       >
         <div
           className="grid gap-2"
           role="dialog"
           aria-label={`${data.label} Class 빠른 편집`}
+          style={{
+            transform: `scale(${data.editorScale})`,
+            transformOrigin: 'left center',
+          }}
           onPointerDown={(event) => event.stopPropagation()}
         >
           <div className="flex items-center justify-between gap-2">
