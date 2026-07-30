@@ -55,6 +55,7 @@ from datariver.domain.retention import (
     LegalHold,
     LegalHoldAction,
     LegalHoldActionType,
+    LegalHoldResourceType,
     LegalHoldScope,
     LegalHoldState,
     RetentionArchiveDisposition,
@@ -505,11 +506,21 @@ class SqlLegalHoldRepository(LegalHoldRepository):
         subject_scope_ids = {target_id}
         if target_owner_id is not None:
             subject_scope_ids.add(target_owner_id)
+        typed_resource = {
+            ErasureTargetType.CHAT_SESSION: LegalHoldResourceType.CHAT_SESSION.value,
+            ErasureTargetType.UPLOAD_OBJECT: LegalHoldResourceType.UPLOAD_OBJECT.value,
+        }.get(target_type)
         scope_predicate = or_(
             LegalHoldModel.scope == LegalHoldScope.WORKSPACE.value,
             and_(
                 LegalHoldModel.scope == LegalHoldScope.RESOURCE.value,
                 LegalHoldModel.scope_id == target_id,
+                LegalHoldModel.resource_type.in_(
+                    (
+                        LegalHoldResourceType.LEGACY_UNTYPED.value,
+                        typed_resource or LegalHoldResourceType.LEGACY_UNTYPED.value,
+                    )
+                ),
             ),
             and_(
                 LegalHoldModel.scope == LegalHoldScope.SUBJECT.value,
@@ -951,7 +962,7 @@ class SqlArchiveEvidenceRepository:
             raise ConflictError(
                 "The immutable archive receipt policy was not active at write time."
             )
-        if policy.contract_version == "POLICY_BOOK_V2" and (
+        if policy.contract_version in {"POLICY_BOOK_V2", "POLICY_BOOK_V3"} and (
             policy.effective_from is None
             or policy.effective_from > evidence.written_at
             or (policy.effective_until is not None and policy.effective_until < write_interval_end)
@@ -1427,7 +1438,7 @@ def _policy_contract(
         if class_rule_models:
             raise ConflictError("A legacy retention policy contains unexpected class rules.")
         return None
-    if contract_version != "POLICY_BOOK_V2":
+    if contract_version not in {"POLICY_BOOK_V2", "POLICY_BOOK_V3"}:
         raise ConflictError("The retention policy contract version is unsupported.")
     if model.effective_from is None or model.execution_authorization_hours is None:
         raise ConflictError("The POLICY_BOOK_V2 contract metadata is incomplete.")
@@ -1454,6 +1465,7 @@ def _policy_contract(
         effective_until=model.effective_until,
         execution_authorization_hours=model.execution_authorization_hours,
         class_rules=tuple(class_rules),
+        contract_version=contract_version,
     )
 
 
@@ -1464,6 +1476,7 @@ def _hold_model(hold: LegalHold) -> LegalHoldModel:
         data_class=hold.data_class.value,
         scope=hold.scope.value,
         scope_id=hold.scope_id,
+        resource_type=hold.resource_type.value if hold.resource_type is not None else None,
         reason=hold.reason,
         payload_hash=hold.payload_hash,
         created_by=hold.created_by,
@@ -1505,6 +1518,9 @@ def _hydrate_hold(
     try:
         data_class = RetentionDataClass(model.data_class)
         scope = LegalHoldScope(model.scope)
+        resource_type = (
+            LegalHoldResourceType(model.resource_type) if model.resource_type is not None else None
+        )
         state = LegalHoldState(model.state)
         actions = [] if history_summary else [_hydrate_action(model, event) for event in events]
     except (ValueError, ValidationError) as error:
@@ -1516,6 +1532,8 @@ def _hydrate_hold(
         "scope_id": str(model.scope_id) if model.scope_id else None,
         "reason": model.reason,
     }
+    if resource_type is not None and resource_type is not LegalHoldResourceType.LEGACY_UNTYPED:
+        placement_document["resource_type"] = resource_type.value
     if canonical_json_hash(placement_document) != model.payload_hash:
         raise ConflictError("The stored Legal Hold payload failed its integrity check.")
     if not history_summary:
@@ -1537,6 +1555,7 @@ def _hydrate_hold(
         data_class=data_class,
         scope=scope,
         scope_id=model.scope_id,
+        resource_type=resource_type,
         reason=model.reason,
         payload_hash=model.payload_hash,
         created_by=model.created_by,

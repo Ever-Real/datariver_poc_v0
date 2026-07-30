@@ -14,6 +14,21 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## GX Quality Phase 1 control-plane addendum — 2026-07-30
+
+This addendum accepts the Phase 1 development-source and isolated PostgreSQL 17 control-plane
+contract at revision `0067`. It does not accept GX source execution, DataHub Profile collection,
+Airflow, Quality API/UI, Linux/WSL artifact parity, production enablement or release readiness.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| Domain and authorization | PASS | Framework-free typed Rule/Run contracts, maker-checker and WebAuthn-gated lifecycle Actions, exact service-only identities and default-deny ABAC are implemented. `REGEX` remains execution-disabled pending its later safety gate. |
+| Schema and retention | PASS | Thirteen Quality tables, composite tenant FKs, immutable evidence, typed `QUALITY_RULE/QUALITY_RESULT/QUALITY_AUDIT` policy pins and typed RuleSet/Run Legal Hold generations agree across SQLAlchemy, `0067`, deterministic `0001` and the data model. Legacy untyped Legal Hold request hashes remain compatible. |
+| PostgreSQL 17 | PASS (isolated development) | Official PostgreSQL `17.10` passed empty-to-head, actual `0066 -> 0067`, complete/partial canonical re-entry, forced-RLS and least-grant probes, application-role Workspace isolation/mutation denial, required index plans, `alembic check`, non-empty downgrade refusal and empty downgrade/re-upgrade. |
+| Source regression | PASS | Ruff format/lint `441` files; strict mypy `435` files; backend `1,792 passed / 101 environment-gated skipped`; static verification; sole head `0067`. Repeated canonical generation SHA-256 is `76896d4104a3fe44ac24b411ec987b685919204fc3410499dcaab4ed3dc68a2c`. |
+| Optional GX dependency | OPEN / DISABLED | GX is exact `1.19.1`; arm64 import, dependency consistency, 71-component SBOM and known-vulnerability audit passed. The `tqdm` `MPL-2.0 AND MIT` distribution decision and exact Linux/WSL amd64 artifact evidence remain open, so no worker/runtime capability is enabled. |
+| Later product surfaces | OPEN | DataHub Profile projection, source adapter, execution worker/lease/outbox, Airflow DAG, API/read model, React dashboard, performance/soak and target runtime acceptance remain owned by later phases. |
+
 ## Knowledge Studio Phase 6 RC preparation addendum — 2026-07-28
 
 This addendum accepts the local source/runtime Graph Builder scaffold for RC visual testing. It

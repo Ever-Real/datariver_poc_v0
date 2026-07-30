@@ -17,6 +17,43 @@ down_revision: str | Sequence[str] | None = "0059"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+
+def _canonical_contract_is_complete() -> bool:
+    inspector = sa.inspect(op.get_bind())
+    expected = {
+        "tbox_draft_elements",
+        "source_references",
+        "abox_binding_drafts",
+        "abox_mapping_rule_drafts",
+    }
+    present = set(inspector.get_table_names(schema="knowledge")) & expected
+    if not present:
+        return False
+    if present != expected:
+        raise RuntimeError("Partial canonical Knowledge Studio A-Box schema detected.")
+    forced_rls = int(
+        op.get_bind()
+        .execute(
+            sa.text(
+                """
+                SELECT count(*)
+                FROM pg_class AS relation
+                JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+                WHERE namespace.nspname = 'knowledge'
+                  AND relation.relname = ANY(CAST(:tables AS text[]))
+                  AND relation.relrowsecurity
+                  AND relation.relforcerowsecurity
+                """
+            ),
+            {"tables": sorted(expected)},
+        )
+        .scalar_one()
+    )
+    if forced_rls != len(expected):
+        raise RuntimeError("Canonical Knowledge Studio A-Box RLS is incomplete.")
+    return True
+
+
 JSON_DOCUMENT = sa.JSON().with_variant(
     postgresql.JSONB(none_as_null=True, astext_type=sa.Text()),
     "postgresql",
@@ -520,6 +557,8 @@ def _grant_application_access() -> None:
 
 
 def upgrade() -> None:
+    if _canonical_contract_is_complete():
+        return
     _create_tbox_elements()
     _create_source_references()
     _create_bindings()

@@ -12,6 +12,7 @@ from datariver.domain.retention import (
     ErasureTargetType,
     GovernanceDecision,
     LegalHoldActionType,
+    LegalHoldResourceType,
     LegalHoldScope,
     LegalHoldState,
     RetentionArchiveDisposition,
@@ -46,10 +47,11 @@ class RetentionClassRuleRequest(StrictRetentionRequest):
 
 
 class RetentionPolicyContractRequest(StrictRetentionRequest):
+    contract_version: Literal["POLICY_BOOK_V2", "POLICY_BOOK_V3"] = "POLICY_BOOK_V2"
     effective_from: datetime
     effective_until: datetime | None = None
     execution_authorization_hours: int = Field(ge=1, le=168)
-    class_rules: tuple[RetentionClassRuleRequest, ...] = Field(min_length=4, max_length=4)
+    class_rules: tuple[RetentionClassRuleRequest, ...] = Field(min_length=4, max_length=7)
 
 
 class RetentionPolicyProposalRequest(StrictRetentionRequest):
@@ -96,6 +98,7 @@ class LegalHoldPlaceRequest(StrictRetentionRequest):
     data_class: RetentionDataClass
     scope: LegalHoldScope
     scope_id: UUID | None = None
+    resource_type: LegalHoldResourceType | None = None
     reason: str = Field(min_length=1, max_length=4000)
 
 
@@ -119,6 +122,7 @@ class LegalHoldResponse(BaseModel):
     data_class: RetentionDataClass
     scope: LegalHoldScope
     scope_id: UUID | None
+    resource_type: LegalHoldResourceType | None
     reason: str
     payload_hash: str
     created_by: UUID

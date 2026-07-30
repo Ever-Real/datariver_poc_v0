@@ -17,6 +17,26 @@ down_revision: str | Sequence[str] | None = "0062"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+
+def _canonical_contract_is_complete() -> bool:
+    inspector = sa.inspect(op.get_bind())
+    expected = {"tbox_draft_blocks", "tbox_proposals", "studio_ingestion_jobs"}
+    present = set(inspector.get_table_names(schema="knowledge")) & expected
+    element_columns = {
+        column["name"]
+        for column in inspector.get_columns("tbox_draft_elements", schema="knowledge")
+    }
+    # Revision 0064 deliberately moves vector-index policy to normalized subtype
+    # tables, so the later canonical supertype no longer owns that column.
+    required_columns = {"block_id", "definition", "aliases"}
+    indicators = bool(present) or bool(element_columns & required_columns)
+    if not indicators:
+        return False
+    if present != expected or not required_columns <= element_columns:
+        raise RuntimeError("Partial canonical Ontology Builder schema detected.")
+    return True
+
+
 JSON_DOCUMENT = sa.JSON().with_variant(
     postgresql.JSONB(none_as_null=True, astext_type=sa.Text()),
     "postgresql",
@@ -461,6 +481,8 @@ def _install_rls_and_grants() -> None:
 
 
 def upgrade() -> None:
+    if _canonical_contract_is_complete():
+        return
     _create_blocks_and_extend_elements()
     _create_proposals()
     _create_ingestion_jobs()

@@ -69,13 +69,15 @@ _FINGERPRINT_TABLES = (
 # PostgreSQL still renders some generated definitions differently for the fresh canonical baseline
 # and the additive 0041 bridge, so both independently rehearsed paths are allowlisted explicitly.
 # The third value is the same current canonical baseline with the reviewed 0044 bounded-list
-# indexes already present; no other later object is accepted. Update only with reviewed
-# model/migration evidence from both paths.
+# indexes already present. The fourth is the regenerated canonical baseline with the reviewed
+# 0067 typed Quality retention classes already present; no other later object is accepted.
+# Update only with reviewed model/migration evidence from both paths.
 _EXPECTED_SCHEMA_FINGERPRINTS = frozenset(
     {
         "e7d66e854560db29c126f3768a3eb2d3b635c9a1f6b291bf7255b72149b75478",
         "0dcf7a560a9c9ccd090b4178c63af942283df77e1eae5e6f6841e9976dc16ae2",
         "0a6f12b6ee2ffbb7b6e7d11ba22aa651cdc9831b22194fa34b83922a578986d4",
+        "36277617db15a0c66df471ecc6d08b9022de74730025495ce3527ffeb6fdd524",
     }
 )
 

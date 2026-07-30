@@ -76,7 +76,8 @@ class RetentionPolicyVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Ver
             "(contract_version = 'SINGLE_DEADLINE_V1' "
             "AND effective_from IS NULL AND effective_until IS NULL "
             "AND execution_authorization_hours IS NULL) OR "
-            "(contract_version = 'POLICY_BOOK_V2' AND effective_from IS NOT NULL "
+            "(contract_version IN ('POLICY_BOOK_V2', 'POLICY_BOOK_V3') "
+            "AND effective_from IS NOT NULL "
             "AND (effective_until IS NULL OR effective_until > effective_from) "
             "AND execution_authorization_hours BETWEEN 1 AND 168)",
             name="contract_shape",
@@ -175,7 +176,8 @@ class RetentionPolicyClassRuleModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
         ),
         CheckConstraint(
             "data_class IN ('COMPLETED_OPERATIONS', 'CHAT_CONTENT', "
-            "'AUDIT_EVIDENCE', 'OBJECT_DATA')",
+            "'AUDIT_EVIDENCE', 'OBJECT_DATA', 'QUALITY_RULE', "
+            "'QUALITY_RESULT', 'QUALITY_AUDIT')",
             name="data_class",
         ),
         CheckConstraint("unit IN ('DAYS', 'MONTHS', 'YEARS')", name="unit"),
@@ -236,14 +238,31 @@ class LegalHoldModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
         ),
         CheckConstraint(
             "data_class IN ('COMPLETED_OPERATIONS', 'CHAT_CONTENT', "
-            "'AUDIT_EVIDENCE', 'OBJECT_DATA')",
+            "'AUDIT_EVIDENCE', 'OBJECT_DATA', 'QUALITY_RULE', "
+            "'QUALITY_RESULT', 'QUALITY_AUDIT')",
             name="data_class",
         ),
         CheckConstraint("scope IN ('WORKSPACE', 'SUBJECT', 'RESOURCE')", name="scope"),
         CheckConstraint(
-            "(scope = 'WORKSPACE' AND scope_id IS NULL) OR "
-            "(scope IN ('SUBJECT', 'RESOURCE') AND scope_id IS NOT NULL)",
+            "(scope = 'WORKSPACE' AND scope_id IS NULL AND resource_type IS NULL) OR "
+            "(scope = 'SUBJECT' AND scope_id IS NOT NULL AND resource_type IS NULL) OR "
+            "(scope = 'RESOURCE' AND scope_id IS NOT NULL AND resource_type IN "
+            "('LEGACY_UNTYPED', 'CHAT_SESSION', 'UPLOAD_OBJECT', "
+            "'QUALITY_RULE_SET', 'QUALITY_VALIDATION_RUN'))",
             name="scope_shape",
+        ),
+        CheckConstraint(
+            "scope <> 'RESOURCE' OR "
+            "(resource_type = 'LEGACY_UNTYPED' "
+            "AND data_class IN ('COMPLETED_OPERATIONS', 'CHAT_CONTENT', "
+            "'AUDIT_EVIDENCE', 'OBJECT_DATA')) OR "
+            "(resource_type = 'CHAT_SESSION' AND data_class = 'CHAT_CONTENT') OR "
+            "(resource_type = 'UPLOAD_OBJECT' AND data_class = 'OBJECT_DATA') OR "
+            "(resource_type = 'QUALITY_RULE_SET' "
+            "AND data_class IN ('QUALITY_RULE', 'QUALITY_AUDIT')) OR "
+            "(resource_type = 'QUALITY_VALIDATION_RUN' "
+            "AND data_class IN ('QUALITY_RESULT', 'QUALITY_AUDIT'))",
+            name="resource_semantics",
         ),
         CheckConstraint(
             "state IN ('ACTIVE', 'RELEASE_REQUESTED', 'RELEASE_REJECTED', 'RELEASED')",
@@ -288,6 +307,7 @@ class LegalHoldModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
             "workspace_id",
             "data_class",
             "scope",
+            "resource_type",
             "scope_id",
             postgresql_where=text("state <> 'RELEASED'"),
         ),
@@ -309,6 +329,7 @@ class LegalHoldModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     data_class: Mapped[str] = mapped_column(String(32), nullable=False)
     scope: Mapped[str] = mapped_column(String(20), nullable=False)
     scope_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    resource_type: Mapped[str | None] = mapped_column(String(40))
     reason: Mapped[str] = mapped_column(String(4000), nullable=False)
     payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
@@ -321,6 +342,36 @@ class LegalHoldModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     release_decision_reason: Mapped[str | None] = mapped_column(String(4000))
     release_decision_policy_decision_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     released_at: Mapped[datetime | None]
+
+
+class LegalHoldGenerationModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    __tablename__ = "legal_hold_generations"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "data_class",
+            name="uq_legal_hold_generations_workspace_class",
+        ),
+        CheckConstraint(
+            "data_class IN ('COMPLETED_OPERATIONS', 'CHAT_CONTENT', "
+            "'AUDIT_EVIDENCE', 'OBJECT_DATA', 'QUALITY_RULE', "
+            "'QUALITY_RESULT', 'QUALITY_AUDIT')",
+            name="data_class",
+        ),
+        CheckConstraint("generation > 0", name="generation_positive"),
+        CheckConstraint("resolution_hash ~ '^[0-9a-f]{64}$'", name="resolution_hash_sha256"),
+        CheckConstraint("version > 0", name="version_positive"),
+        {"schema": "retention"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id"),
+        nullable=False,
+    )
+    data_class: Mapped[str] = mapped_column(String(32), nullable=False)
+    generation: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    resolution_hash: Mapped[str] = mapped_column(String(64), nullable=False)
 
 
 class LegalHoldEventModel(Base, UuidPrimaryKeyMixin):

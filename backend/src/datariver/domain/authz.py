@@ -54,6 +54,21 @@ class Action(StrEnum):
     ERASURE_REQUEST = "erasure.request"
     ERASURE_APPROVE = "erasure.approve"
     ARCHIVE_READ = "archive.read"
+    QUALITY_READ = "quality.read"
+    QUALITY_PROFILE_READ = "quality.profile.read"
+    QUALITY_RULE_PROPOSE = "quality.rule.propose"
+    QUALITY_RULE_REVIEW = "quality.rule.review"
+    QUALITY_RULE_ACTIVATE = "quality.rule.activate"
+    QUALITY_RULE_REVOKE = "quality.rule.revoke"
+    QUALITY_RULE_ARCHIVE = "quality.rule.archive"
+    QUALITY_RUN_REQUEST = "quality.run.request"
+    QUALITY_RUN_CANCEL = "quality.run.cancel"
+    QUALITY_RUN_RETRY = "quality.run.retry"
+    QUALITY_OPERATIONS_READ = "quality.operations.read"
+    QUALITY_AUDIT_READ = "quality.audit.read"
+    QUALITY_DISPATCH = "quality.dispatch"
+    QUALITY_EXECUTE = "quality.execute"
+    CATALOG_PROFILE_COLLECT = "catalog.profile.collect"
 
 
 class AuthenticationAssurance(StrEnum):
@@ -76,6 +91,8 @@ HIGH_RISK_ACTIONS = frozenset(
         Action.LEGAL_HOLD_RELEASE,
         Action.ERASURE_REQUEST,
         Action.ERASURE_APPROVE,
+        Action.QUALITY_RULE_ACTIVATE,
+        Action.QUALITY_RULE_REVOKE,
     }
 )
 
@@ -87,8 +104,23 @@ HUMAN_GOVERNANCE_ACTIONS = frozenset(
         Action.LEGAL_HOLD_RELEASE,
         Action.ERASURE_REQUEST,
         Action.ERASURE_APPROVE,
+        Action.QUALITY_RULE_PROPOSE,
+        Action.QUALITY_RULE_REVIEW,
+        Action.QUALITY_RULE_ACTIVATE,
+        Action.QUALITY_RULE_REVOKE,
+        Action.QUALITY_RULE_ARCHIVE,
+        Action.QUALITY_RUN_REQUEST,
+        Action.QUALITY_RUN_CANCEL,
+        Action.QUALITY_RUN_RETRY,
     }
 )
+
+SERVICE_ONLY_ACTION_GROUPS: dict[Action, str] = {
+    Action.QUALITY_DISPATCH: "quality-dispatchers",
+    Action.QUALITY_EXECUTE: "quality-workers",
+    Action.CATALOG_PROFILE_COLLECT: "catalog-profile-collectors",
+}
+SERVICE_ONLY_ACTIONS = frozenset(SERVICE_ONLY_ACTION_GROUPS)
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,6 +223,15 @@ class BuiltinPolicyEngine:
         if action is Action.CHANGE_APPROVE and resource.requester_id == subject.subject_id:
             reasons.append("SELF_APPROVAL_FORBIDDEN")
         if (
+            action
+            in {
+                Action.QUALITY_RULE_REVIEW,
+                Action.QUALITY_RULE_ACTIVATE,
+            }
+            and resource.requester_id == subject.subject_id
+        ):
+            reasons.append("SELF_APPROVAL_FORBIDDEN")
+        if (
             resource.owner_subject_id is not None
             and resource.owner_subject_id != subject.subject_id
             and "security-administrators" not in subject.groups
@@ -214,6 +255,16 @@ class BuiltinPolicyEngine:
             subject.job_function == "SERVICE_ACCOUNT" or "service-accounts" in subject.groups
         ):
             reasons.append("HUMAN_ACTOR_REQUIRED")
+        if action in SERVICE_ONLY_ACTIONS:
+            purpose_group = SERVICE_ONLY_ACTION_GROUPS[action]
+            if (
+                subject.job_function != "SERVICE_ACCOUNT"
+                or "service-accounts" not in subject.groups
+                or purpose_group not in subject.groups
+            ):
+                reasons.append("PURPOSE_BOUND_SERVICE_REQUIRED")
+            if subject.allowed_actions != frozenset({action}):
+                reasons.append("SERVICE_ACTION_SET_INVALID")
 
         effect = Effect.DENY if reasons else Effect.ALLOW
         return Decision(

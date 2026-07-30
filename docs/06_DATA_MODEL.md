@@ -460,13 +460,14 @@ appends and mutation of retention evidence. The application role retains only se
 `version`/`updated_at` update privilege and no Chat delete privilege. Clean installations validate
 the canonical `0001` contract, upgrades install it atomically, and partial schemas fail closed.
 
-## Approved Quality target schema (Phase 0; not implemented)
+## Governed Quality schema (Phase 1 implemented at revision `0067`)
 
-ADR-0077 approves a future `quality` bounded context and two Catalog profile-projection tables.
-They are not present in SQLAlchemy metadata or Alembic at revision `0066`. The names below are the
-target model contract, not permission to create ad-hoc tables or claim GX execution. Phase 1 owns
-the Quality and retention-target revision; Phase 2 owns a separate additive Catalog Profile and
-`QUALITY_PROFILE` retention-target revision.
+ADR-0077 defines the `quality` bounded context and two later Catalog profile-projection tables.
+Revision `0067` implements the 13 Quality control-plane tables below in SQLAlchemy and Alembic,
+together with `QUALITY_RULE/QUALITY_RESULT/QUALITY_AUDIT` retention classes, typed RuleSet/Run
+Legal Hold targets, forced RLS, least-privilege grants and fixed lifecycle functions. This Phase 1
+schema does not claim a GX execution worker, DataHub Profile projection, API or dashboard. Phase 2
+owns a separate additive Catalog Profile and `QUALITY_PROFILE` retention-target revision.
 
 ```mermaid
 erDiagram
@@ -491,13 +492,13 @@ erDiagram
 |---|---|---|
 | `quality.rule_sets` | workspace/local asset composite binding, stable name, `ACTIVE/ARCHIVED`, optimistic version, creator/updater and times; exact `QUALITY_RULE` policy ID/version/hash/deadline and RuleSet Legal Hold generation/hash; no DELETE | logical rule aggregate and typed hold root |
 | `quality.rule_set_versions` | workspace/rule-set/version-number UQ, `PROPOSED/APPROVED/REJECTED/ACTIVE/SUPERSEDED/REVOKED`, immutable target/schema/source-connection/workload-profile/compiler/GX/score-policy plus `MANUAL_ONLY` or approved schedule-profile ID/version/hash documents and SHA-256 hashes; exact `QUALITY_RULE` policy ID/version/hash/deadline and Legal Hold generation/hash; at most one ACTIVE version per rule set | immutable executable suite contract; lifecycle columns change only through fixed transition functions |
-| `quality.rule_definitions` | workspace/version/ordinal UQ, server-owned field identifier, `NOT_NULL/RANGE/REGEX`, `BLOCKING/ADVISORY`, bounded typed parameters and canonical hash; composite FK inherits the Version's `QUALITY_RULE` binding | compiler input; no raw GX/SQL/query document |
+| `quality.rule_definitions` | workspace/version/ordinal UQ, server-owned field identifier, execution-enabled `NOT_NULL/RANGE` only, `BLOCKING/ADVISORY`, exact closed typed parameters and canonical hash; composite FK inherits the Version's `QUALITY_RULE` binding | compiler input; no raw GX/SQL/query document; `REGEX` remains rejected until its later safety gate |
 | `quality.rule_reviews` | workspace/version/decision/version UQs, distinct human actor, closed `APPROVE/REJECT` decision, assurance/policy/target hashes, exact `QUALITY_AUDIT` policy ID/version/hash/deadline and Legal Hold generation/hash, DB time; append-only | maker-checker review evidence; activation/revocation use separate fixed commands |
-| `quality.rule_command_events` | workspace/rule-set/sequence UQ, exact version, `ACTIVATE/REVOKE/ARCHIVE/SUPERSEDE`, human/service actor, WebAuthn/authorization/target/schedule/retention/idempotency evidence hashes, exact `QUALITY_AUDIT` policy ID/version/hash/deadline and Legal Hold generation/hash, DB time; append-only | immutable lifecycle-command evidence written by fixed transition functions |
+| `quality.rule_command_events` | workspace/rule-set/sequence UQ, exact version, `ACTIVATE/REVOKE/ARCHIVE/SUPERSEDE`, human/service actor, server-derived WebAuthn/authorization plus target/schedule/retention hashes, canonical request hash and idempotency-key hash, exact `QUALITY_AUDIT` policy ID/version/hash/deadline and Legal Hold generation/hash, DB time; append-only | immutable lifecycle-command evidence written by fixed transition functions; an exact replay returns the prior command ID and a same-key/different-request replay fails closed |
 | `quality.rule_schedules` | workspace/rule-set-version UQ; immutable schedule-profile ID/version/hash and normalized cadence payload/hash with closed cadence grammar, IANA timezone, anchor, DST ambiguous/nonexistent policy, evaluator/tzdb contract versions, bounded non-negative late grace, closed `SKIP_MISSED_V1/LATEST_ONLY_V1/CATCH_UP_OLDEST_FIRST_V1` and catch-up cap; mutable `ACTIVE/INACTIVE`, `next_due_at`, current window, optimistic version and DB times; one partial-UQ ACTIVE row per workspace/rule-set; inherits the Version's `QUALITY_RULE` binding by composite FK | versioned canonical scheduler input/history; fixed functions alone transition state/due cursor, clients cannot supply cron and Airflow is not the schedule ledger |
 | `quality.validation_runs` | exact rule version/target/source-connection/security/DataHub-profile-context/score-policy pins; `retry_of_run_id`; manual/scheduled trigger and authority; scheduled rows pin schedule ID/version, canonical UTC window key, due time and late flag; execution state, separate quality outcome and score/count summary; current attempt ID, DB-time `next_attempt_at`, lease epoch/token hash/owner/`lease_until`/heartbeat/`source_started_at`/`source_access_deadline`, pinned hard-timeout/margin contract hash; exact `QUALITY_RESULT` and `QUALITY_AUDIT` policy IDs/versions/hashes/deadlines and Legal Hold generation/hash; optimistic version/times; workspace/schedule-version/canonical-window-key UQ | canonical durable validation job; DataHub profile is context, never GX decision evidence |
 | `quality.validation_attempts` | workspace/run/attempt and run/lease-epoch UQs, token hash, worker fingerprint, claim/lease/source-start/source-access-deadline/terminal DB times, closed `RUNNING/SUCCEEDED/RETRYABLE_FAILED/FAILED/STALE/CANCELLED/SUPERSEDED`, compiler/GX/result hashes and sanitized failure code; composite FK inherits Run retention pins | fenced execution evidence; whole source-access hard timeout plus cancel/reconcile/completion margin fits inside the frozen lease, every statement rechecks the fence and has its own source-server timeout |
-| `quality.expectation_results` | workspace/run/rule-definition UQ, normalized `PASS/ADVISORY_FAIL/BLOCKING_FAIL`, evaluated/missing/unexpected counts/ratios, duration/result hash; composite FK inherits the Run's `QUALITY_RESULT` binding; append-only | sanitized per-rule outcome with no raw value, row, SQL or exception |
+| `quality.expectation_results` | workspace/run/rule-definition UQ, exact Rule Set Version and current successful attempt/run-state binding, normalized `PASS/ADVISORY_FAIL/BLOCKING_FAIL`, evaluated/missing/unexpected counts/ratios, duration/result hash; deferred composite FKs inherit the Run's `QUALITY_RESULT` binding; append-only | sanitized per-rule outcome with no raw value, row, SQL or exception |
 | `quality.run_events` | workspace/run/sequence UQ, state/reason/actor/evidence hash and DB time; composite FK inherits the Run's `QUALITY_AUDIT` binding; append-only | canonical run transition history |
 | `quality.dispatch_call_receipts` | workspace/service Subject/call-ID hash UQ, canonical request/result/idempotency hashes, DB-time cutoff, pinned dispatch evaluator/tzdb/max-due/max-created contract ID/version/hash, bounded created/skipped counts and run-list/skipped-range hashes, exact workspace-scoped `QUALITY_AUDIT` policy ID/version/hash/deadline and Legal Hold resolution generation/hash, DB times; no Run FK or raw token | authenticated Airflow replay fence for no-work, one-run and multi-run dispatch |
 | `quality.dispatch_run_links` | workspace/dispatch-receipt/ordinal UQ plus validation-run UQ; composite FKs inherit receipt AUDIT and Run RESULT/AUDIT bindings | bounded immutable dispatch-to-Run mapping |
@@ -510,9 +511,12 @@ profile rows reference the local Catalog asset; immutable Quality evidence addit
 server-authored historical target binding so later projection replacement cannot rewrite history.
 Ordinary application roles cannot directly update/delete versions or update/delete reviews,
 results, events or call receipts. Fixed `SECURITY DEFINER` functions with pinned `search_path`,
-current authorization/RLS, optimistic concurrency and idempotency are the only lifecycle write
-path. Activation atomically supersedes the prior ACTIVE version, activates the approved candidate,
-transitions schedules, and appends decision/audit/outbox evidence. The quality-worker role is
+current authorization/RLS, live Catalog target revalidation, server-derived decision evidence,
+optimistic concurrency and canonical-request idempotency are the only lifecycle write path.
+Activation atomically supersedes the prior ACTIVE version, emits a server-derived `SUPERSEDE`
+event, activates the approved candidate and appends decision/audit evidence. Phase 1 activation
+accepts `MANUAL_ONLY` versions only; scheduled activation and schedule materialization remain
+capability-closed until the Phase 3 scheduler/worker contract is implemented. The quality-worker role is
 NOBYPASSRLS and should claim/complete through fixed,
 claim-scoped functions or equivalently narrow column grants; it receives no cross-context mutation
 right. The separate Phase 2 `catalog-profile-collector` has only `catalog.profile.collect`, a
@@ -526,12 +530,20 @@ least one Rule Definition, and `SUCCEEDED` requires exactly one sanitized result
 successful Run's Quality outcome is `PASS/WARN/FAIL`; non-success Runs and aggregates without a
 contributing successful result use `UNKNOWN`. `SUCCEEDED` therefore does not imply `PASS`.
 
-The Run/attempt pairing is constrained as follows: `QUEUED` has no current attempt;
+The Run/current-attempt link is a deferred workspace/run/attempt composite foreign key backed by
+a deferred state-shape trigger, rather than an informational UUID. The pairing is constrained as
+follows: `QUEUED` has no current attempt;
 `RUNNING` and in-flight `CANCEL_REQUESTED` point to `RUNNING`; `RETRY_WAIT` points to
 `RETRYABLE_FAILED`; `SUCCEEDED/FAILED/STALE` point to the matching current attempt. `CANCELLED`
 points to no attempt before first claim, `CANCELLED` after in-flight cancellation, or
 `RETRYABLE_FAILED` after retry-wait cancellation. A reclaimed `SUPERSEDED` attempt is never
 current, and only a `SUCCEEDED` current attempt has expectation results.
+
+Legal Hold resolution uses a closed semantic mapping: `QUALITY_RULE` targets
+`QUALITY_RULE_SET`, `QUALITY_RESULT` targets `QUALITY_VALIDATION_RUN`, and `QUALITY_AUDIT` targets
+either Quality resource type. A resolver invoked for a newly created Workspace atomically creates
+generation `1` with the canonical empty-set hash before locking and returning it. Domain validation,
+DDL checks and the retention resolver all reject cross-type combinations.
 
 The deterministic Profile snapshot identity is the canonical hash of workspace/local asset,
 profiled time, normalized kind, provider/query/config/source-watermark hashes, normalized
@@ -547,15 +559,23 @@ mounted `file:` secret available only to the quality worker. The independent
 DataHub-profile-context ID/source watermark records freshness context and is never a GX evaluation
 input. A separate deployment-approved workload-profile ID/version/hash pins the full-source-access
 hard timeout, per-statement timeout, cancellation/close margins, pool/concurrency and scan budgets;
-changing it requires a new Rule Set Version. Phase 1 must add the Quality SQLAlchemy metadata, its
-incremental revision from the
-then-current head, the `QUALITY_RULE/QUALITY_RESULT/QUALITY_AUDIT` retention kinds and typed
-RuleSet/Run hold targets in the same revision. Phase 2 adds the two Catalog tables,
+changing it requires a new Rule Set Version. Phase 1 added the Quality SQLAlchemy metadata and
+revision `0067` from head `0066`, plus the
+`QUALITY_RULE/QUALITY_RESULT/QUALITY_AUDIT` retention kinds and typed RuleSet/Run hold targets in
+the same revision. Phase 2 adds the two Catalog tables,
 `QUALITY_PROFILE` kind and ProfileSnapshot hold target in its own additive revision. Each revision
 must regenerate deterministic `0001`, update this document and pass PostgreSQL 17
 blank/current-head/canonical re-entry/RLS/grant/drift tests. Downgrade must refuse to drop a Quality
 or Profile schema containing immutable evidence; destructive rollback is permitted only for a
 provably empty development schema.
+
+Revision `0067` also pins a PostgreSQL 17 semantic catalog fingerprint covering Quality tables and
+their governed retention policy/rule/hold dependencies: managed columns by name, constraints,
+indexes, forced-RLS flags and policies, non-internal triggers and enabled state, function bodies,
+owners/security/search paths, all table/column/function/schema grants, schema owners, the
+`datariver_quality` role and its memberships. Canonical and additive physical column ordinals may
+differ and are deliberately not part of this logical/security fingerprint; any same-name object
+with different semantics fails canonical re-entry.
 
 The minimum access-path contract is: partial unique ACTIVE version and partial unique ACTIVE
 schedule per Rule Set; immutable schedule history unique per Rule Set Version; due schedules on
@@ -758,6 +778,9 @@ Legal Hold is a versioned aggregate with typed place and governed release comman
 history, not a mutable object-manifest boolean. It takes precedence over ordinary expiry and blocks
 explicit erasure, row pruning and partition detach/drop. A release-pending hold is treated as active.
 The first partition implementation over-retains a whole partition when any applicable hold exists.
+Quality hold generations advance with one atomic PostgreSQL upsert and a previous-hash/event-hash
+chain; concurrent hold events serialize on the workspace/data-class row and cannot lose an
+increment through snapshot recomputation.
 
 Future object deletion must follow canonical manifest/session state through a retryable typed erasure workflow.
 The request binds workspace, target kind and UUID, target version/owner/classification, policy

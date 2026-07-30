@@ -39,6 +39,26 @@ class RetentionDataClass(StrEnum):
     CHAT_CONTENT = "CHAT_CONTENT"
     AUDIT_EVIDENCE = "AUDIT_EVIDENCE"
     OBJECT_DATA = "OBJECT_DATA"
+    QUALITY_RULE = "QUALITY_RULE"
+    QUALITY_RESULT = "QUALITY_RESULT"
+    QUALITY_AUDIT = "QUALITY_AUDIT"
+
+
+LEGACY_RETENTION_DATA_CLASSES = frozenset(
+    {
+        RetentionDataClass.COMPLETED_OPERATIONS,
+        RetentionDataClass.CHAT_CONTENT,
+        RetentionDataClass.AUDIT_EVIDENCE,
+        RetentionDataClass.OBJECT_DATA,
+    }
+)
+QUALITY_RETENTION_DATA_CLASSES = frozenset(
+    {
+        RetentionDataClass.QUALITY_RULE,
+        RetentionDataClass.QUALITY_RESULT,
+        RetentionDataClass.QUALITY_AUDIT,
+    }
+)
 
 
 class RetentionPeriodUnit(StrEnum):
@@ -65,6 +85,14 @@ class LegalHoldScope(StrEnum):
     WORKSPACE = "WORKSPACE"
     SUBJECT = "SUBJECT"
     RESOURCE = "RESOURCE"
+
+
+class LegalHoldResourceType(StrEnum):
+    LEGACY_UNTYPED = "LEGACY_UNTYPED"
+    CHAT_SESSION = "CHAT_SESSION"
+    UPLOAD_OBJECT = "UPLOAD_OBJECT"
+    QUALITY_RULE_SET = "QUALITY_RULE_SET"
+    QUALITY_VALIDATION_RUN = "QUALITY_VALIDATION_RUN"
 
 
 class LegalHoldState(StrEnum):
@@ -289,6 +317,7 @@ class RetentionPolicyContract:
     effective_until: datetime | None
     execution_authorization_hours: int
     class_rules: tuple[RetentionClassRule, ...]
+    contract_version: str = "POLICY_BOOK_V2"
 
     def __post_init__(self) -> None:
         _require_aware_datetime(self.effective_from, "retention policy effective-from")
@@ -301,12 +330,17 @@ class RetentionPolicyContract:
                 "The erasure execution authorisation window must be between one hour "
                 "and seven days."
             )
+        expected_classes = {
+            "POLICY_BOOK_V2": LEGACY_RETENTION_DATA_CLASSES,
+            "POLICY_BOOK_V3": LEGACY_RETENTION_DATA_CLASSES | QUALITY_RETENTION_DATA_CLASSES,
+        }.get(self.contract_version)
+        if expected_classes is None:
+            raise ValidationError("The retention policy contract version is unsupported.")
         data_classes = tuple(rule.data_class for rule in self.class_rules)
-        if len(data_classes) != len(set(data_classes)) or set(data_classes) != set(
-            RetentionDataClass
-        ):
+        if len(data_classes) != len(set(data_classes)) or set(data_classes) != expected_classes:
             raise ValidationError(
-                "A POLICY_BOOK_V2 contract requires exactly one rule for every data class."
+                f"A {self.contract_version} contract requires exactly one rule "
+                "for every governed data class."
             )
 
     def rule_for(self, data_class: RetentionDataClass) -> RetentionClassRule:
@@ -320,11 +354,11 @@ class RetentionPolicyContract:
         if now < self.effective_from or (
             self.effective_until is not None and now >= self.effective_until
         ):
-            raise ConflictError("The POLICY_BOOK_V2 retention contract is not effective.")
+            raise ConflictError(f"The {self.contract_version} retention contract is not effective.")
 
     def document(self) -> dict[str, object]:
         return {
-            "contract_version": "POLICY_BOOK_V2",
+            "contract_version": self.contract_version,
             "effective_from": self.effective_from.isoformat(),
             "effective_until": (
                 self.effective_until.isoformat() if self.effective_until is not None else None
@@ -449,7 +483,7 @@ class RetentionPolicyVersion:
 
     @property
     def contract_version(self) -> str:
-        return "POLICY_BOOK_V2" if self.contract is not None else "SINGLE_DEADLINE_V1"
+        return self.contract.contract_version if self.contract is not None else "SINGLE_DEADLINE_V1"
 
     def assert_integrity(self) -> None:
         _assert_policy_contract_compatibility(rules=self.rules, contract=self.contract)
@@ -524,6 +558,7 @@ class LegalHold:
     payload_hash: str
     created_by: UUID
     create_policy_decision_id: UUID
+    resource_type: LegalHoldResourceType | None = None
     state: LegalHoldState = LegalHoldState.ACTIVE
     release_requested_by: UUID | None = None
     release_request_reason: str | None = None
@@ -545,29 +580,47 @@ class LegalHold:
         data_class: RetentionDataClass,
         scope: LegalHoldScope,
         scope_id: UUID | None,
+        resource_type: LegalHoldResourceType | None = None,
         reason: str,
         actor_id: UUID,
         policy_decision_id: UUID,
         now: datetime,
     ) -> LegalHold:
-        _validate_hold_scope(scope, scope_id)
+        if (
+            data_class in QUALITY_RETENTION_DATA_CLASSES
+            and scope is LegalHoldScope.RESOURCE
+            and resource_type in {None, LegalHoldResourceType.LEGACY_UNTYPED}
+        ):
+            raise ValidationError("A Quality resource Legal Hold requires an exact resource type.")
+        resolved_resource_type = (
+            LegalHoldResourceType.LEGACY_UNTYPED
+            if scope is LegalHoldScope.RESOURCE and resource_type is None
+            else resource_type
+        )
+        _validate_hold_scope(scope, scope_id, resolved_resource_type)
+        _validate_hold_resource_semantics(data_class, scope, resolved_resource_type)
         _require_aware_datetime(now, "Legal Hold placement")
         cleaned_reason = _required_reason(reason, "A Legal Hold reason is required.")
-        payload_hash = canonical_json_hash(
-            {
-                "workspace_id": str(workspace_id),
-                "data_class": data_class.value,
-                "scope": scope.value,
-                "scope_id": str(scope_id) if scope_id else None,
-                "reason": cleaned_reason,
-            }
-        )
+        placement_document: dict[str, object] = {
+            "workspace_id": str(workspace_id),
+            "data_class": data_class.value,
+            "scope": scope.value,
+            "scope_id": str(scope_id) if scope_id else None,
+            "reason": cleaned_reason,
+        }
+        # LEGACY_UNTYPED is the explicit spelling of the historical omitted
+        # value.  Keep both forms on the exact pre-0067 payload hash so old
+        # idempotency receipts and hydrated evidence remain interchangeable.
+        if resource_type is not None and resource_type is not LegalHoldResourceType.LEGACY_UNTYPED:
+            placement_document["resource_type"] = resource_type.value
+        payload_hash = canonical_json_hash(placement_document)
         hold = cls(
             hold_id=uuid7(),
             workspace_id=workspace_id,
             data_class=data_class,
             scope=scope,
             scope_id=scope_id,
+            resource_type=resolved_resource_type,
             reason=cleaned_reason,
             payload_hash=payload_hash,
             created_by=actor_id,
@@ -1191,11 +1244,56 @@ def _required_reason(reason: str, message: str) -> str:
     return cleaned
 
 
-def _validate_hold_scope(scope: LegalHoldScope, scope_id: UUID | None) -> None:
+def _validate_hold_scope(
+    scope: LegalHoldScope,
+    scope_id: UUID | None,
+    resource_type: LegalHoldResourceType | None,
+) -> None:
     if (scope is LegalHoldScope.WORKSPACE and scope_id is not None) or (
         scope is not LegalHoldScope.WORKSPACE and scope_id is None
     ):
         raise ValidationError("The Legal Hold scope and identifier do not match.")
+    if scope is LegalHoldScope.RESOURCE and resource_type is None:
+        raise ValidationError("A resource Legal Hold requires an exact resource type.")
+    if scope is not LegalHoldScope.RESOURCE and resource_type is not None:
+        raise ValidationError("Only a resource Legal Hold may have a resource type.")
+
+
+def _validate_hold_resource_semantics(
+    data_class: RetentionDataClass,
+    scope: LegalHoldScope,
+    resource_type: LegalHoldResourceType | None,
+) -> None:
+    if scope is not LegalHoldScope.RESOURCE:
+        return
+    allowed_types = {
+        RetentionDataClass.COMPLETED_OPERATIONS: {
+            LegalHoldResourceType.LEGACY_UNTYPED,
+        },
+        RetentionDataClass.CHAT_CONTENT: {
+            LegalHoldResourceType.LEGACY_UNTYPED,
+            LegalHoldResourceType.CHAT_SESSION,
+        },
+        RetentionDataClass.AUDIT_EVIDENCE: {
+            LegalHoldResourceType.LEGACY_UNTYPED,
+        },
+        RetentionDataClass.OBJECT_DATA: {
+            LegalHoldResourceType.LEGACY_UNTYPED,
+            LegalHoldResourceType.UPLOAD_OBJECT,
+        },
+        RetentionDataClass.QUALITY_RULE: {
+            LegalHoldResourceType.QUALITY_RULE_SET,
+        },
+        RetentionDataClass.QUALITY_RESULT: {
+            LegalHoldResourceType.QUALITY_VALIDATION_RUN,
+        },
+        RetentionDataClass.QUALITY_AUDIT: {
+            LegalHoldResourceType.QUALITY_RULE_SET,
+            LegalHoldResourceType.QUALITY_VALIDATION_RUN,
+        },
+    }[data_class]
+    if resource_type not in allowed_types:
+        raise ValidationError("The Legal Hold data class and resource type do not match.")
 
 
 def _validate_archive_object_location(

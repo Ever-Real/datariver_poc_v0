@@ -1,14 +1,15 @@
 # GX 기반 품질관리 고도화 PRD 및 실행 체크리스트
 
-- 상태: **Phase 0 계약·ADR 완료 — Phase 1 사용자 승인 대기**
+- 상태: **Phase 1 도메인·권한·PostgreSQL 구현 완료 — 외부 artifact gate는 비활성 보류**
 - 결정 문서: [ADR-0077](adr/0077-governed-gx-quality-control-plane.md)
 - 적용 범위: Task 1 품질관리 대시보드, DataHub Profile, typed Rule, GX 실행 및 결과 시각화
 - 비적용 범위: Task 2 거버넌스 문서, GX Data Docs, MinIO 결과 저장, Oracle 실행,
   DataHub 품질 Aspect write-back
 
 이 문서는 Task 1의 승인된 설계를 실행 가능한 요구사항과 phase gate로 고정한다. Phase 0은
-문서·계약 단계다. GX dependency, API, 테이블, worker, DAG, React 대시보드는 아직 구현된 것으로
-간주하지 않는다.
+문서·계약 단계였고, Phase 1은 Quality 도메인/권한/데이터베이스 control plane을 구현했다.
+GX worker, DataHub Profile projection, API, DAG와 React 대시보드는 이후 Phase 소유이며 아직
+구현된 것으로 간주하지 않는다.
 
 ## 1. 현재 상태와 확인된 공백
 
@@ -514,23 +515,26 @@ chart library는 실제 요구와 bundle 측정 후 별도 승인한다.
 - [x] 기존 PRD/Architecture/Data Model/Security/Test Strategy와 controlled index를 갱신한다.
 - [x] Data Engineer, Backend/DBA, Frontend, Security/Governance 읽기 교차검토를 반영한다.
 
-**Exit:** 문서/결정은 승인 가능 상태다. 구현·migration·dependency·runtime 변경은 없으며
-Phase 1은 사용자 재승인 전 시작하지 않는다.
+**Exit:** 문서/결정은 승인되었고 사용자의 연속 실행 지시에 따라 Phase 1에 진입했다.
 
 ### Phase 1 — 도메인·권한·PostgreSQL
 
 - [ ] exact dependency lock/SBOM/license/driver/arm64+amd64 artifact gate를 먼저 통과한다.
-- [ ] Quality domain aggregate, pure state machine, ports/DTO와 typed compiler contract를 구현한다.
-- [ ] 전용 Action/ABAC/strong-auth와 service identity/group 계약을 구현한다.
-- [ ] 목표 `quality` schema, `QUALITY_RULE/QUALITY_RESULT/QUALITY_AUDIT` retention kind와
+  Mac arm64에서 GX `1.19.1` lock, SBOM, import, dependency consistency와 알려진 취약점 검사는
+  통과했다. 새 transitive `tqdm`의 `MPL-2.0 AND MIT` 배포 결정과 Linux/WSL amd64 고정
+  artifact 검증은 담당자/대상 호스트 증거가 필요하므로 capability는 기본 비활성 상태다.
+- [x] Quality domain aggregate, pure state machine, ports/DTO와 typed compiler contract를 구현한다.
+- [x] 전용 Action/ABAC/strong-auth와 service identity/group 계약을 구현한다.
+- [x] 목표 `quality` schema, `QUALITY_RULE/QUALITY_RESULT/QUALITY_AUDIT` retention kind와
   RuleSet/Run Legal Hold target, fixed transition functions, RLS, grants, 핵심 indices를 한
   incremental migration으로 구현한다.
-- [ ] SQLAlchemy metadata, incremental migration, regenerated `0001`과 Data Model을 동기화한다.
+- [x] SQLAlchemy metadata, incremental migration, regenerated `0001`과 Data Model을 동기화한다.
 - [ ] rule/version/review/activation/revoke/archive, route-Action matrix와 capability/read
-  contract를 구현한다.
-- [ ] ACTIVE-version/due-schedule/runnable-claim/terminal-dashboard index `EXPLAIN`과
+  contract를 구현한다. 도메인 lifecycle, 고정 DB 전이 함수, Action 및 service identity
+  계약은 완료했고 HTTP route/capability/read-model 연결은 Phase 4 소유로 남는다.
+- [x] ACTIVE-version/due-schedule/runnable-claim/terminal-dashboard index `EXPLAIN`과
   blank/current-head/canonical re-entry/drift/RLS actual PostgreSQL 17 gate를 통과한다.
-- [ ] immutable evidence가 있으면 destructive downgrade를 거부하고 empty development
+- [x] immutable evidence가 있으면 destructive downgrade를 거부하고 empty development
   schema만 안전하게 downgrade함을 검증한다.
 
 ### Phase 2 — DataHub Profile
@@ -604,5 +608,7 @@ Phase 0 완료 검증은 문서 링크, ADR/requirement traceability, Markdown/s
 4개 역할의 교차검토다. Python/TypeScript/runtime 동작은 바뀌지 않으므로 이를 GX 실행,
 Dashboard, RLS/migration 또는 target acceptance 증거로 사용하지 않는다.
 
-Phase 1 승인을 받기 전에는 dependency/lock, SQLAlchemy model, Alembic, backend/frontend,
-Compose/Airflow/worker와 runtime configuration을 변경하지 않는다.
+이 제한은 Phase 0에서 지켜졌으며 이후 연속 실행 승인을 받았다. Phase 1은 optional
+dependency lock, SQLAlchemy/Alembic과 backend control-plane만 변경했다. Compose의
+quality-worker 실행, Airflow quality DAG, API/frontend capability와 runtime enablement는
+각 후속 Phase gate 전까지 계속 비활성이다.

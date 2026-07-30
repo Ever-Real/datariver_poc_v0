@@ -31,6 +31,7 @@ services:
       - postgres_upload_password
       - postgres_governance_password
       - postgres_knowledge_password
+      - postgres_quality_password
       - postgres_export_password
       - postgres_retention_scheduler_password
       - postgres_archive_password
@@ -387,6 +388,8 @@ secrets:
     file: ./secrets/postgres_governance_password
   postgres_knowledge_password:
     file: ./secrets/postgres_knowledge_password
+  postgres_quality_password:
+    file: ./secrets/postgres_quality_password
   postgres_export_password:
     file: ./secrets/postgres_export_password
   postgres_retention_scheduler_password:

@@ -338,10 +338,19 @@ def _assert_retention_schema_contract() -> None:
             ) < 23 OR (
                 SELECT count(*) FROM information_schema.columns
                 WHERE table_schema = 'retention' AND table_name = 'legal_holds'
-            ) <> 20 OR (
+            ) NOT IN (20, 21) OR (
                 SELECT count(*) FROM information_schema.columns
                 WHERE table_schema = 'retention' AND table_name = 'legal_hold_events'
-            ) <> 10 THEN
+            ) <> 10 OR (
+                SELECT count(*) FROM information_schema.columns
+                WHERE table_schema = 'retention' AND table_name = 'legal_holds'
+            ) = 21 AND NOT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_schema = 'retention'
+                  AND table_name = 'legal_holds'
+                  AND column_name = 'resource_type'
+                  AND data_type = 'character varying'
+            ) THEN
                 RAISE EXCEPTION 'retention table column count contract is invalid';
             END IF;
 
@@ -461,7 +470,11 @@ def _assert_retention_schema_contract() -> None:
                 SELECT 1 FROM pg_indexes
                 WHERE schemaname = 'retention'
                   AND indexname = 'ix_legal_holds_workspace_blocking_scope'
-                  AND indexdef LIKE '%(workspace_id, data_class, scope, scope_id)%'
+                  AND (
+                      indexdef LIKE '%(workspace_id, data_class, scope, scope_id)%'
+                      OR indexdef LIKE
+                         '%(workspace_id, data_class, scope, resource_type, scope_id)%'
+                  )
                   AND indexdef LIKE '%RELEASED%'
             ) THEN
                 RAISE EXCEPTION 'retention partial index contract is invalid';

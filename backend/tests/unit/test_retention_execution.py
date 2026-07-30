@@ -7,6 +7,7 @@ from datariver.domain.authz import Classification
 from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.retention import (
     AUTOMATION_DISABLED,
+    LEGACY_RETENTION_DATA_CLASSES,
     ErasureRequest,
     ErasureTargetSnapshot,
     ErasureTargetType,
@@ -124,7 +125,7 @@ def _approved_request(
 def test_policy_book_v2_requires_exactly_one_bounded_rule_per_data_class() -> None:
     now = datetime.now(UTC)
     contract = _contract(now=now)
-    assert tuple(rule.data_class for rule in contract.class_rules) == tuple(RetentionDataClass)
+    assert set(rule.data_class for rule in contract.class_rules) == LEGACY_RETENTION_DATA_CLASSES
     assert contract.rule_for(RetentionDataClass.CHAT_CONTENT).minimum == 7
 
     with pytest.raises(ValidationError, match="exactly one"):
@@ -133,6 +134,43 @@ def test_policy_book_v2_requires_exactly_one_bounded_rule_per_data_class() -> No
             effective_until=now + timedelta(days=1),
             execution_authorization_hours=24,
             class_rules=contract.class_rules[:-1],
+        )
+
+
+def test_policy_book_v3_requires_all_quality_classes_without_backfilling_v2() -> None:
+    now = datetime.now(UTC)
+    legacy = _contract(now=now)
+    quality_rules = tuple(
+        RetentionClassRule(
+            data_class=data_class,
+            unit=RetentionPeriodUnit.DAYS,
+            minimum=30,
+            maximum=365,
+            archive_disposition=RetentionArchiveDisposition.EVIDENCE_ONLY,
+        )
+        for data_class in (
+            RetentionDataClass.QUALITY_RULE,
+            RetentionDataClass.QUALITY_RESULT,
+            RetentionDataClass.QUALITY_AUDIT,
+        )
+    )
+    quality = RetentionPolicyContract(
+        effective_from=legacy.effective_from,
+        effective_until=legacy.effective_until,
+        execution_authorization_hours=legacy.execution_authorization_hours,
+        class_rules=legacy.class_rules + quality_rules,
+        contract_version="POLICY_BOOK_V3",
+    )
+    assert quality.contract_version == "POLICY_BOOK_V3"
+    assert quality.rule_for(RetentionDataClass.QUALITY_RESULT).minimum == 30
+    assert legacy.contract_version == "POLICY_BOOK_V2"
+    with pytest.raises(ValidationError, match="every governed data class"):
+        RetentionPolicyContract(
+            effective_from=legacy.effective_from,
+            effective_until=legacy.effective_until,
+            execution_authorization_hours=legacy.execution_authorization_hours,
+            class_rules=legacy.class_rules + quality_rules[:-1],
+            contract_version="POLICY_BOOK_V3",
         )
     with pytest.raises(ValidationError, match="minimum"):
         RetentionClassRule(

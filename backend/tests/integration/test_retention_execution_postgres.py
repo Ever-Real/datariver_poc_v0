@@ -852,6 +852,7 @@ async def test_fenced_planning_claim_and_revocation_revalidation_on_postgres() -
                         data_class=RetentionDataClass.CHAT_CONTENT.value,
                         scope="RESOURCE",
                         scope_id=fixture.chat_id,
+                        resource_type="CHAT_SESSION",
                         reason="Race-test hold",
                         payload_hash="d" * 64,
                         created_by=fixture.requester_id,

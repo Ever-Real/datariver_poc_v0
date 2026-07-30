@@ -1078,6 +1078,7 @@ def verify_database_roles() -> None:
         "datariver_archive",
         "datariver_bootstrap",
         "datariver_knowledge",
+        "datariver_quality",
     }
     missing = {role for role in required_roles if role not in combined}
     if missing:
@@ -1132,6 +1133,7 @@ def verify_database_roles() -> None:
         "datariver_retention_scheduler",
         "datariver_archive",
         "datariver_knowledge",
+        "datariver_quality",
     ):
         if re.search(rf"ALTER ROLE {role}[^;]*NOBYPASSRLS;", combined) is None:
             raise AssertionError(f"{role} must remain subject to workspace RLS")

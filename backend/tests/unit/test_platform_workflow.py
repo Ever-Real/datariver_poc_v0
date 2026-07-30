@@ -551,6 +551,31 @@ def test_environment_plan_merges_with_source_plan_without_inferred_migration() -
     assert result.requires_migration is False
 
 
+def test_update_reconciles_runtime_roles_before_and_after_migration() -> None:
+    source = UPDATE_MODULE_PATH.read_text(encoding="utf-8")
+    migration_block = source.split("if plan.requires_migration:", maxsplit=1)[1].split(
+        "if reapply_local_identity:", maxsplit=1
+    )[0]
+
+    before = migration_block.index("Migration 선행 PostgreSQL 역할 계약")
+    migrate = migration_block.index('runner.note("Alembic migration을 적용합니다.")')
+    after = migration_block.index("Migration 후 PostgreSQL 역할 grant")
+
+    assert before < migrate < after
+    assert migration_block.count("_reconcile_postgres(runner, env_file=env_file)") == 2
+
+
+def test_update_recovers_a_stopped_keycloak_before_reconfiguration() -> None:
+    source = UPDATE_MODULE_PATH.read_text(encoding="utf-8")
+    recovery = source.index('if plan.configure_keycloak and "keycloak" not in running:')
+    start = source.index('"up",', recovery)
+    configure = source.index("if plan.configure_keycloak:", recovery)
+
+    assert recovery < start < configure
+    assert '"--wait",' in source[start:configure]
+    assert '"keycloak",' in source[start:configure]
+
+
 @pytest.mark.parametrize(
     "load_workflow",
     (_load_fresh_setup_module, _load_update_module),

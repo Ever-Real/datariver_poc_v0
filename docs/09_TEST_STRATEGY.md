@@ -2,6 +2,54 @@
 
 ## Current verification status
 
+### GX Quality Phase 1 domain, authorization and PostgreSQL control plane — 2026-07-30
+
+Revision `0067` adds the framework-free Quality aggregate/contracts, dedicated human and
+service-only Actions, three typed retention classes, typed RuleSet/Run Legal Hold targets, 13
+Quality control-plane tables, fixed maker-checker lifecycle functions, forced RLS and a
+NOBYPASSRLS `datariver_quality` role. GX remains an optional, disabled worker dependency; this
+phase does not claim DataHub Profile collection, source execution, API or UI behavior.
+
+Repository Ruff format/lint passed over `441` files, strict mypy passed over `435` source/test
+files, the complete backend suite passed `1,792` with `101` explicitly environment-gated skips, and
+static architecture/security/documentation verification passed. Two consecutive canonical `0001`
+generations are byte-identical at SHA-256
+`76896d4104a3fe44ac24b411ec987b685919204fc3410499dcaab4ed3dc68a2c`; Alembic has the sole head
+`0067`, and `alembic check` against the isolated head reports no upgrade operations.
+
+An isolated official PostgreSQL `17.10` instance passed a clean empty-to-head migration, an actual
+pre-change `0066 -> 0067` additive upgrade, complete canonical re-entry and a partial-contract
+fail-closed re-entry. All 13 Quality tables have forced RLS. Actual application-role probes returned
+zero rows for the wrong Workspace, one permitted Legal Hold generation for the correct Workspace,
+and denied direct RuleSet mutation. The service role has no direct table privilege, PUBLIC has no
+Quality function execute privilege, and lifecycle functions remain application-callable only
+through their fixed signatures. Forced index plans selected the ACTIVE-version, due-schedule,
+runnable-run and terminal-dashboard indexes. Downgrade refused non-empty immutable evidence; a
+provably empty schema downgraded to `0066`, removed the Quality schema and typed Legal Hold column,
+then reapplied `0067` successfully.
+
+The final isolated canonical and additive databases each passed four focused PostgreSQL tests:
+semantic-catalog drift rejection, live target-drift rejection, atomic first-generation
+initialization for a newly created Workspace and concurrent Legal Hold generation serialization.
+Quality Legal Hold data-class/resource-type combinations are closed in both domain and DDL
+contracts. Successful-run results are bound to the exact current successful attempt and Rule Set
+Version, and deferred commit-time triggers require one result per Definition with matching summary
+counts and outcome. The managed catalog fingerprint also covers retention policy/rule/hold tables,
+all table/column/function/schema ACLs, schema owners and trigger enabled state.
+
+The broader historical `head -> base` recovery probe is not a Phase 1 acceptance claim: after
+successfully removing revision `0067` and continuing through older revisions, it found a pre-existing
+revision `0051` check-constraint naming mismatch. PostgreSQL rolled the command back. That legacy
+full-chain downgrade repair is recorded for the final consolidated maintenance pass and is not
+silently represented as fixed here.
+
+The arm64 dependency audit pins GX `1.19.1`, produced a 71-component CycloneDX SBOM
+(`60c4ac1c7d115b17e887a7269189ab46fdbb2767053427eb6e5f0a5e1c67e710`) from lock
+`c822728328b67e71d8d5b24dc8da22c9ab420daef33153c58db86e55715d09a3`, imported GX, passed
+dependency consistency and found no known vulnerabilities. Runtime enablement remains closed:
+the new `tqdm` transitive declares `MPL-2.0 AND MIT` and requires the repository's accountable
+distribution decision, and the matching Linux/WSL amd64 artifact has not yet been validated.
+
 ### GX Quality Phase 0 contract and ADR — 2026-07-30
 
 ADR-0077 and the Quality PRD/checklist approve a new bounded context, but no Quality table,

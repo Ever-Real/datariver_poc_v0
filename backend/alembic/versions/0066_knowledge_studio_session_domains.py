@@ -17,7 +17,35 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _canonical_contract_is_complete() -> bool:
+    inspector = sa.inspect(op.get_bind())
+    vocabulary_columns = {
+        column["name"] for column in inspector.get_columns("vocabulary_entries", schema="catalog")
+    }
+    draft_columns = {
+        column["name"] for column in inspector.get_columns("studio_drafts", schema="knowledge")
+    }
+    proposal_columns = {
+        column["name"] for column in inspector.get_columns("tbox_proposals", schema="knowledge")
+    }
+    expected = (
+        {"created_by", "version"} <= vocabulary_columns
+        and "endpoint_aliases" in draft_columns
+        and "source_reference_document" in proposal_columns
+    )
+    indicators = (
+        bool({"created_by", "version"} & vocabulary_columns)
+        or "endpoint_aliases" in draft_columns
+        or "source_reference_document" in proposal_columns
+    )
+    if indicators and not expected:
+        raise RuntimeError("Partial canonical managed Knowledge domain schema detected.")
+    return expected
+
+
 def upgrade() -> None:
+    if _canonical_contract_is_complete():
+        return
     op.add_column(
         "vocabulary_entries",
         sa.Column("created_by", sa.Uuid(), nullable=True),

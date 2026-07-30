@@ -10,7 +10,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from datariver.config import get_settings
-from datariver.domain.authz import Action, Classification
+from datariver.domain.authz import SERVICE_ONLY_ACTIONS, Action, Classification
 from datariver.domain.common import utc_now
 from datariver.domain.knowledge_studio import (
     DEFAULT_KNOWLEDGE_DOMAINS,
@@ -230,7 +230,9 @@ async def bootstrap_local_identity() -> dict[str, object]:
             attributes = _local_human_membership_attributes(
                 groups=("security-administrators",),
                 allowed_actions=tuple(
-                    action for action in Action if action is not Action.CHANGE_RAW_CREATE
+                    action
+                    for action in Action
+                    if action is not Action.CHANGE_RAW_CREATE and action not in SERVICE_ONLY_ACTIONS
                 ),
                 bootstrap="local-identity-v1",
                 allowed_domain_ids=default_domain_ids,

@@ -16,6 +16,79 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _canonical_contract_is_complete() -> bool:
+    """Accept only the complete regenerated 0001 Studio foundation."""
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    graph_columns = {
+        column["name"] for column in inspector.get_columns("graphs", schema="knowledge")
+    }
+    ontology_columns = {
+        column["name"] for column in inspector.get_columns("ontology_versions", schema="knowledge")
+    }
+    studio_present = inspector.has_table("studio_drafts", schema="knowledge")
+    required_graph_columns = {
+        "domain_ref_id",
+        "domain_ref_kind",
+        "domain_source_version",
+        "created_by",
+        "updated_by",
+    }
+    required_ontology_columns = {
+        "schema_contract_version",
+        "base_ontology_version_id",
+        "created_by",
+    }
+    indicators = (
+        bool(graph_columns & required_graph_columns)
+        or bool(ontology_columns & required_ontology_columns)
+        or studio_present
+    )
+    if not indicators:
+        return False
+    if (
+        not required_graph_columns <= graph_columns
+        or not required_ontology_columns <= ontology_columns
+        or not studio_present
+    ):
+        raise RuntimeError("Partial canonical Knowledge Studio foundation detected.")
+    required_graph_foreign_keys = {
+        ("workspace_id", "domain_ref_id", "domain_ref_kind"),
+        ("workspace_id", "created_by"),
+        ("workspace_id", "updated_by"),
+    }
+    required_ontology_foreign_keys = {
+        ("workspace_id", "graph_id", "base_ontology_version_id"),
+        ("workspace_id", "created_by"),
+    }
+    graph_foreign_keys = {
+        tuple(constraint["constrained_columns"])
+        for constraint in inspector.get_foreign_keys("graphs", schema="knowledge")
+    }
+    ontology_foreign_keys = {
+        tuple(constraint["constrained_columns"])
+        for constraint in inspector.get_foreign_keys("ontology_versions", schema="knowledge")
+    }
+    security_shape = bind.execute(
+        sa.text(
+            """
+            SELECT relrowsecurity AND relforcerowsecurity
+            FROM pg_class AS relation
+            JOIN pg_namespace AS namespace ON namespace.oid = relation.relnamespace
+            WHERE namespace.nspname = 'knowledge'
+              AND relation.relname = 'studio_drafts'
+            """
+        )
+    ).scalar_one_or_none()
+    if (
+        not required_graph_foreign_keys <= graph_foreign_keys
+        or not required_ontology_foreign_keys <= ontology_foreign_keys
+        or security_shape is not True
+    ):
+        raise RuntimeError("Canonical Knowledge Studio foundation security is incomplete.")
+    return True
+
+
 def _reject_invalid_graph_rows() -> None:
     invalid = int(
         op.get_bind()
@@ -249,6 +322,8 @@ def _grant_application_access() -> None:
 
 
 def upgrade() -> None:
+    if _canonical_contract_is_complete():
+        return
     _reject_invalid_graph_rows()
     op.add_column(
         "graphs",

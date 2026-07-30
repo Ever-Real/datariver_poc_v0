@@ -11,6 +11,7 @@ from datariver.application.services.retention import RetentionGovernanceService
 from datariver.domain.common import ValidationError, canonical_json_hash
 from datariver.domain.retention import (
     ErasureRequestState,
+    LegalHoldResourceType,
     LegalHoldState,
     RetentionClassRule,
     RetentionPolicyContract,
@@ -118,6 +119,7 @@ async def propose_retention_policy(
     contract = None
     if payload.contract is not None:
         contract = RetentionPolicyContract(
+            contract_version=payload.contract.contract_version,
             effective_from=payload.contract.effective_from,
             effective_until=payload.contract.effective_until,
             execution_authorization_hours=payload.contract.execution_authorization_hours,
@@ -236,20 +238,23 @@ async def place_legal_hold(
     context: ContextDep,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> LegalHoldResponse:
-    request_hash = canonical_json_hash(
-        {
-            "operation": "retention.legal_hold.place",
-            "data_class": payload.data_class.value,
-            "scope": payload.scope.value,
-            "scope_id": str(payload.scope_id) if payload.scope_id else None,
-            "reason": payload.reason,
-        }
-    )
+    request_document: dict[str, object] = {
+        "operation": "retention.legal_hold.place",
+        "data_class": payload.data_class.value,
+        "scope": payload.scope.value,
+        "scope_id": str(payload.scope_id) if payload.scope_id else None,
+        "reason": payload.reason,
+    }
+    resource_type = payload.resource_type
+    if resource_type is not None and resource_type is not LegalHoldResourceType.LEGACY_UNTYPED:
+        request_document["resource_type"] = resource_type.value
+    request_hash = canonical_json_hash(request_document)
     value = await _service(request).place_legal_hold(
         workspace_id=context.workspace_id,
         data_class=payload.data_class,
         scope=payload.scope,
         scope_id=payload.scope_id,
+        resource_type=payload.resource_type,
         reason=payload.reason,
         subject=context.subject,
         environment=context.environment,

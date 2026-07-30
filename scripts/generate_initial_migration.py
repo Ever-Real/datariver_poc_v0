@@ -119,6 +119,26 @@ def _load_phase6b_revision() -> ModuleType:
     return module
 
 
+def _load_quality_phase1_revision() -> ModuleType:
+    """Load the self-contained Quality security contract into the canonical baseline."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0067_quality_control_plane.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_quality_phase1_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Quality Phase 1 migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -131,6 +151,7 @@ def build_upgrade() -> ops.UpgradeOps:
     ]
     for schema in SCHEMAS:
         operations.append(ops.ExecuteSQLOp(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+    deferred_policy_operations: list[ops.MigrateOperation] = []
     for table in Base.metadata.sorted_tables:
         operations.append(ops.CreateTableOp.from_table(table))
         operations.extend(
@@ -152,6 +173,7 @@ def build_upgrade() -> ops.UpgradeOps:
                     f"WITH CHECK ({workspace_column} = {RLS_SETTING})"
                 )
             )
+            policy_start = len(operations)
             if table.fullname == "catalog.export_requests":
                 operations.append(
                     ops.ExecuteSQLOp(
@@ -420,6 +442,9 @@ def build_upgrade() -> ops.UpgradeOps:
                         f"WITH CHECK ({owner_expression})"
                     )
                 )
+            deferred_policy_operations.extend(operations[policy_start:])
+            del operations[policy_start:]
+    operations.extend(deferred_policy_operations)
     operations.extend(
         ops.ExecuteSQLOp(statement) for statement in _manifest_content_profile_immutability_sql()
     )
@@ -464,6 +489,45 @@ def build_upgrade() -> ops.UpgradeOps:
             ops.ExecuteSQLOp(statement)
             for statement in _sql_statements(getattr(phase6b, attribute))
         )
+    quality_phase1 = _load_quality_phase1_revision()
+    operations.append(ops.ExecuteSQLOp(quality_phase1._QUALITY_ROLE_ASSERTION_SQL.strip()))
+    for attribute in (
+        "_HOLD_GENERATION_SQL",
+        "_RESOLVER_SQL",
+        "_QUALITY_SECURITY_SQL",
+        "_IMMUTABILITY_SQL",
+        "_RUN_ATTEMPT_INVARIANT_SQL",
+        "_RUN_RESULT_INVARIANT_SQL",
+        "_TRANSITION_SQL",
+    ):
+        operations.extend(
+            ops.ExecuteSQLOp(statement)
+            for statement in _sql_statements(getattr(quality_phase1, attribute))
+        )
+    for table_name in quality_phase1._IMMUTABLE_TABLES:
+        operations.append(
+            ops.ExecuteSQLOp(
+                f"CREATE TRIGGER reject_evidence_mutation "
+                f"BEFORE UPDATE OR DELETE ON quality.{table_name} "
+                "FOR EACH ROW EXECUTE FUNCTION quality.reject_evidence_mutation()"
+            )
+        )
+    for statement in _sql_statements(quality_phase1._RLS_AND_GRANTS_SQL):
+        normalized = statement.lstrip()
+        if (
+            normalized.startswith("DO $$\nDECLARE\n    table_name text;")
+            or normalized.startswith(
+                "ALTER TABLE retention.legal_hold_generations ENABLE ROW LEVEL SECURITY"
+            )
+            or normalized.startswith(
+                "ALTER TABLE retention.legal_hold_generations FORCE ROW LEVEL SECURITY"
+            )
+            or normalized.startswith(
+                "CREATE POLICY workspace_isolation ON retention.legal_hold_generations"
+            )
+        ):
+            continue
+        operations.append(ops.ExecuteSQLOp(statement))
     return ops.UpgradeOps(ops=operations)
 
 
@@ -887,7 +951,62 @@ EXECUTE FUNCTION assistant.enforce_chat_message_retention_binding()
 
 def build_downgrade() -> ops.DowngradeOps:
     phase5 = _load_phase5_revision()
+    quality_phase1 = _load_quality_phase1_revision()
     operations: list[ops.MigrateOperation] = [
+        ops.ExecuteSQLOp("DROP TRIGGER enforce_run_results_shape ON quality.expectation_results"),
+        ops.ExecuteSQLOp("DROP TRIGGER enforce_run_results_shape ON quality.validation_runs"),
+        ops.ExecuteSQLOp("DROP TRIGGER enforce_run_attempt_shape ON quality.validation_attempts"),
+        ops.ExecuteSQLOp("DROP TRIGGER enforce_run_attempt_shape ON quality.validation_runs"),
+        *(
+            ops.ExecuteSQLOp(f"DROP TRIGGER reject_evidence_mutation ON quality.{table_name}")
+            for table_name in quality_phase1._IMMUTABLE_TABLES
+        ),
+        ops.ExecuteSQLOp("DROP TRIGGER enforce_rule_set_binding ON quality.rule_sets"),
+        ops.ExecuteSQLOp("DROP TRIGGER refresh_legal_hold_generation ON retention.legal_holds"),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.archive_rule_set_v1("
+            "uuid, uuid, uuid, text, text, text, integer, "
+            "uuid, integer, text, timestamptz, bigint, text)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.revoke_rule_set_version_v1("
+            "uuid, uuid, uuid, text, text, text, text, integer, "
+            "uuid, integer, text, timestamptz, bigint, text)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.activate_rule_set_version_v1("
+            "uuid, uuid, uuid, text, text, text, text, text, integer, "
+            "uuid, integer, text, timestamptz, bigint, text)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.review_rule_set_version_v1("
+            "uuid, uuid, text, text, uuid, text, integer, "
+            "uuid, integer, text, timestamptz, bigint, text)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.require_human_decision_v1(uuid, uuid, uuid, text, uuid, boolean)"
+        ),
+        ops.ExecuteSQLOp("DROP FUNCTION quality.reject_evidence_mutation()"),
+        ops.ExecuteSQLOp("DROP FUNCTION quality.assert_run_results_shape_v1()"),
+        ops.ExecuteSQLOp("DROP FUNCTION quality.assert_run_attempt_shape_v1()"),
+        ops.ExecuteSQLOp("DROP FUNCTION quality.enforce_rule_set_binding_v1()"),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.current_target_matches_v1("
+            "uuid, uuid, integer, uuid, uuid, text, text, text)"
+        ),
+        ops.ExecuteSQLOp("DROP FUNCTION quality.can_read_asset(uuid, uuid, integer, uuid, uuid)"),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.current_human_can(uuid, text, integer, uuid, uuid)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION retention.resolve_quality_binding_v1("
+            "uuid, text, text, uuid, timestamptz)"
+        ),
+        ops.ExecuteSQLOp("DROP FUNCTION retention.refresh_legal_hold_generation()"),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION retention.advance_legal_hold_generation("
+            "uuid, text, text, uuid, integer, text, text, text, uuid, text)"
+        ),
         ops.ExecuteSQLOp("DROP TRIGGER api_invocation_exact_result ON sharing.api_invocations"),
         ops.ExecuteSQLOp(
             "DROP TRIGGER api_invocation_results_immutable ON sharing.api_invocation_results"

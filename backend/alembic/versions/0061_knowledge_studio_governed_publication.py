@@ -17,6 +17,35 @@ down_revision: str | Sequence[str] | None = "0060"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+
+def _canonical_contract_is_complete() -> bool:
+    inspector = sa.inspect(op.get_bind())
+    expected = {
+        "ontology_elements",
+        "studio_preflight_checks",
+        "studio_releases",
+        "abox_binding_versions",
+        "abox_mapping_rule_versions",
+    }
+    present = set(inspector.get_table_names(schema="knowledge")) & expected
+    draft_columns = {
+        column["name"] for column in inspector.get_columns("studio_drafts", schema="knowledge")
+    }
+    graph_columns = {
+        column["name"] for column in inspector.get_columns("graphs", schema="knowledge")
+    }
+    indicators = bool(present) or "submitted_preflight_check_id" in draft_columns
+    if not indicators:
+        return False
+    if (
+        present != expected
+        or "submitted_preflight_check_id" not in draft_columns
+        or "active_studio_release_id" not in graph_columns
+    ):
+        raise RuntimeError("Partial canonical governed Studio publication schema detected.")
+    return True
+
+
 JSON_DOCUMENT = sa.JSON().with_variant(
     postgresql.JSONB(none_as_null=True, astext_type=sa.Text()),
     "postgresql",
@@ -998,6 +1027,8 @@ def _grant_application_access() -> None:
 
 
 def upgrade() -> None:
+    if _canonical_contract_is_complete():
+        return
     _guard_legacy_publications()
     _extend_draft_and_graph()
     _create_ontology_elements()

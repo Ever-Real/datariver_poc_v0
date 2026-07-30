@@ -6,6 +6,7 @@ relay_password=$(cat /run/secrets/postgres_relay_password)
 upload_password=$(cat /run/secrets/postgres_upload_password)
 governance_password=$(cat /run/secrets/postgres_governance_password)
 knowledge_password=$(cat /run/secrets/postgres_knowledge_password)
+quality_password=$(cat /run/secrets/postgres_quality_password)
 export_password=$(cat /run/secrets/postgres_export_password)
 retention_scheduler_password=$(cat /run/secrets/postgres_retention_scheduler_password)
 archive_password=$(cat /run/secrets/postgres_archive_password)
@@ -19,6 +20,7 @@ psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set=upload_password="$upload_password" \
   --set=governance_password="$governance_password" \
   --set=knowledge_password="$knowledge_password" \
+  --set=quality_password="$quality_password" \
   --set=export_password="$export_password" \
   --set=retention_scheduler_password="$retention_scheduler_password" \
   --set=archive_password="$archive_password" \
@@ -34,6 +36,8 @@ SELECT format('CREATE ROLE datariver_governance LOGIN PASSWORD %L', :'governance
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') \gexec
 SELECT format('CREATE ROLE datariver_knowledge LOGIN PASSWORD %L', :'knowledge_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_knowledge') \gexec
+SELECT format('CREATE ROLE datariver_quality LOGIN PASSWORD %L', :'quality_password')
+WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_quality') \gexec
 SELECT format('CREATE ROLE datariver_export LOGIN PASSWORD %L', :'export_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_export') \gexec
 SELECT format('CREATE ROLE datariver_retention_scheduler LOGIN PASSWORD %L', :'retention_scheduler_password')
@@ -75,6 +79,31 @@ BEGIN
   ) THEN
     RAISE EXCEPTION
       'datariver_knowledge must not be assumable by another non-superuser principal';
+  END IF;
+END
+$datariver$;
+ALTER ROLE datariver_quality WITH LOGIN PASSWORD :'quality_password'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+DO $datariver$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_quality'
+      AND pg_has_role('datariver_quality', candidate.oid, 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_quality must not inherit or SET ROLE to another principal';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_quality'
+      AND NOT candidate.rolsuper
+      AND pg_has_role(candidate.oid, 'datariver_quality', 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_quality must not be assumable by another non-superuser principal';
   END IF;
 END
 $datariver$;

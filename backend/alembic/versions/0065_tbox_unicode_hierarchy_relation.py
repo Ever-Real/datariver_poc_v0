@@ -16,7 +16,34 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _canonical_contract_is_complete() -> bool:
+    inspector = sa.inspect(op.get_bind())
+    columns = {
+        column["name"] for column in inspector.get_columns("tbox_classes", schema="knowledge")
+    }
+    if "hierarchy_relation" not in columns:
+        return False
+    index = next(
+        (
+            value
+            for value in inspector.get_indexes("tbox_classes", schema="knowledge")
+            if value["name"] == "ix_tbox_classes_parent"
+        ),
+        None,
+    )
+    if index is None or index["column_names"] != [
+        "workspace_id",
+        "draft_id",
+        "parent_stable_class_id",
+        "stable_class_id",
+    ]:
+        raise RuntimeError("Canonical named T-Box hierarchy index is incomplete.")
+    return True
+
+
 def upgrade() -> None:
+    if _canonical_contract_is_complete():
+        return
     op.add_column(
         "tbox_classes",
         sa.Column(

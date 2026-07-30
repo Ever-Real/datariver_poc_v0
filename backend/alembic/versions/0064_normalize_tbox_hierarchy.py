@@ -16,6 +16,33 @@ down_revision: str | Sequence[str] | None = "0063"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+
+def _canonical_contract_is_complete() -> bool:
+    inspector = sa.inspect(op.get_bind())
+    expected = {"tbox_classes", "tbox_properties", "tbox_relationships"}
+    present = set(inspector.get_table_names(schema="knowledge")) & expected
+    if not present:
+        return False
+    if present != expected:
+        raise RuntimeError("Partial canonical normalized T-Box schema detected.")
+    required = {
+        "tbox_classes": {"stable_class_id", "parent_stable_class_id"},
+        "tbox_properties": {"owner_stable_class_id", "stable_property_id"},
+        "tbox_relationships": {
+            "stable_relationship_id",
+            "source_stable_class_id",
+            "target_stable_class_id",
+        },
+    }
+    for table_name, required_columns in required.items():
+        actual = {
+            column["name"] for column in inspector.get_columns(table_name, schema="knowledge")
+        }
+        if not required_columns <= actual:
+            raise RuntimeError("Canonical normalized T-Box columns are incomplete.")
+    return True
+
+
 CURRENT_SUBJECT = "NULLIF(current_setting('app.subject_id', true), '')::uuid"
 
 
@@ -437,6 +464,8 @@ def _install_rls_and_grants() -> None:
 
 
 def upgrade() -> None:
+    if _canonical_contract_is_complete():
+        return
     _create_normalized_tables()
     _backfill_and_reduce_supertype()
     _install_rls_and_grants()

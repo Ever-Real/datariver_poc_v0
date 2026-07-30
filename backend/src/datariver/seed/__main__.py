@@ -11,7 +11,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.config import Settings, get_settings
-from datariver.domain.authz import Action, Classification
+from datariver.domain.authz import SERVICE_ONLY_ACTIONS, Action, Classification
 from datariver.domain.common import DomainEvent, canonical_json_hash, utc_now
 from datariver.domain.knowledge import (
     GraphEdge,
@@ -69,7 +69,9 @@ LOCAL_KEYCLOAK_REVIEWER_SUBJECT = "00000000-0000-4000-8000-000000000003"
 LOCAL_KEYCLOAK_VIEWER_SUBJECT = "00000000-0000-4000-8000-000000000004"
 VIEWER_SUBJECT_ID = stable_id("subject:local-datariver-seed-viewer")
 ADMINISTRATOR_ACTIONS = tuple(
-    action.value for action in Action if action is not Action.CHANGE_RAW_CREATE
+    action.value
+    for action in Action
+    if action is not Action.CHANGE_RAW_CREATE and action not in SERVICE_ONLY_ACTIONS
 )
 REVIEWER_ACTIONS = (Action.KG_READ.value, Action.KG_REVIEW.value)
 

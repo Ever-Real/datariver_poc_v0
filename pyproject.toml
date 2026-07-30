@@ -27,6 +27,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+quality-worker = [
+  "great-expectations==1.19.1",
+]
 dev = [
   "boto3-stubs[s3]==1.43.13",
   "httpx2==2.5.0",

@@ -32,6 +32,7 @@ def retention_policy_response(policy: RetentionPolicyVersion) -> RetentionPolicy
         contract_version=policy.contract_version,
         contract=(
             RetentionPolicyContractRequest(
+                contract_version=policy.contract.contract_version,
                 effective_from=policy.contract.effective_from,
                 effective_until=policy.contract.effective_until,
                 execution_authorization_hours=policy.contract.execution_authorization_hours,
@@ -68,6 +69,7 @@ def legal_hold_response(hold: LegalHold) -> LegalHoldResponse:
         data_class=hold.data_class,
         scope=hold.scope,
         scope_id=hold.scope_id,
+        resource_type=hold.resource_type,
         reason=hold.reason,
         payload_hash=hold.payload_hash,
         created_by=hold.created_by,

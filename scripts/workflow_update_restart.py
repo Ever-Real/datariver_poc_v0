@@ -532,6 +532,8 @@ def main() -> int:
                     files=files,
                     trailing=("stop", *stop_services),
                 )
+            runner.note("Migration 선행 PostgreSQL 역할 계약을 재적용합니다.")
+            _reconcile_postgres(runner, env_file=env_file)
             runner.note("Alembic migration을 적용합니다.")
             _compose(
                 runner,
@@ -544,7 +546,7 @@ def main() -> int:
                     "migrate",
                 ),
             )
-            runner.note("PostgreSQL 역할 계약을 재적용합니다.")
+            runner.note("Migration 후 PostgreSQL 역할 grant를 재적용합니다.")
             _reconcile_postgres(runner, env_file=env_file)
 
         if reapply_local_identity:
@@ -571,6 +573,22 @@ def main() -> int:
                     "--force-recreate",
                     *(("--no-build", "--pull", "never") if offline else ("--no-build",)),
                     *restart_services,
+                ),
+            )
+
+        if plan.configure_keycloak and "keycloak" not in running:
+            runner.note("중단된 update 재시도를 위해 Keycloak을 기동합니다.")
+            _compose(
+                runner,
+                env_file=env_file,
+                files=files,
+                trailing=(
+                    "up",
+                    "-d",
+                    "--wait",
+                    "--no-deps",
+                    *(("--pull", "never") if offline else ()),
+                    "keycloak",
                 ),
             )
 

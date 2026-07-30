@@ -6,7 +6,7 @@ import pytest
 
 from datariver.application.ports import ImmutableArchiveStore
 from datariver.domain.authz import Classification
-from datariver.domain.common import ConflictError, ValidationError
+from datariver.domain.common import ConflictError, ValidationError, canonical_json_hash
 from datariver.domain.retention import (
     AUTOMATION_DISABLED,
     ArchiveCapability,
@@ -19,6 +19,7 @@ from datariver.domain.retention import (
     GovernanceDecision,
     ImmutableArchiveReceipt,
     LegalHold,
+    LegalHoldResourceType,
     LegalHoldScope,
     LegalHoldState,
     RetentionDataClass,
@@ -108,6 +109,107 @@ def test_legal_hold_scope_is_typed() -> None:
             policy_decision_id=uuid4(),
             now=datetime.now(UTC),
         )
+
+
+def test_quality_legal_hold_resource_type_separates_uuid_namespaces() -> None:
+    workspace_id, resource_id = uuid4(), uuid4()
+    rule_hold = LegalHold.create(
+        workspace_id=workspace_id,
+        data_class=RetentionDataClass.QUALITY_AUDIT,
+        scope=LegalHoldScope.RESOURCE,
+        scope_id=resource_id,
+        resource_type=LegalHoldResourceType.QUALITY_RULE_SET,
+        reason="Preserve the governed rules",
+        actor_id=uuid4(),
+        policy_decision_id=uuid4(),
+        now=datetime.now(UTC),
+    )
+    run_hold = LegalHold.create(
+        workspace_id=workspace_id,
+        data_class=RetentionDataClass.QUALITY_AUDIT,
+        scope=LegalHoldScope.RESOURCE,
+        scope_id=resource_id,
+        resource_type=LegalHoldResourceType.QUALITY_VALIDATION_RUN,
+        reason="Preserve the governed rules",
+        actor_id=uuid4(),
+        policy_decision_id=uuid4(),
+        now=datetime.now(UTC),
+    )
+    assert rule_hold.payload_hash != run_hold.payload_hash
+
+    with pytest.raises(ValidationError, match="exact resource type"):
+        LegalHold.create(
+            workspace_id=workspace_id,
+            data_class=RetentionDataClass.QUALITY_RULE,
+            scope=LegalHoldScope.RESOURCE,
+            scope_id=resource_id,
+            reason="Untyped hold",
+            actor_id=uuid4(),
+            policy_decision_id=uuid4(),
+            now=datetime.now(UTC),
+        )
+    with pytest.raises(ValidationError, match="do not match"):
+        LegalHold.create(
+            workspace_id=workspace_id,
+            data_class=RetentionDataClass.QUALITY_RULE,
+            scope=LegalHoldScope.RESOURCE,
+            scope_id=resource_id,
+            resource_type=LegalHoldResourceType.QUALITY_VALIDATION_RUN,
+            reason="Mismatched typed hold",
+            actor_id=uuid4(),
+            policy_decision_id=uuid4(),
+            now=datetime.now(UTC),
+        )
+    with pytest.raises(ValidationError, match="do not match"):
+        LegalHold.create(
+            workspace_id=workspace_id,
+            data_class=RetentionDataClass.QUALITY_AUDIT,
+            scope=LegalHoldScope.RESOURCE,
+            scope_id=resource_id,
+            resource_type=LegalHoldResourceType.CHAT_SESSION,
+            reason="Cross-domain typed hold",
+            actor_id=uuid4(),
+            policy_decision_id=uuid4(),
+            now=datetime.now(UTC),
+        )
+
+
+def test_legacy_resource_hold_keeps_untyped_hash_compatibility() -> None:
+    workspace_id, resource_id = uuid4(), uuid4()
+    hold = LegalHold.create(
+        workspace_id=workspace_id,
+        data_class=RetentionDataClass.CHAT_CONTENT,
+        scope=LegalHoldScope.RESOURCE,
+        scope_id=resource_id,
+        reason="Legacy investigation",
+        actor_id=uuid4(),
+        policy_decision_id=uuid4(),
+        now=datetime.now(UTC),
+    )
+    explicit_hold = LegalHold.create(
+        workspace_id=workspace_id,
+        data_class=RetentionDataClass.CHAT_CONTENT,
+        scope=LegalHoldScope.RESOURCE,
+        scope_id=resource_id,
+        resource_type=LegalHoldResourceType.LEGACY_UNTYPED,
+        reason="Legacy investigation",
+        actor_id=uuid4(),
+        policy_decision_id=uuid4(),
+        now=datetime.now(UTC),
+    )
+
+    assert hold.resource_type is LegalHoldResourceType.LEGACY_UNTYPED
+    assert explicit_hold.resource_type is LegalHoldResourceType.LEGACY_UNTYPED
+    assert explicit_hold.payload_hash == hold.payload_hash
+    assert hold.payload_hash == canonical_json_hash(
+        {
+            "workspace_id": str(workspace_id),
+            "data_class": "CHAT_CONTENT",
+            "scope": "RESOURCE",
+            "scope_id": str(resource_id),
+            "reason": "Legacy investigation",
+        }
+    )
 
 
 def test_legal_hold_release_is_maker_checker_and_rejection_remains_active() -> None:

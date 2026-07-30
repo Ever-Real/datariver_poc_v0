@@ -16,6 +16,24 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 
+def _canonical_contract_is_complete() -> bool:
+    inspector = sa.inspect(op.get_bind())
+    columns = {column["name"] for column in inspector.get_columns("graphs", schema="knowledge")}
+    required = {"archived_at", "archived_by"}
+    present = columns & required
+    if not present:
+        return False
+    if present != required:
+        raise RuntimeError("Partial canonical Knowledge graph archive schema detected.")
+    check_names = {
+        constraint["name"]
+        for constraint in inspector.get_check_constraints("graphs", schema="knowledge")
+    }
+    if "ck_graphs_archive_shape" not in check_names:
+        raise RuntimeError("Canonical Knowledge graph archive constraint is incomplete.")
+    return True
+
+
 def _seed_default_domains() -> None:
     # Use the driver's SQL path so the canonical-id separator is not parsed as
     # a SQLAlchemy ``:bind_parameter`` inside this literal migration statement.
@@ -59,6 +77,9 @@ def _seed_default_domains() -> None:
 
 
 def upgrade() -> None:
+    if _canonical_contract_is_complete():
+        _seed_default_domains()
+        return
     op.add_column(
         "graphs",
         sa.Column("archived_at", sa.DateTime(timezone=True), nullable=True),

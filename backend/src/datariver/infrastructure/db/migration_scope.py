@@ -13,6 +13,7 @@ MANAGED_DATABASE_SCHEMAS = (
     "assistant",
     "sharing",
     "retention",
+    "quality",
 )
 _MANAGED_DATABASE_SCHEMA_SET = frozenset(MANAGED_DATABASE_SCHEMAS)
 
