@@ -2240,6 +2240,21 @@ export function GraphBuilder({
     return () => window.removeEventListener('keydown', listener)
   }, [deleteSelection])
 
+  const setOpenEditor = useCallback((nextId: string) => {
+    setEditorOpenId(nextId)
+    setNodes((current) => current.map((node) => (
+      node.type === 'schemaClass'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              editorOpen: node.id === nextId,
+            },
+          }
+        : node
+    )))
+  }, [setNodes])
+
   const renderedNodes = nodes.map((node): CanvasNode => {
     if (node.type !== 'schemaClass') return node
     const item = elements.find((element) => element.stable_element_id === node.id)
@@ -2270,12 +2285,12 @@ export function GraphBuilder({
             id: property.stable_element_id,
             label: property.display_name,
             dataType: property.data_type ?? 'STRING',
-          })),
+        })),
         onToggleEditor: () => {
           setSelectedElementId(item.stable_element_id)
-          setEditorOpenId((current) => (
-            current === item.stable_element_id ? '' : item.stable_element_id
-          ))
+          setOpenEditor(
+            editorOpenId === item.stable_element_id ? '' : item.stable_element_id,
+          )
         },
         onRename: (value) => {
           const name = schemaIdentifier(value, 'Class')
@@ -2604,7 +2619,7 @@ export function GraphBuilder({
                       onEdgeClick={(_, edge) => setSelectedElementId(edge.id)}
                       onPaneClick={() => {
                         setSelectedElementId('')
-                        setEditorOpenId('')
+                        setOpenEditor('')
                       }}
                       nodesDraggable={!locked && !working}
                       nodesConnectable={!locked && !working}

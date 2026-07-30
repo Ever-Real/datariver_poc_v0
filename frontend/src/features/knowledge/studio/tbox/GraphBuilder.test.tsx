@@ -109,6 +109,10 @@ describe('GraphBuilder', () => {
     expect(screen.getByLabelText('T-Box Cypher 편집기')).toHaveValue(
       'CREATE (n0:Employee)',
     )
+    fireEvent.click(screen.getByLabelText('Employee Class 편집기 열기'))
+    expect(screen.getByLabelText('Employee Class 빠른 편집')).toBeInTheDocument()
+    fireEvent.click(screen.getByLabelText('Employee Class 편집기 닫기'))
+    expect(screen.queryByLabelText('Employee Class 빠른 편집')).not.toBeInTheDocument()
 
     fireEvent.change(screen.getByLabelText('T-Box Cypher 편집기'), {
       target: { value: 'CREATE (n0:Employee)\nMATCH (n0)' },
