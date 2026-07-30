@@ -2,6 +2,58 @@
 
 ## Current verification status
 
+### GX Quality Phase 6 local operational gate — 2026-07-30
+
+The implementation under test is commit
+`cdf2eb24c520787abd114c4c8ec7db2e49ab1ae2` on `dev`, with database revision `0070`.
+This gate closes the source and Mac-development checks that can be executed without inventing a
+target source, retention decision, human identity or WSL environment. It does not open the
+Quality worker, Airflow schedule, Rule mutations or production release.
+
+Focused backend Quality/Profile/Airflow tests passed `99/99`; the four Quality frontend test files
+passed `9/9`. Those tests keep `REGEX` unavailable at both the domain and GX compiler boundary,
+discard raw unexpected rows/values/indexes/query/provider exceptions, reject unapproved source
+URLs/queries/credentials, deny service identities on the public API, bind authorization leases and
+cursors, cap list pages at `100`, cap cursor input at `2,000` characters and bound selected-Run
+polling to 20 reads or 120 visible seconds.
+
+The running Mac PostgreSQL `17.10` database reported revision `0070`. The
+`datariver_app`, `datariver_quality` and `datariver_catalog_profile` roles all reported
+`rolbypassrls=false`; the inspected Catalog/Quality relations retained their Workspace and
+Quality read policies. Direct `datariver_app` reads with no session context returned zero Catalog
+assets, Rule Sets and Runs. The local dataset contains `2,000` Catalog assets in the application
+Workspace but no Quality Rule/Run evidence, so a cross-Workspace Quality count-leakage load claim
+would be meaningless and remains a target gate.
+
+On that non-representative dataset, an authorization-pruned active-asset list used
+`ix_assets_projection_active_scope_order` as an index-only scan in `0.067 ms` with three shared
+buffer hits. The active Rule Set aggregate used the expected Rule Set and ACTIVE-Version indexes
+in `0.053 ms` with two shared buffer hits, but traversed no Quality row. These measurements prove
+the local structural access path only; they are not a representative SLO, load or soak result.
+
+The live local gateway returned a bounded `268`-byte `401` problem for a Workspace-scoped request
+without a bearer token. A real Keycloak client-credentials token for the dedicated Airflow Quality
+dispatcher reached the public capability endpoint and was denied as a human-only boundary with a
+bounded `243`-byte `403` problem. The in-app browser rendered the sign-in-required state without
+persisted credentials; no human session was available for post-login accessibility testing. The
+Chrome control extension was absent, so no alternate authenticated browser claim is made.
+
+The built Mac worker image is
+`sha256:12262595340cd28e8c51bad9712ce58b22ec03bbae3e85d20dd6c60ea5ede98a`
+(`linux/arm64`). A network-disabled one-shot import reported `aarch64`, DataRiver `0.1.0`, GX
+`1.19.1`, asyncpg `0.31.0` and SQLAlchemy `2.0.49`. The running API and Web images are respectively
+`sha256:392b183557a48ffd48a7c912aa76182b753431f6c0e7492ebfcb90b8553e48df` and
+`sha256:9f9d15db014e2c934cefda7273c60e74e765863e506f9afd5d2bb99340a3fe25`
+on `linux/arm64/v8`.
+
+The full repository verification passed Ruff format/lint over `482` files, strict mypy over `473`
+source/test files, backend `1,871 passed / 103 environment-gated skipped`, static verification,
+frontend TypeScript/ESLint, `63 files / 348 tests` and the production build. Final `dev-publish`
+reruns these gates after the evidence commit. Representative source and Quality datasets,
+60-minute soak, real multi-Workspace human identities, target
+DataHub/Profile/Airflow/source execution, screen reader/zoom, exact WSL amd64 artifacts and
+`prep-update` remain explicit external gates.
+
 ### GX Quality Phase 4 authorized read model and dashboard — 2026-07-30
 
 Revision `0070` adds only three bounded read-path indexes. The human Quality API authorizes

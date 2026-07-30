@@ -1990,6 +1990,13 @@ The `datariver_quality_dispatch` Airflow DAG remains paused on creation and has 
 schedule/run ledger. A missing active retention policy, source manifest, target mapping or scan
 budget is an unavailable capability, never an implicit default or sampled execution.
 
+The fail-closed rollback is to remove the Quality dispatch schedule and pause the DAG, set
+`QUALITY_WORKER_ENABLED=false`, and stop the explicit `quality-execution` profile. Do not delete or
+rewrite committed Run, Attempt, Result, outbox or audit evidence, and do not downgrade a non-empty
+Quality schema. Roll an application image back only after proving it remains compatible with the
+current additive database revision. Re-enablement requires a new operator approval and a fresh
+source/identity/workload readiness check.
+
 ## Optional semiconductor seed
 
 The seed is deterministic synthetic reference data and never installs by default. It contains 12 catalog assets and a 257-node/279-edge semiconductor value-chain release, including 168 monthly facility-capacity and product-demand observations with assertion-level provenance. Apply records separate maker/checker and authorized-publisher evidence, 536 immutable changeset operations, a canonical PostgreSQL read-back receipt and the published lineage before setting the active release. Verify rechecks the active release, role permissions, the exact operation ledger and a canonical row reconstruction hash; seed data is not a governance bypass.

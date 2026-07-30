@@ -585,12 +585,27 @@ chart library는 실제 요구와 bundle 측정 후 별도 승인한다.
 - [ ] 실제 Airflow → DataRiver → quality-worker → PostgreSQL source → result commit을 검증한다.
 - [ ] Mac arm64와 WSL amd64 exact artifact, offline update, restart/recovery evidence를 확보한다.
 
+2026-07-30 로컬 운영 게이트에서는 backend Quality/Profile/Airflow 집중 테스트 `99/99`,
+Quality frontend `9/9`, REGEX 이중 비활성화, raw GX 결과 제거, no-context RLS 0행,
+실제 Airflow 서비스 토큰의 human API `403`, 익명 API `401`, Mac arm64 worker GX `1.19.1`
+import를 재검증했다. 로컬 DB에는 Quality Rule/Run 행이 없으므로 `0.067 ms` asset index-only
+scan과 `0.053 ms` empty active-Version aggregate는 구조적 경로 증거일 뿐 representative
+성능으로 승격하지 않는다. 따라서 위 target 항목은 체크하지 않는다.
+
 ### Phase 6 — release/cutover
 
 - [ ] feature/worker/DAG enablement을 별도 운영 승인하고 rollback 기준을 고정한다.
 - [ ] exact commit/image/SBOM/dataset/identity/provider evidence를 acceptance report에 연결한다.
 - [ ] `dev-publish` 후 준비 PC `prep-update`와 API/Web/OIDC/worker/source health를 검증한다.
-- [ ] production gate가 열리지 않은 상태를 production-ready로 표현하지 않는다.
+- [x] production gate가 열리지 않은 상태를 production-ready로 표현하지 않는다.
+
+로컬 rollback 기준은 고정했다. 장애 또는 미승인 상태에서는 Airflow Quality schedule을
+설정하지 않고 DAG를 pause하며, `QUALITY_WORKER_ENABLED=false`와 비활성
+`quality-execution` profile을 유지한다. 이미 커밋된 Run/Attempt/Result/Audit는 삭제하거나
+되돌리지 않고, evidence가 존재하는 `0070` schema downgrade도 시도하지 않는다. image
+rollback은 schema 호환성 확인 뒤에만 수행한다. 실제 enablement 승인, target
+identity/provider/dataset/SBOM 묶음, WSL `prep-update`는 여전히 미완료이므로 첫 세 항목은
+열어 둔다.
 
 ## 9. Phase 0에서 고정하지 않는 운영 값
 
@@ -627,4 +642,7 @@ disabled/paused-by-default이며 실제 target source full-scan과 kill/reclaim�
 acceptance gate로 남는다. Phase 4는 인간용 capability와 read-only API, 네 탭 대시보드를
 연결했다. Rule authoring, activation, manual execution과 scheduling은 필요한 server-owned
 identity/readiness 입력이 없어 capability-closed이며 Phase 5 target acceptance 전에는
-production-ready로 주장하지 않는다.
+production-ready로 주장하지 않는다. Phase 6 로컬 운영 게이트는 ReDoS/raw-result/payload
+경계, 실제 서비스 OIDC 음성 경로, PostgreSQL 구조적 access plan과 Mac arm64 worker
+artifact를 확인했다. 대표 dataset/soak, 사람 다중 Workspace, 실제 source/Profile,
+인증 후 브라우저 접근성 및 WSL amd64는 외부 gate로 남으며 worker/DAG는 비활성 상태다.

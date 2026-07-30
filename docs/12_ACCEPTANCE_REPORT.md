@@ -14,6 +14,23 @@ addenda and `docs/29_MASTER_EXECUTION_BACKLOG.md`.
 
 P0–P3 foundation addendum, updated 2026-07-16: current source checks additionally include the stable DataHub v1.6.0 release contract and typed OIDC assurance. Hardware WebAuthn requires an exact approved ACR+AMR combination and `auth_time`; OTP, generic MFA and refreshed-token `iat` cannot satisfy high-risk authorization. Browser remediation is bounded to typed authentication actions, rejects unsafe return locations, and never automatically replays a denied mutation after an authentication redirect. Compatibility migrations and the current hybrid runtime have separate live evidence below.
 
+## GX Quality Phase 6 local operational-gate addendum — 2026-07-30
+
+This addendum accepts the Task 1 Quality source and Mac-development operational boundary for
+implementation commit `cdf2eb24c520787abd114c4c8ec7db2e49ab1ae2` at revision `0070`. It
+does not accept production enablement, target data execution, representative performance, human
+browser accessibility or WSL amd64 parity.
+
+| Gate | Result | Current executed evidence |
+|---|---|---|
+| ReDoS, raw-result and payload boundary | PASS (local source) | Focused backend tests passed `99/99` and Quality frontend tests passed `9/9`. `REGEX` is unavailable in the domain, compiler and capability contract; GX raw values/rows/indexes/query/exception material is discarded; source URLs/queries/credentials are rejected; list/cursor/lease/poll bounds remain enforced. |
+| Identity and least privilege | PASS (Mac development) | Anonymous Workspace-scoped capability returned a `268`-byte `401`. A real dedicated Airflow Quality client-credentials token reached the human capability endpoint and returned a `243`-byte `403`. `datariver_app`, `datariver_quality` and `datariver_catalog_profile` are NOBYPASSRLS; no-context app-role reads returned zero Catalog/Quality rows. |
+| PostgreSQL access path | PASS (structural only) | PostgreSQL `17.10` reported `0070`. The local authorized asset query used `ix_assets_projection_active_scope_order` as an index-only scan (`0.067 ms`, three shared hits); the empty Quality active-version aggregate used the expected indexes (`0.053 ms`, two shared hits). With no local Quality rows, this is not representative load evidence. |
+| Mac artifact/runtime | PASS (Mac development) | Worker image `sha256:12262595340cd28e8c51bad9712ce58b22ec03bbae3e85d20dd6c60ea5ede98a` is `linux/arm64`; a network-disabled import reported GX `1.19.1`, asyncpg `0.31.0`, SQLAlchemy `2.0.49` and DataRiver `0.1.0`. API/Web image IDs are recorded in the test strategy. |
+| Full source regression | PASS | Ruff `482` files; strict mypy `473` files; backend `1,871 passed / 103 environment-gated skipped`; static verification; frontend TypeScript/ESLint, `63 files / 348 tests` and production build. |
+| Browser state | PASS (pre-auth only) / OPEN (human) | The in-app browser rendered the sign-in-required state and stored no credential. No existing human session was available; the Chrome control extension was absent. Authenticated keyboard/zoom/screen-reader/target-browser acceptance remains open. |
+| External target gates | OPEN / DISABLED | Worker profile and DAG schedule remain disabled. Representative manifest/load/60-minute soak, multi-Workspace human leakage/revocation, real DataHub Profile and Airflow-to-source execution, approved retention/source identities, exact WSL amd64 artifact and preparation-PC `prep-update` remain required. |
+
 ## GX Quality Phase 4 read-dashboard addendum — 2026-07-30
 
 This addendum accepts the local Phase 4 authorization-pruned read API and React dashboard at
