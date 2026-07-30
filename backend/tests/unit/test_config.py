@@ -72,6 +72,22 @@ def test_default_governance_worker_is_the_seeded_airflow_service_subject() -> No
     assert settings().governance_worker_subject_id == LOCAL_AIRFLOW_SUBJECT_ID
 
 
+def test_quality_dispatch_capacity_is_deployment_owned_and_complete() -> None:
+    defaults = settings()
+    assert defaults.quality_dispatch_max_due_schedules is None
+    assert defaults.quality_dispatch_max_created_runs is None
+
+    with pytest.raises(ValidationError, match="requires both approved"):
+        settings(quality_dispatch_max_due_schedules=25)
+
+    configured = settings(
+        quality_dispatch_max_due_schedules=25,
+        quality_dispatch_max_created_runs=100,
+    )
+    assert configured.quality_dispatch_max_due_schedules == 25
+    assert configured.quality_dispatch_max_created_runs == 100
+
+
 def test_deployment_environment_identity_is_typed_and_rejects_control_characters() -> None:
     configured = settings(
         datariver_env_file=".env.wsl-intranet-development",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from datariver.application.services.authorization import AuthorizationService
@@ -36,13 +36,20 @@ async def dispatch_due_quality_runs(
     context: ContextDep,
 ) -> QualityDispatchResponse:
     container = get_container(request)
+    max_due_schedules = container.settings.quality_dispatch_max_due_schedules
+    max_created_runs = container.settings.quality_dispatch_max_created_runs
+    if max_due_schedules is None or max_created_runs is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Quality dispatch capacity is not approved for this deployment.",
+        )
     service = QualityDispatchService(
         store=SqlQualityDispatchStore(container.database.session_factory),
         authorization=AuthorizationService(
             decision_writer=SqlDecisionWriter(container.database.session_factory)
         ),
-        max_due_schedules=container.settings.quality_dispatch_max_due_schedules,
-        max_created_runs=container.settings.quality_dispatch_max_created_runs,
+        max_due_schedules=max_due_schedules,
+        max_created_runs=max_created_runs,
     )
     result = await service.dispatch(
         workspace_id=context.workspace_id,

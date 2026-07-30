@@ -78,7 +78,7 @@ export function PolicyGovernancePage({ client, mayReadPolicies = false, allowedO
 
 function PolicyDocumentView({ document, data, loading }: { document: { id: DocumentId; title: string; description: string }; data: PolicyData; loading: boolean }) {
   return <article className="policy-document-view">
-    <section className="policy-document-meta"><div><dt>문서</dt><dd>{document.title}</dd></div><div><dt>조회 시각</dt><dd>{new Date().toLocaleString()}</dd></div><div><dt>소유 범위</dt><dd>현재 Workspace</dd></div><div><dt>상태</dt><dd><span className="badge">{loading ? 'LOADING' : 'LIVE READ'}</span></dd></div></section>
+    <section className="policy-document-meta"><div><dt>문서</dt><dd>{document.title}</dd></div><div><dt>화면 갱신 시각</dt><dd>{new Date().toLocaleString()}</dd></div><div><dt>소유 범위</dt><dd>현재 Workspace</dd></div><div><dt>상태</dt><dd><span className="badge">{loading ? 'LOADING' : 'LIVE READ'}</span></dd></div></section>
     <header><span className="eyebrow">{document.description}</span><h1>{document.title}</h1></header>
     {loading ? <PolicyEmpty text="서버 정책 read model을 불러오는 중입니다." /> : !data.readAllowed ? <PolicyEmpty text="이 정책 read model은 보안 관리자 권한이 있는 사용자에게만 표시됩니다." /> : document.id === 'CLASSIFICATION' ? <ClassificationDocument policy={data.classification} /> : document.id === 'RETENTION' ? <RetentionDocument policy={data.retention} /> : <LegalHoldDocument holds={data.holds} />}
   </article>
@@ -94,7 +94,7 @@ function RetentionDocument({ policy }: { policy: RetentionPolicy | null }) {
   const entries = [
     ['완료 운영 데이터', `${policy.rules.completed_operation_days}일`], ['Chat 콘텐츠', `${policy.rules.chat_content_days}일`], ['온라인 감사 증거', `${policy.rules.audit_online_months}개월`], ['불변 아카이브', `${policy.rules.immutable_archive_years}년`],
   ]
-  return <section className="policy-body"><p>보존·파기 조건은 Maker-Checker 승인과 Legal Hold 상태를 통과해야 하며, 브라우저가 직접 파기할 수 없습니다.</p><dl className="policy-fact-grid"><div><dt>정책 번호</dt><dd>{policy.policy_number}</dd></div><div><dt>상태</dt><dd>{policy.state}</dd></div><div><dt>Partition automation</dt><dd>{policy.partition_automation_state}</dd></div><div><dt>Deletion automation</dt><dd>{policy.deletion_automation_state}</dd></div></dl><h2>보존 규칙</h2><div className="policy-retention-list">{entries.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div></section>
+  return <section className="policy-body"><p>보존·파기 조건은 Maker-Checker 승인과 Legal Hold 상태를 통과해야 하며, 브라우저가 직접 파기할 수 없습니다.</p><dl className="policy-fact-grid"><div><dt>정책 번호</dt><dd>{policy.policy_number}</dd></div><div><dt>상태</dt><dd>{policy.state}</dd></div><div><dt>계약</dt><dd>{policy.contract_version}</dd></div><div><dt>Partition automation</dt><dd>{policy.partition_automation_state}</dd></div><div><dt>Deletion automation</dt><dd>{policy.deletion_automation_state}</dd></div></dl><h2>보존 규칙</h2><div className="policy-retention-list">{entries.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div>{policy.contract && <><h2>데이터 클래스 계약</h2><div className="policy-retention-list">{policy.contract.class_rules.map((rule) => <div key={rule.data_class}><span>{rule.data_class}</span><strong>{rule.minimum}–{rule.maximum} {rule.unit} · {rule.archive_disposition}</strong></div>)}</div></>}</section>
 }
 
 function LegalHoldDocument({ holds }: { holds: LegalHold[] }) {
@@ -103,8 +103,14 @@ function LegalHoldDocument({ holds }: { holds: LegalHold[] }) {
 }
 
 function PolicyWorkflowView({ document, data, loading }: { document: { id: DocumentId; title: string }; data: PolicyData; loading: boolean }) {
-  const active = document.id === 'CLASSIFICATION' ? data.classification?.state === 'ACTIVE' : document.id === 'RETENTION' ? data.retention?.state === 'ACTIVE' : data.holds.some((hold) => hold.state === 'ACTIVE')
-  return <section className="policy-flow-view"><header><span className="eyebrow">{document.title}</span><h2>Governed lifecycle</h2><p>실제 read model 상태를 사용한 정책·검토·활성화 흐름입니다.</p></header><div className="policy-flow-canvas">{['작성', '검토', '승인', '활성화'].map((label, index) => <div className={`policy-flow-node ${!loading && (index < 3 || active) ? 'complete' : index === 2 && !loading ? 'current' : ''}`} key={label}><span>{index + 1}</span><strong>{label}</strong>{index < 3 && <i aria-hidden="true">→</i>}</div>)}</div><footer><Eye size={13} /> {loading ? '상태를 불러오는 중입니다.' : active ? '현재 read model에 활성 정책 또는 Hold가 있습니다.' : '현재 활성 상태는 서버에서 확인되지 않았습니다.'}</footer></section>
+  const state = document.id === 'CLASSIFICATION'
+    ? data.classification?.state
+    : document.id === 'RETENTION'
+      ? data.retention?.state
+      : data.holds.length > 0
+        ? `${data.holds.filter((hold) => hold.state === 'ACTIVE').length} ACTIVE / ${data.holds.length} VISIBLE`
+        : undefined
+  return <section className="policy-flow-view"><header><span className="eyebrow">{document.title}</span><h2>Current governed state</h2><p>이 화면은 서버가 제공하는 현재 상태만 표시합니다. 전체 lifecycle 이력은 감사 read model이 제공될 때까지 추정하지 않습니다.</p></header><div className="policy-flow-canvas"><div className={`policy-flow-node ${state ? 'current' : ''}`}><span>1</span><strong>{loading ? '조회 중' : state ?? '상태 없음'}</strong></div></div><footer><Eye size={13} /> {loading ? '상태를 불러오는 중입니다.' : state ? `서버 현재 상태: ${state}` : '현재 상태는 서버에서 확인되지 않았습니다.'}</footer></section>
 }
 
 function PolicyEmpty({ text }: { text: string }) { return <div className="policy-empty"><CheckCircle2 size={27} /><p>{text}</p></div> }

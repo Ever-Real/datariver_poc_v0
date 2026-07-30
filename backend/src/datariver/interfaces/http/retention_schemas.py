@@ -47,11 +47,15 @@ class RetentionClassRuleRequest(StrictRetentionRequest):
 
 
 class RetentionPolicyContractRequest(StrictRetentionRequest):
-    contract_version: Literal["POLICY_BOOK_V2", "POLICY_BOOK_V3"] = "POLICY_BOOK_V2"
+    contract_version: Literal[
+        "POLICY_BOOK_V2",
+        "POLICY_BOOK_V3",
+        "POLICY_BOOK_V4",
+    ] = "POLICY_BOOK_V2"
     effective_from: datetime
     effective_until: datetime | None = None
     execution_authorization_hours: int = Field(ge=1, le=168)
-    class_rules: tuple[RetentionClassRuleRequest, ...] = Field(min_length=4, max_length=7)
+    class_rules: tuple[RetentionClassRuleRequest, ...] = Field(min_length=4, max_length=8)
 
 
 class RetentionPolicyProposalRequest(StrictRetentionRequest):

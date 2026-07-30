@@ -2,11 +2,13 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import type {
   AdminReadContext,
   LegalHold,
+  LegalHoldResourceType,
   LegalHoldScope,
   LegalHoldState,
   RetentionDataClass,
   RetentionArchiveDisposition,
   RetentionClassRule,
+  RetentionContractVersion,
   RetentionPeriodUnit,
   RetentionPolicy,
   RetentionPolicyContract,
@@ -35,17 +37,55 @@ const emptyRules: RuleDraft = {
   completed_operation_days: '', chat_content_days: '', audit_online_months: '', immutable_archive_years: '',
 }
 
-type ClassRuleDraft = Omit<RetentionClassRule, 'minimum' | 'maximum'> & {
+type ClassRuleDraft = Omit<
+  RetentionClassRule,
+  'unit' | 'minimum' | 'maximum' | 'archive_disposition'
+> & {
+  unit: RetentionPeriodUnit | ''
   minimum: string
   maximum: string
+  archive_disposition: RetentionArchiveDisposition | ''
 }
 
-const initialClassRules: ClassRuleDraft[] = [
-  { data_class: 'COMPLETED_OPERATIONS', unit: 'DAYS', minimum: '30', maximum: '365', archive_disposition: 'NO_ARCHIVE' },
-  { data_class: 'CHAT_CONTENT', unit: 'DAYS', minimum: '7', maximum: '365', archive_disposition: 'NO_ARCHIVE' },
-  { data_class: 'AUDIT_EVIDENCE', unit: 'MONTHS', minimum: '12', maximum: '84', archive_disposition: 'CONTENT_WORM' },
-  { data_class: 'OBJECT_DATA', unit: 'DAYS', minimum: '30', maximum: '3650', archive_disposition: 'CONTENT_WORM' },
-]
+const retentionClasses: Record<RetentionContractVersion, RetentionDataClass[]> = {
+  POLICY_BOOK_V2: ['COMPLETED_OPERATIONS', 'CHAT_CONTENT', 'AUDIT_EVIDENCE', 'OBJECT_DATA'],
+  POLICY_BOOK_V3: [
+    'COMPLETED_OPERATIONS', 'CHAT_CONTENT', 'AUDIT_EVIDENCE', 'OBJECT_DATA',
+    'QUALITY_RULE', 'QUALITY_RESULT', 'QUALITY_AUDIT',
+  ],
+  POLICY_BOOK_V4: [
+    'COMPLETED_OPERATIONS', 'CHAT_CONTENT', 'AUDIT_EVIDENCE', 'OBJECT_DATA',
+    'QUALITY_RULE', 'QUALITY_RESULT', 'QUALITY_AUDIT', 'QUALITY_PROFILE',
+  ],
+}
+
+const holdResourceTypes: Record<RetentionDataClass, LegalHoldResourceType[]> = {
+  COMPLETED_OPERATIONS: ['LEGACY_UNTYPED'],
+  CHAT_CONTENT: ['CHAT_SESSION', 'LEGACY_UNTYPED'],
+  AUDIT_EVIDENCE: ['LEGACY_UNTYPED'],
+  OBJECT_DATA: ['UPLOAD_OBJECT', 'LEGACY_UNTYPED'],
+  QUALITY_RULE: ['QUALITY_RULE_SET'],
+  QUALITY_RESULT: ['QUALITY_VALIDATION_RUN'],
+  QUALITY_AUDIT: ['QUALITY_RULE_SET', 'QUALITY_VALIDATION_RUN'],
+  QUALITY_PROFILE: ['PROFILE_SNAPSHOT'],
+}
+
+const retentionDataClasses = retentionClasses.POLICY_BOOK_V4
+
+function classRuleDrafts(
+  contractVersion: RetentionContractVersion,
+  current: ClassRuleDraft[] = [],
+): ClassRuleDraft[] {
+  return retentionClasses[contractVersion].map((dataClass) => (
+    current.find((rule) => rule.data_class === dataClass) ?? {
+      data_class: dataClass,
+      unit: '',
+      minimum: '',
+      maximum: '',
+      archive_disposition: '',
+    }
+  ))
+}
 
 function currentLocalMinute() {
   const now = new Date()
@@ -57,7 +97,8 @@ export function RetentionPolicyAdmin(props: Props) {
   const [policies, setPolicies] = useState<RetentionPolicy[]>([])
   const [selectedId, setSelectedId] = useState('')
   const [rules, setRules] = useState<RuleDraft>(emptyRules)
-  const [classRules, setClassRules] = useState<ClassRuleDraft[]>(initialClassRules)
+  const [contractVersion, setContractVersion] = useState<RetentionContractVersion | ''>('')
+  const [classRules, setClassRules] = useState<ClassRuleDraft[]>([])
   const [effectiveFrom, setEffectiveFrom] = useState(currentLocalMinute)
   const [effectiveUntil, setEffectiveUntil] = useState('')
   const [executionAuthorizationHours, setExecutionAuthorizationHours] = useState('24')
@@ -112,6 +153,7 @@ export function RetentionPolicyAdmin(props: Props) {
 
   const propose = (event: FormEvent) => {
     event.preventDefault()
+    if (!contractVersion) return
     const payload: RetentionRules = {
       completed_operation_days: Number(rules.completed_operation_days),
       chat_content_days: Number(rules.chat_content_days),
@@ -119,22 +161,26 @@ export function RetentionPolicyAdmin(props: Props) {
       immutable_archive_years: Number(rules.immutable_archive_years),
     }
     const contract: RetentionPolicyContract = {
+      contract_version: contractVersion,
       effective_from: new Date(effectiveFrom).toISOString(),
       effective_until: effectiveUntil ? new Date(effectiveUntil).toISOString() : null,
       execution_authorization_hours: Number(executionAuthorizationHours),
       class_rules: classRules.map((rule) => ({
-        ...rule,
+        data_class: rule.data_class,
+        unit: rule.unit as RetentionPeriodUnit,
         minimum: Number(rule.minimum),
         maximum: Number(rule.maximum),
+        archive_disposition: rule.archive_disposition as RetentionArchiveDisposition,
       })),
     }
     const intent = `retention-propose:${JSON.stringify(payload)}:${JSON.stringify(contract)}:${proposalReason}`
     requestConfirmation({
       title: messages.policyProposal,
-      summary: ['POLICY_BOOK_V2', JSON.stringify(payload), JSON.stringify(contract), proposalReason],
+      summary: [contractVersion, JSON.stringify(payload), JSON.stringify(contract), proposalReason],
       execute: async () => {
         const next = await api.proposeRetentionPolicy(payload, contract, proposalReason.trim(), keyFor(intent, 'retention-propose'))
         clearKey(intent); setRules(emptyRules); setProposalReason('')
+        setContractVersion(''); setClassRules([])
         await reloadFirstPage()
         setSelectedId(next.policy_id)
       },
@@ -174,16 +220,25 @@ export function RetentionPolicyAdmin(props: Props) {
         <RuleField label={messages.chatDays} value={rules.chat_content_days} max={3650} onChange={(value) => setRules({ ...rules, chat_content_days: value })} />
         <RuleField label={messages.auditMonths} value={rules.audit_online_months} max={120} onChange={(value) => setRules({ ...rules, audit_online_months: value })} />
         <RuleField label={messages.archiveYears} value={rules.immutable_archive_years} max={100} onChange={(value) => setRules({ ...rules, immutable_archive_years: value })} />
-        <h4>POLICY_BOOK_V2 시행 계약</h4>
+        <h4>보존 시행 계약</h4>
+        <label>계약 버전<select
+          value={contractVersion}
+          required
+          onChange={(event) => {
+            const value = event.target.value as RetentionContractVersion | ''
+            setContractVersion(value)
+            setClassRules(value ? classRuleDrafts(value, classRules) : [])
+          }}
+        ><option value="">승인할 계약 범위를 선택하세요</option><option>POLICY_BOOK_V2</option><option>POLICY_BOOK_V3</option><option>POLICY_BOOK_V4</option></select></label>
         <label>시행 시작<input type="datetime-local" value={effectiveFrom} onChange={(event) => setEffectiveFrom(event.target.value)} required /></label>
         <label>시행 종료 (선택)<input type="datetime-local" value={effectiveUntil} min={effectiveFrom} onChange={(event) => setEffectiveUntil(event.target.value)} /></label>
         <RuleField label="실행 승인 유효시간" value={executionAuthorizationHours} max={168} onChange={setExecutionAuthorizationHours} />
         {classRules.map((rule, index) => <fieldset className="form-stack" key={rule.data_class}>
           <legend>{rule.data_class}</legend>
-          <label>단위<select value={rule.unit} onChange={(event) => setClassRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, unit: event.target.value as RetentionPeriodUnit } : item))}><option>DAYS</option><option>MONTHS</option><option>YEARS</option></select></label>
-          <RuleField label="최소 보존" value={rule.minimum} max={36500} onChange={(value) => setClassRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, minimum: value } : item))} />
+          <label>단위<select required value={rule.unit} onChange={(event) => setClassRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, unit: event.target.value as RetentionPeriodUnit | '' } : item))}><option value="">선택</option><option>DAYS</option><option>MONTHS</option><option>YEARS</option></select></label>
+          <RuleField label="최소 보존" value={rule.minimum} min={0} max={36500} onChange={(value) => setClassRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, minimum: value } : item))} />
           <RuleField label="최대 보존" value={rule.maximum} max={36500} onChange={(value) => setClassRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, maximum: value } : item))} />
-          <label>만료 처리<select value={rule.archive_disposition} onChange={(event) => setClassRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, archive_disposition: event.target.value as RetentionArchiveDisposition } : item))}><option>NO_ARCHIVE</option><option>EVIDENCE_ONLY</option><option>CONTENT_WORM</option></select></label>
+          <label>만료 처리<select required value={rule.archive_disposition} onChange={(event) => setClassRules((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, archive_disposition: event.target.value as RetentionArchiveDisposition | '' } : item))}><option value="">선택</option><option>NO_ARCHIVE</option><option>EVIDENCE_ONLY</option><option>CONTENT_WORM</option></select></label>
         </fieldset>)}
         <label>{messages.reason}<textarea value={proposalReason} onChange={(event) => setProposalReason(event.target.value)} maxLength={4000} required /></label>
         <button className="button">{messages.propose}</button>
@@ -226,8 +281,8 @@ export function RetentionPolicyAdmin(props: Props) {
   </>
 }
 
-function RuleField({ label, value, max, onChange }: { label: string; value: string; max: number; onChange: (value: string) => void }) {
-  return <label>{label}<input type="number" min={1} max={max} value={value} onChange={(event) => onChange(event.target.value)} required /></label>
+function RuleField({ label, value, min = 1, max, onChange }: { label: string; value: string; min?: number; max: number; onChange: (value: string) => void }) {
+  return <label>{label}<input type="number" min={min} max={max} value={value} onChange={(event) => onChange(event.target.value)} required /></label>
 }
 
 export function LegalHoldAdmin(props: Props) {
@@ -235,9 +290,10 @@ export function LegalHoldAdmin(props: Props) {
   const [holds, setHolds] = useState<LegalHold[]>([])
   const [selectedDetail, setSelectedDetail] = useState<LegalHold>()
   const [selectedId, setSelectedId] = useState('')
-  const [dataClass, setDataClass] = useState<RetentionDataClass>('AUDIT_EVIDENCE')
+  const [dataClass, setDataClass] = useState<RetentionDataClass | ''>('')
   const [scope, setScope] = useState<LegalHoldScope>('WORKSPACE')
   const [scopeId, setScopeId] = useState('')
+  const [resourceType, setResourceType] = useState<LegalHoldResourceType | ''>('')
   const [placeReason, setPlaceReason] = useState('')
   const [releaseReason, setReleaseReason] = useState('')
   const [stateFilter, setStateFilter] = useState<LegalHoldState | ''>('')
@@ -300,14 +356,28 @@ export function LegalHoldAdmin(props: Props) {
 
   const place = (event: FormEvent) => {
     event.preventDefault()
+    if (!dataClass || (scope === 'RESOURCE' && !resourceType)) return
     const target = scope === 'WORKSPACE' ? null : scopeId.trim()
-    const intent = `hold-place:${dataClass}:${scope}:${target}:${placeReason}`
+    const exactResourceType = scope === 'RESOURCE' ? resourceType as LegalHoldResourceType : null
+    const intent = `hold-place:${dataClass}:${scope}:${target}:${exactResourceType}:${placeReason}`
     requestConfirmation({
       title: messages.placeHold,
-      summary: [dataClass, `${scope}: ${target ?? 'workspace'}`, placeReason],
+      summary: [
+        dataClass,
+        `${scope}: ${target ?? 'workspace'}`,
+        exactResourceType ?? 'no resource type',
+        placeReason,
+      ],
       execute: async () => {
-        const next = await api.placeLegalHold(dataClass, scope, target, placeReason.trim(), keyFor(intent, 'legal-hold-place'))
-        clearKey(intent); setPlaceReason(''); setScopeId('')
+        const next = await api.placeLegalHold(
+          dataClass,
+          scope,
+          target,
+          exactResourceType,
+          placeReason.trim(),
+          keyFor(intent, 'legal-hold-place'),
+        )
+        clearKey(intent); setPlaceReason(''); setScopeId(''); setResourceType('')
         await reloadFirstPage()
         setSelectedId(next.hold_id)
       },
@@ -353,9 +423,10 @@ export function LegalHoldAdmin(props: Props) {
     <div className={canPlace ? 'admin-two-column' : ''}>
       {canPlace && <form className="panel form-stack" onSubmit={place}>
         <h3>{messages.holdPlacement}</h3>
-        <label>{messages.dataClass}<select value={dataClass} onChange={(event) => setDataClass(event.target.value as RetentionDataClass)}><option>COMPLETED_OPERATIONS</option><option>CHAT_CONTENT</option><option>AUDIT_EVIDENCE</option><option>OBJECT_DATA</option></select></label>
-        <label>{messages.scope}<select value={scope} onChange={(event) => setScope(event.target.value as LegalHoldScope)}><option>WORKSPACE</option><option>SUBJECT</option><option>RESOURCE</option></select></label>
+        <label>{messages.dataClass}<select required value={dataClass} onChange={(event) => { setDataClass(event.target.value as RetentionDataClass | ''); setResourceType('') }}><option value="">보존 클래스를 선택하세요</option>{retentionDataClasses.map((value) => <option key={value}>{value}</option>)}</select></label>
+        <label>{messages.scope}<select value={scope} onChange={(event) => { setScope(event.target.value as LegalHoldScope); setResourceType('') }}><option>WORKSPACE</option><option>SUBJECT</option><option>RESOURCE</option></select></label>
         {scope !== 'WORKSPACE' && <label>{messages.scopeId}<input value={scopeId} onChange={(event) => setScopeId(event.target.value)} required pattern="[0-9a-fA-F-]{36}" /></label>}
+        {scope === 'RESOURCE' && dataClass && <label>리소스 타입<select required value={resourceType} onChange={(event) => setResourceType(event.target.value as LegalHoldResourceType | '')}><option value="">정확한 리소스 타입을 선택하세요</option>{holdResourceTypes[dataClass].map((value) => <option key={value}>{value}</option>)}</select></label>}
         <label>{messages.reason}<textarea value={placeReason} onChange={(event) => setPlaceReason(event.target.value)} maxLength={4000} required /></label>
         <button className="button">{messages.placeHold}</button>
       </form>}
@@ -383,7 +454,7 @@ export function LegalHoldAdmin(props: Props) {
     </div>
     {selected && <section className="result-card governance-detail form-stack">
       <h3>{selected.data_class} · {selected.state}</h3><p>{selected.reason}</p>
-      <dl className="summary-list"><div><dt>hold_id</dt><dd>{selected.hold_id}</dd></div><div><dt>maker</dt><dd>{selected.created_by}</dd></div><div><dt>scope</dt><dd>{selected.scope_id ?? selected.scope}</dd></div><div><dt>version</dt><dd>{selected.version}</dd></div><div><dt>effect</dt><dd>{selected.deletion_effect}</dd></div><div><dt>hash</dt><dd>{selected.payload_hash}</dd></div></dl>
+      <dl className="summary-list"><div><dt>hold_id</dt><dd>{selected.hold_id}</dd></div><div><dt>maker</dt><dd>{selected.created_by}</dd></div><div><dt>scope</dt><dd>{selected.scope_id ?? selected.scope}</dd></div><div><dt>resource type</dt><dd>{selected.resource_type ?? '—'}</dd></div><div><dt>version</dt><dd>{selected.version}</dd></div><div><dt>effect</dt><dd>{selected.deletion_effect}</dd></div><div><dt>hash</dt><dd>{selected.payload_hash}</dd></div></dl>
       {selected.state !== 'RELEASED' && <label>{messages.reason}<textarea value={releaseReason} onChange={(event) => setReleaseReason(event.target.value)} maxLength={4000} /></label>}
       <div className="action-row">
         {canRequestRelease && <button className="button button-secondary" disabled={!releaseReason.trim()} onClick={releaseRequest}>{messages.requestRelease}</button>}

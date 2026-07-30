@@ -856,7 +856,11 @@ describe('GovernancePage', () => {
     renderPage(apiClient(request), onStepUp)
     const detailDialog = await openDetail(existing)
     fireEvent.click(await within(detailDialog).findByRole('button', { name: '검토 시작' }))
-    fireEvent.click(within(screen.getByRole('dialog', { name: '변경관리 명령 확인' })).getByRole('button', { name: '확인 후 제출' }))
+    const confirmDialog = screen.getByRole('dialog', { name: '변경관리 명령 확인' })
+    fireEvent.change(within(confirmDialog).getByLabelText('판단 사유'), {
+      target: { value: '보안키 재인증이 필요한 변경 사유' },
+    })
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: '확인 후 제출' }))
 
     expect(await within(detailDialog).findByText('WebAuthn 보안키 인증이 필요합니다.')).toBeInTheDocument()
     fireEvent.click(within(detailDialog).getByRole('button', { name: '보안키로 인증' }))

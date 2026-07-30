@@ -132,6 +132,50 @@ def test_policy_book_v2_admin_wire_contract_accepts_canonical_archive_dispositio
     ]
 
 
+def test_policy_book_v4_admin_wire_contract_accepts_profile_retention() -> None:
+    classes = (
+        "COMPLETED_OPERATIONS",
+        "CHAT_CONTENT",
+        "AUDIT_EVIDENCE",
+        "OBJECT_DATA",
+        "QUALITY_RULE",
+        "QUALITY_RESULT",
+        "QUALITY_AUDIT",
+        "QUALITY_PROFILE",
+    )
+    request = RetentionPolicyProposalRequest.model_validate(
+        {
+            "rules": {
+                "completed_operation_days": 30,
+                "chat_content_days": 30,
+                "audit_online_months": 12,
+                "immutable_archive_years": 7,
+            },
+            "contract": {
+                "contract_version": "POLICY_BOOK_V4",
+                "effective_from": "2026-07-30T00:00:00Z",
+                "effective_until": None,
+                "execution_authorization_hours": 24,
+                "class_rules": [
+                    {
+                        "data_class": data_class,
+                        "unit": "DAYS",
+                        "minimum": 1,
+                        "maximum": 30,
+                        "archive_disposition": "EVIDENCE_ONLY",
+                    }
+                    for data_class in classes
+                ],
+            },
+            "reason": "Independent approval of all V4 retention classes",
+        }
+    )
+
+    assert request.contract is not None
+    assert request.contract.contract_version == "POLICY_BOOK_V4"
+    assert [rule.data_class.value for rule in request.contract.class_rules] == list(classes)
+
+
 def test_retention_presenters_keep_every_destructive_effect_disabled() -> None:
     workspace_id = uuid4()
     now = datetime.now(UTC)

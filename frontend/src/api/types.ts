@@ -1464,6 +1464,7 @@ export interface RetentionRules {
 
 export type RetentionPeriodUnit = 'DAYS' | 'MONTHS' | 'YEARS'
 export type RetentionArchiveDisposition = 'NO_ARCHIVE' | 'EVIDENCE_ONLY' | 'CONTENT_WORM'
+export type RetentionContractVersion = 'POLICY_BOOK_V2' | 'POLICY_BOOK_V3' | 'POLICY_BOOK_V4'
 
 export interface RetentionClassRule {
   data_class: RetentionDataClass
@@ -1474,6 +1475,7 @@ export interface RetentionClassRule {
 }
 
 export interface RetentionPolicyContract {
+  contract_version: RetentionContractVersion
   effective_from: string
   effective_until: string | null
   execution_authorization_hours: number
@@ -1486,7 +1488,7 @@ export interface RetentionPolicy {
   policy_id: string
   policy_number: number
   rules: RetentionRules
-  contract_version: 'SINGLE_DEADLINE_V1' | 'POLICY_BOOK_V2'
+  contract_version: 'SINGLE_DEADLINE_V1' | RetentionContractVersion
   contract: RetentionPolicyContract | null
   payload_hash: string
   requester_id: string
@@ -1506,13 +1508,25 @@ export type RetentionDataClass =
   | 'CHAT_CONTENT'
   | 'AUDIT_EVIDENCE'
   | 'OBJECT_DATA'
+  | 'QUALITY_RULE'
+  | 'QUALITY_RESULT'
+  | 'QUALITY_AUDIT'
+  | 'QUALITY_PROFILE'
 export type LegalHoldScope = 'WORKSPACE' | 'SUBJECT' | 'RESOURCE'
+export type LegalHoldResourceType =
+  | 'LEGACY_UNTYPED'
+  | 'CHAT_SESSION'
+  | 'UPLOAD_OBJECT'
+  | 'QUALITY_RULE_SET'
+  | 'QUALITY_VALIDATION_RUN'
+  | 'PROFILE_SNAPSHOT'
 
 export interface LegalHold {
   hold_id: string
   data_class: RetentionDataClass
   scope: LegalHoldScope
   scope_id: string | null
+  resource_type: LegalHoldResourceType | null
   reason: string
   payload_hash: string
   created_by: string

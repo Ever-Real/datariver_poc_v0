@@ -153,6 +153,19 @@ describe('Retention admin list races', () => {
     fireEvent.change(screen.getByLabelText('Chat 콘텐츠 보존일'), { target: { value: '30' } })
     fireEvent.change(screen.getByLabelText('감사 온라인 보존개월'), { target: { value: '12' } })
     fireEvent.change(screen.getByLabelText('불변 아카이브 보존년'), { target: { value: '7' } })
+    fireEvent.change(screen.getByLabelText('계약 버전'), { target: { value: 'POLICY_BOOK_V2' } })
+    screen.getAllByLabelText('단위').forEach((field) => {
+      fireEvent.change(field, { target: { value: 'DAYS' } })
+    })
+    screen.getAllByLabelText('최소 보존').forEach((field) => {
+      fireEvent.change(field, { target: { value: '1' } })
+    })
+    screen.getAllByLabelText('최대 보존').forEach((field) => {
+      fireEvent.change(field, { target: { value: '30' } })
+    })
+    screen.getAllByLabelText('만료 처리').forEach((field) => {
+      fireEvent.change(field, { target: { value: 'NO_ARCHIVE' } })
+    })
     fireEvent.change(screen.getAllByLabelText('사유')[0]!, { target: { value: 'reviewed' } })
     fireEvent.click(screen.getByRole('button', { name: '정책 제안' }))
 
@@ -182,6 +195,7 @@ function policy(id: string, number: number) {
     state: 'DRAFT',
     contract_version: 'POLICY_BOOK_V2',
     contract: {
+      contract_version: 'POLICY_BOOK_V2',
       effective_from: '2026-07-23T00:00:00.000Z',
       effective_until: null,
       execution_authorization_hours: 24,
@@ -213,6 +227,7 @@ function hold(id: string, dataClass: string) {
     data_class: dataClass,
     scope: 'WORKSPACE',
     scope_id: null,
+    resource_type: null,
     state: 'ACTIVE',
     reason: 'test',
     created_by: 'maker',

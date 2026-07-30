@@ -108,8 +108,7 @@ export function DashboardPage({
           title="Data Quality"
           unit="Score"
           icon={<ShieldCheck size={20} />}
-          description="검증된 품질 점수 read model이 아직 없음"
-          unavailable
+          description="품질 대시보드에서 검증 Score와 Run 결과 확인"
           page="quality"
           onNavigate={onNavigate}
         />

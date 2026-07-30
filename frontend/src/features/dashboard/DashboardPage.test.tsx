@@ -44,7 +44,7 @@ describe('DashboardPage', () => {
     expect(await screen.findByText('설명 완성도 70%')).toBeInTheDocument()
     expect(screen.getAllByText('10')).toHaveLength(2)
     expect(screen.getByText('현재 projection 계약에서는 집계하지 않음')).toBeInTheDocument()
-    expect(screen.getByText('검증된 품질 점수 read model이 아직 없음')).toBeInTheDocument()
+    expect(screen.getByText('품질 대시보드에서 검증 Score와 Run 결과 확인')).toBeInTheDocument()
     expect(screen.queryByText('94.2')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '1W' })).toBeDisabled()
 

@@ -177,6 +177,7 @@ describe('AdminApi', () => {
     await api.proposeRetentionPolicy(
       { completed_operation_days: 1, chat_content_days: 1, audit_online_months: 1, immutable_archive_years: 1 },
       {
+        contract_version: 'POLICY_BOOK_V2',
         effective_from: '2026-07-23T00:00:00.000Z',
         effective_until: null,
         execution_authorization_hours: 24,
@@ -191,7 +192,7 @@ describe('AdminApi', () => {
       'policy-key',
     )
     await api.decideRetentionPolicy(policy, 'APPROVED', 'reason', 'policy-decision-key')
-    await api.placeLegalHold('AUDIT_EVIDENCE', 'WORKSPACE', null, 'reason', 'hold-key')
+    await api.placeLegalHold('AUDIT_EVIDENCE', 'WORKSPACE', null, null, 'reason', 'hold-key')
     await api.getLegalHold('hold-one')
     await api.requestLegalHoldRelease(hold, 'reason', 'hold-release-key')
     await api.decideLegalHoldRelease(hold, 'APPROVED', 'reason', 'hold-decision-key')

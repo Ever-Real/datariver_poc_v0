@@ -299,8 +299,8 @@ class Settings(BaseSettings):
         max_length=512,
     )
     # Phase 3 separates the OIDC dispatcher, the API DB role and the source-reading worker.
-    quality_dispatch_max_due_schedules: int = Field(default=25, ge=1, le=100)
-    quality_dispatch_max_created_runs: int = Field(default=100, ge=1, le=100)
+    quality_dispatch_max_due_schedules: int | None = Field(default=None, ge=1, le=100)
+    quality_dispatch_max_created_runs: int | None = Field(default=None, ge=1, le=100)
     quality_worker_enabled: bool = False
     quality_database_url: str | None = None
     quality_database_secret_ref: str | None = Field(default=None, max_length=512)
@@ -1003,6 +1003,12 @@ class Settings(BaseSettings):
             "source manifest": self.quality_source_manifest_file,
             "worker fingerprint": self.quality_worker_fingerprint,
         }
+        if (self.quality_dispatch_max_due_schedules is None) != (
+            self.quality_dispatch_max_created_runs is None
+        ):
+            raise ValueError(
+                "Quality dispatch capacity requires both approved schedule and run limits."
+            )
         if self.quality_worker_enabled:
             missing_quality_settings = sorted(
                 name for name, value in quality_worker_settings.items() if value is None

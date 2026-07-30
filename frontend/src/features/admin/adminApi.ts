@@ -13,6 +13,7 @@ import type {
   ErasureRequestState,
   ErasureTargetType,
   LegalHold,
+  LegalHoldResourceType,
   LegalHoldScope,
   LegalHoldState,
   InferenceProviderProfile,
@@ -772,13 +773,20 @@ export class AdminApi {
     dataClass: RetentionDataClass,
     scope: LegalHoldScope,
     scopeId: string | null,
+    resourceType: LegalHoldResourceType | null,
     reason: string,
     idempotencyKey: string,
   ) {
     return this.client.request<LegalHold>('/admin/retention/legal-holds', {
       method: 'POST',
       idempotencyKey,
-      body: JSON.stringify({ data_class: dataClass, scope, scope_id: scopeId, reason }),
+      body: JSON.stringify({
+        data_class: dataClass,
+        scope,
+        scope_id: scopeId,
+        resource_type: resourceType,
+        reason,
+      }),
     })
   }
 

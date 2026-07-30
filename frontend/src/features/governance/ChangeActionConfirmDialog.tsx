@@ -57,6 +57,7 @@ export function ChangeActionConfirmDialog({
           value={reason}
           maxLength={4000}
           disabled={busy}
+          placeholder="검토한 증거와 이 판단의 근거를 직접 입력하세요."
           aria-describedby="governance-action-reason-help"
           onChange={(event) => onReasonChange(event.target.value)}
         />

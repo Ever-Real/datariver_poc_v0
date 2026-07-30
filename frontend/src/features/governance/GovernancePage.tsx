@@ -32,8 +32,6 @@ import {
   type ChangeActionHint,
 } from './changePresentation'
 
-const DEFAULT_REASON = '검토 기준과 현재 대상 증거를 확인했습니다.'
-
 const columns: ColumnDef<ChangeRequestSummary>[] = [
   {
     accessorKey: 'number',
@@ -175,7 +173,7 @@ export function GovernancePage({
   const [actionError, setActionError] = useState<unknown>()
   const [pendingAction, setPendingAction] = useState<ChangeActionHint>()
   const [createOpen, setCreateOpen] = useState(false)
-  const [reason, setReason] = useState(DEFAULT_REASON)
+  const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [nextCursor, setNextCursor] = useState<string>()
   const [cursorStack, setCursorStack] = useState<string[]>([])
@@ -183,6 +181,7 @@ export function GovernancePage({
   const listIntent = useRef(0)
   const detailIntent = useRef(0)
   const attachmentMutationIntent = useRef(0)
+  const preserveReasonForConflictRetry = useRef(false)
   const controllers = useRef(new Set<AbortController>())
   const detailController = useRef<AbortController | undefined>(undefined)
   const attachmentMutationController = useRef<AbortController | undefined>(undefined)
@@ -257,7 +256,8 @@ export function GovernancePage({
     setApplyReportError(undefined)
     setActionError(undefined)
     setPendingAction(undefined)
-    setReason(DEFAULT_REASON)
+    setReason('')
+    preserveReasonForConflictRetry.current = false
     setBusy(false)
     void loadRequests()
     return () => {
@@ -405,7 +405,8 @@ export function GovernancePage({
 
   const openDetail = useCallback((changeRequest: ChangeRequestSummary) => {
     setActionError(undefined)
-    setReason(DEFAULT_REASON)
+    setReason('')
+    preserveReasonForConflictRetry.current = false
     void loadDetail(changeRequest.id)
   }, [loadDetail])
 
@@ -432,12 +433,18 @@ export function GovernancePage({
     setApplyReportError(undefined)
     setActionError(undefined)
     setPendingAction(undefined)
-    setReason(DEFAULT_REASON)
+    setReason('')
+    preserveReasonForConflictRetry.current = false
   }, [])
 
   const openAction = useCallback((action: ChangeActionHint, actionReason?: string) => {
     setActionError(undefined)
-    if (actionReason?.trim()) setReason(actionReason.trim())
+    if (actionReason?.trim()) {
+      setReason(actionReason.trim())
+    } else if (!preserveReasonForConflictRetry.current) {
+      setReason('')
+    }
+    preserveReasonForConflictRetry.current = false
     setPendingAction(action)
   }, [])
   const cancelAction = useCallback(() => setPendingAction(undefined), [])
@@ -633,12 +640,14 @@ export function GovernancePage({
           ? { ...item, state: next.state, version: next.version, current_round_number: next.current_round_number }
           : item)
       })
-      setReason(DEFAULT_REASON)
+      setReason('')
+      preserveReasonForConflictRetry.current = false
     } catch (error) {
       if (controller.signal.aborted || expectedGeneration !== generation.current) return
       setPendingAction(undefined)
       setActionError(error)
       if (error instanceof ApiError && error.problem.status === 409) {
+        preserveReasonForConflictRetry.current = true
         await loadDetail(current.id)
       }
     } finally {

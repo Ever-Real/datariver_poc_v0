@@ -73,6 +73,10 @@ EXPECTED_SERVICE_SECRETS = {
         "s3_export_access_key",
         "s3_export_secret_key",
     },
+    "quality-worker": {
+        "postgres_quality_password",
+        "redis_delivery_password",
+    },
     "knowledge-source-worker": {
         "postgres_knowledge_password",
         "redis_delivery_password",
@@ -86,6 +90,12 @@ DATAHUB_CONTRACT_DIRECTORY = ROOT / "infra" / "contracts"
 DATAHUB_COMPONENTS = {"actions", "frontend", "gms", "upgrade"}
 IMMUTABLE_DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 EXACT_STABLE_RELEASE = re.compile(r"v\d+\.\d+\.\d+\Z")
+PRODUCTION_SOURCE_ROOTS = (
+    ROOT / "backend" / "src",
+    ROOT / "frontend" / "src",
+    ROOT / "infra" / "airflow" / "dags",
+)
+SOURCE_SUFFIXES = {".js", ".jsx", ".py", ".ts", ".tsx"}
 
 
 def _yaml(path: Path) -> dict[str, Any]:
@@ -508,11 +518,7 @@ def verify_identity_assurance_contract() -> None:
     if not isinstance(web_client, dict):
         raise AssertionError("Keycloak realm has no datariver-web client")
     quality_dispatch_client = next(
-        (
-            client
-            for client in clients
-            if client.get("clientId") == "datariver-quality-dispatch"
-        ),
+        (client for client in clients if client.get("clientId") == "datariver-quality-dispatch"),
         None,
     )
     if not isinstance(quality_dispatch_client, dict):
@@ -1256,6 +1262,94 @@ def verify_architecture_imports() -> None:
                     )
 
 
+def verify_phase7_source_integrity() -> None:
+    """Keep production surfaces free of fake UI data, debug residue and credential literals."""
+
+    forbidden_residue = re.compile(
+        r"\b(?:TODO|FIXME|HACK|XXX)\b"
+        r"|console\.(?:log|debug|trace)\s*\("
+        r"|\bdebugger\s*;"
+        r"|\bbreakpoint\s*\("
+    )
+    admin_identity_bypass = re.compile(
+        r"(?:if|elif)\s+[^\n]*(?:user(?:name)?|subject|role)"
+        r"[^\n]*(?:==|in)\s*[\"'](?:admin|administrator)[\"']",
+        re.IGNORECASE,
+    )
+    frontend_mock_identifier = re.compile(
+        r"\b(?:const|let|var)\s+[A-Za-z0-9_]*(?:mock|fixture|dummy|fake)"
+        r"[A-Za-z0-9_]*\s*[:=]",
+        re.IGNORECASE,
+    )
+    credential_fingerprints = (
+        re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
+        re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+        re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+        re.compile(r"\bsk-[A-Za-z0-9]{20,}\b"),
+    )
+    for source_root in PRODUCTION_SOURCE_ROOTS:
+        for path in source_root.rglob("*"):
+            if (
+                not path.is_file()
+                or path.suffix not in SOURCE_SUFFIXES
+                or ".test." in path.name
+                or "__pycache__" in path.parts
+            ):
+                continue
+            source = path.read_text(encoding="utf-8")
+            if forbidden_residue.search(source):
+                raise AssertionError(
+                    f"production source contains debug/dead-code residue: {path.relative_to(ROOT)}"
+                )
+            if path.suffix == ".py" and admin_identity_bypass.search(source):
+                raise AssertionError(
+                    f"production authorization compares an administrator name: "
+                    f"{path.relative_to(ROOT)}"
+                )
+            if source_root.name == "src" and "frontend" in source_root.parts:
+                if frontend_mock_identifier.search(source):
+                    raise AssertionError(
+                        f"frontend runtime declares mock/fixture data: {path.relative_to(ROOT)}"
+                    )
+            if any(pattern.search(source) for pattern in credential_fingerprints):
+                raise AssertionError(
+                    f"production source contains a credential fingerprint: {path.relative_to(ROOT)}"
+                )
+
+    example_environment = (ROOT / ".env.example").read_text(encoding="utf-8")
+    for line in example_environment.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", maxsplit=1)
+        if re.search(r"(?:_PASSWORD|_SECRET|_TOKEN|_API_KEY)\Z", key) and value:
+            raise AssertionError(f".env.example must not provide plaintext {key}")
+
+    phase_migrations = tuple(
+        next((ROOT / "backend" / "alembic" / "versions").glob(f"{revision}_*.py"))
+        for revision in ("0067", "0068", "0069")
+    )
+    protected_legacy_relation = re.compile(
+        r"ALTER\s+TABLE\s+(?:catalog\.assets_projection|integration\."
+        r"(?!outbox_events\b)|platform\.external_service_profile)",
+        re.IGNORECASE,
+    )
+    destructive_legacy_ddl = re.compile(
+        r"(?:DROP\s+(?:TABLE|CONSTRAINT)|ON\s+DELETE\s+CASCADE|\bCASCADE\b)",
+        re.IGNORECASE,
+    )
+    for migration in phase_migrations:
+        upgrade_source = migration.read_text(encoding="utf-8").split("def downgrade()", maxsplit=1)[
+            0
+        ]
+        for match in protected_legacy_relation.finditer(upgrade_source):
+            statement = upgrade_source[match.start() : match.start() + 500]
+            if destructive_legacy_ddl.search(statement):
+                raise AssertionError(
+                    f"{migration.name} destructively alters a protected legacy relation"
+                )
+
+
 def verify_tenant_referential_integrity() -> None:
     """Every relationship between tenant tables must carry the workspace boundary."""
     for table in Base.metadata.tables.values():
@@ -1352,6 +1446,7 @@ def main() -> None:
     verify_ci_supply_chain()
     verify_database_roles()
     verify_architecture_imports()
+    verify_phase7_source_integrity()
     verify_tenant_referential_integrity()
     verify_seed()
     verify_document_links()
@@ -1360,7 +1455,7 @@ def main() -> None:
         "identity assurance contract, "
         "runtime hardening/readiness/browser storage/web headers, "
         "CI supply chain, "
-        "database roles, architecture, tenant foreign keys, seed, documentation"
+        "database roles, architecture, source integrity, tenant foreign keys, seed, documentation"
     )
 
 
