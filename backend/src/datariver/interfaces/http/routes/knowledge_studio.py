@@ -152,6 +152,8 @@ IfMatch = Annotated[
 def _service_components(
     request: Request,
     session: SessionDep,
+    *,
+    administrator_context: bool = False,
 ) -> tuple[
     SqlKnowledgeStudioStore,
     AuthorizationService,
@@ -159,7 +161,10 @@ def _service_components(
 ]:
     container = get_container(request)
     authorization = AuthorizationService(
-        decision_writer=SqlDecisionWriter(container.database.session_factory)
+        decision_writer=SqlDecisionWriter(container.database.session_factory),
+        development_admin_password_bypass_enabled=(
+            administrator_context and container.settings.development_admin_password_bypass_enabled
+        ),
     )
     index = SqlCatalogIndexReader(session)
     catalog = CatalogService(
@@ -189,6 +194,22 @@ def _service_components(
 
 def _service(request: Request, session: SessionDep) -> KnowledgeStudioService:
     store, authorization, sources = _service_components(request, session)
+    return KnowledgeStudioService(
+        store=store,
+        authorization=authorization,
+        sources=sources,
+    )
+
+
+def _domain_administration_service(
+    request: Request,
+    session: SessionDep,
+) -> KnowledgeStudioService:
+    store, authorization, sources = _service_components(
+        request,
+        session,
+        administrator_context=True,
+    )
     return KnowledgeStudioService(
         store=store,
         authorization=authorization,
@@ -593,7 +614,7 @@ async def list_managed_knowledge_domains(
     session: SessionDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 100,
 ) -> KnowledgeStudioManagedDomainListResponse:
-    records = await _service(request, session).list_managed_domains(
+    records = await _domain_administration_service(request, session).list_managed_domains(
         workspace_id=context.workspace_id,
         subject=context.subject,
         limit=limit,
@@ -669,7 +690,7 @@ async def update_managed_knowledge_domain(
             "expected_version": expected_version,
         }
     )
-    record = await _service(request, session).update_managed_domain(
+    record = await _domain_administration_service(request, session).update_managed_domain(
         workspace_id=context.workspace_id,
         subject=context.subject,
         domain_id=domain_id,
@@ -712,7 +733,7 @@ async def delete_managed_knowledge_domain(
             "operation": "ARCHIVE",
         }
     )
-    await _service(request, session).archive_managed_domain(
+    await _domain_administration_service(request, session).archive_managed_domain(
         workspace_id=context.workspace_id,
         subject=context.subject,
         domain_id=domain_id,

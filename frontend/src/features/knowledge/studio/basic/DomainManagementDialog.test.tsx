@@ -105,4 +105,45 @@ describe('DomainManagementDialog', () => {
     expect(deleteHeaders.get('If-Match')).toBe('"3"')
     expect(deleteHeaders.get('Idempotency-Key')).toBeTruthy()
   })
+
+  it('offers explicit password reauthentication for an administrator assurance denial', async () => {
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(new Response(JSON.stringify({
+      type: 'urn:datariver:problem:forbidden',
+      title: 'Forbidden',
+      status: 403,
+      detail: 'The requested action is not permitted.',
+      code: 'forbidden',
+      request_id: 'domain-admin-reauth',
+      remediation: { kind: 'REAUTH_REQUIRED' },
+    }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/problem+json' },
+    })))
+    vi.stubGlobal('fetch', fetchMock)
+    const onPasswordReauth = vi.fn(() => Promise.resolve())
+
+    render(
+      <DomainManagementDialog
+        client={new ApiClient('/api/v1', () => 'token', () => 'workspace')}
+        open
+        items={domains}
+        loading={false}
+        onRequestClose={vi.fn()}
+        onChanged={vi.fn(() => Promise.resolve())}
+        onStepUp={vi.fn(() => Promise.resolve())}
+        onPasswordReauth={onPasswordReauth}
+        onEnroll={vi.fn(() => Promise.resolve())}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '반도체 도메인 수정' }))
+    fireEvent.change(screen.getByRole('textbox', { name: '반도체 도메인명 수정' }), {
+      target: { value: '반도체 재인증' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '반도체 도메인 수정 저장' }))
+
+    fireEvent.click(await screen.findByRole('button', { name: '비밀번호로 재인증' }))
+    expect(onPasswordReauth).toHaveBeenCalledOnce()
+    expect(fetchMock).toHaveBeenCalledOnce()
+  })
 })

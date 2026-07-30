@@ -98,6 +98,18 @@ class AuthorizationService:
         )
         if not decision.allowed:
             remediation_kind = _remediation_kind(action=action, subject=subject, decision=decision)
+            if (
+                self._development_admin_password_bypass_enabled
+                and action is Action.ADMIN_MANAGE
+                and decision.reason_codes
+                and set(decision.reason_codes).issubset(AUTHENTICATION_DENIAL_REASONS)
+                and subject.authentication_assurance is not AuthenticationAssurance.PASSWORD_REAUTH
+            ):
+                # The development exception still fails closed for an absent,
+                # stale or non-password assurance. Tell the browser to obtain
+                # the fresh PASSWORD_REAUTH token that the exception actually
+                # requires instead of sending it to disabled WebAuthn.
+                remediation_kind = "REAUTH_REQUIRED"
             details: dict[str, object] = {
                 "decision_id": str(decision.decision_id),
                 "reason_codes": decision.reason_codes,

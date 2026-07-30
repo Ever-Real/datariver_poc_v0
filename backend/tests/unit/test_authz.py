@@ -592,6 +592,35 @@ async def test_development_admin_password_bypass_preserves_actual_assurance(
     assert "development-admin-password-bypass-v1" in decision.policy_versions
 
 
+async def test_development_admin_password_bypass_requests_password_reauth_before_allowing() -> None:
+    subject, resource, environment = make_context(action=Action.ADMIN_MANAGE)
+    subject = replace(
+        subject,
+        authentication_assurance=AuthenticationAssurance.UNKNOWN,
+        authentication_time=environment.requested_at
+        - environment.maximum_authentication_age
+        - timedelta(seconds=1),
+    )
+
+    with pytest.raises(ForbiddenError) as captured:
+        await AuthorizationService(
+            decision_writer=BatchDecisionWriter(),
+            development_admin_password_bypass_enabled=True,
+        ).authorize(
+            subject=subject,
+            resource=resource,
+            action=Action.ADMIN_MANAGE,
+            environment=environment,
+            request_id="development-admin-password-reauth",
+        )
+
+    assert captured.value.details["remediation"] == {"kind": "REAUTH_REQUIRED"}
+    assert set(captured.value.details["reason_codes"]) == {
+        "PHISHING_RESISTANT_AUTH_REQUIRED",
+        "AUTHENTICATION_TOO_OLD",
+    }
+
+
 async def test_development_admin_password_bypass_never_overrides_other_denials() -> None:
     subject, resource, environment = make_context(action=Action.ADMIN_MANAGE)
     password_subject = replace(

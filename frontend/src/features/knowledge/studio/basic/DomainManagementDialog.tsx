@@ -7,6 +7,7 @@ import {
 import { Check, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ApiClient } from '../../../../api/client'
+import { AssuranceNotice } from '../../../../components/AssuranceNotice'
 import { Dialog } from '../../../../components/common/Dialog'
 import {
   createKnowledgeStudioManagedDomain,
@@ -27,6 +28,9 @@ interface DomainManagementDialogProps {
     selected?: KnowledgeStudioManagedDomain,
     archivedId?: string,
   ) => Promise<void>
+  onStepUp?: () => Promise<void>
+  onPasswordReauth?: () => Promise<void>
+  onEnroll?: () => Promise<void>
 }
 
 const columnHelper = createColumnHelper<KnowledgeStudioDomainOption>()
@@ -101,20 +105,28 @@ export function DomainManagementDialog({
   loading,
   onRequestClose,
   onChanged,
+  onStepUp,
+  onPasswordReauth,
+  onEnroll,
 }: DomainManagementDialogProps) {
   const [newName, setNewName] = useState('')
   const [editingId, setEditingId] = useState('')
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
+  const [managementError, setManagementError] = useState<unknown>()
 
   useEffect(() => {
-    if (open) setStatus('')
+    if (open) {
+      setStatus('')
+      setManagementError(undefined)
+    }
   }, [open])
 
   const createDomain = async () => {
     const name = newName.trim()
     if (!name || busy) return
     setBusy(true)
+    setManagementError(undefined)
     try {
       const created = await createKnowledgeStudioManagedDomain(
         client,
@@ -125,6 +137,7 @@ export function DomainManagementDialog({
       setNewName('')
       setStatus(`'${created.display_name}' 도메인을 등록했습니다.`)
     } catch (error) {
+      setManagementError(error)
       setStatus(error instanceof Error ? error.message : '도메인을 등록하지 못했습니다.')
     } finally {
       setBusy(false)
@@ -145,6 +158,7 @@ export function DomainManagementDialog({
       return
     }
     setBusy(true)
+    setManagementError(undefined)
     try {
       const updated = await updateKnowledgeStudioManagedDomain(
         client,
@@ -157,6 +171,7 @@ export function DomainManagementDialog({
       setEditingId('')
       setStatus(`'${updated.display_name}' 도메인을 수정했습니다.`)
     } catch (error) {
+      setManagementError(error)
       setStatus(error instanceof Error ? error.message : '도메인을 수정하지 못했습니다.')
     } finally {
       setBusy(false)
@@ -172,6 +187,7 @@ export function DomainManagementDialog({
       !window.confirm(`'${domain.display_name}' 도메인을 삭제(비활성화)하시겠습니까?`)
     ) return
     setBusy(true)
+    setManagementError(undefined)
     try {
       await deleteKnowledgeStudioManagedDomain(
         client,
@@ -182,6 +198,7 @@ export function DomainManagementDialog({
       await onChanged(undefined, domain.id)
       setStatus(`'${domain.display_name}' 도메인을 비활성화했습니다.`)
     } catch (error) {
+      setManagementError(error)
       setStatus(error instanceof Error ? error.message : '도메인을 삭제하지 못했습니다.')
     } finally {
       setBusy(false)
@@ -347,6 +364,15 @@ export function DomainManagementDialog({
       <p role="status" className="mb-0 mt-3 min-h-5 text-xs text-slate-600">
         {busy || loading ? 'PostgreSQL 도메인 정본을 동기화하는 중…' : status}
       </p>
+      {managementError !== undefined && onStepUp && onPasswordReauth && onEnroll && (
+        <AssuranceNotice
+          error={managementError}
+          requiredAssurance="PASSWORD"
+          onStepUp={onStepUp}
+          onPasswordReauth={onPasswordReauth}
+          onEnroll={onEnroll}
+        />
+      )}
     </Dialog>
   )
 }

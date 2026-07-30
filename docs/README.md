@@ -110,6 +110,9 @@ document Proposal path are defined by
 [ADR-0073](adr/0073-knowledge-domain-author-bootstrap.md). The single domain resource, bounded
 multipart ingress, exact catalog Proposal pin and React Flow projection refinements are defined by
 [ADR-0074](adr/0074-knowledge-studio-unified-domain-and-proposal-integrity.md).
+The isolated `admin.manage` assurance and development password-reauth boundary for domain rename
+and archive is defined by
+[ADR-0075](adr/0075-knowledge-domain-administrator-assurance.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

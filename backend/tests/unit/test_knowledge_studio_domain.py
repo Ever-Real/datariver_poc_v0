@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from inspect import getsource
 
 import pytest
 
@@ -21,7 +22,19 @@ from datariver.domain.knowledge_studio import (
     validate_studio_name,
     validate_tbox_element_set,
 )
-from datariver.interfaces.http.routes.knowledge_studio import _expected_version
+from datariver.interfaces.http.routes.knowledge_studio import (
+    _domain_administration_service,
+    _expected_version,
+    _service,
+)
+
+
+def test_domain_administration_service_isolates_development_admin_context() -> None:
+    ordinary_source = getsource(_service)
+    administrator_source = getsource(_domain_administration_service)
+
+    assert "administrator_context=True" not in ordinary_source
+    assert "administrator_context=True" in administrator_source
 
 
 @pytest.mark.parametrize(

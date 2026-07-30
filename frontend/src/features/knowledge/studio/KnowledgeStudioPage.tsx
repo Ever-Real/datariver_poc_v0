@@ -1013,6 +1013,9 @@ export function KnowledgeStudioPage({
       loading={domainsLoading}
       onRequestClose={() => setDomainManagementOpen(false)}
       onChanged={domainChanged}
+      onStepUp={onStepUp}
+      onPasswordReauth={onPasswordReauth}
+      onEnroll={onEnroll}
     />
   </StudioShell>
 }
