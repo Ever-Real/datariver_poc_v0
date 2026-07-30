@@ -1155,6 +1155,7 @@ export function GraphBuilder({
   }>()
   const [selectedElementId, setSelectedElementId] = useState('')
   const [editorOpenId, setEditorOpenId] = useState('')
+  const editorOpenIdRef = useRef('')
   const [status, setStatus] = useState('T-Box 정본을 불러오는 중입니다.')
   const [working, setWorking] = useState(false)
   const [showBlockMenu, setShowBlockMenu] = useState(false)
@@ -1200,6 +1201,22 @@ export function GraphBuilder({
   const removeSessionBlock = useKnowledgeStudioSessionStore((state) => state.removeBlock)
   const locked = lifecycleState !== 'DRAFT'
 
+  const setOpenEditor = useCallback((nextId: string) => {
+    editorOpenIdRef.current = nextId
+    setEditorOpenId(nextId)
+    setNodes((current) => current.map((node) => (
+      node.type === 'schemaClass'
+        ? {
+            ...node,
+            data: {
+              ...node.data,
+              editorOpen: node.id === nextId,
+            },
+          }
+        : node
+    )))
+  }, [setNodes])
+
   const selectedBlock = record?.blocks.find((item) => item.id === selectedBlockId)
   const lastBlockId = record?.blocks.at(-1)?.id
 
@@ -1239,6 +1256,7 @@ export function GraphBuilder({
       ? cached.viewport
       : defaultKnowledgeStudioViewport())
     setSelectedElementId('')
+    editorOpenIdRef.current = ''
     setEditorOpenId('')
   }, [
     draftId,
@@ -2240,21 +2258,6 @@ export function GraphBuilder({
     return () => window.removeEventListener('keydown', listener)
   }, [deleteSelection])
 
-  const setOpenEditor = useCallback((nextId: string) => {
-    setEditorOpenId(nextId)
-    setNodes((current) => current.map((node) => (
-      node.type === 'schemaClass'
-        ? {
-            ...node,
-            data: {
-              ...node.data,
-              editorOpen: node.id === nextId,
-            },
-          }
-        : node
-    )))
-  }, [setNodes])
-
   const renderedNodes = nodes.map((node): CanvasNode => {
     if (node.type !== 'schemaClass') return node
     const item = elements.find((element) => element.stable_element_id === node.id)
@@ -2289,7 +2292,9 @@ export function GraphBuilder({
         onToggleEditor: () => {
           setSelectedElementId(item.stable_element_id)
           setOpenEditor(
-            editorOpenId === item.stable_element_id ? '' : item.stable_element_id,
+            editorOpenIdRef.current === item.stable_element_id
+              ? ''
+              : item.stable_element_id,
           )
         },
         onRename: (value) => {
