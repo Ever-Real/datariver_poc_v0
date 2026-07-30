@@ -248,11 +248,15 @@ export function DomainManagementDialog({
       ),
     }),
   ], [archiveDomain, busy, editingId, saveDomain])
+  const tableData = useMemo(
+    () => [...items].sort(compareDomains),
+    [items],
+  )
 
   // TanStack Table owns mutable table methods; React Compiler must not memoize this hook.
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
-    data: [...items].sort(compareDomains),
+    data: tableData,
     columns,
     getCoreRowModel: getCoreRowModel(),
   })
