@@ -47,6 +47,8 @@ EXPECTED_SERVICE_SECRETS = {
         "neo4j_auth",
         "keycloak_identity_admin_client_secret",
         "s3_access_key",
+        "s3_governance_document_access_key",
+        "s3_governance_document_secret_key",
         "s3_secret_key",
     },
     "outbox-relay": {"postgres_relay_password", "redis_delivery_password"},
@@ -76,6 +78,15 @@ EXPECTED_SERVICE_SECRETS = {
     "quality-worker": {
         "postgres_quality_password",
         "redis_delivery_password",
+    },
+    "governance-document-worker": {
+        "postgres_governance_document_password",
+        "redis_delivery_password",
+        "s3_governance_document_access_key",
+        "s3_governance_document_secret_key",
+        "intranet_llm_chat_api_key",
+        "intranet_llm_embedding_api_key",
+        "neo4j_auth",
     },
     "knowledge-source-worker": {
         "postgres_knowledge_password",

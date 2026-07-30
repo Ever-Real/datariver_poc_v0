@@ -641,6 +641,44 @@ Version's Run; and latest Profiles on
 these paths with representative `EXPLAIN (ANALYZE, BUFFERS)` evidence rather than merely checking
 that an index exists.
 
+## Governance Document schema (implemented through revision `0072`)
+
+ADR-0080 adds a document bounded context inside the existing `governance` schema. PostgreSQL owns
+all lifecycle and authorization state; MinIO and Neo4j are verified, rebuildable projections.
+
+| Table | Canonical role |
+|---|---|
+| `governance.documents` | tenant-scoped document/Template aggregate, classification and current published version |
+| `governance.document_versions` | immutable sanitized HTML/plain-text versions and projection lease/status |
+| `governance.document_reviews` | one independent approve/reject judgment per version |
+| `governance.document_events` | append-only command/audit sequence |
+| `governance.document_artifact_receipts` | exact MinIO body/manifest keys, VersionIds, checksums and verification time |
+| `governance.document_attachments` | immutable version-owned attachment metadata and exact object receipt |
+| `governance.document_knowledge_chunks` | bounded published text chunks and provider/model-bound vector shadow |
+| `governance.document_projection_receipts` | relational/Neo4j projection hashes and verified chunk count |
+
+`documents.current_published_version_id` and
+`document_versions.source_template_version_id` are explicit deferred/self-referential foreign
+keys. Every child also carries a composite `(workspace_id, parent_id)` foreign key. A partial
+unique index permits at most one live `DRAFT`/`IN_REVIEW` candidate per document; version number
+and tag are unique per document. `DocumentVersion` content, Review/Event/receipt/attachment/chunk
+evidence and every physical identity are immutable.
+
+The aggregate states are `DRAFT`, `ACTIVE`, `ARCHIVED`; Archive requires actor/time/reason and does
+not remove the current version or any child. Version states are `DRAFT`, `IN_REVIEW`, `PUBLISHED`,
+`REJECTED`, `SUPERSEDED`; author and reviewer must differ. Only the dedicated projector may update
+artifact/knowledge lease fields, and it cannot change content or publication fields.
+
+MinIO object keys are not caller input. Version body/manifest and attachment keys are derived from
+non-zero Workspace/Document/Version/Attachment UUIDs below `governance/documents/v1/`. Exact
+provider VersionIds, ETags and SHA-256 receipts are stored; there is no DB or application physical
+delete path.
+
+Knowledge chunks store portable bounded JSON vectors with exact dimension, provider/model and
+content hash. Retrieval is capped at 2,000 already authorized current-version candidates before
+application cosine ranking. This is the implemented portable vector shadow, not an unrecorded
+claim of pgvector/ANN production capacity.
+
 ## Constraints enforced outside DDL
 
 - Domain code owns legal change/upload/graph transitions and optimistic-version checks.

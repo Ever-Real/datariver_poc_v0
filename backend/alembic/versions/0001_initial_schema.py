@@ -796,6 +796,42 @@ def upgrade() -> None:
         op.execute('ALTER TABLE governance.change_request_items ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE governance.change_request_items FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON governance.change_request_items USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('documents',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('kind', sa.String(length=16), nullable=False),
+        sa.Column('category', sa.String(length=32), nullable=False),
+        sa.Column('title', sa.String(length=500), nullable=False),
+        sa.Column('summary', sa.Text(), nullable=False),
+        sa.Column('classification', sa.Integer(), nullable=False),
+        sa.Column('owner_subject_id', sa.Uuid(), nullable=False),
+        sa.Column('owner_department_id', sa.Uuid(), nullable=True),
+        sa.Column('system_id', sa.Uuid(), nullable=True),
+        sa.Column('domain_id', sa.Uuid(), nullable=True),
+        sa.Column('state', sa.String(length=16), nullable=False),
+        sa.Column('current_published_version_id', sa.Uuid(), nullable=True),
+        sa.Column('archived_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('archived_by', sa.Uuid(), nullable=True),
+        sa.Column('archived_reason', sa.String(length=2000), nullable=True),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(state = 'DRAFT' AND current_published_version_id IS NULL AND archived_at IS NULL AND archived_by IS NULL AND archived_reason IS NULL) OR (state = 'ACTIVE' AND current_published_version_id IS NOT NULL AND archived_at IS NULL AND archived_by IS NULL AND archived_reason IS NULL) OR (state = 'ARCHIVED' AND archived_at IS NOT NULL AND archived_by IS NOT NULL AND archived_reason IS NOT NULL)", name=op.f('ck_documents_lifecycle_shape')),
+        sa.CheckConstraint("category IN ('POLICY','STANDARD_TERMINOLOGY','SECURITY_GUIDE','OTHER')", name=op.f('ck_documents_category_vocabulary')),
+        sa.CheckConstraint("kind IN ('DOCUMENT','TEMPLATE')", name=op.f('ck_documents_kind_vocabulary')),
+        sa.CheckConstraint("state IN ('DRAFT','ACTIVE','ARCHIVED')", name=op.f('ck_documents_state_vocabulary')),
+        sa.CheckConstraint('char_length(summary) <= 2000', name=op.f('ck_documents_summary_length')),
+        sa.CheckConstraint('char_length(title) BETWEEN 1 AND 500', name=op.f('ck_documents_title_length')),
+        sa.CheckConstraint('classification BETWEEN 0 AND 3', name=op.f('ck_documents_classification_range')),
+        sa.ForeignKeyConstraint(['workspace_id', 'archived_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_governance_documents_archiver', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'current_published_version_id'], ['governance.document_versions.workspace_id', 'governance.document_versions.id'], name='fk_governance_documents_current_version', ondelete='RESTRICT', initially='DEFERRED', deferrable=True, use_alter=True),
+        sa.ForeignKeyConstraint(['workspace_id', 'owner_subject_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_governance_documents_owner', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_documents')),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_governance_documents_workspace_id'),
+        schema='governance'
+        )
+        op.create_index('ix_governance_documents_list', 'documents', ['workspace_id', 'kind', 'state', sa.literal_column('updated_at DESC'), sa.literal_column('id DESC')], unique=False, schema='governance')
+        op.create_index('ix_governance_documents_title', 'documents', ['workspace_id', sa.literal_column('lower(title)'), 'id'], unique=False, schema='governance')
         op.create_table('manual_metadata_submissions',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('asset_id', sa.Uuid(), nullable=False),
@@ -1606,6 +1642,66 @@ def upgrade() -> None:
         op.execute('ALTER TABLE governance.change_test_runs ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE governance.change_test_runs FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON governance.change_test_runs USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('document_versions',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('document_id', sa.Uuid(), nullable=False),
+        sa.Column('version_number', sa.Integer(), nullable=False),
+        sa.Column('version_tag', sa.String(length=16), nullable=False),
+        sa.Column('state', sa.String(length=16), nullable=False),
+        sa.Column('title', sa.String(length=500), nullable=False),
+        sa.Column('summary', sa.Text(), nullable=False),
+        sa.Column('applicability_scope', sa.Text(), nullable=False),
+        sa.Column('sanitized_html', sa.Text(), nullable=False),
+        sa.Column('plain_text', sa.Text(), nullable=False),
+        sa.Column('content_sha256', sa.String(length=64), nullable=False),
+        sa.Column('size_bytes', sa.Integer(), nullable=False),
+        sa.Column('sanitizer_policy_version', sa.String(length=100), nullable=False),
+        sa.Column('sanitizer_policy_sha256', sa.String(length=64), nullable=False),
+        sa.Column('source_format', sa.String(length=16), nullable=False),
+        sa.Column('source_template_version_id', sa.Uuid(), nullable=True),
+        sa.Column('author_id', sa.Uuid(), nullable=False),
+        sa.Column('submitted_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('reviewed_by', sa.Uuid(), nullable=True),
+        sa.Column('reviewed_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('published_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('artifact_state', sa.String(length=16), nullable=False),
+        sa.Column('knowledge_state', sa.String(length=16), nullable=False),
+        sa.Column('projection_attempts', sa.Integer(), nullable=False),
+        sa.Column('next_attempt_at', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('lease_owner', sa.String(length=255), nullable=True),
+        sa.Column('lease_until', sa.DateTime(timezone=True), nullable=True),
+        sa.Column('failure_code', sa.String(length=100), nullable=True),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.Column('version', sa.Integer(), nullable=False),
+        sa.CheckConstraint("(state = 'DRAFT' AND submitted_at IS NULL AND reviewed_by IS NULL AND reviewed_at IS NULL AND published_at IS NULL) OR (state = 'IN_REVIEW' AND submitted_at IS NOT NULL AND reviewed_by IS NULL AND reviewed_at IS NULL AND published_at IS NULL) OR (state = 'REJECTED' AND submitted_at IS NOT NULL AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND published_at IS NULL) OR (state IN ('PUBLISHED','SUPERSEDED') AND submitted_at IS NOT NULL AND reviewed_by IS NOT NULL AND reviewed_at IS NOT NULL AND published_at IS NOT NULL)", name=op.f('ck_document_versions_lifecycle_shape')),
+        sa.CheckConstraint("artifact_state IN ('PENDING','STORED','FAILED')", name=op.f('ck_document_versions_artifact_state_vocabulary')),
+        sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_document_versions_content_sha256_valid')),
+        sa.CheckConstraint("failure_code IS NULL OR (artifact_state = 'FAILED' OR knowledge_state = 'FAILED')", name=op.f('ck_document_versions_failure_code_shape')),
+        sa.CheckConstraint("knowledge_state IN ('PENDING','PROJECTING','READY','FAILED')", name=op.f('ck_document_versions_knowledge_state_vocabulary')),
+        sa.CheckConstraint("sanitizer_policy_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_document_versions_sanitizer_policy_sha256_valid')),
+        sa.CheckConstraint("source_format IN ('HTML','MARKDOWN','DOCX')", name=op.f('ck_document_versions_source_format_vocabulary')),
+        sa.CheckConstraint("state IN ('DRAFT','IN_REVIEW','PUBLISHED','REJECTED','SUPERSEDED')", name=op.f('ck_document_versions_state_vocabulary')),
+        sa.CheckConstraint("version_tag ~ '^v[1-9][0-9]{0,8}$'", name=op.f('ck_document_versions_version_tag_valid')),
+        sa.CheckConstraint('char_length(applicability_scope) <= 4000', name=op.f('ck_document_versions_applicability_scope_length')),
+        sa.CheckConstraint('char_length(summary) <= 2000', name=op.f('ck_document_versions_summary_length')),
+        sa.CheckConstraint('char_length(title) BETWEEN 1 AND 500', name=op.f('ck_document_versions_title_length')),
+        sa.CheckConstraint('reviewed_by IS NULL OR reviewed_by <> author_id', name=op.f('ck_document_versions_maker_checker_distinct')),
+        sa.CheckConstraint('size_bytes BETWEEN 1 AND 1048576', name=op.f('ck_document_versions_size_bytes_range')),
+        sa.CheckConstraint('version_number > 0', name=op.f('ck_document_versions_version_number_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'author_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_governance_document_versions_author', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_id'], ['governance.documents.workspace_id', 'governance.documents.id'], name='fk_governance_document_versions_document', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'reviewed_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_governance_document_versions_reviewer', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'source_template_version_id'], ['governance.document_versions.workspace_id', 'governance.document_versions.id'], name='fk_governance_document_versions_template', ondelete='RESTRICT', use_alter=True),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_document_versions')),
+        sa.UniqueConstraint('workspace_id', 'document_id', 'version_number', name='uq_governance_document_versions_number'),
+        sa.UniqueConstraint('workspace_id', 'document_id', 'version_tag', name='uq_governance_document_versions_tag'),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_governance_document_versions_workspace_id'),
+        schema='governance'
+        )
+        op.create_index('ix_governance_document_versions_history', 'document_versions', ['workspace_id', 'document_id', sa.literal_column('version_number DESC'), sa.literal_column('id DESC')], unique=False, schema='governance')
+        op.create_index('ix_governance_document_versions_projection', 'document_versions', ['knowledge_state', 'next_attempt_at', 'lease_until', 'id'], unique=False, schema='governance', postgresql_where=sa.text("state = 'PUBLISHED' AND knowledge_state IN ('PENDING','FAILED')"))
+        op.create_index('uq_governance_document_versions_live_candidate', 'document_versions', ['workspace_id', 'document_id'], unique=True, schema='governance', postgresql_where=sa.text("state IN ('DRAFT','IN_REVIEW')"))
         op.create_table('manual_metadata_apply_attempts',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('submission_id', sa.Uuid(), nullable=False),
@@ -2222,6 +2318,147 @@ def upgrade() -> None:
         op.execute('ALTER TABLE catalog.column_profile_metrics ENABLE ROW LEVEL SECURITY')
         op.execute('ALTER TABLE catalog.column_profile_metrics FORCE ROW LEVEL SECURITY')
         op.execute("CREATE POLICY workspace_isolation ON catalog.column_profile_metrics USING (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid) WITH CHECK (workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid)")
+        op.create_table('document_artifact_receipts',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('document_id', sa.Uuid(), nullable=False),
+        sa.Column('document_version_id', sa.Uuid(), nullable=False),
+        sa.Column('bucket', sa.String(length=255), nullable=False),
+        sa.Column('content_object_key', sa.Text(), nullable=False),
+        sa.Column('content_provider_version_id', sa.String(length=1000), nullable=False),
+        sa.Column('content_etag', sa.String(length=255), nullable=False),
+        sa.Column('content_sha256', sa.String(length=64), nullable=False),
+        sa.Column('manifest_object_key', sa.Text(), nullable=False),
+        sa.Column('manifest_provider_version_id', sa.String(length=1000), nullable=False),
+        sa.Column('manifest_etag', sa.String(length=255), nullable=False),
+        sa.Column('manifest_sha256', sa.String(length=64), nullable=False),
+        sa.Column('verified_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_document_artifact_receipts_content_sha256_valid')),
+        sa.CheckConstraint("manifest_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_document_artifact_receipts_manifest_sha256_valid')),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_id'], ['governance.documents.workspace_id', 'governance.documents.id'], name='fk_governance_document_artifact_receipts_document', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_version_id'], ['governance.document_versions.workspace_id', 'governance.document_versions.id'], name='fk_governance_document_artifact_receipts_version', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_document_artifact_receipts')),
+        sa.UniqueConstraint('bucket', 'content_object_key', 'content_provider_version_id', name='uq_governance_document_artifact_content'),
+        sa.UniqueConstraint('bucket', 'manifest_object_key', 'manifest_provider_version_id', name='uq_governance_document_artifact_manifest'),
+        sa.UniqueConstraint('workspace_id', 'document_version_id', name='uq_governance_document_artifact_receipts_version'),
+        schema='governance'
+        )
+        op.create_table('document_attachments',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('document_id', sa.Uuid(), nullable=False),
+        sa.Column('document_version_id', sa.Uuid(), nullable=False),
+        sa.Column('original_name', sa.String(length=500), nullable=False),
+        sa.Column('content_type', sa.String(length=255), nullable=False),
+        sa.Column('size_bytes', sa.Integer(), nullable=False),
+        sa.Column('content_sha256', sa.String(length=64), nullable=False),
+        sa.Column('bucket', sa.String(length=255), nullable=False),
+        sa.Column('object_key', sa.Text(), nullable=False),
+        sa.Column('provider_version_id', sa.String(length=1000), nullable=False),
+        sa.Column('etag', sa.String(length=255), nullable=False),
+        sa.Column('uploaded_by', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_document_attachments_content_sha256_valid')),
+        sa.CheckConstraint('size_bytes BETWEEN 1 AND 26214400', name=op.f('ck_document_attachments_size_bytes_range')),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_id'], ['governance.documents.workspace_id', 'governance.documents.id'], name='fk_governance_document_attachments_document', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_version_id'], ['governance.document_versions.workspace_id', 'governance.document_versions.id'], name='fk_governance_document_attachments_version', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'uploaded_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_governance_document_attachments_uploader', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_document_attachments')),
+        sa.UniqueConstraint('bucket', 'object_key', 'provider_version_id', name='uq_governance_document_attachments_object'),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_governance_document_attachments_workspace_id'),
+        schema='governance'
+        )
+        op.create_index('ix_governance_document_attachments_version', 'document_attachments', ['workspace_id', 'document_version_id', 'created_at', 'id'], unique=False, schema='governance')
+        op.create_table('document_events',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('document_id', sa.Uuid(), nullable=False),
+        sa.Column('document_version_id', sa.Uuid(), nullable=True),
+        sa.Column('sequence', sa.Integer(), nullable=False),
+        sa.Column('event_type', sa.String(length=32), nullable=False),
+        sa.Column('actor_id', sa.Uuid(), nullable=False),
+        sa.Column('policy_decision_id', sa.Uuid(), nullable=True),
+        sa.Column('request_id', sa.String(length=100), nullable=False),
+        sa.Column('details', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("event_type IN ('CREATED','VERSION_CREATED','SUBMITTED','APPROVED','REJECTED','PUBLISHED','ARCHIVED','ATTACHMENT_ADDED','ARTIFACT_STORED','KNOWLEDGE_PROJECTED','PROJECTION_FAILED')", name=op.f('ck_document_events_event_type_vocabulary')),
+        sa.CheckConstraint('sequence > 0', name=op.f('ck_document_events_sequence_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'actor_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_governance_document_events_actor', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_id'], ['governance.documents.workspace_id', 'governance.documents.id'], name='fk_governance_document_events_document', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_version_id'], ['governance.document_versions.workspace_id', 'governance.document_versions.id'], name='fk_governance_document_events_version', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_document_events')),
+        sa.UniqueConstraint('workspace_id', 'document_id', 'sequence', name='uq_governance_document_events_sequence'),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_governance_document_events_workspace_id'),
+        schema='governance'
+        )
+        op.create_index('ix_governance_document_events_history', 'document_events', ['workspace_id', 'document_id', 'sequence'], unique=False, schema='governance')
+        op.create_table('document_knowledge_chunks',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('document_id', sa.Uuid(), nullable=False),
+        sa.Column('document_version_id', sa.Uuid(), nullable=False),
+        sa.Column('ordinal', sa.Integer(), nullable=False),
+        sa.Column('content', sa.Text(), nullable=False),
+        sa.Column('content_sha256', sa.String(length=64), nullable=False),
+        sa.Column('embedding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('embedding_dimension', sa.Integer(), nullable=False),
+        sa.Column('provider', sa.String(length=100), nullable=False),
+        sa.Column('model_identity', sa.String(length=255), nullable=False),
+        sa.Column('graph_node_id', sa.Uuid(), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_document_knowledge_chunks_content_sha256_valid')),
+        sa.CheckConstraint('embedding_dimension BETWEEN 1 AND 16384', name=op.f('ck_document_knowledge_chunks_embedding_dimension_range')),
+        sa.CheckConstraint('ordinal > 0', name=op.f('ck_document_knowledge_chunks_ordinal_positive')),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_id'], ['governance.documents.workspace_id', 'governance.documents.id'], name='fk_governance_document_knowledge_chunks_document', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_version_id'], ['governance.document_versions.workspace_id', 'governance.document_versions.id'], name='fk_governance_document_knowledge_chunks_version', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_document_knowledge_chunks')),
+        sa.UniqueConstraint('workspace_id', 'document_version_id', 'ordinal', name='uq_governance_document_knowledge_chunks_ordinal'),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_governance_document_knowledge_chunks_workspace_id'),
+        schema='governance'
+        )
+        op.create_index('ix_governance_document_knowledge_chunks_search', 'document_knowledge_chunks', ['workspace_id', 'document_id', 'document_version_id', 'ordinal'], unique=False, schema='governance')
+        op.create_table('document_projection_receipts',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('document_id', sa.Uuid(), nullable=False),
+        sa.Column('document_version_id', sa.Uuid(), nullable=False),
+        sa.Column('chunk_count', sa.Integer(), nullable=False),
+        sa.Column('provider', sa.String(length=100), nullable=False),
+        sa.Column('model_identity', sa.String(length=255), nullable=False),
+        sa.Column('projection_hash', sa.String(length=64), nullable=False),
+        sa.Column('graph_projection_hash', sa.String(length=64), nullable=True),
+        sa.Column('verified_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("graph_projection_hash IS NULL OR graph_projection_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_document_projection_receipts_graph_projection_hash_valid')),
+        sa.CheckConstraint("projection_hash ~ '^[0-9a-f]{64}$'", name=op.f('ck_document_projection_receipts_projection_hash_valid')),
+        sa.CheckConstraint('chunk_count BETWEEN 1 AND 512', name=op.f('ck_document_projection_receipts_chunk_count_range')),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_id'], ['governance.documents.workspace_id', 'governance.documents.id'], name='fk_governance_document_projection_receipts_document', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_version_id'], ['governance.document_versions.workspace_id', 'governance.document_versions.id'], name='fk_governance_document_projection_receipts_version', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_document_projection_receipts')),
+        sa.UniqueConstraint('workspace_id', 'document_version_id', name='uq_governance_document_projection_receipts_version'),
+        schema='governance'
+        )
+        op.create_table('document_reviews',
+        sa.Column('workspace_id', sa.Uuid(), nullable=False),
+        sa.Column('document_id', sa.Uuid(), nullable=False),
+        sa.Column('document_version_id', sa.Uuid(), nullable=False),
+        sa.Column('decision', sa.String(length=16), nullable=False),
+        sa.Column('reviewer_id', sa.Uuid(), nullable=False),
+        sa.Column('reason', sa.String(length=2000), nullable=False),
+        sa.Column('policy_decision_id', sa.Uuid(), nullable=False),
+        sa.Column('authentication_assurance', sa.String(length=32), nullable=False),
+        sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
+        sa.Column('id', sa.Uuid(), nullable=False),
+        sa.CheckConstraint("decision IN ('APPROVE','REJECT')", name=op.f('ck_document_reviews_decision_vocabulary')),
+        sa.CheckConstraint('char_length(reason) BETWEEN 1 AND 2000', name=op.f('ck_document_reviews_reason_length')),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_id'], ['governance.documents.workspace_id', 'governance.documents.id'], name='fk_governance_document_reviews_document', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'document_version_id'], ['governance.document_versions.workspace_id', 'governance.document_versions.id'], name='fk_governance_document_reviews_version', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'reviewer_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_governance_document_reviews_reviewer', ondelete='RESTRICT'),
+        sa.PrimaryKeyConstraint('id', name=op.f('pk_document_reviews')),
+        sa.UniqueConstraint('workspace_id', 'document_version_id', name='uq_governance_document_reviews_version'),
+        sa.UniqueConstraint('workspace_id', 'id', name='uq_governance_document_reviews_workspace_id'),
+        schema='governance'
+        )
+        op.create_index('ix_governance_document_reviews_history', 'document_reviews', ['workspace_id', 'document_id', sa.literal_column('created_at DESC'), sa.literal_column('id DESC')], unique=False, schema='governance')
         op.create_table('manual_metadata_aspect_reports',
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('submission_id', sa.Uuid(), nullable=False),
@@ -4479,6 +4716,8 @@ def upgrade() -> None:
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_base_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'base_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_published_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'published_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_changesets_workspace_id_source_analysis_job_id_source_analysis_jobs'), 'changesets', 'source_analysis_jobs', ['workspace_id', 'source_analysis_job_id'], ['workspace_id', 'id'], source_schema='knowledge', referent_schema='knowledge', ondelete='RESTRICT', use_alter=True)
+        op.create_foreign_key('fk_governance_document_versions_template', 'document_versions', 'document_versions', ['workspace_id', 'source_template_version_id'], ['workspace_id', 'id'], source_schema='governance', referent_schema='governance', ondelete='RESTRICT', use_alter=True)
+        op.create_foreign_key('fk_governance_documents_current_version', 'documents', 'document_versions', ['workspace_id', 'current_published_version_id'], ['workspace_id', 'id'], source_schema='governance', referent_schema='governance', ondelete='RESTRICT', initially='DEFERRED', deferrable=True, use_alter=True)
         op.create_foreign_key(op.f('fk_graphs_workspace_id_id_active_release_id_releases'), 'graphs', 'releases', ['workspace_id', 'id', 'active_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_graphs_workspace_id_id_active_studio_release_id_studio_releases'), 'graphs', 'studio_releases', ['workspace_id', 'id', 'active_studio_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', ondelete='RESTRICT', use_alter=True)
         op.create_foreign_key(op.f('fk_ontology_versions_workspace_id_graph_id_base_ontology_version_id_ontology_versions'), 'ontology_versions', 'ontology_versions', ['workspace_id', 'graph_id', 'base_ontology_version_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', ondelete='RESTRICT', use_alter=True)
@@ -4676,9 +4915,82 @@ def upgrade() -> None:
         op.execute("CREATE OR REPLACE FUNCTION quality.request_manual_validation_run_v1(\n    p_workspace_id uuid,\n    p_rule_set_id uuid,\n    p_policy_decision_id uuid\n)\nRETURNS uuid\nLANGUAGE plpgsql\nVOLATILE\nSECURITY DEFINER\nSET search_path = pg_catalog, quality, catalog, retention, integration\nAS $$\nDECLARE\n    actor_id uuid := NULLIF(current_setting('app.subject_id', true), '')::uuid;\n    parent quality.rule_sets%ROWTYPE;\n    candidate quality.rule_set_versions%ROWTYPE;\n    result_binding record;\n    audit_binding record;\n    decision_evidence record;\n    run_id uuid := gen_random_uuid();\n    cutoff_at timestamptz := transaction_timestamp();\n    profile_context_hash text;\n    security_context_hash text;\nBEGIN\n    IF p_workspace_id IS DISTINCT FROM\n       NULLIF(current_setting('app.workspace_id', true), '')::uuid THEN\n        RAISE EXCEPTION 'invalid Quality manual Run request'\n            USING ERRCODE = '42501';\n    END IF;\n    SELECT * INTO parent\n    FROM quality.rule_sets\n    WHERE workspace_id = p_workspace_id\n      AND id = p_rule_set_id\n      AND state = 'ACTIVE'\n    FOR KEY SHARE;\n    SELECT * INTO candidate\n    FROM quality.rule_set_versions\n    WHERE workspace_id = p_workspace_id\n      AND rule_set_id = p_rule_set_id\n      AND state = 'ACTIVE'\n    FOR KEY SHARE;\n    IF parent.id IS NULL\n       OR candidate.id IS NULL\n       OR candidate.schedule_mode <> 'MANUAL_ONLY'\n       OR NOT EXISTS (\n           SELECT 1\n           FROM quality.rule_definitions AS definition\n           WHERE definition.workspace_id = p_workspace_id\n             AND definition.rule_set_version_id = candidate.id\n       )\n       OR NOT quality.current_target_matches_v1(\n           p_workspace_id,\n           candidate.asset_id,\n           candidate.classification,\n           candidate.system_id,\n           candidate.domain_id,\n           candidate.lifecycle,\n           candidate.source_version,\n           'quality.run.request'\n       ) THEN\n        RAISE EXCEPTION 'invalid Quality manual Run request'\n            USING ERRCODE = '42501';\n    END IF;\n    SELECT * INTO decision_evidence\n    FROM quality.require_human_decision_v1(\n        p_workspace_id,\n        actor_id,\n        candidate.id,\n        'quality.run.request',\n        p_policy_decision_id,\n        false\n    );\n    SELECT * INTO result_binding\n    FROM retention.resolve_quality_binding_v1(\n        p_workspace_id,\n        'QUALITY_RESULT',\n        'QUALITY_VALIDATION_RUN',\n        run_id,\n        cutoff_at\n    );\n    SELECT * INTO audit_binding\n    FROM retention.resolve_quality_binding_v1(\n        p_workspace_id,\n        'QUALITY_AUDIT',\n        'QUALITY_VALIDATION_RUN',\n        run_id,\n        cutoff_at\n    );\n    SELECT COALESCE(\n        (\n            SELECT snapshot.snapshot_identity_hash\n            FROM catalog.asset_profile_snapshots AS snapshot\n            WHERE snapshot.workspace_id = p_workspace_id\n              AND snapshot.asset_id = candidate.asset_id\n              AND snapshot.asset_source_version = candidate.source_version\n              AND snapshot.profile_kind IN ('FULL', 'PARTITION')\n              AND snapshot.completeness = 'COMPLETE'\n              AND snapshot.stale_at > cutoff_at\n              AND snapshot.profile_retain_until > cutoff_at\n            ORDER BY snapshot.profiled_at DESC, snapshot.id DESC\n            LIMIT 1\n        ),\n        encode(sha256(convert_to(\n            'QUALITY_PROFILE_CONTEXT_UNAVAILABLE_V1', 'UTF8'\n        )), 'hex')\n    ) INTO profile_context_hash;\n    security_context_hash := encode(sha256(convert_to(jsonb_build_object(\n        'contract', 'QUALITY_SECURITY_CONTEXT_V1',\n        'asset_id', candidate.asset_id::text,\n        'classification', candidate.classification,\n        'system_id', candidate.system_id::text,\n        'domain_id', candidate.domain_id::text,\n        'lifecycle', candidate.lifecycle,\n        'source_version', candidate.source_version\n    )::text, 'UTF8')), 'hex');\n\n    INSERT INTO quality.validation_runs (\n        id, workspace_id, rule_set_id, rule_set_version_id, asset_id,\n        target_binding_hash, schema_hash,\n        source_connection_profile_id, source_connection_profile_version,\n        source_connection_profile_hash,\n        workload_profile_id, workload_profile_version, workload_profile_hash,\n        security_context_hash, datahub_profile_context_hash,\n        score_policy_id, score_policy_version, score_policy_hash,\n        retry_of_run_id, trigger_kind, requested_by,\n        schedule_id, schedule_version, canonical_window_key, due_at, is_late,\n        state, quality_outcome, score, passed_count,\n        advisory_failed_count, blocking_failed_count,\n        current_attempt_id, attempt_count, maximum_attempts, next_attempt_at,\n        lease_epoch, lease_token_hash, lease_owner_fingerprint, lease_until,\n        heartbeat_at, source_started_at, source_access_deadline,\n        hard_timeout_contract_hash, completed_at, failure_code,\n        result_retention_kind, result_retention_policy_id,\n        result_retention_policy_number, result_retention_policy_hash,\n        result_retention_basis_at, result_retain_until,\n        result_hold_generation, result_hold_hash,\n        audit_retention_kind, audit_retention_policy_id,\n        audit_retention_policy_number, audit_retention_policy_hash,\n        audit_retention_basis_at, audit_retain_until,\n        audit_hold_generation, audit_hold_hash,\n        created_at, updated_at, version\n    )\n    VALUES (\n        run_id, p_workspace_id, candidate.rule_set_id,\n        candidate.id, candidate.asset_id,\n        candidate.target_binding_hash, candidate.schema_hash,\n        candidate.source_connection_profile_id,\n        candidate.source_connection_profile_version,\n        candidate.source_connection_profile_hash,\n        candidate.workload_profile_id,\n        candidate.workload_profile_version,\n        candidate.workload_profile_hash,\n        security_context_hash, profile_context_hash,\n        candidate.score_policy_id,\n        candidate.score_policy_version,\n        candidate.score_policy_hash,\n        NULL, 'MANUAL', actor_id,\n        NULL, NULL, NULL, NULL, false,\n        'QUEUED', 'UNKNOWN', NULL, NULL, NULL, NULL,\n        NULL, 0, 3, cutoff_at, 0, NULL, NULL, NULL,\n        NULL, NULL, NULL, candidate.workload_profile_hash, NULL, NULL,\n        'QUALITY_RESULT', result_binding.policy_id, result_binding.policy_number,\n        result_binding.policy_hash, cutoff_at, result_binding.retain_until,\n        result_binding.hold_generation, result_binding.hold_hash,\n        'QUALITY_AUDIT', audit_binding.policy_id, audit_binding.policy_number,\n        audit_binding.policy_hash, cutoff_at, audit_binding.retain_until,\n        audit_binding.hold_generation, audit_binding.hold_hash,\n        cutoff_at, cutoff_at, 1\n    );\n    INSERT INTO quality.run_events (\n        id, workspace_id, run_id, sequence, state, reason_code,\n        actor_id, actor_kind, evidence_hash,\n        audit_retention_policy_id, audit_retention_policy_number,\n        audit_retention_policy_hash, audit_retain_until,\n        audit_hold_generation, audit_hold_hash, occurred_at\n    )\n    VALUES (\n        gen_random_uuid(), p_workspace_id, run_id, 1, 'QUEUED',\n        'MANUAL_REQUEST_ACCEPTED', actor_id, 'HUMAN',\n        decision_evidence.authorization_hash,\n        audit_binding.policy_id, audit_binding.policy_number,\n        audit_binding.policy_hash, audit_binding.retain_until,\n        audit_binding.hold_generation, audit_binding.hold_hash, cutoff_at\n    );\n    INSERT INTO integration.outbox_events (\n        id, workspace_id, aggregate_type, aggregate_id, event_type,\n        schema_version, payload, created_at, published_at,\n        dead_lettered_at, lease_until, attempts, last_error_code\n    )\n    VALUES (\n        gen_random_uuid(), p_workspace_id, 'quality_validation_run', run_id,\n        'quality.validation_run.queued.v1', 1,\n        jsonb_build_object('run_id', run_id::text, 'state', 'QUEUED'),\n        cutoff_at, NULL, NULL, NULL, 0, NULL\n    );\n    RETURN run_id;\nEND\n$$;")
         op.execute('REVOKE ALL ON FUNCTION quality.request_manual_validation_run_v1(\n    uuid, uuid, uuid\n) FROM PUBLIC;')
         op.execute("DO $$\nBEGIN\n    IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN\n        GRANT EXECUTE ON FUNCTION quality.review_rule_set_version_command_v2(\n            uuid, uuid, text, text, uuid, integer\n        ) TO datariver_app;\n        GRANT EXECUTE ON FUNCTION quality.activate_rule_set_version_command_v2(\n            uuid, uuid, uuid, text, integer\n        ) TO datariver_app;\n        GRANT EXECUTE ON FUNCTION quality.request_manual_validation_run_v1(\n            uuid, uuid, uuid\n        ) TO datariver_app;\n    END IF;\nEND\n$$;")
+        op.execute("DO $$\nBEGIN\n    IF NOT EXISTS (\n        SELECT 1 FROM pg_roles\n        WHERE rolname = 'datariver_app'\n          AND rolcanlogin IS TRUE\n          AND rolsuper IS FALSE\n          AND rolcreatedb IS FALSE\n          AND rolcreaterole IS FALSE\n          AND rolreplication IS FALSE\n          AND rolbypassrls IS FALSE\n    ) THEN\n        RAISE EXCEPTION 'required role datariver_app is missing';\n    END IF;\n    IF NOT EXISTS (\n        SELECT 1 FROM pg_roles\n        WHERE rolname = 'datariver_governance_document'\n          AND rolcanlogin IS TRUE\n          AND rolsuper IS FALSE\n          AND rolcreatedb IS FALSE\n          AND rolcreaterole IS FALSE\n          AND rolreplication IS FALSE\n          AND rolbypassrls IS FALSE\n    ) THEN\n        RAISE EXCEPTION\n            'datariver_governance_document must be a safe NOBYPASSRLS login role';\n    END IF;\n    IF EXISTS (\n        SELECT 1\n        FROM pg_auth_members AS membership\n        JOIN pg_roles AS member_role ON member_role.oid = membership.member\n        JOIN pg_roles AS granted_role ON granted_role.oid = membership.roleid\n        WHERE member_role.rolname = 'datariver_governance_document'\n           OR (\n               granted_role.rolname = 'datariver_governance_document'\n               AND member_role.rolname NOT IN (\n                   current_user, session_user, 'datariver_migrator'\n               )\n           )\n    ) THEN\n        RAISE EXCEPTION 'datariver_governance_document role membership is unsafe';\n    END IF;\nEND\n$$")
+        op.execute("CREATE OR REPLACE FUNCTION governance.current_human_can_document_v1(\n    p_workspace_id uuid,\n    p_action text,\n    p_classification integer,\n    p_system_id uuid,\n    p_domain_id uuid\n)\nRETURNS boolean\nLANGUAGE sql\nSTABLE\nSECURITY DEFINER\nSET search_path = pg_catalog, platform, iam\nAS $$\n    SELECT EXISTS (\n        SELECT 1\n        FROM platform.workspaces AS workspace\n        JOIN iam.workspace_memberships AS membership\n          ON membership.workspace_id = workspace.id\n        JOIN iam.subjects AS subject\n          ON subject.id = membership.subject_id\n        WHERE workspace.id = p_workspace_id\n          AND workspace.status = 'ACTIVE'\n          AND membership.subject_id =\n              NULLIF(current_setting('app.subject_id', true), '')::uuid\n          AND subject.active IS TRUE\n          AND membership.active IS TRUE\n          AND (\n              membership.access_expires_at IS NULL\n              OR membership.access_expires_at > transaction_timestamp()\n          )\n          AND COALESCE(membership.job_function, '') <> 'SERVICE_ACCOUNT'\n          AND NOT (\n              COALESCE(membership.attributes -> 'groups', '[]'::jsonb)\n              ? 'service-accounts'\n          )\n          AND membership.clearance >= p_classification\n          AND (\n              p_system_id IS NULL\n              OR p_classification = 0\n              OR COALESCE(\n                  membership.attributes -> 'allowed_system_ids',\n                  '[]'::jsonb\n              ) ? p_system_id::text\n          )\n          AND (\n              p_domain_id IS NULL\n              OR p_classification = 0\n              OR COALESCE(\n                  membership.attributes -> 'allowed_domain_ids',\n                  '[]'::jsonb\n              ) ? p_domain_id::text\n          )\n          AND COALESCE(\n              membership.attributes -> 'allowed_actions',\n              '[]'::jsonb\n          ) ? p_action\n          AND NOT (\n              COALESCE(\n                  membership.attributes -> 'denied_actions',\n                  '[]'::jsonb\n              ) ? p_action\n          )\n    )\n$$;")
+        op.execute('REVOKE ALL ON FUNCTION governance.current_human_can_document_v1(\n    uuid, text, integer, uuid, uuid\n) FROM PUBLIC;')
+        op.execute('GRANT EXECUTE ON FUNCTION governance.current_human_can_document_v1(\n    uuid, text, integer, uuid, uuid\n) TO datariver_app;')
+        op.execute("CREATE OR REPLACE FUNCTION governance.can_read_document_v1(p_document_id uuid)\nRETURNS boolean\nLANGUAGE sql\nSTABLE\nSECURITY DEFINER\nSET search_path = pg_catalog, governance\nAS $$\n    SELECT governance.current_human_can_document_v1(\n        document.workspace_id,\n        CASE\n            WHEN document.kind = 'TEMPLATE' THEN 'governance.template.read'\n            WHEN document.state = 'ARCHIVED' THEN 'governance.document.history.read'\n            ELSE 'governance.document.read'\n        END,\n        document.classification,\n        document.system_id,\n        document.domain_id\n    )\n    FROM governance.documents AS document\n    WHERE document.id = p_document_id\n      AND document.workspace_id =\n          NULLIF(current_setting('app.workspace_id', true), '')::uuid\n$$;")
+        op.execute('REVOKE ALL ON FUNCTION governance.can_read_document_v1(uuid) FROM PUBLIC;')
+        op.execute('GRANT EXECUTE ON FUNCTION governance.can_read_document_v1(uuid) TO datariver_app;')
+        op.execute("CREATE OR REPLACE FUNCTION governance.can_act_on_document_v1(\n    p_document_id uuid,\n    p_document_action text,\n    p_template_action text\n)\nRETURNS boolean\nLANGUAGE sql\nSTABLE\nSECURITY DEFINER\nSET search_path = pg_catalog, governance\nAS $$\n    SELECT governance.current_human_can_document_v1(\n        document.workspace_id,\n        CASE WHEN document.kind = 'TEMPLATE'\n             THEN p_template_action ELSE p_document_action END,\n        document.classification,\n        document.system_id,\n        document.domain_id\n    )\n    FROM governance.documents AS document\n    WHERE document.id = p_document_id\n      AND document.workspace_id =\n          NULLIF(current_setting('app.workspace_id', true), '')::uuid\n$$;")
+        op.execute('REVOKE ALL ON FUNCTION governance.can_act_on_document_v1(\n    uuid, text, text\n) FROM PUBLIC;')
+        op.execute('GRANT EXECUTE ON FUNCTION governance.can_act_on_document_v1(\n    uuid, text, text\n) TO datariver_app;')
+        op.execute("CREATE OR REPLACE FUNCTION governance.reject_document_evidence_mutation_v1()\nRETURNS trigger\nLANGUAGE plpgsql\nAS $$\nBEGIN\n    RAISE EXCEPTION 'Governance Document evidence is immutable'\n        USING ERRCODE = '55000';\nEND\n$$;")
+        op.execute("CREATE OR REPLACE FUNCTION governance.enforce_document_mutation_v1()\nRETURNS trigger\nLANGUAGE plpgsql\nAS $$\nDECLARE\n    required_action text;\nBEGIN\n    IF TG_OP = 'DELETE' THEN\n        RAISE EXCEPTION 'Governance Documents are logically archived, never deleted'\n            USING ERRCODE = '55000';\n    END IF;\n    IF NEW.id IS DISTINCT FROM OLD.id\n       OR NEW.workspace_id IS DISTINCT FROM OLD.workspace_id\n       OR NEW.kind IS DISTINCT FROM OLD.kind\n       OR NEW.category IS DISTINCT FROM OLD.category\n       OR NEW.classification IS DISTINCT FROM OLD.classification\n       OR NEW.owner_subject_id IS DISTINCT FROM OLD.owner_subject_id\n       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN\n        RAISE EXCEPTION 'Governance Document identity is immutable'\n            USING ERRCODE = '55000';\n    END IF;\n    IF NEW.state = 'ARCHIVED' AND OLD.state <> 'ARCHIVED' THEN\n        required_action := CASE WHEN NEW.kind = 'TEMPLATE'\n            THEN 'governance.template.archive'\n            ELSE 'governance.document.archive' END;\n    ELSIF NEW.current_published_version_id IS DISTINCT FROM\n          OLD.current_published_version_id THEN\n        required_action := CASE WHEN NEW.kind = 'TEMPLATE'\n            THEN 'governance.template.activate'\n            ELSE 'governance.document.publish' END;\n    ELSE\n        required_action := CASE WHEN NEW.kind = 'TEMPLATE'\n            THEN 'governance.template.propose'\n            ELSE 'governance.document.edit' END;\n    END IF;\n    IF NOT governance.current_human_can_document_v1(\n        NEW.workspace_id,\n        required_action,\n        NEW.classification,\n        NEW.system_id,\n        NEW.domain_id\n    ) AND NOT (\n        required_action = 'governance.document.edit'\n        AND governance.current_human_can_document_v1(\n            NEW.workspace_id,\n            'governance.document.review',\n            NEW.classification,\n            NEW.system_id,\n            NEW.domain_id\n        )\n    ) AND NOT (\n        required_action = 'governance.template.propose'\n        AND governance.current_human_can_document_v1(\n            NEW.workspace_id,\n            'governance.template.review',\n            NEW.classification,\n            NEW.system_id,\n            NEW.domain_id\n        )\n    ) THEN\n        RAISE EXCEPTION 'Governance Document transition is not authorized'\n            USING ERRCODE = '42501';\n    END IF;\n    IF NEW.state = 'ARCHIVED' AND (\n        NEW.archived_at IS NULL OR NEW.archived_by IS DISTINCT FROM\n        NULLIF(current_setting('app.subject_id', true), '')::uuid\n    ) THEN\n        RAISE EXCEPTION 'Governance Document archive evidence is invalid'\n            USING ERRCODE = '55000';\n    END IF;\n    RETURN NEW;\nEND\n$$;")
+        op.execute("CREATE OR REPLACE FUNCTION governance.enforce_document_version_mutation_v1()\nRETURNS trigger\nLANGUAGE plpgsql\nAS $$\nDECLARE\n    parent governance.documents%ROWTYPE;\n    required_action text;\nBEGIN\n    IF TG_OP = 'DELETE' THEN\n        RAISE EXCEPTION 'Governance Document versions are immutable'\n            USING ERRCODE = '55000';\n    END IF;\n    IF NEW.id IS DISTINCT FROM OLD.id\n       OR NEW.workspace_id IS DISTINCT FROM OLD.workspace_id\n       OR NEW.document_id IS DISTINCT FROM OLD.document_id\n       OR NEW.version_number IS DISTINCT FROM OLD.version_number\n       OR NEW.version_tag IS DISTINCT FROM OLD.version_tag\n       OR NEW.title IS DISTINCT FROM OLD.title\n       OR NEW.summary IS DISTINCT FROM OLD.summary\n       OR NEW.applicability_scope IS DISTINCT FROM OLD.applicability_scope\n       OR NEW.sanitized_html IS DISTINCT FROM OLD.sanitized_html\n       OR NEW.plain_text IS DISTINCT FROM OLD.plain_text\n       OR NEW.content_sha256 IS DISTINCT FROM OLD.content_sha256\n       OR NEW.size_bytes IS DISTINCT FROM OLD.size_bytes\n       OR NEW.sanitizer_policy_version IS DISTINCT FROM OLD.sanitizer_policy_version\n       OR NEW.sanitizer_policy_sha256 IS DISTINCT FROM OLD.sanitizer_policy_sha256\n       OR NEW.source_format IS DISTINCT FROM OLD.source_format\n       OR NEW.source_template_version_id IS DISTINCT FROM OLD.source_template_version_id\n       OR NEW.author_id IS DISTINCT FROM OLD.author_id\n       OR NEW.created_at IS DISTINCT FROM OLD.created_at THEN\n        RAISE EXCEPTION 'Governance Document version content is immutable'\n            USING ERRCODE = '55000';\n    END IF;\n    SELECT * INTO parent\n    FROM governance.documents\n    WHERE workspace_id = NEW.workspace_id AND id = NEW.document_id;\n    IF current_user = 'datariver_governance_document' THEN\n        IF NEW.state IS DISTINCT FROM OLD.state\n           OR NEW.submitted_at IS DISTINCT FROM OLD.submitted_at\n           OR NEW.reviewed_by IS DISTINCT FROM OLD.reviewed_by\n           OR NEW.reviewed_at IS DISTINCT FROM OLD.reviewed_at\n           OR NEW.published_at IS DISTINCT FROM OLD.published_at THEN\n            RAISE EXCEPTION 'Projection worker cannot change publication state'\n                USING ERRCODE = '42501';\n        END IF;\n        RETURN NEW;\n    END IF;\n    IF NEW.artifact_state IS DISTINCT FROM OLD.artifact_state\n       OR NEW.knowledge_state IS DISTINCT FROM OLD.knowledge_state\n       OR NEW.projection_attempts IS DISTINCT FROM OLD.projection_attempts\n       OR NEW.next_attempt_at IS DISTINCT FROM OLD.next_attempt_at\n       OR NEW.lease_owner IS DISTINCT FROM OLD.lease_owner\n       OR NEW.lease_until IS DISTINCT FROM OLD.lease_until\n       OR NEW.failure_code IS DISTINCT FROM OLD.failure_code THEN\n        RAISE EXCEPTION 'Human commands cannot mutate projection evidence'\n            USING ERRCODE = '42501';\n    END IF;\n    IF OLD.state = 'DRAFT' AND NEW.state = 'IN_REVIEW'\n       AND NEW.author_id =\n           NULLIF(current_setting('app.subject_id', true), '')::uuid THEN\n        required_action := CASE WHEN parent.kind = 'TEMPLATE'\n            THEN 'governance.template.propose'\n            ELSE 'governance.document.edit' END;\n    ELSIF OLD.state = 'IN_REVIEW' AND NEW.state = 'REJECTED'\n       AND NEW.reviewed_by =\n           NULLIF(current_setting('app.subject_id', true), '')::uuid\n       AND NEW.reviewed_by <> NEW.author_id THEN\n        required_action := CASE WHEN parent.kind = 'TEMPLATE'\n            THEN 'governance.template.review'\n            ELSE 'governance.document.review' END;\n    ELSIF OLD.state = 'IN_REVIEW' AND NEW.state = 'PUBLISHED'\n       AND NEW.reviewed_by =\n           NULLIF(current_setting('app.subject_id', true), '')::uuid\n       AND NEW.reviewed_by <> NEW.author_id THEN\n        required_action := CASE WHEN parent.kind = 'TEMPLATE'\n            THEN 'governance.template.activate'\n            ELSE 'governance.document.publish' END;\n    ELSIF OLD.state = 'PUBLISHED' AND NEW.state = 'SUPERSEDED' THEN\n        required_action := CASE WHEN parent.kind = 'TEMPLATE'\n            THEN 'governance.template.activate'\n            ELSE 'governance.document.publish' END;\n    ELSIF NEW.state IS NOT DISTINCT FROM OLD.state THEN\n        required_action := CASE WHEN parent.kind = 'TEMPLATE'\n            THEN 'governance.template.propose'\n            ELSE 'governance.document.edit' END;\n    ELSE\n        RAISE EXCEPTION 'Governance Document version transition is invalid'\n            USING ERRCODE = '55000';\n    END IF;\n    IF NOT governance.current_human_can_document_v1(\n        NEW.workspace_id,\n        required_action,\n        parent.classification,\n        parent.system_id,\n        parent.domain_id\n    ) THEN\n        RAISE EXCEPTION 'Governance Document version transition is not authorized'\n            USING ERRCODE = '42501';\n    END IF;\n    RETURN NEW;\nEND\n$$;")
+        op.execute('CREATE TRIGGER enforce_document_mutation\nBEFORE UPDATE OR DELETE ON governance.documents\nFOR EACH ROW EXECUTE FUNCTION governance.enforce_document_mutation_v1();')
+        op.execute('CREATE TRIGGER enforce_document_version_mutation\nBEFORE UPDATE OR DELETE ON governance.document_versions\nFOR EACH ROW EXECUTE FUNCTION governance.enforce_document_version_mutation_v1();')
+        op.execute('CREATE TRIGGER reject_document_review_mutation\nBEFORE UPDATE OR DELETE ON governance.document_reviews\nFOR EACH ROW EXECUTE FUNCTION governance.reject_document_evidence_mutation_v1();')
+        op.execute('CREATE TRIGGER reject_document_event_mutation\nBEFORE UPDATE OR DELETE ON governance.document_events\nFOR EACH ROW EXECUTE FUNCTION governance.reject_document_evidence_mutation_v1();')
+        op.execute('CREATE TRIGGER reject_document_artifact_receipt_mutation\nBEFORE UPDATE OR DELETE ON governance.document_artifact_receipts\nFOR EACH ROW EXECUTE FUNCTION governance.reject_document_evidence_mutation_v1();')
+        op.execute('CREATE TRIGGER reject_document_attachment_mutation\nBEFORE UPDATE OR DELETE ON governance.document_attachments\nFOR EACH ROW EXECUTE FUNCTION governance.reject_document_evidence_mutation_v1();')
+        op.execute('CREATE TRIGGER reject_document_chunk_mutation\nBEFORE UPDATE OR DELETE ON governance.document_knowledge_chunks\nFOR EACH ROW EXECUTE FUNCTION governance.reject_document_evidence_mutation_v1();')
+        op.execute('CREATE TRIGGER reject_document_projection_receipt_mutation\nBEFORE UPDATE OR DELETE ON governance.document_projection_receipts\nFOR EACH ROW EXECUTE FUNCTION governance.reject_document_evidence_mutation_v1();')
+        op.execute('ALTER TABLE governance.documents ENABLE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.documents FORCE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_versions ENABLE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_versions FORCE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_reviews ENABLE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_reviews FORCE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_events ENABLE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_events FORCE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_artifact_receipts ENABLE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_artifact_receipts FORCE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_attachments ENABLE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_attachments FORCE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_knowledge_chunks ENABLE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_knowledge_chunks FORCE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_projection_receipts ENABLE ROW LEVEL SECURITY;')
+        op.execute('ALTER TABLE governance.document_projection_receipts FORCE ROW LEVEL SECURITY;')
+        op.execute('CREATE POLICY governance_documents_app_select ON governance.documents\nFOR SELECT TO datariver_app\nUSING (governance.can_read_document_v1(id));')
+        op.execute("CREATE POLICY governance_documents_app_insert ON governance.documents\nFOR INSERT TO datariver_app\nWITH CHECK (\n    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid\n    AND owner_subject_id = NULLIF(current_setting('app.subject_id', true), '')::uuid\n    AND governance.current_human_can_document_v1(\n        workspace_id,\n        CASE WHEN kind = 'TEMPLATE' THEN 'governance.template.propose'\n             ELSE 'governance.document.create' END,\n        classification, system_id, domain_id\n    )\n);")
+        op.execute("CREATE POLICY governance_documents_app_update ON governance.documents\nFOR UPDATE TO datariver_app\nUSING (governance.can_read_document_v1(id))\nWITH CHECK (\n    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid\n);")
+        op.execute('CREATE POLICY governance_document_versions_app_select ON governance.document_versions\nFOR SELECT TO datariver_app\nUSING (governance.can_read_document_v1(document_id));')
+        op.execute("CREATE POLICY governance_document_versions_app_insert ON governance.document_versions\nFOR INSERT TO datariver_app\nWITH CHECK (\n    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid\n    AND author_id = NULLIF(current_setting('app.subject_id', true), '')::uuid\n    AND governance.can_act_on_document_v1(\n        document_id, 'governance.document.edit', 'governance.template.propose'\n    )\n);")
+        op.execute('CREATE POLICY governance_document_versions_app_update ON governance.document_versions\nFOR UPDATE TO datariver_app\nUSING (governance.can_read_document_v1(document_id))\nWITH CHECK (governance.can_read_document_v1(document_id));')
+        op.execute('CREATE POLICY governance_document_reviews_app_select ON governance.document_reviews\nFOR SELECT TO datariver_app\nUSING (governance.can_read_document_v1(document_id));')
+        op.execute("CREATE POLICY governance_document_reviews_app_insert ON governance.document_reviews\nFOR INSERT TO datariver_app\nWITH CHECK (\n    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid\n    AND reviewer_id = NULLIF(current_setting('app.subject_id', true), '')::uuid\n    AND governance.can_act_on_document_v1(\n        document_id, 'governance.document.review', 'governance.template.review'\n    )\n);")
+        op.execute('CREATE POLICY governance_document_events_app_select ON governance.document_events\nFOR SELECT TO datariver_app\nUSING (governance.can_read_document_v1(document_id));')
+        op.execute("CREATE POLICY governance_document_events_app_insert ON governance.document_events\nFOR INSERT TO datariver_app\nWITH CHECK (\n    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid\n    AND actor_id = NULLIF(current_setting('app.subject_id', true), '')::uuid\n    AND governance.can_act_on_document_v1(\n        document_id,\n        CASE event_type\n            WHEN 'CREATED' THEN 'governance.document.create'\n            WHEN 'VERSION_CREATED' THEN 'governance.document.edit'\n            WHEN 'SUBMITTED' THEN 'governance.document.edit'\n            WHEN 'REJECTED' THEN 'governance.document.review'\n            WHEN 'PUBLISHED' THEN 'governance.document.publish'\n            WHEN 'ARCHIVED' THEN 'governance.document.archive'\n            WHEN 'ATTACHMENT_ADDED' THEN 'governance.document.edit'\n            ELSE 'governance.document.__denied__'\n        END,\n        CASE event_type\n            WHEN 'CREATED' THEN 'governance.template.propose'\n            WHEN 'VERSION_CREATED' THEN 'governance.template.propose'\n            WHEN 'SUBMITTED' THEN 'governance.template.propose'\n            WHEN 'REJECTED' THEN 'governance.template.review'\n            WHEN 'PUBLISHED' THEN 'governance.template.activate'\n            WHEN 'ARCHIVED' THEN 'governance.template.archive'\n            WHEN 'ATTACHMENT_ADDED' THEN 'governance.template.propose'\n            ELSE 'governance.template.__denied__'\n        END\n    )\n);")
+        op.execute('CREATE POLICY governance_document_attachments_app_select ON governance.document_attachments\nFOR SELECT TO datariver_app\nUSING (governance.can_read_document_v1(document_id));')
+        op.execute("CREATE POLICY governance_document_attachments_app_insert ON governance.document_attachments\nFOR INSERT TO datariver_app\nWITH CHECK (\n    workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid\n    AND uploaded_by = NULLIF(current_setting('app.subject_id', true), '')::uuid\n    AND governance.can_act_on_document_v1(\n        document_id, 'governance.document.edit', 'governance.template.propose'\n    )\n);")
+        op.execute('CREATE POLICY governance_document_chunks_app_select ON governance.document_knowledge_chunks\nFOR SELECT TO datariver_app\nUSING (governance.can_read_document_v1(document_id));')
+        op.execute('CREATE POLICY governance_documents_worker_select ON governance.documents\nFOR SELECT TO datariver_governance_document USING (true);')
+        op.execute('CREATE POLICY governance_versions_worker_select ON governance.document_versions\nFOR SELECT TO datariver_governance_document USING (true);')
+        op.execute('CREATE POLICY governance_versions_worker_update ON governance.document_versions\nFOR UPDATE TO datariver_governance_document USING (true) WITH CHECK (true);')
+        op.execute('CREATE POLICY governance_artifacts_worker_all ON governance.document_artifact_receipts\nFOR ALL TO datariver_governance_document USING (true) WITH CHECK (true);')
+        op.execute('CREATE POLICY governance_chunks_worker_all ON governance.document_knowledge_chunks\nFOR ALL TO datariver_governance_document USING (true) WITH CHECK (true);')
+        op.execute('CREATE POLICY governance_projection_receipts_worker_all\nON governance.document_projection_receipts\nFOR ALL TO datariver_governance_document USING (true) WITH CHECK (true);')
+        op.execute('REVOKE ALL ON ALL TABLES IN SCHEMA governance\nFROM datariver_governance_document;')
+        op.execute('GRANT USAGE ON SCHEMA governance TO datariver_app, datariver_governance_document;')
+        op.execute('GRANT SELECT, INSERT, UPDATE ON governance.documents TO datariver_app;')
+        op.execute('GRANT SELECT, INSERT, UPDATE ON governance.document_versions TO datariver_app;')
+        op.execute('GRANT SELECT, INSERT ON governance.document_reviews TO datariver_app;')
+        op.execute('GRANT SELECT, INSERT ON governance.document_events TO datariver_app;')
+        op.execute('GRANT SELECT ON governance.document_artifact_receipts TO datariver_app;')
+        op.execute('GRANT SELECT, INSERT ON governance.document_attachments TO datariver_app;')
+        op.execute('GRANT SELECT ON governance.document_knowledge_chunks TO datariver_app;')
+        op.execute('GRANT SELECT ON governance.document_projection_receipts TO datariver_app;')
+        op.execute('GRANT SELECT ON governance.documents TO datariver_governance_document;')
+        op.execute('GRANT SELECT ON governance.document_versions TO datariver_governance_document;')
+        op.execute('GRANT UPDATE (\n    artifact_state,\n    knowledge_state,\n    projection_attempts,\n    next_attempt_at,\n    lease_owner,\n    lease_until,\n    failure_code,\n    version\n) ON governance.document_versions TO datariver_governance_document;')
+        op.execute('GRANT SELECT, INSERT ON governance.document_artifact_receipts\nTO datariver_governance_document;')
+        op.execute('GRANT SELECT, INSERT ON governance.document_knowledge_chunks\nTO datariver_governance_document;')
+        op.execute('GRANT SELECT, INSERT ON governance.document_projection_receipts\nTO datariver_governance_document;')
 
 
 def downgrade() -> None:
+        op.execute('DROP FUNCTION governance.can_read_document_v1(uuid), governance.can_act_on_document_v1(uuid,text,text), governance.current_human_can_document_v1(uuid,text,integer,uuid,uuid), governance.enforce_document_mutation_v1(), governance.enforce_document_version_mutation_v1(), governance.reject_document_evidence_mutation_v1() CASCADE')
         op.execute('DROP FUNCTION quality.request_manual_validation_run_v1(uuid, uuid, uuid)')
         op.execute('DROP FUNCTION quality.activate_rule_set_version_command_v2(uuid, uuid, uuid, text, integer)')
         op.execute('DROP FUNCTION quality.review_rule_set_version_command_v2(uuid, uuid, text, text, uuid, integer)')
@@ -4789,6 +5101,8 @@ def downgrade() -> None:
         op.drop_constraint(op.f('fk_ontology_versions_workspace_id_graph_id_base_ontology_version_id_ontology_versions'), 'ontology_versions', schema='knowledge', type_='foreignkey')
         op.drop_constraint(op.f('fk_graphs_workspace_id_id_active_studio_release_id_studio_releases'), 'graphs', schema='knowledge', type_='foreignkey')
         op.drop_constraint(op.f('fk_graphs_workspace_id_id_active_release_id_releases'), 'graphs', schema='knowledge', type_='foreignkey')
+        op.drop_constraint('fk_governance_documents_current_version', 'documents', schema='governance', type_='foreignkey')
+        op.drop_constraint('fk_governance_document_versions_template', 'document_versions', schema='governance', type_='foreignkey')
         op.drop_constraint(op.f('fk_changesets_workspace_id_source_analysis_job_id_source_analysis_jobs'), 'changesets', schema='knowledge', type_='foreignkey')
         op.drop_constraint(op.f('fk_changesets_workspace_id_graph_id_published_release_id_releases'), 'changesets', schema='knowledge', type_='foreignkey')
         op.drop_constraint(op.f('fk_changesets_workspace_id_graph_id_base_release_id_releases'), 'changesets', schema='knowledge', type_='foreignkey')
@@ -4856,6 +5170,12 @@ def downgrade() -> None:
         op.drop_table('catalog_metadata_rows', schema='integration')
         op.drop_table('catalog_metadata_candidates', schema='integration')
         op.drop_table('manual_metadata_aspect_reports', schema='governance')
+        op.drop_table('document_reviews', schema='governance')
+        op.drop_table('document_projection_receipts', schema='governance')
+        op.drop_table('document_knowledge_chunks', schema='governance')
+        op.drop_table('document_events', schema='governance')
+        op.drop_table('document_attachments', schema='governance')
+        op.drop_table('document_artifact_receipts', schema='governance')
         op.drop_table('column_profile_metrics', schema='catalog')
         op.drop_table('restricted_search_grant_events', schema='authz')
         op.drop_table('chat_messages', schema='assistant')
@@ -4873,6 +5193,7 @@ def downgrade() -> None:
         op.drop_table('access_role_assignments', schema='iam')
         op.drop_table('access_role_assignment_events', schema='iam')
         op.drop_table('manual_metadata_apply_attempts', schema='governance')
+        op.drop_table('document_versions', schema='governance')
         op.drop_table('change_test_runs', schema='governance')
         op.drop_table('asset_profile_snapshots', schema='catalog')
         op.drop_table('restricted_search_grants', schema='authz')
@@ -4894,6 +5215,7 @@ def downgrade() -> None:
         op.drop_table('access_roles', schema='iam')
         op.drop_table('state_transitions', schema='governance')
         op.drop_table('manual_metadata_submissions', schema='governance')
+        op.drop_table('documents', schema='governance')
         op.drop_table('change_request_items', schema='governance')
         op.drop_table('change_request_attachments', schema='governance')
         op.drop_table('change_request_attachment_upload_intents', schema='governance')

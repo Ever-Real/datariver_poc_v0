@@ -69,6 +69,19 @@ class Action(StrEnum):
     QUALITY_DISPATCH = "quality.dispatch"
     QUALITY_EXECUTE = "quality.execute"
     CATALOG_PROFILE_COLLECT = "catalog.profile.collect"
+    GOVERNANCE_DOCUMENT_READ = "governance.document.read"
+    GOVERNANCE_DOCUMENT_HISTORY_READ = "governance.document.history.read"
+    GOVERNANCE_DOCUMENT_CREATE = "governance.document.create"
+    GOVERNANCE_DOCUMENT_EDIT = "governance.document.edit"
+    GOVERNANCE_DOCUMENT_REVIEW = "governance.document.review"
+    GOVERNANCE_DOCUMENT_PUBLISH = "governance.document.publish"
+    GOVERNANCE_DOCUMENT_ARCHIVE = "governance.document.archive"
+    GOVERNANCE_TEMPLATE_READ = "governance.template.read"
+    GOVERNANCE_TEMPLATE_PROPOSE = "governance.template.propose"
+    GOVERNANCE_TEMPLATE_REVIEW = "governance.template.review"
+    GOVERNANCE_TEMPLATE_ACTIVATE = "governance.template.activate"
+    GOVERNANCE_TEMPLATE_ARCHIVE = "governance.template.archive"
+    GOVERNANCE_KNOWLEDGE_READ = "governance.knowledge.read"
 
 
 class AuthenticationAssurance(StrEnum):
@@ -93,6 +106,10 @@ HIGH_RISK_ACTIONS = frozenset(
         Action.ERASURE_APPROVE,
         Action.QUALITY_RULE_ACTIVATE,
         Action.QUALITY_RULE_REVOKE,
+        Action.GOVERNANCE_DOCUMENT_PUBLISH,
+        Action.GOVERNANCE_DOCUMENT_ARCHIVE,
+        Action.GOVERNANCE_TEMPLATE_ACTIVATE,
+        Action.GOVERNANCE_TEMPLATE_ARCHIVE,
     }
 )
 
@@ -112,6 +129,15 @@ HUMAN_GOVERNANCE_ACTIONS = frozenset(
         Action.QUALITY_RUN_REQUEST,
         Action.QUALITY_RUN_CANCEL,
         Action.QUALITY_RUN_RETRY,
+        Action.GOVERNANCE_DOCUMENT_CREATE,
+        Action.GOVERNANCE_DOCUMENT_EDIT,
+        Action.GOVERNANCE_DOCUMENT_REVIEW,
+        Action.GOVERNANCE_DOCUMENT_PUBLISH,
+        Action.GOVERNANCE_DOCUMENT_ARCHIVE,
+        Action.GOVERNANCE_TEMPLATE_PROPOSE,
+        Action.GOVERNANCE_TEMPLATE_REVIEW,
+        Action.GOVERNANCE_TEMPLATE_ACTIVATE,
+        Action.GOVERNANCE_TEMPLATE_ARCHIVE,
     }
 )
 
@@ -227,6 +253,10 @@ class BuiltinPolicyEngine:
             in {
                 Action.QUALITY_RULE_REVIEW,
                 Action.QUALITY_RULE_ACTIVATE,
+                Action.GOVERNANCE_DOCUMENT_REVIEW,
+                Action.GOVERNANCE_DOCUMENT_PUBLISH,
+                Action.GOVERNANCE_TEMPLATE_REVIEW,
+                Action.GOVERNANCE_TEMPLATE_ACTIVATE,
             }
             and resource.requester_id == subject.subject_id
         ):

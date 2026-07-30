@@ -9,6 +9,9 @@ from datariver.infrastructure.datahub.http import HttpDataHubGateway
 from datariver.infrastructure.db.session import Database
 from datariver.infrastructure.identity.keycloak import KeycloakIdentityAdministration
 from datariver.infrastructure.knowledge.neo4j import BoltNeo4jQueryExecutor
+from datariver.infrastructure.object_store.governance_document_attachments import (
+    S3GovernanceDocumentAttachmentStore,
+)
 from datariver.infrastructure.object_store.s3 import S3ObjectStore
 from datariver.infrastructure.observability.metrics import HttpMetrics
 from datariver.infrastructure.secrets import SecretResolver
@@ -26,6 +29,7 @@ class AppContainer:
     object_store: S3ObjectStore
     metrics: HttpMetrics
     knowledge_neo4j: BoltNeo4jQueryExecutor | None = None
+    governance_document_attachments: S3GovernanceDocumentAttachmentStore | None = None
     identity_admin: KeycloakIdentityAdministration | None = None
     knowledge_studio_samples: KnowledgeStudioSampleReader | None = None
 
@@ -50,6 +54,7 @@ def build_container(settings: Settings) -> AppContainer:
     s3_secret_key = secret_resolver.resolve(f"file:{settings.s3_secret_key_file}")
     metrics = HttpMetrics()
     knowledge_neo4j: BoltNeo4jQueryExecutor | None = None
+    governance_document_attachments: S3GovernanceDocumentAttachmentStore | None = None
     identity_admin: KeycloakIdentityAdministration | None = None
     if settings.neo4j_projection_enabled:
         if settings.neo4j_uri is None or settings.neo4j_auth_secret_ref is None:
@@ -65,6 +70,24 @@ def build_container(settings: Settings) -> AppContainer:
             database=settings.neo4j_database,
             connection_timeout_seconds=settings.neo4j_connection_timeout_seconds,
             maximum_connection_pool_size=settings.neo4j_maximum_connection_pool_size,
+        )
+    if settings.governance_document_worker_enabled:
+        if (
+            settings.s3_bucket_filefolder is None
+            or settings.s3_governance_document_access_key_file is None
+            or settings.s3_governance_document_secret_key_file is None
+        ):
+            raise ValueError("Enabled Governance Document storage has incomplete settings.")
+        governance_document_attachments = S3GovernanceDocumentAttachmentStore(
+            endpoint_url=settings.s3_endpoint_url,
+            region=settings.s3_region,
+            bucket=settings.s3_bucket_filefolder,
+            access_key=secret_resolver.resolve(
+                f"file:{settings.s3_governance_document_access_key_file}"
+            ),
+            secret_key=secret_resolver.resolve(
+                f"file:{settings.s3_governance_document_secret_key_file}"
+            ),
         )
     if settings.identity_admin_enabled:
         if (
@@ -136,5 +159,6 @@ def build_container(settings: Settings) -> AppContainer:
         ),
         metrics=metrics,
         knowledge_neo4j=knowledge_neo4j,
+        governance_document_attachments=governance_document_attachments,
         identity_admin=identity_admin,
     )

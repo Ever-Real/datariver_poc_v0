@@ -22,6 +22,18 @@ SCHEMAS = MANAGED_DATABASE_SCHEMAS
 RLS_SETTING = "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
 RUNTIME_SCHEMAS = ", ".join(SCHEMAS)
 _STATEMENT_BOUNDARY = "-- datariver-statement-boundary"
+_GOVERNANCE_DOCUMENT_TABLES = frozenset(
+    {
+        "governance.documents",
+        "governance.document_versions",
+        "governance.document_reviews",
+        "governance.document_events",
+        "governance.document_artifact_receipts",
+        "governance.document_attachments",
+        "governance.document_knowledge_chunks",
+        "governance.document_projection_receipts",
+    }
+)
 
 
 def _current_subject_sql() -> str:
@@ -199,6 +211,26 @@ def _load_quality_authoring_revision() -> ModuleType:
     return module
 
 
+def _load_governance_document_revision() -> ModuleType:
+    """Load the fixed Governance Document RLS and transition contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0072_governance_document_library.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_governance_document_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Governance Document migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -218,7 +250,9 @@ def build_upgrade() -> ops.UpgradeOps:
             ops.CreateIndexOp.from_index(index)
             for index in sorted(table.indexes, key=lambda value: value.name or "")
         )
-        if "workspace_id" in table.columns or table.fullname == "platform.workspaces":
+        if (
+            "workspace_id" in table.columns or table.fullname == "platform.workspaces"
+        ) and table.fullname not in _GOVERNANCE_DOCUMENT_TABLES:
             workspace_column = "id" if table.fullname == "platform.workspaces" else "workspace_id"
             operations.append(
                 ops.ExecuteSQLOp(f"ALTER TABLE {table.fullname} ENABLE ROW LEVEL SECURITY")
@@ -630,6 +664,12 @@ def build_upgrade() -> ops.UpgradeOps:
     quality_authoring = _load_quality_authoring_revision()
     operations.extend(
         ops.ExecuteSQLOp(statement) for statement in _sql_statements(quality_authoring._COMMAND_SQL)
+    )
+    governance_documents = _load_governance_document_revision()
+    operations.append(ops.ExecuteSQLOp(governance_documents._ROLE_ASSERTION_SQL.strip()))
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in _sql_statements(governance_documents._SECURITY_SQL)
     )
     return ops.UpgradeOps(ops=operations)
 
@@ -1056,6 +1096,14 @@ def build_downgrade() -> ops.DowngradeOps:
     phase5 = _load_phase5_revision()
     quality_phase1 = _load_quality_phase1_revision()
     operations: list[ops.MigrateOperation] = [
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION governance.can_read_document_v1(uuid), "
+            "governance.can_act_on_document_v1(uuid,text,text), "
+            "governance.current_human_can_document_v1(uuid,text,integer,uuid,uuid), "
+            "governance.enforce_document_mutation_v1(), "
+            "governance.enforce_document_version_mutation_v1(), "
+            "governance.reject_document_evidence_mutation_v1() CASCADE"
+        ),
         ops.ExecuteSQLOp(
             "DROP FUNCTION quality.request_manual_validation_run_v1(uuid, uuid, uuid)"
         ),

@@ -32,6 +32,7 @@ services:
       - postgres_governance_password
       - postgres_knowledge_password
       - postgres_quality_password
+      - postgres_governance_document_password
       - postgres_catalog_profile_password
       - postgres_export_password
       - postgres_retention_scheduler_password
@@ -128,6 +129,8 @@ services:
       - keycloak_identity_admin_client_secret
       - s3_access_key
       - s3_secret_key
+      - s3_governance_document_access_key
+      - s3_governance_document_secret_key
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -257,6 +260,35 @@ services:
     restart: unless-stopped
     mem_limit: 1g
     cpus: 1.0
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+
+  governance-document-worker:
+    <<: *backend
+    profiles: ["governance-documents"]
+    secrets:
+      - postgres_governance_document_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
+      - s3_governance_document_access_key
+      - s3_governance_document_secret_key
+      - intranet_llm_chat_api_key
+      - intranet_llm_embedding_api_key
+      - neo4j_auth
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.governance_documents"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+      - connectors
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 0.75
     read_only: true
     tmpfs:
       - /tmp:size=64m,noexec,nosuid
@@ -423,6 +455,8 @@ secrets:
     file: ./secrets/postgres_knowledge_password
   postgres_quality_password:
     file: ./secrets/postgres_quality_password
+  postgres_governance_document_password:
+    file: ./secrets/postgres_governance_document_password
   postgres_catalog_profile_password:
     file: ./secrets/postgres_catalog_profile_password
   postgres_export_password:
@@ -477,6 +511,10 @@ secrets:
     file: ./secrets/s3_knowledge_access_key
   s3_knowledge_secret_key:
     file: ./secrets/s3_knowledge_secret_key
+  s3_governance_document_access_key:
+    file: ./secrets/s3_governance_document_access_key
+  s3_governance_document_secret_key:
+    file: ./secrets/s3_governance_document_secret_key
   s3_archive_access_key:
     file: ./secrets/s3_archive_access_key
   s3_archive_secret_key:

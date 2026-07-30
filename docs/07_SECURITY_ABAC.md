@@ -225,6 +225,36 @@ disables source execution as well as
 physical cleanup. Airflow cleanup, TTL and object lifecycle never become deletion authority, and
 v1 writes no GX Data Docs or raw results to the filefolder/upload store.
 
+## Governance Document security boundary
+
+Public Governance Document routes are human-only. Reads and every command use explicit document,
+history, Template or knowledge Actions; forced RLS repeats Workspace, active membership,
+classification and System/Domain scope. Existing-aggregate commands require a quoted `If-Match`
+and actor-bound idempotency. Publication/activation and Archive remain high-risk actions, and the
+author cannot approve their own version. Archive is logical; application and worker roles receive
+no document-table DELETE grant.
+
+HTML, Markdown and DOCX are untrusted ingress. The server applies input/output byte, node, depth,
+link, table and cell limits; rejects macro-enabled/external XML DOCX relationships; and canonicalizes
+an allowlist that excludes script/style/iframe/SVG/MathML/form/media, `on*`, `style`, `src`,
+`srcdoc`, `id` and `name`. Links are HTTPS or relative. Responses contain only canonical HTML plus
+the exact sanitizer policy/version hash. The browser parses that HTML into allowlisted React nodes
+and never uses `dangerouslySetInnerHTML`.
+
+The API and projector use one dedicated MinIO identity under `governance/documents/v1/` in
+`datariver-filefolder`. Its policy allows only conditional Put and exact-version Get/Head; it has
+no bucket list, copy, presign or delete capability. Bucket versioning and provider VersionId are
+mandatory, and every write is read back by exact version/checksum/metadata. This prevents
+application overwrite/delete but does not represent operator/root credentials as regulatory WORM.
+
+The projection worker uses a separate NOBYPASSRLS PostgreSQL login with no role membership. It can
+select document/version inputs, update only projection lease/status columns, and insert immutable
+artifact/chunk/projection receipts. It has no human review/publication/archive authority. Neo4j
+receives only fixed parameterized Cypher. The evidence API accepts text only, uses the active
+server-side embedding binding, and never accepts a vector, model/provider, SQL, Cypher or GraphQL
+from the caller. Results are restricted to active documents and their exact current published
+version after the same classification/System/Domain scope.
+
 ## Atomic API-product invocation boundary
 
 Only the fixed local `SNAPSHOT_V1`, `NEIGHBORS_V1` and `CHAT_LOCAL_V1` executors can enter the

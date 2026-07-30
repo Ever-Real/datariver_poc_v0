@@ -1,0 +1,1170 @@
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
+import type { ColumnDef } from '@tanstack/react-table'
+import { ApiError, newIdempotencyKey, type ApiClient } from '../../api/client'
+import { ErrorNotice } from '../../components/ErrorNotice'
+import { CursorPagination } from '../../components/common/CursorPagination'
+import { DenseDataTable } from '../../components/common/DenseDataTable'
+import { Dialog } from '../../components/common/Dialog'
+import { GovernedUnavailable } from '../../components/common/GovernedUnavailable'
+import { GovernanceHtmlEditor } from './GovernanceHtmlEditor'
+import {
+  GovernanceDocumentsApi,
+  governanceDocumentQueryKey,
+} from './governanceDocumentsApi'
+import { SafeGovernanceHtml } from './SafeGovernanceHtml'
+import type {
+  GovernanceDocumentAction,
+  GovernanceDocumentAttachment,
+  GovernanceDocumentBlueprint,
+  GovernanceDocumentCapability,
+  GovernanceDocumentCapabilityAxis,
+  GovernanceDocumentCategory,
+  GovernanceDocumentCommandResponse,
+  GovernanceDocumentDetail,
+  GovernanceDocumentKind,
+  GovernanceDocumentState,
+  GovernanceDocumentSummary,
+  GovernanceDocumentVersion,
+} from './types'
+import './governanceDocuments.css'
+
+type EditorMode = 'CREATE' | 'CREATE_VERSION'
+type ReviewDecision = 'APPROVE' | 'REJECT'
+
+const PAGE_SIZE = 25
+const CATEGORIES: Array<{ value: GovernanceDocumentCategory; label: string }> = [
+  { value: 'POLICY', label: '정책' },
+  { value: 'STANDARD_TERMINOLOGY', label: '표준어 사전' },
+  { value: 'SECURITY_GUIDE', label: '보안 가이드' },
+  { value: 'OTHER', label: '기타' },
+]
+
+export function GovernanceDocumentLibrary({ client }: { client: ApiClient }) {
+  const api = useMemo(() => new GovernanceDocumentsApi(client), [client])
+  const capability = useQuery({
+    queryKey: ['governance-documents', 'capability'],
+    queryFn: ({ signal }) => api.capability(signal),
+    staleTime: 0,
+    gcTime: 30_000,
+    retry: false,
+  })
+  const [leaseExpired, setLeaseExpired] = useState(false)
+
+  useEffect(() => {
+    setLeaseExpired(false)
+    if (!capability.data) return
+    const delay = Date.parse(capability.data.valid_until) - Date.now()
+    if (delay <= 0) {
+      setLeaseExpired(true)
+      return
+    }
+    const timer = window.setTimeout(() => setLeaseExpired(true), delay)
+    return () => window.clearTimeout(timer)
+  }, [capability.data])
+
+  if (capability.isPending) {
+    return <p className="governance-documents-loading" role="status">문서 접근 권한을 확인하는 중입니다.</p>
+  }
+  if (capability.error) {
+    return <>
+      <ErrorNotice error={capability.error} />
+      <GovernedUnavailable
+        title="문서 접근 권한을 확인할 수 없습니다"
+        description="서버 capability가 검증되기 전에는 거버넌스 문서를 요청하지 않습니다."
+      />
+    </>
+  }
+  const readAxis = capability.data?.axes.find((axis) => axis.id === 'read')
+  if (!capability.data || leaseExpired || readAxis?.state !== 'AVAILABLE') {
+    return <GovernedUnavailable
+      title={leaseExpired ? '문서 접근 권한이 만료되었습니다' : '문서 열람이 허용되지 않았습니다'}
+      description={leaseExpired
+        ? '권한을 새로고침한 뒤 문서 목록을 다시 요청하세요.'
+        : capabilityReason(readAxis)}
+    />
+  }
+  return <GovernanceDocumentWorkspace
+    api={api}
+    capability={capability.data}
+    onRefreshCapability={() => void capability.refetch()}
+  />
+}
+
+function GovernanceDocumentWorkspace({
+  api,
+  capability,
+  onRefreshCapability,
+}: {
+  api: GovernanceDocumentsApi
+  capability: GovernanceDocumentCapability
+  onRefreshCapability: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [cursorStack, setCursorStack] = useState<Array<string | undefined>>([undefined])
+  const [pageIndex, setPageIndex] = useState(0)
+  const [queryInput, setQueryInput] = useState('')
+  const [query, setQuery] = useState('')
+  const [kind, setKind] = useState<GovernanceDocumentKind>('DOCUMENT')
+  const [includeArchived, setIncludeArchived] = useState(false)
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string>()
+  const [selectedVersionId, setSelectedVersionId] = useState<string>()
+  const [editorMode, setEditorMode] = useState<EditorMode>()
+  const [editorKind, setEditorKind] = useState<GovernanceDocumentKind>('DOCUMENT')
+  const [title, setTitle] = useState('')
+  const [summary, setSummary] = useState('')
+  const [editorCategory, setEditorCategory] = useState<GovernanceDocumentCategory>('POLICY')
+  const [classification, setClassification] = useState(1)
+  const [applicabilityScope, setApplicabilityScope] = useState('')
+  const [templateVersionId, setTemplateVersionId] = useState('')
+  const [blueprintId, setBlueprintId] = useState('')
+  const [editorInitialHtml, setEditorInitialHtml] = useState('<p></p>')
+  const [importFile, setImportFile] = useState<File>()
+  const [reviewDecision, setReviewDecision] = useState<ReviewDecision>()
+  const [reviewReason, setReviewReason] = useState('')
+  const [archiveOpen, setArchiveOpen] = useState(false)
+  const [archiveReason, setArchiveReason] = useState('')
+  const [attachmentFile, setAttachmentFile] = useState<File>()
+  const [knowledgeQuery, setKnowledgeQuery] = useState('')
+  const [knowledgeSearch, setKnowledgeSearch] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [mutationError, setMutationError] = useState<unknown>()
+  const [notice, setNotice] = useState<string>()
+  const editorHtml = useRef('')
+  const cursor = cursorStack[pageIndex]
+  const axis = useCallback((id: GovernanceDocumentCapabilityAxis['id']) => (
+    capability.axes.find((candidate) => candidate.id === id)
+  ), [capability.axes])
+
+  useEffect(() => {
+    setCursorStack([undefined])
+    setPageIndex(0)
+    setSelectedDocumentId(undefined)
+    setSelectedVersionId(undefined)
+  }, [includeArchived, kind, query])
+
+  const documents = useQuery({
+    queryKey: governanceDocumentQueryKey(
+      capability.cache_scope,
+      'documents',
+      kind,
+      query,
+      includeArchived,
+      cursor,
+      PAGE_SIZE,
+    ),
+    queryFn: ({ signal }) => api.documents(capability.cache_scope, {
+      cursor,
+      query,
+      kind,
+      includeArchived,
+      limit: PAGE_SIZE,
+      signal,
+    }),
+    staleTime: 0,
+    gcTime: 30_000,
+    retry: false,
+  })
+  const detail = useQuery({
+    queryKey: governanceDocumentQueryKey(
+      capability.cache_scope,
+      'document-detail',
+      selectedDocumentId,
+    ),
+    queryFn: ({ signal }) => api.document(
+      selectedDocumentId ?? '',
+      capability.cache_scope,
+      signal,
+    ),
+    enabled: Boolean(selectedDocumentId),
+    staleTime: 0,
+    gcTime: 30_000,
+    retry: false,
+  })
+  const templates = useQuery({
+    queryKey: governanceDocumentQueryKey(
+      capability.cache_scope,
+      'templates',
+      PAGE_SIZE,
+    ),
+    queryFn: ({ signal }) => api.documents(capability.cache_scope, {
+      kind: 'TEMPLATE',
+      limit: PAGE_SIZE,
+      signal,
+    }),
+    enabled: Boolean(editorMode === 'CREATE' && editorKind === 'DOCUMENT'),
+    staleTime: 0,
+    gcTime: 30_000,
+    retry: false,
+  })
+  const blueprints = useQuery({
+    queryKey: governanceDocumentQueryKey(
+      capability.cache_scope,
+      'template-blueprints',
+    ),
+    queryFn: ({ signal }) => api.templateBlueprints(signal),
+    enabled: Boolean(editorMode === 'CREATE' && editorKind === 'TEMPLATE'),
+    staleTime: 5 * 60_000,
+    gcTime: 5 * 60_000,
+    retry: false,
+  })
+  const knowledge = useQuery({
+    queryKey: governanceDocumentQueryKey(
+      capability.cache_scope,
+      'knowledge-evidence',
+      knowledgeSearch,
+    ),
+    queryFn: ({ signal }) => api.knowledgeEvidence(
+      capability.cache_scope,
+      knowledgeSearch,
+      signal,
+    ),
+    enabled: knowledgeSearch.length >= 2
+      && axis('knowledge_projection')?.state === 'AVAILABLE',
+    staleTime: 30_000,
+    gcTime: 30_000,
+    retry: false,
+  })
+
+  const currentDetail = detail.data?.data.item
+  const selectedVersion = currentDetail?.versions.find((version) => (
+    version.version_id === selectedVersionId
+  ))
+  const allowed = useCallback((action: GovernanceDocumentAction) => (
+    currentDetail?.document.allowed_actions.includes(action) ?? false
+  ), [currentDetail])
+
+  useEffect(() => {
+    if (!currentDetail) return
+    setSelectedVersionId((current) => {
+      if (currentDetail.versions.some((version) => version.version_id === current)) return current
+      return currentDetail.document.current_published_version_id
+        ?? currentDetail.versions[0]?.version_id
+    })
+  }, [currentDetail])
+  useEffect(() => {
+    setSelectedVersionId(undefined)
+    setMutationError(undefined)
+    setNotice(undefined)
+    setAttachmentFile(undefined)
+  }, [selectedDocumentId])
+
+  const invalidateDocument = async (documentId?: string) => {
+    await Promise.all([
+      queryClient.invalidateQueries({
+        queryKey: governanceDocumentQueryKey(capability.cache_scope, 'documents'),
+      }),
+      queryClient.invalidateQueries({
+        queryKey: governanceDocumentQueryKey(capability.cache_scope, 'templates'),
+      }),
+      ...(documentId ? [queryClient.invalidateQueries({
+        queryKey: governanceDocumentQueryKey(
+          capability.cache_scope,
+          'document-detail',
+          documentId,
+        ),
+      })] : []),
+    ])
+  }
+  const execute = async (
+    operation: () => Promise<GovernanceDocumentCommandResponse | GovernanceDocumentAttachment>,
+    success: string,
+  ) => {
+    setBusy(true)
+    setMutationError(undefined)
+    setNotice(undefined)
+    try {
+      const result = await operation()
+      const documentId = 'item' in result
+        ? result.item.document.document_id
+        : result.document_id
+      await invalidateDocument(documentId)
+      setNotice(success)
+      return true
+    } catch (error) {
+      setMutationError(error)
+      if (error instanceof ApiError && error.problem.status === 409 && selectedDocumentId) {
+        await queryClient.invalidateQueries({
+          queryKey: governanceDocumentQueryKey(
+            capability.cache_scope,
+            'document-detail',
+            selectedDocumentId,
+          ),
+        })
+      }
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+  const openCreate = (nextKind: GovernanceDocumentKind, template?: GovernanceDocumentSummary) => {
+    setEditorKind(nextKind)
+    setTitle('')
+    setSummary('')
+    setEditorCategory(template?.category ?? 'POLICY')
+    setClassification(template?.classification ?? 1)
+    setApplicabilityScope('')
+    setTemplateVersionId(template?.current_published_version_id ?? '')
+    setBlueprintId('')
+    setImportFile(undefined)
+    editorHtml.current = '<p></p>'
+    setEditorInitialHtml('<p></p>')
+    setMutationError(undefined)
+    setEditorMode('CREATE')
+  }
+  const openNewVersion = () => {
+    if (!selectedVersion) return
+    setTitle(selectedVersion.title)
+    setApplicabilityScope(selectedVersion.applicability_scope)
+    setBlueprintId('')
+    setImportFile(undefined)
+    editorHtml.current = selectedVersion.sanitized_html
+    setEditorInitialHtml(selectedVersion.sanitized_html)
+    setMutationError(undefined)
+    setEditorMode('CREATE_VERSION')
+  }
+  const applyBlueprint = (nextBlueprintId: string) => {
+    setBlueprintId(nextBlueprintId)
+    const blueprint = blueprints.data?.items.find(
+      (candidate) => candidate.blueprint_id === nextBlueprintId,
+    )
+    if (!blueprint) {
+      editorHtml.current = '<p></p>'
+      setEditorInitialHtml('<p></p>')
+      return
+    }
+    setTitle(blueprint.title)
+    setSummary(blueprint.summary)
+    setEditorCategory(blueprint.category)
+    setApplicabilityScope(blueprint.applicability_scope)
+    setTemplateVersionId('')
+    editorHtml.current = blueprint.sanitized_html
+    setEditorInitialHtml(blueprint.sanitized_html)
+  }
+  const saveEditor = async () => {
+    if (editorMode === 'CREATE') {
+      const canCreate = editorKind === 'TEMPLATE'
+        ? axis('template_manage')?.state === 'AVAILABLE'
+        : axis('create')?.state === 'AVAILABLE'
+      if (!title.trim() || !canCreate) return
+      const saved = await execute(
+        () => api.createDocument({
+          kind: editorKind,
+          category: editorCategory,
+          title: title.trim(),
+          summary: summary.trim(),
+          classification,
+          applicability_scope: applicabilityScope.trim(),
+          sanitized_html: templateVersionId ? null : editorHtml.current,
+          source_template_version_id: templateVersionId || null,
+        }, newIdempotencyKey('governance-document-create')),
+        editorKind === 'TEMPLATE'
+          ? '거버넌스 문서 Template을 생성했습니다.'
+          : '거버넌스 문서를 생성했습니다.',
+      )
+      if (saved) setEditorMode(undefined)
+      return
+    }
+    if (
+      !currentDetail
+      || !selectedVersion
+      || !title.trim()
+      || !allowed('create_version')
+      || axis('edit')?.state !== 'AVAILABLE'
+    ) return
+    const saved = await execute(
+      () => importFile
+        ? api.importVersion(
+          currentDetail.document.document_id,
+          currentDetail.document.version,
+          importFile,
+          title.trim(),
+          applicabilityScope.trim(),
+          newIdempotencyKey('governance-document-import'),
+        )
+        : api.createVersion(
+          currentDetail.document.document_id,
+          currentDetail.document.version,
+          {
+            title: title.trim(),
+            applicability_scope: applicabilityScope.trim(),
+            sanitized_html: editorHtml.current,
+          },
+          newIdempotencyKey('governance-document-version'),
+        ),
+      '새 immutable 문서 버전을 저장했습니다.',
+    )
+    if (saved) {
+      setEditorMode(undefined)
+      setSelectedVersionId(undefined)
+    }
+  }
+  const submit = async () => {
+    if (
+      !currentDetail
+      || !selectedVersion
+      || selectedVersion.state !== 'DRAFT'
+      || !allowed('submit')
+      || axis('edit')?.state !== 'AVAILABLE'
+    ) return
+    await execute(
+      () => api.submitVersion(
+        currentDetail.document.document_id,
+        selectedVersion.version_id,
+        currentDetail.document.version,
+        newIdempotencyKey('governance-document-submit'),
+      ),
+      '선택 버전을 검토 요청했습니다.',
+    )
+  }
+  const review = async () => {
+    if (
+      !currentDetail
+      || !selectedVersion
+      || selectedVersion.state !== 'IN_REVIEW'
+      || !reviewDecision
+      || !reviewReason.trim()
+      || axis('review')?.state !== 'AVAILABLE'
+      || !allowed('review')
+      || (reviewDecision === 'APPROVE' && (
+        axis('publish')?.state !== 'AVAILABLE' || !allowed('publish')
+      ))
+    ) return
+    const saved = await execute(
+      () => api.reviewVersion(
+        currentDetail.document.document_id,
+        selectedVersion.version_id,
+        currentDetail.document.version,
+        { decision: reviewDecision, reason: reviewReason.trim() },
+        newIdempotencyKey('governance-document-review'),
+      ),
+      reviewDecision === 'APPROVE'
+        ? '문서 버전을 승인·게시했습니다.'
+        : '문서 버전을 반려했습니다.',
+    )
+    if (saved) {
+      setReviewDecision(undefined)
+      setReviewReason('')
+    }
+  }
+  const archive = async () => {
+    if (
+      !currentDetail
+      || !archiveReason.trim()
+      || !allowed('archive')
+      || axis('archive')?.state !== 'AVAILABLE'
+    ) return
+    const saved = await execute(
+      () => api.archiveDocument(
+        currentDetail.document.document_id,
+        currentDetail.document.version,
+        archiveReason.trim(),
+        newIdempotencyKey('governance-document-archive'),
+      ),
+      '문서를 Archive 처리했습니다. 저장된 버전과 Object는 물리 삭제되지 않습니다.',
+    )
+    if (saved) {
+      setArchiveOpen(false)
+      setArchiveReason('')
+      setSelectedDocumentId(undefined)
+    }
+  }
+  const uploadAttachment = async () => {
+    if (
+      !currentDetail
+      || !selectedVersion
+      || !attachmentFile
+      || attachmentFile.size > capability.limits.max_attachment_bytes
+      || selectedVersionAttachments(currentDetail, selectedVersion.version_id).length
+        >= capability.limits.max_attachments_per_version
+      || !allowed('add_attachment')
+      || axis('artifact_storage')?.state !== 'AVAILABLE'
+    ) return
+    const saved = await execute(
+      () => api.uploadAttachment(
+        currentDetail.document.document_id,
+        selectedVersion.version_id,
+        currentDetail.document.version,
+        attachmentFile,
+        newIdempotencyKey('governance-document-attachment'),
+      ),
+      '첨부파일의 저장 증빙을 등록했습니다.',
+    )
+    if (saved) setAttachmentFile(undefined)
+  }
+
+  const columns = useMemo<ColumnDef<GovernanceDocumentSummary>[]>(() => [
+    { accessorKey: 'title', header: '문서명', size: 260, enableSorting: false },
+    { accessorKey: 'category', header: '유형', size: 130, enableSorting: false, cell: ({ row }) => categoryLabel(row.original.category) },
+    { accessorKey: 'state', header: '상태', size: 110, enableSorting: false, cell: ({ row }) => <DocumentStatus value={row.original.state} /> },
+    { accessorKey: 'current_version_number', header: '게시 버전', size: 90, enableSorting: false, cell: ({ row }) => row.original.current_version_number === null ? '—' : `v${row.original.current_version_number}` },
+    { accessorKey: 'classification', header: '분류', size: 100, enableSorting: false, cell: ({ row }) => classificationLabel(row.original.classification) },
+    { accessorKey: 'updated_at', header: '최근 변경', size: 170, enableSorting: false, cell: ({ row }) => dateTime(row.original.updated_at) },
+  ], [])
+
+  return <section className="governance-document-library">
+    <header className="governance-documents-header">
+      <div>
+        <span className="eyebrow">Immutable document versions</span>
+        <h2>문서 라이브러리</h2>
+        <p>권한이 허용한 문서·버전만 조회하며, Archive는 객체나 버전을 물리 삭제하지 않습니다.</p>
+      </div>
+      <div className="action-row">
+        <button type="button" className="button button-secondary" disabled={documents.isFetching} onClick={() => {
+          onRefreshCapability()
+          void documents.refetch()
+        }}>권한·목록 새로고침</button>
+        {axis('create')?.state === 'AVAILABLE' && <button type="button" className="button" onClick={() => openCreate('DOCUMENT')}>새 문서</button>}
+        {axis('template_manage')?.state === 'AVAILABLE' && <button type="button" className="button button-secondary" onClick={() => openCreate('TEMPLATE')}>새 Template</button>}
+      </div>
+    </header>
+    <CapabilitySummary capability={capability} />
+    {documents.error && <ErrorNotice error={documents.error} />}
+    {notice && <p className="notice notice-success" role="status">{notice}</p>}
+    <section className="panel governance-document-list-panel" aria-labelledby="governance-document-list-title">
+      <header>
+        <div><span className="eyebrow">Permission-pruned cursor page</span><h3 id="governance-document-list-title">{kind === 'DOCUMENT' ? '문서 목록' : 'Template 목록'}</h3></div>
+        <form className="governance-document-filters" onSubmit={(event) => {
+          event.preventDefault()
+          setQuery(queryInput.trim())
+        }}>
+          <label>대상<select value={kind} onChange={(event) => setKind(event.target.value as GovernanceDocumentKind)}><option value="DOCUMENT">문서</option><option value="TEMPLATE">Template</option></select></label>
+          <label>검색<input type="search" value={queryInput} onChange={(event) => setQueryInput(event.target.value)} /></label>
+          {axis('archive')?.state === 'AVAILABLE' && <label className="governance-inline-check"><input type="checkbox" checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)} />Archive 포함</label>}
+          <button type="submit" className="button button-secondary">적용</button>
+        </form>
+      </header>
+      <DenseDataTable
+        caption="거버넌스 문서 목록"
+        columns={columns}
+        data={documents.data?.items ?? []}
+        getRowId={(row) => row.document_id}
+        loading={documents.isPending}
+        emptyMessage="현재 권한 범위에서 조회 가능한 문서가 없습니다."
+        selectedRowId={selectedDocumentId}
+        onRowActivate={(row) => setSelectedDocumentId(row.document_id)}
+      />
+      <CursorPagination
+        page={pageIndex + 1}
+        pageSize={PAGE_SIZE}
+        pageSizeOptions={[PAGE_SIZE]}
+        itemCount={documents.data?.items.length}
+        canPrevious={pageIndex > 0}
+        canNext={Boolean(documents.data?.page.next_cursor)}
+        onPrevious={() => setPageIndex((current) => Math.max(0, current - 1))}
+        onNext={() => {
+          const next = documents.data?.page.next_cursor
+          if (!next) return
+          setCursorStack((current) => [...current.slice(0, pageIndex + 1), next])
+          setPageIndex((current) => current + 1)
+        }}
+        onPageSizeChange={() => undefined}
+        label="거버넌스 문서 페이지 탐색"
+      />
+    </section>
+    {axis('knowledge_projection')?.state === 'AVAILABLE' && <KnowledgeEvidencePanel
+      query={knowledgeQuery}
+      search={knowledgeSearch}
+      loading={knowledge.isFetching}
+      error={knowledge.error}
+      items={knowledge.data?.items ?? []}
+      onQuery={setKnowledgeQuery}
+      onSearch={() => setKnowledgeSearch(knowledgeQuery.trim())}
+    />}
+    <DocumentDetailDialog
+      open={Boolean(selectedDocumentId)}
+      detail={currentDetail}
+      detailEtag={detail.data?.etag}
+      detailLoading={detail.isPending}
+      detailError={detail.error}
+      selectedVersion={selectedVersion}
+      selectedVersionId={selectedVersionId}
+      onSelectedVersion={setSelectedVersionId}
+      attachmentFile={attachmentFile}
+      maximumAttachmentBytes={capability.limits.max_attachment_bytes}
+      maximumAttachments={capability.limits.max_attachments_per_version}
+      attachmentAvailable={axis('artifact_storage')?.state === 'AVAILABLE' && allowed('add_attachment')}
+      busy={busy}
+      mutationError={mutationError}
+      notice={notice}
+      canCreateVersion={axis('edit')?.state === 'AVAILABLE' && allowed('create_version')}
+      canSubmit={axis('edit')?.state === 'AVAILABLE' && allowed('submit')}
+      canReview={axis('review')?.state === 'AVAILABLE' && allowed('review')}
+      canPublish={axis('publish')?.state === 'AVAILABLE' && allowed('publish')}
+      canArchive={axis('archive')?.state === 'AVAILABLE' && allowed('archive')}
+      canInstantiate={axis('create')?.state === 'AVAILABLE' && allowed('instantiate_template')}
+      onCreateVersion={openNewVersion}
+      onSubmit={() => void submit()}
+      onReview={(decision) => {
+        setReviewDecision(decision)
+        setReviewReason('')
+        setMutationError(undefined)
+      }}
+      onArchive={() => {
+        setArchiveReason('')
+        setArchiveOpen(true)
+      }}
+      onInstantiate={() => {
+        if (currentDetail) openCreate('DOCUMENT', currentDetail.document)
+      }}
+      onAttachmentFile={setAttachmentFile}
+      onUploadAttachment={() => void uploadAttachment()}
+      onClose={() => {
+        if (!busy) setSelectedDocumentId(undefined)
+      }}
+    />
+    <EditorDialog
+      mode={editorMode}
+      kind={editorKind}
+      title={title}
+      summary={summary}
+      category={editorCategory}
+      classification={classification}
+      applicabilityScope={applicabilityScope}
+      templates={(templates.data?.items ?? []).filter((template) => (
+        template.category === editorCategory
+        && template.current_published_version_id
+        && template.allowed_actions.includes('instantiate_template')
+      ))}
+      blueprints={blueprints.data?.items ?? []}
+      blueprintId={blueprintId}
+      templateVersionId={templateVersionId}
+      initialHtml={editorInitialHtml}
+      editorKey={`${editorMode ?? 'closed'}:${selectedVersionId ?? (blueprintId || 'blank')}`}
+      importFile={importFile}
+      maximumHtmlBytes={capability.limits.max_html_bytes}
+      maximumImportBytes={capability.limits.max_attachment_bytes}
+      busy={busy}
+      error={mutationError}
+      onTitle={setTitle}
+      onSummary={setSummary}
+      onCategory={(value) => {
+        setEditorCategory(value)
+        setTemplateVersionId('')
+        setBlueprintId('')
+      }}
+      onClassification={setClassification}
+      onApplicabilityScope={setApplicabilityScope}
+      onTemplateVersion={setTemplateVersionId}
+      onBlueprint={applyBlueprint}
+      onHtmlChange={useCallback((value: string) => {
+        editorHtml.current = value
+      }, [])}
+      onImportFile={setImportFile}
+      onSubmit={() => void saveEditor()}
+      onClose={() => {
+        if (!busy) setEditorMode(undefined)
+      }}
+    />
+    <ReviewDialog
+      decision={reviewDecision}
+      reason={reviewReason}
+      busy={busy}
+      error={mutationError}
+      onReason={setReviewReason}
+      onSubmit={() => void review()}
+      onClose={() => {
+        if (!busy) setReviewDecision(undefined)
+      }}
+    />
+    <ArchiveDialog
+      open={archiveOpen}
+      reason={archiveReason}
+      busy={busy}
+      error={mutationError}
+      onReason={setArchiveReason}
+      onSubmit={() => void archive()}
+      onClose={() => {
+        if (!busy) setArchiveOpen(false)
+      }}
+    />
+  </section>
+}
+
+function CapabilitySummary({ capability }: { capability: GovernanceDocumentCapability }) {
+  return <ul className="governance-document-capabilities" aria-label="문서 관리 capability">
+    {capability.axes.map((axis) => <li key={axis.id}>
+      <DocumentStatus value={axis.state} />
+      <span>{axisLabel(axis.id)}</span>
+      {axis.state !== 'AVAILABLE' && <small>{axis.reason_code ?? '사용 불가'}</small>}
+    </li>)}
+  </ul>
+}
+
+function DocumentDetailDialog({
+  open,
+  detail,
+  detailEtag,
+  detailLoading,
+  detailError,
+  selectedVersion,
+  selectedVersionId,
+  onSelectedVersion,
+  attachmentFile,
+  maximumAttachmentBytes,
+  maximumAttachments,
+  attachmentAvailable,
+  busy,
+  mutationError,
+  notice,
+  canCreateVersion,
+  canSubmit,
+  canReview,
+  canPublish,
+  canArchive,
+  canInstantiate,
+  onCreateVersion,
+  onSubmit,
+  onReview,
+  onArchive,
+  onInstantiate,
+  onAttachmentFile,
+  onUploadAttachment,
+  onClose,
+}: {
+  open: boolean
+  detail?: GovernanceDocumentDetail
+  detailEtag?: string
+  detailLoading: boolean
+  detailError: unknown
+  selectedVersion?: GovernanceDocumentVersion
+  selectedVersionId?: string
+  onSelectedVersion: (id: string) => void
+  attachmentFile?: File
+  maximumAttachmentBytes: number
+  maximumAttachments: number
+  attachmentAvailable: boolean
+  busy: boolean
+  mutationError: unknown
+  notice?: string
+  canCreateVersion: boolean
+  canSubmit: boolean
+  canReview: boolean
+  canPublish: boolean
+  canArchive: boolean
+  canInstantiate: boolean
+  onCreateVersion: () => void
+  onSubmit: () => void
+  onReview: (decision: ReviewDecision) => void
+  onArchive: () => void
+  onInstantiate: () => void
+  onAttachmentFile: (file?: File) => void
+  onUploadAttachment: () => void
+  onClose: () => void
+}) {
+  const attachments = detail && selectedVersion
+    ? selectedVersionAttachments(detail, selectedVersion.version_id)
+    : []
+  const reviews = detail && selectedVersion
+    ? detail.reviews.filter((review) => review.document_version_id === selectedVersion.version_id)
+    : []
+  const attachmentLimitReached = attachments.length >= maximumAttachments
+  return <Dialog
+    open={open}
+    title={detail?.document.title ?? '거버넌스 문서'}
+    description="canonical HTML, immutable 버전 이력, 결재 상태와 첨부 증빙을 확인합니다."
+    size="workspace"
+    onRequestClose={onClose}
+  >
+    {detailLoading && <p role="status">문서 상세를 불러오는 중입니다.</p>}
+    {Boolean(detailError) && <ErrorNotice error={detailError} />}
+    {Boolean(mutationError) && <ErrorNotice error={mutationError} />}
+    {notice && <p className="notice notice-success" role="status">{notice}</p>}
+    {detail && <>
+      <dl className="governance-document-meta">
+        <div><dt>구분·유형</dt><dd>{detail.document.kind} · {categoryLabel(detail.document.category)}</dd></div>
+        <div><dt>문서 상태</dt><dd><DocumentStatus value={detail.document.state} /></dd></div>
+        <div><dt>게시 버전</dt><dd>{detail.document.current_version_number === null ? '—' : `v${detail.document.current_version_number}`}</dd></div>
+        <div><dt>서버 변경 조건</dt><dd>{detailEtag ? 'ETag 확인됨' : 'ETag 없음 · 변경 잠김'}</dd></div>
+        <div><dt>분류</dt><dd>{classificationLabel(detail.document.classification)}</dd></div>
+        <div><dt>소유자</dt><dd>{shortId(detail.document.owner_subject_id)}</dd></div>
+      </dl>
+      <div className="action-row">
+        {canCreateVersion && detailEtag && <button type="button" className="button" disabled={busy || !selectedVersion} onClick={onCreateVersion}>새 버전 작성·가져오기</button>}
+        {canSubmit && detailEtag && selectedVersion?.state === 'DRAFT' && <button type="button" className="button" disabled={busy} onClick={onSubmit}>검토 요청</button>}
+        {canReview && canPublish && detailEtag && selectedVersion?.state === 'IN_REVIEW' && <button type="button" className="button" disabled={busy} onClick={() => onReview('APPROVE')}>승인·게시</button>}
+        {canReview && detailEtag && selectedVersion?.state === 'IN_REVIEW' && <button type="button" className="button button-secondary" disabled={busy} onClick={() => onReview('REJECT')}>반려</button>}
+        {canInstantiate && detail.document.kind === 'TEMPLATE' && selectedVersion?.state === 'PUBLISHED' && <button type="button" className="button button-secondary" disabled={busy} onClick={onInstantiate}>이 Template으로 문서 생성</button>}
+        {canArchive && detailEtag && <button type="button" className="button button-danger" disabled={busy || detail.document.state === 'ARCHIVED'} onClick={onArchive}>Archive</button>}
+      </div>
+      <div className="governance-document-detail-grid">
+        <section className="governance-version-list" aria-labelledby="governance-version-list-title">
+          <h3 id="governance-version-list-title">버전 이력</h3>
+          {detail.versions.length === 0
+            ? <p role="status">조회 가능한 버전이 없습니다.</p>
+            : <ul>{detail.versions.map((version) => <li key={version.version_id}>
+              <button
+                type="button"
+                className={selectedVersionId === version.version_id ? 'active' : ''}
+                aria-current={selectedVersionId === version.version_id ? 'true' : undefined}
+                onClick={() => onSelectedVersion(version.version_id)}
+              >
+                <strong>{version.version_tag}</strong>
+                <DocumentStatus value={version.state} />
+                <span>{version.source_format}</span>
+                <small>{dateTime(version.created_at)}</small>
+                <small>Object {version.artifact_state} · Knowledge {version.knowledge_state}</small>
+              </button>
+            </li>)}</ul>}
+        </section>
+        <section className="governance-document-content" aria-labelledby="governance-document-content-title">
+          <header>
+            <div><span className="eyebrow">Sanitized canonical HTML</span><h3 id="governance-document-content-title">{selectedVersion ? `${selectedVersion.version_tag} 본문` : '문서 본문'}</h3></div>
+            {selectedVersion && <span>{formatBytes(selectedVersion.size_bytes)} · {selectedVersion.sanitizer_policy_version}</span>}
+          </header>
+          {!selectedVersion && <p role="status">표시할 버전을 선택하세요.</p>}
+          {selectedVersion && <SafeGovernanceHtml
+            html={selectedVersion.sanitized_html}
+            contentHash={selectedVersion.content_sha256}
+            sanitizerPolicyVersion={`${selectedVersion.sanitizer_policy_version}:${selectedVersion.sanitizer_policy_sha256}`}
+          />}
+        </section>
+      </div>
+      <section className="governance-document-attachments" aria-labelledby="governance-document-attachments-title">
+        <header><h3 id="governance-document-attachments-title">선택 버전 첨부파일</h3></header>
+        {attachments.length === 0
+          ? <p role="status">등록된 첨부파일이 없습니다.</p>
+          : <ul>{attachments.map((attachment) => <li key={attachment.attachment_id}>
+            <strong>{attachment.original_name}</strong>
+            <span>{attachment.content_type}</span>
+            <span>{formatBytes(attachment.size_bytes)}</span>
+            <span>{dateTime(attachment.created_at)}</span>
+          </li>)}</ul>}
+        {attachmentAvailable && selectedVersion && <div className="governance-attachment-input">
+          <label>첨부파일<input type="file" disabled={busy || attachmentLimitReached} onChange={(event) => onAttachmentFile(event.target.files?.[0])} /></label>
+          <small>최대 {formatBytes(maximumAttachmentBytes)} · 버전당 {maximumAttachments}개</small>
+          <button type="button" className="button button-secondary" disabled={busy || attachmentLimitReached || !attachmentFile || attachmentFile.size > maximumAttachmentBytes} onClick={onUploadAttachment}>첨부 증빙 등록</button>
+          {attachmentLimitReached && <p role="alert">이 버전의 첨부파일 허용 개수에 도달했습니다.</p>}
+          {attachmentFile && attachmentFile.size > maximumAttachmentBytes && <p role="alert">선택한 파일이 서버 허용 크기를 초과합니다.</p>}
+        </div>}
+      </section>
+      <section className="governance-document-attachments" aria-labelledby="governance-document-reviews-title">
+        <header><h3 id="governance-document-reviews-title">선택 버전 결재 이력</h3></header>
+        {reviews.length === 0
+          ? <p role="status">기록된 결재가 없습니다.</p>
+          : <ul>{reviews.map((review) => <li key={review.review_id}>
+            <strong>{review.decision}</strong>
+            <span>{review.reason}</span>
+            <span>{shortId(review.reviewer_id)}</span>
+            <span>{dateTime(review.created_at)}</span>
+          </li>)}</ul>}
+      </section>
+    </>}
+  </Dialog>
+}
+
+function EditorDialog({
+  mode,
+  kind,
+  title,
+  summary,
+  category,
+  classification,
+  applicabilityScope,
+  templates,
+  blueprints,
+  blueprintId,
+  templateVersionId,
+  initialHtml,
+  editorKey,
+  importFile,
+  maximumHtmlBytes,
+  maximumImportBytes,
+  busy,
+  error,
+  onTitle,
+  onSummary,
+  onCategory,
+  onClassification,
+  onApplicabilityScope,
+  onTemplateVersion,
+  onBlueprint,
+  onHtmlChange,
+  onImportFile,
+  onSubmit,
+  onClose,
+}: {
+  mode?: EditorMode
+  kind: GovernanceDocumentKind
+  title: string
+  summary: string
+  category: GovernanceDocumentCategory
+  classification: number
+  applicabilityScope: string
+  templates: GovernanceDocumentSummary[]
+  blueprints: GovernanceDocumentBlueprint[]
+  blueprintId: string
+  templateVersionId: string
+  initialHtml: string
+  editorKey: string
+  importFile?: File
+  maximumHtmlBytes: number
+  maximumImportBytes: number
+  busy: boolean
+  error: unknown
+  onTitle: (value: string) => void
+  onSummary: (value: string) => void
+  onCategory: (value: GovernanceDocumentCategory) => void
+  onClassification: (value: number) => void
+  onApplicabilityScope: (value: string) => void
+  onTemplateVersion: (value: string) => void
+  onBlueprint: (value: string) => void
+  onHtmlChange: (value: string) => void
+  onImportFile: (file?: File) => void
+  onSubmit: () => void
+  onClose: () => void
+}) {
+  const [htmlBytes, setHtmlBytes] = useState(() => utf8Bytes(initialHtml))
+  useEffect(() => setHtmlBytes(utf8Bytes(initialHtml)), [initialHtml, mode])
+  const importValid = !importFile
+    || (importFile.size <= maximumImportBytes && supportedImport(importFile))
+  const createValid = Boolean(
+    title.trim()
+    && importValid
+    && (
+      templateVersionId
+      || importFile
+      || htmlBytes <= maximumHtmlBytes
+    ),
+  )
+  return <Dialog
+    open={Boolean(mode)}
+    title={mode === 'CREATE' ? `새 ${kind === 'TEMPLATE' ? 'Template' : '거버넌스 문서'}` : '새 immutable 버전'}
+    description={mode === 'CREATE'
+      ? '선택한 exact Template version 또는 안전한 HTML 편집 결과로 생성합니다.'
+      : '현재 본문을 편집하거나 HTML·Markdown·Word 파일을 서버 변환 경계로 가져옵니다.'}
+    size="workspace"
+    onRequestClose={onClose}
+    footer={<>
+      <button type="button" className="button button-secondary" disabled={busy} onClick={onClose}>취소</button>
+      <button type="button" className="button" disabled={busy || !createValid} onClick={onSubmit}>{busy ? '저장 중…' : '저장'}</button>
+    </>}
+  >
+    {Boolean(error) && <ErrorNotice error={error} />}
+    <div className="governance-editor-fields">
+      <label>버전 제목<input required maxLength={500} value={title} disabled={busy} onChange={(event) => onTitle(event.target.value)} /></label>
+      {mode === 'CREATE' && <>
+        <label>유형<select value={category} disabled={busy} onChange={(event) => onCategory(event.target.value as GovernanceDocumentCategory)}>{CATEGORIES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+        <label>분류<select value={classification} disabled={busy} onChange={(event) => onClassification(Number(event.target.value))}><option value={0}>PUBLIC</option><option value={1}>INTERNAL</option><option value={2}>CONFIDENTIAL</option><option value={3}>RESTRICTED</option></select></label>
+        <label>요약<textarea maxLength={2000} value={summary} disabled={busy} onChange={(event) => onSummary(event.target.value)} /></label>
+        {kind === 'TEMPLATE' && <label>기본 양식<select value={blueprintId} disabled={busy} onChange={(event) => onBlueprint(event.target.value)}><option value="">빈 Template</option>{blueprints.map((blueprint) => <option key={blueprint.blueprint_id} value={blueprint.blueprint_id}>{categoryLabel(blueprint.category)} · {blueprint.title}</option>)}</select></label>}
+        {kind === 'DOCUMENT' && <label>Template<select value={templateVersionId} disabled={busy} onChange={(event) => onTemplateVersion(event.target.value)}><option value="">빈 문서</option>{templates.map((template) => <option key={template.document_id} value={template.current_published_version_id ?? ''}>{template.title} · v{template.current_version_number}</option>)}</select></label>}
+      </>}
+      <label>적용 범위<textarea maxLength={4000} value={applicabilityScope} disabled={busy} onChange={(event) => onApplicabilityScope(event.target.value)} /></label>
+      {mode === 'CREATE_VERSION' && <label>HTML·Markdown·Word 가져오기
+        <input
+          type="file"
+          accept=".html,text/html,.md,text/markdown,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+          disabled={busy}
+          onChange={(event) => onImportFile(event.target.files?.[0])}
+        />
+      </label>}
+    </div>
+    {mode === 'CREATE_VERSION' && <small>파일을 선택하면 편집기 대신 서버 import·sanitize 경계를 사용합니다. 클라이언트 사전 제한 {formatBytes(maximumImportBytes)}</small>}
+    {importFile && !supportedImport(importFile) && <p role="alert">HTML, Markdown 또는 DOCX 파일만 가져올 수 있습니다.</p>}
+    {importFile && importFile.size > maximumImportBytes && <p role="alert">선택한 파일이 서버의 가져오기 허용 크기를 초과합니다.</p>}
+    {!templateVersionId && !importFile && <GovernanceHtmlEditor
+      key={editorKey}
+      initialHtml={initialHtml}
+      disabled={busy}
+      onHtmlChange={(value) => {
+        setHtmlBytes(utf8Bytes(value))
+        onHtmlChange(value)
+      }}
+    />}
+    {htmlBytes > maximumHtmlBytes && !templateVersionId && !importFile && <p role="alert">편집한 HTML이 서버 허용 크기를 초과합니다.</p>}
+    {templateVersionId && <p className="callout">선택한 exact Template version을 서버가 복제합니다. 브라우저는 Template HTML을 재작성하지 않습니다.</p>}
+  </Dialog>
+}
+
+function ReviewDialog({
+  decision,
+  reason,
+  busy,
+  error,
+  onReason,
+  onSubmit,
+  onClose,
+}: {
+  decision?: ReviewDecision
+  reason: string
+  busy: boolean
+  error: unknown
+  onReason: (value: string) => void
+  onSubmit: () => void
+  onClose: () => void
+}) {
+  return <Dialog
+    open={Boolean(decision)}
+    title={decision === 'APPROVE' ? '문서 버전 승인·게시' : '문서 버전 반려'}
+    description="현재 선택한 immutable 버전에만 결재 판단을 기록합니다."
+    onRequestClose={onClose}
+    footer={<>
+      <button type="button" className="button button-secondary" disabled={busy} onClick={onClose}>취소</button>
+      <button type="button" className="button" disabled={busy || !reason.trim()} onClick={onSubmit}>판단 기록</button>
+    </>}
+  >
+    {Boolean(error) && <ErrorNotice error={error} />}
+    <label>결재 사유<textarea required maxLength={4000} value={reason} disabled={busy} onChange={(event) => onReason(event.target.value)} /></label>
+  </Dialog>
+}
+
+function ArchiveDialog({
+  open,
+  reason,
+  busy,
+  error,
+  onReason,
+  onSubmit,
+  onClose,
+}: {
+  open: boolean
+  reason: string
+  busy: boolean
+  error: unknown
+  onReason: (value: string) => void
+  onSubmit: () => void
+  onClose: () => void
+}) {
+  return <Dialog
+    open={open}
+    title="거버넌스 문서 Archive"
+    description="활성 상태만 변경합니다. 기존 버전과 Object Storage 객체는 덮어쓰거나 물리 삭제하지 않습니다."
+    onRequestClose={onClose}
+    footer={<>
+      <button type="button" className="button button-secondary" disabled={busy} onClick={onClose}>취소</button>
+      <button type="button" className="button button-danger" disabled={busy || !reason.trim()} onClick={onSubmit}>Archive 확인</button>
+    </>}
+  >
+    {Boolean(error) && <ErrorNotice error={error} />}
+    <label>Archive 사유<textarea required maxLength={4000} value={reason} disabled={busy} onChange={(event) => onReason(event.target.value)} /></label>
+  </Dialog>
+}
+
+function KnowledgeEvidencePanel({
+  query,
+  search,
+  loading,
+  error,
+  items,
+  onQuery,
+  onSearch,
+}: {
+  query: string
+  search: string
+  loading: boolean
+  error: unknown
+  items: Array<{
+    chunk_id: string
+    document_title: string
+    version_tag: string
+    excerpt: string
+    score_basis_points: number
+  }>
+  onQuery: (value: string) => void
+  onSearch: () => void
+}) {
+  return <section className="panel governance-document-list-panel" aria-labelledby="governance-evidence-title">
+    <header>
+      <div><span className="eyebrow">Published knowledge projection</span><h3 id="governance-evidence-title">문서 지식 근거 검색</h3></div>
+      <form className="governance-document-filters" onSubmit={(event) => {
+        event.preventDefault()
+        onSearch()
+      }}>
+        <label>검색어<input type="search" minLength={2} value={query} onChange={(event) => onQuery(event.target.value)} /></label>
+        <button type="submit" className="button button-secondary" disabled={query.trim().length < 2 || loading}>검색</button>
+      </form>
+    </header>
+    {Boolean(error) && <ErrorNotice error={error} />}
+    {loading && <p role="status">게시 문서 근거를 검색하는 중입니다.</p>}
+    {!loading && search && items.length === 0 && <p role="status">권한 범위에서 일치하는 게시 문서 근거가 없습니다.</p>}
+    {items.length > 0 && <ul className="governance-evidence-results">{items.map((item) => <li key={item.chunk_id}>
+      <strong>{item.document_title} · {item.version_tag}</strong>
+      <span>{item.score_basis_points} bp</span>
+      <p>{item.excerpt}</p>
+    </li>)}</ul>}
+  </section>
+}
+
+function selectedVersionAttachments(
+  detail: GovernanceDocumentDetail,
+  versionId: string,
+): GovernanceDocumentAttachment[] {
+  return detail.attachments.filter((attachment) => (
+    attachment.document_version_id === versionId
+  ))
+}
+
+function DocumentStatus({ value }: { value: string }) {
+  return <span className={`governance-document-status status-${value.toLocaleLowerCase().replaceAll('_', '-')}`}>
+    <span aria-hidden="true" />
+    {value}
+  </span>
+}
+
+function capabilityReason(axis?: GovernanceDocumentCapabilityAxis): string {
+  if (!axis) return '서버가 문서 열람 capability를 제공하지 않았습니다.'
+  return axis.reason_code ?? (axis.state === 'DENIED'
+    ? '현재 역할로 열람할 수 없습니다.'
+    : '문서 기능을 사용할 수 없습니다.')
+}
+
+function axisLabel(value: GovernanceDocumentCapabilityAxis['id']): string {
+  return {
+    read: '열람',
+    create: '작성',
+    edit: '새 버전',
+    review: '검토',
+    publish: '게시',
+    archive: 'Archive',
+    template_manage: 'Template',
+    artifact_storage: 'Object 저장',
+    knowledge_projection: '지식 투영',
+  }[value]
+}
+
+function categoryLabel(value: GovernanceDocumentCategory): string {
+  return CATEGORIES.find((candidate) => candidate.value === value)?.label ?? value
+}
+
+function classificationLabel(value: number): string {
+  return ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED'][value] ?? `LEVEL ${value}`
+}
+
+function dateTime(value: string): string {
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleString('ko-KR') : '—'
+}
+
+function shortId(value: string): string {
+  return value.length > 14 ? `${value.slice(0, 8)}…${value.slice(-4)}` : value
+}
+
+function formatBytes(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return '—'
+  if (value < 1024) return `${value} B`
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`
+  return `${(value / (1024 * 1024)).toFixed(1)} MiB`
+}
+
+function utf8Bytes(value: string): number {
+  return new TextEncoder().encode(value).byteLength
+}
+
+function supportedImport(file: File): boolean {
+  const name = file.name.toLocaleLowerCase()
+  return (
+    name.endsWith('.html')
+    || name.endsWith('.htm')
+    || name.endsWith('.md')
+    || name.endsWith('.docx')
+  )
+}
+
+export type { GovernanceDocumentState }

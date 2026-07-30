@@ -2,6 +2,24 @@
 
 ## Current verification status
 
+### Governance Document Phase 9 local release gate — 2026-07-31
+
+Revision `0072` implements forced-RLS document/Template authoring, immutable version and approval
+evidence, safe HTML, create-only versioned MinIO artifacts/attachments and authorized
+vector/Neo4j projection. Repository Ruff passed over `511` files, strict mypy passed over `502`
+source/test files, static architecture/security verification passed, and the backend suite passed
+`1,955` tests with `104` explicitly environment-gated skips. Frontend TypeScript/ESLint passed;
+`68` files / `367` tests passed and the production build completed.
+
+Two canonical `0001` generations matched at SHA-256
+`bbe25ca8451f60720c353e5bd70461ef2885fa6b8b5f36ea19732ff4ccdab030`.
+PostgreSQL `17.10` accepted `0071 -> 0072`; all eight new tables reported forced RLS, both deferred
+foreign keys existed and the dedicated NOBYPASSRLS/NOSUPERUSER worker retained only projection
+column updates. The live MinIO adapter passed create/read/replay while list/delete were denied, and
+the API/worker runtime passed readiness and error-free idle cycles. Production Object Lock,
+representative retrieval/load, WSL amd64 and target identity/browser acceptance remain external
+gates.
+
 ### GX Quality Phase 8 authoring/manual execution readiness — 2026-07-30
 
 Revision `0071` adds only fixed server-derived review, activation and manual-Run command functions.
@@ -1234,6 +1252,37 @@ applicable evidence below exists.
   completion produces STALE/UNKNOWN and zero canonical result. Negatives also prove no
   app/Airflow/worker TTL, DELETE, TRUNCATE, object lifecycle or partition detach/drop exists for
   Quality evidence.
+
+## Governance Document execution gates
+
+- Domain/service tests cover the three sanitized starter blueprints, HTML sanitizer idempotency and
+  adversarial XSS corpus, Markdown/DOCX conversion bounds, logical Archive, one live candidate,
+  maker-checker publication, stale `If-Match`, actor-bound idempotency and human-only APIs.
+- PostgreSQL 17 applies canonical `0001` and additive `0071 -> 0072`, reports no Alembic metadata
+  diff, installs both deferred circular/template foreign keys and forced RLS on all eight tables,
+  and proves wrong/no Workspace reads and direct UPDATE/DELETE fail closed.
+- Role probes prove `datariver_governance_document` is NOBYPASSRLS with no unsafe membership, no
+  document DELETE, no publication/content update columns and only the exact projection
+  table/column grants.
+- Object-store tests prove UUID-only keys, `If-None-Match: *`, exact VersionId/checksum/metadata
+  read-back, identical collision adoption, changed collision rejection, versioning enabled and
+  delete/list denial for the dedicated identity. No WORM/Object Lock claim is made without a
+  separately approved storage profile.
+- Projection tests cover artifact-before-vector ordering, published-version-only projection,
+  deterministic bounded chunking, exact embedding binding/dimension, fixed parameterized Neo4j
+  statements, verified graph hash, immutable relational receipts, retry/lease behavior and no raw
+  provider error persistence.
+- Evidence API tests prove authorization occurs before external embedding, the query uses the same
+  provider/model binding as stored chunks, only active current published authorized documents are
+  ranked, and callers cannot supply raw vectors/provider/model/Cypher/SQL.
+- Frontend tests cover capability-first zero-follow-up denial, cursor/cache scope, ETag and
+  idempotency commands, list/detail/history/review/Archive/attachment/import states, controlled
+  blueprint loading and the DOM-to-React viewer with no raw HTML insertion. TypeScript, ESLint,
+  Vitest and production build are release gates.
+- Representative retrieval candidate count, vector dimension, latency/recall, Neo4j projection,
+  MinIO throughput, worker crash/reclaim, multi-Workspace leakage, WSL amd64 and accessibility are
+  target acceptance gates. The portable 2,000-candidate vector shadow is not a production SLO
+  claim.
 
 ## Core correctness scenarios
 

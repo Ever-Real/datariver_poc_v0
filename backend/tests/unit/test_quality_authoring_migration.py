@@ -24,7 +24,7 @@ def test_quality_authoring_migration_adds_only_server_derived_command_functions(
 
     assert migration.revision == "0071"
     assert migration.down_revision == "0070"
-    assert REQUIRED_DATABASE_REVISION == "0071"
+    assert REQUIRED_DATABASE_REVISION == "0072"
     assert "review_rule_set_version_command_v2" in source
     assert "activate_rule_set_version_command_v2" in source
     assert "request_manual_validation_run_v1" in source

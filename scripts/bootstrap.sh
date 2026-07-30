@@ -371,6 +371,7 @@ ensure_random_secret postgres_upload_password 32
 ensure_random_secret postgres_governance_password 32
 ensure_random_secret postgres_knowledge_password 32
 ensure_random_secret postgres_quality_password 32
+ensure_random_secret postgres_governance_document_password 32
 ensure_random_secret postgres_catalog_profile_password 32
 ensure_random_secret postgres_export_password 32
 ensure_random_secret postgres_retention_scheduler_password 32
@@ -428,6 +429,10 @@ if [ ! -s "$secrets_dir/s3_knowledge_access_key" ]; then
   random_secret 18 | tr '/+' 'AB' | tr -d '=' > "$secrets_dir/s3_knowledge_access_key"
 fi
 ensure_random_secret s3_knowledge_secret_key 36
+if [ ! -s "$secrets_dir/s3_governance_document_access_key" ]; then
+  random_secret 18 | tr '/+' 'AB' | tr -d '=' > "$secrets_dir/s3_governance_document_access_key"
+fi
+ensure_random_secret s3_governance_document_secret_key 36
 if [ ! -s "$secrets_dir/s3_archive_access_key" ]; then
   random_secret 18 | tr '/+' 'AB' | tr -d '=' > "$secrets_dir/s3_archive_access_key"
 fi

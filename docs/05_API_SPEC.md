@@ -116,6 +116,31 @@ retry and scheduling mutations are intentionally absent until trusted field iden
 deployment readiness attestations exist; the browser displays those axes as unavailable rather
 than inventing values.
 
+### Governance Document library
+
+All routes are human-only, `private, no-store` and vary on Authorization and Workspace. List/detail
+reads return a permission-bound cache scope and authorization lease. Existing-aggregate commands
+require a quoted positive `If-Match`; every command requires an actor-bound `Idempotency-Key`.
+
+| Method/path | Action | Purpose |
+|---|---|---|
+| `GET /governance/documents/capability` | evaluated document/Template Actions | independent read/create/edit/review/publish/archive/Template/artifact/knowledge axes and server limits |
+| `GET /governance/documents/template-blueprints` | `governance.template.propose` | exact sanitized V1 starter catalog for policy, standard terminology and security guide |
+| `GET /governance/documents?kind=&category=&q=&include_archived=&limit=&cursor=` | document or Template read | permission-pruned summaries, default 25 and maximum 100 |
+| `POST /governance/documents` | document create or Template propose | create one aggregate from canonical HTML or an exact published Template version |
+| `POST /governance/documents/imports` | document create or Template propose | multipart HTML/Markdown/DOCX aggregate creation; maximum 25 MiB ingress and 1 MiB canonical HTML |
+| `GET /governance/documents/{document_id}` | document/Template read; history Action for archived documents | exact aggregate, immutable versions, reviews and attachment metadata with ETag |
+| `POST /governance/documents/{document_id}/versions` | document edit or Template propose | ETag-fenced JSON HTML or multipart HTML/Markdown/DOCX immutable version |
+| `POST /governance/documents/{document_id}/versions/{version_id}/submissions` | document edit or Template propose | Draft to independent review |
+| `POST /governance/documents/{document_id}/versions/{version_id}/reviews` | review plus publish/activate for approval | independent approve-and-publish or reject with reason |
+| `POST /governance/documents/{document_id}/versions/{version_id}/attachments` | document edit or Template propose | one create-only Draft-version attachment, maximum 25 MiB and 25 per version |
+| `POST /governance/documents/{document_id}/archive` | document/Template archive | logical Archive with reason; no physical deletion |
+| `GET /governance/documents/knowledge/evidence?q=&limit=` | `governance.knowledge.read` | server-embedded query over current published authorized chunks, maximum 20 results |
+
+No route accepts an object key, MinIO credential, raw vector, provider/model identifier, SQL,
+Cypher, GraphQL, sanitizer policy override or arbitrary parser/plugin configuration. Attachment
+download/delete and physical document deletion are intentionally absent.
+
 ### Catalog facade
 
 | Method/path | Action | Purpose |

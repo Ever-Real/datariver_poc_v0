@@ -65,7 +65,7 @@ an environment may claim HA.
 | Authorization | ABAC resources, Role-version Policy Book rules, policies, bindings and decision evidence | Role data rule, policy and decision log |
 | Catalog Facade | authorized index plus DataHub search/detail/lineage projection and snapshot-bound managed export | projection/cursor/export receipt; applied metadata remains in DataHub |
 | Quality | immutable typed rule versions, independent activation, durable validation runs, sanitized results and authorization-pruned dashboard | rule/review/run/attempt/result/event evidence in PostgreSQL; DataHub profiles remain provider observations |
-| Governance | registration and change-request aggregate/state machine | requests, approvals, transitions, audit |
+| Governance | registration/change-request workflow plus immutable governance documents and Templates | requests, approvals, document/version/review/object/projection receipts and audit |
 | Integration | connections, job intents, outbox/inbox, retry/DLQ/reconcile | durable job and delivery state |
 | Knowledge Studio | ontology, proposals, changesets, validation and releases | immutable graph releases/provenance |
 | Assistant | sessions, messages, runs and authorized evidence | chat audit/evidence metadata |
@@ -80,6 +80,9 @@ The API gateway is a deployment boundary, not an authorization context. It valid
 - DataHub owns metadata after successful application. DataRiver stores a minimal authorized projection and a monotonic local projection version; a true DataHub source watermark remains an ingestion contract.
 - DataRiver PostgreSQL owns intent, approvals, job state, graph release manifests, policy and audit.
 - Graph projection data is disposable. Publishing first creates an immutable PostgreSQL/object snapshot, loads a shadow projection, verifies it, then switches the active pointer.
+- Governance Document lifecycle, sanitized content hashes, reviews and exact object/projection
+  receipts are PostgreSQL truth. MinIO version bytes and Neo4j document/chunk nodes are verified
+  evidence/projections and cannot publish or archive a document.
 - Redis owns nothing canonical. Cache loss changes latency, not correctness. Delivery-stream loss is recovered from the PostgreSQL outbox.
 - Airflow task status is operational evidence, never the business job status.
 - PostgreSQL, not an object provider, owns retention versions, Legal Hold state, erasure authority

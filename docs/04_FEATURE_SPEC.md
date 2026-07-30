@@ -205,6 +205,27 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   attestations exist. The browser shows the returned reason code and never substitutes example
   data or an optimistic local success.
 
+## Governance Document library
+
+- The existing policy status page remains the default view. A separate document workspace first
+  obtains a 30-second capability lease, then loads only permission-pruned document or Template
+  summaries with an opaque cursor. Read denial causes zero document requests.
+- Authorized humans create a document/Template with native rich text or import bounded
+  HTML/Markdown/DOCX. The server canonicalizes and sanitizes HTML; the browser renders allowlisted
+  nodes without raw HTML insertion. Policy, standard-terminology and security-guide starter
+  blueprints create ordinary editable Template aggregates rather than example business records.
+- Every edit creates a new immutable version. Draft authors submit for independent review; only an
+  eligible non-author Checker can approve/publish or reject. The detail view shows version,
+  author/reviewer/time, applicability, object state, knowledge state and immutable review history.
+- Attachments belong to one Draft version and are create-only in the versioned
+  `datariver-filefolder` prefix. The UI accepts no object key and exposes no list/delete/presign
+  control. A stale aggregate ETag blocks the object write.
+- Archive is a reasoned high-risk command that changes lifecycle only. It never deletes a DB row,
+  document version, attachment or MinIO object version.
+- A dedicated worker stores exact version artifacts, embeds published text and verifies the fixed
+  Neo4j document/version/chunk projection. The evidence search sends only bounded text; the server
+  uses its active embedding binding and returns only current published authorized chunks.
+
 ## Monitoring and operations
 
 - Capability cards for API, PostgreSQL, DataHub, cache, queue, object storage, graph, LLM, Airflow and policy.

@@ -39,6 +39,7 @@ BACKEND_RUNTIME_SERVICES = (
     "retention-scheduler",
     "retention-archive-worker",
     "quality-worker",
+    "governance-document-worker",
 )
 RUNTIME_SERVICES = (
     *DEFAULT_RUNTIME_SERVICES,
@@ -47,6 +48,7 @@ RUNTIME_SERVICES = (
     "retention-scheduler",
     "retention-archive-worker",
     "quality-worker",
+    "governance-document-worker",
     "keycloak",
 )
 AIRFLOW_SERVICES = (
@@ -764,6 +766,8 @@ def classify_environment_changes(
             # The optional worker is restarted only when already running; the
             # environment workflow never enables its explicit Compose profile.
             services.add("quality-worker")
+        elif key.startswith("GOVERNANCE_DOCUMENT_"):
+            services.update(("api", "governance-document-worker"))
         elif key == "CATALOG_EXPORT_WORKER_ENABLED":
             services.update(("api", "catalog-export-worker"))
         elif key in {
@@ -871,6 +875,8 @@ def classify_environment_changes(
             services.add("web")
         elif key.startswith(("MINIO_",)):
             local_connector_services.add("minio")
+        elif key.startswith("S3_GOVERNANCE_DOCUMENT_"):
+            services.update(("api", "governance-document-worker"))
         elif key.startswith("S3_ARCHIVE_"):
             services.update(("retention-scheduler", "retention-archive-worker"))
         elif key.startswith("S3_EXPORT_"):

@@ -146,6 +146,67 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  minio-governance-document-identity-init:
+    profiles: ["object-storage"]
+    image: ${MINIO_IMAGE:-quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e}
+    entrypoint: ["/bin/sh", "-ec"]
+    environment:
+      MC_CONFIG_DIR: /tmp/mc
+      S3_BUCKET_FILEFOLDER: ${S3_BUCKET_FILEFOLDER:?S3_BUCKET_FILEFOLDER is required}
+    command:
+      - >-
+        bucket="$${S3_BUCKET_FILEFOLDER}";
+        if [ "$${#bucket}" -lt 3 ] || [ "$${#bucket}" -gt 63 ];
+        then echo "S3_BUCKET_FILEFOLDER is not a valid bucket name" >&2; exit 2; fi;
+        case "$$bucket" in
+        *[!a-z0-9.-]*|.*|-*|*.|*-|*..*|*.-*|-.*)
+        echo "S3_BUCKET_FILEFOLDER is not a valid bucket name" >&2; exit 2;; esac;
+        while IFS= read -r policy_line || [ -n "$$policy_line" ]; do
+        case "$$policy_line" in
+        *__S3_BUCKET_FILEFOLDER__*)
+        prefix="$${policy_line%%__S3_BUCKET_FILEFOLDER__*}";
+        suffix="$${policy_line#*__S3_BUCKET_FILEFOLDER__}";
+        printf '%s%s%s\n' "$$prefix" "$$bucket" "$$suffix";;
+        *) printf '%s\n' "$$policy_line";; esac;
+        done < /config/governance-document-policy.template.json
+        > /tmp/governance-document-policy.json;
+        root_user="$$(cat /run/secrets/s3_access_key)";
+        root_secret="$$(cat /run/secrets/s3_secret_key)";
+        until printf '%s\n%s\n' "$$root_user" "$$root_secret" |
+        mc alias set local http://minio:9000 >/dev/null 2>&1;
+        do sleep 2; done;
+        mc mb --ignore-existing "local/$$bucket";
+        mc version enable "local/$$bucket";
+        unset root_user root_secret;
+        governance_user="$$(cat /run/secrets/s3_governance_document_access_key)";
+        governance_secret="$$(cat /run/secrets/s3_governance_document_secret_key)";
+        mc admin user info local "$$governance_user" >/dev/null 2>&1 ||
+        printf '%s\n%s\n' "$$governance_user" "$$governance_secret" |
+        mc admin user add local;
+        unset governance_secret;
+        mc admin policy create local datariver-governance-document
+        /tmp/governance-document-policy.json;
+        mc admin policy attach local datariver-governance-document
+        --user "$$governance_user"
+    secrets:
+      - s3_access_key
+      - s3_secret_key
+      - s3_governance_document_access_key
+      - s3_governance_document_secret_key
+    volumes:
+      - ./infra/minio/governance-document-policy.template.json:/config/governance-document-policy.template.json:ro
+    depends_on:
+      minio:
+        condition: service_started
+    networks:
+      - connectors
+    restart: "no"
+    read_only: true
+    tmpfs:
+      - /tmp:size=8m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+
   neo4j:
     profiles: ["graph"]
     image: ${NEO4J_IMAGE:-neo4j:2026.06.0@sha256:ba2b859bdbe7017a9baa1a7b5681ac9732198753719b0a502e3645feddfdec72}
@@ -202,5 +263,9 @@ secrets:
     file: ./secrets/s3_knowledge_access_key
   s3_knowledge_secret_key:
     file: ./secrets/s3_knowledge_secret_key
+  s3_governance_document_access_key:
+    file: ./secrets/s3_governance_document_access_key
+  s3_governance_document_secret_key:
+    file: ./secrets/s3_governance_document_secret_key
   neo4j_auth:
     file: ./secrets/neo4j_auth

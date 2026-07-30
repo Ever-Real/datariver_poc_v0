@@ -3,10 +3,18 @@ import { BookOpen, CheckCircle2, Eye, FileText, RefreshCw, Shield, Workflow } fr
 import type { ApiClient } from '../../api/client'
 import type { AdminOperation, ClassificationAccessPolicy, LegalHold, RetentionPolicy } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { useRovingTabs } from '../../components/common/useRovingTabs'
 import { PageTitle } from '../../components/layout/PageTitle'
+import { GovernanceDocumentLibrary } from '../governance-documents/GovernanceDocumentLibrary'
 
 type DocumentId = 'CLASSIFICATION' | 'RETENTION' | 'LEGAL_HOLD'
 type ViewMode = 'TEXT' | 'FLOW'
+type GovernancePrimaryTab = 'POLICY_STATUS' | 'DOCUMENT_LIBRARY'
+const governancePrimaryTabs = [
+  { id: 'POLICY_STATUS', label: '정책 현황' },
+  { id: 'DOCUMENT_LIBRARY', label: '문서 라이브러리' },
+] as const satisfies ReadonlyArray<{ id: GovernancePrimaryTab; label: string }>
+const governancePrimaryTabIds = governancePrimaryTabs.map((tab) => tab.id)
 
 const documents: Array<{ id: DocumentId; title: string; description: string; icon: typeof Shield }> = [
   { id: 'CLASSIFICATION', title: '데이터 분류·접근 정책', description: '검색·Chat 허용 경계', icon: Shield },
@@ -23,6 +31,7 @@ interface PolicyData {
 }
 
 export function PolicyGovernancePage({ client, mayReadPolicies = false, allowedOperations }: { client: ApiClient; mayReadPolicies?: boolean; allowedOperations?: readonly AdminOperation[] }) {
+  const [primaryTab, setPrimaryTab] = useState<GovernancePrimaryTab>('POLICY_STATUS')
   const [active, setActive] = useState<DocumentId>('CLASSIFICATION')
   const [viewMode, setViewMode] = useState<ViewMode>('TEXT')
   const [data, setData] = useState<PolicyData>({ classification: null, retention: null, holds: [], readAllowed: false })
@@ -58,11 +67,29 @@ export function PolicyGovernancePage({ client, mayReadPolicies = false, allowedO
 
   useEffect(() => { void refresh() }, [refresh])
   const document = documents.find((item) => item.id === active) ?? defaultDocument
+  const primaryTabs = useRovingTabs({
+    ids: governancePrimaryTabIds,
+    activeId: primaryTab,
+    idPrefix: 'governance-primary',
+    onSelect: setPrimaryTab,
+  })
 
   return <section className="policy-governance-page">
-    <PageTitle icon="GV" eyebrow="Policy governance" title="거버넌스" description="v0.3의 문서 목차·본문·워크플로우 구조로 실제 정책·보존·Legal Hold read model을 확인합니다." actions={<button type="button" className="button button-secondary" disabled={loading} onClick={() => void refresh()}><RefreshCw size={13} />새로고침</button>} />
+    <PageTitle icon="GV" eyebrow="Policy governance" title="거버넌스" description="실제 정책 read model과 버전이 보존되는 거버넌스 문서를 권한 범위 안에서 관리합니다." actions={primaryTab === 'POLICY_STATUS' ? <button type="button" className="button button-secondary" disabled={loading} onClick={() => void refresh()}><RefreshCw size={13} />새로고침</button> : undefined} />
     <ErrorNotice error={error} />
-    <div className="policy-governance-workspace" aria-busy={loading}>
+    <nav className="governance-primary-tabs" role="tablist" aria-label="거버넌스 영역">
+      {governancePrimaryTabs.map((tab) => <button
+        key={tab.id}
+        {...primaryTabs.tabProps(tab.id)}
+        type="button"
+        className={primaryTab === tab.id ? 'active' : ''}
+        onClick={() => setPrimaryTab(tab.id)}
+      >
+        {tab.label}
+      </button>)}
+    </nav>
+    <div {...primaryTabs.panelProps(primaryTab)} className="governance-primary-panel">
+      {primaryTab === 'POLICY_STATUS' ? <div className="policy-governance-workspace" aria-busy={loading}>
       <aside className="policy-document-tree panel" aria-label="거버넌스 문서 목차">
         <header><BookOpen size={16} /><div><span className="eyebrow">Governance library</span><h2>가이드라인 목록</h2></div></header>
         <nav>{documents.map(({ id, title, description, icon: Icon }) => <button key={id} type="button" className={active === id ? 'active' : ''} onClick={() => setActive(id)}><span><Icon size={15} /></span><div><strong>{title}</strong><small>{description}</small></div></button>)}</nav>
@@ -72,6 +99,7 @@ export function PolicyGovernancePage({ client, mayReadPolicies = false, allowedO
         <header className="policy-document-toolbar"><div role="tablist" aria-label="문서 보기 방식"><button type="button" role="tab" aria-selected={viewMode === 'TEXT'} className={viewMode === 'TEXT' ? 'active' : ''} onClick={() => setViewMode('TEXT')}><FileText size={13} />문서 뷰어</button><button type="button" role="tab" aria-selected={viewMode === 'FLOW'} className={viewMode === 'FLOW' ? 'active' : ''} onClick={() => setViewMode('FLOW')}><Workflow size={13} />워크플로우 맵</button></div><span>{loading ? '동기화 중' : '서버 read model'}</span></header>
         {viewMode === 'TEXT' ? <PolicyDocumentView document={document} data={data} loading={loading} /> : <PolicyWorkflowView document={document} data={data} loading={loading} />}
       </main>
+      </div> : <GovernanceDocumentLibrary client={client} />}
     </div>
   </section>
 }

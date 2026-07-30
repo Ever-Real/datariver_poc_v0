@@ -8,7 +8,11 @@ from datariver.infrastructure.cache.redis import RedisEventDelivery
 from datariver.infrastructure.datahub.http import HttpDataHubGateway
 from datariver.infrastructure.datahub.profile_http import HttpDataHubProfileGateway
 from datariver.infrastructure.db.session import Database
+from datariver.infrastructure.knowledge.neo4j import BoltNeo4jQueryExecutor
 from datariver.infrastructure.object_store.archive_s3 import S3ImmutableArchiveStore
+from datariver.infrastructure.object_store.governance_documents import (
+    S3GovernanceDocumentArtifactStore,
+)
 from datariver.infrastructure.object_store.s3 import S3ObjectStore
 from datariver.infrastructure.secrets import SecretResolver
 
@@ -73,6 +77,16 @@ class CatalogProfileCollectorContainer:
 @dataclass(slots=True)
 class QualityWorkerContainer(RelayWorkerContainer):
     pass
+
+
+@dataclass(slots=True)
+class GovernanceDocumentWorkerContainer(RelayWorkerContainer):
+    artifacts: S3GovernanceDocumentArtifactStore
+    neo4j: BoltNeo4jQueryExecutor
+
+    async def close(self) -> None:
+        await self.neo4j.close()
+        await super().close()
 
 
 def retention_archive_configuration_fingerprint(settings: Settings) -> str:
@@ -248,6 +262,59 @@ def build_quality_container(settings: Settings) -> QualityWorkerContainer:
     return QualityWorkerContainer(
         database=_database(settings, role="quality"),
         event_delivery=_delivery(settings, resolver),
+    )
+
+
+def build_governance_document_container(
+    settings: Settings,
+) -> GovernanceDocumentWorkerContainer:
+    required = (
+        settings.governance_document_database_url,
+        settings.governance_document_database_secret_ref,
+        settings.s3_bucket_filefolder,
+        settings.s3_governance_document_access_key_file,
+        settings.s3_governance_document_secret_key_file,
+        settings.neo4j_uri,
+        settings.neo4j_auth_secret_ref,
+    )
+    if not settings.governance_document_worker_enabled or any(value is None for value in required):
+        raise RuntimeError(
+            "Governance Document worker requires explicit enablement and dedicated "
+            "DB/S3/Neo4j settings."
+        )
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
+    bucket = settings.s3_bucket_filefolder
+    access_file = settings.s3_governance_document_access_key_file
+    secret_file = settings.s3_governance_document_secret_key_file
+    neo4j_uri = settings.neo4j_uri
+    neo4j_secret_ref = settings.neo4j_auth_secret_ref
+    assert bucket is not None
+    assert access_file is not None
+    assert secret_file is not None
+    assert neo4j_uri is not None
+    assert neo4j_secret_ref is not None
+    credential = resolver.resolve(neo4j_secret_ref).strip()
+    username, separator, password = credential.partition("/")
+    if not separator or not username or not password:
+        raise RuntimeError("The Governance Document Neo4j secret is invalid.")
+    return GovernanceDocumentWorkerContainer(
+        database=_database(settings, role="governance_document"),
+        event_delivery=_delivery(settings, resolver),
+        artifacts=S3GovernanceDocumentArtifactStore(
+            endpoint_url=settings.s3_endpoint_url,
+            region=settings.s3_region,
+            bucket=bucket,
+            access_key=resolver.resolve(f"file:{access_file}"),
+            secret_key=resolver.resolve(f"file:{secret_file}"),
+        ),
+        neo4j=BoltNeo4jQueryExecutor(
+            uri=neo4j_uri,
+            username=username,
+            password=password,
+            database=settings.neo4j_database,
+            connection_timeout_seconds=settings.neo4j_connection_timeout_seconds,
+            maximum_connection_pool_size=settings.neo4j_maximum_connection_pool_size,
+        ),
     )
 
 

@@ -1,0 +1,18 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ImmutableGovernanceDocumentArtifacts",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:GetObjectVersion",
+        "s3:GetObjectAttributes",
+        "s3:PutObject"
+      ],
+      "Resource": [
+        "arn:aws:s3:::__S3_BUCKET_FILEFOLDER__/governance/documents/v1/*"
+      ]
+    }
+  ]
+}

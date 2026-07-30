@@ -33,7 +33,7 @@ def test_quality_read_indexes_are_metadata_migration_and_baseline_consistent() -
     migration = _load_migration()
     assert migration.revision == "0070"
     assert migration.down_revision == "0069"
-    assert REQUIRED_DATABASE_REVISION == "0071"
+    assert REQUIRED_DATABASE_REVISION == "0072"
 
     expected = {
         "ix_quality_rule_sets_list",

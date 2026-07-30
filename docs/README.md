@@ -50,6 +50,7 @@
 | 52 | [GX quality management PRD/checklist](52_GX_QUALITY_MANAGEMENT_PRD_CHECKLIST.md) | governed DataHub Profile, typed Rule, isolated GX execution and authorization-pruned dashboard contract | Phases 1–5 and local Phase 6 gates complete; mutations and target Profile/source/WSL gates remain closed |
 | 53 | [Phase 7 integrity audit](53_PHASE7_INTEGRITY_AUDIT.md) | one-pass source/migration/secret audit, V4 retention administration and fail-closed dispatch capacity | Local static/focused gates complete; Phase 8 runtime and target gates open |
 | 54 | [Phase 8 Quality authoring and execution readiness](54_PHASE8_QUALITY_AUTHORING_AND_EXECUTION_READINESS.md) | V2 field directory, atomic Rule commands, manual Run outbox and runtime readiness | Local source/PostgreSQL 17 gates complete; target source/Profile gates remain open |
+| 55 | [Phase 9 Governance Document library](55_PHASE9_GOVERNANCE_DOCUMENT_LIBRARY.md) | immutable document/Template versions, approval, safe HTML, MinIO and knowledge projection | Local source/PostgreSQL 17/MinIO/runtime gates complete; target gates open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and
@@ -130,6 +131,9 @@ The additive Profile collector boundary, local Catalog source-version watermark,
 The fail-closed V2 authoring directory, bounded atomic Rule proposal and server-derived
 review/activation/manual Run commands are defined by
 [ADR-0079](adr/0079-quality-authoring-readiness-and-manual-run-commands.md).
+The immutable Governance Document aggregate, safe HTML/import boundary, create-only MinIO
+artifacts, independent approval and authorized vector/Neo4j projection are defined by
+[ADR-0080](adr/0080-governance-document-library-and-knowledge-projection.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

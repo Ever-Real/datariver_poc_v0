@@ -97,7 +97,7 @@ def test_migration_installs_fail_closed_triggers_rls_and_limited_role_grants() -
     migration = (
         root / "backend/alembic/versions/0011_governed_classification_access.py"
     ).read_text(encoding="utf-8")
-    assert REQUIRED_DATABASE_REVISION == "0071"
+    assert REQUIRED_DATABASE_REVISION == "0072"
     assert "FORCE ROW LEVEL SECURITY" in migration
     assert "validate_classification_policy_activation" in migration
     assert "validate_restricted_search_grant" in migration

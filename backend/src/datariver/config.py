@@ -310,6 +310,11 @@ class Settings(BaseSettings):
     quality_source_secret_root: str = "/run/secrets"  # noqa: S105 - filesystem path
     quality_worker_fingerprint: str | None = Field(default=None, max_length=255)
     quality_worker_lease_seconds: int = Field(default=360, ge=60, le=90_000)
+    governance_document_worker_enabled: bool = False
+    governance_document_database_url: str | None = None
+    governance_document_database_secret_ref: str | None = Field(default=None, max_length=512)
+    governance_document_worker_poll_seconds: float = Field(default=2.0, ge=0.1, le=30.0)
+    governance_document_worker_lease_seconds: int = Field(default=300, ge=60, le=3_600)
     ui_datahub_url: HttpUrl | None = None
     ui_airflow_url: HttpUrl | None = None
     ui_grafana_url: HttpUrl | None = None
@@ -413,6 +418,8 @@ class Settings(BaseSettings):
     s3_export_secret_key_file: str | None = None
     s3_knowledge_access_key_file: str | None = None
     s3_knowledge_secret_key_file: str | None = None
+    s3_governance_document_access_key_file: str | None = None
+    s3_governance_document_secret_key_file: str | None = None
     s3_archive_endpoint_url: str | None = None
     s3_archive_region: str | None = None
     s3_archive_bucket: str | None = None
@@ -1054,6 +1061,95 @@ class Settings(BaseSettings):
             }
             if self.quality_database_secret_ref in shared_database_secrets:
                 raise ValueError("Quality worker database secret must be dedicated.")
+        if self.governance_document_worker_enabled:
+            required_governance_document_settings = {
+                "database URL": self.governance_document_database_url,
+                "database secret": self.governance_document_database_secret_ref,
+                "filefolder bucket": self.s3_bucket_filefolder,
+                "S3 access key file": self.s3_governance_document_access_key_file,
+                "S3 secret key file": self.s3_governance_document_secret_key_file,
+            }
+            missing_governance_document_settings = sorted(
+                name
+                for name, value in required_governance_document_settings.items()
+                if value is None
+            )
+            if missing_governance_document_settings:
+                raise ValueError(
+                    "Enabled Governance Document worker requires all dedicated settings: "
+                    + ", ".join(missing_governance_document_settings)
+                )
+            assert self.governance_document_database_url is not None
+            assert self.governance_document_database_secret_ref is not None
+            if (
+                urlsplit(self.governance_document_database_url).username
+                != "datariver_governance_document"
+            ):
+                raise ValueError(
+                    "Governance Document worker must use its dedicated database principal."
+                )
+            other_database_urls = {
+                self.database_url,
+                self.migration_database_url,
+                self.relay_database_url,
+                self.upload_database_url,
+                self.governance_database_url,
+                self.bootstrap_database_url,
+                self.knowledge_database_url,
+                self.export_database_url,
+                self.retention_scheduler_database_url,
+                self.archive_database_url,
+                self.catalog_profile_database_url,
+                self.quality_database_url,
+            }
+            if self.governance_document_database_url in other_database_urls:
+                raise ValueError("Governance Document worker database URL must be separate.")
+            other_database_secrets = {
+                self.database_secret_ref,
+                self.migration_database_secret_ref,
+                self.relay_database_secret_ref,
+                self.upload_database_secret_ref,
+                self.governance_database_secret_ref,
+                self.bootstrap_database_secret_ref,
+                self.knowledge_database_secret_ref,
+                self.export_database_secret_ref,
+                self.retention_scheduler_database_secret_ref,
+                self.archive_database_secret_ref,
+                self.catalog_profile_database_secret_ref,
+                self.quality_database_secret_ref,
+            }
+            if self.governance_document_database_secret_ref in other_database_secrets:
+                raise ValueError("Governance Document worker database secret must be dedicated.")
+            governance_s3_files = {
+                self.s3_governance_document_access_key_file,
+                self.s3_governance_document_secret_key_file,
+            }
+            if len(governance_s3_files) != 2 or governance_s3_files & {
+                self.s3_access_key_file,
+                self.s3_secret_key_file,
+                self.s3_export_access_key_file,
+                self.s3_export_secret_key_file,
+                self.s3_knowledge_access_key_file,
+                self.s3_knowledge_secret_key_file,
+                self.s3_archive_access_key_file,
+                self.s3_archive_secret_key_file,
+            }:
+                raise ValueError(
+                    "Governance Document S3 credentials must use separate secret files."
+                )
+            embedding_ready = (
+                self.local_ollama_embedding_enabled
+                or self.intranet_openai_compatible_embedding_enabled
+            )
+            if (
+                not self.knowledge_pipeline_enabled
+                or not self.neo4j_projection_enabled
+                or not embedding_ready
+            ):
+                raise ValueError(
+                    "Governance Document worker requires Knowledge, Neo4j and Embedding "
+                    "projection capabilities."
+                )
         if self.retention_archive_execution_enabled:
             if self.retention_worker_subject_id != UUID("00000000-0000-7000-8000-000000000003"):
                 raise ValueError(

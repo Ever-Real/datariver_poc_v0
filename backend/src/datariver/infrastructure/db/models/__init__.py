@@ -37,6 +37,16 @@ from datariver.infrastructure.db.models.governance import (
     RegistrationContentBindingModel,
     StateTransitionModel,
 )
+from datariver.infrastructure.db.models.governance_documents import (
+    GovernanceDocumentArtifactReceiptModel,
+    GovernanceDocumentAttachmentModel,
+    GovernanceDocumentEventModel,
+    GovernanceDocumentKnowledgeChunkModel,
+    GovernanceDocumentModel,
+    GovernanceDocumentProjectionReceiptModel,
+    GovernanceDocumentReviewModel,
+    GovernanceDocumentVersionModel,
+)
 from datariver.infrastructure.db.models.inference import (
     InferenceProviderGenerationModel,
     InferenceProviderProfileVersionModel,
@@ -187,6 +197,14 @@ __all__ = [
     "EvidenceCitationModel",
     "ExternalServiceProfileModel",
     "ExternalServiceProfileVersionModel",
+    "GovernanceDocumentArtifactReceiptModel",
+    "GovernanceDocumentAttachmentModel",
+    "GovernanceDocumentEventModel",
+    "GovernanceDocumentKnowledgeChunkModel",
+    "GovernanceDocumentModel",
+    "GovernanceDocumentProjectionReceiptModel",
+    "GovernanceDocumentReviewModel",
+    "GovernanceDocumentVersionModel",
     "GraphModel",
     "IdempotencyKeyModel",
     "ImmutableArchiveReceiptModel",

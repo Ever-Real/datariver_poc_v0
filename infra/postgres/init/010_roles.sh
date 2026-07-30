@@ -7,6 +7,7 @@ upload_password=$(cat /run/secrets/postgres_upload_password)
 governance_password=$(cat /run/secrets/postgres_governance_password)
 knowledge_password=$(cat /run/secrets/postgres_knowledge_password)
 quality_password=$(cat /run/secrets/postgres_quality_password)
+governance_document_password=$(cat /run/secrets/postgres_governance_document_password)
 catalog_profile_password=$(cat /run/secrets/postgres_catalog_profile_password)
 export_password=$(cat /run/secrets/postgres_export_password)
 retention_scheduler_password=$(cat /run/secrets/postgres_retention_scheduler_password)
@@ -22,6 +23,7 @@ psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set=governance_password="$governance_password" \
   --set=knowledge_password="$knowledge_password" \
   --set=quality_password="$quality_password" \
+  --set=governance_document_password="$governance_document_password" \
   --set=catalog_profile_password="$catalog_profile_password" \
   --set=export_password="$export_password" \
   --set=retention_scheduler_password="$retention_scheduler_password" \
@@ -40,6 +42,14 @@ SELECT format('CREATE ROLE datariver_knowledge LOGIN PASSWORD %L', :'knowledge_p
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_knowledge') \gexec
 SELECT format('CREATE ROLE datariver_quality LOGIN PASSWORD %L', :'quality_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_quality') \gexec
+SELECT format(
+  'CREATE ROLE datariver_governance_document LOGIN PASSWORD %L '
+  'NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
+  :'governance_document_password'
+)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance_document'
+) \gexec
 SELECT format(
   'CREATE ROLE datariver_catalog_profile LOGIN PASSWORD %L '
   'NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
@@ -114,6 +124,32 @@ BEGIN
   ) THEN
     RAISE EXCEPTION
       'datariver_quality must not be assumable by another non-superuser principal';
+  END IF;
+END
+$datariver$;
+ALTER ROLE datariver_governance_document
+  WITH LOGIN PASSWORD :'governance_document_password'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+DO $datariver$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_governance_document'
+      AND pg_has_role('datariver_governance_document', candidate.oid, 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_governance_document must not inherit or SET ROLE to another principal';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_governance_document'
+      AND NOT candidate.rolsuper
+      AND pg_has_role(candidate.oid, 'datariver_governance_document', 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_governance_document must not be assumable by another principal';
   END IF;
 END
 $datariver$;
@@ -301,6 +337,23 @@ BEGIN
   END LOOP;
 END
 $datariver$;
+
+-- Reconcile the Governance Document projector to immutable artifacts and projection evidence.
+-- Human document commands continue to run only as datariver_app through RLS.
+SELECT 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA governance FROM datariver_governance_document'
+WHERE to_regclass('governance.document_versions') IS NOT NULL \gexec
+SELECT 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA governance FROM datariver_governance_document'
+WHERE to_regclass('governance.document_versions') IS NOT NULL \gexec
+SELECT 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA governance FROM datariver_governance_document'
+WHERE to_regclass('governance.document_versions') IS NOT NULL \gexec
+SELECT 'GRANT USAGE ON SCHEMA governance TO datariver_governance_document'
+WHERE to_regclass('governance.document_versions') IS NOT NULL \gexec
+SELECT 'GRANT SELECT ON governance.documents, governance.document_versions TO datariver_governance_document'
+WHERE to_regclass('governance.document_versions') IS NOT NULL \gexec
+SELECT 'GRANT UPDATE (artifact_state, knowledge_state, projection_attempts, next_attempt_at, lease_owner, lease_until, failure_code, version) ON governance.document_versions TO datariver_governance_document'
+WHERE to_regclass('governance.document_versions') IS NOT NULL \gexec
+SELECT 'GRANT SELECT, INSERT ON governance.document_artifact_receipts, governance.document_knowledge_chunks, governance.document_projection_receipts TO datariver_governance_document'
+WHERE to_regclass('governance.document_versions') IS NOT NULL \gexec
 
 SELECT 'CREATE DATABASE keycloak OWNER keycloak'
 WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = 'keycloak') \gexec
