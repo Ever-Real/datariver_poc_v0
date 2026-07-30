@@ -26,6 +26,7 @@ Reviewed 2026-07-14 against official project documentation/repositories.
 | cache | external Redis-protocol endpoint | deployment-reviewed | strict memory cap; never canonical or bundled |
 | job delivery | separate external Redis-protocol endpoint + worker | deployment-reviewed/application licenses | never shares cache endpoint, database or eviction policy |
 | batch orchestration | Apache Airflow 3.3.x | Apache-2.0 | scheduled/bulk/reconciliation only |
+| data quality validation | Great Expectations Core 1.19.1 | Apache-2.0 | isolated optional quality worker; PostgreSQL-first, exact-version and disabled-first |
 | object API | external S3-compatible endpoint | deployment-reviewed | MinIO-compatible contract; no provider image is bundled |
 | authorization policy | embedded typed ABAC; OPA adapter/profile | Apache-2.0 for OPA | app remains enforcement point |
 | identity | external OIDC; Keycloak local profile | Apache-2.0 | no application passwords |
@@ -39,6 +40,10 @@ Reviewed 2026-07-14 against official project documentation/repositories.
 - Neo4j Community is an optional compatibility/read-projection profile only. Correctness cannot depend on clustering, online backup, or fine-grained authorization available only outside Community. Bolt is never public.
 - Grafana, Tempo and Loki remain opt-in observability components because their distribution/license posture needs an explicit review. The `aux-compose.yml` Pilot overlay is not a production acceptance shortcut.
 - A message broker may replace Redis delivery when throughput/retention warrants it, but canonical outbox/inbox semantics may not change.
+- GX does not run in the API or Airflow image, does not own rule/run/result state, and does not write
+  Data Docs or raw validation results to the upload/filefolder object store. Oracle, sampling,
+  dynamic custom Expectations/Actions/plugins and DataHub result write-back are disabled until
+  separately approved contracts and target evidence exist.
 
 ## Dependency policy
 

@@ -31,9 +31,14 @@ flowchart LR
     P --> R["Outbox relay"]
     R --> VQ["External Redis job delivery"]
     VQ --> W["Integration / KG workers"]
+    VQ -. "Phase 1+ quality job IDs" .-> QW["Isolated GX quality worker"]
+    QW -. "read-only, manifest-bound" .-> QS["Approved PostgreSQL source"]
+    QW -. "fenced normalized results" .-> P
     W --> D
     W --> O
     W --> GP["Rebuildable graph projection"]
+    PC["Phase 2 Catalog Profile collector"] -. "fixed GraphQL" .-> D
+    PC -. "bounded projection" .-> P
     RW["Optional archive-only retention scheduler / worker"] --> P
     RW --> IA["Separate immutable archive port"]
     AF["Airflow scheduled and bulk workflows"] --> A
@@ -59,6 +64,7 @@ an environment may claim HA.
 | Platform & Identity | workspaces, external IdP-subject mapping and normalized Role assignment evidence | workspace, subject reference, membership, Role assignment/event |
 | Authorization | ABAC resources, Role-version Policy Book rules, policies, bindings and decision evidence | Role data rule, policy and decision log |
 | Catalog Facade | authorized index plus DataHub search/detail/lineage projection and snapshot-bound managed export | projection/cursor/export receipt; applied metadata remains in DataHub |
+| Quality | immutable typed rule versions, independent activation, durable validation runs, sanitized results and authorization-pruned dashboard | rule/review/run/attempt/result/event evidence in PostgreSQL; DataHub profiles remain provider observations |
 | Governance | registration and change-request aggregate/state machine | requests, approvals, transitions, audit |
 | Integration | connections, job intents, outbox/inbox, retry/DLQ/reconcile | durable job and delivery state |
 | Knowledge Studio | ontology, proposals, changesets, validation and releases | immutable graph releases/provenance |
@@ -80,6 +86,9 @@ The API gateway is a deployment boundary, not an authorization context. It valid
   and archive verification receipts. Archive objects are evidence bytes referenced by those
   receipts; provider metadata does not activate deletion.
 - External identifiers such as DataHub URNs map to internal UUIDs and are never primary keys.
+- DataHub owns provider-produced profile observations. Catalog may keep a bounded rebuildable
+  profile projection; PostgreSQL Quality owns rule and GX validation evidence. A profile, Airflow
+  task or GX process response never substitutes for the canonical validation run/outcome.
 - Policy Book Role rules add deny-capable No/Partial/Full, residency and purpose checks. They never
   replace membership ABAC or RLS; missing rules and unavailable partial-treatment adapters deny.
 
@@ -166,6 +175,56 @@ sequenceDiagram
 ```
 
 The worker may receive a message more than once. Inbox uniqueness and operation-specific idempotency make the business effect repeat-safe.
+
+## Governed quality execution boundary
+
+ADR-0077 adds a disabled-first Quality context. The API creates immutable typed Rule versions and
+durable Run intents in PostgreSQL. Rule activation requires a distinct human reviewer, current
+target authorization, optimistic concurrency, idempotency and hardware WebAuthn. The browser cannot
+submit an external URN, relation name, GX configuration, query, datasource or credential.
+
+Airflow calls only a fixed dispatch endpoint with a short-lived purpose-bound OIDC service identity.
+PostgreSQL, rather than the DAG, calculates and reconciles bounded due windows so an Airflow outage
+does not erase scheduled intent. Version-specific immutable
+cadence/timezone/DST/evaluator/tzdb/missed-window/catch-up inputs and the mutable due cursor are
+pinned in schedule history; a canonical UTC window key fences each scheduled Run. One receipt
+transaction can represent no work or several unique scheduled-window Runs, but locks/creates no
+more than the deployment-approved max-due/max-created caps pinned in its receipt. Airflow receives
+neither GX nor a source credential. The receipt pins its DB-time cutoff; closed SKIP,
+LATEST_ONLY or bounded OLDEST_FIRST catch-up semantics deterministically advance the due cursor and
+record skipped-range evidence.
+
+The delivery stream carries an ID only. A separately deployed NOBYPASSRLS quality worker claims with
+database time, a monotonic lease epoch and token hash; resolves only the exact server-owned source
+manifest binding; opens a read-only, timeout- and workload-bounded PostgreSQL transaction; compiles
+the approved RuleKind through the pinned GX adapter; sanitizes the result; and completes only the
+exact current claim. Its source secret and egress allowlist are unavailable to the API, browser,
+relay and Airflow. Immediately before the full scan it freezes a DB-time source-start lease whose
+remaining lifetime is strictly greater than the hard timeout for the complete GX source-access
+window plus approved cancel/reconcile/completion margins. Lease renewal is forbidden until the
+source transaction/connection closes. Every statement first revalidates the current epoch/token and
+uses a source-server timeout inside the remaining deadline. Reclaim starts only after the frozen
+lease expires and supersedes the old attempt, preventing overlapping full scans as well as stale
+publication.
+
+DataHub field profiles enter through a different Catalog port and fixed GraphQL contract. A
+separate `catalog-profile-collector` identity has only a least-privilege DataHub read token,
+`catalog.profile.collect` and a fixed Catalog projection function; it has neither source
+credential nor Quality write authority. The projection preserves normalized
+FULL/SAMPLE/PARTITION/QUERY/UNKNOWN provenance, provider/query contract and observed time without
+raw partition text. A bounded raw partition is read only inside the fixed parser; PARTITION/QUERY
+idempotency may retain only a deployment-keyed HMAC fingerprint/key ID. It does not invoke GX or
+produce PASS/FAIL. Sample values, top/distinct values, raw GX unexpected values, generated SQL and
+Data Docs are outside the v1 system.
+
+Dashboard cards, scores, counts, trends and lists share one authorization-pruned local asset base
+relation. The current snapshot first selects each visible Rule Set's latest terminal Run for its
+current ACTIVE Version; a newly activated Version never inherits a superseded Version's result.
+Only `SUCCEEDED` contributes Rule Definition counts, while a newer same-Version
+failed/stale/cancelled Run or no same-Version terminal Run makes that Rule Set UNKNOWN. Object
+storage is not a Quality result plane. Quality rows pin the applicable
+`QUALITY_RULE/PROFILE/RESULT/AUDIT` retention policy and typed Legal Hold generation before source
+execution can be enabled, while no physical deletion path exists in v1.
 
 Catalog export is a separate disabled-first worker boundary. The API records an exact normalized
 request plus permission, classification-policy, policy-code, CSV-safety and projection generations;
@@ -317,11 +376,13 @@ URL, and the replacement password never crosses the DataRiver API.
 | Dependency failure | Expected behavior |
 |---|---|
 | DataHub | concurrency bulkhead/circuit breaker; authorized local base detail or explicitly bounded stale enrichment, otherwise 503; queued changes retained and never marked applied |
+| DataHub quality profile | prior authorized projection may be shown only with explicit stale/partial provenance; no activation, execution success or quality outcome is inferred |
 | Redis cache | direct authorized DB/DataHub path; higher latency |
 | Redis delivery | outbox accumulates and relay retries; writes remain durable |
 | graph projection | catalog remains available; graph Chat/analytics clearly degraded |
 | future inference provider/worker | deterministic evidence Chat remains; the disabled-first contract refuses with `검증 불가`; no provider call or graph mutation |
 | Airflow | scheduled/bulk jobs delayed; synchronous core unaffected |
+| quality worker or approved source | canonical Run remains queued/retryable/stale with a sanitized reason; no source fallback, implicit sample or false PASS/FAIL |
 | object storage | upload/download unavailable; metadata/workflow state retained |
 | immutable archive capability | export, explicit erasure that requires archive, automatic deletion and partition drop stop; ordinary authorized reads remain available |
 | telemetry backend/collector | canonical workflows continue; bounded telemetry may buffer or drop according to deployment policy without exporting protected payloads |

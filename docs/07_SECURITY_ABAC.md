@@ -49,7 +49,7 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
 |---|---|
 | Subject | workspace, department, groups, job function, clearance, allowed system/domain IDs, auth strength, active |
 | Resource | workspace, owner department, system/domain, classification, sensitivity, lifecycle, share scope |
-| Action | `catalog.read`, `change.create/review/approve`, `kg.read/edit/publish/share`, `chat.query`, `attachment.download`, `admin.manage`, etc. |
+| Action | `catalog.read`, `change.create/review/approve`, `quality.read/profile.read/rule.*/run.*`, `kg.read/edit/publish/share`, `chat.query`, `attachment.download`, `admin.manage`, etc. |
 | Environment | time, network zone, client type, authentication age, purpose, request/CR ID |
 
 ## Decision algorithm
@@ -140,6 +140,90 @@ preview ETag before the candidate binding, Change Request item and outbox event 
 - A retention duration, expired timestamp, object lifecycle result or provider capability label is
   never deletion authority. Automatic deletion and partition detach/drop remain disabled until the
   governed retention gates in ADR-0010 are implemented and verified.
+
+## Governed Quality security boundary
+
+ADR-0077 introduces separate human Actions `quality.read`, `quality.profile.read`,
+`quality.rule.propose`, `quality.rule.review`, `quality.rule.activate`, `quality.rule.revoke`,
+`quality.rule.archive`, `quality.run.request`, `quality.run.cancel`, `quality.run.retry`,
+`quality.operations.read` and `quality.audit.read`, plus service-only `quality.dispatch`,
+`quality.execute` and `catalog.profile.collect`. Existing `catalog.sync`, `admin.manage`, browser
+Role labels or service group names do not imply any of them. Every decision still intersects
+current workspace membership, clearance, System/Domain, classification policy, lifecycle, Policy
+Book restrictions, explicit deny and forced workspace RLS. The route-to-Action matrix in
+`docs/52_GX_QUALITY_MANAGEMENT_PRD_CHECKLIST.md` is normative; generic "mutation" permission does
+not exist.
+
+Rule versions are immutable. The author cannot review or activate their version; service identities
+cannot propose, review, activate or revoke. Activation and revocation require a current
+independently eligible human, `If-Match`, durable idempotency and recent approved hardware WebAuthn.
+Revocation is deny-first; reactivation requires a new version and review. A manual source run
+reauthorizes its requester immediately before source access. A scheduled run relies on the current
+unrevoked activation decision rather than impersonating the author, and revalidates the current
+target/policy plus both purpose-bound service identities.
+
+The browser submits only a local asset ID, a server-returned field identity, RuleKind, severity and
+typed parameters. The server derives the provider/source/System/Domain/classification/schema and
+connection-profile binding. External URNs, provider relation names, arbitrary GX
+expectation/kwargs/suite/checkpoint documents, BatchRequest, datasource or connection URL, SQL,
+GraphQL, Python/import/plugin and row conditions are absent from the public schema. `REGEX` remains
+unavailable until the complete engine/compiler/connector grammar has a bounded-execution proof.
+
+Airflow owns only `quality.dispatch` and has no GX package, source/DataHub/object credential or
+source endpoint. The NOBYPASSRLS quality worker owns only `quality.execute` and may resolve only the
+canonical run's exact deployment-manifest connection profile through a mounted `file:` secret.
+The connector enforces read-only source authority, server-owned quoted identifiers, a pinned
+workload profile, complete source-access hard deadline, per-statement source-server timeout,
+cancellation/connection close, scan/concurrency budget and exact egress/DNS/IP policy. Lease
+renewal is forbidden during the source-access window and every statement rechecks the current
+epoch/token. Any target, policy, version, lease, worker or source-binding drift causes zero further
+source calls. Airflow dispatch also uses approved max-due/max-created bounds pinned in the
+run-independent receipt; caller input cannot raise them or override the pinned SKIP/LATEST_ONLY/
+OLDEST_FIRST missed-window policy, DB-time cutoff, late grace, evaluator or tzdb contract.
+
+DataHub Profile collection uses a fixed GraphQL document and a server-owned URN variable. The v1
+allowlist is table row/column/byte counts and field null/unique counts/proportions with full/sample
+provenance and timestamps. Sample values, distinct frequencies, top values and example rows are
+never requested, stored or returned. Min/max, mean/median/stdev, quantile and histogram remain
+disabled until a classification/data-type disclosure policy and workload budget are approved.
+The existing fixed typed API adapter or a separate `catalog-profile-collector` may hold a
+least-privilege DataHub read token. The collector uses its own OIDC Subject,
+`catalog.profile.collect`, NOBYPASSRLS role and one fixed Catalog projection function. The token is
+never available to browser, Airflow or quality worker, and the collector has no source credential
+or Quality write grant. Profile provenance is normalized to
+`FULL/SAMPLE/PARTITION/QUERY/UNKNOWN`. A bounded raw partition exists only inside the fixed parser;
+PARTITION/QUERY idempotency may retain a deployment-keyed HMAC-SHA-256 fingerprint and key ID.
+Unkeyed digests and raw partition names/specifications never cross the adapter.
+
+Raw GX output is untrusted. An allowlist sanitizer retains only exact rule/run/source/compiler/GX
+hashes, boolean result, bounded evaluated/missing/unexpected counts/ratios, duration, observation
+time and sanitized failure code. Unexpected rows/values/indexes, generated or rendered SQL,
+queries, samples, exception text and connection data are discarded before DB, cache, queue, log,
+trace or response. Sanitizer failure is an execution failure with no raw evidence persisted.
+
+All dashboard cards, score denominators, trends and grids aggregate from the same
+authorization-pruned asset relation. They expose neither global totals nor hidden buckets/deltas,
+and visibly identify the result as permission-scoped. Until an organization approves small-cell
+suppression, classification/System/Domain cohort buckets and every detailed distribution output are
+unavailable; those attributes may only filter the permitted asset base. Cache and cursor security
+scope includes workspace, full permission fingerprint, policy/generation, System/Domain,
+profile/source/rule watermark and normalized request shape. Capability returns an authorization
+`valid_until` no more than 30 seconds after server database time. At expiry the browser hides and
+purges all Quality memory before reauthorization; resource freshness cannot outlive this lease.
+Dependency unavailability blocks only the affected new operation/section and does not erase
+authorized historical reads. An actual read denial prevents all Quality resource requests.
+
+Quality rules, reviews, runs, attempts, normalized results, profiles and audits have governed
+`QUALITY_RULE`, `QUALITY_PROFILE`, `QUALITY_RESULT` and `QUALITY_AUDIT` kinds. RuleSet, Run,
+ProfileSnapshot and run-independent dispatch receipt roots pin policy ID/version/hash, deadline,
+data kind and resolved Legal Hold generation/hash; child evidence inherits the exact root binding
+through composite foreign keys. Dispatch resolves workspace-scoped AUDIT holds even when it creates
+no Run. RuleSet, Run and ProfileSnapshot are typed resource hold targets. Creation, claim
+immediately before source access and completion recheck the exact retention/hold snapshot; mid-run
+drift produces STALE/UNKNOWN and no canonical result. Missing retention/Legal Hold coverage
+disables source execution as well as
+physical cleanup. Airflow cleanup, TTL and object lifecycle never become deletion authority, and
+v1 writes no GX Data Docs or raw results to the filefolder/upload store.
 
 ## Atomic API-product invocation boundary
 

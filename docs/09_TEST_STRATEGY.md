@@ -2,6 +2,20 @@
 
 ## Current verification status
 
+### GX Quality Phase 0 contract and ADR — 2026-07-30
+
+ADR-0077 and the Quality PRD/checklist approve a new bounded context, but no Quality table,
+migration, dependency, worker, Airflow DAG, API or dashboard is implemented in this phase. The
+review is source-based and cross-checks the current DataHub query/recipe, canonical ownership,
+credential boundaries, target model, Rule/score semantics, security matrix and later acceptance
+gates.
+
+The review found that the checked-in PostgreSQL DataHub recipe combines table-only profiling with
+an enabled field metric, which the pinned DataHub v1.6 configuration rejects. It also found that
+the current asset query accepts FULL and SAMPLE profiles while omitting partition provenance. These
+are explicit Phase 2 correction/target gates, not current field-profile evidence. Phase 0 must not
+be reported as GX, profile, PostgreSQL RLS, Airflow or UI execution evidence.
+
 ### Knowledge Studio Phase 2.6 session/domain/document UX increment — 2026-07-29
 
 Revision `0066` adds bounded endpoint-alias arrays, managed DOMAIN creator/version evidence and
@@ -876,6 +890,149 @@ red-team corpus.
 - External release acceptance still requires the exact target commit on WSL, external MinIO
   conditional-write permission, real Airflow OIDC execution, DataHub 1.6 five-Aspect read-back,
   multiple Keycloak humans and representative crash/load/soak evidence.
+
+## Governed Quality execution gates
+
+Phase 0 establishes requirements only. Phase 1 and later cannot claim completion until the
+applicable evidence below exists.
+
+- Domain/compiler tests cover all Rule/version/run/attempt transitions, terminal immutability,
+  execution-state versus quality-outcome separation, `NOT_NULL` and typed `RANGE` exact semantics,
+  severity outcome, activation denial for an empty Version, `SUCCEEDED` only with exactly one
+  sanitized result per Rule Definition, aggregate zero-denominator UNKNOWN and deterministic
+  `UNWEIGHTED_RULE_PASS_RATE_V1`. `REGEX` remains unavailable until its bounded-execution engine
+  proof and positive/negative grammar set pass.
+- Compiler/API schema tests prove there is no arbitrary expectation name/kwargs, suite/checkpoint
+  JSON/YAML, BatchRequest, datasource/URL, external identifier, SQL, GraphQL, Python/import/plugin,
+  row condition or runtime-result-format input. Unsupported/unknown fields fail before job creation.
+- Rule-command tests cover current target binding, immutable version creation, one ACTIVE version,
+  author/reviewer separation, service-account rejection, recent hardware WebAuthn,
+  `If-Match`, same/different-body idempotency, fixed transition-function-only lifecycle updates,
+  atomic prior-version/schedule supersession, revoke deny-first, logical archive and no physical
+  delete. A route-to-Action matrix includes archive, cancel, operations/audit and both service
+  boundaries; an unspecified or wrong Action is denied.
+- Actual PostgreSQL 17 tests cover blank-to-head, prior-head additive upgrade, canonical re-entry,
+  exact metadata equivalence, partial/same-name-definition drift fail-closed, RLS no-context/wrong
+  workspace/correct scope, composite tenant foreign keys, app UPDATE/DELETE denial, NOBYPASSRLS
+  worker/collector scope, evidence-bearing downgrade refusal and `alembic check`. Phase 1 Quality
+  and Phase 2 Catalog Profile revisions are separately additive. Partial ACTIVE-version,
+  due-schedule, runnable/reclaimable Run, terminal-dashboard and latest-profile indexes must serve
+  representative keyset/claim plans in `EXPLAIN (ANALYZE, BUFFERS)`.
+- Run tests prove enqueue/outbox/audit/idempotency atomicity, scheduled-window uniqueness,
+  database-time claim, stored current-attempt/lease-owner/expiry/source-start/access-deadline
+  fences, monotonic
+  lease epoch/token hash, expired-attempt supersession, exact-worker completion, duplicate delivery,
+  cancel/complete and retry/reclaim races, crash before/during/after source access and one canonical
+  result. Source tests enforce complete GX source-access hard timeout plus
+  cancel/reconciliation/completion margins inside the frozen lease, prohibit renewal until source
+  transaction/connection close, recheck epoch/token before every statement and bound each
+  source-server `statement_timeout` by the remaining source-access deadline/lease. They prove a
+  newer epoch cannot overlap any expired worker statement or source connection. Retry creates a
+  `retry_of_run_id` successor after current reauthorization and never reopens the terminal
+  predecessor. Expectation violations complete the execution without becoming infrastructure
+  `FAILED`.
+- State-machine tests cover the closed attempt vocabulary and every permitted Run/current-attempt
+  pair, including queued cancellation without an attempt, in-flight cancellation,
+  retry-wait cancellation and non-current SUPERSEDED history. Only a SUCCEEDED current attempt may
+  own canonical expectation results.
+- Dispatch tests cover authenticated no-work, one-Run and multi-Run calls, exact replay,
+  different-body call-ID conflict and one-transaction due-lock → scheduled-window unique Run/outbox
+  → next-due advance → receipt semantics. A call cannot exceed the receipt-pinned approved
+  max-due/max-created bounds or source hard maxima, and processes only a deterministic keyset.
+  Execution-call replay remains separately bound to one current Run/attempt/lease.
+- Sanitizer adversarial fixtures inject raw rows/values/indexes, rendered SQL, queries, credential
+  strings, private endpoints and provider exceptions. None may reach PostgreSQL, API, cursor/cache,
+  outbox/delivery, log, trace or metric. Unknown shape/sanitizer failure produces only a bounded
+  failure code and no raw evidence. Numeric fixtures reject negative/overflow counts,
+  boolean-as-integer, NaN/Infinity, proportions outside `0..1`, percentages outside `0..100`,
+  count/ratio inconsistency, duration overflow and oversized/unknown failure codes.
+- DataHub v1.6 contract tests use a separate fixed profile query containing profile/partition
+  provenance, including `partitionSpec { type partition }` and excluding nonexistent
+  `profileType`. Fixtures map FULL_TABLE/canonical marker to FULL, QUERY/exact SAMPLE marker or its
+  sample-row suffix form to SAMPLE, valid PARTITION to PARTITION, other valid QUERY to QUERY and
+  missing/unsupported/ambiguous input to UNKNOWN. They also cover empty/missing fields, ordering,
+  response oversize, 401/403/429/5xx and schema/version drift. A bounded raw partition is accepted
+  only at fixed parser ingress,
+  normalized before DTO construction and then discarded. PARTITION/QUERY may retain only the
+  deployment-keyed HMAC/key ID; raw text and unkeyed digests are absent downstream.
+  SAMPLE/ambiguous provenance is never promoted to FULL, and an eight-MiB overflow is explicit
+  PARTIAL/UNAVAILABLE rather than silent truncation.
+- Profile projection tests prove the deterministic asset/profiled-time/kind/provider/source/
+  normalized-payload/keyed-provenance identity: identical re-observation advances only
+  `last_observed_at`, changed metrics create a new immutable snapshot, and HMAC key rotation creates
+  a new explicit provenance lineage without exposing the raw partition.
+- The PostgreSQL DataHub recipe first passes the pinned v1.6 configuration validator. Field
+  profiling explicitly disables sample values, distinct frequencies, histogram, quantiles and
+  every unapproved statistic; it explicitly bounds workers/field scope rather than inheriting the
+  `5 * CPU` worker or sample-value defaults. The retained target run report records selected,
+  dropped and failed profiles without credentials.
+- Profile privacy tests prove `sampleValues`, `distinctValueFrequencies`, top values and example
+  rows are absent from GraphQL requests. Raw partition text is present only in the bounded fixed
+  adapter response ingress and absent from DTO/projection/cache/API/UI/log/trace/error; only an
+  allowlisted keyed HMAC/key ID may remain for PARTITION/QUERY identity.
+  Min/max/mean/median/stdev/quantile/histogram remain unavailable without the approved
+  classification/data-type policy and workload evidence.
+- Source tests use a dedicated PostgreSQL read-only role and approved base relations. They prove
+  write/DDL/arbitrary-query denial, transaction read-only mode, server-owned identifier quoting,
+  statement/lock/execution timeout, cancellation, pool/concurrency/scan budget and exact
+  manifest/secret/egress enforcement. Missing budget, secret or source binding makes the
+  capability unavailable before a source call.
+- Airflow image/config/secret inventory proves it contains no GX/source/DataHub/object credential.
+  OIDC issuer/audience/client/group/Action, stable run/call ordinal, replay and workspace/run
+  mismatch negatives are mandatory. PostgreSQL owns due-window/missed-window/catch-up reconciliation
+  under an approved cap, so scheduler downtime does not silently discard canonical intent.
+- Schedule tests cover closed FIXED_INTERVAL/DAILY_LOCAL_TIME grammars, invalid IANA zones,
+  ambiguous-time EARLIER/LATER offsets, nonexistent-time SKIP/SHIFT_FORWARD, evaluator/tzdb
+  version/hash drift and canonical UTC window-key replay. With a receipt-pinned DB-time cutoff they
+  prove exact `SKIP_MISSED_V1`, newest-only `LATEST_ONLY_V1` and bounded deterministic
+  `(due_at, schedule_id, window_key)` `CATCH_UP_OLDEST_FIRST_V1` behavior, late-grace boundaries,
+  skipped-range hashes, cursor advancement and outage recovery. Schedule payload/history is
+  immutable per Rule Set Version, only fixed functions advance its cursor/state, and activation
+  atomically enforces one ACTIVE schedule per Rule Set.
+- Credential/role inventory proves the fixed API DataHub adapter or dedicated
+  `catalog-profile-collector` alone can read DataHub; the collector has
+  `catalog.profile.collect` and one fixed Catalog projection function but no source credential or
+  Quality write grant. Airflow and quality worker have no DataHub token.
+- Dashboard/list/count/facet/trend tests use one authorization-pruned asset relation and cover no/
+  invalid token, inactive/expired membership, cross-workspace ID, clearance/System/Domain,
+  explicit deny, policy drift/outage, hidden resource `404`, hidden count/bucket/delta leakage and
+  stale cursor/cache scope. The current snapshot considers only Runs bound to the current ACTIVE
+  Rule Set Version, so newly activated Versions cannot inherit a superseded Version's success. A
+  latest same-Version FAILED/STALE/CANCELLED Run makes the Rule Set UNKNOWN and cannot be hidden by
+  an older same-Version `SUCCEEDED`; Rule Set unknown/coverage counts and Rule Definition evaluated
+  counts cannot be mixed. Without an approved small-cell
+  policy, classification/System/Domain cohort buckets and distributions are absent. All values are
+  visibly permission-scoped.
+- Frontend tests cover read denial with zero follow-up calls, independent profile/worker/source/
+  scheduling dependency outages that preserve authorized history, loading/background-refresh/
+  empty/error/forbidden/partial/stale/unknown, `SUCCEEDED != PASS`, integer basis-point
+  `ROUND_HALF_UP` scoring, cursor/page maximum 100, trend maximum 90, typed asset lookup and Rule
+  errors/status/ETag/idempotency conflicts, normalized sort/filter query keys and allowlisted URL
+  state. Authorization lease tests hide/purge at no more than 30 seconds, abort late responses and
+  revalidate before redisplay. Polling tests count the initial immediate read, pause both elapsed
+  time and reads while hidden, resume within the remaining 20-read/visible-active-120-second cap,
+  and bound `Retry-After`. Semantic tests plus table caption/headers/keyboard row actions,
+  reduced-motion, non-repeating live-region, target screen-reader/200%-zoom/320-CSS-pixel manual
+  checks are required.
+- Representative narrow, wide and large PostgreSQL tables provide source query plans and CPU/IO/
+  latency/lock-wait/replica-lag, cancellation, worker concurrency and 60-minute soak evidence.
+  Dashboard SQL records `EXPLAIN (ANALYZE, BUFFERS)` and response/p95 measurements. Capacity-owner
+  limits are deployment inputs, not portable source defaults.
+- Release acceptance requires exact GX 1.19.1/compiler/driver/lock/SBOM fingerprints, zero
+  unresolved Critical/High findings, Mac arm64 and WSL amd64 offline-artifact parity, actual
+  DataHub v1.6 profile evidence, actual Airflow-to-DataRiver dispatch, actual read-only PostgreSQL
+  GX execution, revocation-before-query and crash/reclaim evidence. Unit/source passes do not open
+  those target gates.
+- Retention tests prove Phase 1 pins `QUALITY_RULE/QUALITY_RESULT/QUALITY_AUDIT` policy
+  ID/version/hash/deadline and RuleSet/Run hold target generation/hash, while Phase 2 separately
+  pins `QUALITY_PROFILE` and ProfileSnapshot holds. A no-work dispatch receipt independently pins
+  workspace-scoped QUALITY_AUDIT policy/deadline/hold resolution; child rows inherit exact root
+  bindings through composite FKs. Creation, claim and completion reject missing, ambiguous or
+  drifted bindings. A membership/Action/classification/System/Domain/lifecycle/active
+  version/source-connection/workload-profile/retention change after source access but before
+  completion produces STALE/UNKNOWN and zero canonical result. Negatives also prove no
+  app/Airflow/worker TTL, DELETE, TRUNCATE, object lifecycle or partition detach/drop exists for
+  Quality evidence.
 
 ## Core correctness scenarios
 

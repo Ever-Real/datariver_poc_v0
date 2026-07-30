@@ -28,6 +28,14 @@ DataRiver gives data consumers, stewards, engineers, and governance operators on
 - `FR-ADM-001`: manage workspaces, subject attributes, resource attributes, policies, connections by secret reference, retention, and audit export.
 - `FR-ADM-002`: let only eligible human security administrators govern versioned Role data-access
   levels, partial treatments, residency and processing-purpose scope with exact assignment evidence.
+- `FR-DQ-001`: show authorization-pruned quality snapshots, score, pass rate, coverage, trends and
+  bounded result drill-down with source/profile/rule/score-policy provenance.
+- `FR-DQ-002`: let eligible humans propose immutable typed quality-rule versions and require an
+  independent hardware-authenticated reviewer before one version becomes active.
+- `FR-DQ-003`: execute active quality rules as durable PostgreSQL jobs through an isolated,
+  read-only GX worker; Airflow schedules/dispatches but never owns run state or quality outcome.
+- `FR-DQ-004`: retain only sanitized aggregate validation evidence, never raw unexpected rows,
+  values, generated SQL, credentials or GX Data Docs.
 - `FR-RET-002`: execute retention only through an approval-gated, least-privilege, hold-aware,
   archive-read-back workflow; policy approval alone never authorizes deletion.
 - `FR-SEED-001`: install or remove a deterministic deep semiconductor value-chain pack only by explicit opt-in.
@@ -50,7 +58,11 @@ DataRiver does not replace DataHub storage, operate the enterprise identity prov
 ## Success measures
 
 - zero cross-workspace/unauthorized evidence exposure in the policy matrix;
+- zero hidden-asset/count leakage and zero raw source value, query or credential exposure through
+  quality profiles, rules, results, caches, queues, logs or telemetry;
 - 100% of applied changes linked to request, approval, outbox, attempt, reconciliation and audit records;
+- 100% of quality outcomes linked to an exact active rule version, source binding, compiler/GX
+  contract, fenced attempt and sanitized canonical result;
 - 100% of published graph assertions have provenance;
 - clean clone bootstrap and documented recovery drill pass;
 - common user journeys complete without placeholder/mock production data.
