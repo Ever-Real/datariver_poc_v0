@@ -1068,6 +1068,8 @@ class KnowledgeStudioDomainOption:
     display_name: str
     source_version: str
     created_by: UUID | None = None
+    creator_display_name: str | None = None
+    creator_email: str | None = None
     asset_count: int = 0
     lifecycle: str = "ACTIVE"
     version: int | None = None
@@ -1088,6 +1090,8 @@ class KnowledgeStudioManagedDomainRecord:
     version: int
     created_at: datetime
     updated_at: datetime
+    creator_display_name: str | None = None
+    creator_email: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

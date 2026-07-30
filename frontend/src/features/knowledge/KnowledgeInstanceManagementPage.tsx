@@ -12,7 +12,7 @@ export function KnowledgeInstanceManagementPage() {
             Knowledge instance workspace
           </span>
           <h2 className="my-1 text-lg font-black text-navy-900">
-            인스턴스 관리 · 지식 자산 프로파일
+            지식 자산 인스턴스 관리
           </h2>
           <p className="m-0 max-w-3xl text-xs leading-5 text-slate-500">
             발행된 T-Box Property URN을 기준으로 동의어, 단위, 데이터 프로필과 A-Box

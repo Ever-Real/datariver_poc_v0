@@ -2042,6 +2042,8 @@ class KnowledgeStudioDomainOptionResponse(BaseModel):
     display_name: str
     source_version: str
     created_by: UUID | None = None
+    creator_display_name: str | None = None
+    creator_email: str | None = None
     asset_count: int = Field(default=0, ge=0)
     lifecycle: Literal["ACTIVE", "INACTIVE"] = "ACTIVE"
     version: int | None = Field(default=None, ge=1)

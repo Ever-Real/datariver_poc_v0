@@ -584,10 +584,22 @@ export function KnowledgeStudioPage({
           || !(error instanceof ApiError)
           || error.problem.status !== 409
         ) throw error
-        const resumable = await getResumableKnowledgeStudioDraft(
-          client,
-          savingRecord.payload.endpoint_alias,
-        )
+        let resumable: Awaited<ReturnType<typeof getResumableKnowledgeStudioDraft>>
+        try {
+          resumable = await getResumableKnowledgeStudioDraft(
+            client,
+            savingRecord.payload.endpoint_alias,
+          )
+        } catch (resumeError) {
+          // A create race can converge only when the conflicting Draft belongs
+          // to this author. Preserve the original 409 when the non-disclosing
+          // lookup still returns 404 (another author or a published graph).
+          if (
+            resumeError instanceof ApiError
+            && resumeError.problem.status === 404
+          ) throw error
+          throw resumeError
+        }
         if (!await bindSavingRecord(resumable, newKnowledgeStudioIdempotencyKey())) return false
         response = await autosaveKnowledgeStudioDraft(
           client,

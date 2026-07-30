@@ -295,6 +295,7 @@ async def test_empty_domain_table_uses_only_deterministic_abac_scoped_fallbacks(
     assert values[0].source_version == DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION
     statement = str(session.execute.await_args.args[0])
     assert "vocabulary_entries.created_by" in statement
+    assert "iam.subjects" in statement
 
 
 @pytest.mark.asyncio
@@ -330,11 +331,12 @@ async def test_resumable_draft_lookup_is_scoped_to_workspace_author_alias_and_dr
     )
 
     assert result is None
-    statement = str(session.scalars.await_args.args[0])
-    assert "studio_drafts.workspace_id" in statement
-    assert "studio_drafts.author_id" in statement
-    assert "studio_drafts.endpoint_alias" in statement
-    assert "studio_drafts.state" in statement
+    statement = session.scalars.await_args.args[0]
+    compiled = str(statement.compile(dialect=postgresql.dialect()))  # type: ignore[no-untyped-call]
+    assert "studio_drafts.workspace_id" in compiled
+    assert "studio_drafts.author_id" in compiled
+    assert "CAST(knowledge.studio_drafts.endpoint_aliases AS JSONB) @>" in compiled
+    assert "studio_drafts.state" in compiled
 
 
 def test_abox_mapping_is_a_normalized_child_aggregate_not_draft_json() -> None:

@@ -203,9 +203,23 @@ export function DomainManagementDialog({
     }),
     columnHelper.accessor('created_by', {
       header: '생성자',
-      cell: ({ getValue }) => (
-        <span className="text-[10px] text-slate-600">{getValue() ?? 'SYSTEM'}</span>
-      ),
+      cell: ({ row }) => {
+        const domain = row.original
+        const creator = domain.creator_display_name
+          ?? domain.creator_email
+          ?? (domain.created_by ? '사용자 정보 없음' : 'SYSTEM')
+        return (
+          <span
+            className="grid text-[10px] text-slate-600"
+            title={domain.creator_email}
+          >
+            <span>{creator}</span>
+            {domain.creator_display_name && domain.creator_email && (
+              <small className="text-[9px] text-slate-400">{domain.creator_email}</small>
+            )}
+          </span>
+        )
+      },
     }),
     columnHelper.accessor('asset_count', {
       header: '소속 Asset',

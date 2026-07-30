@@ -16,6 +16,8 @@ export interface KnowledgeStudioDomainOption {
   display_name: string
   source_version: string
   created_by?: string
+  creator_display_name?: string
+  creator_email?: string
   asset_count?: number
   lifecycle?: 'ACTIVE' | 'INACTIVE'
   version?: number

@@ -88,6 +88,7 @@ from datariver.infrastructure.db.models.knowledge_studio import (
     TBoxProposalModel,
     TBoxRelationshipModel,
 )
+from datariver.infrastructure.db.models.platform import SubjectModel
 
 CREATE_OPERATION = "knowledge.studio_draft.create"
 PREFLIGHT_CONTRACT_VERSION = "KNOWLEDGE_STUDIO_PREFLIGHT_V1"
@@ -186,6 +187,8 @@ def _managed_domain_record(
     model: CatalogVocabularyEntryModel,
     *,
     asset_count: int,
+    creator_display_name: str | None = None,
+    creator_email: str | None = None,
 ) -> KnowledgeStudioManagedDomainRecord:
     return KnowledgeStudioManagedDomainRecord(
         domain_id=model.id,
@@ -198,6 +201,8 @@ def _managed_domain_record(
         version=model.version,
         created_at=model.observed_at,
         updated_at=model.updated_at,
+        creator_display_name=creator_display_name,
+        creator_email=creator_email,
     )
 
 
@@ -217,6 +222,8 @@ def _managed_domain_result(
         "version": record.version,
         "created_at": record.created_at.isoformat(),
         "updated_at": record.updated_at.isoformat(),
+        "creator_display_name": record.creator_display_name,
+        "creator_email": record.creator_email,
         "actor_id": str(actor_id),
     }
 
@@ -240,6 +247,8 @@ def _managed_domain_record_from_result(
         version=_required_int(result, "version"),
         created_at=_required_datetime(result, "created_at"),
         updated_at=_required_datetime(result, "updated_at"),
+        creator_display_name=_optional_document_string(result, "creator_display_name"),
+        creator_email=_optional_document_string(result, "creator_email"),
     )
     if record.workspace_id != workspace_id:
         raise ConflictError("The idempotent managed-domain result belongs to another workspace.")
@@ -1028,10 +1037,16 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             select(
                 CatalogVocabularyEntryModel,
                 func.coalesce(graph_count.c.asset_count, 0),
+                SubjectModel.display_name,
+                SubjectModel.email,
             )
             .outerjoin(
                 graph_count,
                 graph_count.c.domain_id == CatalogVocabularyEntryModel.id,
+            )
+            .outerjoin(
+                SubjectModel,
+                SubjectModel.id == CatalogVocabularyEntryModel.created_by,
             )
             .where(
                 CatalogVocabularyEntryModel.workspace_id == workspace_id,
@@ -1071,6 +1086,8 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 display_name=model.display_name,
                 source_version=model.source_version,
                 created_by=model.created_by,
+                creator_display_name=creator_display_name,
+                creator_email=creator_email,
                 asset_count=int(asset_count),
                 lifecycle=model.lifecycle,
                 version=model.version,
@@ -1078,7 +1095,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 updated_at=model.updated_at,
                 managed=model.provider_ref.startswith("urn:li:domain:datariver-"),
             )
-            for model, asset_count in rows
+            for model, asset_count, creator_display_name, creator_email in rows
         )
         if values:
             return values
@@ -1141,10 +1158,16 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 select(
                     CatalogVocabularyEntryModel,
                     func.coalesce(graph_count.c.asset_count, 0),
+                    SubjectModel.display_name,
+                    SubjectModel.email,
                 )
                 .outerjoin(
                     graph_count,
                     graph_count.c.domain_id == CatalogVocabularyEntryModel.id,
+                )
+                .outerjoin(
+                    SubjectModel,
+                    SubjectModel.id == CatalogVocabularyEntryModel.created_by,
                 )
                 .where(
                     CatalogVocabularyEntryModel.workspace_id == workspace_id,
@@ -1160,8 +1183,13 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             )
         ).all()
         return tuple(
-            _managed_domain_record(model, asset_count=int(asset_count))
-            for model, asset_count in rows
+            _managed_domain_record(
+                model,
+                asset_count=int(asset_count),
+                creator_display_name=creator_display_name,
+                creator_email=creator_email,
+            )
+            for model, asset_count, creator_display_name, creator_email in rows
         )
 
     async def create_managed_domain(
@@ -1229,7 +1257,13 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             updated_at=now,
         )
         self._session.add(model)
-        record = _managed_domain_record(model, asset_count=0)
+        creator_display_name, creator_email = await self._creator_identity(actor_id)
+        record = _managed_domain_record(
+            model,
+            asset_count=0,
+            creator_display_name=creator_display_name,
+            creator_email=creator_email,
+        )
         await idempotency.save_result(
             workspace_id=workspace_id,
             key=idempotency_key,
@@ -1372,7 +1406,13 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             )
             or 0
         )
-        record = _managed_domain_record(model, asset_count=asset_count)
+        creator_display_name, creator_email = await self._creator_identity(model.created_by)
+        record = _managed_domain_record(
+            model,
+            asset_count=asset_count,
+            creator_display_name=creator_display_name,
+            creator_email=creator_email,
+        )
         await idempotency.save_result(
             workspace_id=workspace_id,
             key=idempotency_key,
@@ -1382,6 +1422,23 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         )
         await self._session.commit()
         return record
+
+    async def _creator_identity(
+        self,
+        creator_id: UUID | None,
+    ) -> tuple[str | None, str | None]:
+        if creator_id is None:
+            return None, None
+        row = (
+            await self._session.execute(
+                select(SubjectModel.display_name, SubjectModel.email).where(
+                    SubjectModel.id == creator_id
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None, None
+        return row.display_name, row.email
 
     async def get_draft(
         self,
@@ -1416,7 +1473,9 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 select(KnowledgeStudioDraftModel).where(
                     KnowledgeStudioDraftModel.workspace_id == workspace_id,
                     KnowledgeStudioDraftModel.author_id == author_id,
-                    KnowledgeStudioDraftModel.endpoint_alias == endpoint_alias,
+                    cast(KnowledgeStudioDraftModel.endpoint_aliases, JSONB).contains(
+                        [endpoint_alias]
+                    ),
                     KnowledgeStudioDraftModel.state == "DRAFT",
                 )
             )

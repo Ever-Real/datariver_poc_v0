@@ -23,6 +23,12 @@ describe('KnowledgePage', () => {
 
     await screen.findByRole('table', { name: '지식 에셋 목록' })
     expect(screen.queryByRole('button', { name: /데이터 적재/ })).not.toBeInTheDocument()
+    const registryMenu = screen.getByRole('button', { name: /지식 레지스트리/ })
+    const instanceMenu = screen.getByRole('button', {
+      name: /지식 자산 인스턴스 관리/,
+    })
+    expect(registryMenu).not.toHaveClass('ml-5')
+    expect(instanceMenu).not.toHaveClass('ml-5')
 
     fireEvent.click(screen.getByRole('button', { name: /에셋 추가/ }))
     expect(onNavigate).toHaveBeenCalledWith('knowledge-studio')
