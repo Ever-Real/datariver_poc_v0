@@ -11,6 +11,7 @@ from typing import Any, cast
 from urllib.request import Request
 
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 
 class _Response(io.BytesIO):
@@ -23,6 +24,10 @@ class _Response(io.BytesIO):
 
 def _dags_root() -> Path:
     return Path(__file__).resolve().parents[3] / "infra/airflow/dags"
+
+
+def _repository_root() -> Path:
+    return Path(__file__).resolve().parents[3]
 
 
 def _load_module(name: str) -> ModuleType:
@@ -214,3 +219,29 @@ def test_quality_dispatch_dag_is_paused_bounded_and_server_scheduled() -> None:
         "psycopg",
     ):
         assert forbidden not in f"{auth}\n{helper}\n{dag}"
+
+
+def test_quality_dispatch_schedule_is_parser_only_and_secret_is_scheduler_only() -> None:
+    document = yaml.safe_load(
+        (_repository_root() / "compose.airflow.yaml").read_text(encoding="utf-8")
+    )
+    assert isinstance(document, dict)
+    services = document["services"]
+    assert isinstance(services, dict)
+
+    dag_processor = services["airflow-dag-processor"]
+    assert dag_processor["environment"]["DATARIVER_QUALITY_DISPATCH_SCHEDULE"] is None
+
+    for service_name, service in services.items():
+        if service_name != "airflow-dag-processor":
+            assert "DATARIVER_QUALITY_DISPATCH_SCHEDULE" not in service.get("environment", {})
+
+        quality_secret_count = sum(
+            (
+                secret == "quality_dispatch_client_secret"
+                if isinstance(secret, str)
+                else secret.get("source") == "quality_dispatch_client_secret"
+            )
+            for secret in service.get("secrets", ())
+        )
+        assert quality_secret_count == (1 if service_name == "airflow-scheduler" else 0)

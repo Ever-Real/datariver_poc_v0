@@ -69,6 +69,9 @@ _POST_0067_INDEX_NAMES = frozenset(
     }
 )
 _QUALITY_CATALOG_CONTRACT_HASH = "43149d67578f8f1e59c3739e9a8c16ae736103f685a3ad50a28e4014a49ab343"
+_QUALITY_CANONICAL_HEAD_CONTRACT_HASH = (
+    "06392589dd401f2f797aa9b5aacf674399b0b6442429092edf332759db9841f1"
+)
 
 _RETENTION_ALLOWLIST_SQL = """
 ALTER TABLE retention.policy_versions
@@ -2455,10 +2458,14 @@ def _canonical_contract_is_complete(bind: object) -> bool:
     if quality_tables != expected or not generation_present or not resource_type_present:
         raise RuntimeError("Partial canonical Quality schema detected; refusing 0067 re-entry.")
     actual_hash = _catalog_contract_hash(bind)
-    if actual_hash != _QUALITY_CATALOG_CONTRACT_HASH:
+    supported_hashes = {
+        _QUALITY_CATALOG_CONTRACT_HASH,
+        _QUALITY_CANONICAL_HEAD_CONTRACT_HASH,
+    }
+    if actual_hash not in supported_hashes:
         raise RuntimeError(
             "Canonical Quality definition/security fingerprint is incomplete or drifted "
-            f"(expected {_QUALITY_CATALOG_CONTRACT_HASH}, got {actual_hash})."
+            f"(expected one of {sorted(supported_hashes)}, got {actual_hash})."
         )
     return True
 

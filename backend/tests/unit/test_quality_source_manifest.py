@@ -8,6 +8,7 @@ import pytest
 
 from datariver.domain.common import canonical_json_hash
 from datariver.infrastructure.quality.source_manifest import (
+    AUTHORING_MANIFEST_CONTRACT_VERSION,
     MANIFEST_CONTRACT_VERSION,
     PostgresTlsMode,
     QualitySourceManifest,
@@ -79,6 +80,29 @@ def _manifest(
     }
 
 
+def _authoring_manifest() -> dict[str, object]:
+    profile = _profile(
+        field_types={
+            "field:amount": "DECIMAL",
+            "field:created_at": "TIMESTAMP",
+        }
+    )
+    return {
+        "contract_version": AUTHORING_MANIFEST_CONTRACT_VERSION,
+        "profiles": [profile],
+        "workloads": [_workload()],
+        "authoring_bindings": [
+            {
+                "asset_id": ASSET_ID,
+                "source_connection_profile_id": "warehouse-primary",
+                "source_connection_profile_version": 3,
+                "workload_profile_id": "full-scan-bounded",
+                "workload_profile_version": 2,
+            }
+        ],
+    }
+
+
 def _parse(document: dict[str, object]) -> QualitySourceManifest:
     return parse_quality_source_manifest(json.dumps(document))
 
@@ -142,9 +166,61 @@ def test_canonical_profile_and_workload_hashes_are_mandatory() -> None:
         _parse(_manifest(workloads=[workload]))
 
 
+def test_v2_manifest_resolves_one_explicit_authoring_binding_and_typed_schema() -> None:
+    parsed = _parse(_authoring_manifest())
+
+    target = parsed.resolve_authoring_target(asset_id=UUID(ASSET_ID))
+
+    assert parsed.contract_version == AUTHORING_MANIFEST_CONTRACT_VERSION
+    assert target.source.column_for("field:amount") == "amount"
+    assert target.source.logical_type_for("field:amount") == "DECIMAL"
+    assert target.fields == (
+        ("field:amount", "DECIMAL"),
+        ("field:created_at", "TIMESTAMP"),
+    )
+    assert len(target.schema_hash) == 64
+    assert parsed.manifest_hash == canonical_json_hash(parsed.document())
+
+
+def test_v1_manifest_remains_execution_only_and_cannot_author_rules() -> None:
+    parsed = _parse(_manifest())
+
+    with pytest.raises(QualitySourceManifestError) as unavailable:
+        parsed.resolve_authoring_target(asset_id=UUID(ASSET_ID))
+
+    assert unavailable.value.details["code"] == "AUTHORING_MANIFEST_UNAVAILABLE"
+
+
+def test_v2_authoring_bindings_fail_closed_on_schema_or_profile_drift() -> None:
+    mismatched_types = _authoring_manifest()
+    profile = dict(mismatched_types["profiles"][0])  # type: ignore[index]
+    profile["field_types"] = {"field:amount": "DECIMAL"}
+    profile["source_connection_profile_hash"] = canonical_json_hash(
+        {key: value for key, value in profile.items() if key != "source_connection_profile_hash"}
+    )
+    mismatched_types["profiles"] = [profile]
+    with pytest.raises(QualitySourceManifestError, match="do not match"):
+        _parse(mismatched_types)
+
+    missing_profile = _authoring_manifest()
+    binding = dict(missing_profile["authoring_bindings"][0])  # type: ignore[index]
+    binding["workload_profile_version"] = 99
+    missing_profile["authoring_bindings"] = [binding]
+    with pytest.raises(QualitySourceManifestError, match="unavailable profile"):
+        _parse(missing_profile)
+
+    duplicate = _authoring_manifest()
+    duplicate["authoring_bindings"] = [
+        duplicate["authoring_bindings"][0],  # type: ignore[index]
+        duplicate["authoring_bindings"][0],  # type: ignore[index]
+    ]
+    with pytest.raises(QualitySourceManifestError, match="repeats an authoring asset"):
+        _parse(duplicate)
+
+
 def test_contract_arrays_fields_and_identities_are_exact_and_bounded() -> None:
     with pytest.raises(QualitySourceManifestError, match="contract"):
-        _parse({**_manifest(), "contract_version": "QUALITY_SOURCE_MANIFEST_V2"})
+        _parse({**_manifest(), "contract_version": "QUALITY_SOURCE_MANIFEST_V3"})
     with pytest.raises(QualitySourceManifestError, match="fields"):
         _parse({**_manifest(), "dsn": "postgresql://user:secret@database/source"})
     with pytest.raises(QualitySourceManifestError, match="array"):

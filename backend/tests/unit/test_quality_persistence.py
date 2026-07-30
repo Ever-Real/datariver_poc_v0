@@ -32,7 +32,7 @@ EXPECTED_TABLES = {
 
 
 def test_quality_metadata_and_revision_are_complete() -> None:
-    assert REQUIRED_DATABASE_REVISION == "0070"
+    assert REQUIRED_DATABASE_REVISION == "0071"
     assert "quality" in MANAGED_DATABASE_SCHEMAS
     assert EXPECTED_TABLES <= set(Base.metadata.tables)
     assert "retention.legal_hold_generations" in Base.metadata.tables
@@ -204,6 +204,7 @@ def test_incremental_and_canonical_contract_include_security_fences() -> None:
         "decision_evidence.assurance_hash",
         "calculated_request_hash",
         "_QUALITY_CATALOG_CONTRACT_HASH",
+        "_QUALITY_CANONICAL_HEAD_CONTRACT_HASH",
         "role_membership",
         "schema_grant",
         "reject_evidence_mutation",

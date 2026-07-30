@@ -33,7 +33,7 @@ def test_quality_read_indexes_are_metadata_migration_and_baseline_consistent() -
     migration = _load_migration()
     assert migration.revision == "0070"
     assert migration.down_revision == "0069"
-    assert REQUIRED_DATABASE_REVISION == "0070"
+    assert REQUIRED_DATABASE_REVISION == "0071"
 
     expected = {
         "ix_quality_rule_sets_list",
@@ -65,7 +65,7 @@ def test_quality_issue_index_remains_failure_only() -> None:
     assert predicate in canonical_source
 
 
-def test_public_quality_surface_is_read_only_until_readiness_attestations_exist() -> None:
+def test_public_quality_surface_exposes_only_bounded_quality_commands() -> None:
     routes = {
         (method, route.path)
         for route in quality_router.routes
@@ -86,8 +86,20 @@ def test_public_quality_surface_is_read_only_until_readiness_attestations_exist(
         ("GET", "/quality/runs/{run_id}/results"),
         ("GET", "/quality/issues"),
     } <= routes
+    assert {
+        ("POST", "/quality/rule-sets"),
+        (
+            "POST",
+            "/quality/rule-sets/{rule_set_id}/versions/{version_id}/reviews",
+        ),
+        (
+            "POST",
+            "/quality/rule-sets/{rule_set_id}/versions/{version_id}/activations",
+        ),
+        ("POST", "/quality/runs"),
+    } <= routes
     assert not {
         (method, path)
         for method, path in routes
-        if method != "GET" and not path.startswith("/quality/internal/")
+        if method not in {"GET", "POST"} and not path.startswith("/quality/internal/")
     }

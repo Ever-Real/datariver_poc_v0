@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from datariver.interfaces.http.schemas import PageMeta
 
@@ -16,6 +16,7 @@ class QualityCapabilityAxisResponse(BaseModel):
         "read_access",
         "profile_readiness",
         "rule_authoring",
+        "review",
         "activation",
         "manual_execution",
         "scheduling",
@@ -28,7 +29,7 @@ class QualityCapabilityAxisResponse(BaseModel):
 class QualityCapabilityResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    contract_version: Literal["QUALITY_CAPABILITY_V1"] = "QUALITY_CAPABILITY_V1"
+    contract_version: Literal["QUALITY_CAPABILITY_V2"] = "QUALITY_CAPABILITY_V2"
     observed_at: datetime
     valid_until: datetime
     cache_scope: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -220,8 +221,107 @@ class QualityAssetListResponse(QualityReadMetadata):
     page: PageMeta
 
 
+class QualityAuthoringFieldResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field_identifier: str = Field(min_length=1, max_length=255)
+    display_path: str = Field(min_length=1, max_length=255)
+    logical_type: Literal[
+        "STRING",
+        "INTEGER",
+        "DECIMAL",
+        "DATE",
+        "TIMESTAMP",
+        "BOOLEAN",
+        "OTHER",
+    ]
+    supported_rule_kinds: list[Literal["NOT_NULL", "RANGE"]]
+
+
+class QualityAssetAuthoringResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    state: Literal["READY", "UNAVAILABLE"]
+    reason_code: str | None
+    source_version: str
+    schema_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    fields: list[QualityAuthoringFieldResponse]
+
+
 class QualityAssetDetailResponse(QualityReadMetadata):
     item: QualityAssetResponse
+    authoring: QualityAssetAuthoringResponse
+
+
+class QualityRuleDraftRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field_identifier: str = Field(min_length=1, max_length=255)
+    kind: Literal["NOT_NULL", "RANGE"]
+    severity: Literal["BLOCKING", "ADVISORY"]
+    parameters: dict[str, object] = Field(default_factory=dict)
+
+
+class QualityRuleBatchProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name_prefix: str = Field(min_length=1, max_length=100)
+    asset_ids: list[UUID] = Field(min_length=1, max_length=25)
+    rules: list[QualityRuleDraftRequest] = Field(min_length=1, max_length=100)
+
+    @field_validator("asset_ids")
+    @classmethod
+    def unique_assets(cls, value: list[UUID]) -> list[UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("asset_ids must be unique")
+        return value
+
+
+class QualityRuleProposalItemResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: UUID
+    rule_set_id: UUID
+    version_id: UUID
+    version: int = Field(ge=1)
+
+
+class QualityRuleBatchProposalResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[QualityRuleProposalItemResponse]
+    replayed: bool
+
+
+class QualityRuleReviewRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    decision: Literal["APPROVE", "REJECT"]
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class QualityRuleVersionCommandResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rule_set_id: UUID
+    version_id: UUID
+    state: str
+    version: int = Field(ge=1)
+
+
+class QualityManualRunRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rule_set_id: UUID
+
+
+class QualityManualRunResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: UUID
+    state: str
+    created_at: datetime
+    replayed: bool
 
 
 class QualityRuleSetListResponse(QualityReadMetadata):

@@ -16,6 +16,7 @@ from datariver.domain.authz import Action
 from datariver.domain.common import (
     ForbiddenError,
     PreconditionFailedError,
+    PreconditionRequiredError,
     RateLimitError,
     ValidationError,
 )
@@ -190,6 +191,22 @@ def test_precondition_failure_has_a_distinct_http_412_contract() -> None:
 
     assert response.status_code == 412
     assert response.json()["code"] == "precondition_failed"
+    assert response.headers["Cache-Control"] == "private, no-store"
+
+
+def test_missing_precondition_has_a_distinct_http_428_contract() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    app = create_app(settings(), container_factory=factory)
+
+    @app.patch("/test/precondition-required")
+    async def missing_precondition() -> None:
+        raise PreconditionRequiredError("If-Match is required.")
+
+    with TestClient(app) as client:
+        response = client.patch("/test/precondition-required")
+
+    assert response.status_code == 428
+    assert response.json()["code"] == "precondition_required"
     assert response.headers["Cache-Control"] == "private, no-store"
 
 

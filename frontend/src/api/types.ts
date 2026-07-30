@@ -1772,6 +1772,7 @@ export type QualityCapabilityAxisId =
   | 'read_access'
   | 'profile_readiness'
   | 'rule_authoring'
+  | 'review'
   | 'activation'
   | 'manual_execution'
   | 'scheduling'
@@ -1786,7 +1787,7 @@ export interface QualityCapabilityAxis {
 }
 
 export interface QualityCapability {
-  contract_version: 'QUALITY_CAPABILITY_V1'
+  contract_version: 'QUALITY_CAPABILITY_V2'
   observed_at: string
   valid_until: string
   cache_scope: string
@@ -1881,6 +1882,80 @@ export interface QualityAsset {
   latest_run_state: QualityRunState | null
   latest_quality_outcome: QualityOutcome | null
   latest_score_basis_points: number | null
+}
+
+export type QualityAuthoringState = 'READY' | 'UNAVAILABLE'
+export type QualityAuthoringLogicalType =
+  | 'STRING'
+  | 'INTEGER'
+  | 'DECIMAL'
+  | 'DATE'
+  | 'TIMESTAMP'
+  | 'BOOLEAN'
+  | 'OTHER'
+export type QualityAuthoringRuleKind = Extract<QualityRuleKind, 'NOT_NULL' | 'RANGE'>
+
+export interface QualityAuthoringField {
+  field_identifier: string
+  display_path: string
+  logical_type: QualityAuthoringLogicalType
+  supported_rule_kinds: QualityAuthoringRuleKind[]
+}
+
+export interface QualityAssetAuthoring {
+  state: QualityAuthoringState
+  reason_code: string | null
+  source_version: string
+  schema_hash: string | null
+  fields: QualityAuthoringField[]
+}
+
+export interface QualityAssetDetailResponse extends QualityResourceResponse<QualityAsset> {
+  authoring: QualityAssetAuthoring
+}
+
+export interface QualityRuleDraftRequest {
+  field_identifier: string
+  kind: QualityAuthoringRuleKind
+  severity: QualityRuleSeverity
+  parameters: Record<string, unknown>
+}
+
+export interface QualityRuleBatchProposalRequest {
+  name_prefix: string
+  asset_ids: string[]
+  rules: QualityRuleDraftRequest[]
+}
+
+export interface QualityRuleProposalItem {
+  asset_id: string
+  rule_set_id: string
+  version_id: string
+  version: number
+}
+
+export interface QualityRuleBatchProposalResponse {
+  items: QualityRuleProposalItem[]
+  replayed: boolean
+}
+
+export interface QualityRuleReviewRequest {
+  decision: 'APPROVE' | 'REJECT'
+  reason: string
+}
+
+export interface QualityRuleVersionCommandResponse {
+  rule_set_id: string
+  version_id: string
+  state: QualityRuleSetVersionState
+  version: number
+}
+
+export interface QualityManualRunResponse {
+  run_id: string
+  state: QualityRunState
+  created_at: string
+  replayed: boolean
 }
 
 export interface QualityRuleDefinitionCapability {

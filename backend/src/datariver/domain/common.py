@@ -61,6 +61,12 @@ class PreconditionFailedError(DomainError):
     code = "precondition_failed"
 
 
+class PreconditionRequiredError(DomainError):
+    """The request omitted a required optimistic concurrency precondition."""
+
+    code = "precondition_required"
+
+
 class ForbiddenError(DomainError):
     code = "forbidden"
 

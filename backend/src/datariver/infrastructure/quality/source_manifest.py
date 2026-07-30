@@ -14,6 +14,7 @@ from uuid import UUID
 from datariver.domain.common import ValidationError, canonical_json_hash
 
 MANIFEST_CONTRACT_VERSION = "QUALITY_SOURCE_MANIFEST_V1"
+AUTHORING_MANIFEST_CONTRACT_VERSION = "QUALITY_SOURCE_MANIFEST_V2"
 
 _MAX_MANIFEST_BYTES = 2 * 1024 * 1024
 _MAX_SECRET_BYTES = 16 * 1024
@@ -66,13 +67,14 @@ class PostgresSourceProfile:
     schema: str
     relation: str
     field_map: tuple[tuple[str, str], ...]
+    field_types: tuple[tuple[str, str], ...]
     username: str
     password_secret_ref: str
     tls_mode: PostgresTlsMode
     allowed_ips: tuple[str, ...]
 
     def configuration_document(self) -> dict[str, object]:
-        return {
+        document: dict[str, object] = {
             "asset_id": str(self.asset_id),
             "system_id": str(self.system_id),
             "platform": self.platform,
@@ -89,6 +91,9 @@ class PostgresSourceProfile:
             "tls_mode": self.tls_mode.value,
             "allowed_ips": list(self.allowed_ips),
         }
+        if self.field_types:
+            document["field_types"] = dict(self.field_types)
+        return document
 
     def document(self) -> dict[str, object]:
         return {
@@ -103,6 +108,15 @@ class PostgresSourceProfile:
         raise QualitySourceManifestError(
             "The pinned source field is unavailable.",
             details={"code": "SOURCE_FIELD_UNAVAILABLE"},
+        )
+
+    def logical_type_for(self, field_identifier: str) -> str:
+        for candidate, logical_type in self.field_types:
+            if candidate == field_identifier:
+                return logical_type
+        raise QualitySourceManifestError(
+            "The authoring field type is unavailable.",
+            details={"code": "FIELD_TYPE_UNAVAILABLE"},
         )
 
 
@@ -154,9 +168,31 @@ class ResolvedQualitySource:
 
 
 @dataclass(frozen=True, slots=True)
+class QualityAuthoringBinding:
+    asset_id: UUID
+    source_connection_profile_id: str
+    source_connection_profile_version: int
+    workload_profile_id: str
+    workload_profile_version: int
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedQualityAuthoringTarget:
+    source: PostgresSourceProfile
+    workload: QualityWorkloadProfile
+    schema_hash: str
+
+    @property
+    def fields(self) -> tuple[tuple[str, str], ...]:
+        return self.source.field_types
+
+
+@dataclass(frozen=True, slots=True)
 class QualitySourceManifest:
+    contract_version: str
     profiles: tuple[PostgresSourceProfile, ...]
     workloads: tuple[QualityWorkloadProfile, ...]
+    authoring_bindings: tuple[QualityAuthoringBinding, ...] = ()
 
     @property
     def manifest_hash(self) -> str:
@@ -164,9 +200,27 @@ class QualitySourceManifest:
 
     def document(self) -> dict[str, object]:
         return {
-            "contract_version": MANIFEST_CONTRACT_VERSION,
+            "contract_version": self.contract_version,
             "profiles": [profile.document() for profile in self.profiles],
             "workloads": [workload.document() for workload in self.workloads],
+            **(
+                {
+                    "authoring_bindings": [
+                        {
+                            "asset_id": str(binding.asset_id),
+                            "source_connection_profile_id": (binding.source_connection_profile_id),
+                            "source_connection_profile_version": (
+                                binding.source_connection_profile_version
+                            ),
+                            "workload_profile_id": binding.workload_profile_id,
+                            "workload_profile_version": binding.workload_profile_version,
+                        }
+                        for binding in self.authoring_bindings
+                    ]
+                }
+                if self.contract_version == AUTHORING_MANIFEST_CONTRACT_VERSION
+                else {}
+            ),
         }
 
     def resolve(
@@ -220,6 +274,62 @@ class QualitySourceManifest:
                 details={"code": "WORKLOAD_PROFILE_DRIFT"},
             )
         return ResolvedQualitySource(source=source, workload=workload)
+
+    def resolve_authoring_target(self, *, asset_id: UUID) -> ResolvedQualityAuthoringTarget:
+        if self.contract_version != AUTHORING_MANIFEST_CONTRACT_VERSION:
+            raise QualitySourceManifestError(
+                "The source manifest has no authoring bindings.",
+                details={"code": "AUTHORING_MANIFEST_UNAVAILABLE"},
+            )
+        binding = next(
+            (candidate for candidate in self.authoring_bindings if candidate.asset_id == asset_id),
+            None,
+        )
+        if binding is None:
+            raise QualitySourceManifestError(
+                "The asset has no authoring binding.",
+                details={"code": "AUTHORING_TARGET_UNAVAILABLE"},
+            )
+        source = next(
+            (
+                profile
+                for profile in self.profiles
+                if profile.asset_id == asset_id
+                and profile.source_connection_profile_id == binding.source_connection_profile_id
+                and profile.source_connection_profile_version
+                == binding.source_connection_profile_version
+            ),
+            None,
+        )
+        workload = next(
+            (
+                profile
+                for profile in self.workloads
+                if profile.workload_profile_id == binding.workload_profile_id
+                and profile.workload_profile_version == binding.workload_profile_version
+            ),
+            None,
+        )
+        if source is None or workload is None or not source.field_types:
+            raise QualitySourceManifestError(
+                "The authoring binding is incomplete.",
+                details={"code": "AUTHORING_BINDING_DRIFT"},
+            )
+        return ResolvedQualityAuthoringTarget(
+            source=source,
+            workload=workload,
+            schema_hash=canonical_json_hash(
+                {
+                    "contract": "QUALITY_AUTHORING_SCHEMA_V1",
+                    "asset_id": str(asset_id),
+                    "source_connection_profile_hash": (source.source_connection_profile_hash),
+                    "fields": [
+                        {"field_identifier": field_identifier, "logical_type": logical_type}
+                        for field_identifier, logical_type in source.field_types
+                    ],
+                }
+            ),
+        )
 
 
 class QualitySourceSecretReader:
@@ -318,12 +428,24 @@ def parse_quality_source_manifest(payload: bytes | str) -> QualitySourceManifest
         raise QualitySourceManifestError("The source manifest is not valid JSON.") from error
 
     document = _object(decoded, "source manifest")
-    _exact_keys(document, {"contract_version", "profiles", "workloads"}, "source manifest")
-    if document["contract_version"] != MANIFEST_CONTRACT_VERSION:
+    contract_version = document.get("contract_version")
+    if contract_version not in {
+        MANIFEST_CONTRACT_VERSION,
+        AUTHORING_MANIFEST_CONTRACT_VERSION,
+    }:
         raise QualitySourceManifestError("The source manifest contract is unsupported.")
+    expected_keys = {"contract_version", "profiles", "workloads"}
+    if contract_version == AUTHORING_MANIFEST_CONTRACT_VERSION:
+        expected_keys.add("authoring_bindings")
+    _exact_keys(document, expected_keys, "source manifest")
 
     raw_profiles = _array(document["profiles"], "profiles", 1, _MAX_PROFILES)
-    profiles = tuple(_parse_source_profile(value) for value in raw_profiles)
+    profiles = tuple(
+        _parse_source_profile(
+            value, authoring=contract_version == AUTHORING_MANIFEST_CONTRACT_VERSION
+        )
+        for value in raw_profiles
+    )
     raw_workloads = _array(document["workloads"], "workloads", 1, _MAX_WORKLOADS)
     workloads = tuple(_parse_workload_profile(value) for value in raw_workloads)
 
@@ -342,10 +464,49 @@ def parse_quality_source_manifest(payload: bytes | str) -> QualitySourceManifest
     }
     if len(workload_identities) != len(workloads):
         raise QualitySourceManifestError("The source manifest repeats a workload identity.")
-    return QualitySourceManifest(profiles=profiles, workloads=workloads)
+    authoring_bindings: tuple[QualityAuthoringBinding, ...] = ()
+    if contract_version == AUTHORING_MANIFEST_CONTRACT_VERSION:
+        raw_bindings = _array(
+            document["authoring_bindings"],
+            "authoring bindings",
+            1,
+            _MAX_PROFILES,
+        )
+        authoring_bindings = tuple(_parse_authoring_binding(value) for value in raw_bindings)
+        if len({binding.asset_id for binding in authoring_bindings}) != len(authoring_bindings):
+            raise QualitySourceManifestError("The source manifest repeats an authoring asset.")
+        source_keys = {
+            (
+                profile.asset_id,
+                profile.source_connection_profile_id,
+                profile.source_connection_profile_version,
+            )
+            for profile in profiles
+        }
+        workload_keys = {
+            (profile.workload_profile_id, profile.workload_profile_version) for profile in workloads
+        }
+        for binding in authoring_bindings:
+            if (
+                binding.asset_id,
+                binding.source_connection_profile_id,
+                binding.source_connection_profile_version,
+            ) not in source_keys or (
+                binding.workload_profile_id,
+                binding.workload_profile_version,
+            ) not in workload_keys:
+                raise QualitySourceManifestError(
+                    "The authoring binding references an unavailable profile."
+                )
+    return QualitySourceManifest(
+        contract_version=str(contract_version),
+        profiles=profiles,
+        workloads=workloads,
+        authoring_bindings=authoring_bindings,
+    )
 
 
-def _parse_source_profile(value: object) -> PostgresSourceProfile:
+def _parse_source_profile(value: object, *, authoring: bool) -> PostgresSourceProfile:
     document = _object(value, "source profile")
     expected_keys = {
         "asset_id",
@@ -365,6 +526,8 @@ def _parse_source_profile(value: object) -> PostgresSourceProfile:
         "tls_mode",
         "allowed_ips",
     }
+    if authoring:
+        expected_keys.add("field_types")
     _exact_keys(document, expected_keys, "source profile")
     if document["platform"] != "POSTGRESQL":
         raise QualitySourceManifestError("Only PostgreSQL source profiles are supported.")
@@ -381,6 +544,25 @@ def _parse_source_profile(value: object) -> PostgresSourceProfile:
     fields.sort()
     if len({column for _, column in fields}) != len(fields):
         raise QualitySourceManifestError("The source field map repeats a column.")
+    field_types: list[tuple[str, str]] = []
+    if authoring:
+        raw_types = _object(document["field_types"], "source field types")
+        if set(raw_types) != set(raw_fields):
+            raise QualitySourceManifestError("The source field types do not match the field map.")
+        for field_identifier, raw_type in raw_types.items():
+            logical_type = _text(raw_type, "source logical type", 32)
+            if logical_type not in {
+                "STRING",
+                "INTEGER",
+                "DECIMAL",
+                "DATE",
+                "TIMESTAMP",
+                "BOOLEAN",
+                "OTHER",
+            }:
+                raise QualitySourceManifestError("The source logical type is invalid.")
+            field_types.append((field_identifier, logical_type))
+        field_types.sort()
 
     raw_ips = _array(document["allowed_ips"], "allowed IPs", 1, _MAX_ALLOWED_IPS)
     allowed_ips = tuple(_exact_ip(value) for value in raw_ips)
@@ -429,6 +611,7 @@ def _parse_source_profile(value: object) -> PostgresSourceProfile:
         schema=_postgres_identifier(document["schema"], "source schema"),
         relation=_postgres_identifier(document["relation"], "source relation"),
         field_map=tuple(fields),
+        field_types=tuple(field_types),
         username=_postgres_identifier(document["username"], "source username"),
         password_secret_ref=password_secret_ref,
         tls_mode=tls_mode,
@@ -439,6 +622,44 @@ def _parse_source_profile(value: object) -> PostgresSourceProfile:
     ):
         raise QualitySourceManifestError("The source profile hash does not match its content.")
     return profile
+
+
+def _parse_authoring_binding(value: object) -> QualityAuthoringBinding:
+    document = _object(value, "authoring binding")
+    _exact_keys(
+        document,
+        {
+            "asset_id",
+            "source_connection_profile_id",
+            "source_connection_profile_version",
+            "workload_profile_id",
+            "workload_profile_version",
+        },
+        "authoring binding",
+    )
+    return QualityAuthoringBinding(
+        asset_id=_uuid(document["asset_id"], "authoring asset"),
+        source_connection_profile_id=_opaque_id(
+            document["source_connection_profile_id"],
+            "source profile",
+        ),
+        source_connection_profile_version=_bounded_int(
+            document["source_connection_profile_version"],
+            "source profile version",
+            1,
+            2_147_483_647,
+        ),
+        workload_profile_id=_opaque_id(
+            document["workload_profile_id"],
+            "workload profile",
+        ),
+        workload_profile_version=_bounded_int(
+            document["workload_profile_version"],
+            "workload profile version",
+            1,
+            2_147_483_647,
+        ),
+    )
 
 
 def _parse_workload_profile(value: object) -> QualityWorkloadProfile:

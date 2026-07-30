@@ -2,6 +2,27 @@
 
 ## Current verification status
 
+### GX Quality Phase 8 authoring/manual execution readiness — 2026-07-30
+
+Revision `0071` adds only fixed server-derived review, activation and manual-Run command functions.
+The browser cannot submit source coordinates, GX classes, connection data, retention bindings or
+authorization evidence. V2 deployment manifests provide exact field/type/source/workload bindings;
+missing deployment inputs keep authoring and execution capability closed.
+
+Repository Ruff passed, strict mypy passed over `481` source/test files, the complete backend suite
+passed `1,882` with `104` explicitly environment-gated skips, and static architecture/security
+verification passed. Frontend TypeScript and ESLint passed; `65` files / `356` tests passed and the
+production build emitted the lazy Quality chunk at `62.12 kB` (`16.63 kB` gzip). Two consecutive
+canonical `0001` generations were byte-identical at SHA-256
+`59502d46caa5bd9bb5b6f2764c1e160740586c6724d8d8e69bc0887bd5d83033`.
+
+An isolated PostgreSQL `17.10` database accepted canonical `0001` and the actual `0070 -> 0071`
+upgrade. Five live Quality tests passed, including semantic fingerprint drift rollback, complete
+V3 retention genesis, concurrent Legal Hold generation and the manual command's atomic
+Run/event/outbox creation. Real DataHub collection, approved target source execution, worker/Airflow
+enablement, target identities, screen-reader/zoom acceptance and WSL amd64 artifacts remain
+external gates.
+
 ### GX Quality Phase 6 local operational gate — 2026-07-30
 
 The implementation under test is commit

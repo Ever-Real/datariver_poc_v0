@@ -1,6 +1,6 @@
 # GX 기반 품질관리 고도화 PRD 및 실행 체크리스트
 
-- 상태: **Phase 4 권한 축소형 Read API·React 대시보드 구현 완료 — mutation/target gate는 비활성 보류**
+- 상태: **Phase 8 로컬 authoring/manual command 및 게이트 완료 — target source/Profile gate는 비활성 보류**
 - 결정 문서: [ADR-0077](adr/0077-governed-gx-quality-control-plane.md)
 - 적용 범위: Task 1 품질관리 대시보드, DataHub Profile, typed Rule, GX 실행 및 결과 시각화
 - 비적용 범위: Task 2 거버넌스 문서, GX Data Docs, MinIO 결과 저장, Oracle 실행,
@@ -9,8 +9,8 @@
 이 문서는 Task 1의 승인된 설계를 실행 가능한 요구사항과 phase gate로 고정한다. Phase 0은
 문서·계약, Phase 1은 Quality 도메인/권한/데이터베이스 control plane, Phase 2는 DataHub
 Profile projection, Phase 3은 GX worker와 Airflow dispatch, Phase 4는 인간용 권한 축소
-read model과 React 대시보드를 구현했다. 검증되지 않은 field identity,
-source/workload/schedule readiness를 요구하는 mutation은 capability-closed 상태다.
+read model과 React 대시보드를 구현했다. Phase 8은 V2 server-owned field directory와
+bounded mutation surface를 추가하되 미검증 배포 입력은 capability-closed로 유지한다.
 
 ## 1. 현재 상태와 확인된 공백
 
@@ -21,9 +21,9 @@ source/workload/schedule readiness를 요구하는 mutation은 capability-closed
   정규화 결과만 표시한다. 권한 lease, cursor, 선택 Run polling은 caller scope에 결합된다.
 - sample/top/distribution, 실패행, provider/source credential은 projection/API/UI 계약에
   포함하지 않는다.
-- field identity directory와 source/workload/schedule deployment readiness가 아직
-  canonical server input으로 존재하지 않으므로 Rule 작성·활성화·수동 실행·예약 mutation은
-  unavailable capability로 닫혀 있다.
+- field identity/source/workload는 V2 deployment manifest로만 제공하며 현재 로컬 배포에는
+  그 manifest와 승인 retention/source credential이 없어 관련 capability가 fail-closed다.
+  schedule profile은 계속 존재하지 않으므로 예약 mutation은 닫혀 있다.
 - 실제 DataHub v1.6 collector run, target PostgreSQL full scan/kill/reclaim, WSL amd64
   artifact와 수동 접근성 검증은 Phase 5 이후의 외부 gate다.
 
@@ -419,7 +419,7 @@ coordinate는 제외한다. `GET /quality/assets/{asset_id}`는 server-owned fie
 display path/type, schema/source version을 제공한다. stale/deleted historical target은 권한이
 있으면 과거 evidence read에만 사용할 수 있고 새 Rule/activation target이 될 수 없다.
 
-Capability는 `read_access`, `profile_readiness`, `rule_authoring`, `activation`,
+Capability V2는 `read_access`, `profile_readiness`, `rule_authoring`, `review`, `activation`,
 `manual_execution`, `scheduling`, `operations`를 독립 축으로 반환한다. `read_access=DENIED`
 일 때만 모든 Quality resource fetch를 막고 캐시를 제거한다. DataHub profile 장애는 profile
 section/new activation만 unavailable로 만들고 과거 Run/Rule read를 지우지 않는다.
@@ -532,9 +532,8 @@ chart library는 실제 요구와 bundle 측정 후 별도 승인한다.
   incremental migration으로 구현한다.
 - [x] SQLAlchemy metadata, incremental migration, regenerated `0001`과 Data Model을 동기화한다.
 - [ ] rule/version/review/activation/revoke/archive mutation route-Action matrix를 구현한다.
-  도메인 lifecycle, 고정 DB 전이 함수, Action 및 service identity 계약은 완료했고 Phase 4
-  capability/read pagination API는 구현했다. mutation route는 field/source/deployment
-  readiness 증거가 없으므로 공개하지 않는다.
+  Phase 8은 bounded multi-target RuleSet proposal, review 및 `MANUAL_ONLY` activation을
+  구현했다. 새 Version, revoke/archive는 아직 공개하지 않으므로 전체 항목은 열어 둔다.
 - [x] ACTIVE-version/due-schedule/runnable-claim/terminal-dashboard index `EXPLAIN`과
   blank/current-head/canonical re-entry/drift/RLS actual PostgreSQL 17 gate를 통과한다.
 - [x] immutable evidence가 있으면 destructive downgrade를 거부하고 empty development
@@ -568,9 +567,8 @@ chart library는 실제 요구와 bundle 측정 후 별도 승인한다.
 
 - [x] authorization-pruned Overview/assets/rules/runs/results/issues read model을 구현한다.
 - [x] 네 탭, server cards/trend/grid, cursor list와 선택 후 lazy detail UI를 구현한다.
-- [ ] Rule wizard와 conflict/review/activation UI를 구현한다. field identity 및
-  source/workload/schedule readiness attestation이 없으므로 예시 값으로 열지 않고 capability로
-  잠근다.
+- [x] V2 field directory 기반 bounded Rule wizard와 conflict/review/`MANUAL_ONLY`
+  activation UI를 구현하고 readiness가 없으면 capability로 잠근다.
 - [x] 30초 authorization lease, capability/dependency 분리, bounded polling/cache fence와
   availability/freshness 상태를 component-test한다.
 - [x] roving keyboard tab, chart 대체 표, loading/empty/error/denied/partial 상태를
@@ -640,9 +638,10 @@ dispatch/claim/fence/completion functions, isolated Quality worker, source manif
 result boundary와 paused Airflow DAG를 추가했다. Worker와 DAG schedule은 계속
 disabled/paused-by-default이며 실제 target source full-scan과 kill/reclaim은 Phase 5
 acceptance gate로 남는다. Phase 4는 인간용 capability와 read-only API, 네 탭 대시보드를
-연결했다. Rule authoring, activation, manual execution과 scheduling은 필요한 server-owned
-identity/readiness 입력이 없어 capability-closed이며 Phase 5 target acceptance 전에는
-production-ready로 주장하지 않는다. Phase 6 로컬 운영 게이트는 ReDoS/raw-result/payload
+연결했다. Rule authoring, activation과 manual execution route는 구현됐지만 필요한
+server-owned identity/readiness 입력이 없는 현재 배포에서는 capability-closed다.
+scheduling은 구현하지 않았으며 Phase 5 target acceptance 전에는 production-ready로
+주장하지 않는다. Phase 6 로컬 운영 게이트는 ReDoS/raw-result/payload
 경계, 실제 서비스 OIDC 음성 경로, PostgreSQL 구조적 access plan과 Mac arm64 worker
 artifact를 확인했다. 대표 dataset/soak, 사람 다중 Workspace, 실제 source/Profile,
 인증 후 브라우저 접근성 및 WSL amd64는 외부 gate로 남으며 worker/DAG는 비활성 상태다.

@@ -460,7 +460,7 @@ appends and mutation of retention evidence. The application role retains only se
 `version`/`updated_at` update privilege and no Chat delete privilege. Clean installations validate
 the canonical `0001` contract, upgrades install it atomically, and partial schemas fail closed.
 
-## Governed Quality schema (Phases 1–3 implemented through revision `0069`)
+## Governed Quality schema (authoring commands implemented through revision `0071`)
 
 ADR-0077 defines the `quality` bounded context and the bounded Catalog Profile projection.
 Revision `0067` implements the 13 Quality control-plane tables below in SQLAlchemy and Alembic,
@@ -471,9 +471,9 @@ Phase 2 owns the separate additive Catalog Profile and `QUALITY_PROFILE` retenti
 refined by ADR-0078. Phase 3 adds only the service execution plane: authenticated due dispatch,
 fenced claim/source execution and sanitized terminal completion through fixed functions. Phase 4
 adds an authorization-pruned human read model over the existing canonical rows; it introduces no
-parallel Quality truth. Rule authoring, schedule activation and manual execution remain
-capability-closed until their server-owned field-directory and deployment-readiness attestations
-exist.
+parallel Quality truth. Revision `0071` adds no table: it introduces ADR-0079's server-derived
+review/activation/manual-Run wrappers after the V2 field directory and deployment-readiness
+attestations exist. Scheduling remains capability-closed until a governed schedule profile exists.
 `POLICY_BOOK_V3` remains the valid exact Phase 1 contract;
 `POLICY_BOOK_V4 = POLICY_BOOK_V3 + QUALITY_PROFILE`.
 
@@ -520,6 +520,14 @@ Every card, trend, list and issue query first joins the same authorization-prune
 relation used by Catalog search, with quarantine review explicitly disabled. Cursors bind the
 workspace, caller permission/classification scope, resource kind and page size; PostgreSQL RLS
 remains an independent lower-bound check.
+
+Revision `0071` adds fixed wrappers, not tables. Review resolves current assurance and
+`QUALITY_AUDIT` retention inside PostgreSQL. `MANUAL_ONLY` activation derives authorization,
+schedule and retention hashes server-side before calling the existing immutable lifecycle
+function. Manual Run creation revalidates the active version/current target and atomically inserts
+the canonical `validation_runs`, first `run_events` row and
+`quality.validation_run.queued.v1` outbox event. The application passes the exact current policy
+decision ID; it cannot search for or substitute an older authorization decision.
 
 All protected rows require `workspace_id`, composite tenant foreign keys and forced RLS. Rebuildable
 profile rows reference the local Catalog asset; immutable Quality evidence additionally stores the
@@ -594,6 +602,8 @@ the same revision. Phase 2 adds the two Catalog tables,
 `QUALITY_PROFILE` kind and typed `PROFILE_SNAPSHOT` hold target in its own additive revision.
 Phase 3 revision `0069` adds no tables and no raw execution evidence: it installs the fixed
 service-only execution functions and grants the quality worker exactly that function allowlist.
+Revision `0071` adds the human authoring/manual wrappers and grants the application role execute
+only; it adds no direct lifecycle DML grant.
 `POLICY_BOOK_V3` stays frozen and valid for the Phase 1 classes; Profile creation requires an
 explicit active `POLICY_BOOK_V4` policy with the exact added `QUALITY_PROFILE` class. Existing
 Phase 1 Quality classes remain valid under V3 or V4. Each revision
@@ -616,7 +626,9 @@ indexes, forced-RLS flags and policies, non-internal triggers and enabled state,
 owners/security/search paths, all table/column/function/schema grants, schema owners, the
 `datariver_quality` role and its memberships. Canonical and additive physical column ordinals may
 differ and are deliberately not part of this logical/security fingerprint; any same-name object
-with different semantics fails canonical re-entry.
+with different semantics fails canonical re-entry. The historical Phase 1 fingerprint remains
+accepted for an additive `0067` upgrade, while the deterministic canonical baseline is pinned to
+the current head fingerprint after the `0071` authoring/manual-command functions are installed.
 
 The minimum access-path contract is: partial unique ACTIVE version and partial unique ACTIVE
 schedule per Rule Set; immutable schedule history unique per Rule Set Version; due schedules on

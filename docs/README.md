@@ -49,6 +49,7 @@
 | 51 | [Knowledge Phase 6 cutover QA remediation](51_KNOWLEDGE_PHASE6_QA_REMEDIATION.md) | domain safety net, persistent Knowledge shell, resizable/version-focused Registry drawer and governed edit/archive actions | Local source verified; target browser/PostgreSQL gates open |
 | 52 | [GX quality management PRD/checklist](52_GX_QUALITY_MANAGEMENT_PRD_CHECKLIST.md) | governed DataHub Profile, typed Rule, isolated GX execution and authorization-pruned dashboard contract | Phases 1–5 and local Phase 6 gates complete; mutations and target Profile/source/WSL gates remain closed |
 | 53 | [Phase 7 integrity audit](53_PHASE7_INTEGRITY_AUDIT.md) | one-pass source/migration/secret audit, V4 retention administration and fail-closed dispatch capacity | Local static/focused gates complete; Phase 8 runtime and target gates open |
+| 54 | [Phase 8 Quality authoring and execution readiness](54_PHASE8_QUALITY_AUTHORING_AND_EXECUTION_READINESS.md) | V2 field directory, atomic Rule commands, manual Run outbox and runtime readiness | Local source/PostgreSQL 17 gates complete; target source/Profile gates remain open |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and
@@ -126,6 +127,9 @@ isolated worker, typed Rule and sanitized dashboard/result boundary are defined 
 The additive Profile collector boundary, local Catalog source-version watermark, frozen
 `POLICY_BOOK_V3`, exact `POLICY_BOOK_V4` extension and typed Profile Snapshot hold are defined by
 [ADR-0078](adr/0078-quality-profile-retention-v4-and-collector-boundary.md).
+The fail-closed V2 authoring directory, bounded atomic Rule proposal and server-derived
+review/activation/manual Run commands are defined by
+[ADR-0079](adr/0079-quality-authoring-readiness-and-manual-run-commands.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

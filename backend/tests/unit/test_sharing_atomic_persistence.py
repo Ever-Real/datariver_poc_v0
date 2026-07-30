@@ -137,7 +137,7 @@ def _execute_sql_literals(source: str, function_name: str) -> tuple[str, ...]:
 def test_revision_and_schema_metadata_advance_to_atomic_sharing_head() -> None:
     migration = MIGRATION.read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0070"
+    assert REQUIRED_DATABASE_REVISION == "0071"
     assert 'revision: str = "0055"' in migration
     assert 'down_revision: str | Sequence[str] | None = "0054"' in migration
     assert {

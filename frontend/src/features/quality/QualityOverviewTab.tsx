@@ -67,7 +67,9 @@ export function QualityOverviewTab({
           <Kpi label="FAIL" value={countText(query.data.blocking_failed_count)} detail="Blocking failure" status="FAIL" />
           <Kpi label="UNKNOWN" value={countText(query.data.unknown_rule_set_count)} detail="Rule Set 기준" status="UNKNOWN" />
         </div>
+        <QualityCoverage overview={query.data} />
         <QualityTrend overview={query.data} />
+        <QualityResultCountTrend overview={query.data} />
       </>
     )}
   </section>
@@ -157,6 +159,148 @@ function QualityTrend({ overview }: { overview: QualityOverview }) {
             <tbody>{overview.trend.map((point) => <tr key={point.bucket_start}>
               <th scope="row">{dateTimeText(point.bucket_start)}</th>
               <td>{basisPointsText(point.score_basis_points)}</td>
+              <td>{countText(point.passed_count)}</td>
+              <td>{countText(point.advisory_failed_count)}</td>
+              <td>{countText(point.blocking_failed_count)}</td>
+              <td>{countText(point.evaluated_rule_count)}</td>
+            </tr>)}</tbody>
+          </table>
+        </div>
+      </>
+    )}
+  </section>
+}
+
+function QualityCoverage({ overview }: { overview: QualityOverview }) {
+  const titleId = useId()
+  const coverage = overview.coverage_basis_points
+
+  return <section className="quality-trend panel" aria-labelledby={titleId}>
+    <header>
+      <div>
+        <span className="eyebrow">Current snapshot · Rule Set grain</span>
+        <h3 id={titleId}>현재 Rule Set Coverage</h3>
+      </div>
+      <span>서버가 계산한 현재 권한 범위의 coverage입니다.</span>
+    </header>
+    {coverage === null ? (
+      <p className="quality-empty" role="status">서버가 현재 coverage 비율을 제공하지 않았습니다.</p>
+    ) : (
+      <div className="quality-coverage-visual">
+        <progress
+          className="quality-coverage-progress"
+          aria-label="현재 Rule Set coverage"
+          max={10_000}
+          value={coverage}
+        />
+        <strong>{basisPointsText(coverage)}</strong>
+      </div>
+    )}
+    <div className="quality-table-scroll" tabIndex={0} aria-label="현재 Rule Set coverage 표 스크롤 영역">
+      <table className="quality-trend-table">
+        <caption>현재 Rule Set coverage 막대와 동일한 서버 집계 수치</caption>
+        <thead>
+          <tr>
+            <th scope="col">Coverage</th>
+            <th scope="col">활성 Rule Set</th>
+            <th scope="col">평가 Rule Set</th>
+            <th scope="col">UNKNOWN Rule Set</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <th scope="row">{basisPointsText(coverage)}</th>
+            <td>{countText(overview.active_rule_set_count)}</td>
+            <td>{countText(overview.evaluated_rule_set_count)}</td>
+            <td>{countText(overview.unknown_rule_set_count)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+}
+
+function QualityResultCountTrend({ overview }: { overview: QualityOverview }) {
+  const titleId = useId()
+  const descriptionId = useId()
+  const maximum = Math.max(
+    0,
+    ...overview.trend.flatMap((point) => [
+      point.passed_count,
+      point.advisory_failed_count,
+      point.blocking_failed_count,
+    ]),
+  )
+  const chartLeft = 44
+  const chartWidth = 536
+  const chartBottom = 140
+  const chartHeight = 110
+  const groupWidth = overview.trend.length > 0 ? chartWidth / overview.trend.length : chartWidth
+  const barWidth = Math.max(1, Math.min(12, groupWidth / 4))
+  const barHeight = (value: number) => maximum === 0 ? 0 : value / maximum * chartHeight
+  const series = [
+    { key: 'passed_count', label: 'PASS', fill: '#2f855a' },
+    { key: 'advisory_failed_count', label: 'Advisory fail', fill: '#b7791f' },
+    { key: 'blocking_failed_count', label: 'Blocking fail', fill: '#c53030' },
+  ] as const
+
+  return <section className="quality-trend panel" aria-labelledby={titleId}>
+    <header>
+      <div>
+        <span className="eyebrow">Last 30 days · Rule result grain</span>
+        <h3 id={titleId}>품질 Rule 결과 건수 추이</h3>
+      </div>
+      <span>PASS, Advisory fail, Blocking fail은 동일한 Rule 단위입니다.</span>
+    </header>
+    {overview.trend.length === 0 ? (
+      <p className="quality-empty" role="status">표시할 완료 Rule 결과 추이가 없습니다.</p>
+    ) : (
+      <>
+        <div className="quality-chart-scroll" tabIndex={0} aria-label="품질 Rule 결과 건수 추이 차트 스크롤 영역">
+          <div className="quality-result-count-legend" aria-hidden="true">
+            {series.map((item) => <span key={item.key}>
+              <i style={{ backgroundColor: item.fill }} />{item.label}
+            </span>)}
+          </div>
+          <svg viewBox="0 0 600 160" role="img" aria-labelledby={`${titleId} ${descriptionId}`}>
+            <desc id={descriptionId}>각 기간의 서버 집계 PASS, Advisory fail, Blocking fail Rule 건수를 나란한 막대로 표시합니다. 동일 수치는 아래 표에서도 제공됩니다.</desc>
+            <line x1={chartLeft} x2={chartLeft + chartWidth} y1={chartBottom} y2={chartBottom} className="quality-chart-grid" />
+            <text x="2" y={chartBottom + 4}>0</text>
+            <text x="2" y={chartBottom - chartHeight + 4}>{countText(maximum)}</text>
+            {overview.trend.flatMap((point, pointIndex) => {
+              const center = chartLeft + pointIndex * groupWidth + groupWidth / 2
+              return series.map((item, seriesIndex) => {
+                const value = point[item.key]
+                const height = barHeight(value)
+                const x = center + (seriesIndex - 1.5) * barWidth
+                return <rect
+                  key={`${point.bucket_start}:${item.key}`}
+                  x={x}
+                  y={chartBottom - height}
+                  width={barWidth}
+                  height={height}
+                  fill={item.fill}
+                >
+                  <title>{dateTimeText(point.bucket_start)} · {item.label} {countText(value)}</title>
+                </rect>
+              })
+            })}
+          </svg>
+        </div>
+        <div className="quality-table-scroll" tabIndex={0} aria-label="품질 Rule 결과 건수 추이 표 스크롤 영역">
+          <table className="quality-trend-table">
+            <caption>품질 Rule 결과 건수 추이 차트와 동일한 서버 집계 수치</caption>
+            <thead>
+              <tr>
+                <th scope="col">기간</th>
+                <th scope="col">PASS</th>
+                <th scope="col">Advisory fail</th>
+                <th scope="col">Blocking fail</th>
+                <th scope="col">평가 Rule</th>
+              </tr>
+            </thead>
+            <tbody>{overview.trend.map((point) => <tr key={point.bucket_start}>
+              <th scope="row">{dateTimeText(point.bucket_start)}</th>
               <td>{countText(point.passed_count)}</td>
               <td>{countText(point.advisory_failed_count)}</td>
               <td>{countText(point.blocking_failed_count)}</td>

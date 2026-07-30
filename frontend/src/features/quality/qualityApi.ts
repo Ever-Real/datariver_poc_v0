@@ -1,15 +1,21 @@
 import type { ApiClient } from '../../api/client'
 import type {
   QualityAsset,
+  QualityAssetDetailResponse,
   QualityCapability,
   QualityExpectationResult,
   QualityIssueSummary,
   QualityListResponse,
+  QualityManualRunResponse,
   QualityOverview,
   QualityResourceResponse,
+  QualityRuleBatchProposalRequest,
+  QualityRuleBatchProposalResponse,
   QualityRuleDefinitionCatalog,
+  QualityRuleReviewRequest,
   QualityRuleSetDetail,
   QualityRuleSetSummary,
+  QualityRuleVersionCommandResponse,
   QualityRunSummary,
 } from '../../api/types'
 
@@ -24,6 +30,7 @@ export interface QualitySecurityBoundary {
 export type QualityResource =
   | 'overview'
   | 'assets'
+  | 'asset-detail'
   | 'rule-definitions'
   | 'rule-sets'
   | 'rule-set-detail'
@@ -108,8 +115,48 @@ export class QualityApi {
     return this.list<QualityAsset>('/quality/assets', { cursor, signal })
   }
 
+  async asset(
+    assetId: string,
+    expectedCacheScope: string,
+    signal?: AbortSignal,
+  ): Promise<QualityAssetDetailResponse> {
+    const value = await this.client.request<QualityAssetDetailResponse>(
+      `/quality/assets/${encodeURIComponent(assetId)}`,
+      { cache: 'no-store', signal },
+    )
+    if (
+      value?.item?.asset_id !== assetId
+      || value.cache_scope !== expectedCacheScope
+      || !validDate(value.observed_at)
+      || !validDate(value.authorization_valid_until)
+      || !validAuthoring(value)
+    ) {
+      throw new Error('선택한 품질 자산의 작성 계약을 확인할 수 없습니다.')
+    }
+    return value
+  }
+
   ruleSets(cursor?: string, signal?: AbortSignal) {
     return this.list<QualityRuleSetSummary>('/quality/rule-sets', { cursor, signal })
+  }
+
+  async proposeRuleSets(
+    payload: QualityRuleBatchProposalRequest,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<QualityRuleBatchProposalResponse> {
+    const value = await this.client.request<QualityRuleBatchProposalResponse>(
+      '/quality/rule-sets',
+      {
+        method: 'POST',
+        cache: 'no-store',
+        signal,
+        idempotencyKey,
+        body: JSON.stringify(payload),
+      },
+    )
+    assertProposal(value, payload.asset_ids)
+    return value
   }
 
   async ruleSet(
@@ -134,6 +181,74 @@ export class QualityApi {
       throw new Error('선택한 품질 Rule Set 상세를 확인할 수 없습니다.')
     }
     return detail
+  }
+
+  async reviewRuleVersion(
+    ruleSetId: string,
+    versionId: string,
+    expectedVersion: number,
+    payload: QualityRuleReviewRequest,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<QualityRuleVersionCommandResponse> {
+    return this.ruleVersionCommand(
+      `/quality/rule-sets/${encodeURIComponent(ruleSetId)}/versions/${encodeURIComponent(versionId)}/reviews`,
+      ruleSetId,
+      versionId,
+      expectedVersion,
+      idempotencyKey,
+      signal,
+      payload,
+    )
+  }
+
+  async activateRuleVersion(
+    ruleSetId: string,
+    versionId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<QualityRuleVersionCommandResponse> {
+    return this.ruleVersionCommand(
+      `/quality/rule-sets/${encodeURIComponent(ruleSetId)}/versions/${encodeURIComponent(versionId)}/activations`,
+      ruleSetId,
+      versionId,
+      expectedVersion,
+      idempotencyKey,
+      signal,
+    )
+  }
+
+  async requestManualRun(
+    ruleSetId: string,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<QualityManualRunResponse> {
+    const value = await this.client.request<QualityManualRunResponse>('/quality/runs', {
+      method: 'POST',
+      cache: 'no-store',
+      signal,
+      idempotencyKey,
+      body: JSON.stringify({ rule_set_id: ruleSetId }),
+    })
+    if (
+      !validIdentifier(value?.run_id)
+      || ![
+        'QUEUED',
+        'RUNNING',
+        'RETRY_WAIT',
+        'CANCEL_REQUESTED',
+        'SUCCEEDED',
+        'FAILED',
+        'STALE',
+        'CANCELLED',
+      ].includes(value.state)
+      || !validDate(value.created_at)
+      || typeof value.replayed !== 'boolean'
+    ) {
+      throw new Error('품질 수동 실행 응답이 올바르지 않습니다.')
+    }
+    return value
   }
 
   runs(cursor?: string, signal?: AbortSignal) {
@@ -173,6 +288,36 @@ export class QualityApi {
     return this.list<QualityIssueSummary>('/quality/issues', { cursor, signal })
   }
 
+  private async ruleVersionCommand(
+    path: string,
+    ruleSetId: string,
+    versionId: string,
+    expectedVersion: number,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+    payload?: QualityRuleReviewRequest,
+  ): Promise<QualityRuleVersionCommandResponse> {
+    const value = await this.client.request<QualityRuleVersionCommandResponse>(path, {
+      method: 'POST',
+      cache: 'no-store',
+      signal,
+      idempotencyKey,
+      ifMatch: `"${expectedVersion}"`,
+      body: payload ? JSON.stringify(payload) : undefined,
+    })
+    if (
+      value?.rule_set_id !== ruleSetId
+      || value.version_id !== versionId
+      || !['PROPOSED', 'APPROVED', 'REJECTED', 'ACTIVE', 'SUPERSEDED', 'REVOKED']
+        .includes(value.state)
+      || !Number.isSafeInteger(value.version)
+      || value.version < 1
+    ) {
+      throw new Error('품질 Rule 버전 명령 응답이 올바르지 않습니다.')
+    }
+    return value
+  }
+
   private async list<T>(
     path: string,
     options: {
@@ -202,6 +347,7 @@ function assertCapability(value: QualityCapability): void {
     'read_access',
     'profile_readiness',
     'rule_authoring',
+    'review',
     'activation',
     'manual_execution',
     'scheduling',
@@ -209,7 +355,7 @@ function assertCapability(value: QualityCapability): void {
   ])
   if (
     !value
-    || value.contract_version !== 'QUALITY_CAPABILITY_V1'
+    || value.contract_version !== 'QUALITY_CAPABILITY_V2'
     || !validDate(value.observed_at)
     || !validDate(value.valid_until)
     || !validCacheScope(value.cache_scope)
@@ -284,6 +430,64 @@ function assertList<T>(value: QualityListResponse<T>, requestedLimit: number): v
   ) {
     throw new Error('품질 목록 계약이 올바르지 않습니다.')
   }
+}
+
+function validAuthoring(value: QualityAssetDetailResponse): boolean {
+  const authoring = value.authoring
+  const logicalTypes = new Set(['STRING', 'INTEGER', 'DECIMAL', 'DATE', 'TIMESTAMP', 'BOOLEAN', 'OTHER'])
+  if (
+    !authoring
+    || !['READY', 'UNAVAILABLE'].includes(authoring.state)
+    || typeof authoring.source_version !== 'string'
+    || !authoring.source_version
+    || (
+      authoring.schema_hash !== null
+      && !/^[0-9a-f]{64}$/.test(authoring.schema_hash)
+    )
+    || !Array.isArray(authoring.fields)
+    || authoring.fields.length > 10_000
+    || new Set(authoring.fields.map((field) => field.field_identifier)).size !== authoring.fields.length
+    || authoring.fields.some((field) => (
+      !validIdentifier(field.field_identifier)
+      || !validIdentifier(field.display_path)
+      || !logicalTypes.has(field.logical_type)
+      || !Array.isArray(field.supported_rule_kinds)
+      || field.supported_rule_kinds.length > 2
+      || new Set(field.supported_rule_kinds).size !== field.supported_rule_kinds.length
+      || field.supported_rule_kinds.some((kind) => !['NOT_NULL', 'RANGE'].includes(kind))
+    ))
+  ) {
+    return false
+  }
+  return authoring.state === 'READY'
+    ? authoring.schema_hash !== null && authoring.fields.length > 0
+    : authoring.fields.length === 0 && typeof authoring.reason_code === 'string'
+}
+
+function assertProposal(
+  value: QualityRuleBatchProposalResponse,
+  requestedAssetIds: readonly string[],
+): void {
+  if (
+    !value
+    || typeof value.replayed !== 'boolean'
+    || !Array.isArray(value.items)
+    || value.items.length !== requestedAssetIds.length
+    || new Set(value.items.map((item) => item.asset_id)).size !== value.items.length
+    || value.items.some((item) => (
+      !requestedAssetIds.includes(item.asset_id)
+      || !validIdentifier(item.rule_set_id)
+      || !validIdentifier(item.version_id)
+      || !Number.isSafeInteger(item.version)
+      || item.version < 1
+    ))
+  ) {
+    throw new Error('품질 Rule 일괄 제안 응답이 올바르지 않습니다.')
+  }
+}
+
+function validIdentifier(value: string): boolean {
+  return typeof value === 'string' && value.length > 0 && value.length <= 255
 }
 
 function validBasisPoints(value: number | null): boolean {

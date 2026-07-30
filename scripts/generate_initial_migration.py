@@ -179,6 +179,26 @@ def _load_quality_phase3_revision() -> ModuleType:
     return module
 
 
+def _load_quality_authoring_revision() -> ModuleType:
+    """Load the fixed Quality authoring and manual Run command contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0071_quality_authoring_commands.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_quality_authoring_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Quality authoring migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -604,10 +624,13 @@ def build_upgrade() -> ops.UpgradeOps:
         operations.append(ops.ExecuteSQLOp(statement))
     quality_phase3 = _load_quality_phase3_revision()
     operations.extend(
-        ops.ExecuteSQLOp(statement)
-        for statement in _sql_statements(quality_phase3._FUNCTION_SQL)
+        ops.ExecuteSQLOp(statement) for statement in _sql_statements(quality_phase3._FUNCTION_SQL)
     )
     operations.append(ops.ExecuteSQLOp(quality_phase3._GRANT_SQL.strip()))
+    quality_authoring = _load_quality_authoring_revision()
+    operations.extend(
+        ops.ExecuteSQLOp(statement) for statement in _sql_statements(quality_authoring._COMMAND_SQL)
+    )
     return ops.UpgradeOps(ops=operations)
 
 
@@ -1034,6 +1057,17 @@ def build_downgrade() -> ops.DowngradeOps:
     quality_phase1 = _load_quality_phase1_revision()
     operations: list[ops.MigrateOperation] = [
         ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.request_manual_validation_run_v1(uuid, uuid, uuid)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.activate_rule_set_version_command_v2("
+            "uuid, uuid, uuid, text, integer)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION quality.review_rule_set_version_command_v2("
+            "uuid, uuid, text, text, uuid, integer)"
+        ),
+        ops.ExecuteSQLOp(
             "DROP FUNCTION quality.fail_validation_run_v1("
             "uuid, uuid, uuid, bigint, text, text, text, boolean)"
         ),
@@ -1042,8 +1076,7 @@ def build_downgrade() -> ops.DowngradeOps:
             "uuid, uuid, uuid, bigint, text, text, text, text, text, jsonb)"
         ),
         ops.ExecuteSQLOp(
-            "DROP FUNCTION quality.assert_source_statement_fence_v1("
-            "uuid, uuid, uuid, bigint, text)"
+            "DROP FUNCTION quality.assert_source_statement_fence_v1(uuid, uuid, uuid, bigint, text)"
         ),
         ops.ExecuteSQLOp(
             "DROP FUNCTION quality.freeze_source_access_v1("
@@ -1053,16 +1086,14 @@ def build_downgrade() -> ops.DowngradeOps:
             "DROP FUNCTION quality.claim_validation_run_v1(uuid, text, text, integer)"
         ),
         ops.ExecuteSQLOp(
-            "DROP FUNCTION quality.dispatch_due_validation_runs_v1("
-            "uuid, text, integer, integer)"
+            "DROP FUNCTION quality.dispatch_due_validation_runs_v1(uuid, text, integer, integer)"
         ),
         ops.ExecuteSQLOp(
             "DROP FUNCTION quality.current_quality_target_matches_v1("
             "uuid, uuid, integer, uuid, uuid, text, text)"
         ),
         ops.ExecuteSQLOp(
-            "DROP FUNCTION quality.current_quality_service_can_v1("
-            "uuid, text, integer, uuid, uuid)"
+            "DROP FUNCTION quality.current_quality_service_can_v1(uuid, text, integer, uuid, uuid)"
         ),
         ops.ExecuteSQLOp("DROP FUNCTION catalog.project_asset_profile_v1(uuid, uuid, jsonb)"),
         ops.ExecuteSQLOp("DROP FUNCTION catalog.read_profile_target_v1(uuid, uuid)"),

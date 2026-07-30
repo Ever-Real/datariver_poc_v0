@@ -95,14 +95,15 @@ function capability(readState: 'AVAILABLE' | 'DENIED'): QualityCapability {
   const axes = [
     'read_access',
     'profile_readiness',
-    'rule_authoring',
-    'activation',
+  'rule_authoring',
+  'review',
+  'activation',
     'manual_execution',
     'scheduling',
     'operations',
   ] as const
   return {
-    contract_version: 'QUALITY_CAPABILITY_V1',
+    contract_version: 'QUALITY_CAPABILITY_V2',
     observed_at: '2026-07-30T00:00:00Z',
     valid_until: '2026-07-30T00:00:30Z',
     cache_scope: cacheScope,

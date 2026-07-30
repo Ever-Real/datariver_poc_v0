@@ -56,6 +56,8 @@ class QualityReadService:
         *,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
+        authoring_ready: bool = False,
+        manual_execution_ready: bool = False,
     ) -> QualityCapability:
         self._require_human(subject)
         context = await self._context(subject=subject)
@@ -72,6 +74,7 @@ class QualityReadService:
         read_allowed = allowed(Action.QUALITY_READ)
         profile_allowed = allowed(Action.QUALITY_PROFILE_READ)
         propose_allowed = allowed(Action.QUALITY_RULE_PROPOSE)
+        review_allowed = allowed(Action.QUALITY_RULE_REVIEW)
         activation_allowed = allowed(Action.QUALITY_RULE_ACTIVATE)
         manual_allowed = allowed(Action.QUALITY_RUN_REQUEST)
         operations_allowed = allowed(Action.QUALITY_OPERATIONS_READ)
@@ -91,24 +94,35 @@ class QualityReadService:
                 action_allowed=propose_allowed,
                 denied_code="QUALITY_RULE_PROPOSE_DENIED",
                 unavailable_code="FIELD_IDENTITY_MAPPING_UNAVAILABLE",
+                dependency_ready=authoring_ready,
             ),
             _dependency_axis(
                 "activation",
                 action_allowed=activation_allowed,
                 denied_code="QUALITY_RULE_ACTIVATE_DENIED",
                 unavailable_code="QUALITY_CONTROL_READINESS_ATTESTATION_UNAVAILABLE",
+                dependency_ready=authoring_ready,
+            ),
+            _dependency_axis(
+                "review",
+                action_allowed=review_allowed,
+                denied_code="QUALITY_RULE_REVIEW_DENIED",
+                unavailable_code="QUALITY_CONTROL_READINESS_ATTESTATION_UNAVAILABLE",
+                dependency_ready=authoring_ready,
             ),
             _dependency_axis(
                 "manual_execution",
                 action_allowed=manual_allowed,
                 denied_code="QUALITY_RUN_REQUEST_DENIED",
                 unavailable_code="SOURCE_READINESS_ATTESTATION_UNAVAILABLE",
+                dependency_ready=manual_execution_ready,
             ),
             _dependency_axis(
                 "scheduling",
                 action_allowed=activation_allowed,
                 denied_code="QUALITY_RULE_ACTIVATE_DENIED",
                 unavailable_code="SCHEDULE_PROFILE_ATTESTATION_UNAVAILABLE",
+                dependency_ready=False,
             ),
             QualityCapabilityAxis(
                 id="operations",
@@ -421,11 +435,12 @@ def _dependency_axis(
     action_allowed: bool,
     denied_code: str,
     unavailable_code: str,
+    dependency_ready: bool,
 ) -> QualityCapabilityAxis:
     if not action_allowed:
         return QualityCapabilityAxis(id=axis_id, state="DENIED", reason_code=denied_code)
     return QualityCapabilityAxis(
         id=axis_id,
-        state="UNAVAILABLE",
-        reason_code=unavailable_code,
+        state="AVAILABLE" if dependency_ready else "UNAVAILABLE",
+        reason_code=None if dependency_ready else unavailable_code,
     )
