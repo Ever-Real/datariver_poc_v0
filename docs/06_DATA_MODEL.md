@@ -657,7 +657,7 @@ Version's Run; and latest Profiles on
 these paths with representative `EXPLAIN (ANALYZE, BUFFERS)` evidence rather than merely checking
 that an index exists.
 
-## Governance Document schema (implemented through revision `0075`)
+## Governance Document schema (implemented through revision `0077`)
 
 ADR-0080 and ADR-0082 add a document bounded context inside the existing `governance` schema.
 PostgreSQL owns all lifecycle and authorization state; MinIO and Neo4j are verified, rebuildable
@@ -697,6 +697,12 @@ backfills existing JSON values and enforces `vector_dims(embedding_vector) =
 embedding_dimension`. Retrieval applies tenant, ABAC scope, active-document, current-version and
 provider/model predicates before exact PostgreSQL cosine ordering. No ANN index or production
 latency/recall claim is implied.
+
+Revision `0077` changes no data or model semantics. It normalizes the physical name of the
+dimension check created by the additive `0075` path to
+`ck_document_knowledge_chunks_embedding_vector_dimension_matches`, which is the same name emitted
+by SQLAlchemy metadata and canonical `0001`; migration fails closed if neither expected constraint
+identity exists.
 
 ## Constraints enforced outside DDL
 

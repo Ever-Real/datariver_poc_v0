@@ -53,6 +53,9 @@ def test_additive_and_canonical_migrations_install_the_same_vector_contract() ->
     additive = (ROOT / "backend/alembic/versions/0075_governance_pgvector.py").read_text(
         encoding="utf-8"
     )
+    normalization = (
+        ROOT / "backend/alembic/versions/0077_governance_pgvector_constraint_name.py"
+    ).read_text(encoding="utf-8")
     canonical = (ROOT / "backend/alembic/versions/0001_initial_schema.py").read_text(
         encoding="utf-8"
     )
@@ -63,6 +66,13 @@ def test_additive_and_canonical_migrations_install_the_same_vector_contract() ->
         assert "vector_dims(embedding_vector) = embedding_dimension" in migration
     assert "embedding::text::vector" in additive
     assert "pgvector.sqlalchemy.vector.VECTOR()" in canonical
+    assert 'revision: str = "0077"' in normalization
+    assert 'down_revision: str | Sequence[str] | None = "0076"' in normalization
+    assert "ck_document_knowledge_chunks_ck_document_knowledge_chun_801a" in normalization
+    assert "ck_document_knowledge_chunks_embedding_vector_dimension_matches" in normalization
+    assert "RENAME CONSTRAINT" in normalization
+    assert "ck_document_knowledge_chunks_ck_document_knowledge_chun_801a" not in canonical
+    assert "ck_document_knowledge_chunks_embedding_vector_dimension_matches" in canonical
 
 
 @pytest.mark.asyncio

@@ -26,6 +26,11 @@ Chat current-version citation reauthorization. Source and runtime results are re
 Phase 9 implementation record after the final clean `dev` gate; no ANN, WORM or production SLO
 claim follows from source tests.
 
+Revision `0077` is a compatibility-only migration that renames the dimension check left by the
+`0075` additive naming-convention path to the exact SQLAlchemy/canonical `0001` identity. Contract
+tests require both known names, a fail-closed catalog lookup and the canonical metadata name; the
+target runtime gate additionally inspects `pg_constraint`, `vector_dims` and the Alembic head.
+
 ### Governance Document Phase 9 local release gate — 2026-07-31
 
 Revision `0072` implements forced-RLS document/Template authoring, immutable version and approval
