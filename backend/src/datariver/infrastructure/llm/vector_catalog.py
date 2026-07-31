@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import math
+import re
 
 from datariver.application.classification_access import ClassificationAccessSnapshot
-from datariver.application.dto import CatalogAssetIndex, ChatVectorSearchResult
+from datariver.application.dto import CatalogAssetIndex, CatalogPage, ChatVectorSearchResult
 from datariver.application.errors import ChatExternalAdapterInvocationError
 from datariver.application.knowledge_pipeline_ports import KnowledgeEmbeddingProvider
 from datariver.application.ports import CatalogIndexReader, ChatVectorCatalogReader
@@ -14,6 +15,8 @@ from datariver.domain.chat import (
 )
 from datariver.domain.common import ValidationError
 from datariver.domain.knowledge_pipeline import ModelBinding, PdfPage
+
+_CATALOG_IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)+")
 
 
 class BoundedCatalogVectorReader(ChatVectorCatalogReader):
@@ -42,13 +45,11 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
             max(limit * 4, 8),
             MAXIMUM_CHAT_VECTOR_CANDIDATES,
         )
-        page = await self._catalog_index.search(
+        page = await self._candidate_page(
             subject=subject,
             access=access,
-            query="",
-            filters={},
-            cursor=None,
-            limit=candidate_limit,
+            question=question,
+            candidate_limit=candidate_limit,
         )
         candidates = tuple(page.items)
         if not candidates:
@@ -92,6 +93,48 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
             items=tuple(candidate for _score, candidate in scored[:limit]),
             provider_invoked=True,
         )
+
+    async def _candidate_page(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        question: str,
+        candidate_limit: int,
+    ) -> CatalogPage:
+        """Prefer an exact catalog-name window without broadening the access scope."""
+
+        anchor = self._catalog_identifier_anchor(question)
+        if anchor:
+            anchored_page = await self._catalog_index.search(
+                subject=subject,
+                access=access,
+                query=anchor,
+                filters={"search_fields": "TABLE"},
+                cursor=None,
+                limit=candidate_limit,
+            )
+            if anchored_page.items:
+                return anchored_page
+        return await self._catalog_index.search(
+            subject=subject,
+            access=access,
+            query="",
+            filters={},
+            cursor=None,
+            limit=candidate_limit,
+        )
+
+    @staticmethod
+    def _catalog_identifier_anchor(question: str) -> str:
+        """Return a bounded table-like token; natural-language queries keep vector behavior."""
+
+        candidates = tuple(
+            match.group(0)
+            for match in _CATALOG_IDENTIFIER.finditer(question)
+            if len(match.group(0)) <= 100
+        )
+        return max(candidates, key=len, default="")
 
     @staticmethod
     def _candidate_text(candidate: CatalogAssetIndex) -> str:

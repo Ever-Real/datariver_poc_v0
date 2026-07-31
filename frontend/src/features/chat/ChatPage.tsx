@@ -11,7 +11,6 @@ import {
   Check,
   Copy,
   Database,
-  GitBranch,
   History,
   MessageSquarePlus,
   PanelLeftClose,
@@ -137,6 +136,16 @@ function historyMessage(message: ChatMessage): ChatViewMessage {
 
 function lastAssistant(messages: ChatViewMessage[]): ChatViewMessage | undefined {
   return [...messages].reverse().find((message) => message.role === 'assistant')
+}
+
+function evidenceDescriptionForDisplay(description: string | null | undefined): string | undefined {
+  if (!description) return undefined
+  const display = description
+    .replace(/\[\[[^\]\r\n]*\]\]/g, '')
+    .replace(/\burn:[^\s\])]+/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+  return display || undefined
 }
 
 export function ChatPage({ client }: { client: ApiClient }) {
@@ -663,27 +672,28 @@ export function ChatPage({ client }: { client: ApiClient }) {
                 title="인가된 인용 근거"
               >
                 <ol className="chat-evidence-list">
-                  {visibleEvidence.map((item) => (
-                    <li key={item.chunk_id}>
-                      <button
-                        aria-label={`근거 ${item.rank} ${item.name} 상세 열기`}
-                        onClick={(event) => {
-                          evidenceTriggerRef.current = event.currentTarget
-                          setSelectedEvidenceAssetId(item.resource_id)
-                        }}
-                        type="button"
-                      >
-                        <span className="chat-evidence-rank">#{item.rank}</span>
-                        <span className="chat-evidence-copy">
-                          <strong>{item.name}</strong>
-                          <small>{item.classification} · {item.source_type}</small>
-                          {item.description && <span>{item.description}</span>}
-                          <code>{item.source_locator}</code>
-                          <small><GitBranch size={10} />{item.retrieval_method} · v{item.source_version}</small>
-                        </span>
-                      </button>
-                    </li>
-                  ))}
+                  {visibleEvidence.map((item) => {
+                    const description = evidenceDescriptionForDisplay(item.description)
+                    return (
+                      <li key={item.chunk_id}>
+                        <button
+                          aria-label={`근거 ${item.rank} ${item.name} 상세 열기`}
+                          onClick={(event) => {
+                            evidenceTriggerRef.current = event.currentTarget
+                            setSelectedEvidenceAssetId(item.resource_id)
+                          }}
+                          type="button"
+                        >
+                          <span className="chat-evidence-rank">#{item.rank}</span>
+                          <span className="chat-evidence-copy">
+                            <strong>{item.name}</strong>
+                            <small>{item.classification} · {item.source_type}</small>
+                            {description && <span>{description}</span>}
+                          </span>
+                        </button>
+                      </li>
+                    )
+                  })}
                   {visibleEvidence.length === 0 && (
                     <li className="chat-evidence-empty">
                       {visibleAssistant

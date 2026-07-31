@@ -916,6 +916,34 @@ def asset(workspace_id: UUID, *, description: str = "Fab yield observations") ->
     )
 
 
+def test_chat_redacts_internal_evidence_identifiers_from_answer_prose() -> None:
+    workspace_id = uuid4()
+    evidence = build_evidence_chunk(
+        workspace_id=workspace_id,
+        resource_id=uuid4(),
+        classification=Classification.INTERNAL,
+        system_id=None,
+        domain_id=None,
+        owner_department_id=None,
+        name="Capital project accelerator",
+        description="Accelerator initiative summary.",
+        source_locator="urn:li:dataset:(oracle,capital_project_ai_accelerator,PROD)",
+        source_version="v1",
+        effective_from=datetime.now(UTC),
+        extraction_method="CATALOG_PROJECTION_V1",
+    )
+    answer = ChatService._redact_internal_evidence_identifiers(
+        answer=(
+            "프로젝트 가속기 요약입니다. "
+            "[[Dataset:urn:li:dataset:(oracle,capital_project_ai_accelerator,PROD)]] "
+            f"{evidence.source_locator} [{evidence.chunk_id}]"
+        ),
+        evidence=(evidence,),
+    )
+
+    assert answer == "프로젝트 가속기 요약입니다."
+
+
 async def test_vector_provider_receives_only_exact_profile_bound_classifications() -> None:
     workspace_id = uuid4()
     profile_id = uuid4()

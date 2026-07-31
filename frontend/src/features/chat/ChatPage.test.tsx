@@ -68,7 +68,7 @@ const response: ChatResponse = {
     domain_id: null,
     owner_department_id: null,
     name: 'orders',
-    description: '주문 원장',
+    description: '주문 원장 [[Dataset:urn:li:dataset:(orders,PROD)]]',
     source_type: 'CATALOG_ASSET',
     source_locator: 'postgres.analytics.orders',
     source_version: 'v7',
@@ -168,6 +168,9 @@ describe('ChatPage', () => {
     expect(within(workflow).getByText('1. 권한 확인')).toBeInTheDocument()
     expect(within(workflow).getByText('8. 대화 저장')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '근거 1 orders 상세 열기' })).toBeInTheDocument()
+    expect(screen.getByText('주문 원장')).toBeInTheDocument()
+    expect(screen.queryByText('postgres.analytics.orders')).not.toBeInTheDocument()
+    expect(screen.queryByText(/VECTOR · vv7/)).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '근거 1 orders 상세 열기' }))
     const dialog = screen.getByRole('dialog', { name: '근거 테이블 상세와 Lineage' })

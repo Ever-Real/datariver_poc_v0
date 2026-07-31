@@ -106,7 +106,7 @@ def _development_composer(
             ChatCompositionAudit(
                 provider="ollama-native-chat",
                 model=settings.local_ollama_chat_model,
-                prompt_template_version="grounded-chat-tool-v2",
+                prompt_template_version="grounded-chat-tool-v3",
                 external_service_used=True,
                 provider_profile_version_id=(settings.chat_composition_provider_profile_version_id),
             ),
@@ -138,7 +138,7 @@ def _development_composer(
             ChatCompositionAudit(
                 provider="intranet-openai-compatible",
                 model=settings.intranet_openai_compatible_chat_model,
-                prompt_template_version="grounded-chat-tool-v1",
+                prompt_template_version="grounded-chat-tool-v3",
                 external_service_used=True,
                 provider_profile_version_id=(settings.chat_composition_provider_profile_version_id),
             ),

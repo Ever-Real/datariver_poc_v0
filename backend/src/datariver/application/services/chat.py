@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from datetime import datetime
@@ -69,6 +70,11 @@ from datariver.domain.retention import RetentionPolicyState
 UNVERIFIABLE_ANSWER = "검증 불가"
 GENERAL_KNOWLEDGE_PREFIX = "※ 사내 인용 근거가 없어 일반 지식으로 답변합니다.\n\n"
 _MAXIMUM_CHAT_ANSWER_CHARACTERS = 4_000
+_INTERNAL_EVIDENCE_MARKUP = re.compile(r"\[\[[^\]\r\n]*\]\]")
+_UUID_TOKEN = re.compile(
+    r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}(?![0-9A-Fa-f])"
+)
+_EMPTY_CITATION_LIST = re.compile(r"\[\s*(?:[,;]\s*)*\]")
 _DETERMINISTIC_AUDIT = ChatCompositionAudit(
     provider="datariver",
     model="deterministic-evidence-v1",
@@ -1400,7 +1406,34 @@ class ChatService:
             item.workspace_id != workspace_id or not evidence_chunk_is_valid(item) for item in cited
         ):
             return UNVERIFIABLE_ANSWER, ()
-        return draft.answer.strip(), cited
+        answer = ChatService._redact_internal_evidence_identifiers(
+            answer=draft.answer,
+            evidence=cited,
+        )
+        if not answer:
+            return UNVERIFIABLE_ANSWER, ()
+        return answer, cited
+
+    @staticmethod
+    def _redact_internal_evidence_identifiers(
+        *,
+        answer: str,
+        evidence: Sequence[ChatEvidence],
+    ) -> str:
+        """Keep citation identities in the governed evidence channel, not prose."""
+
+        redacted = _INTERNAL_EVIDENCE_MARKUP.sub("", answer)
+        for locator in sorted(
+            {item.source_locator for item in evidence if item.source_locator},
+            key=len,
+            reverse=True,
+        ):
+            redacted = redacted.replace(locator, "")
+        redacted = _UUID_TOKEN.sub("", redacted)
+        redacted = _EMPTY_CITATION_LIST.sub("", redacted)
+        redacted = re.sub(r"[ \t]{2,}", " ", redacted)
+        redacted = re.sub(r"(?m)^[ \t,;:·-]+$", "", redacted)
+        return re.sub(r"\n{3,}", "\n\n", redacted).strip()
 
     async def _final_reauthorize_citations(
         self,

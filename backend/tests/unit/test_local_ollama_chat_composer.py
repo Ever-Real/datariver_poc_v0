@@ -75,6 +75,30 @@ def test_budget_envelope_covers_the_maximum_serialized_provider_request() -> Non
     )
 
 
+def test_grounded_payload_keeps_internal_source_metadata_out_of_model_context() -> None:
+    evidence = _evidence()
+    payload = ollama_native_grounded_chat_request_payload(
+        model="operator-selected-model",
+        question="이 테이블을 설명해줘",
+        evidence=(evidence,),
+        context_tokens=8_192,
+    )
+    system_prompt = payload["messages"][0]["content"]
+    authorized_evidence = json.loads(payload["messages"][1]["content"])["authorized_evidence"]
+
+    assert "summarize the documented purpose" in system_prompt
+    assert "without describing unrelated assets" in system_prompt
+    assert authorized_evidence == [
+        {
+            "chunk_id": str(evidence.chunk_id),
+            "name": evidence.name,
+            "description": evidence.description,
+        }
+    ]
+    assert evidence.source_locator not in payload["messages"][1]["content"]
+    assert evidence.source_version not in payload["messages"][1]["content"]
+
+
 @pytest.mark.asyncio
 async def test_composer_uses_one_fixed_tool_and_returns_its_untrusted_draft() -> None:
     evidence = _evidence()

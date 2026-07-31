@@ -190,10 +190,18 @@ async def test_semantic_router_fails_closed_when_the_classifier_is_not_allowed_o
 
 
 class _CatalogIndex:
-    def __init__(self, items: Sequence[CatalogAssetIndex]) -> None:
+    def __init__(
+        self,
+        items: Sequence[CatalogAssetIndex],
+        *,
+        query_items: dict[str, Sequence[CatalogAssetIndex]] | None = None,
+    ) -> None:
         self.items = tuple(items)
+        self.query_items = {query: tuple(result) for query, result in (query_items or {}).items()}
         self.seen_limit: int | None = None
         self.seen_query: str | None = None
+        self.seen_filters: dict[str, Any] | None = None
+        self.searches: list[tuple[str, dict[str, Any]]] = []
 
     async def search(
         self,
@@ -205,11 +213,13 @@ class _CatalogIndex:
         cursor: str | None,
         limit: int,
     ) -> CatalogPage:
-        del subject, access, filters, cursor
+        del subject, access, cursor
         self.seen_limit = limit
         self.seen_query = query
+        self.seen_filters = filters
+        self.searches.append((query, filters))
         return CatalogPage(
-            items=self.items[:limit],
+            items=self.query_items.get(query, self.items if not query else ())[:limit],
             next_cursor=None,
             observed_at=datetime.now(UTC),
         )
@@ -242,13 +252,18 @@ class _Embedding:
         pages: Sequence[PdfPage],
         binding: ModelBinding,
     ) -> EmbeddingBatch:
-        assert len(pages) == 3
+        assert len(pages) >= 2
         return EmbeddingBatch(
             binding=binding,
             embeddings=(
                 PageEmbedding(page_number=1, vector=(1.0, 0.0)),
-                PageEmbedding(page_number=2, vector=(0.0, 1.0)),
-                PageEmbedding(page_number=3, vector=(1.0, 0.0)),
+                *(
+                    PageEmbedding(
+                        page_number=page_number,
+                        vector=(0.0, 1.0) if page_number == 2 else (1.0, 0.0),
+                    )
+                    for page_number in range(2, len(pages) + 1)
+                ),
             ),
             input_tokens=None,
         )
@@ -312,6 +327,74 @@ async def test_vector_reader_ranks_only_the_bounded_catalog_window() -> None:
     assert result.provider_invoked is True
     assert index.seen_query == ""
     assert index.seen_limit == 8
+
+
+async def test_vector_reader_prefers_a_bounded_matching_table_name_window() -> None:
+    workspace_id = uuid4()
+    matching = _asset(workspace_id, name="capital_project_ai_accelerator")
+    index = _CatalogIndex(
+        (_asset(workspace_id, name="First"),),
+        query_items={"capital_project_ai_accelerator": (matching,)},
+    )
+    binding = ModelBinding.activated(
+        provider="test-provider",
+        model="operator-selected-embedding",
+        prompt_version="embedding-v1",
+        tool_schema_version="openai-embeddings-v1",
+        configuration_version=None,
+        configuration_hash=None,
+        adapter_contract="openai-compatible-embeddings-v1",
+        deployment_configuration_hash="a" * 64,
+    )
+    reader = BoundedCatalogVectorReader(
+        catalog_index=index,
+        embedding=_Embedding(),
+        binding=binding,
+    )
+
+    result = await reader.search(
+        subject=_subject(workspace_id),
+        access=static_classification_access_floor(),
+        question="Oracle의 capital_project_ai_accelerator 테이블을 설명해줘",
+        limit=2,
+    )
+
+    assert result.items == (matching,)
+    assert index.searches == [("capital_project_ai_accelerator", {"search_fields": "TABLE"})]
+
+
+async def test_vector_reader_falls_back_when_an_identifier_has_no_visible_table_match() -> None:
+    workspace_id = uuid4()
+    fallback = _asset(workspace_id, name="First")
+    index = _CatalogIndex((fallback,))
+    binding = ModelBinding.activated(
+        provider="test-provider",
+        model="operator-selected-embedding",
+        prompt_version="embedding-v1",
+        tool_schema_version="openai-embeddings-v1",
+        configuration_version=None,
+        configuration_hash=None,
+        adapter_contract="openai-compatible-embeddings-v1",
+        deployment_configuration_hash="a" * 64,
+    )
+    reader = BoundedCatalogVectorReader(
+        catalog_index=index,
+        embedding=_Embedding(),
+        binding=binding,
+    )
+
+    result = await reader.search(
+        subject=_subject(workspace_id),
+        access=static_classification_access_floor(),
+        question="capital_project_ai_accelerator를 찾아줘",
+        limit=2,
+    )
+
+    assert result.items == (fallback,)
+    assert index.searches == [
+        ("capital_project_ai_accelerator", {"search_fields": "TABLE"}),
+        ("", {}),
+    ]
 
 
 async def test_vector_reader_marks_only_failures_after_embedding_invocation() -> None:
