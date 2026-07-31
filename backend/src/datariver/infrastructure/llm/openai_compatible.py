@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from datariver.application.dto import ChatDraft, ChatEvidence
+from datariver.domain.chat import ChatRetrievalMode
 from datariver.infrastructure.knowledge.openai_compatible import (
     OpenAICompatibleChatRequestOptions,
     OpenAIJsonTransport,
@@ -12,6 +13,8 @@ from datariver.infrastructure.llm.ollama import (
     grounded_chat_request_payload,
     parse_general_chat_response,
     parse_grounded_chat_response,
+    parse_route_classification_response,
+    route_classification_request_payload,
 )
 
 
@@ -35,6 +38,10 @@ class OpenAICompatibleGroundedChatComposer:
             top_p=top_p,
             repetition_penalty=repetition_penalty,
             enable_thinking=enable_thinking,
+        )
+        self._route_options = OpenAICompatibleChatRequestOptions(
+            temperature=0.0,
+            enable_thinking=False,
         )
 
     async def compose(
@@ -72,3 +79,19 @@ class OpenAICompatibleGroundedChatComposer:
             ),
         )
         return parse_general_chat_response(result)
+
+    async def classify_route(
+        self,
+        *,
+        question: str,
+    ) -> ChatRetrievalMode:
+        result = await self._transport.post_json(
+            path="/chat/completions",
+            document=self._route_options.apply(
+                route_classification_request_payload(
+                    model=self._model,
+                    question=question,
+                )
+            ),
+        )
+        return parse_route_classification_response(result)

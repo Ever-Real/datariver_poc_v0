@@ -11,6 +11,7 @@ import pytest
 from datariver.application.dto import ChatEvidence
 from datariver.application.evidence import build_evidence_chunk
 from datariver.domain.authz import Classification
+from datariver.domain.chat import ChatRetrievalMode
 from datariver.infrastructure.llm.openai_compatible import (
     OpenAICompatibleGroundedChatComposer,
 )
@@ -76,6 +77,32 @@ class RecordingGeneralTransport:
         }
 
 
+class RecordingRouteTransport:
+    def __init__(self) -> None:
+        self.path = ""
+        self.document: dict[str, object] = {}
+
+    async def post_json(self, *, path: str, document: Mapping[str, object]) -> Mapping[str, Any]:
+        self.path = path
+        self.document = dict(document)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "select_chat_retrieval_mode",
+                                    "arguments": json.dumps({"mode": "VECTOR"}),
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+
+
 def evidence() -> ChatEvidence:
     return build_evidence_chunk(
         workspace_id=uuid4(),
@@ -128,6 +155,36 @@ async def test_openai_compatible_chat_uses_separate_general_tool_contract() -> N
     }
     assert draft.answer == "A bounded general answer."
     assert draft.cited_chunk_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_chat_classifies_with_fixed_zero_temperature_contract() -> None:
+    transport = RecordingRouteTransport()
+
+    mode = await OpenAICompatibleGroundedChatComposer(
+        model="approved-chat-model",
+        transport=transport,
+        temperature=0.9,
+        top_p=0.8,
+        repetition_penalty=1.1,
+        enable_thinking=True,
+    ).classify_route(question="Which fields describe the customer order table?")
+
+    assert mode is ChatRetrievalMode.VECTOR
+    assert transport.path == "/chat/completions"
+    assert transport.document["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "select_chat_retrieval_mode"},
+    }
+    assert transport.document["temperature"] == 0.0
+    assert transport.document["max_tokens"] == 64
+    assert "top_p" not in transport.document
+    assert "repetition_penalty" not in transport.document
+    assert "chat_template_kwargs" not in transport.document
+    assert transport.document["messages"][1] == {
+        "role": "user",
+        "content": '{"question":"Which fields describe the customer order table?"}',
+    }
 
 
 @pytest.mark.asyncio

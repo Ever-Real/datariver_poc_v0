@@ -205,14 +205,18 @@ class ChatService:
             now=environment.requested_at,
         )
         chat_access = self._chat_retrieval_access(access, subject=subject)
-        route = self._question_router.route(
-            question=question,
-            requested_mode=requested_mode,
-            vector_available=(
-                self._vector_catalog is not None or self._governance_evidence is not None
-            ),
-            graph_available=self._graph_evidence is not None,
+        route_classifier_requested = (
+            requested_mode is ChatRetrievalMode.AUTO
+            and self._question_router.requires_composition_inference
         )
+        route_classifier_allowed = True
+        if route_classifier_requested:
+            route_classifier_allowed = bool(
+                self._provider_bound_classifications(
+                    chat_access,
+                    required_stages=(InferenceStage.COMPOSITION,),
+                )
+            )
         if self._budget_guard is not None:
             await self._budget_guard.reserve(
                 workspace_id=workspace_id,
@@ -222,11 +226,12 @@ class ChatService:
                     question,
                     maximum_evidence=maximum_evidence,
                     retrieval_mode=(
-                        route.selected_mode
-                        if route.adapter_state is ChatAdapterState.READY
-                        else ChatRetrievalMode.GENERAL
+                        requested_mode
+                        if requested_mode is not ChatRetrievalMode.AUTO
+                        else ChatRetrievalMode.VECTOR
                     ),
                     reranker_enabled=self._reranker is not None,
+                    route_classifier_enabled=route_classifier_requested,
                 ),
                 request_limit=self._request_limit_per_minute,
                 token_limit=self._token_limit_per_minute,
@@ -243,6 +248,15 @@ class ChatService:
                 ),
             )
         )
+        route = await self._question_router.route(
+            question=question,
+            requested_mode=requested_mode,
+            vector_available=(
+                self._vector_catalog is not None or self._governance_evidence is not None
+            ),
+            graph_available=self._graph_evidence is not None,
+            inference_allowed=route_classifier_allowed,
+        )
         required_external_stages = (
             self._required_external_stages(route)
             if route.adapter_state is ChatAdapterState.READY
@@ -250,6 +264,16 @@ class ChatService:
         )
         external_path_required = bool(required_external_stages)
         route_unavailable_detail = f"{route.selected_mode.value}_ADAPTER_UNAVAILABLE"
+        if (
+            route_classifier_requested
+            and route.selected_mode is ChatRetrievalMode.GENERAL
+            and route.adapter_state is ChatAdapterState.UNAVAILABLE
+        ):
+            route_unavailable_detail = (
+                "ROUTE_CLASSIFIER_UNAVAILABLE"
+                if route_classifier_allowed
+                else "INFERENCE_PROVIDER_POLICY_BINDING_UNAVAILABLE"
+            )
         allowed_chat_classifications = {
             rule.classification for rule in chat_access.rules if rule.search_mode is SearchMode.ABAC
         }
@@ -279,7 +303,9 @@ class ChatService:
             access,
             external_stages=(),
         )
-        external_stages: list[str] = []
+        external_stages: list[str] = [
+            "composition"
+        ] if route_classifier_requested and route_classifier_allowed else []
         if route.adapter_state is ChatAdapterState.UNAVAILABLE:
             workflow.extend(
                 (
@@ -1392,6 +1418,7 @@ class ChatService:
         maximum_evidence: int,
         retrieval_mode: ChatRetrievalMode = ChatRetrievalMode.GENERAL,
         reranker_enabled: bool = False,
+        route_classifier_enabled: bool = False,
     ) -> int:
         # One reserved token per possible UTF-8 byte deliberately overstates
         # provider tokenization. The base covers the bounded composer request
@@ -1409,6 +1436,10 @@ class ChatService:
             )
         if reranker_enabled:
             total += question_bytes + (maximum_evidence * 16_384) + 8_192
+        if route_classifier_enabled:
+            # The fixed classifier receives only the question and emits one short enum.
+            # Reserve a deliberately larger prompt/output envelope before it is invoked.
+            total += question_bytes + 2_048
         return total
 
     @staticmethod

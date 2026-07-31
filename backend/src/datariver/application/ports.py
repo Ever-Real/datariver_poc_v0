@@ -2066,14 +2066,28 @@ class ChatGeneralAnswerComposer(Protocol):
     ) -> ChatDraft: ...
 
 
+class ChatRouteIntentClassifier(Protocol):
+    """Classify a bounded question into a non-executable retrieval contract."""
+
+    async def classify_route(
+        self,
+        *,
+        question: str,
+    ) -> ChatRetrievalMode: ...
+
+
 class ChatQuestionRouter(Protocol):
-    def route(
+    @property
+    def requires_composition_inference(self) -> bool: ...
+
+    async def route(
         self,
         *,
         question: str,
         requested_mode: ChatRetrievalMode,
         vector_available: bool,
         graph_available: bool,
+        inference_allowed: bool,
     ) -> ChatRouteDecision: ...
 
 

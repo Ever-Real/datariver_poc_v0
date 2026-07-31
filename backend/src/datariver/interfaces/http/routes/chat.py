@@ -15,10 +15,15 @@ from datariver.application.dto import (
 from datariver.application.governance_document_chat import (
     GovernanceDocumentChatEvidenceReader,
 )
-from datariver.application.ports import ChatAnswerComposer, ChatGeneralAnswerComposer
+from datariver.application.ports import (
+    ChatAnswerComposer,
+    ChatGeneralAnswerComposer,
+    ChatRouteIntentClassifier,
+)
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.chat import ChatService
 from datariver.application.services.chat_history import ChatHistoryService
+from datariver.application.services.chat_routing import SemanticChatQuestionRouter
 from datariver.application.services.governance_documents import GovernanceDocumentService
 from datariver.infrastructure.db.authz import SqlDecisionWriter, SqlSubjectReader
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
@@ -68,11 +73,12 @@ def _development_composer(
 ) -> tuple[
     ChatAnswerComposer | None,
     ChatGeneralAnswerComposer | None,
+    ChatRouteIntentClassifier | None,
     ChatCompositionAudit | None,
 ]:
     settings = container.settings
     if settings.app_env != "development":
-        return None, None, None
+        return None, None, None, None
     if settings.local_ollama_chat_enabled:
         assert settings.local_ollama_chat_base_url is not None
         assert settings.local_ollama_chat_model is not None
@@ -84,6 +90,7 @@ def _development_composer(
             allowed_hosts=settings.effective_local_inference_allowed_hosts,
         )
         return (
+            local_composer,
             local_composer,
             local_composer,
             ChatCompositionAudit(
@@ -117,6 +124,7 @@ def _development_composer(
         return (
             intranet_composer,
             intranet_composer,
+            intranet_composer,
             ChatCompositionAudit(
                 provider="intranet-openai-compatible",
                 model=settings.intranet_openai_compatible_chat_model,
@@ -125,7 +133,7 @@ def _development_composer(
                 provider_profile_version_id=(settings.chat_composition_provider_profile_version_id),
             ),
         )
-    return None, None, None
+    return None, None, None, None
 
 
 @router.post("/query", response_model=ChatQueryResponse)
@@ -141,7 +149,9 @@ async def query(
     settings = container.settings
     catalog_index = SqlCatalogIndexReader(session)
     chat_history = SqlChatHistoryStore(session)
-    composer, general_composer, composition_audit = _development_composer(container)
+    composer, general_composer, route_classifier, composition_audit = _development_composer(
+        container
+    )
     vector_catalog_enabled = (
         settings.app_env == "development"
         and (settings.local_ollama_chat_enabled and settings.local_ollama_embedding_enabled)
@@ -229,6 +239,7 @@ async def query(
         ),
         composer=composer,
         general_composer=general_composer,
+        question_router=SemanticChatQuestionRouter(classifier=route_classifier),
         composition_audit=composition_audit,
         inference_runtime_bindings=resolve_interactive_runtime_bindings(settings),
         allow_ephemeral_without_retention=(

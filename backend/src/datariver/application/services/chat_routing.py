@@ -1,89 +1,69 @@
 from __future__ import annotations
 
 from datariver.application.dto import ChatRouteDecision
-from datariver.application.ports import ChatQuestionRouter
+from datariver.application.ports import ChatQuestionRouter, ChatRouteIntentClassifier
 from datariver.domain.chat import (
     ChatAdapterState,
     ChatRetrievalMode,
     ChatRouteReason,
 )
 
-_GRAPH_TERMS = frozenset(
-    {
-        "lineage",
-        "upstream",
-        "downstream",
-        "impact",
-        "dependency",
-        "relationship",
-        "계보",
-        "상류",
-        "하류",
-        "영향",
-        "의존",
-        "관계",
-        "연결",
-    }
-)
-_SEMANTIC_TERMS = frozenset(
-    {
-        "semantic",
-        "similar",
-        "meaning",
-        "description",
-        "discover",
-        "vector",
-        "embedding",
-        "의미",
-        "유사",
-        "설명",
-        "찾아",
-        "어떤 테이블",
-        "벡터",
-        "임베딩",
-    }
-)
-
 
 class DeterministicChatQuestionRouter(ChatQuestionRouter):
-    """Select one retrieval contract without calling a model or accepting executable input."""
+    """Use an explicit route, otherwise retain the non-model general baseline.
 
-    def route(
+    This router deliberately has no intent keyword list. Deployments that configure a
+    composition-model classifier use :class:`SemanticChatQuestionRouter` instead.
+    """
+
+    @property
+    def requires_composition_inference(self) -> bool:
+        return False
+
+    async def route(
         self,
         *,
         question: str,
         requested_mode: ChatRetrievalMode,
         vector_available: bool,
         graph_available: bool,
+        inference_allowed: bool,
     ) -> ChatRouteDecision:
+        del question, inference_allowed
         if requested_mode is not ChatRetrievalMode.AUTO:
-            return ChatRouteDecision(
+            return self._decision(
                 requested_mode=requested_mode,
                 selected_mode=requested_mode,
                 reason=ChatRouteReason.EXPLICIT_SELECTION,
-                adapter_state=self._state(
-                    requested_mode,
-                    vector_available=vector_available,
-                    graph_available=graph_available,
-                ),
+                vector_available=vector_available,
+                graph_available=graph_available,
             )
+        return self._decision(
+            requested_mode=requested_mode,
+            selected_mode=ChatRetrievalMode.GENERAL,
+            reason=ChatRouteReason.GENERAL_DEFAULT,
+            vector_available=vector_available,
+            graph_available=graph_available,
+        )
 
-        normalized = " ".join(question.casefold().split())
-        if any(term in normalized for term in _GRAPH_TERMS):
-            selected = ChatRetrievalMode.GRAPH
-            reason = ChatRouteReason.GRAPH_INTENT
-        elif any(term in normalized for term in _SEMANTIC_TERMS):
-            selected = ChatRetrievalMode.VECTOR
-            reason = ChatRouteReason.SEMANTIC_INTENT
-        else:
-            selected = ChatRetrievalMode.GENERAL
-            reason = ChatRouteReason.GENERAL_DEFAULT
+    @classmethod
+    def _decision(
+        cls,
+        *,
+        requested_mode: ChatRetrievalMode,
+        selected_mode: ChatRetrievalMode,
+        reason: ChatRouteReason,
+        vector_available: bool,
+        graph_available: bool,
+        adapter_state: ChatAdapterState | None = None,
+    ) -> ChatRouteDecision:
         return ChatRouteDecision(
             requested_mode=requested_mode,
-            selected_mode=selected,
+            selected_mode=selected_mode,
             reason=reason,
-            adapter_state=self._state(
-                selected,
+            adapter_state=adapter_state
+            or cls._state(
+                selected_mode,
                 vector_available=vector_available,
                 graph_available=graph_available,
             ),
@@ -101,3 +81,95 @@ class DeterministicChatQuestionRouter(ChatQuestionRouter):
         if selected is ChatRetrievalMode.GRAPH and not graph_available:
             return ChatAdapterState.UNAVAILABLE
         return ChatAdapterState.READY
+
+
+class SemanticChatQuestionRouter(DeterministicChatQuestionRouter):
+    """Classify only AUTO intent through a fixed enum-only inference contract."""
+
+    def __init__(self, *, classifier: ChatRouteIntentClassifier | None) -> None:
+        self._classifier = classifier
+
+    @property
+    def requires_composition_inference(self) -> bool:
+        return self._classifier is not None
+
+    async def route(
+        self,
+        *,
+        question: str,
+        requested_mode: ChatRetrievalMode,
+        vector_available: bool,
+        graph_available: bool,
+        inference_allowed: bool,
+    ) -> ChatRouteDecision:
+        if requested_mode is not ChatRetrievalMode.AUTO:
+            return await super().route(
+                question=question,
+                requested_mode=requested_mode,
+                vector_available=vector_available,
+                graph_available=graph_available,
+                inference_allowed=inference_allowed,
+            )
+        if self._classifier is None:
+            return await super().route(
+                question=question,
+                requested_mode=requested_mode,
+                vector_available=vector_available,
+                graph_available=graph_available,
+                inference_allowed=inference_allowed,
+            )
+        if not inference_allowed:
+            return self._unavailable_decision(
+                requested_mode=requested_mode,
+                vector_available=vector_available,
+                graph_available=graph_available,
+            )
+        try:
+            selected_mode = await self._classifier.classify_route(question=question)
+        except Exception:
+            return self._unavailable_decision(
+                requested_mode=requested_mode,
+                vector_available=vector_available,
+                graph_available=graph_available,
+            )
+        if selected_mode not in {
+            ChatRetrievalMode.GENERAL,
+            ChatRetrievalMode.VECTOR,
+            ChatRetrievalMode.GRAPH,
+        }:
+            return self._unavailable_decision(
+                requested_mode=requested_mode,
+                vector_available=vector_available,
+                graph_available=graph_available,
+            )
+        return self._decision(
+            requested_mode=requested_mode,
+            selected_mode=selected_mode,
+            reason=(
+                ChatRouteReason.GRAPH_INTENT
+                if selected_mode is ChatRetrievalMode.GRAPH
+                else (
+                    ChatRouteReason.SEMANTIC_INTENT
+                    if selected_mode is ChatRetrievalMode.VECTOR
+                    else ChatRouteReason.GENERAL_DEFAULT
+                )
+            ),
+            vector_available=vector_available,
+            graph_available=graph_available,
+        )
+
+    def _unavailable_decision(
+        self,
+        *,
+        requested_mode: ChatRetrievalMode,
+        vector_available: bool,
+        graph_available: bool,
+    ) -> ChatRouteDecision:
+        return self._decision(
+            requested_mode=requested_mode,
+            selected_mode=ChatRetrievalMode.GENERAL,
+            reason=ChatRouteReason.GENERAL_DEFAULT,
+            vector_available=vector_available,
+            graph_available=graph_available,
+            adapter_state=ChatAdapterState.UNAVAILABLE,
+        )
