@@ -16,7 +16,6 @@ import {
   MessageSquarePlus,
   PanelLeftClose,
   PanelLeftOpen,
-  PanelRightClose,
   PanelRightOpen,
   Route,
   Send,
@@ -566,17 +565,16 @@ export function ChatPage({ client }: { client: ApiClient }) {
         <aside className="chat-evidence-panel panel">
           <header>
             <div className="chat-panel-heading">
-              <PanelRightOpen aria-hidden="true" size={16} />
+              <button
+                aria-label={evidenceCollapsed ? 'EVIDENCE 패널 펼치기' : 'EVIDENCE 패널 숨기기'}
+                className="chat-panel-toggle chat-evidence-heading-toggle"
+                onClick={() => setEvidenceCollapsed((current) => !current)}
+                type="button"
+              >
+                {evidenceCollapsed ? <PanelRightOpen size={16} /> : <PanelLeftClose size={16} />}
+              </button>
               {!evidenceCollapsed && <div><span className="eyebrow">Evidence</span><h2>근거와 처리 흐름</h2></div>}
             </div>
-            <button
-              aria-label={evidenceCollapsed ? 'EVIDENCE 패널 펼치기' : 'EVIDENCE 패널 숨기기'}
-              className="chat-panel-toggle"
-              onClick={() => setEvidenceCollapsed((current) => !current)}
-              type="button"
-            >
-              {evidenceCollapsed ? <PanelRightOpen size={16} /> : <PanelRightClose size={16} />}
-            </button>
           </header>
           {!evidenceCollapsed && (
             <div className="chat-evidence-scroll">

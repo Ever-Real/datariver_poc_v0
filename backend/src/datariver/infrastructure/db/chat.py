@@ -143,7 +143,12 @@ class SqlChatHistoryStore(ChatHistoryStore):
                 )
             ).all()
         )
-        messages.reverse()
+        # A persisted exchange assigns one timestamp to its user request and assistant response.
+        # UUIDv7 remains time-sortable across milliseconds but is intentionally random within the
+        # same millisecond, so reversing a UUID-sorted database page can interleave a pair.
+        # Keep the bounded newest page, then restore the conversational order with the actor as
+        # the deterministic tie-breaker.
+        messages.sort(key=self._chronological_message_key)
         request_ids = tuple(message.id for message in messages if message.actor == "USER")
         runs = (
             list(
@@ -204,6 +209,14 @@ class SqlChatHistoryStore(ChatHistoryStore):
                 )
             )
         return tuple(records)
+
+    @staticmethod
+    def _chronological_message_key(message: ChatMessageModel) -> tuple[datetime, int, str]:
+        return (
+            message.created_at,
+            0 if message.actor == "USER" else 1,
+            str(message.id),
+        )
 
     async def set_favorite(
         self,

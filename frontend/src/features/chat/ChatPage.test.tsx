@@ -294,7 +294,10 @@ describe('ChatPage', () => {
     await screen.findByText('저장된 답변')
     fireEvent.click(screen.getByRole('button', { name: '대화 이력 숨기기' }))
     expect(screen.getByRole('button', { name: '대화 이력 펼치기' })).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'EVIDENCE 패널 숨기기' }))
+    const evidenceToggle = screen.getByRole('button', { name: 'EVIDENCE 패널 숨기기' })
+    expect(screen.getAllByRole('button', { name: 'EVIDENCE 패널 숨기기' })).toHaveLength(1)
+    expect(evidenceToggle.closest('.chat-panel-heading')).not.toBeNull()
+    fireEvent.click(evidenceToggle)
     expect(screen.queryByRole('button', { name: '근거 1 orders 상세 열기' })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '이 답변의 근거 다시 보기' }))
