@@ -85,7 +85,6 @@ function chatClient() {
   let favorite = false
   const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
     if (path === '/chat/sessions?limit=50') return Promise.resolve([{ ...session, is_favorite: favorite }])
-    if (path === '/chat/query') return Promise.resolve(response)
     if (path === `/chat/sessions/${session.id}/messages?limit=200`) return Promise.resolve([
       {
         id: 'history-user',
@@ -117,7 +116,18 @@ function chatClient() {
     }
     return Promise.reject(new Error(`Unexpected request: ${path} ${options?.method ?? 'GET'}`))
   })
-  return { client: { request } as unknown as ApiClient, request }
+  const requestEventStream = vi.fn((
+    path: string,
+    _options: RequestOptions,
+    onEvent: (event: { event: string; data: unknown }) => void,
+  ): Promise<unknown> => {
+    if (path === '/chat/query/stream') {
+      response.workflow.forEach((step) => onEvent({ event: 'workflow', data: step }))
+      return Promise.resolve(response)
+    }
+    return Promise.reject(new Error(`Unexpected stream request: ${path}`))
+  })
+  return { client: { request, requestEventStream } as unknown as ApiClient, request, requestEventStream }
 }
 
 function requestBody(options: RequestOptions | undefined): unknown {
@@ -136,7 +146,7 @@ describe('ChatPage', () => {
   })
 
   it('sends the selected route on Enter and renders only server-returned workflow and ranked evidence', async () => {
-    const { client, request } = chatClient()
+    const { client, requestEventStream } = chatClient()
     render(<ChatPage client={client} />)
 
     expect(await screen.findByText('주문 데이터')).toBeInTheDocument()
@@ -146,7 +156,7 @@ describe('ChatPage', () => {
     fireEvent.keyDown(question, { key: 'Enter', code: 'Enter' })
 
     await screen.findByRole('heading', { name: '확인된 테이블' })
-    const queryCall = request.mock.calls.find(([path]) => path === '/chat/query')
+    const queryCall = requestEventStream.mock.calls.find(([path]) => path === '/chat/query/stream')
     expect(requestBody(queryCall?.[1])).toEqual({
       question: '주문과 고객 테이블을 찾아줘',
       maximum_evidence: 5,
@@ -183,24 +193,81 @@ describe('ChatPage', () => {
     })
   })
 
+  it('renders server-observed in-progress workflow stages before the final answer arrives', async () => {
+    let resolveResult: ((value: ChatResponse) => void) | undefined
+    const { client: baseClient } = chatClient()
+    const requestEventStream = vi.fn((
+      path: string,
+      _options: RequestOptions,
+      onEvent: (event: { event: string; data: unknown }) => void,
+    ): Promise<ChatResponse> => {
+      if (path !== '/chat/query/stream') return Promise.reject(new Error(`Unexpected stream: ${path}`))
+      onEvent({
+        event: 'workflow',
+        data: {
+          stage: 'AUTHORIZATION',
+          status: 'IN_PROGRESS',
+          detail_code: 'AUTHORIZATION_IN_PROGRESS',
+        },
+      })
+      onEvent({
+        event: 'workflow',
+        data: {
+          stage: 'AUTHORIZATION',
+          status: 'COMPLETED',
+          detail_code: 'CHAT_QUERY_AUTHORIZED',
+        },
+      })
+      onEvent({
+        event: 'workflow',
+        data: {
+          stage: 'RETRIEVAL',
+          status: 'IN_PROGRESS',
+          detail_code: 'RETRIEVAL_IN_PROGRESS',
+        },
+      })
+      return new Promise((resolve) => {
+        resolveResult = resolve
+      })
+    })
+    render(<ChatPage client={{ request: baseClient.request, requestEventStream } as unknown as ApiClient} />)
+    await screen.findByText('주문 데이터')
+
+    const question = screen.getByLabelText('카탈로그 질문')
+    fireEvent.change(question, { target: { value: '주문 테이블을 찾아줘' } })
+    fireEvent.keyDown(question, { key: 'Enter', code: 'Enter' })
+
+    const workflow = await screen.findByLabelText('질문 응답 Workflow')
+    expect(within(workflow).getByText('진행 중')).toBeInTheDocument()
+    expect(within(workflow).getByText('근거 검색')).toBeInTheDocument()
+    expect(within(workflow).getByText('인가된 근거를 검색하고 있습니다.')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '확인된 테이블' })).not.toBeInTheDocument()
+
+    resolveResult?.(response)
+    expect(await screen.findByRole('heading', { name: '확인된 테이블' })).toBeInTheDocument()
+    expect(within(screen.getByLabelText('질문 응답 Workflow')).queryByText('진행 중')).not.toBeInTheDocument()
+  })
+
   it('keeps Shift+Enter as a multiline escape and sends only on plain Enter', async () => {
-    const { client, request } = chatClient()
+    const { client, requestEventStream } = chatClient()
     render(<ChatPage client={client} />)
     await screen.findByText('주문 데이터')
 
     const question = screen.getByLabelText('카탈로그 질문')
     fireEvent.change(question, { target: { value: '첫 줄' } })
     fireEvent.keyDown(question, { key: 'Enter', code: 'Enter', shiftKey: true })
-    expect(request.mock.calls.some(([path]) => path === '/chat/query')).toBe(false)
+    expect(requestEventStream.mock.calls.some(([path]) => path === '/chat/query/stream')).toBe(false)
     expect(question).toHaveValue('첫 줄')
 
     fireEvent.change(question, { target: { value: '첫 줄\n둘째 줄' } })
     fireEvent.keyDown(question, { key: 'Enter', code: 'Enter' })
-    await waitFor(() => expect(request.mock.calls.some(([path]) => path === '/chat/query')).toBe(true))
+    await waitFor(() => expect(
+      requestEventStream.mock.calls.some(([path]) => path === '/chat/query/stream'),
+    ).toBe(true))
   })
 
   it('does not submit an Enter key event while an IME composition is active', async () => {
-    const { client, request } = chatClient()
+    const { client, requestEventStream } = chatClient()
     render(<ChatPage client={client} />)
     await screen.findByText('주문 데이터')
 
@@ -208,12 +275,12 @@ describe('ChatPage', () => {
     fireEvent.change(question, { target: { value: '조합 중인 질문' } })
     fireEvent.keyDown(question, { key: 'Enter', code: 'Enter', isComposing: true })
 
-    expect(request.mock.calls.some(([path]) => path === '/chat/query')).toBe(false)
+    expect(requestEventStream.mock.calls.some(([path]) => path === '/chat/query/stream')).toBe(false)
     expect(question).toHaveValue('조합 중인 질문')
   })
 
   it('does not submit a one-character question from the Enter shortcut', async () => {
-    const { client, request } = chatClient()
+    const { client, requestEventStream } = chatClient()
     render(<ChatPage client={client} />)
     await screen.findByText('주문 데이터')
 
@@ -221,7 +288,7 @@ describe('ChatPage', () => {
     fireEvent.change(question, { target: { value: '한' } })
     fireEvent.keyDown(question, { key: 'Enter', code: 'Enter' })
 
-    expect(request.mock.calls.some(([path]) => path === '/chat/query')).toBe(false)
+    expect(requestEventStream.mock.calls.some(([path]) => path === '/chat/query/stream')).toBe(false)
     expect(question).toHaveValue('한')
   })
 
@@ -352,17 +419,21 @@ describe('ChatPage', () => {
     let queryCount = 0
     let rejectPending: ((reason: Error) => void) | undefined
     const { client: baseClient } = chatClient()
-    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
-      if (path === '/chat/query') {
+    const requestEventStream = vi.fn((
+      path: string,
+      options: RequestOptions,
+      onEvent: (event: { event: string; data: unknown }) => void,
+    ): Promise<unknown> => {
+      if (path === '/chat/query/stream') {
         queryCount += 1
         if (queryCount === 1) return Promise.resolve(response)
         return new Promise((_, reject) => {
           rejectPending = reject
         })
       }
-      return baseClient.request(path, options)
+      return baseClient.requestEventStream(path, options, onEvent)
     })
-    render(<ChatPage client={{ request } as unknown as ApiClient} />)
+    render(<ChatPage client={{ request: baseClient.request, requestEventStream } as unknown as ApiClient} />)
     await screen.findByText('주문 데이터')
 
     const question = screen.getByLabelText('카탈로그 질문')
@@ -373,7 +444,7 @@ describe('ChatPage', () => {
     fireEvent.change(question, { target: { value: '다시 시도할 질문' } })
     fireEvent.keyDown(question, { key: 'Enter', code: 'Enter' })
     expect(screen.queryByLabelText('서버 라우팅 결정')).not.toBeInTheDocument()
-    expect(screen.getByText('서버가 응답하면 실제 처리 단계가 표시됩니다.')).toBeInTheDocument()
+    expect(screen.getByText('서버가 실제 처리 단계를 시작하면 표시됩니다.')).toBeInTheDocument()
 
     rejectPending?.(new Error('provider unavailable'))
     await waitFor(() => expect(question).toHaveValue('다시 시도할 질문'))
@@ -404,10 +475,16 @@ describe('ChatPage', () => {
       evidence: [],
     }
     const { client: baseClient } = chatClient()
-    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => (
-      path === '/chat/query' ? Promise.resolve(unavailable) : baseClient.request(path, options)
+    const requestEventStream = vi.fn((
+      path: string,
+      options: RequestOptions,
+      onEvent: (event: { event: string; data: unknown }) => void,
+    ): Promise<unknown> => (
+      path === '/chat/query/stream'
+        ? Promise.resolve(unavailable)
+        : baseClient.requestEventStream(path, options, onEvent)
     ))
-    render(<ChatPage client={{ request } as unknown as ApiClient} />)
+    render(<ChatPage client={{ request: baseClient.request, requestEventStream } as unknown as ApiClient} />)
     await screen.findByText('주문 데이터')
 
     selectRoute('그래프')
@@ -443,10 +520,16 @@ describe('ChatPage', () => {
       evidence: [],
     }
     const { client: baseClient } = chatClient()
-    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => (
-      path === '/chat/query' ? Promise.resolve(generalAnswer) : baseClient.request(path, options)
+    const requestEventStream = vi.fn((
+      path: string,
+      options: RequestOptions,
+      onEvent: (event: { event: string; data: unknown }) => void,
+    ): Promise<unknown> => (
+      path === '/chat/query/stream'
+        ? Promise.resolve(generalAnswer)
+        : baseClient.requestEventStream(path, options, onEvent)
     ))
-    render(<ChatPage client={{ request } as unknown as ApiClient} />)
+    render(<ChatPage client={{ request: baseClient.request, requestEventStream } as unknown as ApiClient} />)
     await screen.findByText('주문 데이터')
 
     const question = screen.getByLabelText('카탈로그 질문')
@@ -481,10 +564,16 @@ describe('ChatPage', () => {
       evidence: [],
     }
     const { client: baseClient } = chatClient()
-    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => (
-      path === '/chat/query' ? Promise.resolve(unavailable) : baseClient.request(path, options)
+    const requestEventStream = vi.fn((
+      path: string,
+      options: RequestOptions,
+      onEvent: (event: { event: string; data: unknown }) => void,
+    ): Promise<unknown> => (
+      path === '/chat/query/stream'
+        ? Promise.resolve(unavailable)
+        : baseClient.requestEventStream(path, options, onEvent)
     ))
-    render(<ChatPage client={{ request } as unknown as ApiClient} />)
+    render(<ChatPage client={{ request: baseClient.request, requestEventStream } as unknown as ApiClient} />)
     await screen.findByText('주문 데이터')
 
     selectRoute('일반')

@@ -2091,6 +2091,12 @@ class ChatQuestionRouter(Protocol):
     ) -> ChatRouteDecision: ...
 
 
+class ChatWorkflowProgressObserver(Protocol):
+    """Receive non-persisted, server-observed Chat workflow transitions."""
+
+    def publish(self, *, event: ChatWorkflowEvent) -> None: ...
+
+
 class ChatVectorCatalogReader(Protocol):
     async def search(
         self,

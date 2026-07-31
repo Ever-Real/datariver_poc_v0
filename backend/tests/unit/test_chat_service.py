@@ -815,6 +815,14 @@ class FixedGeneralComposer:
         return self.draft
 
 
+class RecordingWorkflowObserver:
+    def __init__(self) -> None:
+        self.events: list[ChatWorkflowEvent] = []
+
+    def publish(self, *, event: ChatWorkflowEvent) -> None:
+        self.events.append(event)
+
+
 class FailingReranker:
     async def rerank(
         self,
@@ -1270,6 +1278,40 @@ async def test_chat_returns_explicit_general_knowledge_only_after_empty_authoriz
         and item.status is ChatWorkflowStatus.SKIPPED
         for item in exchange.workflow
     )
+
+
+async def test_chat_publishes_actual_in_progress_workflow_events_without_persisting_them() -> None:
+    workspace_id = uuid4()
+    observer = RecordingWorkflowObserver()
+    exchange = await chat_service(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="현재 카탈로그 근거를 설명해줘",
+        maximum_evidence=2,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-workflow-progress",
+        workflow_observer=observer,
+    )
+
+    progress = [item for item in observer.events if item.status is ChatWorkflowStatus.IN_PROGRESS]
+    assert [item.stage for item in progress] == [
+        ChatWorkflowStage.AUTHORIZATION,
+        ChatWorkflowStage.BUDGET_RESERVATION,
+        ChatWorkflowStage.ROUTING,
+        ChatWorkflowStage.RETRIEVAL,
+        ChatWorkflowStage.RERANKING,
+        ChatWorkflowStage.COMPOSITION,
+        ChatWorkflowStage.CITATION_VALIDATION,
+        ChatWorkflowStage.PERSISTENCE,
+    ]
+    assert all(item.status is not ChatWorkflowStatus.IN_PROGRESS for item in exchange.workflow)
+    assert observer.events[-1].stage is ChatWorkflowStage.PERSISTENCE
+    assert observer.events[-1].status is ChatWorkflowStatus.COMPLETED
 
 
 async def test_chat_rejects_general_draft_that_forges_internal_citations() -> None:

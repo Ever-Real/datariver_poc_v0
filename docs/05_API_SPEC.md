@@ -516,6 +516,7 @@ bounded winner; a rejected call records no ledger, result or aggregate increment
 | Method/path | Action | Purpose |
 |---|---|---|
 | `POST /chat/query` | `chat.query` plus `catalog.read` / `kg.read` per citation | persist a grounded answer or an explicitly disclosed zero-evidence general-knowledge answer; development may use local Ollama or one allowlisted private OpenAI-compatible fixed tool contract |
+| `POST /chat/query/stream` | same as `POST /chat/query` | request-local server-observed workflow events followed by the same final Chat response; no model-token stream |
 
 Request is `{session_id?,question,maximum_evidence<=10}`. Response carries session/message IDs,
 answer, route/workflow state and immutable evidence chunk metadata: `chunk_id`,
@@ -528,6 +529,14 @@ authorized evidence set is empty, the separate general composer may return a bou
 zero citations. The server prefixes it with `※ 사내 인용 근거가 없어 일반 지식으로
 답변합니다.` and records explicit general-answer workflow codes. Adapter, policy, authorization,
 retrieval, reranker and citation failures never use this path.
+
+`POST /chat/query/stream` has the same request shape and authorization/policy semantics as the
+ordinary endpoint. Its `text/event-stream` body has ordered `workflow` events containing only the
+typed `{stage,status,detail_code}` transition that the server has actually started or completed,
+then exactly one `result` event containing the ordinary response. `IN_PROGRESS` is request-local;
+only terminal workflow events may be persisted or returned in Chat history. The stream is bounded,
+uses `Cache-Control: no-store` and `X-Accel-Buffering: no`, and never transmits model tokens,
+prompts, unapproved evidence or adapter diagnostics.
 
 Final persistence requires a workspace ACTIVE retention-policy version. A new session binds the
 exact policy ID/hash, database transaction time and policy-derived deadline in one locked

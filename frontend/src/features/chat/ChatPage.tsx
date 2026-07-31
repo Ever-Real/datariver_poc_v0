@@ -37,7 +37,7 @@ import { AccordionItem } from '../../components/common/Accordion'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { ChatRouteMenu, type ChatRouteOption } from './ChatRouteMenu'
-import { ChatWorkflowRail } from './ChatWorkflowRail'
+import { ChatWorkflowRail, type ChatWorkflowProgressStep } from './ChatWorkflowRail'
 import { EvidenceModal } from './EvidenceModal'
 import { SafeMarkdown } from './SafeMarkdown'
 
@@ -77,6 +77,47 @@ interface ChatViewMessage {
   workflow?: ChatWorkflowStep[]
 }
 
+const workflowStages: ReadonlySet<ChatWorkflowProgressStep['stage']> = new Set([
+  'AUTHORIZATION',
+  'BUDGET_RESERVATION',
+  'ROUTING',
+  'RETRIEVAL',
+  'RERANKING',
+  'COMPOSITION',
+  'CITATION_VALIDATION',
+  'PERSISTENCE',
+])
+
+const workflowStatuses: ReadonlySet<ChatWorkflowProgressStep['status']> = new Set([
+  'IN_PROGRESS',
+  'COMPLETED',
+  'SKIPPED',
+  'UNAVAILABLE',
+  'FAILED',
+  'REFUSED',
+])
+
+function isWorkflowProgressStep(value: unknown): value is ChatWorkflowProgressStep {
+  if (!value || typeof value !== 'object') return false
+  const candidate = value as Record<string, unknown>
+  return (
+    typeof candidate.detail_code === 'string'
+    && workflowStages.has(candidate.stage as ChatWorkflowProgressStep['stage'])
+    && workflowStatuses.has(candidate.status as ChatWorkflowProgressStep['status'])
+  )
+}
+
+function mergeWorkflowProgress(
+  current: ChatWorkflowProgressStep[],
+  next: ChatWorkflowProgressStep,
+): ChatWorkflowProgressStep[] {
+  const existing = current.findIndex((item) => item.stage === next.stage)
+  if (existing < 0) return [...current, next]
+  const updated = [...current]
+  updated[existing] = next
+  return updated
+}
+
 interface CopyFeedback {
   messageId: string
   status: 'SUCCESS' | 'FAILED'
@@ -105,6 +146,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [persistence, setPersistence] = useState<ChatResponse['persistence']>()
   const [messages, setMessages] = useState<ChatViewMessage[]>([])
+  const [liveWorkflow, setLiveWorkflow] = useState<ChatWorkflowProgressStep[]>([])
   const [error, setError] = useState<unknown>()
   const [loading, setLoading] = useState(false)
   const [favoriteSessionId, setFavoriteSessionId] = useState<string>()
@@ -134,6 +176,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setSessions([])
     setSessionId(undefined)
     setMessages([])
+    setLiveWorkflow([])
     setSelectedAssistantMessageId(undefined)
     setSelectedEvidenceAssetId(undefined)
     setPersistence(undefined)
@@ -152,7 +195,10 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const visibleAssistant = loading && !selectedAssistantMessageId
     ? undefined
     : selectedAssistant ?? latestAssistant
-  const providerPolicyUnavailable = visibleAssistant?.workflow?.some(
+  const visibleWorkflow = loading && !selectedAssistantMessageId
+    ? liveWorkflow
+    : visibleAssistant?.workflow ?? []
+  const providerPolicyUnavailable = visibleWorkflow.some(
     (step) => step.detail_code === 'INFERENCE_PROVIDER_POLICY_BINDING_UNAVAILABLE',
   ) ?? false
   const visibleEvidence = useMemo(
@@ -170,6 +216,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     const requestVersion = ++historyRequestVersion.current
     setLoading(true)
     setError(undefined)
+    setLiveWorkflow([])
     setSelectedEvidenceAssetId(undefined)
     try {
       const history = await client.request<ChatMessage[]>(`/chat/sessions/${id}/messages?limit=200`)
@@ -192,6 +239,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setQuestion('')
     setMode('AUTO')
     setMessages([])
+    setLiveWorkflow([])
     setPersistence(undefined)
     setSelectedAssistantMessageId(undefined)
     setSelectedEvidenceAssetId(undefined)
@@ -273,18 +321,28 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setPersistence(undefined)
     setSelectedAssistantMessageId(undefined)
     setSelectedEvidenceAssetId(undefined)
+    setLiveWorkflow([])
     try {
-      const result = await client.request<ChatResponse>('/chat/query', {
-        method: 'POST',
-        body: JSON.stringify({
-          session_id: sessionId,
-          question: text,
-          maximum_evidence: 5,
-          mode,
-        }),
-      })
+      const result = await client.requestEventStream<ChatResponse>(
+        '/chat/query/stream',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            session_id: sessionId,
+            question: text,
+            maximum_evidence: 5,
+            mode,
+          }),
+        },
+        (event) => {
+          const step = event.data
+          if (event.event !== 'workflow' || !isWorkflowProgressStep(step)) return
+          setLiveWorkflow((current) => mergeWorkflowProgress(current, step))
+        },
+      )
       setSessionId(result.session_id)
       setPersistence(result.persistence)
+      setLiveWorkflow(result.workflow)
       setSelectedAssistantMessageId(result.response_message_id)
       setMessages((current) => [
         ...current.map((message) => message.id === pendingMessageId
@@ -593,9 +651,9 @@ export function ChatPage({ client }: { client: ApiClient }) {
               <section className="chat-workflow-section">
                 <div className="chat-evidence-section-heading">
                   <span>Response workflow</span>
-                  <small>{visibleAssistant?.workflow?.length ?? 0}단계</small>
+                  <small>{visibleWorkflow.length}단계</small>
                 </div>
-                <ChatWorkflowRail steps={visibleAssistant?.workflow ?? []} />
+                <ChatWorkflowRail isStreaming={loading} steps={visibleWorkflow} />
               </section>
               <AccordionItem
                 expanded={evidenceExpanded}

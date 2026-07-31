@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+import json
+from collections.abc import AsyncIterator
+from contextlib import suppress
 from uuid import UUID
 
 from fastapi import APIRouter, Query, Request, Response
+from fastapi.responses import StreamingResponse
 
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.dto import (
@@ -11,6 +16,7 @@ from datariver.application.dto import (
     ChatEvidenceRanking,
     ChatMessageRecord,
     ChatSessionRecord,
+    ChatWorkflowEvent,
 )
 from datariver.application.governance_document_chat import (
     GovernanceDocumentChatEvidenceReader,
@@ -19,6 +25,7 @@ from datariver.application.ports import (
     ChatAnswerComposer,
     ChatGeneralAnswerComposer,
     ChatRouteIntentClassifier,
+    ChatWorkflowProgressObserver,
 )
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.chat import ChatService
@@ -136,15 +143,13 @@ def _development_composer(
     return None, None, None, None
 
 
-@router.post("/query", response_model=ChatQueryResponse)
-async def query(
+async def _query_response(
     payload: ChatQueryRequest,
     request: Request,
-    response: Response,
     context: ContextDep,
     session: SessionDep,
+    workflow_observer: ChatWorkflowProgressObserver | None = None,
 ) -> ChatQueryResponse:
-    response.headers["Cache-Control"] = "no-store"
     container = get_container(request)
     settings = container.settings
     catalog_index = SqlCatalogIndexReader(session)
@@ -256,6 +261,7 @@ async def query(
         environment=context.environment,
         request_id=context.request_id,
         requested_mode=payload.mode,
+        workflow_observer=workflow_observer,
     )
     rankings = {item.chunk_id: item for item in exchange.evidence_ranking}
     return ChatQueryResponse(
@@ -285,6 +291,127 @@ async def query(
             )
             for item in exchange.evidence
         ],
+    )
+
+
+@router.post("/query", response_model=ChatQueryResponse)
+async def query(
+    payload: ChatQueryRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> ChatQueryResponse:
+    response.headers["Cache-Control"] = "no-store"
+    return await _query_response(
+        payload=payload,
+        request=request,
+        context=context,
+        session=session,
+    )
+
+
+class _WorkflowQueueObserver:
+    """Bridge server-observed Chat transitions into one bounded SSE request."""
+
+    def __init__(self, queue: asyncio.Queue[ChatWorkflowEvent]) -> None:
+        self._queue = queue
+
+    def publish(self, *, event: ChatWorkflowEvent) -> None:
+        self._queue.put_nowait(event)
+
+
+def _workflow_event_response(event: ChatWorkflowEvent) -> ChatWorkflowEventResponse:
+    return ChatWorkflowEventResponse(
+        stage=event.stage,
+        status=event.status,
+        detail_code=event.detail_code,
+    )
+
+
+def _sse_event(*, name: str, payload: object) -> str:
+    encoded = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {name}\ndata: {encoded}\n\n"
+
+
+async def _stream_chat_query(
+    *,
+    payload: ChatQueryRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> AsyncIterator[str]:
+    """Emit actual server stages before the unchanged final Chat response."""
+
+    queue: asyncio.Queue[ChatWorkflowEvent] = asyncio.Queue(maxsize=32)
+    task = asyncio.create_task(
+        _query_response(
+            payload=payload,
+            request=request,
+            context=context,
+            session=session,
+            workflow_observer=_WorkflowQueueObserver(queue),
+        )
+    )
+    try:
+        while not task.done() or not queue.empty():
+            if queue.empty():
+                next_event = asyncio.create_task(queue.get())
+                done, _ = await asyncio.wait(
+                    {task, next_event},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if next_event not in done:
+                    next_event.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await next_event
+                    continue
+                event = next_event.result()
+            else:
+                event = queue.get_nowait()
+            yield _sse_event(
+                name="workflow",
+                payload=_workflow_event_response(event).model_dump(mode="json"),
+            )
+        result = await task
+    except Exception:
+        # The ordinary endpoint remains the source of detailed RFC 9457 failures.
+        # Streaming exposes no internal adapter or policy detail before a final result.
+        yield _sse_event(
+            name="error",
+            payload={
+                "code": "CHAT_WORKFLOW_STREAM_FAILED",
+                "detail": "응답 처리 중 문제가 발생했습니다. 다시 시도하세요.",
+            },
+        )
+    else:
+        yield _sse_event(name="result", payload=result.model_dump(mode="json"))
+    finally:
+        if not task.done():
+            task.cancel()
+        with suppress(asyncio.CancelledError, Exception):
+            await task
+
+
+@router.post("/query/stream", response_class=StreamingResponse)
+async def query_stream(
+    payload: ChatQueryRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> StreamingResponse:
+    return StreamingResponse(
+        _stream_chat_query(
+            payload=payload,
+            request=request,
+            context=context,
+            session=session,
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-store",
+            "X-Accel-Buffering": "no",
+        },
     )
 
 

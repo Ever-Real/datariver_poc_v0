@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import replace
 from datetime import datetime
 from uuid import UUID
@@ -39,6 +39,7 @@ from datariver.application.ports import (
     ChatSessionOwnershipReader,
     ChatSubjectAccessReader,
     ChatVectorCatalogReader,
+    ChatWorkflowProgressObserver,
     GovernanceChatEvidenceReader,
     KnowledgeEvidenceReader,
 )
@@ -72,6 +73,45 @@ _DETERMINISTIC_AUDIT = ChatCompositionAudit(
     prompt_template_version="catalog-evidence-v1",
     external_service_used=False,
 )
+
+
+class _ObservedChatWorkflow(list[ChatWorkflowEvent]):
+    """Keep the persisted terminal workflow and optional UI progress in lockstep."""
+
+    def __init__(self, observer: ChatWorkflowProgressObserver | None) -> None:
+        super().__init__()
+        self._observer = observer
+
+    def append(self, event: ChatWorkflowEvent) -> None:
+        super().append(event)
+        self._publish(event)
+
+    def extend(self, events: Iterable[ChatWorkflowEvent]) -> None:
+        for event in events:
+            self.append(event)
+
+    def publish_progress(
+        self,
+        *,
+        stage: ChatWorkflowStage,
+        detail_code: str,
+    ) -> None:
+        self._publish(
+            ChatWorkflowEvent(
+                stage=stage,
+                status=ChatWorkflowStatus.IN_PROGRESS,
+                detail_code=detail_code,
+            )
+        )
+
+    def _publish(self, event: ChatWorkflowEvent) -> None:
+        if self._observer is None:
+            return
+        try:
+            self._observer.publish(event=event)
+        except Exception:
+            # Browser progress is observational; it must never change the governed result.
+            return
 
 
 class DeterministicChatAnswerComposer:
@@ -165,8 +205,13 @@ class ChatService:
         environment: EnvironmentAttributes,
         request_id: str,
         requested_mode: ChatRetrievalMode = ChatRetrievalMode.AUTO,
+        workflow_observer: ChatWorkflowProgressObserver | None = None,
     ) -> ChatExchange:
-        workflow: list[ChatWorkflowEvent] = []
+        workflow = _ObservedChatWorkflow(workflow_observer)
+        workflow.publish_progress(
+            stage=ChatWorkflowStage.AUTHORIZATION,
+            detail_code="AUTHORIZATION_IN_PROGRESS",
+        )
         owner_id = subject.subject_id
         if session_id is not None:
             current_owner_id = await self._session_ownership.get_session_owner(
@@ -217,6 +262,10 @@ class ChatService:
                     required_stages=(InferenceStage.COMPOSITION,),
                 )
             )
+        workflow.publish_progress(
+            stage=ChatWorkflowStage.BUDGET_RESERVATION,
+            detail_code="BUDGET_RESERVATION_IN_PROGRESS",
+        )
         if self._budget_guard is not None:
             await self._budget_guard.reserve(
                 workspace_id=workspace_id,
@@ -247,6 +296,10 @@ class ChatService:
                     else "CHAT_BUDGET_GUARD_NOT_CONFIGURED"
                 ),
             )
+        )
+        workflow.publish_progress(
+            stage=ChatWorkflowStage.ROUTING,
+            detail_code="ROUTING_IN_PROGRESS",
         )
         route = await self._question_router.route(
             question=question,
@@ -341,6 +394,10 @@ class ChatService:
             )
             if general_fallback_allowed and general_composer is not None:
                 try:
+                    workflow.publish_progress(
+                        stage=ChatWorkflowStage.COMPOSITION,
+                        detail_code="COMPOSITION_IN_PROGRESS",
+                    )
                     if self._composition_audit.external_service_used:
                         external_stages.append("composition")
                     draft = await general_composer.compose_general(question=question)
@@ -418,6 +475,10 @@ class ChatService:
                 )
             )
             try:
+                workflow.publish_progress(
+                    stage=ChatWorkflowStage.RETRIEVAL,
+                    detail_code="RETRIEVAL_IN_PROGRESS",
+                )
                 evidence, retrieval_stages = await self._retrieve(
                     route=route,
                     workspace_id=workspace_id,
@@ -501,6 +562,11 @@ class ChatService:
                         f"{route.selected_mode.value}_RETRIEVAL_COMPLETED",
                     )
                 )
+                if evidence:
+                    workflow.publish_progress(
+                        stage=ChatWorkflowStage.RERANKING,
+                        detail_code="RERANKING_IN_PROGRESS",
+                    )
                 (
                     ranked_evidence,
                     rankings,
@@ -554,6 +620,10 @@ class ChatService:
                         )
                     else:
                         try:
+                            workflow.publish_progress(
+                                stage=ChatWorkflowStage.COMPOSITION,
+                                detail_code="COMPOSITION_IN_PROGRESS",
+                            )
                             if self._composition_audit.external_service_used:
                                 external_stages.append("composition")
                             draft = await self._general_composer.compose_general(
@@ -610,6 +680,10 @@ class ChatService:
                                 )
                 else:
                     try:
+                        workflow.publish_progress(
+                            stage=ChatWorkflowStage.COMPOSITION,
+                            detail_code="COMPOSITION_IN_PROGRESS",
+                        )
                         if self._composition_audit.external_service_used:
                             external_stages.append("composition")
                         draft = await self._composer.compose(
@@ -649,6 +723,10 @@ class ChatService:
                             workspace_id=workspace_id,
                         )
                         if cited_evidence:
+                            workflow.publish_progress(
+                                stage=ChatWorkflowStage.CITATION_VALIDATION,
+                                detail_code="CITATION_VALIDATION_IN_PROGRESS",
+                            )
                             answer, cited_evidence = await self._final_reauthorize_citations(
                                 answer=answer,
                                 evidence=cited_evidence,
@@ -694,14 +772,20 @@ class ChatService:
             policy = await uow.retention_policies.get_active_for_update(workspace_id=workspace_id)
             if policy is None or policy.state is not RetentionPolicyState.ACTIVE:
                 if self._allow_ephemeral_without_retention:
+                    workflow.publish_progress(
+                        stage=ChatWorkflowStage.PERSISTENCE,
+                        detail_code="PERSISTENCE_IN_PROGRESS",
+                    )
+                    persistence_event = self._event(
+                        ChatWorkflowStage.PERSISTENCE,
+                        ChatWorkflowStatus.SKIPPED,
+                        "EPHEMERAL_NO_STORE",
+                    )
                     ephemeral_workflow = (
                         *workflow,
-                        self._event(
-                            ChatWorkflowStage.PERSISTENCE,
-                            ChatWorkflowStatus.SKIPPED,
-                            "EPHEMERAL_NO_STORE",
-                        ),
+                        persistence_event,
                     )
+                    workflow.append(persistence_event)
                     return ChatExchange(
                         session_id=session_id or uuid7(),
                         request_message_id=uuid7(),
@@ -722,13 +806,18 @@ class ChatService:
                 binding_basis_at=await uow.transaction_time(),
                 chat_content_days=policy.rules.chat_content_days,
             )
+            workflow.publish_progress(
+                stage=ChatWorkflowStage.PERSISTENCE,
+                detail_code="PERSISTENCE_IN_PROGRESS",
+            )
+            persistence_event = self._event(
+                ChatWorkflowStage.PERSISTENCE,
+                ChatWorkflowStatus.COMPLETED,
+                "RETENTION_BOUND_EXCHANGE_PERSISTED",
+            )
             persisted_workflow = (
                 *workflow,
-                self._event(
-                    ChatWorkflowStage.PERSISTENCE,
-                    ChatWorkflowStatus.COMPLETED,
-                    "RETENTION_BOUND_EXCHANGE_PERSISTED",
-                ),
+                persistence_event,
             )
             exchange = await uow.chats.save_exchange(
                 workspace_id=workspace_id,
@@ -745,6 +834,7 @@ class ChatService:
                 composition_audit=request_composition_audit,
             )
             await uow.commit()
+            workflow.append(persistence_event)
             return exchange
 
     async def _retrieve(

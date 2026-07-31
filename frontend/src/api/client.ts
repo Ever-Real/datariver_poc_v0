@@ -49,6 +49,13 @@ export interface ApiDownload {
   etag?: string
 }
 
+export interface ApiEventStreamEvent {
+  event: string
+  data: unknown
+}
+
+export type ApiEventStreamHandler = (event: ApiEventStreamEvent) => void
+
 export type AccessTokenRenewer = () => Promise<string | undefined>
 
 interface SecurityBoundary {
@@ -93,6 +100,74 @@ export class ApiClient {
     const data = response.status === 204 ? undefined as T : await response.json() as T
     this.assertCurrent(boundary)
     return { data, etag: response.headers.get('ETag') ?? undefined }
+  }
+
+  async requestEventStream<T>(
+    path: string,
+    options: RequestOptions,
+    onEvent: ApiEventStreamHandler,
+  ): Promise<T> {
+    const token = this.accessToken()
+    if (!token) throw new Error('로그인이 필요합니다.')
+    const workspace = this.workspaceId()
+    if (!workspace) throw new Error('워크스페이스 ID를 입력하세요.')
+    const boundary = { workspace, securityEpoch: this.securityEpoch() }
+    const headers = new Headers(options.headers)
+    headers.set('Accept', 'text/event-stream')
+    const response = await this.fetchAuthorized(
+      path,
+      { ...options, cache: 'no-store', headers },
+      token,
+      workspace,
+    )
+    this.assertCurrent(boundary)
+    if (!response.ok) {
+      const problem = await parseProblem(response)
+      this.assertCurrent(boundary)
+      throw new ApiError(problem)
+    }
+    if (response.body === null) {
+      throw new Error('서버가 Chat 진행 상태 스트림을 열지 못했습니다.')
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+    let result: T | undefined
+    let receivedResult = false
+    try {
+      while (!receivedResult) {
+        const { done, value } = await reader.read()
+        this.assertCurrent(boundary)
+        buffer += decoder.decode(value, { stream: !done }).replace(/\r\n?/g, '\n')
+        const frames = buffer.split('\n\n')
+        buffer = done ? '' : (frames.pop() ?? '')
+        for (const frame of frames) {
+          const event = parseEventStreamFrame(frame)
+          if (!event) continue
+          if (event.event === 'error') {
+            throw new Error(eventStreamErrorDetail(event.data))
+          }
+          if (event.event === 'result') {
+            result = event.data as T
+            receivedResult = true
+            break
+          }
+          onEvent(event)
+          this.assertCurrent(boundary)
+        }
+        if (done && !receivedResult) {
+          throw new Error('서버가 Chat 최종 결과를 반환하지 않았습니다.')
+        }
+      }
+    } finally {
+      if (!receivedResult) {
+        await reader.cancel().catch(() => undefined)
+      }
+      reader.releaseLock()
+    }
+    this.assertCurrent(boundary)
+    return result as T
   }
 
   async download(
@@ -171,6 +246,36 @@ export class ApiClient {
     // need the application's durable idempotency boundary.
     return method === 'GET' || method === 'HEAD' || Boolean(options.idempotencyKey)
   }
+}
+
+function parseEventStreamFrame(frame: string): ApiEventStreamEvent | undefined {
+  let event = 'message'
+  const dataLines: string[] = []
+  for (const line of frame.split('\n')) {
+    if (line.startsWith('event:')) {
+      event = line.slice('event:'.length).trim() || 'message'
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice('data:'.length).trimStart())
+    }
+  }
+  if (dataLines.length === 0) return undefined
+  try {
+    return { event, data: JSON.parse(dataLines.join('\n')) as unknown }
+  } catch {
+    throw new Error('서버가 유효하지 않은 Chat 진행 상태를 반환했습니다.')
+  }
+}
+
+function eventStreamErrorDetail(value: unknown): string {
+  if (
+    value
+    && typeof value === 'object'
+    && 'detail' in value
+    && typeof value.detail === 'string'
+  ) {
+    return value.detail
+  }
+  return 'Chat 응답 처리 중 문제가 발생했습니다. 다시 시도하세요.'
 }
 
 function downloadFilename(contentDisposition: string | null): string {

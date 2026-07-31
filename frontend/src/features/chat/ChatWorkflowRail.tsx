@@ -11,6 +11,10 @@ import {
 } from 'lucide-react'
 import type { ChatWorkflowStep } from '../../api/types'
 
+export type ChatWorkflowProgressStep = Omit<ChatWorkflowStep, 'status'> & {
+  status: ChatWorkflowStep['status'] | 'IN_PROGRESS'
+}
+
 const labels: Record<ChatWorkflowStep['stage'], string> = {
   AUTHORIZATION: '권한 확인',
   BUDGET_RESERVATION: '예산 예약',
@@ -34,6 +38,14 @@ const icons: Record<ChatWorkflowStep['stage'], LucideIcon> = {
 }
 
 const detailLabels: Partial<Record<string, string>> = {
+  AUTHORIZATION_IN_PROGRESS: '질문 실행 권한을 확인하고 있습니다.',
+  BUDGET_RESERVATION_IN_PROGRESS: '요청 및 토큰 예산을 예약하고 있습니다.',
+  ROUTING_IN_PROGRESS: '질문 의도와 인가된 검색 경로를 결정하고 있습니다.',
+  RETRIEVAL_IN_PROGRESS: '인가된 근거를 검색하고 있습니다.',
+  RERANKING_IN_PROGRESS: '검색 근거의 우선순위를 계산하고 있습니다.',
+  COMPOSITION_IN_PROGRESS: '승인된 컨텍스트로 답변을 작성하고 있습니다.',
+  CITATION_VALIDATION_IN_PROGRESS: '최종 권한과 인용 근거를 검증하고 있습니다.',
+  PERSISTENCE_IN_PROGRESS: '보존정책에 따라 대화를 저장하고 있습니다.',
   CHAT_QUERY_AUTHORIZED: '질문 실행 권한을 확인했습니다.',
   CHAT_RATE_AND_TOKEN_BUDGET_RESERVED: '요청 및 토큰 예산을 예약했습니다.',
   INFERENCE_PROVIDER_POLICY_BINDING_UNAVAILABLE: '승인된 추론 프로필 연결이 필요합니다.',
@@ -79,7 +91,8 @@ const detailLabels: Partial<Record<string, string>> = {
   PERSISTED: '보존정책에 따라 대화를 저장했습니다.',
 }
 
-const statusLabels: Record<ChatWorkflowStep['status'], string> = {
+const statusLabels: Record<ChatWorkflowProgressStep['status'], string> = {
+  IN_PROGRESS: '진행 중',
   COMPLETED: '완료',
   SKIPPED: '건너뜀',
   UNAVAILABLE: '사용 불가',
@@ -87,19 +100,32 @@ const statusLabels: Record<ChatWorkflowStep['status'], string> = {
   REFUSED: '중단',
 }
 
-function statusClass(status: ChatWorkflowStep['status']): string {
+function statusClass(status: ChatWorkflowProgressStep['status']): string {
+  if (status === 'IN_PROGRESS') return 'is-progress'
   if (status === 'COMPLETED') return 'is-completed'
   if (status === 'SKIPPED') return 'is-skipped'
   if (status === 'UNAVAILABLE') return 'is-unavailable'
   return 'is-failed'
 }
 
-export function ChatWorkflowRail({ steps }: { steps: ChatWorkflowStep[] }) {
+export function ChatWorkflowRail({
+  isStreaming = false,
+  steps,
+}: {
+  isStreaming?: boolean
+  steps: ChatWorkflowProgressStep[]
+}) {
   if (steps.length === 0) {
-    return <p className="chat-evidence-empty">서버가 응답하면 실제 처리 단계가 표시됩니다.</p>
+    return (
+      <p className="chat-evidence-empty">
+        {isStreaming
+          ? '서버가 실제 처리 단계를 시작하면 표시됩니다.'
+          : '답변을 선택하면 서버가 기록한 처리 단계가 표시됩니다.'}
+      </p>
+    )
   }
   return (
-    <ol aria-label="질문 응답 Workflow" className="chat-workflow-rail">
+    <ol aria-busy={isStreaming} aria-label="질문 응답 Workflow" className="chat-workflow-rail">
       {steps.map((step, index) => {
         const Icon = icons[step.stage]
         const detail = detailLabels[step.detail_code] ?? '서버가 반환한 처리 상태입니다.'

@@ -2,6 +2,16 @@
 
 ## Current verification status
 
+### Server-observed Chat live workflow progress — 2026-07-31
+
+The Chat stream uses the same bounded request and authorization contract as the ordinary endpoint.
+Focused service tests assert that only real operation starts emit request-local `IN_PROGRESS`
+events and that those events are not persisted. Route tests assert the SSE workflow-to-final-result
+ordering, while browser-component tests assert an in-progress stage renders before the final answer
+and is replaced by a terminal stored trace. Development runtime/browser evidence is recorded only
+after the exact committed source has been published; target deployment behavior remains a separate
+acceptance gate.
+
 ### Knowledge Information Profiles and bounded Proposal timeout — 2026-07-31
 
 Revision `0076` adds forced-RLS Property Profile and normalized synonym tables tied by composite

@@ -38,6 +38,7 @@ class ChatWorkflowStage(StrEnum):
 
 
 class ChatWorkflowStatus(StrEnum):
+    IN_PROGRESS = "IN_PROGRESS"
     COMPLETED = "COMPLETED"
     SKIPPED = "SKIPPED"
     UNAVAILABLE = "UNAVAILABLE"

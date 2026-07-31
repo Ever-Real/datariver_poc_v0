@@ -214,6 +214,61 @@ describe('API problem handling', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 
+  it('delivers server workflow events before the final Chat stream result', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response([
+      'event: workflow',
+      'data: {"stage":"RETRIEVAL","status":"IN_PROGRESS","detail_code":"RETRIEVAL_IN_PROGRESS"}',
+      '',
+      'event: result',
+      'data: {"answer":"완료된 답변"}',
+      '',
+    ].join('\n'), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    const events: Array<{ event: string; data: unknown }> = []
+
+    await expect(client.requestEventStream<{ answer: string }>(
+      '/chat/query/stream',
+      { method: 'POST', body: JSON.stringify({ question: '질문' }) },
+      (event) => events.push(event),
+    )).resolves.toEqual({ answer: '완료된 답변' })
+
+    expect(events).toEqual([{
+      event: 'workflow',
+      data: {
+        stage: 'RETRIEVAL',
+        status: 'IN_PROGRESS',
+        detail_code: 'RETRIEVAL_IN_PROGRESS',
+      },
+    }])
+    const [, options] = fetchMock.mock.calls[0] ?? []
+    expect(options?.cache).toBe('no-store')
+    const headers = new Headers(options?.headers)
+    expect(headers.get('Accept')).toBe('text/event-stream')
+    expect(headers.get('Authorization')).toBe('Bearer token')
+    expect(headers.get('X-Workspace-Id')).toBe('workspace')
+  })
+
+  it('does not accept a stream error as a completed Chat response', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response([
+      'event: error',
+      'data: {"detail":"응답 처리 중 문제가 발생했습니다. 다시 시도하세요."}',
+      '',
+    ].join('\n'), {
+      status: 200,
+      headers: { 'Content-Type': 'text/event-stream' },
+    })))
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    await expect(client.requestEventStream('/chat/query/stream', {
+      method: 'POST',
+      body: JSON.stringify({ question: '질문' }),
+    }, () => undefined)).rejects.toThrow('응답 처리 중 문제가 발생했습니다.')
+  })
+
   it('downloads a server-versioned template through the authenticated no-store boundary', async () => {
     const fetchMock = vi.fn((_input: RequestInfo | URL, _init?: RequestInit) => {
       void _input

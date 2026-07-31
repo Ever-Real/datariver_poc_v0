@@ -147,6 +147,10 @@ artifacts, independent approval and authorized vector/Neo4j projection are defin
 Its Bleach policy, exact-version Presigned download, pgvector exact search, declared
 `GovernancePolicy -> Dataset/Term` projection and Chat citation boundary are refined by
 [ADR-0082](adr/0082-governance-document-pgvector-download-and-chat-grounding.md).
+Semantic `AUTO` Chat routing is defined by
+[ADR-0085](adr/0085-semantic-chat-route-classification.md), and its server-observed live workflow
+progress boundary is defined by
+[ADR-0089](adr/0089-live-chat-workflow-progress-events.md).
 The consolidated Knowledge Information workspace, immutable-Release Property Profiles, governed
 Catalog tables and bounded document-Proposal proxy bridge are defined by
 [ADR-0083](adr/0083-knowledge-information-property-profiles-and-bounded-proposal-timeout.md).

@@ -786,6 +786,18 @@
   background: #83bd94;
 }
 
+.chat-workflow-rail li.is-progress .chat-workflow-node {
+  border-color: #478bc9;
+  color: #276fae;
+  background: #eaf4fd;
+  box-shadow: 0 0 0 4px rgba(71, 139, 201, .14);
+  animation: chat-workflow-pulse 1.25s ease-in-out infinite;
+}
+
+.chat-workflow-rail li.is-progress .chat-workflow-edge {
+  background: linear-gradient(90deg, #7fb4e2, #d4dce2);
+}
+
 .chat-workflow-rail li.is-unavailable .chat-workflow-node {
   border-color: #d8a348;
   color: #8a611a;
@@ -1445,6 +1457,11 @@
   50% { opacity: 1; transform: scale(1); }
 }
 
+@keyframes chat-workflow-pulse {
+  0%, 100% { box-shadow: 0 0 0 4px rgba(71, 139, 201, .11); }
+  50% { box-shadow: 0 0 0 7px rgba(71, 139, 201, .04); }
+}
+
 @keyframes chat-bounce {
   0%, 60%, 100% { transform: translateY(0); opacity: .45; }
   30% { transform: translateY(-4px); opacity: 1; }
@@ -1566,6 +1583,7 @@
   .chat-session-card,
   .chat-conversation .message,
   .chat-route-options,
+  .chat-workflow-rail li.is-progress .chat-workflow-node,
   .chat-evidence-modal,
   .chat-evidence-modal-surface {
     scroll-behavior: auto;
