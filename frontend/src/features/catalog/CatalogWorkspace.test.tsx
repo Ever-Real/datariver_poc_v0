@@ -158,6 +158,74 @@ describe('catalog workspace', () => {
     expect(request.mock.calls.some(([path]) => String(path).includes('10000'))).toBe(false)
   })
 
+  it('shows the latest quality score in search results and the Evidence panel', async () => {
+    const qualityAsset = {
+      asset_id: asset.id,
+      name: asset.name,
+      platform: asset.platform,
+      database_name: asset.database_name,
+      schema_name: asset.schema_name,
+      classification: asset.classification,
+      lifecycle: asset.lifecycle,
+      profile_readiness: 'READY',
+      profile_observed_at: '2026-07-30T00:00:00Z',
+      active_rule_set_count: 2,
+      latest_run_state: 'SUCCEEDED',
+      latest_quality_outcome: 'PASS',
+      latest_score_basis_points: 9_875,
+    }
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path === '/quality/capability') {
+        return Promise.resolve({
+          contract_version: 'QUALITY_CAPABILITY_V2',
+          observed_at: '2026-07-30T00:00:00Z',
+          valid_until: '2026-07-30T00:00:30Z',
+          cache_scope: 'a'.repeat(64),
+          axes: [
+            'read_access',
+            'profile_readiness',
+            'rule_authoring',
+            'review',
+            'activation',
+            'manual_execution',
+            'scheduling',
+            'operations',
+          ].map((id) => ({ id, state: id === 'read_access' ? 'AVAILABLE' : 'UNAVAILABLE' })),
+        })
+      }
+      if (path === '/quality/assets/summary-batch') {
+        expect(options?.method).toBe('POST')
+        if (typeof options?.body !== 'string') {
+          throw new Error('Expected JSON request body')
+        }
+        expect(JSON.parse(options.body)).toEqual({ asset_ids: [asset.id] })
+        return Promise.resolve({
+          items: [qualityAsset],
+          cache_scope: 'a'.repeat(64),
+          observed_at: '2026-07-30T00:00:00Z',
+          authorization_valid_until: '2026-07-30T00:00:30Z',
+        })
+      }
+      return defaultRequest(path, options)
+    })
+    render(<TestCatalogPage
+      client={clientWith(request)}
+      workspaceId="workspace-one"
+      subjectId="subject-one"
+      securityEpoch={7}
+      authorizationRevision={11}
+    />)
+
+    const table = await screen.findByRole('table', { name: '카탈로그 검색 결과' })
+    expect(await within(table).findByText('98.75%')).toBeInTheDocument()
+    expect(within(table).getByText('PASS')).toBeInTheDocument()
+    fireEvent.click(within(table).getByText(asset.name))
+
+    const evidence = await screen.findByRole('region', { name: '최근 품질 검사 Evidence' })
+    expect(within(evidence).getByText('98.75%')).toBeInTheDocument()
+    expect(within(evidence).getByText('PASS')).toBeInTheDocument()
+  })
+
   it('surfaces bounded catalog summary evidence instead of implying completeness', async () => {
     const bounded = {
       ...asset,

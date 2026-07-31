@@ -88,6 +88,51 @@ class QualityAssetSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class QualityAssetWorkspace:
+    asset: QualityAssetSummary
+    rule_sets: tuple[QualityRuleSetSummary, ...]
+    runs: tuple[QualityRunSummary, ...]
+    trend: tuple[QualityTrendPoint, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class QualityCommonRuleTemplateRule:
+    field_identifier: str
+    kind: str
+    severity: str
+    parameters: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class QualityCommonRuleTemplateSummary:
+    template_id: UUID
+    name: str
+    description: str | None
+    rules: tuple[QualityCommonRuleTemplateRule, ...]
+    mapping_count: int
+    created_at: datetime
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class QualityCommonRuleTemplateMapping:
+    asset_id: UUID
+    asset_name: str
+    platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    rule_set_id: UUID
+    rule_set_name: str
+    mapped_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class QualityCommonRuleTemplateDetail:
+    template: QualityCommonRuleTemplateSummary
+    mappings: tuple[QualityCommonRuleTemplateMapping, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class QualityRuleVersionSummary:
     version_id: UUID
     version_number: int

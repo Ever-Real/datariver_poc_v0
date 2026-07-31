@@ -2,13 +2,14 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { Network, X } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { CatalogAssetDetail, CatalogLineage } from '../../api/types'
+import type { CatalogAssetDetail, CatalogLineage, QualityAsset } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { AccordionItem } from '../../components/common/Accordion'
 import { BadgeScroller } from '../../components/common/ControlledVocabularyInput'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { CatalogLineageGraph } from './CatalogLineageGraph'
 import { CatalogEmptyValue } from './CatalogEmptyValue'
+import { basisPointsText, dateTimeText, QualityStatus } from '../quality/QualityShared'
 
 function valueOf(document: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const key of keys) {
@@ -66,6 +67,10 @@ export function CatalogDetailPane({
   onSelectAsset,
   onResizeWidth,
   width,
+  qualitySummary,
+  showQualityEvidence = false,
+  qualityReadAvailable = false,
+  qualityLoading = false,
   asOverlay = false,
   asModal = false,
 }: {
@@ -76,6 +81,10 @@ export function CatalogDetailPane({
   onSelectAsset?: (assetId: string) => void
   onResizeWidth?: (width: number) => void
   width?: number
+  qualitySummary?: QualityAsset
+  showQualityEvidence?: boolean
+  qualityReadAvailable?: boolean
+  qualityLoading?: boolean
   /** true이면 오버레이(fixed positioning) 방식으로 렌더링 */
   asOverlay?: boolean
   /** true이면 document portal 안의 중앙 모달 surface를 채웁니다. */
@@ -247,6 +256,37 @@ export function CatalogDetailPane({
             <TruncatedText value={detail.external_urn} />
           </button>
         </div>
+        {showQualityEvidence && <section
+          className="catalog-quality-evidence"
+          aria-label="최근 품질 검사 Evidence"
+        >
+          <div>
+            <span className="eyebrow">Latest quality evidence</span>
+            <strong>최근 품질 점수</strong>
+          </div>
+          {qualityLoading
+            ? <div className="catalog-quality-evidence-value empty">
+              <b>확인 중…</b>
+            </div>
+            : !qualityReadAvailable
+              ? <div className="catalog-quality-evidence-value empty">
+                <b>표시 불가</b>
+                <small>품질 열람 권한이 있을 때 최근 결과를 표시합니다.</small>
+              </div>
+              : qualitySummary?.latest_quality_outcome
+            ? <div className="catalog-quality-evidence-value">
+              <b>{basisPointsText(qualitySummary.latest_score_basis_points)}</b>
+              <QualityStatus value={qualitySummary.latest_quality_outcome} />
+              <small>최근 완료 검사 {qualitySummary.latest_run_state ?? '—'}</small>
+            </div>
+            : <div className="catalog-quality-evidence-value empty">
+              <b>검사 이력 없음</b>
+              <small>최근 품질 실행 결과가 아직 없습니다.</small>
+            </div>}
+          {qualitySummary?.profile_observed_at && (
+            <small>Profile 관측 {dateTimeText(qualitySummary.profile_observed_at)}</small>
+          )}
+        </section>}
       <div className="catalog-detail-tabs" role="tablist" aria-label="상세 정보 보기">
         <button aria-controls="catalog-metadata-panel" aria-selected={activeTab === 'metadata'} className={activeTab === 'metadata' ? 'active' : ''} id="catalog-metadata-tab" onClick={() => showTab('metadata')} role="tab" type="button">Table Details</button>
         <button aria-controls="catalog-lineage-panel" aria-selected={activeTab === 'lineage'} className={activeTab === 'lineage' ? 'active' : ''} id="catalog-lineage-tab" onClick={() => showTab('lineage')} role="tab" type="button">Lineage</button>

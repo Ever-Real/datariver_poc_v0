@@ -12,8 +12,11 @@ from datariver.application.classification_access import ClassificationAccessReso
 from datariver.application.quality_read_contracts import (
     QualityAssetPage,
     QualityAssetSummary,
+    QualityAssetWorkspace,
     QualityCapability,
     QualityCapabilityAxis,
+    QualityCommonRuleTemplateDetail,
+    QualityCommonRuleTemplateSummary,
     QualityIssuePage,
     QualityOverview,
     QualityReadContext,
@@ -190,6 +193,8 @@ class QualityReadService:
         *,
         limit: int,
         cursor: str | None,
+        query: str = "",
+        schema_name: str | None = None,
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
@@ -201,9 +206,33 @@ class QualityReadService:
             include_profile=True,
         )
         return (
-            await self._repository.list_assets(context=context, limit=limit, cursor=cursor),
+            await self._repository.list_assets(
+                context=context,
+                limit=limit,
+                cursor=cursor,
+                query=query,
+                schema_name=schema_name,
+            ),
             context,
         )
+
+    async def get_assets(
+        self,
+        *,
+        asset_ids: tuple[UUID, ...],
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[tuple[QualityAssetSummary, ...], QualityReadContext]:
+        if not 1 <= len(asset_ids) <= 100 or len(asset_ids) != len(set(asset_ids)):
+            raise ValueError("The Quality asset summary batch must contain 1 to 100 unique IDs.")
+        context = await self._read_context(
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            include_profile=True,
+        )
+        return await self._repository.get_assets(context=context, asset_ids=asset_ids), context
 
     async def list_rule_sets(
         self,
@@ -257,6 +286,65 @@ class QualityReadService:
         value = await self._repository.get_rule_set(context=context, rule_set_id=rule_set_id)
         if value is None:
             raise NotFoundError("The Quality Rule Set was not found.")
+        return value, context
+
+    async def get_asset_workspace(
+        self,
+        *,
+        asset_id: UUID,
+        days: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[QualityAssetWorkspace, QualityReadContext]:
+        context = await self._read_context(
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            include_profile=True,
+        )
+        value = await self._repository.get_asset_workspace(
+            context=context,
+            asset_id=asset_id,
+            days=days,
+        )
+        if value is None:
+            raise NotFoundError("The Quality asset was not found.")
+        return value, context
+
+    async def list_common_rule_templates(
+        self,
+        *,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[tuple[QualityCommonRuleTemplateSummary, ...], QualityReadContext]:
+        context = await self._read_context(
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._repository.list_common_rule_templates(context=context), context
+
+    async def get_common_rule_template(
+        self,
+        *,
+        template_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[QualityCommonRuleTemplateDetail, QualityReadContext]:
+        context = await self._read_context(
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        value = await self._repository.get_common_rule_template(
+            context=context,
+            template_id=template_id,
+        )
+        if value is None:
+            raise NotFoundError("The Quality common Rule template was not found.")
         return value, context
 
     async def list_runs(

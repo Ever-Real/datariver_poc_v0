@@ -89,7 +89,7 @@ version, canonical contract hash and independent reviewer remain exact.
 
 ### Quality read model
 
-All implemented public Quality routes are `GET`, require an active human identity and return
+Public Quality reads and bounded authoring commands require an active human identity and return
 `Cache-Control: private, no-store` with `Vary: Authorization, X-Workspace-Id`. Every resource read
 requires `quality.read`; Profile readiness is returned only after the separate
 `quality.profile.read` decision. Service identities use the internal execution routes and are
@@ -100,8 +100,14 @@ rejected from this surface. Hidden resources return `404`.
 | `GET /quality/capability` | independent read/Profile/authoring/activation/manual/scheduling/operations axes; database-time `valid_until` is no more than 30 seconds |
 | `GET /quality/rule-definitions` | fixed `NOT_NULL`, typed `RANGE` and safety-disabled `REGEX` contracts; no GX JSON/kwargs |
 | `GET /quality/overview?days=` | authorization-pruned current snapshot and at most 90 daily server trend points; `days` is 1–90 |
-| `GET /quality/assets?limit=&cursor=` | permission-scoped active assets and redacted or approved Profile readiness; default 25, maximum 100 |
+| `GET /quality/assets?q=&schema=&limit=&cursor=` | permission-scoped active assets and redacted or approved Profile readiness; literal table/schema search; default 25, maximum 100 |
+| `POST /quality/assets/summary-batch` | one to 100 caller-ordered Catalog asset IDs; returns only authorization-visible latest Quality summaries for Search integration |
 | `GET /quality/assets/{asset_id}` | exact authorized asset summary; no DataHub URN or source coordinate |
+| `GET /quality/assets/{asset_id}/workspace?days=` | one authorized asset with at most 50 Rule Sets, 50 recent Runs and 90 daily score points |
+| `GET /quality/common-rule-templates` | at most 100 reusable typed Rule templates with authorization-visible mapping counts |
+| `POST /quality/common-rule-templates` | actor-bound idempotent creation of one to 100 typed `NOT_NULL/RANGE` Rules |
+| `GET /quality/common-rule-templates/{template_id}` | exact template and at most 500 authorization-visible asset mappings |
+| `POST /quality/common-rule-templates/{template_id}/mappings` | one atomic server-validated mapping to one to 25 unique assets through canonical Rule Set proposals |
 | `GET /quality/rule-sets?limit=&cursor=` | bounded Rule Set summaries |
 | `GET /quality/rule-sets/{rule_set_id}` | immutable version and typed Rule detail with an aggregate ETag |
 | `GET /quality/runs?limit=&cursor=` | bounded execution state and separate quality outcome summaries |
@@ -109,12 +115,13 @@ rejected from this surface. Hidden resources return `404`.
 | `GET /quality/runs/{run_id}/results?limit=&cursor=` | sanitized counts/ratios/duration per typed Rule; no unexpected rows or values |
 | `GET /quality/issues?limit=&cursor=` | server-side failure aggregate with opaque issue IDs |
 
-List wrappers return `cache_scope`, `observed_at`, `authorization_valid_until` and an opaque next
+List/read wrappers return `cache_scope`, `observed_at`, `authorization_valid_until` and an opaque next
 cursor bound to the exact Workspace and caller scope. Malformed, cross-resource, cross-scope or
-page-size-mismatched cursors fail closed. Rule authoring, review, activation, manual Run, cancel,
-retry and scheduling mutations are intentionally absent until trusted field identity and
-deployment readiness attestations exist; the browser displays those axes as unavailable rather
-than inventing values.
+page-size-mismatched cursors fail closed. Common-template mapping reuses the existing bounded
+Rule-proposal command and therefore requires the trusted field identity and deployment readiness
+attestations. Review, activation, manual Run, cancel, retry and scheduling controls remain absent
+from the ordinary user-centric browser surface; unavailable axes are displayed without invented
+values.
 
 ### Governance Document library
 

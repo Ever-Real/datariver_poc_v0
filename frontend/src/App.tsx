@@ -332,7 +332,16 @@ export function App() {
     >
       <Suspense fallback={<main className="centered"><div className="loader" /><p>화면을 불러오고 있습니다.</p></main>}>
         {page === 'dashboard' && <DashboardPage client={client} onNavigate={navigate} />}
-        {page === 'catalog' && <CatalogPage client={client} initialQuery={catalogQuery} onQueryChange={searchCatalog} catalogExportWorkerEnabled={catalogExportWorkerEnabled} />}
+        {page === 'catalog' && <CatalogPage
+          client={client}
+          initialQuery={catalogQuery}
+          onQueryChange={searchCatalog}
+          catalogExportWorkerEnabled={catalogExportWorkerEnabled}
+          workspaceId={activeWorkspace}
+          subjectId={authenticatedSubject}
+          securityEpoch={auth.securityEpoch}
+          authorizationRevision={auth.authorizationRevision}
+        />}
         {page === 'registration' && <RegistrationPage client={client} />}
         {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
         {page === 'quality' && <QualityPage

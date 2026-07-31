@@ -24,6 +24,11 @@ from datariver.application.quality_read_contracts import (
     ProfileReadiness,
     QualityAssetPage,
     QualityAssetSummary,
+    QualityAssetWorkspace,
+    QualityCommonRuleTemplateDetail,
+    QualityCommonRuleTemplateMapping,
+    QualityCommonRuleTemplateRule,
+    QualityCommonRuleTemplateSummary,
     QualityIssuePage,
     QualityIssueSummary,
     QualityOverview,
@@ -48,6 +53,8 @@ from datariver.infrastructure.db.models.catalog import (
     AssetProjectionModel,
 )
 from datariver.infrastructure.db.models.quality import (
+    QualityCommonRuleTemplateMappingModel,
+    QualityCommonRuleTemplateModel,
     QualityExpectationResultModel,
     QualityRuleDefinitionModel,
     QualityRuleSetModel,
@@ -194,13 +201,36 @@ class SqlQualityReadRepository(QualityReadRepository):
         )
 
     async def list_assets(
-        self, *, context: QualityReadContext, limit: int, cursor: str | None
+        self,
+        *,
+        context: QualityReadContext,
+        limit: int,
+        cursor: str | None,
+        query: str = "",
+        schema_name: str | None = None,
     ) -> QualityAssetPage:
         conditions = catalog_asset_scope_conditions(context.subject, context.access)
+        normalized_query = query.strip()
+        if normalized_query:
+            pattern = _literal_contains_pattern(normalized_query)
+            conditions.append(
+                or_(
+                    AssetProjectionModel.name.ilike(pattern, escape="\\"),
+                    AssetProjectionModel.schema_name.ilike(pattern, escape="\\"),
+                    AssetProjectionModel.database_name.ilike(pattern, escape="\\"),
+                    AssetProjectionModel.platform.ilike(pattern, escape="\\"),
+                )
+            )
+        if schema_name:
+            conditions.append(AssetProjectionModel.schema_name == schema_name)
+        cursor_resource = _asset_cursor_resource(
+            query=normalized_query,
+            schema_name=schema_name,
+        )
         if cursor:
             boundary = _decode_cursor(
                 cursor,
-                resource="assets",
+                resource=cursor_resource,
                 context=context,
                 limit=limit,
             )
@@ -227,61 +257,37 @@ class SqlQualityReadRepository(QualityReadRepository):
         )
         has_more = len(rows) > limit
         selected = rows[:limit]
-        asset_ids = tuple(row.id for row in selected)
-        counts = await self._active_rule_set_counts(
-            workspace_id=context.subject.workspace_id,
-            asset_ids=asset_ids,
-        )
-        latest_runs = await self._latest_runs_by_asset(
-            workspace_id=context.subject.workspace_id,
-            asset_ids=asset_ids,
-        )
-        profiles = (
-            await self._latest_profiles(
-                workspace_id=context.subject.workspace_id,
-                asset_ids=asset_ids,
-            )
-            if context.profile_allowed
-            else {}
-        )
-        items = tuple(
-            QualityAssetSummary(
-                asset_id=row.id,
-                name=row.name,
-                platform=row.platform,
-                database_name=row.database_name,
-                schema_name=row.schema_name,
-                classification=Classification(row.classification).name,
-                lifecycle=row.lifecycle,
-                active_rule_set_count=counts.get(row.id, 0),
-                latest_run_state=(latest_runs[row.id].state if row.id in latest_runs else None),
-                latest_quality_outcome=(
-                    latest_runs[row.id].quality_outcome if row.id in latest_runs else None
-                ),
-                latest_score_basis_points=(
-                    _run_basis_points(latest_runs[row.id]) if row.id in latest_runs else None
-                ),
-                profile_readiness=(
-                    _profile_readiness(
-                        profile=profiles.get(row.id),
-                        observed_at=context.observed_at,
-                    )
-                    if context.profile_allowed
-                    else "REDACTED"
-                ),
-                profile_observed_at=(profiles[row.id].profiled_at if row.id in profiles else None),
-            )
-            for row in selected
-        )
+        items = await self._asset_summaries(context=context, rows=selected)
         next_cursor = None
         if has_more and selected:
             next_cursor = _encode_cursor(
-                resource="assets",
+                resource=cursor_resource,
                 context=context,
                 limit=limit,
                 boundary={"name": selected[-1].name, "id": str(selected[-1].id)},
             )
         return QualityAssetPage(items=items, next_cursor=next_cursor)
+
+    async def get_assets(
+        self, *, context: QualityReadContext, asset_ids: tuple[UUID, ...]
+    ) -> tuple[QualityAssetSummary, ...]:
+        if not asset_ids:
+            return ()
+        rows = list(
+            (
+                await self._session.scalars(
+                    select(AssetProjectionModel).where(
+                        and_(
+                            *catalog_asset_scope_conditions(context.subject, context.access),
+                            AssetProjectionModel.id.in_(asset_ids),
+                        )
+                    )
+                )
+            ).all()
+        )
+        summaries = await self._asset_summaries(context=context, rows=rows)
+        by_id = {item.asset_id: item for item in summaries}
+        return tuple(by_id[asset_id] for asset_id in asset_ids if asset_id in by_id)
 
     async def list_rule_sets(
         self, *, context: QualityReadContext, limit: int, cursor: str | None
@@ -342,56 +348,170 @@ class SqlQualityReadRepository(QualityReadRepository):
     async def get_asset(
         self, *, context: QualityReadContext, asset_id: UUID
     ) -> QualityAssetSummary | None:
-        row = (
-            await self._session.scalars(
-                select(AssetProjectionModel).where(
-                    and_(
-                        *catalog_asset_scope_conditions(context.subject, context.access),
-                        AssetProjectionModel.id == asset_id,
+        values = await self.get_assets(context=context, asset_ids=(asset_id,))
+        return values[0] if values else None
+
+    async def get_asset_workspace(
+        self, *, context: QualityReadContext, asset_id: UUID, days: int
+    ) -> QualityAssetWorkspace | None:
+        asset = await self.get_asset(context=context, asset_id=asset_id)
+        if asset is None:
+            return None
+        visible = self._visible_assets(context).subquery("visible_quality_assets")
+        rule_rows = list(
+            (
+                await self._session.execute(
+                    select(QualityRuleSetModel, visible.c.name.label("asset_name"))
+                    .join(visible, visible.c.id == QualityRuleSetModel.asset_id)
+                    .where(
+                        QualityRuleSetModel.workspace_id == context.subject.workspace_id,
+                        QualityRuleSetModel.asset_id == asset_id,
                     )
+                    .order_by(
+                        desc(QualityRuleSetModel.updated_at),
+                        desc(QualityRuleSetModel.id),
+                    )
+                    .limit(50)
+                )
+            ).all()
+        )
+        runs = await self._run_rows(
+            context=context,
+            conditions=(QualityValidationRunModel.asset_id == asset_id,),
+            limit=50,
+        )
+        asset_visible = (
+            self._visible_assets(context)
+            .where(AssetProjectionModel.id == asset_id)
+            .subquery("selected_quality_asset")
+        )
+        return QualityAssetWorkspace(
+            asset=asset,
+            rule_sets=await self._rule_set_summaries(rule_rows),
+            runs=tuple(_run_summary(row) for row in runs),
+            trend=await self._trend(
+                context=context,
+                visible=asset_visible,
+                since=context.observed_at - timedelta(days=days),
+            ),
+        )
+
+    async def list_common_rule_templates(
+        self, *, context: QualityReadContext
+    ) -> tuple[QualityCommonRuleTemplateSummary, ...]:
+        visible = self._visible_assets(context).subquery("visible_template_assets")
+        counts = (
+            select(
+                QualityCommonRuleTemplateMappingModel.template_id,
+                func.count().label("mapping_count"),
+            )
+            .join(
+                visible,
+                visible.c.id == QualityCommonRuleTemplateMappingModel.asset_id,
+            )
+            .where(
+                QualityCommonRuleTemplateMappingModel.workspace_id == context.subject.workspace_id
+            )
+            .group_by(QualityCommonRuleTemplateMappingModel.template_id)
+        ).subquery("visible_template_mapping_counts")
+        rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        QualityCommonRuleTemplateModel,
+                        func.coalesce(counts.c.mapping_count, 0).label("mapping_count"),
+                    )
+                    .outerjoin(
+                        counts,
+                        counts.c.template_id == QualityCommonRuleTemplateModel.id,
+                    )
+                    .where(
+                        QualityCommonRuleTemplateModel.workspace_id == context.subject.workspace_id
+                    )
+                    .order_by(
+                        desc(QualityCommonRuleTemplateModel.updated_at),
+                        desc(QualityCommonRuleTemplateModel.id),
+                    )
+                    .limit(100)
+                )
+            ).all()
+        )
+        return tuple(_common_template_summary(row[0], int(row.mapping_count)) for row in rows)
+
+    async def get_common_rule_template(
+        self, *, context: QualityReadContext, template_id: UUID
+    ) -> QualityCommonRuleTemplateDetail | None:
+        template = (
+            await self._session.scalars(
+                select(QualityCommonRuleTemplateModel).where(
+                    QualityCommonRuleTemplateModel.workspace_id == context.subject.workspace_id,
+                    QualityCommonRuleTemplateModel.id == template_id,
                 )
             )
         ).one_or_none()
-        if row is None:
+        if template is None:
             return None
-        counts = await self._active_rule_set_counts(
-            workspace_id=context.subject.workspace_id,
-            asset_ids=(asset_id,),
+        visible = self._visible_assets(context).subquery("visible_template_assets")
+        rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        QualityCommonRuleTemplateMappingModel,
+                        AssetProjectionModel,
+                        QualityRuleSetModel,
+                    )
+                    .join(
+                        visible,
+                        visible.c.id == QualityCommonRuleTemplateMappingModel.asset_id,
+                    )
+                    .join(
+                        AssetProjectionModel,
+                        and_(
+                            AssetProjectionModel.workspace_id
+                            == QualityCommonRuleTemplateMappingModel.workspace_id,
+                            AssetProjectionModel.id
+                            == QualityCommonRuleTemplateMappingModel.asset_id,
+                        ),
+                    )
+                    .join(
+                        QualityRuleSetModel,
+                        and_(
+                            QualityRuleSetModel.workspace_id
+                            == QualityCommonRuleTemplateMappingModel.workspace_id,
+                            QualityRuleSetModel.id
+                            == QualityCommonRuleTemplateMappingModel.rule_set_id,
+                        ),
+                    )
+                    .where(
+                        QualityCommonRuleTemplateMappingModel.workspace_id
+                        == context.subject.workspace_id,
+                        QualityCommonRuleTemplateMappingModel.template_id == template_id,
+                    )
+                    .order_by(
+                        AssetProjectionModel.schema_name,
+                        AssetProjectionModel.name,
+                        AssetProjectionModel.id,
+                    )
+                    .limit(500)
+                )
+            ).all()
         )
-        latest_runs = await self._latest_runs_by_asset(
-            workspace_id=context.subject.workspace_id,
-            asset_ids=(asset_id,),
-        )
-        profiles = (
-            await self._latest_profiles(
-                workspace_id=context.subject.workspace_id,
-                asset_ids=(asset_id,),
+        mappings = tuple(
+            QualityCommonRuleTemplateMapping(
+                asset_id=asset.id,
+                asset_name=asset.name,
+                platform=asset.platform,
+                database_name=asset.database_name,
+                schema_name=asset.schema_name,
+                rule_set_id=rule_set.id,
+                rule_set_name=rule_set.name,
+                mapped_at=mapping.created_at,
             )
-            if context.profile_allowed
-            else {}
+            for mapping, asset, rule_set in rows
         )
-        latest_run = latest_runs.get(asset_id)
-        profile = profiles.get(asset_id)
-        return QualityAssetSummary(
-            asset_id=row.id,
-            name=row.name,
-            platform=row.platform,
-            database_name=row.database_name,
-            schema_name=row.schema_name,
-            classification=Classification(row.classification).name,
-            lifecycle=row.lifecycle,
-            active_rule_set_count=counts.get(asset_id, 0),
-            latest_run_state=latest_run.state if latest_run is not None else None,
-            latest_quality_outcome=(latest_run.quality_outcome if latest_run is not None else None),
-            latest_score_basis_points=(
-                _run_basis_points(latest_run) if latest_run is not None else None
-            ),
-            profile_readiness=(
-                _profile_readiness(profile=profile, observed_at=context.observed_at)
-                if context.profile_allowed
-                else "REDACTED"
-            ),
-            profile_observed_at=profile.profiled_at if profile is not None else None,
+        return QualityCommonRuleTemplateDetail(
+            template=_common_template_summary(template, len(mappings)),
+            mappings=mappings,
         )
 
     async def get_rule_set(
@@ -839,6 +959,59 @@ class SqlQualityReadRepository(QualityReadRepository):
         ).all()
         return {row.asset_id: int(row._mapping["aggregate_count"]) for row in rows}
 
+    async def _asset_summaries(
+        self,
+        *,
+        context: QualityReadContext,
+        rows: Sequence[AssetProjectionModel],
+    ) -> tuple[QualityAssetSummary, ...]:
+        asset_ids = tuple(row.id for row in rows)
+        counts = await self._active_rule_set_counts(
+            workspace_id=context.subject.workspace_id,
+            asset_ids=asset_ids,
+        )
+        latest_runs = await self._latest_runs_by_asset(
+            workspace_id=context.subject.workspace_id,
+            asset_ids=asset_ids,
+        )
+        profiles = (
+            await self._latest_profiles(
+                workspace_id=context.subject.workspace_id,
+                asset_ids=asset_ids,
+            )
+            if context.profile_allowed
+            else {}
+        )
+        return tuple(
+            QualityAssetSummary(
+                asset_id=row.id,
+                name=row.name,
+                platform=row.platform,
+                database_name=row.database_name,
+                schema_name=row.schema_name,
+                classification=Classification(row.classification).name,
+                lifecycle=row.lifecycle,
+                active_rule_set_count=counts.get(row.id, 0),
+                latest_run_state=(latest_runs[row.id].state if row.id in latest_runs else None),
+                latest_quality_outcome=(
+                    latest_runs[row.id].quality_outcome if row.id in latest_runs else None
+                ),
+                latest_score_basis_points=(
+                    _run_basis_points(latest_runs[row.id]) if row.id in latest_runs else None
+                ),
+                profile_readiness=(
+                    _profile_readiness(
+                        profile=profiles.get(row.id),
+                        observed_at=context.observed_at,
+                    )
+                    if context.profile_allowed
+                    else "REDACTED"
+                ),
+                profile_observed_at=(profiles[row.id].profiled_at if row.id in profiles else None),
+            )
+            for row in rows
+        )
+
     async def _latest_runs_by_asset(
         self, *, workspace_id: UUID, asset_ids: Sequence[UUID]
     ) -> dict[UUID, QualityValidationRunModel]:
@@ -859,6 +1032,7 @@ class SqlQualityReadRepository(QualityReadRepository):
             ).where(
                 QualityValidationRunModel.workspace_id == workspace_id,
                 QualityValidationRunModel.asset_id.in_(asset_ids),
+                QualityValidationRunModel.state == "SUCCEEDED",
             )
         ).subquery("ranked_asset_runs")
         models = list(
@@ -1034,6 +1208,59 @@ def _run_summary(
         failure_code=model.failure_code,
         version=model.version,
     )
+
+
+def _common_template_summary(
+    model: QualityCommonRuleTemplateModel,
+    mapping_count: int,
+) -> QualityCommonRuleTemplateSummary:
+    rules: list[QualityCommonRuleTemplateRule] = []
+    for value in model.rules:
+        field_identifier = value.get("field_identifier")
+        kind = value.get("kind")
+        severity = value.get("severity")
+        parameters = value.get("parameters")
+        if (
+            not isinstance(field_identifier, str)
+            or not isinstance(kind, str)
+            or not isinstance(severity, str)
+            or not isinstance(parameters, dict)
+            or any(not isinstance(key, str) for key in parameters)
+        ):
+            raise RuntimeError("A stored Quality common Rule template is invalid.")
+        rules.append(
+            QualityCommonRuleTemplateRule(
+                field_identifier=field_identifier,
+                kind=kind,
+                severity=severity,
+                parameters=dict(parameters),
+            )
+        )
+    return QualityCommonRuleTemplateSummary(
+        template_id=model.id,
+        name=model.name,
+        description=model.description,
+        rules=tuple(rules),
+        mapping_count=mapping_count,
+        created_at=model.created_at,
+        updated_at=model.updated_at,
+    )
+
+
+def _asset_cursor_resource(*, query: str, schema_name: str | None) -> str:
+    scope = canonical_json_hash(
+        {
+            "contract": "QUALITY_ASSET_FILTER_V1",
+            "query": query,
+            "schema_name": schema_name,
+        }
+    )
+    return f"assets:{scope}"
+
+
+def _literal_contains_pattern(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
 
 
 def _run_basis_points(model: QualityValidationRunModel) -> int | None:

@@ -212,6 +212,13 @@ WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
 SELECT 'GRANT UPDATE (state, stage, evidence_hash, external_response_hash, failure_code, finished_at) ON retention.execution_attempts TO datariver_archive'
 WHERE to_regclass('retention.execution_jobs') IS NOT NULL \gexec
 
+-- Quality read models join DataHub profile projections under the caller's Workspace RLS
+-- context. The API receives read-only table access; the dedicated collector remains the
+-- sole principal allowed to project or mutate profile evidence.
+SELECT 'GRANT SELECT ON catalog.asset_profile_snapshots, catalog.column_profile_metrics TO datariver_app'
+WHERE to_regclass('catalog.asset_profile_snapshots') IS NOT NULL
+  AND to_regclass('catalog.column_profile_metrics') IS NOT NULL \gexec
+
 -- Reconcile the profile collector to one fixed projection-function capability. The schema USAGE
 -- privilege only permits name resolution; all direct catalog/quality object access stays revoked.
 SELECT 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA catalog, quality FROM datariver_catalog_profile'

@@ -460,7 +460,7 @@ appends and mutation of retention evidence. The application role retains only se
 `version`/`updated_at` update privilege and no Chat delete privilege. Clean installations validate
 the canonical `0001` contract, upgrades install it atomically, and partial schemas fail closed.
 
-## Governed Quality schema (authoring commands implemented through revision `0071`)
+## Governed Quality schema (user-centric common Rules implemented through revision `0074`)
 
 ADR-0077 defines the `quality` bounded context and the bounded Catalog Profile projection.
 Revision `0067` implements the 13 Quality control-plane tables below in SQLAlchemy and Alembic,
@@ -480,6 +480,9 @@ attestations exist. Scheduling remains capability-closed until a governed schedu
 ```mermaid
 erDiagram
     CATALOG_ASSET ||--o{ QUALITY_RULE_SET : governs
+    QUALITY_COMMON_RULE_TEMPLATE ||--o{ QUALITY_COMMON_RULE_TEMPLATE_MAPPING : maps
+    CATALOG_ASSET ||--o{ QUALITY_COMMON_RULE_TEMPLATE_MAPPING : receives
+    QUALITY_RULE_SET ||--o| QUALITY_COMMON_RULE_TEMPLATE_MAPPING : originated_from
     QUALITY_RULE_SET ||--|{ QUALITY_RULE_SET_VERSION : versions
     QUALITY_RULE_SET_VERSION ||--|{ QUALITY_RULE_DEFINITION : contains
     QUALITY_RULE_SET_VERSION ||--o{ QUALITY_RULE_REVIEW : decides
@@ -498,6 +501,8 @@ erDiagram
 
 | Target table | Required key columns and constraints | Purpose |
 |---|---|---|
+| `quality.common_rule_templates` | workspace/name UQ, one to 100 closed typed Rule documents, bounded description, creator membership FK and DB times; forced RLS; app has no update/delete grant | reusable non-executable authoring intent for `NOT_NULL/RANGE`; never canonical execution state |
+| `quality.common_rule_template_mappings` | workspace/template/asset UQ and workspace/rule-set UQ; composite tenant FKs to Template, Catalog asset, canonical Rule Set and mapping actor; forced RLS; app has no update/delete grant | atomic lineage from one reusable Template application to the per-asset immutable Rule Set it created |
 | `quality.rule_sets` | workspace/local asset composite binding, stable name, `ACTIVE/ARCHIVED`, optimistic version, creator/updater and times; exact `QUALITY_RULE` policy ID/version/hash/deadline and RuleSet Legal Hold generation/hash; no DELETE | logical rule aggregate and typed hold root |
 | `quality.rule_set_versions` | workspace/rule-set/version-number UQ, `PROPOSED/APPROVED/REJECTED/ACTIVE/SUPERSEDED/REVOKED`, immutable target/schema/source-connection/workload-profile/compiler/GX/score-policy plus `MANUAL_ONLY` or approved schedule-profile ID/version/hash documents and SHA-256 hashes; exact `QUALITY_RULE` policy ID/version/hash/deadline and Legal Hold generation/hash; at most one ACTIVE version per rule set | immutable executable suite contract; lifecycle columns change only through fixed transition functions |
 | `quality.rule_definitions` | workspace/version/ordinal UQ, server-owned field identifier, execution-enabled `NOT_NULL/RANGE` only, `BLOCKING/ADVISORY`, exact closed typed parameters and canonical hash; composite FK inherits the Version's `QUALITY_RULE` binding | compiler input; no raw GX/SQL/query document; `REGEX` remains rejected until its later safety gate |

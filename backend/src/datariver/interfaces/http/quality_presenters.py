@@ -4,6 +4,9 @@ from dataclasses import asdict
 
 from datariver.application.quality_read_contracts import (
     QualityAssetSummary,
+    QualityAssetWorkspace,
+    QualityCommonRuleTemplateDetail,
+    QualityCommonRuleTemplateSummary,
     QualityIssueSummary,
     QualityOverview,
     QualityResultSummary,
@@ -13,6 +16,9 @@ from datariver.application.quality_read_contracts import (
 )
 from datariver.interfaces.http.quality_schemas import (
     QualityAssetResponse,
+    QualityAssetWorkspaceItemResponse,
+    QualityCommonRuleTemplateDetailItemResponse,
+    QualityCommonRuleTemplateResponse,
     QualityIssueResponse,
     QualityOverviewResponse,
     QualityResultResponse,
@@ -28,6 +34,24 @@ def quality_overview_response(value: QualityOverview) -> QualityOverviewResponse
 
 def quality_asset_response(value: QualityAssetSummary) -> QualityAssetResponse:
     return QualityAssetResponse.model_validate(asdict(value))
+
+
+def quality_asset_workspace_response(
+    value: QualityAssetWorkspace,
+) -> QualityAssetWorkspaceItemResponse:
+    return QualityAssetWorkspaceItemResponse.model_validate(asdict(value))
+
+
+def quality_common_rule_template_response(
+    value: QualityCommonRuleTemplateSummary,
+) -> QualityCommonRuleTemplateResponse:
+    return QualityCommonRuleTemplateResponse.model_validate(asdict(value))
+
+
+def quality_common_rule_template_detail_response(
+    value: QualityCommonRuleTemplateDetail,
+) -> QualityCommonRuleTemplateDetailItemResponse:
+    return QualityCommonRuleTemplateDetailItemResponse.model_validate(asdict(value))
 
 
 def quality_rule_set_response(value: QualityRuleSetSummary) -> QualityRuleSetResponse:

@@ -13,7 +13,7 @@ GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
 
 def test_durable_knowledge_schema_is_in_metadata_and_canonical_baseline() -> None:
-    assert REQUIRED_DATABASE_REVISION == "0072"
+    assert REQUIRED_DATABASE_REVISION == "0074"
     expected_tables = {
         "knowledge.source_analysis_jobs",
         "knowledge.source_analysis_attempts",

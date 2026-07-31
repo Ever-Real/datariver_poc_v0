@@ -6,6 +6,8 @@ from uuid import UUID
 from datariver.application.quality_command_contracts import (
     QualityAssetAuthoringDetail,
     QualityAuthoringAsset,
+    QualityCommonRuleTemplateCreateCommand,
+    QualityCommonRuleTemplateCreateResult,
     QualityDeploymentBinding,
     QualityManualRunResult,
     QualityRuleCommandTarget,
@@ -109,6 +111,7 @@ class QualityCommandService:
         name_prefix: str,
         asset_ids: Sequence[UUID],
         rules: Sequence[Mapping[str, object]],
+        template_id: UUID | None = None,
     ) -> QualityRuleProposalResult:
         if not await self.authoring_ready(workspace_id=subject.workspace_id):
             raise ConflictError(
@@ -191,6 +194,7 @@ class QualityCommandService:
                 "workspace_id": str(subject.workspace_id),
                 "actor_id": str(subject.subject_id),
                 "name_prefix": normalized_name,
+                "template_id": str(template_id) if template_id is not None else None,
                 "targets": [
                     {
                         "asset_id": str(target.asset.asset_id),
@@ -220,7 +224,110 @@ class QualityCommandService:
                 targets=tuple(targets),
                 request_hash=request_hash,
                 idempotency_key=idempotency_key,
+                template_id=template_id,
             )
+        )
+
+    async def create_common_rule_template(
+        self,
+        *,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        name: str,
+        description: str | None,
+        rules: Sequence[Mapping[str, object]],
+    ) -> QualityCommonRuleTemplateCreateResult:
+        normalized_name = name.strip()
+        normalized_description = description.strip() if description else None
+        if (
+            not 1 <= len(normalized_name) <= 100
+            or (normalized_description is not None and len(normalized_description) > 1_000)
+            or not 1 <= len(rules) <= _MAX_RULES
+        ):
+            raise ValidationError("The common Rule template is outside its bounded contract.")
+        await self._authorization.authorize(
+            subject=subject,
+            resource=ResourceAttributes(
+                resource_id=subject.workspace_id,
+                workspace_id=subject.workspace_id,
+                resource_type="QUALITY_COMMON_RULE_TEMPLATE",
+                owner_department_id=None,
+                system_id=None,
+                domain_id=None,
+                classification=Classification.PUBLIC,
+                lifecycle="ACTIVE",
+            ),
+            action=Action.QUALITY_RULE_PROPOSE,
+            environment=environment,
+            request_id=request_id,
+        )
+        normalized_rules = _normalized_template_rules(rules)
+        request_hash = canonical_json_hash(
+            {
+                "contract": "QUALITY_COMMON_RULE_TEMPLATE_CREATE_V1",
+                "workspace_id": str(subject.workspace_id),
+                "actor_id": str(subject.subject_id),
+                "name": normalized_name,
+                "description": normalized_description,
+                "rules": normalized_rules,
+            }
+        )
+        return await self._repository.create_common_rule_template(
+            command=QualityCommonRuleTemplateCreateCommand(
+                workspace_id=subject.workspace_id,
+                actor_id=subject.subject_id,
+                name=normalized_name,
+                description=normalized_description,
+                rules=normalized_rules,
+                request_hash=request_hash,
+                idempotency_key=idempotency_key,
+            )
+        )
+
+    async def map_common_rule_template(
+        self,
+        *,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        template_id: UUID,
+        asset_ids: Sequence[UUID],
+    ) -> QualityRuleProposalResult:
+        await self._authorization.authorize(
+            subject=subject,
+            resource=ResourceAttributes(
+                resource_id=template_id,
+                workspace_id=subject.workspace_id,
+                resource_type="QUALITY_COMMON_RULE_TEMPLATE",
+                owner_department_id=None,
+                system_id=None,
+                domain_id=None,
+                classification=Classification.PUBLIC,
+                lifecycle="ACTIVE",
+            ),
+            action=Action.QUALITY_RULE_PROPOSE,
+            environment=environment,
+            request_id=request_id,
+        )
+        template = await self._repository.get_common_rule_template_rules(
+            workspace_id=subject.workspace_id,
+            template_id=template_id,
+        )
+        if template is None:
+            raise NotFoundError("The Quality common Rule template was not found.")
+        name, rules = template
+        return await self.propose_rule_sets(
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+            name_prefix=name,
+            asset_ids=asset_ids,
+            rules=rules,
+            template_id=template_id,
         )
 
     async def review_rule_set_version(
@@ -392,6 +499,40 @@ def _deployment_drift_reason(
     ):
         return "FIELD_IDENTITY_MAPPING_DRIFT"
     return None
+
+
+def _normalized_template_rules(
+    rules: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    normalized: list[dict[str, object]] = []
+    identities: set[tuple[str, str]] = set()
+    for ordinal, raw_rule in enumerate(rules, start=1):
+        field_identifier = _required_text(raw_rule, "field_identifier", 255)
+        kind = _rule_kind(raw_rule.get("kind"))
+        severity = _rule_severity(raw_rule.get("severity"))
+        parameters = raw_rule.get("parameters")
+        if not isinstance(parameters, dict) or any(not isinstance(key, str) for key in parameters):
+            raise ValidationError("The Rule parameters are invalid.")
+        identity = (field_identifier, kind.value)
+        if identity in identities:
+            raise ValidationError("A common Rule template contains a duplicate Rule.")
+        identities.add(identity)
+        definition = RuleDefinition.create(
+            ordinal=ordinal,
+            field_identifier=field_identifier,
+            kind=kind,
+            severity=severity,
+            parameters=dict(parameters),
+        )
+        normalized.append(
+            {
+                "field_identifier": definition.field_identifier,
+                "kind": definition.kind.value,
+                "severity": definition.severity.value,
+                "parameters": definition.parameters,
+            }
+        )
+    return tuple(normalized)
 
 
 def _asset_resource(

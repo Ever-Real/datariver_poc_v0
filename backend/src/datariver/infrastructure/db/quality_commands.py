@@ -12,6 +12,8 @@ from sqlalchemy.sql.elements import TextClause
 
 from datariver.application.quality_command_contracts import (
     QualityAuthoringAsset,
+    QualityCommonRuleTemplateCreateCommand,
+    QualityCommonRuleTemplateCreateResult,
     QualityManualRunResult,
     QualityRuleCommandTarget,
     QualityRuleProposalCommand,
@@ -35,6 +37,8 @@ from datariver.domain.quality import TargetBinding
 from datariver.infrastructure.db.governance import SqlIdempotencyStore
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.quality import (
+    QualityCommonRuleTemplateMappingModel,
+    QualityCommonRuleTemplateModel,
     QualityRuleDefinitionModel,
     QualityRuleSetModel,
     QualityRuleSetVersionModel,
@@ -42,6 +46,7 @@ from datariver.infrastructure.db.models.quality import (
 )
 
 _CREATE_OPERATION = "quality.rule_sets.batch_create.v1"
+_CREATE_TEMPLATE_OPERATION = "quality.common_rule_template.create.v1"
 _REVIEW_OPERATION = "quality.rule_version.review.v2"
 _ACTIVATE_OPERATION = "quality.rule_version.activate.v2"
 _MANUAL_RUN_OPERATION = "quality.manual_run.request.v1"
@@ -127,6 +132,78 @@ class SqlQualityCommandRepository(QualityCommandRepository):
             for row in rows
         )
 
+    async def create_common_rule_template(
+        self, *, command: QualityCommonRuleTemplateCreateCommand
+    ) -> QualityCommonRuleTemplateCreateResult:
+        await self._idempotency.acquire_key_lock(
+            workspace_id=command.workspace_id,
+            key=command.idempotency_key,
+            operation=_CREATE_TEMPLATE_OPERATION,
+        )
+        existing = await self._idempotency.get_result(
+            workspace_id=command.workspace_id,
+            key=command.idempotency_key,
+            operation=_CREATE_TEMPLATE_OPERATION,
+        )
+        if existing is not None:
+            _require_idempotent_actor(
+                existing.request_hash,
+                existing.result,
+                request_hash=command.request_hash,
+                actor_id=command.actor_id,
+            )
+            return QualityCommonRuleTemplateCreateResult(
+                template_id=UUID(str(existing.result["template_id"])),
+                replayed=True,
+            )
+        template_id = uuid7()
+        self._session.add(
+            QualityCommonRuleTemplateModel(
+                id=template_id,
+                workspace_id=command.workspace_id,
+                name=command.name,
+                description=command.description,
+                rules=[dict(rule) for rule in command.rules],
+                created_by=command.actor_id,
+            )
+        )
+        try:
+            await self._session.flush()
+            await self._idempotency.save_result(
+                workspace_id=command.workspace_id,
+                key=command.idempotency_key,
+                operation=_CREATE_TEMPLATE_OPERATION,
+                request_hash=command.request_hash,
+                result={
+                    "actor_id": str(command.actor_id),
+                    "template_id": str(template_id),
+                },
+            )
+            await self._session.commit()
+        except DBAPIError as error:
+            raise ConflictError(
+                "The Quality common Rule template conflicts with current state."
+            ) from error
+        return QualityCommonRuleTemplateCreateResult(
+            template_id=template_id,
+            replayed=False,
+        )
+
+    async def get_common_rule_template_rules(
+        self, *, workspace_id: UUID, template_id: UUID
+    ) -> tuple[str, tuple[dict[str, object], ...]] | None:
+        template = (
+            await self._session.scalars(
+                select(QualityCommonRuleTemplateModel).where(
+                    QualityCommonRuleTemplateModel.workspace_id == workspace_id,
+                    QualityCommonRuleTemplateModel.id == template_id,
+                )
+            )
+        ).one_or_none()
+        if template is None:
+            return None
+        return template.name, tuple(dict(rule) for rule in template.rules)
+
     async def create_rule_sets(
         self,
         *,
@@ -161,6 +238,20 @@ class SqlQualityCommandRepository(QualityCommandRepository):
                 ),
                 replayed=True,
             )
+        template = None
+        if command.template_id is not None:
+            template = (
+                await self._session.scalars(
+                    select(QualityCommonRuleTemplateModel)
+                    .where(
+                        QualityCommonRuleTemplateModel.workspace_id == command.workspace_id,
+                        QualityCommonRuleTemplateModel.id == command.template_id,
+                    )
+                    .with_for_update(read=True)
+                )
+            ).one_or_none()
+            if template is None:
+                raise ConflictError("The Quality common Rule template is unavailable.")
         now = await self._database_now()
         items: list[QualityRuleProposalItem] = []
         try:
@@ -315,6 +406,17 @@ class SqlQualityCommandRepository(QualityCommandRepository):
                             rule_retain_until=retention.retain_until,
                             rule_hold_generation=retention.hold_generation,
                             rule_hold_hash=retention.hold_hash,
+                        )
+                    )
+                if template is not None:
+                    self._session.add(
+                        QualityCommonRuleTemplateMappingModel(
+                            id=uuid7(),
+                            workspace_id=command.workspace_id,
+                            template_id=template.id,
+                            asset_id=current.id,
+                            rule_set_id=rule_set_id,
+                            mapped_by=command.actor_id,
                         )
                     )
                 items.append(

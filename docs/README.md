@@ -131,6 +131,9 @@ The additive Profile collector boundary, local Catalog source-version watermark,
 The fail-closed V2 authoring directory, bounded atomic Rule proposal and server-derived
 review/activation/manual Run commands are defined by
 [ADR-0079](adr/0079-quality-authoring-readiness-and-manual-run-commands.md).
+The search-integrated Quality Evidence, asset-centric workspace and reusable common Rule Template
+to atomic multi-asset Rule Set mapping are defined by
+[ADR-0081](adr/0081-user-centric-quality-workspace-and-common-rule-templates.md).
 The immutable Governance Document aggregate, safe HTML/import boundary, create-only MinIO
 artifacts, independent approval and authorized vector/Neo4j projection are defined by
 [ADR-0080](adr/0080-governance-document-library-and-knowledge-projection.md).

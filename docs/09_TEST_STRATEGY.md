@@ -1233,6 +1233,16 @@ applicable evidence below exists.
   and bound `Retry-After`. Semantic tests plus table caption/headers/keyboard row actions,
   reduced-motion, non-repeating live-region, target screen-reader/200%-zoom/320-CSS-pixel manual
   checks are required.
+- User-centric Quality tests additionally prove Catalog Search uses one permission-bound summary
+  batch for the visible IDs and renders the same score/status in the result row and Evidence panel;
+  no per-row request is allowed. The two-tab Quality workspace proves one selected asset combines
+  Rule Sets, recent Runs and score trend while Issue/review controls are absent. Common Rule tests
+  cover closed typed creation, exact field/type compatibility, schema/table search, 25-target
+  maximum, duplicate rejection, atomic mapping/idempotent replay and authorization-pruned mapping
+  counts/details.
+- Revision `0074` tests require forced RLS, composite tenant foreign keys, no update/delete app
+  grant, unique Template/asset and Rule Set mappings, blank-to-head and `0073 -> 0074` upgrade,
+  metadata equivalence and deterministic canonical `0001` regeneration.
 - Representative narrow, wide and large PostgreSQL tables provide source query plans and CPU/IO/
   latency/lock-wait/replica-lag, cancellation, worker concurrency and 60-minute soak evidence.
   Dashboard SQL records `EXPLAIN (ANALYZE, BUFFERS)` and response/p95 measurements. Capacity-owner

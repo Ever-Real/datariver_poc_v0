@@ -2,7 +2,13 @@ import type { ApiClient } from '../../api/client'
 import type {
   QualityAsset,
   QualityAssetDetailResponse,
+  QualityAssetSummaryBatchResponse,
+  QualityAssetWorkspace,
   QualityCapability,
+  QualityCommonRuleTemplateCreateRequest,
+  QualityCommonRuleTemplateCreateResponse,
+  QualityCommonRuleTemplateDetail,
+  QualityCommonRuleTemplateListResponse,
   QualityExpectationResult,
   QualityIssueSummary,
   QualityListResponse,
@@ -31,6 +37,10 @@ export type QualityResource =
   | 'overview'
   | 'assets'
   | 'asset-detail'
+  | 'asset-workspace'
+  | 'asset-summaries'
+  | 'common-rule-templates'
+  | 'common-rule-template-detail'
   | 'rule-definitions'
   | 'rule-sets'
   | 'rule-set-detail'
@@ -111,8 +121,45 @@ export class QualityApi {
     return catalog
   }
 
-  assets(cursor?: string, signal?: AbortSignal) {
-    return this.list<QualityAsset>('/quality/assets', { cursor, signal })
+  assets(
+    cursor?: string,
+    signal?: AbortSignal,
+    filters?: { query?: string; schema?: string; limit?: number },
+  ) {
+    return this.list<QualityAsset>('/quality/assets', {
+      cursor,
+      signal,
+      limit: filters?.limit,
+      parameters: {
+        ...(filters?.query ? { q: filters.query } : {}),
+        ...(filters?.schema ? { schema: filters.schema } : {}),
+      },
+    })
+  }
+
+  async assetSummaries(
+    assetIds: readonly string[],
+    expectedCacheScope: string,
+    signal?: AbortSignal,
+  ): Promise<QualityAssetSummaryBatchResponse> {
+    const value = await this.client.request<QualityAssetSummaryBatchResponse>(
+      '/quality/assets/summary-batch',
+      {
+        method: 'POST',
+        cache: 'no-store',
+        signal,
+        body: JSON.stringify({ asset_ids: assetIds }),
+      },
+    )
+    if (
+      !validReadMetadata(value, expectedCacheScope)
+      || !Array.isArray(value.items)
+      || value.items.length > assetIds.length
+      || value.items.some((item) => !assetIds.includes(item.asset_id))
+    ) {
+      throw new Error('검색 결과의 품질 요약 계약이 올바르지 않습니다.')
+    }
+    return value
   }
 
   async asset(
@@ -133,6 +180,111 @@ export class QualityApi {
     ) {
       throw new Error('선택한 품질 자산의 작성 계약을 확인할 수 없습니다.')
     }
+    return value
+  }
+
+  async assetWorkspace(
+    assetId: string,
+    expectedCacheScope: string,
+    signal?: AbortSignal,
+  ): Promise<QualityAssetWorkspace> {
+    const value = await this.client.request<QualityResourceResponse<QualityAssetWorkspace>>(
+      `/quality/assets/${encodeURIComponent(assetId)}/workspace?days=30`,
+      { cache: 'no-store', signal },
+    )
+    if (
+      !validReadMetadata(value, expectedCacheScope)
+      || value.item?.asset?.asset_id !== assetId
+      || !Array.isArray(value.item.rule_sets)
+      || value.item.rule_sets.length > 50
+      || !Array.isArray(value.item.runs)
+      || value.item.runs.length > 50
+      || !Array.isArray(value.item.trend)
+      || value.item.trend.length > 90
+    ) {
+      throw new Error('자산별 품질 현황 계약이 올바르지 않습니다.')
+    }
+    return value.item
+  }
+
+  async commonRuleTemplates(
+    expectedCacheScope: string,
+    signal?: AbortSignal,
+  ): Promise<QualityCommonRuleTemplateListResponse> {
+    const value = await this.client.request<QualityCommonRuleTemplateListResponse>(
+      '/quality/common-rule-templates',
+      { cache: 'no-store', signal },
+    )
+    if (
+      !validReadMetadata(value, expectedCacheScope)
+      || !Array.isArray(value.items)
+      || value.items.length > 100
+      || value.items.some((item) => !validCommonTemplate(item))
+    ) {
+      throw new Error('공통 룰셋 목록 계약이 올바르지 않습니다.')
+    }
+    return value
+  }
+
+  async commonRuleTemplate(
+    templateId: string,
+    expectedCacheScope: string,
+    signal?: AbortSignal,
+  ): Promise<QualityCommonRuleTemplateDetail> {
+    const value = await this.client.request<QualityResourceResponse<QualityCommonRuleTemplateDetail>>(
+      `/quality/common-rule-templates/${encodeURIComponent(templateId)}`,
+      { cache: 'no-store', signal },
+    )
+    if (
+      !validReadMetadata(value, expectedCacheScope)
+      || value.item?.template?.template_id !== templateId
+      || !validCommonTemplate(value.item.template)
+      || !Array.isArray(value.item.mappings)
+      || value.item.mappings.length > 500
+    ) {
+      throw new Error('공통 룰셋 상세 계약이 올바르지 않습니다.')
+    }
+    return value.item
+  }
+
+  async createCommonRuleTemplate(
+    payload: QualityCommonRuleTemplateCreateRequest,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<QualityCommonRuleTemplateCreateResponse> {
+    const value = await this.client.request<QualityCommonRuleTemplateCreateResponse>(
+      '/quality/common-rule-templates',
+      {
+        method: 'POST',
+        cache: 'no-store',
+        signal,
+        idempotencyKey,
+        body: JSON.stringify(payload),
+      },
+    )
+    if (!validIdentifier(value?.template_id) || typeof value.replayed !== 'boolean') {
+      throw new Error('공통 룰셋 생성 응답이 올바르지 않습니다.')
+    }
+    return value
+  }
+
+  async mapCommonRuleTemplate(
+    templateId: string,
+    assetIds: string[],
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<QualityRuleBatchProposalResponse> {
+    const value = await this.client.request<QualityRuleBatchProposalResponse>(
+      `/quality/common-rule-templates/${encodeURIComponent(templateId)}/mappings`,
+      {
+        method: 'POST',
+        cache: 'no-store',
+        signal,
+        idempotencyKey,
+        body: JSON.stringify({ asset_ids: assetIds }),
+      },
+    )
+    assertProposal(value, assetIds)
     return value
   }
 
@@ -462,6 +614,59 @@ function validAuthoring(value: QualityAssetDetailResponse): boolean {
   return authoring.state === 'READY'
     ? authoring.schema_hash !== null && authoring.fields.length > 0
     : authoring.fields.length === 0 && typeof authoring.reason_code === 'string'
+}
+
+function validReadMetadata(
+  value: {
+    cache_scope?: string
+    observed_at?: string
+    authorization_valid_until?: string
+  } | null | undefined,
+  expectedCacheScope: string,
+): boolean {
+  return Boolean(
+    value
+    && value.cache_scope === expectedCacheScope
+    && validDate(value.observed_at ?? '')
+    && validDate(value.authorization_valid_until ?? ''),
+  )
+}
+
+function validCommonTemplate(
+  value: {
+    template_id?: string
+    name?: string
+    rules?: Array<{
+      field_identifier?: string
+      kind?: string
+      severity?: string
+      parameters?: unknown
+    }>
+    mapping_count?: number
+    created_at?: string
+    updated_at?: string
+  } | null | undefined,
+): boolean {
+  return Boolean(
+    value
+    && validIdentifier(value.template_id ?? '')
+    && validIdentifier(value.name ?? '')
+    && Array.isArray(value.rules)
+    && value.rules.length > 0
+    && value.rules.length <= 100
+    && value.rules.every((rule) => (
+      validIdentifier(rule.field_identifier ?? '')
+      && ['NOT_NULL', 'RANGE'].includes(rule.kind ?? '')
+      && ['BLOCKING', 'ADVISORY'].includes(rule.severity ?? '')
+      && typeof rule.parameters === 'object'
+      && rule.parameters !== null
+      && !Array.isArray(rule.parameters)
+    ))
+    && Number.isSafeInteger(value.mapping_count)
+    && (value.mapping_count ?? -1) >= 0
+    && validDate(value.created_at ?? '')
+    && validDate(value.updated_at ?? ''),
+  )
 }
 
 function assertProposal(

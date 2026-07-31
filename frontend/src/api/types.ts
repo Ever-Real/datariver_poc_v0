@@ -1914,6 +1914,13 @@ export interface QualityAssetDetailResponse extends QualityResourceResponse<Qual
   authoring: QualityAssetAuthoring
 }
 
+export interface QualityAssetSummaryBatchResponse {
+  items: QualityAsset[]
+  cache_scope: string
+  observed_at: string
+  authorization_valid_until: string
+}
+
 export interface QualityRuleDraftRequest {
   field_identifier: string
   kind: QualityAuthoringRuleKind
@@ -1936,6 +1943,64 @@ export interface QualityRuleProposalItem {
 
 export interface QualityRuleBatchProposalResponse {
   items: QualityRuleProposalItem[]
+  replayed: boolean
+}
+
+export interface QualityAssetWorkspace {
+  asset: QualityAsset
+  rule_sets: QualityRuleSetSummary[]
+  runs: QualityRunSummary[]
+  trend: QualityTrendPoint[]
+}
+
+export interface QualityCommonRuleTemplateRule {
+  field_identifier: string
+  kind: QualityAuthoringRuleKind
+  severity: QualityRuleSeverity
+  parameters: Record<string, unknown>
+}
+
+export interface QualityCommonRuleTemplate {
+  template_id: string
+  name: string
+  description: string | null
+  rules: QualityCommonRuleTemplateRule[]
+  mapping_count: number
+  created_at: string
+  updated_at: string
+}
+
+export interface QualityCommonRuleTemplateMapping {
+  asset_id: string
+  asset_name: string
+  platform: string | null
+  database_name: string | null
+  schema_name: string | null
+  rule_set_id: string
+  rule_set_name: string
+  mapped_at: string
+}
+
+export interface QualityCommonRuleTemplateDetail {
+  template: QualityCommonRuleTemplate
+  mappings: QualityCommonRuleTemplateMapping[]
+}
+
+export interface QualityCommonRuleTemplateListResponse {
+  items: QualityCommonRuleTemplate[]
+  cache_scope: string
+  observed_at: string
+  authorization_valid_until: string
+}
+
+export interface QualityCommonRuleTemplateCreateRequest {
+  name: string
+  description?: string | null
+  rules: QualityRuleDraftRequest[]
+}
+
+export interface QualityCommonRuleTemplateCreateResponse {
+  template_id: string
   replayed: boolean
 }
 

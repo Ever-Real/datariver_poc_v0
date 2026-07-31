@@ -99,6 +99,83 @@ describe('QualityApi authorization contracts', () => {
     })
   })
 
+  it('loads one permission-bound quality summary batch for catalog results', async () => {
+    const request = vi.fn().mockResolvedValue({
+      items: [{
+        asset_id: 'asset-one',
+        name: 'orders',
+        classification: 'INTERNAL',
+        lifecycle: 'ACTIVE',
+        profile_readiness: 'READY',
+        profile_observed_at: '2026-07-30T00:00:00Z',
+        active_rule_set_count: 1,
+        latest_run_state: 'SUCCEEDED',
+        latest_quality_outcome: 'PASS',
+        latest_score_basis_points: 9_875,
+      }],
+      cache_scope: cacheScope,
+      observed_at: '2026-07-30T00:00:00Z',
+      authorization_valid_until: '2026-07-30T00:00:30Z',
+    })
+    const api = new QualityApi({ request })
+
+    const result = await api.assetSummaries(['asset-one'], cacheScope)
+
+    expect(result.items[0]?.latest_score_basis_points).toBe(9_875)
+    expect(request).toHaveBeenCalledWith('/quality/assets/summary-batch', {
+      method: 'POST',
+      cache: 'no-store',
+      signal: undefined,
+      body: JSON.stringify({ asset_ids: ['asset-one'] }),
+    })
+  })
+
+  it('creates and maps a reusable common rule through bounded batch routes', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({ template_id: 'template-one', replayed: false })
+      .mockResolvedValueOnce({
+        items: [
+          { asset_id: 'asset-one', rule_set_id: 'rules-one', version_id: 'version-one', version: 1 },
+          { asset_id: 'asset-two', rule_set_id: 'rules-two', version_id: 'version-two', version: 1 },
+        ],
+        replayed: false,
+      })
+    const api = new QualityApi({ request })
+    const template = {
+      name: 'Not null',
+      rules: [{
+        field_identifier: 'email',
+        kind: 'NOT_NULL' as const,
+        severity: 'BLOCKING' as const,
+        parameters: {},
+      }],
+    }
+
+    await api.createCommonRuleTemplate(template, 'template-key')
+    await api.mapCommonRuleTemplate(
+      'template-one',
+      ['asset-one', 'asset-two'],
+      'mapping-key',
+    )
+
+    expect(request.mock.calls[0]).toEqual([
+      '/quality/common-rule-templates',
+      expect.objectContaining({
+        method: 'POST',
+        idempotencyKey: 'template-key',
+        body: JSON.stringify(template),
+      }),
+    ])
+    expect(request.mock.calls[1]).toEqual([
+      '/quality/common-rule-templates/template-one/mappings',
+      expect.objectContaining({
+        method: 'POST',
+        idempotencyKey: 'mapping-key',
+        body: JSON.stringify({ asset_ids: ['asset-one', 'asset-two'] }),
+      }),
+    ])
+  })
+
   it('uses plural lifecycle routes with quoted version preconditions', async () => {
     const request = vi.fn()
       .mockResolvedValueOnce({

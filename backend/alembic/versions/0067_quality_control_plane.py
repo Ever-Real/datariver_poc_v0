@@ -2114,9 +2114,8 @@ $$;
 
 
 def _quality_tables() -> Iterable[object]:
-    for table in Base.metadata.sorted_tables:
-        if table.schema == "quality":
-            yield table
+    for table_name in _QUALITY_TABLE_NAMES:
+        yield Base.metadata.tables[f"quality.{table_name}"]
 
 
 def _quality_deferred_foreign_keys() -> tuple[object, ...]:

@@ -5,6 +5,8 @@ from uuid import UUID
 
 from datariver.application.quality_command_contracts import (
     QualityAuthoringAsset,
+    QualityCommonRuleTemplateCreateCommand,
+    QualityCommonRuleTemplateCreateResult,
     QualityDeploymentBinding,
     QualityManualRunResult,
     QualityRuleCommandTarget,
@@ -36,6 +38,14 @@ class QualityCommandRepository(Protocol):
         *,
         command: QualityRuleProposalCommand,
     ) -> QualityRuleProposalResult: ...
+
+    async def create_common_rule_template(
+        self, *, command: QualityCommonRuleTemplateCreateCommand
+    ) -> QualityCommonRuleTemplateCreateResult: ...
+
+    async def get_common_rule_template_rules(
+        self, *, workspace_id: UUID, template_id: UUID
+    ) -> tuple[str, tuple[dict[str, object], ...]] | None: ...
 
     async def get_rule_command_target(
         self,

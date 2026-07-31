@@ -47,6 +47,100 @@ def _sha256_checks(*columns: str) -> tuple[CheckConstraint, ...]:
     )
 
 
+class QualityCommonRuleTemplateModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "common_rule_templates"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "id", name="uq_quality_common_rule_templates_workspace_id"
+        ),
+        UniqueConstraint("workspace_id", "name", name="uq_quality_common_rule_templates_name"),
+        ForeignKeyConstraint(
+            ["workspace_id", "created_by"],
+            ["iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"],
+            name="fk_quality_common_rule_templates_creator",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint("char_length(btrim(name)) BETWEEN 1 AND 100", name="name_bounded"),
+        CheckConstraint(
+            "description IS NULL OR char_length(description) <= 1000",
+            name="description_bounded",
+        ),
+        CheckConstraint("jsonb_typeof(rules) = 'array'", name="rules_array"),
+        CheckConstraint("jsonb_array_length(rules) BETWEEN 1 AND 100", name="rules_bounded"),
+        Index(
+            "ix_quality_common_rule_templates_list",
+            "workspace_id",
+            text("updated_at DESC"),
+            text("id DESC"),
+        ),
+        {"schema": "quality"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("platform.workspaces.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1000))
+    rules: Mapped[list[dict[str, object]]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+
+
+class QualityCommonRuleTemplateMappingModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "common_rule_template_mappings"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "template_id",
+            "asset_id",
+            name="uq_quality_common_rule_template_mappings_asset",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "rule_set_id",
+            name="uq_quality_common_rule_template_mappings_rule_set",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "template_id"],
+            ["quality.common_rule_templates.workspace_id", "quality.common_rule_templates.id"],
+            name="fk_quality_common_rule_template_mappings_template",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "asset_id"],
+            ["catalog.assets_projection.workspace_id", "catalog.assets_projection.id"],
+            name="fk_quality_common_rule_template_mappings_asset",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "rule_set_id"],
+            ["quality.rule_sets.workspace_id", "quality.rule_sets.id"],
+            name="fk_quality_common_rule_template_mappings_rule_set",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["workspace_id", "mapped_by"],
+            ["iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"],
+            name="fk_quality_common_rule_template_mappings_actor",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_quality_common_rule_template_mappings_template",
+            "workspace_id",
+            "template_id",
+            text("created_at DESC"),
+        ),
+        {"schema": "quality"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("platform.workspaces.id"), nullable=False
+    )
+    template_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    asset_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    rule_set_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    mapped_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+
+
 class QualityRuleSetModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     __tablename__ = "rule_sets"
     __table_args__ = (

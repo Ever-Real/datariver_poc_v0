@@ -5,10 +5,8 @@ import { ErrorNotice } from '../../components/ErrorNotice'
 import { GovernedUnavailable } from '../../components/common/GovernedUnavailable'
 import { useRovingTabs } from '../../components/common/useRovingTabs'
 import { PageTitle } from '../../components/layout/PageTitle'
-import { QualityIssuesTab } from './QualityIssuesTab'
-import { QualityOverviewTab } from './QualityOverviewTab'
-import { QualityRuleSetsTab } from './QualityRuleSetsTab'
-import { QualityRunsTab } from './QualityRunsTab'
+import { QualityAssetsTab } from './QualityAssetsTab'
+import { QualityCommonRulesTab } from './QualityCommonRulesTab'
 import { QualityApi } from './qualityApi'
 import {
   qualityLocationFromHref,
@@ -21,10 +19,8 @@ import { QualityStatus, dateTimeText } from './QualityShared'
 import { useQualityAuthorizationLease } from './useQualityAuthorizationLease'
 
 const qualityTabs = [
-  { id: 'overview', label: '현황' },
-  { id: 'rules', label: 'Rule Sets' },
-  { id: 'runs', label: '실행 이력' },
-  { id: 'issues', label: '이슈' },
+  { id: 'assets', label: '자산별 품질 현황 및 이력' },
+  { id: 'templates', label: '공통 룰셋 관리' },
 ] as const satisfies ReadonlyArray<{ id: QualityTab; label: string }>
 const qualityTabIds = qualityTabs.map((tab) => tab.id)
 
@@ -61,21 +57,14 @@ export function QualityPage({
     return () => window.removeEventListener('popstate', restore)
   }, [])
 
-  const navigateTab = useCallback((tab: QualityTab) => {
-    const next: QualityLocation = { tab }
+  const navigate = useCallback((next: QualityLocation) => {
     window.history.pushState({}, '', qualityUrl(next))
     setLocation(next)
   }, [])
-  const selectRuleSet = useCallback((ruleSetId?: string) => {
-    const next: QualityLocation = { tab: 'rules', ...(ruleSetId ? { ruleSetId } : {}) }
-    window.history.pushState({}, '', qualityUrl(next))
-    setLocation(next)
-  }, [])
-  const selectRun = useCallback((runId?: string) => {
-    const next: QualityLocation = { tab: 'runs', ...(runId ? { runId } : {}) }
-    window.history.pushState({}, '', qualityUrl(next))
-    setLocation(next)
-  }, [])
+  const navigateTab = useCallback(
+    (tab: QualityTab) => navigate({ tab }),
+    [navigate],
+  )
   const tabs = useRovingTabs({
     ids: qualityTabIds,
     activeId: location.tab,
@@ -83,27 +72,27 @@ export function QualityPage({
     onSelect: navigateTab,
   })
 
-  return <section className="quality-page">
+  return <section className="quality-page quality-page-user-centric">
     <PageTitle
       icon="DQ"
-      eyebrow="Data quality · permission scoped"
+      eyebrow="Data quality · at a glance"
       title="품질관리"
-      description="검증 Rule, 실행 결과와 품질 이슈를 서버가 허용한 범위 안에서 관리합니다."
+      description="테이블별 품질 상태를 바로 확인하고, 공통 룰을 여러 자산에 간편하게 적용합니다."
       actions={<button
         type="button"
         className="button button-secondary"
         onClick={lease.refresh}
         disabled={lease.loading}
       >
-        권한·현황 새로고침
+        새로고침
       </button>}
     />
-    {lease.loading && <p className="quality-loading" role="status">품질 접근 권한을 확인하는 중입니다.</p>}
+    {lease.loading && <p className="quality-loading" role="status">품질 정보를 준비하는 중입니다.</p>}
     {!lease.loading && Boolean(lease.error) && <>
       <ErrorNotice error={lease.error} />
       <GovernedUnavailable
-        title="품질 접근 권한을 확인할 수 없습니다"
-        description="권한 capability가 검증되기 전에는 품질 데이터 요청을 시작하지 않습니다."
+        title="품질 정보를 불러올 수 없습니다"
+        description="잠시 후 새로고침하거나 품질 열람 권한을 확인해 주세요."
       />
     </>}
     {!lease.loading && !lease.error && !lease.capability && <GovernedUnavailable
@@ -112,17 +101,16 @@ export function QualityPage({
     />}
     {lease.capability && lease.axis('read_access')?.state !== 'AVAILABLE' && (
       <GovernedUnavailable
-        title="품질 데이터 열람이 허용되지 않았습니다"
+        title="품질 데이터 열람 권한이 없습니다"
         description={capabilityReason(lease.axis('read_access'))}
       />
     )}
     {lease.capability && lease.boundary && lease.axis('read_access')?.state === 'AVAILABLE' && <>
-      <section className="quality-lease-summary" aria-label="품질 권한 상태">
+      <section className="quality-lease-summary" aria-label="품질 데이터 기준 시각">
         <QualityStatus value="AVAILABLE" />
-        <span>관측 {dateTimeText(lease.capability.observed_at)}</span>
-        <span>유효 {dateTimeText(lease.capability.valid_until)}</span>
+        <span>최근 확인 {dateTimeText(lease.capability.observed_at)}</span>
       </section>
-      <nav className="quality-tabs" role="tablist" aria-label="품질관리 영역">
+      <nav className="quality-tabs quality-tabs-simple" role="tablist" aria-label="품질관리 영역">
         {qualityTabs.map((tab) => <button
           key={tab.id}
           {...tabs.tabProps(tab.id)}
@@ -134,67 +122,35 @@ export function QualityPage({
         </button>)}
       </nav>
       <div className="quality-tab-panel" {...tabs.panelProps(location.tab)}>
-        <QualityActiveTab
-          api={api}
-          boundary={lease.boundary}
-          axes={new Map(lease.capability.axes.map((axis) => [axis.id, axis]))}
-          location={location}
-          onSelectedRuleSet={selectRuleSet}
-          onSelectedRun={selectRun}
-          onBoundaryInvalid={lease.invalidate}
-        />
+        {location.tab === 'assets'
+          ? <QualityAssetsTab
+            api={api}
+            boundary={lease.boundary}
+            selectedAssetId={location.assetId}
+            onSelectedAsset={(assetId) => navigate({
+              tab: 'assets',
+              ...(assetId ? { assetId } : {}),
+            })}
+            onBoundaryInvalid={lease.invalidate}
+          />
+          : <QualityCommonRulesTab
+            api={api}
+            boundary={lease.boundary}
+            axes={new Map(lease.capability.axes.map((axis) => [axis.id, axis]))}
+            selectedTemplateId={location.templateId}
+            onSelectedTemplate={(templateId) => navigate({
+              tab: 'templates',
+              ...(templateId ? { templateId } : {}),
+            })}
+            onBoundaryInvalid={lease.invalidate}
+          />}
       </div>
     </>}
   </section>
 }
 
-function QualityActiveTab({
-  api,
-  boundary,
-  axes,
-  location,
-  onSelectedRuleSet,
-  onSelectedRun,
-  onBoundaryInvalid,
-}: {
-  api: QualityApi
-  boundary: NonNullable<ReturnType<typeof useQualityAuthorizationLease>['boundary']>
-  axes: Map<string, QualityCapabilityAxis>
-  location: QualityLocation
-  onSelectedRuleSet: (id?: string) => void
-  onSelectedRun: (id?: string) => void
-  onBoundaryInvalid: () => void
-}) {
-  if (location.tab === 'rules') return <QualityRuleSetsTab
-    api={api}
-    boundary={boundary}
-    axes={axes}
-    selectedRuleSetId={location.ruleSetId}
-    onSelectedRuleSet={onSelectedRuleSet}
-    onBoundaryInvalid={onBoundaryInvalid}
-  />
-  if (location.tab === 'runs') return <QualityRunsTab
-    api={api}
-    boundary={boundary}
-    axes={axes}
-    selectedRunId={location.runId}
-    onSelectedRun={onSelectedRun}
-    onBoundaryInvalid={onBoundaryInvalid}
-  />
-  if (location.tab === 'issues') return <QualityIssuesTab
-    api={api}
-    boundary={boundary}
-    onBoundaryInvalid={onBoundaryInvalid}
-  />
-  return <QualityOverviewTab
-    api={api}
-    boundary={boundary}
-    onBoundaryInvalid={onBoundaryInvalid}
-  />
-}
-
 function capabilityReason(axis: QualityCapabilityAxis | undefined): string {
   return axis?.reason_code
-    ? `서버 capability가 ${axis.reason_code} 사유로 품질 데이터 열람을 허용하지 않았습니다.`
+    ? `현재 권한 정책(${axis.reason_code})에서는 품질 정보를 표시할 수 없습니다.`
     : '현재 사용자에게 품질 데이터 열람 권한이 없습니다.'
 }

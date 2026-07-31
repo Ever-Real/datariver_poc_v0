@@ -221,6 +221,23 @@ class QualityAssetListResponse(QualityReadMetadata):
     page: PageMeta
 
 
+class QualityAssetSummaryBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+    @field_validator("asset_ids")
+    @classmethod
+    def unique_assets(cls, value: list[UUID]) -> list[UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("asset_ids must be unique")
+        return value
+
+
+class QualityAssetSummaryBatchResponse(QualityReadMetadata):
+    items: list[QualityAssetResponse]
+
+
 class QualityAuthoringFieldResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -251,6 +268,19 @@ class QualityAssetAuthoringResponse(BaseModel):
 class QualityAssetDetailResponse(QualityReadMetadata):
     item: QualityAssetResponse
     authoring: QualityAssetAuthoringResponse
+
+
+class QualityAssetWorkspaceItemResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset: QualityAssetResponse
+    rule_sets: list[QualityRuleSetResponse] = Field(max_length=50)
+    runs: list[QualityRunResponse] = Field(max_length=50)
+    trend: list[QualityTrendPointResponse] = Field(max_length=90)
+
+
+class QualityAssetWorkspaceResponse(QualityReadMetadata):
+    item: QualityAssetWorkspaceItemResponse
 
 
 class QualityRuleDraftRequest(BaseModel):
@@ -291,6 +321,83 @@ class QualityRuleBatchProposalResponse(BaseModel):
 
     items: list[QualityRuleProposalItemResponse]
     replayed: bool
+
+
+class QualityCommonRuleTemplateCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=1000)
+    rules: list[QualityRuleDraftRequest] = Field(min_length=1, max_length=100)
+
+
+class QualityCommonRuleTemplateMapRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_ids: list[UUID] = Field(min_length=1, max_length=25)
+
+    @field_validator("asset_ids")
+    @classmethod
+    def unique_assets(cls, value: list[UUID]) -> list[UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("asset_ids must be unique")
+        return value
+
+
+class QualityCommonRuleTemplateCreateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template_id: UUID
+    replayed: bool
+
+
+class QualityCommonRuleTemplateRuleResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    field_identifier: str
+    kind: Literal["NOT_NULL", "RANGE"]
+    severity: Literal["BLOCKING", "ADVISORY"]
+    parameters: dict[str, object]
+
+
+class QualityCommonRuleTemplateResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template_id: UUID
+    name: str
+    description: str | None
+    rules: list[QualityCommonRuleTemplateRuleResponse] = Field(max_length=100)
+    mapping_count: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+
+
+class QualityCommonRuleTemplateMappingResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: UUID
+    asset_name: str
+    platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    rule_set_id: UUID
+    rule_set_name: str
+    mapped_at: datetime
+
+
+class QualityCommonRuleTemplateListResponse(QualityReadMetadata):
+    items: list[QualityCommonRuleTemplateResponse] = Field(max_length=100)
+
+
+class QualityCommonRuleTemplateDetailItemResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template: QualityCommonRuleTemplateResponse
+    mappings: list[QualityCommonRuleTemplateMappingResponse] = Field(max_length=500)
+
+
+class QualityCommonRuleTemplateDetailResponse(QualityReadMetadata):
+    item: QualityCommonRuleTemplateDetailItemResponse
 
 
 class QualityRuleReviewRequest(BaseModel):

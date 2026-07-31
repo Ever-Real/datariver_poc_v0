@@ -33,7 +33,7 @@ def test_quality_read_indexes_are_metadata_migration_and_baseline_consistent() -
     migration = _load_migration()
     assert migration.revision == "0070"
     assert migration.down_revision == "0069"
-    assert REQUIRED_DATABASE_REVISION == "0072"
+    assert REQUIRED_DATABASE_REVISION == "0074"
 
     expected = {
         "ix_quality_rule_sets_list",
@@ -78,7 +78,11 @@ def test_public_quality_surface_exposes_only_bounded_quality_commands() -> None:
         ("GET", "/quality/rule-definitions"),
         ("GET", "/quality/overview"),
         ("GET", "/quality/assets"),
+        ("POST", "/quality/assets/summary-batch"),
         ("GET", "/quality/assets/{asset_id}"),
+        ("GET", "/quality/assets/{asset_id}/workspace"),
+        ("GET", "/quality/common-rule-templates"),
+        ("GET", "/quality/common-rule-templates/{template_id}"),
         ("GET", "/quality/rule-sets"),
         ("GET", "/quality/rule-sets/{rule_set_id}"),
         ("GET", "/quality/runs"),
@@ -88,6 +92,11 @@ def test_public_quality_surface_exposes_only_bounded_quality_commands() -> None:
     } <= routes
     assert {
         ("POST", "/quality/rule-sets"),
+        ("POST", "/quality/common-rule-templates"),
+        (
+            "POST",
+            "/quality/common-rule-templates/{template_id}/mappings",
+        ),
         (
             "POST",
             "/quality/rule-sets/{rule_set_id}/versions/{version_id}/reviews",

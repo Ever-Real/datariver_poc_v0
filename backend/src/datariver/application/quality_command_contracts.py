@@ -77,6 +77,7 @@ class QualityRuleProposalCommand:
     targets: tuple[QualityRuleProposalTarget, ...]
     request_hash: str
     idempotency_key: str
+    template_id: UUID | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,6 +91,23 @@ class QualityRuleProposalItem:
 @dataclass(frozen=True, slots=True)
 class QualityRuleProposalResult:
     items: tuple[QualityRuleProposalItem, ...]
+    replayed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class QualityCommonRuleTemplateCreateCommand:
+    workspace_id: UUID
+    actor_id: UUID
+    name: str
+    description: str | None
+    rules: tuple[dict[str, object], ...]
+    request_hash: str
+    idempotency_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class QualityCommonRuleTemplateCreateResult:
+    template_id: UUID
     replayed: bool
 
 

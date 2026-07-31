@@ -10,6 +10,7 @@ import type {
   CatalogSuggestion,
   CatalogSuggestions,
   Classification,
+  QualityAsset,
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { CursorPagination } from '../../components/common/CursorPagination'
@@ -22,6 +23,10 @@ import { CatalogEmptyValue } from './CatalogEmptyValue'
 import { CatalogExportControl } from './CatalogExportControl'
 import { CatalogMatchPreview } from './CatalogMatchText'
 import { CatalogResourceTree } from './CatalogResourceTree'
+import { QualityApi, qualityQueryKey } from '../quality/qualityApi'
+import { basisPointsText, QualityStatus } from '../quality/QualityShared'
+import { useQualityAuthorizationLease } from '../quality/useQualityAuthorizationLease'
+import { isAuthorizationBoundaryError } from '../quality/useBoundedQualityRunPolling'
 
 export function validCatalogQuery(query: string): boolean {
   const length = query.trim().length
@@ -69,13 +74,29 @@ export function CatalogPage({
   initialQuery = '',
   onQueryChange,
   catalogExportWorkerEnabled = false,
+  workspaceId = '',
+  subjectId = '',
+  securityEpoch = 0,
+  authorizationRevision = 0,
 }: {
   client: ApiClient
   initialQuery?: string
   onQueryChange?: (query: string) => void
   catalogExportWorkerEnabled?: boolean
+  workspaceId?: string
+  subjectId?: string
+  securityEpoch?: number
+  authorizationRevision?: number
 }) {
   const queryClient = useQueryClient()
+  const qualityApi = useMemo(() => new QualityApi(client), [client])
+  const qualityLease = useQualityAuthorizationLease({
+    api: qualityApi,
+    workspaceId,
+    subjectId,
+    securityEpoch,
+    authorizationRevision,
+  })
   const [draftQuery, setDraftQuery] = useState(initialQuery)
   const [query, setQuery] = useState(initialQuery)
   const [filters, setFilters] = useState<Filters>(emptyFilters)
@@ -126,6 +147,39 @@ export function CatalogPage({
     staleTime: 5 * 60 * 1000,
     gcTime: 10 * 60 * 1000,
   })
+
+  const qualityAssetIds = useMemo(() => {
+    return result?.items.map((item) => item.id) ?? []
+  }, [result?.items])
+  const qualityBoundary = qualityLease.boundary
+  const qualityReadAvailable = Boolean(
+    qualityBoundary && qualityLease.axis('read_access')?.state === 'AVAILABLE',
+  )
+  const qualitySummaries = useQuery({
+    queryKey: qualityBoundary
+      ? qualityQueryKey(qualityBoundary, 'asset-summaries', ...qualityAssetIds)
+      : ['quality', 'catalog-asset-summaries', 'unavailable'],
+    queryFn: ({ signal }) => qualityApi.assetSummaries(
+      qualityAssetIds,
+      qualityBoundary?.cacheScope ?? '',
+      signal,
+    ),
+    enabled: Boolean(
+      qualityReadAvailable
+      && qualityAssetIds.length > 0,
+    ),
+    staleTime: 0,
+    gcTime: 30_000,
+    retry: false,
+  })
+  const invalidateQualityLease = qualityLease.invalidate
+  useEffect(() => {
+    if (isAuthorizationBoundaryError(qualitySummaries.error)) invalidateQualityLease()
+  }, [invalidateQualityLease, qualitySummaries.error])
+  const qualityByAsset = useMemo(
+    () => new Map(qualitySummaries.data?.items.map((item) => [item.asset_id, item]) ?? []),
+    [qualitySummaries.data?.items],
+  )
 
   useEffect(() => {
     const normalized = draftQuery.trim()
@@ -193,6 +247,17 @@ export function CatalogPage({
     { accessorKey: 'database_name', header: 'Database', size: 110, cell: ({ row }) => optionalTableText(row.original.database_name) },
     { accessorKey: 'schema_name', header: 'Schema', size: 110, cell: ({ row }) => optionalTableText(row.original.schema_name) },
     { accessorKey: 'name', header: 'Table / Asset', size: 210, cell: ({ row }) => <TruncatedText value={row.original.name} className="catalog-asset-name" /> },
+    {
+      id: 'quality',
+      header: 'Quality',
+      size: 132,
+      enableSorting: false,
+      cell: ({ row }) => <CatalogQualitySummary
+        available={qualityReadAvailable}
+        loading={qualitySummaries.isPending && qualitySummaries.fetchStatus === 'fetching'}
+        value={qualityByAsset.get(row.original.id)}
+      />,
+    },
     { id: 'terms', accessorFn: (row) => (row.terms ?? []).join(' '), header: 'Terms', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Terms`} values={row.original.terms ?? []} truncated={row.original.terms_truncated} /> },
     { id: 'tags', accessorFn: (row) => (row.tags ?? []).join(' '), header: 'Tags', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Tags`} values={row.original.tags ?? []} truncated={row.original.tags_truncated} /> },
     { accessorKey: 'owner', header: 'Owner', size: 140, cell: ({ row }) => optionalTableText(row.original.owner) },
@@ -200,7 +265,14 @@ export function CatalogPage({
     { accessorKey: 'classification', header: 'Class', size: 100, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
     { accessorKey: 'description', header: 'Description', size: 260, cell: ({ row }) => boundedTableText(row.original.description, row.original.description_truncated) },
     { id: 'matches', accessorFn: (row) => row.matches.map((match) => match.text).join(' '), header: 'Matches', size: 300, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },
-  ], [pageIndex, pageSize])
+  ], [
+    pageIndex,
+    pageSize,
+    qualityByAsset,
+    qualityReadAvailable,
+    qualitySummaries.fetchStatus,
+    qualitySummaries.isPending,
+  ])
 
   const updateFilter = (name: keyof Filters, value: string) => {
     setFilters((current) => ({ ...current, [name]: value })); setCursors([undefined]); setPageIndex(0)
@@ -351,12 +423,36 @@ export function CatalogPage({
           onSelectAsset={selectAsset}
           onResizeWidth={(w) => setDetailWidth(Math.max(320, Math.min(w, 900)))}
           width={detailWidth}
+          qualitySummary={qualityByAsset.get(selectedAssetId)}
+          showQualityEvidence
+          qualityReadAvailable={qualityReadAvailable}
+          qualityLoading={qualitySummaries.isPending && qualitySummaries.fetchStatus === 'fetching'}
           asOverlay
         />
       )}
     </div>
   </section>
 
+}
+
+function CatalogQualitySummary({
+  value,
+  loading,
+  available,
+}: {
+  value?: QualityAsset
+  loading: boolean
+  available: boolean
+}) {
+  if (loading) return <span className="catalog-quality-summary pending">확인 중…</span>
+  if (!available) return <span className="catalog-quality-summary empty">표시 불가</span>
+  if (!value || !value.latest_quality_outcome) {
+    return <span className="catalog-quality-summary empty">검사 이력 없음</span>
+  }
+  return <span className="catalog-quality-summary">
+    <QualityStatus value={value.latest_quality_outcome} />
+    <strong>{basisPointsText(value.latest_score_basis_points)}</strong>
+  </span>
 }
 
 function optionalTableText(value: string | null | undefined) {

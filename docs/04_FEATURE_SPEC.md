@@ -13,7 +13,7 @@ when identity, policy, source evidence or a required connector is unavailable.
 | Catalog | authorized user, administrator review scope | bounded search/tree/detail/lineage, match evidence, cursor paging, authorized export jobs | PostgreSQL projection + DataHub detail; stale/degraded reads are explicit |
 | Registration | Administrator, Data Steward, service worker | typed Manual and Bulk intake, private object receipts, bounded parsing, governed CR creation | PostgreSQL intent/evidence; S3/DataHub/Airflow failure never reports applied |
 | Change management | requester, independent approver, worker | versioned CR rounds, maker-checker approvals, TEST evidence, queued application and read-back | PostgreSQL aggregate; provider acknowledgement alone is not completion |
-| Data quality | Data Steward, reviewer, Quality operator | authorization-pruned snapshot, typed Rule/version history, durable Run/result history and bounded issue dashboard | PostgreSQL Quality evidence; Profile/source dependencies are contextual and unavailable mutations stay locked |
+| Data quality | Data Steward, Quality user | search-integrated recent score/status, asset-centric Rule/Run/trend inspector and reusable common Rules with atomic multi-asset mapping | PostgreSQL per-asset Quality evidence; common templates are non-executable authoring intent and unavailable dependencies stay locked |
 | Policy and retention | security administrator, independent checker, scheduler/archive roles | reusable Role rules, No/Partial/Full access, retention/hold/erasure approval evidence | PostgreSQL policy/evidence; no direct destructive completion claim |
 | Knowledge and Chat | steward, reviewer, authorized user | governed graph publication, bounded source jobs, grounded Chat/GraphRAG capability gates | PostgreSQL release/audit; Neo4j/LLM are optional projections/providers |
 | API sharing | product manager, service consumer | versioned product contracts, subject-bound grants, atomic quota/result/replay evidence | PostgreSQL; revoked/expired/drifted grants deny first call and replay |
@@ -194,9 +194,17 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   same-Version terminal Run. Only a latest `SUCCEEDED` Run contributes; later failure, stale or
   cancellation cannot be hidden by an older success. Execution state and quality outcome remain
   separate.
-- The four tabs are `현황 / Rule Sets / 실행 이력 / 이슈`. Server values alone drive KPI and
-  charts, and the chart has an equivalent table. Lists use opaque server cursors, Rule detail is
-  fetched after selection and only one selected non-terminal Run uses bounded polling.
+- Catalog Search requests one bounded Quality summary batch for the visible asset IDs and renders
+  the latest pass rate plus `PASS/WARN/FAIL` in both the result row and selected Evidence panel.
+  Quality denial or dependency failure does not hide an otherwise authorized Catalog result.
+- The two tabs are `자산별 품질 현황 및 이력 / 공통 룰셋 관리`. The asset tab combines a
+  searchable schema/table directory, applied Rule Sets, the latest 50 Runs and a 30-day score
+  trend. The former separate Overview/Run/Issue and maker-checker navigation is not part of the
+  ordinary UI.
+- A common Rule stores reusable typed `NOT_NULL/RANGE` authoring intent. The mapping dialog searches
+  schema/table targets, validates the server field directory and submits at most 25 compatible
+  assets as one atomic per-asset Rule Set proposal. The Template never executes directly and
+  `REGEX` remains safety-disabled.
 - Asset Profile readiness uses only privacy-allowlisted FULL/PARTITION projection after the
   separate Profile read decision. SAMPLE values, raw partitions, distributions, failure rows,
   generated SQL and provider/source credentials are neither requested nor rendered.

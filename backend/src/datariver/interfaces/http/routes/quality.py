@@ -30,6 +30,9 @@ from datariver.infrastructure.quality.source_manifest import (
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.quality_presenters import (
     quality_asset_response,
+    quality_asset_workspace_response,
+    quality_common_rule_template_detail_response,
+    quality_common_rule_template_response,
     quality_issue_response,
     quality_overview_response,
     quality_result_response,
@@ -41,9 +44,17 @@ from datariver.interfaces.http.quality_schemas import (
     QualityAssetAuthoringResponse,
     QualityAssetDetailResponse,
     QualityAssetListResponse,
+    QualityAssetSummaryBatchRequest,
+    QualityAssetSummaryBatchResponse,
+    QualityAssetWorkspaceResponse,
     QualityAuthoringFieldResponse,
     QualityCapabilityAxisResponse,
     QualityCapabilityResponse,
+    QualityCommonRuleTemplateCreateRequest,
+    QualityCommonRuleTemplateCreateResponse,
+    QualityCommonRuleTemplateDetailResponse,
+    QualityCommonRuleTemplateListResponse,
+    QualityCommonRuleTemplateMapRequest,
     QualityIssueListResponse,
     QualityManualRunRequest,
     QualityManualRunResponse,
@@ -190,11 +201,15 @@ async def list_quality_assets(
     session: SessionDep,
     limit: Annotated[int, Query(ge=1, le=100)] = 25,
     cursor: Annotated[str | None, Query(max_length=2_000)] = None,
+    q: Annotated[str, Query(max_length=200)] = "",
+    schema_name: Annotated[str | None, Query(alias="schema", max_length=255)] = None,
 ) -> QualityAssetListResponse:
     _private(response)
     page, read_context = await _service(request, session).list_assets(
         limit=limit,
         cursor=cursor,
+        query=q,
+        schema_name=schema_name,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
@@ -202,6 +217,29 @@ async def list_quality_assets(
     return QualityAssetListResponse(
         items=[quality_asset_response(value) for value in page.items],
         page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+        cache_scope=read_context.cache_scope,
+        observed_at=read_context.observed_at,
+        authorization_valid_until=read_context.authorization_valid_until,
+    )
+
+
+@router.post("/assets/summary-batch", response_model=QualityAssetSummaryBatchResponse)
+async def get_quality_asset_summaries(
+    payload: QualityAssetSummaryBatchRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> QualityAssetSummaryBatchResponse:
+    _private(response)
+    values, read_context = await _service(request, session).get_assets(
+        asset_ids=tuple(payload.asset_ids),
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return QualityAssetSummaryBatchResponse(
+        items=[quality_asset_response(value) for value in values],
         cache_scope=read_context.cache_scope,
         observed_at=read_context.observed_at,
         authorization_valid_until=read_context.authorization_valid_until,
@@ -247,6 +285,157 @@ async def get_quality_asset(
         cache_scope=read_context.cache_scope,
         observed_at=read_context.observed_at,
         authorization_valid_until=read_context.authorization_valid_until,
+    )
+
+
+@router.get(
+    "/assets/{asset_id}/workspace",
+    response_model=QualityAssetWorkspaceResponse,
+)
+async def get_quality_asset_workspace(
+    asset_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    days: Annotated[int, Query(ge=1, le=90)] = 30,
+) -> QualityAssetWorkspaceResponse:
+    _private(response)
+    value, read_context = await _service(request, session).get_asset_workspace(
+        asset_id=asset_id,
+        days=days,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return QualityAssetWorkspaceResponse(
+        item=quality_asset_workspace_response(value),
+        cache_scope=read_context.cache_scope,
+        observed_at=read_context.observed_at,
+        authorization_valid_until=read_context.authorization_valid_until,
+    )
+
+
+@router.get(
+    "/common-rule-templates",
+    response_model=QualityCommonRuleTemplateListResponse,
+)
+async def list_quality_common_rule_templates(
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> QualityCommonRuleTemplateListResponse:
+    _private(response)
+    values, read_context = await _service(request, session).list_common_rule_templates(
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return QualityCommonRuleTemplateListResponse(
+        items=[quality_common_rule_template_response(value) for value in values],
+        cache_scope=read_context.cache_scope,
+        observed_at=read_context.observed_at,
+        authorization_valid_until=read_context.authorization_valid_until,
+    )
+
+
+@router.post(
+    "/common-rule-templates",
+    response_model=QualityCommonRuleTemplateCreateResponse,
+    status_code=201,
+)
+async def create_quality_common_rule_template(
+    payload: QualityCommonRuleTemplateCreateRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=16, max_length=200),
+    ],
+) -> QualityCommonRuleTemplateCreateResponse:
+    _private(response)
+    result = await _command_service(request, session).create_common_rule_template(
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        name=payload.name,
+        description=payload.description,
+        rules=[rule.model_dump() for rule in payload.rules],
+    )
+    response.headers["Location"] = f"/api/v1/quality/common-rule-templates/{result.template_id}"
+    return QualityCommonRuleTemplateCreateResponse(
+        template_id=result.template_id,
+        replayed=result.replayed,
+    )
+
+
+@router.get(
+    "/common-rule-templates/{template_id}",
+    response_model=QualityCommonRuleTemplateDetailResponse,
+)
+async def get_quality_common_rule_template(
+    template_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> QualityCommonRuleTemplateDetailResponse:
+    _private(response)
+    value, read_context = await _service(request, session).get_common_rule_template(
+        template_id=template_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return QualityCommonRuleTemplateDetailResponse(
+        item=quality_common_rule_template_detail_response(value),
+        cache_scope=read_context.cache_scope,
+        observed_at=read_context.observed_at,
+        authorization_valid_until=read_context.authorization_valid_until,
+    )
+
+
+@router.post(
+    "/common-rule-templates/{template_id}/mappings",
+    response_model=QualityRuleBatchProposalResponse,
+    status_code=201,
+)
+async def map_quality_common_rule_template(
+    template_id: UUID,
+    payload: QualityCommonRuleTemplateMapRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=16, max_length=200),
+    ],
+) -> QualityRuleBatchProposalResponse:
+    _private(response)
+    result = await _command_service(request, session).map_common_rule_template(
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        template_id=template_id,
+        asset_ids=payload.asset_ids,
+    )
+    return QualityRuleBatchProposalResponse(
+        items=[
+            QualityRuleProposalItemResponse(
+                asset_id=item.asset_id,
+                rule_set_id=item.rule_set_id,
+                version_id=item.version_id,
+                version=item.version,
+            )
+            for item in result.items
+        ],
+        replayed=result.replayed,
     )
 
 

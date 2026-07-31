@@ -12,9 +12,13 @@ from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0067_quality_control_plane.py"
+COMMON_TEMPLATE_MIGRATION = ROOT / "backend/alembic/versions/0074_quality_common_rule_templates.py"
+CANONICAL = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 CANONICAL_GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
 EXPECTED_TABLES = {
+    "quality.common_rule_templates",
+    "quality.common_rule_template_mappings",
     "quality.rule_sets",
     "quality.rule_set_versions",
     "quality.rule_definitions",
@@ -32,7 +36,7 @@ EXPECTED_TABLES = {
 
 
 def test_quality_metadata_and_revision_are_complete() -> None:
-    assert REQUIRED_DATABASE_REVISION == "0072"
+    assert REQUIRED_DATABASE_REVISION == "0074"
     assert "quality" in MANAGED_DATABASE_SCHEMAS
     assert EXPECTED_TABLES <= set(Base.metadata.tables)
     assert "retention.legal_hold_generations" in Base.metadata.tables
@@ -109,6 +113,30 @@ def test_quality_rule_parameters_and_command_replay_are_database_closed() -> Non
         if isinstance(constraint, CheckConstraint)
     )
     assert "request_hash ~ '^[0-9a-f]{64}$'" in command_checks
+
+
+def test_common_rule_templates_are_reusable_authoring_intent_not_execution_state() -> None:
+    templates = Base.metadata.tables["quality.common_rule_templates"]
+    mappings = Base.metadata.tables["quality.common_rule_template_mappings"]
+    assert set(templates.c.keys()) == {
+        "workspace_id",
+        "name",
+        "description",
+        "rules",
+        "created_by",
+        "id",
+        "created_at",
+        "updated_at",
+    }
+    assert {"template_id", "asset_id", "rule_set_id", "mapped_by"} <= set(mappings.c.keys())
+    assert {
+        constraint.name
+        for constraint in mappings.constraints
+        if isinstance(constraint, UniqueConstraint)
+    } >= {
+        "uq_quality_common_rule_template_mappings_asset",
+        "uq_quality_common_rule_template_mappings_rule_set",
+    }
 
 
 def test_quality_run_attempt_and_receipt_evidence_use_composite_foreign_keys() -> None:
@@ -224,3 +252,26 @@ def test_incremental_revision_is_importable_and_single_parented() -> None:
     spec.loader.exec_module(module)
     assert module.revision == "0067"
     assert module.down_revision == "0066"
+
+
+def test_common_template_revision_and_canonical_baseline_agree() -> None:
+    spec = importlib.util.spec_from_file_location("quality_0074_test", COMMON_TEMPLATE_MIGRATION)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module.revision == "0074"
+    assert module.down_revision == "0073"
+
+    migration = COMMON_TEMPLATE_MIGRATION.read_text(encoding="utf-8")
+    canonical = CANONICAL.read_text(encoding="utf-8")
+    generator = CANONICAL_GENERATOR.read_text(encoding="utf-8")
+    for marker in (
+        "quality.common_rule_templates",
+        "quality.common_rule_template_mappings",
+        "ix_quality_common_rule_templates_list",
+        "ix_quality_common_rule_template_mappings_template",
+    ):
+        assert marker in canonical
+    assert "FORCE ROW LEVEL SECURITY" in migration
+    assert "quality.common_rule_template_mappings TO datariver_app" in migration
+    assert "quality.common_rule_template_mappings TO datariver_app" in generator

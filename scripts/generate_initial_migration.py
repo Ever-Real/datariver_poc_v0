@@ -711,7 +711,11 @@ BEGIN
         GRANT INSERT ON authz.policy_decisions TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON catalog.assets_projection,
             catalog.sync_runs, catalog.projection_watermarks TO datariver_app;
+        GRANT SELECT ON catalog.asset_profile_snapshots,
+            catalog.column_profile_metrics TO datariver_app;
         GRANT SELECT, INSERT ON catalog.export_requests TO datariver_app;
+        GRANT SELECT, INSERT ON quality.common_rule_templates,
+            quality.common_rule_template_mappings TO datariver_app;
         GRANT SELECT, INSERT ON governance.change_request_items,
             governance.approvals, governance.state_transitions TO datariver_app;
         GRANT SELECT, INSERT ON governance.change_request_attachments TO datariver_app;
