@@ -14,14 +14,6 @@ import {
   validateKnowledgePdf,
 } from './KnowledgeSourceUpload'
 
-vi.mock('hash-wasm', () => ({
-  createSHA256: vi.fn(() => Promise.resolve({
-    init: vi.fn(),
-    update: vi.fn(),
-    digest: vi.fn(() => 'a'.repeat(64)),
-  })),
-}))
-
 function jsonBody(options?: RequestOptions): Record<string, unknown> {
   if (typeof options?.body !== 'string') throw new Error('Expected a JSON request body.')
   return JSON.parse(options.body) as Record<string, unknown>
@@ -286,7 +278,7 @@ describe('KnowledgeIngestionStudio', () => {
     expect(initiateBody).toMatchObject({
       display_name: 'knowledge-prompt.txt',
       content_type: 'text/plain',
-      sha256: 'a'.repeat(64),
+      sha256: '5a18199859c968c2b0b850d46e7ae1fa7ed7330b410b280bc81b2b5eab896ccf',
     })
     expect(initiateBody).not.toHaveProperty('classification')
     expect(initiateBody).not.toHaveProperty('content_profile')

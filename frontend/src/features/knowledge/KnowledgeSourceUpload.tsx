@@ -1,4 +1,3 @@
-import { createSHA256 } from 'hash-wasm'
 import {
   CheckCircle2,
   FileUp,
@@ -28,7 +27,6 @@ import type {
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 
-const HASH_CHUNK_SIZE = 4 * 1024 * 1024
 const MAX_KNOWLEDGE_SOURCE_SIZE_BYTES = 50 * 1024 * 1024
 const KNOWLEDGE_SOURCE_ACCEPT = [
   '.pdf',
@@ -732,17 +730,14 @@ async function digestFile(
   signal: AbortSignal,
   onProgress: (value: number) => void,
 ): Promise<string> {
-  const hash = await createSHA256()
-  hash.init()
-  for (let offset = 0; offset < file.size; offset += HASH_CHUNK_SIZE) {
-    signal.throwIfAborted()
-    const chunk = new Uint8Array(await file.slice(offset, offset + HASH_CHUNK_SIZE).arrayBuffer())
-    signal.throwIfAborted()
-    hash.update(chunk)
-    onProgress(Math.min(1, (offset + chunk.byteLength) / file.size))
-  }
   signal.throwIfAborted()
-  return hash.digest('hex')
+  const content = await file.arrayBuffer()
+  signal.throwIfAborted()
+  onProgress(0.5)
+  const digest = await crypto.subtle.digest('SHA-256', content)
+  signal.throwIfAborted()
+  onProgress(1)
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 function uploadStateLabel(record: UploadRecord): string {
