@@ -4,23 +4,11 @@ from typing import Any
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from datariver.config import Settings
-from datariver.domain.monitoring import monitoring_origin
 from datariver.infrastructure.db.models.platform import MonitoringConfigurationModel
 from datariver.interfaces.http.schemas import (
     MonitoringConfigurationResponse,
     MonitoringDashboardResponse,
 )
-
-
-def approved_grafana_origins(settings: Settings) -> frozenset[str]:
-    origins = {
-        origin
-        for value in (settings.ui_grafana_url, settings.grafana_embed_base_url)
-        if value is not None
-        for origin in (monitoring_origin(str(value)),)
-        if origin is not None
-    }
-    return frozenset(origins)
 
 
 def monitoring_configuration_response(

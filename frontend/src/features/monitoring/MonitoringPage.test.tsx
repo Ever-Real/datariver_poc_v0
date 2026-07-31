@@ -76,7 +76,7 @@ describe('MonitoringPage', () => {
     render(<MonitoringPage client={apiClient(request)} />)
 
     fireEvent.click(await screen.findByRole('tab', { name: 'DataHub' }))
-    const frame = await screen.findByTitle('DataHub Grafana Dashboard')
+    const frame = await screen.findByTitle('DataHub Monitoring Dashboard')
     expect(frame).toHaveAttribute('src', 'https://grafana.example/d/datahub')
     expect(frame).toHaveAttribute('sandbox', 'allow-forms allow-same-origin allow-scripts')
     expect(frame).toHaveAttribute('referrerpolicy', 'no-referrer')
@@ -124,8 +124,14 @@ describe('MonitoringPage', () => {
     )
 
     fireEvent.click(await screen.findByRole('button', { name: '탭 수정' }))
+    const linkInputs = screen.getAllByLabelText('Dashboard Link')
+    expect(linkInputs).toHaveLength(2)
+    expect(screen.queryByText('Grafana Dashboard URL')).not.toBeInTheDocument()
     const nameInputs = screen.getAllByLabelText('탭 이름')
     fireEvent.change(nameInputs[0]!, { target: { value: 'Core platform' } })
+    fireEvent.change(linkInputs[0]!, {
+      target: { value: 'https://status.example.com/platform' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'DataHub 탭 삭제' }))
     fireEvent.click(screen.getByRole('button', { name: '저장' }))
 
@@ -139,6 +145,7 @@ describe('MonitoringPage', () => {
     expect(updateOptions?.method).toBe('PUT')
     expect(updateOptions?.ifMatch).toBe('"3"')
     expect(updateOptions?.body).toContain('"label":"Core platform"')
+    expect(updateOptions?.body).toContain('"url":"https://status.example.com/platform"')
     expect(await screen.findByRole('tab', { name: 'Core platform' })).toBeInTheDocument()
   })
 

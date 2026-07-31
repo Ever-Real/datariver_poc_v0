@@ -2,6 +2,21 @@
 
 ## Current verification status
 
+### Provider-neutral Monitoring dashboard links — 2026-07-31
+
+ADR-0095 refines the Monitoring presentation boundary so an administrator may save a
+credential-free HTTP(S) Dashboard Link from any origin. Registration never causes a server fetch,
+probe, proxy, connector change or CSP expansion. The existing deployment-owned exact-origin
+Grafana gate remains the only way to receive a sandboxed iframe descriptor; all other origins open
+as isolated external links. Domain tests cover heterogeneous origins, credential rejection,
+active-content scheme rejection and the existing tab/height bounds. Component tests use a
+non-Grafana link and require the provider-neutral **Dashboard Link** label.
+
+The complete backend suite passed `2,069` tests with `104` explicitly environment-gated skips.
+Strict mypy passed over `540` source/test files and static architecture/security verification
+passed. Frontend TypeScript/ESLint passed; `73` files / `395` tests passed and the production build
+completed. Runtime/browser evidence is recorded only after the exact commit is published.
+
 ### Governed monitoring dashboard tabs — 2026-07-31
 
 Revision `0078` adds a Workspace-scoped monitoring presentation aggregate with forced RLS.

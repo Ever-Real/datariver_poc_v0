@@ -333,10 +333,11 @@ drift. Physical deletion remains a separate governed retention operation.
   capability path may load them into runtime Settings. Admin returns a redacted snapshot, publishes
   no write/activate route and never accepts a probe destination from the browser.
 - Monitoring tab updates are a separate RLS-protected presentation aggregate, not a connector
-  profile. The server accepts only credential-free Dashboard URLs whose origin exactly matches the
-  deployment-owned Grafana origin. Administrator input cannot enable iframe use, widen CSP, select
-  another host or provide a probe destination; fresh administrator assurance and optimistic
-  concurrency are required for every replacement.
+  profile. The server accepts credential-free HTTP(S) Dashboard Links from any origin but never
+  fetches, probes or proxies them. Administrator input cannot enable iframe use, widen CSP or
+  provide a connector destination; only the existing deployment-owned exact-origin Grafana gate
+  may produce an iframe descriptor. Other links open with browser opener isolation. Fresh
+  administrator assurance and optimistic concurrency are required for every replacement.
 - No zero/default encryption key fallback. Startup fails when required secret material is missing or weak.
 - TLS is mandatory outside a single-host private development network. PostgreSQL/object backups are encrypted and restoration is tested.
 - Logs redact Authorization, cookies, provider tokens, presigned URLs, connection strings, prompt content and personal data.

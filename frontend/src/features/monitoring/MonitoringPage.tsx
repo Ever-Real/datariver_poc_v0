@@ -144,7 +144,7 @@ export function MonitoringPage({
   const saveDrafts = async () => {
     if (!canUpdateTabs || saving) return
     if (drafts.some((item) => !item.label.trim() || !item.url.trim())) {
-      setError(new Error('각 탭의 이름과 Grafana Dashboard URL을 입력하세요.'))
+      setError(new Error('각 탭의 이름과 Dashboard Link를 입력하세요.'))
       return
     }
     setSaving(true)
@@ -180,7 +180,7 @@ export function MonitoringPage({
         icon="MO"
         eyebrow="Infrastructure monitoring"
         title="Infrastructure Monitoring"
-        description="서버가 검증한 Grafana Dashboard 탭과 관측성 링크를 표시합니다."
+        description="서버가 검증한 Monitoring Dashboard 탭과 관측성 링크를 표시합니다."
       />
       <ErrorNotice error={error} />
       <div className="monitoring-tabs-shell">
@@ -236,8 +236,7 @@ export function MonitoringPage({
             <div>
               <h2>Monitoring Dashboard가 없습니다.</h2>
               <p>
-                관리자는 탭 수정에서 배포가 승인한 Grafana 원본의 Dashboard URL을 등록할 수
-                있습니다.
+                관리자는 탭 수정에서 HTTP(S) Dashboard Link를 등록할 수 있습니다.
               </p>
             </div>
           </div>
@@ -246,7 +245,7 @@ export function MonitoringPage({
       <Dialog
         open={editorOpen}
         title="Monitoring 탭 수정"
-        description="탭별 Dashboard URL과 페이지 높이를 설정합니다. URL은 배포 승인 Grafana 원본과 일치해야 합니다."
+        description="탭별 Dashboard Link와 페이지 높이를 설정합니다. iframe 승인이 없는 외부 링크는 새 창에서 열립니다."
         size="large"
         onRequestClose={() => {
           if (!saving) setEditorOpen(false)
@@ -316,12 +315,12 @@ export function MonitoringPage({
                   />
                 </label>
                 <label>
-                  Grafana Dashboard URL
+                  Dashboard Link
                   <input
                     value={draft.url}
                     type="url"
                     maxLength={2000}
-                    placeholder="https://grafana.example/d/overview"
+                    placeholder="https://monitoring.example/dashboard"
                     disabled={!canUpdateTabs}
                     onChange={(event) => updateDraft(draft.id, 'url', event.target.value)}
                   />
@@ -387,7 +386,7 @@ function MonitoringDashboardPanel({ dashboard }: { dashboard: MonitoringDashboar
             <Monitor size={20} aria-hidden="true" />
           </span>
           <p>
-            서버가 승인한 Grafana 원본의 <strong>{dashboard.label}</strong> Dashboard입니다.
+            서버가 iframe 표시를 승인한 <strong>{dashboard.label}</strong> Dashboard입니다.
           </p>
           <a
             className="button button-secondary"
@@ -406,7 +405,7 @@ function MonitoringDashboardPanel({ dashboard }: { dashboard: MonitoringDashboar
           sandbox="allow-forms allow-same-origin allow-scripts"
           src={dashboard.embed_url}
           style={{ height: dashboard.height_px }}
-          title={`${dashboard.label} Grafana Dashboard`}
+          title={`${dashboard.label} Monitoring Dashboard`}
         />
       </div>
     )
@@ -420,8 +419,8 @@ function MonitoringDashboardPanel({ dashboard }: { dashboard: MonitoringDashboar
         <p className="eyebrow">Approved external observability</p>
         <h2>{dashboard.label}</h2>
         <p>
-          이 Dashboard는 서버가 제공한 링크입니다. 현재 배포에서 Grafana frame 정책이
-          승인되지 않아 새 창에서 엽니다.
+          이 Dashboard는 서버가 검증한 링크입니다. 현재 배포에서 iframe 표시가 승인되지
+          않아 새 창에서 엽니다.
         </p>
         <a
           className="button"

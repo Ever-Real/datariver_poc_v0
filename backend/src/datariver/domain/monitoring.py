@@ -49,8 +49,6 @@ def monitoring_origin(url: str) -> str | None:
 
 def normalize_monitoring_dashboards(
     drafts: tuple[MonitoringDashboardDraft, ...],
-    *,
-    approved_origins: frozenset[str],
 ) -> tuple[MonitoringDashboard, ...]:
     if len(drafts) > MAX_MONITORING_DASHBOARDS:
         raise ValidationError(
@@ -75,10 +73,6 @@ def normalize_monitoring_dashboards(
         if origin is None:
             raise ValidationError(
                 "Monitoring dashboard URLs must be credential-free HTTP or HTTPS URLs."
-            )
-        if origin not in approved_origins:
-            raise ValidationError(
-                "Monitoring dashboard URLs must use the deployment-approved Grafana origin."
             )
         if not MIN_DASHBOARD_HEIGHT_PX <= draft.height_px <= MAX_DASHBOARD_HEIGHT_PX:
             raise ValidationError(

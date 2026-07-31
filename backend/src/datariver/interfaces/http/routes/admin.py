@@ -96,7 +96,6 @@ from datariver.infrastructure.system_configuration_runtime import (
 )
 from datariver.interfaces.http.dependencies import ContextDep, get_container
 from datariver.interfaces.http.monitoring_configuration import (
-    approved_grafana_origins,
     monitoring_configuration_response,
 )
 from datariver.interfaces.http.presenters import (
@@ -2804,7 +2803,6 @@ async def update_monitoring_configuration(
             "Monitoring configuration update requires a fresh administrator assurance."
         )
     container = get_container(request)
-    approved_origins = approved_grafana_origins(container.settings)
     dashboards = normalize_monitoring_dashboards(
         tuple(
             MonitoringDashboardDraft(
@@ -2815,7 +2813,6 @@ async def update_monitoring_configuration(
             )
             for item in payload.items
         ),
-        approved_origins=approved_origins,
     )
     documents = [dashboard.document() for dashboard in dashboards]
     payload_hash = canonical_json_hash({"items": documents})
