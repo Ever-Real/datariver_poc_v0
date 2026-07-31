@@ -160,6 +160,104 @@ describe('QualityPage', () => {
     expect(await screen.findByRole('heading', { name: 'wafer_events' })).toBeInTheDocument()
   })
 
+  it('keeps an asset workspace 404 terminal without resetting the authorization lease or tree', async () => {
+    selectQualityAsset()
+    const fetchMock = qualityFetchMock({
+      workspace: () => Promise.resolve(problem(404, 'not_found', '품질 대상 자산을 찾을 수 없습니다.')),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+
+    expect(await screen.findByText('품질 대상 자산을 찾을 수 없습니다.')).toBeInTheDocument()
+    expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(1)
+    expect(requestCount(fetchMock, '/api/v1/catalog/tree/nodes')).toBe(1)
+    expect(requestCount(fetchMock, assetWorkspacePath)).toBe(1)
+    expect(screen.queryByRole('heading', { name: '필드별 품질 관리' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('hides a cached inspector and field drawer when the same asset later returns 404', async () => {
+    selectQualityAsset()
+    let workspaceReads = 0
+    const fetchMock = qualityFetchMock({
+      workspace: () => {
+        workspaceReads += 1
+        return Promise.resolve(workspaceReads === 1
+          ? workspaceJson()
+          : problem(404, 'not_found', '품질 대상 자산을 찾을 수 없습니다.'))
+      },
+      fieldWorkspace: () => Promise.resolve(fieldWorkspaceJson()),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const page = renderPage()
+
+    expect(await screen.findByRole('heading', { name: 'wafer_events' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('row', { name: /wafer_id/ }))
+    expect(await screen.findByRole('heading', { name: 'wafer_id' })).toBeInTheDocument()
+
+    await act(async () => {
+      await page.queryClient.invalidateQueries({ queryKey: ['quality'] })
+    })
+
+    expect(await screen.findByText('품질 대상 자산을 찾을 수 없습니다.')).toBeInTheDocument()
+    expect(requestCount(fetchMock, assetWorkspacePath)).toBe(2)
+    expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(1)
+    expect(screen.queryByRole('heading', { name: 'wafer_events' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'wafer_id' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '필드별 품질 관리' })).not.toBeInTheDocument()
+  })
+
+  it.each([
+    ['forbidden', 403, 'forbidden'],
+    ['cache scope mismatch', 409, 'cache_scope_mismatch'],
+  ])('invalidates the full authorization boundary for %s', async (_label, status, code) => {
+    selectQualityAsset()
+    let capabilityReads = 0
+    const pendingCapability = new Promise<Response>(() => undefined)
+    const fetchMock = qualityFetchMock({
+      capability: () => {
+        capabilityReads += 1
+        return capabilityReads === 1
+          ? Promise.resolve(json(capability('AVAILABLE')))
+          : pendingCapability
+      },
+      workspace: () => Promise.resolve(problem(status, code, '인가 경계가 변경되었습니다.')),
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+
+    await waitFor(() => {
+      expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(2)
+    })
+    expect(requestCount(fetchMock, assetWorkspacePath)).toBe(1)
+    expect(screen.queryByRole('heading', { name: '필드별 품질 관리' })).not.toBeInTheDocument()
+  })
+
+  it('shows a generic workspace error without renewing the lease or exposing cached data', async () => {
+    selectQualityAsset()
+    let workspaceReads = 0
+    const fetchMock = qualityFetchMock({
+      workspace: () => {
+        workspaceReads += 1
+        return workspaceReads === 1
+          ? Promise.resolve(workspaceJson())
+          : Promise.reject(new Error('원천 연결이 중단되었습니다.'))
+      },
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const page = renderPage()
+
+    expect(await screen.findByRole('heading', { name: '필드별 품질 관리' })).toBeInTheDocument()
+    await act(async () => {
+      await page.queryClient.invalidateQueries({ queryKey: ['quality'] })
+    })
+
+    expect(await screen.findByText('원천 연결이 중단되었습니다.')).toBeInTheDocument()
+    expect(requestCount(fetchMock, assetWorkspacePath)).toBe(2)
+    expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(1)
+    expect(screen.queryByRole('heading', { name: '필드별 품질 관리' })).not.toBeInTheDocument()
+  })
+
   it('coalesces repeated focus events while the capability request is in flight', async () => {
     let resolveCapability!: (response: Response) => void
     let capabilitySignal: AbortSignal | undefined
@@ -301,6 +399,7 @@ function renderPage(initial: {
   const page = render(value())
   return {
     ...page,
+    queryClient,
     rerenderQuality(next: Partial<typeof props>) {
       props = { ...props, ...next }
       page.rerender(value())
@@ -506,6 +605,70 @@ function treePage() {
     items: [],
     page: { next_cursor: null, limit: 100 },
   }
+}
+
+function selectQualityAsset() {
+  window.history.replaceState(
+    {},
+    '',
+    `/?page=quality&workspace=workspace-one&assetId=${qualityAsset.asset_id}`,
+  )
+}
+
+const assetWorkspacePath = `/api/v1/quality/assets/${qualityAsset.asset_id}/workspace`
+
+function qualityFetchMock({
+  capability: capabilityResponse = () => Promise.resolve(json(capability('AVAILABLE'))),
+  workspace,
+  fieldWorkspace: fieldWorkspaceResponse,
+}: {
+  capability?: () => Promise<Response>
+  workspace: () => Promise<Response>
+  fieldWorkspace?: () => Promise<Response>
+}) {
+  return vi.fn((input: string | URL | Request) => {
+    const path = requestUrl(input).pathname
+    if (path.endsWith('/quality/capability')) return capabilityResponse()
+    if (path.endsWith('/quality/assets')) return Promise.resolve(json(emptyPage()))
+    if (path.endsWith('/catalog/tree/nodes')) return Promise.resolve(json(treePage()))
+    if (path.endsWith(assetWorkspacePath)) return workspace()
+    if (
+      fieldWorkspaceResponse
+      && path.endsWith(`${assetWorkspacePath.replace('/workspace', '')}/fields/wafer_id/workspace`)
+    ) {
+      return fieldWorkspaceResponse()
+    }
+    return Promise.reject(new Error(`unexpected request: ${requestUrl(input).href}`))
+  })
+}
+
+function workspaceJson(): Response {
+  return json({
+    item: assetWorkspace(),
+    cache_scope: cacheScope,
+    observed_at: '2026-07-30T00:00:00Z',
+    authorization_valid_until: '2026-07-30T00:00:30Z',
+  })
+}
+
+function fieldWorkspaceJson(): Response {
+  return json({
+    item: fieldWorkspace(),
+    cache_scope: cacheScope,
+    observed_at: '2026-07-30T00:00:00Z',
+    authorization_valid_until: '2026-07-30T00:00:30Z',
+  })
+}
+
+function problem(status: number, code: string, detail: string): Response {
+  return json({
+    type: `urn:datariver:problem:${code}`,
+    title: code,
+    status,
+    detail,
+    code,
+    request_id: 'request-quality-test',
+  }, status)
 }
 
 function requestPaths(fetchMock: ReturnType<typeof vi.fn>): string[] {

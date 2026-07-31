@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { ApiClient } from '../../api/client'
+import { ApiError, type ApiClient } from '../../api/client'
 import type { QualityAsset, QualityCapabilityAxis } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { AccordionItem } from '../../components/common/Accordion'
@@ -60,7 +60,11 @@ export function QualityAssetsTab({
   })
 
   useEffect(() => {
-    if (isAuthorizationBoundaryError(workspace.error)) onBoundaryInvalid()
+    const resourceNotFound = workspace.error instanceof ApiError
+      && workspace.error.problem.status === 404
+    if (!resourceNotFound && isAuthorizationBoundaryError(workspace.error)) {
+      onBoundaryInvalid()
+    }
   }, [onBoundaryInvalid, workspace.error])
   return <section className="quality-asset-workspace">
     <aside className="quality-asset-directory panel" aria-label="품질 대상 자산 목록">
@@ -122,7 +126,7 @@ export function QualityAssetsTab({
         <p className="quality-loading" role="status">선택한 자산의 품질 현황을 불러오는 중입니다.</p>
       )}
       {workspace.error && <ErrorNotice error={workspace.error} />}
-      {workspace.data && <AssetInspector
+      {!workspace.error && workspace.data && <AssetInspector
         value={workspace.data}
         api={api}
         boundary={boundary}
