@@ -230,7 +230,10 @@ describe('ChatPage', () => {
         resolveResult = resolve
       })
     })
-    render(<ChatPage client={{ request: baseClient.request, requestEventStream } as unknown as ApiClient} />)
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
     await screen.findByText('주문 데이터')
 
     const question = screen.getByLabelText('카탈로그 질문')
@@ -433,7 +436,10 @@ describe('ChatPage', () => {
       }
       return baseClient.requestEventStream(path, options, onEvent)
     })
-    render(<ChatPage client={{ request: baseClient.request, requestEventStream } as unknown as ApiClient} />)
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
     await screen.findByText('주문 데이터')
 
     const question = screen.getByLabelText('카탈로그 질문')
@@ -484,7 +490,10 @@ describe('ChatPage', () => {
         ? Promise.resolve(unavailable)
         : baseClient.requestEventStream(path, options, onEvent)
     ))
-    render(<ChatPage client={{ request: baseClient.request, requestEventStream } as unknown as ApiClient} />)
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
     await screen.findByText('주문 데이터')
 
     selectRoute('그래프')
@@ -529,7 +538,10 @@ describe('ChatPage', () => {
         ? Promise.resolve(generalAnswer)
         : baseClient.requestEventStream(path, options, onEvent)
     ))
-    render(<ChatPage client={{ request: baseClient.request, requestEventStream } as unknown as ApiClient} />)
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
     await screen.findByText('주문 데이터')
 
     const question = screen.getByLabelText('카탈로그 질문')
@@ -573,7 +585,10 @@ describe('ChatPage', () => {
         ? Promise.resolve(unavailable)
         : baseClient.requestEventStream(path, options, onEvent)
     ))
-    render(<ChatPage client={{ request: baseClient.request, requestEventStream } as unknown as ApiClient} />)
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
     await screen.findByText('주문 데이터')
 
     selectRoute('일반')

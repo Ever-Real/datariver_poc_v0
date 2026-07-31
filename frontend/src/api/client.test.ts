@@ -215,17 +215,21 @@ describe('API problem handling', () => {
   })
 
   it('delivers server workflow events before the final Chat stream result', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response([
-      'event: workflow',
-      'data: {"stage":"RETRIEVAL","status":"IN_PROGRESS","detail_code":"RETRIEVAL_IN_PROGRESS"}',
-      '',
-      'event: result',
-      'data: {"answer":"완료된 답변"}',
-      '',
-    ].join('\n'), {
-      status: 200,
-      headers: { 'Content-Type': 'text/event-stream' },
-    }))
+    let requestedOptions: RequestInit | undefined
+    const fetchMock = vi.fn((_input: RequestInfo | URL, options?: RequestInit) => {
+      requestedOptions = options
+      return Promise.resolve(new Response([
+        'event: workflow',
+        'data: {"stage":"RETRIEVAL","status":"IN_PROGRESS","detail_code":"RETRIEVAL_IN_PROGRESS"}',
+        '',
+        'event: result',
+        'data: {"answer":"완료된 답변"}',
+        '',
+      ].join('\n'), {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
+      }))
+    })
     vi.stubGlobal('fetch', fetchMock)
     const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
     const events: Array<{ event: string; data: unknown }> = []
@@ -244,9 +248,8 @@ describe('API problem handling', () => {
         detail_code: 'RETRIEVAL_IN_PROGRESS',
       },
     }])
-    const [, options] = fetchMock.mock.calls[0] ?? []
-    expect(options?.cache).toBe('no-store')
-    const headers = new Headers(options?.headers)
+    expect(requestedOptions?.cache).toBe('no-store')
+    const headers = new Headers(requestedOptions?.headers)
     expect(headers.get('Accept')).toBe('text/event-stream')
     expect(headers.get('Authorization')).toBe('Bearer token')
     expect(headers.get('X-Workspace-Id')).toBe('workspace')
