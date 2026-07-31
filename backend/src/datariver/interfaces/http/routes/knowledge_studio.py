@@ -828,6 +828,7 @@ async def list_knowledge_studio_domains(
 @domains_router.get(
     "/domains/manage",
     response_model=KnowledgeStudioManagedDomainListResponse,
+    operation_id="list_managed_knowledge_domains",
 )
 async def list_managed_knowledge_domains(
     request: Request,

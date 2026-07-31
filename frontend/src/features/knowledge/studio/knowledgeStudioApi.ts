@@ -484,6 +484,17 @@ export async function listKnowledgeStudioDomains(
   return response.items
 }
 
+export async function listKnowledgeStudioManagedDomains(
+  client: ApiClient,
+  signal?: AbortSignal,
+): Promise<KnowledgeStudioManagedDomain[]> {
+  const response = await client.request<{ items: KnowledgeStudioManagedDomain[] }>(
+    '/knowledge/domains/manage?limit=100',
+    { cache: 'no-store', signal },
+  )
+  return response.items
+}
+
 export async function createKnowledgeStudioManagedDomain(
   client: ApiClient,
   displayName: string,

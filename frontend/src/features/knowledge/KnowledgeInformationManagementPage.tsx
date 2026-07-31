@@ -6,7 +6,7 @@ import { KnowledgeAssetInstancePanel } from './KnowledgeAssetInstancePanel'
 import { KnowledgeDeliveryPolicyPanel } from './KnowledgeDeliveryPolicyPanel'
 import { DomainManagementPanel } from './studio/basic/DomainManagementDialog'
 import {
-  listKnowledgeStudioDomains,
+  listKnowledgeStudioManagedDomains,
   type KnowledgeStudioDomainOption,
 } from './studio/knowledgeStudioApi'
 
@@ -35,19 +35,22 @@ export function KnowledgeInformationManagementPage({
     'DOMAINS' | 'PROFILES' | 'INSTANCES' | 'DELIVERY'
   >(initialTab)
   const [domains, setDomains] = useState<KnowledgeStudioDomainOption[]>([])
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(initialTab === 'DOMAINS')
   const [error, setError] = useState('')
   const [revision, setRevision] = useState(0)
 
   const reload = useCallback(async (signal?: AbortSignal) => {
     setLoading(true)
     setError('')
+    setDomains([])
     try {
-      const items = await listKnowledgeStudioDomains(client, 'INTERNAL', undefined, signal)
+      const items = await listKnowledgeStudioManagedDomains(client, signal)
+      if (signal?.aborted) return []
       setDomains(items)
       return items
     } catch (caught) {
       if (signal?.aborted) return []
+      setDomains([])
       setError(caught instanceof Error ? caught.message : '업무 도메인을 불러오지 못했습니다.')
       return []
     } finally {
@@ -56,10 +59,16 @@ export function KnowledgeInformationManagementPage({
   }, [client])
 
   useEffect(() => {
+    if (activeTab !== 'DOMAINS') {
+      setLoading(false)
+      setError('')
+      setDomains([])
+      return
+    }
     const controller = new AbortController()
     void reload(controller.signal)
     return () => controller.abort()
-  }, [reload, revision])
+  }, [activeTab, reload, revision])
 
   useEffect(() => {
     setActiveTab(initialTab)
@@ -121,19 +130,32 @@ export function KnowledgeInformationManagementPage({
         })}
       </nav>
       {activeTab === 'DOMAINS' && (
-        <>
-          {error && (
-            <div role="alert" className="rounded-enterprise border border-red-200 bg-red-50 p-3 text-xs text-red-800">
-              {error}
+        loading ? (
+          <div
+            role="status"
+            className="rounded-enterprise border border-slate-200 bg-slate-50 p-4 text-xs text-slate-600"
+          >
+            PostgreSQL 업무 도메인 관리 목록을 확인하는 중입니다.
+          </div>
+        ) : error ? (
+          <section
+            role="alert"
+            aria-label="업무 도메인 관리 사용 불가"
+            className="rounded-enterprise border border-red-200 bg-red-50 p-4 text-xs text-red-800"
+          >
+            <strong className="block text-sm">업무 도메인 관리 기능을 사용할 수 없습니다.</strong>
+            <p className="mb-0 mt-1">{error}</p>
+            <div className="mt-3">
               <button
                 type="button"
-                className="ml-3 font-black underline"
+                className="font-black underline"
                 onClick={() => setRevision((current) => current + 1)}
               >
                 다시 시도
               </button>
             </div>
-          )}
+          </section>
+        ) : (
           <DomainManagementPanel
             client={client}
             items={domains}
@@ -146,7 +168,7 @@ export function KnowledgeInformationManagementPage({
             onEnroll={onEnroll}
             hardwareWebauthnEnabled={hardwareWebauthnEnabled}
           />
-        </>
+        )
       )}
       {activeTab === 'PROFILES' && <KnowledgePropertyProfilePanel client={client} />}
       {activeTab === 'INSTANCES' && (

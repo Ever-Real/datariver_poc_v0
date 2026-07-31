@@ -18,6 +18,7 @@ import {
   initiateKnowledgeStudioSourceUpload,
   listKnowledgeStudioTBoxProposalJobs,
   listKnowledgeStudioDomains,
+  listKnowledgeStudioManagedDomains,
   preflightKnowledgeStudioABox,
   presignKnowledgeStudioSourceUploadPart,
   previewKnowledgeStudioBinding,
@@ -391,6 +392,37 @@ describe('Knowledge Studio API', () => {
 
     expect(requestUrl(fetchMock.mock.calls[0]?.[0])).toContain('/knowledge/domains')
     expect(requestUrl(fetchMock.mock.calls[0]?.[0])).not.toContain('/manage')
+  })
+
+  it('lists the bounded managed-domain inventory through the admin resource', async () => {
+    const managedDomain = {
+      id: payload.domain_id,
+      display_name: '반도체',
+      source_version: payload.domain_source_version,
+      asset_count: 2,
+      lifecycle: 'ACTIVE',
+      version: 1,
+      created_at: '2026-07-30T01:00:00Z',
+      updated_at: '2026-07-30T01:00:00Z',
+      managed: true,
+    }
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ items: [managedDomain] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    const items = await listKnowledgeStudioManagedDomains(client)
+
+    expect(items).toEqual([managedDomain])
+    expect(requestUrl(fetchMock.mock.calls[0]?.[0])).toContain(
+      '/knowledge/domains/manage?limit=100',
+    )
+    expect(fetchMock.mock.calls[0]?.[1]?.method ?? 'GET').toBe('GET')
+    expect(fetchMock.mock.calls[0]?.[1]?.cache).toBe('no-store')
   })
 
   it('searches exact published T-Box releases and creates a fenced Asset Proposal', async () => {

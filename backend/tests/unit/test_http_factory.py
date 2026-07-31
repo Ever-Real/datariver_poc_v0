@@ -1349,6 +1349,11 @@ def test_knowledge_studio_draft_openapi_requires_etag_and_idempotency() -> None:
         "CONFIDENTIAL",
         "RESTRICTED",
     ]
+    managed_domains = document["paths"]["/api/v1/knowledge/domains/manage"]["get"]
+    assert managed_domains["operationId"] == "list_managed_knowledge_domains"
+    assert managed_domains["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/KnowledgeStudioManagedDomainListResponse"
+    }
 
     abox = document["paths"]["/api/v1/knowledge/studio/drafts/{draft_id}/abox"]["get"]
     assert abox["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
