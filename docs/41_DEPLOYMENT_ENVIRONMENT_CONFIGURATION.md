@@ -71,6 +71,12 @@ APP_ENV=development
 APP_PUBLIC_ORIGIN=<browser-origin>
 APP_CORS_ORIGINS=<comma-separated-browser-origins>
 APP_TRUSTED_HOSTS=<comma-separated-hosts>
+API_PROXY_READ_TIMEOUT_SECONDS=30
+# This exception applies only to the typed Studio document-Proposal route.
+KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS=135
+# Host-development compatibility values; they are not production capacity defaults.
+HOST_DEV_API_PROXY_READ_TIMEOUT_SECONDS=900
+HOST_DEV_KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS=900
 
 DATAHUB_BASE_URL=<gms-origin>
 DATAHUB_SECRET_REF=file:/run/secrets/datahub_token
@@ -110,6 +116,12 @@ INTRANET_RERANKER_MODEL=<approved-model-id>
 An unset optional field and an explicitly disabled adapter are both unconfigured. Enabling an
 adapter without every required endpoint/model/reference fails Settings validation; there is no
 source-code fallback.
+
+The Knowledge Studio document timeout is a bounded synchronous compatibility bridge for the exact
+document-Proposal endpoint. It does not widen the generic API proxy timeout, and changing any of
+the four proxy timeout keys recreates only the web process. Production acceptance still requires
+moving slow inference to the approved durable worker instead of increasing the timeout
+indefinitely.
 
 For the Mac-only loopback Reranker, the selected fresh/update workflow owns the managed process
 lifecycle. An enabled supported profile starts or reuses only the PID whose command, model blob and

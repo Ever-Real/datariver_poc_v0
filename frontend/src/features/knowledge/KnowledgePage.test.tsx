@@ -6,7 +6,7 @@ import { KnowledgePage } from './KnowledgePage'
 afterEach(() => vi.unstubAllGlobals())
 
 describe('KnowledgePage', () => {
-  it('shows the four Knowledge workspaces and routes creation to full-screen Studio', async () => {
+  it('shows the consolidated Knowledge workspaces and routes creation to full-screen Studio', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url
       if (url.endsWith('/knowledge/graphs')) return Promise.resolve(json([]))
@@ -25,10 +25,9 @@ describe('KnowledgePage', () => {
     expect(screen.queryByRole('button', { name: /데이터 적재/ })).not.toBeInTheDocument()
     const registryMenu = screen.getByRole('button', { name: /조회 및 생성/ })
     const informationMenu = screen.getByRole('button', { name: /정보 관리/ })
-    const instanceMenu = screen.getByRole('button', { name: /인스턴스 관리/ })
     expect(registryMenu).not.toHaveClass('ml-5')
     expect(informationMenu).not.toHaveClass('ml-5')
-    expect(instanceMenu).not.toHaveClass('ml-5')
+    expect(screen.queryByRole('button', { name: /인스턴스 관리/ })).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /에셋 추가/ }))
     expect(onNavigate).toHaveBeenCalledWith('knowledge-studio')
@@ -37,8 +36,6 @@ describe('KnowledgePage', () => {
     expect(onNavigate).toHaveBeenCalledWith('knowledge-chat')
     fireEvent.click(informationMenu)
     expect(onNavigate).toHaveBeenCalledWith('knowledge-instances')
-    fireEvent.click(instanceMenu)
-    expect(onNavigate).toHaveBeenCalledWith('knowledge-profiles')
   })
 })
 

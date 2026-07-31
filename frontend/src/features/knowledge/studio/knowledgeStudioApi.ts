@@ -35,6 +35,42 @@ export interface KnowledgeStudioManagedDomain extends KnowledgeStudioDomainOptio
   managed: true
 }
 
+export interface KnowledgePropertyProfile {
+  id: string
+  description: string | null
+  unit: string | null
+  synonyms: string[]
+  lifecycle: 'ACTIVE' | 'ARCHIVED'
+  created_by: string
+  updated_by: string
+  archived_by: string | null
+  created_at: string
+  updated_at: string
+  archived_at: string | null
+  version: number
+}
+
+export interface KnowledgePropertyProfileItem {
+  graph_id: string
+  graph_name: string
+  studio_release_id: string
+  release_no: number
+  ontology_version_id: string
+  ontology_element_id: string
+  stable_property_id: string
+  property_name: string
+  owner_class_id: string
+  data_type: string
+  property_urn: string
+  profile: KnowledgePropertyProfile | null
+}
+
+export interface KnowledgePropertyProfileValues {
+  description?: string
+  unit?: string
+  synonyms: string[]
+}
+
 export interface KnowledgeStudioDraft extends KnowledgeStudioBasicInformation {
   id: string
   author_id: string
@@ -374,6 +410,72 @@ export async function deleteKnowledgeStudioManagedDomain(
 ): Promise<void> {
   await client.request<void>(
     `/knowledge/domains/${encodeURIComponent(domainId)}`,
+    {
+      method: 'DELETE',
+      cache: 'no-store',
+      ifMatch: `"${version}"`,
+      idempotencyKey,
+    },
+  )
+}
+
+export async function listKnowledgePropertyProfiles(
+  client: ApiClient,
+  query = '',
+  signal?: AbortSignal,
+): Promise<KnowledgePropertyProfileItem[]> {
+  const params = new URLSearchParams({ q: query.trim(), limit: '200' })
+  const response = await client.request<{ items: KnowledgePropertyProfileItem[] }>(
+    `/knowledge/property-profiles?${params.toString()}`,
+    { cache: 'no-store', signal },
+  )
+  return response.items
+}
+
+export async function createKnowledgePropertyProfile(
+  client: ApiClient,
+  ontologyElementId: string,
+  values: KnowledgePropertyProfileValues,
+  idempotencyKey: string,
+): Promise<KnowledgePropertyProfile> {
+  return client.request<KnowledgePropertyProfile>('/knowledge/property-profiles', {
+    method: 'POST',
+    cache: 'no-store',
+    idempotencyKey,
+    body: JSON.stringify({
+      ontology_element_id: ontologyElementId,
+      ...values,
+    }),
+  })
+}
+
+export async function updateKnowledgePropertyProfile(
+  client: ApiClient,
+  profileId: string,
+  version: number,
+  values: KnowledgePropertyProfileValues,
+  idempotencyKey: string,
+): Promise<KnowledgePropertyProfile> {
+  return client.request<KnowledgePropertyProfile>(
+    `/knowledge/property-profiles/${encodeURIComponent(profileId)}`,
+    {
+      method: 'PATCH',
+      cache: 'no-store',
+      ifMatch: `"${version}"`,
+      idempotencyKey,
+      body: JSON.stringify(values),
+    },
+  )
+}
+
+export async function archiveKnowledgePropertyProfile(
+  client: ApiClient,
+  profileId: string,
+  version: number,
+  idempotencyKey: string,
+): Promise<KnowledgePropertyProfile> {
+  return client.request<KnowledgePropertyProfile>(
+    `/knowledge/property-profiles/${encodeURIComponent(profileId)}`,
     {
       method: 'DELETE',
       cache: 'no-store',

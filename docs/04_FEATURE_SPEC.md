@@ -246,6 +246,17 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 ## Knowledge Graph Studio
 
 - Create graph and versioned ontology; import DataHub scope or uploaded sources.
+- The first-depth Knowledge workspace separates **조회 및 생성**, consolidated **정보 관리** and
+  **Chat Test**. Information Management uses the same canonical domain API as Studio Step 1 and
+  manages description, unit and synonyms for exact Properties in the active immutable Studio
+  Release. Graph Builder keeps only lightweight Property name/type authoring.
+- A released Property Profile is PostgreSQL canonical, domain/classification authorized, forced-RLS
+  isolated, ETag-fenced and idempotent. Archive preserves history while a partial unique constraint
+  permits one later active profile for the same released Property; it never edits the ontology
+  element or Neo4j projection.
+- T-Box catalog discovery uses the same authorization-pruned Catalog search as the main search
+  workspace, then narrows candidates to Dataset/Table/View and the Draft classification ceiling.
+  Results and field selection use bounded tables; no browser fallback asset is manufactured.
 - Extraction produces proposals with provenance/confidence, never direct mutations.
 - PDF source analysis is a durable, owner-scoped capability rather than an HTTP-request-bound
   inference call. Submission accepts only an integrity-verified `ACCEPTED` PDF owned by the current

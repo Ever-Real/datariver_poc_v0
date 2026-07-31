@@ -753,7 +753,9 @@ BEGIN
             knowledge.abox_mapping_rule_drafts,
             knowledge.studio_preflight_checks, knowledge.studio_releases,
             knowledge.ontology_elements, knowledge.abox_binding_versions,
-            knowledge.abox_mapping_rule_versions TO datariver_app;
+            knowledge.abox_mapping_rule_versions,
+            knowledge.property_profiles,
+            knowledge.property_profile_synonyms TO datariver_app;
         GRANT INSERT ON knowledge.graphs, knowledge.ontology_versions,
             knowledge.releases, knowledge.release_nodes, knowledge.release_edges,
             knowledge.changesets, knowledge.change_operations,
@@ -763,7 +765,9 @@ BEGIN
             knowledge.graphrag_audits, knowledge.studio_drafts,
             knowledge.studio_preflight_checks, knowledge.studio_releases,
             knowledge.ontology_elements, knowledge.abox_binding_versions,
-            knowledge.abox_mapping_rule_versions TO datariver_app;
+            knowledge.abox_mapping_rule_versions,
+            knowledge.property_profiles,
+            knowledge.property_profile_synonyms TO datariver_app;
         GRANT UPDATE ON knowledge.graphs, knowledge.changesets,
             knowledge.projection_deployments, knowledge.source_snapshots TO datariver_app;
         GRANT UPDATE (
@@ -779,6 +783,11 @@ BEGIN
         ) ON knowledge.studio_drafts TO datariver_app;
         GRANT UPDATE (state, archived_at, archived_by)
             ON knowledge.studio_releases TO datariver_app;
+        GRANT UPDATE (
+            description, unit, lifecycle, updated_by, archived_at,
+            archived_by, updated_at, version
+        ) ON knowledge.property_profiles TO datariver_app;
+        GRANT DELETE ON knowledge.property_profile_synonyms TO datariver_app;
         GRANT INSERT ON knowledge.source_references,
             knowledge.abox_binding_drafts,
             knowledge.abox_mapping_rule_drafts TO datariver_app;

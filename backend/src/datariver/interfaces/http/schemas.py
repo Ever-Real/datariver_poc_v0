@@ -2076,6 +2076,55 @@ class KnowledgeStudioManagedDomainListResponse(BaseModel):
     items: list[KnowledgeStudioManagedDomainResponse]
 
 
+class KnowledgePropertyProfileValuesRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    description: str | None = Field(default=None, max_length=2_000)
+    unit: str | None = Field(default=None, max_length=100)
+    synonyms: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        default_factory=list,
+        max_length=50,
+    )
+
+
+class KnowledgePropertyProfileCreateRequest(KnowledgePropertyProfileValuesRequest):
+    ontology_element_id: UUID
+
+
+class KnowledgePropertyProfileResponse(BaseModel):
+    id: UUID
+    description: str | None
+    unit: str | None
+    synonyms: list[str]
+    lifecycle: Literal["ACTIVE", "ARCHIVED"]
+    created_by: UUID
+    updated_by: UUID
+    archived_by: UUID | None
+    created_at: datetime
+    updated_at: datetime
+    archived_at: datetime | None
+    version: int = Field(ge=1)
+
+
+class KnowledgePropertyProfileItemResponse(BaseModel):
+    graph_id: UUID
+    graph_name: str
+    studio_release_id: UUID
+    release_no: int = Field(ge=1)
+    ontology_version_id: UUID
+    ontology_element_id: UUID
+    stable_property_id: str
+    property_name: str
+    owner_class_id: str
+    data_type: str
+    property_urn: str
+    profile: KnowledgePropertyProfileResponse | None
+
+
+class KnowledgePropertyProfileListResponse(BaseModel):
+    items: list[KnowledgePropertyProfileItemResponse]
+
+
 class KnowledgeStudioDraftResponse(BaseModel):
     id: UUID
     author_id: UUID

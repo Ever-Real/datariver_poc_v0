@@ -243,6 +243,8 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 | `knowledge.studio_preflight_checks` | draft/version/contract hash, `PASS/FAIL/UNAVAILABLE`, validation contract version, bounded evidence document/hash, checker/time | append-only exact pre-flight receipt; only a PASS from the eventual independent reviewer can support publication |
 | `knowledge.studio_releases` | graph/release number UQ, source Draft/version UQ, `ACTIVE/ARCHIVED`, ontology/exact receipt/supersedes references, contract/T-Box/A-Box hashes, author/reviewer/reason/publisher/times | immutable Studio schema/mapping manifest and single active contract history; composite FK fixes receipt Draft/version/hash/checker, separate from instance `knowledge.releases` |
 | `knowledge.ontology_elements` | immutable ontology-version stable ID and ordinal UQ, kind/name/document/hash | deterministic typed element index derived and read back in the publication transaction |
+| `knowledge.property_profiles` | workspace/graph/active Studio Release/ontology version/exact `PROPERTY` element and stable-ID references, description, unit, `ACTIVE/ARCHIVED`, actor/time/version; partial UQ permits one active row per released Property | mutable PostgreSQL semantic profile that never rewrites the immutable ontology element; archive retains history and allows a later new active profile |
+| `knowledge.property_profile_synonyms` | workspace/profile/value, NFC case-folded normalized value UQ, created time | bounded normalized synonym values owned by one Property Profile aggregate |
 | `knowledge.abox_binding_versions` | Studio Release/target ordinal UQ, exact ontology element/source reference and mapping hash | immutable published A-Box binding headers |
 | `knowledge.abox_mapping_rule_versions` | immutable binding-version/ordinal UQ, ontology target, typed method/source field and `IDENTITY@1` transform | immutable published mapping-rule whitelist |
 | `knowledge.changesets` | `id`, graph/base release/ontology/title/state/author/reviewer/published release, nullable `source_analysis_job_id`, `version`, timestamps | incremental author/review/publish aggregate; a durable worker-created DRAFT is bound to exactly one source-analysis job |
@@ -282,6 +284,15 @@ tables; the application role has no raw SQL/Cypher or subtype update path. Sourc
 are immutable after insert, A-Box binding headers have a column-bounded update grant, and only Draft
 mapping-rule rows can be deleted so one selected target can be atomically replaced. All child
 foreign keys are `RESTRICT`, and a locked Draft ETag serializes target updates.
+
+Revision `0076` adds Property Profiles as a separate mutable aggregate around immutable active
+Studio Release Properties. Composite references prove that the selected Studio Release carries the
+same ontology version and that the referenced element has the exact `PROPERTY` kind and stable ID.
+Both tables have forced workspace RLS; service reads additionally prune by graph clearance/domain
+and mutations authorize `kg.edit` against that exact graph. The application role can select/insert,
+update only profile value/lifecycle/audit/version columns and replace synonym children; it cannot
+delete a profile row. A partial active-row index retains archived predecessors while preventing two
+active profiles for one released Property.
 
 Pre-flight receipts and published ontology/binding/rule versions are append-only. The application
 role can insert or archive `studio_releases` only as the current independently authorized publisher;

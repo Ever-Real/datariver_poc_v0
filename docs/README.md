@@ -140,6 +140,9 @@ artifacts, independent approval and authorized vector/Neo4j projection are defin
 Its Bleach policy, exact-version Presigned download, pgvector exact search, declared
 `GovernancePolicy -> Dataset/Term` projection and Chat citation boundary are refined by
 [ADR-0082](adr/0082-governance-document-pgvector-download-and-chat-grounding.md).
+The consolidated Knowledge Information workspace, immutable-Release Property Profiles, governed
+Catalog tables and bounded document-Proposal proxy bridge are defined by
+[ADR-0083](adr/0083-knowledge-information-property-profiles-and-bounded-proposal-timeout.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

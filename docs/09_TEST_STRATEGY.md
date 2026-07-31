@@ -2,6 +2,22 @@
 
 ## Current verification status
 
+### Knowledge Information Profiles and bounded Proposal timeout — 2026-07-31
+
+Revision `0076` adds forced-RLS Property Profile and normalized synonym tables tied by composite
+foreign keys to the exact active Studio Release ontology and `PROPERTY` element identity.
+Unit/service tests cover Unicode normalization, domain/classification authorization, archive and
+post-archive re-creation, least-privilege grants, ETag mutation and response-loss idempotency-key
+replay. Knowledge component tests cover the consolidated Information workspace, real Profile CRUD,
+saved block-title feedback, document apply-mode layout and TanStack Catalog/field selection.
+
+The Nginx contract test proves that only the exact document-Proposal route receives the bounded
+deployment-configurable read timeout; generic API send/read limits remain unchanged. This removes
+edge-generated 504s from the approved synchronous local workflow but does not close the durable
+background inference production gate. Canonical `0001` is regenerated twice and compared
+byte-for-byte before publication; target PostgreSQL migration/RLS and authenticated browser results
+are reported separately from source gates.
+
 ### Governance Document pgvector/download/Chat refinement — 2026-07-31
 
 Revision `0075` adds Bleach policy evidence, exact-VersionId Presigned download, exact pgvector

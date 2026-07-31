@@ -1,11 +1,10 @@
-import { BookOpen, Boxes, MessageSquareText, Settings2 } from 'lucide-react'
+import { BookOpen, MessageSquareText, Settings2 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import type { Page } from '../../app/navigation'
 
 export type KnowledgeWorkspaceSection =
   | 'REGISTRY'
   | 'INFORMATION'
-  | 'INSTANCES'
   | 'CHAT'
   | 'STUDIO'
 
@@ -19,14 +18,8 @@ const items: Array<{
   {
     section: 'INFORMATION',
     title: '정보 관리',
-    description: '업무 도메인 CRUD',
+    description: '도메인·Property 프로파일',
     icon: Settings2,
-  },
-  {
-    section: 'INSTANCES',
-    title: '인스턴스 관리',
-    description: 'Property 프로필·A-Box 동기화',
-    icon: Boxes,
   },
   { section: 'CHAT', title: 'Chat Test', description: '별도 GraphRAG 질의', icon: MessageSquareText },
 ]
@@ -43,10 +36,6 @@ export function KnowledgeWorkspaceLayout({
   const select = (section: KnowledgeWorkspaceSection) => {
     if (section === 'CHAT') {
       onNavigate('knowledge-chat')
-      return
-    }
-    if (section === 'INSTANCES') {
-      onNavigate('knowledge-profiles')
       return
     }
     if (section === 'INFORMATION') {

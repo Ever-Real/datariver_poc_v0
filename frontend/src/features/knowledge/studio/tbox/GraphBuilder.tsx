@@ -34,6 +34,7 @@ import {
   type NodeProps,
   type Viewport,
 } from '@xyflow/react'
+import type { ColumnDef } from '@tanstack/react-table'
 import {
   Bot,
   Check,
@@ -50,6 +51,7 @@ import {
   X,
 } from 'lucide-react'
 import type { ApiClient } from '../../../../api/client'
+import { DenseDataTable } from '../../../../components/common/DenseDataTable'
 import { Dialog } from '../../../../components/common/Dialog'
 import {
   defaultKnowledgeStudioViewport,
@@ -112,6 +114,11 @@ interface LayerGroupData extends Record<string, unknown> {
 }
 type LayerGroupNode = Node<LayerGroupData, 'layerGroup'>
 type CanvasNode = SchemaNode | LayerGroupNode
+interface CatalogFieldRow {
+  path: string
+  selected: boolean
+}
+
 interface SchemaEdgeData extends Record<string, unknown> {
   relation: string
   hierarchy?: boolean
@@ -1397,7 +1404,7 @@ function EditableBlockTitle({ block, disabled, onSave }: EditableBlockTitleProps
         className={`input min-w-0 flex-1 py-1 text-xs font-black text-navy-900 ${
           dirty
             ? 'border-enterprise-blue bg-white'
-            : 'border-slate-100 bg-slate-50/30'
+            : 'border-white bg-white hover:border-slate-200 focus:border-enterprise-blue'
         }`}
         value={value}
         maxLength={120}
@@ -1505,6 +1512,85 @@ export function GraphBuilder({
   const removeSessionBlock = useKnowledgeStudioSessionStore((state) => state.removeBlock)
   const locked = lifecycleState !== 'DRAFT'
   const nodePositionsRef = useRef(new Map<string, { x: number; y: number }>())
+  const catalogColumns = useMemo<ColumnDef<KnowledgeStudioSourceDataset>[]>(() => [
+    {
+      accessorKey: 'name',
+      header: '테이블',
+      size: 230,
+      cell: ({ row }) => (
+        <span className="grid min-w-0">
+          <strong className="truncate text-xs text-navy-900">{row.original.name}</strong>
+          <small className="truncate text-[9px] text-slate-500">
+            {row.original.asset_type}
+          </small>
+        </span>
+      ),
+    },
+    {
+      accessorKey: 'schema_name',
+      header: 'Schema',
+      size: 150,
+      cell: ({ row }) => row.original.schema_name || '—',
+    },
+    {
+      accessorKey: 'platform',
+      header: 'Platform',
+      size: 120,
+      cell: ({ row }) => row.original.platform || '—',
+    },
+    {
+      accessorKey: 'domain',
+      header: 'Domain / Tag',
+      size: 210,
+      cell: ({ row }) => (
+        <span className="block max-w-52 truncate">
+          {[row.original.domain, ...(row.original.tags ?? []).slice(0, 2)]
+            .filter(Boolean)
+            .join(' · ') || '—'}
+        </span>
+      ),
+    },
+  ], [])
+  const catalogFieldRows = useMemo<CatalogFieldRow[]>(
+    () => (selectedCatalog?.field_paths ?? []).map((path) => ({
+      path,
+      selected: selectedCatalogFields.has(path),
+    })),
+    [selectedCatalog?.field_paths, selectedCatalogFields],
+  )
+  const catalogFieldColumns = useMemo<ColumnDef<CatalogFieldRow>[]>(() => [
+    {
+      accessorKey: 'selected',
+      header: '선택',
+      size: 70,
+      enableSorting: false,
+      cell: ({ row }) => (
+        <input
+          type="checkbox"
+          aria-label={`${row.original.path} 컬럼 선택`}
+          checked={row.original.selected}
+          onChange={(event) => {
+            setSelectedCatalogFields((current) => {
+              const next = new Set(current)
+              if (event.target.checked) next.add(row.original.path)
+              else next.delete(row.original.path)
+              return next
+            })
+          }}
+        />
+      ),
+    },
+    {
+      accessorKey: 'path',
+      header: '컬럼 경로',
+      size: 330,
+      cell: ({ row }) => (
+        <span className="block max-w-80 truncate" title={row.original.path}>
+          {row.original.path}
+        </span>
+      ),
+    },
+  ], [])
 
   const setOpenEditor = useCallback((nextId: string) => {
     editorOpenIdRef.current = nextId
@@ -3216,7 +3302,7 @@ export function GraphBuilder({
 
       <Dialog
         open={catalogOpen}
-        size="large"
+        size="workspace"
         title="DB 카탈로그에서 T-Box 제안"
         description="상단 검색과 동일하게 테이블명, 스키마, 컬럼, 태그, 용어, 설명 전체에서 검색합니다."
         onRequestClose={() => {
@@ -3280,39 +3366,24 @@ export function GraphBuilder({
               검색
             </button>
           </form>
-          <div className="grid max-h-[58vh] min-w-0 gap-3 overflow-auto md:grid-cols-[minmax(280px,0.9fr)_minmax(0,1.6fr)]">
-            <ul className="m-0 grid content-start gap-1 list-none p-0">
-              {catalogResults.length === 0 && (
-                <li className="rounded border border-dashed border-slate-300 p-4 text-center text-xs text-slate-500">
-                  검색 결과가 없습니다.
-                </li>
-              )}
-              {catalogResults.map((item) => (
-                <li key={item.id}>
-                  <button
-                    type="button"
-                    className={`w-full rounded border p-2 text-left ${
-                      selectedCatalog?.id === item.id
-                        ? 'border-enterprise-blue bg-blue-50'
-                        : 'border-slate-200 hover:bg-slate-50'
-                    }`}
-                    disabled={catalogDetailLoading}
-                    onClick={() => void selectCatalogSource(item)}
-                  >
-                    <strong className="block truncate text-xs text-navy-900">{item.name}</strong>
-                    <span className="mt-1 block truncate text-[9px] text-slate-500">
-                      {[item.platform, item.database_name, item.schema_name]
-                        .filter(Boolean)
-                        .join(' / ')}
-                    </span>
-                    <span className="mt-1 block truncate text-[9px] text-slate-500">
-                      {[item.domain, ...(item.tags ?? []).slice(0, 2)].filter(Boolean).join(' · ')}
-                    </span>
-                  </button>
-                </li>
-              ))}
-            </ul>
-            <section className="rounded border border-slate-200 p-3">
+          <p className="m-0 text-[10px] leading-4 text-slate-500">
+            상단 카탈로그 검색과 동일한 검색 정본을 사용하며, 현재 Draft 보안등급 이하의
+            Dataset·Table·View만 T-Box 입력 후보로 표시합니다.
+          </p>
+          <div className="grid max-h-[58vh] min-w-0 gap-3 overflow-auto lg:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.9fr)]">
+            <DenseDataTable
+              caption="T-Box 카탈로그 검색 결과"
+              columns={catalogColumns}
+              data={catalogResults}
+              getRowId={(item) => item.id}
+              loading={catalogLoading}
+              emptyMessage="검색 결과가 없습니다. 테이블명, 컬럼, 태그 또는 용어로 검색해 주세요."
+              selectedRowId={selectedCatalog?.id}
+              onRowActivate={(item) => {
+                if (!catalogDetailLoading) void selectCatalogSource(item)
+              }}
+            />
+            <section className="min-w-0 rounded border border-slate-200 p-3">
               <h4 className="m-0 text-xs font-black text-navy-900">
                 {selectedCatalog?.name ?? 'Dataset을 선택하세요'}
               </h4>
@@ -3332,28 +3403,14 @@ export function GraphBuilder({
                       실제 카탈로그 컬럼을 조회하는 중…
                     </p>
                   )}
-                  <div className="grid max-h-64 gap-1 overflow-auto">
-                    {selectedCatalog.field_paths.map((field) => (
-                      <label
-                        key={field}
-                        className="flex items-center gap-2 rounded px-2 py-1 text-[10px] hover:bg-slate-50"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={selectedCatalogFields.has(field)}
-                          onChange={(event) => {
-                            setSelectedCatalogFields((current) => {
-                              const next = new Set(current)
-                              if (event.target.checked) next.add(field)
-                              else next.delete(field)
-                              return next
-                            })
-                          }}
-                        />
-                        <span className="truncate">{field}</span>
-                      </label>
-                    ))}
-                  </div>
+                  <DenseDataTable
+                    caption={`${selectedCatalog.name} 컬럼 선택`}
+                    columns={catalogFieldColumns}
+                    data={catalogFieldRows}
+                    getRowId={(item) => item.path}
+                    loading={catalogDetailLoading}
+                    emptyMessage="선택 가능한 컬럼이 없습니다."
+                  />
                 </>
               )}
             </section>
@@ -3408,27 +3465,47 @@ export function GraphBuilder({
               PDF, CSV, TXT, XLSX, DOCX, PPTX, HTML, XML, JSON · 최대 10 MiB · DOC/XLS 제외
             </span>
           </label>
-          <fieldset className="grid gap-2 rounded border border-slate-200 p-3">
+          <fieldset className="grid gap-3 rounded-enterprise border border-slate-200 p-3 md:grid-cols-2">
             <legend className="px-1 text-xs font-black text-navy-900">반영 방식</legend>
-            <label className="flex items-start gap-2 text-xs text-slate-700">
+            <label className={`grid cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-start gap-3 rounded-enterprise border p-3 text-xs ${
+              documentProposalMode === 'MERGE_INTO_CURRENT'
+                ? 'border-enterprise-blue bg-blue-50 text-navy-900'
+                : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+            }`}>
               <input
+                className="mt-0.5"
                 type="radio"
                 name="document-proposal-mode"
                 checked={documentProposalMode === 'MERGE_INTO_CURRENT'}
                 disabled={working}
                 onChange={() => setDocumentProposalMode('MERGE_INTO_CURRENT')}
               />
-              <span><strong>현재 블록 Proposal</strong> · 기본 Keep Original 병합</span>
+              <span className="grid gap-1">
+                <strong>현재 블록 Proposal</strong>
+                <small className="text-[10px] leading-4 text-slate-500">
+                  현재 레이어에 미리보기로 표시하며 기본 Keep Original 전략으로 병합합니다.
+                </small>
+              </span>
             </label>
-            <label className="flex items-start gap-2 text-xs text-slate-700">
+            <label className={`grid cursor-pointer grid-cols-[auto_minmax(0,1fr)] items-start gap-3 rounded-enterprise border p-3 text-xs ${
+              documentProposalMode === 'APPEND_LAYER'
+                ? 'border-enterprise-blue bg-blue-50 text-navy-900'
+                : 'border-slate-200 bg-white text-slate-700 hover:border-slate-300'
+            }`}>
               <input
+                className="mt-0.5"
                 type="radio"
                 name="document-proposal-mode"
                 checked={documentProposalMode === 'APPEND_LAYER'}
                 disabled={working}
                 onChange={() => setDocumentProposalMode('APPEND_LAYER')}
               />
-              <span><strong>새 블록 Proposal</strong> · 승인 시 최신 레이어 추가</span>
+              <span className="grid gap-1">
+                <strong>새 블록 Proposal</strong>
+                <small className="text-[10px] leading-4 text-slate-500">
+                  검토한 제안을 승인할 때 가장 마지막 신규 레이어로 추가합니다.
+                </small>
+              </span>
             </label>
           </fieldset>
           <ol

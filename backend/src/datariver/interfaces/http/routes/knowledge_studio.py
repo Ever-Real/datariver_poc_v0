@@ -20,6 +20,10 @@ from datariver.application.dto import (
     KnowledgeStudioTBoxRecord,
     KnowledgeStudioValidationEvidence,
 )
+from datariver.application.knowledge_property_profiles import (
+    KnowledgePropertyProfileItem,
+    KnowledgePropertyProfileService,
+)
 from datariver.application.knowledge_studio_document import (
     MAXIMUM_STUDIO_DOCUMENT_BYTES,
     extract_studio_document_text,
@@ -36,6 +40,7 @@ from datariver.application.services.knowledge_studio_preview import (
 )
 from datariver.domain.authz import BuiltinPolicyEngine, Classification
 from datariver.domain.common import ConflictError, ValidationError, canonical_json_hash
+from datariver.domain.knowledge_property_profiles import KnowledgePropertyProfile
 from datariver.domain.knowledge_studio import (
     TBoxElementInput,
     TBoxElementKind,
@@ -49,6 +54,9 @@ from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
 )
+from datariver.infrastructure.db.knowledge_property_profiles import (
+    SqlKnowledgePropertyProfileRepository,
+)
 from datariver.infrastructure.db.knowledge_studio import SqlKnowledgeStudioStore
 from datariver.infrastructure.knowledge.runtime import (
     build_knowledge_runtime_adapters,
@@ -56,6 +64,11 @@ from datariver.infrastructure.knowledge.runtime import (
 )
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.schemas import (
+    KnowledgePropertyProfileCreateRequest,
+    KnowledgePropertyProfileItemResponse,
+    KnowledgePropertyProfileListResponse,
+    KnowledgePropertyProfileResponse,
+    KnowledgePropertyProfileValuesRequest,
     KnowledgeStudioABoxResponse,
     KnowledgeStudioAdvanceRequest,
     KnowledgeStudioBasicInformationRequest,
@@ -217,6 +230,19 @@ def _domain_administration_service(
     )
 
 
+def _property_profile_service(
+    request: Request,
+    session: SessionDep,
+) -> KnowledgePropertyProfileService:
+    container = get_container(request)
+    return KnowledgePropertyProfileService(
+        repository=SqlKnowledgePropertyProfileRepository(session),
+        authorization=AuthorizationService(
+            decision_writer=SqlDecisionWriter(container.database.session_factory),
+        ),
+    )
+
+
 def _runtime_service(request: Request, session: SessionDep) -> KnowledgeStudioService:
     store, authorization, sources = _service_components(request, session)
     runtime = build_knowledge_runtime_adapters(get_container(request).settings)
@@ -317,6 +343,62 @@ def _managed_domain_response(
         created_at=record.created_at,
         updated_at=record.updated_at,
         managed=True,
+    )
+
+
+def _property_profile_response(
+    item: KnowledgePropertyProfileItem,
+) -> KnowledgePropertyProfileItemResponse:
+    profile = item.profile
+    return KnowledgePropertyProfileItemResponse(
+        graph_id=item.target.graph_id,
+        graph_name=item.target.graph_name,
+        studio_release_id=item.target.studio_release_id,
+        release_no=item.target.release_no,
+        ontology_version_id=item.target.ontology_version_id,
+        ontology_element_id=item.target.ontology_element_id,
+        stable_property_id=item.target.stable_property_id,
+        property_name=item.target.property_name,
+        owner_class_id=item.target.owner_class_id,
+        data_type=item.target.data_type,
+        property_urn=item.target.property_urn,
+        profile=(
+            KnowledgePropertyProfileResponse(
+                id=profile.profile_id,
+                description=profile.description,
+                unit=profile.unit,
+                synonyms=list(profile.synonyms),
+                lifecycle=profile.lifecycle.value,
+                created_by=profile.created_by,
+                updated_by=profile.updated_by,
+                archived_by=profile.archived_by,
+                created_at=profile.created_at,
+                updated_at=profile.updated_at,
+                archived_at=profile.archived_at,
+                version=profile.version,
+            )
+            if profile is not None
+            else None
+        ),
+    )
+
+
+def _profile_value_response(
+    profile: KnowledgePropertyProfile,
+) -> KnowledgePropertyProfileResponse:
+    return KnowledgePropertyProfileResponse(
+        id=profile.profile_id,
+        description=profile.description,
+        unit=profile.unit,
+        synonyms=list(profile.synonyms),
+        lifecycle=profile.lifecycle.value,
+        created_by=profile.created_by,
+        updated_by=profile.updated_by,
+        archived_by=profile.archived_by,
+        created_at=profile.created_at,
+        updated_at=profile.updated_at,
+        archived_at=profile.archived_at,
+        version=profile.version,
     )
 
 
@@ -744,6 +826,143 @@ async def delete_managed_knowledge_domain(
         request_id=context.request_id,
     )
     response.headers["Cache-Control"] = "private, no-store"
+
+
+@domains_router.get(
+    "/property-profiles",
+    response_model=KnowledgePropertyProfileListResponse,
+    operation_id="list_knowledge_property_profiles",
+)
+async def list_knowledge_property_profiles(
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    q: Annotated[str, Query(max_length=200)] = "",
+    limit: Annotated[int, Query(ge=1, le=200)] = 100,
+) -> KnowledgePropertyProfileListResponse:
+    values = await _property_profile_service(request, session).list_items(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        query=q,
+        limit=limit,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return KnowledgePropertyProfileListResponse(
+        items=[_property_profile_response(item) for item in values]
+    )
+
+
+@domains_router.post(
+    "/property-profiles",
+    response_model=KnowledgePropertyProfileResponse,
+    status_code=status.HTTP_201_CREATED,
+    operation_id="create_knowledge_property_profile",
+)
+async def create_knowledge_property_profile(
+    payload: KnowledgePropertyProfileCreateRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+) -> KnowledgePropertyProfileResponse:
+    request_hash = canonical_json_hash(payload.model_dump(mode="json"))
+    profile = await _property_profile_service(request, session).create_profile(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        ontology_element_id=payload.ontology_element_id,
+        description=payload.description,
+        unit=payload.unit,
+        synonyms=tuple(payload.synonyms),
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["ETag"] = f'"{profile.version}"'
+    return _profile_value_response(profile)
+
+
+@domains_router.patch(
+    "/property-profiles/{profile_id}",
+    response_model=KnowledgePropertyProfileResponse,
+    operation_id="update_knowledge_property_profile",
+)
+async def update_knowledge_property_profile(
+    profile_id: UUID,
+    payload: KnowledgePropertyProfileValuesRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgePropertyProfileResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "profile_id": str(profile_id),
+            "expected_version": expected_version,
+            "values": payload.model_dump(mode="json"),
+        }
+    )
+    profile = await _property_profile_service(request, session).update_profile(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        profile_id=profile_id,
+        description=payload.description,
+        unit=payload.unit,
+        synonyms=tuple(payload.synonyms),
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["ETag"] = f'"{profile.version}"'
+    return _profile_value_response(profile)
+
+
+@domains_router.delete(
+    "/property-profiles/{profile_id}",
+    response_model=KnowledgePropertyProfileResponse,
+    operation_id="archive_knowledge_property_profile",
+)
+async def archive_knowledge_property_profile(
+    profile_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgePropertyProfileResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "profile_id": str(profile_id),
+            "expected_version": expected_version,
+            "operation": "ARCHIVE",
+        }
+    )
+    profile = await _property_profile_service(request, session).archive_profile(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        profile_id=profile_id,
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["ETag"] = f'"{profile.version}"'
+    return _profile_value_response(profile)
 
 
 @router.post(

@@ -743,6 +743,13 @@ def classify_environment_changes(
         elif key in {"APP_CORS_ORIGINS", "APP_TRUSTED_HOSTS"}:
             services.add("api")
         elif key in {
+            "API_PROXY_READ_TIMEOUT_SECONDS",
+            "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS",
+            "HOST_DEV_API_PROXY_READ_TIMEOUT_SECONDS",
+            "HOST_DEV_KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS",
+        }:
+            services.add("web")
+        elif key in {
             "WORKSPACE_SELECTION_ENABLED",
             "HIGH_RISK_AUTH_MAX_AGE_SECONDS",
             "CHAT_EPHEMERAL_ADMIN_WITHOUT_RETENTION_ENABLED",

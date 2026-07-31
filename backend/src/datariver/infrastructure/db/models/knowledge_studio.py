@@ -1076,6 +1076,13 @@ class KnowledgeStudioReleaseModel(Base, UuidPrimaryKeyMixin):
         UniqueConstraint("workspace_id", "source_draft_id"),
         UniqueConstraint("graph_id", "release_no"),
         UniqueConstraint("graph_id", "contract_hash"),
+        UniqueConstraint(
+            "workspace_id",
+            "graph_id",
+            "id",
+            "ontology_version_id",
+            name="uq_studio_releases_profile_release_ontology",
+        ),
         CheckConstraint("release_no >= 1", name="release_no_positive"),
         CheckConstraint("source_draft_version >= 1", name="source_draft_version_positive"),
         CheckConstraint("state IN ('ACTIVE', 'ARCHIVED')", name="state_vocabulary"),
@@ -1219,6 +1226,14 @@ class OntologyElementModel(Base, UuidPrimaryKeyMixin):
             "ontology_version_id",
             "stable_element_id",
         ),
+        UniqueConstraint(
+            "workspace_id",
+            "ontology_version_id",
+            "id",
+            "kind",
+            "stable_element_id",
+            name="uq_ontology_elements_profile_identity",
+        ),
         UniqueConstraint("workspace_id", "ontology_version_id", "ordinal"),
         CheckConstraint(
             "kind IN ('CLASS', 'PROPERTY', 'RELATION')",
@@ -1262,6 +1277,186 @@ class OntologyElementModel(Base, UuidPrimaryKeyMixin):
     ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
     element_document: Mapped[dict[str, object]] = mapped_column(JSON_DOCUMENT, nullable=False)
     element_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+
+
+class KnowledgePropertyProfileModel(
+    Base,
+    UuidPrimaryKeyMixin,
+    TimestampMixin,
+    VersionMixin,
+):
+    """Mutable semantic profile bound to one immutable released Property."""
+
+    __tablename__ = "property_profiles"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        CheckConstraint(
+            "lifecycle IN ('ACTIVE', 'ARCHIVED')",
+            name="lifecycle_vocabulary",
+        ),
+        CheckConstraint(
+            "element_kind = 'PROPERTY'",
+            name="element_kind_property",
+        ),
+        CheckConstraint(
+            "char_length(stable_property_id) BETWEEN 1 AND 128 "
+            "AND stable_property_id = btrim(stable_property_id)",
+            name="stable_property_id_valid",
+        ),
+        CheckConstraint(
+            "description IS NULL OR "
+            "(char_length(description) BETWEEN 1 AND 2000 "
+            "AND description = btrim(description))",
+            name="description_valid",
+        ),
+        CheckConstraint(
+            "unit IS NULL OR (char_length(unit) BETWEEN 1 AND 100 AND unit = btrim(unit))",
+            name="unit_valid",
+        ),
+        CheckConstraint(
+            "(lifecycle = 'ACTIVE' AND archived_at IS NULL AND archived_by IS NULL) OR "
+            "(lifecycle = 'ARCHIVED' AND archived_at IS NOT NULL AND archived_by IS NOT NULL)",
+            name="archive_shape",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "graph_id",
+                "studio_release_id",
+                "ontology_version_id",
+            ),
+            (
+                "knowledge.studio_releases.workspace_id",
+                "knowledge.studio_releases.graph_id",
+                "knowledge.studio_releases.id",
+                "knowledge.studio_releases.ontology_version_id",
+            ),
+            name="fk_property_profiles_studio_release",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "ontology_version_id"),
+            (
+                "knowledge.ontology_versions.workspace_id",
+                "knowledge.ontology_versions.graph_id",
+                "knowledge.ontology_versions.id",
+            ),
+            name="fk_property_profiles_ontology_version",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "ontology_version_id",
+                "ontology_element_id",
+                "element_kind",
+                "stable_property_id",
+            ),
+            (
+                "knowledge.ontology_elements.workspace_id",
+                "knowledge.ontology_elements.ontology_version_id",
+                "knowledge.ontology_elements.id",
+                "knowledge.ontology_elements.kind",
+                "knowledge.ontology_elements.stable_element_id",
+            ),
+            name="fk_property_profiles_ontology_element",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            name="fk_property_profiles_created_by",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "updated_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            name="fk_property_profiles_updated_by",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "archived_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            name="fk_property_profiles_archived_by",
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_property_profiles_graph_stable_property",
+            "workspace_id",
+            "graph_id",
+            "stable_property_id",
+        ),
+        Index(
+            "uq_property_profiles_one_active_per_element",
+            "workspace_id",
+            "ontology_element_id",
+            unique=True,
+            postgresql_where=text("lifecycle = 'ACTIVE'"),
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    graph_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    studio_release_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ontology_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ontology_element_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    element_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    stable_property_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    unit: Mapped[str | None] = mapped_column(String(100))
+    lifecycle: Mapped[str] = mapped_column(String(16), default="ACTIVE", nullable=False)
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    updated_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    archived_at: Mapped[datetime | None]
+    archived_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+
+
+class KnowledgePropertyProfileSynonymModel(Base, UuidPrimaryKeyMixin):
+    """Normalized synonym child values for one Property profile."""
+
+    __tablename__ = "property_profile_synonyms"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id",
+            "profile_id",
+            "id",
+            name="uq_property_profile_synonyms_workspace_profile_id",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "profile_id",
+            "normalized_value",
+            name="uq_property_profile_synonyms_workspace_profile_value",
+        ),
+        CheckConstraint(
+            "char_length(value) BETWEEN 1 AND 200 AND value = btrim(value)",
+            name="value_valid",
+        ),
+        CheckConstraint(
+            "char_length(normalized_value) BETWEEN 1 AND 600 "
+            "AND normalized_value = btrim(normalized_value)",
+            name="normalized_value_valid",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "profile_id"),
+            ("knowledge.property_profiles.workspace_id", "knowledge.property_profiles.id"),
+            name="fk_property_profile_synonyms_profile",
+            ondelete="CASCADE",
+        ),
+        Index(
+            "ix_property_profile_synonyms_value",
+            "workspace_id",
+            "normalized_value",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    profile_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    value: Mapped[str] = mapped_column(String(200), nullable=False)
+    normalized_value: Mapped[str] = mapped_column(String(600), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(nullable=False)
 
 
 class ABoxBindingVersionModel(Base, UuidPrimaryKeyMixin):

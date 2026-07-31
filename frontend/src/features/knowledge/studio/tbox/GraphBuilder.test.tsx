@@ -660,13 +660,14 @@ describe('GraphBuilder', () => {
     fireEvent.keyDown(title, { key: 'Enter' })
 
     await waitFor(() => expect(title).toHaveValue('핵심 스키마'))
-    expect(title).toHaveClass('border-slate-100')
+    expect(title).toHaveClass('border-white')
+    expect(title).toHaveClass('hover:border-slate-200')
     expect(screen.getByLabelText('핵심 스키마 블록 이름 저장됨')).toHaveClass('text-emerald-600')
     const patch = fetchMock.mock.calls.find(([, init]) => init?.method === 'PATCH')
     expect(new Headers(patch?.[1]?.headers).get('If-Match')).toBe('"2"')
   })
 
-  it('uses the governed global catalog search surface in a wide database modal', async () => {
+  it('uses the governed global catalog search surface in a workspace database modal', async () => {
     const fetchMock = vi.fn<typeof fetch>((input) => {
       const path = requestUrl(input)
       if (path.endsWith(`/drafts/${draftId}/tbox`)) {
@@ -674,8 +675,47 @@ describe('GraphBuilder', () => {
       }
       if (path.includes(`/drafts/${draftId}/tbox/catalog-sources?`)) {
         return Promise.resolve(json({
-          items: [],
+          items: [{
+            id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
+            name: 'orders',
+            asset_type: 'TABLE',
+            platform: 'postgres',
+            database_name: 'sales',
+            schema_name: 'public',
+            classification: 'INTERNAL',
+            source_version: 'projection-v4',
+            projection_source_version: 'projection-v4',
+            field_paths: [],
+            fields_truncated: true,
+            domain: 'Finance',
+            tags: ['gold'],
+            glossary_terms: ['Order'],
+          }],
           page: { next_cursor: null, limit: 50 },
+        }))
+      }
+      if (path.endsWith(
+        `/drafts/${draftId}/tbox/catalog-sources/019fa57b-52de-74c0-9f5e-06ae7b1bf3d0`,
+      )) {
+        return Promise.resolve(json({
+          dataset: {
+            id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
+            name: 'orders',
+            asset_type: 'TABLE',
+            platform: 'postgres',
+            database_name: 'sales',
+            schema_name: 'public',
+            classification: 'INTERNAL',
+            source_version: 'datahub-v8',
+            projection_source_version: 'projection-v4',
+            field_paths: ['order_id', 'amount'],
+            fields_truncated: false,
+            domain: 'Finance',
+            tags: ['gold'],
+            glossary_terms: ['Order'],
+          },
+          observed_at: '2026-07-31T01:00:00Z',
+          stale_at: null,
         }))
       }
       return Promise.reject(new Error(`Unexpected request: ${path}`))
@@ -699,7 +739,7 @@ describe('GraphBuilder', () => {
     const dialog = await screen.findByRole('dialog', {
       name: 'DB 카탈로그에서 T-Box 제안',
     })
-    expect(dialog).toHaveClass('app-dialog-large')
+    expect(dialog).toHaveClass('app-dialog-workspace')
     const query = screen.getByLabelText('T-Box 카탈로그 검색어')
     fireEvent.change(query, { target: { value: 'orders' } })
     fireEvent.submit(query.closest('form')!)
@@ -710,5 +750,12 @@ describe('GraphBuilder', () => {
         `/tbox/catalog-sources?q=orders&limit=50`,
       ))
     })
+    const results = await screen.findByRole('table', {
+      name: 'T-Box 카탈로그 검색 결과',
+    })
+    fireEvent.click(within(results).getByText('orders'))
+    const fields = await screen.findByRole('table', { name: 'orders 컬럼 선택' })
+    expect(within(fields).getByRole('checkbox', { name: 'order_id 컬럼 선택' })).toBeChecked()
+    expect(within(fields).getByRole('checkbox', { name: 'amount 컬럼 선택' })).toBeChecked()
   })
 })

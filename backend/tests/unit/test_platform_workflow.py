@@ -470,6 +470,11 @@ def test_environment_change_classification_restarts_only_known_consumers() -> No
     app_origin = workflow.classify_environment_changes(("APP_PUBLIC_ORIGIN",))
     assert app_origin.local_connector_services == ("minio",)
 
+    knowledge_document_timeout = workflow.classify_environment_changes(
+        ("KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS",)
+    )
+    assert knowledge_document_timeout.services == ("web",)
+
     connector_network = workflow.classify_environment_changes(("DATARIVER_CONNECTOR_NETWORK",))
     assert set(connector_network.local_connector_services) == set(workflow.LOCAL_CONNECTOR_SERVICES)
     assert connector_network.restart_airflow is True

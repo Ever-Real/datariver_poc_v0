@@ -39,7 +39,7 @@ def _module() -> ModuleType:
 
 def _location(source: str, declaration: str) -> str:
     start = source.index(declaration)
-    body_start = source.index("{", start) + 1
+    body_start = source.index(" {", start) + 2
     depth = 1
     cursor = body_start
     while depth:
@@ -77,6 +77,33 @@ def test_nginx_merges_security_headers_into_every_location_and_normalizes_api() 
     assert 'add_header Cache-Control "public, immutable";' in _location(source, "location /assets/")
     assert "client_max_body_size 12m;" in api
     assert "strict-transport-security" not in source.casefold()
+
+
+def test_document_proposal_timeout_is_scoped_and_bounded() -> None:
+    source = TEMPLATE.read_text(encoding="utf-8")
+    proposal = _location(
+        source,
+        'location ~ "^/api/v1/knowledge/studio/drafts/[0-9a-fA-F-]{36}/tbox/document-proposals$"',
+    )
+    api = _location(source, "location /api/")
+    entrypoint = (ROOT / "frontend" / "docker-entrypoint.sh").read_text(encoding="utf-8")
+    compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
+    host_development = (ROOT / "compose.host-dev.yaml").read_text(encoding="utf-8")
+
+    assert (
+        "proxy_read_timeout ${KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS}s;" in proposal
+    )
+    assert "proxy_read_timeout ${API_PROXY_READ_TIMEOUT_SECONDS}s;" in api
+    assert "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS:-135" in entrypoint
+    assert "integer between 1 and 900" in entrypoint
+    assert (
+        "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS: "
+        "${KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS:-135}" in compose
+    )
+    assert (
+        "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS: "
+        "${HOST_DEV_KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS:-900}" in host_development
+    )
 
 
 def test_live_verifier_parses_headers_and_rejects_duplicates() -> None:
