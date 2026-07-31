@@ -52,6 +52,7 @@ export function useQualityAuthorizationLease({
   useEffect(() => {
     let active = true
     let controller: AbortController | undefined
+    let capabilityRequestInFlight = false
     let leaseTimer: ReturnType<typeof setTimeout> | undefined
     let hasCapability = false
 
@@ -65,22 +66,29 @@ export function useQualityAuthorizationLease({
         || document.visibilityState === 'hidden'
         || !workspaceId
         || !subjectId
+        || capabilityRequestInFlight
       ) {
-        setLoading(false)
+        if (!capabilityRequestInFlight) setLoading(false)
         return
       }
       clearLeaseTimer()
       controller?.abort()
-      controller = new AbortController()
+      const requestController = new AbortController()
+      controller = requestController
+      capabilityRequestInFlight = true
       const requestStartedAt = performance.now()
       const generation = requestGeneration.current + 1
       requestGeneration.current = generation
       hasCapability = false
       setLoading(true)
       setError(undefined)
-      void api.capability(controller.signal)
+      void api.capability(requestController.signal)
         .then((next) => {
-          if (!active || controller?.signal.aborted || requestGeneration.current !== generation) {
+          if (
+            !active
+            || requestController.signal.aborted
+            || requestGeneration.current !== generation
+          ) {
             return
           }
           const serverLeaseMs = Math.min(
@@ -106,7 +114,11 @@ export function useQualityAuthorizationLease({
           }, remainingLeaseMs)
         })
         .catch((next: unknown) => {
-          if (!active || controller?.signal.aborted || requestGeneration.current !== generation) {
+          if (
+            !active
+            || requestController.signal.aborted
+            || requestGeneration.current !== generation
+          ) {
             return
           }
           hasCapability = false
@@ -114,16 +126,26 @@ export function useQualityAuthorizationLease({
           setError(next)
           setLoading(false)
         })
+        .finally(() => {
+          if (controller !== requestController) return
+          controller = undefined
+          capabilityRequestInFlight = false
+        })
     }
     const revalidate = () => {
-      if (!active || document.visibilityState === 'hidden') return
+      if (
+        !active
+        || document.visibilityState === 'hidden'
+        || hasCapability
+        || capabilityRequestInFlight
+      ) return
       hasCapability = false
       purge()
       load()
     }
     const visibilityChanged = () => {
       if (document.visibilityState === 'hidden') return
-      if (!hasCapability) load()
+      if (!hasCapability && !capabilityRequestInFlight) load()
     }
 
     purge()

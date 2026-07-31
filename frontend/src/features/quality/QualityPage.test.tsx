@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../api/client'
 import type {
@@ -103,27 +103,216 @@ describe('QualityPage', () => {
       ]))
     })
   })
+
+  it('keeps a valid authorization lease and selected asset requests across focus events', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/?page=quality&workspace=workspace-one&assetId=${qualityAsset.asset_id}`,
+    )
+    let resolveWorkspace!: (response: Response) => void
+    let workspaceSignal: AbortSignal | undefined
+    const workspaceResponse = new Promise<Response>((resolve) => {
+      resolveWorkspace = resolve
+    })
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const path = requestUrl(input).pathname
+      if (path.endsWith('/quality/capability')) {
+        return Promise.resolve(json(capability('AVAILABLE')))
+      }
+      if (path.endsWith('/quality/assets')) return Promise.resolve(json(emptyPage()))
+      if (path.endsWith('/catalog/tree/nodes')) return Promise.resolve(json(treePage()))
+      if (path.endsWith(`/quality/assets/${qualityAsset.asset_id}/workspace`)) {
+        workspaceSignal = init?.signal ?? undefined
+        return workspaceResponse
+      }
+      return Promise.reject(new Error(`unexpected request: ${requestUrl(input).href}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+
+    await waitFor(() => {
+      expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(1)
+      expect(requestCount(fetchMock, '/api/v1/catalog/tree/nodes')).toBe(1)
+      expect(requestCount(
+        fetchMock,
+        `/api/v1/quality/assets/${qualityAsset.asset_id}/workspace`,
+      )).toBe(1)
+    })
+
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(1)
+    expect(requestCount(fetchMock, '/api/v1/catalog/tree/nodes')).toBe(1)
+    expect(workspaceSignal?.aborted).toBe(false)
+
+    await act(async () => {
+      resolveWorkspace(json({
+        item: assetWorkspace(),
+        cache_scope: cacheScope,
+        observed_at: '2026-07-30T00:00:00Z',
+        authorization_valid_until: '2026-07-30T00:00:30Z',
+      }))
+      await Promise.resolve()
+    })
+    expect(await screen.findByRole('heading', { name: 'wafer_events' })).toBeInTheDocument()
+  })
+
+  it('coalesces repeated focus events while the capability request is in flight', async () => {
+    let resolveCapability!: (response: Response) => void
+    let capabilitySignal: AbortSignal | undefined
+    const capabilityResponse = new Promise<Response>((resolve) => {
+      resolveCapability = resolve
+    })
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const path = requestUrl(input).pathname
+      if (path.endsWith('/quality/capability')) {
+        capabilitySignal = init?.signal ?? undefined
+        return capabilityResponse
+      }
+      if (path.endsWith('/quality/assets')) return Promise.resolve(json(emptyPage()))
+      if (path.endsWith('/catalog/tree/nodes')) return Promise.resolve(json(treePage()))
+      return Promise.reject(new Error(`unexpected request: ${requestUrl(input).href}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+
+    await waitFor(() => {
+      expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(1)
+    })
+    act(() => {
+      window.dispatchEvent(new Event('focus'))
+      window.dispatchEvent(new Event('focus'))
+    })
+
+    expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(1)
+    expect(capabilitySignal?.aborted).toBe(false)
+
+    await act(async () => {
+      resolveCapability(json(capability('AVAILABLE')))
+      await Promise.resolve()
+    })
+    expect(await screen.findByRole('tab', {
+      name: '자산별 품질 현황 및 이력',
+    })).toBeInTheDocument()
+  })
+
+  it('keeps explicit refresh and security boundary changes fail closed', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/?page=quality&workspace=workspace-one&assetId=${qualityAsset.asset_id}`,
+    )
+    const workspaceSignals: AbortSignal[] = []
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const path = requestUrl(input).pathname
+      if (path.endsWith('/quality/capability')) {
+        return Promise.resolve(json(capability('AVAILABLE')))
+      }
+      if (path.endsWith('/quality/assets')) return Promise.resolve(json(emptyPage()))
+      if (path.endsWith('/catalog/tree/nodes')) return Promise.resolve(json(treePage()))
+      if (path.endsWith(`/quality/assets/${qualityAsset.asset_id}/workspace`)) {
+        if (init?.signal) workspaceSignals.push(init.signal)
+        return new Promise<Response>(() => undefined)
+      }
+      return Promise.reject(new Error(`unexpected request: ${requestUrl(input).href}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const page = renderPage()
+
+    await waitFor(() => expect(workspaceSignals).toHaveLength(1))
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }))
+    await waitFor(() => {
+      expect(workspaceSignals[0]?.aborted).toBe(true)
+      expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(2)
+      expect(workspaceSignals).toHaveLength(2)
+    })
+
+    page.rerenderQuality({ securityEpoch: 8 })
+    await waitFor(() => {
+      expect(workspaceSignals[1]?.aborted).toBe(true)
+      expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(3)
+    })
+  })
+
+  it('expires the bounded lease and cancels selected asset requests fail closed', async () => {
+    vi.useFakeTimers()
+    window.history.replaceState(
+      {},
+      '',
+      `/?page=quality&workspace=workspace-one&assetId=${qualityAsset.asset_id}`,
+    )
+    const workspaceSignals: AbortSignal[] = []
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const path = requestUrl(input).pathname
+      if (path.endsWith('/quality/capability')) {
+        return Promise.resolve(json(capability('AVAILABLE', 100)))
+      }
+      if (path.endsWith('/quality/assets')) return Promise.resolve(json(emptyPage()))
+      if (path.endsWith('/catalog/tree/nodes')) return Promise.resolve(json(treePage()))
+      if (path.endsWith(`/quality/assets/${qualityAsset.asset_id}/workspace`)) {
+        if (init?.signal) workspaceSignals.push(init.signal)
+        return new Promise<Response>(() => undefined)
+      }
+      return Promise.reject(new Error(`unexpected request: ${requestUrl(input).href}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(1)
+    expect(workspaceSignals).toHaveLength(1)
+
+    await act(async () => vi.advanceTimersByTimeAsync(101))
+
+    expect(workspaceSignals[0]?.aborted).toBe(true)
+    expect(requestCount(fetchMock, '/api/v1/quality/capability')).toBe(2)
+  })
 })
 
-function renderPage() {
+function renderPage(initial: {
+  securityEpoch?: number
+  authorizationRevision?: number
+} = {}) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   const client = new ApiClient('/api/v1', () => 'token', () => 'workspace-one')
-  return render(
+  let props = {
+    securityEpoch: initial.securityEpoch ?? 7,
+    authorizationRevision: initial.authorizationRevision ?? 11,
+  }
+  const value = () => (
     <QueryClientProvider client={queryClient}>
       <QualityPage
         client={client}
         workspaceId="workspace-one"
         subjectId="subject-one"
-        securityEpoch={7}
-        authorizationRevision={11}
+        securityEpoch={props.securityEpoch}
+        authorizationRevision={props.authorizationRevision}
       />
-    </QueryClientProvider>,
+    </QueryClientProvider>
   )
+  const page = render(value())
+  return {
+    ...page,
+    rerenderQuality(next: Partial<typeof props>) {
+      props = { ...props, ...next }
+      page.rerender(value())
+    },
+  }
 }
 
-function capability(readState: 'AVAILABLE' | 'DENIED'): QualityCapability {
+function capability(
+  readState: 'AVAILABLE' | 'DENIED',
+  validForMilliseconds = 30_000,
+): QualityCapability {
+  const observedAt = '2026-07-30T00:00:00.000Z'
   const axes = [
     'read_access',
     'profile_readiness',
@@ -136,8 +325,8 @@ function capability(readState: 'AVAILABLE' | 'DENIED'): QualityCapability {
   ] as const
   return {
     contract_version: 'QUALITY_CAPABILITY_V2',
-    observed_at: '2026-07-30T00:00:00Z',
-    valid_until: '2026-07-30T00:00:30Z',
+    observed_at: observedAt,
+    valid_until: new Date(Date.parse(observedAt) + validForMilliseconds).toISOString(),
     cache_scope: cacheScope,
     axes: axes.map((id) => ({
       id,
@@ -321,6 +510,10 @@ function treePage() {
 
 function requestPaths(fetchMock: ReturnType<typeof vi.fn>): string[] {
   return fetchMock.mock.calls.map(([input]) => requestUrl(input as string | URL | Request).pathname)
+}
+
+function requestCount(fetchMock: ReturnType<typeof vi.fn>, path: string): number {
+  return requestPaths(fetchMock).filter((value) => value === path).length
 }
 
 function requestUrl(input: string | URL | Request): URL {
