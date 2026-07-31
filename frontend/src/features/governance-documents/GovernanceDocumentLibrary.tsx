@@ -557,8 +557,11 @@ function GovernanceDocumentWorkspace({
           onRefreshCapability()
           void documents.refetch()
         }}>권한·목록 새로고침</button>
-        {axis('create')?.state === 'AVAILABLE' && <button type="button" className="button" onClick={() => openCreate('DOCUMENT')}>새 문서</button>}
-        {axis('template_manage')?.state === 'AVAILABLE' && <button type="button" className="button button-secondary" onClick={() => openCreate('TEMPLATE')}>새 Template</button>}
+        {axis('create')?.state === 'AVAILABLE' && <>
+          <button type="button" className="button" onClick={() => openCreate('DOCUMENT')}>문서 작성</button>
+          <button type="button" className="button button-secondary" onClick={() => setKind('TEMPLATE')}>템플릿 선택</button>
+        </>}
+        {axis('template_manage')?.state === 'AVAILABLE' && <button type="button" className="button button-secondary" onClick={() => openCreate('TEMPLATE')}>템플릿 작성</button>}
       </div>
     </header>
     <CapabilitySummary capability={capability} />
@@ -831,11 +834,11 @@ function DocumentDetailDialog({
         <div><dt>소유자</dt><dd>{shortId(detail.document.owner_subject_id)}</dd></div>
       </dl>
       <div className="action-row">
-        {canCreateVersion && detailEtag && <button type="button" className="button" disabled={busy || !selectedVersion} onClick={onCreateVersion}>새 버전 작성·가져오기</button>}
+        {canCreateVersion && detailEtag && <button type="button" className="button" disabled={busy || !selectedVersion} onClick={onCreateVersion}>수정</button>}
         {canSubmit && detailEtag && selectedVersion?.state === 'DRAFT' && <button type="button" className="button" disabled={busy} onClick={onSubmit}>검토 요청</button>}
         {canReview && canPublish && detailEtag && selectedVersion?.state === 'IN_REVIEW' && <button type="button" className="button" disabled={busy} onClick={() => onReview('APPROVE')}>승인·게시</button>}
         {canReview && detailEtag && selectedVersion?.state === 'IN_REVIEW' && <button type="button" className="button button-secondary" disabled={busy} onClick={() => onReview('REJECT')}>반려</button>}
-        {canInstantiate && detail.document.kind === 'TEMPLATE' && selectedVersion?.state === 'PUBLISHED' && <button type="button" className="button button-secondary" disabled={busy} onClick={onInstantiate}>이 Template으로 문서 생성</button>}
+        {canInstantiate && detail.document.kind === 'TEMPLATE' && selectedVersion?.state === 'PUBLISHED' && <button type="button" className="button button-secondary" disabled={busy} onClick={onInstantiate}>이 템플릿으로 문서 생성</button>}
         {canArchive && detailEtag && <button type="button" className="button button-danger" disabled={busy || detail.document.state === 'ARCHIVED'} onClick={onArchive}>Archive</button>}
       </div>
       <div className="governance-document-detail-grid">
@@ -986,7 +989,7 @@ function EditorDialog({
   )
   return <Dialog
     open={Boolean(mode)}
-    title={mode === 'CREATE' ? `새 ${kind === 'TEMPLATE' ? 'Template' : '거버넌스 문서'}` : '새 immutable 버전'}
+    title={mode === 'CREATE' ? (kind === 'TEMPLATE' ? '템플릿 작성' : '문서 작성') : '새 immutable 버전'}
     description={mode === 'CREATE'
       ? '선택한 exact Template version 또는 안전한 HTML 편집 결과로 생성합니다.'
       : '현재 본문을 편집하거나 HTML·Markdown·Word 파일을 서버 변환 경계로 가져옵니다.'}
@@ -1004,8 +1007,8 @@ function EditorDialog({
         <label>유형<select value={category} disabled={busy} onChange={(event) => onCategory(event.target.value as GovernanceDocumentCategory)}>{CATEGORIES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
         <label>분류<select value={classification} disabled={busy} onChange={(event) => onClassification(Number(event.target.value))}><option value={0}>PUBLIC</option><option value={1}>INTERNAL</option><option value={2}>CONFIDENTIAL</option><option value={3}>RESTRICTED</option></select></label>
         <label>요약<textarea maxLength={2000} value={summary} disabled={busy} onChange={(event) => onSummary(event.target.value)} /></label>
-        {kind === 'TEMPLATE' && <label>기본 양식<select value={blueprintId} disabled={busy} onChange={(event) => onBlueprint(event.target.value)}><option value="">빈 Template</option>{blueprints.map((blueprint) => <option key={blueprint.blueprint_id} value={blueprint.blueprint_id}>{categoryLabel(blueprint.category)} · {blueprint.title}</option>)}</select></label>}
-        {kind === 'DOCUMENT' && <label>Template<select value={templateVersionId} disabled={busy} onChange={(event) => onTemplateVersion(event.target.value)}><option value="">빈 문서</option>{templates.map((template) => <option key={template.document_id} value={template.current_published_version_id ?? ''}>{template.title} · v{template.current_version_number}</option>)}</select></label>}
+        {kind === 'TEMPLATE' && <label>기본 양식<select value={blueprintId} disabled={busy} onChange={(event) => onBlueprint(event.target.value)}><option value="">빈 템플릿</option>{blueprints.map((blueprint) => <option key={blueprint.blueprint_id} value={blueprint.blueprint_id}>{categoryLabel(blueprint.category)} · {blueprint.title}</option>)}</select></label>}
+        {kind === 'DOCUMENT' && <label>템플릿 선택<select value={templateVersionId} disabled={busy} onChange={(event) => onTemplateVersion(event.target.value)}><option value="">빈 문서</option>{templates.map((template) => <option key={template.document_id} value={template.current_published_version_id ?? ''}>{template.title} · v{template.current_version_number}</option>)}</select></label>}
       </>}
       <label>적용 범위<textarea maxLength={4000} value={applicabilityScope} disabled={busy} onChange={(event) => onApplicabilityScope(event.target.value)} />
         <small>지식그래프 연결이 필요하면 `dataset:참조` 또는 `term:용어`를 쉼표·줄바꿈으로 선언하세요. 본문에서는 `[[Dataset:참조]]`, `[[Term:용어]]`를 사용할 수 있습니다.</small>
