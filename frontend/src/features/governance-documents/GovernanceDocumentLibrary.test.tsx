@@ -103,6 +103,7 @@ describe('GovernanceDocumentLibrary capability boundary', () => {
     const create = await screen.findByRole('button', { name: '문서 작성' })
     const selectTemplate = screen.getByRole('button', { name: '템플릿 선택' })
     expect(screen.getByRole('button', { name: '템플릿 작성' })).toBeInTheDocument()
+    expect(screen.queryByRole('list', { name: '문서 관리 capability' })).not.toBeInTheDocument()
     fireEvent.click(selectTemplate)
     expect(screen.getByRole('combobox', { name: '대상' })).toHaveValue('TEMPLATE')
     fireEvent.click(create)

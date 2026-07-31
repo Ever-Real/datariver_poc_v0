@@ -634,7 +634,6 @@ function GovernanceDocumentWorkspace({
         {axis('template_manage')?.state === 'AVAILABLE' && <button type="button" className="button button-secondary" onClick={() => openCreate('TEMPLATE')}>템플릿 작성</button>}
       </div>
     </header>
-    <CapabilitySummary capability={capability} />
     {documents.error && <ErrorNotice error={documents.error} />}
     {notice && <p className="notice notice-success" role="status">{notice}</p>}
     <section className="panel governance-document-list-panel" aria-labelledby="governance-document-list-title">
@@ -816,16 +815,6 @@ function GovernanceDocumentWorkspace({
       }}
     />
   </section>
-}
-
-function CapabilitySummary({ capability }: { capability: GovernanceDocumentCapability }) {
-  return <ul className="governance-document-capabilities" aria-label="문서 관리 capability">
-    {capability.axes.map((axis) => <li key={axis.id}>
-      <DocumentStatus value={axis.state} />
-      <span>{axisLabel(axis.id)}</span>
-      {axis.state !== 'AVAILABLE' && <small>{axis.reason_code ?? '사용 불가'}</small>}
-    </li>)}
-  </ul>
 }
 
 function DocumentDetailDialog({
@@ -1316,20 +1305,6 @@ function capabilityReason(axis?: GovernanceDocumentCapabilityAxis): string {
   return axis.reason_code ?? (axis.state === 'DENIED'
     ? '현재 역할로 열람할 수 없습니다.'
     : '문서 기능을 사용할 수 없습니다.')
-}
-
-function axisLabel(value: GovernanceDocumentCapabilityAxis['id']): string {
-  return {
-    read: '열람',
-    create: '작성',
-    edit: '새 버전',
-    review: '검토',
-    publish: '게시',
-    archive: 'Archive',
-    template_manage: 'Template',
-    artifact_storage: 'Object 저장',
-    knowledge_projection: '지식 투영',
-  }[value]
 }
 
 function categoryLabel(value: GovernanceDocumentCategory): string {

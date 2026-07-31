@@ -8,9 +8,6 @@
 .governance-documents-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; border-left: 4px solid var(--blue-700); padding: 9px 12px; background: linear-gradient(90deg, #f2f8fa, transparent); }
 .governance-documents-header h2 { margin: 2px 0 4px; color: var(--navy-900); font-size: 18px; }
 .governance-documents-header p { margin: 0; color: var(--text-500); font-size: 10px; }
-.governance-document-capabilities { display: grid; grid-template-columns: repeat(auto-fit, minmax(125px, 1fr)); gap: 6px; margin: 0; padding: 0; list-style: none; }
-.governance-document-capabilities li { min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 5px; border: 1px solid var(--line-300); padding: 7px; background: #fff; font-size: 9px; }
-.governance-document-capabilities small { width: 100%; overflow: hidden; color: var(--text-500); text-overflow: ellipsis; white-space: nowrap; }
 .governance-document-status { display: inline-flex; align-items: center; gap: 4px; border: 1px solid #bdc9cf; border-radius: 999px; padding: 2px 6px; color: var(--text-600); background: #f6f8f8; font-size: 8px; font-weight: 900; white-space: nowrap; }
 .governance-document-status > span { width: 7px; height: 7px; border-radius: 50%; background: #7d8c94; }
 .governance-document-status.status-available, .governance-document-status.status-active, .governance-document-status.status-published { border-color: #9bc4aa; color: #285b3b; background: #eff9f2; }
@@ -80,12 +77,11 @@
 .governance-evidence-results p { grid-column: 1 / -1; margin: 0; color: var(--text-600); font-size: 10px; line-height: 1.5; }
 
 @media (max-width: 1000px) {
-  .governance-document-capabilities { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .governance-document-detail-grid { grid-template-columns: 210px minmax(0, 1fr); }
 }
 @media (max-width: 700px) {
   .governance-documents-header, .governance-document-list-panel > header { align-items: stretch; flex-direction: column; }
-  .governance-document-capabilities, .governance-document-meta, .governance-editor-fields { grid-template-columns: 1fr; }
+  .governance-document-meta, .governance-editor-fields { grid-template-columns: 1fr; }
   .governance-document-meta div + div { border-top: 1px solid var(--line-200); border-left: 0; }
   .governance-document-detail-grid { grid-template-columns: 1fr; }
   .governance-version-list { border-right: 0; border-bottom: 1px solid var(--line-300); }
