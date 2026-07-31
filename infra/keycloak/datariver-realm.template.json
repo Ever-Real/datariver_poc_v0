@@ -236,7 +236,7 @@
       "alias": "datariver-password-reference-v1",
       "config": {
         "default.reference.value": "pwd",
-        "default.reference.maxAge": "0"
+        "default.reference.maxAge": "300"
       }
     },
     {

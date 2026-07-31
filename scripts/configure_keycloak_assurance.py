@@ -33,6 +33,12 @@ LOA1_CONDITION_CONFIG_ALIAS = "datariver-loa1-condition-v1"
 LOA2_CONDITION_CONFIG_ALIAS = "datariver-loa2-condition-v1"
 PWD_REFERENCE_CONFIG_ALIAS = "datariver-password-reference-v1"  # noqa: S105
 WEBAUTHN_REFERENCE_CONFIG_ALIAS = "datariver-webauthn-reference-v1"
+PASSWORD_REFERENCE_MAX_AGE_SECONDS = 300
+
+PWD_REFERENCE_CONFIG = {
+    "default.reference.value": "pwd",
+    "default.reference.maxAge": str(PASSWORD_REFERENCE_MAX_AGE_SECONDS),
+}
 
 WEBAUTHN_REALM_POLICY = {
     "webAuthnPolicyAuthenticatorAttachment": "cross-platform",
@@ -362,6 +368,32 @@ class KeycloakAdmin:
             raise RuntimeError("The Keycloak authenticator configuration is invalid.")
         return config
 
+    def _upgrade_legacy_reference_config(
+        self,
+        execution: dict[str, Any],
+        *,
+        alias: str,
+        expected: dict[str, str],
+    ) -> bool:
+        config = self._execution_config(execution)
+        current = config.get("config")
+        if config.get("alias") != alias or not isinstance(current, dict):
+            raise RuntimeError(f"Keycloak authenticator configuration {alias} has drifted.")
+        if current == expected:
+            return False
+        legacy = {**expected, "default.reference.maxAge": "0"}
+        if current != legacy:
+            raise RuntimeError(f"Keycloak authenticator configuration {alias} has drifted.")
+        config_id = config.get("id")
+        if not isinstance(config_id, str) or not config_id:
+            raise RuntimeError("The Keycloak authenticator configuration has no stable identifier.")
+        self._request(
+            "PUT",
+            f"/admin/realms/{self._realm}/authentication/config/{config_id}",
+            json={**config, "config": expected},
+        )
+        return True
+
     @staticmethod
     def _verify_config(config: dict[str, Any], *, alias: str, expected: dict[str, str]) -> None:
         if config.get("alias") != alias or config.get("config") != expected:
@@ -423,7 +455,7 @@ class KeycloakAdmin:
         self._configure_execution(
             execution=password,
             alias=PWD_REFERENCE_CONFIG_ALIAS,
-            config={"default.reference.value": "pwd", "default.reference.maxAge": "0"},
+            config=PWD_REFERENCE_CONFIG,
         )
 
         loa2_flow = self._add_subflow(parent_alias=AUTH_FLOW_ALIAS, alias=LOA2_FLOW_ALIAS)
@@ -508,7 +540,7 @@ class KeycloakAdmin:
         self._verify_config(
             self._execution_config(password),
             alias=PWD_REFERENCE_CONFIG_ALIAS,
-            expected={"default.reference.value": "pwd", "default.reference.maxAge": "0"},
+            expected=PWD_REFERENCE_CONFIG,
         )
         self._verify_config(
             self._execution_config(loa2_condition),
@@ -542,6 +574,17 @@ class KeycloakAdmin:
         if self._flow(STEP_UP_FLOW_ALIAS) is None:
             self._create_step_up_flow()
             changes.append("created-step-up-flow")
+        else:
+            password = self._one_execution(
+                self._executions(LOA1_FLOW_ALIAS),
+                provider_id="auth-username-password-form",
+            )
+            if self._upgrade_legacy_reference_config(
+                password,
+                alias=PWD_REFERENCE_CONFIG_ALIAS,
+                expected=PWD_REFERENCE_CONFIG,
+            ):
+                changes.append("updated-password-amr-reference-window")
         self._verify_step_up_flow()
 
         realm_path = f"/admin/realms/{self._realm}"

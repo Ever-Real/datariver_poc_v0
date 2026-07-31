@@ -224,6 +224,10 @@ def test_step_up_flow_is_created_verified_and_idempotent() -> None:
         if "/authentication/config/" in path and method == "GET":
             config_id = path.rsplit("/", 1)[1]
             return httpx.Response(200, json=state["configs"][config_id])
+        if "/authentication/config/" in path and method == "PUT":
+            config_id = path.rsplit("/", 1)[1]
+            state["configs"][config_id] = body(request)
+            return httpx.Response(204)
         if path.endswith("/admin/realms/datariver"):
             if method == "GET":
                 return httpx.Response(200, json=state["realm"])
@@ -262,6 +266,14 @@ def test_step_up_flow_is_created_verified_and_idempotent() -> None:
     assert state["realm"]["browserFlow"] == module.STEP_UP_FLOW_ALIAS
     assert state["realm"]["webAuthnPolicyAuthenticatorAttachment"] == "cross-platform"
     assert state["client"]["attributes"]["default.acr.values"] == "1"
+    reference_configs = {config["alias"]: config["config"] for config in state["configs"].values()}
+    assert reference_configs[module.PWD_REFERENCE_CONFIG_ALIAS] == module.PWD_REFERENCE_CONFIG
+
+    for config in state["configs"].values():
+        if config["alias"] == module.PWD_REFERENCE_CONFIG_ALIAS:
+            config["config"]["default.reference.maxAge"] = "0"
+    assert admin.configure_step_up(client_id="web") == ("updated-password-amr-reference-window",)
+    assert admin.configure_step_up(client_id="web") == ()
     client.close()
 
 
@@ -291,8 +303,8 @@ def test_step_up_flow_drift_is_rejected_before_binding() -> None:
                     }
                 ],
             )
-        if request.url.path.endswith(
-            f"/authentication/flows/{module.STEP_UP_FLOW_ALIAS}/executions"
+        if "/authentication/flows/" in request.url.path and request.url.path.endswith(
+            "/executions"
         ):
             return httpx.Response(200, json=[])
         return httpx.Response(500)
