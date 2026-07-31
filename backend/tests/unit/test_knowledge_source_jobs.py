@@ -121,20 +121,20 @@ def test_pin_hash_preserves_legacy_v1_and_binds_new_validation_evidence_in_v2() 
     legacy_hash = legacy.evidence_hash()
 
     assert legacy.to_document()["contract"] == "KNOWLEDGE_SOURCE_JOB_PINS_V1"
-    assert (
-        replace(legacy, source_validation_evidence_hash="8" * 64).evidence_hash()
-        == legacy_hash
-    )
+    assert replace(legacy, source_validation_evidence_hash="8" * 64).evidence_hash() == legacy_hash
 
     governed = replace(
         legacy,
         source_content_profile="KNOWLEDGE_SOURCE_DOCUMENT_V1",
     )
     assert governed.to_document()["contract"] == "KNOWLEDGE_SOURCE_JOB_PINS_V2"
-    assert governed.evidence_hash() != replace(
-        governed,
-        source_validation_evidence_hash="8" * 64,
-    ).evidence_hash()
+    assert (
+        governed.evidence_hash()
+        != replace(
+            governed,
+            source_validation_evidence_hash="8" * 64,
+        ).evidence_hash()
+    )
 
 
 def test_empty_base_is_explicit_and_cannot_carry_a_release_hash() -> None:

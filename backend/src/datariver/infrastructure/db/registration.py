@@ -199,8 +199,7 @@ def _to_domain(model: ObjectManifestModel) -> UploadManifest:
 
 def _apply_manifest(model: ObjectManifestModel, manifest: UploadManifest) -> None:
     if (
-        model.legacy_knowledge_source_eligible
-        != manifest.legacy_knowledge_source_eligible
+        model.legacy_knowledge_source_eligible != manifest.legacy_knowledge_source_eligible
         or model.knowledge_source_graph_id != manifest.knowledge_source_graph_id
     ):
         raise ValueError("Server-owned Knowledge upload bindings are immutable.")

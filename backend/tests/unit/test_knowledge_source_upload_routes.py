@@ -364,9 +364,7 @@ async def test_completion_preserves_etag_and_idempotency_replay_contract(
     upload_service = _UploadService(_manifest(subject=subject, graph_id=graph_id))
     monkeypatch.setattr(knowledge, "_service", lambda *_: graph_service)
     monkeypatch.setattr(knowledge, "_source_upload_service", lambda _: upload_service)
-    payload = UploadCompleteRequest(
-        parts=[CompletedPartRequest(part_number=1, etag="object-etag")]
-    )
+    payload = UploadCompleteRequest(parts=[CompletedPartRequest(part_number=1, etag="object-etag")])
 
     responses = [Response(), Response()]
     for response in responses:
