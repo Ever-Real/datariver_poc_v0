@@ -16,7 +16,7 @@ from yaml.tokens import AliasToken, AnchorToken  # type: ignore[import-untyped]
 
 from datariver.application.classification_access import InferenceRuntimeBinding
 from datariver.application.dto import MembershipRenewalRecord
-from datariver.application.identity_admin import IdentityUserDraft
+from datariver.application.identity_admin import IdentityUserDraft, IdentityUserProfileDraft
 from datariver.application.services.admin_access import AdminAccessService
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.identity_admin import IdentityAdminService
@@ -117,6 +117,11 @@ from datariver.interfaces.http.schemas import (
     AdminFallbackDecisionRequest,
     AdminReadContextResponse,
     DeploymentEnvironmentResponse,
+    IdentityTemporaryPasswordResetRequest,
+    IdentityTemporaryPasswordResetResponse,
+    IdentityUserProfileResponse,
+    IdentityUserProfileUpdateRequest,
+    IdentityUserProfileUpdateResponse,
     IdentityUserProvisionRequest,
     IdentityUserProvisionResponse,
     MembershipAccessDocumentRequest,
@@ -1841,6 +1846,23 @@ def _service(request: Request) -> AdminAccessService:
     )
 
 
+def _identity_service(request: Request) -> IdentityAdminService:
+    container = get_container(request)
+    if container.identity_admin is None:
+        raise ForbiddenError("Identity administration is not enabled for this deployment.")
+    return IdentityAdminService(
+        uow_factory=lambda: SqlAdminAccessUnitOfWork(container.database.session_factory),
+        authorization=AuthorizationService(
+            decision_writer=SqlDecisionWriter(container.database.session_factory),
+            development_admin_password_bypass_enabled=(
+                container.settings.development_admin_password_bypass_enabled
+            ),
+        ),
+        provider=container.identity_admin,
+        issuer=container.settings.oidc_issuer,
+    )
+
+
 def _expected_version(if_match: str) -> int:
     value = if_match.strip().strip('"')
     if not value.isdigit() or int(value) < 1:
@@ -2053,6 +2075,154 @@ async def list_membership_owned_tables(
     )
 
 
+@router.get(
+    "/workspace-memberships/{target_subject_id}/identity-profile",
+    response_model=IdentityUserProfileResponse,
+    responses={
+        200: {
+            "headers": {
+                "ETag": {
+                    "description": "Quoted current workspace membership version.",
+                    "schema": {"type": "string"},
+                }
+            }
+        }
+    },
+)
+async def get_identity_user_profile(
+    target_subject_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+) -> IdentityUserProfileResponse:
+    result = await _identity_service(request).get_user_profile(
+        workspace_id=context.workspace_id,
+        target_subject_id=target_subject_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["ETag"] = f'"{result.membership_version}"'
+    return IdentityUserProfileResponse(
+        subject_id=result.subject_id,
+        username=result.username,
+        display_name=result.display_name,
+        email=result.email,
+        first_name=result.first_name,
+        last_name=result.last_name,
+        department_id=result.department_id,
+        job_function=result.job_function,
+        membership_version=result.membership_version,
+        provider_enabled=result.provider_enabled,
+        email_verified=result.email_verified,
+        required_actions=list(result.required_actions),
+    )
+
+
+@router.put(
+    "/workspace-memberships/{target_subject_id}/identity-profile",
+    response_model=IdentityUserProfileUpdateResponse,
+    responses={
+        200: {
+            "headers": {
+                "ETag": {
+                    "description": "Quoted updated workspace membership version.",
+                    "schema": {"type": "string"},
+                }
+            }
+        }
+    },
+)
+async def update_identity_user_profile(
+    target_subject_id: UUID,
+    payload: IdentityUserProfileUpdateRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> IdentityUserProfileUpdateResponse:
+    expected_version = _expected_version(if_match)
+    result = await _identity_service(request).update_user_profile(
+        workspace_id=context.workspace_id,
+        target_subject_id=target_subject_id,
+        expected_membership_version=expected_version,
+        draft=IdentityUserProfileDraft(
+            email=payload.email,
+            first_name=payload.first_name,
+            last_name=payload.last_name,
+        ),
+        department_id=payload.department_id,
+        job_function=payload.job_function,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=canonical_json_hash(
+            {
+                "workspace_id": str(context.workspace_id),
+                "target_subject_id": str(target_subject_id),
+                "expected_membership_version": expected_version,
+                "email": payload.email,
+                "first_name": payload.first_name,
+                "last_name": payload.last_name,
+                "department_id": str(payload.department_id) if payload.department_id else None,
+                "job_function": payload.job_function,
+            }
+        ),
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["ETag"] = f'"{result.membership_version}"'
+    return IdentityUserProfileUpdateResponse(
+        subject_id=result.subject_id,
+        username=result.username,
+        display_name=result.display_name,
+        email=result.email,
+        department_id=result.department_id,
+        job_function=result.job_function,
+        membership_version=result.membership_version,
+    )
+
+
+@router.put(
+    "/workspace-memberships/{target_subject_id}/temporary-password",
+    response_model=IdentityTemporaryPasswordResetResponse,
+)
+async def reset_identity_temporary_password(
+    target_subject_id: UUID,
+    payload: IdentityTemporaryPasswordResetRequest,
+    request: Request,
+    context: ContextDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> IdentityTemporaryPasswordResetResponse:
+    expected_version = _expected_version(if_match)
+    result = await _identity_service(request).reset_temporary_password(
+        workspace_id=context.workspace_id,
+        target_subject_id=target_subject_id,
+        expected_membership_version=expected_version,
+        temporary_password=payload.temporary_password.get_secret_value(),
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=canonical_json_hash(
+            {
+                "operation": "temporary-password-reset",
+                "workspace_id": str(context.workspace_id),
+                "target_subject_id": str(target_subject_id),
+                "expected_membership_version": expected_version,
+            }
+        ),
+    )
+    return IdentityTemporaryPasswordResetResponse(
+        subject_id=result.subject_id,
+        temporary_password_required=result.temporary_password_required,
+        sessions_revoked=result.sessions_revoked,
+    )
+
+
 @router.post(
     "/identity-users",
     response_model=IdentityUserProvisionResponse,
@@ -2064,9 +2234,6 @@ async def provision_identity_user(
     context: ContextDep,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> IdentityUserProvisionResponse:
-    container = get_container(request)
-    if container.identity_admin is None:
-        raise ForbiddenError("Identity administration is not enabled for this deployment.")
     profile_document = {
         "workspace_id": str(context.workspace_id),
         "username": payload.username,
@@ -2084,17 +2251,7 @@ async def provision_identity_user(
             "idempotency_key": idempotency_key,
         }
     )
-    result = await IdentityAdminService(
-        uow_factory=lambda: SqlAdminAccessUnitOfWork(container.database.session_factory),
-        authorization=AuthorizationService(
-            decision_writer=SqlDecisionWriter(container.database.session_factory),
-            development_admin_password_bypass_enabled=(
-                container.settings.development_admin_password_bypass_enabled
-            ),
-        ),
-        provider=container.identity_admin,
-        issuer=container.settings.oidc_issuer,
-    ).provision_user(
+    result = await _identity_service(request).provision_user(
         draft=IdentityUserDraft(
             username=payload.username,
             email=payload.email,

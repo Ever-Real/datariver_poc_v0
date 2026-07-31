@@ -1241,6 +1241,9 @@ export type Classification = 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTE
 
 export type AdminOperation =
   | 'IDENTITY_USER_PROVISION'
+  | 'IDENTITY_USER_PROFILE_READ'
+  | 'IDENTITY_USER_PROFILE_UPDATE'
+  | 'IDENTITY_USER_PASSWORD_RESET'
   | 'MEMBERSHIP_ACCESS_READ'
   | 'MEMBERSHIP_ACCESS_UPDATE'
   | 'MEMBERSHIP_RENEWAL_READ'
@@ -1447,6 +1450,45 @@ export interface IdentityUserProvisionResult {
   role_id: string | null
   access_expires_at: string
   temporary_password_required: boolean
+}
+
+export interface IdentityUserProfile {
+  subject_id: string
+  username: string
+  display_name: string
+  email: string
+  first_name: string
+  last_name: string
+  department_id: string | null
+  job_function: string | null
+  membership_version: number
+  provider_enabled: boolean
+  email_verified: boolean
+  required_actions: string[]
+}
+
+export interface IdentityUserProfileUpdateInput {
+  email: string
+  first_name: string
+  last_name: string
+  department_id: string | null
+  job_function: string | null
+}
+
+export interface IdentityUserProfileUpdateResult {
+  subject_id: string
+  username: string
+  display_name: string
+  email: string
+  department_id: string | null
+  job_function: string | null
+  membership_version: number
+}
+
+export interface IdentityTemporaryPasswordResetResult {
+  subject_id: string
+  temporary_password_required: boolean
+  sessions_revoked: boolean
 }
 
 export interface SystemDirectoryEntry {

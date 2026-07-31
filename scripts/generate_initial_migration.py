@@ -12,6 +12,10 @@ from sqlalchemy import ForeignKeyConstraint
 
 from datariver.infrastructure.db import models  # noqa: F401
 from datariver.infrastructure.db.base import Base
+from datariver.infrastructure.db.identity_profile_sql import (
+    IDENTITY_PROFILE_UPDATE_FUNCTION_SQL,
+    IDENTITY_PROFILE_UPDATE_SIGNATURE,
+)
 from datariver.infrastructure.db.identity_provisioning_sql import (
     IDENTITY_PROVISIONING_FUNCTION_SQL,
     IDENTITY_PROVISIONING_SIGNATURE,
@@ -600,6 +604,10 @@ def build_upgrade() -> ops.UpgradeOps:
     operations.append(
         ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {IDENTITY_PROVISIONING_SIGNATURE} FROM PUBLIC")
     )
+    operations.append(ops.ExecuteSQLOp(IDENTITY_PROFILE_UPDATE_FUNCTION_SQL))
+    operations.append(
+        ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {IDENTITY_PROFILE_UPDATE_SIGNATURE} FROM PUBLIC")
+    )
     operations.extend(ops.ExecuteSQLOp(statement) for statement in _default_workspace_lookup_sql())
     operations.extend(
         ops.CreateForeignKeyOp.from_constraint(constraint)
@@ -782,6 +790,7 @@ BEGIN
             ON iam.access_role_assignments TO datariver_app;
         GRANT EXECUTE ON FUNCTION iam.resolve_default_workspace(text, text) TO datariver_app;
         GRANT EXECUTE ON FUNCTION {IDENTITY_PROVISIONING_SIGNATURE} TO datariver_app;
+        GRANT EXECUTE ON FUNCTION {IDENTITY_PROFILE_UPDATE_SIGNATURE} TO datariver_app;
         GRANT UPDATE (active, clearance, attributes, version, updated_at)
             ON iam.workspace_memberships TO datariver_app;
         GRANT UPDATE (access_expires_at, version, updated_at)
@@ -1337,6 +1346,7 @@ def build_downgrade() -> ops.DowngradeOps:
             "text, text, integer, text, text, text)"
         ),
         *(ops.ExecuteSQLOp(statement) for statement in _sql_statements(phase5._DROP_TRIGGER_SQL)),
+        ops.ExecuteSQLOp(f"DROP FUNCTION {IDENTITY_PROFILE_UPDATE_SIGNATURE}"),
         ops.ExecuteSQLOp(f"DROP FUNCTION {IDENTITY_PROVISIONING_SIGNATURE}"),
         ops.ExecuteSQLOp("DROP FUNCTION iam.resolve_default_workspace(text, text)"),
         ops.ExecuteSQLOp(

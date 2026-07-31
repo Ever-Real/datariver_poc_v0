@@ -2,6 +2,20 @@
 
 ## Current verification status
 
+### Governed administrator user profile and credential reset — 2026-07-31
+
+ADR-0098 adds only subject-bound typed identity profile read/update and temporary-password reset.
+Tests cover Keycloak response bounds, exact provider paths, temporary credential shape, session
+revocation, human/service-account target rejection, optimistic membership versioning, secret-free
+idempotency/audit evidence and the execute-only `0083` projection function. Admin component tests
+cover the business-job versus data/screen-access Role distinction, compact profile layout, actual
+CR/owned-table activity and guarded profile/password mutations. The complete source gate passed
+Ruff format/lint over `555` files, strict mypy over `546` source/test files, `2,094` backend tests
+with `105` explicitly environment-gated skips, static architecture/security verification,
+TypeScript/ESLint, `73` frontend files / `400` tests and the production build. Runtime migration,
+health and authenticated browser evidence is recorded only after the exact clean `dev` commit
+passes the stable `dev-publish` gate.
+
 ### Administrator-approved Monitoring frames — 2026-07-31
 
 ADR-0097 treats a fresh-assurance administrator save as iframe approval for every credential-free

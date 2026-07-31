@@ -8,6 +8,7 @@ interface DialogProps {
   title: string
   description?: string
   size?: 'medium' | 'large' | 'workspace'
+  compactHeight?: boolean
   children: ReactNode
   footer?: ReactNode
   onRequestClose: (reason: DialogCloseReason) => void
@@ -23,6 +24,7 @@ export function Dialog({
   title,
   description,
   size = 'medium',
+  compactHeight = false,
   children,
   footer,
   onRequestClose,
@@ -85,7 +87,7 @@ export function Dialog({
   return createPortal(
     <dialog
       ref={dialogRef}
-      className={`app-dialog app-dialog-${size}`}
+      className={`app-dialog app-dialog-${size}${compactHeight ? ' app-dialog-fit' : ''}`}
       aria-modal="true"
       aria-labelledby={titleId}
       aria-describedby={description ? descriptionId : undefined}

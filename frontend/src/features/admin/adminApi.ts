@@ -21,6 +21,10 @@ import type {
   InferenceProviderProfileState,
   IdentityUserProvisionInput,
   IdentityUserProvisionResult,
+  IdentityTemporaryPasswordResetResult,
+  IdentityUserProfile,
+  IdentityUserProfileUpdateInput,
+  IdentityUserProfileUpdateResult,
   MembershipAccessDocument,
   MembershipAccessUpdateResult,
   MembershipChangeRequestActivity,
@@ -51,6 +55,10 @@ type AdminApiClient = Pick<ApiClient, 'request' | 'requestWithMeta'>
 type GovernanceDecision = 'APPROVED' | 'REJECTED'
 
 export interface VersionedMembershipAccess extends WorkspaceMembershipAccess {
+  etag: string
+}
+
+export interface VersionedIdentityUserProfile extends IdentityUserProfile {
   etag: string
 }
 
@@ -157,6 +165,55 @@ export class AdminApi {
     return this.client.request<IdentityUserProvisionResult>('/admin/identity-users', {
       method: 'POST', idempotencyKey, body: JSON.stringify(payload),
     })
+  }
+
+  async getIdentityUserProfile(
+    subjectId: string,
+    signal?: AbortSignal,
+  ): Promise<VersionedIdentityUserProfile> {
+    const response = await this.client.requestWithMeta<IdentityUserProfile>(
+      `/admin/workspace-memberships/${encodeURIComponent(subjectId)}/identity-profile`,
+      { signal, cache: 'no-store' },
+    )
+    const expected = quotedVersion(response.data.membership_version)
+    if (response.etag !== expected) {
+      throw new Error('사용자 프로필 버전 ETag를 검증하지 못했습니다. 새로고침 후 다시 시도하세요.')
+    }
+    return { ...response.data, etag: response.etag }
+  }
+
+  updateIdentityUserProfile(
+    subjectId: string,
+    payload: IdentityUserProfileUpdateInput,
+    etag: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<IdentityUserProfileUpdateResult>(
+      `/admin/workspace-memberships/${encodeURIComponent(subjectId)}/identity-profile`,
+      {
+        method: 'PUT',
+        ifMatch: etag,
+        idempotencyKey,
+        body: JSON.stringify(payload),
+      },
+    )
+  }
+
+  resetIdentityTemporaryPassword(
+    subjectId: string,
+    temporaryPassword: string,
+    etag: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<IdentityTemporaryPasswordResetResult>(
+      `/admin/workspace-memberships/${encodeURIComponent(subjectId)}/temporary-password`,
+      {
+        method: 'PUT',
+        ifMatch: etag,
+        idempotencyKey,
+        body: JSON.stringify({ temporary_password: temporaryPassword }),
+      },
+    )
   }
 
   async listMembershipRenewalPage({

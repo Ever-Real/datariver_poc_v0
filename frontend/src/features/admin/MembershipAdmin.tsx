@@ -4,7 +4,6 @@ import type {
   AdminAccessRequest,
   AdminReadContext,
   MembershipRenewalRequest,
-  MembershipRoleAssignmentEvidence,
   WorkspaceMembershipSummary,
 } from '../../api/types'
 import { sha256Text } from '../../api/client'
@@ -14,6 +13,7 @@ import { Dialog } from '../../components/common/Dialog'
 import type { AdminApi } from './adminApi'
 import type { PendingAdminMutation } from './AdminMutationConfirmDialog'
 import type { AdminMessages } from './messages'
+import { UserProfileDialog } from './UserProfileDialog'
 
 export interface AdminSectionProps extends AssuranceActions {
   api: AdminApi
@@ -46,10 +46,6 @@ export function MembershipAccessAdmin({
   const [membershipPageNumber, setMembershipPageNumber] = useState(1)
   const [nextMembershipCursor, setNextMembershipCursor] = useState<string | null>(null)
   const [profileOpen, setProfileOpen] = useState(false)
-  const [profileLoading, setProfileLoading] = useState(false)
-  const [membershipEtag, setMembershipEtag] = useState('')
-  const [roleAssignment, setRoleAssignment] = useState<MembershipRoleAssignmentEvidence>()
-  const [selectedRoleId, setSelectedRoleId] = useState('')
   const [createOpen, setCreateOpen] = useState(false)
   const [createBusy, setCreateBusy] = useState(false)
   const [roles, setRoles] = useState<AccessRole[]>([])
@@ -60,16 +56,9 @@ export function MembershipAccessAdmin({
     jobFunction: '', roleId: '', temporaryPassword: '', passwordConfirmation: '',
   })
   const memberGeneration = useRef(0)
-  const accessGeneration = useRef(0)
   const roleGeneration = useRef(0)
   const canRead = context?.allowed_operations.includes('MEMBERSHIP_ACCESS_READ') ?? false
   const canProvision = context?.allowed_operations.includes('IDENTITY_USER_PROVISION') ?? false
-  const canAssign = (
-    context?.allowed_operations.includes('MEMBERSHIP_ACCESS_UPDATE')
-    && selectedId !== context.subject_id
-    && Boolean(membershipEtag)
-  ) ?? false
-
   const loadMembers = useCallback(async (signal?: AbortSignal) => {
     const generation = ++memberGeneration.current
     try {
@@ -90,24 +79,6 @@ export function MembershipAccessAdmin({
   }, [
     api, appliedMemberQuery, memberStatus, membershipCursor, reportError,
     setMembers, setNextMembershipCursor, setSelectedId,
-  ])
-  const loadSelectedAccess = useCallback(async (subjectId: string, signal?: AbortSignal) => {
-    const generation = ++accessGeneration.current
-    setProfileLoading(true)
-    try {
-      const next = await api.getMembershipAccess(subjectId, signal)
-      if (signal?.aborted || generation !== accessGeneration.current) return
-      setMembershipEtag(next.etag)
-      setRoleAssignment(next.role_assignment)
-      setSelectedRoleId(next.role_assignment.role_id ?? '')
-    } catch (error) {
-      if (!signal?.aborted && generation === accessGeneration.current) reportError(error)
-    } finally {
-      if (!signal?.aborted && generation === accessGeneration.current) setProfileLoading(false)
-    }
-  }, [
-    api, reportError, setMembershipEtag, setProfileLoading, setRoleAssignment,
-    setSelectedRoleId,
   ])
   const loadRoles = useCallback(async (signal?: AbortSignal) => {
     const generation = ++roleGeneration.current
@@ -142,16 +113,7 @@ export function MembershipAccessAdmin({
     }
   }, [canRead, loadMembers])
   useEffect(() => {
-    if (!profileOpen || !selectedId) return
-    const controller = new AbortController()
-    void loadSelectedAccess(selectedId, controller.signal)
-    return () => {
-      controller.abort()
-      accessGeneration.current += 1
-    }
-  }, [loadSelectedAccess, profileOpen, selectedId])
-  useEffect(() => {
-    if (!profileOpen && !createOpen) return
+    if (!createOpen) return
     const controller = new AbortController()
     const timer = window.setTimeout(() => void loadRoles(controller.signal), roleQuery ? 250 : 0)
     return () => {
@@ -159,7 +121,7 @@ export function MembershipAccessAdmin({
       controller.abort()
       roleGeneration.current += 1
     }
-  }, [createOpen, loadRoles, profileOpen, roleQuery])
+  }, [createOpen, loadRoles, roleQuery])
   useEffect(() => {
     if (canProvision) return
     setCreateOpen(false)
@@ -167,22 +129,12 @@ export function MembershipAccessAdmin({
   }, [canProvision])
 
   const selected = members.find((member) => member.subject_id === selectedId)
-  const selectedRole = roles.find((role) => role.id === selectedRoleId)
   const openProfile = (member: WorkspaceMembershipSummary) => {
     setSelectedId(member.subject_id)
-    setMembershipEtag('')
-    setRoleAssignment(undefined)
-    setSelectedRoleId('')
-    setRoleQuery('')
-    setRoles([])
-    setRolesTruncated(false)
     setProfileOpen(true)
   }
   const closeProfile = () => {
     setProfileOpen(false)
-    setMembershipEtag('')
-    setRoleAssignment(undefined)
-    setSelectedRoleId('')
   }
   const openCreate = () => {
     if (!canProvision) {
@@ -232,27 +184,9 @@ export function MembershipAccessAdmin({
       setCreateBusy(false)
     }
   }
-  const saveRoleAssignment = () => {
-    if (!selected || !canAssign || roleAssignment?.role_id === selectedRoleId) return
-    const role = roles.find((item) => item.id === selectedRoleId)
-    const intent = `membership-role:${selected.subject_id}:${membershipEtag}:${selectedRoleId || 'none'}`
-    requestConfirmation({
-      title: `${selected.display_name} Role ${role ? '할당' : '해제'}`,
-      summary: [role?.name ?? 'Role 미할당', membershipEtag, role ? `${role.clearance} 등급` : 'PUBLIC 최소 권한'],
-      execute: async () => {
-        await api.assignMembershipRole(
-          selected.subject_id, selectedRoleId || null, membershipEtag,
-          keyFor(intent, 'membership-role'),
-        )
-        clearKey(intent)
-        await Promise.all([loadMembers(), loadSelectedAccess(selected.subject_id)])
-      },
-    })
-  }
-
   return <>
     <section className="panel">
-      <div className="section-heading"><div><h3>User 관리</h3><p className="muted">사용자를 선택하면 Role을 변경할 수 있는 프로필 수정 모달이 열립니다.</p></div><div className="action-row"><button type="button" className="button button-secondary" onClick={() => void loadMembers()}>{messages.refresh}</button>{onOpenRenewals && <button type="button" className="button button-secondary" onClick={onOpenRenewals}>계정 갱신</button>}{onOpenRoleManagement && <button type="button" className="button button-secondary" onClick={onOpenRoleManagement}>Role 관리</button>}<button type="button" className="button" disabled={context?.authentication_assurance === 'HARDWARE_WEBAUTHN' && !canProvision} title={canProvision ? '인증 계정과 Workspace 멤버십을 함께 생성합니다.' : '이 배포의 계정 생성 연계 또는 현재 인가가 준비되지 않았습니다.'} onClick={openCreate}>사용자 등록</button></div></div>
+      <div className="section-heading"><div><h3>User 관리</h3><p className="muted">사용자를 선택해 프로필, 데이터·화면 접근 Role, CR 활동과 인증 복구를 관리합니다.</p></div><div className="action-row"><button type="button" className="button button-secondary" onClick={() => void loadMembers()}>{messages.refresh}</button>{onOpenRenewals && <button type="button" className="button button-secondary" onClick={onOpenRenewals}>계정 갱신</button>}{onOpenRoleManagement && <button type="button" className="button button-secondary" onClick={onOpenRoleManagement}>Role 관리</button>}<button type="button" className="button" disabled={context?.authentication_assurance === 'HARDWARE_WEBAUTHN' && !canProvision} title={canProvision ? '인증 계정과 Workspace 멤버십을 함께 생성합니다.' : '이 배포의 계정 생성 연계 또는 현재 인가가 준비되지 않았습니다.'} onClick={openCreate}>사용자 등록</button></div></div>
       <div className="mb-3 grid gap-2 rounded-enterprise border border-slate-300 bg-slate-50 p-3 md:grid-cols-[minmax(220px,1fr)_170px_auto] md:items-end"><label className="grid gap-1 text-xs font-bold">사용자 검색<input type="search" value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="사용자명, 이메일로 검색" /></label><label className="grid gap-1 text-xs font-bold">상태 필터<select value={memberStatus} onChange={(event) => { setMemberStatus(event.target.value as typeof memberStatus); setMembershipCursor(undefined); setMembershipCursorHistory([]); setMembershipPageNumber(1) }}><option value="ALL">전체</option><option value="ACTIVE">활성</option><option value="INACTIVE">비활성</option></select></label><button type="button" className="button button-secondary" disabled={!memberQuery && memberStatus === 'ALL'} onClick={() => { setMemberQuery(''); setAppliedMemberQuery(''); setMemberStatus('ALL'); setMembershipCursor(undefined); setMembershipCursorHistory([]); setMembershipPageNumber(1) }}>필터 초기화</button></div>
       <DenseDataTable caption="워크스페이스 사용자 목록" columns={[
         { accessorKey: 'display_name', header: '사용자', size: 170, cell: ({ row }) => <strong>{row.original.display_name}</strong> },
@@ -266,11 +200,20 @@ export function MembershipAccessAdmin({
       <div className="action-row" aria-label="사용자 목록 페이지"><button type="button" className="button button-secondary" disabled={membershipCursorHistory.length === 0} onClick={() => { const previous = membershipCursorHistory.at(-1); setMembershipCursorHistory((current) => current.slice(0, -1)); setMembershipCursor(previous || undefined); setMembershipPageNumber((current) => Math.max(1, current - 1)) }}>이전 페이지</button><span className="badge badge-soft">서버 페이지 {membershipPageNumber}</span><button type="button" className="button button-secondary" disabled={!nextMembershipCursor} onClick={() => { setMembershipCursorHistory((current) => [...current.slice(-49), membershipCursor ?? '']); setMembershipCursor(nextMembershipCursor ?? undefined); setMembershipPageNumber((current) => current + 1) }}>다음 페이지</button></div>
       <p className="muted">검색과 상태 필터는 서버에서 적용되며 한 번에 최대 25명만 브라우저에 유지합니다.</p>
     </section>
-    <Dialog open={profileOpen && Boolean(selected)} size="medium" title="사용자 프로필 수정" description="이 Workspace의 사용자 Role을 변경합니다. 사용자 인증 프로필의 정본은 IdP에 남아 있습니다." onRequestClose={closeProfile} footer={<><button type="button" className="button button-secondary" onClick={closeProfile}>취소</button><button type="button" className="button" disabled={profileLoading || !canAssign || roleAssignment?.role_id === selectedRoleId} onClick={saveRoleAssignment}>Role 저장</button></>}>
-      {selected && <div className="grid gap-4"><dl className="summary-list"><div><dt>이름</dt><dd>{selected.display_name}</dd></div><div><dt>Email</dt><dd>{selected.email ?? '—'}</dd></div><div><dt>업무 역할</dt><dd>{selected.job_function ?? '미지정'}</dd></div><div><dt>멤버십</dt><dd>{selected.membership_active ? 'ACTIVE' : 'INACTIVE'}</dd></div></dl>{profileLoading ? <p className="muted">현재 Role을 불러오는 중입니다.</p> : <><label>Role 검색<input type="search" value={roleQuery} onChange={(event) => setRoleQuery(event.target.value)} placeholder="Role 이름 또는 key" /></label><label>할당 Role<select aria-label="사용자 Role" value={selectedRoleId} disabled={!canAssign} onChange={(event) => setSelectedRoleId(event.target.value)}><option value="">Role 미할당</option>{roleAssignment?.role_id && !roles.some((role) => role.id === roleAssignment.role_id) && <option value={roleAssignment.role_id}>{roleAssignment.role_id} · 현재 페이지 외 Role</option>}{roles.map((role) => <option key={role.id} value={role.id}>{role.name} · {role.clearance}</option>)}</select></label>{rolesTruncated && <p className="callout m-0">현재 검색 결과는 첫 25개입니다. Role 이름 또는 key로 범위를 좁히세요.</p>}{selectedRole && <p className="callout m-0"><strong>{selectedRole.name}</strong> · {selectedRole.description || '설명 없음'}</p>}{selected.subject_id === context?.subject_id && <p className="callout m-0">관리자는 자신의 Role을 변경할 수 없습니다. 다른 적격 관리자가 변경해야 합니다.</p>}{roleAssignment?.status === 'EVIDENCE_MISMATCH' && <p className="notice notice-error m-0">Role 할당 증거와 현재 Access 상태가 일치하지 않습니다. Role을 다시 저장해 복구하세요.</p>}</>}</div>}
-    </Dialog>
+    <UserProfileDialog
+      open={profileOpen && Boolean(selected)}
+      member={selected}
+      api={api}
+      context={context}
+      keyFor={keyFor}
+      clearKey={clearKey}
+      reportError={reportError}
+      requestConfirmation={requestConfirmation}
+      onRequestClose={closeProfile}
+      onUpdated={loadMembers}
+    />
     <Dialog open={createOpen} title="사용자 등록" description="인증 계정과 현재 Workspace 멤버십을 하나의 통제된 작업으로 생성합니다." onRequestClose={closeCreate} footer={<><button type="button" className="button button-secondary" disabled={createBusy} onClick={closeCreate}>취소</button><button type="button" className="button" disabled={createBusy || !newUser.username.trim() || !newUser.email.trim() || !newUser.firstName.trim() || !newUser.lastName.trim() || newUser.temporaryPassword.length < 12 || newUser.temporaryPassword !== newUser.passwordConfirmation} onClick={() => void provisionUser()}>{createBusy ? '등록 중…' : '사용자 등록'}</button></>}>
-      <div className="grid gap-3 md:grid-cols-2"><label className="grid gap-1 text-xs font-bold">사용자명<input required minLength={3} maxLength={64} autoComplete="off" value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} placeholder="예: hong.gildong" /></label><label className="grid gap-1 text-xs font-bold">Email<input required type="email" maxLength={320} autoComplete="off" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">이름<input required maxLength={100} value={newUser.firstName} onChange={(event) => setNewUser({ ...newUser, firstName: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">성<input required maxLength={100} value={newUser.lastName} onChange={(event) => setNewUser({ ...newUser, lastName: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">부서 UUID (선택)<input value={newUser.departmentId} onChange={(event) => setNewUser({ ...newUser, departmentId: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">업무 역할 (선택)<input maxLength={100} value={newUser.jobFunction} onChange={(event) => setNewUser({ ...newUser, jobFunction: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold md:col-span-2">Role 검색<input type="search" value={roleQuery} onChange={(event) => setRoleQuery(event.target.value)} placeholder="Role 이름 또는 key" /></label><label className="grid gap-1 text-xs font-bold md:col-span-2">간편 Role<select value={newUser.roleId} onChange={(event) => setNewUser({ ...newUser, roleId: event.target.value })}><option value="">Role 미할당 · PUBLIC 최소 권한</option>{roles.map((role) => <option key={role.id} value={role.id}>{role.name} · {role.clearance}</option>)}</select></label>{rolesTruncated && <p className="callout m-0 md:col-span-2">현재 검색 결과는 첫 25개입니다. Role 이름 또는 key로 범위를 좁히세요.</p>}<label className="grid gap-1 text-xs font-bold">임시 비밀번호<input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={newUser.temporaryPassword} onChange={(event) => setNewUser({ ...newUser, temporaryPassword: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">임시 비밀번호 확인<input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={newUser.passwordConfirmation} onChange={(event) => setNewUser({ ...newUser, passwordConfirmation: event.target.value })} /></label></div>
+      <div className="grid gap-3 md:grid-cols-2"><label className="grid gap-1 text-xs font-bold">사용자명<input required minLength={3} maxLength={64} autoComplete="off" value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} placeholder="예: hong.gildong" /></label><label className="grid gap-1 text-xs font-bold">Email<input required type="email" maxLength={320} autoComplete="off" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">이름<input required maxLength={100} value={newUser.firstName} onChange={(event) => setNewUser({ ...newUser, firstName: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">성<input required maxLength={100} value={newUser.lastName} onChange={(event) => setNewUser({ ...newUser, lastName: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">부서 UUID (선택)<input value={newUser.departmentId} onChange={(event) => setNewUser({ ...newUser, departmentId: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">업무 역할 (선택)<input maxLength={100} value={newUser.jobFunction} onChange={(event) => setNewUser({ ...newUser, jobFunction: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold md:col-span-2">데이터·화면 접근 Role 검색<input type="search" value={roleQuery} onChange={(event) => setRoleQuery(event.target.value)} placeholder="Role 이름 또는 key" /></label><label className="grid gap-1 text-xs font-bold md:col-span-2">데이터·화면 접근 Role<select value={newUser.roleId} onChange={(event) => setNewUser({ ...newUser, roleId: event.target.value })}><option value="">Role 미할당 · PUBLIC 최소 권한</option>{roles.map((role) => <option key={role.id} value={role.id}>{role.name} · {role.clearance}</option>)}</select></label>{rolesTruncated && <p className="callout m-0 md:col-span-2">현재 검색 결과는 첫 25개입니다. Role 이름 또는 key로 범위를 좁히세요.</p>}<label className="grid gap-1 text-xs font-bold">임시 비밀번호<input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={newUser.temporaryPassword} onChange={(event) => setNewUser({ ...newUser, temporaryPassword: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">임시 비밀번호 확인<input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={newUser.passwordConfirmation} onChange={(event) => setNewUser({ ...newUser, passwordConfirmation: event.target.value })} /></label></div>
     </Dialog>
   </>
 }

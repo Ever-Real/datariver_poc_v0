@@ -109,7 +109,7 @@ from datariver.application.dto import (
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipPage,
 )
-from datariver.application.identity_admin import ProvisionedWorkspaceUser
+from datariver.application.identity_admin import IdentityProfileTarget, ProvisionedWorkspaceUser
 from datariver.domain.admin_access import (
     AdminAccessRequest,
     MembershipAccessUpdate,
@@ -902,6 +902,25 @@ class MembershipAccessRepository(Protocol):
     async def get_access(
         self, *, workspace_id: UUID, subject_id: UUID
     ) -> WorkspaceMembershipAccessRecord | None: ...
+
+    async def get_identity_profile_target(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        for_update: bool = False,
+    ) -> IdentityProfileTarget | None: ...
+
+    async def update_identity_profile(
+        self,
+        *,
+        target: IdentityProfileTarget,
+        expected_membership_version: int,
+        display_name: str,
+        email: str,
+        department_id: UUID | None,
+        job_function: str | None,
+    ) -> int: ...
 
     async def list_change_request_activity(
         self,

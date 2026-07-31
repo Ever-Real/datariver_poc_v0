@@ -955,6 +955,77 @@ class IdentityUserProvisionResponse(BaseModel):
     temporary_password_required: bool
 
 
+class IdentityUserProfileUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: str = Field(min_length=3, max_length=320)
+    first_name: str = Field(min_length=1, max_length=100)
+    last_name: str = Field(min_length=1, max_length=100)
+    department_id: UUID | None = None
+    job_function: str | None = Field(default=None, max_length=100)
+
+    @field_validator("email", "first_name", "last_name", "job_function")
+    @classmethod
+    def normalize_identity_profile(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("Identity profile values cannot be blank.")
+        return normalized
+
+    @field_validator("email")
+    @classmethod
+    def validate_identity_email(cls, value: str) -> str:
+        local, separator, domain = value.rpartition("@")
+        if (
+            not separator
+            or not local
+            or "." not in domain
+            or domain.startswith(".")
+            or domain.endswith(".")
+        ):
+            raise ValueError("A valid email address is required.")
+        return value
+
+
+class IdentityUserProfileResponse(BaseModel):
+    subject_id: UUID
+    username: str
+    display_name: str
+    email: str
+    first_name: str
+    last_name: str
+    department_id: UUID | None
+    job_function: str | None
+    membership_version: int = Field(ge=1)
+    provider_enabled: bool
+    email_verified: bool
+    required_actions: list[str] = Field(max_length=32)
+
+
+class IdentityUserProfileUpdateResponse(BaseModel):
+    subject_id: UUID
+    username: str
+    display_name: str
+    email: str
+    department_id: UUID | None
+    job_function: str | None
+    membership_version: int = Field(ge=1)
+
+
+class IdentityTemporaryPasswordResetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    temporary_password: SecretStr = Field(min_length=12, max_length=128)
+
+
+class IdentityTemporaryPasswordResetResponse(BaseModel):
+    subject_id: UUID
+    temporary_password_required: bool
+    sessions_revoked: bool
+
+
 class ProblemDetails(BaseModel):
     type: str
     title: str

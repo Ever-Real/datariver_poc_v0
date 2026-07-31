@@ -10,6 +10,8 @@ from datariver.application.errors import ExternalDependencyError
 from datariver.application.identity_admin import (
     IdentityAdministration,
     IdentityUserDraft,
+    IdentityUserProfile,
+    IdentityUserProfileDraft,
     ProvisionedIdentity,
 )
 from datariver.domain.common import ConflictError
@@ -116,6 +118,85 @@ class KeycloakIdentityAdministration(IdentityAdministration):
             "PUT",
             self._admin_path(f"users/{quote(external_subject, safe='')}"),
             json={"enabled": True},
+            expected={204},
+        )
+
+    async def get_user_profile(self, *, external_subject: str) -> IdentityUserProfile:
+        response = await self._request(
+            "GET",
+            self._admin_path(f"users/{quote(external_subject, safe='')}"),
+            expected={200},
+        )
+        try:
+            value = response.json()
+        except ValueError as error:
+            raise self._dependency_error(
+                "The authentication system returned an invalid user profile.",
+                retryable=False,
+            ) from error
+        if not isinstance(value, dict) or self._user_id(value) != external_subject:
+            raise self._dependency_error(
+                "The authentication system returned an invalid user profile.",
+                retryable=False,
+            )
+        return self._user_profile(value)
+
+    async def update_user_profile(
+        self,
+        *,
+        external_subject: str,
+        draft: IdentityUserProfileDraft,
+    ) -> IdentityUserProfile:
+        current = await self.get_user_profile(external_subject=external_subject)
+        if not current.enabled:
+            raise ConflictError("The managed authentication identity is disabled.")
+        await self._request(
+            "PUT",
+            self._admin_path(f"users/{quote(external_subject, safe='')}"),
+            json={
+                "email": draft.email,
+                "emailVerified": (
+                    current.email_verified if current.email == draft.email else False
+                ),
+                "firstName": draft.first_name,
+                "lastName": draft.last_name,
+            },
+            expected={204},
+        )
+        return IdentityUserProfile(
+            external_subject=external_subject,
+            username=current.username,
+            email=draft.email,
+            first_name=draft.first_name,
+            last_name=draft.last_name,
+            enabled=current.enabled,
+            email_verified=current.email_verified if current.email == draft.email else False,
+            required_actions=current.required_actions,
+        )
+
+    async def reset_temporary_password(
+        self,
+        *,
+        external_subject: str,
+        temporary_password: str,
+    ) -> None:
+        current = await self.get_user_profile(external_subject=external_subject)
+        if not current.enabled:
+            raise ConflictError("The managed authentication identity is disabled.")
+        encoded_subject = quote(external_subject, safe="")
+        await self._request(
+            "PUT",
+            self._admin_path(f"users/{encoded_subject}/reset-password"),
+            json={
+                "type": "password",
+                "value": temporary_password,
+                "temporary": True,
+            },
+            expected={204},
+        )
+        await self._request(
+            "POST",
+            self._admin_path(f"users/{encoded_subject}/logout"),
             expected={204},
         )
 
@@ -285,6 +366,51 @@ class KeycloakIdentityAdministration(IdentityAdministration):
                 "The authentication system returned a user without an identity.", retryable=False
             )
         return external_subject
+
+    @classmethod
+    def _user_profile(cls, value: dict[str, Any]) -> IdentityUserProfile:
+        external_subject = cls._user_id(value)
+        username = value.get("username")
+        email = value.get("email")
+        first_name = value.get("firstName")
+        last_name = value.get("lastName")
+        enabled = value.get("enabled")
+        email_verified = value.get("emailVerified", False)
+        required_actions = value.get("requiredActions", [])
+        if (
+            not isinstance(username, str)
+            or not username
+            or not isinstance(email, str)
+            or not email
+            or not isinstance(first_name, str)
+            or not isinstance(last_name, str)
+            or not isinstance(enabled, bool)
+            or not isinstance(email_verified, bool)
+            or not isinstance(required_actions, list)
+            or len(username) > 255
+            or len(email) > 320
+            or len(first_name) > 100
+            or len(last_name) > 100
+            or len(required_actions) > 32
+            or any(
+                not isinstance(item, str) or not item or len(item) > 100
+                for item in required_actions
+            )
+        ):
+            raise cls._dependency_error(
+                "The authentication system returned an invalid user profile.",
+                retryable=False,
+            )
+        return IdentityUserProfile(
+            external_subject=external_subject,
+            username=username,
+            email=email,
+            first_name=first_name,
+            last_name=last_name,
+            enabled=enabled,
+            email_verified=email_verified,
+            required_actions=tuple(sorted(set(required_actions))),
+        )
 
     def _subject_from_location(self, location: str) -> str | None:
         if not location:

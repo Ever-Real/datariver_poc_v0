@@ -49,4 +49,5 @@
 @media (max-width: 959px) {
   .app-dialog { padding: 8px; }
   .app-dialog-surface, .app-dialog-large .app-dialog-surface, .app-dialog-workspace .app-dialog-surface { width: 100%; height: calc(100vh - 16px); max-height: calc(100vh - 16px); }
+  .app-dialog-fit .app-dialog-surface { height: auto; }
 }

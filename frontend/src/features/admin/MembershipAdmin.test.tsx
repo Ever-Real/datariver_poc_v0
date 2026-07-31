@@ -71,7 +71,7 @@ describe('MembershipAccessAdmin', () => {
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'hong@example.test' } })
     fireEvent.change(screen.getByLabelText('이름'), { target: { value: 'Gildong' } })
     fireEvent.change(screen.getByLabelText('성'), { target: { value: 'Hong' } })
-    fireEvent.change(screen.getByLabelText('간편 Role'), { target: { value: catalogReader.id } })
+    fireEvent.change(screen.getByLabelText('데이터·화면 접근 Role'), { target: { value: catalogReader.id } })
     fireEvent.change(screen.getByLabelText('임시 비밀번호'), { target: { value: 'Temporary-Only-42!' } })
     fireEvent.change(screen.getByLabelText('임시 비밀번호 확인'), { target: { value: 'Temporary-Only-42!' } })
     fireEvent.click(screen.getAllByRole('button', { name: '사용자 등록' }).at(-1)!)
@@ -94,6 +94,8 @@ describe('MembershipAccessAdmin', () => {
         role_assignment: { status: 'VERIFIED', role_id: catalogReader.id, role_version: 1, assignment_version: 1, membership_version: 3, access_payload_hash: 'a'.repeat(64), assigned_by: null, updated_at: null, legacy_markers: [] },
       })),
       listAccessRolePage: vi.fn(() => Promise.resolve({ items: [catalogReader, dataSteward], nextCursor: null, limit: 25 })),
+      listMembershipChangeRequestActivity: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
+      listMembershipOwnedTables: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
       assignMembershipRole: vi.fn(() => Promise.resolve({ subject_id: target.subject_id, role_id: dataSteward.id, membership_version: 4, payload_hash: 'b'.repeat(64) })),
     }
     let pending: PendingAdminMutation | undefined
@@ -101,15 +103,103 @@ describe('MembershipAccessAdmin', () => {
 
     fireEvent.click(await screen.findByText('Engineer'))
     expect(await screen.findByRole('dialog', { name: '사용자 프로필 수정' })).toBeInTheDocument()
-    const roleSelect = await screen.findByLabelText('사용자 Role')
+    fireEvent.click(screen.getByRole('tab', { name: '데이터·화면 접근' }))
+    const roleSelect = await screen.findByLabelText('데이터 및 화면 접근 Role')
     await waitFor(() => expect(roleSelect).toHaveValue(catalogReader.id))
     fireEvent.change(roleSelect, { target: { value: dataSteward.id } })
-    fireEvent.click(screen.getByRole('button', { name: 'Role 저장' }))
+    fireEvent.click(screen.getByRole('button', { name: '접근 Role 저장' }))
     if (!pending) throw new Error('Role assignment confirmation was not requested')
     await act(async () => { await pending?.execute() })
     expect(api.assignMembershipRole).toHaveBeenCalledWith(
       target.subject_id, dataSteward.id, '"3"', 'stable-key',
     )
     expect(screen.queryByText('세부 Access 문서 (고급)')).not.toBeInTheDocument()
+  })
+
+  it('uses governed profile, activity and temporary-password APIs without inventing audit data', async () => {
+    const target = {
+      ...member(),
+      last_login_at: '2026-07-30T01:00:00Z',
+      last_login_ip: '10.0.0.42',
+      change_request_count: 1,
+      owned_table_count: 1,
+    }
+    const api = {
+      listMembershipPage: vi.fn(() => Promise.resolve({ items: [target], nextCursor: null, limit: 25 })),
+      getMembershipAccess: vi.fn(() => Promise.resolve({
+        ...target, etag: '"3"',
+        access: { active: true, clearance: 'INTERNAL', groups: [], allowed_actions: ['catalog.read'], denied_actions: [], allowed_system_ids: [], allowed_domain_ids: [] },
+        role_assignment: { status: 'VERIFIED', role_id: catalogReader.id, role_version: 1, assignment_version: 1, membership_version: 3, access_payload_hash: 'a'.repeat(64), assigned_by: null, updated_at: null, legacy_markers: [] },
+      })),
+      getIdentityUserProfile: vi.fn(() => Promise.resolve({
+        subject_id: target.subject_id, username: 'engineer', display_name: 'Engineer',
+        email: 'engineer@example.test', first_name: 'Data', last_name: 'Engineer',
+        department_id: null, job_function: 'ENGINEER', membership_version: 3,
+        provider_enabled: true, email_verified: true, required_actions: [], etag: '"3"',
+      })),
+      listAccessRolePage: vi.fn(() => Promise.resolve({ items: [catalogReader], nextCursor: null, limit: 25 })),
+      listMembershipChangeRequestActivity: vi.fn(() => Promise.resolve({
+        items: [{
+          change_request_id: 'cr-one', number: 'CR-1', title: 'Schema change',
+          request_type: 'SCHEMA', state: 'APPROVED', relationship: 'REQUESTER',
+          classification: 'INTERNAL', updated_at: '2026-07-30T02:00:00Z',
+        }], nextCursor: null, limit: 25,
+      })),
+      listMembershipOwnedTables: vi.fn(() => Promise.resolve({
+        items: [{
+          asset_id: 'asset-one', name: 'orders', platform: 'postgres',
+          database_name: 'warehouse', schema_name: 'public', classification: 'INTERNAL',
+          source_version: 'v1', observed_at: '2026-07-30T03:00:00Z',
+        }], nextCursor: null, limit: 25,
+      })),
+      updateIdentityUserProfile: vi.fn(() => Promise.resolve({
+        subject_id: target.subject_id, membership_version: 4,
+      })),
+      resetIdentityTemporaryPassword: vi.fn(() => Promise.resolve({
+        subject_id: target.subject_id, temporary_password_required: true, sessions_revoked: true,
+      })),
+    }
+    const confirmations: PendingAdminMutation[] = []
+    renderUsers(api, [
+      'MEMBERSHIP_ACCESS_READ',
+      'IDENTITY_USER_PROFILE_READ',
+      'IDENTITY_USER_PROFILE_UPDATE',
+      'IDENTITY_USER_PASSWORD_RESET',
+    ], (next) => { confirmations.push(next) })
+
+    fireEvent.click(await screen.findByText('Engineer'))
+    expect(await screen.findByText('10.0.0.42')).toBeInTheDocument()
+    fireEvent.change(await screen.findByLabelText('업무 역할'), { target: { value: 'DATA_ENGINEER' } })
+    fireEvent.click(screen.getByRole('button', { name: '사용자 정보 저장' }))
+    await act(async () => { await confirmations.at(-1)?.execute() })
+    expect(api.updateIdentityUserProfile).toHaveBeenCalledWith(
+      target.subject_id,
+      {
+        email: 'engineer@example.test',
+        first_name: 'Data',
+        last_name: 'Engineer',
+        department_id: null,
+        job_function: 'DATA_ENGINEER',
+      },
+      '"3"',
+      'stable-key',
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'CR·활동' }))
+    expect(await screen.findByText('Schema change')).toBeInTheDocument()
+    expect(screen.getByText('orders')).toBeInTheDocument()
+    expect(screen.getByText(/상세 감사 로그가 아니라/)).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('tab', { name: '비밀번호 재설정' }))
+    fireEvent.change(screen.getByLabelText('새 임시 비밀번호'), { target: { value: 'Temporary-Only-42!' } })
+    fireEvent.change(screen.getByLabelText('임시 비밀번호 확인'), { target: { value: 'Temporary-Only-42!' } })
+    fireEvent.click(screen.getByRole('button', { name: '임시 비밀번호 재설정' }))
+    await act(async () => { await confirmations.at(-1)?.execute() })
+    expect(api.resetIdentityTemporaryPassword).toHaveBeenCalledWith(
+      target.subject_id,
+      'Temporary-Only-42!',
+      '"3"',
+      'stable-key',
+    )
   })
 })

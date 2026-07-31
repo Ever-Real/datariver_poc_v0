@@ -138,6 +138,79 @@ describe('AdminApi', () => {
     ])
   })
 
+  it('binds identity profile and temporary-password mutations to the exact membership ETag', async () => {
+    const { api, request, requestWithMeta } = mockClient()
+    requestWithMeta.mockResolvedValue({
+      data: {
+        subject_id: 'subject-one',
+        username: 'engineer',
+        display_name: 'Data Engineer',
+        email: 'engineer@example.test',
+        first_name: 'Data',
+        last_name: 'Engineer',
+        department_id: null,
+        job_function: 'ENGINEER',
+        membership_version: 3,
+        provider_enabled: true,
+        email_verified: true,
+        required_actions: [],
+      },
+      etag: '"3"',
+    })
+    request.mockResolvedValue({})
+
+    await expect(api.getIdentityUserProfile('subject-one')).resolves.toMatchObject({ etag: '"3"' })
+    await api.updateIdentityUserProfile(
+      'subject-one',
+      {
+        email: 'engineer@example.test',
+        first_name: 'Data',
+        last_name: 'Engineer',
+        department_id: null,
+        job_function: 'DATA_ENGINEER',
+      },
+      '"3"',
+      'identity-profile-key',
+    )
+    await api.resetIdentityTemporaryPassword(
+      'subject-one',
+      'Temporary-Only-42!',
+      '"3"',
+      'identity-password-key',
+    )
+
+    expect(requestWithMeta).toHaveBeenCalledWith(
+      '/admin/workspace-memberships/subject-one/identity-profile',
+      { cache: 'no-store', signal: undefined },
+    )
+    expect(request.mock.calls).toEqual([
+      [
+        '/admin/workspace-memberships/subject-one/identity-profile',
+        {
+          method: 'PUT',
+          ifMatch: '"3"',
+          idempotencyKey: 'identity-profile-key',
+          body: JSON.stringify({
+            email: 'engineer@example.test',
+            first_name: 'Data',
+            last_name: 'Engineer',
+            department_id: null,
+            job_function: 'DATA_ENGINEER',
+          }),
+        },
+      ],
+      [
+        '/admin/workspace-memberships/subject-one/temporary-password',
+        {
+          method: 'PUT',
+          ifMatch: '"3"',
+          idempotencyKey: 'identity-password-key',
+          body: JSON.stringify({ temporary_password: 'Temporary-Only-42!' }),
+        },
+      ],
+    ])
+  })
+
   it('sends an exact direct update with If-Match and one idempotency key', async () => {
     const { api, request } = mockClient()
     request.mockResolvedValue({ target_subject_id: 'subject-one', membership_version: 4, payload_hash: 'a'.repeat(64) })

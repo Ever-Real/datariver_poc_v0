@@ -111,6 +111,14 @@ repository also records the normalized assignment and event in the same transact
 application role has execute-only access and still has no direct `INSERT` grant on either IAM table.
 No password or provider client credential is a function argument or database column.
 
+`iam.update_workspace_identity_profile(...)` is the only app-executable local identity-profile
+projection update. It is `SECURITY DEFINER`, contains no dynamic SQL and independently requires the
+matching transaction-local Workspace/subject context, an active unexpired human
+`security-administrators` actor with RESTRICTED clearance and `admin.manage`, an active unexpired
+human target and the exact expected membership version. It updates only subject display/email and
+membership department/job-function/version. The application role has execute-only access; no
+password, provider credential, session token or arbitrary provider document is accepted or stored.
+
 The three policy-book tables use forced workspace RLS. The application may insert immutable Role
 rules/events and may update only the current assignment's bounded state/version columns. There is no
 application `DELETE` grant. Existing `datariver-role-*` membership markers are compatibility hints;
@@ -791,6 +799,10 @@ non-secret System Configuration/deployment binding on GraphRAG audits. Alembic `
 fixed governed identity-provisioning function and execute-only application grant; it adds no
 credential column or direct IAM-table write grant. SQLAlchemy metadata, the regenerated `0001`
 baseline and these incremental migrations must remain deterministic equivalents.
+
+Alembic `0083` adds the fixed governed identity-profile projection function and execute-only
+application grant. It creates no table or column and does not change the canonical ownership of
+identity-provider profile fields or credentials.
 
 Alembic `0040` extends only the bounded external-service and probe vocabularies for separate Redis
 cache/delivery profiles, `redis://`/`rediss://` endpoints and authenticated `REDIS_POLICY`

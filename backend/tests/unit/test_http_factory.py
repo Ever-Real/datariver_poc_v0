@@ -1898,6 +1898,24 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
         "/api/v1/admin/workspace-memberships/{target_subject_id}/access"
     ]["get"]
     assert membership_detail["responses"]["200"]["headers"]["ETag"]["schema"] == {"type": "string"}
+    identity_profile_path = document["paths"][
+        "/api/v1/admin/workspace-memberships/{target_subject_id}/identity-profile"
+    ]
+    for operation in ("get", "put"):
+        identity_profile_etag = identity_profile_path[operation]["responses"]["200"]["headers"][
+            "ETag"
+        ]
+        assert identity_profile_etag["schema"] == {"type": "string"}
+    temporary_password_request = document["components"]["schemas"][
+        "IdentityTemporaryPasswordResetRequest"
+    ]
+    assert set(temporary_password_request["properties"]) == {"temporary_password"}
+    assert (
+        "temporary_password"
+        not in document["components"]["schemas"]["IdentityTemporaryPasswordResetResponse"][
+            "properties"
+        ]
+    )
     access_schema = document["components"]["schemas"]["MembershipAccessDocumentResponse"]
     assert set(access_schema["required"]) == {
         "active",
@@ -1923,6 +1941,9 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
     }
     assert set(operation_schema["enum"]) == {
         "IDENTITY_USER_PROVISION",
+        "IDENTITY_USER_PROFILE_READ",
+        "IDENTITY_USER_PROFILE_UPDATE",
+        "IDENTITY_USER_PASSWORD_RESET",
         "MEMBERSHIP_ACCESS_READ",
         "MEMBERSHIP_ACCESS_UPDATE",
         "MEMBERSHIP_RENEWAL_READ",

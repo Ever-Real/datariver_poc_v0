@@ -456,6 +456,8 @@ class AdminAccessService:
         ]
         if self._development_system_configuration_enabled:
             operations.append(AdminOperation.SYSTEM_CONFIGURATION_READ)
+        if self._identity_administration_enabled:
+            operations.append(AdminOperation.IDENTITY_USER_PROFILE_READ)
         if (
             Action.RETENTION_READ in subject.allowed_actions
             and Action.RETENTION_READ not in subject.denied_actions
@@ -497,7 +499,13 @@ class AdminAccessService:
                 ]
             )
             if self._identity_administration_enabled:
-                operations.append(AdminOperation.IDENTITY_USER_PROVISION)
+                operations.extend(
+                    [
+                        AdminOperation.IDENTITY_USER_PROVISION,
+                        AdminOperation.IDENTITY_USER_PROFILE_UPDATE,
+                        AdminOperation.IDENTITY_USER_PASSWORD_RESET,
+                    ]
+                )
             governed_operations = (
                 (Action.RETENTION_MANAGE, AdminOperation.RETENTION_POLICY_MANAGE),
                 (Action.LEGAL_HOLD_PLACE, AdminOperation.LEGAL_HOLD_PLACE),

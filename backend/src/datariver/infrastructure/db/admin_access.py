@@ -30,7 +30,7 @@ from datariver.application.dto import (
     WorkspaceMembershipPage,
     WorkspaceMembershipSummary,
 )
-from datariver.application.identity_admin import ProvisionedWorkspaceUser
+from datariver.application.identity_admin import IdentityProfileTarget, ProvisionedWorkspaceUser
 from datariver.application.ports import (
     AdminAccessRequestRepository,
     AdminAccessUnitOfWork,
@@ -825,6 +825,96 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             else None
         )
         return _membership_access_record(subject, membership, role_assignment=evidence)
+
+    async def get_identity_profile_target(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        for_update: bool = False,
+    ) -> IdentityProfileTarget | None:
+        statement = (
+            select(SubjectModel, WorkspaceMembershipModel)
+            .join(
+                WorkspaceMembershipModel,
+                WorkspaceMembershipModel.subject_id == SubjectModel.id,
+            )
+            .where(
+                WorkspaceMembershipModel.workspace_id == workspace_id,
+                WorkspaceMembershipModel.subject_id == subject_id,
+            )
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        row = (await self._session.execute(statement)).one_or_none()
+        if row is None:
+            return None
+        subject, membership = row
+        return IdentityProfileTarget(
+            subject_id=subject.id,
+            workspace_id=membership.workspace_id,
+            issuer=subject.issuer,
+            external_subject=subject.external_subject,
+            display_name=subject.display_name,
+            email=subject.email,
+            department_id=membership.department_id,
+            job_function=membership.job_function,
+            membership_version=membership.version,
+            subject_active=subject.active,
+            membership_active=membership.active,
+            service_account=(
+                membership.job_function == "SERVICE_ACCOUNT"
+                or "service-accounts" in (_string_set(membership.attributes, "groups") or set())
+            ),
+            access_expires_at=membership.access_expires_at,
+        )
+
+    async def update_identity_profile(
+        self,
+        *,
+        target: IdentityProfileTarget,
+        expected_membership_version: int,
+        display_name: str,
+        email: str,
+        department_id: UUID | None,
+        job_function: str | None,
+    ) -> int:
+        try:
+            next_version = await self._session.scalar(
+                text(
+                    """
+                    SELECT iam.update_workspace_identity_profile(
+                        :workspace_id, :subject_id, :expected_membership_version,
+                        :display_name, :email, :department_id, :job_function
+                    )
+                    """
+                ),
+                {
+                    "workspace_id": target.workspace_id,
+                    "subject_id": target.subject_id,
+                    "expected_membership_version": expected_membership_version,
+                    "display_name": display_name,
+                    "email": email,
+                    "department_id": department_id,
+                    "job_function": job_function,
+                },
+            )
+        except DBAPIError as error:
+            sqlstate = getattr(error.orig, "sqlstate", None)
+            if sqlstate == "42501":
+                raise ForbiddenError("Identity profile administration lost authority.") from error
+            if sqlstate == "P0002":
+                raise NotFoundError("The target workspace identity does not exist.") from error
+            if sqlstate == "40001":
+                raise ConflictError(
+                    "The target workspace identity changed during the operation."
+                ) from error
+            if sqlstate == "23514":
+                raise ValidationError("The identity profile update violates policy.") from error
+            raise
+        if not isinstance(next_version, int) or next_version <= expected_membership_version:
+            raise ConflictError("The identity profile update returned invalid evidence.")
+        return next_version
 
     async def list_change_request_activity(
         self,
