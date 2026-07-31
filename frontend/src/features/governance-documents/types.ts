@@ -112,6 +112,7 @@ export interface GovernanceDocumentVersion {
   sanitizer_policy_sha256: string
   source_format: GovernanceDocumentSourceFormat
   source_template_version_id: string | null
+  parent_document_id: string | null
   author_id: string
   submitted_at: string | null
   reviewed_by: string | null
@@ -128,6 +129,8 @@ export interface GovernanceDocumentAttachment {
   workspace_id: string
   document_id: string
   document_version_id: string
+  serial_number: number
+  storage_filename: string | null
   original_name: string
   content_type: string
   size_bytes: number
@@ -160,6 +163,8 @@ export interface GovernanceDocumentDetail {
   versions: GovernanceDocumentVersion[]
   reviews: GovernanceDocumentReview[]
   attachments: GovernanceDocumentAttachment[]
+  parent_document: GovernanceDocumentSummary | null
+  child_documents: GovernanceDocumentSummary[]
 }
 
 export interface GovernanceDocumentDetailResponse extends GovernanceReadEnvelope {
@@ -175,6 +180,7 @@ export interface GovernanceDocumentCreateRequest {
   applicability_scope: string
   sanitized_html: string | null
   source_template_version_id: string | null
+  parent_document_id: string | null
 }
 
 export interface GovernanceDocumentVersionCreateRequest {
@@ -183,6 +189,7 @@ export interface GovernanceDocumentVersionCreateRequest {
   applicability_scope: string
   sanitized_html: string
   source_template_version_id?: string | null
+  parent_document_id?: string | null
 }
 
 export interface GovernanceDocumentReviewRequest {
@@ -196,7 +203,8 @@ export interface GovernanceDocumentCommandResponse {
 
 export interface GovernanceDocumentBlueprint {
   blueprint_id: string
-  blueprint_version: 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V1'
+  blueprint_version: 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V2'
+  purpose: 'STARTER_DOCUMENT' | 'TEMPLATE'
   category: Exclude<GovernanceDocumentCategory, 'OTHER'>
   title: string
   summary: string
@@ -208,8 +216,20 @@ export interface GovernanceDocumentBlueprint {
 }
 
 export interface GovernanceDocumentBlueprintListResponse {
-  contract_version: 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V1'
+  contract_version: 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V2'
   items: GovernanceDocumentBlueprint[]
+}
+
+export interface GovernanceDocumentExport extends GovernanceReadEnvelope {
+  contract_version: 'GOVERNANCE_DOCUMENT_EXPORT_V1'
+  exported_at: string
+  document: GovernanceDocumentSummary
+  selected_version: GovernanceDocumentVersion
+  version_history: GovernanceDocumentVersion[]
+  reviews: GovernanceDocumentReview[]
+  attachments: GovernanceDocumentAttachment[]
+  parent_document: GovernanceDocumentSummary | null
+  child_documents: GovernanceDocumentSummary[]
 }
 
 export interface GovernanceKnowledgeEvidence {

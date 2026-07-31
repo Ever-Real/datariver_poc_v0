@@ -231,6 +231,26 @@ def _load_governance_document_revision() -> ModuleType:
     return module
 
 
+def _load_governance_document_management_revision() -> ModuleType:
+    """Load the Governance Document hierarchy immutability contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0079_governance_document_management.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_governance_document_management_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Governance Document management migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -672,6 +692,11 @@ def build_upgrade() -> ops.UpgradeOps:
         ops.ExecuteSQLOp(statement)
         for statement in _sql_statements(governance_documents._SECURITY_SQL)
     )
+    governance_document_management = _load_governance_document_management_revision()
+    operations.append(
+        ops.ExecuteSQLOp(governance_document_management._PARENT_MUTATION_FUNCTION_SQL)
+    )
+    operations.append(ops.ExecuteSQLOp(governance_document_management._PARENT_MUTATION_TRIGGER_SQL))
     return ops.UpgradeOps(ops=operations)
 
 
@@ -1119,6 +1144,7 @@ def build_downgrade() -> ops.DowngradeOps:
             "governance.current_human_can_document_v1(uuid,text,integer,uuid,uuid), "
             "governance.enforce_document_mutation_v1(), "
             "governance.enforce_document_version_mutation_v1(), "
+            "governance.reject_document_parent_mutation_v1(), "
             "governance.reject_document_evidence_mutation_v1() CASCADE"
         ),
         ops.ExecuteSQLOp(

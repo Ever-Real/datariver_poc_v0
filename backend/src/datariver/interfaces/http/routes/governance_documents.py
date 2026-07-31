@@ -34,6 +34,7 @@ from datariver.domain.governance_documents import (
     GovernanceDocumentCategory,
     GovernanceDocumentKind,
     GovernanceDocumentReviewDecision,
+    GovernanceDocumentState,
 )
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.governance_documents import (
@@ -44,7 +45,9 @@ from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_c
 from datariver.interfaces.http.governance_document_presenters import (
     governance_document_attachment_response,
     governance_document_detail_response,
+    governance_document_review_response,
     governance_document_summary_response,
+    governance_document_version_response,
     governance_knowledge_evidence_response,
 )
 from datariver.interfaces.http.governance_document_schemas import (
@@ -58,6 +61,7 @@ from datariver.interfaces.http.governance_document_schemas import (
     GovernanceDocumentCommandResponse,
     GovernanceDocumentCreateRequest,
     GovernanceDocumentDetailResponse,
+    GovernanceDocumentExportResponse,
     GovernanceDocumentLimitsResponse,
     GovernanceDocumentListResponse,
     GovernanceDocumentReviewRequest,
@@ -197,6 +201,7 @@ async def import_governance_document(
     classification: Annotated[int, Form(ge=0, le=3)],
     applicability_scope: Annotated[str, Form(max_length=4_000)],
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key")],
+    parent_document_id: Annotated[UUID | None, Form()] = None,
 ) -> GovernanceDocumentCommandResponse:
     _private(response)
     filename = file.filename
@@ -220,6 +225,7 @@ async def import_governance_document(
         applicability_scope=applicability_scope,
         content=prepared,
         source_template_version_id=None,
+        parent_document_id=parent_document_id,
     )
     _etag(response, value.document.version)
     return GovernanceDocumentCommandResponse(item=governance_document_detail_response(value))
@@ -246,6 +252,7 @@ async def list_governance_document_template_blueprints(
             GovernanceDocumentBlueprintResponse(
                 blueprint_id=value.blueprint_id,
                 blueprint_version=value.blueprint_version,
+                purpose=value.purpose.value,
                 category=value.category.value,
                 title=value.title,
                 summary=value.summary,
@@ -331,6 +338,7 @@ async def list_governance_documents(
     q: Annotated[str | None, Query(max_length=200)] = None,
     kind: Annotated[GovernanceDocumentKind | None, Query()] = None,
     category: Annotated[GovernanceDocumentCategory | None, Query()] = None,
+    state: Annotated[GovernanceDocumentState | None, Query()] = None,
     include_archived: bool = False,
 ) -> GovernanceDocumentListResponse:
     _private(response)
@@ -340,6 +348,7 @@ async def list_governance_documents(
         request_id=context.request_id,
         kind=kind,
         category=category,
+        state=state,
         include_archived=include_archived,
         query=q,
         limit=limit,
@@ -389,6 +398,7 @@ async def create_governance_document(
         applicability_scope=body.applicability_scope,
         content=prepared,
         source_template_version_id=body.source_template_version_id,
+        parent_document_id=body.parent_document_id,
     )
     _etag(response, value.document.version)
     return GovernanceDocumentCommandResponse(item=governance_document_detail_response(value))
@@ -412,6 +422,47 @@ async def get_governance_document(
     _etag(response, value.document.version)
     return GovernanceDocumentDetailResponse(
         item=governance_document_detail_response(value),
+        cache_scope=read_context.cache_scope,
+        observed_at=read_context.observed_at,
+        authorization_valid_until=read_context.authorization_valid_until,
+    )
+
+
+@router.get("/{document_id}/export", response_model=GovernanceDocumentExportResponse)
+async def export_governance_document(
+    document_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    version_id: Annotated[UUID | None, Query()] = None,
+) -> GovernanceDocumentExportResponse:
+    _private(response)
+    value, read_context = await _service(request, session).export_document(
+        document_id=document_id,
+        version_id=version_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return GovernanceDocumentExportResponse(
+        contract_version="GOVERNANCE_DOCUMENT_EXPORT_V1",
+        exported_at=value.exported_at,
+        document=governance_document_summary_response(value.document),
+        selected_version=governance_document_version_response(value.selected_version),
+        version_history=[
+            governance_document_version_response(item) for item in value.version_history
+        ],
+        reviews=[governance_document_review_response(item) for item in value.reviews],
+        attachments=[governance_document_attachment_response(item) for item in value.attachments],
+        parent_document=(
+            governance_document_summary_response(value.parent_document)
+            if value.parent_document is not None
+            else None
+        ),
+        child_documents=[
+            governance_document_summary_response(item) for item in value.child_documents
+        ],
         cache_scope=read_context.cache_scope,
         observed_at=read_context.observed_at,
         authorization_valid_until=read_context.authorization_valid_until,
@@ -446,6 +497,7 @@ async def create_governance_document_version(
         applicability_scope=body.applicability_scope,
         content=content,
         source_template_version_id=body.source_template_version_id,
+        parent_document_id=body.parent_document_id,
     )
     _etag(response, value.document.version)
     return GovernanceDocumentCommandResponse(item=governance_document_detail_response(value))
@@ -616,6 +668,7 @@ async def _version_input(
             required=False,
         )
         template_id = _optional_uuid(form.get("source_template_version_id"))
+        parent_document_id = _optional_uuid(form.get("parent_document_id"))
         filename = upload.filename
         upload_content_type = upload.content_type
         content = await _bounded_upload(upload)
@@ -631,6 +684,7 @@ async def _version_input(
                 applicability_scope=applicability_scope,
                 sanitized_html=prepared.sanitized_html,
                 source_template_version_id=template_id,
+                parent_document_id=parent_document_id,
             ),
             prepared,
         )

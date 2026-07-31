@@ -228,21 +228,33 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 
 ## Governance Document library
 
-- The existing policy status page remains the default view. A separate document workspace first
-  obtains a 30-second capability lease, then loads only permission-pruned document or Template
-  summaries with an opaque cursor. Read denial causes zero document requests.
+- Governance opens on **문서 조회**, which lists only currently `ACTIVE` managed documents and
+  renders the selected published version, its metadata and authorized hierarchy. **문서 관리** is
+  shown only when at least one create/edit/review/publish/archive axis is available. Every
+  document request follows a 30-second capability lease and returns only permission-pruned
+  summaries with an opaque cursor; read denial causes zero document requests.
 - Authorized humans create a document/Template with native rich text or import bounded
   HTML/Markdown/DOCX. The server canonicalizes and sanitizes HTML; the browser renders allowlisted
-  nodes without raw HTML insertion. Policy, standard-terminology and security-guide starter
-  blueprints create ordinary editable Template aggregates rather than example business records.
+  nodes without raw HTML insertion. Data classification/access, retention/disposal and Legal Hold
+  starter blueprints create ordinary editable `DOCUMENT` aggregates. They are never silently
+  seeded or shown as `ACTIVE`; an authorized author must create them and an independent reviewer
+  must approve each version.
 - Every edit creates a new immutable version. Draft authors submit for independent review; only an
   eligible non-author Checker can approve/publish or reject. The detail view shows version,
-  author/reviewer/time, applicability, object state, knowledge state and immutable review history.
+  initial author, version author/reviewer/time, applicability, object state, knowledge state,
+  immutable review history and version-owned parent/authorized-child document links. Parent changes
+  require a new version; self-links and cycles fail closed.
 - Attachments belong to one Draft version and are create-only in the versioned
   `datariver-filefolder` prefix. The UI accepts no object key and exposes no list/delete/presign
-  control. A stale aggregate ETag blocks the object write.
+  control. A stale aggregate ETag blocks the object write. Server-derived basenames distinguish
+  the body (`doc_governance_<title>_<YYYYMMDD>_<serial>.html`) from editor-bottom references
+  (`ref_governance_<title>_<YYYYMMDD>_<serial>.<ext>`), while UUID directories retain collision
+  isolation and exact-version receipts.
 - Archive is a reasoned high-risk command that changes lifecycle only. It never deletes a DB row,
   document version, attachment or MinIO object version.
+- The authorized JSON export contains the selected sanitized body, public metadata, immutable
+  version/review history, attachment metadata and permitted parent/child summaries. It never
+  exposes bucket names, object keys, provider VersionIds, credentials, endpoints or Presigned URLs.
 - A dedicated worker stores exact version artifacts, embeds published text and verifies the fixed
   Neo4j document/version/chunk projection. The evidence search sends only bounded text; the server
   uses its active embedding binding and returns only current published authorized chunks.

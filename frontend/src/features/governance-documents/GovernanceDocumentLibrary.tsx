@@ -135,10 +135,12 @@ function GovernanceDocumentWorkspace({
   const [editorCategory, setEditorCategory] = useState<GovernanceDocumentCategory>('POLICY')
   const [classification, setClassification] = useState(1)
   const [applicabilityScope, setApplicabilityScope] = useState('')
+  const [parentDocumentId, setParentDocumentId] = useState('')
   const [templateVersionId, setTemplateVersionId] = useState('')
   const [blueprintId, setBlueprintId] = useState('')
   const [editorInitialHtml, setEditorInitialHtml] = useState('<p></p>')
   const [importFile, setImportFile] = useState<File>()
+  const [editorAttachmentFile, setEditorAttachmentFile] = useState<File>()
   const [reviewDecision, setReviewDecision] = useState<ReviewDecision>()
   const [reviewReason, setReviewReason] = useState('')
   const [archiveOpen, setArchiveOpen] = useState(false)
@@ -216,13 +218,30 @@ function GovernanceDocumentWorkspace({
     gcTime: 30_000,
     retry: false,
   })
+  const parentCandidates = useQuery({
+    queryKey: governanceDocumentQueryKey(
+      capability.cache_scope,
+      'documents',
+      'parent-candidates',
+      100,
+    ),
+    queryFn: ({ signal }) => api.documents(capability.cache_scope, {
+      kind: 'DOCUMENT',
+      limit: 100,
+      signal,
+    }),
+    enabled: Boolean(editorMode && editorKind === 'DOCUMENT'),
+    staleTime: 0,
+    gcTime: 30_000,
+    retry: false,
+  })
   const blueprints = useQuery({
     queryKey: governanceDocumentQueryKey(
       capability.cache_scope,
       'template-blueprints',
     ),
     queryFn: ({ signal }) => api.templateBlueprints(signal),
-    enabled: Boolean(editorMode === 'CREATE' && editorKind === 'TEMPLATE'),
+    enabled: Boolean(editorMode === 'CREATE'),
     staleTime: 5 * 60_000,
     gcTime: 5 * 60_000,
     retry: false,
@@ -299,7 +318,7 @@ function GovernanceDocumentWorkspace({
         : result.document_id
       await invalidateDocument(documentId)
       setNotice(success)
-      return true
+      return result
     } catch (error) {
       setMutationError(error)
       if (error instanceof ApiError && error.problem.status === 409 && selectedDocumentId) {
@@ -311,7 +330,7 @@ function GovernanceDocumentWorkspace({
           ),
         })
       }
-      return false
+      return undefined
     } finally {
       setBusy(false)
     }
@@ -323,9 +342,11 @@ function GovernanceDocumentWorkspace({
     setEditorCategory(template?.category ?? 'POLICY')
     setClassification(template?.classification ?? 1)
     setApplicabilityScope('')
+    setParentDocumentId('')
     setTemplateVersionId(template?.current_published_version_id ?? '')
     setBlueprintId('')
     setImportFile(undefined)
+    setEditorAttachmentFile(undefined)
     editorHtml.current = '<p></p>'
     setEditorInitialHtml('<p></p>')
     setMutationError(undefined)
@@ -334,9 +355,12 @@ function GovernanceDocumentWorkspace({
   const openNewVersion = () => {
     if (!selectedVersion) return
     setTitle(selectedVersion.title)
+    setSummary(selectedVersion.summary)
     setApplicabilityScope(selectedVersion.applicability_scope)
+    setParentDocumentId(selectedVersion.parent_document_id ?? '')
     setBlueprintId('')
     setImportFile(undefined)
+    setEditorAttachmentFile(undefined)
     editorHtml.current = selectedVersion.sanitized_html
     setEditorInitialHtml(selectedVersion.sanitized_html)
     setMutationError(undefined)
@@ -357,6 +381,7 @@ function GovernanceDocumentWorkspace({
     setEditorCategory(blueprint.category)
     setApplicabilityScope(blueprint.applicability_scope)
     setTemplateVersionId('')
+    setParentDocumentId('')
     editorHtml.current = blueprint.sanitized_html
     setEditorInitialHtml(blueprint.sanitized_html)
   }
@@ -367,21 +392,49 @@ function GovernanceDocumentWorkspace({
         : axis('create')?.state === 'AVAILABLE'
       if (!title.trim() || !canCreate) return
       const saved = await execute(
-        () => api.createDocument({
-          kind: editorKind,
-          category: editorCategory,
-          title: title.trim(),
-          summary: summary.trim(),
-          classification,
-          applicability_scope: applicabilityScope.trim(),
-          sanitized_html: templateVersionId ? null : editorHtml.current,
-          source_template_version_id: templateVersionId || null,
-        }, newIdempotencyKey('governance-document-create')),
+        () => importFile
+          ? api.importDocument({
+            file: importFile,
+            kind: editorKind,
+            category: editorCategory,
+            title: title.trim(),
+            summary: summary.trim(),
+            classification,
+            applicabilityScope: applicabilityScope.trim(),
+            parentDocumentId: editorKind === 'DOCUMENT' ? parentDocumentId || null : null,
+          }, newIdempotencyKey('governance-document-import'))
+          : api.createDocument({
+            kind: editorKind,
+            category: editorCategory,
+            title: title.trim(),
+            summary: summary.trim(),
+            classification,
+            applicability_scope: applicabilityScope.trim(),
+            sanitized_html: templateVersionId ? null : editorHtml.current,
+            source_template_version_id: templateVersionId || null,
+            parent_document_id: editorKind === 'DOCUMENT' ? parentDocumentId || null : null,
+          }, newIdempotencyKey('governance-document-create')),
         editorKind === 'TEMPLATE'
           ? '거버넌스 문서 Template을 생성했습니다.'
           : '거버넌스 문서를 생성했습니다.',
       )
-      if (saved) setEditorMode(undefined)
+      if (saved && 'item' in saved) {
+        const draft = saved.item.versions.find((version) => version.state === 'DRAFT')
+        setSelectedDocumentId(saved.item.document.document_id)
+        if (editorAttachmentFile && draft) {
+          await execute(
+            () => api.uploadAttachment(
+              saved.item.document.document_id,
+              draft.version_id,
+              saved.item.document.version,
+              editorAttachmentFile,
+              newIdempotencyKey('governance-document-attachment'),
+            ),
+            '문서와 별첨을 각각 불변 Object로 저장했습니다.',
+          )
+        }
+        setEditorMode(undefined)
+      }
       return
     }
     if (
@@ -399,6 +452,7 @@ function GovernanceDocumentWorkspace({
           importFile,
           title.trim(),
           applicabilityScope.trim(),
+          parentDocumentId || null,
           newIdempotencyKey('governance-document-import'),
         )
         : api.createVersion(
@@ -408,12 +462,28 @@ function GovernanceDocumentWorkspace({
             title: title.trim(),
             applicability_scope: applicabilityScope.trim(),
             sanitized_html: editorHtml.current,
+            parent_document_id: parentDocumentId || null,
           },
           newIdempotencyKey('governance-document-version'),
         ),
       '새 immutable 문서 버전을 저장했습니다.',
     )
     if (saved) {
+      if ('item' in saved) {
+        const draft = saved.item.versions.find((version) => version.state === 'DRAFT')
+        if (editorAttachmentFile && draft) {
+          await execute(
+            () => api.uploadAttachment(
+              saved.item.document.document_id,
+              draft.version_id,
+              saved.item.document.version,
+              editorAttachmentFile,
+              newIdempotencyKey('governance-document-attachment'),
+            ),
+            '새 immutable 버전과 별첨을 저장했습니다.',
+          )
+        }
+      }
       setEditorMode(undefined)
       setSelectedVersionId(undefined)
     }
@@ -433,7 +503,7 @@ function GovernanceDocumentWorkspace({
         currentDetail.document.version,
         newIdempotencyKey('governance-document-submit'),
       ),
-      '선택 버전을 검토 요청했습니다.',
+      '선택 버전을 결재 상신했습니다.',
     )
   }
   const review = async () => {
@@ -549,7 +619,7 @@ function GovernanceDocumentWorkspace({
     <header className="governance-documents-header">
       <div>
         <span className="eyebrow">Immutable document versions</span>
-        <h2>문서 라이브러리</h2>
+        <h2>문서 관리</h2>
         <p>권한이 허용한 문서·버전만 조회하며, Archive는 객체나 버전을 물리 삭제하지 않습니다.</p>
       </div>
       <div className="action-row">
@@ -674,14 +744,26 @@ function GovernanceDocumentWorkspace({
         && template.current_published_version_id
         && template.allowed_actions.includes('instantiate_template')
       ))}
-      blueprints={blueprints.data?.items ?? []}
+      blueprints={(blueprints.data?.items ?? []).filter((blueprint) => (
+        blueprint.purpose === (
+          editorKind === 'TEMPLATE' ? 'TEMPLATE' : 'STARTER_DOCUMENT'
+        )
+      ))}
       blueprintId={blueprintId}
       templateVersionId={templateVersionId}
       initialHtml={editorInitialHtml}
       editorKey={`${editorMode ?? 'closed'}:${selectedVersionId ?? (blueprintId || 'blank')}`}
       importFile={importFile}
+      attachmentFile={editorAttachmentFile}
+      parentDocumentId={parentDocumentId}
+      parentDocuments={(parentCandidates.data?.items ?? []).filter((item) => (
+        item.kind === 'DOCUMENT'
+        && item.state !== 'ARCHIVED'
+        && item.document_id !== currentDetail?.document.document_id
+      ))}
       maximumHtmlBytes={capability.limits.max_html_bytes}
       maximumImportBytes={capability.limits.max_attachment_bytes}
+      attachmentAvailable={axis('artifact_storage')?.state === 'AVAILABLE'}
       busy={busy}
       error={mutationError}
       onTitle={setTitle}
@@ -693,12 +775,17 @@ function GovernanceDocumentWorkspace({
       }}
       onClassification={setClassification}
       onApplicabilityScope={setApplicabilityScope}
-      onTemplateVersion={setTemplateVersionId}
+      onParentDocument={setParentDocumentId}
+      onTemplateVersion={(value) => {
+        setTemplateVersionId(value)
+        setBlueprintId('')
+      }}
       onBlueprint={applyBlueprint}
       onHtmlChange={useCallback((value: string) => {
         editorHtml.current = value
       }, [])}
       onImportFile={setImportFile}
+      onAttachmentFile={setEditorAttachmentFile}
       onSubmit={() => void saveEditor()}
       onClose={() => {
         if (!busy) setEditorMode(undefined)
@@ -832,14 +919,18 @@ function DocumentDetailDialog({
         <div><dt>서버 변경 조건</dt><dd>{detailEtag ? 'ETag 확인됨' : 'ETag 없음 · 변경 잠김'}</dd></div>
         <div><dt>분류</dt><dd>{classificationLabel(detail.document.classification)}</dd></div>
         <div><dt>소유자</dt><dd>{shortId(detail.document.owner_subject_id)}</dd></div>
+        <div><dt>생성일</dt><dd>{dateTime(detail.document.created_at)}</dd></div>
+        <div><dt>수정일</dt><dd>{dateTime(detail.document.updated_at)}</dd></div>
+        <div><dt>상위 문서</dt><dd>{detail.parent_document?.title ?? '—'}</dd></div>
+        <div><dt>하위 문서</dt><dd>{detail.child_documents.map((item) => item.title).join(', ') || '—'}</dd></div>
       </dl>
       <div className="action-row">
         {canCreateVersion && detailEtag && <button type="button" className="button" disabled={busy || !selectedVersion} onClick={onCreateVersion}>수정</button>}
-        {canSubmit && detailEtag && selectedVersion?.state === 'DRAFT' && <button type="button" className="button" disabled={busy} onClick={onSubmit}>검토 요청</button>}
+        {canSubmit && detailEtag && selectedVersion?.state === 'DRAFT' && <button type="button" className="button" disabled={busy} onClick={onSubmit}>결재 상신</button>}
         {canReview && canPublish && detailEtag && selectedVersion?.state === 'IN_REVIEW' && <button type="button" className="button" disabled={busy} onClick={() => onReview('APPROVE')}>승인·게시</button>}
         {canReview && detailEtag && selectedVersion?.state === 'IN_REVIEW' && <button type="button" className="button button-secondary" disabled={busy} onClick={() => onReview('REJECT')}>반려</button>}
         {canInstantiate && detail.document.kind === 'TEMPLATE' && selectedVersion?.state === 'PUBLISHED' && <button type="button" className="button button-secondary" disabled={busy} onClick={onInstantiate}>이 템플릿으로 문서 생성</button>}
-        {canArchive && detailEtag && <button type="button" className="button button-danger" disabled={busy || detail.document.state === 'ARCHIVED'} onClick={onArchive}>Archive</button>}
+        {canArchive && detailEtag && <button type="button" className="button button-danger" disabled={busy || detail.document.state === 'ARCHIVED'} onClick={onArchive}>삭제(Archive)</button>}
       </div>
       <div className="governance-document-detail-grid">
         <section className="governance-version-list" aria-labelledby="governance-version-list-title">
@@ -857,6 +948,7 @@ function DocumentDetailDialog({
                 <DocumentStatus value={version.state} />
                 <span>{version.source_format}</span>
                 <small>{dateTime(version.created_at)}</small>
+                <small>수정자 {shortId(version.author_id)}</small>
                 <small>Object {version.artifact_state} · Knowledge {version.knowledge_state}</small>
               </button>
             </li>)}</ul>}
@@ -867,11 +959,23 @@ function DocumentDetailDialog({
             {selectedVersion && <span>{formatBytes(selectedVersion.size_bytes)} · {selectedVersion.sanitizer_policy_version}</span>}
           </header>
           {!selectedVersion && <p role="status">표시할 버전을 선택하세요.</p>}
-          {selectedVersion && <SafeGovernanceHtml
-            html={selectedVersion.sanitized_html}
-            contentHash={selectedVersion.content_sha256}
-            sanitizerPolicyVersion={`${selectedVersion.sanitizer_policy_version}:${selectedVersion.sanitizer_policy_sha256}`}
-          />}
+          {selectedVersion && <>
+            <dl className="governance-document-meta governance-version-meta">
+              <div><dt>버전 수정자</dt><dd>{shortId(selectedVersion.author_id)}</dd></div>
+              <div><dt>버전 생성일</dt><dd>{dateTime(selectedVersion.created_at)}</dd></div>
+              <div><dt>결재 상태</dt><dd>{selectedVersion.state}</dd></div>
+              <div><dt>결재 상신일</dt><dd>{selectedVersion.submitted_at ? dateTime(selectedVersion.submitted_at) : '—'}</dd></div>
+              <div><dt>결재자</dt><dd>{selectedVersion.reviewed_by ? shortId(selectedVersion.reviewed_by) : '—'}</dd></div>
+              <div><dt>결재일</dt><dd>{selectedVersion.reviewed_at ? dateTime(selectedVersion.reviewed_at) : '—'}</dd></div>
+              <div><dt>적용 범위</dt><dd>{selectedVersion.applicability_scope || '—'}</dd></div>
+              <div><dt>상위 문서 연결</dt><dd>{selectedVersion.parent_document_id ? shortId(selectedVersion.parent_document_id) : '—'}</dd></div>
+            </dl>
+            <SafeGovernanceHtml
+              html={selectedVersion.sanitized_html}
+              contentHash={selectedVersion.content_sha256}
+              sanitizerPolicyVersion={`${selectedVersion.sanitizer_policy_version}:${selectedVersion.sanitizer_policy_sha256}`}
+            />
+          </>}
         </section>
       </div>
       <section className="governance-document-attachments" aria-labelledby="governance-document-attachments-title">
@@ -880,6 +984,8 @@ function DocumentDetailDialog({
           ? <p role="status">등록된 첨부파일이 없습니다.</p>
           : <ul>{attachments.map((attachment) => <li key={attachment.attachment_id}>
             <strong>{attachment.original_name}</strong>
+            <span>별첨 #{String(attachment.serial_number).padStart(3, '0')}</span>
+            <span>{attachment.storage_filename ?? 'legacy object name'}</span>
             <span>{attachment.content_type}</span>
             <span>{formatBytes(attachment.size_bytes)}</span>
             <span>{dateTime(attachment.created_at)}</span>
@@ -928,8 +1034,12 @@ function EditorDialog({
   initialHtml,
   editorKey,
   importFile,
+  attachmentFile,
+  parentDocumentId,
+  parentDocuments,
   maximumHtmlBytes,
   maximumImportBytes,
+  attachmentAvailable,
   busy,
   error,
   onTitle,
@@ -937,10 +1047,12 @@ function EditorDialog({
   onCategory,
   onClassification,
   onApplicabilityScope,
+  onParentDocument,
   onTemplateVersion,
   onBlueprint,
   onHtmlChange,
   onImportFile,
+  onAttachmentFile,
   onSubmit,
   onClose,
 }: {
@@ -958,8 +1070,12 @@ function EditorDialog({
   initialHtml: string
   editorKey: string
   importFile?: File
+  attachmentFile?: File
+  parentDocumentId: string
+  parentDocuments: GovernanceDocumentSummary[]
   maximumHtmlBytes: number
   maximumImportBytes: number
+  attachmentAvailable: boolean
   busy: boolean
   error: unknown
   onTitle: (value: string) => void
@@ -967,10 +1083,12 @@ function EditorDialog({
   onCategory: (value: GovernanceDocumentCategory) => void
   onClassification: (value: number) => void
   onApplicabilityScope: (value: string) => void
+  onParentDocument: (value: string) => void
   onTemplateVersion: (value: string) => void
   onBlueprint: (value: string) => void
   onHtmlChange: (value: string) => void
   onImportFile: (file?: File) => void
+  onAttachmentFile: (file?: File) => void
   onSubmit: () => void
   onClose: () => void
 }) {
@@ -978,9 +1096,11 @@ function EditorDialog({
   useEffect(() => setHtmlBytes(utf8Bytes(initialHtml)), [initialHtml, mode])
   const importValid = !importFile
     || (importFile.size <= maximumImportBytes && supportedImport(importFile))
+  const attachmentValid = !attachmentFile || attachmentFile.size <= maximumImportBytes
   const createValid = Boolean(
     title.trim()
     && importValid
+    && attachmentValid
     && (
       templateVersionId
       || importFile
@@ -1008,21 +1128,25 @@ function EditorDialog({
         <label>분류<select value={classification} disabled={busy} onChange={(event) => onClassification(Number(event.target.value))}><option value={0}>PUBLIC</option><option value={1}>INTERNAL</option><option value={2}>CONFIDENTIAL</option><option value={3}>RESTRICTED</option></select></label>
         <label>요약<textarea maxLength={2000} value={summary} disabled={busy} onChange={(event) => onSummary(event.target.value)} /></label>
         {kind === 'TEMPLATE' && <label>기본 양식<select value={blueprintId} disabled={busy} onChange={(event) => onBlueprint(event.target.value)}><option value="">빈 템플릿</option>{blueprints.map((blueprint) => <option key={blueprint.blueprint_id} value={blueprint.blueprint_id}>{categoryLabel(blueprint.category)} · {blueprint.title}</option>)}</select></label>}
-        {kind === 'DOCUMENT' && <label>템플릿 선택<select value={templateVersionId} disabled={busy} onChange={(event) => onTemplateVersion(event.target.value)}><option value="">빈 문서</option>{templates.map((template) => <option key={template.document_id} value={template.current_published_version_id ?? ''}>{template.title} · v{template.current_version_number}</option>)}</select></label>}
+        {kind === 'DOCUMENT' && <>
+          <label>기본 관리 문서<select value={blueprintId} disabled={busy} onChange={(event) => onBlueprint(event.target.value)}><option value="">빈 문서</option>{blueprints.map((blueprint) => <option key={blueprint.blueprint_id} value={blueprint.blueprint_id}>{blueprint.title}</option>)}</select></label>
+          <label>게시 템플릿 선택<select value={templateVersionId} disabled={busy} onChange={(event) => onTemplateVersion(event.target.value)}><option value="">사용하지 않음</option>{templates.map((template) => <option key={template.document_id} value={template.current_published_version_id ?? ''}>{template.title} · v{template.current_version_number}</option>)}</select></label>
+        </>}
       </>}
+      {kind === 'DOCUMENT' && <label>상위 문서<select value={parentDocumentId} disabled={busy} onChange={(event) => onParentDocument(event.target.value)}><option value="">상위 문서 없음</option>{parentDocuments.map((parent) => <option key={parent.document_id} value={parent.document_id}>{parent.title}</option>)}</select></label>}
       <label>적용 범위<textarea maxLength={4000} value={applicabilityScope} disabled={busy} onChange={(event) => onApplicabilityScope(event.target.value)} />
         <small>지식그래프 연결이 필요하면 `dataset:참조` 또는 `term:용어`를 쉼표·줄바꿈으로 선언하세요. 본문에서는 `[[Dataset:참조]]`, `[[Term:용어]]`를 사용할 수 있습니다.</small>
       </label>
-      {mode === 'CREATE_VERSION' && <label>HTML·Markdown·Word 가져오기
+      <label>HTML·Markdown·Word 가져오기
         <input
           type="file"
           accept=".html,text/html,.md,text/markdown,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
           disabled={busy}
           onChange={(event) => onImportFile(event.target.files?.[0])}
         />
-      </label>}
+      </label>
     </div>
-    {mode === 'CREATE_VERSION' && <small>파일을 선택하면 편집기 대신 서버 import·sanitize 경계를 사용합니다. 클라이언트 사전 제한 {formatBytes(maximumImportBytes)}</small>}
+    <small>파일을 선택하면 편집기 대신 서버 import·sanitize 경계를 사용합니다. 클라이언트 사전 제한 {formatBytes(maximumImportBytes)}</small>
     {importFile && !supportedImport(importFile) && <p role="alert">HTML, Markdown 또는 DOCX 파일만 가져올 수 있습니다.</p>}
     {importFile && importFile.size > maximumImportBytes && <p role="alert">선택한 파일이 서버의 가져오기 허용 크기를 초과합니다.</p>}
     {!templateVersionId && !importFile && <GovernanceHtmlEditor
@@ -1036,6 +1160,18 @@ function EditorDialog({
     />}
     {htmlBytes > maximumHtmlBytes && !templateVersionId && !importFile && <p role="alert">편집한 HTML이 서버 허용 크기를 초과합니다.</p>}
     {templateVersionId && <p className="callout">선택한 exact Template version을 서버가 복제합니다. 브라우저는 Template HTML을 재작성하지 않습니다.</p>}
+    {kind === 'DOCUMENT' && <section className="governance-editor-attachment" aria-labelledby="governance-editor-attachment-title">
+      <h3 id="governance-editor-attachment-title">별첨 등록</h3>
+      <p>본문 Object와 구분해 `ref_governance_*` 이름의 별도 불변 Object로 저장합니다.</p>
+      <label>별첨 파일<input
+        type="file"
+        disabled={busy || !attachmentAvailable}
+        onChange={(event) => onAttachmentFile(event.target.files?.[0])}
+      /></label>
+      {!attachmentAvailable && <small>현재 Object Storage capability가 준비되지 않아 별첨을 선택할 수 없습니다.</small>}
+      {attachmentFile && <small>{attachmentFile.name} · {formatBytes(attachmentFile.size)}</small>}
+      {attachmentFile && !attachmentValid && <p role="alert">선택한 별첨이 서버 허용 크기를 초과합니다.</p>}
+    </section>}
   </Dialog>
 }
 
@@ -1095,17 +1231,17 @@ function ArchiveDialog({
 }) {
   return <Dialog
     open={open}
-    title="거버넌스 문서 Archive"
-    description="활성 상태만 변경합니다. 기존 버전과 Object Storage 객체는 덮어쓰거나 물리 삭제하지 않습니다."
+    title="거버넌스 문서 삭제(Archive)"
+    description="목록의 활성 상태만 종료합니다. 감사·복구를 위해 기존 버전과 Object Storage 객체는 물리 삭제하지 않습니다."
     onRequestClose={onClose}
     footer={<>
       <button type="button" className="button button-secondary" disabled={busy} onClick={onClose}>취소</button>
-      <button type="button" className="button button-danger" disabled={busy || !reason.trim()} onClick={onSubmit}>Archive 확인</button>
+      <button type="button" className="button button-danger" disabled={busy || !reason.trim()} onClick={onSubmit}>삭제(Archive) 확인</button>
     </>}
   >
     {assurance && <AssuranceNotice error={error} {...assurance} />}
     {Boolean(error) && <ErrorNotice error={error} />}
-    <label>Archive 사유<textarea required maxLength={4000} value={reason} disabled={busy} onChange={(event) => onReason(event.target.value)} /></label>
+    <label>삭제(Archive) 사유<textarea required maxLength={4000} value={reason} disabled={busy} onChange={(event) => onReason(event.target.value)} /></label>
   </Dialog>
 }
 

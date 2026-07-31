@@ -19,6 +19,7 @@ from datariver.domain.governance_documents import (
     GovernanceDocumentProjectionClaim,
     GovernanceDocumentReviewDecision,
     GovernanceDocumentSourceFormat,
+    GovernanceDocumentState,
     GovernanceDocumentVersion,
     GovernanceKnowledgeEvidence,
 )
@@ -34,6 +35,7 @@ class GovernanceDocumentRepository(Protocol):
         subject: SubjectAttributes,
         kind: GovernanceDocumentKind | None,
         category: GovernanceDocumentCategory | None,
+        state: GovernanceDocumentState | None,
         include_archived: bool,
         query: str | None,
         limit: int,
@@ -56,6 +58,15 @@ class GovernanceDocumentRepository(Protocol):
         subject: SubjectAttributes,
     ) -> GovernanceDocumentVersion | None: ...
 
+    async def validate_parent_document(
+        self,
+        *,
+        workspace_id: UUID,
+        document_id: UUID | None,
+        parent_document_id: UUID | None,
+        subject: SubjectAttributes,
+    ) -> None: ...
+
     async def create_document(
         self,
         *,
@@ -76,6 +87,7 @@ class GovernanceDocumentRepository(Protocol):
         sanitizer_policy_sha256: str,
         source_format: GovernanceDocumentSourceFormat,
         source_template_version_id: UUID | None,
+        parent_document_id: UUID | None,
         policy_decision_id: UUID,
         request_id: str,
     ) -> GovernanceDocumentDetail: ...
@@ -99,6 +111,7 @@ class GovernanceDocumentRepository(Protocol):
         sanitizer_policy_sha256: str,
         source_format: GovernanceDocumentSourceFormat,
         source_template_version_id: UUID | None,
+        parent_document_id: UUID | None,
         policy_decision_id: UUID,
         request_id: str,
     ) -> GovernanceDocumentDetail: ...
@@ -159,6 +172,8 @@ class GovernanceDocumentRepository(Protocol):
         expected_version: int,
         idempotency_key: str,
         request_hash: str,
+        serial_number: int,
+        storage_filename: str,
         original_name: str,
         content_type: str,
         content_sha256: str,

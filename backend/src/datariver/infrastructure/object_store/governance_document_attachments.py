@@ -79,6 +79,7 @@ class S3GovernanceDocumentAttachmentStore:
             document_id=write.document_id,
             version_id=write.version_id,
             attachment_id=write.attachment_id,
+            storage_filename=write.storage_filename,
         )
         digest = write.content_sha256
         provider_checksum = base64.b64encode(bytes.fromhex(digest)).decode("ascii")
@@ -88,6 +89,8 @@ class S3GovernanceDocumentAttachmentStore:
             "document-id": str(write.document_id),
             "document-version-id": str(write.version_id),
             "attachment-id": str(write.attachment_id),
+            "storage-filename-contract": "ref-governance-v1",
+            "attachment-serial": str(write.serial_number),
             "classification": write.classification,
             "content-sha256": digest,
             "size-bytes": str(len(write.content)),
@@ -165,6 +168,7 @@ class S3GovernanceDocumentAttachmentStore:
             document_id=source.attachment.document_id,
             version_id=source.attachment.document_version_id,
             attachment_id=source.attachment.attachment_id,
+            storage_filename=source.attachment.storage_filename,
         )
         if source.object_key != expected_key:
             raise GovernanceDocumentAttachmentExternalError(

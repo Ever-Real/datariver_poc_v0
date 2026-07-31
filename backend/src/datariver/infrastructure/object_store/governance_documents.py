@@ -66,12 +66,16 @@ class S3GovernanceDocumentArtifactStore:
             workspace_id=write.workspace_id,
             document_id=write.document_id,
             version_id=write.version_id,
+            document_title=write.document_title,
+            registered_at=write.registered_at,
+            version_number=write.version_number,
         )
         common_metadata = {
             "contract": "governance-document-artifact-v1",
             "workspace-id": str(write.workspace_id),
             "document-id": str(write.document_id),
             "document-version-id": str(write.version_id),
+            "storage-filename-contract": "doc-governance-v1",
             "document-version-number": str(write.version_number),
             "document-version-tag": write.version_tag,
             "sanitizer-policy-version": write.sanitizer_policy_version,

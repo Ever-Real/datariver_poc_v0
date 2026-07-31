@@ -3,10 +3,14 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
 from datariver.application.errors import ExternalDependencyError
+from datariver.application.governance_document_storage_names import (
+    governance_document_attachment_filename,
+)
 from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.governance_documents import (
     MAXIMUM_ATTACHMENT_BYTES,
@@ -23,14 +27,26 @@ def governance_document_attachment_key(
     document_id: UUID,
     version_id: UUID,
     attachment_id: UUID,
+    storage_filename: str | None = None,
 ) -> str:
     identifiers = (workspace_id, document_id, version_id, attachment_id)
     if any(not isinstance(identifier, UUID) or identifier.int == 0 for identifier in identifiers):
         raise ValueError("Governance document attachment identities must be non-zero UUID values.")
-    return (
+    prefix = (
         "governance/documents/v1/"
         f"{workspace_id}/{document_id}/{version_id}/attachments/{attachment_id}"
     )
+    if storage_filename is None:
+        return prefix
+    if (
+        not storage_filename
+        or len(storage_filename) > 255
+        or "/" in storage_filename
+        or "\\" in storage_filename
+        or storage_filename in {".", ".."}
+    ):
+        raise ValidationError("Governance document attachment storage filename is invalid.")
+    return f"{prefix}/{storage_filename}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,15 +55,26 @@ class GovernanceDocumentAttachmentWrite:
     document_id: UUID
     version_id: UUID
     attachment_id: UUID
+    document_title: str
+    registered_at: datetime
+    serial_number: int
+    original_name: str
     classification: str
     content: bytes
 
     def __post_init__(self) -> None:
+        storage_filename = governance_document_attachment_filename(
+            title=self.document_title,
+            registered_at=self.registered_at,
+            serial_number=self.serial_number,
+            original_name=self.original_name,
+        )
         governance_document_attachment_key(
             workspace_id=self.workspace_id,
             document_id=self.document_id,
             version_id=self.version_id,
             attachment_id=self.attachment_id,
+            storage_filename=storage_filename,
         )
         if _CLASSIFICATION_PATTERN.fullmatch(self.classification) is None:
             raise ValidationError("Governance document attachment classification is invalid.")
@@ -57,6 +84,15 @@ class GovernanceDocumentAttachmentWrite:
     @property
     def content_sha256(self) -> str:
         return hashlib.sha256(self.content).hexdigest()
+
+    @property
+    def storage_filename(self) -> str:
+        return governance_document_attachment_filename(
+            title=self.document_title,
+            registered_at=self.registered_at,
+            serial_number=self.serial_number,
+            original_name=self.original_name,
+        )
 
 
 @dataclass(frozen=True, slots=True)

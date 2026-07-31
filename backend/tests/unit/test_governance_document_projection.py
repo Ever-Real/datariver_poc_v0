@@ -155,6 +155,7 @@ def _claim() -> GovernanceDocumentProjectionClaim:
             sanitizer_policy_sha256="c" * 64,
             source_format=GovernanceDocumentSourceFormat.HTML,
             source_template_version_id=None,
+            parent_document_id=None,
             author_id=uuid4(),
             submitted_at=NOW,
             reviewed_by=uuid4(),

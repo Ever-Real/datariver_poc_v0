@@ -83,6 +83,7 @@ describe('GovernanceDocumentsApi', () => {
       file,
       '개인정보 처리 정책',
       '전사 개인정보 처리',
+      null,
       'governance-import-key',
     )
 
@@ -120,6 +121,7 @@ describe('GovernanceDocumentsApi', () => {
       applicability_scope: '전사',
       sanitized_html: '<p>정책</p>',
       source_template_version_id: null,
+      parent_document_id: null,
     }, 'governance-create-key')
 
     expect(calls[0]?.[0]).toBe('/governance/documents')
@@ -129,11 +131,14 @@ describe('GovernanceDocumentsApi', () => {
 
   it('loads the controlled policy, terminology and security template blueprints', async () => {
     const request = vi.fn().mockResolvedValue({
-      contract_version: 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V1',
+      contract_version: 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V2',
       items: [
-        blueprint('policy-v1', 'POLICY'),
-        blueprint('standard-terminology-v1', 'STANDARD_TERMINOLOGY'),
-        blueprint('security-guide-v1', 'SECURITY_GUIDE'),
+        blueprint('policy-v1', 'POLICY', 'TEMPLATE', '정책 문서 기본 양식'),
+        blueprint('standard-terminology-v1', 'STANDARD_TERMINOLOGY', 'TEMPLATE', '표준어 사전 기본 양식'),
+        blueprint('security-guide-v1', 'SECURITY_GUIDE', 'TEMPLATE', '보안 가이드 기본 양식'),
+        blueprint('starter-classification-v1', 'POLICY', 'STARTER_DOCUMENT', '데이터 분류·접근 정책'),
+        blueprint('starter-retention-v1', 'POLICY', 'STARTER_DOCUMENT', '보존·파기 정책'),
+        blueprint('starter-legal-hold-v1', 'POLICY', 'STARTER_DOCUMENT', 'Legal Hold 관리'),
       ],
     })
     const api = new GovernanceDocumentsApi({
@@ -143,7 +148,7 @@ describe('GovernanceDocumentsApi', () => {
 
     const value = await api.templateBlueprints()
 
-    expect(value.items).toHaveLength(3)
+    expect(value.items).toHaveLength(6)
     expect(request).toHaveBeenCalledWith(
       '/governance/documents/template-blueprints',
       expect.objectContaining({ cache: 'no-store' }),
@@ -181,6 +186,44 @@ describe('GovernanceDocumentsApi', () => {
     )
     expect(String(request.mock.calls[0]?.[0])).not.toContain('datariver-filefolder')
   })
+
+  it('exports one exact version without requesting storage coordinates', async () => {
+    const request = vi.fn().mockResolvedValue({
+      contract_version: 'GOVERNANCE_DOCUMENT_EXPORT_V1',
+      exported_at: now,
+      document: { document_id: 'document-one' },
+      selected_version: {
+        document_id: 'document-one',
+        version_id: 'version-one',
+      },
+      version_history: [],
+      reviews: [],
+      attachments: [],
+      parent_document: null,
+      child_documents: [],
+      cache_scope: cacheScope,
+      observed_at: now,
+      authorization_valid_until: validUntil,
+    })
+    const api = new GovernanceDocumentsApi({
+      request,
+      requestWithMeta: vi.fn(),
+    })
+
+    const value = await api.exportDocument(
+      'document-one',
+      cacheScope,
+      'version-one',
+    )
+
+    expect(value.contract_version).toBe('GOVERNANCE_DOCUMENT_EXPORT_V1')
+    expect(request).toHaveBeenCalledWith(
+      '/governance/documents/document-one/export?version_id=version-one',
+      expect.objectContaining({ cache: 'no-store' }),
+    )
+    expect(String(request.mock.calls[0]?.[0])).not.toContain('bucket')
+    expect(String(request.mock.calls[0]?.[0])).not.toContain('object_key')
+  })
 })
 
 function command() {
@@ -193,6 +236,8 @@ function command() {
       versions: [],
       reviews: [],
       attachments: [],
+      parent_document: null,
+      child_documents: [],
     },
   }
 }
@@ -204,12 +249,15 @@ const cacheScope = 'a'.repeat(64)
 function blueprint(
   blueprintId: string,
   category: 'POLICY' | 'STANDARD_TERMINOLOGY' | 'SECURITY_GUIDE',
+  purpose: 'STARTER_DOCUMENT' | 'TEMPLATE',
+  title: string,
 ) {
   return {
     blueprint_id: blueprintId,
-    blueprint_version: 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V1',
+    blueprint_version: 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V2',
+    purpose,
     category,
-    title: blueprintId,
+    title,
     summary: '통제된 기본 양식',
     applicability_scope: '전사',
     sanitized_html: '<h1>양식</h1>',

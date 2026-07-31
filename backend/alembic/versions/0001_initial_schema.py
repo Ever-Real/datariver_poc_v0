@@ -1705,6 +1705,7 @@ def upgrade() -> None:
         sa.Column('sanitizer_policy_sha256', sa.String(length=64), nullable=False),
         sa.Column('source_format', sa.String(length=16), nullable=False),
         sa.Column('source_template_version_id', sa.Uuid(), nullable=True),
+        sa.Column('parent_document_id', sa.Uuid(), nullable=True),
         sa.Column('author_id', sa.Uuid(), nullable=False),
         sa.Column('submitted_at', sa.DateTime(timezone=True), nullable=True),
         sa.Column('reviewed_by', sa.Uuid(), nullable=True),
@@ -1732,11 +1733,13 @@ def upgrade() -> None:
         sa.CheckConstraint('char_length(applicability_scope) <= 4000', name=op.f('ck_document_versions_applicability_scope_length')),
         sa.CheckConstraint('char_length(summary) <= 2000', name=op.f('ck_document_versions_summary_length')),
         sa.CheckConstraint('char_length(title) BETWEEN 1 AND 500', name=op.f('ck_document_versions_title_length')),
+        sa.CheckConstraint('parent_document_id IS NULL OR parent_document_id <> document_id', name=op.f('ck_document_versions_parent_document_distinct')),
         sa.CheckConstraint('reviewed_by IS NULL OR reviewed_by <> author_id', name=op.f('ck_document_versions_maker_checker_distinct')),
         sa.CheckConstraint('size_bytes BETWEEN 1 AND 1048576', name=op.f('ck_document_versions_size_bytes_range')),
         sa.CheckConstraint('version_number > 0', name=op.f('ck_document_versions_version_number_positive')),
         sa.ForeignKeyConstraint(['workspace_id', 'author_id'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_governance_document_versions_author', ondelete='RESTRICT'),
         sa.ForeignKeyConstraint(['workspace_id', 'document_id'], ['governance.documents.workspace_id', 'governance.documents.id'], name='fk_governance_document_versions_document', ondelete='RESTRICT'),
+        sa.ForeignKeyConstraint(['workspace_id', 'parent_document_id'], ['governance.documents.workspace_id', 'governance.documents.id'], name='fk_governance_document_versions_parent', ondelete='RESTRICT', use_alter=True),
         sa.ForeignKeyConstraint(['workspace_id', 'reviewed_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_governance_document_versions_reviewer', ondelete='RESTRICT'),
         sa.ForeignKeyConstraint(['workspace_id', 'source_template_version_id'], ['governance.document_versions.workspace_id', 'governance.document_versions.id'], name='fk_governance_document_versions_template', ondelete='RESTRICT', use_alter=True),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_document_versions')),
@@ -1746,6 +1749,7 @@ def upgrade() -> None:
         schema='governance'
         )
         op.create_index('ix_governance_document_versions_history', 'document_versions', ['workspace_id', 'document_id', sa.literal_column('version_number DESC'), sa.literal_column('id DESC')], unique=False, schema='governance')
+        op.create_index('ix_governance_document_versions_parent', 'document_versions', ['workspace_id', 'parent_document_id', 'state'], unique=False, schema='governance', postgresql_where=sa.text('parent_document_id IS NOT NULL'))
         op.create_index('ix_governance_document_versions_projection', 'document_versions', ['knowledge_state', 'next_attempt_at', 'lease_until', 'id'], unique=False, schema='governance', postgresql_where=sa.text("state = 'PUBLISHED' AND knowledge_state IN ('PENDING','FAILED')"))
         op.create_index('uq_governance_document_versions_live_candidate', 'document_versions', ['workspace_id', 'document_id'], unique=True, schema='governance', postgresql_where=sa.text("state IN ('DRAFT','IN_REVIEW')"))
         op.create_table('manual_metadata_apply_attempts',
@@ -2393,6 +2397,8 @@ def upgrade() -> None:
         sa.Column('workspace_id', sa.Uuid(), nullable=False),
         sa.Column('document_id', sa.Uuid(), nullable=False),
         sa.Column('document_version_id', sa.Uuid(), nullable=False),
+        sa.Column('serial_number', sa.Integer(), nullable=False),
+        sa.Column('storage_filename', sa.String(length=255), nullable=True),
         sa.Column('original_name', sa.String(length=500), nullable=False),
         sa.Column('content_type', sa.String(length=255), nullable=False),
         sa.Column('size_bytes', sa.Integer(), nullable=False),
@@ -2405,12 +2411,14 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('id', sa.Uuid(), nullable=False),
         sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_document_attachments_content_sha256_valid')),
+        sa.CheckConstraint('serial_number BETWEEN 1 AND 25', name=op.f('ck_document_attachments_serial_number_range')),
         sa.CheckConstraint('size_bytes BETWEEN 1 AND 26214400', name=op.f('ck_document_attachments_size_bytes_range')),
         sa.ForeignKeyConstraint(['workspace_id', 'document_id'], ['governance.documents.workspace_id', 'governance.documents.id'], name='fk_governance_document_attachments_document', ondelete='RESTRICT'),
         sa.ForeignKeyConstraint(['workspace_id', 'document_version_id'], ['governance.document_versions.workspace_id', 'governance.document_versions.id'], name='fk_governance_document_attachments_version', ondelete='RESTRICT'),
         sa.ForeignKeyConstraint(['workspace_id', 'uploaded_by'], ['iam.workspace_memberships.workspace_id', 'iam.workspace_memberships.subject_id'], name='fk_governance_document_attachments_uploader', ondelete='RESTRICT'),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_document_attachments')),
         sa.UniqueConstraint('bucket', 'object_key', 'provider_version_id', name='uq_governance_document_attachments_object'),
+        sa.UniqueConstraint('workspace_id', 'document_version_id', 'serial_number', name='uq_governance_document_attachments_serial'),
         sa.UniqueConstraint('workspace_id', 'id', name='uq_governance_document_attachments_workspace_id'),
         schema='governance'
         )
@@ -4848,6 +4856,7 @@ def upgrade() -> None:
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_base_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'base_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_changesets_workspace_id_graph_id_published_release_id_releases'), 'changesets', 'releases', ['workspace_id', 'graph_id', 'published_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
         op.create_foreign_key(op.f('fk_changesets_workspace_id_source_analysis_job_id_source_analysis_jobs'), 'changesets', 'source_analysis_jobs', ['workspace_id', 'source_analysis_job_id'], ['workspace_id', 'id'], source_schema='knowledge', referent_schema='knowledge', ondelete='RESTRICT', use_alter=True)
+        op.create_foreign_key('fk_governance_document_versions_parent', 'document_versions', 'documents', ['workspace_id', 'parent_document_id'], ['workspace_id', 'id'], source_schema='governance', referent_schema='governance', ondelete='RESTRICT', use_alter=True)
         op.create_foreign_key('fk_governance_document_versions_template', 'document_versions', 'document_versions', ['workspace_id', 'source_template_version_id'], ['workspace_id', 'id'], source_schema='governance', referent_schema='governance', ondelete='RESTRICT', use_alter=True)
         op.create_foreign_key('fk_governance_documents_current_version', 'documents', 'document_versions', ['workspace_id', 'current_published_version_id'], ['workspace_id', 'id'], source_schema='governance', referent_schema='governance', ondelete='RESTRICT', initially='DEFERRED', deferrable=True, use_alter=True)
         op.create_foreign_key(op.f('fk_graphs_workspace_id_id_active_release_id_releases'), 'graphs', 'releases', ['workspace_id', 'id', 'active_release_id'], ['workspace_id', 'graph_id', 'id'], source_schema='knowledge', referent_schema='knowledge', use_alter=True)
@@ -5119,10 +5128,12 @@ def upgrade() -> None:
         op.execute('GRANT SELECT, INSERT ON governance.document_artifact_receipts\nTO datariver_governance_document;')
         op.execute('GRANT SELECT, INSERT ON governance.document_knowledge_chunks\nTO datariver_governance_document;')
         op.execute('GRANT SELECT, INSERT ON governance.document_projection_receipts\nTO datariver_governance_document;')
+        op.execute("CREATE OR REPLACE FUNCTION governance.reject_document_parent_mutation_v1()\nRETURNS trigger\nLANGUAGE plpgsql\nAS $$\nBEGIN\n    IF NEW.parent_document_id IS DISTINCT FROM OLD.parent_document_id THEN\n        RAISE EXCEPTION\n            'Governance Document version hierarchy is immutable'\n            USING ERRCODE = '55000';\n    END IF;\n    RETURN NEW;\nEND\n$$;")
+        op.execute('CREATE TRIGGER reject_document_parent_mutation\nBEFORE UPDATE ON governance.document_versions\nFOR EACH ROW\nEXECUTE FUNCTION governance.reject_document_parent_mutation_v1();')
 
 
 def downgrade() -> None:
-        op.execute('DROP FUNCTION governance.can_read_document_v1(uuid), governance.can_act_on_document_v1(uuid,text,text), governance.current_human_can_document_v1(uuid,text,integer,uuid,uuid), governance.enforce_document_mutation_v1(), governance.enforce_document_version_mutation_v1(), governance.reject_document_evidence_mutation_v1() CASCADE')
+        op.execute('DROP FUNCTION governance.can_read_document_v1(uuid), governance.can_act_on_document_v1(uuid,text,text), governance.current_human_can_document_v1(uuid,text,integer,uuid,uuid), governance.enforce_document_mutation_v1(), governance.enforce_document_version_mutation_v1(), governance.reject_document_parent_mutation_v1(), governance.reject_document_evidence_mutation_v1() CASCADE')
         op.execute('DROP FUNCTION quality.request_manual_validation_run_v1(uuid, uuid, uuid)')
         op.execute('DROP FUNCTION quality.activate_rule_set_version_command_v2(uuid, uuid, uuid, text, integer)')
         op.execute('DROP FUNCTION quality.review_rule_set_version_command_v2(uuid, uuid, text, text, uuid, integer)')
@@ -5235,6 +5246,7 @@ def downgrade() -> None:
         op.drop_constraint(op.f('fk_graphs_workspace_id_id_active_release_id_releases'), 'graphs', schema='knowledge', type_='foreignkey')
         op.drop_constraint('fk_governance_documents_current_version', 'documents', schema='governance', type_='foreignkey')
         op.drop_constraint('fk_governance_document_versions_template', 'document_versions', schema='governance', type_='foreignkey')
+        op.drop_constraint('fk_governance_document_versions_parent', 'document_versions', schema='governance', type_='foreignkey')
         op.drop_constraint(op.f('fk_changesets_workspace_id_source_analysis_job_id_source_analysis_jobs'), 'changesets', schema='knowledge', type_='foreignkey')
         op.drop_constraint(op.f('fk_changesets_workspace_id_graph_id_published_release_id_releases'), 'changesets', schema='knowledge', type_='foreignkey')
         op.drop_constraint(op.f('fk_changesets_workspace_id_graph_id_base_release_id_releases'), 'changesets', schema='knowledge', type_='foreignkey')

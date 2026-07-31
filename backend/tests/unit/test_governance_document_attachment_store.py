@@ -121,6 +121,10 @@ def _write() -> GovernanceDocumentAttachmentWrite:
         document_id=uuid4(),
         version_id=uuid4(),
         attachment_id=uuid4(),
+        document_title="데이터 분류/접근 정책",
+        registered_at=datetime(2026, 7, 31, tzinfo=UTC),
+        serial_number=1,
+        original_name="승인 증빙.PDF",
         classification="INTERNAL",
         content=b"immutable attachment evidence",
     )
@@ -139,26 +143,28 @@ def _store(client: _VersionedS3Client) -> S3GovernanceDocumentAttachmentStore:
     )
 
 
-def test_attachment_key_contains_only_canonical_uuids_and_no_filename() -> None:
+def test_attachment_key_uses_uuid_isolation_and_a_ref_governance_filename() -> None:
     write = _write()
     key = governance_document_attachment_key(
         workspace_id=write.workspace_id,
         document_id=write.document_id,
         version_id=write.version_id,
         attachment_id=write.attachment_id,
+        storage_filename=write.storage_filename,
     )
 
     assert key == (
         f"governance/documents/v1/{write.workspace_id}/{write.document_id}/"
-        f"{write.version_id}/attachments/{write.attachment_id}"
+        f"{write.version_id}/attachments/{write.attachment_id}/"
+        "ref_governance_데이터_분류_접근_정책_20260731_001.pdf"
     )
-    assert "." not in key.rsplit("/", 1)[-1]
     with pytest.raises(ValueError):
         governance_document_attachment_key(
             workspace_id=UUID(int=0),
             document_id=write.document_id,
             version_id=write.version_id,
             attachment_id=write.attachment_id,
+            storage_filename=write.storage_filename,
         )
 
 
@@ -171,6 +177,10 @@ def test_attachment_payload_is_bounded_to_25_mib() -> None:
             document_id=write.document_id,
             version_id=write.version_id,
             attachment_id=write.attachment_id,
+            document_title=write.document_title,
+            registered_at=write.registered_at,
+            serial_number=write.serial_number,
+            original_name=write.original_name,
             classification=write.classification,
             content=b"x" * (MAXIMUM_GOVERNANCE_DOCUMENT_ATTACHMENT_BYTES + 1),
         )
@@ -225,6 +235,10 @@ async def test_different_existing_bytes_raise_structured_collision() -> None:
         document_id=write.document_id,
         version_id=write.version_id,
         attachment_id=write.attachment_id,
+        document_title=write.document_title,
+        registered_at=write.registered_at,
+        serial_number=write.serial_number,
+        original_name=write.original_name,
         classification=write.classification,
         content=b"different evidence",
     )
@@ -268,6 +282,8 @@ async def test_download_is_signed_for_the_exact_immutable_object_version() -> No
             workspace_id=write.workspace_id,
             document_id=write.document_id,
             document_version_id=write.version_id,
+            serial_number=write.serial_number,
+            storage_filename=write.storage_filename,
             original_name="정책 증빙.txt",
             content_type="text/plain",
             size_bytes=len(write.content),

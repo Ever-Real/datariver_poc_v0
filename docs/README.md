@@ -151,6 +151,9 @@ artifacts, independent approval and authorized vector/Neo4j projection are defin
 Its Bleach policy, exact-version Presigned download, pgvector exact search, declared
 `GovernancePolicy -> Dataset/Term` projection and Chat citation boundary are refined by
 [ADR-0082](adr/0082-governance-document-pgvector-download-and-chat-grounding.md).
+The managed Governance viewer, controlled three-document starter catalog, versioned hierarchy,
+readable private object basenames and authorized JSON export are defined by
+[ADR-0091](adr/0091-managed-governance-document-viewer-and-export.md).
 Semantic `AUTO` Chat routing is defined by
 [ADR-0085](adr/0085-semantic-chat-route-classification.md), and its server-observed live workflow
 progress boundary is defined by

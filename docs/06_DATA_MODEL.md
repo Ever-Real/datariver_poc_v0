@@ -658,7 +658,7 @@ Version's Run; and latest Profiles on
 these paths with representative `EXPLAIN (ANALYZE, BUFFERS)` evidence rather than merely checking
 that an index exists.
 
-## Governance Document schema (implemented through revision `0077`)
+## Governance Document schema (implemented through revision `0079`)
 
 ADR-0080 and ADR-0082 add a document bounded context inside the existing `governance` schema.
 PostgreSQL owns all lifecycle and authorization state; MinIO and Neo4j are verified, rebuildable
@@ -675,12 +675,14 @@ projections.
 | `governance.document_knowledge_chunks` | bounded published text chunks, immutable JSON audit shadow and provider/model-bound pgvector value |
 | `governance.document_projection_receipts` | relational/Neo4j projection hashes and verified chunk count |
 
-`documents.current_published_version_id` and
-`document_versions.source_template_version_id` are explicit deferred/self-referential foreign
-keys. Every child also carries a composite `(workspace_id, parent_id)` foreign key. A partial
-unique index permits at most one live `DRAFT`/`IN_REVIEW` candidate per document; version number
-and tag are unique per document. `DocumentVersion` content, Review/Event/receipt/attachment/chunk
-evidence and every physical identity are immutable.
+`documents.current_published_version_id`, `document_versions.source_template_version_id` and
+`document_versions.parent_document_id` are explicit deferred/self-referential foreign keys.
+Every child also carries a composite `(workspace_id, parent_id)` foreign key. A partial unique
+index permits at most one live `DRAFT`/`IN_REVIEW` candidate per document; version number and tag
+are unique per document. Parent linkage belongs to the immutable version, must reference an
+accessible non-archived `DOCUMENT` in the same Workspace, and rejects self-links and cycles.
+`DocumentVersion` content/hierarchy, Review/Event/receipt/attachment/chunk evidence and every
+physical identity are immutable.
 
 The aggregate states are `DRAFT`, `ACTIVE`, `ARCHIVED`; Archive requires actor/time/reason and does
 not remove the current version or any child. Version states are `DRAFT`, `IN_REVIEW`, `PUBLISHED`,
@@ -688,9 +690,14 @@ not remove the current version or any child. Version states are `DRAFT`, `IN_REV
 artifact/knowledge lease fields, and it cannot change content or publication fields.
 
 MinIO object keys are not caller input. Version body/manifest and attachment keys are derived from
-non-zero Workspace/Document/Version/Attachment UUIDs below `governance/documents/v1/`. Exact
-provider VersionIds, ETags and SHA-256 receipts are stored; there is no DB or application physical
-delete path.
+non-zero Workspace/Document/Version/Attachment UUIDs below `governance/documents/v1/`. Revision
+`0079` adds server-derived readable basenames:
+`doc_governance_<normalized-title>_<YYYYMMDD>_<version-serial>.html` for document bodies and
+`ref_governance_<normalized-title>_<YYYYMMDD>_<attachment-serial>.<safe-ext>` for attachments.
+UUID directories remain the collision and tenant isolation boundary. Attachment serial is
+immutable, unique per version and bounded to 1–25; legacy attachment `storage_filename` may remain
+null and continues to resolve through its recorded receipt. Exact provider VersionIds, ETags and
+SHA-256 receipts are stored; there is no DB or application physical delete path.
 
 Knowledge chunks store an immutable bounded JSON audit shadow and an identical pgvector value with
 exact dimension, provider/model and content hash. Revision `0075` installs the `vector` extension,
@@ -704,6 +711,12 @@ dimension check created by the additive `0075` path to
 `ck_document_knowledge_chunks_embedding_vector_dimension_matches`, which is the same name emitted
 by SQLAlchemy metadata and canonical `0001`; migration fails closed if neither expected constraint
 identity exists.
+
+Revision `0079` adds immutable version-owned parent links plus attachment serial/readable filename
+metadata. Existing attachments are deterministically numbered by creation time and ID. A database
+trigger prevents parent mutation even by a role that later gains a broader column grant, and the
+application rejects cross-Workspace, unauthorized, archived, self and cyclic relationships before
+insert.
 
 ## Constraints enforced outside DDL
 

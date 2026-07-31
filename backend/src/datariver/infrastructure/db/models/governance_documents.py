@@ -157,6 +157,17 @@ class GovernanceDocumentVersionModel(Base, UuidPrimaryKeyMixin, VersionMixin):
             ondelete="RESTRICT",
             name="fk_governance_document_versions_template",
         ),
+        ForeignKeyConstraint(
+            ("workspace_id", "parent_document_id"),
+            ("governance.documents.workspace_id", "governance.documents.id"),
+            use_alter=True,
+            ondelete="RESTRICT",
+            name="fk_governance_document_versions_parent",
+        ),
+        CheckConstraint(
+            "parent_document_id IS NULL OR parent_document_id <> document_id",
+            name="parent_document_distinct",
+        ),
         CheckConstraint("version_number > 0", name="version_number_positive"),
         CheckConstraint("version_tag ~ '^v[1-9][0-9]{0,8}$'", name="version_tag_valid"),
         CheckConstraint(
@@ -227,6 +238,13 @@ class GovernanceDocumentVersionModel(Base, UuidPrimaryKeyMixin, VersionMixin):
             text("id DESC"),
         ),
         Index(
+            "ix_governance_document_versions_parent",
+            "workspace_id",
+            "parent_document_id",
+            "state",
+            postgresql_where=text("parent_document_id IS NOT NULL"),
+        ),
+        Index(
             "ix_governance_document_versions_projection",
             "knowledge_state",
             "next_attempt_at",
@@ -262,6 +280,7 @@ class GovernanceDocumentVersionModel(Base, UuidPrimaryKeyMixin, VersionMixin):
     sanitizer_policy_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     source_format: Mapped[str] = mapped_column(String(16), nullable=False)
     source_template_version_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    parent_document_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     author_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reviewed_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
@@ -477,6 +496,12 @@ class GovernanceDocumentAttachmentModel(Base, UuidPrimaryKeyMixin):
             "provider_version_id",
             name="uq_governance_document_attachments_object",
         ),
+        UniqueConstraint(
+            "workspace_id",
+            "document_version_id",
+            "serial_number",
+            name="uq_governance_document_attachments_serial",
+        ),
         ForeignKeyConstraint(
             ("workspace_id", "document_id"),
             ("governance.documents.workspace_id", "governance.documents.id"),
@@ -502,6 +527,7 @@ class GovernanceDocumentAttachmentModel(Base, UuidPrimaryKeyMixin):
             "size_bytes BETWEEN 1 AND 26214400",
             name="size_bytes_range",
         ),
+        CheckConstraint("serial_number BETWEEN 1 AND 25", name="serial_number_range"),
         CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name="content_sha256_valid"),
         Index(
             "ix_governance_document_attachments_version",
@@ -516,6 +542,8 @@ class GovernanceDocumentAttachmentModel(Base, UuidPrimaryKeyMixin):
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     document_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     document_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    serial_number: Mapped[int] = mapped_column(nullable=False)
+    storage_filename: Mapped[str | None] = mapped_column(String(255))
     original_name: Mapped[str] = mapped_column(String(500), nullable=False)
     content_type: Mapped[str] = mapped_column(String(255), nullable=False)
     size_bytes: Mapped[int] = mapped_column(nullable=False)
