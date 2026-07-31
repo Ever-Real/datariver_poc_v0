@@ -1435,6 +1435,19 @@ def test_knowledge_studio_draft_openapi_requires_etag_and_idempotency() -> None:
     }.isdisjoint(ingestion_response["properties"])
 
 
+def test_knowledge_asset_registry_openapi_exposes_an_optional_uuid_domain_fence() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+    operation = document["paths"]["/api/v1/knowledge/registry/assets"]["get"]
+    parameters = {item["name"]: item for item in operation["parameters"]}
+
+    domain = parameters["domain_id"]
+    assert domain["in"] == "query"
+    assert domain["required"] is False
+    assert {"type": "string", "format": "uuid"} in domain["schema"]["anyOf"]
+    assert {"type": "null"} in domain["schema"]["anyOf"]
+
+
 def test_typed_upload_template_is_an_authenticated_server_versioned_download() -> None:
     factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
     document = create_app(settings(), container_factory=factory).openapi()

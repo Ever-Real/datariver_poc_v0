@@ -7,8 +7,10 @@ import {
 import { Check, Pencil, Plus, Trash2, X } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ApiClient } from '../../../../api/client'
+import type { KnowledgeAssetPage } from '../../../../api/types'
 import { AssuranceNotice } from '../../../../components/AssuranceNotice'
 import { Dialog } from '../../../../components/common/Dialog'
+import { listKnowledgeAssetsByDomain } from '../../knowledgeRegistryApi'
 import {
   createKnowledgeStudioManagedDomain,
   deleteKnowledgeStudioManagedDomain,
@@ -38,6 +40,143 @@ interface DomainManagementDialogProps extends DomainManagementPanelProps {
 }
 
 const columnHelper = createColumnHelper<KnowledgeStudioDomainOption>()
+
+function activeReleaseLabel(asset: KnowledgeAssetPage['items'][number]): string {
+  const labels = []
+  if (asset.active_studio_release_no !== null) {
+    labels.push(`T-Box v${asset.active_studio_release_no}`)
+  }
+  if (asset.active_release_no !== null) {
+    labels.push(`A-Box v${asset.active_release_no}`)
+  }
+  return labels.join(' / ') || '—'
+}
+
+function DomainAssetDrilldown({
+  client,
+  domain,
+  onRequestClose,
+}: {
+  client: ApiClient
+  domain: KnowledgeStudioDomainOption
+  onRequestClose: () => void
+}) {
+  const [page, setPage] = useState<KnowledgeAssetPage>()
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const controller = new AbortController()
+    setLoading(true)
+    setError('')
+    setPage(undefined)
+    void listKnowledgeAssetsByDomain(client, domain.id, cursor, controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) setPage(result)
+      })
+      .catch((caught: unknown) => {
+        if (!controller.signal.aborted) {
+          setError(caught instanceof Error
+            ? caught.message
+            : '도메인 Asset 목록을 불러오지 못했습니다.')
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false)
+      })
+    return () => controller.abort()
+  }, [client, cursor, domain.id])
+
+  const previousPage = () => {
+    if (cursorHistory.length === 0) return
+    setCursor(cursorHistory[cursorHistory.length - 1] ?? null)
+    setCursorHistory((current) => current.slice(0, -1))
+  }
+  const nextPage = () => {
+    if (!page?.next_cursor) return
+    setCursorHistory((current) => [...current, cursor])
+    setCursor(page.next_cursor)
+  }
+
+  return (
+    <Dialog
+      open
+      size="large"
+      compactHeight
+      title={`${domain.display_name} · 조회 가능 Asset`}
+      description="관리 정본의 소속 Asset 수와 별개로, 현재 사용자의 KG_READ·등급·도메인 권한 범위에 있는 활성 Asset만 표시합니다."
+      onRequestClose={onRequestClose}
+      footer={(
+        <>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={loading || cursorHistory.length === 0}
+            onClick={previousPage}
+          >
+            이전
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={loading || !page?.next_cursor}
+            onClick={nextPage}
+          >
+            다음
+          </button>
+          <button type="button" className="button" onClick={onRequestClose}>닫기</button>
+        </>
+      )}
+    >
+      {loading ? (
+        <p role="status" className="m-0 text-xs text-slate-600">
+          서버 권한 범위에서 Asset을 조회하는 중입니다.
+        </p>
+      ) : error ? (
+        <section role="alert" className="rounded-enterprise border border-red-200 bg-red-50 p-4 text-xs text-red-800">
+          <strong className="block text-sm">도메인 Asset 조회를 사용할 수 없습니다.</strong>
+          <p className="mb-0 mt-1">{error}</p>
+        </section>
+      ) : (
+        <div className="max-h-[48vh] overflow-auto rounded-enterprise border border-slate-200">
+          <table className="w-full border-collapse text-left text-xs">
+            <thead className="sticky top-0 bg-slate-100">
+              <tr>
+                {['Asset', '상태', '등급', '활성 Release'].map((label) => (
+                  <th key={label} className="border-b border-slate-200 px-3 py-2 text-[9px] font-black tracking-wide text-slate-500 uppercase">
+                    {label}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {page?.items.map((asset) => (
+                <tr key={asset.id} className="border-b border-slate-100 last:border-0">
+                  <td className="px-3 py-2">
+                    <strong className="block text-navy-900">{asset.name}</strong>
+                    <small className="text-[9px] text-slate-400">{asset.slug}</small>
+                  </td>
+                  <td className="px-3 py-2">{asset.status}</td>
+                  <td className="px-3 py-2">{asset.classification}</td>
+                  <td className="px-3 py-2">{activeReleaseLabel(asset)}</td>
+                </tr>
+              ))}
+              {page?.items.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="p-8 text-center text-xs text-slate-500">
+                    현재 조회 권한 범위에 표시할 활성 Asset이 없습니다.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Dialog>
+  )
+}
 
 interface DomainNameCellProps {
   domain: KnowledgeStudioDomainOption
@@ -117,6 +256,7 @@ export function DomainManagementPanel({
   const [busy, setBusy] = useState(false)
   const [status, setStatus] = useState('')
   const [managementError, setManagementError] = useState<unknown>()
+  const [assetDomain, setAssetDomain] = useState<KnowledgeStudioDomainOption>()
 
   const createDomain = async () => {
     const name = newName.trim()
@@ -235,8 +375,17 @@ export function DomainManagementPanel({
       },
     }),
     columnHelper.accessor('asset_count', {
-      header: '소속 Asset',
-      cell: ({ getValue }) => <span className="font-bold">{getValue() ?? '—'}</span>,
+      header: '소속 Asset (관리 정본)',
+      cell: ({ getValue, row }) => (
+        <button
+          type="button"
+          className="font-bold text-enterprise-blue underline decoration-dotted underline-offset-2"
+          aria-label={`${row.original.display_name} 도메인의 조회 가능 Asset 보기`}
+          onClick={() => setAssetDomain(row.original)}
+        >
+          {getValue() ?? '—'}
+        </button>
+      ),
     }),
     columnHelper.accessor('created_at', {
       header: '생성일',
@@ -289,7 +438,8 @@ export function DomainManagementPanel({
   })
 
   return (
-    <section aria-label="업무 도메인 관리" className="grid gap-3">
+    <>
+      <section aria-label="업무 도메인 관리" className="grid gap-3">
       <form
         className="mb-3 flex gap-2"
         onSubmit={(event) => {
@@ -358,7 +508,15 @@ export function DomainManagementPanel({
           hardwareWebauthnEnabled={hardwareWebauthnEnabled}
         />
       )}
-    </section>
+      </section>
+      {assetDomain && (
+        <DomainAssetDrilldown
+          client={client}
+          domain={assetDomain}
+          onRequestClose={() => setAssetDomain(undefined)}
+        />
+      )}
+    </>
   )
 }
 

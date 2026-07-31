@@ -8,6 +8,24 @@ import type {
 export const KNOWLEDGE_ARCHIVE_CONFIRMATION = '정말 이 지식 자산을 삭제/아카이빙 하시겠습니까?'
 const MAXIMUM_MANAGED_ASSETS = 10_000
 
+export async function listKnowledgeAssetsByDomain(
+  client: ApiClient,
+  domainId: string,
+  cursor?: string | null,
+  signal?: AbortSignal,
+): Promise<KnowledgeAssetPage> {
+  const parameters = new URLSearchParams({
+    domain_id: domainId,
+    limit: '25',
+    sort: 'NAME_ASC',
+  })
+  if (cursor) parameters.set('cursor', cursor)
+  return client.request<KnowledgeAssetPage>(
+    `/knowledge/registry/assets?${parameters}`,
+    { cache: 'no-store', signal },
+  )
+}
+
 export async function listAllKnowledgeAssets(
   client: ApiClient,
   signal?: AbortSignal,

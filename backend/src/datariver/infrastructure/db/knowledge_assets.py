@@ -50,16 +50,30 @@ _POLICY_OPERATION = "kg.delivery-policy.save.v1"
 _CURSOR_VERSION = 1
 
 
-def _encode_cursor(*, sort: str, key: str, graph_id: UUID) -> str:
+def _encode_cursor(
+    *,
+    sort: str,
+    key: str,
+    graph_id: UUID,
+    domain_id: UUID | None = None,
+) -> str:
+    document = {"v": _CURSOR_VERSION, "sort": sort, "key": key, "id": str(graph_id)}
+    if domain_id is not None:
+        document["domain_id"] = str(domain_id)
     payload = json.dumps(
-        {"v": _CURSOR_VERSION, "sort": sort, "key": key, "id": str(graph_id)},
+        document,
         separators=(",", ":"),
         sort_keys=True,
     ).encode()
     return base64.urlsafe_b64encode(payload).decode().rstrip("=")
 
 
-def _decode_cursor(cursor: str, *, sort: str) -> tuple[str, UUID]:
+def _decode_cursor(
+    cursor: str,
+    *,
+    sort: str,
+    domain_id: UUID | None = None,
+) -> tuple[str, UUID]:
     try:
         payload = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
         document = json.loads(payload)
@@ -69,11 +83,18 @@ def _decode_cursor(cursor: str, *, sort: str) -> tuple[str, UUID]:
             or document.get("sort") != sort
             or not isinstance(document.get("key"), str)
             or not isinstance(document.get("id"), str)
+            or (domain_id is None and "domain_id" in document)
+            or (domain_id is not None and document.get("domain_id") != str(domain_id))
         ):
             raise ValueError
         key = document["key"]
         graph_id = UUID(document["id"])
-        if cursor != _encode_cursor(sort=sort, key=key, graph_id=graph_id):
+        if cursor != _encode_cursor(
+            sort=sort,
+            key=key,
+            graph_id=graph_id,
+            domain_id=domain_id,
+        ):
             raise ValueError
         return key, graph_id
     except (ValueError, TypeError, json.JSONDecodeError) as error:
@@ -386,6 +407,7 @@ class SqlKnowledgeAssetRepository(KnowledgeAssetRepository):
         clearance: int,
         allowed_domain_ids: frozenset[UUID],
         query: str,
+        domain_id: UUID | None,
         sort: str,
         cursor: str | None,
         limit: int,
@@ -395,6 +417,8 @@ class SqlKnowledgeAssetRepository(KnowledgeAssetRepository):
         statement = self._statement(workspace_id).where(
             *self._scope(clearance=clearance, allowed_domain_ids=allowed_domain_ids)
         )
+        if domain_id is not None:
+            statement = statement.where(GraphModel.domain_ref_id == domain_id)
         if query:
             escaped = query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
             pattern = f"%{escaped}%"
@@ -409,7 +433,7 @@ class SqlKnowledgeAssetRepository(KnowledgeAssetRepository):
                 )
             )
         if cursor is not None:
-            key, graph_id = _decode_cursor(cursor, sort=sort)
+            key, graph_id = _decode_cursor(cursor, sort=sort, domain_id=domain_id)
             if sort == "UPDATED_DESC":
                 try:
                     boundary = datetime.fromisoformat(key)
@@ -446,6 +470,7 @@ class SqlKnowledgeAssetRepository(KnowledgeAssetRepository):
                     else str(values["name_sort_key"])
                 ),
                 graph_id=graph.id,
+                domain_id=domain_id,
             )
         return KnowledgeAssetPage(
             items=tuple(self._summary(row) for row in visible),

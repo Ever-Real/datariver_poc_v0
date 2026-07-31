@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 
 from datariver.application.knowledge_asset_contracts import (
+    KnowledgeAssetPage,
     KnowledgeAssetSummary,
     KnowledgeAssetVersionPage,
     KnowledgeChatCandidate,
@@ -27,14 +28,16 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import ValidationError
+from datariver.domain.common import ForbiddenError, ValidationError
 from datariver.domain.knowledge_assets import (
     KnowledgeDeliveryPolicy,
     normalize_route_terms,
     validate_delivery_policy,
 )
 from datariver.infrastructure.db.knowledge_assets import (
+    _decode_cursor,
     _decode_version_cursor,
+    _encode_cursor,
     _encode_version_cursor,
     _policy_result,
     _replayed_policy,
@@ -58,6 +61,37 @@ def test_version_cursor_is_canonical_and_rejects_tampering() -> None:
     assert _decode_version_cursor(cursor) == (NOW, RELEASE_A_ID)
     with pytest.raises(ValidationError, match="version cursor is invalid"):
         _decode_version_cursor(cursor + "=")
+
+
+def test_asset_cursor_binds_the_exact_domain_filter_without_breaking_unfiltered_cursors() -> None:
+    domain_cursor = _encode_cursor(
+        sort="NAME_ASC",
+        key="finance graph",
+        graph_id=GRAPH_A_ID,
+        domain_id=DOMAIN_ID,
+    )
+
+    assert _decode_cursor(
+        domain_cursor,
+        sort="NAME_ASC",
+        domain_id=DOMAIN_ID,
+    ) == ("finance graph", GRAPH_A_ID)
+    with pytest.raises(ValidationError, match="page cursor is invalid"):
+        _decode_cursor(domain_cursor, sort="NAME_ASC", domain_id=GRAPH_B_ID)
+    with pytest.raises(ValidationError, match="page cursor is invalid"):
+        _decode_cursor(domain_cursor, sort="NAME_ASC")
+
+    unfiltered_cursor = _encode_cursor(
+        sort="NAME_ASC",
+        key="finance graph",
+        graph_id=GRAPH_A_ID,
+    )
+    assert _decode_cursor(unfiltered_cursor, sort="NAME_ASC") == (
+        "finance graph",
+        GRAPH_A_ID,
+    )
+    with pytest.raises(ValidationError, match="page cursor is invalid"):
+        _decode_cursor(unfiltered_cursor, sort="NAME_ASC", domain_id=DOMAIN_ID)
 
 
 class MemoryDecisionWriter:
@@ -167,6 +201,64 @@ def _chat_candidate(asset: KnowledgeAssetSummary) -> KnowledgeChatCandidate:
 
 def _authorization() -> AuthorizationService:
     return AuthorizationService(decision_writer=MemoryDecisionWriter())
+
+
+@pytest.mark.asyncio
+async def test_asset_list_forwards_the_exact_domain_filter_after_kg_read() -> None:
+    page = KnowledgeAssetPage(items=(), next_cursor=None)
+    repository = SimpleNamespace(list_assets=AsyncMock(return_value=page))
+    service = KnowledgeAssetService(
+        repository=cast(KnowledgeAssetRepository, repository),
+        authorization=_authorization(),
+    )
+
+    result = await service.list_assets(
+        workspace_id=WORKSPACE_ID,
+        subject=_subject(allowed_actions=frozenset({Action.KG_READ})),
+        query=" finance ",
+        domain_id=DOMAIN_ID,
+        sort="NAME_ASC",
+        cursor=None,
+        limit=25,
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="knowledge-assets-domain",
+    )
+
+    assert result is page
+    repository.list_assets.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        clearance=int(Classification.INTERNAL),
+        allowed_domain_ids=frozenset({DOMAIN_ID}),
+        query="finance",
+        domain_id=DOMAIN_ID,
+        sort="NAME_ASC",
+        cursor=None,
+        limit=25,
+    )
+
+
+@pytest.mark.asyncio
+async def test_asset_list_denies_missing_kg_read_before_repository_access() -> None:
+    repository = SimpleNamespace(list_assets=AsyncMock())
+    service = KnowledgeAssetService(
+        repository=cast(KnowledgeAssetRepository, repository),
+        authorization=_authorization(),
+    )
+
+    with pytest.raises(ForbiddenError, match="requested action is not permitted"):
+        await service.list_assets(
+            workspace_id=WORKSPACE_ID,
+            subject=_subject(allowed_actions=frozenset()),
+            query="",
+            domain_id=DOMAIN_ID,
+            sort="NAME_ASC",
+            cursor=None,
+            limit=25,
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="knowledge-assets-domain-denied",
+        )
+
+    repository.list_assets.assert_not_awaited()
 
 
 def test_delivery_terms_are_unicode_normalized_deduplicated_and_safe() -> None:

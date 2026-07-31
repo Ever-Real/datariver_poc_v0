@@ -14,7 +14,7 @@ const domains: KnowledgeStudioDomainOption[] = [{
   created_by: '00000000-0000-4000-8000-000000000101',
   creator_display_name: 'DataRiver Administrator',
   creator_email: 'admin@datariver.local',
-  asset_count: 0,
+  asset_count: 4,
   lifecycle: 'ACTIVE',
   created_at: '2026-07-30T00:00:00Z',
   updated_at: '2026-07-30T00:00:00Z',
@@ -145,5 +145,120 @@ describe('DomainManagementDialog', () => {
     fireEvent.click(await screen.findByRole('button', { name: '비밀번호로 재인증' }))
     expect(onPasswordReauth).toHaveBeenCalledOnce()
     expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('drills into the server-filtered KG_READ asset page and preserves the domain cursor', async () => {
+    const asset = {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1c1001',
+      slug: 'semiconductor-knowledge',
+      name: '반도체 지식그래프',
+      graph_type: 'DOMAIN',
+      status: 'PUBLISHED',
+      classification: 'INTERNAL',
+      domain_id: domains[0]!.id,
+      domain_name: domains[0]!.display_name,
+      creator_name: 'DataRiver Administrator',
+      creator_email: 'admin@datariver.local',
+      editor_name: 'DataRiver Administrator',
+      editor_email: 'admin@datariver.local',
+      active_studio_release_id: '019fa57b-52de-74c0-9f5e-06ae7b1c1002',
+      active_studio_release_no: 2,
+      active_release_id: '019fa57b-52de-74c0-9f5e-06ae7b1c1003',
+      active_release_no: 3,
+      class_count: 2,
+      property_count: 3,
+      relationship_count: 1,
+      binding_count: 2,
+      source_count: 1,
+      node_count: 5,
+      edge_count: 4,
+      projection_state: 'SHADOW_VERIFIED',
+      created_at: '2026-07-30T00:00:00Z',
+      updated_at: '2026-07-31T00:00:00Z',
+      version: 1,
+      delivery_policy: null,
+    }
+    let requestCount = 0
+    const fetchMock = vi.fn<typeof fetch>(() => {
+      requestCount += 1
+      const page = requestCount === 1
+        ? { items: [asset], next_cursor: 'domain-page-2', limit: 25 }
+        : { items: [], next_cursor: null, limit: 25 }
+      return Promise.resolve(new Response(JSON.stringify(page), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(
+      <DomainManagementDialog
+        client={new ApiClient('/api/v1', () => 'token', () => 'workspace')}
+        open
+        items={domains}
+        loading={false}
+        onRequestClose={vi.fn()}
+        onChanged={vi.fn(() => Promise.resolve())}
+      />,
+    )
+
+    expect(fetchMock).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', {
+      name: '반도체 도메인의 조회 가능 Asset 보기',
+    }))
+
+    expect(await screen.findByText('반도체 지식그래프')).toBeInTheDocument()
+    expect(screen.getByText('T-Box v2 / A-Box v3')).toBeInTheDocument()
+    expect(screen.getByText(/관리 정본의 소속 Asset 수와 별개로/)).toBeInTheDocument()
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      `/api/v1/knowledge/registry/assets?domain_id=${domains[0]!.id}&limit=25&sort=NAME_ASC`,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '다음' }))
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2))
+    expect(fetchMock.mock.calls[1]?.[0]).toBe(
+      `/api/v1/knowledge/registry/assets?domain_id=${domains[0]!.id}&limit=25&sort=NAME_ASC&cursor=domain-page-2`,
+    )
+    expect(await screen.findByText('현재 조회 권한 범위에 표시할 활성 Asset이 없습니다.'))
+      .toBeInTheDocument()
+  })
+
+  it('fails closed without a global registry fallback or fabricated rows', async () => {
+    const fetchMock = vi.fn<typeof fetch>(() => Promise.resolve(new Response(JSON.stringify({
+      type: 'urn:datariver:problem:forbidden',
+      title: 'Forbidden',
+      status: 403,
+      detail: 'The requested action is not permitted.',
+      code: 'forbidden',
+      request_id: 'domain-assets-forbidden',
+    }), {
+      status: 403,
+      headers: { 'Content-Type': 'application/problem+json' },
+    })))
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(
+      <DomainManagementDialog
+        client={new ApiClient('/api/v1', () => 'token', () => 'workspace')}
+        open
+        items={domains}
+        loading={false}
+        onRequestClose={vi.fn()}
+        onChanged={vi.fn(() => Promise.resolve())}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', {
+      name: '반도체 도메인의 조회 가능 Asset 보기',
+    }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      '도메인 Asset 조회를 사용할 수 없습니다.',
+    )
+    expect(fetchMock).toHaveBeenCalledOnce()
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      `/api/v1/knowledge/registry/assets?domain_id=${domains[0]!.id}&limit=25&sort=NAME_ASC`,
+    )
+    expect(screen.queryByRole('row', { name: /가짜|fake/i })).not.toBeInTheDocument()
   })
 })

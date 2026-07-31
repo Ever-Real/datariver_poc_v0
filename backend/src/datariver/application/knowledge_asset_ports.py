@@ -23,6 +23,7 @@ class KnowledgeAssetRepository(Protocol):
         clearance: int,
         allowed_domain_ids: frozenset[UUID],
         query: str,
+        domain_id: UUID | None,
         sort: str,
         cursor: str | None,
         limit: int,

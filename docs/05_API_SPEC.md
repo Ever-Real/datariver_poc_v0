@@ -825,11 +825,14 @@ with generic provider or arbitrary query pass-through.
 ## Knowledge Asset operating endpoints
 
 Knowledge Asset 조회는 PostgreSQL 정본과 현재 요청자의 KG ABAC 범위를 사용한다. Registry
-목록은 `GET /api/v1/knowledge/registry/assets`에서 `q`, `sort`, opaque `cursor`, `limit`
-인자를 받고, 상세는
+목록은 `GET /api/v1/knowledge/registry/assets`에서 `q`, optional exact `domain_id`, `sort`,
+opaque `cursor`, `limit` 인자를 받고, 상세는
 `GET /api/v1/knowledge/registry/assets/{graph_id}/detail`에서 T-Box 요약, A-Box binding,
 Neo4j shadow projection 상태를 함께 반환한다. 목록과 상세는 권한 밖 Asset의 존재나 개수를
-노출하지 않는다.
+노출하지 않는다. `domain_id`는 Workspace, `kg.read`, clearance, Subject domain scope 및
+ARCHIVED 제외 조건과 서버에서 교집합으로 적용된다. 필터에 맞지 않거나 권한 밖인 도메인은
+별도 존재 확인 없이 빈 page를 반환하며, cursor는 정확한 `domain_id`에 고정되어 다른 도메인에
+재사용할 수 없다. `q`와 `domain_id`를 함께 보내면 두 조건을 AND로 적용한다.
 
 `PUT /api/v1/knowledge/registry/assets/{graph_id}/delivery-policy`는 `kg.edit`,
 `Idempotency-Key`와 기존 정책 수정 시 quoted integer `If-Match`를 요구한다. 정책은 API
