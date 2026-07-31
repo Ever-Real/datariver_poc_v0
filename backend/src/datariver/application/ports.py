@@ -2237,6 +2237,8 @@ class KnowledgeEvidenceReader(Protocol):
         self,
         *,
         workspace_id: UUID,
+        graph_id: UUID | None = None,
+        release_id: UUID | None = None,
         query: str,
         maximum_classification: int,
         limit: int,
@@ -2247,6 +2249,8 @@ class KnowledgeEvidenceReader(Protocol):
         *,
         workspace_id: UUID,
         resource_ids: Sequence[UUID],
+        graph_id: UUID | None = None,
+        release_id: UUID | None = None,
     ) -> Sequence[KnowledgeEvidenceCandidate]: ...
 
 

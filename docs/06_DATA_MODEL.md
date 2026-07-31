@@ -237,7 +237,7 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 | `knowledge.tbox_properties` | workspace/draft/stable Property UQ, exact owner Class, datatype/nullability/unit/vector target flag, nullable opaque metadata reference ID/URN, version | normalized Class-owned Property schema; future rich metadata management resolves the reference instead of expanding Graph Builder |
 | `knowledge.tbox_relationships` | workspace/draft/stable Relationship UQ, exact source/target Classes, fixed `ASSOCIATION` kind, nullable opaque metadata reference ID/URN, version | normalized non-taxonomic Class relationship schema |
 | `knowledge.tbox_proposals` | exact Draft/base version and optional target block, typed proposal/conflict documents, model binding, optional exact upload bucket/key/hash source reference, `READY/APPLIED/REJECTED/FAILED`, merge strategy and timestamps | LLM output remains a Proposal until an authorized, version-fenced acceptance command applies it |
-| `knowledge.studio_ingestion_jobs` | exact Draft/binding request, vector-target-conditional embedding binding and Property/Class/binding/source-field pins, durable `PENDING/RUNNING/FAILED/SUCCESS` progress, reserved lease and terminal result/error | background A-Box materialization contract; API requests enqueue only and never impersonate completion |
+| `knowledge.studio_ingestion_jobs` | exact Draft/binding request, vector-target-conditional embedding binding and Property/Class/binding/source-field pins, durable `PENDING/RUNNING/FAILED/SUCCESS` progress, reserved lease and terminal result/error | reserved A-Box materialization request contract; the API can persist PENDING but no production worker may claim completion until the approved batch-reader/release-pin design is implemented |
 | `knowledge.source_references` | immutable local catalog asset UUID, exact provider schema version, exact catalog projection version, classification, typed selected-field document/hash and creator | provider-opaque physical Dataset snapshot pin; no external URN, query, endpoint or credential |
 | `knowledge.abox_binding_drafts` | one row per draft + accepted Class/Relation stable ID, immutable source-reference FK, `DRAFT/VALIDATED/STALE`, accepted T-Box version, author/editor and optimistic version | mutable A-Box mapping header; it is not an ingestion job or published assertion |
 | `knowledge.abox_mapping_rule_drafts` | binding/ordinal UQ, typed `SUBJECT_ID/PROPERTY/EDGE_LINK/EDGE_PROPERTY`, selected source field path, accepted T-Box target and fixed `IDENTITY@1` transform | normalized target-scoped mapping contract; arbitrary SQL/Cypher/provider expressions are not accepted |
@@ -246,6 +246,7 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 | `knowledge.ontology_elements` | immutable ontology-version stable ID and ordinal UQ, kind/name/document/hash | deterministic typed element index derived and read back in the publication transaction |
 | `knowledge.property_profiles` | workspace/graph/active Studio Release/ontology version/exact `PROPERTY` element and stable-ID references, description, unit, `ACTIVE/ARCHIVED`, actor/time/version; partial UQ permits one active row per released Property | mutable PostgreSQL semantic profile that never rewrites the immutable ontology element; archive retains history and allows a later new active profile |
 | `knowledge.property_profile_synonyms` | workspace/profile/value, NFC case-folded normalized value UQ, created time | bounded normalized synonym values owned by one Property Profile aggregate |
+| `knowledge.delivery_policies` | one row per workspace/graph, API and Chat enable flags, bounded priority, normalized literal ANY/ALL/excluded term arrays, creator/editor/time/version | owner-managed typed alias delivery and Chat graph-scope policy; terms are data and cannot contain SQL/Cypher/regex execution |
 | `knowledge.abox_binding_versions` | Studio Release/target ordinal UQ, exact ontology element/source reference and mapping hash | immutable published A-Box binding headers |
 | `knowledge.abox_mapping_rule_versions` | immutable binding-version/ordinal UQ, ontology target, typed method/source field and `IDENTITY@1` transform | immutable published mapping-rule whitelist |
 | `knowledge.changesets` | `id`, graph/base release/ontology/title/state/author/reviewer/published release, nullable `source_analysis_job_id`, `version`, timestamps | incremental author/review/publish aggregate; a durable worker-created DRAFT is bound to exactly one source-analysis job |
@@ -294,6 +295,14 @@ and mutations authorize `kg.edit` against that exact graph. The application role
 update only profile value/lifecycle/audit/version columns and replace synonym children; it cannot
 delete a profile row. A partial active-row index retains archived predecessors while preventing two
 active profiles for one released Property.
+
+Revision `0080` adds one forced-RLS Delivery Policy per Knowledge graph. The graph FK cascades only
+when the parent aggregate is physically removed by a privileged retention workflow; normal Archive
+retains the policy and its version. The application role can select/insert and update only enable
+flags, priority, normalized term arrays, updater/time and version. It has no DELETE privilege.
+Service reads still apply graph classification/domain pruning, and mutations authorize `kg.edit`
+against the exact graph resource. An enabled Chat policy must contain a positive literal condition;
+raw expressions, provider queries and credentials are not stored.
 
 Pre-flight receipts and published ontology/binding/rule versions are append-only. The application
 role can insert or archive `studio_releases` only as the current independently authorized publisher;

@@ -28,6 +28,8 @@ from datariver.application.dto import (
 )
 from datariver.application.errors import ChatExternalAdapterInvocationError
 from datariver.application.evidence import build_evidence_chunk, evidence_chunk_is_valid
+from datariver.application.knowledge_asset_contracts import KnowledgeGraphChatScope
+from datariver.application.knowledge_asset_ports import KnowledgeGraphScopeResolver
 from datariver.application.ports import (
     CatalogIndexReader,
     ChatAnswerComposer,
@@ -153,6 +155,7 @@ class ChatService:
         governance_evidence: GovernanceChatEvidenceReader | None = None,
         graph_evidence: KnowledgeEvidenceReader | None = None,
         knowledge_evidence: KnowledgeEvidenceReader | None = None,
+        graph_scope_resolver: KnowledgeGraphScopeResolver | None = None,
         reranker: ChatEvidenceReranker | None = None,
         budget_guard: ChatRequestBudgetGuard | None = None,
         request_limit_per_minute: int = 30,
@@ -165,6 +168,7 @@ class ChatService:
         self._vector_catalog = vector_catalog
         self._governance_evidence = governance_evidence
         self._graph_evidence = graph_evidence or knowledge_evidence
+        self._graph_scope_resolver = graph_scope_resolver
         self._reranker = reranker
         self._budget_guard = budget_guard
         self._request_limit_per_minute = request_limit_per_minute
@@ -205,6 +209,7 @@ class ChatService:
         environment: EnvironmentAttributes,
         request_id: str,
         requested_mode: ChatRetrievalMode = ChatRetrievalMode.AUTO,
+        requested_graph_id: UUID | None = None,
         workflow_observer: ChatWorkflowProgressObserver | None = None,
     ) -> ChatExchange:
         workflow = _ObservedChatWorkflow(workflow_observer)
@@ -367,6 +372,7 @@ class ChatService:
             access,
             external_stages=(),
         )
+        graph_scope: KnowledgeGraphChatScope | None = None
         external_stages: list[str] = (
             ["composition"] if route_classifier_requested and route_classifier_allowed else []
         )
@@ -479,7 +485,7 @@ class ChatService:
                     stage=ChatWorkflowStage.RETRIEVAL,
                     detail_code="RETRIEVAL_IN_PROGRESS",
                 )
-                evidence, retrieval_stages = await self._retrieve(
+                evidence, retrieval_stages, graph_scope = await self._retrieve(
                     route=route,
                     workspace_id=workspace_id,
                     subject=subject,
@@ -491,6 +497,7 @@ class ChatService:
                     environment=environment,
                     request_id=request_id,
                     parent_resource_id=session_id or workspace_id,
+                    requested_graph_id=requested_graph_id,
                 )
                 external_stages.extend(retrieval_stages)
             except ChatExternalAdapterInvocationError as error:
@@ -737,6 +744,9 @@ class ChatService:
                                 environment=environment,
                                 request_id=request_id,
                                 parent_resource_id=session_id or workspace_id,
+                                question=question,
+                                requested_graph_id=requested_graph_id,
+                                initial_graph_scope=graph_scope,
                             )
                         if cited_evidence:
                             workflow.append(
@@ -763,6 +773,15 @@ class ChatService:
             access,
             external_stages=tuple(dict.fromkeys(external_stages)),
         )
+        if graph_scope is not None:
+            request_composition_audit = replace(
+                request_composition_audit,
+                knowledge_graph_id=graph_scope.graph_id,
+                knowledge_release_id=graph_scope.release_id,
+                knowledge_delivery_policy_id=graph_scope.policy_id,
+                knowledge_delivery_policy_version=graph_scope.policy_version,
+                knowledge_delivery_policy_hash=graph_scope.policy_hash,
+            )
         async with self._uow_factory() as uow:
             await uow.set_security_context(
                 workspace_id=workspace_id,
@@ -851,21 +870,25 @@ class ChatService:
         environment: EnvironmentAttributes,
         request_id: str,
         parent_resource_id: UUID,
-    ) -> tuple[tuple[ChatEvidence, ...], tuple[str, ...]]:
+        requested_graph_id: UUID | None,
+    ) -> tuple[
+        tuple[ChatEvidence, ...],
+        tuple[str, ...],
+        KnowledgeGraphChatScope | None,
+    ]:
         if route.selected_mode is ChatRetrievalMode.GRAPH:
-            return (
-                await self._retrieve_graph(
-                    workspace_id=workspace_id,
-                    subject=subject,
-                    allowed_classifications=allowed_classifications,
-                    question=question,
-                    maximum_evidence=maximum_evidence,
-                    environment=environment,
-                    request_id=request_id,
-                    parent_resource_id=parent_resource_id,
-                ),
-                (),
+            evidence, scope = await self._retrieve_graph(
+                workspace_id=workspace_id,
+                subject=subject,
+                allowed_classifications=allowed_classifications,
+                question=question,
+                maximum_evidence=maximum_evidence,
+                environment=environment,
+                request_id=request_id,
+                parent_resource_id=parent_resource_id,
+                requested_graph_id=requested_graph_id,
             )
+            return evidence, (), scope
         retrieval_stages: tuple[str, ...] = ()
         if route.selected_mode is ChatRetrievalMode.VECTOR:
             catalog_items: Sequence[CatalogAssetIndex] = ()
@@ -916,6 +939,7 @@ class ChatService:
         return (
             (*eligible_governance, *catalog_evidence)[:maximum_evidence],
             retrieval_stages,
+            None,
         )
 
     async def _authorize_catalog_items(
@@ -985,22 +1009,46 @@ class ChatService:
         environment: EnvironmentAttributes,
         request_id: str,
         parent_resource_id: UUID,
-    ) -> tuple[ChatEvidence, ...]:
+        requested_graph_id: UUID | None,
+    ) -> tuple[tuple[ChatEvidence, ...], KnowledgeGraphChatScope | None]:
         assert self._graph_evidence is not None
-        candidates = await self._graph_evidence.search_active_nodes(
-            workspace_id=workspace_id,
-            query=self._search_term(question),
-            maximum_classification=int(
-                self._chat_ceiling(allowed_classifications, subject=subject)
-            ),
-            limit=maximum_evidence,
-        )
+        scope: KnowledgeGraphChatScope | None = None
+        if self._graph_scope_resolver is not None:
+            scope = await self._graph_scope_resolver.resolve_graph_scope(
+                workspace_id=workspace_id,
+                subject=subject,
+                question=question,
+                requested_graph_id=requested_graph_id,
+                environment=environment,
+                request_id=request_id,
+            )
+            if scope is None:
+                return (), None
+        search_term = self._search_term(question)
+        maximum_classification = int(self._chat_ceiling(allowed_classifications, subject=subject))
+        if scope is None:
+            candidates = await self._graph_evidence.search_active_nodes(
+                workspace_id=workspace_id,
+                query=search_term,
+                maximum_classification=maximum_classification,
+                limit=maximum_evidence,
+            )
+        else:
+            candidates = await self._graph_evidence.search_active_nodes(
+                workspace_id=workspace_id,
+                graph_id=scope.graph_id,
+                release_id=scope.release_id,
+                query=search_term,
+                maximum_classification=maximum_classification,
+                limit=maximum_evidence,
+            )
         eligible = tuple(
             candidate
             for candidate in candidates
             if candidate.classification in allowed_classifications
             and candidate.evidence.workspace_id == workspace_id
             and candidate.evidence.classification == candidate.classification
+            and (scope is None or candidate.graph_id == scope.graph_id)
         )
         resources = tuple(
             ResourceAttributes(
@@ -1026,10 +1074,13 @@ class ChatService:
                 parent_resource_id=parent_resource_id,
             )
         }
-        return tuple(
-            candidate.evidence
-            for candidate in eligible
-            if candidate.evidence.resource_id in authorized_ids
+        return (
+            tuple(
+                candidate.evidence
+                for candidate in eligible
+                if candidate.evidence.resource_id in authorized_ids
+            ),
+            scope,
         )
 
     async def _rank(
@@ -1363,6 +1414,9 @@ class ChatService:
         environment: EnvironmentAttributes,
         request_id: str,
         parent_resource_id: UUID,
+        question: str,
+        requested_graph_id: UUID | None,
+        initial_graph_scope: KnowledgeGraphChatScope | None,
     ) -> tuple[str, tuple[ChatEvidence, ...]]:
         try:
             validation_time = utc_now()
@@ -1472,9 +1526,28 @@ class ChatService:
             if knowledge_evidence:
                 if self._graph_evidence is None:
                     return UNVERIFIABLE_ANSWER, ()
+                if initial_graph_scope is not None:
+                    if self._graph_scope_resolver is None:
+                        return UNVERIFIABLE_ANSWER, ()
+                    current_scope = await self._graph_scope_resolver.resolve_graph_scope(
+                        workspace_id=workspace_id,
+                        subject=refreshed_subject,
+                        question=question,
+                        requested_graph_id=requested_graph_id,
+                        environment=final_environment,
+                        request_id=f"{request_id}:graph-scope-final",
+                    )
+                    if current_scope != initial_graph_scope:
+                        return UNVERIFIABLE_ANSWER, ()
                 current_candidates = await self._graph_evidence.get_active_nodes_by_resource_ids(
                     workspace_id=workspace_id,
                     resource_ids=tuple(item.resource_id for item in knowledge_evidence),
+                    graph_id=(
+                        initial_graph_scope.graph_id if initial_graph_scope is not None else None
+                    ),
+                    release_id=(
+                        initial_graph_scope.release_id if initial_graph_scope is not None else None
+                    ),
                 )
                 candidates_by_id: dict[UUID, list[ChatEvidence]] = {}
                 for candidate in current_candidates:

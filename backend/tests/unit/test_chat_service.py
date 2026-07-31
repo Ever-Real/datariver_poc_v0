@@ -5,8 +5,9 @@ from collections.abc import Callable, Sequence
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from types import TracebackType
+from types import SimpleNamespace, TracebackType
 from typing import Any, Self, cast
+from unittest.mock import ANY, AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -37,6 +38,7 @@ from datariver.application.dto import (
     default_chat_route,
 )
 from datariver.application.evidence import build_evidence_chunk, evidence_chunk_is_valid
+from datariver.application.knowledge_asset_contracts import KnowledgeGraphChatScope
 from datariver.application.ports import ChatStore, RetentionPolicyRepository
 from datariver.application.services.authorization import AuthorizationService, NullDecisionWriter
 from datariver.application.services.chat import (
@@ -630,10 +632,13 @@ class FakeKnowledgeEvidence:
         self,
         workspace_id: UUID,
         *,
+        graph_id: UUID | None = None,
         tamper_hash: bool = False,
         drift_on_refresh: bool = False,
     ) -> None:
         self.workspace_id = workspace_id
+        self.requested_graph_id: UUID | None = None
+        self.requested_release_id: UUID | None = None
         self.tamper_hash = tamper_hash
         self.drift_on_refresh = drift_on_refresh
         evidence = build_evidence_chunk(
@@ -655,7 +660,7 @@ class FakeKnowledgeEvidence:
             evidence = replace(evidence, content_hash="0" * 64)
         self.candidate = KnowledgeEvidenceCandidate(
             evidence=evidence,
-            graph_id=uuid4(),
+            graph_id=graph_id or uuid4(),
             classification=Classification.INTERNAL,
         )
 
@@ -663,12 +668,16 @@ class FakeKnowledgeEvidence:
         self,
         *,
         workspace_id: UUID,
+        graph_id: UUID | None = None,
+        release_id: UUID | None = None,
         query: str,
         maximum_classification: int,
         limit: int,
     ) -> Sequence[KnowledgeEvidenceCandidate]:
         del query, maximum_classification, limit
         assert workspace_id == self.workspace_id
+        self.requested_graph_id = graph_id
+        self.requested_release_id = release_id
         return (self.candidate,)
 
     async def get_active_nodes_by_resource_ids(
@@ -676,7 +685,10 @@ class FakeKnowledgeEvidence:
         *,
         workspace_id: UUID,
         resource_ids: Sequence[UUID],
+        graph_id: UUID | None = None,
+        release_id: UUID | None = None,
     ) -> Sequence[KnowledgeEvidenceCandidate]:
+        del graph_id, release_id
         assert workspace_id == self.workspace_id
         if self.drift_on_refresh:
             drifted = replace(
@@ -1843,6 +1855,104 @@ async def test_chat_can_use_only_authorized_release_pinned_knowledge_evidence() 
     assert len(exchange.evidence) == 1
     assert exchange.evidence[0].source_type == "KNOWLEDGE_NODE"
     assert exchange.evidence[0].source_version == "f" * 64
+
+
+async def test_chat_graph_retrieval_is_scoped_to_the_policy_selected_graph() -> None:
+    workspace_id = uuid4()
+    graph_id = uuid4()
+    release_id = uuid4()
+    policy_id = uuid4()
+    subject = chat_subject(workspace_id, include_kg=True)
+    evidence = FakeKnowledgeEvidence(workspace_id, graph_id=graph_id)
+    store = FakeChatStore()
+    scope_resolver = SimpleNamespace(
+        resolve_graph_scope=AsyncMock(
+            return_value=KnowledgeGraphChatScope(
+                graph_id=graph_id,
+                release_id=release_id,
+                policy_id=policy_id,
+                policy_version=3,
+                policy_hash="a" * 64,
+                domain_id=None,
+                classification=Classification.INTERNAL,
+            )
+        )
+    )
+    service = chat_service(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        graph_evidence=evidence,
+        graph_scope_resolver=scope_resolver,
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    )
+
+    exchange = await service.query(
+        workspace_id=workspace_id,
+        subject=subject,
+        session_id=None,
+        question="승인된 그래프 근거를 알려줘",
+        maximum_evidence=2,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-policy-scoped-graph",
+        requested_mode=ChatRetrievalMode.GRAPH,
+    )
+
+    assert exchange.evidence
+    assert evidence.requested_graph_id == graph_id
+    assert evidence.requested_release_id == release_id
+    assert store.saved_composition_audit is not None
+    assert store.saved_composition_audit.knowledge_graph_id == graph_id
+    assert store.saved_composition_audit.knowledge_release_id == release_id
+    assert store.saved_composition_audit.knowledge_delivery_policy_id == policy_id
+    assert store.saved_composition_audit.knowledge_delivery_policy_version == 3
+    assert store.saved_composition_audit.knowledge_delivery_policy_hash == "a" * 64
+    assert scope_resolver.resolve_graph_scope.await_count == 2
+    scope_resolver.resolve_graph_scope.assert_any_await(
+        workspace_id=workspace_id,
+        subject=subject,
+        question="승인된 그래프 근거를 알려줘",
+        requested_graph_id=None,
+        environment=ANY,
+        request_id="request-policy-scoped-graph",
+    )
+
+
+async def test_chat_refuses_citations_when_the_graph_delivery_policy_is_revoked() -> None:
+    workspace_id = uuid4()
+    graph_id = uuid4()
+    release_id = uuid4()
+    scope = KnowledgeGraphChatScope(
+        graph_id=graph_id,
+        release_id=release_id,
+        policy_id=uuid4(),
+        policy_version=1,
+        policy_hash="b" * 64,
+        domain_id=None,
+        classification=Classification.INTERNAL,
+    )
+    evidence = FakeKnowledgeEvidence(workspace_id, graph_id=graph_id)
+    scope_resolver = SimpleNamespace(resolve_graph_scope=AsyncMock(side_effect=(scope, None)))
+    store = FakeChatStore()
+    exchange = await chat_service(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        graph_evidence=evidence,
+        graph_scope_resolver=scope_resolver,
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id, include_kg=True),
+        session_id=None,
+        question="정책 변경 중 그래프 근거",
+        maximum_evidence=2,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-revoked-graph-policy",
+        requested_mode=ChatRetrievalMode.GRAPH,
+    )
+
+    assert exchange.answer == UNVERIFIABLE_ANSWER
+    assert exchange.evidence == ()
+    assert store.saved_evidence == ()
 
 
 async def test_chat_vector_mode_uses_current_governance_document_evidence() -> None:

@@ -166,6 +166,8 @@ def _release_response(release: KnowledgeReleaseRecord) -> KnowledgeReleaseRespon
         edge_count=release.edge_count,
         published_by=release.published_by,
         published_at=release.published_at,
+        publisher_name=release.publisher_name,
+        publisher_email=release.publisher_email,
     )
 
 

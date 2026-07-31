@@ -26,33 +26,40 @@ class SqlKnowledgeEvidenceReader(KnowledgeEvidenceReader):
         self,
         *,
         workspace_id: UUID,
+        graph_id: UUID | None = None,
+        release_id: UUID | None = None,
         query: str,
         maximum_classification: int,
         limit: int,
     ) -> tuple[KnowledgeEvidenceCandidate, ...]:
         escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         pattern = f"%{escaped}%"
+        conditions = [
+            GraphModel.workspace_id == workspace_id,
+            GraphModel.classification <= maximum_classification,
+            ReleaseModel.id.in_(
+                governed_release_ids(
+                    workspace_id=workspace_id,
+                    graph_id=ReleaseModel.graph_id,
+                ).correlate(ReleaseModel)
+            ),
+            ReleaseNodeModel.classification <= maximum_classification,
+            or_(
+                ReleaseNodeModel.entity_type.ilike(pattern, escape="\\"),
+                cast(ReleaseNodeModel.properties, Text).ilike(pattern, escape="\\"),
+            ),
+        ]
+        if graph_id is not None:
+            conditions.append(GraphModel.id == graph_id)
+        if release_id is not None:
+            conditions.append(ReleaseModel.id == release_id)
         rows = list(
             (
                 await self._session.execute(
                     select(GraphModel, ReleaseModel, ReleaseNodeModel)
                     .join(ReleaseModel, ReleaseModel.id == GraphModel.active_release_id)
                     .join(ReleaseNodeModel, ReleaseNodeModel.release_id == ReleaseModel.id)
-                    .where(
-                        GraphModel.workspace_id == workspace_id,
-                        GraphModel.classification <= maximum_classification,
-                        ReleaseModel.id.in_(
-                            governed_release_ids(
-                                workspace_id=workspace_id,
-                                graph_id=ReleaseModel.graph_id,
-                            ).correlate(ReleaseModel)
-                        ),
-                        ReleaseNodeModel.classification <= maximum_classification,
-                        or_(
-                            ReleaseNodeModel.entity_type.ilike(pattern, escape="\\"),
-                            cast(ReleaseNodeModel.properties, Text).ilike(pattern, escape="\\"),
-                        ),
-                    )
+                    .where(*conditions)
                     .order_by(GraphModel.name, ReleaseNodeModel.entity_id)
                     .limit(limit)
                 )
@@ -73,25 +80,32 @@ class SqlKnowledgeEvidenceReader(KnowledgeEvidenceReader):
         *,
         workspace_id: UUID,
         resource_ids: Sequence[UUID],
+        graph_id: UUID | None = None,
+        release_id: UUID | None = None,
     ) -> tuple[KnowledgeEvidenceCandidate, ...]:
         unique_ids = tuple(dict.fromkeys(resource_ids))
         if not unique_ids:
             return ()
+        conditions = [
+            GraphModel.workspace_id == workspace_id,
+            ReleaseModel.id.in_(
+                governed_release_ids(
+                    workspace_id=workspace_id,
+                    graph_id=ReleaseModel.graph_id,
+                ).correlate(ReleaseModel)
+            ),
+            ReleaseNodeModel.entity_id.in_(unique_ids),
+        ]
+        if graph_id is not None:
+            conditions.append(GraphModel.id == graph_id)
+        if release_id is not None:
+            conditions.append(ReleaseModel.id == release_id)
         rows = (
             await self._session.execute(
                 select(GraphModel, ReleaseModel, ReleaseNodeModel)
                 .join(ReleaseModel, ReleaseModel.id == GraphModel.active_release_id)
                 .join(ReleaseNodeModel, ReleaseNodeModel.release_id == ReleaseModel.id)
-                .where(
-                    GraphModel.workspace_id == workspace_id,
-                    ReleaseModel.id.in_(
-                        governed_release_ids(
-                            workspace_id=workspace_id,
-                            graph_id=ReleaseModel.graph_id,
-                        ).correlate(ReleaseModel)
-                    ),
-                    ReleaseNodeModel.entity_id.in_(unique_ids),
-                )
+                .where(*conditions)
                 .order_by(ReleaseNodeModel.entity_id, GraphModel.id)
             )
         ).all()
@@ -127,7 +141,7 @@ class SqlKnowledgeEvidenceReader(KnowledgeEvidenceReader):
                 resource_id=node.entity_id,
                 classification=classification,
                 system_id=None,
-                domain_id=None,
+                domain_id=graph.domain_ref_id,
                 owner_department_id=None,
                 name=name,
                 description=str(description_value)[:1000] if description_value else None,

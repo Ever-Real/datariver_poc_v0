@@ -11,6 +11,7 @@ from datariver.interfaces.http.routes import (
     health,
     inference_admin,
     knowledge,
+    knowledge_assets,
     knowledge_studio,
     manual_registration,
     operations,
@@ -35,6 +36,8 @@ api_router.include_router(registration.router)
 api_router.include_router(manual_registration.router)
 api_router.include_router(retention.router)
 api_router.include_router(knowledge.router)
+api_router.include_router(knowledge_assets.registry_router)
+api_router.include_router(knowledge_assets.endpoint_router)
 api_router.include_router(knowledge_studio.router)
 api_router.include_router(knowledge_studio.domains_router)
 api_router.include_router(chat.router)

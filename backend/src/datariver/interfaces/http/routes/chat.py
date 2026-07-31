@@ -32,6 +32,7 @@ from datariver.application.services.chat import ChatService
 from datariver.application.services.chat_history import ChatHistoryService
 from datariver.application.services.chat_routing import SemanticChatQuestionRouter
 from datariver.application.services.governance_documents import GovernanceDocumentService
+from datariver.application.services.knowledge_assets import KnowledgeGraphScopeService
 from datariver.infrastructure.db.authz import SqlDecisionWriter, SqlSubjectReader
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
 from datariver.infrastructure.db.chat import (
@@ -44,6 +45,8 @@ from datariver.infrastructure.db.classification_access import (
 from datariver.infrastructure.db.governance_documents import (
     SqlGovernanceDocumentRepository,
 )
+from datariver.infrastructure.db.knowledge_assets import SqlKnowledgeAssetRepository
+from datariver.infrastructure.db.knowledge_evidence import SqlKnowledgeEvidenceReader
 from datariver.infrastructure.knowledge.openai_compatible import HttpxOpenAIJsonTransport
 from datariver.infrastructure.knowledge.runtime import build_knowledge_runtime_adapters
 from datariver.infrastructure.llm.ollama import LocalOllamaChatComposer
@@ -226,9 +229,13 @@ async def _query_response(
         catalog_index=catalog_index,
         vector_catalog=vector_catalog,
         governance_evidence=governance_evidence,
-        # The governed asset-graph adapter is intentionally opened by the port but
-        # remains unavailable until the next asset-graph scope is implemented.
-        graph_evidence=None,
+        graph_evidence=SqlKnowledgeEvidenceReader(session),
+        graph_scope_resolver=KnowledgeGraphScopeService(
+            repository=SqlKnowledgeAssetRepository(session),
+            authorization=AuthorizationService(
+                decision_writer=SqlDecisionWriter(container.database.session_factory)
+            ),
+        ),
         reranker=reranker,
         budget_guard=container.chat_budget,
         request_limit_per_minute=settings.chat_rate_limit_requests_per_minute,
@@ -261,6 +268,7 @@ async def _query_response(
         environment=context.environment,
         request_id=context.request_id,
         requested_mode=payload.mode,
+        requested_graph_id=payload.graph_id,
         workflow_observer=workflow_observer,
     )
     rankings = {item.chunk_id: item for item in exchange.evidence_ranking}

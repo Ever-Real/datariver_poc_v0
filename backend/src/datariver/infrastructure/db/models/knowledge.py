@@ -116,6 +116,66 @@ class GraphModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     archived_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
 
 
+class KnowledgeDeliveryPolicyModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
+    __tablename__ = "delivery_policies"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "graph_id"),
+        UniqueConstraint("workspace_id", "id"),
+        CheckConstraint(
+            "priority BETWEEN 0 AND 1000",
+            name="priority_range",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(match_any_terms) = 'array' "
+            "AND jsonb_typeof(match_all_terms) = 'array' "
+            "AND jsonb_typeof(excluded_terms) = 'array' "
+            "AND jsonb_array_length(match_any_terms) <= 50 "
+            "AND jsonb_array_length(match_all_terms) <= 50 "
+            "AND jsonb_array_length(excluded_terms) <= 50",
+            name="route_terms_arrays",
+        ),
+        CheckConstraint(
+            "NOT chat_enabled OR "
+            "jsonb_array_length(match_any_terms) + jsonb_array_length(match_all_terms) > 0",
+            name="chat_route_has_positive_term",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id"),
+            ("knowledge.graphs.workspace_id", "knowledge.graphs.id"),
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "created_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "updated_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_delivery_policies_chat_match",
+            "workspace_id",
+            "chat_enabled",
+            "priority",
+            "graph_id",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    graph_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    api_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    chat_enabled: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    priority: Mapped[int] = mapped_column(Integer, default=100, nullable=False)
+    match_any_terms: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    match_all_terms: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    excluded_terms: Mapped[list[str]] = mapped_column(JSON_DOCUMENT, default=list, nullable=False)
+    created_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    updated_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+
+
 class OntologyVersionModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "ontology_versions"
     __table_args__ = (

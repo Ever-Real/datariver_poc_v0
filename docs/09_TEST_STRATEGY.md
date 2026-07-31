@@ -1363,6 +1363,34 @@ applicable evidence below exists.
   MinIO throughput, worker crash/reclaim, multi-Workspace leakage, WSL amd64 and accessibility are
   target acceptance gates. Exact pgvector search is not a production SLO claim.
 
+### Knowledge Asset lifecycle and delivery acceptance
+
+- Revision `0080` and canonical `0001` must agree on the `knowledge.delivery_policies`
+  constraints, composite Workspace foreign keys, forced RLS, index and least-privilege grants.
+  Canonical generation is executed twice and the SHA-256 must remain identical.
+- Registry tests cover permission-pruned cursor pagination, server-side ordering, focused historical
+  Release metadata, bounded graph preview failure, real A-Box bindings and projection status.
+- Information Management tests cover direct typed A-Box UPSERT/DELETE changesets, exact
+  classification mapping, stable retry idempotency, property-profile deep links and delivery-policy
+  ETag handling.
+- Delivery-policy tests cover Unicode normalization, ANY/ALL/excluded conflicts, optimistic
+  concurrency, exact lost-response replay, concurrent-create serialization and ambiguous Chat route
+  refusal.
+- Governed Chat tests prove the selected graph/release/policy ID, version and hash are persisted,
+  retrieval is constrained to that immutable Release, and policy/release revocation between
+  retrieval and final citation validation fails closed without citations.
+- Browser acceptance verifies the existing Shell stays mounted, 조회 및 생성 and 정보 관리 switch
+  without a full reload, a Registry detail drawer focuses Release metadata, and API & Chat policy
+  feedback survives a successful save. External provider, large ingestion and preparation-PC
+  performance claims remain separate target-environment gates.
+
+On 2026-07-31, the revision `0080` source gate passed Ruff format/lint, strict mypy over
+`529` source files, `scripts/verify_static.py`, `2024` backend tests with `104` explicitly
+environment-gated skips, and the deterministic canonical migration check with an unchanged SHA-256
+across two generations. The frontend passed strict TypeScript, zero-warning ESLint, `390` tests in
+`73` files and the Vite production build. Live PostgreSQL migration, authenticated browser and
+preparation-PC checks remain runtime gates until the committed revision is applied.
+
 ## Core correctness scenarios
 
 - State machine rejects every undeclared transition and stale aggregate version.

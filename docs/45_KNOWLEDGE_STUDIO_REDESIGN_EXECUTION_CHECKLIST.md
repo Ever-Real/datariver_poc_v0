@@ -37,15 +37,15 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 
 - [ ] 기존 `GET /knowledge/graphs` 배열과 create/changeset/release/source-analysis/GraphRAG
   응답을 변경하지 않는 contract test를 먼저 고정한다.
-- [ ] `/knowledge/registry/assets` page와 drawer summary/version/binding/preview read API를 추가한다.
-- [ ] allowlisted sort, opaque keyset cursor, malformed cursor/limit negative를 구현한다.
-- [ ] graph domain/classification/action predicate를 SQL에 적용하고 cross-workspace,
+- [x] `/knowledge/registry/assets` page와 drawer summary/version/binding/preview read API를 추가한다.
+- [x] allowlisted sort, opaque keyset cursor, malformed cursor/limit negative를 구현한다.
+- [x] graph domain/classification/action predicate를 SQL에 적용하고 cross-workspace,
   over-clearance, disallowed-domain existence를 노출하지 않는 test를 만든다.
-- [ ] graph마다 release/snapshot/source job을 추가 조회하지 않는 one-query/grouped query를
+- [x] graph마다 release/snapshot/source job을 추가 조회하지 않는 one-query/grouped query를
   구현하고 query-count test를 만든다.
 - [ ] 대표 dataset manifest와 target `EXPLAIN (ANALYZE, BUFFERS)` 계획을 작성한다.
   target evidence 전에는 latency/capacity를 주장하지 않는다.
-- [ ] creator/editor/domain legacy-null을 추측하지 않고 server가 bounded display identity를
+- [x] creator/editor/domain legacy-null을 추측하지 않고 server가 bounded display identity를
   함께 반환함을 검증한다.
 
 **Exit:** 기존 UI는 그대로 동작하고 새 Registry read API가 additive, bounded, ABAC-safe다.
@@ -152,11 +152,11 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 - [ ] mapping readiness `UNBOUND/DRAFT/VALIDATED/STALE`와 ingestion
   `NOT_RUN/QUEUED/RUNNING/FAILED/DRAFT_CHANGESET/PUBLISHED`를 별도 표시함을 UI test한다.
 - [ ] source schema/file hash/ontology/transform/permission/classification drift가 STALE/denied가 되는 negative tests를 만든다.
-- [ ] drawer binding source list/count가 grouped bounded query이고 secret/object coordinate가 없음을 test한다.
+- [x] drawer binding source list/count가 grouped bounded query이고 secret/object coordinate가 없음을 test한다.
 - [ ] mapping 설정 저장이 release, Neo4j, DataHub metadata, raw source를 직접 바꾸지 않음을 integration test한다.
 - [ ] Studio 완료 transaction이 graph/ontology/binding read-back 전에 실패하면 A-Box job이
   없고, 성공 후 enqueue 실패가 materialized schema/spec을 변조하지 않음을 test한다.
-- [ ] 기존 PDF-to-DRAFT owner scope, PUBLIC/INTERNAL, bounded polling/cancel/stale 흐름을
+- [x] 기존 PDF-to-DRAFT owner scope, PUBLIC/INTERNAL, bounded polling/cancel/stale 흐름을
   Step 3에서 재사용하고 기존 entry point와 결과가 동등함을 test한다.
 - [ ] 실제 일반 mapping run은 ADR-0044 수준의 separate durable job, attempt/event,
   fencing/retry/cancel/outbox/RLS/worker role/crash matrix가 승인된 source kind에만 구현한다.
@@ -200,13 +200,13 @@ target DB/identity/browser 증거와 실제 physical reader는 별도 운영 게
 ## Phase 5B — Registry/Studio UI cutover
 
 - [ ] server capability가 Registry/Studio schema/API와 기존 PDF parity를 모두 ready로 보고하는지 확인한다.
-- [ ] KnowledgeRegistryPage의 TanStack manual page/sort와 wide drawer route state를 기본 화면으로 전환한다.
+- [x] KnowledgeRegistryPage의 TanStack manual page/sort와 wide drawer route state를 기본 화면으로 전환한다.
 - [ ] drawer close/back, loading/error/denied/empty/unavailable, focus restore, keyboard accessibility를 test한다.
-- [ ] overview/version/binding/preview/API tab을 lazy-load하고 close/tab-change에서 request를 abort한다.
+- [x] overview/version/binding/preview/API tab을 lazy-load하고 close/tab-change에서 request를 abort한다.
 - [x] create click이 persistent Knowledge shell 안의 route-backed full-screen modal Step 1로
   이동하고 refresh/back/deep-link로 Draft/step을 복구함을 test한다.
 - [x] KnowledgeWorkspaceLayout에서 데이터 적재 메뉴를 제거하고 Registry/Knowledge Chat만 남긴다.
-- [ ] old Mode A/B가 더 이상 독립 정본으로 쓰이지 않고 rollback source로만 남는지 확인한다.
+- [x] old Mode A/B가 더 이상 독립 정본으로 쓰이지 않고 rollback source로만 남는지 확인한다.
 - [ ] Catalog, Registration, Change Management, general Chat, Admin, AppShell의 focused regression을 실행한다.
 
 **Exit:** 두 메뉴 GNB, full-screen Studio, bounded wide drawer가 기본이며 기존 Knowledge Chat과

@@ -1416,6 +1416,8 @@ class KnowledgeReleaseRecord:
     edge_count: int
     published_by: UUID
     published_at: datetime
+    publisher_name: str | None = None
+    publisher_email: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1616,6 +1618,11 @@ class ChatCompositionAudit:
     authorization_generation: int | None = None
     external_stages: tuple[str, ...] = ()
     external_stage_provider_profile_version_ids: tuple[tuple[str, UUID], ...] = ()
+    knowledge_graph_id: UUID | None = None
+    knowledge_release_id: UUID | None = None
+    knowledge_delivery_policy_id: UUID | None = None
+    knowledge_delivery_policy_version: int | None = None
+    knowledge_delivery_policy_hash: str | None = None
 
 
 def default_chat_route() -> ChatRouteDecision:

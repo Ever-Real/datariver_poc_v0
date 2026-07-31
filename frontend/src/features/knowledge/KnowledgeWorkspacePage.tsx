@@ -92,6 +92,8 @@ export function KnowledgeWorkspacePage({
             onPasswordReauth={onPasswordReauth}
             onEnroll={onEnroll}
             hardwareWebauthnEnabled={hardwareWebauthnEnabled}
+            onEditAsset={onOpenStudio}
+            initialTab={page === 'knowledge-profiles' ? 'PROFILES' : 'DOMAINS'}
           />
         )}
         {page === 'knowledge-studio' && (

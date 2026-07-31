@@ -55,6 +55,7 @@ from datariver.infrastructure.db.models.knowledge import (
     ReleaseNodeModel,
     ValidationResultModel,
 )
+from datariver.infrastructure.db.models.platform import SubjectModel
 
 
 def _graph_record(
@@ -83,7 +84,12 @@ def _graph_record(
     )
 
 
-def _release_record(model: ReleaseModel) -> KnowledgeReleaseRecord:
+def _release_record(
+    model: ReleaseModel,
+    *,
+    publisher_name: str | None = None,
+    publisher_email: str | None = None,
+) -> KnowledgeReleaseRecord:
     return KnowledgeReleaseRecord(
         release_id=model.id,
         graph_id=model.graph_id,
@@ -94,6 +100,8 @@ def _release_record(model: ReleaseModel) -> KnowledgeReleaseRecord:
         edge_count=model.edge_count,
         published_by=model.published_by,
         published_at=model.published_at,
+        publisher_name=publisher_name,
+        publisher_email=publisher_email,
     )
 
 
@@ -1085,10 +1093,15 @@ class SqlKnowledgeStore(KnowledgeStore):
     async def list_releases(
         self, *, workspace_id: UUID, graph_id: UUID
     ) -> tuple[KnowledgeReleaseRecord, ...]:
-        models = list(
+        rows = list(
             (
-                await self._session.scalars(
-                    select(ReleaseModel)
+                await self._session.execute(
+                    select(
+                        ReleaseModel,
+                        SubjectModel.display_name,
+                        SubjectModel.email,
+                    )
+                    .outerjoin(SubjectModel, SubjectModel.id == ReleaseModel.published_by)
                     .where(
                         ReleaseModel.workspace_id == workspace_id,
                         ReleaseModel.graph_id == graph_id,
@@ -1103,7 +1116,14 @@ class SqlKnowledgeStore(KnowledgeStore):
                 )
             ).all()
         )
-        return tuple(_release_record(model) for model in models)
+        return tuple(
+            _release_record(
+                model,
+                publisher_name=publisher_name,
+                publisher_email=publisher_email,
+            )
+            for model, publisher_name, publisher_email in rows
+        )
 
     async def activate_release(
         self,

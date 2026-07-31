@@ -768,3 +768,32 @@ inference source contract is not a production external-provider claim. The durab
 the fixed deployment/System Configuration bindings already loaded at startup; there is no
 browser-created provider profile, endpoint or credential route. Backlog features may not be emulated
 with generic provider or arbitrary query pass-through.
+
+## Knowledge Asset operating endpoints
+
+Knowledge Asset 조회는 PostgreSQL 정본과 현재 요청자의 KG ABAC 범위를 사용한다. Registry
+목록은 `GET /api/v1/knowledge/registry/assets`에서 `q`, `sort`, opaque `cursor`, `limit`
+인자를 받고, 상세는
+`GET /api/v1/knowledge/registry/assets/{graph_id}/detail`에서 T-Box 요약, A-Box binding,
+Neo4j shadow projection 상태를 함께 반환한다. 목록과 상세는 권한 밖 Asset의 존재나 개수를
+노출하지 않는다.
+
+`PUT /api/v1/knowledge/registry/assets/{graph_id}/delivery-policy`는 `kg.edit`,
+`Idempotency-Key`와 기존 정책 수정 시 quoted integer `If-Match`를 요구한다. 정책은 API
+opt-in, Chat opt-in, 우선순위, Unicode 정규화된 ANY/ALL/제외 조건만 저장하며 raw
+Cypher·SQL·provider endpoint·credential을 받지 않는다. 응답은 `ETag`와 `no-store`를
+반환한다. 같은 idempotency key의 재시도는 최초 응답 snapshot을 재생하고, 다른 payload
+재사용은 충돌한다.
+
+`GET /api/v1/knowledge/assets/by-alias/{alias}`는 인증된 alias discovery endpoint다.
+hyphen/underscore alias와 Studio에 게시된 다중 alias를 같은 정본에서 해석하되, API opt-in,
+활성 Studio Release, 활성 immutable graph Release, KG ABAC를 모두 다시 확인한다. 반환값은
+typed contract/snapshot/GraphRAG/export 상대 경로뿐이며 raw graph query나 저장소 좌표를
+포함하지 않는다. 실제 Release 경로도 각각의 기존 권한 검사를 그대로 수행한다.
+
+Chat의 의미 분류가 `GRAPH`일 때만 활성 delivery policy 후보를 PostgreSQL에서
+권한·Release·ANY/ALL/제외 조건으로 먼저 축소한다. 동일 우선순위와 조건 특이성의 상위
+후보가 둘이면 자동 선택하지 않는다. 선택된 graph/release/policy ID, policy version과
+policy hash는 composition audit에 고정되며, 최종 citation 저장 직전에 정책과 활성 Release를
+재검증한다. 중간에 권한·정책·Release가 바뀌면 답변은 검증 불가로 닫히고 citation은
+저장하지 않는다.

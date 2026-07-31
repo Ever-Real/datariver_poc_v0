@@ -839,6 +839,8 @@ export interface KnowledgeRelease {
   edge_count: number
   published_by: string
   published_at: string
+  publisher_name?: string | null
+  publisher_email?: string | null
 }
 
 export interface KnowledgeProvenance {
@@ -986,6 +988,96 @@ export interface KnowledgeProjectionReceipt {
   node_count: number
   edge_count: number
   state: 'SHADOW_VERIFIED'
+}
+
+export interface KnowledgeDeliveryPolicy {
+  id: string
+  graph_id: string
+  api_enabled: boolean
+  chat_enabled: boolean
+  priority: number
+  match_any_terms: string[]
+  match_all_terms: string[]
+  excluded_terms: string[]
+  version: number
+  created_by: string
+  updated_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface KnowledgeAssetSummary {
+  id: string
+  slug: string
+  name: string
+  graph_type: string
+  status: string
+  classification: 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
+  domain_id: string | null
+  domain_name: string | null
+  creator_name: string | null
+  creator_email: string | null
+  editor_name: string | null
+  editor_email: string | null
+  active_studio_release_id: string | null
+  active_studio_release_no: number | null
+  active_release_id: string | null
+  active_release_no: number | null
+  class_count: number
+  property_count: number
+  relationship_count: number
+  binding_count: number
+  source_count: number
+  node_count: number
+  edge_count: number
+  projection_state: string | null
+  created_at: string
+  updated_at: string
+  version: number
+  delivery_policy: KnowledgeDeliveryPolicy | null
+}
+
+export interface KnowledgeAssetPage {
+  items: KnowledgeAssetSummary[]
+  next_cursor: string | null
+  limit: number
+}
+
+export interface KnowledgeAssetBindingSummary {
+  id: string
+  target_stable_element_id: string
+  source_reference_id: string
+  source_kind: string
+  source_name: string
+  source_version: string
+  mapping_rule_count: number
+}
+
+export interface KnowledgeAssetProjectionSummary {
+  id: string
+  release_id: string
+  adapter: string
+  state: string
+  node_count: number | null
+  edge_count: number | null
+  verified_at: string | null
+  error_code: string | null
+  updated_at: string
+}
+
+export interface KnowledgeAssetOperationalDetail {
+  asset: KnowledgeAssetSummary
+  schema_elements: Array<{
+    stable_element_id: string
+    kind: 'CLASS' | 'PROPERTY' | 'RELATION'
+    display_name: string
+    canonical_name: string
+    data_type: string | null
+    source_stable_element_id: string | null
+    target_stable_element_id: string | null
+  }>
+  bindings: KnowledgeAssetBindingSummary[]
+  projections: KnowledgeAssetProjectionSummary[]
 }
 
 export interface ChatSession {

@@ -526,6 +526,25 @@ class SqlChatStore(ChatStore):
                 "classification_policy_hash": (resolved_audit.classification_policy_hash),
                 "classification_policy_version": (resolved_audit.classification_policy_version),
                 "authorization_generation": (resolved_audit.authorization_generation),
+                "knowledge_graph_id": (
+                    str(resolved_audit.knowledge_graph_id)
+                    if resolved_audit.knowledge_graph_id is not None
+                    else None
+                ),
+                "knowledge_release_id": (
+                    str(resolved_audit.knowledge_release_id)
+                    if resolved_audit.knowledge_release_id is not None
+                    else None
+                ),
+                "knowledge_delivery_policy_id": (
+                    str(resolved_audit.knowledge_delivery_policy_id)
+                    if resolved_audit.knowledge_delivery_policy_id is not None
+                    else None
+                ),
+                "knowledge_delivery_policy_version": (
+                    resolved_audit.knowledge_delivery_policy_version
+                ),
+                "knowledge_delivery_policy_hash": (resolved_audit.knowledge_delivery_policy_hash),
                 "retrieval_mode": (
                     resolved_route.selected_mode.value if resolved_route else "GENERAL"
                 ),

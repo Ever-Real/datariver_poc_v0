@@ -163,6 +163,10 @@ boundary are defined by [ADR-0090](adr/0090-governed-monitoring-dashboard-tabs.m
 The consolidated Knowledge Information workspace, immutable-Release Property Profiles, governed
 Catalog tables and bounded document-Proposal proxy bridge are defined by
 [ADR-0083](adr/0083-knowledge-information-property-profiles-and-bounded-proposal-timeout.md).
+The unified Registry/Studio/instance operating model, typed alias delivery policy and
+authorization-scoped Chat graph selection are defined by
+[ADR-0092](adr/0092-knowledge-asset-lifecycle-delivery-and-chat-scope.md) and the
+[Knowledge Asset operating model](56_KNOWLEDGE_ASSET_OPERATING_MODEL.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

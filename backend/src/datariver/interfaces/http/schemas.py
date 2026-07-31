@@ -2631,6 +2631,120 @@ class KnowledgeGraphArchiveRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=2_000)
 
 
+class KnowledgeDeliveryPolicyResponse(BaseModel):
+    id: UUID
+    graph_id: UUID
+    api_enabled: bool
+    chat_enabled: bool
+    priority: int
+    match_any_terms: list[str]
+    match_all_terms: list[str]
+    excluded_terms: list[str]
+    version: int
+    created_by: UUID
+    updated_by: UUID
+    created_at: datetime
+    updated_at: datetime
+
+
+class KnowledgeDeliveryPolicyUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    api_enabled: bool
+    chat_enabled: bool
+    priority: int = Field(ge=0, le=1_000)
+    match_any_terms: list[str] = Field(default_factory=list, max_length=50)
+    match_all_terms: list[str] = Field(default_factory=list, max_length=50)
+    excluded_terms: list[str] = Field(default_factory=list, max_length=50)
+
+
+class KnowledgeAssetSummaryResponse(BaseModel):
+    id: UUID
+    slug: str
+    name: str
+    graph_type: str
+    status: str
+    classification: str
+    domain_id: UUID | None
+    domain_name: str | None
+    creator_name: str | None
+    creator_email: str | None
+    editor_name: str | None
+    editor_email: str | None
+    active_studio_release_id: UUID | None
+    active_studio_release_no: int | None
+    active_release_id: UUID | None
+    active_release_no: int | None
+    class_count: int
+    property_count: int
+    relationship_count: int
+    binding_count: int
+    source_count: int
+    node_count: int
+    edge_count: int
+    projection_state: str | None
+    created_at: datetime
+    updated_at: datetime
+    version: int
+    delivery_policy: KnowledgeDeliveryPolicyResponse | None
+
+
+class KnowledgeAssetPageResponse(BaseModel):
+    items: list[KnowledgeAssetSummaryResponse]
+    next_cursor: str | None
+    limit: int
+
+
+class KnowledgeAssetBindingSummaryResponse(BaseModel):
+    id: UUID
+    target_stable_element_id: str
+    source_reference_id: UUID
+    source_kind: str
+    source_name: str
+    source_version: str
+    mapping_rule_count: int
+
+
+class KnowledgeAssetProjectionSummaryResponse(BaseModel):
+    id: UUID
+    release_id: UUID
+    adapter: str
+    state: str
+    node_count: int | None
+    edge_count: int | None
+    verified_at: datetime | None
+    error_code: str | None
+    updated_at: datetime
+
+
+class KnowledgeAssetSchemaElementSummaryResponse(BaseModel):
+    stable_element_id: str
+    kind: str
+    display_name: str
+    canonical_name: str
+    data_type: str | None
+    source_stable_element_id: str | None
+    target_stable_element_id: str | None
+
+
+class KnowledgeAssetOperationalDetailResponse(BaseModel):
+    asset: KnowledgeAssetSummaryResponse
+    schema_elements: list[KnowledgeAssetSchemaElementSummaryResponse]
+    bindings: list[KnowledgeAssetBindingSummaryResponse]
+    projections: list[KnowledgeAssetProjectionSummaryResponse]
+
+
+class KnowledgeAssetEndpointResponse(BaseModel):
+    alias: str
+    graph_id: UUID
+    active_studio_release_id: UUID | None
+    active_release_id: UUID | None
+    contract_path: str
+    snapshot_path: str | None
+    graphrag_path: str | None
+    export_paths: list[str]
+
+
 class ProvenanceRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2683,6 +2797,8 @@ class KnowledgeReleaseResponse(BaseModel):
     edge_count: int
     published_by: UUID
     published_at: datetime
+    publisher_name: str | None = None
+    publisher_email: str | None = None
 
 
 class KnowledgeChangeSetCreate(BaseModel):
@@ -2912,6 +3028,7 @@ class ChatQueryRequest(BaseModel):
     question: str = Field(min_length=2, max_length=4000)
     maximum_evidence: int = Field(default=5, ge=1, le=10)
     mode: ChatRetrievalMode = ChatRetrievalMode.AUTO
+    graph_id: UUID | None = None
 
 
 class ChatEvidenceResponse(BaseModel):

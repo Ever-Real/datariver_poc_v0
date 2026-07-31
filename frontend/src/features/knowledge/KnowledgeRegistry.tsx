@@ -10,7 +10,13 @@ import {
 import type { ColumnDef } from '@tanstack/react-table'
 import { Edit3, Network, Plus, Trash2, X } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { KnowledgeGraph, KnowledgeRelease, KnowledgeSnapshot } from '../../api/types'
+import type {
+  KnowledgeAssetOperationalDetail,
+  KnowledgeAssetPage,
+  KnowledgeAssetSummary,
+  KnowledgeRelease,
+  KnowledgeSnapshot,
+} from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { AccordionItem } from '../../components/common/Accordion'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
@@ -45,15 +51,27 @@ export function KnowledgeRegistry({
 }) {
   const registryRootRef = useRef<HTMLDivElement>(null)
   const resizeRef = useRef<{ startX: number; startWidth: number } | undefined>(undefined)
-  const [graphs, setGraphs] = useState<KnowledgeGraph[]>([])
+  const archiveRetryRef = useRef<{
+    assetId: string
+    version: number
+    key: string
+  } | undefined>(undefined)
+  const [assets, setAssets] = useState<KnowledgeAssetSummary[]>([])
+  const [detail, setDetail] = useState<KnowledgeAssetOperationalDetail>()
+  const [query, setQuery] = useState('')
+  const [appliedQuery, setAppliedQuery] = useState('')
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [pageCursor, setPageCursor] = useState<string | null>(null)
+  const [cursorHistory, setCursorHistory] = useState<Array<string | null>>([])
   const [selectedId, setSelectedId] = useState<string>()
   const [focusedReleaseId, setFocusedReleaseId] = useState<string>()
   const [releases, setReleases] = useState<KnowledgeRelease[]>([])
   const [snapshot, setSnapshot] = useState<KnowledgeSnapshot>()
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [previewNotice, setPreviewNotice] = useState('')
   const [archiving, setArchiving] = useState(false)
-  const [archiveTarget, setArchiveTarget] = useState<KnowledgeGraph>()
+  const [archiveTarget, setArchiveTarget] = useState<KnowledgeAssetSummary>()
   const [error, setError] = useState<unknown>()
   const [expandedSections, setExpandedSections] = useState(
     () => new Set(['version-history', 'graph-preview']),
@@ -119,28 +137,39 @@ export function KnowledgeRegistry({
   const refresh = useCallback(async () => {
     setLoading(true)
     setError(undefined)
+    setPreviewNotice('')
     try {
-      const result = await client.request<KnowledgeGraph[]>('/knowledge/graphs')
-      setGraphs(result)
+      const parameters = new URLSearchParams({
+        limit: '25',
+        sort: 'UPDATED_DESC',
+      })
+      if (appliedQuery) parameters.set('q', appliedQuery)
+      if (pageCursor) parameters.set('cursor', pageCursor)
+      const result = await client.request<KnowledgeAssetPage>(
+        `/knowledge/registry/assets?${parameters}`,
+      )
+      setAssets(result.items)
+      setNextCursor(result.next_cursor)
       setSelectedId((current) => (
-        current && result.some((graph) => graph.id === current) ? current : undefined
+        current && result.items.some((asset) => asset.id === current) ? current : undefined
       ))
     } catch (next) {
       setError(next)
     } finally {
       setLoading(false)
     }
-  }, [client])
+  }, [appliedQuery, client, pageCursor])
 
   useEffect(() => {
     void refresh()
   }, [refresh])
 
-  const selected = graphs.find((graph) => graph.id === selectedId)
+  const selected = assets.find((asset) => asset.id === selectedId)
   const focusedRelease = releases.find((release) => release.id === focusedReleaseId)
 
   useEffect(() => {
     if (!selected) {
+      setDetail(undefined)
       setReleases([])
       setFocusedReleaseId(undefined)
       setSnapshot(undefined)
@@ -150,13 +179,21 @@ export function KnowledgeRegistry({
     setDetailLoading(true)
     setError(undefined)
     setReleases([])
+    setDetail(undefined)
     setSnapshot(undefined)
-    void client.request<KnowledgeRelease[]>(
-      `/knowledge/graphs/${selected.id}/releases`,
-      { cache: 'no-store', signal: controller.signal },
-    )
-      .then((nextReleases) => {
+    void Promise.all([
+      client.request<KnowledgeRelease[]>(
+        `/knowledge/graphs/${selected.id}/releases`,
+        { cache: 'no-store', signal: controller.signal },
+      ),
+      client.request<KnowledgeAssetOperationalDetail>(
+        `/knowledge/registry/assets/${selected.id}/detail`,
+        { cache: 'no-store', signal: controller.signal },
+      ),
+    ])
+      .then(([nextReleases, nextDetail]) => {
         if (controller.signal.aborted) return
+        setDetail(nextDetail)
         setReleases(nextReleases)
         setFocusedReleaseId(
           selected.active_release_id
@@ -186,6 +223,7 @@ export function KnowledgeRegistry({
     setDetailLoading(true)
     setError(undefined)
     setSnapshot(undefined)
+    setPreviewNotice('')
     void client.request<KnowledgeSnapshot>(
       `/knowledge/graphs/${selected.id}/releases/${focusedReleaseId}/snapshot?maximum_nodes=200`,
       { cache: 'no-store', signal: controller.signal },
@@ -194,7 +232,13 @@ export function KnowledgeRegistry({
         if (!controller.signal.aborted) setSnapshot(nextSnapshot)
       })
       .catch((next) => {
-        if (!controller.signal.aborted) setError(next)
+        if (!controller.signal.aborted) {
+          setPreviewNotice(
+            next instanceof Error
+              ? `이 버전의 bounded 미리보기를 표시하지 못했습니다: ${next.message}`
+              : '이 버전의 bounded 미리보기를 표시하지 못했습니다.',
+          )
+        }
       })
       .finally(() => {
         if (!controller.signal.aborted) setDetailLoading(false)
@@ -215,7 +259,7 @@ export function KnowledgeRegistry({
     label: edge.edge_type,
   })), [snapshot])
 
-  const columns = useMemo<ColumnDef<KnowledgeGraph>[]>(() => [
+  const columns = useMemo<ColumnDef<KnowledgeAssetSummary>[]>(() => [
     {
       accessorKey: 'id',
       header: 'ID',
@@ -227,25 +271,45 @@ export function KnowledgeRegistry({
       accessorKey: 'name',
       header: 'Name',
       size: 220,
+      enableSorting: false,
       cell: ({ row }) => <strong>{row.original.name}</strong>,
     },
     {
       id: 'domain',
       header: 'Domain',
       size: 170,
+      enableSorting: false,
       accessorFn: (graph) => graph.domain_name ?? '기록 없음 (legacy)',
     },
     {
       accessorKey: 'status',
       header: 'Status',
       size: 110,
+      enableSorting: false,
       cell: ({ row }) => <span className="badge badge-soft">{row.original.status}</span>,
     },
     {
-      accessorKey: 'version',
-      header: 'Version',
-      size: 80,
-      cell: ({ row }) => `v${row.original.version}`,
+      id: 'schema',
+      header: 'Schema / Instance',
+      size: 140,
+      cell: ({ row }) => (
+        <span>
+          T v{row.original.active_studio_release_no ?? '—'}
+          {' · '}A v{row.original.active_release_no ?? '—'}
+        </span>
+      ),
+    },
+    {
+      id: 'topology',
+      header: 'Class / Relation',
+      size: 130,
+      cell: ({ row }) => `${row.original.class_count} / ${row.original.relationship_count}`,
+    },
+    {
+      id: 'instances',
+      header: 'Nodes / Edges',
+      size: 130,
+      cell: ({ row }) => `${row.original.node_count} / ${row.original.edge_count}`,
     },
     {
       id: 'actions',
@@ -308,7 +372,18 @@ export function KnowledgeRegistry({
     setArchiving(true)
     setError(undefined)
     try {
-      await archiveKnowledgeAsset(client, archiveTarget)
+      if (
+        archiveRetryRef.current?.assetId !== archiveTarget.id
+        || archiveRetryRef.current.version !== archiveTarget.version
+      ) {
+        archiveRetryRef.current = {
+          assetId: archiveTarget.id,
+          version: archiveTarget.version,
+          key: crypto.randomUUID(),
+        }
+      }
+      await archiveKnowledgeAsset(client, archiveTarget, archiveRetryRef.current.key)
+      archiveRetryRef.current = undefined
       if (selectedId === archiveTarget.id) setSelectedId(undefined)
       setArchiveTarget(undefined)
       await refresh()
@@ -323,9 +398,11 @@ export function KnowledgeRegistry({
     <div ref={registryRootRef} className="grid gap-4">
       <div className="grid gap-2 sm:grid-cols-3">
         {[
-          ['오늘 추가된 노드', '집계 API 미제공'],
-          ['오늘 추가된 관계', '집계 API 미제공'],
-          ['수행된 적재 작업', '작업 API 미제공'],
+          ['현재 페이지 Assets', String(assets.length)],
+          ['활성 인스턴스', String(assets.filter((item) => item.active_release_id).length)],
+          ['검증된 Projection', String(assets.filter(
+            (item) => item.projection_state === 'SHADOW_VERIFIED',
+          ).length)],
         ].map(([label, value]) => (
           <article
             key={label}
@@ -335,34 +412,87 @@ export function KnowledgeRegistry({
               {label}
             </span>
             <strong className="mt-1 block text-sm text-navy-900">
-              — <small className="font-normal text-slate-500">{value}</small>
+              {value}
             </strong>
           </article>
         ))}
       </div>
       <section className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm">
-        <header className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <header className="mb-3 flex flex-wrap items-end justify-between gap-3">
           <div>
             <span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">
               Asset list
             </span>
             <h2 className="my-1 text-lg font-black text-navy-900">지식 레지스트리</h2>
           </div>
-          <button className="button" type="button" onClick={onCreate}>
-            <Plus size={14} /> 에셋 추가
-          </button>
+          <div className="flex flex-wrap items-end gap-2">
+            <label className="grid gap-1 text-xs font-bold text-navy-900">
+              Asset 검색
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== 'Enter') return
+                  setAppliedQuery(query.trim())
+                  setPageCursor(null)
+                  setCursorHistory([])
+                }}
+                placeholder="이름, alias, 도메인"
+              />
+            </label>
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => {
+                setAppliedQuery(query.trim())
+                setPageCursor(null)
+                setCursorHistory([])
+              }}
+            >
+              검색
+            </button>
+            <button className="button" type="button" onClick={onCreate}>
+              <Plus size={14} /> 에셋 추가
+            </button>
+          </div>
         </header>
         <ErrorNotice error={error} />
         <div className="grid gap-4">
           <DenseDataTable
             caption="지식 에셋 목록"
             columns={columns}
-            data={graphs}
-            getRowId={(graph) => graph.id}
+            data={assets}
+            getRowId={(asset) => asset.id}
             loading={loading}
             selectedRowId={selectedId}
-            onRowActivate={(graph) => setSelectedId(graph.id)}
+            onRowActivate={(asset) => setSelectedId(asset.id)}
           />
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={loading || cursorHistory.length === 0}
+              onClick={() => {
+                const next = [...cursorHistory]
+                setPageCursor(next.pop() ?? null)
+                setCursorHistory(next)
+              }}
+            >
+              이전
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={loading || !nextCursor}
+              onClick={() => {
+                if (!nextCursor) return
+                setCursorHistory((current) => [...current, pageCursor])
+                setPageCursor(nextCursor)
+              }}
+            >
+              다음
+            </button>
+          </div>
           {!selected && (
             <div className="grid min-h-36 place-items-center rounded-enterprise border border-dashed border-slate-300 bg-slate-50 text-center text-xs text-slate-500">
               <div>
@@ -423,11 +553,11 @@ export function KnowledgeRegistry({
                 </div>
                 <div>
                   <dt className="text-[10px] font-black text-slate-500">Nodes</dt>
-                  <dd className="m-0">{focusedRelease?.node_count ?? '—'}</dd>
+                  <dd className="m-0">{focusedRelease?.node_count ?? selected.node_count}</dd>
                 </div>
                 <div>
                   <dt className="text-[10px] font-black text-slate-500">Edges</dt>
-                  <dd className="m-0">{focusedRelease?.edge_count ?? '—'}</dd>
+                  <dd className="m-0">{focusedRelease?.edge_count ?? selected.edge_count}</dd>
                 </div>
                 <div>
                   <dt className="text-[10px] font-black text-slate-500">Focused version</dt>
@@ -437,11 +567,20 @@ export function KnowledgeRegistry({
                 </div>
                 <div>
                   <dt className="text-[10px] font-black text-slate-500">Creator</dt>
-                  <dd className="m-0 break-all">{focusedRelease?.published_by ?? '—'}</dd>
+                  <dd className="m-0 break-all">
+                    {focusedRelease?.publisher_name
+                      ?? focusedRelease?.publisher_email
+                      ?? focusedRelease?.published_by
+                      ?? selected.creator_name
+                      ?? selected.creator_email
+                      ?? '—'}
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-[10px] font-black text-slate-500">Created At</dt>
-                  <dd className="m-0">{localTime(focusedRelease?.published_at)}</dd>
+                  <dd className="m-0">
+                    {localTime(focusedRelease?.published_at ?? selected.created_at)}
+                  </dd>
                 </div>
               </dl>
               <AccordionItem
@@ -487,7 +626,9 @@ export function KnowledgeRegistry({
                                     : <span className="text-slate-500">HISTORICAL</span>}
                                 </td>
                                 <td className="max-w-36 truncate p-2" title={release.published_by}>
-                                  {release.published_by}
+                                  {release.publisher_name
+                                    ?? release.publisher_email
+                                    ?? release.published_by}
                                 </td>
                                 <td className="whitespace-nowrap p-2">
                                   {localTime(release.published_at)}
@@ -530,29 +671,113 @@ export function KnowledgeRegistry({
                   height={420}
                   showMiniMap
                 />
+                {previewNotice && (
+                  <p role="status" className="mt-2 rounded border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                    {previewNotice} 버전 메타데이터와 카운트는 계속 확인할 수 있습니다.
+                  </p>
+                )}
               </AccordionItem>
               <AccordionItem
                 itemId="ingestion-history"
                 title="Ingestion 기록과 연결 Source"
-                summary="read API 연결 전"
+                summary={`${detail?.bindings.length ?? 0} bindings`}
                 expanded={expandedSections.has('ingestion-history')}
                 onToggle={() => toggleSection('ingestion-history')}
               >
-                <p className="m-0 text-xs text-slate-500">
-                  Version-pinned binding/run summary API가 연결된 뒤 표시합니다.
-                </p>
+                {detail?.bindings.length ? (
+                  <div className="overflow-x-auto">
+                    <table className="w-full border-collapse text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-slate-300 text-[10px] font-black text-slate-500 uppercase">
+                          <th className="p-2">Target</th>
+                          <th className="p-2">Source</th>
+                          <th className="p-2">Version</th>
+                          <th className="p-2">Rules</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {detail.bindings.map((binding) => (
+                          <tr key={binding.id} className="border-b border-slate-200">
+                            <td className="p-2 font-bold">{binding.target_stable_element_id}</td>
+                            <td className="p-2">
+                              {binding.source_name}
+                              <small className="block text-slate-500">{binding.source_kind}</small>
+                            </td>
+                            <td className="p-2">{binding.source_version}</td>
+                            <td className="p-2">{binding.mapping_rule_count}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="m-0 text-xs text-slate-500">
+                    활성 Studio Release에 발행된 A-Box Binding이 없습니다.
+                  </p>
+                )}
+              </AccordionItem>
+              <AccordionItem
+                itemId="projection-history"
+                title="Projection 동기화"
+                summary={selected.projection_state ?? 'NOT_RUN'}
+                expanded={expandedSections.has('projection-history')}
+                onToggle={() => toggleSection('projection-history')}
+              >
+                {detail?.projections.filter(
+                  (projection) => !focusedReleaseId || projection.release_id === focusedReleaseId,
+                ).length ? (
+                  <ul className="m-0 grid list-none gap-2 p-0 text-xs">
+                    {detail.projections
+                      .filter(
+                        (projection) => (
+                          !focusedReleaseId || projection.release_id === focusedReleaseId
+                        ),
+                      )
+                      .map((projection) => (
+                      <li key={projection.id} className="rounded border border-slate-200 p-3">
+                        <strong>{projection.adapter} · {projection.state}</strong>
+                        <small className="mt-1 block text-slate-500">
+                          {projection.node_count ?? 0} nodes · {projection.edge_count ?? 0} edges
+                          {' · '}{localTime(projection.verified_at ?? projection.updated_at)}
+                        </small>
+                        {projection.error_code && (
+                          <span className="mt-1 block text-red-700">{projection.error_code}</span>
+                        )}
+                      </li>
+                      ))}
+                  </ul>
+                ) : (
+                  <p className="m-0 text-xs text-slate-500">
+                    아직 PostgreSQL Release를 검증한 Projection receipt가 없습니다.
+                  </p>
+                )}
               </AccordionItem>
               <AccordionItem
                 itemId="typed-api"
                 title="Endpoint API"
-                summary="capability 확인 필요"
+                summary={selected.delivery_policy?.api_enabled ? 'ENABLED' : 'DISABLED'}
                 expanded={expandedSections.has('typed-api')}
                 onToggle={() => toggleSection('typed-api')}
               >
-                <p className="m-0 text-xs text-slate-500">
-                  서버가 허용한 상대 경로만 표시하며 provider URL, credential 또는 Bolt 주소는
-                  노출하지 않습니다.
-                </p>
+                {selected.delivery_policy?.api_enabled ? (
+                  <div className="grid gap-2 text-xs">
+                    <p className="m-0 text-slate-500">
+                      OIDC와 KG ABAC를 통과한 호출자에게만 활성 Release 상대 경로를 반환합니다.
+                    </p>
+                    <code className="overflow-x-auto rounded bg-slate-100 p-3">
+                      GET /api/v1/knowledge/assets/by-alias/{selected.slug}
+                    </code>
+                    <code className="overflow-x-auto rounded bg-slate-100 p-3">
+                      GET /api/v1/knowledge/graphs/{selected.id}/releases/
+                      {selected.active_release_id ?? '{active-release}'}/snapshot
+                    </code>
+                  </div>
+                ) : (
+                  <p className="m-0 text-xs text-slate-500">
+                    정보 관리의 API &amp; Chat routing에서 이 Asset의 API 제공을 활성화할 수
+                    있습니다.
+                  </p>
+                )}
               </AccordionItem>
             </div>
           </aside>
