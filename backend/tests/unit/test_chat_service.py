@@ -1308,12 +1308,31 @@ async def test_chat_rejects_general_draft_that_forges_internal_citations() -> No
     )
 
 
-async def test_chat_graph_unavailable_is_visible_and_never_falls_back() -> None:
+async def test_chat_graph_unavailable_returns_safe_general_knowledge_without_retrieval() -> None:
     workspace_id = uuid4()
+    profile_id = uuid4()
+    binding = inference_binding(InferenceStage.COMPOSITION, profile_id)
     index = FakeIndex(asset(workspace_id))
+    store = FakeChatStore()
+    general = FixedGeneralComposer(
+        ChatDraft(answer="계보는 데이터 흐름과 의존 관계를 나타냅니다.", cited_chunk_ids=())
+    )
     exchange = await chat_service(
         catalog_index=index,
-        uow_factory=chat_uow_factory(FakeChatStore()),
+        general_composer=general,
+        composition_audit=ChatCompositionAudit(
+            provider="local-test",
+            model="configured-model",
+            prompt_template_version="test-v1",
+            external_service_used=True,
+            provider_profile_version_id=profile_id,
+        ),
+        classification_access=cast(
+            ClassificationAccessResolver,
+            FixedClassificationAccess(governed_chat_access(binding)),
+        ),
+        inference_runtime_bindings=(binding,),
+        uow_factory=chat_uow_factory(store),
         authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
     ).query(
         workspace_id=workspace_id,
@@ -1327,12 +1346,69 @@ async def test_chat_graph_unavailable_is_visible_and_never_falls_back() -> None:
     )
 
     assert index.search_subject is None
-    assert exchange.answer == UNVERIFIABLE_ANSWER
+    assert general.calls == 1
+    assert exchange.answer == (
+        f"{GENERAL_KNOWLEDGE_PREFIX}계보는 데이터 흐름과 의존 관계를 나타냅니다."
+    )
     assert exchange.evidence == ()
     assert exchange.route.selected_mode is ChatRetrievalMode.GRAPH
     assert exchange.route.adapter_state is ChatAdapterState.UNAVAILABLE
     routing = next(item for item in exchange.workflow if item.stage is ChatWorkflowStage.ROUTING)
     assert routing.status is ChatWorkflowStatus.UNAVAILABLE
+    assert any(
+        item.detail_code == "GRAPH_UNAVAILABLE_GENERAL_KNOWLEDGE_COMPOSED"
+        and item.status is ChatWorkflowStatus.COMPLETED
+        for item in exchange.workflow
+    )
+    assert store.saved_composition_audit is not None
+    assert store.saved_composition_audit.external_stages == ("composition",)
+
+
+async def test_chat_graph_fallback_refuses_unbound_external_general_composer() -> None:
+    workspace_id = uuid4()
+    policy_profile_id = uuid4()
+    configured_profile_id = uuid4()
+    policy_binding = inference_binding(InferenceStage.COMPOSITION, policy_profile_id)
+    configured_binding = replace(
+        policy_binding,
+        provider_profile_version_id=configured_profile_id,
+    )
+    general = FixedGeneralComposer(ChatDraft(answer="안전한 일반 설명", cited_chunk_ids=()))
+    exchange = await chat_service(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        general_composer=general,
+        composition_audit=ChatCompositionAudit(
+            provider="local-test",
+            model="configured-model",
+            prompt_template_version="test-v1",
+            external_service_used=True,
+            provider_profile_version_id=configured_profile_id,
+        ),
+        classification_access=cast(
+            ClassificationAccessResolver,
+            FixedClassificationAccess(governed_chat_access(policy_binding)),
+        ),
+        inference_runtime_bindings=(configured_binding,),
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="이 테이블의 downstream 영향을 알려줘",
+        maximum_evidence=5,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-graph-fallback-provider-mismatch",
+        requested_mode=ChatRetrievalMode.GRAPH,
+    )
+
+    assert general.calls == 0
+    assert exchange.answer == UNVERIFIABLE_ANSWER
+    assert exchange.route.adapter_state is ChatAdapterState.UNAVAILABLE
+    assert any(
+        item.detail_code == "INFERENCE_PROVIDER_POLICY_BINDING_UNAVAILABLE"
+        for item in exchange.workflow
+    )
 
 
 async def test_chat_reranker_failure_refuses_without_composer_or_strategy_fallback() -> None:

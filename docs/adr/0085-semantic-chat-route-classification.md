@@ -45,7 +45,10 @@ reuse their approved composition-model configuration.
 The service performs authorization, classification access filtering, retrieval, reranking and
 final citation reauthorization after routing as before. A `GRAPH` result invokes no graph query
 unless the separately governed graph adapter is present; otherwise it reports
-`GRAPH_ADAPTER_UNAVAILABLE` rather than degrading to another retrieval method.
+`GRAPH_ADAPTER_UNAVAILABLE` rather than degrading to another retrieval method. If the approved
+general-answer composer is available, Chat may still provide a clearly marked, citation-free
+general-knowledge explanation; it never infers or represents graph facts for the unavailable
+asset graph.
 
 ## Consequences
 

@@ -257,12 +257,22 @@ class ChatService:
             graph_available=self._graph_evidence is not None,
             inference_allowed=route_classifier_allowed,
         )
+        general_composer = self._general_composer
+        general_fallback_requested = (
+            route.adapter_state is ChatAdapterState.UNAVAILABLE
+            and route.selected_mode is ChatRetrievalMode.GRAPH
+            and general_composer is not None
+        )
+        general_fallback_external_required = (
+            general_fallback_requested and self._composition_audit.external_service_used
+        )
         required_external_stages = (
             self._required_external_stages(route)
             if route.adapter_state is ChatAdapterState.READY
-            else ()
+            else ((InferenceStage.COMPOSITION,) if general_fallback_external_required else ())
         )
         external_path_required = bool(required_external_stages)
+        general_fallback_allowed = general_fallback_requested
         route_unavailable_detail = f"{route.selected_mode.value}_ADAPTER_UNAVAILABLE"
         if (
             route_classifier_requested
@@ -286,6 +296,7 @@ class ChatService:
                 route = replace(route, adapter_state=ChatAdapterState.UNAVAILABLE)
                 route_unavailable_detail = "INFERENCE_PROVIDER_POLICY_BINDING_UNAVAILABLE"
                 allowed_chat_classifications = set()
+                general_fallback_allowed = False
             else:
                 allowed_chat_classifications.intersection_update(provider_bound)
         retrieval_subject = replace(
@@ -307,6 +318,8 @@ class ChatService:
             ["composition"] if route_classifier_requested and route_classifier_allowed else []
         )
         if route.adapter_state is ChatAdapterState.UNAVAILABLE:
+            cited_evidence: tuple[ChatEvidence, ...] = ()
+            rankings: tuple[ChatEvidenceRanking, ...] = ()
             workflow.extend(
                 (
                     self._event(
@@ -324,21 +337,78 @@ class ChatService:
                         ChatWorkflowStatus.SKIPPED,
                         "NO_RETRIEVED_EVIDENCE",
                     ),
-                    self._event(
-                        ChatWorkflowStage.COMPOSITION,
-                        ChatWorkflowStatus.REFUSED,
-                        "UNAVAILABLE_ROUTE_REFUSED",
-                    ),
-                    self._event(
-                        ChatWorkflowStage.CITATION_VALIDATION,
-                        ChatWorkflowStatus.SKIPPED,
-                        "NO_DRAFT",
-                    ),
                 )
             )
-            answer = UNVERIFIABLE_ANSWER
-            cited_evidence: tuple[ChatEvidence, ...] = ()
-            rankings: tuple[ChatEvidenceRanking, ...] = ()
+            if general_fallback_allowed and general_composer is not None:
+                try:
+                    if self._composition_audit.external_service_used:
+                        external_stages.append("composition")
+                    draft = await general_composer.compose_general(question=question)
+                    answer = self._validate_general_draft(draft)
+                except Exception:
+                    route = replace(route, adapter_state=ChatAdapterState.FAILED)
+                    answer = UNVERIFIABLE_ANSWER
+                    workflow.extend(
+                        (
+                            self._event(
+                                ChatWorkflowStage.COMPOSITION,
+                                ChatWorkflowStatus.FAILED,
+                                "GENERAL_KNOWLEDGE_COMPOSER_FAILED",
+                            ),
+                            self._event(
+                                ChatWorkflowStage.CITATION_VALIDATION,
+                                ChatWorkflowStatus.SKIPPED,
+                                "NO_DRAFT",
+                            ),
+                        )
+                    )
+                else:
+                    if answer == UNVERIFIABLE_ANSWER:
+                        workflow.extend(
+                            (
+                                self._event(
+                                    ChatWorkflowStage.COMPOSITION,
+                                    ChatWorkflowStatus.REFUSED,
+                                    "INVALID_GENERAL_KNOWLEDGE_DRAFT",
+                                ),
+                                self._event(
+                                    ChatWorkflowStage.CITATION_VALIDATION,
+                                    ChatWorkflowStatus.SKIPPED,
+                                    "NO_DRAFT",
+                                ),
+                            )
+                        )
+                    else:
+                        workflow.extend(
+                            (
+                                self._event(
+                                    ChatWorkflowStage.COMPOSITION,
+                                    ChatWorkflowStatus.COMPLETED,
+                                    "GRAPH_UNAVAILABLE_GENERAL_KNOWLEDGE_COMPOSED",
+                                ),
+                                self._event(
+                                    ChatWorkflowStage.CITATION_VALIDATION,
+                                    ChatWorkflowStatus.SKIPPED,
+                                    "NO_INTERNAL_CITATIONS_GENERAL_ANSWER",
+                                ),
+                            )
+                        )
+            else:
+                answer = UNVERIFIABLE_ANSWER
+                workflow.extend(
+                    (
+                        self._event(
+                            ChatWorkflowStage.COMPOSITION,
+                            ChatWorkflowStatus.REFUSED,
+                            "UNAVAILABLE_ROUTE_REFUSED",
+                        ),
+                        self._event(
+                            ChatWorkflowStage.CITATION_VALIDATION,
+                            ChatWorkflowStatus.SKIPPED,
+                            "NO_DRAFT",
+                        ),
+                    )
+                )
         else:
             workflow.append(
                 self._event(
