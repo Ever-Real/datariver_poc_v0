@@ -4,9 +4,12 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from io import BytesIO
+from types import SimpleNamespace
+from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.services.knowledge_pipeline import (
     KnowledgeGraphRagService,
@@ -29,12 +32,14 @@ from datariver.domain.knowledge_pipeline import (
     PageEmbedding,
     PdfPage,
 )
+from datariver.infrastructure.db.knowledge_pipeline import SqlSemanticSeedSelector
 from datariver.infrastructure.knowledge.neo4j import (
     CypherStatement,
     Neo4jKnowledgeProjectionAdapter,
     Neo4jScopedEvidenceRetriever,
 )
 from datariver.infrastructure.knowledge.pdf import PypdfPageAwareParser
+from datariver.local_graphrag_fixture import fixture_operations
 
 
 def _generated_pdf_fixture() -> bytes:
@@ -797,6 +802,278 @@ async def test_shadow_projection_rejects_tampered_content_even_when_counts_match
     )
 
 
+class _SelectorResult:
+    def __init__(self, values: Sequence[object]) -> None:
+        self._values = tuple(values)
+
+    def all(self) -> list[object]:
+        return list(self._values)
+
+
+class _SelectorSession:
+    def __init__(
+        self,
+        *,
+        vector_rows: Sequence[object],
+        nodes: Sequence[SimpleNamespace],
+    ) -> None:
+        self._vector_rows = tuple(vector_rows)
+        self._nodes = tuple(nodes)
+        self.scalar_statements: list[Any] = []
+
+    async def execute(self, statement: Any) -> _SelectorResult:
+        del statement
+        return _SelectorResult(self._vector_rows)
+
+    async def scalars(self, statement: Any) -> _SelectorResult:
+        self.scalar_statements.append(statement)
+        compiled = statement.compile()
+        params = compiled.params
+        maximum_classification = next(
+            int(value) for key, value in params.items() if key.startswith("classification")
+        )
+        row_limit = next(int(value) for key, value in params.items() if key.startswith("param"))
+        values = [
+            node for node in self._nodes if int(node.classification) <= maximum_classification
+        ]
+        if "ORDER BY" in str(statement):
+            values.sort(key=lambda node: node.entity_id.int)
+        return _SelectorResult(values[:row_limit])
+
+
+class _SelectorSessionContext:
+    def __init__(self, session: _SelectorSession) -> None:
+        self._session = session
+
+    async def __aenter__(self) -> _SelectorSession:
+        return self._session
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: object,
+    ) -> None:
+        del exc_type, exc, traceback
+
+
+class _SelectorSessionFactory:
+    def __init__(self, session: _SelectorSession) -> None:
+        self._session = session
+
+    def __call__(self) -> _SelectorSessionContext:
+        return _SelectorSessionContext(self._session)
+
+
+class _InvalidQuestionEmbedding(_Embedding):
+    async def embed_pages(
+        self, *, pages: Sequence[PdfPage], binding: ModelBinding
+    ) -> EmbeddingBatch:
+        del pages
+        return EmbeddingBatch(binding=binding, embeddings=(), input_tokens=0)
+
+
+def _selector(
+    *,
+    session: _SelectorSession,
+    embedding: _Embedding | None = None,
+) -> SqlSemanticSeedSelector:
+    return SqlSemanticSeedSelector(
+        session_factory=cast(
+            async_sessionmaker[AsyncSession],
+            _SelectorSessionFactory(session),
+        ),
+        subject_id=uuid4(),
+        embedding=embedding or _Embedding(),
+        binding=_binding("bge-m3:latest"),
+    )
+
+
+async def _disable_selector_security_context(*_: object, **__: object) -> None:
+    return None
+
+
+def _selector_node(
+    entity_id: UUID,
+    *,
+    classification: int = 1,
+    source_version: str = "a" * 64,
+    page_number: int = 1,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        entity_id=entity_id,
+        classification=classification,
+        provenance=[
+            {
+                "source_locator": f"fixture://source#page={page_number}",
+                "source_version": source_version,
+            }
+        ],
+    )
+
+
+@pytest.mark.asyncio
+async def test_semantic_seed_uses_bounded_fallback_for_the_three_node_local_fixture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "datariver.infrastructure.db.knowledge_pipeline.set_security_context",
+        _disable_selector_security_context,
+    )
+    snapshot = GraphSnapshot()
+    for operation in fixture_operations():
+        snapshot = operation.apply(snapshot)
+    restricted_id = UUID(int=(1 << 128) - 1)
+    session = _SelectorSession(
+        vector_rows=(),
+        nodes=(
+            *(
+                _selector_node(node.entity_id, classification=node.classification)
+                for node in snapshot.nodes.values()
+            ),
+            _selector_node(restricted_id, classification=2),
+        ),
+    )
+
+    selected = await _selector(session=session).select_seed_ids(
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        release_id=uuid4(),
+        question="반도체 장치 관계",
+        maximum_classification=1,
+        limit=8,
+    )
+
+    assert selected == tuple(sorted(snapshot.nodes, key=lambda value: value.int))
+    assert restricted_id not in selected
+    assert len(session.scalar_statements) == 1
+    statement = session.scalar_statements[0]
+    assert "ORDER BY" in str(statement)
+    assert "knowledge.releases.graph_id" in str(statement)
+    assert 9 in statement.compile().params.values()
+
+
+@pytest.mark.asyncio
+async def test_semantic_seed_fallback_fails_closed_above_the_request_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "datariver.infrastructure.db.knowledge_pipeline.set_security_context",
+        _disable_selector_security_context,
+    )
+    session = _SelectorSession(
+        vector_rows=(),
+        nodes=tuple(_selector_node(UUID(int=value)) for value in range(1, 4)),
+    )
+
+    selected = await _selector(session=session).select_seed_ids(
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        release_id=uuid4(),
+        question="bounded fallback",
+        maximum_classification=1,
+        limit=2,
+    )
+
+    assert selected == ()
+
+
+@pytest.mark.asyncio
+async def test_semantic_seed_does_not_hide_existing_vector_provenance_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "datariver.infrastructure.db.knowledge_pipeline.set_security_context",
+        _disable_selector_security_context,
+    )
+    embedding = SimpleNamespace(embedding=(0.1, 0.2, 0.3), page_number=1)
+    source = SimpleNamespace(content_sha256="a" * 64)
+    session = _SelectorSession(
+        vector_rows=((embedding, source),),
+        nodes=(_selector_node(uuid4(), source_version="b" * 64),),
+    )
+
+    selected = await _selector(session=session).select_seed_ids(
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        release_id=uuid4(),
+        question="mismatched evidence",
+        maximum_classification=1,
+        limit=8,
+    )
+
+    assert selected == ()
+    assert "ORDER BY" not in str(session.scalar_statements[0])
+
+
+@pytest.mark.asyncio
+async def test_semantic_seed_still_scores_later_nodes_when_vectors_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "datariver.infrastructure.db.knowledge_pipeline.set_security_context",
+        _disable_selector_security_context,
+    )
+    earlier_id = UUID(int=1)
+    later_id = UUID(int=2)
+    vector_rows = (
+        (
+            SimpleNamespace(embedding=(-0.1, -0.2, -0.3), page_number=1),
+            SimpleNamespace(content_sha256="a" * 64),
+        ),
+        (
+            SimpleNamespace(embedding=(0.1, 0.2, 0.3), page_number=1),
+            SimpleNamespace(content_sha256="b" * 64),
+        ),
+    )
+    session = _SelectorSession(
+        vector_rows=vector_rows,
+        nodes=(
+            _selector_node(earlier_id, source_version="a" * 64),
+            _selector_node(later_id, source_version="b" * 64),
+        ),
+    )
+
+    selected = await _selector(session=session).select_seed_ids(
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        release_id=uuid4(),
+        question="semantic ranking",
+        maximum_classification=1,
+        limit=1,
+    )
+
+    assert selected == (later_id,)
+    assert "ORDER BY" not in str(session.scalar_statements[0])
+    assert 2_000 in session.scalar_statements[0].compile().params.values()
+
+
+@pytest.mark.asyncio
+async def test_semantic_seed_rejects_an_invalid_question_embedding_batch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "datariver.infrastructure.db.knowledge_pipeline.set_security_context",
+        _disable_selector_security_context,
+    )
+    session = _SelectorSession(vector_rows=(), nodes=())
+
+    with pytest.raises(ValidationError, match="invalid batch"):
+        await _selector(
+            session=session,
+            embedding=_InvalidQuestionEmbedding(),
+        ).select_seed_ids(
+            workspace_id=uuid4(),
+            graph_id=uuid4(),
+            release_id=uuid4(),
+            question="invalid embedding",
+            maximum_classification=1,
+            limit=8,
+        )
+
+    assert session.scalar_statements == []
+
+
 class _SeedSelector:
     def __init__(self, entity_ids: tuple[UUID, ...]) -> None:
         self.entity_ids = entity_ids
@@ -895,6 +1172,47 @@ async def test_scoped_retrieval_returns_typed_edge_evidence_with_endpoints() -> 
     assert edge_evidence.target_entity_id == target_id
     assert edge_evidence.edge_type == "USES"
     assert edge_evidence.evidence_excerpt == excerpt
+
+
+@pytest.mark.asyncio
+async def test_scoped_retrieval_keeps_an_explicit_seed_when_semantic_selection_is_empty() -> None:
+    entity_id = uuid4()
+    release_id = uuid4()
+    executor = _EvidenceExecutor(
+        node_rows=(
+            {
+                "entity_id": str(entity_id),
+                "entity_type": "Tool",
+                "properties_json": '{"name":"ETCH-01"}',
+                "source_locator": "private/report.pdf#page=1",
+                "source_version": "a" * 64,
+                "page_number": 1,
+                "classification": 1,
+                "evidence_excerpt": "ETCH-01 is an etching tool.",
+                "evidence_sha256": hashlib.sha256(b"ETCH-01 is an etching tool.").hexdigest(),
+                "source_page_sha256": "b" * 64,
+            },
+        ),
+        edge_rows=(),
+    )
+
+    evidence = await Neo4jScopedEvidenceRetriever(
+        executor=executor,
+        semantic_selector=_SeedSelector(()),
+    ).retrieve(
+        workspace_id=uuid4(),
+        graph_id=uuid4(),
+        release_id=release_id,
+        question="etching tool",
+        start_node_id=entity_id,
+        direction="BOTH",
+        edge_types=frozenset(),
+        maximum_classification=1,
+        maximum_hops=1,
+        maximum_nodes=8,
+    )
+
+    assert tuple(item.entity_id for item in evidence) == (entity_id,)
 
 
 class _Retriever:

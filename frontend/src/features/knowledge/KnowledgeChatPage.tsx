@@ -241,7 +241,7 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
             <label>
               시작 노드
               <select value={nodeId} onChange={(event) => setNodeId(event.target.value)}>
-                <option value="">자동 선택 · 질문 의미 기반</option>
+                <option value="">자동 선택 · 의미 검색 또는 소형 그래프 bounded fallback</option>
                 {(snapshot?.nodes ?? []).map((node) => (
                   <option key={node.id} value={node.id}>
                     {label(node.properties, node.id)} · {node.entity_type}
@@ -291,8 +291,9 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
             </button>
             <p className="knowledge-chat-security">
               <ShieldCheck size={14} />
-              시작 노드를 비우면 질문 의미로 자동 선택합니다. 릴리스와 계정 권한은 서버에서
-              재검증하며 브라우저는 그래프 쿼리를 직접 만들지 않습니다.
+              시작 노드를 비우면 질문 의미 기반 또는 소형 그래프 bounded fallback으로
+              선택합니다. 릴리스와 계정 권한은 서버에서 재검증하며 브라우저는 그래프 쿼리를
+              직접 만들지 않습니다.
             </p>
           </form>
 
@@ -380,7 +381,9 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
                       <span>v{activeRelease?.release_no ?? '-'}</span>
                       <ChevronRight size={12} />
                       <strong>
-                        {activeNode ? label(activeNode.properties, activeNode.id) : '자동 semantic seed'}
+                        {activeNode
+                          ? label(activeNode.properties, activeNode.id)
+                          : '자동 seed · 의미 검색 또는 소형 그래프 bounded fallback'}
                       </strong>
                     </div>
                     {analysis.truncated && (

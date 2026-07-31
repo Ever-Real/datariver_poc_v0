@@ -120,13 +120,19 @@ describe('KnowledgeChatPage', () => {
 
     expect(await screen.findByText('2 nodes · 1 edges · 권한 내 bounded preview · filtered')).toBeInTheDocument()
     expect(screen.getByLabelText('시작 노드')).toHaveValue('')
+    expect(screen.getByRole('option', {
+      name: '자동 선택 · 의미 검색 또는 소형 그래프 bounded fallback',
+    })).toBeInTheDocument()
+    expect(screen.getByText(/질문 의미 기반 또는 소형 그래프 bounded fallback/))
+      .toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('질문'), { target: { value: '식각 공정 장비는?' } })
     expect(screen.getByRole('button', { name: 'GraphRAG 질의' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'GraphRAG 질의' }))
 
     expect(await screen.findByText('질문 의미에 따라 ETCH-01이 근거로 선택됐습니다.')).toBeInTheDocument()
     expect(screen.getByText('1 nodes · 0 edges · 답변 근거 경로')).toBeInTheDocument()
-    expect(screen.getByText('자동 semantic seed')).toBeInTheDocument()
+    expect(screen.getByText('자동 seed · 의미 검색 또는 소형 그래프 bounded fallback'))
+      .toBeInTheDocument()
     expect(request.mock.calls.some(([path]) => String(path).startsWith('/chat'))).toBe(false)
   })
 })

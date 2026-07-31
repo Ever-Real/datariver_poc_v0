@@ -39,6 +39,7 @@ from datariver.infrastructure.db.models.knowledge import (
     KnowledgeSourceSnapshotModel,
     OntologyVersionModel,
     ProjectionDeploymentModel,
+    ReleaseModel,
     ReleaseNodeModel,
 )
 from datariver.infrastructure.db.rls import set_security_context
@@ -509,6 +510,30 @@ class SqlSemanticSeedSelector:
                     .limit(2_000)
                 )
             ).all()
+            if not rows:
+                fallback_nodes = list(
+                    (
+                        await session.scalars(
+                            select(ReleaseNodeModel)
+                            .join(
+                                ReleaseModel,
+                                (ReleaseModel.workspace_id == ReleaseNodeModel.workspace_id)
+                                & (ReleaseModel.id == ReleaseNodeModel.release_id),
+                            )
+                            .where(
+                                ReleaseNodeModel.workspace_id == workspace_id,
+                                ReleaseNodeModel.release_id == release_id,
+                                ReleaseModel.graph_id == graph_id,
+                                ReleaseNodeModel.classification <= maximum_classification,
+                            )
+                            .order_by(ReleaseNodeModel.entity_id)
+                            .limit(limit + 1)
+                        )
+                    ).all()
+                )
+                if len(fallback_nodes) > limit:
+                    return ()
+                return tuple(node.entity_id for node in fallback_nodes)
             nodes = list(
                 (
                     await session.scalars(
