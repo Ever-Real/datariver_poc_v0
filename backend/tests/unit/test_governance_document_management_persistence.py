@@ -23,6 +23,11 @@ def test_additive_management_migration_has_bounded_backfill_and_immutable_parent
     assert "row_number() OVER (" in source
     assert "PARTITION BY workspace_id, document_version_id" in source
     assert "ORDER BY created_at, id" in source
+    drop_trigger = source.index("DROP TRIGGER reject_document_attachment_mutation")
+    backfill = source.index("UPDATE governance.document_attachments AS attachment")
+    restore_trigger = source.index("op.execute(_ATTACHMENT_MUTATION_TRIGGER_SQL)")
+    assert drop_trigger < backfill < restore_trigger
+    assert "EXECUTE FUNCTION governance.reject_document_evidence_mutation_v1()" in source
     assert "serial_number BETWEEN 1 AND 25" in source
     assert "uq_governance_document_attachments_serial" in source
     assert "parent_document_id IS NULL OR parent_document_id <> document_id" in source

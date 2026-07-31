@@ -40,6 +40,13 @@ FOR EACH ROW
 EXECUTE FUNCTION governance.reject_document_parent_mutation_v1();
 """.strip()
 
+_ATTACHMENT_MUTATION_TRIGGER_SQL = """
+CREATE TRIGGER reject_document_attachment_mutation
+BEFORE UPDATE OR DELETE ON governance.document_attachments
+FOR EACH ROW
+EXECUTE FUNCTION governance.reject_document_evidence_mutation_v1();
+""".strip()
+
 
 def upgrade() -> None:
     op.add_column(
@@ -82,6 +89,11 @@ def upgrade() -> None:
         sa.Column("storage_filename", sa.String(length=255), nullable=True),
         schema="governance",
     )
+    # Revision 0075 made attachment evidence immutable. Temporarily remove only
+    # that trigger so this controlled, deterministic schema backfill can run.
+    op.execute(
+        "DROP TRIGGER reject_document_attachment_mutation ON governance.document_attachments"
+    )
     op.execute(
         """
         WITH numbered AS (
@@ -98,6 +110,7 @@ def upgrade() -> None:
         WHERE numbered.id = attachment.id
         """
     )
+    op.execute(_ATTACHMENT_MUTATION_TRIGGER_SQL)
     op.alter_column(
         "document_attachments",
         "serial_number",
