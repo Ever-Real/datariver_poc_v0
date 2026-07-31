@@ -56,6 +56,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   const [memberQuery, setMemberQuery] = useState('')
   const [appliedMemberQuery, setAppliedMemberQuery] = useState('')
   const [draft, setDraft] = useState<AssignmentDraft[]>([])
+  const [editingAssignmentKeys, setEditingAssignmentKeys] = useState<Set<string>>(() => new Set())
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<unknown>()
   const [createOpen, setCreateOpen] = useState(false)
@@ -110,6 +111,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
       if (signal?.aborted || generation !== assigneeGeneration.current) return
       setAssignees(page.items)
       setDraft(toDraft(page.items))
+      setEditingAssignmentKeys(new Set())
       setAssigneeVersion(page.system_version)
       setNextAssigneeCursor(page.page.next_cursor)
     } catch (next) {
@@ -229,15 +231,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
     key: string,
     patch: Partial<Pick<AssignmentDraft, 'subject_id' | 'priority'>>,
   ) => setDraft((current) => current.map((item) => (
-    item.key === key
-      ? {
-          ...item,
-          ...patch,
-          key: patch.subject_id
-            ? assignmentKey({ ...item, subject_id: patch.subject_id })
-            : item.key,
-        }
-      : item
+    item.key === key ? { ...item, ...patch } : item
   )))
   const addAssignment = (responsibility: Responsibility) => {
     setDraft((current) => [...current, {
@@ -249,9 +243,14 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   }
   const removeAssignment = (key: string) => {
     setDraft((current) => current.filter((value) => value.key !== key))
+    setEditingAssignmentKeys((current) => {
+      const next = new Set(current)
+      next.delete(key)
+      return next
+    })
   }
   const save = () => {
-    if (!selected || !assigneeVersion || !draftValid || !changed) return
+    if (!canUpdate || !selected || !assigneeVersion || !draftValid || !changed) return
     const intent = `system-assignees-patch:${selected.system_id}:${assigneeVersion}:${JSON.stringify({ upserts, removals })}`
     requestConfirmation({
       title: '시스템 담당자 변경',
@@ -280,6 +279,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
 
   const handleCreateSubmit = (event: React.FormEvent) => {
     event.preventDefault()
+    if (!canUpdate) return
     setCreateValidationError('')
     if (!/^[A-Za-z][A-Za-z0-9_-]{1,99}$/.test(createForm.code)) {
       setCreateValidationError('시스템 코드는 영문자로 시작하고 2~100자의 영숫자, -, _ 만 허용됩니다.')
@@ -305,7 +305,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   }
 
   return <section className="panel admin-system-directory">
-    <div className="section-heading"><div><h3>시스템 권한 매핑</h3><p className="muted">시스템과 담당자를 각각 서버 페이지로 읽고, 버전 고정 delta로 변경합니다.</p></div><div className="action-row"><button className="button" onClick={() => { if (canUpdate) { setCreateOpen(true); setCreateValidationError('') } else { void props.onStepUp() } }} type="button">{canUpdate ? '신규 시스템 추가' : 'WebAuthn 후 시스템 추가'}</button><button className="button button-secondary" onClick={() => void loadSystems()} type="button">새로고침</button></div></div>
+    <div className="section-heading"><div><h3>시스템 권한 매핑</h3><p className="muted">시스템과 담당자를 각각 서버 페이지로 읽고, 버전 고정 delta로 변경합니다.</p></div><div className="action-row"><button className="button" disabled={!canUpdate} onClick={() => { setCreateOpen(true); setCreateValidationError('') }} type="button">시스템 추가</button><button className="button button-secondary" onClick={() => void loadSystems()} type="button">새로고침</button></div></div>
     <label className="mb-3 block max-w-md text-xs font-bold">시스템 검색<input type="search" value={systemQuery} onChange={(event) => setSystemQuery(event.target.value)} placeholder="시스템명 또는 코드" /></label>
     <DenseDataTable
       caption="워크스페이스 시스템 목록"
@@ -353,16 +353,16 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
         {responsibilities.map(({ id, label }) => {
           const assignments = draft.filter((item) => item.responsibility === id)
           return <fieldset key={id}><legend>{label}</legend>
+            <div className="mb-2 flex justify-end"><button className="button button-secondary button-compact" disabled={!canUpdate || draft.length >= 100} onClick={() => addAssignment(id)} type="button">+ {label} 추가</button></div>
             {assignments.map((assignment) => <div className="admin-system-assignment-row" key={assignment.key}>
-              <label><span className="sr-only">{label} 담당자</span><select disabled={!canUpdate || originalByKey.has(assignment.key)} onChange={(event) => updateDraft(assignment.key, { subject_id: event.target.value })} value={assignment.subject_id}>
+              <label><span className="sr-only">{label} 담당자</span><select disabled={!canUpdate || (originalByKey.has(assignment.key) && !editingAssignmentKeys.has(assignment.key))} onChange={(event) => updateDraft(assignment.key, { subject_id: event.target.value })} value={assignment.subject_id}>
                 <option value="">멤버 선택</option>
-                {members.map((member) => <option key={member.subject_id} value={member.subject_id}>{member.display_name}</option>)}
-                {assignment.subject_id && !members.some((member) => member.subject_id === assignment.subject_id) && <option value={assignment.subject_id}>{assignees.find((item) => assignmentKey(item) === assignment.key)?.display_name ?? assignment.subject_id}</option>}
+                {members.map((member) => <option key={member.subject_id} value={member.subject_id}>{member.display_name} · {member.email ?? '이메일 없음'}</option>)}
+                {assignment.subject_id && !members.some((member) => member.subject_id === assignment.subject_id) && <option value={assignment.subject_id}>{assignees.find((item) => assignmentKey(item) === assignment.key)?.display_name ?? '현재 담당자'} · 검색 결과 외</option>}
               </select></label>
               <label><span className="sr-only">{label} 우선순위</span><input disabled={!canUpdate} max={999} min={1} onChange={(event) => updateDraft(assignment.key, { priority: Number(event.target.value) })} type="number" value={assignment.priority} /></label>
-              <button aria-label={`${label} 담당자 제거`} className="button button-secondary button-compact" disabled={!canUpdate} onClick={() => removeAssignment(assignment.key)} type="button">제거</button>
+              <div className="flex gap-1">{originalByKey.has(assignment.key) && <button aria-label={`${label} 담당자 변경`} className="button button-secondary button-compact" disabled={!canUpdate} onClick={() => setEditingAssignmentKeys((current) => new Set(current).add(assignment.key))} type="button">변경</button>}<button aria-label={`${label} 담당자 삭제`} className="button button-secondary button-compact" disabled={!canUpdate} onClick={() => removeAssignment(assignment.key)} type="button">삭제</button></div>
             </div>)}
-            <button className="button button-secondary button-compact" disabled={!canUpdate || draft.length >= 100} onClick={() => addAssignment(id)} type="button">+ {label} 추가</button>
           </fieldset>
         })}
       </div>
@@ -383,9 +383,9 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
           setAssigneePageNumber((current) => current + 1)
         }}
       />
-      {canUpdate ? <div className="action-row"><button className="button" disabled={!draftValid || !changed} onClick={() => void save()} type="button">현재 페이지 변경 저장</button><button className="button button-danger" disabled title="시스템 정본 삭제 API와 참조 무결성 검토 계약이 아직 없습니다." type="button">시스템 삭제</button>{!draftValid && <small className="muted">현재 페이지에서 담당자·우선순위가 중복되거나 유효하지 않습니다.</small>}</div> : <p className="callout">담당자 변경은 보안키 인증(HARDWARE_WEBAUTHN) 후에만 활성화됩니다.</p>}
+      {canUpdate ? <div className="action-row"><button className="button" disabled={!draftValid || !changed} onClick={() => void save()} type="button">현재 페이지 변경 저장</button><button className="button button-danger" disabled title="시스템 정본 삭제 API와 참조 무결성 검토 계약이 아직 없습니다." type="button">시스템 삭제</button>{!draftValid && <small className="muted">현재 페이지에서 담당자·우선순위가 중복되거나 유효하지 않습니다.</small>}</div> : <p className="callout">서버가 현재 세션에 시스템 담당자 변경 권한을 허용하지 않았습니다.</p>}
     </section>}
-    <Dialog open={createOpen} title="신규 시스템 추가" size="medium" onRequestClose={() => setCreateOpen(false)}>
+    <Dialog open={createOpen} title="시스템 추가" size="medium" onRequestClose={() => setCreateOpen(false)}>
       <form id="system-create-form" onSubmit={handleCreateSubmit} className="grid gap-3">
         <label className="block text-sm font-bold">시스템 코드
           <input className="mt-1 block w-full" maxLength={100} onChange={(e) => setCreateForm({ ...createForm, code: e.target.value })} pattern="^[A-Za-z][A-Za-z0-9_-]{1,99}$" required type="text" value={createForm.code} placeholder="예: system-code_123" />

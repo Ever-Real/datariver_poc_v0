@@ -137,10 +137,7 @@ export function MembershipAccessAdmin({
     setProfileOpen(false)
   }
   const openCreate = () => {
-    if (!canProvision) {
-      if (context?.authentication_assurance !== 'HARDWARE_WEBAUTHN') void props.onStepUp()
-      return
-    }
+    if (!canProvision) return
     setRoleQuery('')
     setRoles([])
     setRolesTruncated(false)
@@ -186,7 +183,7 @@ export function MembershipAccessAdmin({
   }
   return <>
     <section className="panel">
-      <div className="section-heading"><div><h3>User 관리</h3><p className="muted">사용자를 선택해 프로필, 데이터·화면 접근 Role, CR 활동과 인증 복구를 관리합니다.</p></div><div className="action-row"><button type="button" className="button button-secondary" onClick={() => void loadMembers()}>{messages.refresh}</button>{onOpenRenewals && <button type="button" className="button button-secondary" onClick={onOpenRenewals}>계정 갱신</button>}{onOpenRoleManagement && <button type="button" className="button button-secondary" onClick={onOpenRoleManagement}>Role 관리</button>}<button type="button" className="button" disabled={context?.authentication_assurance === 'HARDWARE_WEBAUTHN' && !canProvision} title={canProvision ? '인증 계정과 Workspace 멤버십을 함께 생성합니다.' : '이 배포의 계정 생성 연계 또는 현재 인가가 준비되지 않았습니다.'} onClick={openCreate}>사용자 등록</button></div></div>
+      <div className="section-heading"><div><h3>User 관리</h3><p className="muted">사용자를 선택해 프로필, 데이터·화면 접근 Role, CR 활동과 인증 복구를 관리합니다.</p></div><div className="action-row"><button type="button" className="button button-secondary" onClick={() => void loadMembers()}>{messages.refresh}</button>{onOpenRenewals && <button type="button" className="button button-secondary" onClick={onOpenRenewals}>계정 갱신</button>}{onOpenRoleManagement && <button type="button" className="button button-secondary" onClick={onOpenRoleManagement}>Role 관리</button>}<button type="button" className="button" disabled={!canProvision} title={canProvision ? '인증 계정과 Workspace 멤버십을 함께 생성합니다.' : '서버가 현재 세션에 사용자 등록 권한을 허용하지 않았습니다.'} onClick={openCreate}>사용자 등록</button></div></div>
       <div className="mb-3 grid gap-2 rounded-enterprise border border-slate-300 bg-slate-50 p-3 md:grid-cols-[minmax(220px,1fr)_170px_auto] md:items-end"><label className="grid gap-1 text-xs font-bold">사용자 검색<input type="search" value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="사용자명, 이메일로 검색" /></label><label className="grid gap-1 text-xs font-bold">상태 필터<select value={memberStatus} onChange={(event) => { setMemberStatus(event.target.value as typeof memberStatus); setMembershipCursor(undefined); setMembershipCursorHistory([]); setMembershipPageNumber(1) }}><option value="ALL">전체</option><option value="ACTIVE">활성</option><option value="INACTIVE">비활성</option></select></label><button type="button" className="button button-secondary" disabled={!memberQuery && memberStatus === 'ALL'} onClick={() => { setMemberQuery(''); setAppliedMemberQuery(''); setMemberStatus('ALL'); setMembershipCursor(undefined); setMembershipCursorHistory([]); setMembershipPageNumber(1) }}>필터 초기화</button></div>
       <DenseDataTable caption="워크스페이스 사용자 목록" columns={[
         { accessorKey: 'display_name', header: '사용자', size: 170, cell: ({ row }) => <strong>{row.original.display_name}</strong> },

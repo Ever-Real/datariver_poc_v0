@@ -84,7 +84,82 @@ describe('RoleManagementDialog', () => {
     expect(screen.getByLabelText('PUBLIC 접근 수준')).toHaveValue('FULL_ACCESS')
     expect(screen.getByLabelText('INTERNAL 접근 수준')).toHaveValue('MISSING')
     fireEvent.change(screen.getByLabelText('INTERNAL 접근 수준'), { target: { value: 'NO_ACCESS' } })
-    fireEvent.click(screen.getAllByRole('button', { name: 'Role 저장' })[0]!)
+    expect(screen.getAllByRole('button', { name: '저장' })).toHaveLength(1)
+    fireEvent.click(screen.getByRole('button', { name: '저장' }))
     await waitFor(() => expect(requestConfirmation).toHaveBeenCalled())
+  })
+
+  it('discards only the local Role draft when the administrator cancels', async () => {
+    const catalogReader = role(
+      '00000000-0000-4000-8000-000000000301', 'catalog-reader', 'Catalog Reader',
+    )
+    const api = {
+      listAccessRolePage: vi.fn(() => Promise.resolve({
+        items: [catalogReader], nextCursor: null, limit: 25,
+      })),
+    }
+    const context: AdminReadContext = {
+      subject_id: 'admin', workspace_id: 'workspace', display_name: 'Administrator',
+      authentication_assurance: 'PASSWORD', fallback_enabled: false,
+      allowed_operations: ['MEMBERSHIP_ACCESS_UPDATE'], action_vocabulary: [],
+    }
+    renderDialog(api, context)
+
+    expect(await screen.findByText('Catalog Reader')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '+ Role 추가' }))
+    fireEvent.change(screen.getByLabelText('Role Key'), { target: { value: 'draft-role' } })
+    fireEvent.change(screen.getByLabelText('Role 이름'), { target: { value: 'Draft Role' } })
+    fireEvent.click(screen.getByRole('button', { name: '취소' }))
+
+    expect(screen.queryByLabelText('Role Key')).not.toBeInTheDocument()
+    expect(screen.getByText('Catalog Reader')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '+ Role 추가' }))
+    expect(screen.getByLabelText('Role Key')).toHaveValue('')
+    expect(screen.getByLabelText('Role 이름')).toHaveValue('')
+  })
+
+  it('makes no Role mutation, confirmation, or step-up call without the capability', async () => {
+    const catalogReader = role(
+      '00000000-0000-4000-8000-000000000301', 'catalog-reader', 'Catalog Reader',
+    )
+    const api = {
+      listAccessRolePage: vi.fn(() => Promise.resolve({
+        items: [catalogReader], nextCursor: null, limit: 25,
+      })),
+      createAccessRole: vi.fn(),
+      updateAccessRole: vi.fn(),
+      deactivateAccessRole: vi.fn(),
+    }
+    const requestConfirmation = vi.fn()
+    const onStepUp = vi.fn(() => Promise.resolve())
+    render(<RoleManagementDialog
+      open onRequestClose={vi.fn()} api={api as never}
+      context={{
+        subject_id: 'admin', workspace_id: 'workspace', display_name: 'Administrator',
+        authentication_assurance: 'PASSWORD', fallback_enabled: false,
+        allowed_operations: ['MEMBERSHIP_ACCESS_READ'], action_vocabulary: [],
+      }}
+      messages={getAdminMessages('ko')}
+      requestConfirmation={requestConfirmation}
+      keyFor={() => 'stable-role-key'}
+      clearKey={vi.fn()}
+      reportError={vi.fn()}
+      onStepUp={onStepUp}
+      onPasswordReauth={vi.fn(() => Promise.resolve())}
+      onEnroll={vi.fn(() => Promise.resolve())}
+    />)
+
+    const add = await screen.findByRole('button', { name: '+ Role 추가' })
+    expect(add).toBeDisabled()
+    fireEvent.click(add)
+    fireEvent.click(screen.getByText('Catalog Reader'))
+    expect(screen.getAllByRole('button', { name: '저장' })).toHaveLength(1)
+    expect(screen.getByRole('button', { name: '저장' })).toBeDisabled()
+
+    expect(api.createAccessRole).not.toHaveBeenCalled()
+    expect(api.updateAccessRole).not.toHaveBeenCalled()
+    expect(api.deactivateAccessRole).not.toHaveBeenCalled()
+    expect(requestConfirmation).not.toHaveBeenCalled()
+    expect(onStepUp).not.toHaveBeenCalled()
   })
 })

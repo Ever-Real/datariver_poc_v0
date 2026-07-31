@@ -44,6 +44,12 @@ describe('SystemDirectoryAdmin', () => {
       pending_renewal_request_id: null,
       renewal_request_eligible: false,
     }
+    const replacement: WorkspaceMembershipSummary = {
+      ...target,
+      subject_id: '00000000-0000-4000-8000-000000000725',
+      display_name: 'Replacement User',
+      email: 'replacement@example.test',
+    }
     const selectedSystem = system(
       '00000000-0000-4000-8000-000000000722',
       'FAB',
@@ -72,7 +78,7 @@ describe('SystemDirectoryAdmin', () => {
         limit: 25,
       })),
       listMembershipPage: vi.fn(() => Promise.resolve({
-        items: [target], nextCursor: null, limit: 25,
+        items: [target, replacement], nextCursor: null, limit: 25,
       })),
       listSystemAssigneePage: vi.fn()
         .mockResolvedValueOnce({
@@ -82,7 +88,11 @@ describe('SystemDirectoryAdmin', () => {
         })
         .mockResolvedValue({
           system_version: 2,
-          items: [{ ...assignments[0], priority: 2 }, assignments[1]],
+          items: [{
+            ...assignments[0],
+            subject_id: replacement.subject_id,
+            display_name: replacement.display_name,
+          }, assignments[1]],
           page: { next_cursor: null, limit: 25 },
         }),
       patchSystemAssignees: vi.fn(() => Promise.resolve({
@@ -109,8 +119,20 @@ describe('SystemDirectoryAdmin', () => {
       onPasswordReauth={vi.fn(() => Promise.resolve())} onEnroll={vi.fn(() => Promise.resolve())}
     />)
 
-    const priorities = await screen.findAllByRole('spinbutton')
-    fireEvent.change(priorities[0]!, { target: { value: '2' } })
+    const changeDeveloper = await screen.findByRole('button', { name: 'Developer 담당자 변경' })
+    fireEvent.change(screen.getByLabelText('담당자 후보 검색'), {
+      target: { value: 'replacement@example.test' },
+    })
+    await waitFor(() => expect(api.listMembershipPage).toHaveBeenLastCalledWith(
+      expect.objectContaining({ query: 'replacement@example.test', status: 'ACTIVE', limit: 25 }),
+    ))
+    expect(screen.getAllByRole('option', {
+      name: 'Replacement User · replacement@example.test',
+    })).toHaveLength(2)
+    fireEvent.click(changeDeveloper)
+    fireEvent.change(screen.getByLabelText('Developer 담당자'), {
+      target: { value: replacement.subject_id },
+    })
     fireEvent.click(screen.getByRole('button', { name: '현재 페이지 변경 저장' }))
     expect(pending?.title).toBe('시스템 담당자 변경')
     if (!pending) throw new Error('system assignment confirmation was not requested')
@@ -119,11 +141,14 @@ describe('SystemDirectoryAdmin', () => {
     expect(api.patchSystemAssignees).toHaveBeenCalledWith(
       selectedSystem.system_id,
       [{
+        subject_id: replacement.subject_id,
+        responsibility: 'DEVELOPER',
+        priority: 1,
+      }],
+      [{
         subject_id: target.subject_id,
         responsibility: 'DEVELOPER',
-        priority: 2,
       }],
-      [],
       1,
       'stable-system-key',
     )
@@ -203,7 +228,7 @@ describe('SystemDirectoryAdmin', () => {
       onEnroll={vi.fn(() => Promise.resolve())}
     />)
 
-    fireEvent.click(await screen.findByRole('button', { name: '신규 시스템 추가' }))
+    fireEvent.click(await screen.findByRole('button', { name: '시스템 추가' }))
     fireEvent.change(screen.getByLabelText('시스템 코드'), { target: { value: 'CRM' } })
     fireEvent.change(screen.getByLabelText('시스템 이름'), { target: { value: 'Customer Data' } })
     fireEvent.change(screen.getByLabelText('설명'), { target: { value: 'Customer source' } })
@@ -215,6 +240,63 @@ describe('SystemDirectoryAdmin', () => {
       { code: 'CRM', name: 'Customer Data', description: 'Customer source' },
       'system-create-idempotency-key',
     )
+  })
+
+  it('makes no system mutation, confirmation, or step-up call without the capability', async () => {
+    const selectedSystem = system(
+      '00000000-0000-4000-8000-000000000722', 'FAB', 'Fabrication',
+    )
+    const api = {
+      listSystemPage: vi.fn(() => Promise.resolve({
+        items: [selectedSystem], nextCursor: null, limit: 25,
+      })),
+      listMembershipPage: vi.fn(() => Promise.resolve({
+        items: [], nextCursor: null, limit: 25,
+      })),
+      listSystemAssigneePage: vi.fn(() => Promise.resolve({
+        system_version: 1,
+        items: [{
+          subject_id: 'member-one', display_name: 'Member One',
+          responsibility: 'DEVELOPER' as const, priority: 1, active: true,
+        }],
+        page: { next_cursor: null, limit: 25 },
+      })),
+      createSystem: vi.fn(),
+      patchSystemAssignees: vi.fn(),
+    }
+    const requestConfirmation = vi.fn()
+    const onStepUp = vi.fn(() => Promise.resolve())
+    render(<SystemDirectoryAdmin
+      api={api as never}
+      context={{
+        subject_id: 'admin', workspace_id: 'workspace', display_name: 'Administrator',
+        authentication_assurance: 'PASSWORD', fallback_enabled: false,
+        allowed_operations: ['MEMBERSHIP_ACCESS_READ'], action_vocabulary: [],
+      }}
+      messages={getAdminMessages('ko')}
+      requestConfirmation={requestConfirmation}
+      keyFor={() => 'stable-system-key'}
+      clearKey={vi.fn()}
+      reportError={vi.fn()}
+      onStepUp={onStepUp}
+      onPasswordReauth={vi.fn(() => Promise.resolve())}
+      onEnroll={vi.fn(() => Promise.resolve())}
+    />)
+
+    const create = await screen.findByRole('button', { name: '시스템 추가' })
+    expect(create).toBeDisabled()
+    fireEvent.click(create)
+    const edit = await screen.findByRole('button', { name: 'Developer 담당자 변경' })
+    const remove = screen.getByRole('button', { name: 'Developer 담당자 삭제' })
+    expect(edit).toBeDisabled()
+    expect(remove).toBeDisabled()
+    fireEvent.click(edit)
+    fireEvent.click(remove)
+
+    expect(api.createSystem).not.toHaveBeenCalled()
+    expect(api.patchSystemAssignees).not.toHaveBeenCalled()
+    expect(requestConfirmation).not.toHaveBeenCalled()
+    expect(onStepUp).not.toHaveBeenCalled()
   })
 })
 

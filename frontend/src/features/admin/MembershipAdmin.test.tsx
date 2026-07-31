@@ -57,6 +57,36 @@ function renderUsers(
 }
 
 describe('MembershipAccessAdmin', () => {
+  it('keeps user provisioning fail-closed when the server omits the capability', async () => {
+    const api = {
+      listMembershipPage: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
+      provisionIdentityUser: vi.fn(),
+    }
+    const requestConfirmation = vi.fn()
+    const onStepUp = vi.fn(() => Promise.resolve())
+    render(<MembershipAccessAdmin
+      api={api as never}
+      context={{ ...context(['MEMBERSHIP_ACCESS_READ']), authentication_assurance: 'PASSWORD' }}
+      messages={getAdminMessages('ko')}
+      requestConfirmation={requestConfirmation}
+      keyFor={() => 'stable-key'}
+      clearKey={vi.fn()}
+      reportError={vi.fn()}
+      onStepUp={onStepUp}
+      onPasswordReauth={vi.fn(() => Promise.resolve())}
+      onEnroll={vi.fn(() => Promise.resolve())}
+    />)
+
+    const provision = await screen.findByRole('button', { name: '사용자 등록' })
+    expect(provision).toBeDisabled()
+    fireEvent.click(provision)
+
+    expect(screen.queryByRole('dialog', { name: '사용자 등록' })).not.toBeInTheDocument()
+    expect(api.provisionIdentityUser).not.toHaveBeenCalled()
+    expect(requestConfirmation).not.toHaveBeenCalled()
+    expect(onStepUp).not.toHaveBeenCalled()
+  })
+
   it('creates an identity and Workspace membership through the governed API', async () => {
     const api = {
       listMembershipPage: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
