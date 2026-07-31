@@ -39,6 +39,8 @@ def _pins() -> KnowledgeSourceJobPins:
         source_storage_version="manifest-v7",
         source_content_sha256="a" * 64,
         source_classification=1,
+        source_content_profile="FORMAT_ONLY_V1",
+        source_validation_evidence_hash="9" * 64,
         graph_version=5,
         base_release_id=uuid4(),
         base_release_hash="b" * 64,
@@ -51,8 +53,24 @@ def _pins() -> KnowledgeSourceJobPins:
     )
 
 
+class _ProfileResult:
+    def __init__(self, row: object | None) -> None:
+        self._row = row
+
+    def one_or_none(self) -> object | None:
+        return self._row
+
+
+class _ProfileSession:
+    def __init__(self, row: object | None) -> None:
+        self._row = row
+
+    async def execute(self, _statement: object) -> _ProfileResult:
+        return _ProfileResult(self._row)
+
+
 @pytest.mark.asyncio
-async def test_historical_database_model_binding_is_never_current() -> None:
+async def test_database_model_binding_requires_the_exact_active_available_profile() -> None:
     historical = replace(
         _binding("historical-model", "a" * 64),
         configuration_source="SYSTEM_CONFIGURATION",
@@ -61,7 +79,16 @@ async def test_historical_database_model_binding_is_never_current() -> None:
 
     assert (
         await _activated_binding_is_current(
-            cast(AsyncSession, object()),
+            cast(AsyncSession, _ProfileSession(object())),
+            workspace_id=uuid4(),
+            service_key="LLM_CHAT_MODEL",
+            binding=historical,
+        )
+        is True
+    )
+    assert (
+        await _activated_binding_is_current(
+            cast(AsyncSession, _ProfileSession(None)),
             workspace_id=uuid4(),
             service_key="LLM_CHAT_MODEL",
             binding=historical,
@@ -87,6 +114,27 @@ def test_knowledge_source_job_pin_hash_binds_every_preparation_dimension() -> No
             ),
         ).evidence_hash()
     )
+
+
+def test_pin_hash_preserves_legacy_v1_and_binds_new_validation_evidence_in_v2() -> None:
+    legacy = _pins()
+    legacy_hash = legacy.evidence_hash()
+
+    assert legacy.to_document()["contract"] == "KNOWLEDGE_SOURCE_JOB_PINS_V1"
+    assert (
+        replace(legacy, source_validation_evidence_hash="8" * 64).evidence_hash()
+        == legacy_hash
+    )
+
+    governed = replace(
+        legacy,
+        source_content_profile="KNOWLEDGE_SOURCE_DOCUMENT_V1",
+    )
+    assert governed.to_document()["contract"] == "KNOWLEDGE_SOURCE_JOB_PINS_V2"
+    assert governed.evidence_hash() != replace(
+        governed,
+        source_validation_evidence_hash="8" * 64,
+    ).evidence_hash()
 
 
 def test_empty_base_is_explicit_and_cannot_carry_a_release_hash() -> None:

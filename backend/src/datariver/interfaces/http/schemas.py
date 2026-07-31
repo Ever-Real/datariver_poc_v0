@@ -1672,6 +1672,7 @@ class UploadResponse(BaseModel):
         "CATALOG_METADATA_ROWS_XLSX_V1",
         "DATASET_DESCRIPTION_CSV_V1",
         "DATASET_DESCRIPTION_XLSX_V1",
+        "KNOWLEDGE_SOURCE_DOCUMENT_V1",
         "KNOWLEDGE_STUDIO_DOCUMENT_V1",
     ]
     expires_at: datetime
@@ -2419,7 +2420,39 @@ class KnowledgeStudioSourceUploadInitiateRequest(BaseModel):
         return cleaned
 
 
+class KnowledgeSourceUploadInitiateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=255)
+    size_bytes: int = Field(ge=1, le=50 * 1024 * 1024)
+    content_type: Literal[
+        "application/pdf",
+        "text/csv",
+        "text/plain",
+        "application/json",
+        "application/xml",
+        "text/html",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ]
+    sha256: str = Field(pattern="^[0-9a-f]{64}$")
+
+    @field_validator("display_name")
+    @classmethod
+    def safe_display_name(cls, value: str) -> str:
+        cleaned = value.strip().replace("\\", "/").split("/")[-1]
+        if not cleaned or any(ord(character) < 32 for character in cleaned):
+            raise ValueError("The Knowledge source filename is invalid.")
+        return cleaned
+
+
 class KnowledgeStudioSourceUploadPartResponse(BaseModel):
+    url: str
+    expires_seconds: int = Field(ge=60, le=900)
+
+
+class KnowledgeSourceUploadPartResponse(BaseModel):
     url: str
     expires_seconds: int = Field(ge=60, le=900)
 

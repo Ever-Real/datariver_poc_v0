@@ -35,6 +35,7 @@ from datariver.infrastructure.db.knowledge_studio_proposal_jobs import (
     SqlKnowledgeStudioProposalJobStore,
     SqlKnowledgeStudioProposalJobWorkerStore,
 )
+from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 from datariver.infrastructure.secrets import SecretResolver
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -186,7 +187,10 @@ async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID, int, 
         "profile_configuration_hash": parser_hash,
     }
     async with owner.begin() as connection:
-        assert await connection.scalar(text("SELECT version_num FROM alembic_version")) == "0084"
+        assert (
+            await connection.scalar(text("SELECT version_num FROM alembic_version"))
+            == REQUIRED_DATABASE_REVISION
+        )
         await connection.execute(
             text(
                 """

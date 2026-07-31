@@ -11,8 +11,17 @@ import pytest
 from datariver.application.dto import ObjectMetadata
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import ObjectStore, UploadValidationStore
-from datariver.application.services.upload_validation import Inspection, UploadValidationWorker
-from datariver.application.typed_upload_profiles import KNOWLEDGE_STUDIO_DOCUMENT_V1
+from datariver.application.services.upload_validation import (
+    DEFAULT_PREVIEW_LIMIT,
+    KNOWLEDGE_SOURCE_PREVIEW_LIMIT,
+    Inspection,
+    UploadValidationWorker,
+)
+from datariver.application.typed_upload_profiles import (
+    KNOWLEDGE_SOURCE_DOCUMENT_V1,
+    KNOWLEDGE_STUDIO_DOCUMENT_V1,
+    MultiFormatUploadProfileDefinition,
+)
 from datariver.domain.authz import Classification
 from datariver.domain.common import ValidationError
 from datariver.domain.registration import UploadContentProfile, UploadManifest, UploadState
@@ -241,24 +250,46 @@ async def test_only_low_classification_pdfs_use_the_knowledge_read_prefix(
 
 
 @pytest.mark.parametrize(
-    ("classification", "expected_namespace"),
+    ("classification", "expected_namespace", "profile", "definition"),
     (
-        (Classification.PUBLIC, "knowledge-eligible"),
-        (Classification.INTERNAL, "knowledge-eligible"),
-        (Classification.CONFIDENTIAL, "accepted"),
-        (Classification.RESTRICTED, "accepted"),
+        (
+            Classification.PUBLIC,
+            "knowledge-eligible",
+            UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1,
+            KNOWLEDGE_SOURCE_DOCUMENT_V1,
+        ),
+        (
+            Classification.INTERNAL,
+            "knowledge-eligible",
+            UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1,
+            KNOWLEDGE_STUDIO_DOCUMENT_V1,
+        ),
+        (
+            Classification.CONFIDENTIAL,
+            "accepted",
+            UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1,
+            KNOWLEDGE_SOURCE_DOCUMENT_V1,
+        ),
+        (
+            Classification.RESTRICTED,
+            "accepted",
+            UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1,
+            KNOWLEDGE_STUDIO_DOCUMENT_V1,
+        ),
     ),
 )
 @pytest.mark.asyncio
 async def test_knowledge_document_profile_uses_classification_bounded_read_prefix(
     classification: Classification,
     expected_namespace: str,
+    profile: UploadContentProfile,
+    definition: MultiFormatUploadProfileDefinition,
 ) -> None:
     content = b'{"customer":"one"}'
     upload = manifest(content)
     upload.display_name = "source.json"
     upload.declared_mime = "application/json"
-    upload.content_profile = UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1
+    upload.content_profile = profile
     upload.classification = classification
     store = MemoryValidationStore(upload)
     objects = MemoryObjectStore(
@@ -276,12 +307,9 @@ async def test_knowledge_document_profile_uses_classification_bounded_read_prefi
     )
     assert store.accepted_object_key == destination_key
     assert store.accepted is not None
-    assert store.accepted["content_profile"] == "KNOWLEDGE_STUDIO_DOCUMENT_V1"
-    assert store.accepted["parser_version"] == KNOWLEDGE_STUDIO_DOCUMENT_V1.parser_version
-    assert (
-        store.accepted["profile_configuration_hash"]
-        == KNOWLEDGE_STUDIO_DOCUMENT_V1.configuration_hash
-    )
+    assert store.accepted["content_profile"] == profile.value
+    assert store.accepted["parser_version"] == definition.parser_version
+    assert store.accepted["profile_configuration_hash"] == definition.configuration_hash
 
 
 def test_xlsx_validation_emits_the_registered_profile_validator_version() -> None:
@@ -302,6 +330,33 @@ def test_xlsx_validation_emits_the_registered_profile_validator_version() -> Non
     )
 
     assert summary["validator_version"] == "integrity-xlsx-v2-low-resource"
+
+
+def test_json_preview_limit_expands_only_for_the_knowledge_source_profile() -> None:
+    size_bytes = 11 * 1024 * 1024
+    generic = Inspection(
+        size_bytes=size_bytes,
+        sha256="a" * 64,
+        prefix=b"{}",
+        tail=b"{}",
+        contains_vba=False,
+    )
+    with pytest.raises(ValidationError, match="above 10 MiB"):
+        UploadValidationWorker._validate_json(generic)
+
+    knowledge_source = Inspection(
+        size_bytes=size_bytes,
+        sha256="a" * 64,
+        prefix=b"{}",
+        tail=b"{}",
+        contains_vba=False,
+        preview_limit_bytes=KNOWLEDGE_SOURCE_PREVIEW_LIMIT,
+    )
+    assert DEFAULT_PREVIEW_LIMIT == 10 * 1024 * 1024
+    assert UploadValidationWorker._validate_json(knowledge_source) == {
+        "coverage": "FULL",
+        "root_type": "object",
+    }
 
 
 @pytest.mark.parametrize(

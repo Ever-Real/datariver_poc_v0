@@ -6,7 +6,7 @@ from typing import Annotated
 from uuid import UUID
 
 import orjson
-from fastapi import APIRouter, Header, Query, Request
+from fastapi import APIRouter, Header, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 
 from datariver.application.dto import (
@@ -21,6 +21,10 @@ from datariver.application.services.knowledge_pipeline import (
     KnowledgeGraphRagService,
     VerifiedProjectionService,
 )
+from datariver.application.services.registration import (
+    RegistrationService,
+    UploadAuthorizationPolicy,
+)
 from datariver.domain.authz import Action, Classification
 from datariver.domain.common import ConflictError, ValidationError, canonical_json_hash
 from datariver.domain.knowledge import (
@@ -33,6 +37,11 @@ from datariver.domain.knowledge import (
     GraphSnapshot,
     Provenance,
 )
+from datariver.domain.registration import (
+    CompletedUploadPart,
+    UploadContentProfile,
+    UploadManifest,
+)
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.knowledge import SqlKnowledgeStore
 from datariver.infrastructure.db.knowledge_pipeline import (
@@ -43,6 +52,7 @@ from datariver.infrastructure.db.knowledge_source_jobs import (
     SqlKnowledgeSourceJobStore,
     knowledge_requester_authorization_hash,
 )
+from datariver.infrastructure.db.registration import SqlUploadUnitOfWork
 from datariver.infrastructure.knowledge.neo4j import (
     Neo4jKnowledgeProjectionAdapter,
     Neo4jScopedEvidenceRetriever,
@@ -77,10 +87,15 @@ from datariver.interfaces.http.schemas import (
     KnowledgeSourceJobPageResponse,
     KnowledgeSourceJobResponse,
     KnowledgeSourceJobResultResponse,
+    KnowledgeSourceUploadInitiateRequest,
+    KnowledgeSourceUploadPartResponse,
     KnowledgeValidationResponse,
     NeighborAnalysisRequest,
     NeighborAnalysisResponse,
     ProvenanceRequest,
+    UploadCompleteRequest,
+    UploadPartRequest,
+    UploadResponse,
 )
 
 router = APIRouter(prefix="/knowledge/graphs", tags=["knowledge"])
@@ -98,6 +113,41 @@ def _service(request: Request, session: SessionDep) -> KnowledgeService:
             decision_writer=SqlDecisionWriter(container.database.session_factory)
         ),
     )
+
+
+def _source_upload_service(request: Request) -> RegistrationService:
+    container = get_container(request)
+    return RegistrationService(
+        uow_factory=lambda: SqlUploadUnitOfWork(container.database.session_factory),
+        authorization=AuthorizationService(
+            decision_writer=SqlDecisionWriter(container.database.session_factory),
+        ),
+        object_store=container.object_store,
+        quarantine_bucket=container.settings.s3_bucket_quarantine,
+        presign_ttl_seconds=container.settings.presigned_url_ttl_seconds,
+    )
+
+
+def _source_upload_response(manifest: UploadManifest) -> UploadResponse:
+    return UploadResponse(
+        id=manifest.upload_id,
+        display_name=manifest.display_name,
+        state=manifest.state.value,
+        size_bytes=manifest.declared_size_bytes,
+        content_type=manifest.declared_mime,
+        sha256=manifest.declared_sha256,
+        classification=manifest.classification.name,
+        content_profile=manifest.content_profile.value,
+        expires_at=manifest.expires_at,
+        version=manifest.version,
+        validation_summary=manifest.validation_summary,
+        last_error_code=manifest.last_error_code,
+    )
+
+
+def _set_source_upload_headers(response: Response, manifest: UploadManifest) -> None:
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["ETag"] = f'"{manifest.version}"'
 
 
 def _graph_response(graph: KnowledgeGraphRecord) -> KnowledgeGraphResponse:
@@ -860,6 +910,265 @@ async def analyze_neighbors(
     )
 
 
+async def _authorize_source_analysis_graph(
+    *,
+    graph_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> KnowledgeGraphRecord | None:
+    service = _service(request, session)
+    graph = await service.get_graph(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if graph is None:
+        return None
+    await service.authorize_source_analysis(
+        workspace_id=context.workspace_id,
+        graph=graph,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if graph.classification > Classification.INTERNAL:
+        raise ValidationError(
+            "Knowledge source analysis currently supports PUBLIC or INTERNAL Assets.",
+            details={"code": "KNOWLEDGE_SOURCE_CLASSIFICATION_NOT_SUPPORTED"},
+        )
+    return graph
+
+
+def _require_source_upload_graph_binding(
+    manifest: UploadManifest,
+    *,
+    graph_id: UUID,
+) -> None:
+    if manifest.knowledge_source_graph_id != graph_id:
+        raise ValidationError(
+            "The Knowledge source upload is bound to a different graph.",
+            details={"code": "KNOWLEDGE_SOURCE_GRAPH_MISMATCH"},
+        )
+
+
+@router.post(
+    "/{graph_id}/source-uploads",
+    response_model=UploadResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def initiate_knowledge_source_upload(
+    graph_id: UUID,
+    payload: KnowledgeSourceUploadInitiateRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=16, max_length=200),
+    ],
+) -> UploadResponse | JSONResponse:
+    graph = await _authorize_source_analysis_graph(
+        graph_id=graph_id,
+        request=request,
+        context=context,
+        session=session,
+    )
+    if graph is None:
+        return _not_found(request, context.request_id)
+    request_hash = canonical_json_hash(
+        {
+            "contract": "KNOWLEDGE_SOURCE_UPLOAD_V1",
+            "workspace_id": str(context.workspace_id),
+            "graph_id": str(graph_id),
+            "payload": payload.model_dump(mode="json"),
+        }
+    )
+    manifest = await _source_upload_service(request).initiate(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        display_name=payload.display_name,
+        declared_size_bytes=payload.size_bytes,
+        declared_mime=payload.content_type,
+        declared_sha256=payload.sha256,
+        classification=graph.classification,
+        content_profile=UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        authorization_policy=UploadAuthorizationPolicy.KNOWLEDGE_SOURCE,
+        knowledge_source_graph_id=graph_id,
+    )
+    _set_source_upload_headers(response, manifest)
+    return _source_upload_response(manifest)
+
+
+@router.get(
+    "/{graph_id}/source-uploads/{upload_id}",
+    response_model=UploadResponse,
+)
+async def get_knowledge_source_upload(
+    graph_id: UUID,
+    upload_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> UploadResponse | JSONResponse:
+    graph = await _authorize_source_analysis_graph(
+        graph_id=graph_id,
+        request=request,
+        context=context,
+        session=session,
+    )
+    if graph is None:
+        return _not_found(request, context.request_id)
+    manifest = await _source_upload_service(request).get_manifest(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        authorization_policy=UploadAuthorizationPolicy.KNOWLEDGE_SOURCE,
+    )
+    _require_source_upload_graph_binding(manifest, graph_id=graph_id)
+    if manifest.content_profile is not UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1:
+        raise ValidationError(
+            "The upload is not a governed Knowledge source.",
+            details={"code": "KNOWLEDGE_SOURCE_PROFILE_MISMATCH"},
+        )
+    _set_source_upload_headers(response, manifest)
+    return _source_upload_response(manifest)
+
+
+@router.post(
+    "/{graph_id}/source-uploads/{upload_id}/parts",
+    response_model=KnowledgeSourceUploadPartResponse,
+)
+async def presign_knowledge_source_upload_part(
+    graph_id: UUID,
+    upload_id: UUID,
+    payload: UploadPartRequest,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> KnowledgeSourceUploadPartResponse | JSONResponse:
+    graph = await _authorize_source_analysis_graph(
+        graph_id=graph_id,
+        request=request,
+        context=context,
+        session=session,
+    )
+    if graph is None:
+        return _not_found(request, context.request_id)
+    upload_service = _source_upload_service(request)
+    manifest = await upload_service.get_manifest(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        authorization_policy=UploadAuthorizationPolicy.KNOWLEDGE_SOURCE,
+    )
+    _require_source_upload_graph_binding(manifest, graph_id=graph_id)
+    if manifest.content_profile is not UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1:
+        raise ValidationError(
+            "The upload is not a governed Knowledge source.",
+            details={"code": "KNOWLEDGE_SOURCE_PROFILE_MISMATCH"},
+        )
+    url, lifetime = await upload_service.presign_part(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        subject=context.subject,
+        part_number=payload.part_number,
+        checksum_sha256=payload.checksum_sha256,
+        environment=context.environment,
+        request_id=context.request_id,
+        authorization_policy=UploadAuthorizationPolicy.KNOWLEDGE_SOURCE,
+    )
+    return KnowledgeSourceUploadPartResponse(url=url, expires_seconds=lifetime)
+
+
+@router.post(
+    "/{graph_id}/source-uploads/{upload_id}/complete",
+    response_model=UploadResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def complete_knowledge_source_upload(
+    graph_id: UUID,
+    upload_id: UUID,
+    payload: UploadCompleteRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: Annotated[str, Header(alias="If-Match", min_length=3, max_length=100)],
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=16, max_length=200),
+    ],
+) -> UploadResponse | JSONResponse:
+    graph = await _authorize_source_analysis_graph(
+        graph_id=graph_id,
+        request=request,
+        context=context,
+        session=session,
+    )
+    if graph is None:
+        return _not_found(request, context.request_id)
+    upload_service = _source_upload_service(request)
+    manifest = await upload_service.get_manifest(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        authorization_policy=UploadAuthorizationPolicy.KNOWLEDGE_SOURCE,
+    )
+    _require_source_upload_graph_binding(manifest, graph_id=graph_id)
+    if manifest.content_profile is not UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1:
+        raise ValidationError(
+            "The upload is not a governed Knowledge source.",
+            details={"code": "KNOWLEDGE_SOURCE_PROFILE_MISMATCH"},
+        )
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "contract": "KNOWLEDGE_SOURCE_UPLOAD_COMPLETION_V1",
+            "workspace_id": str(context.workspace_id),
+            "graph_id": str(graph_id),
+            "upload_id": str(upload_id),
+            "expected_version": expected_version,
+            "parts": [part.model_dump(mode="json") for part in payload.parts],
+        }
+    )
+    manifest = await upload_service.queue_completion(
+        workspace_id=context.workspace_id,
+        upload_id=upload_id,
+        subject=context.subject,
+        parts=[
+            CompletedUploadPart(
+                part_number=part.part_number,
+                etag=part.etag,
+                checksum_sha256=part.checksum_sha256,
+            )
+            for part in payload.parts
+        ],
+        expected_version=expected_version,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        authorization_policy=UploadAuthorizationPolicy.KNOWLEDGE_SOURCE,
+    )
+    _set_source_upload_headers(response, manifest)
+    return _source_upload_response(manifest)
+
+
 @router.post(
     "/{graph_id}/sources/{upload_id}/analyze",
     status_code=202,
@@ -874,23 +1183,14 @@ async def analyze_knowledge_document_source(
     session: SessionDep,
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
 ) -> KnowledgeSourceJobResponse | JSONResponse:
-    service = _service(request, session)
-    graph = await service.get_graph(
-        workspace_id=context.workspace_id,
+    graph = await _authorize_source_analysis_graph(
         graph_id=graph_id,
-        subject=context.subject,
-        environment=context.environment,
-        request_id=context.request_id,
+        request=request,
+        context=context,
+        session=session,
     )
     if graph is None:
         return _not_found(request, context.request_id)
-    await service.authorize_source_analysis(
-        workspace_id=context.workspace_id,
-        graph=graph,
-        subject=context.subject,
-        environment=context.environment,
-        request_id=context.request_id,
-    )
     settings = get_container(request).settings
     if not settings.knowledge_source_worker_enabled:
         raise ConflictError(

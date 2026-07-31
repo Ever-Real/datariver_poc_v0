@@ -244,6 +244,16 @@ KNOWLEDGE_STUDIO_DOCUMENT_V1 = MultiFormatUploadProfileDefinition(
     profile_contract="knowledge-studio-document-v1",
 )
 
+KNOWLEDGE_SOURCE_DOCUMENT_V1 = MultiFormatUploadProfileDefinition(
+    content_profile=UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1,
+    accepted_media_types=KNOWLEDGE_STUDIO_DOCUMENT_V1.accepted_media_types,
+    maximum_file_bytes=50 * 1024 * 1024,
+    acceptance_validator_version="knowledge-source-document-integrity-v1",
+    parser_version="knowledge-source-multiformat-parser-v2",
+    schema_version="knowledge-source-document-profile-v1",
+    profile_contract="knowledge-source-document-v1",
+)
+
 TYPED_PROFILE_DEFINITIONS = {
     definition.content_profile: definition
     for definition in (
@@ -273,8 +283,15 @@ def validate_upload_profile(
 ) -> None:
     if content_profile is UploadContentProfile.FORMAT_ONLY_V1:
         return
-    if content_profile is UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1:
-        knowledge_definition = KNOWLEDGE_STUDIO_DOCUMENT_V1
+    if content_profile in {
+        UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1,
+        UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1,
+    }:
+        knowledge_definition = (
+            KNOWLEDGE_SOURCE_DOCUMENT_V1
+            if content_profile is UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1
+            else KNOWLEDGE_STUDIO_DOCUMENT_V1
+        )
         if not knowledge_definition.accepts(
             content_type=content_type,
             display_name=display_name,

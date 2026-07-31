@@ -5,6 +5,7 @@ import pytest
 
 from datariver.application.typed_upload_profiles import (
     DATASET_DESCRIPTION_CSV_V1,
+    KNOWLEDGE_SOURCE_DOCUMENT_V1,
     KNOWLEDGE_STUDIO_DOCUMENT_V1,
     validate_upload_profile,
 )
@@ -255,6 +256,29 @@ def test_knowledge_studio_document_profile_rejects_unlisted_media_and_oversize()
     assert (
         KNOWLEDGE_STUDIO_DOCUMENT_V1.configuration_hash
         == "c70a2750dd6f089d79ef3e4d1e2eb59bb34b885c85db88d0426d59ee65a513e8"
+    )
+
+
+def test_knowledge_source_document_profile_reuses_formats_with_a_50_mib_ceiling() -> None:
+    validate_upload_profile(
+        content_profile=UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1,
+        display_name="knowledge-prompt.txt",
+        content_type="text/plain",
+        size_bytes=KNOWLEDGE_SOURCE_DOCUMENT_V1.maximum_file_bytes,
+    )
+
+    with pytest.raises(ValidationError, match="bounded file-size"):
+        validate_upload_profile(
+            content_profile=UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1,
+            display_name="source.pdf",
+            content_type="application/pdf",
+            size_bytes=KNOWLEDGE_SOURCE_DOCUMENT_V1.maximum_file_bytes + 1,
+        )
+
+    assert KNOWLEDGE_SOURCE_DOCUMENT_V1.maximum_file_bytes == 50 * 1024 * 1024
+    assert (
+        KNOWLEDGE_SOURCE_DOCUMENT_V1.accepted_media_types
+        == KNOWLEDGE_STUDIO_DOCUMENT_V1.accepted_media_types
     )
 
 

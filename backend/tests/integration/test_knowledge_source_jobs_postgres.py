@@ -19,6 +19,7 @@ from datariver.application.knowledge_source_job_contracts import (
     KnowledgeSourceJobClaim,
     KnowledgeSourceJobRecord,
 )
+from datariver.application.typed_upload_profiles import KNOWLEDGE_SOURCE_DOCUMENT_V1
 from datariver.domain.authz import Action, Classification, SubjectAttributes
 from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.knowledge_pipeline import (
@@ -111,6 +112,21 @@ def _subject(workspace_id: UUID, subject_id: UUID) -> SubjectAttributes:
         allowed_domain_ids=frozenset(),
         allowed_actions=frozenset({Action.KG_EDIT, Action.KG_READ}),
         denied_actions=frozenset(),
+    )
+
+
+def _validation_summary(*, content_type: str, size_bytes: int, sha256: str) -> str:
+    return json.dumps(
+        {
+            "content_profile": "KNOWLEDGE_SOURCE_DOCUMENT_V1",
+            "content_type": content_type,
+            "coverage": "FULL_SIGNATURE" if content_type == "application/pdf" else "FULL",
+            "parser_version": KNOWLEDGE_SOURCE_DOCUMENT_V1.parser_version,
+            "profile_configuration_hash": KNOWLEDGE_SOURCE_DOCUMENT_V1.configuration_hash,
+            "sha256": sha256,
+            "size_bytes": size_bytes,
+            "validator_version": KNOWLEDGE_SOURCE_DOCUMENT_V1.acceptance_validator_version,
+        }
     )
 
 
@@ -298,13 +314,15 @@ async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID]:
                     actual_size_bytes, actual_mime, actual_sha256,
                     processing_lease_until, processing_attempts, validation_attempts,
                     last_error_code, validation_summary, completion_parts, state,
-                    content_profile, classification, owner_id, retention_until,
+                    content_profile, legacy_knowledge_source_eligible,
+                    knowledge_source_graph_id, classification, owner_id, retention_until,
                     expires_at, created_at, updated_at, version
                 ) VALUES (
                     :upload_id, :workspace_id, 'datariver-accepted', :object_key,
                     'source.pdf', NULL, 23, 'application/pdf', :source_hash,
                     23, 'application/pdf', :source_hash, NULL, 0, 1, NULL,
-                    '{}'::jsonb, '[]'::jsonb, 'ACCEPTED', 'FORMAT_ONLY_V1',
+                    CAST(:validation_summary AS jsonb), '[]'::jsonb, 'ACCEPTED',
+                    'KNOWLEDGE_SOURCE_DOCUMENT_V1', false, :graph_id,
                     1, :actor_id, NULL, NULL, :now, :now, 1
                 )
                 """
@@ -314,6 +332,10 @@ async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID]:
                 "workspace_id": workspace_id,
                 "object_key": f"knowledge/{workspace_id}/{upload_id}.pdf",
                 "source_hash": source_hash,
+                "validation_summary": _validation_summary(
+                    content_type="application/pdf", size_bytes=23, sha256=source_hash
+                ),
+                "graph_id": graph_id,
                 "actor_id": actor_id,
                 "now": now,
             },
@@ -365,13 +387,15 @@ async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID]:
                     actual_size_bytes, actual_mime, actual_sha256,
                     processing_lease_until, processing_attempts, validation_attempts,
                     last_error_code, validation_summary, completion_parts, state,
-                    content_profile, classification, owner_id, retention_until,
+                    content_profile, legacy_knowledge_source_eligible,
+                    knowledge_source_graph_id, classification, owner_id, retention_until,
                     expires_at, created_at, updated_at, version
                 ) VALUES (
                     :upload_id, :workspace_id, 'datariver-accepted', :object_key,
                     'restricted.pdf', NULL, 23, 'application/pdf', :source_hash,
                     23, 'application/pdf', :source_hash, NULL, 0, 1, NULL,
-                    '{}'::jsonb, '[]'::jsonb, 'ACCEPTED', 'FORMAT_ONLY_V1',
+                    CAST(:validation_summary AS jsonb), '[]'::jsonb, 'ACCEPTED',
+                    'KNOWLEDGE_SOURCE_DOCUMENT_V1', false, :graph_id,
                     3, :actor_id, NULL, NULL, :now, :now, 1
                 )
                 """
@@ -381,6 +405,10 @@ async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID]:
                 "workspace_id": workspace_id,
                 "object_key": f"accepted/{workspace_id}/{other_upload_id}.pdf",
                 "source_hash": source_hash,
+                "validation_summary": _validation_summary(
+                    content_type="application/pdf", size_bytes=23, sha256=source_hash
+                ),
+                "graph_id": other_graph_id,
                 "actor_id": other_actor_id,
                 "now": now,
             },
@@ -450,6 +478,7 @@ async def _add_upload(
     *,
     workspace_id: UUID,
     actor_id: UUID,
+    graph_id: UUID,
     display_name: str = "source.pdf",
     media_type: str = "application/pdf",
     content: bytes | None = None,
@@ -468,13 +497,15 @@ async def _add_upload(
                     actual_size_bytes, actual_mime, actual_sha256,
                     processing_lease_until, processing_attempts, validation_attempts,
                     last_error_code, validation_summary, completion_parts, state,
-                    content_profile, classification, owner_id, retention_until,
+                    content_profile, legacy_knowledge_source_eligible,
+                    knowledge_source_graph_id, classification, owner_id, retention_until,
                     expires_at, created_at, updated_at, version
                 ) VALUES (
                     :upload_id, :workspace_id, 'datariver-accepted', :object_key,
                     :display_name, NULL, :size_bytes, :media_type, :source_hash,
                     :size_bytes, :media_type, :source_hash, NULL, 0, 1, NULL,
-                    '{}'::jsonb, '[]'::jsonb, 'ACCEPTED', 'FORMAT_ONLY_V1',
+                    CAST(:validation_summary AS jsonb), '[]'::jsonb, 'ACCEPTED',
+                    'KNOWLEDGE_SOURCE_DOCUMENT_V1', false, :graph_id,
                     1, :actor_id, NULL, NULL, :now, :now, 1
                 )
                 """
@@ -487,11 +518,137 @@ async def _add_upload(
                 "size_bytes": len(source_content),
                 "media_type": media_type,
                 "source_hash": source_hash,
+                "validation_summary": _validation_summary(
+                    content_type=media_type,
+                    size_bytes=len(source_content),
+                    sha256=source_hash,
+                ),
+                "graph_id": graph_id,
                 "actor_id": actor_id,
                 "now": now,
             },
         )
     return upload_id
+
+
+async def _add_migration_owned_legacy_upload(
+    owner: AsyncEngine,
+    *,
+    workspace_id: UUID,
+    actor_id: UUID,
+) -> UUID:
+    upload_id = uuid4()
+    now = datetime.now(UTC)
+    source_content = f"%PDF-1.7\nlegacy-{upload_id}\n%%EOF".encode()
+    source_hash = hashlib.sha256(source_content).hexdigest()
+    validation_summary = json.dumps(
+        {
+            "content_type": "application/pdf",
+            "coverage": "FULL_SIGNATURE",
+            "sha256": source_hash,
+            "size_bytes": len(source_content),
+            "validator_version": "integrity-format-v1",
+        }
+    )
+    async with owner.begin() as connection:
+        # This fixture represents an exact row marked by the 0085 migration.
+        # Product principals cannot create or mutate the marker because its
+        # trigger remains enabled outside this isolated owner transaction.
+        await connection.execute(
+            text(
+                "ALTER TABLE integration.object_manifests DISABLE TRIGGER "
+                "trg_object_manifest_legacy_knowledge_source_marker"
+            )
+        )
+        await connection.execute(
+            text(
+                """
+                INSERT INTO integration.object_manifests (
+                    id, workspace_id, bucket, object_key, display_name,
+                    multipart_upload_id, size_bytes, mime, sha256,
+                    actual_size_bytes, actual_mime, actual_sha256,
+                    processing_lease_until, processing_attempts, validation_attempts,
+                    last_error_code, validation_summary, completion_parts, state,
+                    content_profile, legacy_knowledge_source_eligible,
+                    knowledge_source_graph_id, classification, owner_id, retention_until,
+                    expires_at, created_at, updated_at, version
+                ) VALUES (
+                    :upload_id, :workspace_id, 'datariver-accepted', :object_key,
+                    'legacy-source.pdf', NULL, :size_bytes, 'application/pdf', :source_hash,
+                    :size_bytes, 'application/pdf', :source_hash, NULL, 0, 1, NULL,
+                    CAST(:validation_summary AS jsonb), '[]'::jsonb, 'ACCEPTED',
+                    'FORMAT_ONLY_V1', true, NULL,
+                    1, :actor_id, NULL, NULL, :now, :now, 1
+                )
+                """
+            ),
+            {
+                "upload_id": upload_id,
+                "workspace_id": workspace_id,
+                "object_key": f"legacy/{workspace_id}/{upload_id}.pdf",
+                "size_bytes": len(source_content),
+                "source_hash": source_hash,
+                "validation_summary": validation_summary,
+                "actor_id": actor_id,
+                "now": now,
+            },
+        )
+        await connection.execute(
+            text(
+                "ALTER TABLE integration.object_manifests ENABLE TRIGGER "
+                "trg_object_manifest_legacy_knowledge_source_marker"
+            )
+        )
+    return upload_id
+
+
+async def _add_internal_graph(
+    owner: AsyncEngine,
+    *,
+    workspace_id: UUID,
+) -> UUID:
+    graph_id, ontology_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    async with owner.begin() as connection:
+        await connection.execute(
+            text(
+                """
+                INSERT INTO knowledge.graphs
+                    (id, workspace_id, slug, name, graph_type, status,
+                     active_release_id, classification, created_at, updated_at, version)
+                VALUES
+                    (:graph_id, :workspace_id, :slug, 'Legacy race graph', 'DOMAIN',
+                     'DRAFT', NULL, 1, :now, :now, 1)
+                """
+            ),
+            {
+                "graph_id": graph_id,
+                "workspace_id": workspace_id,
+                "slug": f"legacy-race-{graph_id.hex}",
+                "now": now,
+            },
+        )
+        await connection.execute(
+            text(
+                """
+                INSERT INTO knowledge.ontology_versions
+                    (id, workspace_id, graph_id, version, schema_document,
+                     checksum, status, created_at, updated_at)
+                VALUES
+                    (:ontology_id, :workspace_id, :graph_id, '1',
+                     '{"entity_types":["Asset"],"edge_types":[]}'::jsonb,
+                     :checksum, 'ACTIVE', :now, :now)
+                """
+            ),
+            {
+                "ontology_id": ontology_id,
+                "workspace_id": workspace_id,
+                "graph_id": graph_id,
+                "checksum": hashlib.sha256(str(graph_id).encode()).hexdigest(),
+                "now": now,
+            },
+        )
+    return graph_id
 
 
 def _analysis(
@@ -541,6 +698,7 @@ async def test_source_snapshot_database_enforces_exact_governed_media_vocabulary
                 owner,
                 workspace_id=workspace_id,
                 actor_id=actor_id,
+                graph_id=graph_id,
                 display_name=f"approved-source-{index}",
                 media_type=media_type,
                 content=f"approved-source-{index}".encode(),
@@ -607,6 +765,7 @@ async def test_source_snapshot_database_enforces_exact_governed_media_vocabulary
                 owner,
                 workspace_id=workspace_id,
                 actor_id=actor_id,
+                graph_id=graph_id,
                 display_name=f"rejected-source-{index}",
                 media_type=media_type,
                 content=f"rejected-source-{index}".encode(),
@@ -644,6 +803,302 @@ async def test_source_snapshot_database_enforces_exact_governed_media_vocabulary
                         },
                     )
     finally:
+        await owner.dispose()
+
+
+@pytest.mark.skipif(not _ENABLED, reason="isolated Knowledge source PostgreSQL gate not enabled")
+@pytest.mark.asyncio
+async def test_governed_graph_a_upload_cannot_enqueue_or_rebind_through_graph_b() -> None:
+    owner = _engine(_OWNER_URL, _OWNER_SECRET)
+    app = _engine(_APP_URL, _APP_SECRET)
+    worker = _engine(_WORKER_URL, _WORKER_SECRET)
+    try:
+        workspace_id, actor_id, _, graph_id, upload_id = await _seed(owner)
+        competing_graph_id = await _add_internal_graph(
+            owner,
+            workspace_id=workspace_id,
+        )
+        embedding, extraction = _binding("embed", "a"), _binding("extract", "b")
+
+        with pytest.raises(ValidationError, match="different graph"):
+            await _enqueue(
+                app,
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                graph_id=competing_graph_id,
+                upload_id=upload_id,
+                embedding=embedding,
+                extraction=extraction,
+                idempotency_key=f"cross-graph-{competing_graph_id}",
+            )
+
+        with pytest.raises(DBAPIError, match="graph binding is immutable"):
+            async with app.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.workspace_id', :value, true)"),
+                    {"value": str(workspace_id)},
+                )
+                await connection.execute(
+                    text("SELECT set_config('app.subject_id', :value, true)"),
+                    {"value": str(actor_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE integration.object_manifests
+                        SET knowledge_source_graph_id = :competing_graph_id
+                        WHERE workspace_id = :workspace_id AND id = :upload_id
+                        """
+                    ),
+                    {
+                        "workspace_id": workspace_id,
+                        "upload_id": upload_id,
+                        "competing_graph_id": competing_graph_id,
+                    },
+                )
+
+        with pytest.raises(DBAPIError, match="fk_source_snapshots_manifest_graph"):
+            async with app.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.workspace_id', :value, true)"),
+                    {"value": str(workspace_id)},
+                )
+                await connection.execute(
+                    text("SELECT set_config('app.subject_id', :value, true)"),
+                    {"value": str(actor_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO knowledge.source_snapshots (
+                            id, workspace_id, graph_id, upload_id, bucket, object_key,
+                            storage_version, media_type, byte_size, content_sha256,
+                            classification, state, created_by, created_at, updated_at
+                        )
+                        SELECT
+                            :source_id, manifest.workspace_id, :competing_graph_id,
+                            manifest.id, manifest.bucket, manifest.object_key,
+                            'manifest-v' || manifest.version::text, manifest.mime,
+                            manifest.size_bytes, manifest.sha256, manifest.classification,
+                            'PENDING', manifest.owner_id, clock_timestamp(), clock_timestamp()
+                        FROM integration.object_manifests AS manifest
+                        WHERE manifest.workspace_id = :workspace_id
+                          AND manifest.id = :upload_id
+                        """
+                    ),
+                    {
+                        "source_id": uuid4(),
+                        "workspace_id": workspace_id,
+                        "upload_id": upload_id,
+                        "competing_graph_id": competing_graph_id,
+                    },
+                )
+
+        for principal, subject_id in (
+            (app, actor_id),
+            (worker, _WORKER_SUBJECT_ID),
+        ):
+            with pytest.raises(DBAPIError):
+                async with principal.begin() as connection:
+                    await connection.execute(
+                        text("SELECT set_config('app.workspace_id', :value, true)"),
+                        {"value": str(workspace_id)},
+                    )
+                    await connection.execute(
+                        text("SELECT set_config('app.subject_id', :value, true)"),
+                        {"value": str(subject_id)},
+                    )
+                    await connection.execute(
+                        text(
+                            """
+                            UPDATE integration.object_manifests
+                            SET legacy_knowledge_source_eligible = true
+                            WHERE workspace_id = :workspace_id AND id = :upload_id
+                            """
+                        ),
+                        {"workspace_id": workspace_id, "upload_id": upload_id},
+                    )
+
+        async with owner.connect() as connection:
+            counts = (
+                await connection.execute(
+                    text(
+                        """
+                        SELECT
+                            (SELECT count(*) FROM knowledge.source_snapshots
+                             WHERE workspace_id = :workspace_id AND upload_id = :upload_id),
+                            (SELECT count(*) FROM knowledge.source_analysis_jobs
+                             WHERE workspace_id = :workspace_id),
+                            (SELECT count(*) FROM integration.outbox_events
+                             WHERE workspace_id = :workspace_id
+                               AND aggregate_type = 'knowledge_source_analysis_job'),
+                            (SELECT knowledge_source_graph_id
+                             FROM integration.object_manifests
+                             WHERE workspace_id = :workspace_id AND id = :upload_id)
+                        """
+                    ),
+                    {"workspace_id": workspace_id, "upload_id": upload_id},
+                )
+            ).one()
+        assert counts == (0, 0, 0, graph_id)
+
+        valid_job = await _enqueue(
+            app,
+            workspace_id=workspace_id,
+            actor_id=actor_id,
+            graph_id=graph_id,
+            upload_id=upload_id,
+            embedding=embedding,
+            extraction=extraction,
+            idempotency_key=f"valid-composite-graph-{graph_id}",
+        )
+        async with owner.connect() as connection:
+            job_fk = await connection.scalar(
+                text(
+                    """
+                    SELECT pg_get_constraintdef(oid)
+                    FROM pg_constraint
+                    WHERE conname = 'fk_source_analysis_jobs_snapshot_graph'
+                    """
+                )
+            )
+        assert job_fk is not None
+        assert "FOREIGN KEY (workspace_id, graph_id, source_snapshot_id)" in job_fk
+
+        with pytest.raises(DBAPIError):
+            async with app.begin() as connection:
+                await connection.execute(
+                    text("SELECT set_config('app.workspace_id', :value, true)"),
+                    {"value": str(workspace_id)},
+                )
+                await connection.execute(
+                    text("SELECT set_config('app.subject_id', :value, true)"),
+                    {"value": str(actor_id)},
+                )
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE knowledge.source_analysis_jobs
+                        SET graph_id = :competing_graph_id
+                        WHERE workspace_id = :workspace_id AND id = :job_id
+                        """
+                    ),
+                    {
+                        "workspace_id": workspace_id,
+                        "job_id": valid_job.job_id,
+                        "competing_graph_id": competing_graph_id,
+                    },
+                )
+
+        sessions = async_sessionmaker(app, expire_on_commit=False)
+        async with sessions() as session:
+            cancelled = await SqlKnowledgeSourceJobStore(session).cancel(
+                workspace_id=workspace_id,
+                graph_id=graph_id,
+                job_id=valid_job.job_id,
+                actor_id=actor_id,
+                expected_version=valid_job.version,
+                reason="Composite graph fence fixture cleanup",
+                request_hash="7" * 64,
+                idempotency_key=f"composite-graph-cleanup-{valid_job.job_id}",
+            )
+        assert cancelled.state.value == "CANCELLED"
+    finally:
+        await worker.dispose()
+        await app.dispose()
+        await owner.dispose()
+
+
+@pytest.mark.skipif(not _ENABLED, reason="isolated Knowledge source PostgreSQL gate not enabled")
+@pytest.mark.asyncio
+async def test_legacy_unsnapshotted_pdf_binds_once_under_cross_graph_race() -> None:
+    owner = _engine(_OWNER_URL, _OWNER_SECRET)
+    app = _engine(_APP_URL, _APP_SECRET)
+    try:
+        workspace_id, actor_id, _, graph_id, _ = await _seed(owner)
+        competing_graph_id = await _add_internal_graph(
+            owner,
+            workspace_id=workspace_id,
+        )
+        upload_id = await _add_migration_owned_legacy_upload(
+            owner,
+            workspace_id=workspace_id,
+            actor_id=actor_id,
+        )
+        embedding, extraction = _binding("embed", "a"), _binding("extract", "b")
+
+        outcomes = await asyncio.gather(
+            _enqueue(
+                app,
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                graph_id=graph_id,
+                upload_id=upload_id,
+                embedding=embedding,
+                extraction=extraction,
+                idempotency_key=f"legacy-first-{graph_id}",
+            ),
+            _enqueue(
+                app,
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                graph_id=competing_graph_id,
+                upload_id=upload_id,
+                embedding=embedding,
+                extraction=extraction,
+                idempotency_key=f"legacy-first-{competing_graph_id}",
+            ),
+            return_exceptions=True,
+        )
+        successes = [
+            outcome for outcome in outcomes if isinstance(outcome, KnowledgeSourceJobRecord)
+        ]
+        failures = [outcome for outcome in outcomes if isinstance(outcome, Exception)]
+        assert len(successes) == 1
+        assert len(failures) == 1
+        assert isinstance(failures[0], ValidationError)
+        assert "different graph" in str(failures[0])
+
+        winner = successes[0]
+        assert winner.graph_id in {graph_id, competing_graph_id}
+        async with owner.connect() as connection:
+            binding = await connection.scalar(
+                text(
+                    """
+                    SELECT knowledge_source_graph_id
+                    FROM integration.object_manifests
+                    WHERE workspace_id = :workspace_id AND id = :upload_id
+                    """
+                ),
+                {"workspace_id": workspace_id, "upload_id": upload_id},
+            )
+            source_count = await connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM knowledge.source_snapshots
+                    WHERE workspace_id = :workspace_id AND upload_id = :upload_id
+                    """
+                ),
+                {"workspace_id": workspace_id, "upload_id": upload_id},
+            )
+        assert binding == winner.graph_id
+        assert source_count == 1
+        sessions = async_sessionmaker(app, expire_on_commit=False)
+        async with sessions() as session:
+            cancelled = await SqlKnowledgeSourceJobStore(session).cancel(
+                workspace_id=workspace_id,
+                graph_id=winner.graph_id,
+                job_id=winner.job_id,
+                actor_id=actor_id,
+                expected_version=winner.version,
+                reason="Isolated legacy race fixture cleanup",
+                request_hash="f" * 64,
+                idempotency_key=f"legacy-race-cleanup-{winner.job_id}",
+            )
+        assert cancelled.state.value == "CANCELLED"
+    finally:
+        await app.dispose()
         await owner.dispose()
 
 
@@ -1019,6 +1474,7 @@ async def test_api_event_and_outbox_require_exact_same_transaction_transition() 
     ("drift_kind", "expected_code"),
     (
         ("source_manifest", "STALE_SOURCE_MANIFEST"),
+        ("source_validation", "STALE_SOURCE_VALIDATION"),
         ("graph_version", "STALE_GRAPH_VERSION"),
         ("base_release", "STALE_BASE_BINDING"),
         ("ontology", "STALE_ONTOLOGY_BINDING"),
@@ -1075,6 +1531,27 @@ async def test_each_pinned_runtime_drift_fails_closed(
                         """
                     ),
                     {"workspace_id": workspace_id, "upload_id": upload_id},
+                )
+            elif drift_kind == "source_validation":
+                await connection.execute(
+                    text(
+                        """
+                        UPDATE integration.object_manifests
+                        SET validation_summary = jsonb_set(
+                                validation_summary,
+                                '{profile_configuration_hash}',
+                                to_jsonb(CAST(:stale_hash AS text))
+                            ),
+                            updated_at = clock_timestamp()
+                        WHERE workspace_id = :workspace_id
+                          AND id = :upload_id
+                        """
+                    ),
+                    {
+                        "workspace_id": workspace_id,
+                        "upload_id": upload_id,
+                        "stale_hash": "0" * 64,
+                    },
                 )
             elif drift_kind == "graph_version":
                 await connection.execute(
@@ -1242,6 +1719,7 @@ async def test_owner_job_history_orders_nonterminal_before_newer_terminal_rows()
             owner,
             workspace_id=workspace_id,
             actor_id=actor_id,
+            graph_id=graph_id,
         )
         terminal = await _enqueue(
             app,
@@ -1316,6 +1794,7 @@ async def test_owner_active_job_capacity_keeps_every_active_job_on_the_first_pag
                     owner,
                     workspace_id=workspace_id,
                     actor_id=actor_id,
+                    graph_id=graph_id,
                 )
             )
             active_jobs.append(
@@ -1333,6 +1812,7 @@ async def test_owner_active_job_capacity_keeps_every_active_job_on_the_first_pag
             owner,
             workspace_id=workspace_id,
             actor_id=actor_id,
+            graph_id=graph_id,
         )
         with pytest.raises(ConflictError, match="maximum number of active"):
             await _enqueue(
@@ -2223,7 +2703,7 @@ async def test_worker_event_policy_and_outbox_require_live_transition_evidence()
                             evaluation_context, request_id, decided_at
                         ) VALUES (
                             :id, :workspace_id, :actor_id, :graph_id, 'kg.edit',
-                            'DENY', '["FORGED_DENY"]'::jsonb,
+                            'ALLOW', '["POLICY_ALLOW"]'::jsonb,
                             '["builtin-abac-v2"]'::jsonb,
                             CAST(:context AS jsonb), :request_id, clock_timestamp()
                         )
@@ -2261,7 +2741,7 @@ async def test_worker_event_policy_and_outbox_require_live_transition_evidence()
             ) VALUES (
                 :id, :workspace_id, :actor_id, :graph_id, 'kg.edit',
                 'ALLOW', '["POLICY_ALLOW"]'::jsonb,
-                '["builtin-abac-v2"]'::jsonb,
+                '["builtin-abac-v3"]'::jsonb,
                 CAST(:context AS jsonb), :request_id, clock_timestamp()
             )
             """
@@ -2738,7 +3218,7 @@ async def test_other_service_roles_cannot_forge_knowledge_shared_evidence() -> N
                     ) VALUES (
                         :id, :workspace_id, :actor_id, :graph_id, 'kg.edit',
                         'ALLOW', '["POLICY_ALLOW"]'::jsonb,
-                        '["builtin-abac-v2"]'::jsonb,
+                        '["builtin-abac-v3"]'::jsonb,
                         CAST(:context AS jsonb), :request_id, clock_timestamp()
                     )
                     """
@@ -3467,7 +3947,7 @@ async def test_oversize_accepted_pdf_is_rejected_before_any_job_evidence() -> No
 
         with pytest.raises(
             ValidationError,
-            match="integrity-verified accepted PDF upload within 50 MiB",
+            match=r"integrity-verified accepted Knowledge document.*within 50 MiB",
         ):
             await _enqueue(
                 app,

@@ -101,6 +101,8 @@ class KnowledgeSourceJobPins:
     source_storage_version: str
     source_content_sha256: str
     source_classification: int
+    source_content_profile: str
+    source_validation_evidence_hash: str
     graph_version: int
     base_release_id: UUID | None
     base_release_hash: str | None
@@ -120,6 +122,12 @@ class KnowledgeSourceJobPins:
         ):
             raise ValidationError("The Knowledge source job source or graph binding is invalid.")
         _require_sha256(self.source_content_sha256, "source content hash")
+        if not self.source_content_profile or len(self.source_content_profile) > 100:
+            raise ValidationError("The Knowledge source job content profile is invalid.")
+        _require_sha256(
+            self.source_validation_evidence_hash,
+            "source validation evidence hash",
+        )
         _require_sha256(self.ontology_checksum, "ontology checksum")
         _require_sha256(self.parser_configuration_hash, "parser configuration hash")
         if (self.base_release_id is None) != (self.base_release_hash is None):
@@ -144,7 +152,7 @@ class KnowledgeSourceJobPins:
                 "release_id": str(self.base_release_id),
                 "content_hash": self.base_release_hash,
             }
-        return {
+        document: dict[str, object] = {
             "contract": "KNOWLEDGE_SOURCE_JOB_PINS_V1",
             "workspace_id": str(self.workspace_id),
             "graph_id": str(self.graph_id),
@@ -166,6 +174,13 @@ class KnowledgeSourceJobPins:
             "extraction_binding": self.extraction_binding.to_document(),
             "prepared_at": self.prepared_at.isoformat(),
         }
+        if self.source_content_profile == "KNOWLEDGE_SOURCE_DOCUMENT_V1":
+            document["contract"] = "KNOWLEDGE_SOURCE_JOB_PINS_V2"
+            source = document["source"]
+            assert isinstance(source, dict)
+            source["content_profile"] = self.source_content_profile
+            source["validation_evidence_hash"] = self.source_validation_evidence_hash
+        return document
 
     def evidence_hash(self) -> str:
         return canonical_json_hash(self.to_document())

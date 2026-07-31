@@ -95,6 +95,24 @@ The previous synchronous document/Catalog routes return `410`, and the route-spe
 assertion is removed. Provider/runtime browser evidence is reported only for the exact published
 commit and is not inferred from source tests.
 
+Revision `0085` adds the server-selected 50 MiB `KNOWLEDGE_SOURCE_DOCUMENT_V1` ingress used by
+A-Box file and bounded natural-language sources. OpenAPI and executable handler tests prove that
+clients cannot submit classification/profile, that `kg.edit` and PUBLIC/INTERNAL graph caps run
+before storage or inference, and that a graph-A upload cannot be read, completed or analyzed through
+graph B. Owner, ETag and idempotency replay fences remain active.
+
+Migration tests distinguish only evidence-complete pre-0085 `FORMAT_ONLY_V1` PDFs with a
+migration-owned marker; later generic uploads cannot set it. Source-job tests pin the exact content
+profile and accepted validation evidence, preserve historical V1 hashes, use V2 for new jobs and
+return `STALE_SOURCE_VALIDATION` on worker preflight drift. Validation tests prove that the 50 MiB
+complete preview applies only to this Knowledge profile while generic profiles retain the 10 MiB
+memory/JSON limit. Natural-language UI tests verify deterministic NFC UTF-8 TXT creation and the
+same upload → validation → durable analysis sequence; they do not synthesize a browser-side graph.
+The online 0085 migration strictly advances the source-finalization evidence function from the
+retired `builtin-abac-v2` token to `builtin-abac-v3`; PostgreSQL tests reject v2 evidence and accept
+only the current policy-engine result. Downgrade performs the exact inverse and fails on an
+unexpected function definition.
+
 ### Knowledge Information Profiles and superseded bounded Proposal timeout — 2026-07-31
 
 Revision `0076` adds forced-RLS Property Profile and normalized synonym tables tied by composite

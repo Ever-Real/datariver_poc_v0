@@ -27,6 +27,7 @@ class UploadContentProfile(StrEnum):
     CATALOG_METADATA_ROWS_XLSX_V1 = "CATALOG_METADATA_ROWS_XLSX_V1"
     DATASET_DESCRIPTION_CSV_V1 = "DATASET_DESCRIPTION_CSV_V1"
     DATASET_DESCRIPTION_XLSX_V1 = "DATASET_DESCRIPTION_XLSX_V1"
+    KNOWLEDGE_SOURCE_DOCUMENT_V1 = "KNOWLEDGE_SOURCE_DOCUMENT_V1"
     KNOWLEDGE_STUDIO_DOCUMENT_V1 = "KNOWLEDGE_STUDIO_DOCUMENT_V1"
 
 
@@ -61,6 +62,7 @@ class UploadManifest:
     multipart_upload_id: str
     expires_at: datetime
     content_profile: UploadContentProfile = UploadContentProfile.FORMAT_ONLY_V1
+    knowledge_source_graph_id: UUID | None = None
     state: UploadState = UploadState.INITIATED
     version: int = 1
     completion_parts: list[CompletedUploadPart] = field(default_factory=list)
@@ -71,6 +73,7 @@ class UploadManifest:
     validation_attempts: int = 0
     validation_summary: dict[str, object] = field(default_factory=dict)
     last_error_code: str | None = None
+    legacy_knowledge_source_eligible: bool = False
     events: list[DomainEvent] = field(default_factory=list)
 
     def __post_init__(self) -> None:

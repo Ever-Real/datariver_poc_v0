@@ -25,6 +25,7 @@ from datariver.domain.common import (
     ConflictError,
     DomainError,
     NotFoundError,
+    ValidationError,
     canonical_json_hash,
     utc_now,
     uuid7,
@@ -49,6 +50,7 @@ class UploadPreparationNotFound(NotFoundError):
 
 class UploadAuthorizationPolicy(StrEnum):
     REGISTRATION = "REGISTRATION"
+    KNOWLEDGE_SOURCE = "KNOWLEDGE_SOURCE"
     KNOWLEDGE_STUDIO = "KNOWLEDGE_STUDIO"
 
 
@@ -68,6 +70,12 @@ _UPLOAD_AUTHORIZATION_ACTIONS = {
         queue_completion=Action.REGISTRATION_CREATE,
     ),
     UploadAuthorizationPolicy.KNOWLEDGE_STUDIO: UploadAuthorizationActions(
+        initiate=Action.KG_EDIT,
+        presign_part=Action.KG_EDIT,
+        read_manifest=Action.KG_EDIT,
+        queue_completion=Action.KG_EDIT,
+    ),
+    UploadAuthorizationPolicy.KNOWLEDGE_SOURCE: UploadAuthorizationActions(
         initiate=Action.KG_EDIT,
         presign_part=Action.KG_EDIT,
         read_manifest=Action.KG_EDIT,
@@ -116,7 +124,20 @@ class RegistrationService:
         idempotency_key: str,
         request_hash: str,
         authorization_policy: UploadAuthorizationPolicy = UploadAuthorizationPolicy.REGISTRATION,
+        knowledge_source_graph_id: UUID | None = None,
     ) -> UploadManifest:
+        if authorization_policy is UploadAuthorizationPolicy.KNOWLEDGE_SOURCE:
+            if (
+                content_profile is not UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1
+                or knowledge_source_graph_id is None
+            ):
+                raise ValidationError(
+                    "Knowledge source uploads require a server-owned target graph binding."
+                )
+        elif knowledge_source_graph_id is not None:
+            raise ValidationError(
+                "Only the Knowledge source ingress may bind an upload to a graph."
+            )
         actions = upload_authorization_actions(authorization_policy)
         validate_upload_profile(
             content_profile=content_profile,
@@ -157,6 +178,10 @@ class RegistrationService:
                 )
                 if manifest is None:
                     raise ConflictError("The idempotent upload result is unavailable.")
+                if manifest.knowledge_source_graph_id != knowledge_source_graph_id:
+                    raise ConflictError(
+                        "The idempotent upload is bound to a different Knowledge graph."
+                    )
                 return manifest
             try:
                 multipart = await self._object_store.create_multipart_upload(
@@ -184,6 +209,7 @@ class RegistrationService:
                     multipart_upload_id=multipart.upload_id,
                     expires_at=utc_now() + timedelta(hours=24),
                     content_profile=content_profile,
+                    knowledge_source_graph_id=knowledge_source_graph_id,
                 )
                 await uow.uploads.add(manifest)
                 await uow.idempotency.save_result(

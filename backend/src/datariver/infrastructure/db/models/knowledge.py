@@ -476,14 +476,25 @@ class KnowledgeSourceSnapshotModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     __table_args__ = (
         UniqueConstraint("workspace_id", "id"),
         UniqueConstraint("workspace_id", "graph_id", "upload_id"),
+        UniqueConstraint(
+            "workspace_id",
+            "graph_id",
+            "id",
+            name="uq_source_snapshots_workspace_graph_id",
+        ),
         ForeignKeyConstraint(
             ("workspace_id", "graph_id"),
             ("knowledge.graphs.workspace_id", "knowledge.graphs.id"),
             ondelete="CASCADE",
         ),
         ForeignKeyConstraint(
-            ("workspace_id", "upload_id"),
-            ("integration.object_manifests.workspace_id", "integration.object_manifests.id"),
+            ("workspace_id", "graph_id", "upload_id"),
+            (
+                "integration.object_manifests.workspace_id",
+                "integration.object_manifests.knowledge_source_graph_id",
+                "integration.object_manifests.id",
+            ),
+            name="fk_source_snapshots_manifest_graph",
             ondelete="RESTRICT",
         ),
         CheckConstraint(
@@ -576,8 +587,13 @@ class KnowledgeSourceAnalysisJobModel(
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
-            ("workspace_id", "source_snapshot_id"),
-            ("knowledge.source_snapshots.workspace_id", "knowledge.source_snapshots.id"),
+            ("workspace_id", "graph_id", "source_snapshot_id"),
+            (
+                "knowledge.source_snapshots.workspace_id",
+                "knowledge.source_snapshots.graph_id",
+                "knowledge.source_snapshots.id",
+            ),
+            name="fk_source_analysis_jobs_snapshot_graph",
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
@@ -638,6 +654,7 @@ class KnowledgeSourceAnalysisJobModel(
         ),
         CheckConstraint(
             "source_content_sha256 ~ '^[0-9a-f]{64}$' AND "
+            "source_validation_evidence_hash ~ '^[0-9a-f]{64}$' AND "
             "ontology_checksum ~ '^[0-9a-f]{64}$' AND "
             "parser_config_hash ~ '^[0-9a-f]{64}$' AND "
             "embedding_binding_hash ~ '^[0-9a-f]{64}$' AND "
@@ -646,6 +663,13 @@ class KnowledgeSourceAnalysisJobModel(
             "request_hash ~ '^[0-9a-f]{64}$' AND "
             "requester_authorization_hash ~ '^[0-9a-f]{64}$'",
             name="evidence_hashes",
+        ),
+        CheckConstraint(
+            "source_content_profile IN ('FORMAT_ONLY_V1', "
+            "'DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1', "
+            "'CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1', "
+            "'KNOWLEDGE_SOURCE_DOCUMENT_V1', 'KNOWLEDGE_STUDIO_DOCUMENT_V1')",
+            name="source_content_profile_allowlist",
         ),
         CheckConstraint("source_classification BETWEEN 0 AND 1", name="inference_classification"),
         CheckConstraint(
@@ -743,6 +767,8 @@ class KnowledgeSourceAnalysisJobModel(
     source_storage_version: Mapped[str] = mapped_column(String(255), nullable=False)
     source_content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     source_classification: Mapped[int] = mapped_column(nullable=False)
+    source_content_profile: Mapped[str] = mapped_column(String(100), nullable=False)
+    source_validation_evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     graph_version: Mapped[int] = mapped_column(nullable=False)
     base_kind: Mapped[str] = mapped_column(String(20), nullable=False)
     base_release_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))

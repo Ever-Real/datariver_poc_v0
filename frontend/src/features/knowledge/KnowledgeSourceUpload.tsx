@@ -1,5 +1,13 @@
 import { createSHA256 } from 'hash-wasm'
-import { CheckCircle2, FileUp, LoaderCircle, Network, RefreshCw, Sparkles } from 'lucide-react'
+import {
+  CheckCircle2,
+  FileUp,
+  LoaderCircle,
+  MessageSquareText,
+  Network,
+  RefreshCw,
+  Sparkles,
+} from 'lucide-react'
 import {
   useCallback,
   useEffect,
@@ -53,8 +61,11 @@ const KNOWLEDGE_SOURCE_PROFILES: Record<string, ReadonlySet<string>> = {
   ]),
 }
 const ANALYSIS_HISTORY_PAGE_LIMIT = 100
+const MAX_KNOWLEDGE_PROMPT_CHARACTERS = 100_000
 const TERMINAL_UPLOAD_STATES = new Set(['ACCEPTED', 'REJECTED', 'ABORTED', 'EXPIRED'])
 const TERMINAL_ANALYSIS_STATES = new Set(['SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED'])
+
+type KnowledgeSourceInputMode = 'FILE' | 'PROMPT'
 
 interface KnowledgeSourceUploadProps {
   client: ApiClient
@@ -70,6 +81,8 @@ export function KnowledgeSourceUpload({
   onOpenChangeset,
 }: KnowledgeSourceUploadProps) {
   const inputId = useId()
+  const [inputMode, setInputMode] = useState<KnowledgeSourceInputMode>('FILE')
+  const [promptText, setPromptText] = useState('')
   const [file, setFile] = useState<File>()
   const [title, setTitle] = useState('')
   const [record, setRecord] = useState<UploadRecord>()
@@ -148,6 +161,8 @@ export function KnowledgeSourceUpload({
     generation.current += 1
     activeControllers.forEach((controller) => controller.abort())
     activeControllers.clear()
+    setInputMode('FILE')
+    setPromptText('')
     setFile(undefined)
     setTitle('')
     setRecord(undefined)
@@ -261,14 +276,18 @@ export function KnowledgeSourceUpload({
   ])
 
   const pollUpload = async (
+    sourceGraphId: string,
     uploadId: string,
     controller: AbortController,
     expectedGeneration: number,
   ): Promise<UploadRecord | undefined> => {
     for (let attempt = 0; attempt < 120; attempt += 1) {
-      const current = await client.request<UploadRecord>(`/uploads/${uploadId}`, {
-        signal: controller.signal,
-      })
+      const current = await client.request<UploadRecord>(
+        `/knowledge/graphs/${sourceGraphId}/source-uploads/${uploadId}`,
+        {
+          signal: controller.signal,
+        },
+      )
       if (expectedGeneration !== generation.current) return undefined
       setRecord(current)
       setStatus(uploadStateLabel(current))
@@ -296,7 +315,8 @@ export function KnowledgeSourceUpload({
       const sha256 = await digestFile(file, controller.signal, (value) => {
         if (expectedGeneration === generation.current) setProgress(value * 0.15)
       })
-      const initiated = await client.request<UploadRecord>('/uploads', {
+      const sourceUploadPath = `/knowledge/graphs/${graph.id}/source-uploads`
+      const initiated = await client.request<UploadRecord>(sourceUploadPath, {
         method: 'POST',
         idempotencyKey: newIdempotencyKey('knowledge-source-upload'),
         signal: controller.signal,
@@ -305,8 +325,6 @@ export function KnowledgeSourceUpload({
           size_bytes: file.size,
           content_type: contentType,
           sha256,
-          classification: graph.classification,
-          content_profile: 'FORMAT_ONLY_V1',
         }),
       })
       if (expectedGeneration !== generation.current) return
@@ -317,11 +335,14 @@ export function KnowledgeSourceUpload({
       for (let index = 0; index < partCount; index += 1) {
         const partNumber = index + 1
         setStatus(`${partNumber}/${partCount} 파트 업로드 중`)
-        const signed = await client.request<{ url: string }>(`/uploads/${initiated.id}/parts`, {
-          method: 'POST',
-          signal: controller.signal,
-          body: JSON.stringify({ part_number: partNumber }),
-        })
+        const signed = await client.request<{ url: string }>(
+          `${sourceUploadPath}/${initiated.id}/parts`,
+          {
+            method: 'POST',
+            signal: controller.signal,
+            body: JSON.stringify({ part_number: partNumber }),
+          },
+        )
         const response = await fetch(signed.url, {
           method: 'PUT',
           signal: controller.signal,
@@ -335,18 +356,21 @@ export function KnowledgeSourceUpload({
         parts.push({ part_number: partNumber, etag })
         setProgress(0.15 + (partNumber / partCount) * 0.8)
       }
-      const queued = await client.request<UploadRecord>(`/uploads/${initiated.id}/complete`, {
-        method: 'POST',
-        idempotencyKey: newIdempotencyKey('knowledge-source-complete'),
-        ifMatch: `"${initiated.version}"`,
-        signal: controller.signal,
-        body: JSON.stringify({ parts }),
-      })
+      const queued = await client.request<UploadRecord>(
+        `${sourceUploadPath}/${initiated.id}/complete`,
+        {
+          method: 'POST',
+          idempotencyKey: newIdempotencyKey('knowledge-source-complete'),
+          ifMatch: `"${initiated.version}"`,
+          signal: controller.signal,
+          body: JSON.stringify({ parts }),
+        },
+      )
       if (expectedGeneration !== generation.current) return
       setRecord(queued)
       setProgress(0.97)
       setStatus('무결성·문서 형식 검증 대기 중')
-      const terminal = await pollUpload(queued.id, controller, expectedGeneration)
+      const terminal = await pollUpload(graph.id, queued.id, controller, expectedGeneration)
       if (terminal && expectedGeneration === generation.current) setProgress(1)
     } catch (next) {
       if (!controller.signal.aborted && expectedGeneration === generation.current) {
@@ -461,6 +485,25 @@ export function KnowledgeSourceUpload({
     }
   }
 
+  const selectInputMode = (next: KnowledgeSourceInputMode) => {
+    if (uploadBusy || analysisBusy || next === inputMode) return
+    setInputMode(next)
+    selectFile(undefined)
+    setTitle('')
+  }
+
+  const preparePromptSource = () => {
+    try {
+      const promptFile = createKnowledgePromptDocument(promptText)
+      selectFile(promptFile)
+      setTitle('LLM 입력 텍스트 지식 추출 제안')
+      setStatus('자연어 입력을 검증 가능한 TXT 원천으로 준비했습니다.')
+    } catch (next) {
+      setFile(undefined)
+      setError(next)
+    }
+  }
+
   const dropFile = (event: DragEvent<HTMLLabelElement>) => {
     event.preventDefault()
     if (!sourceAnalysisEligible) return
@@ -474,18 +517,71 @@ export function KnowledgeSourceUpload({
       <form className="grid gap-3" onSubmit={(event) => void upload(event)}>
         <header>
           <span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Governed document source</span>
-          <h3 className="my-1 text-base font-black text-navy-900">문서 검증 업로드</h3>
-          <p className="m-0 text-xs text-slate-500">PDF, CSV, TXT, JSON, XML, HTML, DOCX, XLSX, PPTX · 최대 50 MiB · DOC/XLS 제외</p>
+          <h3 className="my-1 text-base font-black text-navy-900">파일 또는 LLM 입력 원천</h3>
+          <p className="m-0 text-xs text-slate-500">파일과 자연어 입력 모두 해시된 불변 원천으로 검증한 뒤 같은 A-Box Changeset 경로를 사용합니다.</p>
         </header>
-        <label
-          className="grid min-h-36 place-items-center rounded-enterprise border border-dashed border-enterprise-blue bg-blue-50 p-5 text-center text-xs font-bold text-enterprise-blue"
-          htmlFor={inputId}
-          aria-disabled={!graph || !sourceAnalysisEligible || uploadBusy}
-          onDragOver={(event) => event.preventDefault()}
-          onDrop={dropFile}
-        >
-          <span><FileUp className="mx-auto mb-2" />{file?.name ?? '지식 소스 문서를 드래그하거나 클릭하세요.'}<small className="mt-1 block font-normal text-slate-500">브라우저는 SHA-256을 증분 계산하고 원문은 오브젝트 스토리지로 직접 전송합니다.</small></span>
-        </label>
+        <div className="flex flex-wrap gap-2" aria-label="A-Box LLM 입력 방식">
+          <button
+            type="button"
+            className={`button ${inputMode === 'FILE' ? '' : 'button-secondary'}`}
+            aria-pressed={inputMode === 'FILE'}
+            disabled={uploadBusy || analysisBusy}
+            onClick={() => selectInputMode('FILE')}
+          >
+            <FileUp size={13} /> 파일 업로드
+          </button>
+          <button
+            type="button"
+            className={`button ${inputMode === 'PROMPT' ? '' : 'button-secondary'}`}
+            aria-pressed={inputMode === 'PROMPT'}
+            disabled={uploadBusy || analysisBusy}
+            onClick={() => selectInputMode('PROMPT')}
+          >
+            <MessageSquareText size={13} /> LLM 자연어 입력
+          </button>
+        </div>
+        {inputMode === 'FILE' ? (
+          <label
+            className="grid min-h-36 place-items-center rounded-enterprise border border-dashed border-enterprise-blue bg-blue-50 p-5 text-center text-xs font-bold text-enterprise-blue"
+            htmlFor={inputId}
+            aria-disabled={!graph || !sourceAnalysisEligible || uploadBusy}
+            onDragOver={(event) => event.preventDefault()}
+            onDrop={dropFile}
+          >
+            <span><FileUp className="mx-auto mb-2" />{file?.name ?? '지식 소스 문서를 드래그하거나 클릭하세요.'}<small className="mt-1 block font-normal text-slate-500">PDF, CSV, TXT, JSON, XML, HTML, DOCX, XLSX, PPTX · 최대 50 MiB · DOC/XLS 제외</small></span>
+          </label>
+        ) : (
+          <section className="grid gap-2 rounded-enterprise border border-enterprise-blue bg-blue-50 p-4">
+            <label className="grid gap-1 text-xs font-black text-navy-900">
+              A-Box로 제안할 자연어 입력
+              <textarea
+                className="min-h-36 bg-white text-sm leading-6"
+                maxLength={MAX_KNOWLEDGE_PROMPT_CHARACTERS}
+                value={promptText}
+                placeholder="예: 고객 김하늘은 서울 지점의 법인 고객이며 담당자는 이수진입니다."
+                disabled={!graph || !sourceAnalysisEligible || uploadBusy || analysisBusy}
+                onChange={(event) => setPromptText(event.target.value)}
+              />
+            </label>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <small className="text-slate-500">
+                {promptText.length.toLocaleString()} / {MAX_KNOWLEDGE_PROMPT_CHARACTERS.toLocaleString()}자
+              </small>
+              <button
+                type="button"
+                className="button button-secondary"
+                disabled={!graph || !sourceAnalysisEligible || !promptText.trim() || uploadBusy || analysisBusy}
+                onClick={preparePromptSource}
+              >
+                <MessageSquareText size={13} /> 검증 원천으로 준비
+              </button>
+            </div>
+            <p className="m-0 text-xs leading-5 text-slate-600">
+              입력은 브라우저에서 임의 인스턴스로 변환되지 않습니다. UTF-8 TXT 원천으로 고정·검증되고,
+              별도 worker가 T-Box에 맞는 typed DRAFT Changeset만 제안합니다.
+            </p>
+          </section>
+        )}
         <input
           id={inputId}
           className="sr-only"
@@ -610,6 +706,18 @@ export function validateKnowledgeDocument(
     throw new Error('Knowledge 소스 문서는 최대 50 MiB까지 등록할 수 있습니다.')
   }
   return [...acceptedTypes][0] ?? 'application/octet-stream'
+}
+
+export function createKnowledgePromptDocument(prompt: string): File {
+  const normalized = prompt.normalize('NFC').replaceAll('\r\n', '\n').trim()
+  if (!normalized) throw new Error('LLM 자연어 입력을 작성하세요.')
+  if (normalized.length > MAX_KNOWLEDGE_PROMPT_CHARACTERS) {
+    throw new Error('LLM 자연어 입력은 최대 100,000자까지 사용할 수 있습니다.')
+  }
+  return new File([`${normalized}\n`], 'knowledge-prompt.txt', {
+    type: 'text/plain',
+    lastModified: 0,
+  })
 }
 
 export function validateKnowledgePdf(file: Pick<File, 'name' | 'type' | 'size'>): void {

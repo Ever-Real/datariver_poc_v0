@@ -22,6 +22,7 @@ from datariver.application.knowledge_source_job_ports import (
     KnowledgeSourceJobWorkerStore,
 )
 from datariver.application.services.knowledge_pipeline import KnowledgeSourcePipeline
+from datariver.application.typed_upload_profiles import KNOWLEDGE_SOURCE_DOCUMENT_V1
 from datariver.domain.authz import (
     Action,
     BuiltinPolicyEngine,
@@ -70,6 +71,8 @@ from datariver.infrastructure.db.models.knowledge import (
     OntologyVersionModel,
 )
 from datariver.infrastructure.db.models.platform import (
+    ExternalServiceProfileModel,
+    ExternalServiceProfileVersionModel,
     SubjectModel,
     WorkspaceMembershipModel,
 )
@@ -121,6 +124,94 @@ def _binding_hash(binding: ModelBinding) -> str:
     return canonical_json_hash(binding.to_document())
 
 
+def _legacy_validation_evidence_hash(manifest: ObjectManifestModel) -> str:
+    summary = manifest.validation_summary
+    fields = (
+        "KNOWLEDGE_SOURCE_LEGACY_VALIDATION_EVIDENCE_V1",
+        str(manifest.id),
+        str(manifest.version),
+        manifest.content_profile,
+        "true" if manifest.legacy_knowledge_source_eligible else "false",
+        manifest.mime,
+        str(manifest.size_bytes),
+        manifest.sha256,
+        manifest.actual_mime or "",
+        str(manifest.actual_size_bytes or ""),
+        manifest.actual_sha256 or "",
+        str(summary.get("validator_version", "")),
+        str(summary.get("content_type", "")),
+        str(summary.get("size_bytes", "")),
+        str(summary.get("sha256", "")),
+        str(summary.get("coverage", "")),
+    )
+    digest = hashlib.sha256()
+    for field in fields:
+        encoded = field.encode("utf-8")
+        digest.update(len(encoded).to_bytes(4, byteorder="big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def _source_validation_evidence_hash(manifest: ObjectManifestModel) -> str:
+    if manifest.content_profile != "KNOWLEDGE_SOURCE_DOCUMENT_V1":
+        return _legacy_validation_evidence_hash(manifest)
+    return canonical_json_hash(
+        {
+            "contract": "KNOWLEDGE_SOURCE_VALIDATION_EVIDENCE_V1",
+            "manifest_id": str(manifest.id),
+            "manifest_version": manifest.version,
+            "content_profile": manifest.content_profile,
+            "legacy_knowledge_source_eligible": manifest.legacy_knowledge_source_eligible,
+            "declared": {
+                "content_type": manifest.mime,
+                "sha256": manifest.sha256,
+                "size_bytes": manifest.size_bytes,
+            },
+            "actual": {
+                "content_type": manifest.actual_mime,
+                "sha256": manifest.actual_sha256,
+                "size_bytes": manifest.actual_size_bytes,
+            },
+            "validation_summary": manifest.validation_summary,
+        }
+    )
+
+
+def _source_manifest_validation_is_eligible(manifest: ObjectManifestModel) -> bool:
+    summary = manifest.validation_summary
+    common_evidence = (
+        manifest.state == "ACCEPTED"
+        and manifest.mime in supported_knowledge_source_media_types()
+        and manifest.actual_mime == manifest.mime
+        and manifest.actual_sha256 == manifest.sha256
+        and manifest.actual_size_bytes == manifest.size_bytes
+        and 0 < manifest.size_bytes <= MAX_SOURCE_BYTES
+        and manifest.classification <= int(Classification.INTERNAL)
+        and summary.get("content_type") == manifest.mime
+        and summary.get("sha256") == manifest.sha256
+        and summary.get("size_bytes") == manifest.size_bytes
+    )
+    if not common_evidence:
+        return False
+    if manifest.content_profile == "KNOWLEDGE_SOURCE_DOCUMENT_V1":
+        return (
+            not manifest.legacy_knowledge_source_eligible
+            and summary.get("content_profile") == "KNOWLEDGE_SOURCE_DOCUMENT_V1"
+            and summary.get("validator_version")
+            == KNOWLEDGE_SOURCE_DOCUMENT_V1.acceptance_validator_version
+            and summary.get("parser_version") == KNOWLEDGE_SOURCE_DOCUMENT_V1.parser_version
+            and summary.get("profile_configuration_hash")
+            == KNOWLEDGE_SOURCE_DOCUMENT_V1.configuration_hash
+        )
+    return (
+        manifest.legacy_knowledge_source_eligible
+        and manifest.content_profile == "FORMAT_ONLY_V1"
+        and manifest.mime == "application/pdf"
+        and summary.get("validator_version") == "integrity-format-v1"
+        and summary.get("coverage") == "FULL_SIGNATURE"
+    )
+
+
 def _binding_from_document(document: dict[str, object]) -> ModelBinding:
     try:
         configuration_version_value = document.get("configuration_version")
@@ -163,8 +254,34 @@ async def _activated_binding_is_current(
     service_key: str,
     binding: ModelBinding,
 ) -> bool:
-    del session, workspace_id, service_key
-    return binding.configuration_source == "DEPLOYMENT"
+    if binding.configuration_source != "SYSTEM_CONFIGURATION":
+        return binding.configuration_source == "DEPLOYMENT"
+    if binding.configuration_version is None or binding.configuration_hash is None:
+        return False
+    row = (
+        await session.execute(
+            select(ExternalServiceProfileModel, ExternalServiceProfileVersionModel)
+            .join(
+                ExternalServiceProfileVersionModel,
+                and_(
+                    ExternalServiceProfileVersionModel.workspace_id
+                    == ExternalServiceProfileModel.workspace_id,
+                    ExternalServiceProfileVersionModel.profile_id == ExternalServiceProfileModel.id,
+                    ExternalServiceProfileVersionModel.configuration_version
+                    == ExternalServiceProfileModel.activated_version,
+                ),
+            )
+            .where(
+                ExternalServiceProfileModel.workspace_id == workspace_id,
+                ExternalServiceProfileModel.service_key == service_key,
+                ExternalServiceProfileModel.active.is_(True),
+                ExternalServiceProfileModel.activated_version == binding.configuration_version,
+                ExternalServiceProfileVersionModel.configuration_hash == binding.configuration_hash,
+                ExternalServiceProfileVersionModel.test_status == "AVAILABLE",
+            )
+        )
+    ).one_or_none()
+    return row is not None
 
 
 def _encode_cursor(
@@ -359,18 +476,37 @@ class SqlKnowledgeSourceJobStore(KnowledgeSourceJobStore):
             raise ConflictError(
                 "The owner already has the maximum number of active Knowledge source jobs."
             )
-        if (
-            manifest.state != "ACCEPTED"
-            or manifest.owner_id != actor_id
-            or manifest.mime not in supported_knowledge_source_media_types()
-            or manifest.actual_sha256 != manifest.sha256
-            or manifest.actual_size_bytes != manifest.size_bytes
-            or not 0 < manifest.size_bytes <= MAX_SOURCE_BYTES
-        ):
+        if manifest.owner_id != actor_id or not _source_manifest_validation_is_eligible(manifest):
             raise ValidationError(
                 "The source must be an integrity-verified accepted Knowledge document "
-                "within 50 MiB."
+                "bound to this graph and within 50 MiB."
             )
+        if manifest.knowledge_source_graph_id is None:
+            if not manifest.legacy_knowledge_source_eligible:
+                raise ValidationError(
+                    "The Knowledge source upload is missing its server-owned graph binding."
+                )
+            # The SECURITY DEFINER command repeats owner/evidence checks and is
+            # the only DB-level path the immutability trigger accepts for a
+            # legacy NULL -> graph transition. The locked manifest row makes a
+            # concurrent request observe the first committed binding.
+            bound_graph_id = await self._session.scalar(
+                select(
+                    func.knowledge.bind_legacy_source_manifest_graph_v1(
+                        workspace_id,
+                        upload_id,
+                        graph_id,
+                    )
+                )
+            )
+            if bound_graph_id != graph_id:
+                raise ValidationError("The Knowledge source graph binding failed closed.")
+            await self._session.refresh(
+                manifest,
+                attribute_names=("knowledge_source_graph_id",),
+            )
+        elif manifest.knowledge_source_graph_id != graph_id:
+            raise ValidationError("The Knowledge source upload is bound to a different graph.")
         if manifest.classification > graph.classification:
             raise ValidationError(
                 "The source classification exceeds the graph classification envelope."
@@ -459,6 +595,8 @@ class SqlKnowledgeSourceJobStore(KnowledgeSourceJobStore):
             source_storage_version=source.storage_version,
             source_content_sha256=source.content_sha256,
             source_classification=source.classification,
+            source_content_profile=manifest.content_profile,
+            source_validation_evidence_hash=_source_validation_evidence_hash(manifest),
             graph_version=graph.version,
             base_release_id=base.id if base is not None else None,
             base_release_hash=base.content_hash if base is not None else None,
@@ -483,6 +621,8 @@ class SqlKnowledgeSourceJobStore(KnowledgeSourceJobStore):
             source_storage_version=source.storage_version,
             source_content_sha256=source.content_sha256,
             source_classification=source.classification,
+            source_content_profile=pins.source_content_profile,
+            source_validation_evidence_hash=pins.source_validation_evidence_hash,
             graph_version=graph.version,
             base_kind="RELEASE" if base is not None else "EMPTY",
             base_release_id=base.id if base is not None else None,
@@ -1840,6 +1980,13 @@ class SqlKnowledgeSourceJobWorkerStore(KnowledgeSourceJobWorkerStore):
             or manifest.classification != source.classification
         ):
             return "STALE_SOURCE_MANIFEST"
+        if (
+            manifest.knowledge_source_graph_id != job.graph_id
+            or manifest.content_profile != job.source_content_profile
+            or not _source_manifest_validation_is_eligible(manifest)
+            or _source_validation_evidence_hash(manifest) != job.source_validation_evidence_hash
+        ):
+            return "STALE_SOURCE_VALIDATION"
         graph = await session.scalar(
             select(GraphModel).where(
                 GraphModel.workspace_id == job.workspace_id,
@@ -2144,6 +2291,8 @@ def _pins(
         source_storage_version=job.source_storage_version,
         source_content_sha256=job.source_content_sha256,
         source_classification=job.source_classification,
+        source_content_profile=job.source_content_profile,
+        source_validation_evidence_hash=job.source_validation_evidence_hash,
         graph_version=job.graph_version,
         base_release_id=job.base_release_id,
         base_release_hash=job.base_release_hash,

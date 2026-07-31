@@ -61,6 +61,19 @@ PDF는 실제 page, 나머지는 bounded evidence segment를 사용한다. 실�
 retry는 durable job state로 표현한다. 모델은 Release를 직접 만들 수 없으며 legacy
 DOC/XLS, XML entity, macro/external OpenXML payload는 허용하지 않는다.
 
+파일 없이 입력한 자연어도 브라우저에서 임의 인스턴스로 변환하거나 별도 모델 경로로
+보내지 않는다. Unicode NFC로 정규화된 bounded UTF-8 TXT 원천으로 만들고, 기존 업로드의
+SHA-256·분류·무결성 검증과 동일한 durable source-analysis worker를 통과시킨다. 따라서
+자연어 입력 역시 source snapshot과 evidence hash가 있는 DRAFT Changeset으로만 귀결된다.
+신규 Knowledge 원천은 서버가 선택한 profile·분류와 대상 graph UUID를 manifest에 고정한다.
+일반 업로드는 이 graph binding을 가질 수 없고, 0085 이전 PDF 호환은 마이그레이션이 실제
+SHA/크기/MIME와 validation summary가 모두 맞는 행에만 부여한 legacy marker로 한정한다.
+기존 source snapshot이 없는 legacy PDF는 최초 분석 transaction이 owner/evidence를 다시
+검증하고 manifest row lock 아래 대상 graph를 한 번만 고정한다. 다른 graph의 동시 또는
+후속 요청은 이미 고정된 binding에서 거부된다.
+job은 profile과 validation evidence hash를 별도 불변 pin으로 저장하며 worker는 외부 호출
+전에 이를 재계산해 불일치하면 `STALE_SOURCE_VALIDATION`으로 종료한다.
+
 ### DB Binding
 
 Studio는 Catalog의 로컬 Asset UUID, provider schema version, projection version과 명시적

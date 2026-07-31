@@ -223,13 +223,48 @@ class ObjectManifestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixi
     __table_args__ = (
         UniqueConstraint("bucket", "object_key"),
         UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "knowledge_source_graph_id",
+            "id",
+            name="uq_object_manifests_workspace_graph_id_id",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "knowledge_source_graph_id"),
+            ("knowledge.graphs.workspace_id", "knowledge.graphs.id"),
+            ondelete="RESTRICT",
+        ),
         Index("ix_object_manifests_workspace_state", "workspace_id", "state"),
         CheckConstraint(
             "content_profile IN ('FORMAT_ONLY_V1', "
             "'DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1', "
             "'CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1', "
-            "'KNOWLEDGE_STUDIO_DOCUMENT_V1')",
+            "'KNOWLEDGE_SOURCE_DOCUMENT_V1', 'KNOWLEDGE_STUDIO_DOCUMENT_V1')",
             name="content_profile_allowlist",
+        ),
+        CheckConstraint(
+            "NOT legacy_knowledge_source_eligible OR ("
+            "content_profile = 'FORMAT_ONLY_V1' "
+            "AND mime = 'application/pdf' AND actual_mime = mime "
+            "AND actual_size_bytes = size_bytes AND actual_sha256 = sha256 "
+            "AND size_bytes > 0 AND size_bytes <= 52428800 "
+            "AND classification BETWEEN 0 AND 1 AND validation_attempts > 0 "
+            "AND validation_summary ->> 'content_type' = mime "
+            "AND validation_summary ->> 'sha256' = sha256 "
+            "AND validation_summary -> 'size_bytes' = to_jsonb(size_bytes) "
+            "AND validation_summary ->> 'validator_version' = 'integrity-format-v1' "
+            "AND validation_summary ->> 'coverage' = 'FULL_SIGNATURE')",
+            name="legacy_knowledge_source_evidence",
+        ),
+        CheckConstraint(
+            "(content_profile = 'KNOWLEDGE_SOURCE_DOCUMENT_V1' "
+            "AND knowledge_source_graph_id IS NOT NULL "
+            "AND NOT legacy_knowledge_source_eligible) OR "
+            "(legacy_knowledge_source_eligible "
+            "AND content_profile = 'FORMAT_ONLY_V1') OR "
+            "(content_profile <> 'KNOWLEDGE_SOURCE_DOCUMENT_V1' "
+            "AND NOT legacy_knowledge_source_eligible)",
+            name="knowledge_source_graph_binding",
         ),
         {"schema": "integration"},
     )
@@ -262,6 +297,13 @@ class ObjectManifestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixi
         server_default="FORMAT_ONLY_V1",
         nullable=False,
     )
+    legacy_knowledge_source_eligible: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        server_default="false",
+        nullable=False,
+    )
+    knowledge_source_graph_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     classification: Mapped[int] = mapped_column(default=0, nullable=False)
     owner_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     retention_until: Mapped[datetime | None]

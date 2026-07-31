@@ -1711,6 +1711,27 @@ def test_knowledge_source_job_openapi_is_durable_bounded_and_non_disclosing() ->
     factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
     document = create_app(settings(), container_factory=factory).openapi()
 
+    upload_path = "/api/v1/knowledge/graphs/{graph_id}/source-uploads"
+    source_upload = document["paths"][upload_path]["post"]
+    source_upload_headers = {
+        parameter["name"]: parameter for parameter in source_upload["parameters"]
+    }
+    assert source_upload_headers["Idempotency-Key"]["required"] is True
+    upload_schema = document["components"]["schemas"]["KnowledgeSourceUploadInitiateRequest"]
+    assert set(upload_schema["properties"]) == {
+        "display_name",
+        "size_bytes",
+        "content_type",
+        "sha256",
+    }
+    assert upload_schema["properties"]["size_bytes"]["maximum"] == 50 * 1024 * 1024
+    assert {"classification", "content_profile"}.isdisjoint(upload_schema["properties"])
+
+    complete_upload = document["paths"][f"{upload_path}/{{upload_id}}/complete"]["post"]
+    complete_headers = {parameter["name"]: parameter for parameter in complete_upload["parameters"]}
+    assert complete_headers["If-Match"]["required"] is True
+    assert complete_headers["Idempotency-Key"]["required"] is True
+
     analyze = document["paths"]["/api/v1/knowledge/graphs/{graph_id}/sources/{upload_id}/analyze"][
         "post"
     ]

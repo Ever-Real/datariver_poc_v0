@@ -265,6 +265,46 @@ async def _create_preparation(
 
 
 @pytest.mark.asyncio
+async def test_only_server_scoped_knowledge_ingress_can_supply_a_graph_binding() -> None:
+    service, _, manifest, subject, environment, events = _fixture()
+    with pytest.raises(ValidationError, match="Only the Knowledge source ingress"):
+        await service.initiate(
+            workspace_id=manifest.workspace_id,
+            subject=subject,
+            display_name="source.txt",
+            declared_size_bytes=12,
+            declared_mime="text/plain",
+            declared_sha256="b" * 64,
+            classification=Classification.INTERNAL,
+            content_profile=UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1,
+            environment=environment,
+            request_id="source-binding-test",
+            idempotency_key="source-binding-test-0001",
+            request_hash="c" * 64,
+            authorization_policy=UploadAuthorizationPolicy.REGISTRATION,
+            knowledge_source_graph_id=uuid4(),
+        )
+    with pytest.raises(ValidationError, match="server-owned target graph binding"):
+        await service.initiate(
+            workspace_id=manifest.workspace_id,
+            subject=subject,
+            display_name="source.txt",
+            declared_size_bytes=12,
+            declared_mime="text/plain",
+            declared_sha256="b" * 64,
+            classification=Classification.INTERNAL,
+            content_profile=UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1,
+            environment=environment,
+            request_id="source-binding-test",
+            idempotency_key="source-binding-test-0001",
+            request_hash="c" * 64,
+            authorization_policy=UploadAuthorizationPolicy.KNOWLEDGE_SOURCE,
+            knowledge_source_graph_id=None,
+        )
+    assert events == []
+
+
+@pytest.mark.asyncio
 async def test_create_preparation_locks_authorizes_and_persists_server_evidence() -> None:
     service, uow, manifest, subject, environment, events = _fixture()
 
@@ -316,7 +356,10 @@ async def test_get_manifest_uses_explicit_knowledge_studio_authorization_policy(
 
 def test_upload_authorization_policy_keeps_registration_defaults_and_is_server_owned() -> None:
     registration = upload_authorization_actions(UploadAuthorizationPolicy.REGISTRATION)
-    knowledge = upload_authorization_actions(UploadAuthorizationPolicy.KNOWLEDGE_STUDIO)
+    knowledge_policies = (
+        upload_authorization_actions(UploadAuthorizationPolicy.KNOWLEDGE_STUDIO),
+        upload_authorization_actions(UploadAuthorizationPolicy.KNOWLEDGE_SOURCE),
+    )
 
     assert (
         registration.initiate,
@@ -329,12 +372,13 @@ def test_upload_authorization_policy_keeps_registration_defaults_and_is_server_o
         Action.REGISTRATION_READ,
         Action.REGISTRATION_CREATE,
     )
-    assert {
-        knowledge.initiate,
-        knowledge.presign_part,
-        knowledge.read_manifest,
-        knowledge.queue_completion,
-    } == {Action.KG_EDIT}
+    for knowledge in knowledge_policies:
+        assert {
+            knowledge.initiate,
+            knowledge.presign_part,
+            knowledge.read_manifest,
+            knowledge.queue_completion,
+        } == {Action.KG_EDIT}
 
 
 @pytest.mark.asyncio

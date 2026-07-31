@@ -10,6 +10,7 @@ from pathlib import PurePath
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import ObjectStore, UploadValidationStore
 from datariver.application.typed_upload_profiles import (
+    KNOWLEDGE_SOURCE_DOCUMENT_V1,
     KNOWLEDGE_STUDIO_DOCUMENT_V1,
     typed_profile_definition,
     validate_upload_profile,
@@ -18,10 +19,8 @@ from datariver.domain.authz import Classification
 from datariver.domain.common import DomainError, ValidationError
 from datariver.domain.registration import UploadContentProfile, UploadManifest
 
-# The largest accepted typed text profile is the 10 MiB Studio source. Keeping
-# its complete payload lets JSON/XML/CSV validation remain deterministic rather
-# than parsing a truncated preview at the upper bound.
-PREVIEW_LIMIT = 10 * 1024 * 1024
+DEFAULT_PREVIEW_LIMIT = 10 * 1024 * 1024
+KNOWLEDGE_SOURCE_PREVIEW_LIMIT = 50 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +31,7 @@ class Inspection:
     tail: bytes
     contains_vba: bool
     contains_openxml_external_link: bool = False
+    preview_limit_bytes: int = DEFAULT_PREVIEW_LIMIT
 
 
 class UploadValidationWorker:
@@ -66,7 +66,11 @@ class UploadValidationWorker:
             if (
                 (
                     manifest.declared_mime == "application/pdf"
-                    or manifest.content_profile is UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1
+                    or manifest.content_profile
+                    in {
+                        UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1,
+                        UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1,
+                    }
                 )
                 and manifest.classification <= Classification.INTERNAL
             )
@@ -158,6 +162,11 @@ class UploadValidationWorker:
         bucket: str,
         object_key: str,
     ) -> Inspection:
+        preview_limit = (
+            KNOWLEDGE_SOURCE_PREVIEW_LIMIT
+            if manifest.content_profile is UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1
+            else DEFAULT_PREVIEW_LIMIT
+        )
         digest = hashlib.sha256()
         prefix = bytearray()
         tail = b""
@@ -175,8 +184,8 @@ class UploadValidationWorker:
                     details={"code": "SIZE_MISMATCH"},
                 )
             digest.update(chunk)
-            if len(prefix) < PREVIEW_LIMIT:
-                prefix.extend(chunk[: PREVIEW_LIMIT - len(prefix)])
+            if len(prefix) < preview_limit:
+                prefix.extend(chunk[: preview_limit - len(prefix)])
             tail = (tail + chunk)[-8:]
             search_window = marker_window + chunk
             if b"vbaproject.bin" in search_window.lower():
@@ -202,6 +211,7 @@ class UploadValidationWorker:
             tail,
             contains_vba,
             contains_openxml_external_link,
+            preview_limit,
         )
 
     async def _delete_best_effort(self, *, bucket: str, object_key: str) -> None:
@@ -256,12 +266,20 @@ class UploadValidationWorker:
                 else "integrity-format-v1"
             )
             profile_evidence: dict[str, object] = {}
-        elif manifest.content_profile is UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1:
-            validator_version = KNOWLEDGE_STUDIO_DOCUMENT_V1.acceptance_validator_version
+        elif manifest.content_profile in {
+            UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1,
+            UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1,
+        }:
+            knowledge_definition = (
+                KNOWLEDGE_SOURCE_DOCUMENT_V1
+                if manifest.content_profile is UploadContentProfile.KNOWLEDGE_SOURCE_DOCUMENT_V1
+                else KNOWLEDGE_STUDIO_DOCUMENT_V1
+            )
+            validator_version = knowledge_definition.acceptance_validator_version
             profile_evidence = {
-                "content_profile": KNOWLEDGE_STUDIO_DOCUMENT_V1.content_profile.value,
-                "parser_version": KNOWLEDGE_STUDIO_DOCUMENT_V1.parser_version,
-                "profile_configuration_hash": (KNOWLEDGE_STUDIO_DOCUMENT_V1.configuration_hash),
+                "content_profile": knowledge_definition.content_profile.value,
+                "parser_version": knowledge_definition.parser_version,
+                "profile_configuration_hash": knowledge_definition.configuration_hash,
             }
         else:
             validator_version = typed_profile_definition(
@@ -326,7 +344,11 @@ class UploadValidationWorker:
         if "\x00" in text:
             raise ValidationError("Text sources contain NUL bytes.", details={"code": "TEXT_NUL"})
         return {
-            "coverage": "FULL_TEXT" if inspection.size_bytes <= PREVIEW_LIMIT else "SAMPLED_TEXT"
+            "coverage": (
+                "FULL_TEXT"
+                if inspection.size_bytes <= inspection.preview_limit_bytes
+                else "SAMPLED_TEXT"
+            )
         }
 
     @staticmethod
@@ -354,7 +376,11 @@ class UploadValidationWorker:
             ) from error
         if "\x00" in text:
             raise ValidationError("CSV contains NUL bytes.", details={"code": "CSV_NUL"})
-        sampled = text if inspection.size_bytes <= PREVIEW_LIMIT else text.rsplit("\n", 1)[0]
+        sampled = (
+            text
+            if inspection.size_bytes <= inspection.preview_limit_bytes
+            else text.rsplit("\n", 1)[0]
+        )
         try:
             rows = []
             for index, row in enumerate(csv.reader(io.StringIO(sampled), strict=True)):
@@ -376,16 +402,19 @@ class UploadValidationWorker:
                 details={"code": "CSV_COLUMN_COUNT"},
             )
         return {
-            "coverage": "FULL" if inspection.size_bytes <= PREVIEW_LIMIT else "SAMPLED",
+            "coverage": (
+                "FULL" if inspection.size_bytes <= inspection.preview_limit_bytes else "SAMPLED"
+            ),
             "column_count": column_count,
             "rows_sampled": max(len(rows) - 1, 0),
         }
 
     @staticmethod
     def _validate_json(inspection: Inspection) -> dict[str, object]:
-        if inspection.size_bytes > PREVIEW_LIMIT:
+        if inspection.size_bytes > inspection.preview_limit_bytes:
+            maximum_mib = inspection.preview_limit_bytes // (1024 * 1024)
             raise ValidationError(
-                "JSON above 10 MiB must be converted to a streaming tabular format.",
+                f"JSON above {maximum_mib} MiB must be converted to a streaming tabular format.",
                 details={"code": "JSON_SIZE_POLICY"},
             )
         try:
@@ -416,7 +445,11 @@ class UploadValidationWorker:
                 details={"code": "YAML_UNSAFE_TAG"},
             )
         return {
-            "coverage": "FULL_TEXT" if inspection.size_bytes <= PREVIEW_LIMIT else "SAMPLED_TEXT",
+            "coverage": (
+                "FULL_TEXT"
+                if inspection.size_bytes <= inspection.preview_limit_bytes
+                else "SAMPLED_TEXT"
+            ),
             "safe_loader_required": True,
         }
 

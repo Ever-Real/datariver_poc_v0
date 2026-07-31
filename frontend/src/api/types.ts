@@ -366,6 +366,7 @@ export type UploadContentProfile =
   | 'CATALOG_METADATA_ROWS_XLSX_V1'
   | 'DATASET_DESCRIPTION_CSV_V1'
   | 'DATASET_DESCRIPTION_XLSX_V1'
+  | 'KNOWLEDGE_SOURCE_DOCUMENT_V1'
 
 export type UploadPreparationState =
   | 'QUEUED'

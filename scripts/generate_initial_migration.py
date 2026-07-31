@@ -311,6 +311,26 @@ def _load_studio_proposal_revision() -> ModuleType:
     return module
 
 
+def _load_knowledge_source_ingress_revision() -> ModuleType:
+    """Load the governed Knowledge source ingress immutability contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0085_governed_knowledge_source_upload_ingress.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_knowledge_source_ingress_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Knowledge source ingress migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -812,6 +832,11 @@ def build_upgrade() -> ops.UpgradeOps:
     ):
         operations.append(ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC"))
     operations.append(ops.ExecuteSQLOp(studio_proposal._GRANTS_SQL))
+    knowledge_source_ingress = _load_knowledge_source_ingress_revision()
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in _sql_statements(knowledge_source_ingress._RUNTIME_FENCES_SQL)
+    )
     return ops.UpgradeOps(ops=operations)
 
 
@@ -1259,7 +1284,33 @@ def build_downgrade() -> ops.DowngradeOps:
     quality_phase1 = _load_quality_phase1_revision()
     studio_ingestion = _load_studio_ingestion_revision()
     studio_proposal = _load_studio_proposal_revision()
+    _load_knowledge_source_ingress_revision()
     operations: list[ops.MigrateOperation] = [
+        ops.ExecuteSQLOp(
+            "DROP TRIGGER IF EXISTS trg_source_analysis_validation_pins "
+            "ON knowledge.source_analysis_jobs"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION IF EXISTS knowledge.protect_source_analysis_validation_pins()"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP TRIGGER IF EXISTS trg_object_manifest_legacy_knowledge_source_marker "
+            "ON integration.object_manifests"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION IF EXISTS integration.protect_legacy_knowledge_source_marker()"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP TRIGGER IF EXISTS trg_object_manifest_knowledge_source_graph_binding "
+            "ON integration.object_manifests"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION IF EXISTS integration.protect_knowledge_source_graph_binding()"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION IF EXISTS "
+            "knowledge.bind_legacy_source_manifest_graph_v1(uuid, uuid, uuid)"
+        ),
         *(
             ops.ExecuteSQLOp(f"DROP FUNCTION {signature} CASCADE")
             for signature in (

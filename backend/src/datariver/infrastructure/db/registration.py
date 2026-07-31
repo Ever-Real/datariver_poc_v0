@@ -73,6 +73,8 @@ class SqlUploadRepository(UploadRepository):
             completion_parts=[],
             state=manifest.state.value,
             content_profile=manifest.content_profile.value,
+            legacy_knowledge_source_eligible=False,
+            knowledge_source_graph_id=manifest.knowledge_source_graph_id,
             classification=int(manifest.classification),
             owner_id=manifest.owner_id,
             retention_until=None,
@@ -169,6 +171,7 @@ def _to_domain(model: ObjectManifestModel) -> UploadManifest:
         multipart_upload_id=model.multipart_upload_id or "",
         expires_at=model.expires_at,
         content_profile=UploadContentProfile(model.content_profile),
+        knowledge_source_graph_id=model.knowledge_source_graph_id,
         state=UploadState(model.state),
         version=model.version,
         completion_parts=[
@@ -190,10 +193,17 @@ def _to_domain(model: ObjectManifestModel) -> UploadManifest:
         validation_attempts=model.validation_attempts,
         validation_summary=model.validation_summary,
         last_error_code=model.last_error_code,
+        legacy_knowledge_source_eligible=model.legacy_knowledge_source_eligible,
     )
 
 
 def _apply_manifest(model: ObjectManifestModel, manifest: UploadManifest) -> None:
+    if (
+        model.legacy_knowledge_source_eligible
+        != manifest.legacy_knowledge_source_eligible
+        or model.knowledge_source_graph_id != manifest.knowledge_source_graph_id
+    ):
+        raise ValueError("Server-owned Knowledge upload bindings are immutable.")
     model.state = manifest.state.value
     model.version = manifest.version
     model.actual_size_bytes = manifest.actual_size_bytes

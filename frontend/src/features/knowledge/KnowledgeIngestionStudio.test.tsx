@@ -8,7 +8,11 @@ import type {
   UploadRecord,
 } from '../../api/types'
 import { KnowledgeIngestionStudio } from './KnowledgeIngestionStudio'
-import { validateKnowledgeDocument, validateKnowledgePdf } from './KnowledgeSourceUpload'
+import {
+  createKnowledgePromptDocument,
+  validateKnowledgeDocument,
+  validateKnowledgePdf,
+} from './KnowledgeSourceUpload'
 
 vi.mock('hash-wasm', () => ({
   createSHA256: vi.fn(() => Promise.resolve({
@@ -48,7 +52,7 @@ function uploadRecord(
     content_type: 'application/pdf',
     sha256: 'a'.repeat(64),
     classification,
-    content_profile: 'FORMAT_ONLY_V1',
+    content_profile: 'KNOWLEDGE_SOURCE_DOCUMENT_V1',
     expires_at: '2026-07-22T00:00:00Z',
     version,
     recommended_part_size_bytes: 16 * 1024 * 1024,
@@ -126,6 +130,18 @@ describe('KnowledgeIngestionStudio', () => {
     })).toThrow(/지원 형식/)
   })
 
+  it('turns a bounded natural-language A-Box request into a governed TXT source', () => {
+    const source = createKnowledgePromptDocument('  고객 김하늘은 서울 지점에 소속됩니다.  ')
+
+    expect(source.name).toBe('knowledge-prompt.txt')
+    expect(source.type).toBe('text/plain')
+    expect(source.lastModified).toBe(0)
+    expect(source.size).toBeGreaterThan(0)
+    expect(validateKnowledgeDocument(source)).toBe('text/plain')
+    expect(() => createKnowledgePromptDocument('   ')).toThrow('자연어 입력을 작성')
+    expect(() => createKnowledgePromptDocument('x'.repeat(100_001))).toThrow('최대 100,000자')
+  })
+
   it('uses the backend REVIEW state and a light enterprise mode selector', async () => {
     const request = vi.fn((path: string) => {
       if (path === '/knowledge/graphs') return Promise.resolve([{
@@ -155,7 +171,7 @@ describe('KnowledgeIngestionStudio', () => {
     expect(screen.getByRole('button', { name: '반려' })).toBeInTheDocument()
   })
 
-  it('runs the governed PDF upload, analysis, and verified projection request sequence', async () => {
+  it('runs the governed source upload, analysis, and verified projection request sequence', async () => {
     const calls: Array<[string, RequestOptions | undefined]> = []
     let analysisSucceeded = false
     const generatedChangeset: KnowledgeChangeSet = {
@@ -189,14 +205,14 @@ describe('KnowledgeIngestionStudio', () => {
       if (path === '/knowledge/graphs/graph-1/source-analysis-jobs?limit=100') {
         return Promise.resolve({ items: [], next_cursor: null })
       }
-      if (path === '/uploads' && options?.method === 'POST') {
+      if (path === '/knowledge/graphs/graph-1/source-uploads' && options?.method === 'POST') {
         return Promise.resolve(uploadRecord('INITIATED', 1))
       }
-      if (path === '/uploads/upload-1/parts') return Promise.resolve({ url: 'https://objects.test/part-1' })
-      if (path === '/uploads/upload-1/complete') {
+      if (path === '/knowledge/graphs/graph-1/source-uploads/upload-1/parts') return Promise.resolve({ url: 'https://objects.test/part-1' })
+      if (path === '/knowledge/graphs/graph-1/source-uploads/upload-1/complete') {
         return Promise.resolve(uploadRecord('VALIDATION_QUEUED', 2))
       }
-      if (path === '/uploads/upload-1' && !options?.method) {
+      if (path === '/knowledge/graphs/graph-1/source-uploads/upload-1' && !options?.method) {
         return Promise.resolve(uploadRecord('ACCEPTED', 3))
       }
       if (path === '/knowledge/graphs/graph-1/sources/upload-1/analyze') {
@@ -221,12 +237,13 @@ describe('KnowledgeIngestionStudio', () => {
 
     render(<KnowledgeIngestionStudio client={{ request } as unknown as ApiClient} />)
     fireEvent.click(screen.getByRole('button', { name: /MODE B/ }))
-    const input = await screen.findByLabelText('지식 문서 소스')
-    await waitFor(() => expect(input).toBeEnabled())
-    const file = new File(['%PDF-1.6\nverified-content'], 'semiconductor-outlook.pdf', {
-      type: 'application/pdf',
+    await screen.findByRole('button', { name: 'LLM 자연어 입력' })
+    await waitFor(() => expect(screen.getByLabelText('지식 문서 소스')).toBeEnabled())
+    fireEvent.click(screen.getByRole('button', { name: 'LLM 자연어 입력' }))
+    fireEvent.change(await screen.findByLabelText('A-Box로 제안할 자연어 입력'), {
+      target: { value: '고객 김하늘은 서울 지점에 소속됩니다.' },
     })
-    fireEvent.change(input, { target: { files: [file] } })
+    fireEvent.click(screen.getByRole('button', { name: '검증 원천으로 준비' }))
     fireEvent.click(screen.getByRole('button', { name: '문서 검증 업로드 시작' }))
 
     expect(await screen.findByText('ACCEPTED')).toBeInTheDocument()
@@ -252,10 +269,10 @@ describe('KnowledgeIngestionStudio', () => {
     expect(screen.getByRole('combobox', { name: 'DRAFT changeset' })).toHaveValue('changeset-2')
 
     const paths = calls.map(([path]) => path)
-    const initiatedIndex = paths.indexOf('/uploads')
-    const partIndex = paths.indexOf('/uploads/upload-1/parts')
-    const completeIndex = paths.indexOf('/uploads/upload-1/complete')
-    const pollIndex = paths.indexOf('/uploads/upload-1')
+    const initiatedIndex = paths.indexOf('/knowledge/graphs/graph-1/source-uploads')
+    const partIndex = paths.indexOf('/knowledge/graphs/graph-1/source-uploads/upload-1/parts')
+    const completeIndex = paths.indexOf('/knowledge/graphs/graph-1/source-uploads/upload-1/complete')
+    const pollIndex = paths.indexOf('/knowledge/graphs/graph-1/source-uploads/upload-1')
     const analyzeIndex = paths.indexOf('/knowledge/graphs/graph-1/sources/upload-1/analyze')
     const projectIndex = paths.indexOf('/knowledge/graphs/graph-1/releases/release-1/project')
     expect(initiatedIndex).toBeGreaterThan(-1)
@@ -267,18 +284,19 @@ describe('KnowledgeIngestionStudio', () => {
 
     const initiateBody = jsonBody(calls[initiatedIndex]?.[1])
     expect(initiateBody).toMatchObject({
-      content_type: 'application/pdf',
-      content_profile: 'FORMAT_ONLY_V1',
-      classification: 'INTERNAL',
+      display_name: 'knowledge-prompt.txt',
+      content_type: 'text/plain',
       sha256: 'a'.repeat(64),
     })
+    expect(initiateBody).not.toHaveProperty('classification')
+    expect(initiateBody).not.toHaveProperty('content_profile')
     const completeOptions = calls[completeIndex]?.[1]
     expect(completeOptions?.ifMatch).toBe('"1"')
     expect(jsonBody(completeOptions)).toEqual({
       parts: [{ part_number: 1, etag: 'part-etag-1' }],
     })
     expect(jsonBody(calls[analyzeIndex]?.[1])).toEqual({
-      title: 'semiconductor-outlook.pdf 지식 추출 제안',
+      title: 'LLM 입력 텍스트 지식 추출 제안',
     })
     expect(calls[analyzeIndex]?.[1]?.idempotencyKey).toMatch(/^knowledge-source-analysis-/)
     expect(paths.indexOf('/knowledge/graphs/graph-1/source-analysis-jobs/source-job-1'))
@@ -465,7 +483,7 @@ describe('KnowledgeIngestionStudio', () => {
     expect(screen.getByLabelText('지식 문서 소스')).toBeDisabled()
     expect(screen.getByRole('button', { name: '문서 검증 업로드 시작' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'LLM 추출 제안 생성' })).toBeDisabled()
-    expect(request.mock.calls.some(([path]) => path === '/uploads')).toBe(false)
+    expect(request.mock.calls.some(([path]) => path.endsWith('/source-uploads'))).toBe(false)
   })
 
   it('rejects a source outside the document allowlist before initiating an upload', async () => {
@@ -488,7 +506,7 @@ describe('KnowledgeIngestionStudio', () => {
 
     expect(await screen.findByText(/지원 형식은 PDF/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: '문서 검증 업로드 시작' })).toBeDisabled()
-    expect(request.mock.calls.some(([path]) => path === '/uploads')).toBe(false)
+    expect(request.mock.calls.some(([path]) => path.endsWith('/source-uploads'))).toBe(false)
   })
 
   it('surfaces object-storage failures and never calls analysis', async () => {
@@ -499,10 +517,10 @@ describe('KnowledgeIngestionStudio', () => {
       if (path === '/knowledge/graphs/graph-1/source-analysis-jobs?limit=100') {
         return Promise.resolve({ items: [], next_cursor: null })
       }
-      if (path === '/uploads' && options?.method === 'POST') {
+      if (path === '/knowledge/graphs/graph-1/source-uploads' && options?.method === 'POST') {
         return Promise.resolve(uploadRecord('INITIATED', 1))
       }
-      if (path === '/uploads/upload-1/parts') return Promise.resolve({ url: 'https://objects.test/part-1' })
+      if (path === '/knowledge/graphs/graph-1/source-uploads/upload-1/parts') return Promise.resolve({ url: 'https://objects.test/part-1' })
       throw new Error(`Unexpected request: ${path}`)
     })
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response(null, { status: 503 }))))

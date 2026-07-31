@@ -220,6 +220,8 @@ def _claim(
         source_storage_version="manifest-v1",
         source_content_sha256=source.content_sha256,
         source_classification=1,
+        source_content_profile="KNOWLEDGE_SOURCE_DOCUMENT_V1",
+        source_validation_evidence_hash="9" * 64,
         graph_version=1,
         base_release_id=None,
         base_release_hash=None,
