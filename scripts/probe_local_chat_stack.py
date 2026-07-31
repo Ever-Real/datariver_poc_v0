@@ -108,6 +108,7 @@ async def _probe(
         model=chat_model,
         timeout_seconds=_timeout(values, "LOCAL_OLLAMA_CHAT_TIMEOUT_SECONDS"),
         context_tokens=int(_required(values, "LOCAL_OLLAMA_CHAT_CONTEXT_TOKENS")),
+        allowed_hosts=frozenset({"127.0.0.1", "host.docker.internal"}),
     ).compose(
         question="Which supplied table contains authorized order records?",
         evidence=evidence,
@@ -157,6 +158,7 @@ async def _probe(
         model=reranker_model,
         timeout_seconds=_timeout(values, "LOCAL_LLAMA_CPP_RERANKER_TIMEOUT_SECONDS"),
         top_n=min(int(_required(values, "LOCAL_LLAMA_CPP_RERANKER_TOP_N")), len(evidence)),
+        allowed_hosts=frozenset({"127.0.0.1", "host.docker.internal"}),
     ).rerank(
         question="authorized order records",
         evidence=evidence,

@@ -181,7 +181,9 @@ async def test_openai_compatible_chat_classifies_with_fixed_zero_temperature_con
     assert "top_p" not in transport.document
     assert "repetition_penalty" not in transport.document
     assert "chat_template_kwargs" not in transport.document
-    assert transport.document["messages"][1] == {
+    messages = transport.document["messages"]
+    assert isinstance(messages, list)
+    assert messages[1] == {
         "role": "user",
         "content": '{"question":"Which fields describe the customer order table?"}',
     }
