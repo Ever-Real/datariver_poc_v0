@@ -174,8 +174,16 @@ function proportionalOverviewWidths(rows: ChangeRequestSchemaOverview[]): number
     32,
     Math.max(...values.map(displayWidth)),
   ))
-  const total = weights.reduce((sum, width) => sum + width, 0)
-  return weights.map((width) => (width / total) * 100)
+  const dimensionWeights = weights.slice(0, 3)
+  const metricWeights = weights.slice(3)
+  const sharedMetricWeight = metricWeights.reduce((sum, width) => sum + width, 0)
+    / metricWeights.length
+  const normalizedWeights = [
+    ...dimensionWeights,
+    ...metricWeights.map(() => sharedMetricWeight),
+  ]
+  const total = normalizedWeights.reduce((sum, width) => sum + width, 0)
+  return normalizedWeights.map((width) => (width / total) * 100)
 }
 
 export function GovernancePage({

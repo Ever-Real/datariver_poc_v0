@@ -187,7 +187,7 @@ describe('GovernancePage', () => {
     expect(screen.getByText('0건 표시')).toBeInTheDocument()
   })
 
-  it('sizes overview columns from displayed content and exposes clipped values in titles', async () => {
+  it('sizes overview identity columns from content, keeps metric columns equal, and exposes clipped values in titles', async () => {
     const schemaOverview: ChangeRequestSchemaOverview = {
       platform: 'postgres',
       database_name: 'semiconductor_warehouse',
@@ -219,7 +219,8 @@ describe('GovernancePage', () => {
       (column) => column.getAttribute('style'),
     )
     expect(widths).toHaveLength(10)
-    expect(new Set(widths).size).toBeGreaterThan(1)
+    expect(new Set(widths.slice(0, 3)).size).toBeGreaterThan(1)
+    expect(new Set(widths.slice(3)).size).toBe(1)
     expect(screen.getByText(schemaOverview.schema_name)).toHaveClass('governance-overview-primary')
     expect(screen.getByText(schemaOverview.schema_name)).toHaveAttribute(
       'title',
