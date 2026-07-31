@@ -38,6 +38,36 @@ class WorkspaceModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     settings: Mapped[dict[str, Any]] = mapped_column(JSON_DOCUMENT, default=dict, nullable=False)
 
 
+class MonitoringConfigurationModel(Base, TimestampMixin, VersionMixin):
+    """Workspace-owned, non-secret Grafana tab presentation configuration."""
+
+    __tablename__ = "monitoring_configurations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("workspace_id", "updated_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_monitoring_configurations_updater",
+        ),
+        CheckConstraint("jsonb_typeof(dashboards) = 'array'", name="dashboards_array"),
+        CheckConstraint("jsonb_array_length(dashboards) <= 8", name="dashboards_bounded"),
+        CheckConstraint("payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash_sha256"),
+        CheckConstraint("version > 0", name="version_positive"),
+        {"schema": "platform"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    dashboards: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSON_DOCUMENT, default=list, nullable=False
+    )
+    payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    updated_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+
+
 class SubjectModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
     __tablename__ = "subjects"
     __table_args__ = (

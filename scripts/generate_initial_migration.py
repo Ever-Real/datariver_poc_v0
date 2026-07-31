@@ -728,6 +728,9 @@ BEGIN
             platform.system_assignees, platform.external_service_profiles TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON platform.external_service_profile_versions
             TO datariver_app;
+        GRANT SELECT, INSERT ON platform.monitoring_configurations TO datariver_app;
+        GRANT UPDATE (dashboards, payload_hash, updated_by, updated_at, version)
+            ON platform.monitoring_configurations TO datariver_app;
         GRANT SELECT ON integration.jobs, integration.job_attempts TO datariver_app;
         GRANT INSERT ON integration.jobs TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON integration.object_manifests TO datariver_app;

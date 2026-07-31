@@ -1,25 +1,67 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Activity, ExternalLink, Monitor, RefreshCw, ShieldCheck } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import {
+  ArrowDown,
+  ArrowUp,
+  ExternalLink,
+  Monitor,
+  Plus,
+  RefreshCw,
+  Settings2,
+  Trash2,
+} from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { CapabilitiesResponse, Capability, ExternalSystemLink, GrafanaEmbed } from '../../api/types'
+import type {
+  CapabilitiesResponse,
+  MonitoringConfiguration,
+  MonitoringDashboard,
+} from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { Dialog } from '../../components/common/Dialog'
+import { useRovingTabs } from '../../components/common/useRovingTabs'
 import { PageTitle } from '../../components/layout/PageTitle'
 
-export function MonitoringPage({ client }: { client: ApiClient }) {
-  const [capabilities, setCapabilities] = useState<Capability[]>([])
-  const [links, setLinks] = useState<ExternalSystemLink[]>([])
-  const [grafanaEmbed, setGrafanaEmbed] = useState<GrafanaEmbed>({ state: 'NOT_CONFIGURED' })
+interface MonitoringDashboardDraft {
+  id: string
+  label: string
+  url: string
+  height_px: number
+}
+
+export function MonitoringPage({
+  client,
+  canManageTabs = false,
+  canUpdateTabs = false,
+  onRequestAdminAssurance,
+}: {
+  client: ApiClient
+  canManageTabs?: boolean
+  canUpdateTabs?: boolean
+  onRequestAdminAssurance?: () => Promise<void>
+}) {
+  const [configuration, setConfiguration] = useState<MonitoringConfiguration>({
+    items: [],
+    version: 0,
+  })
+  const [activeId, setActiveId] = useState<string>()
   const [error, setError] = useState<unknown>()
   const [loading, setLoading] = useState(true)
+  const [editorOpen, setEditorOpen] = useState(false)
+  const [drafts, setDrafts] = useState<MonitoringDashboardDraft[]>([])
+  const [saving, setSaving] = useState(false)
 
   const refresh = useCallback(async () => {
     setError(undefined)
     setLoading(true)
     try {
-      const response = await client.request<CapabilitiesResponse>('/capabilities')
-      setCapabilities(response.items)
-      setLinks(response.external_system_links)
-      setGrafanaEmbed(response.grafana_embed)
+      const response = await client.request<CapabilitiesResponse>('/capabilities', {
+        cache: 'no-store',
+      })
+      setConfiguration(response.monitoring_configuration)
+      setActiveId((current) => (
+        current && response.monitoring_configuration.items.some((item) => item.id === current)
+          ? current
+          : response.monitoring_configuration.items[0]?.id
+      ))
     } catch (next) {
       setError(next)
     } finally {
@@ -27,75 +69,370 @@ export function MonitoringPage({ client }: { client: ApiClient }) {
     }
   }, [client])
 
-  useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
 
-  const grafana = links.find((link) => link.system_id === 'grafana')
-  const embeddedGrafanaUrl = grafanaEmbed.state === 'AVAILABLE' ? grafanaEmbed.url : undefined
+  useEffect(() => {
+    setActiveId((current) => (
+      current && configuration.items.some((item) => item.id === current)
+        ? current
+        : configuration.items[0]?.id
+    ))
+  }, [configuration.items])
+
+  const dashboardIds = useMemo(
+    () => configuration.items.map((item) => item.id),
+    [configuration.items],
+  )
+  const tabs = useRovingTabs({
+    ids: dashboardIds,
+    activeId,
+    idPrefix: 'monitoring',
+    onSelect: setActiveId,
+  })
+  const activeDashboard = configuration.items.find((item) => item.id === activeId)
+
+  const openEditor = () => {
+    setDrafts(configuration.items.map((item) => ({
+      id: item.id,
+      label: item.label,
+      url: item.url,
+      height_px: item.height_px,
+    })))
+    setError(undefined)
+    setEditorOpen(true)
+  }
+
+  const addDraft = () => {
+    if (drafts.length >= 8) return
+    setDrafts((current) => [
+      ...current,
+      {
+        id: crypto.randomUUID(),
+        label: `Dashboard ${current.length + 1}`,
+        url: '',
+        height_px: 900,
+      },
+    ])
+  }
+
+  const updateDraft = (
+    id: string,
+    field: 'label' | 'url' | 'height_px',
+    value: string | number,
+  ) => {
+    setDrafts((current) => current.map((item) => (
+      item.id === id ? { ...item, [field]: value } : item
+    )))
+  }
+
+  const moveDraft = (index: number, direction: -1 | 1) => {
+    const nextIndex = index + direction
+    if (nextIndex < 0 || nextIndex >= drafts.length) return
+    setDrafts((current) => {
+      const next = [...current]
+      const item = next[index]
+      const target = next[nextIndex]
+      if (!item || !target) return current
+      next[index] = target
+      next[nextIndex] = item
+      return next
+    })
+  }
+
+  const saveDrafts = async () => {
+    if (!canUpdateTabs || saving) return
+    if (drafts.some((item) => !item.label.trim() || !item.url.trim())) {
+      setError(new Error('각 탭의 이름과 Grafana Dashboard URL을 입력하세요.'))
+      return
+    }
+    setSaving(true)
+    setError(undefined)
+    try {
+      const next = await client.request<MonitoringConfiguration>(
+        '/admin/monitoring-configuration',
+        {
+          method: 'PUT',
+          ifMatch: `"${configuration.version}"`,
+          body: JSON.stringify({
+            items: drafts.map((item) => ({
+              id: item.id,
+              label: item.label.trim(),
+              url: item.url.trim(),
+              height_px: item.height_px,
+            })),
+          }),
+        },
+      )
+      setConfiguration(next)
+      setEditorOpen(false)
+    } catch (next) {
+      setError(next)
+    } finally {
+      setSaving(false)
+    }
+  }
+
   return (
     <section className="monitoring-page">
       <PageTitle
         icon="MO"
         eyebrow="Infrastructure monitoring"
         title="Infrastructure Monitoring"
-        description="서버가 검증한 플랫폼 capability와 관측성 링크만 표시합니다."
-        actions={(
-          <div className="monitoring-title-actions">
-            <button className="button button-secondary" type="button" onClick={() => void refresh()} disabled={loading}><RefreshCw size={14} />새로고침</button>
-            {grafana ? (
-              <a className="button" href={grafana.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} />{grafana.label} 열기</a>
-            ) : (
-              <button className="button button-secondary" type="button" disabled title="서버가 Grafana 외부 링크를 제공하지 않았습니다."><ExternalLink size={14} />Grafana 링크 없음</button>
-            )}
-          </div>
-        )}
+        description="서버가 검증한 Grafana Dashboard 탭과 관측성 링크를 표시합니다."
       />
       <ErrorNotice error={error} />
-      <div className="monitoring-frame" aria-busy={loading}>
+      <div className="monitoring-tabs-shell">
+        <div className="monitoring-tabs" role="tablist" aria-label="Monitoring dashboards">
+          {configuration.items.map((dashboard) => (
+            <button
+              {...tabs.tabProps(dashboard.id)}
+              className={dashboard.id === activeId ? 'active' : ''}
+              key={dashboard.id}
+              onClick={() => setActiveId(dashboard.id)}
+              type="button"
+            >
+              {dashboard.label}
+            </button>
+          ))}
+          {!loading && configuration.items.length === 0 && (
+            <span className="monitoring-tabs-empty">등록된 Dashboard 없음</span>
+          )}
+        </div>
+        <div className="monitoring-tab-actions">
+          <button
+            className="button button-secondary"
+            type="button"
+            onClick={() => void refresh()}
+            disabled={loading}
+          >
+            <RefreshCw size={14} />
+            새로고침
+          </button>
+          {canManageTabs && (
+            <button className="button" type="button" onClick={openEditor}>
+              <Settings2 size={14} />
+              탭 수정
+            </button>
+          )}
+        </div>
+      </div>
+      <div
+        {...(activeDashboard ? tabs.panelProps(activeDashboard.id) : {})}
+        className="monitoring-frame"
+        aria-busy={loading}
+      >
         {loading ? (
-          <div className="monitoring-frame-state"><span className="loader" /><p>플랫폼 상태를 조회하고 있습니다.</p></div>
-        ) : embeddedGrafanaUrl ? (
-          <div className="monitoring-approved-embed">
-            <div className="monitoring-embed-notice">
-              <span><Monitor size={20} aria-hidden="true" /></span>
-              <p>서버가 현재 환경의 Grafana 주소를 확인하여, 이 세션에서는 sandboxed dashboard를 표시합니다.</p>
-              {grafana && <a className="button button-secondary" href={grafana.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} />새 창으로 열기</a>}
-            </div>
-            <iframe className="monitoring-grafana-frame" loading="lazy" referrerPolicy="no-referrer" sandbox="allow-forms allow-same-origin allow-scripts" src={embeddedGrafanaUrl} title="Grafana Dashboard" />
+          <div className="monitoring-frame-state">
+            <span className="loader" />
+            <p>Monitoring Dashboard를 조회하고 있습니다.</p>
           </div>
-        ) : grafana ? (
-          <div className="monitoring-approved-link">
-            <span><Monitor size={35} aria-hidden="true" /></span>
-            <div>
-              <p className="eyebrow">Approved external observability</p>
-              <h2>{grafana.label}</h2>
-              <p>이 링크는 서버가 제공한 외부 관측성 화면입니다. iframe을 사용할 수 없는 환경에서는 세션/프레임 경계를 우회하지 않고 새 창에서 엽니다.</p>
-              <a className="button" href={grafana.url} target="_blank" rel="noopener noreferrer"><ExternalLink size={14} />{grafana.label} 열기</a>
-            </div>
-          </div>
+        ) : activeDashboard ? (
+          <MonitoringDashboardPanel dashboard={activeDashboard} />
         ) : (
           <div className="monitoring-frame-state">
             <Monitor size={38} aria-hidden="true" />
-            <div><h2>Grafana 링크가 없습니다.</h2><p>관리자가 시스템 설정에서 Grafana URL을 저장하거나 배포 설정을 제공하면 이 화면에 서버가 제공한 링크가 나타납니다.</p></div>
+            <div>
+              <h2>Monitoring Dashboard가 없습니다.</h2>
+              <p>
+                관리자는 탭 수정에서 배포가 승인한 Grafana 원본의 Dashboard URL을 등록할 수
+                있습니다.
+              </p>
+            </div>
           </div>
         )}
       </div>
-      <section className="monitoring-capabilities" aria-labelledby="capability-title">
-        <header><Activity size={16} aria-hidden="true" /><div><p className="eyebrow">Current server observation</p><h2 id="capability-title">Platform capability state</h2></div></header>
-        {loading ? <p className="monitoring-capability-state">상태를 불러오는 중입니다.</p> : capabilities.length === 0 ? <p className="monitoring-capability-state">서버가 표시 가능한 capability 결과를 반환하지 않았습니다.</p> : (
-          <ul>
-            {capabilities.map((capability) => (
-              <li key={capability.name}>
-                <span className={`status-dot status-${capability.state}`} aria-hidden="true" />
-                <strong>{capability.name}</strong>
-                <span className="badge">{capability.state}</span>
-                <small>{capability.latency_ms == null ? '지연시간 미수집' : `${capability.latency_ms} ms`}</small>
-                <time dateTime={capability.observed_at}>{capability.observed_at}</time>
-              </li>
-            ))}
-          </ul>
+      <Dialog
+        open={editorOpen}
+        title="Monitoring 탭 수정"
+        description="탭별 Dashboard URL과 페이지 높이를 설정합니다. URL은 배포 승인 Grafana 원본과 일치해야 합니다."
+        size="large"
+        onRequestClose={() => {
+          if (!saving) setEditorOpen(false)
+        }}
+        footer={(
+          <>
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => setEditorOpen(false)}
+              disabled={saving}
+            >
+              취소
+            </button>
+            {canUpdateTabs ? (
+              <button className="button" type="button" onClick={() => void saveDrafts()} disabled={saving}>
+                {saving ? '저장 중…' : '저장'}
+              </button>
+            ) : (
+              <button
+                className="button"
+                type="button"
+                onClick={() => void onRequestAdminAssurance?.()}
+              >
+                관리자 재인증
+              </button>
+            )}
+          </>
         )}
-        <footer><ShieldCheck size={13} aria-hidden="true" /> capability 상태와 외부 주소는 모두 서버 응답에서만 옵니다.</footer>
-      </section>
+      >
+        {!canUpdateTabs && (
+          <p className="notice">
+            탭을 변경하려면 최근 관리자 인증이 필요합니다. 재인증 후 변경 내용은 자동
+            저장되지 않습니다.
+          </p>
+        )}
+        <div className="monitoring-editor-list">
+          {drafts.map((draft, index) => (
+            <section className="monitoring-editor-item" key={draft.id}>
+              <div className="monitoring-editor-order">
+                <strong>{index + 1}</strong>
+                <button
+                  type="button"
+                  aria-label={`${draft.label} 위로 이동`}
+                  onClick={() => moveDraft(index, -1)}
+                  disabled={!canUpdateTabs || index === 0}
+                >
+                  <ArrowUp size={14} />
+                </button>
+                <button
+                  type="button"
+                  aria-label={`${draft.label} 아래로 이동`}
+                  onClick={() => moveDraft(index, 1)}
+                  disabled={!canUpdateTabs || index === drafts.length - 1}
+                >
+                  <ArrowDown size={14} />
+                </button>
+              </div>
+              <div className="monitoring-editor-fields">
+                <label>
+                  탭 이름
+                  <input
+                    value={draft.label}
+                    maxLength={80}
+                    disabled={!canUpdateTabs}
+                    onChange={(event) => updateDraft(draft.id, 'label', event.target.value)}
+                  />
+                </label>
+                <label>
+                  Grafana Dashboard URL
+                  <input
+                    value={draft.url}
+                    type="url"
+                    maxLength={2000}
+                    placeholder="https://grafana.example/d/overview"
+                    disabled={!canUpdateTabs}
+                    onChange={(event) => updateDraft(draft.id, 'url', event.target.value)}
+                  />
+                </label>
+                <label>
+                  페이지 높이 (px)
+                  <input
+                    value={draft.height_px}
+                    type="number"
+                    min={480}
+                    max={2000}
+                    step={20}
+                    disabled={!canUpdateTabs}
+                    onChange={(event) => updateDraft(
+                      draft.id,
+                      'height_px',
+                      Number(event.target.value),
+                    )}
+                  />
+                </label>
+              </div>
+              <button
+                className="button button-secondary monitoring-editor-remove"
+                type="button"
+                aria-label={`${draft.label} 탭 삭제`}
+                disabled={!canUpdateTabs}
+                onClick={() => setDrafts((current) => (
+                  current.filter((item) => item.id !== draft.id)
+                ))}
+              >
+                <Trash2 size={14} />
+                삭제
+              </button>
+            </section>
+          ))}
+          {drafts.length === 0 && (
+            <p className="monitoring-editor-empty">등록된 Dashboard 탭이 없습니다.</p>
+          )}
+        </div>
+        <button
+          className="button button-secondary"
+          type="button"
+          onClick={addDraft}
+          disabled={!canUpdateTabs || drafts.length >= 8}
+        >
+          <Plus size={14} />
+          탭 추가
+        </button>
+      </Dialog>
     </section>
+  )
+}
+
+function MonitoringDashboardPanel({ dashboard }: { dashboard: MonitoringDashboard }) {
+  if (dashboard.embed_state === 'AVAILABLE' && dashboard.embed_url) {
+    return (
+      <div
+        className="monitoring-approved-embed"
+        style={{ minHeight: dashboard.height_px + 43 }}
+      >
+        <div className="monitoring-embed-notice">
+          <span>
+            <Monitor size={20} aria-hidden="true" />
+          </span>
+          <p>
+            서버가 승인한 Grafana 원본의 <strong>{dashboard.label}</strong> Dashboard입니다.
+          </p>
+          <a
+            className="button button-secondary"
+            href={dashboard.url}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            <ExternalLink size={14} />
+            새 창으로 열기
+          </a>
+        </div>
+        <iframe
+          className="monitoring-grafana-frame"
+          loading="lazy"
+          referrerPolicy="no-referrer"
+          sandbox="allow-forms allow-same-origin allow-scripts"
+          src={dashboard.embed_url}
+          style={{ height: dashboard.height_px }}
+          title={`${dashboard.label} Grafana Dashboard`}
+        />
+      </div>
+    )
+  }
+  return (
+    <div className="monitoring-approved-link">
+      <span>
+        <Monitor size={35} aria-hidden="true" />
+      </span>
+      <div>
+        <p className="eyebrow">Approved external observability</p>
+        <h2>{dashboard.label}</h2>
+        <p>
+          이 Dashboard는 서버가 제공한 링크입니다. 현재 배포에서 Grafana frame 정책이
+          승인되지 않아 새 창에서 엽니다.
+        </p>
+        <a
+          className="button"
+          href={dashboard.url}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          <ExternalLink size={14} />
+          {dashboard.label} 열기
+        </a>
+      </div>
+    </div>
   )
 }

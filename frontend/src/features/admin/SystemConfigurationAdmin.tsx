@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  Capability,
   DeploymentEnvironment,
   SystemConfigurationEntry,
   SystemConfigurationTestResult,
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { useRovingTabs } from '../../components/common/useRovingTabs'
+import { CapabilityObservation } from '../monitoring/CapabilityObservation'
 import type { AdminSectionProps } from './MembershipAdmin'
 
 const llmSystemIds = new Set<SystemConfigurationEntry['system_id']>([
@@ -79,11 +81,13 @@ function applyMethodLabel(method: DeploymentEnvironment['apply_method']) {
 export function SystemConfigurationAdmin(props: AdminSectionProps) {
   const { api, reportError } = props
   const [items, setItems] = useState<SystemConfigurationEntry[]>([])
+  const [capabilities, setCapabilities] = useState<Capability[]>([])
   const [deploymentEnvironment, setDeploymentEnvironment] = useState<DeploymentEnvironment>()
   const [selectedId, setSelectedId] = useState<
     SystemConfigurationEntry['system_id'] | 'CORE_DASHBOARD' | undefined
   >()
   const [loading, setLoading] = useState(true)
+  const [capabilitiesLoading, setCapabilitiesLoading] = useState(true)
   const [testingId, setTestingId] = useState<SystemConfigurationEntry['system_id']>()
   const [testResults, setTestResults] = useState<
     Partial<Record<SystemConfigurationEntry['system_id'], SystemConfigurationTestResult>>
@@ -132,6 +136,28 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
     void load()
     return () => loadRequest.current.controller?.abort()
   }, [load])
+
+  const loadCapabilities = useCallback(async (signal?: AbortSignal) => {
+    setCapabilitiesLoading(true)
+    try {
+      const next = await api.getCapabilities(signal)
+      if (!signal?.aborted) setCapabilities(next.items)
+    } catch (next) {
+      if (!signal?.aborted) {
+        setCapabilities([])
+        setError(next)
+        reportError(next)
+      }
+    } finally {
+      if (!signal?.aborted) setCapabilitiesLoading(false)
+    }
+  }, [api, reportError])
+
+  useEffect(() => {
+    const controller = new AbortController()
+    void loadCapabilities(controller.signal)
+    return () => controller.abort()
+  }, [loadCapabilities])
 
   const selected = useMemo(
     () => items.find((item) => item.system_id === selectedId),
@@ -266,7 +292,14 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
           >
             {connectionStateLabel(activeConnectionState)}
           </span>
-          <button className="button button-secondary" onClick={() => void load()} type="button">
+          <button
+            className="button button-secondary"
+            onClick={() => {
+              void load()
+              void loadCapabilities()
+            }}
+            type="button"
+          >
             새로고침
           </button>
         </div>
@@ -301,6 +334,7 @@ export function SystemConfigurationAdmin(props: AdminSectionProps) {
           )}
         </section>
       )}
+      <CapabilityObservation items={capabilities} loading={capabilitiesLoading} />
       <div className="admin-system-settings-workspace">
         <nav aria-label="설정 시스템 목록" className="admin-system-settings-list" role="tablist">
           {coreItems.length > 0 && (

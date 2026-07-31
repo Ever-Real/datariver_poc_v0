@@ -2,6 +2,25 @@
 
 ## Current verification status
 
+### Governed monitoring dashboard tabs — 2026-07-31
+
+Revision `0078` adds a Workspace-scoped monitoring presentation aggregate with forced RLS.
+Administrators with fresh assurance can save at most eight ordered dashboard tabs, but the server
+accepts only HTTP(S) URLs whose exact origin is already deployment-approved by
+`UI_GRAFANA_URL` or `GRAFANA_EMBED_BASE_URL`. Saved presentation metadata cannot enable iframe
+embedding, expand CSP, change the Grafana connector or store credentials. Component tests cover
+multi-tab selection, bounded dashboard height, the administrator-only editor and the relocation of
+server capability observations to System Settings.
+
+Repository Ruff format/lint passed over `528` files, strict mypy passed over `519` source/test
+files, the backend suite passed `2,010` tests with `104` explicitly environment-gated skips, and
+static architecture/security verification passed. Frontend TypeScript/ESLint passed; the complete
+single-worker suite passed `71` files / `386` tests and the production build completed. Two
+canonical `0001` generations were byte-identical at SHA-256
+`ea8ded7766ac7606b3a9b91664c6814a3251d26a6997df97ddd1967cd8147d1d`.
+Authenticated browser/runtime evidence is recorded only after publishing the exact commit; target
+deployment Grafana/CSP acceptance remains an external gate.
+
 ### Server-observed Chat live workflow progress — 2026-07-31
 
 The Chat stream uses the same bounded request and authorization contract as the ordinary endpoint.

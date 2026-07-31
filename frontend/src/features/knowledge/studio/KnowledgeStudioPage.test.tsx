@@ -94,10 +94,13 @@ function requestUrl(input: RequestInfo | URL): string {
 
 beforeEach(() => {
   useKnowledgeStudioSessionStore.setState({ sessions: {} })
+  const digest = vi.fn<SubtleCrypto['digest']>(() => (
+    Promise.resolve(new Uint8Array(32).buffer)
+  ))
   vi.stubGlobal('crypto', {
     ...crypto,
     randomUUID: vi.fn(() => '019fa57b-52de-74c0-9f5e-06ae7b1bf399'),
-    subtle: crypto.subtle,
+    subtle: { digest } as unknown as SubtleCrypto,
   })
 })
 

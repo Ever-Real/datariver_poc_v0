@@ -452,6 +452,7 @@ class AdminAccessService:
             AdminOperation.CLASSIFICATION_POLICY_READ,
             AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
             AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
+            AdminOperation.MONITORING_CONFIGURATION_READ,
         ]
         if self._development_system_configuration_enabled:
             operations.append(AdminOperation.SYSTEM_CONFIGURATION_READ)
@@ -492,6 +493,7 @@ class AdminAccessService:
                     AdminOperation.RESTRICTED_SEARCH_GRANT_PROPOSE,
                     AdminOperation.RESTRICTED_SEARCH_GRANT_DECIDE,
                     AdminOperation.RESTRICTED_SEARCH_GRANT_REVOKE,
+                    AdminOperation.MONITORING_CONFIGURATION_UPDATE,
                 ]
             )
             if self._identity_administration_enabled:

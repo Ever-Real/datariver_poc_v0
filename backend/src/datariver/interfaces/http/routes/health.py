@@ -10,8 +10,13 @@ from sqlalchemy import text
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import Action, Classification, ResourceAttributes
 from datariver.infrastructure.db.authz import SqlDecisionWriter
+from datariver.infrastructure.db.models.platform import MonitoringConfigurationModel
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
+from datariver.infrastructure.db.rls import set_security_context
 from datariver.interfaces.http.dependencies import ContextDep, get_container
+from datariver.interfaces.http.monitoring_configuration import (
+    monitoring_configuration_response,
+)
 from datariver.interfaces.http.schemas import (
     CapabilitiesResponse,
     CapabilityResponse,
@@ -105,6 +110,17 @@ async def capabilities(request: Request, context: ContextDep) -> CapabilitiesRes
         redis_status("redis-cache", container.cache.ping()),
         container.datahub.capability(),
     )
+    async with container.database.session_factory() as session:
+        async with session.begin():
+            await set_security_context(
+                session,
+                workspace_id=context.workspace_id,
+                subject_id=context.subject.subject_id,
+            )
+            monitoring_configuration = await session.get(
+                MonitoringConfigurationModel,
+                context.workspace_id,
+            )
     grafana_url = (
         str(container.settings.ui_grafana_url)
         if container.settings.ui_grafana_url is not None
@@ -144,6 +160,11 @@ async def capabilities(request: Request, context: ContextDep) -> CapabilitiesRes
         grafana_embed=GrafanaEmbedResponse(
             state=grafana_embed_state,
             url=grafana_embed_url,
+        ),
+        monitoring_configuration=monitoring_configuration_response(
+            settings=container.settings,
+            workspace_id=context.workspace_id,
+            configuration=monitoring_configuration,
         ),
         deployment_tier=container.settings.deployment_tier,
     )

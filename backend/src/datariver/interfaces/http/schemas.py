@@ -857,10 +857,40 @@ class GrafanaEmbedResponse(BaseModel):
     url: HttpUrl | None = None
 
 
+class MonitoringDashboardResponse(BaseModel):
+    id: UUID
+    label: str = Field(min_length=1, max_length=80)
+    url: HttpUrl
+    height_px: int = Field(ge=480, le=2000)
+    embed_state: Literal["AVAILABLE", "DISABLED"]
+    embed_url: HttpUrl | None = None
+
+
+class MonitoringConfigurationResponse(BaseModel):
+    items: list[MonitoringDashboardResponse] = Field(max_length=8)
+    version: int = Field(ge=0)
+
+
+class MonitoringDashboardWriteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID | None = None
+    label: str = Field(min_length=1, max_length=80)
+    url: HttpUrl
+    height_px: int = Field(ge=480, le=2000)
+
+
+class MonitoringConfigurationUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[MonitoringDashboardWriteRequest] = Field(max_length=8)
+
+
 class CapabilitiesResponse(BaseModel):
     items: list[CapabilityResponse]
     external_system_links: list[ExternalSystemLinkResponse] = Field(default_factory=list)
     grafana_embed: GrafanaEmbedResponse
+    monitoring_configuration: MonitoringConfigurationResponse
     deployment_tier: Literal["SINGLE_NODE_PILOT", "HA_CANDIDATE", "HA_ACCEPTED"]
 
 

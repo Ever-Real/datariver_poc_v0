@@ -59,8 +59,28 @@ function inventory(items: SystemConfigurationEntry[]) {
 }
 
 function renderAdmin(request: ReturnType<typeof vi.fn>) {
+  const routedRequest = (path: string, options?: RequestInit) => {
+    if (path === '/capabilities') {
+      return Promise.resolve({
+        items: [{
+          name: 'postgresql',
+          state: 'healthy',
+          observed_at: '2026-07-31T00:00:00Z',
+          latency_ms: 4,
+        }],
+        external_system_links: [],
+        grafana_embed: { state: 'NOT_CONFIGURED' },
+        monitoring_configuration: { items: [], version: 0 },
+        deployment_tier: 'SINGLE_NODE_PILOT',
+      })
+    }
+    return (request as unknown as (
+      path: string,
+      options?: RequestInit,
+    ) => unknown)(path, options)
+  }
   const api = new AdminApi(
-    { request, requestWithMeta: vi.fn() } as unknown as Pick<
+    { request: routedRequest, requestWithMeta: vi.fn() } as unknown as Pick<
       ApiClient,
       'request' | 'requestWithMeta'
     >,
@@ -105,6 +125,9 @@ describe('SystemConfigurationAdmin', () => {
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '저장' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '활성화' })).not.toBeInTheDocument()
+    expect(await screen.findByText('Platform capability state')).toBeInTheDocument()
+    expect(screen.getByText('postgresql')).toBeInTheDocument()
+    expect(screen.getByText('4 ms')).toBeInTheDocument()
     expect(request).toHaveBeenCalledWith(
       '/admin/system-configuration',
       expect.objectContaining({ cache: 'no-store' }),

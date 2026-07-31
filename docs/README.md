@@ -51,6 +51,7 @@
 | 53 | [Phase 7 integrity audit](53_PHASE7_INTEGRITY_AUDIT.md) | one-pass source/migration/secret audit, V4 retention administration and fail-closed dispatch capacity | Local static/focused gates complete; Phase 8 runtime and target gates open |
 | 54 | [Phase 8 Quality authoring and execution readiness](54_PHASE8_QUALITY_AUTHORING_AND_EXECUTION_READINESS.md) | V2 field directory, atomic Rule commands, manual Run outbox and runtime readiness | Local source/PostgreSQL 17 gates complete; target source/Profile gates remain open |
 | 55 | [Phase 9 Governance Document library](55_PHASE9_GOVERNANCE_DOCUMENT_LIBRARY.md) | immutable document/Template versions, approval, safe HTML, MinIO and knowledge projection | Local source/PostgreSQL 17/MinIO/runtime gates complete; target gates open |
+| 56 | [Governed Monitoring dashboard tabs](adr/0090-governed-monitoring-dashboard-tabs.md) | Workspace Grafana tab presentation, administrator update and exact-origin embed boundary | Accepted; local implementation |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and
@@ -154,6 +155,8 @@ Semantic `AUTO` Chat routing is defined by
 [ADR-0085](adr/0085-semantic-chat-route-classification.md), and its server-observed live workflow
 progress boundary is defined by
 [ADR-0089](adr/0089-live-chat-workflow-progress-events.md).
+Workspace-scoped Monitoring dashboard tabs, administrator updates and the exact-origin frame
+boundary are defined by [ADR-0090](adr/0090-governed-monitoring-dashboard-tabs.md).
 The consolidated Knowledge Information workspace, immutable-Release Property Profiles, governed
 Catalog tables and bounded document-Proposal proxy bridge are defined by
 [ADR-0083](adr/0083-knowledge-information-property-profiles-and-bounded-proposal-timeout.md).

@@ -5,6 +5,7 @@ import type {
   AdminReadContext,
   AccessRole,
   AccessRoleWrite,
+  CapabilitiesResponse,
   CatalogSearch,
   ClassificationAccessPolicy,
   ClassificationAccessPolicyProposal,
@@ -367,6 +368,13 @@ export class AdminApi {
   listSystemConfiguration(signal?: AbortSignal) {
     return this.client.request<SystemConfigurationInventory>(
       '/admin/system-configuration',
+      { signal, cache: 'no-store' },
+    )
+  }
+
+  getCapabilities(signal?: AbortSignal) {
+    return this.client.request<CapabilitiesResponse>(
+      '/capabilities',
       { signal, cache: 'no-store' },
     )
   }

@@ -1,0 +1,74 @@
+from __future__ import annotations
+
+from typing import Any
+from uuid import NAMESPACE_URL, UUID, uuid5
+
+from datariver.config import Settings
+from datariver.domain.monitoring import monitoring_origin
+from datariver.infrastructure.db.models.platform import MonitoringConfigurationModel
+from datariver.interfaces.http.schemas import (
+    MonitoringConfigurationResponse,
+    MonitoringDashboardResponse,
+)
+
+
+def approved_grafana_origins(settings: Settings) -> frozenset[str]:
+    origins = {
+        origin
+        for value in (settings.ui_grafana_url, settings.grafana_embed_base_url)
+        if value is not None
+        for origin in (monitoring_origin(str(value)),)
+        if origin is not None
+    }
+    return frozenset(origins)
+
+
+def monitoring_configuration_response(
+    *,
+    settings: Settings,
+    workspace_id: UUID,
+    configuration: MonitoringConfigurationModel | None,
+) -> MonitoringConfigurationResponse:
+    if configuration is None:
+        documents = _deployment_default_documents(settings=settings, workspace_id=workspace_id)
+        version = 0
+    else:
+        documents = configuration.dashboards
+        version = configuration.version
+    items = [_dashboard_response(settings=settings, document=document) for document in documents]
+    return MonitoringConfigurationResponse(items=items, version=version)
+
+
+def _deployment_default_documents(
+    *,
+    settings: Settings,
+    workspace_id: UUID,
+) -> list[dict[str, Any]]:
+    if settings.ui_grafana_url is None:
+        return []
+    url = str(settings.ui_grafana_url)
+    return [
+        {
+            "id": str(uuid5(NAMESPACE_URL, f"datariver:{workspace_id}:monitoring:{url}")),
+            "label": "Infrastructure",
+            "url": url,
+            "height_px": 900,
+        }
+    ]
+
+
+def _dashboard_response(
+    *,
+    settings: Settings,
+    document: dict[str, Any],
+) -> MonitoringDashboardResponse:
+    url = str(document["url"])
+    embed_url = settings.grafana_embed_url(url)
+    return MonitoringDashboardResponse(
+        id=UUID(str(document["id"])),
+        label=str(document["label"]),
+        url=url,
+        height_px=int(document["height_px"]),
+        embed_state="AVAILABLE" if embed_url is not None else "DISABLED",
+        embed_url=embed_url,
+    )

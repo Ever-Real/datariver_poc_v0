@@ -251,7 +251,19 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 
 - Capability cards for API, PostgreSQL, DataHub, cache, queue, object storage, graph, LLM, Airflow and policy.
 - The dashboard's legacy asset card layout is backed by the current typed DataHub projection: total non-deleted assets and non-blank description coverage, plus a bounded platform/database/schema breakdown. Tags, glossary mappings, quality scores, time-window history and audit rows are not manufactured when their governed read model is absent; their visible cards state that the metric is not collected under the current contract.
-- Monitoring restores the legacy full-height observability panel and refresh control using the authenticated capabilities response. A configured server-validated Grafana link opens as an external page by default. A sandboxed no-referrer iframe appears only when the server reports an available descriptor derived from deployment-owned `UI_GRAFANA_URL`, matching exact-origin `GRAFANA_EMBED_BASE_URL`, explicit enablement and a non-empty SSO/frame-policy evidence reference; the same origin must be present in web CSP `frame-src`. The browser never creates a frame from an entered URL.
+- Monitoring presents up to eight ordered Workspace dashboard tabs from the authenticated
+  capabilities response. Eligible administrators see a **탭 수정** action on the tab rail and may
+  change the label, order, exact Dashboard URL and bounded page height through a version-fenced
+  server update. A submitted URL must match the deployment-approved Grafana origin; it cannot
+  establish a connector host or enable embedding. A sandboxed no-referrer iframe appears only when
+  the server reports an available descriptor under deployment-owned `UI_GRAFANA_URL`, matching
+  exact-origin `GRAFANA_EMBED_BASE_URL`, explicit enablement and a non-empty SSO/frame-policy
+  evidence reference; the same origin must be present in web CSP `frame-src`. Otherwise the tab
+  opens the server-owned link in a new window. The browser never creates a frame directly from an
+  entered URL. The explicit `480..2000` pixel height lets each cross-origin Dashboard grow the page
+  downward without unsafe document inspection (ADR-0090).
+- Current platform capability observations are shown with the deployment inventory under Admin
+  **System settings**, not repeated below the ordinary Monitoring dashboards.
 - Health is `healthy`, `degraded`, `unavailable`, or `unknown`; an unrelated unavailable capability does not blank the whole UI.
 - Job explorer shows attempts, retry class, correlation, external response hash and DLQ status without secret payloads.
 - Operator replay is an audited command that creates a new attempt; it does not rewrite history.

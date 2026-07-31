@@ -83,9 +83,10 @@ version, canonical contract hash and independent reviewer remain exact.
 |---|---|---|
 | `GET /health/live` | public | process liveness only |
 | `GET /health/ready` | dependency probe | canonical readiness |
-| `GET /capabilities` | `operations.read` | sanitized capability states plus optional server-validated external UI links and a disabled-first Grafana embed descriptor; no credential-bearing or client-supplied URL |
+| `GET /capabilities` | `operations.read` | sanitized capability states, optional server-validated external UI links and the ordered Workspace Monitoring tab document. Each Dashboard is an external link unless its URL matches the deployment-approved Grafana origin and the disabled-first embed gate returns a sandboxed descriptor; no credential-bearing URL |
 | `GET /operations/summary` | `operations.read` | current workspace counts for jobs, uploads, changes, outbox lag and non-deleted typed DataHub projections; the bounded (200 branches + explicit truncation) platform/database/schema coverage reports only asset and non-blank-description counts, never catalog rows, classification, tags, glossary terms or provider documents; includes the fail-closed retention-automation state |
 | `GET /operations/metrics` | `operations.read` | bounded-label Prometheus HTTP metrics |
+| `PUT /admin/monitoring-configuration` | eligible human administrator with fresh `MONITORING_CONFIGURATION_UPDATE`; `If-Match` required | replace up to eight ordered Dashboard label/URL/height descriptors. URL origin must match deployment-owned Grafana configuration; returns the new version and never changes connector, secret, CSP or embed enablement |
 
 ### Quality read model
 

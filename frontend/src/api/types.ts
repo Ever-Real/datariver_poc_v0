@@ -17,10 +17,25 @@ export interface GrafanaEmbed {
   url?: string
 }
 
+export interface MonitoringDashboard {
+  id: string
+  label: string
+  url: string
+  height_px: number
+  embed_state: 'AVAILABLE' | 'DISABLED'
+  embed_url?: string
+}
+
+export interface MonitoringConfiguration {
+  items: MonitoringDashboard[]
+  version: number
+}
+
 export interface CapabilitiesResponse {
   items: Capability[]
   external_system_links: ExternalSystemLink[]
   grafana_embed: GrafanaEmbed
+  monitoring_configuration: MonitoringConfiguration
   deployment_tier: 'SINGLE_NODE_PILOT' | 'HA_CANDIDATE' | 'HA_ACCEPTED'
 }
 
@@ -1106,6 +1121,8 @@ export type AdminOperation =
   | 'SYSTEM_CONFIGURATION_READ'
   | 'SYSTEM_CONFIGURATION_UPDATE'
   | 'SYSTEM_CONFIGURATION_ACTIVATE'
+  | 'MONITORING_CONFIGURATION_READ'
+  | 'MONITORING_CONFIGURATION_UPDATE'
   | 'FALLBACK_REQUEST_READ'
   | 'FALLBACK_REQUEST_CREATE'
   | 'FALLBACK_REQUEST_DECIDE'

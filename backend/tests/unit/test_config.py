@@ -331,6 +331,11 @@ def test_grafana_embed_is_disabled_first_and_requires_deployment_evidence() -> N
     )
 
     assert configured.grafana_embed_url() == "https://grafana.example.com/d/overview"
+    assert (
+        configured.grafana_embed_url("https://grafana.example.com/d/datahub?orgId=1")
+        == "https://grafana.example.com/d/datahub?orgId=1"
+    )
+    assert configured.grafana_embed_url("https://other.example.com/d/datahub") is None
 
 
 def test_production_external_ui_links_require_tls() -> None:

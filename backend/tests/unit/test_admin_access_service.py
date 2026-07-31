@@ -1578,6 +1578,7 @@ async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> N
                 AdminOperation.CLASSIFICATION_POLICY_READ,
                 AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
                 AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
+                AdminOperation.MONITORING_CONFIGURATION_READ,
             },
         ),
         (
@@ -1589,6 +1590,7 @@ async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> N
                 AdminOperation.CLASSIFICATION_POLICY_READ,
                 AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
                 AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
+                AdminOperation.MONITORING_CONFIGURATION_READ,
             },
         ),
         (
@@ -1600,6 +1602,7 @@ async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> N
                 AdminOperation.CLASSIFICATION_POLICY_READ,
                 AdminOperation.INFERENCE_PROVIDER_PROFILE_READ,
                 AdminOperation.RESTRICTED_SEARCH_GRANT_READ,
+                AdminOperation.MONITORING_CONFIGURATION_READ,
                 AdminOperation.FALLBACK_REQUEST_READ,
                 AdminOperation.FALLBACK_REQUEST_CREATE,
                 AdminOperation.FALLBACK_REQUEST_DECIDE,
@@ -1625,6 +1628,8 @@ async def test_membership_detail_hides_unknown_or_other_workspace_subject() -> N
                 AdminOperation.RESTRICTED_SEARCH_GRANT_PROPOSE,
                 AdminOperation.RESTRICTED_SEARCH_GRANT_DECIDE,
                 AdminOperation.RESTRICTED_SEARCH_GRANT_REVOKE,
+                AdminOperation.MONITORING_CONFIGURATION_READ,
+                AdminOperation.MONITORING_CONFIGURATION_UPDATE,
                 AdminOperation.FALLBACK_REQUEST_READ,
                 AdminOperation.FALLBACK_REQUEST_DECIDE,
             },

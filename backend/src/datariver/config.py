@@ -694,11 +694,26 @@ class Settings(BaseSettings):
             )
         )
 
-    def grafana_embed_url(self) -> str | None:
-        """Return the one server-configured Grafana page only when approved."""
-        if not self.grafana_embed_enabled or self.ui_grafana_url is None:
+    def grafana_embed_url(self, dashboard_url: str | None = None) -> str | None:
+        """Return an exact-origin Grafana page only when deployment evidence allows framing."""
+        if (
+            not self.grafana_embed_enabled
+            or self.ui_grafana_url is None
+            or self.grafana_embed_base_url is None
+            or not self.grafana_embed_evidence_reference
+        ):
             return None
-        return str(self.ui_grafana_url)
+        candidate = dashboard_url or str(self.ui_grafana_url)
+        parsed_candidate = urlsplit(candidate)
+        parsed_origin = urlsplit(str(self.grafana_embed_base_url))
+        if (
+            parsed_candidate.scheme != parsed_origin.scheme
+            or parsed_candidate.netloc != parsed_origin.netloc
+            or parsed_candidate.username is not None
+            or parsed_candidate.password is not None
+        ):
+            return None
+        return candidate
 
     @model_validator(mode="after")
     def validate_security_posture(self) -> Self:

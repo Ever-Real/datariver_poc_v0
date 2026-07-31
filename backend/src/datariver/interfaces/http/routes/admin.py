@@ -35,6 +35,7 @@ from datariver.domain.common import (
     ConflictError,
     DomainEvent,
     ForbiddenError,
+    PreconditionFailedError,
     ValidationError,
     canonical_json_hash,
     utc_now,
@@ -52,6 +53,10 @@ from datariver.domain.inference import (
 from datariver.domain.membership_renewal import (
     MembershipRenewalDecision,
     MembershipRenewalState,
+)
+from datariver.domain.monitoring import (
+    MonitoringDashboardDraft,
+    normalize_monitoring_dashboards,
 )
 from datariver.domain.system_configuration import (
     canonical_secret_references,
@@ -71,6 +76,7 @@ from datariver.infrastructure.db.models.platform import (
     AccessRoleModel,
     ExternalServiceProfileModel,
     ExternalServiceProfileVersionModel,
+    MonitoringConfigurationModel,
     WorkspaceMembershipModel,
 )
 from datariver.infrastructure.db.rls import set_security_context
@@ -89,6 +95,10 @@ from datariver.infrastructure.system_configuration_runtime import (
     validate_runtime_system_configuration,
 )
 from datariver.interfaces.http.dependencies import ContextDep, get_container
+from datariver.interfaces.http.monitoring_configuration import (
+    approved_grafana_origins,
+    monitoring_configuration_response,
+)
 from datariver.interfaces.http.presenters import (
     admin_access_request_response,
     admin_read_context_response,
@@ -122,6 +132,8 @@ from datariver.interfaces.http.schemas import (
     MembershipRenewalResponse,
     MembershipRoleAssignmentRequest,
     MembershipRoleAssignmentResponse,
+    MonitoringConfigurationResponse,
+    MonitoringConfigurationUpdateRequest,
     PageMeta,
     SystemAssigneeListResponse,
     SystemAssigneePatchRequest,
@@ -2755,6 +2767,90 @@ async def list_system_configuration(
         items=_system_configuration_entries(container.settings),
         deployment_environment=_deployment_environment(container.settings),
     )
+
+
+@router.put(
+    "/monitoring-configuration",
+    response_model=MonitoringConfigurationResponse,
+)
+async def update_monitoring_configuration(
+    payload: MonitoringConfigurationUpdateRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+) -> MonitoringConfigurationResponse:
+    admin_context = await _service(request).get_admin_read_context(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if "MONITORING_CONFIGURATION_UPDATE" not in admin_context.allowed_operations:
+        raise ForbiddenError(
+            "Monitoring configuration update requires a fresh administrator assurance."
+        )
+    container = get_container(request)
+    approved_origins = approved_grafana_origins(container.settings)
+    dashboards = normalize_monitoring_dashboards(
+        tuple(
+            MonitoringDashboardDraft(
+                dashboard_id=item.id,
+                label=item.label,
+                url=str(item.url),
+                height_px=item.height_px,
+            )
+            for item in payload.items
+        ),
+        approved_origins=approved_origins,
+    )
+    documents = [dashboard.document() for dashboard in dashboards]
+    payload_hash = canonical_json_hash({"items": documents})
+    expected_version = _expected_configuration_version(if_match)
+
+    async with container.database.session_factory() as session:
+        async with session.begin():
+            await set_security_context(
+                session,
+                workspace_id=context.workspace_id,
+                subject_id=context.subject.subject_id,
+            )
+            configuration = (
+                await session.scalars(
+                    select(MonitoringConfigurationModel)
+                    .where(
+                        MonitoringConfigurationModel.workspace_id == context.workspace_id,
+                    )
+                    .with_for_update()
+                )
+            ).one_or_none()
+            current_version = configuration.version if configuration is not None else 0
+            if expected_version != current_version:
+                raise PreconditionFailedError(
+                    "The monitoring configuration changed after it was loaded."
+                )
+            if configuration is None:
+                configuration = MonitoringConfigurationModel(
+                    workspace_id=context.workspace_id,
+                    dashboards=documents,
+                    payload_hash=payload_hash,
+                    updated_by=context.subject.subject_id,
+                    version=1,
+                )
+                session.add(configuration)
+            else:
+                configuration.dashboards = documents
+                configuration.payload_hash = payload_hash
+                configuration.updated_by = context.subject.subject_id
+                configuration.version += 1
+            result = monitoring_configuration_response(
+                settings=container.settings,
+                workspace_id=context.workspace_id,
+                configuration=configuration,
+            )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["ETag"] = f'"{result.version}"'
+    return result
 
 
 async def list_system_configuration_versions(

@@ -370,7 +370,26 @@ export function App() {
             hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled === true}
           />
         )}
-        {page === 'monitoring' && <MonitoringPage client={client} />}
+        {page === 'monitoring' && (
+          <MonitoringPage
+            client={client}
+            canManageTabs={
+              currentAdminContext?.allowed_operations.includes(
+                'MONITORING_CONFIGURATION_READ',
+              ) ?? false
+            }
+            canUpdateTabs={
+              currentAdminContext?.allowed_operations.includes(
+                'MONITORING_CONFIGURATION_UPDATE',
+              ) ?? false
+            }
+            onRequestAdminAssurance={
+              auth.profile?.hardware_webauthn_enabled === false
+                ? auth.beginPasswordReauth
+                : auth.beginStepUp
+            }
+          />
+        )}
         {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} assurance={{ onStepUp: auth.beginStepUp, onPasswordReauth: auth.beginPasswordReauth, onEnroll: auth.beginWebAuthnEnrollment, hardwareWebauthnEnabled: auth.profile?.hardware_webauthn_enabled === true }} />}
         {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled === true} />}
         {page === 'chat' && <ChatPage client={client} />}
