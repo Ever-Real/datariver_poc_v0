@@ -164,6 +164,31 @@ export function App() {
   ])
 
   useEffect(() => {
+    const currentAdminDecision = (
+      adminAccess.workspace === activeWorkspace
+      && adminAccess.subject === authenticatedSubject
+      && adminAccess.securityEpoch === auth.securityEpoch
+      && adminAccess.authorizationRevision === auth.authorizationRevision
+    )
+    if (page !== 'admin' || !currentAdminDecision || adminAccess.status !== 'denied') return
+
+    const url = new URL(window.location.href)
+    url.searchParams.set('page', 'dashboard')
+    url.searchParams.delete('adminSection')
+    url.searchParams.delete('adminView')
+    url.searchParams.delete('adminDetail')
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+    setPage('dashboard')
+  }, [
+    activeWorkspace,
+    adminAccess,
+    auth.authorizationRevision,
+    auth.securityEpoch,
+    authenticatedSubject,
+    page,
+  ])
+
+  useEffect(() => {
     let active = true
     setExternalSystemLinks([])
     setCapabilities([])
@@ -280,7 +305,9 @@ export function App() {
     cachedAdminAccessMatches
     && adminAccess.authorizationRevision === auth.authorizationRevision
   )
-  const cachedAdminContext = cachedAdminAccessMatches ? adminAccess.context : undefined
+  const cachedAdminContext = (
+    cachedAdminAccessMatches && adminAccess.context?.allowed_operations.length
+  ) ? adminAccess.context : undefined
   const currentAdminContext = currentAdminAccessMatches && adminAccess.status === 'allowed'
     ? adminAccess.context
     : undefined

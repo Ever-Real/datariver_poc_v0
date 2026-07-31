@@ -1664,6 +1664,117 @@ async def test_admin_read_context_exposes_only_current_assurance_operations(
     assert context.action_vocabulary == tuple(sorted(Action, key=lambda action: action.value))
 
 
+@pytest.mark.parametrize(
+    "boundary",
+    [
+        "missing-admin-group",
+        "missing-admin-action",
+        "explicit-admin-deny",
+        "insufficient-clearance",
+        "inactive-subject",
+        "service-account",
+        "cross-workspace",
+    ],
+)
+@pytest.mark.asyncio
+async def test_admin_read_context_rejects_client_claim_variants_before_repository_access(
+    boundary: str,
+) -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"])[
+        administrator_id
+    ] = _membership_record(administrator_id, "Administrator")
+    subject = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.PASSWORD,
+        now=now,
+    )
+    if boundary == "missing-admin-group":
+        subject = replace(subject, groups=frozenset({"data-stewards"}))
+    elif boundary == "missing-admin-action":
+        subject = replace(subject, allowed_actions=frozenset({Action.CATALOG_READ}))
+    elif boundary == "explicit-admin-deny":
+        subject = replace(subject, denied_actions=frozenset({Action.ADMIN_MANAGE}))
+    elif boundary == "insufficient-clearance":
+        subject = replace(subject, clearance=Classification.CONFIDENTIAL)
+    elif boundary == "inactive-subject":
+        subject = replace(subject, active=False)
+    elif boundary == "service-account":
+        subject = replace(
+            subject,
+            groups=frozenset({"security-administrators", "service-accounts"}),
+            job_function="SERVICE_ACCOUNT",
+        )
+    elif boundary == "cross-workspace":
+        subject = replace(subject, workspace_id=uuid4())
+
+    with pytest.raises(ForbiddenError):
+        await _service(state).get_admin_read_context(
+            workspace_id=workspace_id,
+            subject=subject,
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id=f"admin-me-{boundary}",
+        )
+
+    assert state["membership_read_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_admin_read_context_rechecks_canonical_membership_before_returning_context() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"])[
+        administrator_id
+    ] = _membership_record(administrator_id, "Administrator")
+    cast(set[UUID], state["eligible_administrators"]).remove(administrator_id)
+
+    with pytest.raises(ForbiddenError, match="eligibility changed"):
+        await _service(state).get_admin_read_context(
+            workspace_id=workspace_id,
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.PASSWORD,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="admin-me-revoked-membership",
+        )
+
+    assert state["membership_read_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_non_admin_cannot_read_membership_collection_before_repository_access() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    subject = replace(
+        _administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.PASSWORD,
+            now=now,
+        ),
+        groups=frozenset({"data-stewards"}),
+    )
+
+    with pytest.raises(ForbiddenError):
+        await _service(state).list_workspace_memberships(
+            workspace_id=workspace_id,
+            limit=25,
+            subject=subject,
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="admin-membership-list-non-admin",
+        )
+
+    assert state["membership_read_count"] == 0
+
+
 @pytest.mark.asyncio
 async def test_admin_read_context_does_not_advertise_mutations_for_stale_hardware_auth() -> None:
     workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))

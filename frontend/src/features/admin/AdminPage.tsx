@@ -186,7 +186,7 @@ export function AdminPage({
     />
     <div className="admin-tabs" role="tablist" aria-label={messages.title}>{visibleSections.map((id) => <button key={id} {...primaryTabs.tabProps(id)} type="button" className={activeSection === id ? 'active' : ''} onClick={() => navigate(id)}>{messages[id]}</button>)}</div>
     {context && <section className="panel admin-context" aria-label={messages.adminContext}>
-      <div><strong>{context.display_name}</strong><code>{context.subject_id}</code></div>
+      <div><strong>{context.display_name}</strong></div>
       <div><small>{messages.currentAssurance}</small><span className="badge">{context.authentication_assurance}</span></div>
       <div><small>{messages.fallbackState}</small><span className={`badge ${context.fallback_enabled ? '' : 'badge-soft'}`}>{context.fallback_enabled ? messages.enabled : messages.disabled}</span></div>
     </section>}

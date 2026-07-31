@@ -36,6 +36,18 @@ function renderPage(context = adminContext(), hardwareWebauthnEnabled = true) {
 }
 
 describe('AdminPage', () => {
+  it('shows the administrator display name without exposing the canonical subject identifier', () => {
+    const subjectId = '00000000-0000-4000-8000-000000000106'
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(json({
+      items: [], page: { next_cursor: null, limit: 25 },
+    }))))
+
+    renderPage(adminContext({ subject_id: subjectId, display_name: '한수아' }))
+
+    expect(screen.getByText('한수아')).toBeInTheDocument()
+    expect(screen.queryByText(subjectId)).not.toBeInTheDocument()
+  })
+
   it('renders exactly the three primary administration tabs and keeps USERS focused on the user table', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(json({
       items: [], page: { next_cursor: null, limit: 25 },

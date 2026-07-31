@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { ApiError } from './api/client'
 import type { AdminReadContext } from './api/types'
 
 interface MutableAuth {
@@ -79,6 +80,10 @@ vi.mock('./features/admin/AdminPage', () => ({
   ),
 }))
 
+vi.mock('./features/dashboard/DashboardPage', () => ({
+  DashboardPage: () => <section aria-label="Dashboard route" />,
+}))
+
 vi.mock('./features/knowledge/KnowledgeWorkspacePage', () => ({
   KnowledgeWorkspacePage: ({ page }: { page: string }) => (
     <section aria-label="Knowledge workspace route">{page}</section>
@@ -91,6 +96,8 @@ const WORKSPACE_ONE = '00000000-0000-4000-8000-000000000100'
 const WORKSPACE_TWO = '00000000-0000-4000-8000-000000000200'
 
 describe('App authentication-bound Admin orchestration', () => {
+  afterEach(() => vi.unstubAllGlobals())
+
   beforeEach(() => {
     vi.clearAllMocks()
     window.history.replaceState({}, '', `/?page=admin&workspace=${WORKSPACE_ONE}`)
@@ -186,6 +193,102 @@ describe('App authentication-bound Admin orchestration', () => {
       expect(requestOptions?.cache).toBe('no-store')
       expect(requestOptions?.signal).toBeInstanceOf(AbortSignal)
     }
+  })
+
+  it('rejects forged client Admin state and removes only Admin navigation parameters', async () => {
+    const storage = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value) },
+      removeItem: (key: string) => { storage.delete(key) },
+      clear: () => { storage.clear() },
+    })
+    window.history.replaceState(
+      {},
+      '',
+      `/?page=admin&adminSection=memberships&adminView=systems&adminDetail=classification&workspace=${WORKSPACE_ONE}&keep=preserved`,
+    )
+    window.localStorage.setItem('isAdmin', 'true')
+    window.localStorage.setItem('roles', '["administrator"]')
+    appTest.auth.profile.roles = ['administrator']
+    appTest.request.mockImplementation((path: string) => {
+      if (path === '/admin/me') return Promise.reject(new Error('Forbidden'))
+      if (path === '/capabilities') {
+        return Promise.resolve({
+          items: [], external_system_links: [], grafana_embed: { state: 'DISABLED' },
+          deployment_tier: 'SINGLE_NODE_PILOT',
+        })
+      }
+      if (path === '/catalog/export-capability') return Promise.resolve({ enabled: false })
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<App />)
+
+    await waitFor(() => expect(new URL(window.location.href).searchParams.get('page')).toBe('dashboard'))
+    const parameters = new URL(window.location.href).searchParams
+    expect(parameters.get('adminSection')).toBeNull()
+    expect(parameters.get('adminView')).toBeNull()
+    expect(parameters.get('adminDetail')).toBeNull()
+    expect(parameters.get('workspace')).toBe(WORKSPACE_ONE)
+    expect(parameters.get('keep')).toBe('preserved')
+    expect(screen.queryByTestId('admin-page')).not.toBeInTheDocument()
+    expect(await screen.findByRole('region', { name: 'Dashboard route' })).toBeInTheDocument()
+  })
+
+  it('treats a server context with no allowed operations as denied', async () => {
+    appTest.request.mockImplementation((path: string) => {
+      if (path === '/admin/me') {
+        return Promise.resolve({ ...adminContext(), allowed_operations: [] })
+      }
+      if (path === '/capabilities') {
+        return Promise.resolve({
+          items: [], external_system_links: [], grafana_embed: { state: 'DISABLED' },
+          deployment_tier: 'SINGLE_NODE_PILOT',
+        })
+      }
+      if (path === '/catalog/export-capability') return Promise.resolve({ enabled: false })
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<App />)
+
+    await waitFor(() => expect(new URL(window.location.href).searchParams.get('page')).toBe('dashboard'))
+    expect(screen.queryByTestId('admin-page')).not.toBeInTheDocument()
+  })
+
+  it('keeps the blocked Admin route available for server-requested reauthentication', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/?page=admin&adminSection=memberships&workspace=${WORKSPACE_ONE}`,
+    )
+    appTest.request.mockImplementation((path: string) => {
+      if (path === '/admin/me') {
+        return Promise.reject(new ApiError({
+          type: 'about:blank', title: 'Forbidden', status: 403,
+          detail: 'Recent reauthentication is required.', code: 'FORBIDDEN',
+          request_id: 'request-reauth', remediation: { kind: 'REAUTH_REQUIRED' },
+        }))
+      }
+      if (path === '/capabilities') {
+        return Promise.resolve({
+          items: [], external_system_links: [], grafana_embed: { state: 'DISABLED' },
+          deployment_tier: 'SINGLE_NODE_PILOT',
+        })
+      }
+      if (path === '/catalog/export-capability') return Promise.resolve({ enabled: false })
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<App />)
+
+    expect(await screen.findByRole('heading', { name: '관리자 권한 확인' })).toBeInTheDocument()
+    const parameters = new URL(window.location.href).searchParams
+    expect(parameters.get('page')).toBe('admin')
+    expect(parameters.get('adminSection')).toBe('memberships')
+    expect(screen.getByRole('button', { name: '관리자 재인증' })).toBeInTheDocument()
+    expect(screen.queryByTestId('admin-page')).not.toBeInTheDocument()
   })
 
   it('synchronizes the controlled page after an OIDC callback restores its return URL', async () => {
