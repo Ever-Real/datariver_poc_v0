@@ -141,6 +141,9 @@ review/activation/manual Run commands are defined by
 The search-integrated Quality Evidence, asset-centric workspace and reusable common Rule Template
 to atomic multi-asset Rule Set mapping are defined by
 [ADR-0081](adr/0081-user-centric-quality-workspace-and-common-rule-templates.md).
+The permission-scoped schema Quality dashboard, managed accuracy/completeness/timeliness
+definitions, Catalog hierarchy reuse and fact-only report boundary are defined by
+[ADR-0088](adr/0088-schema-quality-dashboard-and-managed-indicators.md).
 The immutable Governance Document aggregate, safe HTML/import boundary, create-only MinIO
 artifacts, independent approval and authorized vector/Neo4j projection are defined by
 [ADR-0080](adr/0080-governance-document-library-and-knowledge-projection.md).

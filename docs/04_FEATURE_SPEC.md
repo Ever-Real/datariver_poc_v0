@@ -197,10 +197,16 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 - Catalog Search requests one bounded Quality summary batch for the visible asset IDs and renders
   the latest pass rate plus `PASS/WARN/FAIL` in both the result row and selected Evidence panel.
   Quality denial or dependency failure does not hide an otherwise authorized Catalog result.
-- The two tabs are `자산별 품질 현황 및 이력 / 공통 룰셋 관리`. The asset tab combines a
-  searchable schema/table directory, applied Rule Sets, the latest 50 Runs and a 30-day score
-  trend. The former separate Overview/Run/Issue and maker-checker navigation is not part of the
-  ordinary UI.
+- The three tabs are `품질 대시보드 / 자산별 품질 현황 및 이력 / 공통 룰셋 관리`.
+  The dashboard compares permission-scoped schema/table counts and the versioned managed
+  `정확성/완전성/적시성` definitions. Selecting a metric opens one analysis dialog with target
+  coverage, an evidence-backed gauge, a server-fact report and a bounded expandable risk table.
+  Accuracy/completeness use latest-success typed Rule results; timeliness uses only the stored
+  COMPLETE FULL/PARTITION Profile `stale_at` boundary.
+- The asset tab reuses the Catalog global-search control and lazy
+  `platform -> database -> schema -> asset` Resource Tree, then shows applied Rule Sets, the latest
+  50 Runs and a 30-day score trend for the selected table. The former separate Overview/Run/Issue
+  and maker-checker navigation is not part of the ordinary UI.
 - A common Rule stores reusable typed `NOT_NULL/RANGE` authoring intent. The mapping dialog searches
   schema/table targets, validates the server field directory and submits at most 25 compatible
   assets as one atomic per-asset Rule Set proposal. The Template never executes directly and
@@ -212,6 +218,13 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   public UI until trusted server-owned field identity and source/workload/schedule readiness
   attestations exist. The browser shows the returned reason code and never substitutes example
   data or an optimistic local success.
+- Common Rule creation remains available to a permitted user independently of mapping readiness.
+  Mapping requires both the deployment-owned V2 field directory and current V3/V4 Quality
+  retention readiness even for an administrator; the UI explains this dependency instead of
+  treating `FIELD_IDENTITY_MAPPING_UNAVAILABLE` as a role failure.
+- Until an accepted Quality-specific inference route exists, dashboard reports use
+  `FACTS_ONLY/QUALITY_LLM_REPORT_ROUTE_UNAVAILABLE` and are labelled as server fact summaries.
+  The browser does not impersonate an LLM report.
 
 ## Governance Document library
 

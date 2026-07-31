@@ -17,6 +17,7 @@ from datariver.application.quality_read_contracts import (
     QualityCapabilityAxis,
     QualityCommonRuleTemplateDetail,
     QualityCommonRuleTemplateSummary,
+    QualityDashboard,
     QualityIssuePage,
     QualityOverview,
     QualityReadContext,
@@ -187,6 +188,21 @@ class QualityReadService:
             request_id=request_id,
         )
         return await self._repository.overview(context=context, days=days), context
+
+    async def dashboard(
+        self,
+        *,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[QualityDashboard, QualityReadContext]:
+        context = await self._read_context(
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            include_profile=True,
+        )
+        return await self._repository.dashboard(context=context), context
 
     async def list_assets(
         self,

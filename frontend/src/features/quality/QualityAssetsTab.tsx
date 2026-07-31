@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Search } from 'lucide-react'
+import type { ApiClient } from '../../api/client'
 import type { QualityAsset, QualityAssetWorkspace } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { AccordionItem } from '../../components/common/Accordion'
 import { CursorPagination } from '../../components/common/CursorPagination'
+import { GlobalCatalogSearch } from '../../components/layout/GlobalCatalogSearch'
+import { CatalogResourceTree } from '../catalog/CatalogResourceTree'
 import { qualityQueryKey, type QualityApi, type QualitySecurityBoundary } from './qualityApi'
 import {
   basisPointsText,
@@ -16,19 +18,20 @@ import { isAuthorizationBoundaryError } from './useBoundedQualityRunPolling'
 import { useQualityCursorPage } from './useQualityCursorPage'
 
 export function QualityAssetsTab({
+  client,
   api,
   boundary,
   selectedAssetId,
   onSelectedAsset,
   onBoundaryInvalid,
 }: {
+  client: ApiClient
   api: QualityApi
   boundary: QualitySecurityBoundary
   selectedAssetId?: string
   onSelectedAsset: (assetId?: string) => void
   onBoundaryInvalid: () => void
 }) {
-  const [draftQuery, setDraftQuery] = useState('')
   const [query, setQuery] = useState('')
   const assets = useQualityCursorPage({
     boundary,
@@ -53,17 +56,6 @@ export function QualityAssetsTab({
   useEffect(() => {
     if (isAuthorizationBoundaryError(workspace.error)) onBoundaryInvalid()
   }, [onBoundaryInvalid, workspace.error])
-  useEffect(() => {
-    if (selectedAssetId || !assets.data?.items[0]) return
-    onSelectedAsset(assets.data.items[0].asset_id)
-  }, [assets.data?.items, onSelectedAsset, selectedAssetId])
-
-  const submit = (event: FormEvent) => {
-    event.preventDefault()
-    setQuery(draftQuery.trim())
-    onSelectedAsset(undefined)
-  }
-
   return <section className="quality-asset-workspace">
     <aside className="quality-asset-directory panel" aria-label="품질 대상 자산 목록">
       <header>
@@ -71,34 +63,46 @@ export function QualityAssetsTab({
           <span className="eyebrow">Schema · table directory</span>
           <h2>자산 선택</h2>
         </div>
-        <span>{countText(assets.data?.items.length)}개 표시</span>
+        <span>{query ? `${countText(assets.data?.items.length)}개 검색` : '계층 선택'}</span>
       </header>
-      <form className="quality-asset-search" role="search" onSubmit={submit}>
-        <Search size={15} aria-hidden="true" />
-        <label className="sr-only" htmlFor="quality-asset-query">스키마 또는 테이블 검색</label>
-        <input
-          id="quality-asset-query"
-          value={draftQuery}
+      <div className="quality-asset-global-search">
+        <GlobalCatalogSearch
+          client={client}
+          idPrefix="quality-asset"
+          searchLabel="품질 자산 검색"
+          inputLabel="품질 자산 검색"
+          placeholder="스키마·테이블·컬럼 검색..."
           maxLength={200}
-          onChange={(event) => setDraftQuery(event.target.value)}
-          placeholder="스키마·테이블 검색"
+          onSearch={(value) => {
+            setQuery(value)
+            onSelectedAsset(undefined)
+          }}
         />
-        <button className="button" type="submit">검색</button>
-      </form>
-      {assets.error && <ErrorNotice error={assets.error} />}
-      {assets.isPending && <p className="quality-loading" role="status">자산을 불러오는 중입니다.</p>}
-      {!assets.isPending && assets.data?.items.length === 0 && (
-        <p className="quality-empty">검색 조건에 맞는 품질 자산이 없습니다.</p>
-      )}
-      <div className="quality-asset-list">
-        {assets.data?.items.map((asset) => <AssetButton
-          key={asset.asset_id}
-          asset={asset}
-          selected={asset.asset_id === selectedAssetId}
-          onSelect={() => onSelectedAsset(asset.asset_id)}
-        />)}
       </div>
-      <CursorPagination {...assets.pagination} label="품질 자산 페이지 탐색" />
+      {query ? <>
+        <header className="quality-asset-search-result-header">
+          <strong>“{query}” 검색 결과</strong>
+          <button className="button button-secondary" type="button" onClick={() => setQuery('')}>전체 계층 보기</button>
+        </header>
+        {assets.error && <ErrorNotice error={assets.error} />}
+        {assets.isPending && <p className="quality-loading" role="status">자산을 불러오는 중입니다.</p>}
+        {!assets.isPending && assets.data?.items.length === 0 && (
+          <p className="quality-empty">검색 조건에 맞는 품질 자산이 없습니다.</p>
+        )}
+        <div className="quality-asset-list">
+          {assets.data?.items.map((asset) => <AssetButton
+            key={asset.asset_id}
+            asset={asset}
+            selected={asset.asset_id === selectedAssetId}
+            onSelect={() => onSelectedAsset(asset.asset_id)}
+          />)}
+        </div>
+        <CursorPagination {...assets.pagination} label="품질 자산 페이지 탐색" />
+      </> : <CatalogResourceTree
+        client={client}
+        selectedAssetId={selectedAssetId}
+        onSelectAsset={onSelectedAsset}
+      />}
     </aside>
 
     <section className="quality-asset-inspector panel" aria-live="polite">

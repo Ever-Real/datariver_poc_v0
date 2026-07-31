@@ -19,6 +19,9 @@ from datariver.infrastructure.db.models.quality import (
 from datariver.infrastructure.db.quality_read import (
     SqlQualityReadRepository,
     _AssetQualityAggregate,
+    _DashboardRuleMetric,
+    _managed_rule_sets,
+    _rule_dashboard_indicator,
 )
 from datariver.interfaces.http.routes.quality import router as quality_router
 
@@ -144,6 +147,49 @@ def test_asset_score_uses_blocking_failure_precedence() -> None:
     assert aggregate.outcome == "FAIL"
 
 
+def test_dashboard_indicator_uses_value_weighted_latest_success_evidence() -> None:
+    metric = _DashboardRuleMetric(
+        counted_target_count=3,
+        target_count=4,
+        valid_value_count=95,
+        evaluated_value_count=100,
+        advisory_failed_count=1,
+        blocking_failed_count=0,
+        risk_count=1,
+    )
+
+    indicator = _rule_dashboard_indicator(
+        indicator_id="COMPLETENESS",
+        metric=metric,
+        risks=(),
+    )
+
+    assert indicator.coverage_basis_points == 7_500
+    assert indicator.score_basis_points == 9_500
+    assert indicator.outcome == "WARN"
+    assert indicator.report_state == "FACTS_ONLY"
+    assert indicator.report_reason_code == "QUALITY_LLM_REPORT_ROUTE_UNAVAILABLE"
+
+
+def test_dashboard_managed_indicators_are_versioned_and_complete() -> None:
+    definitions = _managed_rule_sets()
+
+    assert {definition.indicator_id for definition in definitions} == {
+        "ACCURACY",
+        "COMPLETENESS",
+        "TIMELINESS",
+    }
+    assert {definition.contract_version for definition in definitions} == {
+        "QUALITY_MANAGED_INDICATORS_V1"
+    }
+    assert (
+        next(
+            definition for definition in definitions if definition.indicator_id == "TIMELINESS"
+        ).rule_kinds
+        == ()
+    )
+
+
 def test_public_quality_surface_exposes_only_bounded_quality_commands() -> None:
     routes = {
         (method, route.path)
@@ -156,6 +202,7 @@ def test_public_quality_surface_exposes_only_bounded_quality_commands() -> None:
         ("GET", "/quality/capability"),
         ("GET", "/quality/rule-definitions"),
         ("GET", "/quality/overview"),
+        ("GET", "/quality/dashboard"),
         ("GET", "/quality/assets"),
         ("POST", "/quality/assets/summary-batch"),
         ("GET", "/quality/assets/{asset_id}"),

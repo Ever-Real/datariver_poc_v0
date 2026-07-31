@@ -27,10 +27,17 @@ describe('QualityPage', () => {
   })
 
   it('combines one asset rule sets, recent runs, and score trend in one inspector', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      `/?page=quality&workspace=workspace-one&assetId=${qualityAsset.asset_id}`,
+    )
     const fetchMock = vi.fn((input: string | URL | Request) => {
-      const path = requestUrl(input).pathname
+      const url = requestUrl(input)
+      const path = url.pathname
       if (path.endsWith('/quality/capability')) return Promise.resolve(json(capability('AVAILABLE')))
       if (path.endsWith('/quality/assets')) return Promise.resolve(json(assetPage()))
+      if (path.endsWith('/catalog/tree/nodes')) return Promise.resolve(json(treePage()))
       if (path.endsWith(`/quality/assets/${qualityAsset.asset_id}/workspace`)) {
         return Promise.resolve(json({
           item: assetWorkspace(),
@@ -46,7 +53,10 @@ describe('QualityPage', () => {
 
     expect(await screen.findByRole('heading', { name: 'wafer_events' })).toBeInTheDocument()
     const tabs = screen.getByRole('tablist', { name: '품질관리 영역' })
-    expect(within(tabs).getAllByRole('tab')).toHaveLength(2)
+    expect(within(tabs).getAllByRole('tab')).toHaveLength(3)
+    expect(within(tabs).getByRole('tab', { name: '품질 대시보드' })).toBeInTheDocument()
+    expect(screen.getByRole('search', { name: '품질 자산 검색' })).toBeInTheDocument()
+    expect(screen.getByRole('complementary', { name: 'Resource Tree' })).toBeInTheDocument()
     expect(screen.getAllByText('98.75%').length).toBeGreaterThanOrEqual(1)
     expect(screen.getAllByText('Not null checks')).toHaveLength(2)
     expect(screen.getByText('최근 품질 검사 이력')).toBeInTheDocument()
@@ -60,6 +70,7 @@ describe('QualityPage', () => {
       const url = requestUrl(input)
       if (url.pathname.endsWith('/quality/capability')) return Promise.resolve(json(capability('AVAILABLE')))
       if (url.pathname.endsWith('/quality/assets')) return Promise.resolve(json(emptyPage()))
+      if (url.pathname.endsWith('/catalog/tree/nodes')) return Promise.resolve(json(treePage()))
       if (url.pathname.endsWith('/quality/common-rule-templates')) {
         return Promise.resolve(json(emptyPage()))
       }
@@ -199,6 +210,13 @@ function emptyPage() {
     cache_scope: cacheScope,
     observed_at: '2026-07-30T00:00:00Z',
     authorization_valid_until: '2026-07-30T00:00:30Z',
+  }
+}
+
+function treePage() {
+  return {
+    items: [],
+    page: { next_cursor: null, limit: 100 },
   }
 }
 

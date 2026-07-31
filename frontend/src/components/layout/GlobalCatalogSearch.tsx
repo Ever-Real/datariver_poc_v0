@@ -15,9 +15,19 @@ const matchLabels = {
 export function GlobalCatalogSearch({
   client,
   onSearch,
+  idPrefix = 'global-catalog',
+  searchLabel = '전역 카탈로그 검색',
+  inputLabel = '카탈로그 검색',
+  placeholder = '검색어를 입력하세요...',
+  maxLength = 500,
 }: {
   client?: ApiClient
   onSearch: (query: string) => void
+  idPrefix?: string
+  searchLabel?: string
+  inputLabel?: string
+  placeholder?: string
+  maxLength?: number
 }) {
   const [query, setQuery] = useState('')
   const [error, setError] = useState('')
@@ -125,36 +135,36 @@ export function GlobalCatalogSearch({
     <div className="global-search-wrap" onBlur={(event) => {
       if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false)
     }}>
-      <form className="global-search" role="search" aria-label="전역 카탈로그 검색" onSubmit={submit}>
-        <label className="sr-only" htmlFor="global-catalog-query">카탈로그 검색</label>
+      <form className="global-search" role="search" aria-label={searchLabel} onSubmit={submit}>
+        <label className="sr-only" htmlFor={`${idPrefix}-query`}>{inputLabel}</label>
         <Search size={15} aria-hidden="true" className="global-search-icon" />
         <input
-          id="global-catalog-query"
+          id={`${idPrefix}-query`}
           value={query}
           onChange={(event) => { setQuery(event.target.value); setError(''); setFocused(true); setSuggestionIndex(-1) }}
           onFocus={() => setFocused(true)}
           onKeyDown={navigateSuggestions}
-          placeholder="검색어를 입력하세요..."
-          maxLength={500}
+          placeholder={placeholder}
+          maxLength={maxLength}
           autoComplete="off"
           aria-invalid={Boolean(error)}
           aria-expanded={focused && query.trim().length >= 2}
-          aria-controls="global-search-suggestions"
+          aria-controls={`${idPrefix}-suggestions`}
           aria-autocomplete="list"
-          aria-activedescendant={focused && suggestionIndex >= 0 ? `global-search-suggestion-${suggestionIndex}` : undefined}
-          aria-describedby={error ? 'global-search-error' : undefined}
+          aria-activedescendant={focused && suggestionIndex >= 0 ? `${idPrefix}-suggestion-${suggestionIndex}` : undefined}
+          aria-describedby={error ? `${idPrefix}-error` : undefined}
           role="combobox"
         />
         <button type="submit">검색</button>
-        {error && <span className="global-search-error" id="global-search-error" role="alert">{error}</span>}
+        {error && <span className="global-search-error" id={`${idPrefix}-error`} role="alert">{error}</span>}
       </form>
       {focused && query.trim().length >= 2 && (
         <section className="global-search-suggestions" aria-label="실시간 검색 결과">
           <header><span>실시간 검색 결과</span><small>{loading ? '조회 중' : `${suggestions.length}건`}</small></header>
-          <div id="global-search-suggestions" role="listbox" aria-label="카탈로그 검색 제안">
+          <div id={`${idPrefix}-suggestions`} role="listbox" aria-label="카탈로그 검색 제안">
           {suggestions.map((suggestion, index) => (
             <button
-              id={`global-search-suggestion-${index}`}
+              id={`${idPrefix}-suggestion-${index}`}
               role="option"
               aria-selected={index === suggestionIndex}
               type="button"

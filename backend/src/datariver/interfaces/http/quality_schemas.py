@@ -84,6 +84,63 @@ class QualityOverviewResponse(BaseModel):
     failure_code: str | None = None
 
 
+class QualityManagedRuleSetResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    indicator_id: Literal["ACCURACY", "COMPLETENESS", "TIMELINESS"]
+    name: str = Field(min_length=1, max_length=100)
+    definition: str = Field(min_length=1, max_length=1_000)
+    calculation: str = Field(min_length=1, max_length=1_000)
+    target_grain: Literal["FIELD", "TABLE"]
+    rule_kinds: list[Literal["NOT_NULL", "RANGE", "REGEX"]] = Field(max_length=3)
+    contract_version: Literal["QUALITY_MANAGED_INDICATORS_V1"]
+
+
+class QualityDashboardRiskResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    risk_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    asset_id: UUID
+    asset_name: str = Field(min_length=1, max_length=500)
+    field_identifier: str | None = Field(default=None, max_length=255)
+    severity: Literal["BLOCKING", "ADVISORY"]
+    outcome: Literal["ADVISORY_FAIL", "BLOCKING_FAIL"]
+    score_basis_points: int | None = Field(default=None, ge=0, le=10_000)
+    evaluated_count: int | None = Field(default=None, ge=0)
+    failed_count: int | None = Field(default=None, ge=0)
+    observed_at: datetime | None
+    detail: str = Field(min_length=1, max_length=1_000)
+
+
+class QualityDashboardIndicatorResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    indicator_id: Literal["ACCURACY", "COMPLETENESS", "TIMELINESS"]
+    counted_target_count: int = Field(ge=0)
+    target_count: int = Field(ge=0)
+    coverage_basis_points: int | None = Field(default=None, ge=0, le=10_000)
+    score_basis_points: int | None = Field(default=None, ge=0, le=10_000)
+    outcome: Literal["PASS", "WARN", "FAIL", "UNKNOWN"]
+    risk_count: int = Field(ge=0)
+    evaluated_value_count: int = Field(ge=0)
+    report_state: Literal["FACTS_ONLY", "LLM_GENERATED", "UNAVAILABLE"]
+    report_reason_code: str | None = Field(default=None, max_length=100)
+    report_summary: str = Field(min_length=1, max_length=2_000)
+    risks: list[QualityDashboardRiskResponse] = Field(max_length=50)
+
+
+class QualitySchemaDashboardResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    schema_id: str = Field(pattern=r"^[0-9a-f]{64}$")
+    platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    table_count: int = Field(ge=0)
+    covered_table_count: int = Field(ge=0)
+    indicators: list[QualityDashboardIndicatorResponse] = Field(min_length=3, max_length=3)
+
+
 class QualityAssetResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -214,6 +271,20 @@ class QualityReadMetadata(BaseModel):
     cache_scope: str = Field(pattern=r"^[0-9a-f]{64}$")
     observed_at: datetime
     authorization_valid_until: datetime
+
+
+class QualityDashboardResponse(QualityReadMetadata):
+    contract_version: Literal["QUALITY_DASHBOARD_V1"] = "QUALITY_DASHBOARD_V1"
+    as_of: datetime
+    schema_count: int = Field(ge=0)
+    table_count: int = Field(ge=0)
+    active_rule_set_count: int = Field(ge=0)
+    common_rule_template_count: int = Field(ge=0)
+    covered_table_count: int = Field(ge=0)
+    table_coverage_basis_points: int | None = Field(default=None, ge=0, le=10_000)
+    managed_rule_sets: list[QualityManagedRuleSetResponse] = Field(min_length=3, max_length=3)
+    schemas: list[QualitySchemaDashboardResponse] = Field(max_length=500)
+    schemas_truncated: bool
 
 
 class QualityAssetListResponse(QualityReadMetadata):

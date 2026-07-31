@@ -10,6 +10,7 @@ from datariver.application.quality_read_contracts import (
     QualityAssetWorkspace,
     QualityCommonRuleTemplateDetail,
     QualityCommonRuleTemplateSummary,
+    QualityDashboard,
     QualityIssuePage,
     QualityOverview,
     QualityReadContext,
@@ -25,6 +26,8 @@ class QualityReadRepository(Protocol):
     async def database_now(self) -> datetime: ...
 
     async def overview(self, *, context: QualityReadContext, days: int) -> QualityOverview: ...
+
+    async def dashboard(self, *, context: QualityReadContext) -> QualityDashboard: ...
 
     async def list_assets(
         self,

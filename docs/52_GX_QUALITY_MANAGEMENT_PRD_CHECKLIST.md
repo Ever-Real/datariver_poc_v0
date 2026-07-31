@@ -17,8 +17,9 @@ bounded mutation surface를 추가하되 미검증 배포 입력은 capability-c
 - Quality 도메인, `quality` schema, 전용 Action, DataHub Profile projection,
   source manifest/resolver, isolated GX worker, service-only Airflow DAG와 인간용 read API가
   구현됐다.
-- React는 capability를 먼저 확인하고 현황/Rule Sets/실행/이슈 네 탭에서 서버 계산값과
-  정규화 결과만 표시한다. 권한 lease, cursor, 선택 Run polling은 caller scope에 결합된다.
+- React는 capability를 먼저 확인하고 품질 대시보드/자산별 품질 현황 및 이력/공통 룰셋
+  관리 세 탭에서 서버 계산값과 정규화 결과만 표시한다. 권한 lease, cursor와 모든 Quality
+  query key는 caller scope에 결합된다.
 - sample/top/distribution, 실패행, provider/source credential은 projection/API/UI 계약에
   포함하지 않는다.
 - field identity/source/workload는 V2 deployment manifest로만 제공하며 현재 로컬 배포에는
@@ -73,7 +74,8 @@ bounded mutation surface를 추가하되 미검증 배포 입력은 capability-c
 
 ### UI 요구사항
 
-- `UI-DQ-001`: `현황 / 룰 관리 / 실행 이력 / 품질 이슈`를 stable URL state로 제공한다.
+- `UI-DQ-001`: `품질 대시보드 / 자산별 품질 현황 및 이력 / 공통 룰셋 관리`를 stable URL
+  state로 제공한다. 실행/이슈/maker-checker는 ordinary navigation에서 제거한다.
 - `UI-DQ-002`: score, pass rate, status와 threshold는 서버 계산값만 표시한다.
 - `UI-DQ-003`: availability, freshness, execution state, quality outcome을 서로 다른 축으로
   표시하고 `SUCCEEDED`를 `PASS`로 해석하지 않는다.
@@ -352,6 +354,7 @@ no-work와 multi-run replay를 표현한다. dispatch는 deterministic keyset에
 - `GET /quality/capability`
 - `GET /quality/rule-definitions`
 - `GET /quality/overview`
+- `GET /quality/dashboard`
 - `GET /quality/assets`
 - `GET /quality/assets/{asset_id}`
 - `GET|POST /quality/rule-sets`
@@ -447,14 +450,19 @@ distribution output을 반환하지 않는다. 이 값들은 승인된 asset-bas
 
 ### 정보 구조
 
-1. `현황`: 단일 Score/pass-rate KPI, coverage, PASS/WARN/FAIL/UNKNOWN, trend, 최근 실패
-2. `룰 관리`: Rule Set/version/lifecycle/reviewer와 typed wizard
-3. `실행 이력`: Run state와 quality outcome을 분리한 cursor grid
-4. `품질 이슈`: asset/field/Rule별 normalized 실패 집계
+1. `품질 대시보드`: 권한 범위의 스키마/테이블 수, Rule 수/적용률과
+   정확성·완전성·적시성 비교
+2. `자산별 품질 현황 및 이력`: Catalog global search/Resource Tree와 선택 자산의 적용 Rule
+   Set, 최근 Run, 점수 추이
+3. `공통 룰셋 관리`: reusable typed template 생성, 스키마/테이블 검색, 최대 25개 원자 매핑
 
-Overview는 server aggregate 한 번으로 받고 raw expectation collection을 브라우저에서
-재집계하지 않는다. 1차 시각화는 accessible CSS/inline SVG와 같은 수치의 표를 사용하고 신규
-chart library는 실제 요구와 bundle 측정 후 별도 승인한다.
+Dashboard는 server aggregate 한 번으로 받고 raw expectation collection을 브라우저에서
+재집계하지 않는다. 지표 modal은 target count/coverage, gauge, fact-only report와 bounded
+expandable risk table을 제공한다. 정확성/완전성은 최신 성공 Rule result, 적시성은 stored
+Profile `stale_at`만 사용한다. 승인된 Quality LLM route가 없으면
+`FACTS_ONLY/QUALITY_LLM_REPORT_ROUTE_UNAVAILABLE`이며 LLM report를 가장하지 않는다. 1차
+시각화는 accessible CSS/inline SVG와 같은 수치의 표를 사용하고 신규 chart library는 실제
+요구와 bundle 측정 후 별도 승인한다.
 
 ### Polling과 cache
 
@@ -566,7 +574,8 @@ chart library는 실제 요구와 bundle 측정 후 별도 승인한다.
 ### Phase 4 — API read model과 React UI
 
 - [x] authorization-pruned Overview/assets/rules/runs/results/issues read model을 구현한다.
-- [x] 네 탭, server cards/trend/grid, cursor list와 선택 후 lazy detail UI를 구현한다.
+- [x] 세 사용자 중심 탭, server cards/trend/grid, Catalog Resource Tree와 선택 후 lazy
+  detail UI를 구현한다.
 - [x] V2 field directory 기반 bounded Rule wizard와 conflict/review/`MANUAL_ONLY`
   activation UI를 구현하고 readiness가 없으면 capability로 잠근다.
 - [x] 30초 authorization lease, capability/dependency 분리, bounded polling/cache fence와

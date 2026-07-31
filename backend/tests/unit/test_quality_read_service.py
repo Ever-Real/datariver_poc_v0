@@ -32,6 +32,7 @@ class _NoClassificationPolicy:
 class _Repository:
     def __init__(self) -> None:
         self.overview_called = False
+        self.dashboard_called = False
 
     async def database_now(self) -> datetime:
         return NOW
@@ -39,6 +40,10 @@ class _Repository:
     async def overview(self, **_: Any) -> Any:
         self.overview_called = True
         raise AssertionError("The overview repository must not be called after denial.")
+
+    async def dashboard(self, **_: Any) -> Any:
+        self.dashboard_called = True
+        raise AssertionError("The dashboard repository must not be called after denial.")
 
 
 def _subject(
@@ -130,3 +135,19 @@ async def test_read_denial_happens_before_read_model_query() -> None:
         )
 
     assert not repository.overview_called
+
+
+@pytest.mark.asyncio
+async def test_dashboard_denial_happens_before_profile_or_read_model_query() -> None:
+    workspace_id = uuid4()
+    repository = _Repository()
+    subject = _subject(workspace_id, actions=frozenset({Action.QUALITY_PROFILE_READ}))
+
+    with pytest.raises(ForbiddenError):
+        await _service(repository).dashboard(
+            subject=subject,
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="quality-dashboard-denied",
+        )
+
+    assert not repository.dashboard_called

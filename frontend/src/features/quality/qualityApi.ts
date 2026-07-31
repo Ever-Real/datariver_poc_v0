@@ -24,6 +24,7 @@ import type {
   QualityRuleVersionCommandResponse,
   QualityRunSummary,
 } from '../../api/types'
+import type { QualityDashboard } from './qualityDashboardTypes'
 
 export interface QualitySecurityBoundary {
   workspaceId: string
@@ -35,6 +36,7 @@ export interface QualitySecurityBoundary {
 
 export type QualityResource =
   | 'overview'
+  | 'dashboard'
   | 'assets'
   | 'asset-detail'
   | 'asset-workspace'
@@ -94,6 +96,20 @@ export class QualityApi {
       signal,
     })
     assertOverview(value)
+    return value
+  }
+
+  async dashboard(
+    expectedCacheScope: string,
+    signal?: AbortSignal,
+  ): Promise<QualityDashboard> {
+    const value = await this.client.request<QualityDashboard>('/quality/dashboard', {
+      cache: 'no-store',
+      signal,
+    })
+    if (!validDashboard(value, expectedCacheScope)) {
+      throw new Error('품질 대시보드 계약이 올바르지 않습니다.')
+    }
     return value
   }
 
@@ -559,6 +575,84 @@ function assertOverview(value: QualityOverview): void {
   ) {
     throw new Error('품질 현황 계약이 올바르지 않습니다.')
   }
+}
+
+function validDashboard(
+  value: QualityDashboard,
+  expectedCacheScope: string,
+): boolean {
+  const indicatorIds = new Set(['ACCURACY', 'COMPLETENESS', 'TIMELINESS'])
+  const nonnegative = (candidate: unknown) => (
+    Number.isSafeInteger(candidate) && Number(candidate) >= 0
+  )
+  return Boolean(
+    value
+    && value.contract_version === 'QUALITY_DASHBOARD_V1'
+    && validReadMetadata(value, expectedCacheScope)
+    && validDate(value.as_of)
+    && [
+      value.schema_count,
+      value.table_count,
+      value.active_rule_set_count,
+      value.common_rule_template_count,
+      value.covered_table_count,
+    ].every(nonnegative)
+    && validBasisPoints(value.table_coverage_basis_points)
+    && Array.isArray(value.managed_rule_sets)
+    && value.managed_rule_sets.length === indicatorIds.size
+    && new Set(value.managed_rule_sets.map((item) => item.indicator_id)).size === indicatorIds.size
+    && value.managed_rule_sets.every((item) => (
+      indicatorIds.has(item.indicator_id)
+      && item.contract_version === 'QUALITY_MANAGED_INDICATORS_V1'
+      && ['FIELD', 'TABLE'].includes(item.target_grain)
+      && Array.isArray(item.rule_kinds)
+      && item.rule_kinds.every((kind) => ['NOT_NULL', 'RANGE', 'REGEX'].includes(kind))
+      && Boolean(item.name)
+      && Boolean(item.definition)
+      && Boolean(item.calculation)
+    ))
+    && Array.isArray(value.schemas)
+    && value.schemas.length <= 500
+    && value.schemas.every((schema) => (
+      validCacheScope(schema.schema_id)
+      && nonnegative(schema.table_count)
+      && nonnegative(schema.covered_table_count)
+      && Array.isArray(schema.indicators)
+      && schema.indicators.length === indicatorIds.size
+      && new Set(schema.indicators.map((item) => item.indicator_id)).size === indicatorIds.size
+      && schema.indicators.every((indicator) => (
+        indicatorIds.has(indicator.indicator_id)
+        && [
+          indicator.counted_target_count,
+          indicator.target_count,
+          indicator.risk_count,
+          indicator.evaluated_value_count,
+        ].every(nonnegative)
+        && validBasisPoints(indicator.coverage_basis_points)
+        && validBasisPoints(indicator.score_basis_points)
+        && ['PASS', 'WARN', 'FAIL', 'UNKNOWN'].includes(indicator.outcome)
+        && ['FACTS_ONLY', 'LLM_GENERATED', 'UNAVAILABLE'].includes(indicator.report_state)
+        && typeof indicator.report_summary === 'string'
+        && indicator.report_summary.length > 0
+        && indicator.report_summary.length <= 2_000
+        && Array.isArray(indicator.risks)
+        && indicator.risks.length <= 50
+        && indicator.risks.every((risk) => (
+          validCacheScope(risk.risk_id)
+          && validIdentifier(risk.asset_id)
+          && Boolean(risk.asset_name)
+          && ['BLOCKING', 'ADVISORY'].includes(risk.severity)
+          && ['ADVISORY_FAIL', 'BLOCKING_FAIL'].includes(risk.outcome)
+          && validBasisPoints(risk.score_basis_points)
+          && (risk.evaluated_count === null || nonnegative(risk.evaluated_count))
+          && (risk.failed_count === null || nonnegative(risk.failed_count))
+          && (risk.observed_at === null || validDate(risk.observed_at))
+          && Boolean(risk.detail)
+        ))
+      ))
+    ))
+    && typeof value.schemas_truncated === 'boolean',
+  )
 }
 
 function assertList<T>(value: QualityListResponse<T>, requestedLimit: number): void {

@@ -1,4 +1,4 @@
-export type QualityTab = 'assets' | 'templates'
+export type QualityTab = 'dashboard' | 'assets' | 'templates'
 
 export interface QualityLocation {
   tab: QualityTab
@@ -6,7 +6,7 @@ export interface QualityLocation {
   templateId?: string
 }
 
-const qualityTabs = new Set<QualityTab>(['assets', 'templates'])
+const qualityTabs = new Set<QualityTab>(['dashboard', 'assets', 'templates'])
 const qualityUrlKeys = new Set([
   'page',
   'workspace',

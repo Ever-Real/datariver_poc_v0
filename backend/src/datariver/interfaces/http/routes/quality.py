@@ -55,6 +55,7 @@ from datariver.interfaces.http.quality_schemas import (
     QualityCommonRuleTemplateDetailResponse,
     QualityCommonRuleTemplateListResponse,
     QualityCommonRuleTemplateMapRequest,
+    QualityDashboardResponse,
     QualityIssueListResponse,
     QualityManualRunRequest,
     QualityManualRunResponse,
@@ -191,6 +192,29 @@ async def get_quality_overview(
         request_id=context.request_id,
     )
     return quality_overview_response(value)
+
+
+@router.get("/dashboard", response_model=QualityDashboardResponse)
+async def get_quality_dashboard(
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> QualityDashboardResponse:
+    _private(response)
+    value, read_context = await _service(request, session).dashboard(
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return QualityDashboardResponse.model_validate(
+        {
+            **asdict(value),
+            "cache_scope": read_context.cache_scope,
+            "observed_at": read_context.observed_at,
+            "authorization_valid_until": read_context.authorization_valid_until,
+        }
+    )
 
 
 @router.get("/assets", response_model=QualityAssetListResponse)

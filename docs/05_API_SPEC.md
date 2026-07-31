@@ -100,6 +100,7 @@ rejected from this surface. Hidden resources return `404`.
 | `GET /quality/capability` | independent read/Profile/authoring/activation/manual/scheduling/operations axes; database-time `valid_until` is no more than 30 seconds |
 | `GET /quality/rule-definitions` | fixed `NOT_NULL`, typed `RANGE` and safety-disabled `REGEX` contracts; no GX JSON/kwargs |
 | `GET /quality/overview?days=` | authorization-pruned current snapshot and at most 90 daily server trend points; `days` is 1–90 |
+| `GET /quality/dashboard` | authorization-pruned schema/table counts and versioned accuracy/completeness/timeliness definitions; at most 500 schemas and 50 sanitized risks per schema indicator; Profile evidence requires its separate decision |
 | `GET /quality/assets?q=&schema=&limit=&cursor=` | permission-scoped active assets and redacted or approved Profile readiness; literal table/schema search; default 25, maximum 100 |
 | `POST /quality/assets/summary-batch` | one to 100 caller-ordered Catalog asset IDs; returns only authorization-visible latest Quality summaries for Search integration |
 | `GET /quality/assets/{asset_id}` | exact authorized asset summary; no DataHub URN or source coordinate |

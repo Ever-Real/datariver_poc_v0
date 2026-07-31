@@ -130,6 +130,23 @@ describe('QualityApi authorization contracts', () => {
     })
   })
 
+  it('accepts only a permission-bound three-indicator dashboard contract', async () => {
+    const request = vi.fn().mockResolvedValue(dashboard())
+    const api = new QualityApi({ request })
+
+    const result = await api.dashboard(cacheScope)
+
+    expect(result.schemas[0]?.indicators.map((item) => item.indicator_id)).toEqual([
+      'ACCURACY',
+      'COMPLETENESS',
+      'TIMELINESS',
+    ])
+    expect(request).toHaveBeenCalledWith('/quality/dashboard', {
+      cache: 'no-store',
+      signal: undefined,
+    })
+  })
+
   it('creates and maps a reusable common rule through bounded batch routes', async () => {
     const request = vi.fn()
       .mockResolvedValueOnce({ template_id: 'template-one', replayed: false })
@@ -252,3 +269,56 @@ const capabilityAxes = [
   'operations',
 ].map((id) => ({ id, state: 'AVAILABLE' }))
 const cacheScope = 'a'.repeat(64)
+
+function dashboard() {
+  const indicators = ['ACCURACY', 'COMPLETENESS', 'TIMELINESS'] as const
+  return {
+    contract_version: 'QUALITY_DASHBOARD_V1',
+    cache_scope: cacheScope,
+    observed_at: '2026-07-30T00:00:00Z',
+    authorization_valid_until: '2026-07-30T00:00:30Z',
+    as_of: '2026-07-30T00:00:00Z',
+    schema_count: 1,
+    table_count: 2,
+    active_rule_set_count: 2,
+    common_rule_template_count: 1,
+    covered_table_count: 1,
+    table_coverage_basis_points: 5_000,
+    managed_rule_sets: indicators.map((indicatorId) => ({
+      indicator_id: indicatorId,
+      name: indicatorId,
+      definition: `${indicatorId} definition`,
+      calculation: `${indicatorId} calculation`,
+      target_grain: indicatorId === 'TIMELINESS' ? 'TABLE' : 'FIELD',
+      rule_kinds: indicatorId === 'ACCURACY'
+        ? ['RANGE']
+        : indicatorId === 'COMPLETENESS'
+          ? ['NOT_NULL']
+          : [],
+      contract_version: 'QUALITY_MANAGED_INDICATORS_V1',
+    })),
+    schemas: [{
+      schema_id: 'b'.repeat(64),
+      platform: 'snowflake',
+      database_name: 'analytics',
+      schema_name: 'manufacturing',
+      table_count: 2,
+      covered_table_count: 1,
+      indicators: indicators.map((indicatorId) => ({
+        indicator_id: indicatorId,
+        counted_target_count: 1,
+        target_count: 2,
+        coverage_basis_points: 5_000,
+        score_basis_points: 9_000,
+        outcome: 'WARN',
+        risk_count: 0,
+        evaluated_value_count: 100,
+        report_state: 'FACTS_ONLY',
+        report_reason_code: 'QUALITY_LLM_REPORT_ROUTE_UNAVAILABLE',
+        report_summary: '서버가 검증한 사실 요약',
+        risks: [],
+      })),
+    }],
+    schemas_truncated: false,
+  }
+}

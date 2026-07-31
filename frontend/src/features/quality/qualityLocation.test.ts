@@ -34,4 +34,11 @@ describe('qualityLocation', () => {
       '/?page=quality&qualityTab=templates',
     )
   })
+
+  it('keeps the dashboard as an explicit quality tab without row identifiers', () => {
+    const href = 'https://example.test/?page=quality&qualityTab=dashboard&assetId=asset-1'
+
+    expect(qualityLocationFromHref(href)).toEqual({ tab: 'dashboard' })
+    expect(sanitizeQualityUrl(href)).toBe('/?page=quality&qualityTab=dashboard')
+  })
 })

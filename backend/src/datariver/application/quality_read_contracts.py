@@ -13,6 +13,9 @@ CapabilityState = Literal["AVAILABLE", "DENIED", "UNAVAILABLE"]
 SectionAvailability = Literal["AVAILABLE", "PARTIAL", "UNAVAILABLE"]
 SectionFreshness = Literal["CURRENT", "STALE", "UNKNOWN"]
 ProfileReadiness = Literal["READY", "STALE", "UNAVAILABLE", "REDACTED"]
+QualityIndicatorId = Literal["ACCURACY", "COMPLETENESS", "TIMELINESS"]
+QualityIndicatorTargetGrain = Literal["FIELD", "TABLE"]
+QualityReportState = Literal["FACTS_ONLY", "LLM_GENERATED", "UNAVAILABLE"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,6 +71,73 @@ class QualityOverview:
     coverage_basis_points: int | None
     trend: tuple[QualityTrendPoint, ...]
     failure_code: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class QualityManagedRuleSet:
+    indicator_id: QualityIndicatorId
+    name: str
+    definition: str
+    calculation: str
+    target_grain: QualityIndicatorTargetGrain
+    rule_kinds: tuple[str, ...]
+    contract_version: str
+
+
+@dataclass(frozen=True, slots=True)
+class QualityDashboardRisk:
+    risk_id: str
+    asset_id: UUID
+    asset_name: str
+    field_identifier: str | None
+    severity: str
+    outcome: str
+    score_basis_points: int | None
+    evaluated_count: int | None
+    failed_count: int | None
+    observed_at: datetime | None
+    detail: str
+
+
+@dataclass(frozen=True, slots=True)
+class QualityDashboardIndicator:
+    indicator_id: QualityIndicatorId
+    counted_target_count: int
+    target_count: int
+    coverage_basis_points: int | None
+    score_basis_points: int | None
+    outcome: str
+    risk_count: int
+    evaluated_value_count: int
+    report_state: QualityReportState
+    report_reason_code: str | None
+    report_summary: str
+    risks: tuple[QualityDashboardRisk, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class QualitySchemaDashboard:
+    schema_id: str
+    platform: str | None
+    database_name: str | None
+    schema_name: str | None
+    table_count: int
+    covered_table_count: int
+    indicators: tuple[QualityDashboardIndicator, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class QualityDashboard:
+    as_of: datetime
+    schema_count: int
+    table_count: int
+    active_rule_set_count: int
+    common_rule_template_count: int
+    covered_table_count: int
+    table_coverage_basis_points: int | None
+    managed_rule_sets: tuple[QualityManagedRuleSet, ...]
+    schemas: tuple[QualitySchemaDashboard, ...]
+    schemas_truncated: bool
 
 
 @dataclass(frozen=True, slots=True)

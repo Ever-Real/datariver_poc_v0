@@ -18,7 +18,6 @@ import {
   countText,
   dateTimeText,
   optionalText,
-  QualityAxisLock,
   QualityStatus,
 } from './QualityShared'
 import { isAuthorizationBoundaryError } from './useBoundedQualityRunPolling'
@@ -125,7 +124,7 @@ export function QualityCommonRulesTab({
         </button>
       )}
     </header>
-    <QualityAxisLock axis={axes.get('rule_authoring')} title="여러 테이블에 적용하려면 자산 필드 준비가 필요합니다" />
+    <RuleMappingReadiness axis={axes.get('rule_authoring')} />
     {notice && <p className="notice notice-success" role="status">{notice}</p>}
     {templates.error && <ErrorNotice error={templates.error} />}
     <div className="quality-template-grid">
@@ -167,11 +166,19 @@ export function QualityCommonRulesTab({
               <h2>{detail.data.template.name}</h2>
               <p>{detail.data.template.description || '별도 설명이 없습니다.'}</p>
             </div>
-            {axes.get('rule_authoring')?.state === 'AVAILABLE' && (
-              <button className="button" type="button" onClick={() => setMappingOpen(true)}>
-                여러 테이블에 적용
-              </button>
-            )}
+            <button
+              className="button"
+              type="button"
+              disabled={axes.get('rule_authoring')?.state !== 'AVAILABLE'}
+              title={axes.get('rule_authoring')?.state === 'AVAILABLE'
+                ? '여러 테이블에 공통 룰 적용'
+                : '배포 소유 필드 디렉터리와 품질 보존 정책이 준비되어야 합니다.'}
+              onClick={() => setMappingOpen(true)}
+            >
+              {axes.get('rule_authoring')?.state === 'AVAILABLE'
+                ? '여러 테이블에 적용'
+                : '적용 준비 필요'}
+            </button>
           </header>
           <TemplateRuleList template={detail.data.template} />
           <section className="quality-template-mappings" aria-labelledby="template-mapping-title">
@@ -234,6 +241,24 @@ export function QualityCommonRulesTab({
         setNotice(`${countText(count)}개 테이블에 적용했습니다.${replayed ? ' 동일 요청 재생 결과입니다.' : ''}`)
       }}
     />}
+  </section>
+}
+
+function RuleMappingReadiness({
+  axis,
+}: {
+  axis: QualityCapabilityAxis | undefined
+}) {
+  if (axis?.state === 'AVAILABLE') return null
+  const denied = axis?.state === 'DENIED'
+  return <section className={`quality-mapping-readiness${denied ? ' denied' : ''}`} role="status">
+    <div>
+      <strong>{denied ? '공통 룰 적용 권한이 없습니다' : '공통 룰은 만들 수 있고, 일괄 적용은 준비 중입니다'}</strong>
+      <span>{denied
+        ? 'Workspace의 품질 룰 제안 권한을 확인해 주세요.'
+        : 'Admin 권한과 별개로 서버가 검증한 V2 필드 identity 디렉터리와 V3/V4 품질 보존 정책이 모두 준비되어야 여러 테이블에 안전하게 적용할 수 있습니다.'}</span>
+    </div>
+    {axis?.reason_code && <code>{axis.reason_code}</code>}
   </section>
 }
 

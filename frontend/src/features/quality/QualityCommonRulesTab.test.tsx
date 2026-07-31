@@ -100,16 +100,55 @@ describe('QualityCommonRulesTab', () => {
     })
     expect(mappingOptions.idempotencyKey).toMatch(/^quality-common-mapping-/)
   })
+
+  it('keeps template creation usable while explaining deployment mapping readiness', async () => {
+    const request = vi.fn().mockImplementation((path: string) => {
+      if (path === '/quality/common-rule-templates') {
+        return Promise.resolve({
+          items: [template],
+          cache_scope: boundary.cacheScope,
+          observed_at: now,
+          authorization_valid_until: validUntil,
+        })
+      }
+      if (path === '/quality/common-rule-templates/template-one') {
+        return Promise.resolve({
+          item: { template, mappings: [] },
+          cache_scope: boundary.cacheScope,
+          observed_at: now,
+          authorization_valid_until: validUntil,
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+    const axes = availableAxes.map((axis) => axis.id === 'rule_authoring'
+      ? {
+          ...axis,
+          state: 'UNAVAILABLE' as const,
+          reason_code: 'FIELD_IDENTITY_MAPPING_UNAVAILABLE',
+        }
+      : axis)
+
+    renderTab(request, axes)
+
+    expect(await screen.findByText('공통 룰은 만들 수 있고, 일괄 적용은 준비 중입니다')).toBeInTheDocument()
+    expect(screen.getByText('FIELD_IDENTITY_MAPPING_UNAVAILABLE')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '공통 룰 만들기' })).toBeEnabled()
+    expect(await screen.findByRole('button', { name: '적용 준비 필요' })).toBeDisabled()
+  })
 })
 
-function renderTab(request: ReturnType<typeof vi.fn>) {
+function renderTab(
+  request: ReturnType<typeof vi.fn>,
+  axisValues: QualityCapabilityAxis[] = availableAxes,
+) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   })
   const api = new QualityApi({
     request: request as unknown as ApiClient['request'],
   })
-  const axes = new Map(availableAxes.map((axis) => [axis.id, axis]))
+  const axes = new Map(axisValues.map((axis) => [axis.id, axis]))
   return render(
     <QueryClientProvider client={queryClient}>
       <QualityCommonRulesTab

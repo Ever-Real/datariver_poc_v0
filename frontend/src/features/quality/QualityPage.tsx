@@ -7,6 +7,7 @@ import { useRovingTabs } from '../../components/common/useRovingTabs'
 import { PageTitle } from '../../components/layout/PageTitle'
 import { QualityAssetsTab } from './QualityAssetsTab'
 import { QualityCommonRulesTab } from './QualityCommonRulesTab'
+import { QualityDashboardTab } from './QualityDashboardTab'
 import { QualityApi } from './qualityApi'
 import {
   qualityLocationFromHref,
@@ -19,6 +20,7 @@ import { QualityStatus, dateTimeText } from './QualityShared'
 import { useQualityAuthorizationLease } from './useQualityAuthorizationLease'
 
 const qualityTabs = [
+  { id: 'dashboard', label: '품질 대시보드' },
   { id: 'assets', label: '자산별 품질 현황 및 이력' },
   { id: 'templates', label: '공통 룰셋 관리' },
 ] as const satisfies ReadonlyArray<{ id: QualityTab; label: string }>
@@ -122,8 +124,14 @@ export function QualityPage({
         </button>)}
       </nav>
       <div className="quality-tab-panel" {...tabs.panelProps(location.tab)}>
-        {location.tab === 'assets'
-          ? <QualityAssetsTab
+        {location.tab === 'dashboard' && <QualityDashboardTab
+          api={api}
+          boundary={lease.boundary}
+          onOpenTemplates={() => navigate({ tab: 'templates' })}
+          onBoundaryInvalid={lease.invalidate}
+        />}
+        {location.tab === 'assets' && <QualityAssetsTab
+            client={client}
             api={api}
             boundary={lease.boundary}
             selectedAssetId={location.assetId}
@@ -132,8 +140,8 @@ export function QualityPage({
               ...(assetId ? { assetId } : {}),
             })}
             onBoundaryInvalid={lease.invalidate}
-          />
-          : <QualityCommonRulesTab
+          />}
+        {location.tab === 'templates' && <QualityCommonRulesTab
             api={api}
             boundary={lease.boundary}
             axes={new Map(lease.capability.axes.map((axis) => [axis.id, axis]))}

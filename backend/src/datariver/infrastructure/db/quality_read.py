@@ -12,6 +12,7 @@ from uuid import UUID
 from sqlalchemy import (
     Row,
     and_,
+    case,
     desc,
     func,
     literal,
@@ -30,8 +31,13 @@ from datariver.application.quality_read_contracts import (
     QualityCommonRuleTemplateMapping,
     QualityCommonRuleTemplateRule,
     QualityCommonRuleTemplateSummary,
+    QualityDashboard,
+    QualityDashboardIndicator,
+    QualityDashboardRisk,
+    QualityIndicatorId,
     QualityIssuePage,
     QualityIssueSummary,
+    QualityManagedRuleSet,
     QualityOverview,
     QualityReadContext,
     QualityResultPage,
@@ -43,6 +49,7 @@ from datariver.application.quality_read_contracts import (
     QualityRuleVersionSummary,
     QualityRunPage,
     QualityRunSummary,
+    QualitySchemaDashboard,
     QualityTrendPoint,
 )
 from datariver.application.quality_read_ports import QualityReadRepository
@@ -65,6 +72,10 @@ from datariver.infrastructure.db.models.quality import (
 
 _CURSOR_MAX_LENGTH = 2_000
 _TERMINAL_STATES = ("SUCCEEDED", "FAILED", "STALE", "CANCELLED")
+_DASHBOARD_SCHEMA_LIMIT = 500
+_DASHBOARD_RISK_QUERY_LIMIT = 5_000
+_DASHBOARD_RISKS_PER_INDICATOR = 50
+_DASHBOARD_INDICATOR_CONTRACT = "QUALITY_MANAGED_INDICATORS_V1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,6 +99,33 @@ class _AssetQualityAggregate:
     @property
     def score_basis_points(self) -> int | None:
         return _basis_points(self.passed_count, self.evaluated_rule_count)
+
+
+@dataclass(frozen=True, slots=True)
+class _DashboardRuleMetric:
+    counted_target_count: int
+    target_count: int
+    valid_value_count: int
+    evaluated_value_count: int
+    advisory_failed_count: int
+    blocking_failed_count: int
+    risk_count: int
+
+    @property
+    def coverage_basis_points(self) -> int | None:
+        return _basis_points(self.counted_target_count, self.target_count)
+
+    @property
+    def score_basis_points(self) -> int | None:
+        return _basis_points(self.valid_value_count, self.evaluated_value_count)
+
+    @property
+    def outcome(self) -> str:
+        return _outcome(
+            evaluated=self.evaluated_value_count,
+            advisory_failed=self.advisory_failed_count,
+            blocking_failed=self.blocking_failed_count,
+        )
 
 
 class SqlQualityReadRepository(QualityReadRepository):
@@ -222,6 +260,144 @@ class SqlQualityReadRepository(QualityReadRepository):
             score_basis_points=_basis_points(passed, evaluated_rules),
             coverage_basis_points=_basis_points(evaluated_rule_sets, active_count),
             trend=trend,
+        )
+
+    async def dashboard(self, *, context: QualityReadContext) -> QualityDashboard:
+        visible = self._visible_assets(context).subquery("visible_quality_dashboard_assets")
+        active_join = and_(
+            QualityRuleSetModel.workspace_id == context.subject.workspace_id,
+            QualityRuleSetModel.asset_id == visible.c.id,
+            QualityRuleSetModel.state == "ACTIVE",
+        )
+        schema_groups = (
+            select(
+                visible.c.platform,
+                visible.c.database_name,
+                visible.c.schema_name,
+            )
+            .select_from(visible)
+            .group_by(
+                visible.c.platform,
+                visible.c.database_name,
+                visible.c.schema_name,
+            )
+        ).subquery("visible_quality_schema_groups")
+        schema_count = int(
+            await self._session.scalar(select(func.count()).select_from(schema_groups)) or 0
+        )
+        table_count = int(
+            await self._session.scalar(select(func.count()).select_from(visible)) or 0
+        )
+        active_rule_set_count = int(
+            await self._session.scalar(
+                select(func.count())
+                .select_from(QualityRuleSetModel)
+                .join(visible, visible.c.id == QualityRuleSetModel.asset_id)
+                .where(
+                    QualityRuleSetModel.workspace_id == context.subject.workspace_id,
+                    QualityRuleSetModel.state == "ACTIVE",
+                )
+            )
+            or 0
+        )
+        covered_table_count = int(
+            await self._session.scalar(
+                select(func.count(func.distinct(QualityRuleSetModel.asset_id)))
+                .select_from(QualityRuleSetModel)
+                .join(visible, visible.c.id == QualityRuleSetModel.asset_id)
+                .where(
+                    QualityRuleSetModel.workspace_id == context.subject.workspace_id,
+                    QualityRuleSetModel.state == "ACTIVE",
+                )
+            )
+            or 0
+        )
+        common_rule_template_count = int(
+            await self._session.scalar(
+                select(func.count())
+                .select_from(QualityCommonRuleTemplateModel)
+                .where(QualityCommonRuleTemplateModel.workspace_id == context.subject.workspace_id)
+            )
+            or 0
+        )
+        schema_rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        visible.c.platform,
+                        visible.c.database_name,
+                        visible.c.schema_name,
+                        func.count(func.distinct(visible.c.id)).label("table_count"),
+                        func.count(func.distinct(QualityRuleSetModel.asset_id)).label(
+                            "covered_table_count"
+                        ),
+                    )
+                    .select_from(visible)
+                    .outerjoin(QualityRuleSetModel, active_join)
+                    .group_by(
+                        visible.c.platform,
+                        visible.c.database_name,
+                        visible.c.schema_name,
+                    )
+                    .order_by(
+                        visible.c.platform,
+                        visible.c.database_name,
+                        visible.c.schema_name,
+                    )
+                    .limit(_DASHBOARD_SCHEMA_LIMIT)
+                )
+            ).all()
+        )
+        rule_metrics, rule_risks = await self._dashboard_rule_metrics(
+            context=context,
+            visible=visible,
+        )
+        timeliness_metrics, timeliness_risks = await self._dashboard_timeliness_metrics(
+            context=context,
+            visible=visible,
+        )
+        schemas: list[QualitySchemaDashboard] = []
+        for row in schema_rows:
+            key = _schema_key(row.platform, row.database_name, row.schema_name)
+            indicators = (
+                _rule_dashboard_indicator(
+                    indicator_id="ACCURACY",
+                    metric=rule_metrics.get((*key, "ACCURACY")),
+                    risks=rule_risks.get((*key, "ACCURACY"), ()),
+                ),
+                _rule_dashboard_indicator(
+                    indicator_id="COMPLETENESS",
+                    metric=rule_metrics.get((*key, "COMPLETENESS")),
+                    risks=rule_risks.get((*key, "COMPLETENESS"), ()),
+                ),
+                _timeliness_dashboard_indicator(
+                    metric=timeliness_metrics.get(key),
+                    risks=timeliness_risks.get(key, ()),
+                    profile_allowed=context.profile_allowed,
+                ),
+            )
+            schemas.append(
+                QualitySchemaDashboard(
+                    schema_id=_schema_id(*key),
+                    platform=row.platform,
+                    database_name=row.database_name,
+                    schema_name=row.schema_name,
+                    table_count=int(row.table_count),
+                    covered_table_count=int(row.covered_table_count),
+                    indicators=indicators,
+                )
+            )
+        return QualityDashboard(
+            as_of=context.observed_at,
+            schema_count=schema_count,
+            table_count=table_count,
+            active_rule_set_count=active_rule_set_count,
+            common_rule_template_count=common_rule_template_count,
+            covered_table_count=covered_table_count,
+            table_coverage_basis_points=_basis_points(covered_table_count, table_count),
+            managed_rule_sets=_managed_rule_sets(),
+            schemas=tuple(schemas),
+            schemas_truncated=schema_count > len(schemas),
         )
 
     async def list_assets(
@@ -900,10 +1076,481 @@ class SqlQualityReadRepository(QualityReadRepository):
             )
         return QualityIssuePage(items=items, next_cursor=next_cursor)
 
+    async def _dashboard_rule_metrics(
+        self,
+        *,
+        context: QualityReadContext,
+        visible: Any,
+    ) -> tuple[
+        dict[tuple[str, str, str, str], _DashboardRuleMetric],
+        dict[tuple[str, str, str, str], tuple[QualityDashboardRisk, ...]],
+    ]:
+        workspace_id = context.subject.workspace_id
+        active_versions = (
+            select(
+                visible.c.id.label("asset_id"),
+                visible.c.name.label("asset_name"),
+                visible.c.platform,
+                visible.c.database_name,
+                visible.c.schema_name,
+                QualityRuleSetModel.id.label("rule_set_id"),
+                QualityRuleSetVersionModel.id.label("version_id"),
+            )
+            .select_from(visible)
+            .join(
+                QualityRuleSetModel,
+                and_(
+                    QualityRuleSetModel.workspace_id == workspace_id,
+                    QualityRuleSetModel.asset_id == visible.c.id,
+                    QualityRuleSetModel.state == "ACTIVE",
+                ),
+            )
+            .join(
+                QualityRuleSetVersionModel,
+                and_(
+                    QualityRuleSetVersionModel.workspace_id == workspace_id,
+                    QualityRuleSetVersionModel.rule_set_id == QualityRuleSetModel.id,
+                    QualityRuleSetVersionModel.state == "ACTIVE",
+                ),
+            )
+        ).subquery("active_quality_dashboard_versions")
+        ranked_runs = (
+            select(
+                QualityValidationRunModel.id.label("run_id"),
+                QualityValidationRunModel.rule_set_id,
+                QualityValidationRunModel.rule_set_version_id,
+                QualityValidationRunModel.completed_at,
+                func.row_number()
+                .over(
+                    partition_by=(
+                        QualityValidationRunModel.rule_set_id,
+                        QualityValidationRunModel.rule_set_version_id,
+                    ),
+                    order_by=(
+                        desc(QualityValidationRunModel.completed_at),
+                        desc(QualityValidationRunModel.id),
+                    ),
+                )
+                .label("ordinal"),
+            )
+            .join(
+                active_versions,
+                and_(
+                    active_versions.c.rule_set_id == QualityValidationRunModel.rule_set_id,
+                    active_versions.c.version_id == QualityValidationRunModel.rule_set_version_id,
+                    active_versions.c.asset_id == QualityValidationRunModel.asset_id,
+                ),
+            )
+            .where(
+                QualityValidationRunModel.workspace_id == workspace_id,
+                QualityValidationRunModel.state == "SUCCEEDED",
+            )
+        ).subquery("ranked_quality_dashboard_runs")
+        latest_runs = (
+            select(
+                ranked_runs.c.run_id,
+                ranked_runs.c.rule_set_id,
+                ranked_runs.c.rule_set_version_id,
+                ranked_runs.c.completed_at,
+            ).where(ranked_runs.c.ordinal == 1)
+        ).subquery("latest_quality_dashboard_runs")
+        dimension = case(
+            (QualityRuleDefinitionModel.kind == "NOT_NULL", "COMPLETENESS"),
+            (
+                QualityRuleDefinitionModel.kind.in_(("RANGE", "REGEX")),
+                "ACCURACY",
+            ),
+        )
+        target_identity = tuple_(
+            active_versions.c.asset_id,
+            QualityRuleDefinitionModel.field_identifier,
+        )
+        has_result = QualityExpectationResultModel.id.is_not(None)
+        valid_values = case(
+            (
+                QualityRuleDefinitionModel.kind == "NOT_NULL",
+                QualityExpectationResultModel.evaluated_count
+                - QualityExpectationResultModel.missing_count,
+            ),
+            else_=(
+                QualityExpectationResultModel.evaluated_count
+                - QualityExpectationResultModel.unexpected_count
+            ),
+        )
+        rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        active_versions.c.platform,
+                        active_versions.c.database_name,
+                        active_versions.c.schema_name,
+                        dimension.label("indicator_id"),
+                        func.count(func.distinct(target_identity)).label("target_count"),
+                        func.count(func.distinct(target_identity))
+                        .filter(has_result)
+                        .label("counted_count"),
+                        func.coalesce(
+                            func.sum(QualityExpectationResultModel.evaluated_count),
+                            0,
+                        ).label("evaluated_count"),
+                        func.coalesce(func.sum(valid_values), 0).label("valid_count"),
+                        func.count(QualityExpectationResultModel.id)
+                        .filter(QualityExpectationResultModel.outcome == "ADVISORY_FAIL")
+                        .label("advisory_count"),
+                        func.count(QualityExpectationResultModel.id)
+                        .filter(QualityExpectationResultModel.outcome == "BLOCKING_FAIL")
+                        .label("blocking_count"),
+                        func.count(QualityExpectationResultModel.id)
+                        .filter(
+                            QualityExpectationResultModel.outcome.in_(
+                                ("ADVISORY_FAIL", "BLOCKING_FAIL")
+                            )
+                        )
+                        .label("risk_count"),
+                    )
+                    .select_from(active_versions)
+                    .join(
+                        QualityRuleDefinitionModel,
+                        and_(
+                            QualityRuleDefinitionModel.workspace_id == workspace_id,
+                            QualityRuleDefinitionModel.rule_set_version_id
+                            == active_versions.c.version_id,
+                        ),
+                    )
+                    .outerjoin(
+                        latest_runs,
+                        and_(
+                            latest_runs.c.rule_set_id == active_versions.c.rule_set_id,
+                            latest_runs.c.rule_set_version_id == active_versions.c.version_id,
+                        ),
+                    )
+                    .outerjoin(
+                        QualityExpectationResultModel,
+                        and_(
+                            QualityExpectationResultModel.workspace_id == workspace_id,
+                            QualityExpectationResultModel.run_id == latest_runs.c.run_id,
+                            QualityExpectationResultModel.rule_definition_id
+                            == QualityRuleDefinitionModel.id,
+                        ),
+                    )
+                    .where(QualityRuleDefinitionModel.kind.in_(("NOT_NULL", "RANGE", "REGEX")))
+                    .group_by(
+                        active_versions.c.platform,
+                        active_versions.c.database_name,
+                        active_versions.c.schema_name,
+                        dimension,
+                    )
+                )
+            ).all()
+        )
+        metrics = {
+            (
+                *_schema_key(row.platform, row.database_name, row.schema_name),
+                str(row.indicator_id),
+            ): _DashboardRuleMetric(
+                counted_target_count=int(row.counted_count),
+                target_count=int(row.target_count),
+                valid_value_count=int(row.valid_count),
+                evaluated_value_count=int(row.evaluated_count),
+                advisory_failed_count=int(row.advisory_count),
+                blocking_failed_count=int(row.blocking_count),
+                risk_count=int(row.risk_count),
+            )
+            for row in rows
+        }
+        risk_rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        active_versions.c.asset_id,
+                        active_versions.c.asset_name,
+                        active_versions.c.platform,
+                        active_versions.c.database_name,
+                        active_versions.c.schema_name,
+                        latest_runs.c.run_id,
+                        latest_runs.c.completed_at,
+                        QualityRuleDefinitionModel.id.label("rule_definition_id"),
+                        QualityRuleDefinitionModel.field_identifier,
+                        QualityRuleDefinitionModel.kind,
+                        QualityRuleDefinitionModel.severity,
+                        QualityExpectationResultModel.outcome,
+                        QualityExpectationResultModel.evaluated_count,
+                        QualityExpectationResultModel.missing_count,
+                        QualityExpectationResultModel.unexpected_count,
+                    )
+                    .select_from(active_versions)
+                    .join(
+                        QualityRuleDefinitionModel,
+                        and_(
+                            QualityRuleDefinitionModel.workspace_id == workspace_id,
+                            QualityRuleDefinitionModel.rule_set_version_id
+                            == active_versions.c.version_id,
+                        ),
+                    )
+                    .join(
+                        latest_runs,
+                        and_(
+                            latest_runs.c.rule_set_id == active_versions.c.rule_set_id,
+                            latest_runs.c.rule_set_version_id == active_versions.c.version_id,
+                        ),
+                    )
+                    .join(
+                        QualityExpectationResultModel,
+                        and_(
+                            QualityExpectationResultModel.workspace_id == workspace_id,
+                            QualityExpectationResultModel.run_id == latest_runs.c.run_id,
+                            QualityExpectationResultModel.rule_definition_id
+                            == QualityRuleDefinitionModel.id,
+                        ),
+                    )
+                    .where(
+                        QualityExpectationResultModel.outcome.in_(
+                            ("ADVISORY_FAIL", "BLOCKING_FAIL")
+                        ),
+                        QualityRuleDefinitionModel.kind.in_(("NOT_NULL", "RANGE", "REGEX")),
+                    )
+                    .order_by(
+                        desc(QualityExpectationResultModel.occurred_at),
+                        desc(QualityExpectationResultModel.id),
+                    )
+                    .limit(_DASHBOARD_RISK_QUERY_LIMIT)
+                )
+            ).all()
+        )
+        risks: dict[tuple[str, str, str, str], list[QualityDashboardRisk]] = {}
+        for row in risk_rows:
+            indicator_id = "COMPLETENESS" if row.kind == "NOT_NULL" else "ACCURACY"
+            key = (
+                *_schema_key(row.platform, row.database_name, row.schema_name),
+                indicator_id,
+            )
+            selected = risks.setdefault(key, [])
+            if len(selected) >= _DASHBOARD_RISKS_PER_INDICATOR:
+                continue
+            failed_count = (
+                int(row.missing_count)
+                if indicator_id == "COMPLETENESS"
+                else int(row.unexpected_count)
+            )
+            evaluated_count = int(row.evaluated_count)
+            selected.append(
+                QualityDashboardRisk(
+                    risk_id=canonical_json_hash(
+                        {
+                            "contract": "QUALITY_DASHBOARD_RISK_V1",
+                            "run_id": str(row.run_id),
+                            "rule_definition_id": str(row.rule_definition_id),
+                        }
+                    ),
+                    asset_id=row.asset_id,
+                    asset_name=row.asset_name,
+                    field_identifier=row.field_identifier,
+                    severity=row.severity,
+                    outcome=row.outcome,
+                    score_basis_points=_basis_points(
+                        max(0, evaluated_count - failed_count),
+                        evaluated_count,
+                    ),
+                    evaluated_count=evaluated_count,
+                    failed_count=failed_count,
+                    observed_at=row.completed_at,
+                    detail=(
+                        f"최근 성공 실행에서 {failed_count:,}개 값이 비어 있습니다."
+                        if indicator_id == "COMPLETENESS"
+                        else f"최근 성공 실행에서 {failed_count:,}개 값이 허용 범위를 벗어났습니다."
+                    ),
+                )
+            )
+        return metrics, {key: tuple(values) for key, values in risks.items()}
+
+    async def _dashboard_timeliness_metrics(
+        self,
+        *,
+        context: QualityReadContext,
+        visible: Any,
+    ) -> tuple[
+        dict[tuple[str, str, str], _DashboardRuleMetric],
+        dict[tuple[str, str, str], tuple[QualityDashboardRisk, ...]],
+    ]:
+        if not context.profile_allowed:
+            return {}, {}
+        workspace_id = context.subject.workspace_id
+        ranked_profiles = (
+            select(
+                AssetProfileSnapshotModel.id.label("snapshot_id"),
+                AssetProfileSnapshotModel.asset_id,
+                func.row_number()
+                .over(
+                    partition_by=AssetProfileSnapshotModel.asset_id,
+                    order_by=(
+                        desc(AssetProfileSnapshotModel.profiled_at),
+                        desc(AssetProfileSnapshotModel.id),
+                    ),
+                )
+                .label("ordinal"),
+            ).where(
+                AssetProfileSnapshotModel.workspace_id == workspace_id,
+                AssetProfileSnapshotModel.profile_kind.in_(("FULL", "PARTITION")),
+                AssetProfileSnapshotModel.completeness == "COMPLETE",
+            )
+        ).subquery("ranked_quality_dashboard_profiles")
+        latest_profiles = (
+            select(
+                ranked_profiles.c.snapshot_id,
+                ranked_profiles.c.asset_id,
+            ).where(ranked_profiles.c.ordinal == 1)
+        ).subquery("latest_quality_dashboard_profiles")
+        profile_present = AssetProfileSnapshotModel.id.is_not(None)
+        profile_current = and_(
+            profile_present,
+            AssetProfileSnapshotModel.stale_at > context.observed_at,
+        )
+        rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        visible.c.platform,
+                        visible.c.database_name,
+                        visible.c.schema_name,
+                        func.count(func.distinct(visible.c.id)).label("target_count"),
+                        func.count(func.distinct(latest_profiles.c.asset_id)).label(
+                            "counted_count"
+                        ),
+                        func.count(func.distinct(visible.c.id))
+                        .filter(profile_current)
+                        .label("current_count"),
+                        func.count(func.distinct(visible.c.id))
+                        .filter(latest_profiles.c.asset_id.is_(None))
+                        .label("missing_count"),
+                        func.count(func.distinct(visible.c.id))
+                        .filter(
+                            and_(
+                                profile_present,
+                                AssetProfileSnapshotModel.stale_at <= context.observed_at,
+                            )
+                        )
+                        .label("stale_count"),
+                    )
+                    .select_from(visible)
+                    .outerjoin(
+                        latest_profiles,
+                        latest_profiles.c.asset_id == visible.c.id,
+                    )
+                    .outerjoin(
+                        AssetProfileSnapshotModel,
+                        and_(
+                            AssetProfileSnapshotModel.workspace_id == workspace_id,
+                            AssetProfileSnapshotModel.id == latest_profiles.c.snapshot_id,
+                        ),
+                    )
+                    .group_by(
+                        visible.c.platform,
+                        visible.c.database_name,
+                        visible.c.schema_name,
+                    )
+                )
+            ).all()
+        )
+        metrics = {
+            _schema_key(row.platform, row.database_name, row.schema_name): _DashboardRuleMetric(
+                counted_target_count=int(row.counted_count),
+                target_count=int(row.target_count),
+                valid_value_count=int(row.current_count),
+                evaluated_value_count=int(row.target_count),
+                advisory_failed_count=int(row.missing_count),
+                blocking_failed_count=int(row.stale_count),
+                risk_count=int(row.missing_count) + int(row.stale_count),
+            )
+            for row in rows
+        }
+        risk_rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        visible.c.id.label("asset_id"),
+                        visible.c.name.label("asset_name"),
+                        visible.c.platform,
+                        visible.c.database_name,
+                        visible.c.schema_name,
+                        AssetProfileSnapshotModel.id.label("snapshot_id"),
+                        AssetProfileSnapshotModel.profiled_at,
+                        AssetProfileSnapshotModel.stale_at,
+                    )
+                    .select_from(visible)
+                    .outerjoin(
+                        latest_profiles,
+                        latest_profiles.c.asset_id == visible.c.id,
+                    )
+                    .outerjoin(
+                        AssetProfileSnapshotModel,
+                        and_(
+                            AssetProfileSnapshotModel.workspace_id == workspace_id,
+                            AssetProfileSnapshotModel.id == latest_profiles.c.snapshot_id,
+                        ),
+                    )
+                    .where(
+                        or_(
+                            latest_profiles.c.asset_id.is_(None),
+                            AssetProfileSnapshotModel.stale_at <= context.observed_at,
+                        )
+                    )
+                    .order_by(
+                        AssetProfileSnapshotModel.profiled_at,
+                        visible.c.name,
+                        visible.c.id,
+                    )
+                    .limit(_DASHBOARD_RISK_QUERY_LIMIT)
+                )
+            ).all()
+        )
+        risks: dict[tuple[str, str, str], list[QualityDashboardRisk]] = {}
+        for row in risk_rows:
+            key = _schema_key(row.platform, row.database_name, row.schema_name)
+            selected = risks.setdefault(key, [])
+            if len(selected) >= _DASHBOARD_RISKS_PER_INDICATOR:
+                continue
+            missing = row.snapshot_id is None
+            age_days = (
+                max(0, (context.observed_at - row.profiled_at).days)
+                if row.profiled_at is not None
+                else None
+            )
+            selected.append(
+                QualityDashboardRisk(
+                    risk_id=canonical_json_hash(
+                        {
+                            "contract": "QUALITY_DASHBOARD_TIMELINESS_RISK_V1",
+                            "asset_id": str(row.asset_id),
+                            "snapshot_id": (
+                                str(row.snapshot_id) if row.snapshot_id is not None else None
+                            ),
+                        }
+                    ),
+                    asset_id=row.asset_id,
+                    asset_name=row.asset_name,
+                    field_identifier=None,
+                    severity="ADVISORY" if missing else "BLOCKING",
+                    outcome="ADVISORY_FAIL" if missing else "BLOCKING_FAIL",
+                    score_basis_points=None if missing else 0,
+                    evaluated_count=None,
+                    failed_count=None,
+                    observed_at=row.profiled_at,
+                    detail=(
+                        "완전한 최신 Profile 증거가 없습니다."
+                        if missing
+                        else f"최신 Profile이 {age_days:,}일 전에 생성되어 stale 기준을 넘었습니다."
+                    ),
+                )
+            )
+        return metrics, {key: tuple(values) for key, values in risks.items()}
+
     def _visible_assets(self, context: QualityReadContext) -> Any:
         return select(
             AssetProjectionModel.id,
             AssetProjectionModel.name,
+            AssetProjectionModel.platform,
+            AssetProjectionModel.database_name,
+            AssetProjectionModel.schema_name,
             AssetProjectionModel.classification,
             AssetProjectionModel.system_id,
             AssetProjectionModel.domain_id,
@@ -1325,6 +1972,179 @@ def _common_template_summary(
         created_at=model.created_at,
         updated_at=model.updated_at,
     )
+
+
+def _managed_rule_sets() -> tuple[QualityManagedRuleSet, ...]:
+    return (
+        QualityManagedRuleSet(
+            indicator_id="ACCURACY",
+            name="정확성",
+            definition="검증 대상으로 지정한 값이 허용 범위 또는 패턴과 일치하는지 평가합니다.",
+            calculation=("최근 성공 실행의 (평가 값 수 - 예상 밖 값 수) ÷ 평가 값 수"),
+            target_grain="FIELD",
+            rule_kinds=("RANGE", "REGEX"),
+            contract_version=_DASHBOARD_INDICATOR_CONTRACT,
+        ),
+        QualityManagedRuleSet(
+            indicator_id="COMPLETENESS",
+            name="완전성",
+            definition="검증 대상으로 지정한 필드에 값이 빠짐없이 존재하는지 평가합니다.",
+            calculation="최근 성공 실행의 (평가 값 수 - 결측 값 수) ÷ 평가 값 수",
+            target_grain="FIELD",
+            rule_kinds=("NOT_NULL",),
+            contract_version=_DASHBOARD_INDICATOR_CONTRACT,
+        ),
+        QualityManagedRuleSet(
+            indicator_id="TIMELINESS",
+            name="적시성",
+            definition=(
+                "각 테이블의 최신 완전 Profile이 서버가 보관한 stale 기준 안에 있는지 평가합니다."
+            ),
+            calculation="현재 Profile을 보유한 테이블 수 ÷ 대상 테이블 수",
+            target_grain="TABLE",
+            rule_kinds=(),
+            contract_version=_DASHBOARD_INDICATOR_CONTRACT,
+        ),
+    )
+
+
+def _rule_dashboard_indicator(
+    *,
+    indicator_id: QualityIndicatorId,
+    metric: _DashboardRuleMetric | None,
+    risks: tuple[QualityDashboardRisk, ...],
+) -> QualityDashboardIndicator:
+    if indicator_id not in {"ACCURACY", "COMPLETENESS"}:
+        raise ValueError("The dashboard Rule indicator is unsupported.")
+    label = "정확성" if indicator_id == "ACCURACY" else "완전성"
+    if metric is None:
+        return QualityDashboardIndicator(
+            indicator_id=indicator_id,
+            counted_target_count=0,
+            target_count=0,
+            coverage_basis_points=None,
+            score_basis_points=None,
+            outcome="UNKNOWN",
+            risk_count=0,
+            evaluated_value_count=0,
+            report_state="FACTS_ONLY",
+            report_reason_code="QUALITY_LLM_REPORT_ROUTE_UNAVAILABLE",
+            report_summary=(
+                f"활성 {label} 대상 필드가 없습니다. 공통 룰셋에서 대상 필드를 지정한 뒤 "
+                "성공 실행이 완료되면 이 지표를 계산합니다."
+            ),
+            risks=(),
+        )
+    return QualityDashboardIndicator(
+        indicator_id=indicator_id,
+        counted_target_count=metric.counted_target_count,
+        target_count=metric.target_count,
+        coverage_basis_points=metric.coverage_basis_points,
+        score_basis_points=metric.score_basis_points,
+        outcome=metric.outcome,
+        risk_count=metric.risk_count,
+        evaluated_value_count=metric.evaluated_value_count,
+        report_state="FACTS_ONLY",
+        report_reason_code="QUALITY_LLM_REPORT_ROUTE_UNAVAILABLE",
+        report_summary=(
+            f"{label} 대상 {metric.target_count:,}개 필드 중 "
+            f"{metric.counted_target_count:,}개가 최근 성공 실행에서 평가되었습니다. "
+            f"위험 룰 결과는 {metric.risk_count:,}개이며, 지표는 "
+            f"{_basis_points_text(metric.score_basis_points)}입니다."
+        ),
+        risks=risks,
+    )
+
+
+def _timeliness_dashboard_indicator(
+    *,
+    metric: _DashboardRuleMetric | None,
+    risks: tuple[QualityDashboardRisk, ...],
+    profile_allowed: bool,
+) -> QualityDashboardIndicator:
+    if not profile_allowed:
+        return QualityDashboardIndicator(
+            indicator_id="TIMELINESS",
+            counted_target_count=0,
+            target_count=0,
+            coverage_basis_points=None,
+            score_basis_points=None,
+            outcome="UNKNOWN",
+            risk_count=0,
+            evaluated_value_count=0,
+            report_state="UNAVAILABLE",
+            report_reason_code="QUALITY_PROFILE_READ_DENIED",
+            report_summary=(
+                "Profile 열람 권한이 없어 적시성 근거와 위험 테이블을 표시하지 않습니다."
+            ),
+            risks=(),
+        )
+    if metric is None:
+        return QualityDashboardIndicator(
+            indicator_id="TIMELINESS",
+            counted_target_count=0,
+            target_count=0,
+            coverage_basis_points=None,
+            score_basis_points=None,
+            outcome="UNKNOWN",
+            risk_count=0,
+            evaluated_value_count=0,
+            report_state="FACTS_ONLY",
+            report_reason_code="QUALITY_LLM_REPORT_ROUTE_UNAVAILABLE",
+            report_summary="적시성을 평가할 권한 범위의 테이블이 없습니다.",
+            risks=(),
+        )
+    return QualityDashboardIndicator(
+        indicator_id="TIMELINESS",
+        counted_target_count=metric.counted_target_count,
+        target_count=metric.target_count,
+        coverage_basis_points=metric.coverage_basis_points,
+        score_basis_points=metric.score_basis_points,
+        outcome=metric.outcome,
+        risk_count=metric.risk_count,
+        evaluated_value_count=metric.evaluated_value_count,
+        report_state="FACTS_ONLY",
+        report_reason_code="QUALITY_LLM_REPORT_ROUTE_UNAVAILABLE",
+        report_summary=(
+            f"대상 {metric.target_count:,}개 테이블 중 "
+            f"{metric.counted_target_count:,}개가 완전한 최신 Profile을 보유합니다. "
+            f"stale 또는 미수집 위험 테이블은 {metric.risk_count:,}개이며, "
+            f"적시성은 {_basis_points_text(metric.score_basis_points)}입니다."
+        ),
+        risks=risks,
+    )
+
+
+def _schema_key(
+    platform: str | None,
+    database_name: str | None,
+    schema_name: str | None,
+) -> tuple[str, str, str]:
+    sentinel = "\u0000"
+    return (
+        platform if platform is not None else sentinel,
+        database_name if database_name is not None else sentinel,
+        schema_name if schema_name is not None else sentinel,
+    )
+
+
+def _schema_id(platform: str, database_name: str, schema_name: str) -> str:
+    sentinel = "\u0000"
+    return canonical_json_hash(
+        {
+            "contract": "QUALITY_SCHEMA_ID_V1",
+            "platform": None if platform == sentinel else platform,
+            "database_name": None if database_name == sentinel else database_name,
+            "schema_name": None if schema_name == sentinel else schema_name,
+        }
+    )
+
+
+def _basis_points_text(value: int | None) -> str:
+    if value is None:
+        return "평가 없음"
+    percentage = value / 100
+    return f"{percentage:.2f}".rstrip("0").rstrip(".") + "%"
 
 
 def _asset_cursor_resource(*, query: str, schema_name: str | None) -> str:
