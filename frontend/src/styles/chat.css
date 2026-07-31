@@ -345,6 +345,8 @@
   max-width: min(84%, 760px);
   border-radius: 16px;
   padding: 12px 14px;
+  font-size: 14px;
+  line-height: 1.65;
   white-space: normal;
   transition: border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
 }
@@ -684,6 +686,9 @@
 }
 
 .chat-workflow-section {
+  position: relative;
+  z-index: 1;
+  isolation: isolate;
   border-top: 1px solid #e5eaee;
   border-bottom: 1px solid #e5eaee;
   padding: 12px 0 10px;
@@ -714,6 +719,7 @@
   display: flex;
   gap: 0;
   margin: 0;
+  min-height: 112px;
   overflow-x: auto;
   overflow-y: hidden;
   padding: 4px 12px 12px;
@@ -812,10 +818,10 @@
 
 .chat-workflow-tooltip {
   position: absolute;
-  z-index: 30;
-  top: 62px;
-  left: 50%;
-  width: 190px;
+  z-index: 3;
+  top: 0;
+  left: calc(50% + 23px);
+  width: 140px;
   display: grid;
   gap: 4px;
   border: 1px solid #bfcbd4;
@@ -828,8 +834,15 @@
   line-height: 1.45;
   opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, -4px);
+  transform: translate(-4px, 0);
   transition: opacity 140ms ease, transform 140ms ease;
+}
+
+/* Keep the popover within the workflow rail near the viewport's right edge. */
+.chat-workflow-rail li:nth-child(n + 3) .chat-workflow-tooltip {
+  right: calc(50% + 23px);
+  left: auto;
+  transform: translate(4px, 0);
 }
 
 .chat-workflow-tooltip b {
@@ -848,10 +861,12 @@
 .chat-workflow-rail li:hover .chat-workflow-tooltip,
 .chat-workflow-rail li:focus-within .chat-workflow-tooltip {
   opacity: 1;
-  transform: translate(-50%, 0);
+  transform: translate(0, 0);
 }
 
 .chat-evidence-panel .accordion-item {
+  position: relative;
+  z-index: 0;
   margin: 12px;
   overflow: hidden;
   border-color: #dce4ea;
