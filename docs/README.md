@@ -167,6 +167,9 @@ The unified Registry/Studio/instance operating model, typed alias delivery polic
 authorization-scoped Chat graph selection are defined by
 [ADR-0092](adr/0092-knowledge-asset-lifecycle-delivery-and-chat-scope.md) and the
 [Knowledge Asset operating model](56_KNOWLEDGE_ASSET_OPERATING_MODEL.md).
+The governed PDF worker's compatible expansion to CSV, TXT, JSON, XML, HTML and macro-free
+DOCX/XLSX/PPTX evidence sources is defined by
+[ADR-0093](adr/0093-governed-multiformat-knowledge-source-analysis.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

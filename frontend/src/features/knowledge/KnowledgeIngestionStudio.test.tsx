@@ -8,7 +8,7 @@ import type {
   UploadRecord,
 } from '../../api/types'
 import { KnowledgeIngestionStudio } from './KnowledgeIngestionStudio'
-import { validateKnowledgePdf } from './KnowledgeSourceUpload'
+import { validateKnowledgeDocument, validateKnowledgePdf } from './KnowledgeSourceUpload'
 
 vi.mock('hash-wasm', () => ({
   createSHA256: vi.fn(() => Promise.resolve({
@@ -108,6 +108,24 @@ describe('KnowledgeIngestionStudio', () => {
     })).toThrow('최대 50 MiB')
   })
 
+  it('accepts the governed A-Box document allowlist and canonicalizes browser MIME aliases', () => {
+    expect(validateKnowledgeDocument({
+      name: 'customers.csv',
+      type: 'application/csv',
+      size: 128,
+    })).toBe('text/csv')
+    expect(validateKnowledgeDocument({
+      name: 'policy.docx',
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      size: 256,
+    })).toBe('application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    expect(() => validateKnowledgeDocument({
+      name: 'legacy.doc',
+      type: 'application/msword',
+      size: 128,
+    })).toThrow(/지원 형식/)
+  })
+
   it('uses the backend REVIEW state and a light enterprise mode selector', async () => {
     const request = vi.fn((path: string) => {
       if (path === '/knowledge/graphs') return Promise.resolve([{
@@ -203,13 +221,13 @@ describe('KnowledgeIngestionStudio', () => {
 
     render(<KnowledgeIngestionStudio client={{ request } as unknown as ApiClient} />)
     fireEvent.click(screen.getByRole('button', { name: /MODE B/ }))
-    const input = await screen.findByLabelText('지식 PDF 소스')
+    const input = await screen.findByLabelText('지식 문서 소스')
     await waitFor(() => expect(input).toBeEnabled())
     const file = new File(['%PDF-1.6\nverified-content'], 'semiconductor-outlook.pdf', {
       type: 'application/pdf',
     })
     fireEvent.change(input, { target: { files: [file] } })
-    fireEvent.click(screen.getByRole('button', { name: 'PDF 검증 업로드 시작' }))
+    fireEvent.click(screen.getByRole('button', { name: '문서 검증 업로드 시작' }))
 
     expect(await screen.findByText('ACCEPTED')).toBeInTheDocument()
     await waitFor(() => expect(screen.getByRole('button', { name: 'LLM 추출 제안 생성' })).toBeEnabled())
@@ -295,7 +313,7 @@ describe('KnowledgeIngestionStudio', () => {
 
     const selectedJob = await screen.findByLabelText('지식 소스 분석 작업')
     await waitFor(() => expect(within(selectedJob).getByText('RUNNING')).toBeInTheDocument())
-    expect(screen.getByText('2/10 pages')).toBeInTheDocument()
+    expect(screen.getByText('2/10 evidence segments')).toBeInTheDocument()
     fireEvent.change(screen.getByPlaceholderText('감사 로그에 남을 사유'), {
       target: { value: '운영자가 잘못된 소스 선택을 확인함' },
     })
@@ -444,13 +462,13 @@ describe('KnowledgeIngestionStudio', () => {
     fireEvent.click(screen.getByRole('button', { name: /MODE B/ }))
 
     expect(await screen.findByText(/PUBLIC\/INTERNAL 소스만 허용/)).toBeInTheDocument()
-    expect(screen.getByLabelText('지식 PDF 소스')).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'PDF 검증 업로드 시작' })).toBeDisabled()
+    expect(screen.getByLabelText('지식 문서 소스')).toBeDisabled()
+    expect(screen.getByRole('button', { name: '문서 검증 업로드 시작' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'LLM 추출 제안 생성' })).toBeDisabled()
     expect(request.mock.calls.some(([path]) => path === '/uploads')).toBe(false)
   })
 
-  it('rejects a non-PDF source before initiating a governed upload', async () => {
+  it('rejects a source outside the document allowlist before initiating an upload', async () => {
     const request = vi.fn((path: string) => {
       if (path === '/knowledge/graphs') return Promise.resolve([graph])
       if (path === '/knowledge/graphs/graph-1/changesets') return Promise.resolve([])
@@ -462,14 +480,14 @@ describe('KnowledgeIngestionStudio', () => {
     })
     render(<KnowledgeIngestionStudio client={{ request } as unknown as ApiClient} />)
     fireEvent.click(screen.getByRole('button', { name: /MODE B/ }))
-    const input = await screen.findByLabelText('지식 PDF 소스')
+    const input = await screen.findByLabelText('지식 문서 소스')
     await waitFor(() => expect(input).toBeEnabled())
     fireEvent.change(input, {
-      target: { files: [new File(['not a pdf'], 'notes.txt', { type: 'text/plain' })] },
+      target: { files: [new File(['binary'], 'notes.exe', { type: 'application/octet-stream' })] },
     })
 
-    expect(await screen.findByText(/application\/pdf 형식의 \.pdf 파일만/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'PDF 검증 업로드 시작' })).toBeDisabled()
+    expect(await screen.findByText(/지원 형식은 PDF/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '문서 검증 업로드 시작' })).toBeDisabled()
     expect(request.mock.calls.some(([path]) => path === '/uploads')).toBe(false)
   })
 
@@ -491,12 +509,12 @@ describe('KnowledgeIngestionStudio', () => {
 
     render(<KnowledgeIngestionStudio client={{ request } as unknown as ApiClient} />)
     fireEvent.click(screen.getByRole('button', { name: /MODE B/ }))
-    const input = await screen.findByLabelText('지식 PDF 소스')
+    const input = await screen.findByLabelText('지식 문서 소스')
     await waitFor(() => expect(input).toBeEnabled())
     fireEvent.change(input, {
       target: { files: [new File(['%PDF-1.6'], 'semiconductor-outlook.pdf', { type: 'application/pdf' })] },
     })
-    fireEvent.click(screen.getByRole('button', { name: 'PDF 검증 업로드 시작' }))
+    fireEvent.click(screen.getByRole('button', { name: '문서 검증 업로드 시작' }))
 
     expect(await screen.findByText('오브젝트 스토리지 업로드 실패 (503)')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'LLM 추출 제안 생성' })).toBeDisabled()

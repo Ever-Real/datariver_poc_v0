@@ -44,6 +44,7 @@ from datariver.domain.knowledge_pipeline import (
     KnowledgeSourceAnalysis,
     KnowledgeSourceSnapshot,
     ModelBinding,
+    supported_knowledge_source_media_types,
 )
 from datariver.domain.knowledge_source_jobs import (
     KnowledgeSourceJobPins,
@@ -74,7 +75,7 @@ from datariver.infrastructure.db.models.platform import (
 )
 from datariver.infrastructure.db.rls import set_security_context
 
-PARSER_CONFIGURATION_HASH = hashlib.sha256(b"pypdf-strict-page-aware-v1").hexdigest()
+PARSER_CONFIGURATION_HASH = hashlib.sha256(b"bounded-knowledge-document-parser-v1").hexdigest()
 _ENQUEUE_OPERATION = "knowledge.source-analysis.enqueue"
 _CANCEL_OPERATION = "knowledge.source-analysis.cancel"
 MAX_ACTIVE_SOURCE_JOBS_PER_OWNER_GRAPH = 20
@@ -361,13 +362,14 @@ class SqlKnowledgeSourceJobStore(KnowledgeSourceJobStore):
         if (
             manifest.state != "ACCEPTED"
             or manifest.owner_id != actor_id
-            or manifest.mime != "application/pdf"
+            or manifest.mime not in supported_knowledge_source_media_types()
             or manifest.actual_sha256 != manifest.sha256
             or manifest.actual_size_bytes != manifest.size_bytes
             or not 0 < manifest.size_bytes <= MAX_SOURCE_BYTES
         ):
             raise ValidationError(
-                "The source must be an integrity-verified accepted PDF upload within 50 MiB."
+                "The source must be an integrity-verified accepted Knowledge document "
+                "within 50 MiB."
             )
         if manifest.classification > graph.classification:
             raise ValidationError(
@@ -410,7 +412,7 @@ class SqlKnowledgeSourceJobStore(KnowledgeSourceJobStore):
             )
         ).one_or_none()
         if source is not None and source.state == "ANALYZED":
-            raise ConflictError("This immutable PDF source has already been analyzed.")
+            raise ConflictError("This immutable Knowledge source has already been analyzed.")
         if source is not None and (
             source.created_by != actor_id
             or source.bucket != manifest.bucket
@@ -447,7 +449,7 @@ class SqlKnowledgeSourceJobStore(KnowledgeSourceJobStore):
             )
         )
         if existing_job_id is not None:
-            raise ConflictError("This immutable PDF source already has an analysis job.")
+            raise ConflictError("This immutable Knowledge source already has an analysis job.")
 
         pins = KnowledgeSourceJobPins(
             workspace_id=workspace_id,

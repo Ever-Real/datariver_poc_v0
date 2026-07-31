@@ -9,7 +9,7 @@ from datariver.application.knowledge_pipeline_ports import (
     KnowledgeEmbeddingProvider,
     KnowledgeInferenceAuditWriter,
     KnowledgeSourceReader,
-    PageAwarePdfParser,
+    PageAwareKnowledgeDocumentParser,
     ScopedGraphEvidenceRetriever,
     TypedKnowledgeExtractor,
     VerifiedKnowledgeProjectionWriter,
@@ -123,7 +123,7 @@ class KnowledgeSourcePipeline:
         self,
         *,
         reader: KnowledgeSourceReader,
-        parser: PageAwarePdfParser,
+        parser: PageAwareKnowledgeDocumentParser,
         embedding: KnowledgeEmbeddingProvider,
         extractor: TypedKnowledgeExtractor,
     ) -> None:
@@ -132,7 +132,7 @@ class KnowledgeSourcePipeline:
         self._embedding = embedding
         self._extractor = extractor
 
-    async def analyze_pdf(
+    async def analyze_document(
         self,
         *,
         source: KnowledgeSourceSnapshot,
@@ -152,10 +152,29 @@ class KnowledgeSourcePipeline:
         extraction_binding.validate()
         payload = await self._reader.read_snapshot(source=source)
         source.verify(payload)
-        pages = self._parser.parse(payload)
+        pages = self._parser.parse(payload, media_type=source.media_type)
         return await self.analyze_pages(
             source=source,
             pages=pages,
+            entity_types=entity_types,
+            edge_types=edge_types,
+            embedding_binding=embedding_binding,
+            extraction_binding=extraction_binding,
+        )
+
+    async def analyze_pdf(
+        self,
+        *,
+        source: KnowledgeSourceSnapshot,
+        entity_types: frozenset[str],
+        edge_types: frozenset[str],
+        embedding_binding: ModelBinding,
+        extraction_binding: ModelBinding,
+    ) -> KnowledgeSourceAnalysis:
+        """Compatibility entry point for callers that still name the original PDF flow."""
+
+        return await self.analyze_document(
+            source=source,
             entity_types=entity_types,
             edge_types=edge_types,
             embedding_binding=embedding_binding,
@@ -179,12 +198,18 @@ class KnowledgeSourcePipeline:
         embedding_binding.validate()
         extraction_binding.validate()
         if not pages or len(pages) > MAX_PDF_PAGES:
-            raise ValidationError("The PDF has no extractable pages or exceeds the page limit.")
+            raise ValidationError(
+                "The source document has no extractable segments or exceeds the segment limit."
+            )
         numbers = [page.page_number for page in pages]
         if len(numbers) != len(set(numbers)) or numbers != sorted(numbers):
-            raise ValidationError("PDF parser output must contain unique ordered page numbers.")
+            raise ValidationError(
+                "Document parser output must contain unique ordered segment numbers."
+            )
         if sum(len(page.text) for page in pages) > MAX_TOTAL_PAGE_CHARACTERS:
-            raise ValidationError("The PDF extracted text exceeds the total character limit.")
+            raise ValidationError(
+                "The source document extracted text exceeds the total character limit."
+            )
         if checkpoint is not None:
             await checkpoint(
                 "PARSED",
@@ -367,7 +392,7 @@ class KnowledgeSourcePipeline:
         for page in pages:
             if len(page.text) > maximum_characters:
                 raise ValidationError(
-                    "A parsed PDF page exceeds the bounded provider request size."
+                    "A parsed source segment exceeds the bounded provider request size."
                 )
             if current and (
                 len(current) >= maximum_pages or characters + len(page.text) > maximum_characters
@@ -460,7 +485,7 @@ class KnowledgeSourcePipeline:
             ),
             source_version=analysis.source.content_sha256,
             method=(
-                f"typed_pdf_extraction:{analysis.extraction.binding.provider}:"
+                f"typed_document_extraction:{analysis.extraction.binding.provider}:"
                 f"{analysis.extraction.binding.model}:{analysis.extraction.binding.prompt_version}"
             ),
             confidence=confidence,
@@ -497,7 +522,7 @@ class KnowledgeSourcePipeline:
             raise ValidationError("Embedding output must match the page count exactly.")
         page_numbers = tuple(page.page_number for page in pages)
         if tuple(item.page_number for item in batch.embeddings) != page_numbers:
-            raise ValidationError("Embedding output must preserve PDF page order.")
+            raise ValidationError("Embedding output must preserve source segment order.")
         dimensions: int | None = None
         for embedding in batch.embeddings:
             embedding.validate(dimensions=dimensions)

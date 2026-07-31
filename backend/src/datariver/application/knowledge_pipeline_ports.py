@@ -42,12 +42,17 @@ class KnowledgeSourceSpoolReader(KnowledgeSourceReader, Protocol):
     ) -> SpooledKnowledgeSource: ...
 
 
-class PageAwarePdfParser(Protocol):
-    def parse(self, payload: bytes) -> tuple[PdfPage, ...]: ...
+class PageAwareKnowledgeDocumentParser(Protocol):
+    def parse(self, payload: bytes, *, media_type: str) -> tuple[PdfPage, ...]: ...
 
 
-class StreamingPageAwarePdfParser(PageAwarePdfParser, Protocol):
-    def parse_stream(self, source: BinaryIO) -> tuple[PdfPage, ...]: ...
+class StreamingPageAwareKnowledgeDocumentParser(PageAwareKnowledgeDocumentParser, Protocol):
+    def parse_stream(
+        self,
+        source: BinaryIO,
+        *,
+        media_type: str,
+    ) -> tuple[PdfPage, ...]: ...
 
 
 class KnowledgeEmbeddingProvider(Protocol):

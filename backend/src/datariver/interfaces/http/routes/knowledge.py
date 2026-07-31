@@ -865,7 +865,7 @@ async def analyze_neighbors(
     status_code=202,
     response_model=KnowledgeSourceJobResponse,
 )
-async def analyze_knowledge_pdf_source(
+async def analyze_knowledge_document_source(
     graph_id: UUID,
     upload_id: UUID,
     payload: KnowledgeSourceAnalyzeRequest,

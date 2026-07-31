@@ -24,6 +24,7 @@ class Inspection:
     prefix: bytes
     tail: bytes
     contains_vba: bool
+    contains_openxml_external_link: bool = False
 
 
 class UploadValidationWorker:
@@ -153,6 +154,7 @@ class UploadValidationWorker:
         marker_window = b""
         size = 0
         contains_vba = False
+        contains_openxml_external_link = False
         async for chunk in self._object_store.iter_object_chunks(
             bucket=bucket, object_key=object_key
         ):
@@ -169,6 +171,8 @@ class UploadValidationWorker:
             search_window = marker_window + chunk
             if b"vbaproject.bin" in search_window.lower():
                 contains_vba = True
+            if b"externallinks/" in search_window.lower():
+                contains_openxml_external_link = True
             marker_window = search_window[-256:]
         actual_hash = digest.hexdigest()
         if size != manifest.declared_size_bytes:
@@ -181,7 +185,14 @@ class UploadValidationWorker:
                 "Uploaded object checksum does not match its declaration.",
                 details={"code": "CHECKSUM_MISMATCH"},
             )
-        return Inspection(size, actual_hash, bytes(prefix), tail, contains_vba)
+        return Inspection(
+            size,
+            actual_hash,
+            bytes(prefix),
+            tail,
+            contains_vba,
+            contains_openxml_external_link,
+        )
 
     async def _delete_best_effort(self, *, bucket: str, object_key: str) -> None:
         try:
@@ -196,22 +207,36 @@ class UploadValidationWorker:
         expected_suffixes = {
             "application/pdf": {".pdf"},
             "text/csv": {".csv"},
+            "text/plain": {".txt"},
             "application/json": {".json"},
+            "text/json": {".json"},
             "application/yaml": {".yaml", ".yml"},
             "text/yaml": {".yaml", ".yml"},
+            "application/xml": {".xml"},
+            "text/xml": {".xml"},
+            "text/html": {".html", ".htm"},
+            "application/xhtml+xml": {".html", ".htm"},
             "application/x-parquet": {".parquet"},
             "application/vnd.apache.parquet": {".parquet"},
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {".xlsx"},
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document": {".docx"},
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation": {".pptx"},
         }
-        if suffix not in expected_suffixes[mime]:
+        accepted_suffixes = expected_suffixes.get(mime)
+        if accepted_suffixes is None or suffix not in accepted_suffixes:
             raise ValidationError(
                 "Filename extension does not match the declared content type.",
                 details={"code": "EXTENSION_MISMATCH"},
             )
         validator_version = (
             (
-                "integrity-xlsx-v1"
-                if mime == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                "integrity-openxml-v1"
+                if mime
+                in {
+                    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                }
                 else "integrity-format-v1"
             )
             if manifest.content_profile is UploadContentProfile.FORMAT_ONLY_V1
@@ -231,22 +256,66 @@ class UploadValidationWorker:
             return {**base, "coverage": "FULL_SIGNATURE"}
         if mime == "text/csv":
             return {**base, **UploadValidationWorker._validate_csv(inspection)}
-        if mime == "application/json":
+        if mime in {"application/json", "text/json"}:
             return {**base, **UploadValidationWorker._validate_json(inspection)}
         if mime in {"application/yaml", "text/yaml"}:
             return {**base, **UploadValidationWorker._validate_yaml(inspection)}
+        if mime == "text/plain":
+            return {**base, **UploadValidationWorker._validate_utf8_text(inspection)}
+        if mime in {"application/xml", "text/xml", "text/html", "application/xhtml+xml"}:
+            return {
+                **base,
+                **UploadValidationWorker._validate_markup(
+                    inspection,
+                    reject_entities=mime in {"application/xml", "text/xml"},
+                ),
+            }
         if mime in {"application/x-parquet", "application/vnd.apache.parquet"}:
             if not inspection.prefix.startswith(b"PAR1") or not inspection.tail.endswith(b"PAR1"):
                 raise ValidationError(
                     "Parquet signature is invalid.", details={"code": "PARQUET_SIGNATURE"}
                 )
             return {**base, "coverage": "FULL_SIGNATURE"}
-        if not inspection.prefix.startswith(b"PK\x03\x04") or inspection.contains_vba:
+        if (
+            not inspection.prefix.startswith(b"PK\x03\x04")
+            or inspection.contains_vba
+            or inspection.contains_openxml_external_link
+        ):
             raise ValidationError(
-                "XLSX package signature is invalid or contains a macro payload.",
-                details={"code": "XLSX_UNSAFE_PACKAGE"},
+                "OpenXML package signature is invalid or contains a macro payload.",
+                details={"code": "OPENXML_UNSAFE_PACKAGE"},
             )
         return {**base, "coverage": "FULL_SIGNATURE", "macros_detected": False}
+
+    @staticmethod
+    def _validate_utf8_text(inspection: Inspection) -> dict[str, object]:
+        try:
+            text = inspection.prefix.decode("utf-8-sig")
+        except UnicodeDecodeError as error:
+            raise ValidationError(
+                "Text sources must be UTF-8 encoded.",
+                details={"code": "TEXT_ENCODING"},
+            ) from error
+        if "\x00" in text:
+            raise ValidationError("Text sources contain NUL bytes.", details={"code": "TEXT_NUL"})
+        return {
+            "coverage": "FULL_TEXT" if inspection.size_bytes <= PREVIEW_LIMIT else "SAMPLED_TEXT"
+        }
+
+    @staticmethod
+    def _validate_markup(
+        inspection: Inspection,
+        *,
+        reject_entities: bool,
+    ) -> dict[str, object]:
+        result = UploadValidationWorker._validate_utf8_text(inspection)
+        lowered = inspection.prefix[:8192].lower()
+        if reject_entities and (b"<!doctype" in lowered or b"<!entity" in lowered):
+            raise ValidationError(
+                "XML DTD and entity declarations are not accepted.",
+                details={"code": "XML_ENTITY_DECLARATION"},
+            )
+        return result
 
     @staticmethod
     def _validate_csv(inspection: Inspection) -> dict[str, object]:

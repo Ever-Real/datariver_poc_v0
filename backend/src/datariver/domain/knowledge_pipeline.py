@@ -9,6 +9,22 @@ from uuid import UUID
 from datariver.domain.common import ValidationError
 
 PDF_MEDIA_TYPE = "application/pdf"
+KNOWLEDGE_SOURCE_MEDIA_TYPES = frozenset(
+    {
+        PDF_MEDIA_TYPE,
+        "text/csv",
+        "text/plain",
+        "application/json",
+        "text/json",
+        "application/xml",
+        "text/xml",
+        "text/html",
+        "application/xhtml+xml",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+)
 MAX_SOURCE_BYTES = 50 * 1024 * 1024
 MAX_PDF_PAGES = 500
 MAX_PAGE_CHARACTERS = 100_000
@@ -31,6 +47,10 @@ def _canonical_hash(document: object) -> str:
     return hashlib.sha256(
         json.dumps(document, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
+
+
+def supported_knowledge_source_media_types() -> frozenset[str]:
+    return KNOWLEDGE_SOURCE_MEDIA_TYPES
 
 
 @dataclass(frozen=True, slots=True)
@@ -67,10 +87,8 @@ class KnowledgeSourceSnapshot:
         )
 
     def verify_observation(self, *, byte_size: int, content_sha256: str) -> None:
-        if self.media_type != PDF_MEDIA_TYPE:
-            raise ValidationError(
-                "Knowledge source ingestion accepts only the PDF content profile."
-            )
+        if self.media_type not in KNOWLEDGE_SOURCE_MEDIA_TYPES:
+            raise ValidationError("The Knowledge source document type is not supported.")
         if (
             not self.bucket
             or not self.object_key

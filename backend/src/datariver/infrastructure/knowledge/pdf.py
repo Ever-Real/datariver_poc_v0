@@ -49,10 +49,22 @@ class PypdfPageAwareParser:
         self._reader_factory = reader_factory
         self._maximum_pages = maximum_pages
 
-    def parse(self, payload: bytes) -> tuple[PdfPage, ...]:
-        return self.parse_stream(BytesIO(payload))
+    def parse(
+        self,
+        payload: bytes,
+        *,
+        media_type: str = "application/pdf",
+    ) -> tuple[PdfPage, ...]:
+        return self.parse_stream(BytesIO(payload), media_type=media_type)
 
-    def parse_stream(self, source: BinaryIO) -> tuple[PdfPage, ...]:
+    def parse_stream(
+        self,
+        source: BinaryIO,
+        *,
+        media_type: str = "application/pdf",
+    ) -> tuple[PdfPage, ...]:
+        if media_type != "application/pdf":
+            raise ValidationError("The PDF parser received an unsupported document type.")
         source.seek(0)
         if source.read(5) != b"%PDF-":
             raise ValidationError("The knowledge source is not a PDF document.")

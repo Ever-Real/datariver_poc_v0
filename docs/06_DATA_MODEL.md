@@ -256,16 +256,16 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 | `knowledge.release_nodes` | composite release/entity identity, type/properties/classification/provenance | immutable assertion snapshot |
 | `knowledge.release_edges` | composite release/edge identity, endpoints/type/properties/classification/provenance | immutable relationship snapshot |
 | `knowledge.projection_deployments` | `id`, graph/release/job, adapter/target/state/content and verification hashes/counts/verified time/error | exact canonical PostgreSQL or Neo4j shadow read-back evidence; verified state requires adapter-specific target, reconstructed content-hash and count equality |
-| `knowledge.source_snapshots` | graph/upload UQ, private object coordinate/version, PDF media/size/hash/classification/state/creator | immutable integrity-verified source binding; never an external URL |
-| `knowledge.source_pages` | source/page PK, page content hash and parsed text | reviewer-visible page-aware grounding source |
+| `knowledge.source_snapshots` | graph/upload UQ, private object coordinate/version, allowlisted document media/size/hash/classification/state/creator | immutable integrity-verified source binding; never an external URL |
+| `knowledge.source_pages` | source/evidence-segment PK, content hash and parsed text | reviewer-visible page/segment-aware grounding source |
 | `knowledge.source_page_embeddings` | source/page/provider/model UQ, dimension `1..16384`, bounded JSON vector and page hash | source-scoped semantic evidence for the exact parsed page; PostgreSQL JSON is the current canonical storage contract, not pgvector or an external vector database claim |
-| `knowledge.source_analysis_jobs` | workspace/source UQ; graph/source/requester FKs; request/auth/source/base/graph/ontology/parser/model pin documents and hashes; state/stage/progress; retry counters; DB-time lease epoch and token hash; cancellation/result/failure/version/timestamps | durable PDF-to-DRAFT aggregate; one immutable source has at most one job and raw lease tokens, endpoints, credentials and private provider responses are not persisted |
+| `knowledge.source_analysis_jobs` | workspace/source UQ; graph/source/requester FKs; request/auth/source/base/graph/ontology/parser/model pin documents and hashes; state/stage/progress; retry counters; DB-time lease epoch and token hash; cancellation/result/failure/version/timestamps | durable document-to-DRAFT aggregate; one immutable source has at most one job and raw lease tokens, endpoints, credentials and private provider responses are not persisted |
 | `knowledge.source_analysis_attempts` | workspace/job/attempt and job/lease-epoch UQ; token hash, worker fingerprint, state/stage, input/output/external-response hashes, retry/failure and DB times | immutable attempt identity plus fenced terminal evidence; current/expired attempt state must agree with its parent job at commit |
 | `knowledge.source_analysis_events` | workspace/job/sequence UQ; optional same-job attempt, typed event/actor/reason, evidence hash, server-authored details and DB time | append-only API/worker transition ledger |
 | `knowledge.extraction_runs` | source/changeset, nullable durable job/attempt FKs, `LEGACY_SYNC_V1|DURABLE_SOURCE_V1`, parser hash, embedding/extraction bindings, input/output hashes/state/error | reproducible typed extraction evidence; `DURABLE_SOURCE_V1` requires both job and attempt while legacy synchronous rows require neither |
 | `knowledge.graphrag_audits` | graph/release/request UQ, actor, question hash, retrieved/cited IDs, model/prompt/tool and configuration source/version/hash, token counts | immutable citation-bounded inference audit without storing the raw question |
 
-The API supports changeset author/submit/independent-review/publish, PDF source extraction into a
+The API supports changeset author/submit/independent-review/publish, governed document extraction into a
 DRAFT changeset, optional Neo4j shadow verification and citation-bound GraphRAG. Publication locks
 the graph and changeset and atomically commits the immutable release/content, canonical PostgreSQL
 read-back receipt, published-changeset lineage, outbox and idempotency result; it never activates the
@@ -369,8 +369,10 @@ All mutations retain the existing workspace RLS, idempotency and ETag boundaries
 PostgreSQL releases remain canonical; Neo4j can be deleted and rebuilt. Graph classification is a
 maximum envelope enforced on changeset operations, complete submission/review, publication,
 immutable source preparation, model-output persistence and release reads. Model operations inherit
-the immutable source classification exactly. Durable PDF analysis is implemented as a separately
-credentialed worker for PUBLIC/INTERNAL sources. Enqueue pins the accepted manifest, graph/base,
+the immutable source classification exactly. Durable document analysis is implemented as a
+separately credentialed worker for PUBLIC/INTERNAL sources. ADR-0093 extends the original PDF
+contract to CSV/TXT/JSON/XML/HTML and macro-free DOCX/XLSX/PPTX without changing the DRAFT-only
+completion boundary. Enqueue pins the accepted manifest, graph/base,
 active ontology, parser and secret-free model bindings loaded from the validated deployment
 environment or orchestrator; the former database-activated System Configuration path is historical
 and superseded by ADR-0048. Finalization locks and rechecks those
@@ -747,7 +749,7 @@ insert.
 ## Backlog schema (not implemented)
 
 Versioned general ABAC policies/bindings, catalog relationships/normalized hierarchy, connection registry,
-general audit export, durable inference jobs beyond the implemented PDF-to-DRAFT capability, saved-query templates
+general audit export, durable inference jobs beyond the implemented document-to-DRAFT capability, saved-query templates
 beyond the built-in surfaces, embedding partitions and the approved Phase 0 Quality tables above
 remain target tables. Governed retention
 policy versions, per-class minimum/maximum rules, Legal Hold history, typed Maker-Checker erasure

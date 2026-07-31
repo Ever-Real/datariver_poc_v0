@@ -455,7 +455,7 @@ export function KnowledgeAssetInstancePanel({
         </span>
         <h3 className="my-1 text-sm font-black text-navy-900">인스턴스·적재·Release 관리</h3>
         <p className="m-0 text-xs leading-5 text-slate-600">
-          직접 입력과 PDF+LLM 추출은 typed DRAFT changeset을 만들며, 독립 검토·발행 전에는
+          직접 입력과 문서+LLM 추출은 typed DRAFT changeset을 만들며, 독립 검토·발행 전에는
           활성 A-Box가 아닙니다. DB 연결은 Studio의 immutable Binding 계약과 정확한 source
           version을 그대로 보여줍니다.
         </p>

@@ -7,7 +7,7 @@ from datariver.application.errors import ExternalDependencyError
 from datariver.application.knowledge_pipeline_ports import (
     KnowledgePipelineRuntime,
     KnowledgeSourceSpoolReader,
-    StreamingPageAwarePdfParser,
+    StreamingPageAwareKnowledgeDocumentParser,
 )
 from datariver.application.knowledge_source_job_contracts import KnowledgeSourceJobClaim
 from datariver.application.knowledge_source_job_ports import KnowledgeSourceJobWorkerStore
@@ -25,7 +25,7 @@ class KnowledgeSourceWorker:
         *,
         store: KnowledgeSourceJobWorkerStore,
         source_reader: KnowledgeSourceSpoolReader,
-        parser: StreamingPageAwarePdfParser,
+        parser: StreamingPageAwareKnowledgeDocumentParser,
         runtime_resolver: Callable[
             [KnowledgeSourceJobClaim],
             Awaitable[KnowledgePipelineRuntime],
@@ -65,6 +65,7 @@ class KnowledgeSourceWorker:
             pages = await asyncio.to_thread(
                 self._parser.parse_stream,
                 spooled.stream,
+                media_type=claim.source.media_type,
             )
             runtime = await self._preflight(claim)
             if runtime is None:

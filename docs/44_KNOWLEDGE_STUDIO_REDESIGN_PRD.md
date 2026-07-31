@@ -50,7 +50,7 @@ ADR/DB/API 게이트 승인과 구현 완료 후에만 이를 대체한다.
 
 현재 화면은 Registry, 데이터 적재, 지식 챗의 세 로컬 메뉴와 생성 Dialog, 고정 폭 inspector를
 사용한다. Registry는 graph 목록 뒤 선택 graph의 releases/snapshot을 조회한다. 기존
-ingestion은 Mode A/Mode B와 PDF 전용 durable source-analysis를 포함한다.
+ingestion은 Mode A/Mode B와 ADR-0093의 다중 형식 durable source-analysis를 포함한다.
 
 현행 소스에서 확인된 변경 지점은 다음과 같다.
 
@@ -64,7 +64,7 @@ ingestion은 Mode A/Mode B와 PDF 전용 durable source-analysis를 포함한다
 | `GET /knowledge/graphs` | 배열 응답이며 repository가 전체 허용 graph를 읽음 | 호환 응답은 유지하고 별도 Registry page endpoint 추가 |
 | `knowledge.graphs` | graph type/classification/version은 있으나 업무 domain/creator/editor가 없음 | nullable legacy-safe provenance 열을 추가하고 신규 materialize에는 필수 |
 | `knowledge.ontology_versions` | `entity_types/edge_types` 집합 문서 중심 | canonical schema document는 유지하고 typed element index를 원자적으로 파생 |
-| source-analysis | PDF, PUBLIC/INTERNAL, pinned/fenced durable job만 구현 | 다른 파일/DB inference를 구현된 것처럼 표시하지 않음 |
+| source-analysis | PDF/CSV/TXT/JSON/XML/HTML/DOCX/XLSX/PPTX, PUBLIC/INTERNAL, pinned/fenced durable job 구현 | full DB batch inference를 구현된 것처럼 표시하지 않음 |
 
 | 현재 계약 | 개편 후 처리 |
 |---|---|
@@ -82,7 +82,7 @@ ingestion은 Mode A/Mode B와 PDF 전용 durable source-analysis를 포함한다
 | UI-KG-001 | Registry와 별도 Knowledge Chat은 유지한다. Data Ingestion 메뉴만 Studio cutover 완료 후 제거한다. |
 | UI-KG-002 | 실제 graph/release 사용은 유지한다. 고정 inspector는 wide drawer로, create Dialog는 full-screen Studio로 대체한다. |
 | UI-KG-003 | Mode A/B의 의미를 Step 2 T-Box/Step 3 A-Box로 승계한다. |
-| UI-KG-004, UI-KG-006 | 기존 PDF durable job의 owner scope, PUBLIC/INTERNAL 제한, bounded polling/cancel/stale 상태를 Step 3에서 그대로 승계한다. DB/기타 파일은 승인 전 unavailable이다. |
+| UI-KG-004, UI-KG-006 | 기존 durable job의 owner scope, PUBLIC/INTERNAL 제한, bounded polling/cancel/stale 상태를 Step 3에서 그대로 승계한다. ADR-0093의 승인 문서 형식만 추가하고 full DB batch는 승인 전 unavailable이다. |
 | UI-KG-005 | 로컬 safe subset과 typed operation 원칙을 유지하고 stable identity, proposal overlay, 양방향 codec을 추가한다. |
 | UI-KG-007, UI-KG-008 | Knowledge Chat과 일반 Chat 계약은 변경하지 않는다. |
 
@@ -458,7 +458,7 @@ Knowledge feature 내부 API/DTO는 `frontend/src/api/types.ts`의 거대한 공
 | knowledge.changesets, change_operations, validation_results | instance/A-Box typed edit와 독립 검토 |
 | knowledge.releases, release_nodes, release_edges | immutable assertion/relationship snapshot |
 | knowledge.projection_deployments | PostgreSQL/Neo4j projection receipt |
-| knowledge.source_*와 extraction_runs | 현재 PDF source-analysis의 pinned/fenced evidence |
+| knowledge.source_*와 extraction_runs | 승인 문서 source-analysis의 pinned/fenced evidence |
 
 Studio proposal/binding은 이를 우회하거나 mutable release content를 바꾸지 않는다.
 기존 graph의 누락 creator/editor/domain은 idempotency나 현재 사용자로 추정 backfill하지 않는다.

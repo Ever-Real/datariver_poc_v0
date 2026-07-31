@@ -32,6 +32,7 @@ from datariver.domain.knowledge_source_jobs import (
     KnowledgeSourceJobStage,
     KnowledgeSourceJobState,
 )
+from datariver.infrastructure.knowledge.document import BoundedKnowledgeDocumentParser
 from datariver.infrastructure.knowledge.object_store import ObjectStoreKnowledgeSourceReader
 from datariver.infrastructure.knowledge.pdf import PypdfPageAwareParser
 from datariver.infrastructure.knowledge.runtime import KnowledgeRuntimeAdapters
@@ -186,7 +187,12 @@ class _Store:
         return self.record
 
 
-def _claim(payload: bytes) -> KnowledgeSourceJobClaim:
+def _claim(
+    payload: bytes,
+    *,
+    media_type: str = "application/pdf",
+    object_key: str = "private/source.pdf",
+) -> KnowledgeSourceJobClaim:
     now = datetime(2026, 7, 24, 1, tzinfo=UTC)
     workspace_id = uuid4()
     graph_id = uuid4()
@@ -199,9 +205,9 @@ def _claim(payload: bytes) -> KnowledgeSourceJobClaim:
         workspace_id=workspace_id,
         graph_id=graph_id,
         bucket="accepted",
-        object_key="private/source.pdf",
+        object_key=object_key,
         storage_version="manifest-v1",
-        media_type="application/pdf",
+        media_type=media_type,
         byte_size=len(payload),
         content_sha256=hashlib.sha256(payload).hexdigest(),
         classification=1,
@@ -282,6 +288,7 @@ def _worker(
     store: _Store,
     object_store: _ObjectStore,
     runtime: KnowledgeRuntimeAdapters,
+    parser: object | None = None,
 ) -> KnowledgeSourceWorker:
     async def resolve_runtime(_: KnowledgeSourceJobClaim) -> KnowledgeRuntimeAdapters:
         return runtime
@@ -291,7 +298,10 @@ def _worker(
         source_reader=ObjectStoreKnowledgeSourceReader(
             object_store=cast(ObjectStore, object_store)
         ),
-        parser=PypdfPageAwareParser(reader_factory=lambda _: _Reader([_Page("asset one")])),
+        parser=cast(
+            Any,
+            parser or PypdfPageAwareParser(reader_factory=lambda _: _Reader([_Page("asset one")])),
+        ),
         runtime_resolver=resolve_runtime,
         worker_fingerprint="worker-1",
         lease_seconds=300,
@@ -318,6 +328,31 @@ async def test_worker_spools_checkpoints_and_finalizes_one_typed_draft() -> None
     assert store.finalized is not None
     assert store.finalized.extraction.nodes[0].local_key == "AssetOne"
     assert {"SOURCE_READ", "PARSED", "EMBEDDED", "EXTRACTED", "FINALIZING"}.issubset(store.renewed)
+
+
+@pytest.mark.asyncio
+async def test_worker_extracts_a_governed_text_document_into_the_same_draft_boundary() -> None:
+    payload = b"asset one"
+    claim = _claim(
+        payload,
+        media_type="text/plain",
+        object_key="private/source.txt",
+    )
+    store = _Store(claim)
+
+    processed = await _worker(
+        store=store,
+        object_store=_ObjectStore(payload),
+        runtime=_runtime(claim),
+        parser=BoundedKnowledgeDocumentParser(),
+    ).run_once()
+
+    assert processed
+    assert store.failed is None
+    assert store.finalized is not None
+    assert store.finalized.source.media_type == "text/plain"
+    operations = store.finalized.extraction.nodes
+    assert operations[0].local_key == "AssetOne"
 
 
 @pytest.mark.asyncio

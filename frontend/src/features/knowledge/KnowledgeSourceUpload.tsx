@@ -21,7 +21,37 @@ import type {
 import { ErrorNotice } from '../../components/ErrorNotice'
 
 const HASH_CHUNK_SIZE = 4 * 1024 * 1024
-const MAX_PDF_SIZE_BYTES = 50 * 1024 * 1024
+const MAX_KNOWLEDGE_SOURCE_SIZE_BYTES = 50 * 1024 * 1024
+const KNOWLEDGE_SOURCE_ACCEPT = [
+  '.pdf',
+  '.csv',
+  '.txt',
+  '.json',
+  '.xml',
+  '.html',
+  '.htm',
+  '.docx',
+  '.xlsx',
+  '.pptx',
+].join(',')
+const KNOWLEDGE_SOURCE_PROFILES: Record<string, ReadonlySet<string>> = {
+  '.pdf': new Set(['application/pdf']),
+  '.csv': new Set(['text/csv', 'application/csv', 'text/plain']),
+  '.txt': new Set(['text/plain']),
+  '.json': new Set(['application/json', 'text/json']),
+  '.xml': new Set(['application/xml', 'text/xml']),
+  '.html': new Set(['text/html', 'application/xhtml+xml']),
+  '.htm': new Set(['text/html', 'application/xhtml+xml']),
+  '.docx': new Set([
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  ]),
+  '.xlsx': new Set([
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  ]),
+  '.pptx': new Set([
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  ]),
+}
 const ANALYSIS_HISTORY_PAGE_LIMIT = 100
 const TERMINAL_UPLOAD_STATES = new Set(['ACCEPTED', 'REJECTED', 'ABORTED', 'EXPIRED'])
 const TERMINAL_ANALYSIS_STATES = new Set(['SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED'])
@@ -54,7 +84,7 @@ export function KnowledgeSourceUpload({
   const [selectedReleaseId, setSelectedReleaseId] = useState('')
   const [projection, setProjection] = useState<KnowledgeProjectionReceipt>()
   const [progress, setProgress] = useState(0)
-  const [status, setStatus] = useState('PDF 파일을 선택하세요.')
+  const [status, setStatus] = useState('지식 소스 문서를 선택하세요.')
   const [uploadBusy, setUploadBusy] = useState(false)
   const [analysisBusy, setAnalysisBusy] = useState(false)
   const [projectionBusy, setProjectionBusy] = useState(false)
@@ -130,7 +160,7 @@ export function KnowledgeSourceUpload({
     setCancelReason('')
     setProjection(undefined)
     setProgress(0)
-    setStatus(graph ? 'PDF 파일을 선택하세요.' : '대상 지식 에셋을 선택하세요.')
+    setStatus(graph ? '지식 소스 문서를 선택하세요.' : '대상 지식 에셋을 선택하세요.')
     setError(undefined)
     setUploadBusy(false)
     setAnalysisBusy(false)
@@ -261,7 +291,7 @@ export function KnowledgeSourceUpload({
     setProjection(undefined)
     setProgress(0)
     try {
-      validateKnowledgePdf(file)
+      const contentType = validateKnowledgeDocument(file)
       setStatus('SHA-256 계산 중')
       const sha256 = await digestFile(file, controller.signal, (value) => {
         if (expectedGeneration === generation.current) setProgress(value * 0.15)
@@ -273,7 +303,7 @@ export function KnowledgeSourceUpload({
         body: JSON.stringify({
           display_name: file.name,
           size_bytes: file.size,
-          content_type: 'application/pdf',
+          content_type: contentType,
           sha256,
           classification: graph.classification,
           content_profile: 'FORMAT_ONLY_V1',
@@ -315,13 +345,13 @@ export function KnowledgeSourceUpload({
       if (expectedGeneration !== generation.current) return
       setRecord(queued)
       setProgress(0.97)
-      setStatus('무결성·PDF 형식 검증 대기 중')
+      setStatus('무결성·문서 형식 검증 대기 중')
       const terminal = await pollUpload(queued.id, controller, expectedGeneration)
       if (terminal && expectedGeneration === generation.current) setProgress(1)
     } catch (next) {
       if (!controller.signal.aborted && expectedGeneration === generation.current) {
         setError(next)
-        setStatus('PDF 업로드 또는 검증 실패')
+        setStatus('문서 업로드 또는 검증 실패')
       }
     } finally {
       finishOperation(controller)
@@ -416,17 +446,17 @@ export function KnowledgeSourceUpload({
     setProgress(0)
     if (!next) {
       setFile(undefined)
-      setStatus('PDF 파일을 선택하세요.')
+      setStatus('지식 소스 문서를 선택하세요.')
       return
     }
     try {
-      validateKnowledgePdf(next)
+      validateKnowledgeDocument(next)
       setFile(next)
       setTitle((current) => current.trim() ? current : `${next.name} 지식 추출 제안`)
       setStatus(`${next.name} 업로드 준비됨`)
     } catch (nextError) {
       setFile(undefined)
-      setStatus('유효한 PDF 파일이 필요합니다.')
+      setStatus('지원되는 지식 소스 문서가 필요합니다.')
       setError(nextError)
     }
   }
@@ -443,9 +473,9 @@ export function KnowledgeSourceUpload({
     <section className="grid gap-4 rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm lg:grid-cols-[minmax(0,1fr)_minmax(280px,0.65fr)]">
       <form className="grid gap-3" onSubmit={(event) => void upload(event)}>
         <header>
-          <span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Governed PDF source</span>
-          <h3 className="my-1 text-base font-black text-navy-900">PDF 검증 업로드</h3>
-          <p className="m-0 text-xs text-slate-500">최대 50 MiB · application/pdf · FORMAT_ONLY_V1</p>
+          <span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Governed document source</span>
+          <h3 className="my-1 text-base font-black text-navy-900">문서 검증 업로드</h3>
+          <p className="m-0 text-xs text-slate-500">PDF, CSV, TXT, JSON, XML, HTML, DOCX, XLSX, PPTX · 최대 50 MiB · DOC/XLS 제외</p>
         </header>
         <label
           className="grid min-h-36 place-items-center rounded-enterprise border border-dashed border-enterprise-blue bg-blue-50 p-5 text-center text-xs font-bold text-enterprise-blue"
@@ -454,22 +484,22 @@ export function KnowledgeSourceUpload({
           onDragOver={(event) => event.preventDefault()}
           onDrop={dropFile}
         >
-          <span><FileUp className="mx-auto mb-2" />{file?.name ?? 'PDF 파일을 드래그하거나 클릭하세요.'}<small className="mt-1 block font-normal text-slate-500">브라우저는 SHA-256을 증분 계산하고 원문은 오브젝트 스토리지로 직접 전송합니다.</small></span>
+          <span><FileUp className="mx-auto mb-2" />{file?.name ?? '지식 소스 문서를 드래그하거나 클릭하세요.'}<small className="mt-1 block font-normal text-slate-500">브라우저는 SHA-256을 증분 계산하고 원문은 오브젝트 스토리지로 직접 전송합니다.</small></span>
         </label>
         <input
           id={inputId}
           className="sr-only"
-          aria-label="지식 PDF 소스"
+          aria-label="지식 문서 소스"
           type="file"
-          accept=".pdf,application/pdf"
+          accept={KNOWLEDGE_SOURCE_ACCEPT}
           disabled={!graph || !sourceAnalysisEligible || uploadBusy}
           onChange={(event) => selectFile(event.target.files?.[0])}
         />
         <button className="button" disabled={!graph || !sourceAnalysisEligible || !file || uploadBusy || analysisBusy}>
           {uploadBusy ? <LoaderCircle size={14} className="animate-spin" /> : <FileUp size={14} />}
-          {uploadBusy ? '검증 중…' : 'PDF 검증 업로드 시작'}
+          {uploadBusy ? '검증 중…' : '문서 검증 업로드 시작'}
         </button>
-        <div className="h-2 overflow-hidden rounded-full bg-slate-200" role="progressbar" aria-label="지식 PDF 업로드 진행률" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}><span className="block h-full bg-enterprise-blue transition-[width]" style={{ width: `${Math.round(progress * 100)}%` }} /></div>
+        <div className="h-2 overflow-hidden rounded-full bg-slate-200" role="progressbar" aria-label="지식 문서 업로드 진행률" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}><span className="block h-full bg-enterprise-blue transition-[width]" style={{ width: `${Math.round(progress * 100)}%` }} /></div>
         <p className="m-0 text-xs text-slate-600" aria-live="polite">{status}</p>
         {record && <dl className="grid gap-2 text-xs sm:grid-cols-2">
           <div><dt className="font-black text-slate-500">Upload ID</dt><dd className="m-0 break-all"><code>{record.id}</code></dd></div>
@@ -482,9 +512,9 @@ export function KnowledgeSourceUpload({
       <div className="grid content-start gap-3">
         <header>
           <span className="text-[10px] font-black tracking-[.14em] text-enterprise-blue uppercase">Typed LLM proposal</span>
-          <h3 className="my-1 text-base font-black text-navy-900">PDF 분석 및 Changeset 생성</h3>
+          <h3 className="my-1 text-base font-black text-navy-900">문서 분석 및 Changeset 생성</h3>
         </header>
-        {graph && !sourceAnalysisEligible && <p className="notice notice-error" role="status">현재 추론 공급자 계약은 PUBLIC/INTERNAL 소스만 허용합니다. {graph.classification} 지식 에셋은 분류를 낮추지 않으며 PDF 업로드·분석을 실행하지 않습니다.</p>}
+        {graph && !sourceAnalysisEligible && <p className="notice notice-error" role="status">현재 추론 공급자 계약은 PUBLIC/INTERNAL 소스만 허용합니다. {graph.classification} 지식 에셋은 분류를 낮추지 않으며 문서 업로드·분석을 실행하지 않습니다.</p>}
         <label className="grid gap-1 text-xs font-black text-navy-900">제안 제목<input maxLength={500} value={title} onChange={(event) => setTitle(event.target.value)} placeholder="분석 근거를 식별할 제목" /></label>
         <button type="button" className="button" disabled={!sourceAnalysisEligible || record?.state !== 'ACCEPTED' || !title.trim() || analysisBusy || uploadBusy || Boolean(analysisJob && !analysisTerminal)} onClick={() => void analyze()}>
           {analysisBusy ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
@@ -518,7 +548,7 @@ export function KnowledgeSourceUpload({
         </section>}
         {analysisJob && <section className="grid gap-2 rounded-enterprise border border-slate-300 bg-slate-50 p-3" aria-label="지식 소스 분석 작업">
           <div className="flex flex-wrap items-center gap-2 text-xs"><strong>작업 상태</strong><span className="badge badge-soft">{analysisJob.state}</span><span>{analysisJob.stage}</span><span>시도 {analysisJob.attempt_count}/{analysisJob.maximum_attempts}</span></div>
-          {analysisJob.progress.total_pages !== undefined && <p className="m-0 text-xs text-slate-600">{analysisJob.progress.completed_pages ?? 0}/{analysisJob.progress.total_pages} pages</p>}
+          {analysisJob.progress.total_pages !== undefined && <p className="m-0 text-xs text-slate-600">{analysisJob.progress.completed_pages ?? 0}/{analysisJob.progress.total_pages} evidence segments</p>}
           {analysisJob.last_failure_code && <p className="notice notice-error m-0" role="status">오류 코드: {analysisJob.last_failure_code}</p>}
           {!analysisTerminal && analysisPollingExhausted && <button type="button" className="button button-secondary w-fit" onClick={() => setAnalysisPollGeneration((value) => value + 1)}>확인 다시 시작</button>}
           {!analysisTerminal && <div className="flex flex-wrap items-end gap-2"><label className="grid min-w-64 flex-1 gap-1 text-xs font-black">취소 사유<input maxLength={1000} value={cancelReason} onChange={(event) => setCancelReason(event.target.value)} placeholder="감사 로그에 남을 사유" /></label><button type="button" className="button button-danger" disabled={!cancelReason.trim()} onClick={() => void cancelAnalysis()}>작업 취소</button></div>}
@@ -529,7 +559,7 @@ export function KnowledgeSourceUpload({
           <dl className="grid gap-2 text-xs sm:grid-cols-2">
             <div><dt className="font-black text-slate-500">Source snapshot</dt><dd className="m-0 break-all"><code>{analysisJob?.source_snapshot_id}</code></dd></div>
             <div><dt className="font-black text-slate-500">Changeset</dt><dd className="m-0 break-all"><code>{analysis.changeset_id}</code></dd></div>
-            <div><dt className="font-black text-slate-500">Pages</dt><dd className="m-0">{analysis.page_count.toLocaleString()}</dd></div>
+            <div><dt className="font-black text-slate-500">Evidence segments</dt><dd className="m-0">{analysis.page_count.toLocaleString()}</dd></div>
             <div><dt className="font-black text-slate-500">Proposed graph</dt><dd className="m-0">{analysis.proposed_node_count.toLocaleString()} nodes · {analysis.proposed_edge_count.toLocaleString()} edges</dd></div>
             <div><dt className="font-black text-slate-500">Embedding model</dt><dd className="m-0 break-all">{analysis.embedding_model}</dd></div>
             <div><dt className="font-black text-slate-500">Extraction model</dt><dd className="m-0 break-all">{analysis.extraction_model}</dd></div>
@@ -563,12 +593,30 @@ export function KnowledgeSourceUpload({
   </div>
 }
 
-export function validateKnowledgePdf(file: Pick<File, 'name' | 'type' | 'size'>): void {
-  if (!file.name.toLowerCase().endsWith('.pdf') || (file.type && file.type !== 'application/pdf')) {
-    throw new Error('Knowledge 소스는 application/pdf 형식의 .pdf 파일만 등록할 수 있습니다.')
+export function validateKnowledgeDocument(
+  file: Pick<File, 'name' | 'type' | 'size'>,
+): string {
+  const suffix = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] ?? ''
+  const acceptedTypes = KNOWLEDGE_SOURCE_PROFILES[suffix]
+  if (!acceptedTypes) {
+    throw new Error('지원 형식은 PDF, CSV, TXT, JSON, XML, HTML, DOCX, XLSX, PPTX입니다.')
   }
-  if (file.size < 1) throw new Error('빈 PDF 파일은 등록할 수 없습니다.')
-  if (file.size > MAX_PDF_SIZE_BYTES) throw new Error('Knowledge PDF는 최대 50 MiB까지 등록할 수 있습니다.')
+  const declaredType = file.type.trim().toLowerCase()
+  if (declaredType && !acceptedTypes.has(declaredType)) {
+    throw new Error('파일 확장자와 브라우저가 확인한 문서 형식이 일치하지 않습니다.')
+  }
+  if (file.size < 1) throw new Error('빈 지식 소스 문서는 등록할 수 없습니다.')
+  if (file.size > MAX_KNOWLEDGE_SOURCE_SIZE_BYTES) {
+    throw new Error('Knowledge 소스 문서는 최대 50 MiB까지 등록할 수 있습니다.')
+  }
+  return [...acceptedTypes][0] ?? 'application/octet-stream'
+}
+
+export function validateKnowledgePdf(file: Pick<File, 'name' | 'type' | 'size'>): void {
+  if (!file.name.toLowerCase().endsWith('.pdf')) {
+    throw new Error('Knowledge PDF는 .pdf 파일이어야 합니다.')
+  }
+  validateKnowledgeDocument(file)
 }
 
 async function digestFile(
@@ -594,8 +642,8 @@ function uploadStateLabel(record: UploadRecord): string {
     COMPLETION_QUEUED: '오브젝트 완료 대기 중',
     COMPLETING: '오브젝트 완료 처리 중',
     QUARANTINED: '격리 완료, 검증 대기 중',
-    VALIDATION_QUEUED: 'PDF 형식 검증 대기 중',
-    VALIDATING: '무결성·PDF 형식 검증 중',
+    VALIDATION_QUEUED: '문서 형식 검증 대기 중',
+    VALIDATING: '무결성·문서 형식 검증 중',
     ACCEPTED: '검증 통과 및 승인 버킷 승격 완료',
     REJECTED: `검증 거부 (${record.last_error_code ?? '원인 미상'})`,
     ABORTED: '업로드 중단',
@@ -606,14 +654,14 @@ function uploadStateLabel(record: UploadRecord): string {
 
 function analysisJobStateLabel(job: KnowledgeSourceJob): string {
   const labels: Record<KnowledgeSourceJob['state'], string> = {
-    QUEUED: 'PDF 분석 작업이 대기열에 등록되었습니다.',
-    RUNNING: `PDF 분석 진행 중 · ${job.stage}`,
+    QUEUED: '문서 분석 작업이 대기열에 등록되었습니다.',
+    RUNNING: `문서 분석 진행 중 · ${job.stage}`,
     RETRY_WAIT: `일시 오류로 재시도 대기 중 (${job.last_failure_code ?? '원인 미상'})`,
     CANCEL_REQUESTED: '실행 중인 작업에 취소를 요청했습니다.',
     SUCCEEDED: 'LLM 추출 제안이 DRAFT changeset으로 생성되었습니다.',
-    FAILED: `PDF 분석 실패 (${job.last_failure_code ?? '원인 미상'})`,
+    FAILED: `문서 분석 실패 (${job.last_failure_code ?? '원인 미상'})`,
     STALE: `고정된 입력 또는 권한이 변경되어 작업을 종료했습니다. (${job.last_failure_code ?? '원인 미상'})`,
-    CANCELLED: 'PDF 분석 작업이 취소되었습니다.',
+    CANCELLED: '문서 분석 작업이 취소되었습니다.',
   }
   return labels[job.state]
 }

@@ -49,7 +49,10 @@ def validate_studio_document_profile(
     filename: str | None,
     content_type: str | None,
     size_bytes: int,
+    maximum_bytes: int = MAXIMUM_STUDIO_DOCUMENT_BYTES,
 ) -> tuple[str, str]:
+    if not 1 <= maximum_bytes <= 50 * 1024 * 1024:
+        raise ValidationError("The Studio document size bound is invalid.")
     if filename is None:
         raise ValidationError("The Studio document filename is required.")
     safe_name = PurePath(filename.replace("\\", "/")).name
@@ -65,7 +68,7 @@ def validate_studio_document_profile(
     declared_type = (content_type or "").split(";", 1)[0].strip().lower()
     if accepted_types is None or declared_type not in accepted_types:
         raise ValidationError("The Studio document type is not supported.")
-    if not 1 <= size_bytes <= MAXIMUM_STUDIO_DOCUMENT_BYTES:
+    if not 1 <= size_bytes <= maximum_bytes:
         raise ValidationError("The Studio document exceeds its bounded size profile.")
     return safe_name, suffix
 
@@ -75,11 +78,16 @@ def extract_studio_document_text(
     filename: str,
     content_type: str,
     content: bytes,
+    maximum_characters: int = MAXIMUM_STUDIO_DOCUMENT_EXTRACTED_CHARACTERS,
+    maximum_bytes: int = MAXIMUM_STUDIO_DOCUMENT_BYTES,
 ) -> str:
+    if not 1 <= maximum_characters <= 5_000_000:
+        raise ValidationError("The Studio document extraction bound is invalid.")
     _, suffix = validate_studio_document_profile(
         filename=filename,
         content_type=content_type,
         size_bytes=len(content),
+        maximum_bytes=maximum_bytes,
     )
     try:
         if suffix == ".pdf":
@@ -106,7 +114,7 @@ def extract_studio_document_text(
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()
     if not normalized:
         raise ValidationError("The Studio document contains no extractable text.")
-    return normalized[:MAXIMUM_STUDIO_DOCUMENT_EXTRACTED_CHARACTERS]
+    return normalized[:maximum_characters]
 
 
 def _decode_text(content: bytes) -> str:

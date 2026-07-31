@@ -470,9 +470,11 @@ changeset until independent publication.
 
 Neighbor request accepts only `node_id`, `direction=IN|OUT|BOTH`, an edge-type allowlist, `maximum_hops<=3` and `maximum_nodes<=500`. It cannot contain SQL, Cypher, labels or clauses. Every published node/edge requires ontology membership, valid endpoints, classification and provenance.
 
-PDF analysis accepts only an `ACCEPTED` `application/pdf` upload owned by the current actor, with
+Document analysis accepts only an `ACCEPTED` allowlisted PDF/CSV/TXT/JSON/XML/HTML or
+macro-free DOCX/XLSX/PPTX upload owned by the current actor, with extension/media agreement,
 declared and observed SHA-256/size equality, a 50 MiB hard limit and PUBLIC/INTERNAL classification
-within the graph envelope. The enqueue transaction pins source version/hash/classification, graph
+within the graph envelope. Legacy DOC/XLS, XML entities and unsafe OpenXML fail closed. The enqueue
+transaction pins source version/hash/classification, graph
 version, explicit empty or exact governed active-release base, active ontology ID/checksum, parser
 hash and secret-free Chat/Embedding binding documents and hashes loaded from the validated
 deployment environment or orchestrator. Database-activated System Configuration is a historical
@@ -483,9 +485,10 @@ conflict. Submission is unavailable when the separately credentialed worker capa
 Job states are `QUEUED`, `RUNNING`, `RETRY_WAIT`, `CANCEL_REQUESTED`, `SUCCEEDED`, `FAILED`,
 `STALE` and `CANCELLED`; terminal states use stage `COMPLETED`. The response never includes attempts,
 lease material, provider error bodies, secret references, endpoints, buckets or object keys.
-Successful result fields are the DRAFT `changeset_id`, page/node/edge counts, evidence hash and
-model identities. Model-proposed evidence must be an exact normalized substring of the referenced
-parsed page; the excerpt/hash/page hash survive review and release through an opaque
+Successful result fields are the DRAFT `changeset_id`, evidence-segment/node/edge counts, evidence
+hash and model identities. The legacy response field remains `page_count`. Model-proposed evidence
+must be an exact normalized substring of the referenced parsed page or deterministic segment; the
+excerpt/hash/page hash survive review and release through an opaque
 `knowledge-source:<snapshot-id>#page=<n>` locator. The worker reauthorizes the requester and rejects
 source, graph/base, ontology or activated-binding drift atomically before proposal persistence.
 Projection and changeset publication are high-risk and retain the recent hardware-WebAuthn gate.

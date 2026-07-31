@@ -13,6 +13,7 @@ from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import ObjectStore, UploadValidationStore
 from datariver.application.services.upload_validation import Inspection, UploadValidationWorker
 from datariver.domain.authz import Classification
+from datariver.domain.common import ValidationError
 from datariver.domain.registration import UploadContentProfile, UploadManifest, UploadState
 
 
@@ -256,6 +257,97 @@ def test_xlsx_validation_emits_the_registered_profile_validator_version() -> Non
     )
 
     assert summary["validator_version"] == "integrity-xlsx-v2-low-resource"
+
+
+@pytest.mark.parametrize(
+    ("display_name", "mime", "content"),
+    (
+        ("source.txt", "text/plain", "고객 데이터".encode()),
+        ("source.json", "application/json", b'{"customer":"one"}'),
+        ("source.xml", "application/xml", "<customer>하나</customer>".encode()),
+        ("source.html", "text/html", b"<p>customer</p>"),
+        (
+            "source.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            b"PK\x03\x04safe-docx-package",
+        ),
+        (
+            "source.pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            b"PK\x03\x04safe-pptx-package",
+        ),
+    ),
+)
+def test_format_only_knowledge_documents_are_allowlisted(
+    display_name: str,
+    mime: str,
+    content: bytes,
+) -> None:
+    upload = manifest(content)
+    upload.display_name = display_name
+    upload.declared_mime = mime
+
+    summary = UploadValidationWorker._validate_format(
+        upload,
+        Inspection(
+            size_bytes=len(content),
+            sha256=hashlib.sha256(content).hexdigest(),
+            prefix=content,
+            tail=content[-8:],
+            contains_vba=False,
+        ),
+    )
+
+    assert summary["validator_version"] in {"integrity-format-v1", "integrity-openxml-v1"}
+
+
+def test_xml_entity_and_legacy_document_profiles_fail_closed() -> None:
+    content = b'<!DOCTYPE foo [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><foo>&xxe;</foo>'
+    upload = manifest(content)
+    upload.display_name = "source.xml"
+    upload.declared_mime = "application/xml"
+
+    with pytest.raises(ValidationError, match="DTD and entity"):
+        UploadValidationWorker._validate_format(
+            upload,
+            Inspection(
+                size_bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+                prefix=content,
+                tail=content[-8:],
+                contains_vba=False,
+            ),
+        )
+
+    upload.display_name = "legacy.doc"
+    upload.declared_mime = "application/msword"
+    with pytest.raises(ValidationError, match="extension"):
+        UploadValidationWorker._validate_format(
+            upload,
+            Inspection(
+                size_bytes=len(content),
+                sha256=hashlib.sha256(content).hexdigest(),
+                prefix=content,
+                tail=content[-8:],
+                contains_vba=False,
+            ),
+        )
+
+    openxml = b"PK\x03\x04xl/externalLinks/externalLink1.xml"
+    upload.display_name = "unsafe.xlsx"
+    upload.declared_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    with pytest.raises(ValidationError, match="OpenXML"):
+        UploadValidationWorker._validate_format(
+            upload,
+            Inspection(
+                size_bytes=len(openxml),
+                sha256=hashlib.sha256(openxml).hexdigest(),
+                prefix=openxml,
+                tail=openxml[-8:],
+                contains_vba=False,
+                contains_openxml_external_link=True,
+            ),
+        )
 
 
 def test_typed_csv_validation_emits_the_registered_profile_validator_version() -> None:

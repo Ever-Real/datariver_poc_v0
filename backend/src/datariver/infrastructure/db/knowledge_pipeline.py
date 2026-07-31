@@ -24,6 +24,7 @@ from datariver.domain.knowledge_pipeline import (
     ModelBinding,
     PdfPage,
     ProjectionReceipt,
+    supported_knowledge_source_media_types,
 )
 from datariver.infrastructure.db.knowledge import require_governed_release_base
 from datariver.infrastructure.db.models.integration import ObjectManifestModel
@@ -42,7 +43,7 @@ from datariver.infrastructure.db.models.knowledge import (
 )
 from datariver.infrastructure.db.rls import set_security_context
 
-_PARSER_CONFIGURATION_HASH = hashlib.sha256(b"pypdf-strict-page-aware-v1").hexdigest()
+_PARSER_CONFIGURATION_HASH = hashlib.sha256(b"bounded-knowledge-document-parser-v1").hexdigest()
 
 
 def _binding_document(binding: ModelBinding) -> dict[str, object]:
@@ -100,11 +101,13 @@ class SqlKnowledgePipelineRepository:
         if (
             manifest.state != "ACCEPTED"
             or manifest.owner_id != actor_id
-            or manifest.mime != "application/pdf"
+            or manifest.mime not in supported_knowledge_source_media_types()
             or manifest.actual_sha256 != manifest.sha256
             or manifest.actual_size_bytes != manifest.size_bytes
         ):
-            raise ValidationError("The source must be an integrity-verified accepted PDF upload.")
+            raise ValidationError(
+                "The source must be an integrity-verified accepted Knowledge document."
+            )
         if manifest.classification > graph.classification:
             raise ValidationError(
                 "The source classification exceeds the graph classification envelope."
@@ -139,7 +142,7 @@ class SqlKnowledgePipelineRepository:
             )
         ).one_or_none()
         if existing is not None and existing.state == "ANALYZED":
-            raise ConflictError("This immutable PDF source has already been analyzed.")
+            raise ConflictError("This immutable Knowledge source has already been analyzed.")
         if existing is None:
             existing = KnowledgeSourceSnapshotModel(
                 id=uuid7(),

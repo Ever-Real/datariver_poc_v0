@@ -8,7 +8,7 @@
 | Studio Step 1 | 이름, alias, Domain, 보안등급 | Studio Draft | Asset 계약 초안 |
 | Studio Step 2 | 직접/문서/DB/LLM T-Box 블록 순차 병합 | T-Box block/element/proposal | 검토 전 schema |
 | Studio Step 3 | T-Box 대상과 DB source field Binding | A-Box Binding/Rule Draft | 재현 가능한 Mapping 계약 |
-| 정보 관리 / 인스턴스·적재 | 직접 입력, PDF+LLM Changeset, Binding 조회, 검토·발행 | Changeset, immutable Release | 운영 A-Box |
+| 정보 관리 / 인스턴스·적재 | 직접 입력, 문서+LLM Changeset, Binding 조회, 검토·발행 | Changeset, immutable Release | 운영 A-Box |
 | 정보 관리 / 프로파일 | Property 설명, 단위, 동의어 | Property Profile | 구조와 분리된 의미 메타 |
 | 정보 관리 / API & Chat | API opt-in, Chat 조건/우선순위 | Delivery Policy | 안전한 제공 범위 |
 | Chat Test | 특정 Graph/Release/Node로 GraphRAG 검증 | Release + verified Projection | 인용 포함 테스트 |
@@ -49,11 +49,13 @@ Proposal을 거쳐 현재 블록에 병합하거나 새 블록으로 추가한�
 추가한다. 모든 operation은 source reference, locator, version, method와 confidence를
 요구한다. 제출, 독립 승인, 발행 후에만 새 Instance Release가 된다.
 
-### 파일 + LLM
+### 문서 + LLM
 
-검증 업로드된 PDF는 별도 worker가 parser/embedding/extraction 단계를 수행하고 근거가
-결합된 DRAFT Changeset을 만든다. 실패, stale, 취소와 retry는 durable job state로
-표현한다. 모델은 Release를 직접 만들 수 없다.
+검증 업로드된 PDF, CSV, TXT, JSON, XML, HTML과 macro-free DOCX/XLSX/PPTX는 별도 worker가
+parser/embedding/extraction 단계를 수행하고 근거가 결합된 DRAFT Changeset을 만든다.
+PDF는 실제 page, 나머지는 bounded evidence segment를 사용한다. 실패, stale, 취소와
+retry는 durable job state로 표현한다. 모델은 Release를 직접 만들 수 없으며 legacy
+DOC/XLS, XML entity, macro/external OpenXML payload는 허용하지 않는다.
 
 ### DB Binding
 

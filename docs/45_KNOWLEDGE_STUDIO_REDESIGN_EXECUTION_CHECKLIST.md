@@ -158,6 +158,9 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
   없고, 성공 후 enqueue 실패가 materialized schema/spec을 변조하지 않음을 test한다.
 - [x] 기존 PDF-to-DRAFT owner scope, PUBLIC/INTERNAL, bounded polling/cancel/stale 흐름을
   Step 3에서 재사용하고 기존 entry point와 결과가 동등함을 test한다.
+- [x] ADR-0093에 따라 동일한 immutable upload/job/Changeset 경계를 CSV/TXT/JSON/XML/HTML과
+  macro-free DOCX/XLSX/PPTX로 확장하고 legacy DOC/XLS, XML entity, unsafe OpenXML 및
+  parser/model pin drift를 fail closed로 유지한다.
 - [ ] 실제 일반 mapping run은 ADR-0044 수준의 separate durable job, attempt/event,
   fencing/retry/cancel/outbox/RLS/worker role/crash matrix가 승인된 source kind에만 구현한다.
 - [x] durable ingestion progress/stage를 PostgreSQL에서 읽고 UI가 visible non-terminal job만

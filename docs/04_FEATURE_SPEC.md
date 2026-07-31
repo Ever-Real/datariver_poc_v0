@@ -295,14 +295,15 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   workspace, then narrows candidates to Dataset/Table/View and the Draft classification ceiling.
   Results and field selection use bounded tables; no browser fallback asset is manufactured.
 - Extraction produces proposals with provenance/confidence, never direct mutations.
-- PDF source analysis is a durable, owner-scoped capability rather than an HTTP-request-bound
-  inference call. Submission accepts only an integrity-verified `ACCEPTED` PDF owned by the current
-  actor and only PUBLIC/INTERNAL inference classification, pins the immutable source
+- Knowledge document source analysis is a durable, owner-scoped capability rather than an
+  HTTP-request-bound inference call. Submission accepts only an integrity-verified `ACCEPTED`
+  PDF/CSV/TXT/JSON/XML/HTML/DOCX/XLSX/PPTX owned by the current actor and only PUBLIC/INTERNAL
+  inference classification, rejects legacy or unsafe document payloads, and pins the immutable source
   version/hash, graph version, explicit empty or exact governed active-release base, active
   ontology ID/checksum, parser contract and secret-free loaded deployment or activated System
   Configuration Chat/Embedding bindings, and
   returns `202 Accepted` with a job. A separately credentialed `datariver_knowledge` worker parses
-  and embeds at bounded page/batch sizes and may create only a typed `DRAFT` changeset. It cannot
+  and embeds at bounded evidence-segment/batch sizes and may create only a typed `DRAFT` changeset. It cannot
   submit, review, publish, activate or project a release.
 - The Data Ingestion UI resumes the current owner's active-first opaque-cursor job history, renders
   at most 100 rows, polls only while visible, stops after a bounded window and can restart the same
@@ -318,7 +319,8 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   operations or changeset. Successful pages, bounded JSON embeddings, `DURABLE_SOURCE_V1`
   extraction evidence, typed operations, DRAFT, job/attempt/event, policy decision and outbox
   evidence commit atomically. Browser-visible provenance uses only
-  `knowledge-source:<snapshot-id>#page=<n>` and never reveals a bucket, object key, endpoint,
+  `knowledge-source:<snapshot-id>#page=<n>` (physical page or deterministic evidence segment) and
+  never reveals a bucket, object key, endpoint,
   credential or lease token.
 - Changeset editor supports node/edge add, update, remove, diff, comments and validation.
 - Validation checks ontology, referential integrity, duplicate identity, provenance, policy attributes and bounded quality rules.

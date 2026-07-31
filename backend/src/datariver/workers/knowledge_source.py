@@ -13,10 +13,10 @@ from datariver.infrastructure.db.knowledge_source_jobs import (
     SqlKnowledgeSourceJobWorkerStore,
 )
 from datariver.infrastructure.db.outbox import SqlInboxStore
+from datariver.infrastructure.knowledge.document import BoundedKnowledgeDocumentParser
 from datariver.infrastructure.knowledge.object_store import (
     ObjectStoreKnowledgeSourceReader,
 )
-from datariver.infrastructure.knowledge.pdf import PypdfPageAwareParser
 from datariver.infrastructure.knowledge.runtime import build_knowledge_runtime_adapters
 from datariver.workers.container import build_knowledge_source_container
 from datariver.workers.event_signal import EventSignalConsumer
@@ -45,7 +45,7 @@ async def run() -> None:
             memory_spool_bytes=settings.knowledge_source_memory_spool_bytes,
             spool_directory=settings.knowledge_source_spool_directory,
         ),
-        parser=PypdfPageAwareParser(),
+        parser=BoundedKnowledgeDocumentParser(),
         runtime_resolver=resolve_runtime,
         worker_fingerprint=worker_name,
         lease_seconds=settings.knowledge_source_worker_lease_seconds,
