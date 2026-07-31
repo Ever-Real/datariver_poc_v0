@@ -85,6 +85,16 @@ def test_local_demo_identities_match_keycloak_and_use_balanced_human_roles(
     assert Action.CHAT_QUERY in actions_by_username["minjae.oh"]
     assert Action.CHAT_QUERY not in actions_by_username["jihoon.choi"]
     assert Action.CHAT_QUERY not in actions_by_username["sua.han"]
+    assert {
+        Action.ATTACHMENT_DOWNLOAD,
+        Action.GOVERNANCE_DOCUMENT_READ,
+        Action.GOVERNANCE_DOCUMENT_CREATE,
+        Action.GOVERNANCE_DOCUMENT_EDIT,
+        Action.GOVERNANCE_DOCUMENT_REVIEW,
+        Action.GOVERNANCE_DOCUMENT_PUBLISH,
+        Action.GOVERNANCE_TEMPLATE_READ,
+        Action.GOVERNANCE_KNOWLEDGE_READ,
+    }.issubset(actions_by_username["sua.han"])
 
     state_path = tmp_path / "local-demo-identities.json"
     provider_subjects = {
