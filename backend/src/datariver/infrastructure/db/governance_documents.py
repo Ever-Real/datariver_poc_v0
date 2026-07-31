@@ -93,6 +93,7 @@ class SqlGovernanceDocumentRepository(
         subject: SubjectAttributes,
         kind: GovernanceDocumentKind | None,
         category: GovernanceDocumentCategory | None,
+        state: GovernanceDocumentState | None,
         include_archived: bool,
         query: str | None,
         limit: int,
@@ -109,6 +110,7 @@ class SqlGovernanceDocumentRepository(
             permission_scope=catalog_permission_scope_hash(subject),
             kind=kind,
             category=category,
+            state=state,
             include_archived=include_archived,
             query=normalized_query,
             limit=limit,
@@ -122,6 +124,8 @@ class SqlGovernanceDocumentRepository(
             conditions.append(GovernanceDocumentModel.kind == kind.value)
         if category is not None:
             conditions.append(GovernanceDocumentModel.category == category.value)
+        if state is not None:
+            conditions.append(GovernanceDocumentModel.state == state.value)
         if not include_archived:
             conditions.append(
                 GovernanceDocumentModel.state != GovernanceDocumentState.ARCHIVED.value
@@ -183,6 +187,7 @@ class SqlGovernanceDocumentRepository(
                 permission_scope=catalog_permission_scope_hash(subject),
                 kind=kind,
                 category=category,
+                state=state,
                 include_archived=include_archived,
                 query=normalized_query,
                 limit=limit,
@@ -216,7 +221,7 @@ class SqlGovernanceDocumentRepository(
         ).one_or_none()
         if document is None:
             return None
-        return await self._detail(document)
+        return await self._detail(document, subject=subject)
 
     async def get_published_template_version(
         self,
@@ -251,6 +256,66 @@ class SqlGovernanceDocumentRepository(
         ).one_or_none()
         return _document_version(value) if value is not None else None
 
+    async def validate_parent_document(
+        self,
+        *,
+        workspace_id: UUID,
+        document_id: UUID | None,
+        parent_document_id: UUID | None,
+        subject: SubjectAttributes,
+    ) -> None:
+        if parent_document_id is None:
+            return
+        if parent_document_id == document_id:
+            raise ValidationError("A Governance Document cannot be its own parent.")
+        parent = (
+            await self._session.scalars(
+                select(GovernanceDocumentModel).where(
+                    GovernanceDocumentModel.workspace_id == workspace_id,
+                    GovernanceDocumentModel.id == parent_document_id,
+                    GovernanceDocumentModel.kind == GovernanceDocumentKind.DOCUMENT.value,
+                    GovernanceDocumentModel.state != GovernanceDocumentState.ARCHIVED.value,
+                    GovernanceDocumentModel.classification <= int(subject.clearance),
+                    *_subject_scope_conditions(subject),
+                )
+            )
+        ).one_or_none()
+        if parent is None:
+            raise NotFoundError("The Governance Document parent is unavailable.")
+        if document_id is None:
+            return
+        rows = (
+            await self._session.scalars(
+                select(GovernanceDocumentVersionModel)
+                .where(
+                    GovernanceDocumentVersionModel.workspace_id == workspace_id,
+                    GovernanceDocumentVersionModel.state.in_(
+                        (
+                            GovernanceDocumentVersionState.DRAFT.value,
+                            GovernanceDocumentVersionState.IN_REVIEW.value,
+                            GovernanceDocumentVersionState.PUBLISHED.value,
+                        )
+                    ),
+                )
+                .order_by(
+                    GovernanceDocumentVersionModel.document_id,
+                    desc(GovernanceDocumentVersionModel.version_number),
+                )
+            )
+        ).all()
+        effective_parent: dict[UUID, UUID | None] = {}
+        for row in rows:
+            effective_parent.setdefault(row.document_id, row.parent_document_id)
+        visited: set[UUID] = set()
+        current: UUID | None = parent_document_id
+        while current is not None:
+            if current == document_id:
+                raise ConflictError("The Governance Document parent would create a cycle.")
+            if current in visited:
+                raise ConflictError("The Governance Document hierarchy already contains a cycle.")
+            visited.add(current)
+            current = effective_parent.get(current)
+
     async def create_document(
         self,
         *,
@@ -271,6 +336,7 @@ class SqlGovernanceDocumentRepository(
         sanitizer_policy_sha256: str,
         source_format: GovernanceDocumentSourceFormat,
         source_template_version_id: UUID | None,
+        parent_document_id: UUID | None,
         policy_decision_id: UUID,
         request_id: str,
     ) -> GovernanceDocumentDetail:
@@ -322,6 +388,7 @@ class SqlGovernanceDocumentRepository(
             sanitizer_policy_sha256=sanitizer_policy_sha256,
             source_format=source_format.value,
             source_template_version_id=source_template_version_id,
+            parent_document_id=parent_document_id,
             author_id=actor_id,
             artifact_state=GovernanceDocumentArtifactState.PENDING.value,
             knowledge_state=GovernanceDocumentKnowledgeState.PENDING.value,
@@ -341,7 +408,14 @@ class SqlGovernanceDocumentRepository(
             actor_id=actor_id,
             policy_decision_id=policy_decision_id,
             request_id=request_id,
-            details={"kind": kind.value, "category": category.value, "version_number": 1},
+            details={
+                "kind": kind.value,
+                "category": category.value,
+                "version_number": 1,
+                "parent_document_id": (
+                    str(parent_document_id) if parent_document_id is not None else None
+                ),
+            },
             created_at=now,
         )
         self._append_outbox(
@@ -383,6 +457,7 @@ class SqlGovernanceDocumentRepository(
         sanitizer_policy_sha256: str,
         source_format: GovernanceDocumentSourceFormat,
         source_template_version_id: UUID | None,
+        parent_document_id: UUID | None,
         policy_decision_id: UUID,
         request_id: str,
     ) -> GovernanceDocumentDetail:
@@ -448,6 +523,7 @@ class SqlGovernanceDocumentRepository(
             sanitizer_policy_sha256=sanitizer_policy_sha256,
             source_format=source_format.value,
             source_template_version_id=source_template_version_id,
+            parent_document_id=parent_document_id,
             author_id=actor_id,
             artifact_state=GovernanceDocumentArtifactState.PENDING.value,
             knowledge_state=GovernanceDocumentKnowledgeState.PENDING.value,
@@ -467,7 +543,12 @@ class SqlGovernanceDocumentRepository(
             actor_id=actor_id,
             policy_decision_id=policy_decision_id,
             request_id=request_id,
-            details={"version_number": version_number},
+            details={
+                "version_number": version_number,
+                "parent_document_id": (
+                    str(parent_document_id) if parent_document_id is not None else None
+                ),
+            },
             created_at=now,
         )
         self._append_outbox(
@@ -746,6 +827,8 @@ class SqlGovernanceDocumentRepository(
         expected_version: int,
         idempotency_key: str,
         request_hash: str,
+        serial_number: int,
+        storage_filename: str,
         original_name: str,
         content_type: str,
         content_sha256: str,
@@ -796,12 +879,16 @@ class SqlGovernanceDocumentRepository(
         )
         if count >= MAXIMUM_ATTACHMENTS_PER_VERSION:
             raise ConflictError("The Governance Document attachment limit has been reached.")
+        if serial_number != count + 1:
+            raise ConflictError("The Governance Document attachment serial is stale.")
         now = await self.database_now()
         attachment = GovernanceDocumentAttachmentModel(
             id=attachment_id,
             workspace_id=workspace_id,
             document_id=document_id,
             document_version_id=document_version_id,
+            serial_number=serial_number,
+            storage_filename=storage_filename,
             original_name=original_name,
             content_type=content_type,
             size_bytes=size_bytes,
@@ -826,6 +913,8 @@ class SqlGovernanceDocumentRepository(
             request_id=request_id,
             details={
                 "attachment_id": str(attachment.id),
+                "serial_number": serial_number,
+                "storage_filename": storage_filename,
                 "content_sha256": content_sha256,
                 "size_bytes": size_bytes,
             },
@@ -1379,7 +1468,12 @@ class SqlGovernanceDocumentRepository(
         ).all()
         return {document_id: version_number for document_id, version_number in rows}
 
-    async def _detail(self, document: GovernanceDocumentModel) -> GovernanceDocumentDetail:
+    async def _detail(
+        self,
+        document: GovernanceDocumentModel,
+        *,
+        subject: SubjectAttributes | None = None,
+    ) -> GovernanceDocumentDetail:
         versions = tuple(
             _document_version(row)
             for row in (
@@ -1439,11 +1533,104 @@ class SqlGovernanceDocumentRepository(
             ),
             None,
         )
+        parent_document: GovernanceDocumentSummary | None = None
+        child_documents: tuple[GovernanceDocumentSummary, ...] = ()
+        relationship_version = next(
+            (
+                value
+                for value in versions
+                if value.version_id == document.current_published_version_id
+            ),
+            versions[0] if versions else None,
+        )
+        if subject is not None and relationship_version is not None:
+            parent_document, child_documents = await self._relationships(
+                document=document,
+                version=relationship_version,
+                subject=subject,
+            )
         return GovernanceDocumentDetail(
             document=_summary(document, current_version_number=current_number),
             versions=versions,
             reviews=reviews,
             attachments=attachments,
+            parent_document=parent_document,
+            child_documents=child_documents,
+        )
+
+    async def _relationships(
+        self,
+        *,
+        document: GovernanceDocumentModel,
+        version: GovernanceDocumentVersion,
+        subject: SubjectAttributes,
+    ) -> tuple[GovernanceDocumentSummary | None, tuple[GovernanceDocumentSummary, ...]]:
+        parent_document: GovernanceDocumentSummary | None = None
+        if version.parent_document_id is not None:
+            parent_row = (
+                await self._session.execute(
+                    select(
+                        GovernanceDocumentModel,
+                        GovernanceDocumentVersionModel.version_number,
+                    )
+                    .join(
+                        GovernanceDocumentVersionModel,
+                        and_(
+                            GovernanceDocumentVersionModel.workspace_id
+                            == GovernanceDocumentModel.workspace_id,
+                            GovernanceDocumentVersionModel.id
+                            == GovernanceDocumentModel.current_published_version_id,
+                        ),
+                    )
+                    .where(
+                        GovernanceDocumentModel.workspace_id == document.workspace_id,
+                        GovernanceDocumentModel.id == version.parent_document_id,
+                        GovernanceDocumentModel.state == GovernanceDocumentState.ACTIVE.value,
+                        GovernanceDocumentModel.classification <= int(subject.clearance),
+                        *_subject_scope_conditions(subject),
+                    )
+                )
+            ).one_or_none()
+            if parent_row is not None:
+                parent, version_number = parent_row
+                parent_document = _summary(
+                    parent,
+                    current_version_number=version_number,
+                )
+        child_rows = (
+            await self._session.execute(
+                select(
+                    GovernanceDocumentModel,
+                    GovernanceDocumentVersionModel.version_number,
+                )
+                .join(
+                    GovernanceDocumentVersionModel,
+                    and_(
+                        GovernanceDocumentVersionModel.workspace_id
+                        == GovernanceDocumentModel.workspace_id,
+                        GovernanceDocumentVersionModel.id
+                        == GovernanceDocumentModel.current_published_version_id,
+                    ),
+                )
+                .where(
+                    GovernanceDocumentModel.workspace_id == document.workspace_id,
+                    GovernanceDocumentModel.state == GovernanceDocumentState.ACTIVE.value,
+                    GovernanceDocumentModel.classification <= int(subject.clearance),
+                    GovernanceDocumentVersionModel.parent_document_id == document.id,
+                    *_subject_scope_conditions(subject),
+                )
+                .order_by(
+                    func.lower(GovernanceDocumentModel.title),
+                    GovernanceDocumentModel.id,
+                )
+            )
+        ).all()
+        return (
+            parent_document,
+            tuple(
+                _summary(child, current_version_number=version_number)
+                for child, version_number in child_rows
+            ),
         )
 
     async def _locked_document(
@@ -1686,6 +1873,7 @@ def _document_version(model: GovernanceDocumentVersionModel) -> GovernanceDocume
         sanitizer_policy_sha256=model.sanitizer_policy_sha256,
         source_format=GovernanceDocumentSourceFormat(model.source_format),
         source_template_version_id=model.source_template_version_id,
+        parent_document_id=model.parent_document_id,
         author_id=model.author_id,
         submitted_at=model.submitted_at,
         reviewed_by=model.reviewed_by,
@@ -1719,6 +1907,8 @@ def _attachment(model: GovernanceDocumentAttachmentModel) -> GovernanceDocumentA
         workspace_id=model.workspace_id,
         document_id=model.document_id,
         document_version_id=model.document_version_id,
+        serial_number=model.serial_number,
+        storage_filename=model.storage_filename,
         original_name=model.original_name,
         content_type=model.content_type,
         size_bytes=model.size_bytes,
@@ -1777,6 +1967,7 @@ def _encode_cursor(
     permission_scope: str,
     kind: GovernanceDocumentKind | None,
     category: GovernanceDocumentCategory | None,
+    state: GovernanceDocumentState | None,
     include_archived: bool,
     query: str,
     limit: int,
@@ -1788,6 +1979,7 @@ def _encode_cursor(
         permission_scope=permission_scope,
         kind=kind,
         category=category,
+        state=state,
         include_archived=include_archived,
         query=query,
         limit=limit,
@@ -1811,6 +2003,7 @@ def _decode_cursor(
     permission_scope: str,
     kind: GovernanceDocumentKind | None,
     category: GovernanceDocumentCategory | None,
+    state: GovernanceDocumentState | None,
     include_archived: bool,
     query: str,
     limit: int,
@@ -1832,6 +2025,7 @@ def _decode_cursor(
         permission_scope=permission_scope,
         kind=kind,
         category=category,
+        state=state,
         include_archived=include_archived,
         query=query,
         limit=limit,
@@ -1847,17 +2041,19 @@ def _cursor_scope(
     permission_scope: str,
     kind: GovernanceDocumentKind | None,
     category: GovernanceDocumentCategory | None,
+    state: GovernanceDocumentState | None,
     include_archived: bool,
     query: str,
     limit: int,
 ) -> str:
     return canonical_json_hash(
         {
-            "contract": "GOVERNANCE_DOCUMENT_CURSOR_V1",
+            "contract": "GOVERNANCE_DOCUMENT_CURSOR_V2",
             "workspace_id": str(workspace_id),
             "permission_scope": permission_scope,
             "kind": kind.value if kind is not None else None,
             "category": category.value if category is not None else None,
+            "state": state.value if state is not None else None,
             "include_archived": include_archived,
             "query": query,
             "limit": limit,

@@ -7,15 +7,17 @@ from datariver.application.governance_document_formats import (
 )
 from datariver.domain.governance_documents import (
     GovernanceDocumentBlueprint,
+    GovernanceDocumentBlueprintPurpose,
     GovernanceDocumentCategory,
 )
 
-BLUEPRINT_CATALOG_VERSION = "GOVERNANCE_DOCUMENT_BLUEPRINTS_V1"
+BLUEPRINT_CATALOG_VERSION = "GOVERNANCE_DOCUMENT_BLUEPRINTS_V2"
 
 
 @dataclass(frozen=True, slots=True)
 class _BlueprintSource:
     blueprint_id: str
+    purpose: GovernanceDocumentBlueprintPurpose
     category: GovernanceDocumentCategory
     title: str
     summary: str
@@ -26,6 +28,7 @@ class _BlueprintSource:
 _SOURCES = (
     _BlueprintSource(
         blueprint_id="policy-v1",
+        purpose=GovernanceDocumentBlueprintPurpose.TEMPLATE,
         category=GovernanceDocumentCategory.POLICY,
         title="정책 문서 기본 양식",
         summary="목적, 적용 범위, 책임, 통제 항목과 예외 절차를 포함하는 정책 문서 양식",
@@ -46,6 +49,7 @@ _SOURCES = (
     ),
     _BlueprintSource(
         blueprint_id="standard-terminology-v1",
+        purpose=GovernanceDocumentBlueprintPurpose.TEMPLATE,
         category=GovernanceDocumentCategory.STANDARD_TERMINOLOGY,
         title="표준어 사전 기본 양식",
         summary="표준 용어의 정의, 허용어, 금칙어, 데이터 타입과 관리 책임을 기록하는 양식",
@@ -73,6 +77,7 @@ _SOURCES = (
     ),
     _BlueprintSource(
         blueprint_id="security-guide-v1",
+        purpose=GovernanceDocumentBlueprintPurpose.TEMPLATE,
         category=GovernanceDocumentCategory.SECURITY_GUIDE,
         title="보안 가이드 기본 양식",
         summary="위협 모델, 접근 통제, 암호화, 로깅, 사고 대응을 구조화하는 보안 가이드 양식",
@@ -96,6 +101,60 @@ _SOURCES = (
             "<p>탐지, 격리, 보고, 복구와 사후 검토 절차를 작성합니다.</p>"
         ),
     ),
+    _BlueprintSource(
+        blueprint_id="starter-data-classification-access-v1",
+        purpose=GovernanceDocumentBlueprintPurpose.STARTER_DOCUMENT,
+        category=GovernanceDocumentCategory.POLICY,
+        title="데이터 분류·접근 정책",
+        summary="데이터 분류별 열람·검색·Chat 접근 경계와 승인 책임을 관리하는 기본 문서",
+        applicability_scope="현재 Workspace의 데이터 자산, 검색, Chat 및 외부 제공 경로",
+        html=(
+            "<h1>데이터 분류·접근 정책</h1>"
+            "<h2>1. 목적</h2><p>데이터 분류에 맞는 최소 권한과 승인된 이용 경계를 정의합니다.</p>"
+            "<h2>2. 적용 범위</h2><p>현재 Workspace의 데이터 자산, 검색, Chat 및 "
+            "반출 경로에 적용합니다.</p>"
+            "<h2>3. 통제 원칙</h2><ol><li>분류 등급과 사용자 clearance를 함께 확인합니다.</li>"
+            "<li>Workspace와 Domain/System 범위를 벗어난 접근을 허용하지 않습니다.</li>"
+            "<li>권한 변경과 민감 작업은 감사 증거로 남깁니다.</li></ol>"
+            "<h2>4. 예외</h2><p>예외는 목적·범위·만료일을 명시한 별도 승인으로 관리합니다.</p>"
+        ),
+    ),
+    _BlueprintSource(
+        blueprint_id="starter-retention-disposal-v1",
+        purpose=GovernanceDocumentBlueprintPurpose.STARTER_DOCUMENT,
+        category=GovernanceDocumentCategory.POLICY,
+        title="보존·파기 정책",
+        summary="데이터 클래스별 보존기간, Legal Hold 우선순위와 파기 승인 절차의 기본 문서",
+        applicability_scope="현재 Workspace에서 생성·수집·처리·보관하는 데이터와 감사 증거",
+        html=(
+            "<h1>보존·파기 정책</h1>"
+            "<h2>1. 목적</h2><p>업무·규제 근거에 따른 보존과 검증 가능한 "
+            "파기 절차를 정의합니다.</p>"
+            "<h2>2. 보존 원칙</h2><ol><li>승인된 데이터 클래스 계약의 최소·최대 "
+            "기간을 준수합니다.</li>"
+            "<li>Legal Hold가 활성화된 범위는 자동 파기에서 제외합니다.</li>"
+            "<li>파기 전 승인과 대상 증거를 확인하고 실행 결과를 감사 기록으로 남깁니다.</li></ol>"
+            "<h2>3. 검토 주기</h2><p>법규, 계약 또는 업무 목적 변경 시 재검토합니다.</p>"
+        ),
+    ),
+    _BlueprintSource(
+        blueprint_id="starter-legal-hold-management-v1",
+        purpose=GovernanceDocumentBlueprintPurpose.STARTER_DOCUMENT,
+        category=GovernanceDocumentCategory.POLICY,
+        title="Legal Hold 관리",
+        summary="보존 의무가 있는 데이터의 파기 보류, 범위 변경과 해제 결재를 관리하는 기본 문서",
+        applicability_scope="소송·조사·감사·규제 대응으로 보존이 요구되는 현재 Workspace 데이터",
+        html=(
+            "<h1>Legal Hold 관리</h1>"
+            "<h2>1. 목적</h2><p>법적 또는 조사상 보존 의무가 있는 데이터의 "
+            "변경·파기를 중지합니다.</p>"
+            "<h2>2. 등록</h2><p>근거, 대상 범위, 책임자, 시작일과 검토일을 "
+            "명시하고 승인받습니다.</p>"
+            "<h2>3. 운영</h2><ol><li>활성 Hold는 일반 보존·파기 정책보다 우선합니다.</li>"
+            "<li>범위 변경과 해제는 독립 검토자의 결재를 거칩니다.</li>"
+            "<li>등록·변경·해제 및 영향 대상은 감사 증거로 보존합니다.</li></ol>"
+        ),
+    ),
 )
 
 
@@ -107,6 +166,7 @@ def governance_document_blueprints() -> tuple[GovernanceDocumentBlueprint, ...]:
             GovernanceDocumentBlueprint(
                 blueprint_id=source.blueprint_id,
                 blueprint_version=BLUEPRINT_CATALOG_VERSION,
+                purpose=source.purpose,
                 category=source.category,
                 title=source.title,
                 summary=source.summary,

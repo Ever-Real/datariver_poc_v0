@@ -40,12 +40,14 @@ from datariver.domain.common import (
     canonical_json_hash,
 )
 from datariver.domain.governance_documents import (
+    MAXIMUM_ATTACHMENTS_PER_VERSION,
     GovernanceDocumentAttachment,
     GovernanceDocumentBlueprint,
     GovernanceDocumentCapability,
     GovernanceDocumentCapabilityAxis,
     GovernanceDocumentCategory,
     GovernanceDocumentDetail,
+    GovernanceDocumentExport,
     GovernanceDocumentKind,
     GovernanceDocumentPage,
     GovernanceDocumentReviewDecision,
@@ -175,6 +177,7 @@ class GovernanceDocumentService:
         request_id: str,
         kind: GovernanceDocumentKind | None,
         category: GovernanceDocumentCategory | None,
+        state: GovernanceDocumentState | None,
         include_archived: bool,
         query: str | None,
         limit: int,
@@ -200,6 +203,7 @@ class GovernanceDocumentService:
             subject=subject,
             kind=kind,
             category=category,
+            state=state,
             include_archived=include_archived,
             query=query,
             limit=limit,
@@ -229,12 +233,30 @@ class GovernanceDocumentService:
         request_id: str,
     ) -> tuple[GovernanceDocumentBlueprint, ...]:
         self._require_human(subject)
+        document_resource = self._workspace_resource(
+            subject,
+            kind=GovernanceDocumentKind.DOCUMENT,
+        )
+        template_resource = self._workspace_resource(
+            subject,
+            kind=GovernanceDocumentKind.TEMPLATE,
+        )
+        may_create_document = self._authorization.is_entitled(
+            subject=subject,
+            resource=document_resource,
+            action=Action.GOVERNANCE_DOCUMENT_CREATE,
+            environment=environment,
+        )
         await self._authorize(
             subject=subject,
             environment=environment,
             request_id=request_id,
-            action=Action.GOVERNANCE_TEMPLATE_PROPOSE,
-            resource=self._workspace_resource(subject, kind=GovernanceDocumentKind.TEMPLATE),
+            action=(
+                Action.GOVERNANCE_DOCUMENT_CREATE
+                if may_create_document
+                else Action.GOVERNANCE_TEMPLATE_PROPOSE
+            ),
+            resource=document_resource if may_create_document else template_resource,
         )
         return governance_document_blueprints()
 
@@ -264,6 +286,45 @@ class GovernanceDocumentService:
             subject
         )
 
+    async def export_document(
+        self,
+        *,
+        document_id: UUID,
+        version_id: UUID | None,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[GovernanceDocumentExport, GovernanceDocumentReadContext]:
+        detail, read_context = await self.get_document(
+            document_id=document_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        selected_id = version_id or detail.document.current_published_version_id
+        if selected_id is None:
+            selected_id = detail.versions[0].version_id if detail.versions else None
+        selected = next(
+            (value for value in detail.versions if value.version_id == selected_id),
+            None,
+        )
+        if selected is None:
+            raise NotFoundError("The Governance Document export version is unavailable.")
+        return (
+            GovernanceDocumentExport(
+                contract_version="GOVERNANCE_DOCUMENT_EXPORT_V1",
+                exported_at=await self._repository.database_now(),
+                document=detail.document,
+                selected_version=selected,
+                version_history=detail.versions,
+                reviews=detail.reviews,
+                attachments=detail.attachments,
+                parent_document=detail.parent_document,
+                child_documents=detail.child_documents,
+            ),
+            read_context,
+        )
+
     async def create_document(
         self,
         *,
@@ -279,6 +340,7 @@ class GovernanceDocumentService:
         applicability_scope: str,
         content: PreparedGovernanceDocumentContent,
         source_template_version_id: UUID | None,
+        parent_document_id: UUID | None,
     ) -> GovernanceDocumentDetail:
         self._require_human(subject)
         title, summary = validate_document_identity(
@@ -296,6 +358,14 @@ class GovernanceDocumentService:
             action=self._create_action(kind),
             resource=self._workspace_resource(subject, kind=kind),
         )
+        await self._validate_parent_document(
+            kind=kind,
+            document_id=None,
+            parent_document_id=parent_document_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
         request_document: dict[str, object] = {
             "kind": kind.value,
             "category": category.value,
@@ -307,6 +377,9 @@ class GovernanceDocumentService:
             "source_format": content.source_format.value,
             "source_template_version_id": (
                 str(source_template_version_id) if source_template_version_id else None
+            ),
+            "parent_document_id": (
+                str(parent_document_id) if parent_document_id is not None else None
             ),
         }
         detail = await self._repository.create_document(
@@ -332,6 +405,7 @@ class GovernanceDocumentService:
             sanitizer_policy_sha256=content.sanitizer_policy_sha256,
             source_format=content.source_format,
             source_template_version_id=source_template_version_id,
+            parent_document_id=parent_document_id,
             policy_decision_id=decision.decision_id,
             request_id=request_id,
         )
@@ -387,6 +461,7 @@ class GovernanceDocumentService:
         applicability_scope: str,
         content: PreparedGovernanceDocumentContent,
         source_template_version_id: UUID | None,
+        parent_document_id: UUID | None,
     ) -> GovernanceDocumentDetail:
         detail = await self._required_detail(document_id=document_id, subject=subject)
         title, normalized_summary = validate_document_identity(
@@ -404,6 +479,14 @@ class GovernanceDocumentService:
             action=self._edit_action(detail.document.kind),
             resource=self._resource(detail.document),
         )
+        await self._validate_parent_document(
+            kind=detail.document.kind,
+            document_id=document_id,
+            parent_document_id=parent_document_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
         request_document: dict[str, object] = {
             "document_id": str(document_id),
             "expected_version": expected_version,
@@ -414,6 +497,9 @@ class GovernanceDocumentService:
             "source_format": content.source_format.value,
             "source_template_version_id": (
                 str(source_template_version_id) if source_template_version_id else None
+            ),
+            "parent_document_id": (
+                str(parent_document_id) if parent_document_id is not None else None
             ),
         }
         value = await self._repository.create_version(
@@ -438,6 +524,7 @@ class GovernanceDocumentService:
             sanitizer_policy_sha256=content.sanitizer_policy_sha256,
             source_format=content.source_format,
             source_template_version_id=source_template_version_id,
+            parent_document_id=parent_document_id,
             policy_decision_id=decision.decision_id,
             request_id=request_id,
         )
@@ -606,7 +693,7 @@ class GovernanceDocumentService:
         content: bytes,
     ) -> GovernanceDocumentAttachment:
         detail = await self._required_detail(document_id=document_id, subject=subject)
-        self._required_version(detail, document_version_id)
+        selected_version = self._required_version(detail, document_version_id)
         if detail.document.version != expected_version:
             raise PreconditionFailedError("The Governance Document version has changed.")
         if self._attachment_store is None:
@@ -617,10 +704,21 @@ class GovernanceDocumentService:
             )
         safe_name = self._attachment_name(original_name)
         safe_content_type = self._attachment_content_type(content_type)
+        serial_number = (
+            sum(
+                1
+                for attachment in detail.attachments
+                if attachment.document_version_id == document_version_id
+            )
+            + 1
+        )
+        if serial_number > MAXIMUM_ATTACHMENTS_PER_VERSION:
+            raise ValidationError("The Governance Document attachment limit has been reached.")
         request_document: dict[str, object] = {
             "document_id": str(document_id),
             "document_version_id": str(document_version_id),
             "expected_version": expected_version,
+            "serial_number": serial_number,
             "original_name": safe_name,
             "content_type": safe_content_type,
             "content_sha256": hashlib.sha256(content).hexdigest(),
@@ -646,16 +744,19 @@ class GovernanceDocumentService:
             action=self._edit_action(detail.document.kind),
             resource=self._resource(detail.document),
         )
-        receipt = await self._attachment_store.ensure_attachment(
-            GovernanceDocumentAttachmentWrite(
-                workspace_id=subject.workspace_id,
-                document_id=document_id,
-                version_id=document_version_id,
-                attachment_id=attachment_id,
-                classification=detail.document.classification.name,
-                content=content,
-            )
+        attachment_write = GovernanceDocumentAttachmentWrite(
+            workspace_id=subject.workspace_id,
+            document_id=document_id,
+            version_id=document_version_id,
+            attachment_id=attachment_id,
+            document_title=selected_version.title,
+            registered_at=selected_version.created_at,
+            serial_number=serial_number,
+            original_name=safe_name,
+            classification=detail.document.classification.name,
+            content=content,
         )
+        receipt = await self._attachment_store.ensure_attachment(attachment_write)
         return await self._repository.add_attachment(
             attachment_id=attachment_id,
             workspace_id=subject.workspace_id,
@@ -665,6 +766,8 @@ class GovernanceDocumentService:
             expected_version=expected_version,
             idempotency_key=idempotency_key,
             request_hash=request_hash,
+            serial_number=serial_number,
+            storage_filename=attachment_write.storage_filename,
             original_name=safe_name,
             content_type=safe_content_type,
             content_sha256=receipt.content_sha256,
@@ -830,6 +933,40 @@ class GovernanceDocumentService:
                 state=detail.document.state,
             ),
             resource=self._resource(detail.document),
+        )
+
+    async def _validate_parent_document(
+        self,
+        *,
+        kind: GovernanceDocumentKind,
+        document_id: UUID | None,
+        parent_document_id: UUID | None,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> None:
+        if parent_document_id is None:
+            return
+        if kind is not GovernanceDocumentKind.DOCUMENT:
+            raise ValidationError("Only a Governance Document can have a parent document.")
+        await self._repository.validate_parent_document(
+            workspace_id=subject.workspace_id,
+            document_id=document_id,
+            parent_document_id=parent_document_id,
+            subject=subject,
+        )
+        parent = await self._repository.get_document(
+            workspace_id=subject.workspace_id,
+            document_id=parent_document_id,
+            subject=subject,
+        )
+        if parent is None:
+            raise NotFoundError("The Governance Document parent is unavailable.")
+        await self._authorize_read_detail(
+            detail=parent,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
         )
 
     async def _authorize(

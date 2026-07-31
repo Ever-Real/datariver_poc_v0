@@ -7,10 +7,12 @@ import type {
   GovernanceDocumentCommandResponse,
   GovernanceDocumentCreateRequest,
   GovernanceDocumentDetailResponse,
+  GovernanceDocumentExport,
   GovernanceDocumentKind,
   GovernanceDocumentListResponse,
   GovernanceDocumentReviewRequest,
   GovernanceDocumentVersionCreateRequest,
+  GovernanceDocumentState,
   GovernanceKnowledgeEvidenceResponse,
   GovernanceReadEnvelope,
 } from './types'
@@ -20,6 +22,7 @@ const BASE_PATH = '/governance/documents'
 export type GovernanceDocumentResource =
   | 'documents'
   | 'document-detail'
+  | 'document-export'
   | 'templates'
   | 'template-blueprints'
   | 'knowledge-evidence'
@@ -50,6 +53,7 @@ export class GovernanceDocumentsApi {
       cursor?: string
       query?: string
       kind?: GovernanceDocumentKind
+      state?: GovernanceDocumentState
       includeArchived?: boolean
       limit: number
       signal?: AbortSignal
@@ -59,6 +63,7 @@ export class GovernanceDocumentsApi {
     if (options.cursor) query.set('cursor', options.cursor)
     if (options.query?.trim()) query.set('q', options.query.trim())
     if (options.kind) query.set('kind', options.kind)
+    if (options.state) query.set('state', options.state)
     if (options.includeArchived) query.set('include_archived', 'true')
     const value = await this.client.request<GovernanceDocumentListResponse>(
       `${BASE_PATH}?${query.toString()}`,
@@ -109,6 +114,43 @@ export class GovernanceDocumentsApi {
     return response.data
   }
 
+  async importDocument(
+    input: {
+      file: File
+      kind: GovernanceDocumentKind
+      category: GovernanceDocumentCreateRequest['category']
+      title: string
+      summary: string
+      classification: number
+      applicabilityScope: string
+      parentDocumentId: string | null
+    },
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<GovernanceDocumentCommandResponse> {
+    const body = new FormData()
+    body.set('file', input.file)
+    body.set('kind', input.kind)
+    body.set('category', input.category)
+    body.set('title', input.title)
+    body.set('summary', input.summary)
+    body.set('classification', String(input.classification))
+    body.set('applicability_scope', input.applicabilityScope)
+    if (input.parentDocumentId) body.set('parent_document_id', input.parentDocumentId)
+    const response = await this.client.requestWithMeta<GovernanceDocumentCommandResponse>(
+      `${BASE_PATH}/imports`,
+      {
+        method: 'POST',
+        cache: 'no-store',
+        signal,
+        idempotencyKey,
+        body,
+      },
+    )
+    assertCommand(response.data, response.etag)
+    return response.data
+  }
+
   async templateBlueprints(
     signal?: AbortSignal,
   ): Promise<GovernanceDocumentBlueprintListResponse> {
@@ -116,15 +158,22 @@ export class GovernanceDocumentsApi {
       `${BASE_PATH}/template-blueprints`,
       { cache: 'no-store', signal },
     )
-    const categories = new Set(value?.items?.map((item) => item.category))
+    const templates = value?.items?.filter((item) => item.purpose === 'TEMPLATE') ?? []
+    const starters = value?.items?.filter((item) => item.purpose === 'STARTER_DOCUMENT') ?? []
+    const templateCategories = new Set(templates.map((item) => item.category))
+    const starterTitles = new Set(starters.map((item) => item.title))
     if (
-      value?.contract_version !== 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V1'
+      value?.contract_version !== 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V2'
       || !Array.isArray(value.items)
-      || value.items.length !== 3
-      || categories.size !== 3
-      || !categories.has('POLICY')
-      || !categories.has('STANDARD_TERMINOLOGY')
-      || !categories.has('SECURITY_GUIDE')
+      || templates.length !== 3
+      || starters.length !== 3
+      || templateCategories.size !== 3
+      || !templateCategories.has('POLICY')
+      || !templateCategories.has('STANDARD_TERMINOLOGY')
+      || !templateCategories.has('SECURITY_GUIDE')
+      || !starterTitles.has('데이터 분류·접근 정책')
+      || !starterTitles.has('보존·파기 정책')
+      || !starterTitles.has('Legal Hold 관리')
       || value.items.some((item) => (
         item.blueprint_version !== value.contract_version
         || !item.blueprint_id
@@ -162,6 +211,7 @@ export class GovernanceDocumentsApi {
     file: File,
     title: string,
     applicabilityScope: string,
+    parentDocumentId: string | null,
     idempotencyKey: string,
     signal?: AbortSignal,
   ): Promise<GovernanceDocumentCommandResponse> {
@@ -169,6 +219,7 @@ export class GovernanceDocumentsApi {
     body.set('file', file)
     body.set('title', title)
     body.set('applicability_scope', applicabilityScope)
+    if (parentDocumentId) body.set('parent_document_id', parentDocumentId)
     return this.command(
       `${BASE_PATH}/${encodeURIComponent(documentId)}/versions`,
       documentId,
@@ -281,6 +332,32 @@ export class GovernanceDocumentsApi {
       || !/^https?:\/\//.test(value.url)
     ) {
       throw new Error('거버넌스 문서 첨부파일 다운로드 증빙을 확인할 수 없습니다.')
+    }
+    return value
+  }
+
+  async exportDocument(
+    documentId: string,
+    expectedCacheScope: string,
+    versionId?: string,
+    signal?: AbortSignal,
+  ): Promise<GovernanceDocumentExport> {
+    const query = new URLSearchParams()
+    if (versionId) query.set('version_id', versionId)
+    const suffix = query.size > 0 ? `?${query.toString()}` : ''
+    const value = await this.client.request<GovernanceDocumentExport>(
+      `${BASE_PATH}/${encodeURIComponent(documentId)}/export${suffix}`,
+      { cache: 'no-store', signal },
+    )
+    if (
+      value?.contract_version !== 'GOVERNANCE_DOCUMENT_EXPORT_V1'
+      || value.document.document_id !== documentId
+      || value.selected_version.document_id !== documentId
+      || value.cache_scope !== expectedCacheScope
+      || !validReadEnvelope(value)
+      || !validDate(value.exported_at)
+    ) {
+      throw new Error('거버넌스 문서 내보내기 계약이 올바르지 않습니다.')
     }
     return value
   }
@@ -410,6 +487,7 @@ function assertDetail(value: GovernanceDocumentCommandResponse['item']): void {
     !Array.isArray(value.versions)
     || !Array.isArray(value.reviews)
     || !Array.isArray(value.attachments)
+    || !Array.isArray(value.child_documents)
     || value.versions.some((version) => (
       version.document_id !== value.document.document_id
       || !isPositiveInteger(version.version)

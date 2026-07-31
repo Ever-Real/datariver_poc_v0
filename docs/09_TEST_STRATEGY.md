@@ -1350,6 +1350,15 @@ applicable evidence below exists.
   idempotency commands, list/detail/history/review/Archive/attachment/import states, controlled
   blueprint loading and the DOM-to-React viewer with no raw HTML insertion. TypeScript, ESLint,
   Vitest and production build are release gates.
+- Revision `0079` tests cover deterministic legacy attachment numbering, the 1–25 serial bound,
+  readable server-derived body/reference basenames, exact receipt signing, same-Workspace
+  permission-pruned parent/child links, self/cycle rejection and DB-level parent immutability.
+  Canonical `0001` must contain the same trigger and be byte-identical across two generations.
+- Browser acceptance uses distinct author and reviewer identities: create or import a managed
+  document, add an editor-bottom reference, submit, independently approve, observe it in
+  **문서 조회**, download the authorized export and verify that the export contains no MinIO
+  address/key/VersionId/credential/Presigned URL. The three controlled starter documents are
+  ordinary records and must each traverse the same workflow before they appear in the viewer.
 - Representative vector dimension, exact-search latency/recall, future ANN sizing, Neo4j projection,
   MinIO throughput, worker crash/reclaim, multi-Workspace leakage, WSL amd64 and accessibility are
   target acceptance gates. Exact pgvector search is not a production SLO claim.

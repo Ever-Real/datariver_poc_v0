@@ -5,71 +5,194 @@ import type { ApiClient } from '../../api/client'
 import { PolicyGovernancePage } from './PolicyGovernancePage'
 
 describe('PolicyGovernancePage', () => {
-  it('does not issue administrator-policy requests for a user without policy read authority', async () => {
-    const request = vi.fn()
-
-    render(
-      <PolicyGovernancePage
-        client={{ request } as unknown as ApiClient}
-        mayReadPolicies={false}
-      />,
-    )
-
-    expect(
-      await screen.findByText('이 정책 read model은 보안 관리자 권한이 있는 사용자에게만 표시됩니다.'),
-    ).toBeInTheDocument()
-    expect(request).not.toHaveBeenCalled()
-  })
-
-  it('keeps the existing policy status view and opens the separately authorized document library', async () => {
-    const request = vi.fn().mockImplementation((path: string) => {
+  it('shows only the managed document viewer tab when management capability is denied', async () => {
+    const request = vi.fn((path: string) => {
       if (path === '/governance/documents/capability') {
-        return Promise.resolve({
-          contract_version: 'GOVERNANCE_DOCUMENT_CAPABILITY_V1',
-          observed_at: new Date(Date.now() - 1_000).toISOString(),
-          valid_until: new Date(Date.now() + 30_000).toISOString(),
-          cache_scope: 'a'.repeat(64),
-          axes: [
-            'read',
-            'create',
-            'edit',
-            'review',
-            'publish',
-            'archive',
-            'template_manage',
-            'artifact_storage',
-            'knowledge_projection',
-          ].map((id) => ({
-            id,
-            state: 'DENIED',
-            reason_code: 'PERMISSION_DENIED',
-          })),
-          limits: {
-            max_html_bytes: 1_000_000,
-            max_attachment_bytes: 10_000_000,
-            max_attachments_per_version: 25,
-          },
-        })
+        return Promise.resolve(capability(false))
+      }
+      if (path === '/governance/documents?limit=100&kind=DOCUMENT&state=ACTIVE') {
+        return Promise.resolve(documentList())
       }
       throw new Error(`unexpected request: ${path}`)
     })
-    const queryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
+
+    renderPage(request)
+
+    expect(await screen.findByRole('tab', { name: '문서 조회' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: '문서 관리' })).not.toBeInTheDocument()
+    expect(await screen.findByText(/승인·게시된 문서가 없습니다/)).toBeInTheDocument()
+  })
+
+  it('renames both tabs and opens the separately authorized management workspace', async () => {
+    const request = vi.fn((path: string) => {
+      if (path === '/governance/documents/capability') {
+        return Promise.resolve(capability(true))
+      }
+      if (path === '/governance/documents?limit=100&kind=DOCUMENT&state=ACTIVE') {
+        return Promise.resolve(documentList())
+      }
+      if (path === '/governance/documents?limit=25&kind=DOCUMENT') {
+        return Promise.resolve({ ...documentList(), page: { next_cursor: null, limit: 25 } })
+      }
+      throw new Error(`unexpected request: ${path}`)
     })
-    render(
-      <QueryClientProvider client={queryClient}>
-        <PolicyGovernancePage
-          client={{ request } as unknown as ApiClient}
-          mayReadPolicies={false}
-        />
-      </QueryClientProvider>,
-    )
 
-    expect(await screen.findByText('이 정책 read model은 보안 관리자 권한이 있는 사용자에게만 표시됩니다.')).toBeInTheDocument()
-    expect(request).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('tab', { name: '문서 라이브러리' }))
+    renderPage(request)
 
-    expect(await screen.findByText('문서 열람이 허용되지 않았습니다')).toBeInTheDocument()
-    expect(request).toHaveBeenCalledTimes(1)
+    const management = await screen.findByRole('tab', { name: '문서 관리' })
+    expect(screen.getByRole('tab', { name: '문서 조회' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: '정책 현황' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: '문서 라이브러리' })).not.toBeInTheDocument()
+    fireEvent.click(management)
+
+    expect(await screen.findByRole('heading', { name: '문서 관리' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '문서 작성' })).toBeInTheDocument()
+  })
+
+  it('renders the current published body and metadata from the managed document API', async () => {
+    const request = vi.fn((path: string) => {
+      if (path === '/governance/documents/capability') {
+        return Promise.resolve(capability(false))
+      }
+      if (path === '/governance/documents?limit=100&kind=DOCUMENT&state=ACTIVE') {
+        return Promise.resolve(documentList([documentSummary]))
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+    const requestWithMeta = vi.fn((path: string) => {
+      if (path === '/governance/documents/document-one') {
+        return Promise.resolve({
+          data: {
+            item: {
+              document: documentSummary,
+              versions: [publishedVersion],
+              reviews: [],
+              attachments: [],
+              parent_document: null,
+              child_documents: [],
+            },
+            cache_scope: cacheScope,
+            observed_at: now,
+            authorization_valid_until: validUntil,
+          },
+          etag: '"3"',
+        })
+      }
+      throw new Error(`unexpected metadata request: ${path}`)
+    })
+
+    renderPage(request, requestWithMeta)
+
+    expect(await screen.findByRole('heading', { name: '데이터 분류·접근 정책' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '승인 본문' })).toBeInTheDocument()
+    expect(screen.getByText('v1')).toBeInTheDocument()
+    expect(screen.getByText('ACTIVE')).toBeInTheDocument()
   })
 })
+
+function renderPage(
+  request: (path: string) => Promise<unknown>,
+  requestWithMeta: (path: string) => Promise<unknown> = vi.fn(),
+) {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  })
+  const client = {
+    request: request as unknown as ApiClient['request'],
+    requestWithMeta: requestWithMeta as unknown as ApiClient['requestWithMeta'],
+  } as unknown as ApiClient
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <PolicyGovernancePage client={client} />
+    </QueryClientProvider>,
+  )
+}
+
+function capability(management: boolean) {
+  return {
+    contract_version: 'GOVERNANCE_DOCUMENT_CAPABILITY_V1',
+    observed_at: new Date(Date.now() - 1_000).toISOString(),
+    valid_until: new Date(Date.now() + 30_000).toISOString(),
+    cache_scope: cacheScope,
+    axes: [
+      'read',
+      'create',
+      'edit',
+      'review',
+      'publish',
+      'archive',
+      'template_manage',
+      'artifact_storage',
+      'knowledge_projection',
+    ].map((id) => ({
+      id,
+      state: id === 'read' || management ? 'AVAILABLE' : 'DENIED',
+      reason_code: id === 'read' || management ? null : 'PERMISSION_DENIED',
+    })),
+    limits: {
+      max_html_bytes: 1_000_000,
+      max_attachment_bytes: 10_000_000,
+      max_attachments_per_version: 25,
+    },
+  }
+}
+
+function documentList(items: unknown[] = []) {
+  return {
+    items,
+    page: { next_cursor: null, limit: 100 },
+    cache_scope: cacheScope,
+    observed_at: new Date(Date.now() - 1_000).toISOString(),
+    authorization_valid_until: new Date(Date.now() + 30_000).toISOString(),
+  }
+}
+
+const cacheScope = 'a'.repeat(64)
+const now = '2026-07-31T00:00:00Z'
+const validUntil = '2099-07-31T00:00:30Z'
+const documentSummary = {
+  document_id: 'document-one',
+  workspace_id: 'workspace-one',
+  kind: 'DOCUMENT',
+  category: 'POLICY',
+  title: '데이터 분류·접근 정책',
+  summary: '승인된 관리 문서',
+  classification: 1,
+  state: 'ACTIVE',
+  owner_subject_id: 'author-one',
+  current_published_version_id: 'version-one',
+  current_version_number: 1,
+  created_at: now,
+  updated_at: now,
+  version: 3,
+  allowed_actions: ['read'],
+}
+const publishedVersion = {
+  version_id: 'version-one',
+  workspace_id: 'workspace-one',
+  document_id: 'document-one',
+  version_number: 1,
+  version_tag: 'v1',
+  state: 'PUBLISHED',
+  title: '데이터 분류·접근 정책',
+  summary: '승인된 관리 문서',
+  applicability_scope: '전사',
+  sanitized_html: '<h2>승인 본문</h2><p>분류 기준을 적용합니다.</p>',
+  plain_text: '승인 본문 분류 기준을 적용합니다.',
+  content_sha256: 'b'.repeat(64),
+  size_bytes: 42,
+  sanitizer_policy_version: 'GOVERNANCE_HTML_SANITIZER_V1',
+  sanitizer_policy_sha256: 'c'.repeat(64),
+  source_format: 'HTML',
+  source_template_version_id: null,
+  parent_document_id: null,
+  author_id: 'author-one',
+  submitted_at: now,
+  reviewed_by: 'reviewer-one',
+  reviewed_at: now,
+  published_at: now,
+  artifact_state: 'STORED',
+  knowledge_state: 'READY',
+  created_at: now,
+  version: 1,
+}

@@ -4,11 +4,15 @@ import hashlib
 import json
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Protocol
 from uuid import UUID
 
 from datariver.application.errors import ExternalDependencyError
+from datariver.application.governance_document_storage_names import (
+    governance_document_storage_stem,
+)
 from datariver.domain.common import ConflictError, ValidationError
 
 GOVERNANCE_DOCUMENT_ARTIFACT_PREFIX = "governance/documents/v1"
@@ -36,6 +40,9 @@ def governance_document_artifact_keys(
     workspace_id: UUID,
     document_id: UUID,
     version_id: UUID,
+    document_title: str,
+    registered_at: datetime,
+    version_number: int,
 ) -> GovernanceDocumentArtifactKeys:
     identifiers = (workspace_id, document_id, version_id)
     if any(not isinstance(identifier, UUID) or identifier.int == 0 for identifier in identifiers):
@@ -43,9 +50,15 @@ def governance_document_artifact_keys(
     version_prefix = (
         f"{GOVERNANCE_DOCUMENT_ARTIFACT_PREFIX}/{workspace_id}/{document_id}/{version_id}"
     )
+    storage_stem = governance_document_storage_stem(
+        prefix="doc_governance",
+        title=document_title,
+        registered_at=registered_at,
+        serial_number=version_number,
+    )
     return GovernanceDocumentArtifactKeys(
-        content_key=f"{version_prefix}/content.html",
-        manifest_key=f"{version_prefix}/manifest.json",
+        content_key=f"{version_prefix}/{storage_stem}.html",
+        manifest_key=f"{version_prefix}/{storage_stem}.manifest.json",
     )
 
 
@@ -54,6 +67,8 @@ class GovernanceDocumentArtifactWrite:
     workspace_id: UUID
     document_id: UUID
     version_id: UUID
+    document_title: str
+    registered_at: datetime
     version_number: int
     version_tag: str
     sanitizer_policy_version: str
@@ -67,6 +82,9 @@ class GovernanceDocumentArtifactWrite:
             workspace_id=self.workspace_id,
             document_id=self.document_id,
             version_id=self.version_id,
+            document_title=self.document_title,
+            registered_at=self.registered_at,
+            version_number=self.version_number,
         )
         if not 1 <= self.version_number <= 2_147_483_647:
             raise ValidationError("Governance document version number is outside the safe range.")

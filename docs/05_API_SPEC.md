@@ -134,12 +134,13 @@ require a quoted positive `If-Match`; every command requires an actor-bound `Ide
 | Method/path | Action | Purpose |
 |---|---|---|
 | `GET /governance/documents/capability` | evaluated document/Template Actions | independent read/create/edit/review/publish/archive/Template/artifact/knowledge axes and server limits |
-| `GET /governance/documents/template-blueprints` | `governance.template.propose` | exact sanitized V1 starter catalog for policy, standard terminology and security guide |
-| `GET /governance/documents?kind=&category=&q=&include_archived=&limit=&cursor=` | document or Template read | permission-pruned summaries, default 25 and maximum 100 |
+| `GET /governance/documents/template-blueprints` | document create or `governance.template.propose` | exact sanitized V2 catalog; `STARTER_DOCUMENT` entries are ordinary document drafts and `TEMPLATE` entries are reusable Templates |
+| `GET /governance/documents?kind=&state=&category=&q=&include_archived=&limit=&cursor=` | document or Template read | permission-pruned summaries, optional exact aggregate-state filter, default 25 and maximum 100 |
 | `POST /governance/documents` | document create or Template propose | create one aggregate from canonical HTML or an exact published Template version |
 | `POST /governance/documents/imports` | document create or Template propose | multipart HTML/Markdown/DOCX aggregate creation; maximum 25 MiB ingress and 1 MiB canonical HTML |
-| `GET /governance/documents/{document_id}` | document/Template read; history Action for archived documents | exact aggregate, immutable versions, reviews and attachment metadata with ETag |
-| `POST /governance/documents/{document_id}/versions` | document edit or Template propose | ETag-fenced JSON HTML or multipart HTML/Markdown/DOCX immutable version |
+| `GET /governance/documents/{document_id}` | document/Template read; history Action for archived documents | exact aggregate, immutable versions, reviews, attachment metadata and authorized parent/child summaries with ETag |
+| `GET /governance/documents/{document_id}/export?version_id=` | document/Template read; history Action for archived documents | selected-version sanitized content, public metadata, history, attachment metadata and authorized hierarchy as private/no-store JSON |
+| `POST /governance/documents/{document_id}/versions` | document edit or Template propose | ETag-fenced JSON HTML or multipart HTML/Markdown/DOCX immutable version; parent linkage is version-owned |
 | `POST /governance/documents/{document_id}/versions/{version_id}/submissions` | document edit or Template propose | Draft to independent review |
 | `POST /governance/documents/{document_id}/versions/{version_id}/reviews` | review plus publish/activate for approval | independent approve-and-publish or reject with reason |
 | `POST /governance/documents/{document_id}/versions/{version_id}/attachments` | document edit or Template propose | one create-only Draft-version attachment, maximum 25 MiB and 25 per version |
@@ -152,6 +153,7 @@ No route accepts an object key, MinIO credential, raw vector, provider/model ide
 Cypher, GraphQL, sanitizer policy override or arbitrary parser/plugin configuration. Attachment
 delete and physical document deletion are intentionally absent. Download authorization precedes
 signing and each URL is bound to the recorded bucket/key/provider VersionId for 60–900 seconds.
+Export never includes the bucket, key, VersionId, endpoint, credential or a Presigned URL.
 
 ### Catalog facade
 

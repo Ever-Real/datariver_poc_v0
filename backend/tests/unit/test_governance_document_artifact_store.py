@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import inspect
+from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any
 from uuid import UUID, uuid4
@@ -108,6 +109,8 @@ def _write() -> GovernanceDocumentArtifactWrite:
         workspace_id=uuid4(),
         document_id=uuid4(),
         version_id=uuid4(),
+        document_title="데이터 분류/접근 정책",
+        registered_at=datetime(2026, 7, 31, tzinfo=UTC),
         version_number=3,
         version_tag="v3.0",
         sanitizer_policy_version="html-policy:1",
@@ -129,24 +132,34 @@ def _store(client: _VersionedS3Client) -> S3GovernanceDocumentArtifactStore:
     )
 
 
-def test_key_builder_accepts_only_non_zero_uuids_and_never_uses_titles() -> None:
+def test_key_builder_uses_uuid_isolation_and_a_normalized_governance_filename() -> None:
     write = _write()
     keys = governance_document_artifact_keys(
         workspace_id=write.workspace_id,
         document_id=write.document_id,
         version_id=write.version_id,
+        document_title=write.document_title,
+        registered_at=write.registered_at,
+        version_number=write.version_number,
     )
 
     expected_prefix = (
         f"governance/documents/v1/{write.workspace_id}/{write.document_id}/{write.version_id}"
     )
-    assert keys.content_key == f"{expected_prefix}/content.html"
-    assert keys.manifest_key == f"{expected_prefix}/manifest.json"
+    assert keys.content_key == (
+        f"{expected_prefix}/doc_governance_데이터_분류_접근_정책_20260731_003.html"
+    )
+    assert keys.manifest_key == (
+        f"{expected_prefix}/doc_governance_데이터_분류_접근_정책_20260731_003.manifest.json"
+    )
     with pytest.raises(ValueError):
         governance_document_artifact_keys(
             workspace_id=UUID(int=0),
             document_id=write.document_id,
             version_id=write.version_id,
+            document_title=write.document_title,
+            registered_at=write.registered_at,
+            version_number=write.version_number,
         )
 
 
@@ -158,10 +171,8 @@ async def test_content_is_created_before_manifest_and_both_are_exactly_read_back
     receipt = await _store(client).ensure_version_artifacts(write)
 
     put_calls = [values for name, values in client.calls if name == "put_object"]
-    assert [str(call["Key"]).rsplit("/", 1)[-1] for call in put_calls] == [
-        "content.html",
-        "manifest.json",
-    ]
+    assert str(put_calls[0]["Key"]).endswith("_003.html")
+    assert str(put_calls[1]["Key"]).endswith("_003.manifest.json")
     assert all(call["IfNoneMatch"] == "*" for call in put_calls)
     assert all(call["ChecksumAlgorithm"] == "SHA256" for call in put_calls)
     assert receipt.content.provider_version_id == "version-1"
@@ -201,6 +212,8 @@ async def test_different_existing_content_is_a_structured_collision() -> None:
         workspace_id=write.workspace_id,
         document_id=write.document_id,
         version_id=write.version_id,
+        document_title=write.document_title,
+        registered_at=write.registered_at,
         version_number=write.version_number,
         version_tag=write.version_tag,
         sanitizer_policy_version=write.sanitizer_policy_version,
@@ -232,8 +245,8 @@ async def test_manifest_write_failure_preserves_content_and_marks_ambiguous_stag
     assert captured.value.details["artifact_stage"] == "MANIFEST"
     assert captured.value.details["content_committed"] is True
     assert captured.value.details["ambiguous_commit"] is True
-    assert any(key.endswith("content.html") for key, _version in client.objects)
-    assert not any(key.endswith("manifest.json") for key, _version in client.objects)
+    assert any(key.endswith("_003.html") for key, _version in client.objects)
+    assert not any(key.endswith("_003.manifest.json") for key, _version in client.objects)
 
 
 @pytest.mark.asyncio

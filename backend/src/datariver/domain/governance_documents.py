@@ -30,6 +30,11 @@ class GovernanceDocumentKind(StrEnum):
     TEMPLATE = "TEMPLATE"
 
 
+class GovernanceDocumentBlueprintPurpose(StrEnum):
+    STARTER_DOCUMENT = "STARTER_DOCUMENT"
+    TEMPLATE = "TEMPLATE"
+
+
 class GovernanceDocumentCategory(StrEnum):
     POLICY = "POLICY"
     STANDARD_TERMINOLOGY = "STANDARD_TERMINOLOGY"
@@ -181,6 +186,7 @@ class GovernanceDocumentVersion:
     sanitizer_policy_sha256: str
     source_format: GovernanceDocumentSourceFormat
     source_template_version_id: UUID | None
+    parent_document_id: UUID | None
     author_id: UUID
     submitted_at: datetime | None
     reviewed_by: UUID | None
@@ -221,6 +227,8 @@ class GovernanceDocumentAttachment:
     workspace_id: UUID
     document_id: UUID
     document_version_id: UUID
+    serial_number: int
+    storage_filename: str | None
     original_name: str
     content_type: str
     size_bytes: int
@@ -249,6 +257,8 @@ class GovernanceDocumentDetail:
     versions: tuple[GovernanceDocumentVersion, ...]
     reviews: tuple[GovernanceDocumentReview, ...]
     attachments: tuple[GovernanceDocumentAttachment, ...]
+    parent_document: GovernanceDocumentSummary | None
+    child_documents: tuple[GovernanceDocumentSummary, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -276,6 +286,7 @@ class GovernanceDocumentCapability:
 class GovernanceDocumentBlueprint:
     blueprint_id: str
     blueprint_version: str
+    purpose: GovernanceDocumentBlueprintPurpose
     category: GovernanceDocumentCategory
     title: str
     summary: str
@@ -284,6 +295,19 @@ class GovernanceDocumentBlueprint:
     content_sha256: str
     sanitizer_policy_version: str
     sanitizer_policy_sha256: str
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceDocumentExport:
+    contract_version: str
+    exported_at: datetime
+    document: GovernanceDocumentSummary
+    selected_version: GovernanceDocumentVersion
+    version_history: tuple[GovernanceDocumentVersion, ...]
+    reviews: tuple[GovernanceDocumentReview, ...]
+    attachments: tuple[GovernanceDocumentAttachment, ...]
+    parent_document: GovernanceDocumentSummary | None
+    child_documents: tuple[GovernanceDocumentSummary, ...]
 
 
 @dataclass(frozen=True, slots=True)

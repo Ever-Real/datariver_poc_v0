@@ -12,6 +12,9 @@ from datariver.application.governance_document_blueprints import (
     BLUEPRINT_CATALOG_VERSION,
     governance_document_blueprints,
 )
+from datariver.application.governance_document_formats import (
+    prepare_governance_document_html,
+)
 from datariver.application.services.authorization import (
     AuthorizationService,
     NullDecisionWriter,
@@ -23,8 +26,12 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import PreconditionFailedError
-from datariver.domain.governance_documents import GovernanceDocumentCategory
+from datariver.domain.common import PreconditionFailedError, ValidationError
+from datariver.domain.governance_documents import (
+    GovernanceDocumentBlueprintPurpose,
+    GovernanceDocumentCategory,
+    GovernanceDocumentKind,
+)
 from datariver.domain.governance_html import sanitize_governance_html
 from datariver.domain.knowledge_pipeline import (
     EmbeddingBatch,
@@ -119,13 +126,53 @@ def test_controlled_blueprints_are_sanitized_and_cover_required_categories() -> 
         GovernanceDocumentCategory.STANDARD_TERMINOLOGY,
         GovernanceDocumentCategory.SECURITY_GUIDE,
     }
-    assert len({value.blueprint_id for value in values}) == 3
+    assert len({value.blueprint_id for value in values}) == 6
+    assert (
+        sum(
+            value.purpose is GovernanceDocumentBlueprintPurpose.STARTER_DOCUMENT for value in values
+        )
+        == 3
+    )
+    assert {
+        value.title
+        for value in values
+        if value.purpose is GovernanceDocumentBlueprintPurpose.STARTER_DOCUMENT
+    } == {
+        "데이터 분류·접근 정책",
+        "보존·파기 정책",
+        "Legal Hold 관리",
+    }
     for value in values:
         assert value.blueprint_version == BLUEPRINT_CATALOG_VERSION
         sanitized = sanitize_governance_html(value.sanitized_html)
         assert sanitized.html == value.sanitized_html
         assert sanitized.content_sha256 == value.content_sha256
         assert sanitized.policy_sha256 == value.sanitizer_policy_sha256
+
+
+@pytest.mark.asyncio
+async def test_template_cannot_claim_a_document_parent() -> None:
+    subject = _subject(Action.GOVERNANCE_TEMPLATE_PROPOSE)
+
+    with pytest.raises(
+        ValidationError,
+        match="Only a Governance Document can have a parent",
+    ):
+        await _service(_Repository()).create_document(
+            subject=subject,
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="template-parent",
+            idempotency_key="template-parent-key",
+            kind=GovernanceDocumentKind.TEMPLATE,
+            category=GovernanceDocumentCategory.POLICY,
+            title="정책 템플릿",
+            summary="",
+            classification=Classification.INTERNAL,
+            applicability_scope="전사",
+            content=prepare_governance_document_html("<p>템플릿</p>"),
+            source_template_version_id=None,
+            parent_document_id=uuid4(),
+        )
 
 
 @pytest.mark.asyncio

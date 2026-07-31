@@ -100,6 +100,7 @@ class GovernanceDocumentVersionResponse(BaseModel):
     sanitizer_policy_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_format: Literal["HTML", "MARKDOWN", "DOCX"]
     source_template_version_id: UUID | None
+    parent_document_id: UUID | None
     author_id: UUID
     submitted_at: datetime | None
     reviewed_by: UUID | None
@@ -133,6 +134,8 @@ class GovernanceDocumentAttachmentResponse(BaseModel):
     workspace_id: UUID
     document_id: UUID
     document_version_id: UUID
+    serial_number: int = Field(ge=1, le=25)
+    storage_filename: str | None
     original_name: str
     content_type: str
     size_bytes: int = Field(ge=1, le=25 * 1024 * 1024)
@@ -156,6 +159,8 @@ class GovernanceDocumentDetailItemResponse(BaseModel):
     versions: list[GovernanceDocumentVersionResponse]
     reviews: list[GovernanceDocumentReviewResponse]
     attachments: list[GovernanceDocumentAttachmentResponse]
+    parent_document: GovernanceDocumentSummaryResponse | None
+    child_documents: list[GovernanceDocumentSummaryResponse]
 
 
 class GovernanceDocumentReadMetadata(BaseModel):
@@ -181,11 +186,24 @@ class GovernanceDocumentCommandResponse(BaseModel):
     item: GovernanceDocumentDetailItemResponse
 
 
+class GovernanceDocumentExportResponse(GovernanceDocumentReadMetadata):
+    contract_version: Literal["GOVERNANCE_DOCUMENT_EXPORT_V1"]
+    exported_at: datetime
+    document: GovernanceDocumentSummaryResponse
+    selected_version: GovernanceDocumentVersionResponse
+    version_history: list[GovernanceDocumentVersionResponse]
+    reviews: list[GovernanceDocumentReviewResponse]
+    attachments: list[GovernanceDocumentAttachmentResponse]
+    parent_document: GovernanceDocumentSummaryResponse | None
+    child_documents: list[GovernanceDocumentSummaryResponse]
+
+
 class GovernanceDocumentBlueprintResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     blueprint_id: str
-    blueprint_version: str
+    blueprint_version: Literal["GOVERNANCE_DOCUMENT_BLUEPRINTS_V2"]
+    purpose: Literal["STARTER_DOCUMENT", "TEMPLATE"]
     category: Literal["POLICY", "STANDARD_TERMINOLOGY", "SECURITY_GUIDE"]
     title: str
     summary: str
@@ -199,8 +217,8 @@ class GovernanceDocumentBlueprintResponse(BaseModel):
 class GovernanceDocumentBlueprintListResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    contract_version: Literal["GOVERNANCE_DOCUMENT_BLUEPRINTS_V1"] = (
-        "GOVERNANCE_DOCUMENT_BLUEPRINTS_V1"
+    contract_version: Literal["GOVERNANCE_DOCUMENT_BLUEPRINTS_V2"] = (
+        "GOVERNANCE_DOCUMENT_BLUEPRINTS_V2"
     )
     items: list[GovernanceDocumentBlueprintResponse]
 
@@ -216,6 +234,7 @@ class GovernanceDocumentCreateRequest(BaseModel):
     applicability_scope: str = Field(default="", max_length=4_000)
     sanitized_html: str | None = None
     source_template_version_id: UUID | None = None
+    parent_document_id: UUID | None = None
 
     @model_validator(mode="after")
     def require_content_or_template(self) -> GovernanceDocumentCreateRequest:
@@ -232,6 +251,7 @@ class GovernanceDocumentVersionCreateRequest(BaseModel):
     applicability_scope: str = Field(default="", max_length=4_000)
     sanitized_html: str
     source_template_version_id: UUID | None = None
+    parent_document_id: UUID | None = None
 
 
 class GovernanceDocumentReviewRequest(BaseModel):

@@ -61,6 +61,7 @@ def governance_document_version_response(
         sanitizer_policy_sha256=value.sanitizer_policy_sha256,
         source_format=value.source_format.value,
         source_template_version_id=value.source_template_version_id,
+        parent_document_id=value.parent_document_id,
         author_id=value.author_id,
         submitted_at=value.submitted_at,
         reviewed_by=value.reviewed_by,
@@ -98,6 +99,8 @@ def governance_document_attachment_response(
         workspace_id=value.workspace_id,
         document_id=value.document_id,
         document_version_id=value.document_version_id,
+        serial_number=value.serial_number,
+        storage_filename=value.storage_filename,
         original_name=value.original_name,
         content_type=value.content_type,
         size_bytes=value.size_bytes,
@@ -115,6 +118,14 @@ def governance_document_detail_response(
         versions=[governance_document_version_response(item) for item in value.versions],
         reviews=[governance_document_review_response(item) for item in value.reviews],
         attachments=[governance_document_attachment_response(item) for item in value.attachments],
+        parent_document=(
+            governance_document_summary_response(value.parent_document)
+            if value.parent_document is not None
+            else None
+        ),
+        child_documents=[
+            governance_document_summary_response(item) for item in value.child_documents
+        ],
     )
 
 
