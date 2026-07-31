@@ -328,6 +328,8 @@ def preparation_bootstrap_command(
         command.append("--source-host-airflow-bridge")
     if env_bool(values, "KNOWLEDGE_SOURCE_WORKER_ENABLED"):
         command.append("--enable-knowledge-source-worker")
+    if env_bool(values, "KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED"):
+        command.append("--enable-knowledge-studio-proposal-worker")
     return tuple(command)
 
 

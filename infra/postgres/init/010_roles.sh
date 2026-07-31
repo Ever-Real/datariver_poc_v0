@@ -6,6 +6,7 @@ relay_password=$(cat /run/secrets/postgres_relay_password)
 upload_password=$(cat /run/secrets/postgres_upload_password)
 governance_password=$(cat /run/secrets/postgres_governance_password)
 knowledge_password=$(cat /run/secrets/postgres_knowledge_password)
+knowledge_proposal_password=$(cat /run/secrets/postgres_knowledge_proposal_password)
 knowledge_ingestion_password=$(cat /run/secrets/postgres_knowledge_ingestion_password)
 quality_password=$(cat /run/secrets/postgres_quality_password)
 governance_document_password=$(cat /run/secrets/postgres_governance_document_password)
@@ -23,6 +24,7 @@ psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set=upload_password="$upload_password" \
   --set=governance_password="$governance_password" \
   --set=knowledge_password="$knowledge_password" \
+  --set=knowledge_proposal_password="$knowledge_proposal_password" \
   --set=knowledge_ingestion_password="$knowledge_ingestion_password" \
   --set=quality_password="$quality_password" \
   --set=governance_document_password="$governance_document_password" \
@@ -42,6 +44,14 @@ SELECT format('CREATE ROLE datariver_governance LOGIN PASSWORD %L', :'governance
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') \gexec
 SELECT format('CREATE ROLE datariver_knowledge LOGIN PASSWORD %L', :'knowledge_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_knowledge') \gexec
+SELECT format(
+  'CREATE ROLE datariver_knowledge_proposal LOGIN PASSWORD %L '
+  'NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
+  :'knowledge_proposal_password'
+)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_roles WHERE rolname = 'datariver_knowledge_proposal'
+) \gexec
 SELECT format(
   'CREATE ROLE datariver_knowledge_ingestion LOGIN PASSWORD %L '
   'NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
@@ -109,6 +119,32 @@ BEGIN
   ) THEN
     RAISE EXCEPTION
       'datariver_knowledge must not be assumable by another non-superuser principal';
+  END IF;
+END
+$datariver$;
+ALTER ROLE datariver_knowledge_proposal
+  WITH LOGIN PASSWORD :'knowledge_proposal_password'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+DO $datariver$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_knowledge_proposal'
+      AND pg_has_role('datariver_knowledge_proposal', candidate.oid, 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_knowledge_proposal must not inherit or SET ROLE to another principal';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_knowledge_proposal'
+      AND NOT candidate.rolsuper
+      AND pg_has_role(candidate.oid, 'datariver_knowledge_proposal', 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_knowledge_proposal must not be assumable by another non-superuser principal';
   END IF;
 END
 $datariver$;

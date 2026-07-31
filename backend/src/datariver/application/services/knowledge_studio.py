@@ -687,16 +687,27 @@ class KnowledgeStudioService:
             proposed=proposed,
         )
         conflicts = self._proposal_conflicts(current=current, proposed=proposed)
-        validated_source_reference = dict(source_reference) if source_reference else None
-        if validated_source_reference is not None:
-            validated_source_reference["pipeline_evidence"] = {
-                "contract_version": "KNOWLEDGE_STUDIO_PROPOSAL_VALIDATION_V1",
-                "typed_schema_parse": "PASSED",
-                "deterministic_correction_passes": 1,
-                "corrected_default_count": corrected_defaults,
-                "aggregate_validation_passes": 1,
-                "cypher_execution": False,
+        validated_source_reference: dict[str, object] = (
+            dict(source_reference)
+            if source_reference is not None
+            else {
+                "contract_version": "KNOWLEDGE_STUDIO_ASSISTANT_INPUT_V1",
+                "input_hash": canonical_json_hash(
+                    {
+                        "contract": "KNOWLEDGE_STUDIO_ASSISTANT_INPUT_V1",
+                        "prompt": prompt,
+                    }
+                ),
             }
+        )
+        validated_source_reference["pipeline_evidence"] = {
+            "contract_version": "KNOWLEDGE_STUDIO_PROPOSAL_VALIDATION_V1",
+            "typed_schema_parse": "PASSED",
+            "deterministic_correction_passes": 1,
+            "corrected_default_count": corrected_defaults,
+            "aggregate_validation_passes": 1,
+            "cypher_execution": False,
+        }
         return await self._store.save_tbox_proposal(
             workspace_id=workspace_id,
             author_id=subject.subject_id,
@@ -704,7 +715,7 @@ class KnowledgeStudioService:
             base_draft_version=expected_version,
             target_block_id=target_block_id,
             mode=mode.value,
-            prompt=prompt,
+            prompt="Governed Schema Assistant proposal",
             elements=proposed,
             conflicts=conflicts,
             model_binding=binding.to_document(),
@@ -808,9 +819,7 @@ class KnowledgeStudioService:
             base_draft_version=expected_version,
             target_block_id=target_block_id,
             mode=mode.value,
-            prompt=(
-                f"Attach Knowledge Asset {source.graph_name} Studio Release v{source.release_no}."
-            ),
+            prompt="Governed Asset Release proposal",
             elements=proposed,
             conflicts=conflicts,
             model_binding={
@@ -849,6 +858,36 @@ class KnowledgeStudioService:
         environment: EnvironmentAttributes,
         request_id: str,
     ) -> KnowledgeStudioTBoxRecord:
+        record = await self.authorize_tbox_source_upload(
+            workspace_id=workspace_id,
+            subject=subject,
+            draft_id=draft_id,
+            expected_version=expected_version,
+            environment=environment,
+            request_id=request_id,
+        )
+        block_ids = {block.block_id for block in record.blocks}
+        if mode is TBoxProposalMode.MERGE_INTO_CURRENT:
+            if target_block_id is None:
+                raise ValidationError("MERGE_INTO_CURRENT requires a target block.")
+            if target_block_id not in block_ids:
+                raise ValidationError("The proposal target block does not exist.")
+        if mode is TBoxProposalMode.APPEND_LAYER and target_block_id is not None:
+            raise ValidationError("APPEND_LAYER cannot target an existing block.")
+        return record
+
+    async def authorize_tbox_source_upload(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        expected_version: int | None,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioTBoxRecord:
+        """Authorize one Draft-scoped source operation without widening Registration RBAC."""
+
         record = await self.get_tbox(
             workspace_id=workspace_id,
             subject=subject,
@@ -864,16 +903,9 @@ class KnowledgeStudioService:
             request_id=request_id,
         )
         if record.draft.state != "DRAFT" or record.draft.current_step != "TBOX":
-            raise ConflictError("T-Box proposals require a mutable Graph Builder Draft.")
-        require_studio_version(record.draft.version, expected_version)
-        block_ids = {block.block_id for block in record.blocks}
-        if mode is TBoxProposalMode.MERGE_INTO_CURRENT:
-            if target_block_id is None:
-                raise ValidationError("MERGE_INTO_CURRENT requires a target block.")
-            if target_block_id not in block_ids:
-                raise ValidationError("The proposal target block does not exist.")
-        if mode is TBoxProposalMode.APPEND_LAYER and target_block_id is not None:
-            raise ValidationError("APPEND_LAYER cannot target an existing block.")
+            raise ConflictError("T-Box sources require a mutable Graph Builder Draft.")
+        if expected_version is not None:
+            require_studio_version(record.draft.version, expected_version)
         return record
 
     async def get_tbox_proposal(

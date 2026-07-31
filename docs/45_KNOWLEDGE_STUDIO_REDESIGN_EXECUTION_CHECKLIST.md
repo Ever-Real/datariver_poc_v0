@@ -111,16 +111,16 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
   later-reference lock과 latest-only block delete를 UI와 service/API 양쪽에서 강제한다.
 - [ ] block 순서/enable 변경이 이전 block을 수정하지 않고 `(weight, ordinal)` deterministic
   fold를 수행하며 동률은 최신 block(LIFO)이 우선함을 test한다.
-- [x] direct document/catalog/asset-release Proposal을 공통 dotted overlay와
-  Accept/Reject/Conflict UI에 연결한다. durable LLM job의 Expired 상태는 아래 별도 게이트로 남긴다.
+- [x] document/catalog durable Proposal과 direct asset-release Proposal을 공통 dotted
+  overlay와 Accept/Reject/Conflict UI에 연결한다.
 - [x] invalid Cypher buffer가 마지막 valid canvas를 유지하고 line/column diagnostic을 즉시
   표시하며 canvas/tree add/edit/delete가 safe text를 재생성함을 test한다.
 - [x] proposal conflict dialog가 `KEEP_ORIGINAL`을 기본값으로 사용하고 KIND/ENDPOINT 충돌을
   자동 overwrite하지 않음을 test한다.
-- [ ] provider/file inference는 별도 durable proposal job/attempt/event와 `202` API로 실행하고
+- [x] provider/file inference는 별도 durable proposal job/attempt/event와 `202` API로 실행하고
   API process가 provider latency를 기다리지 않음을 test한다.
 - [ ] proposal Accept가 one-time/version-fenced이고 source/classification/base pin을 재검증함을 integration test한다.
-- [ ] unavailable file inference/catalog picker가 provider 호출 없이 사유를 표시함을 test한다.
+- [x] unavailable file inference/catalog picker가 provider 호출 없이 사유를 표시함을 test한다.
 - [x] catalog picker가 local Asset UUID/source version과 server-returned aspect/field token만
   받고 arbitrary URN/field path/provider query를 거부함을 test한다.
 - [x] asset attach가 권한 있는 exact Studio Release/contract/T-Box hash만 pin하고
@@ -257,10 +257,11 @@ target DB/identity/browser 증거와 실제 physical reader는 별도 운영 게
   source/mapping/review 입력을 component unmount 밖에서 유지한다.
 - [x] 활성 block의 Node/Relationship/Delete·Backspace 삭제, 과거 block read-only group,
   current-to-earlier 연결, later-reference lock과 latest-only delete를 UI/API 양쪽에서 강제한다.
-- [x] PDF/CSV/TXT/XLSX/DOCX/PPTX/HTML/XML/JSON의 bounded multipart upload, create-only
-  filefolder Object Storage, safe extraction과 실제 governed Schema Assistant Proposal을 연결한다.
-- [x] 파싱/추출/유효성/완료 stepper는 실제 request 경계를 표시하며 fake timer나 fabricated
-  node를 만들지 않는다.
+- [x] PDF/CSV/TXT/XLSX/DOCX/PPTX/HTML/XML/JSON을 Draft-scoped accepted upload와
+  presigned private-object PUT으로 전달하고, API/Nginx body buffering 없이 전용 Proposal
+  worker의 safe extraction과 governed Schema Assistant로 연결한다.
+- [x] 업로드 검증/파싱/추출/Typed 유효성/완료 stepper는 PostgreSQL job의 실제
+  state/stage/progress만 표시하며 fake timer나 fabricated node를 만들지 않는다.
 - [x] Proposal canvas overlay에서 요소 제외, 이름/Property 타입 보정과 Keep Original 충돌
   해결 후 exact Proposal membership을 서버가 재검증하는 Typed apply를 구현한다.
 - [x] 지식 레지스트리 아래 지식 인스턴스 관리 route/shell을 추가하고 rich Property

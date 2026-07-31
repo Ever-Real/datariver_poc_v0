@@ -183,6 +183,9 @@ typed DRAFT Changeset result and vector-preparation evidence are defined by
 The exact durable Knowledge source MIME vocabulary and authorization-revalidated
 Studio Release-pinned Asset attachment are defined by
 [ADR-0096](adr/0096-knowledge-source-media-and-asset-release-pins.md).
+Draft-scoped accepted document ingress and isolated, pinned, resumable document/Catalog T-Box
+Proposal execution are defined by
+[ADR-0099](adr/0099-governed-knowledge-studio-tbox-proposal-jobs.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

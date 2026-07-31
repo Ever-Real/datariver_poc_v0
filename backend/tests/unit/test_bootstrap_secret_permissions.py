@@ -14,6 +14,8 @@ from datariver.bootstrap import (
     LOCAL_DEMO_IDENTITIES,
     LOCAL_KNOWLEDGE_INGESTION_EXTERNAL_SUBJECT,
     LOCAL_KNOWLEDGE_INGESTION_SUBJECT_ID,
+    LOCAL_KNOWLEDGE_PROPOSAL_EXTERNAL_SUBJECT,
+    LOCAL_KNOWLEDGE_PROPOSAL_SUBJECT_ID,
     _local_demo_identities,
     _local_human_membership_attributes,
     _local_service_identities,
@@ -129,6 +131,19 @@ def test_local_knowledge_ingestion_service_has_one_exact_machine_envelope() -> N
     )
     assert ingestion.allowed_actions == (Action.KG_INGEST_EXECUTE,)
     assert ingestion.bootstrap_contract == "local-knowledge-studio-ingestion-service-v1"
+
+
+def test_local_knowledge_proposal_service_has_one_exact_machine_envelope() -> None:
+    services = {identity.subject_id: identity for identity in _local_service_identities()}
+    proposal = services[LOCAL_KNOWLEDGE_PROPOSAL_SUBJECT_ID]
+
+    assert proposal.external_subject == LOCAL_KNOWLEDGE_PROPOSAL_EXTERNAL_SUBJECT
+    assert proposal.groups == (
+        "service-accounts",
+        "knowledge-proposal-workers",
+    )
+    assert proposal.allowed_actions == (Action.KG_PROPOSAL_EXECUTE,)
+    assert proposal.bootstrap_contract == "local-knowledge-studio-proposal-service-v1"
 
 
 def test_local_human_memberships_select_the_single_workspace_by_default() -> None:

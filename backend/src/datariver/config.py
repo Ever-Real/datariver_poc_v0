@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     governance_database_secret_ref: str
     knowledge_database_url: str | None = None
     knowledge_database_secret_ref: str | None = None
+    knowledge_proposal_database_url: str | None = None
+    knowledge_proposal_database_secret_ref: str | None = None
     knowledge_ingestion_database_url: str | None = None
     knowledge_ingestion_database_secret_ref: str | None = None
     export_database_url: str | None = None
@@ -219,6 +221,38 @@ class Settings(BaseSettings):
     knowledge_source_memory_spool_bytes: int = Field(default=1_048_576, ge=4_096, le=52_428_800)
     knowledge_source_spool_directory: str = Field(
         default="/var/spool/datariver-knowledge", min_length=1, max_length=512
+    )
+    knowledge_studio_proposal_worker_enabled: bool = False
+    knowledge_studio_proposal_worker_subject_id: UUID | None = None
+    knowledge_studio_proposal_workspace_id: UUID | None = None
+    knowledge_studio_proposal_worker_fingerprint: str | None = Field(
+        default=None,
+        max_length=255,
+    )
+    knowledge_studio_proposal_worker_poll_seconds: float = Field(
+        default=2.0,
+        ge=0.1,
+        le=30.0,
+    )
+    knowledge_studio_proposal_worker_lease_seconds: int = Field(
+        default=300,
+        ge=60,
+        le=3600,
+    )
+    knowledge_studio_proposal_job_maximum_attempts: int = Field(
+        default=3,
+        ge=1,
+        le=20,
+    )
+    knowledge_studio_proposal_memory_spool_bytes: int = Field(
+        default=1_048_576,
+        ge=4_096,
+        le=10_485_760,
+    )
+    knowledge_studio_proposal_spool_directory: str = Field(
+        default="/var/spool/datariver-knowledge-proposal",
+        min_length=1,
+        max_length=512,
     )
     knowledge_studio_source_manifest_file: str | None = Field(default=None, max_length=512)
     knowledge_studio_source_secret_root: str = "/run/secrets/knowledge-studio-sources"  # noqa: S105 - filesystem path
@@ -948,6 +982,10 @@ class Settings(BaseSettings):
             credential_urls["catalog_profile_database_url"] = self.catalog_profile_database_url
         if self.quality_database_url is not None:
             credential_urls["quality_database_url"] = self.quality_database_url
+        if self.knowledge_proposal_database_url is not None:
+            credential_urls["knowledge_proposal_database_url"] = (
+                self.knowledge_proposal_database_url
+            )
         if self.knowledge_ingestion_database_url is not None:
             credential_urls["knowledge_ingestion_database_url"] = (
                 self.knowledge_ingestion_database_url
@@ -1019,6 +1057,8 @@ class Settings(BaseSettings):
             )
         if self.quality_database_secret_ref is not None:
             references["quality_database"] = self.quality_database_secret_ref
+        if self.knowledge_proposal_database_secret_ref is not None:
+            references["knowledge_proposal_database"] = self.knowledge_proposal_database_secret_ref
         if self.knowledge_ingestion_database_secret_ref is not None:
             references["knowledge_ingestion_database"] = (
                 self.knowledge_ingestion_database_secret_ref
@@ -1509,6 +1549,126 @@ class Settings(BaseSettings):
             ):
                 raise ValueError(
                     "Knowledge source spool directory must be a bounded absolute path."
+                )
+        if self.knowledge_studio_proposal_worker_enabled:
+            proposal_inference_ready = (
+                self.local_ollama_chat_enabled or self.intranet_openai_compatible_chat_enabled
+            )
+            if (
+                not proposal_inference_ready
+                or self.knowledge_proposal_database_url is None
+                or self.knowledge_proposal_database_secret_ref is None
+                or self.knowledge_studio_proposal_worker_subject_id is None
+                or self.knowledge_studio_proposal_workspace_id is None
+                or self.knowledge_studio_proposal_worker_fingerprint is None
+                or self.s3_knowledge_access_key_file is None
+                or self.s3_knowledge_secret_key_file is None
+            ):
+                raise ValueError(
+                    "Enabled Knowledge Studio Proposal worker requires an activated Chat "
+                    "adapter, dedicated database credentials and the bounded read-only "
+                    "Knowledge object credential."
+                )
+            if (
+                urlsplit(self.knowledge_proposal_database_url).username
+                != "datariver_knowledge_proposal"
+            ):
+                raise ValueError(
+                    "Knowledge Studio Proposal worker must use the "
+                    "datariver_knowledge_proposal database principal."
+                )
+            other_database_urls = {
+                self.database_url,
+                self.migration_database_url,
+                self.relay_database_url,
+                self.upload_database_url,
+                self.governance_database_url,
+                self.bootstrap_database_url,
+                self.knowledge_database_url,
+                self.knowledge_ingestion_database_url,
+                self.export_database_url,
+                self.retention_scheduler_database_url,
+                self.archive_database_url,
+                self.catalog_profile_database_url,
+                self.quality_database_url,
+                self.governance_document_database_url,
+            }
+            other_database_principals = {
+                urlsplit(value).username for value in other_database_urls if value is not None
+            }
+            if (
+                self.knowledge_proposal_database_url in other_database_urls
+                or "datariver_knowledge_proposal" in other_database_principals
+            ):
+                raise ValueError(
+                    "Knowledge Studio Proposal worker database URL must use a separate principal."
+                )
+            other_database_secrets = {
+                self.database_secret_ref,
+                self.migration_database_secret_ref,
+                self.relay_database_secret_ref,
+                self.upload_database_secret_ref,
+                self.governance_database_secret_ref,
+                self.bootstrap_database_secret_ref,
+                self.knowledge_database_secret_ref,
+                self.knowledge_ingestion_database_secret_ref,
+                self.export_database_secret_ref,
+                self.retention_scheduler_database_secret_ref,
+                self.archive_database_secret_ref,
+                self.catalog_profile_database_secret_ref,
+                self.quality_database_secret_ref,
+                self.governance_document_database_secret_ref,
+            }
+            if self.knowledge_proposal_database_secret_ref in other_database_secrets:
+                raise ValueError(
+                    "Knowledge Studio Proposal worker database secret must be dedicated."
+                )
+            knowledge_s3_files = {
+                self.s3_knowledge_access_key_file,
+                self.s3_knowledge_secret_key_file,
+            }
+            if len(knowledge_s3_files) != 2 or knowledge_s3_files & {
+                self.s3_access_key_file,
+                self.s3_secret_key_file,
+                self.s3_export_access_key_file,
+                self.s3_export_secret_key_file,
+                self.s3_archive_access_key_file,
+                self.s3_archive_secret_key_file,
+                self.s3_governance_document_access_key_file,
+                self.s3_governance_document_secret_key_file,
+            }:
+                raise ValueError(
+                    "Knowledge Studio Proposal worker requires the isolated read-only "
+                    "Knowledge object credential."
+                )
+            maximum_chat_timeout = max(
+                self.local_ollama_chat_timeout_seconds,
+                self.intranet_openai_compatible_chat_timeout_seconds,
+            )
+            if self.knowledge_studio_proposal_worker_lease_seconds < (maximum_chat_timeout + 30):
+                raise ValueError(
+                    "Knowledge Studio Proposal worker lease must exceed one Chat provider "
+                    "timeout by at least 30 seconds."
+                )
+            proposal_spool_path = PurePosixPath(self.knowledge_studio_proposal_spool_directory)
+            if (
+                not proposal_spool_path.is_absolute()
+                or ".." in proposal_spool_path.parts
+                or proposal_spool_path == PurePosixPath("/")
+            ):
+                raise ValueError(
+                    "Knowledge Studio Proposal spool directory must be a bounded absolute path."
+                )
+            proposal_fingerprint = self.knowledge_studio_proposal_worker_fingerprint
+            assert proposal_fingerprint is not None
+            if (
+                proposal_fingerprint != proposal_fingerprint.strip()
+                or not proposal_fingerprint
+                or any(ord(character) < 32 for character in proposal_fingerprint)
+            ):
+                raise ValueError(
+                    "Knowledge Studio Proposal worker fingerprint must be one bounded "
+                    "non-empty value without surrounding whitespace or controls."
                 )
         if self.knowledge_studio_ingestion_worker_enabled:
             required_ingestion_settings = (

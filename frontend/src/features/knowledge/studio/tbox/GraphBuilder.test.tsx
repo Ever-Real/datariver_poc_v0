@@ -668,10 +668,15 @@ describe('GraphBuilder', () => {
   })
 
   it('uses the governed global catalog search surface in a workspace database modal', async () => {
-    const fetchMock = vi.fn<typeof fetch>((input) => {
+    const catalogProposalId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3d1'
+    const catalogJobId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3d2'
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
       if (path.endsWith(`/drafts/${draftId}/tbox`)) {
         return Promise.resolve(json(tbox()))
+      }
+      if (path.includes(`/drafts/${draftId}/tbox/proposal-jobs?`)) {
+        return Promise.resolve(json({ items: [], page: { next_cursor: null, limit: 20 } }))
       }
       if (path.includes(`/drafts/${draftId}/tbox/catalog-sources?`)) {
         return Promise.resolve(json({
@@ -718,6 +723,66 @@ describe('GraphBuilder', () => {
           stale_at: null,
         }))
       }
+      if (
+        path.endsWith(`/drafts/${draftId}/tbox/proposal-jobs`)
+        && init?.method === 'POST'
+      ) {
+        return Promise.resolve(json({
+          id: catalogJobId,
+          draft_id: draftId,
+          input_kind: 'CATALOG_SCHEMA',
+          mode: 'MERGE_INTO_CURRENT',
+          target_block_id: blockId,
+          state: 'SUCCEEDED',
+          stage: 'COMPLETED',
+          progress_percent: 100,
+          attempt_count: 1,
+          maximum_attempts: 4,
+          last_failure_code: null,
+          version: 3,
+          created_at: '2026-07-31T01:00:00Z',
+          updated_at: '2026-07-31T01:01:00Z',
+          completed_at: '2026-07-31T01:01:00Z',
+          result_proposal_id: catalogProposalId,
+          result_evidence_hash: 'c'.repeat(64),
+          supersedes_job_id: null,
+        }, '"3"'))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/proposals/${catalogProposalId}`)) {
+        return Promise.resolve(json({
+          id: catalogProposalId,
+          draft_id: draftId,
+          target_block_id: blockId,
+          state: 'READY',
+          mode: 'MERGE_INTO_CURRENT',
+          merge_strategy: 'KEEP_ORIGINAL',
+          base_draft_version: 2,
+          prompt: 'Catalog schema proposal: orders',
+          elements: [{
+            stable_element_id: 'class:orders',
+            kind: 'CLASS',
+            canonical_name: 'Orders',
+            display_name: 'Orders',
+            ordinal: 0,
+            version: 1,
+            aliases: [],
+            vector_index_enabled: false,
+            locked_by_later_block: false,
+          }],
+          conflicts: [],
+          source_reference: {
+            pipeline_evidence: {
+              typed_schema_parse: 'PASSED',
+              deterministic_correction_passes: 1,
+              aggregate_validation_passes: 1,
+              cypher_execution: false,
+            },
+          },
+          version: 1,
+          created_at: '2026-07-31T01:01:00Z',
+          updated_at: '2026-07-31T01:01:00Z',
+        }))
+      }
       return Promise.reject(new Error(`Unexpected request: ${path}`))
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -757,6 +822,159 @@ describe('GraphBuilder', () => {
     const fields = await screen.findByRole('table', { name: 'orders 컬럼 선택' })
     expect(within(fields).getByRole('checkbox', { name: 'order_id 컬럼 선택' })).toBeChecked()
     expect(within(fields).getByRole('checkbox', { name: 'amount 컬럼 선택' })).toBeChecked()
+    fireEvent.click(within(dialog).getByRole('button', { name: '현재 블록 Proposal' }))
+
+    expect(await screen.findByLabelText('T-Box Proposal 미리보기')).toBeInTheDocument()
+    const jobCall = fetchMock.mock.calls.find(([input, options]) => (
+      requestUrl(input).endsWith(`/drafts/${draftId}/tbox/proposal-jobs`)
+      && options?.method === 'POST'
+    ))
+    const jobBody = jobCall?.[1]?.body
+    expect(JSON.parse(typeof jobBody === 'string' ? jobBody : '{}')).toEqual({
+      input_kind: 'CATALOG_SCHEMA',
+      asset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
+      selected_field_paths: ['amount', 'order_id'],
+      target_block_id: blockId,
+      mode: 'MERGE_INTO_CURRENT',
+    })
+    expect(fetchMock.mock.calls.some(([input]) => (
+      requestUrl(input).endsWith('/tbox/catalog-proposals')
+    ))).toBe(false)
+  })
+
+  it('uploads a document through accepted storage and renders the durable job Proposal', async () => {
+    const uploadId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3d3'
+    const proposalId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3d4'
+    vi.stubGlobal('crypto', {
+      randomUUID: vi.fn().mockReturnValue('019fa57b-52de-74c0-9f5e-06ae7b1bf3ff'),
+      subtle: {
+        digest: vi.fn().mockResolvedValue(new Uint8Array(32).buffer),
+      },
+    })
+    const upload = {
+      id: uploadId,
+      display_name: 'schema.json',
+      state: 'INITIATED',
+      size_bytes: 2,
+      content_type: 'application/json',
+      sha256: '0'.repeat(64),
+      classification: 'INTERNAL',
+      content_profile: 'KNOWLEDGE_STUDIO_DOCUMENT_V1',
+      expires_at: '2026-07-31T03:00:00Z',
+      version: 1,
+      validation_summary: {},
+      last_error_code: null,
+      recommended_part_size_bytes: 10 * 1024 * 1024,
+    }
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`)) {
+        return Promise.resolve(json(tbox()))
+      }
+      if (path.includes(`/drafts/${draftId}/tbox/proposal-jobs?`)) {
+        return Promise.resolve(json({ items: [], page: { next_cursor: null, limit: 20 } }))
+      }
+      if (path.endsWith(`/drafts/${draftId}/source-uploads`) && init?.method === 'POST') {
+        return Promise.resolve(json(upload, '"1"'))
+      }
+      if (path.endsWith(`/source-uploads/${uploadId}/parts`)) {
+        return Promise.resolve(json({ url: 'https://objects.test/studio-part', expires_seconds: 900 }))
+      }
+      if (path === 'https://objects.test/studio-part') {
+        return Promise.resolve(new Response(undefined, {
+          status: 200,
+          headers: { ETag: '"part-etag"' },
+        }))
+      }
+      if (path.endsWith(`/source-uploads/${uploadId}/complete`)) {
+        return Promise.resolve(json({
+          ...upload,
+          state: 'ACCEPTED',
+          version: 5,
+          validation_summary: { profile_configuration_hash: 'a'.repeat(64) },
+        }, '"5"'))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/proposal-jobs`) && init?.method === 'POST') {
+        return Promise.resolve(json({
+          id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d5',
+          draft_id: draftId,
+          input_kind: 'DOCUMENT_SCHEMA',
+          mode: 'MERGE_INTO_CURRENT',
+          target_block_id: blockId,
+          state: 'SUCCEEDED',
+          stage: 'COMPLETED',
+          progress_percent: 100,
+          attempt_count: 1,
+          maximum_attempts: 4,
+          last_failure_code: null,
+          version: 3,
+          created_at: '2026-07-31T01:00:00Z',
+          updated_at: '2026-07-31T01:01:00Z',
+          completed_at: '2026-07-31T01:01:00Z',
+          result_proposal_id: proposalId,
+          result_evidence_hash: 'b'.repeat(64),
+          supersedes_job_id: null,
+        }, '"3"'))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/proposals/${proposalId}`)) {
+        return Promise.resolve(json({
+          id: proposalId,
+          draft_id: draftId,
+          target_block_id: blockId,
+          state: 'READY',
+          mode: 'MERGE_INTO_CURRENT',
+          merge_strategy: 'KEEP_ORIGINAL',
+          base_draft_version: 2,
+          prompt: 'Document schema proposal: schema.json',
+          elements: [],
+          conflicts: [],
+          source_reference: {
+            pipeline_evidence: {
+              typed_schema_parse: 'PASSED',
+              deterministic_correction_passes: 1,
+              aggregate_validation_passes: 1,
+              cypher_execution: false,
+            },
+          },
+          version: 1,
+          created_at: '2026-07-31T01:01:00Z',
+          updated_at: '2026-07-31T01:01:00Z',
+        }))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    const file = new File(['{}'], 'schema.json', { type: 'application/json' })
+    Object.defineProperty(file, 'arrayBuffer', {
+      value: () => Promise.resolve(new TextEncoder().encode('{}').buffer),
+    })
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    fireEvent.click(screen.getByRole('button', { name: '데이터 업로드' }))
+    const dialog = await screen.findByRole('dialog', { name: '문서 기반 T-Box Proposal' })
+    fireEvent.change(within(dialog).getByLabelText('T-Box 분석 파일'), {
+      target: { files: [file] },
+    })
+    fireEvent.click(within(dialog).getByRole('button', { name: '업로드 및 분석' }))
+
+    expect(await screen.findByLabelText('T-Box Proposal 미리보기')).toBeInTheDocument()
+    expect(within(dialog).getByText(/서버 상태 SUCCEEDED · 단계 COMPLETED · 100%/))
+      .toBeInTheDocument()
+    expect(fetchMock.mock.calls.some(([input]) => (
+      requestUrl(input).endsWith('/tbox/document-proposals')
+    ))).toBe(false)
   })
 
   it('selects an exact published Asset release and opens it in the shared Proposal preview', async () => {

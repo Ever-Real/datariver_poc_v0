@@ -9,6 +9,7 @@ from html.parser import HTMLParser
 from pathlib import PurePath
 
 from pypdf import PdfReader
+from pypdf.errors import PdfReadError
 
 from datariver.domain.common import ValidationError
 
@@ -108,7 +109,7 @@ def extract_studio_document_text(
             text = "\n".join(" | ".join(cell.strip() for cell in row) for row in rows)
         else:
             text = _decode_text(content)
-    except (UnicodeDecodeError, ValueError, zipfile.BadZipFile) as error:
+    except (UnicodeDecodeError, ValueError, zipfile.BadZipFile, PdfReadError) as error:
         raise ValidationError("The Studio document could not be parsed safely.") from error
     normalized = re.sub(r"[ \t]+", " ", text)
     normalized = re.sub(r"\n{3,}", "\n\n", normalized).strip()

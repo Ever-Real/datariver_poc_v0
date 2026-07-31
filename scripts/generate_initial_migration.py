@@ -47,6 +47,13 @@ _STUDIO_INGESTION_TABLES = frozenset(
         "knowledge.studio_ingestion_vector_receipts",
     }
 )
+_STUDIO_PROPOSAL_TABLES = frozenset(
+    {
+        "knowledge.tbox_proposal_jobs",
+        "knowledge.tbox_proposal_attempts",
+        "knowledge.tbox_proposal_events",
+    }
+)
 
 
 def _current_subject_sql() -> str:
@@ -284,6 +291,26 @@ def _load_studio_ingestion_revision() -> ModuleType:
     return module
 
 
+def _load_studio_proposal_revision() -> ModuleType:
+    """Load the governed Studio Proposal worker contract into the baseline."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0084_governed_knowledge_studio_tbox_proposal_jobs.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_studio_proposal_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Studio Proposal migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -306,7 +333,9 @@ def build_upgrade() -> ops.UpgradeOps:
         )
         if (
             "workspace_id" in table.columns or table.fullname == "platform.workspaces"
-        ) and table.fullname not in (_GOVERNANCE_DOCUMENT_TABLES | _STUDIO_INGESTION_TABLES):
+        ) and table.fullname not in (
+            _GOVERNANCE_DOCUMENT_TABLES | _STUDIO_INGESTION_TABLES | _STUDIO_PROPOSAL_TABLES
+        ):
             workspace_column = "id" if table.fullname == "platform.workspaces" else "workspace_id"
             operations.append(
                 ops.ExecuteSQLOp(f"ALTER TABLE {table.fullname} ENABLE ROW LEVEL SECURITY")
@@ -762,6 +791,27 @@ def build_upgrade() -> ops.UpgradeOps:
             ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {trigger_function} FROM PUBLIC")
         )
     operations.append(ops.ExecuteSQLOp(studio_ingestion._GRANTS_SQL))
+    studio_proposal = _load_studio_proposal_revision()
+    operations.append(ops.ExecuteSQLOp(studio_proposal._ROLE_ASSERTION_SQL))
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in studio_proposal.split_postgresql_statements(
+            studio_proposal.TBOX_PROPOSAL_JOB_ALL_FUNCTION_SQL
+        )
+    )
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in studio_proposal.split_postgresql_statements(
+            studio_proposal._RLS_TRIGGERS_SQL
+        )
+    )
+    for signature in (
+        *studio_proposal.TBOX_PROPOSAL_JOB_COMMAND_FUNCTION_SIGNATURES,
+        *studio_proposal.TBOX_PROPOSAL_JOB_WORKER_FUNCTION_SIGNATURES,
+        *studio_proposal.TBOX_PROPOSAL_JOB_INTERNAL_FUNCTION_SIGNATURES,
+    ):
+        operations.append(ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC"))
+    operations.append(ops.ExecuteSQLOp(studio_proposal._GRANTS_SQL))
     return ops.UpgradeOps(ops=operations)
 
 
@@ -1208,7 +1258,16 @@ def build_downgrade() -> ops.DowngradeOps:
     phase5 = _load_phase5_revision()
     quality_phase1 = _load_quality_phase1_revision()
     studio_ingestion = _load_studio_ingestion_revision()
+    studio_proposal = _load_studio_proposal_revision()
     operations: list[ops.MigrateOperation] = [
+        *(
+            ops.ExecuteSQLOp(f"DROP FUNCTION {signature} CASCADE")
+            for signature in (
+                *studio_proposal.TBOX_PROPOSAL_JOB_COMMAND_FUNCTION_SIGNATURES,
+                *studio_proposal.TBOX_PROPOSAL_JOB_WORKER_FUNCTION_SIGNATURES,
+                *studio_proposal.TBOX_PROPOSAL_JOB_INTERNAL_FUNCTION_SIGNATURES,
+            )
+        ),
         *(
             ops.ExecuteSQLOp(f"DROP FUNCTION {signature} CASCADE")
             for signature in (

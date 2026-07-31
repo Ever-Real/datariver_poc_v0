@@ -627,7 +627,7 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
 
 ## Database and object operations
 
-- Alembic has one head at `0066`: the generated current initial schema plus conditional
+- Alembic has one head at `0084`: the generated current initial schema plus conditional
   compatibility bridges for local databases that applied earlier revisions. Deployment runs
   migration before API/workers. The API role can only read `public.alembic_version` for readiness;
   migration ownership remains separate. After explicitly bounded compatibility repairs, the Policy
@@ -662,7 +662,13 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
   Property ownership and Relationship endpoints under forced RLS. Revision `0065` adds named
   Unicode-safe hierarchy semantics and the covering parent/child lookup index. Revision `0066`
   adds Studio endpoint-alias arrays, managed-domain provenance/version and document Proposal source
-  references.
+  references. Revisions `0067` through `0083` add the accepted post-cutover Knowledge, Quality,
+  Governance, Monitoring and governed Identity contracts recorded by their migrations and ADRs.
+  Revision `0084` adds the forced-RLS Studio T-Box Proposal job/attempt/event ledger, exact
+  accepted-source pins, function-only human/worker commands, lease fencing, atomic READY-Proposal
+  finalization and the dedicated `datariver_knowledge_proposal` NOBYPASSRLS login. Existing raw
+  Proposal prompts are replaced by a safe review label while retaining only a SHA-256 audit hash
+  in redacted source evidence.
 - Existing PostgreSQL volumes must reconcile runtime roles before migration so `0042`, `0054` and `0055`
   can grant their least-privilege capabilities. Bootstrap first so the new Knowledge password file
   exists, start PostgreSQL, run `DATARIVER_ENV_FILE=<file>
@@ -674,7 +680,7 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
   past a missing role or grant the worker BYPASSRLS.
 - PostgreSQL pool size/overflow/lease timeout, statement timeout, idle-transaction timeout and application names are explicit. Budget `API replicas × (API pool + overflow) + long-running workers × (worker pool + overflow) + one-shot/IdP/Airflow/admin reserve`; current one-API/four-worker defaults have a ceiling of 60 before reserve.
 - Liveness is process-only. Readiness leases the API pool and requires exactly packaged Alembic
-  head `0066`; Compose and APISIX use readiness for upstream health.
+  head `0084`; Compose and APISIX use readiness for upstream health.
 - `scripts/probe_pgbouncer_rls.py` and its unit contract implement the pre-adoption transaction-pool leakage gate. No Compose profile currently deploys PgBouncer and no live pooler pass has been recorded; direct PostgreSQL remains the supported path until the isolated two-workspace probe succeeds.
 - Back up PostgreSQL and the selected external S3 store as a consistency set or record a watermark; restore into isolation and follow the drill in [operations runbook](13_OPERATIONS_RUNBOOK.md) before traffic.
 - Accepted-object retention/lifecycle is environment policy. Quarantine receives a shorter cleanup policy, but never delete an object whose manifest is actively leased.
@@ -683,7 +689,10 @@ egress or a DataHub credential. The complete Linux/WSL boundary is
 The general Chat assistant provider is not a promoted production runtime component. The
 development-only exceptions in ADR-0023 and ADR-0030 use fixed non-executable contracts. Compose
 now has one opt-in durable queue/worker specifically for PDF-to-DRAFT Knowledge source analysis;
-it is not a general Chat queue and cannot publish a release or mutate DataHub. Production Chat
+it is not a general Chat queue and cannot publish a release or mutate DataHub. A second opt-in
+`knowledge-tbox-proposal-worker` uses its own PostgreSQL login and Redis consumer group to turn
+accepted Studio document/Catalog pins into READY Proposals only. It cannot apply a Proposal,
+publish a Release or mutate Neo4j/DataHub. Production Chat
 provider integration, Chat dispatch/SSE, pre/post-call live policy/profile revalidation and scaled
 operational/red-team evidence remain promotion gates.
 

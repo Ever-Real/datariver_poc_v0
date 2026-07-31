@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import timedelta
+from enum import StrEnum
 from uuid import UUID
 
 from datariver.application.dto import MultipartUpload
@@ -45,6 +47,43 @@ class UploadPreparationNotFound(NotFoundError):
     code = "upload_preparation_not_found"
 
 
+class UploadAuthorizationPolicy(StrEnum):
+    REGISTRATION = "REGISTRATION"
+    KNOWLEDGE_STUDIO = "KNOWLEDGE_STUDIO"
+
+
+@dataclass(frozen=True, slots=True)
+class UploadAuthorizationActions:
+    initiate: Action
+    presign_part: Action
+    read_manifest: Action
+    queue_completion: Action
+
+
+_UPLOAD_AUTHORIZATION_ACTIONS = {
+    UploadAuthorizationPolicy.REGISTRATION: UploadAuthorizationActions(
+        initiate=Action.REGISTRATION_CREATE,
+        presign_part=Action.REGISTRATION_CREATE,
+        read_manifest=Action.REGISTRATION_READ,
+        queue_completion=Action.REGISTRATION_CREATE,
+    ),
+    UploadAuthorizationPolicy.KNOWLEDGE_STUDIO: UploadAuthorizationActions(
+        initiate=Action.KG_EDIT,
+        presign_part=Action.KG_EDIT,
+        read_manifest=Action.KG_EDIT,
+        queue_completion=Action.KG_EDIT,
+    ),
+}
+
+
+def upload_authorization_actions(
+    policy: UploadAuthorizationPolicy,
+) -> UploadAuthorizationActions:
+    """Resolve a server-owned action set; callers cannot inject arbitrary actions."""
+
+    return _UPLOAD_AUTHORIZATION_ACTIONS[policy]
+
+
 class RegistrationService:
     def __init__(
         self,
@@ -76,7 +115,9 @@ class RegistrationService:
         request_id: str,
         idempotency_key: str,
         request_hash: str,
+        authorization_policy: UploadAuthorizationPolicy = UploadAuthorizationPolicy.REGISTRATION,
     ) -> UploadManifest:
+        actions = upload_authorization_actions(authorization_policy)
         validate_upload_profile(
             content_profile=content_profile,
             display_name=display_name,
@@ -93,7 +134,7 @@ class RegistrationService:
                 classification=classification,
                 lifecycle=UploadState.INITIATED.value,
             ),
-            action=Action.REGISTRATION_CREATE,
+            action=actions.initiate,
             environment=environment,
             request_id=request_id,
         )
@@ -172,7 +213,9 @@ class RegistrationService:
         checksum_sha256: str | None,
         environment: EnvironmentAttributes,
         request_id: str,
+        authorization_policy: UploadAuthorizationPolicy = UploadAuthorizationPolicy.REGISTRATION,
     ) -> tuple[str, int]:
+        actions = upload_authorization_actions(authorization_policy)
         async with self._uow_factory() as uow:
             await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
             manifest = await uow.uploads.get_for_update(
@@ -183,7 +226,7 @@ class RegistrationService:
             await self._authorize_manifest(
                 manifest=manifest,
                 subject=subject,
-                action=Action.REGISTRATION_CREATE,
+                action=actions.presign_part,
                 environment=environment,
                 request_id=request_id,
             )
@@ -205,7 +248,9 @@ class RegistrationService:
         subject: SubjectAttributes,
         environment: EnvironmentAttributes,
         request_id: str,
+        authorization_policy: UploadAuthorizationPolicy = UploadAuthorizationPolicy.REGISTRATION,
     ) -> UploadManifest:
+        actions = upload_authorization_actions(authorization_policy)
         async with self._uow_factory() as uow:
             await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
             manifest = await uow.uploads.get(
@@ -217,7 +262,7 @@ class RegistrationService:
             await self._authorize_manifest(
                 manifest=manifest,
                 subject=subject,
-                action=Action.REGISTRATION_READ,
+                action=actions.read_manifest,
                 environment=environment,
                 request_id=request_id,
             )
@@ -274,7 +319,9 @@ class RegistrationService:
         request_id: str,
         idempotency_key: str,
         request_hash: str,
+        authorization_policy: UploadAuthorizationPolicy = UploadAuthorizationPolicy.REGISTRATION,
     ) -> UploadManifest:
+        actions = upload_authorization_actions(authorization_policy)
         async with self._uow_factory() as uow:
             await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
             manifest = await uow.uploads.get_for_update(
@@ -285,7 +332,7 @@ class RegistrationService:
             await self._authorize_manifest(
                 manifest=manifest,
                 subject=subject,
-                action=Action.REGISTRATION_CREATE,
+                action=actions.queue_completion,
                 environment=environment,
                 request_id=request_id,
             )

@@ -86,6 +86,12 @@ for url in sys.argv[1:]:
     print(f"{url} -> HTTP {response.status} {body}")
 """
 
+_POSTGRES_SECRET_MOUNT_ENV_KEYS = frozenset(
+    {
+        "KNOWLEDGE_PROPOSAL_DATABASE_SECRET_REF",
+    }
+)
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -261,6 +267,17 @@ def _reconcile_postgres(runner: Runner, *, env_file: Path) -> None:
             "exec sh /docker-entrypoint-initdb.d/010_roles.sh",
         ),
     )
+
+
+def _enabled_optional_runtime_services(values: dict[str, str]) -> tuple[str, ...]:
+    services: list[str] = []
+    if values.get("KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED", "").lower() == "true":
+        services.append("knowledge-tbox-proposal-worker")
+    return tuple(services)
+
+
+def _requires_postgres_secret_remount(environment_keys: tuple[str, ...]) -> bool:
+    return bool(_POSTGRES_SECRET_MOUNT_ENV_KEYS.intersection(environment_keys))
 
 
 def _health_check(runner: Runner, *, env_file: Path) -> None:
@@ -476,7 +493,8 @@ def main() -> int:
             runner.note("기존 secret을 보존하며 bootstrap 파생 설정을 재적용합니다.")
             _bootstrap(runner, state=state, env_file=env_file)
 
-        current_environment_hashes = environment_key_hashes(read_env_values(env_file))
+        environment_values = read_env_values(env_file)
+        current_environment_hashes = environment_key_hashes(environment_values)
         environment_keys = changed_environment_keys(
             state.environment_key_hashes,
             current_environment_hashes,
@@ -502,9 +520,10 @@ def main() -> int:
             trailing=("config", "--quiet"),
         )
         running = _running_services(runner, env_file=env_file, files=files)
+        enabled_optional_services = _enabled_optional_runtime_services(environment_values)
         restart_services = select_restart_services(
             plan.services,
-            running_services=running,
+            running_services=(*running, *enabled_optional_services),
         )
         _print_plan(
             previous_commit=state.applied_commit,
@@ -552,6 +571,22 @@ def main() -> int:
                     env_file=env_file,
                     files=files,
                     trailing=("stop", *stop_services),
+                )
+            if _requires_postgres_secret_remount(environment_keys):
+                runner.note("새 PostgreSQL role secret mount를 migration 전에 재적용합니다.")
+                _compose(
+                    runner,
+                    env_file=env_file,
+                    files=(ROOT / "compose.yaml",),
+                    trailing=(
+                        "up",
+                        "-d",
+                        "--wait",
+                        "--no-deps",
+                        "--force-recreate",
+                        *(("--pull", "never") if offline else ()),
+                        "postgres",
+                    ),
                 )
             runner.note("Migration 선행 PostgreSQL 역할 계약을 재적용합니다.")
             _reconcile_postgres(runner, env_file=env_file)

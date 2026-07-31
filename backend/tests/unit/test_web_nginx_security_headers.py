@@ -79,31 +79,18 @@ def test_nginx_merges_security_headers_into_every_location_and_normalizes_api() 
     assert "strict-transport-security" not in source.casefold()
 
 
-def test_document_proposal_timeout_is_scoped_and_bounded() -> None:
+def test_studio_proposal_jobs_use_the_standard_bounded_api_proxy() -> None:
     source = TEMPLATE.read_text(encoding="utf-8")
-    proposal = _location(
-        source,
-        'location ~ "^/api/v1/knowledge/studio/drafts/[0-9a-fA-F-]{36}/tbox/document-proposals$"',
-    )
     api = _location(source, "location /api/")
     entrypoint = (ROOT / "frontend" / "docker-entrypoint.sh").read_text(encoding="utf-8")
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     host_development = (ROOT / "compose.host-dev.yaml").read_text(encoding="utf-8")
 
-    assert (
-        "proxy_read_timeout ${KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS}s;" in proposal
-    )
     assert "proxy_read_timeout ${API_PROXY_READ_TIMEOUT_SECONDS}s;" in api
-    assert "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS:-135" in entrypoint
-    assert "integer between 1 and 900" in entrypoint
-    assert (
-        "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS: "
-        "${KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS:-135}" in compose
-    )
-    assert (
-        "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS: "
-        "${HOST_DEV_KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS:-900}" in host_development
-    )
+    assert "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS" not in source
+    assert "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS" not in entrypoint
+    assert "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS" not in compose
+    assert "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS" not in host_development
 
 
 def test_live_verifier_parses_headers_and_rejects_duplicates() -> None:

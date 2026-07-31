@@ -69,7 +69,6 @@ import {
   applyKnowledgeStudioTBoxProposal,
   createKnowledgeStudioTBoxBlock,
   createKnowledgeStudioTBoxAssetReleaseProposal,
-  createKnowledgeStudioTBoxCatalogProposal,
   createKnowledgeStudioTBoxProposal,
   deleteKnowledgeStudioTBoxBlock,
   getKnowledgeStudioTBoxCatalogSource,
@@ -77,7 +76,6 @@ import {
   searchKnowledgeStudioTBoxCatalogSources,
   searchKnowledgeStudioTBoxAssetReleases,
   newKnowledgeStudioIdempotencyKey,
-  uploadKnowledgeStudioTBoxDocumentProposal,
   updateKnowledgeStudioTBoxBlock,
   type KnowledgeStudioDraft,
   type KnowledgeStudioTBox,
@@ -89,6 +87,7 @@ import {
   type KnowledgeStudioTBoxProposal,
   type KnowledgeStudioSourceDataset,
 } from '../knowledgeStudioApi'
+import { useTBoxProposalJob } from './useTBoxProposalJob'
 
 interface SchemaNodeData extends Record<string, unknown> {
   label: string
@@ -1372,6 +1371,19 @@ function hasProposalValidationEvidence(proposal: KnowledgeStudioTBoxProposal): b
   )
 }
 
+const DOCUMENT_JOB_STEPS = [
+  { stage: 'SOURCE_VALIDATION', label: '승인된 Object Storage 소스 검증' },
+  { stage: 'PARSING', label: '문서 파싱' },
+  { stage: 'INFERENCE', label: '승인된 Schema Assistant로 T-Box 추출' },
+  { stage: 'VALIDATING', label: 'Typed AST 무결성 검증 및 보정' },
+  { stage: 'FINALIZING', label: '검증 증거가 포함된 Proposal 준비' },
+] as const
+
+function documentJobStepIndex(stage?: string): number {
+  if (stage === 'COMPLETED') return DOCUMENT_JOB_STEPS.length
+  return DOCUMENT_JOB_STEPS.findIndex((item) => item.stage === stage)
+}
+
 export function schemaIdentifier(value: string, prefix = 'Class'): string {
   const cleaned = value
     .trim()
@@ -1510,10 +1522,7 @@ export function GraphBuilder({
   const [documentProposalMode, setDocumentProposalMode] = useState<
     'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
   >('MERGE_INTO_CURRENT')
-  const [documentWorkflow, setDocumentWorkflow] = useState<
-    'IDLE' | 'PARSING' | 'COMPLETE' | 'FAILED'
-  >('IDLE')
-  const [documentWorkflowError, setDocumentWorkflowError] = useState('')
+  const [documentProposalError, setDocumentProposalError] = useState('')
   const [validationPhase, setValidationPhase] = useState<'CHECKING' | 'VALID' | 'INVALID'>('VALID')
   const [blockPendingDelete, setBlockPendingDelete] = useState<KnowledgeStudioTBoxBlock>()
   const [conflictActions, setConflictActions] = useState<Record<string, 'KEEP_ORIGINAL' | 'ACCEPT_PROPOSAL'>>({})
@@ -1524,6 +1533,47 @@ export function GraphBuilder({
   const removeSessionBlock = useKnowledgeStudioSessionStore((state) => state.removeBlock)
   const locked = lifecycleState !== 'DRAFT'
   const nodePositionsRef = useRef(new Map<string, { x: number; y: number }>())
+  const receivedDocumentProposalId = useRef('')
+  const documentProposalJob = useTBoxProposalJob({
+    client,
+    draftId,
+    draftEtag: responseEtag,
+  })
+  const documentOperationBusy = documentProposalJob.busy || documentProposalJob.active
+
+  useEffect(() => {
+    const next = documentProposalJob.proposal
+    if (!next || receivedDocumentProposalId.current === next.id) return
+    receivedDocumentProposalId.current = next.id
+    if (!hasProposalValidationEvidence(next)) {
+      const message = '서버가 Typed T-Box 검증 증거를 반환하지 않아 Proposal을 표시하지 않았습니다.'
+      setDocumentProposalError(message)
+      setStatus(message)
+      return
+    }
+    setProposal(next)
+    setProposalExcluded(new Set())
+    setProposalOverrides({})
+    setConflictActions(Object.fromEntries(
+      next.conflicts.map((item) => [item.conflict_id, 'KEEP_ORIGINAL']),
+    ))
+    setDocumentProposalError('')
+    if (documentProposalJob.job?.input_kind === 'DOCUMENT_SCHEMA') {
+      setDocumentCapabilityOpen(true)
+    } else {
+      setCatalogOpen(false)
+    }
+    setStatus(`${next.elements.length}개의 Typed 요소 Proposal을 미리보기로 불러왔습니다.`)
+  }, [documentProposalJob.job?.input_kind, documentProposalJob.proposal])
+
+  useEffect(() => {
+    if (!documentProposalJob.active) return
+    if (documentProposalJob.job?.input_kind === 'DOCUMENT_SCHEMA') {
+      setDocumentCapabilityOpen(true)
+    } else if (documentProposalJob.job?.input_kind === 'CATALOG_SCHEMA') {
+      setCatalogOpen(true)
+    }
+  }, [documentProposalJob.active, documentProposalJob.job?.input_kind])
   const catalogColumns = useMemo<ColumnDef<KnowledgeStudioSourceDataset>[]>(() => [
     {
       accessorKey: 'name',
@@ -2461,48 +2511,16 @@ export function GraphBuilder({
   }
 
   const requestDocumentProposal = async () => {
-    if (!documentFile || working || locked || !selectedBlock) return
-    setWorking(true)
-    setDocumentWorkflow('PARSING')
-    setDocumentWorkflowError('')
-    setStatus('문서를 안전하게 저장하고 실제 T-Box Proposal을 생성 중입니다.')
-    try {
-      const next = await uploadKnowledgeStudioTBoxDocumentProposal(
-        client,
-        draftId,
-        {
-          file: documentFile,
-          upload_id: crypto.randomUUID(),
-          target_block_id: documentProposalMode === 'MERGE_INTO_CURRENT'
-            ? selectedBlock.id
-            : undefined,
-          mode: documentProposalMode,
-        },
-        responseEtag,
-      )
-      if (!hasProposalValidationEvidence(next)) {
-        throw new Error('서버가 Typed T-Box 검증 증거를 반환하지 않아 Proposal을 표시하지 않았습니다.')
-      }
-      setProposal(next)
-      setProposalExcluded(new Set())
-      setProposalOverrides({})
-      setConflictActions(Object.fromEntries(
-        next.conflicts.map((item) => [item.conflict_id, 'KEEP_ORIGINAL']),
-      ))
-      setDocumentWorkflow('COMPLETE')
-      setStatus(
-        `${documentFile.name}에서 ${next.elements.length}개의 Typed 요소 Proposal을 생성했습니다.`,
-      )
-    } catch (error) {
-      const message = error instanceof Error
-        ? error.message
-        : '문서 Proposal 생성에 실패했습니다.'
-      setDocumentWorkflow('FAILED')
-      setDocumentWorkflowError(message)
-      setStatus(message)
-    } finally {
-      setWorking(false)
-    }
+    if (!documentFile || documentOperationBusy || locked || !selectedBlock) return
+    setDocumentProposalError('')
+    setStatus('문서를 해시하고 승인 업로드 수명주기를 시작합니다.')
+    await documentProposalJob.start({
+      file: documentFile,
+      targetBlockId: documentProposalMode === 'MERGE_INTO_CURRENT'
+        ? selectedBlock.id
+        : undefined,
+      mode: documentProposalMode,
+    })
   }
 
   const searchCatalog = async () => {
@@ -2553,39 +2571,17 @@ export function GraphBuilder({
       !selectedCatalog
       || selectedCatalogFields.size === 0
       || selectedCatalogFields.size > 100
-      || working
+      || documentOperationBusy
       || locked
       || !selectedBlock
     ) return
-    setWorking(true)
-    setStatus('서버에서 카탈로그 Asset·버전·선택 컬럼을 재검증하고 Proposal을 생성 중입니다.')
-    try {
-      const next = await createKnowledgeStudioTBoxCatalogProposal(
-        client,
-        draftId,
-        {
-          asset_id: selectedCatalog.id,
-          selected_field_paths: [...selectedCatalogFields].sort(),
-          target_block_id: mode === 'MERGE_INTO_CURRENT' ? selectedBlock.id : undefined,
-          mode,
-        },
-        responseEtag,
-      )
-      setProposal(next)
-      setProposalExcluded(new Set())
-      setProposalOverrides({})
-      setConflictActions(Object.fromEntries(
-        next.conflicts.map((item) => [item.conflict_id, 'KEEP_ORIGINAL']),
-      ))
-      setCatalogOpen(false)
-      setStatus(
-        `${selectedCatalog.name}의 검증된 메타데이터에서 ${next.elements.length}개 Typed 요소를 제안했습니다.`,
-      )
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : '카탈로그 Proposal 생성에 실패했습니다.')
-    } finally {
-      setWorking(false)
-    }
+    setStatus('카탈로그 정본과 선택 컬럼을 고정한 백그라운드 Proposal 작업을 시작합니다.')
+    await documentProposalJob.startCatalog({
+      assetId: selectedCatalog.id,
+      selectedFieldPaths: [...selectedCatalogFields].sort(),
+      targetBlockId: mode === 'MERGE_INTO_CURRENT' ? selectedBlock.id : undefined,
+      mode,
+    })
   }
 
   const searchAssetReleases = async () => {
@@ -3452,43 +3448,81 @@ export function GraphBuilder({
         title="DB 카탈로그에서 T-Box 제안"
         description="상단 검색과 동일하게 테이블명, 스키마, 컬럼, 태그, 용어, 설명 전체에서 검색합니다."
         onRequestClose={() => {
-          if (!catalogLoading && !working) setCatalogOpen(false)
+          if (!catalogLoading && !documentProposalJob.busy) setCatalogOpen(false)
         }}
         footer={<>
           <button
             type="button"
             className="button button-secondary"
-            disabled={working}
+            disabled={documentProposalJob.busy}
             onClick={() => setCatalogOpen(false)}
           >
-            취소
+            닫기
           </button>
-          <button
-            type="button"
-            className="button button-secondary"
-            disabled={
-              !selectedCatalog
-              || selectedCatalogFields.size === 0
-              || selectedCatalogFields.size > 100
-              || working
-            }
-            onClick={() => void proposeSelectedCatalog('APPEND_LAYER')}
-          >
-            새 블록 Proposal
-          </button>
-          <button
-            type="button"
-            className="button"
-            disabled={
-              !selectedCatalog
-              || selectedCatalogFields.size === 0
-              || selectedCatalogFields.size > 100
-              || working
-            }
-            onClick={() => void proposeSelectedCatalog('MERGE_INTO_CURRENT')}
-          >
-            현재 블록 Proposal
-          </button>
+          {documentProposalJob.active
+            && documentProposalJob.job?.input_kind === 'CATALOG_SCHEMA' && (
+              <button
+                type="button"
+                className="button button-secondary"
+                disabled={documentProposalJob.busy}
+                onClick={() => void documentProposalJob.cancel()}
+              >
+                작업 취소
+              </button>
+          )}
+          {documentProposalJob.canRetry
+            && documentProposalJob.job?.input_kind === 'CATALOG_SCHEMA' && (
+              <button
+                type="button"
+                className="button"
+                disabled={documentProposalJob.busy}
+                onClick={() => void documentProposalJob.retry()}
+              >
+                작업 다시 시도
+              </button>
+          )}
+          {documentProposalJob.pollingExhausted
+            && documentProposalJob.active
+            && documentProposalJob.job?.input_kind === 'CATALOG_SCHEMA' && (
+              <button
+                type="button"
+                className="button"
+                disabled={documentProposalJob.busy}
+                onClick={documentProposalJob.resumePolling}
+              >
+                상태 확인 재개
+              </button>
+          )}
+          {!documentProposalJob.active && !documentProposalJob.canRetry && (
+            <>
+              <button
+                type="button"
+                className="button button-secondary"
+                disabled={
+                  !selectedCatalog
+                  || selectedCatalogFields.size === 0
+                  || selectedCatalogFields.size > 100
+                  || documentProposalJob.busy
+                }
+                onClick={() => void proposeSelectedCatalog('APPEND_LAYER')}
+              >
+                새 블록 Proposal
+              </button>
+              <button
+                type="button"
+                className="button"
+                disabled={
+                  !selectedCatalog
+                  || selectedCatalogFields.size === 0
+                  || selectedCatalogFields.size > 100
+                  || documentProposalJob.busy
+                }
+                onClick={() => void proposeSelectedCatalog('MERGE_INTO_CURRENT')}
+              >
+                현재 블록 Proposal
+              </button>
+            </>
+          )}
         </>}
       >
         <div className="grid gap-3">
@@ -3516,6 +3550,26 @@ export function GraphBuilder({
             상단 카탈로그 검색과 동일한 검색 정본을 사용하며, 현재 Draft 보안등급 이하의
             Dataset·Table·View만 T-Box 입력 후보로 표시합니다.
           </p>
+          {documentProposalJob.job?.input_kind === 'CATALOG_SCHEMA' && (
+            <section
+              className="grid gap-1 rounded border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900"
+              aria-label="카탈로그 Proposal 작업 상태"
+            >
+              <strong>
+                {documentProposalJob.job.state} · {documentProposalJob.job.stage}
+                {' '}· {documentProposalJob.job.progress_percent}%
+              </strong>
+              <span>
+                시도 {documentProposalJob.job.attempt_count}/
+                {documentProposalJob.job.maximum_attempts}
+              </span>
+              {documentProposalJob.error && (
+                <span role="alert" className="text-red-800">
+                  {documentProposalJob.error}
+                </span>
+              )}
+            </section>
+          )}
           <div className="grid max-h-[58vh] min-w-0 gap-3 overflow-auto lg:grid-cols-[minmax(0,1.25fr)_minmax(360px,0.9fr)]">
             <DenseDataTable
               caption="T-Box 카탈로그 검색 결과"
@@ -3660,28 +3714,64 @@ export function GraphBuilder({
         open={documentCapabilityOpen}
         size="large"
         title="문서 기반 T-Box Proposal"
-        description="파일은 filefolder Object Storage에 create-only로 저장되고, 문서 내용은 A-Box가 아닌 Typed T-Box Proposal로만 분석됩니다."
+        description="파일은 격리·검증 후 승인된 Object Storage 정본으로 승격되며, 백그라운드 작업은 A-Box가 아닌 Typed T-Box Proposal만 생성합니다."
         onRequestClose={() => {
-          if (!working) setDocumentCapabilityOpen(false)
+          if (!documentProposalJob.busy) setDocumentCapabilityOpen(false)
         }}
         footer={<>
           <button
             type="button"
             className="button button-secondary"
-            disabled={working}
+            disabled={documentProposalJob.busy}
             onClick={() => setDocumentCapabilityOpen(false)}
           >
-            {documentWorkflow === 'COMPLETE' ? '제안 확인' : '취소'}
+            {documentProposalJob.proposal ? '제안 확인' : '닫기'}
           </button>
-          <button
-            type="button"
-            className="button"
-            disabled={!documentFile || working || documentWorkflow === 'COMPLETE'}
-            onClick={() => void requestDocumentProposal()}
-          >
-            <FileUp size={13} aria-hidden="true" />
-            업로드 및 분석
-          </button>
+          {documentProposalJob.active && (
+            <button
+              type="button"
+              className="button button-secondary"
+              disabled={documentProposalJob.busy}
+              onClick={() => void documentProposalJob.cancel()}
+            >
+              작업 취소
+            </button>
+          )}
+          {documentProposalJob.canRetry && (
+            <button
+              type="button"
+              className="button"
+              disabled={documentProposalJob.busy}
+              onClick={() => void documentProposalJob.retry()}
+            >
+              작업 다시 시도
+            </button>
+          )}
+          {documentProposalJob.pollingExhausted && documentProposalJob.active && (
+            <button
+              type="button"
+              className="button"
+              disabled={documentProposalJob.busy}
+              onClick={documentProposalJob.resumePolling}
+            >
+              상태 확인 재개
+            </button>
+          )}
+          {!documentProposalJob.active && !documentProposalJob.canRetry && (
+            <button
+              type="button"
+              className="button"
+              disabled={
+                !documentFile
+                || documentProposalJob.busy
+                || Boolean(documentProposalJob.proposal)
+              }
+              onClick={() => void requestDocumentProposal()}
+            >
+              <FileUp size={13} aria-hidden="true" />
+              업로드 및 분석
+            </button>
+          )}
         </>}
       >
         <div className="grid gap-4">
@@ -3692,11 +3782,12 @@ export function GraphBuilder({
               className="input bg-white"
               type="file"
               accept=".pdf,.csv,.txt,.xlsx,.docx,.pptx,.html,.htm,.xml,.json"
-              disabled={working}
+              disabled={documentOperationBusy}
               onChange={(event) => {
                 setDocumentFile(event.target.files?.[0])
-                setDocumentWorkflow('IDLE')
-                setDocumentWorkflowError('')
+                receivedDocumentProposalId.current = ''
+                documentProposalJob.reset()
+                setDocumentProposalError('')
               }}
             />
             <span className="text-[10px] font-medium leading-4 text-slate-500">
@@ -3715,7 +3806,7 @@ export function GraphBuilder({
                 type="radio"
                 name="document-proposal-mode"
                 checked={documentProposalMode === 'MERGE_INTO_CURRENT'}
-                disabled={working}
+                disabled={documentOperationBusy}
                 onChange={() => setDocumentProposalMode('MERGE_INTO_CURRENT')}
               />
               <span className="grid gap-1">
@@ -3735,7 +3826,7 @@ export function GraphBuilder({
                 type="radio"
                 name="document-proposal-mode"
                 checked={documentProposalMode === 'APPEND_LAYER'}
-                disabled={working}
+                disabled={documentOperationBusy}
                 onChange={() => setDocumentProposalMode('APPEND_LAYER')}
               />
               <span className="grid gap-1">
@@ -3750,18 +3841,19 @@ export function GraphBuilder({
             className="m-0 grid list-none gap-2 p-0"
             aria-label="문서 T-Box 분석 진행 상태"
           >
-            {[
-              'Object Storage 저장 및 문서 파싱',
-              '승인된 Schema Assistant로 T-Box 추출',
-              'Typed AST 기본값 보정 및 무결성 검증(1회)',
-              '검증 증거가 포함된 Proposal 준비',
-            ].map((label, index) => {
-              const completed = documentWorkflow === 'COMPLETE'
-              const active = documentWorkflow === 'PARSING' && index === 0
-              const failed = documentWorkflow === 'FAILED' && index === 0
+            {DOCUMENT_JOB_STEPS.map(({ stage, label }, index) => {
+              const serverStep = documentJobStepIndex(documentProposalJob.job?.stage)
+              const completed = documentProposalJob.job?.state === 'SUCCEEDED'
+                || serverStep > index
+              const active = documentProposalJob.active
+                && (
+                  serverStep === index
+                  || (documentProposalJob.job?.stage === 'QUEUED' && index === 0)
+                )
+              const failed = documentProposalJob.canRetry && serverStep === index
               return (
                 <li
-                  key={label}
+                  key={stage}
                   className={`flex items-center gap-3 rounded border px-3 py-2 text-xs font-bold ${
                     completed
                       ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
@@ -3781,12 +3873,27 @@ export function GraphBuilder({
               )
             })}
           </ol>
-          {documentWorkflowError && (
-            <p role="alert" className="m-0 rounded border border-red-200 bg-red-50 p-3 text-xs text-red-800">
-              {documentWorkflowError}
+          {!documentProposalJob.job && documentProposalJob.phase !== 'IDLE' && (
+            <p role="status" className="m-0 rounded border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900">
+              {documentProposalJob.phase === 'HASHING' && '브라우저에서 SHA-256을 계산하고 있습니다.'}
+              {documentProposalJob.phase === 'UPLOADING' && '격리 Object Storage에 단일 파트를 업로드하고 있습니다.'}
+              {documentProposalJob.phase === 'SOURCE_VALIDATION' && '서버가 업로드 정본의 무결성과 형식을 검증하고 있습니다.'}
             </p>
           )}
-          {documentWorkflow === 'COMPLETE' && (
+          {documentProposalJob.job && (
+            <p role="status" className="m-0 rounded border border-slate-200 bg-slate-50 p-3 text-xs text-slate-700">
+              서버 상태 {documentProposalJob.job.state} · 단계 {documentProposalJob.job.stage}
+              {' '}· {documentProposalJob.job.progress_percent}%
+              {' '}· 시도 {documentProposalJob.job.attempt_count}/
+              {documentProposalJob.job.maximum_attempts}
+            </p>
+          )}
+          {(documentProposalError || documentProposalJob.error) && (
+            <p role="alert" className="m-0 rounded border border-red-200 bg-red-50 p-3 text-xs text-red-800">
+              {documentProposalError || documentProposalJob.error}
+            </p>
+          )}
+          {documentProposalJob.proposal && (
             <p role="status" className="m-0 rounded border border-violet-200 bg-violet-50 p-3 text-xs leading-5 text-violet-900">
               제안이 캔버스 우측의 임시 Proposal 패널에 표시되었습니다. 요소를 제외하거나
               보완한 뒤 적용해야 PostgreSQL Draft 정본이 변경됩니다.

@@ -75,7 +75,27 @@ and is replaced by a terminal stored trace. Development runtime/browser evidence
 after the exact committed source has been published; target deployment behavior remains a separate
 acceptance gate.
 
-### Knowledge Information Profiles and bounded Proposal timeout — 2026-07-31
+### Durable Knowledge Studio T-Box Proposal jobs — 2026-07-31
+
+Revision `0084` adds the forced-RLS Proposal job/attempt/event ledger, owner-scoped idempotent
+commands and a function-only `datariver_knowledge_proposal` worker boundary. Its focused source
+tests cover accepted manifest/Catalog pin validation, typed lifecycle handling, worker
+cancellation and the exact function/grant contract. The isolated PostgreSQL gate additionally
+must exercise direct-DML denial, `SKIP LOCKED` claim, lease fencing and running cancellation.
+Cross-Workspace/owner denial, retry/lease recovery, requester/Draft/T-Box/source/model drift and
+atomic READY-Proposal finalization remain required database cases; they must not be inferred from
+source-only tests.
+
+Upload tests cover the exact 10 MiB PDF/CSV/TXT/JSON/XML/HTML/DOCX/XLSX/PPTX profile and
+legacy/MIME/extension/macro/external-link/XML-entity negatives. HTTP/UI tests require `202`,
+ETag/idempotency, no provider call in the API request, refresh recovery, visibility-aware polling,
+cancel/retry and exact Proposal preview. Redaction tests prohibit prompt/excerpt/provider body,
+bucket/object key, presigned URL and lease token in jobs, events, API responses and representations.
+The previous synchronous document/Catalog routes return `410`, and the route-specific Nginx timeout
+assertion is removed. Provider/runtime browser evidence is reported only for the exact published
+commit and is not inferred from source tests.
+
+### Knowledge Information Profiles and superseded bounded Proposal timeout — 2026-07-31
 
 Revision `0076` adds forced-RLS Property Profile and normalized synonym tables tied by composite
 foreign keys to the exact active Studio Release ontology and `PROPERTY` element identity.
@@ -84,12 +104,12 @@ post-archive re-creation, least-privilege grants, ETag mutation and response-los
 replay. Knowledge component tests cover the consolidated Information workspace, real Profile CRUD,
 saved block-title feedback, document apply-mode layout and TanStack Catalog/field selection.
 
-The Nginx contract test proves that only the exact document-Proposal route receives the bounded
-deployment-configurable read timeout; generic API send/read limits remain unchanged. This removes
-edge-generated 504s from the approved synchronous local workflow but does not close the durable
-background inference production gate. Canonical `0001` is regenerated twice and compared
-byte-for-byte before publication; target PostgreSQL migration/RLS and authenticated browser results
-are reported separately from source gates.
+Revision `0076` originally carried a route-specific timeout bridge for the bounded synchronous
+document Proposal. ADR-0099 and revision `0084` retire that route after the durable UI cutover and
+remove the timeout bridge. The Profile aggregate tests remain current; timeout-specific assertions
+are historical evidence only. Canonical `0001` is regenerated twice and compared byte-for-byte
+before publication; target PostgreSQL migration/RLS and authenticated browser results are reported
+separately from source gates.
 
 ### Governance Document pgvector/download/Chat refinement — 2026-07-31
 

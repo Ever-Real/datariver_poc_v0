@@ -5,6 +5,7 @@ import pytest
 
 from datariver.application.typed_upload_profiles import (
     DATASET_DESCRIPTION_CSV_V1,
+    KNOWLEDGE_STUDIO_DOCUMENT_V1,
     validate_upload_profile,
 )
 from datariver.domain.authz import Classification
@@ -191,6 +192,70 @@ def test_typed_profile_definition_is_bounded_and_hashes_exact_schema() -> None:
             content_type="text/csv",
             size_bytes=definition.maximum_file_bytes + 1,
         )
+
+
+@pytest.mark.parametrize(
+    ("display_name", "content_type"),
+    (
+        ("source.pdf", "application/pdf"),
+        ("source.csv", "text/csv"),
+        ("source.txt", "text/plain"),
+        ("source.json", "application/json"),
+        ("source.xml", "application/xml"),
+        ("source.html", "text/html"),
+        (
+            "source.docx",
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        ),
+        (
+            "source.xlsx",
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ),
+        (
+            "source.pptx",
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        ),
+    ),
+)
+def test_knowledge_studio_document_profile_accepts_only_its_bounded_media_contract(
+    display_name: str,
+    content_type: str,
+) -> None:
+    validate_upload_profile(
+        content_profile=UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1,
+        display_name=display_name,
+        content_type=content_type,
+        size_bytes=KNOWLEDGE_STUDIO_DOCUMENT_V1.maximum_file_bytes,
+    )
+
+
+def test_knowledge_studio_document_profile_rejects_unlisted_media_and_oversize() -> None:
+    with pytest.raises(ValidationError, match="content type or filename"):
+        validate_upload_profile(
+            content_profile=UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1,
+            display_name="source.yaml",
+            content_type="application/yaml",
+            size_bytes=100,
+        )
+    with pytest.raises(ValidationError, match="content type or filename"):
+        validate_upload_profile(
+            content_profile=UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1,
+            display_name="source.txt",
+            content_type="application/pdf",
+            size_bytes=100,
+        )
+    with pytest.raises(ValidationError, match="bounded file-size"):
+        validate_upload_profile(
+            content_profile=UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1,
+            display_name="source.pdf",
+            content_type="application/pdf",
+            size_bytes=KNOWLEDGE_STUDIO_DOCUMENT_V1.maximum_file_bytes + 1,
+        )
+    assert KNOWLEDGE_STUDIO_DOCUMENT_V1.maximum_file_bytes == 10 * 1024 * 1024
+    assert (
+        KNOWLEDGE_STUDIO_DOCUMENT_V1.configuration_hash
+        == "c70a2750dd6f089d79ef3e4d1e2eb59bb34b885c85db88d0426d59ee65a513e8"
+    )
 
 
 def test_preparation_queue_is_server_owned_and_emits_bounded_event() -> None:

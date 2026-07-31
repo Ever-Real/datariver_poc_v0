@@ -1,0 +1,558 @@
+from __future__ import annotations
+
+import hashlib
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
+from pathlib import Path
+from uuid import UUID
+
+import pytest
+
+from datariver.application.dto import (
+    KnowledgeStudioDraftRecord,
+    KnowledgeStudioTBoxBlockRecord,
+    KnowledgeStudioTBoxElementRecord,
+    KnowledgeStudioTBoxRecord,
+)
+from datariver.application.knowledge_studio_proposal_job_contracts import (
+    KnowledgeStudioProposalCompletion,
+    KnowledgeStudioProposalDocument,
+    KnowledgeStudioProposalJobClaim,
+    KnowledgeStudioProposalJobRecord,
+    KnowledgeStudioProposalRuntime,
+    KnowledgeStudioProposalSourceLocator,
+)
+from datariver.application.services.knowledge_studio_proposal_jobs import (
+    knowledge_studio_proposal_base_tbox_document,
+    knowledge_studio_proposal_base_tbox_hash,
+)
+from datariver.application.services.knowledge_studio_proposal_worker import (
+    KnowledgeStudioProposalWorker,
+)
+from datariver.domain.authz import Action, Classification, SubjectAttributes
+from datariver.domain.common import ConflictError, ValidationError
+from datariver.domain.knowledge_pipeline import ModelBinding
+from datariver.domain.knowledge_studio import (
+    TBoxElementInput,
+    TBoxElementKind,
+    TBoxProposalMode,
+)
+from datariver.domain.knowledge_studio_proposal_jobs import (
+    KnowledgeStudioAcceptedUploadPin,
+    KnowledgeStudioCatalogSourcePin,
+    KnowledgeStudioProposalInputKind,
+    KnowledgeStudioProposalJobPins,
+    KnowledgeStudioProposalJobStage,
+    KnowledgeStudioProposalJobState,
+    knowledge_studio_proposal_requester_authorization_document,
+    knowledge_studio_proposal_requester_authorization_hash,
+)
+from datariver.infrastructure.db.models.knowledge_studio import (
+    KnowledgeStudioProposalAttemptModel,
+    KnowledgeStudioProposalEventModel,
+    KnowledgeStudioProposalJobModel,
+)
+from datariver.infrastructure.knowledge.proposal_document import (
+    ObjectStoreKnowledgeStudioProposalDocumentReader,
+)
+
+WORKSPACE_ID = UUID("10000000-0000-4000-8000-000000000001")
+DRAFT_ID = UUID("10000000-0000-4000-8000-000000000002")
+ACTOR_ID = UUID("10000000-0000-4000-8000-000000000003")
+JOB_ID = UUID("10000000-0000-4000-8000-000000000004")
+ATTEMPT_ID = UUID("10000000-0000-4000-8000-000000000005")
+MANIFEST_ID = UUID("10000000-0000-4000-8000-000000000006")
+WORKER_ID = UUID("10000000-0000-4000-8000-000000000007")
+BLOCK_ID = UUID("10000000-0000-4000-8000-000000000008")
+NOW = datetime(2026, 7, 31, tzinfo=UTC)
+SHA_A = "a" * 64
+SHA_B = "b" * 64
+SHA_C = "c" * 64
+
+
+def _binding(*, model: str = "schema-model") -> ModelBinding:
+    return ModelBinding(
+        provider="enterprise-gateway",
+        model=model,
+        prompt_version="tbox-proposal-v1",
+        tool_schema_version="tbox-schema-v1",
+        configuration_source="DEPLOYMENT",
+        configuration_hash=SHA_C,
+    )
+
+
+def _document_pins(content: bytes) -> KnowledgeStudioProposalJobPins:
+    return KnowledgeStudioProposalJobPins(
+        workspace_id=WORKSPACE_ID,
+        draft_id=DRAFT_ID,
+        requested_by=ACTOR_ID,
+        input_kind=KnowledgeStudioProposalInputKind.DOCUMENT_SCHEMA,
+        mode=TBoxProposalMode.MERGE_INTO_CURRENT,
+        target_block_id=BLOCK_ID,
+        base_draft_version=4,
+        base_tbox_hash=SHA_A,
+        source=KnowledgeStudioAcceptedUploadPin(
+            manifest_id=MANIFEST_ID,
+            manifest_version=3,
+            content_sha256=hashlib.sha256(content).hexdigest(),
+            media_type="text/plain",
+            size_bytes=len(content),
+            classification=1,
+            content_profile="KNOWLEDGE_STUDIO_DOCUMENT_V1",
+            validation_evidence_hash=SHA_B,
+            filename="schema.txt",
+        ),
+        parser_configuration_hash=SHA_B,
+        schema_binding=_binding(),
+        requester_authorization_hash=SHA_C,
+        prepared_at=NOW,
+    )
+
+
+def _record() -> KnowledgeStudioProposalJobRecord:
+    return KnowledgeStudioProposalJobRecord(
+        job_id=JOB_ID,
+        workspace_id=WORKSPACE_ID,
+        draft_id=DRAFT_ID,
+        requested_by=ACTOR_ID,
+        input_kind=KnowledgeStudioProposalInputKind.DOCUMENT_SCHEMA,
+        mode=TBoxProposalMode.MERGE_INTO_CURRENT,
+        target_block_id=BLOCK_ID,
+        state=KnowledgeStudioProposalJobState.RUNNING,
+        stage=KnowledgeStudioProposalJobStage.SOURCE_VALIDATION,
+        progress_percent=5,
+        attempt_count=1,
+        maximum_attempts=3,
+        next_attempt_at=NOW,
+        last_failure_code=None,
+        version=2,
+        created_at=NOW,
+        updated_at=NOW,
+        completed_at=None,
+        result=None,
+    )
+
+
+def _claim(content: bytes) -> KnowledgeStudioProposalJobClaim:
+    return KnowledgeStudioProposalJobClaim(
+        job=_record(),
+        pins=_document_pins(content),
+        current_elements=(),
+        attempt_id=ATTEMPT_ID,
+        attempt_no=1,
+        lease_epoch=1,
+        worker_fingerprint="proposal-worker-1",
+        lease_token="secret-lease-token",
+        source_locator=KnowledgeStudioProposalSourceLocator(
+            bucket="accepted",
+            object_key="knowledge-eligible/private-object",
+        ),
+    )
+
+
+class _Assistant:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def propose(self, **_kwargs: object) -> tuple[TBoxElementInput, ...]:
+        self.calls += 1
+        return (
+            TBoxElementInput(
+                stable_element_id="asset",
+                kind=TBoxElementKind.CLASS,
+                canonical_name="Asset",
+                display_name="Asset",
+            ),
+        )
+
+
+class _Reader:
+    def __init__(self, content: bytes) -> None:
+        self.content = content
+        self.calls = 0
+
+    async def read_document(
+        self,
+        *,
+        claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalDocument:
+        assert claim.source_locator is not None
+        self.calls += 1
+        return KnowledgeStudioProposalDocument(
+            filename="schema.txt",
+            media_type="text/plain",
+            content=self.content,
+        )
+
+
+class _ObjectStore:
+    def __init__(self, chunks: tuple[bytes, ...]) -> None:
+        self.chunks = chunks
+        self.calls: list[tuple[str, str]] = []
+
+    async def iter_object_chunks(
+        self,
+        *,
+        bucket: str,
+        object_key: str,
+    ) -> AsyncIterator[bytes]:
+        self.calls.append((bucket, object_key))
+        for chunk in self.chunks:
+            yield chunk
+
+
+class _Store:
+    def __init__(self, claim: KnowledgeStudioProposalJobClaim) -> None:
+        self.claim = claim
+        self.renewed: list[tuple[str, int]] = []
+        self.completed: KnowledgeStudioProposalCompletion | None = None
+        self.failed: list[tuple[str, bool, bool]] = []
+        self.drift: str | None = None
+
+    async def claim_next(self, **_kwargs: object) -> KnowledgeStudioProposalJobClaim | None:
+        return self.claim
+
+    async def renew(self, **kwargs: object) -> datetime:
+        progress_percent = kwargs["progress_percent"]
+        assert isinstance(progress_percent, int)
+        self.renewed.append((str(kwargs["stage"]), progress_percent))
+        return NOW
+
+    async def ensure_current(self, **_kwargs: object) -> str | None:
+        return self.drift
+
+    async def complete(self, **kwargs: object) -> KnowledgeStudioProposalJobRecord:
+        completion = kwargs["completion"]
+        assert isinstance(completion, KnowledgeStudioProposalCompletion)
+        self.completed = completion
+        return self.claim.job
+
+    async def fail(self, **kwargs: object) -> None:
+        self.failed.append(
+            (
+                str(kwargs["failure_code"]),
+                bool(kwargs["retryable"]),
+                bool(kwargs["stale"]),
+            )
+        )
+
+
+def test_proposal_job_pins_never_persist_object_coordinates_or_document_text() -> None:
+    pins = _document_pins(b"Schema title")
+    claim = _claim(b"Schema title")
+
+    document = pins.to_document()
+
+    assert pins.evidence_hash() == pins.evidence_hash()
+    assert "bucket" not in str(document).lower()
+    assert "object_key" not in str(document).lower()
+    assert "Schema title" not in str(document)
+    assert "secret-lease-token" not in repr(claim)
+    assert "knowledge-eligible/private-object" not in repr(claim)
+
+
+@pytest.mark.asyncio
+async def test_object_reader_streams_and_rechecks_the_exact_immutable_pin(
+    tmp_path: Path,
+) -> None:
+    content = b"bounded schema source"
+    object_store = _ObjectStore((content[:7], content[7:]))
+    reader = ObjectStoreKnowledgeStudioProposalDocumentReader(
+        object_store=object_store,  # type: ignore[arg-type]
+        memory_spool_bytes=4_096,
+        spool_directory=str(tmp_path),
+    )
+
+    document = await reader.read_document(claim=_claim(content))
+
+    assert document.content == content
+    assert object_store.calls == [("accepted", "knowledge-eligible/private-object")]
+    assert content.decode() not in repr(document)
+
+
+@pytest.mark.asyncio
+async def test_object_reader_rejects_content_hash_drift(tmp_path: Path) -> None:
+    reader = ObjectStoreKnowledgeStudioProposalDocumentReader(
+        object_store=_ObjectStore((b"tampered",)),  # type: ignore[arg-type]
+        memory_spool_bytes=4_096,
+        spool_directory=str(tmp_path),
+    )
+
+    with pytest.raises(ConflictError, match="immutable pin"):
+        await reader.read_document(claim=_claim(b"expected"))
+
+
+def test_catalog_source_pin_rejects_duplicate_selected_fields() -> None:
+    pin = KnowledgeStudioCatalogSourcePin(
+        asset_id=MANIFEST_ID,
+        name="orders",
+        asset_type="TABLE",
+        classification=1,
+        source_version="v1",
+        projection_source_version="projection-v1",
+        selected_field_paths=("order_id", "order_id"),
+    )
+
+    with pytest.raises(ValidationError, match="unique"):
+        pin.validate()
+
+
+def test_completion_rejects_object_coordinates_and_raw_provider_payloads() -> None:
+    completion = KnowledgeStudioProposalCompletion(
+        elements=(
+            TBoxElementInput(
+                stable_element_id="asset",
+                kind=TBoxElementKind.CLASS,
+                canonical_name="Asset",
+                display_name="Asset",
+            ),
+        ),
+        conflicts=(),
+        prompt_label="Document schema proposal",
+        model_binding=_binding().to_document(),
+        source_reference={"nested": {"object_key": "private/source.txt"}},
+        result_hash=SHA_A,
+    )
+
+    with pytest.raises(ValidationError, match="sensitive payload"):
+        completion.validate()
+
+
+def test_proposal_base_tbox_and_authorization_hashes_are_order_stable() -> None:
+    draft = KnowledgeStudioDraftRecord(
+        draft_id=DRAFT_ID,
+        workspace_id=WORKSPACE_ID,
+        author_id=ACTOR_ID,
+        kind="CREATE",
+        state="DRAFT",
+        current_step="TBOX",
+        name="Asset",
+        endpoint_alias="asset",
+        endpoint_aliases=("asset",),
+        domain_id=MANIFEST_ID,
+        domain_source_version="domain-v1",
+        classification=Classification.INTERNAL,
+        base_graph_id=None,
+        base_ontology_version_id=None,
+        base_release_id=None,
+        last_autosaved_at=NOW,
+        version=4,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    first = KnowledgeStudioTBoxElementRecord(
+        stable_element_id="z",
+        kind="CLASS",
+        canonical_name="Zulu",
+        display_name="Zulu",
+        parent_stable_element_id=None,
+        source_stable_element_id=None,
+        target_stable_element_id=None,
+        data_type=None,
+        nullable=None,
+        ordinal=2,
+        version=1,
+    )
+    second = KnowledgeStudioTBoxElementRecord(
+        stable_element_id="a",
+        kind="CLASS",
+        canonical_name="Alpha",
+        display_name="Alpha",
+        parent_stable_element_id=None,
+        source_stable_element_id=None,
+        target_stable_element_id=None,
+        data_type=None,
+        nullable=None,
+        ordinal=1,
+        version=1,
+    )
+    block = KnowledgeStudioTBoxBlockRecord(
+        block_id=BLOCK_ID,
+        kind="DIRECT",
+        title="Core",
+        weight=50,
+        ordinal=0,
+        collapsed=True,
+        version=8,
+        source_reference={"must_not_be_folded": True},
+        elements=(first, second),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    record = KnowledgeStudioTBoxRecord(draft=draft, blocks=(block,))
+
+    folded = knowledge_studio_proposal_base_tbox_document(record)
+
+    assert folded["contract"] == "KNOWLEDGE_STUDIO_PROPOSAL_BASE_TBOX_V1"
+    raw_blocks = folded["blocks"]
+    assert isinstance(raw_blocks, list)
+    assert [item["stable_element_id"] for item in raw_blocks[0]["elements"]] == [
+        "a",
+        "z",
+    ]
+    assert "collapsed" not in raw_blocks[0]
+    assert "source_reference" not in raw_blocks[0]
+    assert knowledge_studio_proposal_base_tbox_hash(record) == (
+        knowledge_studio_proposal_base_tbox_hash(record)
+    )
+
+    subject = SubjectAttributes(
+        subject_id=ACTOR_ID,
+        workspace_id=WORKSPACE_ID,
+        active=True,
+        department_id=None,
+        groups=frozenset({"authors", "knowledge"}),
+        job_function="Knowledge Worker",
+        clearance=Classification.INTERNAL,
+        allowed_actions=frozenset({Action.KG_EDIT, Action.KG_READ}),
+        denied_actions=frozenset(),
+    )
+    authorization = knowledge_studio_proposal_requester_authorization_document(subject)
+    assert authorization["groups"] == ["authors", "knowledge"]
+    assert authorization["allowed_actions"] == ["kg.edit", "kg.read"]
+    assert knowledge_studio_proposal_requester_authorization_hash(subject) == (
+        knowledge_studio_proposal_requester_authorization_hash(subject)
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_completes_ready_proposal_without_persisting_document_excerpt() -> None:
+    content = "고객과 주문의 논리 스키마".encode()
+    claim = _claim(content)
+    store = _Store(claim)
+    reader = _Reader(content)
+    assistant = _Assistant()
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=reader,
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 1
+    assert reader.calls == 1
+    assert store.failed == []
+    assert store.completed is not None
+    assert store.completed.prompt_label == "Document schema proposal: schema.txt"
+    assert "고객" not in str(store.completed.source_reference)
+    assert [stage for stage, _progress in store.renewed] == [
+        "PARSING",
+        "INFERENCE",
+        "VALIDATING",
+        "FINALIZING",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_model_binding_drift_stale_before_source_read() -> None:
+    content = b"schema"
+    claim = _claim(content)
+    store = _Store(claim)
+    reader = _Reader(content)
+    assistant = _Assistant()
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(
+            assistant=assistant,
+            binding=_binding(model="new-model"),
+        )
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=reader,
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 0
+    assert reader.calls == 0
+    assert store.completed is None
+    assert store.failed == [("STALE_MODEL_BINDING", False, True)]
+
+
+@pytest.mark.asyncio
+async def test_worker_stops_when_database_fence_completes_cancellation() -> None:
+    content = b"schema"
+    claim = _claim(content)
+    store = _Store(claim)
+    store.drift = "CANCELLED"
+    reader = _Reader(content)
+    assistant = _Assistant()
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=reader,
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 0
+    assert reader.calls == 0
+    assert store.completed is None
+    assert store.failed == []
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_accepted_source_hash_drift_stale() -> None:
+    claim = _claim(b"expected")
+    store = _Store(claim)
+    reader = _Reader(b"tampered")
+    assistant = _Assistant()
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=reader,
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 0
+    assert store.completed is None
+    assert store.failed == [("STALE_SOURCE_CONTENT", False, True)]
+
+
+def test_proposal_job_models_exclude_raw_object_coordinates() -> None:
+    job_columns = set(KnowledgeStudioProposalJobModel.__table__.columns.keys())
+
+    assert str(KnowledgeStudioProposalJobModel.__table__) == "knowledge.tbox_proposal_jobs"
+    assert str(KnowledgeStudioProposalAttemptModel.__table__) == (
+        "knowledge.tbox_proposal_attempts"
+    )
+    assert str(KnowledgeStudioProposalEventModel.__table__) == ("knowledge.tbox_proposal_events")
+    assert "bucket" not in job_columns
+    assert "object_key" not in job_columns
+    assert "prompt" not in job_columns

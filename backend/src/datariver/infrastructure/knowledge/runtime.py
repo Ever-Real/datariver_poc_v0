@@ -45,6 +45,12 @@ class KnowledgeEmbeddingRuntime:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeTBoxSchemaRuntime:
+    assistant: OpenAICompatibleTBoxSchemaAssistant
+    binding: ModelBinding
+
+
+@dataclass(frozen=True, slots=True)
 class _RuntimeCoordinates:
     provider: str
     allowed_hosts: frozenset[str]
@@ -214,6 +220,110 @@ def build_knowledge_embedding_runtime(settings: Settings) -> KnowledgeEmbeddingR
         ),
         binding=binding,
     )
+
+
+def build_knowledge_tbox_schema_runtime(settings: Settings) -> KnowledgeTBoxSchemaRuntime:
+    """Build the schema-only boundary without resolving an embedding credential."""
+
+    coordinates = _chat_coordinates(settings)
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
+    api_key = (
+        resolver.resolve(coordinates.chat_api_key_secret_ref)
+        if coordinates.chat_api_key_secret_ref is not None
+        else None
+    )
+    binding = _tbox_schema_binding(coordinates)
+    reasoning_effort: Literal["none"] | None = (
+        "none" if coordinates.provider == LOCAL_OLLAMA_PROVIDER else None
+    )
+    return KnowledgeTBoxSchemaRuntime(
+        assistant=OpenAICompatibleTBoxSchemaAssistant(
+            transport=HttpxOpenAIJsonTransport(
+                base_url=coordinates.chat_base_url,
+                allowed_hosts=coordinates.allowed_hosts,
+                api_key=api_key,
+                timeout_seconds=coordinates.chat_timeout_seconds,
+            ),
+            reasoning_effort=reasoning_effort,
+            chat_options=coordinates.chat_options,
+        ),
+        binding=binding,
+    )
+
+
+def resolve_knowledge_tbox_schema_binding(settings: Settings) -> ModelBinding:
+    """Resolve deployment evidence without reading the provider credential."""
+
+    return _tbox_schema_binding(_chat_coordinates(settings))
+
+
+def _tbox_schema_binding(coordinates: _RuntimeCoordinates) -> ModelBinding:
+    return _activated_binding(
+        provider=coordinates.provider,
+        model=coordinates.chat_model,
+        prompt_version=TBOX_SCHEMA_ASSISTANT_PROMPT_VERSION,
+        tool_schema_version=TBOX_SCHEMA_ASSISTANT_SCHEMA_VERSION,
+        adapter_contract=CHAT_JSON_SCHEMA_ADAPTER_CONTRACT,
+        deployment_configuration_hash=_deployment_hash(
+            coordinates=coordinates,
+            system_id="LLM_CHAT_MODEL",
+            adapter_contract=CHAT_JSON_SCHEMA_ADAPTER_CONTRACT,
+            model=coordinates.chat_model,
+            prompt_version=TBOX_SCHEMA_ASSISTANT_PROMPT_VERSION,
+            tool_schema_version=TBOX_SCHEMA_ASSISTANT_SCHEMA_VERSION,
+        ),
+    )
+
+
+def _chat_coordinates(settings: Settings) -> _RuntimeCoordinates:
+    if settings.local_ollama_chat_enabled:
+        if settings.local_ollama_chat_base_url is None or settings.local_ollama_chat_model is None:
+            raise ConflictError("The activated local Schema Assistant binding is incomplete.")
+        return _RuntimeCoordinates(
+            provider=LOCAL_OLLAMA_PROVIDER,
+            allowed_hosts=settings.effective_local_inference_allowed_hosts,
+            approved_public_hosts=frozenset(),
+            chat_base_url=str(settings.local_ollama_chat_base_url),
+            chat_model=settings.local_ollama_chat_model,
+            chat_api_key_secret_ref=None,
+            chat_timeout_seconds=settings.local_ollama_chat_timeout_seconds,
+            chat_options=OpenAICompatibleChatRequestOptions(),
+            embedding_base_url="",
+            embedding_model="",
+            embedding_api_key_secret_ref=None,
+            embedding_timeout_seconds=0,
+            connection_mode="LOCAL_OLLAMA",
+        )
+    if settings.intranet_openai_compatible_chat_enabled:
+        if (
+            settings.intranet_openai_compatible_chat_base_url is None
+            or settings.intranet_openai_compatible_chat_model is None
+            or settings.intranet_openai_compatible_chat_api_key_secret_ref is None
+        ):
+            raise ConflictError("The activated intranet Schema Assistant binding is incomplete.")
+        return _RuntimeCoordinates(
+            provider=INTRANET_OPENAI_COMPATIBLE_PROVIDER,
+            allowed_hosts=frozenset(settings.intranet_openai_compatible_allowed_hosts),
+            approved_public_hosts=frozenset(
+                settings.intranet_openai_compatible_approved_public_hosts
+            ),
+            chat_base_url=str(settings.intranet_openai_compatible_chat_base_url),
+            chat_model=settings.intranet_openai_compatible_chat_model,
+            chat_api_key_secret_ref=(settings.intranet_openai_compatible_chat_api_key_secret_ref),
+            chat_timeout_seconds=settings.intranet_openai_compatible_chat_timeout_seconds,
+            chat_options=OpenAICompatibleChatRequestOptions(
+                temperature=settings.intranet_openai_compatible_chat_temperature,
+                top_p=settings.intranet_openai_compatible_chat_top_p,
+                repetition_penalty=(settings.intranet_openai_compatible_chat_repetition_penalty),
+                enable_thinking=settings.intranet_openai_compatible_chat_enable_thinking,
+            ),
+            embedding_base_url="",
+            embedding_model="",
+            embedding_api_key_secret_ref=None,
+            embedding_timeout_seconds=0,
+            connection_mode="INTRANET_OPENAI_COMPATIBLE",
+        )
+    raise ConflictError("The activated Schema Assistant binding is unavailable.")
 
 
 def _embedding_coordinates(settings: Settings) -> _RuntimeCoordinates:

@@ -421,7 +421,7 @@ def test_environment_fingerprints_detect_keys_without_persisting_values() -> Non
 
 def test_environment_change_classification_restarts_only_known_consumers() -> None:
     llm = workflow.classify_environment_changes(("LOCAL_OLLAMA_CHAT_MODEL",))
-    assert llm.services == ("api",)
+    assert set(llm.services) == {"api", "knowledge-tbox-proposal-worker"}
     assert llm.requires_migration is False
 
     embedding = workflow.classify_environment_changes(("LOCAL_OLLAMA_EMBEDDING_MODEL",))
@@ -431,7 +431,11 @@ def test_environment_change_classification_restarts_only_known_consumers() -> No
     assert reranker.services == ("api",)
 
     local_hosts = workflow.classify_environment_changes(("LOCAL_INFERENCE_ALLOWED_HOSTS",))
-    assert set(local_hosts.services) == {"api", "knowledge-source-worker"}
+    assert set(local_hosts.services) == {
+        "api",
+        "knowledge-source-worker",
+        "knowledge-tbox-proposal-worker",
+    }
 
     public_intranet_hosts = workflow.classify_environment_changes(
         ("INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS",)
@@ -439,6 +443,7 @@ def test_environment_change_classification_restarts_only_known_consumers() -> No
     assert set(public_intranet_hosts.services) == {
         "api",
         "knowledge-source-worker",
+        "knowledge-tbox-proposal-worker",
     }
 
     plaintext_probe_ips = workflow.classify_environment_changes(
@@ -470,10 +475,13 @@ def test_environment_change_classification_restarts_only_known_consumers() -> No
     app_origin = workflow.classify_environment_changes(("APP_PUBLIC_ORIGIN",))
     assert app_origin.local_connector_services == ("minio",)
 
-    knowledge_document_timeout = workflow.classify_environment_changes(
-        ("KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS",)
+    knowledge_proposal_worker = workflow.classify_environment_changes(
+        ("KNOWLEDGE_STUDIO_PROPOSAL_WORKER_LEASE_SECONDS",)
     )
-    assert knowledge_document_timeout.services == ("web",)
+    assert set(knowledge_proposal_worker.services) == {
+        "api",
+        "knowledge-tbox-proposal-worker",
+    }
 
     connector_network = workflow.classify_environment_changes(("DATARIVER_CONNECTOR_NETWORK",))
     assert set(connector_network.local_connector_services) == set(workflow.LOCAL_CONNECTOR_SERVICES)
@@ -552,8 +560,35 @@ def test_environment_plan_merges_with_source_plan_without_inferred_migration() -
         workflow.classify_environment_changes(("LOCAL_OLLAMA_CHAT_MODEL",)),
     )
 
-    assert set(result.services) == {"api", "web"}
+    assert set(result.services) == {"api", "knowledge-tbox-proposal-worker", "web"}
     assert result.requires_migration is False
+
+
+def test_update_starts_an_explicitly_enabled_proposal_worker() -> None:
+    update = _load_update_module()
+
+    assert update._enabled_optional_runtime_services(
+        {"KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED": "true"}
+    ) == ("knowledge-tbox-proposal-worker",)
+    assert (
+        update._enabled_optional_runtime_services(
+            {"KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED": "false"}
+        )
+        == ()
+    )
+
+
+def test_update_remounts_a_new_postgres_role_secret_before_reconciliation() -> None:
+    update = _load_update_module()
+    assert update._requires_postgres_secret_remount(("KNOWLEDGE_PROPOSAL_DATABASE_SECRET_REF",))
+
+    source = UPDATE_MODULE_PATH.read_text(encoding="utf-8")
+    migration_block = source.split("if plan.requires_migration:", maxsplit=1)[1].split(
+        "if reapply_local_identity:", maxsplit=1
+    )[0]
+    remount = migration_block.index("새 PostgreSQL role secret mount")
+    reconcile = migration_block.index("Migration 선행 PostgreSQL 역할 계약")
+    assert remount < reconcile
 
 
 def test_update_reconciles_runtime_roles_before_and_after_migration() -> None:
@@ -903,6 +938,7 @@ def test_classify_changes_limits_restarts_to_affected_services() -> None:
         "governance-apply-worker",
         "governance-document-worker",
         "knowledge-source-worker",
+        "knowledge-tbox-proposal-worker",
         "outbox-relay",
         "quality-worker",
         "retention-archive-worker",

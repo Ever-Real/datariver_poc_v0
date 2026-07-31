@@ -72,11 +72,22 @@ APP_PUBLIC_ORIGIN=<browser-origin>
 APP_CORS_ORIGINS=<comma-separated-browser-origins>
 APP_TRUSTED_HOSTS=<comma-separated-hosts>
 API_PROXY_READ_TIMEOUT_SECONDS=30
-# This exception applies only to the typed Studio document-Proposal route.
-KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS=135
-# Host-development compatibility values; they are not production capacity defaults.
+# Host-development compatibility value for ordinary connector diagnostics; it is
+# not a production capacity default and is not used by Studio Proposal inference.
 HOST_DEV_API_PROXY_READ_TIMEOUT_SECONDS=900
-HOST_DEV_KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS=900
+
+# Disabled-by-default durable Knowledge Studio T-Box Proposal plane.
+KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED=false
+KNOWLEDGE_PROPOSAL_DATABASE_URL=<dedicated-datariver_knowledge_proposal-url>
+KNOWLEDGE_PROPOSAL_DATABASE_SECRET_REF=file:/run/secrets/postgres_knowledge_proposal_password
+KNOWLEDGE_STUDIO_PROPOSAL_WORKER_SUBJECT_ID=<service-subject-uuid>
+KNOWLEDGE_STUDIO_PROPOSAL_WORKSPACE_ID=<workspace-uuid>
+KNOWLEDGE_STUDIO_PROPOSAL_WORKER_FINGERPRINT=<deployment-worker-identity>
+KNOWLEDGE_STUDIO_PROPOSAL_WORKER_POLL_SECONDS=2
+KNOWLEDGE_STUDIO_PROPOSAL_WORKER_LEASE_SECONDS=300
+KNOWLEDGE_STUDIO_PROPOSAL_JOB_MAXIMUM_ATTEMPTS=3
+KNOWLEDGE_STUDIO_PROPOSAL_MEMORY_SPOOL_BYTES=1048576
+KNOWLEDGE_STUDIO_PROPOSAL_SPOOL_DIRECTORY=/var/spool/datariver-knowledge-proposal
 
 # Disabled-by-default Knowledge Studio database-ingestion plane. URLs never contain passwords.
 KNOWLEDGE_STUDIO_INGESTION_WORKER_ENABLED=false
@@ -132,11 +143,11 @@ An unset optional field and an explicitly disabled adapter are both unconfigured
 adapter without every required endpoint/model/reference fails Settings validation; there is no
 source-code fallback.
 
-The Knowledge Studio document timeout is a bounded synchronous compatibility bridge for the exact
-document-Proposal endpoint. It does not widen the generic API proxy timeout, and changing any of
-the four proxy timeout keys recreates only the web process. Production acceptance still requires
-moving slow inference to the approved durable worker instead of increasing the timeout
-indefinitely.
+Knowledge Studio document bytes use Draft-scoped accepted uploads and a direct presigned object
+PUT. Document parsing and model inference run only in the durable Proposal worker, so there is no
+route-specific web timeout to increase. Enabling the worker requires its exact service subject,
+dedicated NOBYPASSRLS PostgreSQL login, bounded read-only Knowledge object credential and one
+approved Chat adapter; incomplete configuration fails closed.
 
 For the Mac-only loopback Reranker, the selected fresh/update workflow owns the managed process
 lifecycle. An enabled supported profile starts or reuses only the PID whose command, model blob and

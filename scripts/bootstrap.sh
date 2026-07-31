@@ -12,6 +12,7 @@ intranet_source_host=false
 web_public_origin_argument=
 oidc_public_origin_argument=
 enable_knowledge_source_worker=false
+enable_knowledge_studio_proposal_worker=false
 env_file_argument=.env
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -50,6 +51,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --enable-knowledge-source-worker)
       enable_knowledge_source_worker=true
+      ;;
+    --enable-knowledge-studio-proposal-worker)
+      enable_knowledge_studio_proposal_worker=true
       ;;
     --datahub-base-url)
       shift
@@ -298,9 +302,36 @@ knowledge_inference_is_ready() {
     intranet_knowledge_inference_is_ready
 }
 
+knowledge_schema_inference_is_ready() {
+  if [ "$wsl_preparation" = true ]; then
+    env_is_true INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED &&
+      env_is_nonempty INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS &&
+      env_is_nonempty INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL &&
+      env_is_nonempty INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL &&
+      env_is_nonempty INTRANET_OPENAI_COMPATIBLE_CHAT_API_KEY_SECRET_REF
+    return
+  fi
+  (
+    env_is_true LOCAL_OLLAMA_CHAT_ENABLED &&
+      env_is_nonempty LOCAL_OLLAMA_CHAT_BASE_URL &&
+      env_is_nonempty LOCAL_OLLAMA_CHAT_MODEL
+  ) || (
+    env_is_true INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED &&
+      env_is_nonempty INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS &&
+      env_is_nonempty INTRANET_OPENAI_COMPATIBLE_CHAT_BASE_URL &&
+      env_is_nonempty INTRANET_OPENAI_COMPATIBLE_CHAT_MODEL &&
+      env_is_nonempty INTRANET_OPENAI_COMPATIBLE_CHAT_API_KEY_SECRET_REF
+  )
+}
+
 if [ "$enable_knowledge_source_worker" = true ] &&
   ! knowledge_inference_is_ready; then
   echo "--enable-knowledge-source-worker requires one complete Chat+Embedding pair in $env_file (local Ollama or intranet OpenAI-compatible)." >&2
+  exit 2
+fi
+if [ "$enable_knowledge_studio_proposal_worker" = true ] &&
+  ! knowledge_schema_inference_is_ready; then
+  echo "--enable-knowledge-studio-proposal-worker requires one complete Chat adapter in $env_file." >&2
   exit 2
 fi
 
@@ -372,6 +403,7 @@ ensure_random_secret postgres_relay_password 32
 ensure_random_secret postgres_upload_password 32
 ensure_random_secret postgres_governance_password 32
 ensure_random_secret postgres_knowledge_password 32
+ensure_random_secret postgres_knowledge_proposal_password 32
 ensure_random_secret postgres_knowledge_ingestion_password 32
 ensure_random_secret postgres_quality_password 32
 ensure_random_secret postgres_governance_document_password 32
@@ -642,6 +674,7 @@ if [ "$wsl_preparation" = true ]; then
   set_env_value NEO4J_AUTH_SECRET_REF file:/run/secrets/neo4j_auth
   set_env_value KNOWLEDGE_PIPELINE_ENABLED false
   set_env_value KNOWLEDGE_SOURCE_WORKER_ENABLED false
+  set_env_value KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED false
   set_env_value KNOWLEDGE_STUDIO_INGESTION_WORKER_ENABLED false
   set_env_value KNOWLEDGE_STUDIO_SOURCE_SECRET_ROOT \
     /run/secrets/knowledge-studio-sources
@@ -655,6 +688,21 @@ if [ "$enable_knowledge_source_worker" = true ]; then
   set_env_value S3_KNOWLEDGE_ACCESS_KEY_FILE /run/secrets/s3_knowledge_access_key
   set_env_value S3_KNOWLEDGE_SECRET_KEY_FILE /run/secrets/s3_knowledge_secret_key
   set_env_value KNOWLEDGE_SOURCE_WORKER_ENABLED true
+fi
+if [ "$enable_knowledge_studio_proposal_worker" = true ]; then
+  set_env_value KNOWLEDGE_PROPOSAL_DATABASE_URL \
+    postgresql+asyncpg://datariver_knowledge_proposal@postgres:5432/datariver
+  set_env_value KNOWLEDGE_PROPOSAL_DATABASE_SECRET_REF \
+    file:/run/secrets/postgres_knowledge_proposal_password
+  set_env_value S3_KNOWLEDGE_ACCESS_KEY_FILE /run/secrets/s3_knowledge_access_key
+  set_env_value S3_KNOWLEDGE_SECRET_KEY_FILE /run/secrets/s3_knowledge_secret_key
+  set_env_value KNOWLEDGE_STUDIO_PROPOSAL_WORKER_SUBJECT_ID \
+    00000000-0000-4000-8000-000000000109
+  set_env_value KNOWLEDGE_STUDIO_PROPOSAL_WORKSPACE_ID \
+    00000000-0000-4000-8000-000000000100
+  set_env_value KNOWLEDGE_STUDIO_PROPOSAL_WORKER_FINGERPRINT \
+    local-knowledge-studio-proposal-worker-v1
+  set_env_value KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED true
 fi
 
 # File-based Compose secrets are bind mounts, so container users with different

@@ -49,6 +49,9 @@ configured_oidc_public_authority=$(env_file_value OIDC_PUBLIC_AUTHORITY \
 airflow_source_api_bridge_enabled=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false)
 airflow_source_api_bridge_port=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_PORT 38103)
 knowledge_source_worker_enabled=$(env_file_value KNOWLEDGE_SOURCE_WORKER_ENABLED false)
+knowledge_studio_proposal_worker_enabled=$(
+  env_file_value KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED false
+)
 knowledge_studio_ingestion_worker_enabled=$(
   env_file_value KNOWLEDGE_STUDIO_INGESTION_WORKER_ENABLED false
 )
@@ -251,6 +254,8 @@ show_status() {
   done
   show_optional_status airflow-api-bridge "$enable_airflow_source_bridge"
   show_optional_status knowledge-source-worker "$knowledge_source_worker_enabled"
+  show_optional_status knowledge-tbox-proposal-worker \
+    "$knowledge_studio_proposal_worker_enabled"
   show_optional_status knowledge-studio-ingestion-worker \
     "$knowledge_studio_ingestion_worker_enabled"
 }
@@ -277,7 +282,7 @@ case "$action" in
     exit 0
     ;;
   stop)
-    for process in vite knowledge-studio-ingestion-worker knowledge-source-worker governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
+    for process in vite knowledge-studio-ingestion-worker knowledge-tbox-proposal-worker knowledge-source-worker governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
       stop_process "$process"
     done
     stop_owned_vite_processes
@@ -419,7 +424,10 @@ fi
 
 required_secrets=(postgres_password)
 if [ "$action" = migrate ]; then
-  required_secrets+=(postgres_knowledge_ingestion_password)
+  required_secrets+=(
+    postgres_knowledge_ingestion_password
+    postgres_knowledge_proposal_password
+  )
 fi
 if [ "$action" = bootstrap-identity ]; then
   required_secrets+=(postgres_bootstrap_password)
@@ -439,6 +447,16 @@ if [ "$action" = start ]; then
     required_secrets+=(
       postgres_knowledge_password s3_knowledge_access_key s3_knowledge_secret_key
     )
+  fi
+  if [ "$knowledge_studio_proposal_worker_enabled" = true ]; then
+    required_secrets+=(
+      postgres_knowledge_proposal_password
+      s3_knowledge_access_key
+      s3_knowledge_secret_key
+    )
+    if [ "$(env_file_value INTRANET_OPENAI_COMPATIBLE_CHAT_ENABLED false)" = true ]; then
+      required_secrets+=(intranet_llm_chat_api_key)
+    fi
   fi
   if [ "$knowledge_studio_ingestion_worker_enabled" = true ]; then
     required_secrets+=(postgres_knowledge_ingestion_password)
@@ -574,7 +592,7 @@ if [ "${NEO4J_PROJECTION_ENABLED:-false}" = true ] && [ ! -s "$root/secrets/neo4
 fi
 mkdir -p "$runtime_dir"
 if [ "$action" = start ]; then
-  for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker knowledge-source-worker knowledge-studio-ingestion-worker vite; do
+  for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker knowledge-source-worker knowledge-tbox-proposal-worker knowledge-studio-ingestion-worker vite; do
     if is_running "$process"; then
       echo "DataRiver source-host process is already running: $process" >&2
       exit 2
@@ -625,6 +643,8 @@ export GOVERNANCE_DATABASE_URL="postgresql+asyncpg://datariver_governance@127.0.
 export GOVERNANCE_DATABASE_SECRET_REF="$(secret_ref postgres_governance_password)"
 export KNOWLEDGE_DATABASE_URL="postgresql+asyncpg://datariver_knowledge@127.0.0.1:$postgres_port/datariver"
 export KNOWLEDGE_DATABASE_SECRET_REF="$(secret_ref postgres_knowledge_password)"
+export KNOWLEDGE_PROPOSAL_DATABASE_URL="postgresql+asyncpg://datariver_knowledge_proposal@127.0.0.1:$postgres_port/datariver"
+export KNOWLEDGE_PROPOSAL_DATABASE_SECRET_REF="$(secret_ref postgres_knowledge_proposal_password)"
 export KNOWLEDGE_INGESTION_DATABASE_URL="postgresql+asyncpg://datariver_knowledge_ingestion@127.0.0.1:$postgres_port/datariver"
 export KNOWLEDGE_INGESTION_DATABASE_SECRET_REF="$(secret_ref postgres_knowledge_ingestion_password)"
 export REDIS_CACHE_URL="$redis_cache_url"
@@ -638,6 +658,7 @@ export S3_SECRET_KEY_FILE="$root/secrets/s3_secret_key"
 export S3_KNOWLEDGE_ACCESS_KEY_FILE="$root/secrets/s3_knowledge_access_key"
 export S3_KNOWLEDGE_SECRET_KEY_FILE="$root/secrets/s3_knowledge_secret_key"
 export KNOWLEDGE_SOURCE_SPOOL_DIRECTORY="$runtime_dir/knowledge-spool"
+export KNOWLEDGE_STUDIO_PROPOSAL_SPOOL_DIRECTORY="$runtime_dir/knowledge-proposal-spool"
 export OIDC_ISSUER="$oidc_public_authority"
 export OIDC_JWKS_URL="http://localhost:$keycloak_port/realms/datariver/protocol/openid-connect/certs"
 export OIDC_PUBLIC_AUTHORITY="$oidc_public_authority"
@@ -817,7 +838,7 @@ cleanup_needed=true
 cleanup_on_error() {
   local status=$?
   if [ "$cleanup_needed" = true ] && [ "$status" -ne 0 ]; then
-    for process in vite knowledge-studio-ingestion-worker knowledge-source-worker governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
+    for process in vite knowledge-studio-ingestion-worker knowledge-tbox-proposal-worker knowledge-source-worker governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
       stop_process "$process"
     done
   fi
@@ -882,6 +903,11 @@ if [ "${KNOWLEDGE_SOURCE_WORKER_ENABLED:-false}" = true ]; then
   mkdir -p "$KNOWLEDGE_SOURCE_SPOOL_DIRECTORY"
   start_process knowledge-source-worker "$root" "$python" -m datariver.workers.knowledge_source
 fi
+if [ "${KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED:-false}" = true ]; then
+  mkdir -p "$KNOWLEDGE_STUDIO_PROPOSAL_SPOOL_DIRECTORY"
+  start_process knowledge-tbox-proposal-worker "$root" \
+    "$python" -m datariver.workers.knowledge_tbox_proposal
+fi
 if [ "${KNOWLEDGE_STUDIO_INGESTION_WORKER_ENABLED:-false}" = true ]; then
   start_process knowledge-studio-ingestion-worker "$root" \
     "$python" -m datariver.workers.knowledge_studio_ingestion
@@ -898,6 +924,9 @@ if [ "$enable_airflow_source_bridge" = true ]; then
 fi
 if [ "${KNOWLEDGE_SOURCE_WORKER_ENABLED:-false}" = true ]; then
   required_processes+=(knowledge-source-worker)
+fi
+if [ "${KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED:-false}" = true ]; then
+  required_processes+=(knowledge-tbox-proposal-worker)
 fi
 if [ "${KNOWLEDGE_STUDIO_INGESTION_WORKER_ENABLED:-false}" = true ]; then
   required_processes+=(knowledge-studio-ingestion-worker)

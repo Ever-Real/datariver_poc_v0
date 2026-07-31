@@ -72,6 +72,53 @@ def test_default_governance_worker_is_the_seeded_airflow_service_subject() -> No
     assert settings().governance_worker_subject_id == LOCAL_AIRFLOW_SUBJECT_ID
 
 
+def test_knowledge_studio_proposal_worker_requires_isolated_exact_settings() -> None:
+    configured = settings()
+    assert configured.knowledge_studio_proposal_worker_enabled is False
+    assert configured.knowledge_proposal_database_url is None
+
+    with pytest.raises(ValidationError, match="Proposal worker requires"):
+        settings(knowledge_studio_proposal_worker_enabled=True)
+
+    enabled = settings(
+        knowledge_studio_proposal_worker_enabled=True,
+        knowledge_proposal_database_url=(
+            "postgresql+asyncpg://datariver_knowledge_proposal@localhost/db"
+        ),
+        knowledge_proposal_database_secret_ref=(
+            "file:/run/secrets/postgres_knowledge_proposal_password"
+        ),
+        knowledge_studio_proposal_worker_subject_id=("00000000-0000-4000-8000-000000000109"),
+        knowledge_studio_proposal_workspace_id=("00000000-0000-4000-8000-000000000100"),
+        knowledge_studio_proposal_worker_fingerprint="knowledge-proposal-dev-v1",
+        s3_knowledge_access_key_file="/run/secrets/s3_knowledge_access_key",
+        s3_knowledge_secret_key_file="/run/secrets/s3_knowledge_secret_key",
+        local_inference_allowed_hosts=("localhost",),
+        local_ollama_chat_enabled=True,
+        local_ollama_chat_base_url="http://localhost:11434/v1",
+        local_ollama_chat_model="schema-model",
+    )
+    assert enabled.knowledge_studio_proposal_worker_enabled is True
+
+    with pytest.raises(ValidationError, match="datariver_knowledge_proposal"):
+        settings(
+            knowledge_studio_proposal_worker_enabled=True,
+            knowledge_proposal_database_url="postgresql+asyncpg://shared@localhost/db",
+            knowledge_proposal_database_secret_ref=(
+                "file:/run/secrets/postgres_knowledge_proposal_password"
+            ),
+            knowledge_studio_proposal_worker_subject_id=("00000000-0000-4000-8000-000000000109"),
+            knowledge_studio_proposal_workspace_id=("00000000-0000-4000-8000-000000000100"),
+            knowledge_studio_proposal_worker_fingerprint="knowledge-proposal-dev-v1",
+            s3_knowledge_access_key_file="/run/secrets/s3_knowledge_access_key",
+            s3_knowledge_secret_key_file="/run/secrets/s3_knowledge_secret_key",
+            local_inference_allowed_hosts=("localhost",),
+            local_ollama_chat_enabled=True,
+            local_ollama_chat_base_url="http://localhost:11434/v1",
+            local_ollama_chat_model="schema-model",
+        )
+
+
 def test_knowledge_studio_ingestion_worker_is_disabled_and_fail_closed_by_default() -> None:
     configured = settings()
     assert configured.knowledge_studio_ingestion_worker_enabled is False

@@ -52,6 +52,11 @@ class KnowledgeSourceWorkerContainer(RelayWorkerContainer):
 
 
 @dataclass(slots=True)
+class KnowledgeTBoxProposalWorkerContainer(RelayWorkerContainer):
+    object_store: S3ObjectStore
+
+
+@dataclass(slots=True)
 class KnowledgeStudioIngestionWorkerContainer(RelayWorkerContainer):
     pass
 
@@ -362,6 +367,34 @@ def build_knowledge_source_container(settings: Settings) -> KnowledgeSourceWorke
     resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
     return KnowledgeSourceWorkerContainer(
         database=_database(settings, role="knowledge"),
+        event_delivery=_delivery(settings, resolver),
+        object_store=S3ObjectStore(
+            endpoint_url=settings.s3_endpoint_url,
+            public_endpoint_url=settings.s3_public_endpoint_url,
+            region=settings.s3_region,
+            access_key=resolver.resolve(f"file:{settings.s3_knowledge_access_key_file}"),
+            secret_key=resolver.resolve(f"file:{settings.s3_knowledge_secret_key_file}"),
+        ),
+    )
+
+
+def build_knowledge_tbox_proposal_container(
+    settings: Settings,
+) -> KnowledgeTBoxProposalWorkerContainer:
+    if (
+        not settings.knowledge_studio_proposal_worker_enabled
+        or settings.knowledge_proposal_database_url is None
+        or settings.knowledge_proposal_database_secret_ref is None
+        or settings.s3_knowledge_access_key_file is None
+        or settings.s3_knowledge_secret_key_file is None
+    ):
+        raise RuntimeError(
+            "Knowledge Studio Proposal worker requires explicit enablement, a dedicated "
+            "database principal and the bounded read-only Knowledge object credential."
+        )
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
+    return KnowledgeTBoxProposalWorkerContainer(
+        database=_database(settings, role="knowledge_proposal"),
         event_delivery=_delivery(settings, resolver),
         object_store=S3ObjectStore(
             endpoint_url=settings.s3_endpoint_url,

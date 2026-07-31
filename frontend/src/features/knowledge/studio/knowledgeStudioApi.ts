@@ -193,6 +193,81 @@ export interface KnowledgeStudioTBoxProposal {
   rejected_at?: string
 }
 
+export type KnowledgeStudioSourceUploadState =
+  | 'INITIATED'
+  | 'COMPLETION_QUEUED'
+  | 'COMPLETING'
+  | 'QUARANTINED'
+  | 'VALIDATING'
+  | 'ACCEPTED'
+  | 'REJECTED'
+  | 'ABORTED'
+  | 'EXPIRED'
+
+export interface KnowledgeStudioSourceUpload {
+  id: string
+  display_name: string
+  state: KnowledgeStudioSourceUploadState
+  size_bytes: number
+  content_type: string
+  sha256: string
+  classification: KnowledgeClassification
+  content_profile: 'KNOWLEDGE_STUDIO_DOCUMENT_V1'
+  expires_at: string
+  version: number
+  validation_summary: Record<string, unknown>
+  last_error_code: string | null
+  recommended_part_size_bytes: number
+}
+
+export type KnowledgeStudioProposalJobState =
+  | 'QUEUED'
+  | 'RUNNING'
+  | 'RETRY_WAIT'
+  | 'CANCEL_REQUESTED'
+  | 'SUCCEEDED'
+  | 'FAILED'
+  | 'STALE'
+  | 'CANCELLED'
+
+export type KnowledgeStudioProposalJobStage =
+  | 'QUEUED'
+  | 'SOURCE_VALIDATION'
+  | 'PARSING'
+  | 'INFERENCE'
+  | 'VALIDATING'
+  | 'FINALIZING'
+  | 'COMPLETED'
+
+export interface KnowledgeStudioProposalJob {
+  id: string
+  draft_id: string
+  input_kind: 'DOCUMENT_SCHEMA' | 'CATALOG_SCHEMA'
+  mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
+  target_block_id: string | null
+  state: KnowledgeStudioProposalJobState
+  stage: KnowledgeStudioProposalJobStage
+  progress_percent: number
+  attempt_count: number
+  maximum_attempts: number
+  last_failure_code: string | null
+  version: number
+  created_at: string
+  updated_at: string
+  completed_at: string | null
+  result_proposal_id: string | null
+  result_evidence_hash: string | null
+  supersedes_job_id: string | null
+}
+
+export interface KnowledgeStudioProposalJobPage {
+  items: KnowledgeStudioProposalJob[]
+  page: {
+    next_cursor: string | null
+    limit: number
+  }
+}
+
 export type KnowledgeStudioIngestionState =
   | 'PENDING'
   | 'RUNNING'
@@ -731,53 +806,218 @@ export async function createKnowledgeStudioTBoxProposal(
   )
 }
 
-export async function createKnowledgeStudioTBoxCatalogProposal(
+export async function getKnowledgeStudioTBoxProposal(
+  client: ApiClient,
+  draftId: string,
+  proposalId: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeStudioTBoxProposal> {
+  return client.request<KnowledgeStudioTBoxProposal>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/proposals/${encodeURIComponent(proposalId)}`,
+    { cache: 'no-store', signal },
+  )
+}
+
+export async function initiateKnowledgeStudioSourceUpload(
   client: ApiClient,
   draftId: string,
   payload: {
-    asset_id: string
-    selected_field_paths: string[]
-    target_block_id?: string
-    mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
+    display_name: string
+    size_bytes: number
+    content_type: string
+    sha256: string
   },
-  etag: string,
-): Promise<KnowledgeStudioTBoxProposal> {
-  return client.request<KnowledgeStudioTBoxProposal>(
-    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/catalog-proposals`,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<KnowledgeStudioSourceUpload>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioSourceUpload>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/source-uploads`,
     {
       method: 'POST',
       body: JSON.stringify(payload),
       cache: 'no-store',
-      ifMatch: etag,
+      idempotencyKey,
+      signal,
+    },
+  ))
+}
+
+export async function presignKnowledgeStudioSourceUploadPart(
+  client: ApiClient,
+  draftId: string,
+  uploadId: string,
+  partNumber: number,
+  signal?: AbortSignal,
+): Promise<{ url: string; expires_seconds: number }> {
+  return client.request<{ url: string; expires_seconds: number }>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/source-uploads/${encodeURIComponent(uploadId)}/parts`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ part_number: partNumber }),
+      cache: 'no-store',
+      signal,
     },
   )
 }
 
-export async function uploadKnowledgeStudioTBoxDocumentProposal(
+export async function uploadKnowledgeStudioSourceUploadPart(
+  url: string,
+  file: File,
+  signal?: AbortSignal,
+): Promise<{ part_number: 1; etag: string }> {
+  const response = await fetch(url, {
+    method: 'PUT',
+    body: file,
+    signal,
+  })
+  if (!response.ok) {
+    throw new Error(`오브젝트 스토리지 업로드에 실패했습니다. (${response.status})`)
+  }
+  const etag = response.headers.get('ETag')?.replaceAll('"', '').trim()
+  if (!etag) {
+    throw new Error(
+      '오브젝트 스토리지 응답에서 ETag를 확인할 수 없습니다. CORS 설정을 확인하세요.',
+    )
+  }
+  return { part_number: 1, etag }
+}
+
+export async function completeKnowledgeStudioSourceUpload(
   client: ApiClient,
   draftId: string,
-  payload: {
-    file: File
-    upload_id: string
-    target_block_id?: string
-    mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
-  },
-  etag: string,
-): Promise<KnowledgeStudioTBoxProposal> {
-  const body = new FormData()
-  body.set('file', payload.file, payload.file.name)
-  body.set('upload_id', payload.upload_id)
-  body.set('mode', payload.mode)
-  if (payload.target_block_id) body.set('target_block_id', payload.target_block_id)
-  return client.request<KnowledgeStudioTBoxProposal>(
-    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/document-proposals`,
+  uploadId: string,
+  parts: Array<{ part_number: number; etag: string }>,
+  uploadEtag: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<KnowledgeStudioSourceUpload>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioSourceUpload>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/source-uploads/${encodeURIComponent(uploadId)}/complete`,
     {
       method: 'POST',
-      body,
+      body: JSON.stringify({ parts }),
       cache: 'no-store',
-      ifMatch: etag,
+      ifMatch: uploadEtag,
+      idempotencyKey,
+      signal,
     },
+  ))
+}
+
+export async function getKnowledgeStudioSourceUpload(
+  client: ApiClient,
+  draftId: string,
+  uploadId: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<KnowledgeStudioSourceUpload>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioSourceUpload>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/source-uploads/${encodeURIComponent(uploadId)}`,
+    { cache: 'no-store', signal },
+  ))
+}
+
+export async function createKnowledgeStudioTBoxProposalJob(
+  client: ApiClient,
+  draftId: string,
+  payload:
+    | {
+        input_kind: 'DOCUMENT_SCHEMA'
+        source_upload_id: string
+        source_manifest_version: number
+        target_block_id?: string
+        mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
+      }
+    | {
+        input_kind: 'CATALOG_SCHEMA'
+        asset_id: string
+        selected_field_paths: string[]
+        target_block_id?: string
+        mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
+      },
+  draftEtag: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<KnowledgeStudioProposalJob>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioProposalJob>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/proposal-jobs`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      ifMatch: draftEtag,
+      idempotencyKey,
+      signal,
+    },
+  ))
+}
+
+export async function listKnowledgeStudioTBoxProposalJobs(
+  client: ApiClient,
+  draftId: string,
+  cursor?: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeStudioProposalJobPage> {
+  const params = new URLSearchParams({ limit: '20' })
+  if (cursor) params.set('cursor', cursor)
+  return client.request<KnowledgeStudioProposalJobPage>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/proposal-jobs?${params.toString()}`,
+    { cache: 'no-store', signal },
   )
+}
+
+export async function getKnowledgeStudioTBoxProposalJob(
+  client: ApiClient,
+  draftId: string,
+  jobId: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<KnowledgeStudioProposalJob>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioProposalJob>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/proposal-jobs/${encodeURIComponent(jobId)}`,
+    { cache: 'no-store', signal },
+  ))
+}
+
+export async function cancelKnowledgeStudioTBoxProposalJob(
+  client: ApiClient,
+  draftId: string,
+  jobId: string,
+  reason: string,
+  jobEtag: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<KnowledgeStudioProposalJob>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioProposalJob>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/proposal-jobs/${encodeURIComponent(jobId)}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ reason }),
+      cache: 'no-store',
+      ifMatch: jobEtag,
+      idempotencyKey,
+      signal,
+    },
+  ))
+}
+
+export async function retryKnowledgeStudioTBoxProposalJob(
+  client: ApiClient,
+  draftId: string,
+  jobId: string,
+  jobEtag: string,
+  idempotencyKey: string,
+  signal?: AbortSignal,
+): Promise<ApiResponse<KnowledgeStudioProposalJob>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioProposalJob>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/proposal-jobs/${encodeURIComponent(jobId)}/retry`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+      cache: 'no-store',
+      ifMatch: jobEtag,
+      idempotencyKey,
+      signal,
+    },
+  ))
 }
 
 export async function applyKnowledgeStudioTBoxProposal(

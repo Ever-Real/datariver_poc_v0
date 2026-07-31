@@ -12,6 +12,7 @@ from datariver.application.dto import ObjectMetadata
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import ObjectStore, UploadValidationStore
 from datariver.application.services.upload_validation import Inspection, UploadValidationWorker
+from datariver.application.typed_upload_profiles import KNOWLEDGE_STUDIO_DOCUMENT_V1
 from datariver.domain.authz import Classification
 from datariver.domain.common import ValidationError
 from datariver.domain.registration import UploadContentProfile, UploadManifest, UploadState
@@ -237,6 +238,50 @@ async def test_only_low_classification_pdfs_use_the_knowledge_read_prefix(
     )
     assert store.accepted_object_key == destination_key
     assert objects.copy_destinations == [("accepted", destination_key)]
+
+
+@pytest.mark.parametrize(
+    ("classification", "expected_namespace"),
+    (
+        (Classification.PUBLIC, "knowledge-eligible"),
+        (Classification.INTERNAL, "knowledge-eligible"),
+        (Classification.CONFIDENTIAL, "accepted"),
+        (Classification.RESTRICTED, "accepted"),
+    ),
+)
+@pytest.mark.asyncio
+async def test_knowledge_document_profile_uses_classification_bounded_read_prefix(
+    classification: Classification,
+    expected_namespace: str,
+) -> None:
+    content = b'{"customer":"one"}'
+    upload = manifest(content)
+    upload.display_name = "source.json"
+    upload.declared_mime = "application/json"
+    upload.content_profile = UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1
+    upload.classification = classification
+    store = MemoryValidationStore(upload)
+    objects = MemoryObjectStore(
+        source_bucket=upload.bucket,
+        source_key=upload.object_key,
+        content=content,
+        content_type="application/json",
+    )
+
+    assert await worker(store=store, objects=objects).run_once() is True
+
+    destination_key = (
+        f"{expected_namespace}/{upload.workspace_id}/{upload.upload_id}/"
+        f"validation-v{upload.version}-attempt-{upload.validation_attempts}"
+    )
+    assert store.accepted_object_key == destination_key
+    assert store.accepted is not None
+    assert store.accepted["content_profile"] == "KNOWLEDGE_STUDIO_DOCUMENT_V1"
+    assert store.accepted["parser_version"] == KNOWLEDGE_STUDIO_DOCUMENT_V1.parser_version
+    assert (
+        store.accepted["profile_configuration_hash"]
+        == KNOWLEDGE_STUDIO_DOCUMENT_V1.configuration_hash
+    )
 
 
 def test_xlsx_validation_emits_the_registered_profile_validator_version() -> None:

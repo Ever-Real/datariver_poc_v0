@@ -11,7 +11,9 @@ from datariver.application.ports import ObjectStore
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.registration import (
     RegistrationService,
+    UploadAuthorizationPolicy,
     UploadNotFound,
+    upload_authorization_actions,
 )
 from datariver.domain.authz import (
     Action,
@@ -293,6 +295,46 @@ async def test_create_preparation_locks_authorizes_and_persists_server_evidence(
         "idempotency-save",
         "commit",
     ]
+
+
+@pytest.mark.asyncio
+async def test_get_manifest_uses_explicit_knowledge_studio_authorization_policy() -> None:
+    service, _, manifest, subject, environment, events = _fixture()
+
+    result = await service.get_manifest(
+        workspace_id=manifest.workspace_id,
+        upload_id=manifest.upload_id,
+        subject=subject,
+        environment=environment,
+        request_id="knowledge-upload-read",
+        authorization_policy=UploadAuthorizationPolicy.KNOWLEDGE_STUDIO,
+    )
+
+    assert result is manifest
+    assert events == ["manifest-read", "authorize:kg.edit"]
+
+
+def test_upload_authorization_policy_keeps_registration_defaults_and_is_server_owned() -> None:
+    registration = upload_authorization_actions(UploadAuthorizationPolicy.REGISTRATION)
+    knowledge = upload_authorization_actions(UploadAuthorizationPolicy.KNOWLEDGE_STUDIO)
+
+    assert (
+        registration.initiate,
+        registration.presign_part,
+        registration.read_manifest,
+        registration.queue_completion,
+    ) == (
+        Action.REGISTRATION_CREATE,
+        Action.REGISTRATION_CREATE,
+        Action.REGISTRATION_READ,
+        Action.REGISTRATION_CREATE,
+    )
+    assert {
+        knowledge.initiate,
+        knowledge.presign_part,
+        knowledge.read_manifest,
+        knowledge.queue_completion,
+    } == {Action.KG_EDIT}
 
 
 @pytest.mark.asyncio

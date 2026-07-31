@@ -38,13 +38,11 @@ services:
       - data
       - datahub
 
-  # The governed 105-page PDF extraction endpoint is intentionally synchronous in the local
-  # single-node developer profile. Production keeps the 30-second default and must use a durable
-  # inference worker before enabling this surface.
+  # Local connector diagnostics may be slower, but Knowledge Studio document
+  # parsing/inference is a durable worker job and never extends the web timeout.
   web:
     environment:
       API_PROXY_READ_TIMEOUT_SECONDS: ${HOST_DEV_API_PROXY_READ_TIMEOUT_SECONDS:-900}
-      KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS: ${HOST_DEV_KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS:-900}
 
   postgres:
     networks:

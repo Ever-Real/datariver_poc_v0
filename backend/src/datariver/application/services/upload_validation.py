@@ -9,12 +9,19 @@ from pathlib import PurePath
 
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.ports import ObjectStore, UploadValidationStore
-from datariver.application.typed_upload_profiles import typed_profile_definition
+from datariver.application.typed_upload_profiles import (
+    KNOWLEDGE_STUDIO_DOCUMENT_V1,
+    typed_profile_definition,
+    validate_upload_profile,
+)
 from datariver.domain.authz import Classification
 from datariver.domain.common import DomainError, ValidationError
 from datariver.domain.registration import UploadContentProfile, UploadManifest
 
-PREVIEW_LIMIT = 8 * 1024 * 1024
+# The largest accepted typed text profile is the 10 MiB Studio source. Keeping
+# its complete payload lets JSON/XML/CSV validation remain deterministic rather
+# than parsing a truncated preview at the upper bound.
+PREVIEW_LIMIT = 10 * 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +64,10 @@ class UploadValidationWorker:
         destination_namespace = (
             "knowledge-eligible"
             if (
-                manifest.declared_mime == "application/pdf"
+                (
+                    manifest.declared_mime == "application/pdf"
+                    or manifest.content_profile is UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1
+                )
                 and manifest.classification <= Classification.INTERNAL
             )
             else "accepted"
@@ -202,6 +212,12 @@ class UploadValidationWorker:
 
     @staticmethod
     def _validate_format(manifest: UploadManifest, inspection: Inspection) -> dict[str, object]:
+        validate_upload_profile(
+            content_profile=manifest.content_profile,
+            display_name=manifest.display_name,
+            content_type=manifest.declared_mime,
+            size_bytes=inspection.size_bytes,
+        )
         suffix = PurePath(manifest.display_name).suffix.lower()
         mime = manifest.declared_mime
         expected_suffixes = {
@@ -228,8 +244,8 @@ class UploadValidationWorker:
                 "Filename extension does not match the declared content type.",
                 details={"code": "EXTENSION_MISMATCH"},
             )
-        validator_version = (
-            (
+        if manifest.content_profile is UploadContentProfile.FORMAT_ONLY_V1:
+            validator_version = (
                 "integrity-openxml-v1"
                 if mime
                 in {
@@ -239,14 +255,25 @@ class UploadValidationWorker:
                 }
                 else "integrity-format-v1"
             )
-            if manifest.content_profile is UploadContentProfile.FORMAT_ONLY_V1
-            else typed_profile_definition(manifest.content_profile).acceptance_validator_version
-        )
+            profile_evidence: dict[str, object] = {}
+        elif manifest.content_profile is UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1:
+            validator_version = KNOWLEDGE_STUDIO_DOCUMENT_V1.acceptance_validator_version
+            profile_evidence = {
+                "content_profile": KNOWLEDGE_STUDIO_DOCUMENT_V1.content_profile.value,
+                "parser_version": KNOWLEDGE_STUDIO_DOCUMENT_V1.parser_version,
+                "profile_configuration_hash": (KNOWLEDGE_STUDIO_DOCUMENT_V1.configuration_hash),
+            }
+        else:
+            validator_version = typed_profile_definition(
+                manifest.content_profile
+            ).acceptance_validator_version
+            profile_evidence = {}
         base: dict[str, object] = {
             "validator_version": validator_version,
             "size_bytes": inspection.size_bytes,
             "sha256": inspection.sha256,
             "content_type": mime,
+            **profile_evidence,
         }
         if mime == "application/pdf":
             if not inspection.prefix.startswith(b"%PDF-") or b"%%EOF" not in inspection.tail:
@@ -358,7 +385,7 @@ class UploadValidationWorker:
     def _validate_json(inspection: Inspection) -> dict[str, object]:
         if inspection.size_bytes > PREVIEW_LIMIT:
             raise ValidationError(
-                "JSON above 8 MiB must be converted to a streaming tabular format.",
+                "JSON above 10 MiB must be converted to a streaming tabular format.",
                 details={"code": "JSON_SIZE_POLICY"},
             )
         try:

@@ -227,7 +227,8 @@ class ObjectManifestModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixi
         CheckConstraint(
             "content_profile IN ('FORMAT_ONLY_V1', "
             "'DATASET_DESCRIPTION_CSV_V1', 'DATASET_DESCRIPTION_XLSX_V1', "
-            "'CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1')",
+            "'CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1', "
+            "'KNOWLEDGE_STUDIO_DOCUMENT_V1')",
             name="content_profile_allowlist",
         ),
         {"schema": "integration"},

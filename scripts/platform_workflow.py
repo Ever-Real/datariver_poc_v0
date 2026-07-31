@@ -36,6 +36,7 @@ BACKEND_RUNTIME_SERVICES = (
     "governance-apply-worker",
     "catalog-export-worker",
     "knowledge-source-worker",
+    "knowledge-tbox-proposal-worker",
     "retention-scheduler",
     "retention-archive-worker",
     "quality-worker",
@@ -45,6 +46,7 @@ RUNTIME_SERVICES = (
     *DEFAULT_RUNTIME_SERVICES,
     "catalog-export-worker",
     "knowledge-source-worker",
+    "knowledge-tbox-proposal-worker",
     "retention-scheduler",
     "retention-archive-worker",
     "quality-worker",
@@ -744,9 +746,7 @@ def classify_environment_changes(
             services.add("api")
         elif key in {
             "API_PROXY_READ_TIMEOUT_SECONDS",
-            "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS",
             "HOST_DEV_API_PROXY_READ_TIMEOUT_SECONDS",
-            "HOST_DEV_KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS",
         }:
             services.add("web")
         elif key in {
@@ -839,8 +839,13 @@ def classify_environment_changes(
         elif key.startswith(
             (
                 "LOCAL_OLLAMA_CHAT_",
-                "LOCAL_LLAMA_CPP_RERANKER_",
                 "INTRANET_OPENAI_COMPATIBLE_CHAT_",
+            )
+        ):
+            services.update(("api", "knowledge-tbox-proposal-worker"))
+        elif key.startswith(
+            (
+                "LOCAL_LLAMA_CPP_RERANKER_",
                 "INTRANET_RERANKER_",
             )
         ):
@@ -849,7 +854,7 @@ def classify_environment_changes(
             "LOCAL_INFERENCE_SOURCE_HOST_ENABLED",
             "LOCAL_INFERENCE_ALLOWED_HOSTS",
         }:
-            services.update(("api", "knowledge-source-worker"))
+            services.update(("api", "knowledge-source-worker", "knowledge-tbox-proposal-worker"))
         elif key.startswith(
             (
                 "LOCAL_OLLAMA_EMBEDDING_",
@@ -861,7 +866,7 @@ def classify_environment_changes(
             "INTRANET_OPENAI_COMPATIBLE_ALLOWED_HOSTS",
             "INTRANET_OPENAI_COMPATIBLE_APPROVED_PUBLIC_HOSTS",
         }:
-            services.update(("api", "knowledge-source-worker"))
+            services.update(("api", "knowledge-source-worker", "knowledge-tbox-proposal-worker"))
         elif key in {
             "SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS",
             "SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS",
@@ -869,6 +874,10 @@ def classify_environment_changes(
             services.add("api")
         elif key == "SYSTEM_CONFIGURATION_SECRET_ROOT":
             services.update(BACKEND_RUNTIME_SERVICES)
+        elif key.startswith("KNOWLEDGE_STUDIO_PROPOSAL_") or key.startswith(
+            "KNOWLEDGE_PROPOSAL_DATABASE_"
+        ):
+            services.update(("api", "knowledge-tbox-proposal-worker"))
         elif key.startswith(("NEO4J_", "KNOWLEDGE_")):
             services.update(("api", "knowledge-source-worker"))
             restart_graph = key in {
@@ -889,7 +898,7 @@ def classify_environment_changes(
         elif key.startswith("S3_EXPORT_"):
             services.add("catalog-export-worker")
         elif key.startswith("S3_KNOWLEDGE_"):
-            services.add("knowledge-source-worker")
+            services.update(("knowledge-source-worker", "knowledge-tbox-proposal-worker"))
         elif key.startswith("S3_"):
             services.update(BACKEND_RUNTIME_SERVICES)
         elif key in {"REDIS_CACHE_PORT", "REDIS_DELIVERY_PORT", "REDIS_IMAGE"}:

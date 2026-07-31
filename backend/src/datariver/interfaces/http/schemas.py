@@ -1672,6 +1672,7 @@ class UploadResponse(BaseModel):
         "CATALOG_METADATA_ROWS_XLSX_V1",
         "DATASET_DESCRIPTION_CSV_V1",
         "DATASET_DESCRIPTION_XLSX_V1",
+        "KNOWLEDGE_STUDIO_DOCUMENT_V1",
     ]
     expires_at: datetime
     version: int
@@ -2389,6 +2390,120 @@ class KnowledgeStudioTBoxCatalogProposalRequest(BaseModel):
     selected_field_paths: list[str] = Field(min_length=1, max_length=100)
     target_block_id: UUID | None = None
     mode: Literal["MERGE_INTO_CURRENT", "APPEND_LAYER"]
+
+
+class KnowledgeStudioSourceUploadInitiateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    display_name: str = Field(min_length=1, max_length=255)
+    size_bytes: int = Field(ge=1, le=10 * 1024 * 1024)
+    content_type: Literal[
+        "application/pdf",
+        "text/csv",
+        "text/plain",
+        "application/json",
+        "application/xml",
+        "text/html",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    ]
+    sha256: str = Field(pattern="^[0-9a-f]{64}$")
+
+    @field_validator("display_name")
+    @classmethod
+    def safe_display_name(cls, value: str) -> str:
+        cleaned = value.strip().replace("\\", "/").split("/")[-1]
+        if not cleaned or any(ord(character) < 32 for character in cleaned):
+            raise ValueError("The Knowledge Studio source filename is invalid.")
+        return cleaned
+
+
+class KnowledgeStudioSourceUploadPartResponse(BaseModel):
+    url: str
+    expires_seconds: int = Field(ge=60, le=900)
+
+
+class KnowledgeStudioTBoxProposalJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    input_kind: Literal["DOCUMENT_SCHEMA", "CATALOG_SCHEMA"]
+    mode: Literal["MERGE_INTO_CURRENT", "APPEND_LAYER"]
+    target_block_id: UUID | None = None
+    source_upload_id: UUID | None = None
+    source_manifest_version: int | None = Field(default=None, ge=1)
+    asset_id: UUID | None = None
+    selected_field_paths: list[str] = Field(default_factory=list, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_source_shape(self) -> KnowledgeStudioTBoxProposalJobRequest:
+        if self.input_kind == "DOCUMENT_SCHEMA":
+            if (
+                self.source_upload_id is None
+                or self.source_manifest_version is None
+                or self.asset_id is not None
+                or self.selected_field_paths
+            ):
+                raise ValueError("A document Proposal job requires one accepted upload pin.")
+        elif (
+            self.asset_id is None
+            or not self.selected_field_paths
+            or self.source_upload_id is not None
+            or self.source_manifest_version is not None
+        ):
+            raise ValueError("A Catalog Proposal job requires one governed Catalog source.")
+        if (self.mode == "MERGE_INTO_CURRENT") != (self.target_block_id is not None):
+            raise ValueError("The Proposal mode and target block do not match.")
+        return self
+
+
+class KnowledgeStudioTBoxProposalJobCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=1_000)
+
+
+class KnowledgeStudioTBoxProposalJobResponse(BaseModel):
+    id: UUID
+    draft_id: UUID
+    input_kind: Literal["DOCUMENT_SCHEMA", "CATALOG_SCHEMA"]
+    mode: Literal["MERGE_INTO_CURRENT", "APPEND_LAYER"]
+    target_block_id: UUID | None
+    state: Literal[
+        "QUEUED",
+        "RUNNING",
+        "RETRY_WAIT",
+        "CANCEL_REQUESTED",
+        "SUCCEEDED",
+        "FAILED",
+        "STALE",
+        "CANCELLED",
+    ]
+    stage: Literal[
+        "QUEUED",
+        "SOURCE_VALIDATION",
+        "PARSING",
+        "INFERENCE",
+        "VALIDATING",
+        "FINALIZING",
+        "COMPLETED",
+    ]
+    progress_percent: int = Field(ge=0, le=100)
+    attempt_count: int = Field(ge=0)
+    maximum_attempts: int = Field(ge=1, le=20)
+    last_failure_code: str | None
+    version: int = Field(ge=1)
+    created_at: datetime
+    updated_at: datetime
+    completed_at: datetime | None
+    result_proposal_id: UUID | None
+    result_evidence_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
+    supersedes_job_id: UUID | None
+
+
+class KnowledgeStudioTBoxProposalJobListResponse(BaseModel):
+    items: list[KnowledgeStudioTBoxProposalJobResponse]
+    page: PageMeta
 
 
 class KnowledgeStudioTBoxProposalConflictResponse(BaseModel):

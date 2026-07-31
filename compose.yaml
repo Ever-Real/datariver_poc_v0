@@ -31,6 +31,7 @@ services:
       - postgres_upload_password
       - postgres_governance_password
       - postgres_knowledge_password
+      - postgres_knowledge_proposal_password
       - postgres_knowledge_ingestion_password
       - postgres_quality_password
       - postgres_governance_document_password
@@ -326,6 +327,33 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  knowledge-tbox-proposal-worker:
+    <<: *backend
+    profiles: ["knowledge-studio-proposal"]
+    secrets:
+      - postgres_knowledge_proposal_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
+      - s3_knowledge_access_key
+      - s3_knowledge_secret_key
+      - intranet_llm_chat_api_key
+    command: ["/app/.venv/bin/python", "-m", "datariver.workers.knowledge_tbox_proposal"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+      - connectors
+    volumes:
+      - knowledge-proposal-spool:/var/spool/datariver-knowledge-proposal
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+
   knowledge-studio-ingestion-worker:
     <<: *backend
     profiles: ["knowledge-studio-ingestion"]
@@ -439,7 +467,6 @@ services:
       DATAHUB_EMBED_BASE_URL: ${DATAHUB_EMBED_BASE_URL:-}
       GRAFANA_EMBED_BASE_URL: ${GRAFANA_EMBED_BASE_URL:-}
       API_PROXY_READ_TIMEOUT_SECONDS: ${API_PROXY_READ_TIMEOUT_SECONDS:-30}
-      KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS: ${KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS:-135}
     depends_on:
       api:
         condition: service_healthy
@@ -473,6 +500,7 @@ networks:
 volumes:
   postgres-data:
   knowledge-spool:
+  knowledge-proposal-spool:
 
 secrets:
   postgres_password:
@@ -487,6 +515,8 @@ secrets:
     file: ./secrets/postgres_governance_password
   postgres_knowledge_password:
     file: ./secrets/postgres_knowledge_password
+  postgres_knowledge_proposal_password:
+    file: ./secrets/postgres_knowledge_proposal_password
   postgres_knowledge_ingestion_password:
     file: ./secrets/postgres_knowledge_ingestion_password
   postgres_quality_password:

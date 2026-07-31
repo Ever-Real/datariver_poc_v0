@@ -7,6 +7,50 @@ from datariver.domain.registration import UploadContentProfile
 
 
 @dataclass(frozen=True, slots=True)
+class AcceptedUploadMediaType:
+    content_type: str
+    filename_suffixes: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class MultiFormatUploadProfileDefinition:
+    content_profile: UploadContentProfile
+    accepted_media_types: tuple[AcceptedUploadMediaType, ...]
+    maximum_file_bytes: int
+    acceptance_validator_version: str
+    parser_version: str
+    schema_version: str
+    profile_contract: str
+
+    @property
+    def configuration_hash(self) -> str:
+        return canonical_json_hash(
+            {
+                "acceptance_validator_version": self.acceptance_validator_version,
+                "accepted_media_types": [
+                    {
+                        "content_type": media.content_type,
+                        "filename_suffixes": list(media.filename_suffixes),
+                    }
+                    for media in self.accepted_media_types
+                ],
+                "content_profile": self.content_profile.value,
+                "maximum_file_bytes": self.maximum_file_bytes,
+                "parser_version": self.parser_version,
+                "profile_contract": self.profile_contract,
+                "schema_version": self.schema_version,
+            }
+        )
+
+    def accepts(self, *, content_type: str, display_name: str) -> bool:
+        lower_name = display_name.lower()
+        return any(
+            media.content_type == content_type and lower_name.endswith(media.filename_suffixes)
+            for media in self.accepted_media_types
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class TypedUploadProfileDefinition:
     content_profile: UploadContentProfile
     content_type: str
@@ -171,6 +215,35 @@ CATALOG_METADATA_ROWS_XLSX_V1 = TypedUploadProfileDefinition(
     profile_contract="catalog-metadata-rows-v1",
 )
 
+KNOWLEDGE_STUDIO_DOCUMENT_V1 = MultiFormatUploadProfileDefinition(
+    content_profile=UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1,
+    accepted_media_types=(
+        AcceptedUploadMediaType("application/pdf", (".pdf",)),
+        AcceptedUploadMediaType("text/csv", (".csv",)),
+        AcceptedUploadMediaType("text/plain", (".txt",)),
+        AcceptedUploadMediaType("application/json", (".json",)),
+        AcceptedUploadMediaType("application/xml", (".xml",)),
+        AcceptedUploadMediaType("text/html", (".html", ".htm")),
+        AcceptedUploadMediaType(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            (".docx",),
+        ),
+        AcceptedUploadMediaType(
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            (".xlsx",),
+        ),
+        AcceptedUploadMediaType(
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            (".pptx",),
+        ),
+    ),
+    maximum_file_bytes=10 * 1024 * 1024,
+    acceptance_validator_version="knowledge-studio-document-integrity-v1",
+    parser_version="knowledge-studio-document-parser-v1",
+    schema_version="knowledge-studio-document-profile-v1",
+    profile_contract="knowledge-studio-document-v1",
+)
+
 TYPED_PROFILE_DEFINITIONS = {
     definition.content_profile: definition
     for definition in (
@@ -199,6 +272,20 @@ def validate_upload_profile(
     size_bytes: int,
 ) -> None:
     if content_profile is UploadContentProfile.FORMAT_ONLY_V1:
+        return
+    if content_profile is UploadContentProfile.KNOWLEDGE_STUDIO_DOCUMENT_V1:
+        knowledge_definition = KNOWLEDGE_STUDIO_DOCUMENT_V1
+        if not knowledge_definition.accepts(
+            content_type=content_type,
+            display_name=display_name,
+        ):
+            raise ValidationError(
+                "The selected content profile has an invalid content type or filename extension."
+            )
+        if size_bytes > knowledge_definition.maximum_file_bytes:
+            raise ValidationError(
+                "The selected content profile exceeds its bounded file-size limit."
+            )
         return
     definition = typed_profile_definition(content_profile)
     if content_type != definition.content_type:

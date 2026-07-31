@@ -55,6 +55,29 @@ reason; `POST .../{job_id}/retry` requires the same headers and no request body.
 recheck the current human authorization for both commands, so a stale UI capability cannot mutate
 the job.
 
+Knowledge Studio document and Catalog schema inference use the same durable Proposal-job control
+plane. A document first follows Draft-scoped
+`POST /knowledge/studio/drafts/{draft_id}/source-uploads`, part-presign, completion and polling
+resources. The server fixes the `KNOWLEDGE_STUDIO_DOCUMENT_V1` profile and Draft classification;
+the browser cannot select a bucket, object key, profile or provider. Source bytes travel directly
+to the presigned private object endpoint, so neither Nginx nor the API buffers the document body.
+
+`POST /knowledge/studio/drafts/{draft_id}/tbox/proposal-jobs` accepts either one exact accepted
+manifest/version pin or one authorization-pruned Catalog Asset/field selection and returns `202`.
+It requires the exact Draft ETag and an `Idempotency-Key`. `GET` collection/detail endpoints are
+owner-scoped resumable polling resources; `POST .../{job_id}/cancel` and
+`POST .../{job_id}/retry` are job-version fenced and idempotent. Every route re-authorizes the
+current mutable T-Box Draft and `kg.edit` policy. States are `QUEUED`, `RUNNING`, `RETRY_WAIT`,
+`CANCEL_REQUESTED`, `SUCCEEDED`, `FAILED`, `STALE` and `CANCELLED`; stages are
+`QUEUED`, `SOURCE_VALIDATION`, `PARSING`, `INFERENCE`, `VALIDATING`, `FINALIZING` and
+`COMPLETED`. A successful job returns only the exact READY Proposal ID/hash. It does not apply the
+Proposal, mutate the Draft, publish a Release or write Neo4j.
+
+The previous synchronous `.../tbox/document-proposals` and `.../tbox/catalog-proposals` commands
+return `410`; interactive bounded assistant prompts and exact Asset-Release attachment remain
+separate typed Proposal commands. Job responses and events contain no document text, prompt,
+provider body, bucket, object key, presigned URL or credential.
+
 ## Conventions
 
 - Base path `/api/v1`; JSON UTF-8; RFC 3339 UTC timestamps.

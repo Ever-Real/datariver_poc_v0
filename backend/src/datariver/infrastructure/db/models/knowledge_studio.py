@@ -686,6 +686,430 @@ class TBoxProposalModel(
     rejected_at: Mapped[datetime | None]
 
 
+class KnowledgeStudioProposalJobModel(
+    Base,
+    UuidPrimaryKeyMixin,
+    TimestampMixin,
+    VersionMixin,
+):
+    """Pinned, owner-scoped durable T-Box Proposal request."""
+
+    __tablename__ = "tbox_proposal_jobs"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "draft_id", "id"),
+        CheckConstraint(
+            "input_kind IN ('DOCUMENT_SCHEMA', 'CATALOG_SCHEMA')",
+            name="input_kind_vocabulary",
+        ),
+        CheckConstraint(
+            "mode IN ('MERGE_INTO_CURRENT', 'APPEND_LAYER')",
+            name="mode_vocabulary",
+        ),
+        CheckConstraint(
+            "(mode = 'MERGE_INTO_CURRENT' AND target_block_id IS NOT NULL) OR "
+            "(mode = 'APPEND_LAYER' AND target_block_id IS NULL)",
+            name="mode_target_shape",
+        ),
+        CheckConstraint(
+            "state IN ('QUEUED', 'RUNNING', 'RETRY_WAIT', 'CANCEL_REQUESTED', "
+            "'SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint(
+            "stage IN ('QUEUED', 'SOURCE_VALIDATION', 'PARSING', 'INFERENCE', "
+            "'VALIDATING', 'FINALIZING', 'COMPLETED')",
+            name="stage_vocabulary",
+        ),
+        CheckConstraint(
+            "progress_percent BETWEEN 0 AND 100",
+            name="progress_range",
+        ),
+        CheckConstraint(
+            "base_draft_version >= 1 AND (manifest_version IS NULL OR manifest_version >= 1)",
+            name="source_versions_positive",
+        ),
+        CheckConstraint(
+            "source_size_bytes IS NULL OR source_size_bytes BETWEEN 1 AND 10485760",
+            name="source_size_range",
+        ),
+        CheckConstraint(
+            "source_classification IS NULL OR source_classification BETWEEN 0 AND 1",
+            name="source_classification_range",
+        ),
+        CheckConstraint(
+            "attempt_count >= 0 AND maximum_attempts BETWEEN 1 AND 20 "
+            "AND attempt_count <= maximum_attempts "
+            "AND lease_epoch >= attempt_count AND version >= 1",
+            name="positive_counters",
+        ),
+        CheckConstraint(
+            "request_hash ~ '^[0-9a-f]{64}$' "
+            "AND requester_authorization_hash ~ '^[0-9a-f]{64}$' "
+            "AND base_tbox_hash ~ '^[0-9a-f]{64}$' "
+            "AND parser_config_hash ~ '^[0-9a-f]{64}$' "
+            "AND schema_binding_hash ~ '^[0-9a-f]{64}$' "
+            "AND source_pin_hash ~ '^[0-9a-f]{64}$' "
+            "AND pin_hash ~ '^[0-9a-f]{64}$'",
+            name="evidence_hashes",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(schema_binding_document) = 'object' "
+            "AND octet_length(schema_binding_document::text) <= 8192",
+            name="schema_binding_bounded",
+        ),
+        CheckConstraint(
+            "(input_kind = 'DOCUMENT_SCHEMA' "
+            "AND manifest_id IS NOT NULL AND manifest_version IS NOT NULL "
+            "AND source_content_hash ~ '^[0-9a-f]{64}$' "
+            "AND source_media_type IS NOT NULL AND source_size_bytes IS NOT NULL "
+            "AND source_classification IS NOT NULL AND source_content_profile IS NOT NULL "
+            "AND source_validation_evidence_hash ~ '^[0-9a-f]{64}$' "
+            "AND source_filename IS NOT NULL "
+            "AND catalog_asset_id IS NULL "
+            "AND catalog_source_document IS NULL AND catalog_source_hash IS NULL) OR "
+            "(input_kind = 'CATALOG_SCHEMA' "
+            "AND manifest_id IS NULL AND manifest_version IS NULL "
+            "AND source_content_hash IS NULL AND source_media_type IS NULL "
+            "AND source_size_bytes IS NULL AND source_content_profile IS NULL "
+            "AND source_validation_evidence_hash IS NULL AND source_filename IS NULL "
+            "AND source_classification IS NOT NULL AND catalog_asset_id IS NOT NULL "
+            "AND jsonb_typeof(catalog_source_document) = 'object' "
+            "AND octet_length(catalog_source_document::text) <= 65536 "
+            "AND catalog_source_hash ~ '^[0-9a-f]{64}$')",
+            name="source_pin_shape",
+        ),
+        CheckConstraint(
+            "lease_token_hash IS NULL OR lease_token_hash ~ '^[0-9a-f]{64}$'",
+            name="lease_token_hash",
+        ),
+        CheckConstraint(
+            "(state IN ('RUNNING', 'CANCEL_REQUESTED') "
+            "AND current_attempt_id IS NOT NULL AND lease_token_hash IS NOT NULL "
+            "AND lease_owner_fingerprint IS NOT NULL AND lease_started_at IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL) OR "
+            "(state NOT IN ('RUNNING', 'CANCEL_REQUESTED') "
+            "AND current_attempt_id IS NULL AND lease_token_hash IS NULL "
+            "AND lease_owner_fingerprint IS NULL AND lease_started_at IS NULL "
+            "AND lease_expires_at IS NULL)",
+            name="lease_shape",
+        ),
+        CheckConstraint(
+            "((state = 'SUCCEEDED') AND result_proposal_id IS NOT NULL "
+            "AND result_evidence_hash ~ '^[0-9a-f]{64}$' "
+            "AND completed_at IS NOT NULL AND last_failure_code IS NULL) OR "
+            "((state <> 'SUCCEEDED') AND result_proposal_id IS NULL "
+            "AND result_evidence_hash IS NULL)",
+            name="result_shape",
+        ),
+        CheckConstraint(
+            "((state IN ('FAILED', 'STALE')) AND last_failure_code IS NOT NULL "
+            "AND completed_at IS NOT NULL) OR "
+            "(state = 'RETRY_WAIT' AND last_failure_code IS NOT NULL "
+            "AND completed_at IS NULL) OR "
+            "((state NOT IN ('FAILED', 'STALE', 'RETRY_WAIT')) "
+            "AND last_failure_code IS NULL)",
+            name="failure_shape",
+        ),
+        CheckConstraint(
+            "((state IN ('CANCEL_REQUESTED', 'CANCELLED')) "
+            "AND cancel_requested_by IS NOT NULL AND cancel_requested_at IS NOT NULL "
+            "AND cancel_reason IS NOT NULL) OR "
+            "((state NOT IN ('CANCEL_REQUESTED', 'CANCELLED')) "
+            "AND cancel_requested_by IS NULL AND cancel_requested_at IS NULL "
+            "AND cancel_reason IS NULL)",
+            name="cancel_shape",
+        ),
+        CheckConstraint(
+            "(state IN ('SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')) = (completed_at IS NOT NULL)",
+            name="terminal_completion",
+        ),
+        CheckConstraint(
+            "(state IN ('SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')) = (stage = 'COMPLETED')",
+            name="terminal_stage",
+        ),
+        CheckConstraint(
+            "(state IN ('QUEUED', 'RETRY_WAIT') AND progress_percent = 0) OR "
+            "(state IN ('RUNNING', 'CANCEL_REQUESTED') "
+            "AND progress_percent BETWEEN 1 AND 99) OR "
+            "(state = 'SUCCEEDED' AND progress_percent = 100) OR "
+            "(state IN ('FAILED', 'STALE', 'CANCELLED') "
+            "AND progress_percent BETWEEN 0 AND 99)",
+            name="state_progress",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id"),
+            ("knowledge.studio_drafts.workspace_id", "knowledge.studio_drafts.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id", "target_block_id"),
+            (
+                "knowledge.tbox_draft_blocks.workspace_id",
+                "knowledge.tbox_draft_blocks.draft_id",
+                "knowledge.tbox_draft_blocks.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "requested_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "manifest_id"),
+            ("integration.object_manifests.workspace_id", "integration.object_manifests.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "catalog_asset_id"),
+            ("catalog.assets_projection.workspace_id", "catalog.assets_projection.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "cancel_requested_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "draft_id", "result_proposal_id"),
+            (
+                "knowledge.tbox_proposals.workspace_id",
+                "knowledge.tbox_proposals.draft_id",
+                "knowledge.tbox_proposals.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "supersedes_job_id"),
+            ("knowledge.tbox_proposal_jobs.workspace_id", "knowledge.tbox_proposal_jobs.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "id", "current_attempt_id"),
+            (
+                "knowledge.tbox_proposal_attempts.workspace_id",
+                "knowledge.tbox_proposal_attempts.job_id",
+                "knowledge.tbox_proposal_attempts.id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        Index(
+            "ix_tbox_proposal_jobs_owner_state",
+            "workspace_id",
+            "draft_id",
+            "requested_by",
+            "state",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+        Index(
+            "ix_tbox_proposal_jobs_claim",
+            "workspace_id",
+            "next_attempt_at",
+            "created_at",
+            "id",
+            postgresql_where=text("state IN ('QUEUED', 'RETRY_WAIT')"),
+        ),
+        Index(
+            "ix_tbox_proposal_jobs_expired",
+            "workspace_id",
+            "lease_expires_at",
+            "id",
+            postgresql_where=text("state IN ('RUNNING', 'CANCEL_REQUESTED')"),
+        ),
+        Index(
+            "ux_tbox_proposal_jobs_one_successor",
+            "workspace_id",
+            "supersedes_job_id",
+            unique=True,
+            postgresql_where=text("supersedes_job_id IS NOT NULL"),
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    target_block_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    requested_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    input_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    base_draft_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    base_tbox_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    requester_authorization_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    parser_config_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    schema_binding_document: Mapped[dict[str, object]] = mapped_column(
+        JSON_DOCUMENT,
+        nullable=False,
+    )
+    schema_binding_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_pin_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    pin_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    prepared_at: Mapped[datetime] = mapped_column(nullable=False)
+    manifest_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    manifest_version: Mapped[int | None] = mapped_column(Integer)
+    source_content_hash: Mapped[str | None] = mapped_column(String(64))
+    source_media_type: Mapped[str | None] = mapped_column(String(255))
+    source_size_bytes: Mapped[int | None] = mapped_column(Integer)
+    source_classification: Mapped[int | None] = mapped_column(Integer)
+    source_content_profile: Mapped[str | None] = mapped_column(String(100))
+    source_validation_evidence_hash: Mapped[str | None] = mapped_column(String(64))
+    source_filename: Mapped[str | None] = mapped_column(String(255))
+    catalog_asset_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    catalog_source_document: Mapped[dict[str, object] | None] = mapped_column(JSON_DOCUMENT)
+    catalog_source_hash: Mapped[str | None] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    progress_percent: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    maximum_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    next_attempt_at: Mapped[datetime] = mapped_column(nullable=False)
+    current_attempt_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    lease_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    lease_token_hash: Mapped[str | None] = mapped_column(String(64))
+    lease_owner_fingerprint: Mapped[str | None] = mapped_column(String(255))
+    lease_started_at: Mapped[datetime | None]
+    lease_expires_at: Mapped[datetime | None]
+    cancel_requested_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    cancel_requested_at: Mapped[datetime | None]
+    cancel_reason: Mapped[str | None] = mapped_column(Text)
+    result_proposal_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    result_evidence_hash: Mapped[str | None] = mapped_column(String(64))
+    last_failure_code: Mapped[str | None] = mapped_column(String(100))
+    completed_at: Mapped[datetime | None]
+    supersedes_job_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+
+
+class KnowledgeStudioProposalAttemptModel(Base, UuidPrimaryKeyMixin):
+    """Append-only worker attempt carrying a lease-token hash, never the raw token."""
+
+    __tablename__ = "tbox_proposal_attempts"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "job_id", "id"),
+        UniqueConstraint("workspace_id", "job_id", "attempt_no"),
+        UniqueConstraint("workspace_id", "job_id", "lease_epoch"),
+        CheckConstraint(
+            "state IN ('RUNNING', 'SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED', 'SUPERSEDED')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint(
+            "stage IN ('SOURCE_VALIDATION', 'PARSING', 'INFERENCE', 'VALIDATING', "
+            "'FINALIZING', 'COMPLETED')",
+            name="stage_vocabulary",
+        ),
+        CheckConstraint(
+            "attempt_no >= 1 AND lease_epoch >= 1 AND lease_token_hash ~ '^[0-9a-f]{64}$'",
+            name="claim_shape",
+        ),
+        CheckConstraint(
+            "output_hash IS NULL OR output_hash ~ '^[0-9a-f]{64}$'",
+            name="output_hash",
+        ),
+        CheckConstraint(
+            "(state = 'RUNNING' AND finished_at IS NULL) OR "
+            "(state <> 'RUNNING' AND finished_at IS NOT NULL)",
+            name="finished_shape",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id"),
+            ("knowledge.tbox_proposal_jobs.workspace_id", "knowledge.tbox_proposal_jobs.id"),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_tbox_proposal_attempts_job",
+            "workspace_id",
+            "job_id",
+            "attempt_no",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    lease_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    worker_fingerprint: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    retryable: Mapped[bool | None] = mapped_column(Boolean)
+    output_hash: Mapped[str | None] = mapped_column(String(64))
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    finished_at: Mapped[datetime | None]
+
+
+class KnowledgeStudioProposalEventModel(Base):
+    """Append-only bounded transition evidence for one Proposal job."""
+
+    __tablename__ = "tbox_proposal_events"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "job_id", "sequence"),
+        CheckConstraint("sequence >= 1", name="sequence_positive"),
+        CheckConstraint(
+            "state IN ('QUEUED', 'RUNNING', 'RETRY_WAIT', 'CANCEL_REQUESTED', "
+            "'SUCCEEDED', 'FAILED', 'STALE', 'CANCELLED')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint(
+            "stage IN ('QUEUED', 'SOURCE_VALIDATION', 'PARSING', 'INFERENCE', "
+            "'VALIDATING', 'FINALIZING', 'COMPLETED')",
+            name="stage_vocabulary",
+        ),
+        CheckConstraint(
+            "actor_kind IN ('HUMAN', 'SERVICE') "
+            "AND char_length(actor_ref) BETWEEN 1 AND 300 "
+            "AND evidence_hash ~ '^[0-9a-f]{64}$'",
+            name="evidence_shape",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(details_document) = 'object' "
+            "AND octet_length(details_document::text) <= 8192",
+            name="details_document_bounded",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id"),
+            ("knowledge.tbox_proposal_jobs.workspace_id", "knowledge.tbox_proposal_jobs.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id", "attempt_id"),
+            (
+                "knowledge.tbox_proposal_attempts.workspace_id",
+                "knowledge.tbox_proposal_attempts.job_id",
+                "knowledge.tbox_proposal_attempts.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_tbox_proposal_events_job",
+            "workspace_id",
+            "job_id",
+            "sequence",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    sequence: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    attempt_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_ref: Mapped[str] = mapped_column(String(300), nullable=False)
+    reason_code: Mapped[str | None] = mapped_column(String(100))
+    details_document: Mapped[dict[str, object]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(nullable=False)
+
+
 class KnowledgeStudioIngestionJobModel(
     Base,
     UuidPrimaryKeyMixin,

@@ -14,19 +14,6 @@ if [ "$api_proxy_read_timeout_seconds" -lt 1 ] || [ "$api_proxy_read_timeout_sec
 fi
 export API_PROXY_READ_TIMEOUT_SECONDS="$api_proxy_read_timeout_seconds"
 
-knowledge_document_timeout_seconds=${KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS:-135}
-case "$knowledge_document_timeout_seconds" in
-  ''|*[!0-9]*)
-    echo "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS must be an integer between 1 and 900." >&2
-    exit 2
-    ;;
-esac
-if [ "$knowledge_document_timeout_seconds" -lt 1 ] || [ "$knowledge_document_timeout_seconds" -gt 900 ]; then
-  echo "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS must be an integer between 1 and 900." >&2
-  exit 2
-fi
-export KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS="$knowledge_document_timeout_seconds"
-
 S3_PUBLIC_ORIGIN=${S3_PUBLIC_ORIGIN:-}
 OIDC_PUBLIC_ORIGIN=${OIDC_PUBLIC_ORIGIN:-}
 DATAHUB_EMBED_BASE_URL=${DATAHUB_EMBED_BASE_URL:-}

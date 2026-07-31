@@ -39,6 +39,7 @@ class Action(StrEnum):
     KG_PUBLISH = "kg.publish"
     KG_EXPORT = "kg.export"
     KG_INGEST_EXECUTE = "kg.ingestion.execute"
+    KG_PROPOSAL_EXECUTE = "kg.proposal.execute"
     CHAT_QUERY = "chat.query"
     ATTACHMENT_DOWNLOAD = "attachment.download"
     SHARING_PUBLISH = "sharing.publish"
@@ -145,6 +146,7 @@ HUMAN_GOVERNANCE_ACTIONS = frozenset(
 
 SERVICE_ONLY_ACTION_GROUPS: dict[Action, str] = {
     Action.KG_INGEST_EXECUTE: "knowledge-ingestion-workers",
+    Action.KG_PROPOSAL_EXECUTE: "knowledge-proposal-workers",
     Action.QUALITY_DISPATCH: "quality-dispatchers",
     Action.QUALITY_EXECUTE: "quality-workers",
     Action.CATALOG_PROFILE_COLLECT: "catalog-profile-collectors",

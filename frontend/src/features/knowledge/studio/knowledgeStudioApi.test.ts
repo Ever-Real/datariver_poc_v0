@@ -3,22 +3,30 @@ import { ApiClient } from '../../../api/client'
 import {
   advanceKnowledgeStudioDraft,
   autosaveKnowledgeStudioDraft,
+  cancelKnowledgeStudioTBoxProposalJob,
   cancelKnowledgeStudioIngestion,
+  completeKnowledgeStudioSourceUpload,
   createKnowledgeStudioDraft,
   createKnowledgeStudioEditDraft,
   createKnowledgeStudioTBoxAssetReleaseProposal,
-  createKnowledgeStudioTBoxCatalogProposal,
+  createKnowledgeStudioTBoxProposalJob,
   createKnowledgeStudioManagedDomain,
   discardKnowledgeStudioDraft,
+  getKnowledgeStudioSourceUpload,
+  getKnowledgeStudioTBoxProposalJob,
   getResumableKnowledgeStudioDraft,
+  initiateKnowledgeStudioSourceUpload,
+  listKnowledgeStudioTBoxProposalJobs,
   listKnowledgeStudioDomains,
   preflightKnowledgeStudioABox,
+  presignKnowledgeStudioSourceUploadPart,
   previewKnowledgeStudioBinding,
   publishKnowledgeStudioDraft,
+  retryKnowledgeStudioTBoxProposalJob,
   retryKnowledgeStudioIngestion,
   searchKnowledgeStudioTBoxAssetReleases,
   submitKnowledgeStudioReview,
-  uploadKnowledgeStudioTBoxDocumentProposal,
+  uploadKnowledgeStudioSourceUploadPart,
   type KnowledgeStudioBasicInformation,
 } from './knowledgeStudioApi'
 
@@ -26,6 +34,12 @@ function requestUrl(input: RequestInfo | URL | undefined): string {
   if (!input) return ''
   if (typeof input === 'string') return input
   return input instanceof URL ? input.toString() : input.url
+}
+
+function jsonResponse(value: unknown, etag?: string, status = 200): Response {
+  const headers = new Headers({ 'Content-Type': 'application/json' })
+  if (etag) headers.set('ETag', etag)
+  return new Response(JSON.stringify(value), { status, headers })
 }
 
 const payload: KnowledgeStudioBasicInformation = {
@@ -162,61 +176,198 @@ describe('Knowledge Studio API', () => {
     ).rejects.toThrow(/ETag/)
   })
 
-  it('uploads an allowlisted document as multipart with the current Draft fence', async () => {
-    const proposal = {
-      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c9',
-      draft_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
-      target_block_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3ca',
-      state: 'READY',
-      mode: 'MERGE_INTO_CURRENT',
-      merge_strategy: 'KEEP_ORIGINAL',
-      base_draft_version: 3,
-      prompt: 'bounded server prompt',
-      elements: [],
-      conflicts: [],
-      model_binding: {},
-      source_reference: { contract_version: 'KNOWLEDGE_STUDIO_DOCUMENT_SOURCE_V1' },
+  it('uses the accepted source-upload lifecycle before creating a fenced 202 Proposal job', async () => {
+    const upload = {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cb',
+      display_name: 'schema.csv',
+      state: 'INITIATED',
+      size_bytes: 12,
+      content_type: 'text/csv',
+      sha256: 'a'.repeat(64),
+      classification: 'INTERNAL',
+      content_profile: 'KNOWLEDGE_STUDIO_DOCUMENT_V1',
+      expires_at: '2026-07-31T03:00:00Z',
       version: 1,
-      created_at: '2026-07-29T01:00:00Z',
-      updated_at: '2026-07-29T01:00:00Z',
+      validation_summary: {},
+      last_error_code: null,
+      recommended_part_size_bytes: 10 * 1024 * 1024,
     }
-    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify(proposal), {
-        status: 201,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    )
+    const accepted = {
+      ...upload,
+      state: 'ACCEPTED',
+      version: 5,
+      validation_summary: { profile_configuration_hash: 'b'.repeat(64) },
+    }
+    const job = {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cc',
+      draft_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
+      input_kind: 'DOCUMENT_SCHEMA',
+      mode: 'MERGE_INTO_CURRENT',
+      target_block_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3ca',
+      state: 'QUEUED',
+      stage: 'QUEUED',
+      progress_percent: 0,
+      attempt_count: 0,
+      maximum_attempts: 4,
+      last_failure_code: null,
+      version: 1,
+      created_at: '2026-07-31T01:00:00Z',
+      updated_at: '2026-07-31T01:00:00Z',
+      completed_at: null,
+      result_proposal_id: null,
+      result_evidence_hash: null,
+      supersedes_job_id: null,
+    }
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(upload, '"1"', 201))
+      .mockResolvedValueOnce(jsonResponse({
+        url: 'https://objects.test/upload-part',
+        expires_seconds: 900,
+      }))
+      .mockResolvedValueOnce(new Response(undefined, {
+        status: 200,
+        headers: { ETag: '"object-etag"' },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ ...upload, state: 'COMPLETION_QUEUED', version: 2 }, '"2"'))
+      .mockResolvedValueOnce(jsonResponse(accepted, '"5"'))
+      .mockResolvedValueOnce(jsonResponse(job, '"1"', 202))
+      .mockResolvedValueOnce(jsonResponse({
+        items: [job],
+        page: { next_cursor: null, limit: 20 },
+      }))
+      .mockResolvedValueOnce(jsonResponse(job, '"1"'))
     vi.stubGlobal('fetch', fetchMock)
     const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
-    const file = new File(['name,description\nDataset,table'], 'schema.csv', {
-      type: 'text/csv',
-    })
-
-    await uploadKnowledgeStudioTBoxDocumentProposal(
+    const source = await initiateKnowledgeStudioSourceUpload(
       client,
-      proposal.draft_id,
+      job.draft_id,
       {
-        file,
-        upload_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cb',
-        target_block_id: proposal.target_block_id,
+        display_name: upload.display_name,
+        size_bytes: upload.size_bytes,
+        content_type: upload.content_type,
+        sha256: upload.sha256,
+      },
+      'source-init-key',
+    )
+    const signed = await presignKnowledgeStudioSourceUploadPart(
+      client,
+      job.draft_id,
+      source.data.id,
+      1,
+    )
+    const part = await uploadKnowledgeStudioSourceUploadPart(
+      signed.url,
+      new File(['schema bytes'], upload.display_name, { type: upload.content_type }),
+    )
+    await completeKnowledgeStudioSourceUpload(
+      client,
+      job.draft_id,
+      source.data.id,
+      [part],
+      source.etag!,
+      'source-complete-key',
+    )
+    const current = await getKnowledgeStudioSourceUpload(client, job.draft_id, source.data.id)
+    await createKnowledgeStudioTBoxProposalJob(
+      client,
+      job.draft_id,
+      {
+        input_kind: 'DOCUMENT_SCHEMA',
+        source_upload_id: current.data.id,
+        source_manifest_version: current.data.version,
+        target_block_id: job.target_block_id,
         mode: 'MERGE_INTO_CURRENT',
       },
       '"3"',
+      'proposal-job-key',
     )
+    await listKnowledgeStudioTBoxProposalJobs(client, job.draft_id)
+    await getKnowledgeStudioTBoxProposalJob(client, job.draft_id, job.id)
 
-    const call = fetchMock.mock.calls[0]
-    expect(requestUrl(call?.[0])).toContain('/tbox/document-proposals')
-    const headers = new Headers(call?.[1]?.headers)
-    expect(headers.get('If-Match')).toBe('"3"')
-    expect(headers.get('Content-Type')).toBeNull()
-    const body = call?.[1]?.body
-    expect(body).toBeInstanceOf(FormData)
-    expect((body as FormData).get('mode')).toBe('MERGE_INTO_CURRENT')
-    expect((body as FormData).get('target_block_id')).toBe(proposal.target_block_id)
-    expect((body as FormData).get('file')).toBeInstanceOf(File)
+    const paths = fetchMock.mock.calls.map(([input]) => requestUrl(input))
+    expect(paths[0]).toContain(`/drafts/${job.draft_id}/source-uploads`)
+    expect(paths[1]).toContain(`/source-uploads/${upload.id}/parts`)
+    expect(paths[2]).toBe('https://objects.test/upload-part')
+    expect(paths[3]).toContain(`/source-uploads/${upload.id}/complete`)
+    expect(paths[4]).toContain(`/source-uploads/${upload.id}`)
+    expect(paths[5]).toContain('/tbox/proposal-jobs')
+    expect(paths[6]).toContain('/tbox/proposal-jobs?limit=20')
+    expect(paths[7]).toContain(`/tbox/proposal-jobs/${job.id}`)
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('Idempotency-Key'))
+      .toBe('source-init-key')
+    const partBody = fetchMock.mock.calls[1]?.[1]?.body
+    expect(JSON.parse(typeof partBody === 'string' ? partBody : '{}')).toEqual({
+      part_number: 1,
+    })
+    expect(new Headers(fetchMock.mock.calls[3]?.[1]?.headers).get('If-Match')).toBe('"1"')
+    expect(new Headers(fetchMock.mock.calls[5]?.[1]?.headers).get('If-Match')).toBe('"3"')
+    expect(new Headers(fetchMock.mock.calls[5]?.[1]?.headers).get('Idempotency-Key'))
+      .toBe('proposal-job-key')
   })
 
-  it('uses the unified domain resource and a typed fenced catalog Proposal contract', async () => {
+  it('fences Proposal job cancel and retry commands with the current job ETag', async () => {
+    const job = {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cc',
+      draft_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
+      input_kind: 'DOCUMENT_SCHEMA',
+      mode: 'MERGE_INTO_CURRENT',
+      target_block_id: null,
+      state: 'CANCEL_REQUESTED',
+      stage: 'INFERENCE',
+      progress_percent: 55,
+      attempt_count: 1,
+      maximum_attempts: 4,
+      last_failure_code: null,
+      version: 2,
+      created_at: '2026-07-31T01:00:00Z',
+      updated_at: '2026-07-31T01:01:00Z',
+      completed_at: null,
+      result_proposal_id: null,
+      result_evidence_hash: null,
+      supersedes_job_id: null,
+    }
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse(job, '"2"'))
+      .mockResolvedValueOnce(jsonResponse({
+        ...job,
+        id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cd',
+        state: 'QUEUED',
+        stage: 'QUEUED',
+        version: 1,
+        supersedes_job_id: job.id,
+      }, '"1"', 202))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    await cancelKnowledgeStudioTBoxProposalJob(
+      client,
+      job.draft_id,
+      job.id,
+      'USER_REQUESTED',
+      '"1"',
+      'cancel-key',
+    )
+    await retryKnowledgeStudioTBoxProposalJob(
+      client,
+      job.draft_id,
+      job.id,
+      '"2"',
+      'retry-key',
+    )
+
+    const cancelHeaders = new Headers(fetchMock.mock.calls[0]?.[1]?.headers)
+    const retryHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers)
+    expect(cancelHeaders.get('If-Match')).toBe('"1"')
+    expect(cancelHeaders.get('Idempotency-Key')).toBe('cancel-key')
+    const cancelBody = fetchMock.mock.calls[0]?.[1]?.body
+    expect(JSON.parse(typeof cancelBody === 'string' ? cancelBody : '{}')).toEqual({
+      reason: 'USER_REQUESTED',
+    })
+    expect(retryHeaders.get('If-Match')).toBe('"2"')
+    expect(retryHeaders.get('Idempotency-Key')).toBe('retry-key')
+  })
+
+  it('uses the unified managed-domain resource', async () => {
     const managedDomain = {
       id: payload.domain_id,
       display_name: '반도체',
@@ -228,27 +379,8 @@ describe('Knowledge Studio API', () => {
       updated_at: '2026-07-30T01:00:00Z',
       managed: true,
     }
-    const proposal = {
-      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c9',
-      draft_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
-      state: 'READY',
-      mode: 'MERGE_INTO_CURRENT',
-      merge_strategy: 'KEEP_ORIGINAL',
-      base_draft_version: 3,
-      prompt: 'server-owned catalog prompt',
-      elements: [],
-      conflicts: [],
-      source_reference: { contract_version: 'KNOWLEDGE_STUDIO_CATALOG_SOURCE_V1' },
-      version: 1,
-      created_at: '2026-07-30T01:00:00Z',
-      updated_at: '2026-07-30T01:00:00Z',
-    }
     const fetchMock = vi.fn<typeof fetch>()
       .mockResolvedValueOnce(new Response(JSON.stringify(managedDomain), {
-        status: 201,
-        headers: { 'Content-Type': 'application/json' },
-      }))
-      .mockResolvedValueOnce(new Response(JSON.stringify(proposal), {
         status: 201,
         headers: { 'Content-Type': 'application/json' },
       }))
@@ -256,29 +388,9 @@ describe('Knowledge Studio API', () => {
     const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
 
     await createKnowledgeStudioManagedDomain(client, '반도체', 'domain-create-key')
-    await createKnowledgeStudioTBoxCatalogProposal(
-      client,
-      proposal.draft_id,
-      {
-        asset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cc',
-        selected_field_paths: ['emp_id', 'emp_name'],
-        mode: 'MERGE_INTO_CURRENT',
-      },
-      '"3"',
-    )
 
     expect(requestUrl(fetchMock.mock.calls[0]?.[0])).toContain('/knowledge/domains')
     expect(requestUrl(fetchMock.mock.calls[0]?.[0])).not.toContain('/manage')
-    expect(requestUrl(fetchMock.mock.calls[1]?.[0])).toContain('/tbox/catalog-proposals')
-    const catalogHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers)
-    expect(catalogHeaders.get('If-Match')).toBe('"3"')
-    const catalogBody = fetchMock.mock.calls[1]?.[1]?.body
-    expect(typeof catalogBody).toBe('string')
-    expect(JSON.parse(typeof catalogBody === 'string' ? catalogBody : '{}')).toEqual({
-      asset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cc',
-      selected_field_paths: ['emp_id', 'emp_name'],
-      mode: 'MERGE_INTO_CURRENT',
-    })
   })
 
   it('searches exact published T-Box releases and creates a fenced Asset Proposal', async () => {

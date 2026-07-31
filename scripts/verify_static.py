@@ -96,6 +96,13 @@ EXPECTED_SERVICE_SECRETS = {
         "intranet_llm_chat_api_key",
         "intranet_llm_embedding_api_key",
     },
+    "knowledge-tbox-proposal-worker": {
+        "postgres_knowledge_proposal_password",
+        "redis_delivery_password",
+        "s3_knowledge_access_key",
+        "s3_knowledge_secret_key",
+        "intranet_llm_chat_api_key",
+    },
     "knowledge-studio-ingestion-worker": {
         "postgres_knowledge_ingestion_password",
         "redis_delivery_password",
@@ -1133,6 +1140,7 @@ def verify_database_roles() -> None:
         "datariver_archive",
         "datariver_bootstrap",
         "datariver_knowledge",
+        "datariver_knowledge_proposal",
         "datariver_knowledge_ingestion",
         "datariver_quality",
     }
@@ -1189,6 +1197,7 @@ def verify_database_roles() -> None:
         "datariver_retention_scheduler",
         "datariver_archive",
         "datariver_knowledge",
+        "datariver_knowledge_proposal",
         "datariver_knowledge_ingestion",
         "datariver_quality",
     ):
@@ -1214,6 +1223,17 @@ def verify_database_roles() -> None:
                 f"{sorted(missing_ingestion)}"
             )
     compose = _yaml(ROOT / "compose.yaml")
+    proposal_worker = compose["services"].get("knowledge-tbox-proposal-worker")
+    if not isinstance(proposal_worker, dict):
+        raise AssertionError("Knowledge Studio Proposal worker service is missing")
+    if (
+        proposal_worker.get("profiles") != ["knowledge-studio-proposal"]
+        or proposal_worker.get("read_only") is not True
+        or "no-new-privileges:true" not in proposal_worker.get("security_opt", [])
+    ):
+        raise AssertionError(
+            "Knowledge Studio Proposal worker isolation/profile contract is incomplete"
+        )
     ingestion_worker = compose["services"].get("knowledge-studio-ingestion-worker")
     if not isinstance(ingestion_worker, dict):
         raise AssertionError("Knowledge Studio ingestion worker service is missing")

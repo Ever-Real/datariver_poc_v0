@@ -31,6 +31,7 @@ LOCAL_AIRFLOW_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000102")
 LOCAL_QUALITY_DISPATCH_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000103")
 LOCAL_QUALITY_WORKER_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000104")
 LOCAL_KNOWLEDGE_INGESTION_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000108")
+LOCAL_KNOWLEDGE_PROPOSAL_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000109")
 LOCAL_KEYCLOAK_SUBJECT = "00000000-0000-4000-8000-000000000001"
 LOCAL_KEYCLOAK_AIRFLOW_SUBJECT = "00000000-0000-4000-8000-000000000002"
 LOCAL_KEYCLOAK_QUALITY_DISPATCH_SUBJECT = "00000000-0000-4000-8000-000000000004"
@@ -38,6 +39,7 @@ LOCAL_QUALITY_WORKER_EXTERNAL_SUBJECT = "urn:datariver:service:quality-worker"
 LOCAL_KNOWLEDGE_INGESTION_EXTERNAL_SUBJECT = (
     "urn:datariver:service:knowledge-studio-ingestion-worker"
 )
+LOCAL_KNOWLEDGE_PROPOSAL_EXTERNAL_SUBJECT = "urn:datariver:service:knowledge-studio-proposal-worker"
 LOCAL_DEMO_IDENTITIES_PATH = Path("/run/datariver/local-demo-identities.json")
 LOCAL_SERVICE_IDENTITIES_PATH = Path("/run/datariver/local-service-identities.json")
 LOCAL_HUMAN_DASHBOARD_READ_ACTIONS = (
@@ -240,6 +242,14 @@ def _local_service_identities() -> tuple[LocalServiceIdentity, ...]:
             groups=("service-accounts", "knowledge-ingestion-workers"),
             allowed_actions=(Action.KG_INGEST_EXECUTE,),
             bootstrap_contract="local-knowledge-studio-ingestion-service-v1",
+        ),
+        LocalServiceIdentity(
+            subject_id=LOCAL_KNOWLEDGE_PROPOSAL_SUBJECT_ID,
+            external_subject=LOCAL_KNOWLEDGE_PROPOSAL_EXTERNAL_SUBJECT,
+            display_name="DataRiver Knowledge Studio Proposal Worker",
+            groups=("service-accounts", "knowledge-proposal-workers"),
+            allowed_actions=(Action.KG_PROPOSAL_EXECUTE,),
+            bootstrap_contract="local-knowledge-studio-proposal-service-v1",
         ),
     )
 
