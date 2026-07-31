@@ -959,10 +959,47 @@ class ChatService:
             if item.workspace_id == workspace_id and item.classification in allowed_classifications
         )
         return (
-            (*eligible_governance, *catalog_evidence)[:maximum_evidence],
+            self._fuse_evidence(
+                catalog_evidence,
+                eligible_governance,
+                limit=maximum_evidence,
+            ),
             retrieval_stages,
             None,
         )
+
+    @staticmethod
+    def _fuse_evidence(
+        catalog_evidence: Sequence[ChatEvidence],
+        governance_evidence: Sequence[ChatEvidence],
+        *,
+        limit: int,
+    ) -> tuple[ChatEvidence, ...]:
+        """Interleave unique evidence without expanding the request evidence bound."""
+
+        if limit <= 0:
+            return ()
+        sources = (catalog_evidence, governance_evidence)
+        positions = [0] * len(sources)
+        seen: set[UUID] = set()
+        fused: list[ChatEvidence] = []
+        while len(fused) < limit:
+            appended = False
+            for source_index, source in enumerate(sources):
+                while positions[source_index] < len(source):
+                    candidate = source[positions[source_index]]
+                    positions[source_index] += 1
+                    if candidate.chunk_id in seen:
+                        continue
+                    seen.add(candidate.chunk_id)
+                    fused.append(candidate)
+                    appended = True
+                    break
+                if len(fused) == limit:
+                    break
+            if not appended:
+                break
+        return tuple(fused)
 
     async def _authorize_catalog_items(
         self,

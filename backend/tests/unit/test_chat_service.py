@@ -944,6 +944,78 @@ def test_chat_redacts_internal_evidence_identifiers_from_answer_prose() -> None:
     assert answer == "프로젝트 가속기 요약입니다."
 
 
+def test_chat_fuses_catalog_and_governance_evidence_with_a_stable_bound() -> None:
+    workspace_id = uuid4()
+
+    def evidence(name: str, *, source_type: str) -> ChatEvidence:
+        return build_evidence_chunk(
+            workspace_id=workspace_id,
+            resource_id=uuid4(),
+            classification=Classification.INTERNAL,
+            system_id=None,
+            domain_id=None,
+            owner_department_id=None,
+            name=name,
+            description=f"{name} description",
+            source_locator=f"urn:test:{name}",
+            source_version="v1",
+            effective_from=datetime.now(UTC),
+            extraction_method="TEST_EVIDENCE_V1",
+            source_type=source_type,
+        )
+
+    catalog_first = evidence("catalog-first", source_type="CATALOG_ASSET")
+    catalog_second = evidence("catalog-second", source_type="CATALOG_ASSET")
+    catalog_third = evidence("catalog-third", source_type="CATALOG_ASSET")
+    governance_first = evidence("governance-first", source_type="GOVERNANCE_DOCUMENT")
+    governance_second = evidence("governance-second", source_type="GOVERNANCE_DOCUMENT")
+    governance_third = evidence("governance-third", source_type="GOVERNANCE_DOCUMENT")
+    catalog = (catalog_first, catalog_second, catalog_third)
+    governance = (
+        governance_first,
+        catalog_second,
+        governance_second,
+        governance_third,
+    )
+
+    fused = ChatService._fuse_evidence(catalog, governance, limit=5)
+
+    assert fused == (
+        catalog_first,
+        governance_first,
+        catalog_second,
+        governance_second,
+        catalog_third,
+    )
+    assert len(fused) == 5
+    assert len({item.chunk_id for item in fused}) == 5
+    assert ChatService._fuse_evidence(catalog, governance, limit=5) == fused
+
+
+def test_chat_fusion_fills_the_bound_from_the_remaining_source() -> None:
+    workspace_id = uuid4()
+    governance = tuple(
+        build_evidence_chunk(
+            workspace_id=workspace_id,
+            resource_id=uuid4(),
+            classification=Classification.INTERNAL,
+            system_id=None,
+            domain_id=None,
+            owner_department_id=None,
+            name=f"governance-{index}",
+            description=None,
+            source_locator=f"governance://test/{index}",
+            source_version="v1",
+            effective_from=datetime.now(UTC),
+            extraction_method="TEST_EVIDENCE_V1",
+            source_type="GOVERNANCE_DOCUMENT",
+        )
+        for index in range(4)
+    )
+
+    assert ChatService._fuse_evidence((), governance, limit=3) == governance[:3]
+
+
 async def test_vector_provider_receives_only_exact_profile_bound_classifications() -> None:
     workspace_id = uuid4()
     profile_id = uuid4()

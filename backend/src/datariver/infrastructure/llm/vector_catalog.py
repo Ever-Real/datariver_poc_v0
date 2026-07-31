@@ -107,7 +107,7 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
 
         anchor = self._catalog_name_anchor(question)
         if anchor:
-            anchored_page = await self._catalog_index.search(
+            return await self._catalog_index.search(
                 subject=subject,
                 access=access,
                 query=anchor,
@@ -115,8 +115,6 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
                 cursor=None,
                 limit=candidate_limit,
             )
-            if anchored_page.items:
-                return anchored_page
         return await self._catalog_index.search(
             subject=subject,
             access=access,

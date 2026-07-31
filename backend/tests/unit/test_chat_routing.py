@@ -397,7 +397,7 @@ async def test_vector_reader_prefers_a_mixed_language_table_name_fragment() -> N
     assert index.searches == [("capital", {"search_fields": "TABLE"})]
 
 
-async def test_vector_reader_falls_back_when_an_identifier_has_no_visible_table_match() -> None:
+async def test_vector_reader_returns_empty_when_an_identifier_has_no_visible_table_match() -> None:
     workspace_id = uuid4()
     fallback = _asset(workspace_id, name="First")
     index = _CatalogIndex((fallback,))
@@ -413,7 +413,7 @@ async def test_vector_reader_falls_back_when_an_identifier_has_no_visible_table_
     )
     reader = BoundedCatalogVectorReader(
         catalog_index=index,
-        embedding=_Embedding(),
+        embedding=_FailingEmbedding(),
         binding=binding,
     )
 
@@ -424,11 +424,9 @@ async def test_vector_reader_falls_back_when_an_identifier_has_no_visible_table_
         limit=2,
     )
 
-    assert result.items == (fallback,)
-    assert index.searches == [
-        ("capital_project_ai_accelerator", {"search_fields": "TABLE"}),
-        ("", {}),
-    ]
+    assert result.items == ()
+    assert result.provider_invoked is False
+    assert index.searches == [("capital_project_ai_accelerator", {"search_fields": "TABLE"})]
 
 
 async def test_vector_reader_marks_only_failures_after_embedding_invocation() -> None:
