@@ -313,6 +313,14 @@ export function KnowledgePropertyProfilePanel({ client }: { client: ApiClient })
     },
   ], [archive, busy])
 
+  const studioHref = useMemo(() => {
+    const url = new URL(window.location.href)
+    url.searchParams.set('page', 'knowledge-studio')
+    return `${url.pathname}${url.search}${url.hash}`
+  }, [])
+
+  const showRegistryConstraint = !loading && !error && !query && items.length === 0
+
   return (
     <section aria-label="Property 프로파일 관리" className="grid gap-3">
       <header className="flex flex-wrap items-start justify-between gap-3">
@@ -357,6 +365,18 @@ export function KnowledgePropertyProfilePanel({ client }: { client: ApiClient })
           <button type="button" className="ml-3 font-black underline" onClick={() => setRevision((value) => value + 1)}>
             다시 시도
           </button>
+        </div>
+      )}
+      {showRegistryConstraint && (
+        <div className="rounded-enterprise border border-blue-200 bg-blue-50 p-3 text-xs leading-5 text-slate-700">
+          <strong className="block text-navy-900">프로파일을 연결할 발행 Property가 없습니다.</strong>
+          <span>
+            Property 프로파일은 활성 Studio Release에 포함된 기존 Property를 기준으로 생성합니다.
+            Knowledge Studio에서 T-Box Property를 정의하고 Release를 활성화한 뒤 다시 확인해 주세요.
+          </span>
+          <a className="button button-secondary mt-3 w-fit" href={studioHref}>
+            Knowledge Studio로 이동
+          </a>
         </div>
       )}
       <DenseDataTable

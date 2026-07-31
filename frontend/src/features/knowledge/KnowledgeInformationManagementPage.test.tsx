@@ -42,6 +42,36 @@ afterEach(() => {
 })
 
 describe('KnowledgeInformationManagementPage', () => {
+  it('explains the released Property prerequisite when no profile target exists', async () => {
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const path = requestUrl(input)
+      if (path.includes('/knowledge/domains?')) {
+        return Promise.resolve(json({ items: [] }))
+      }
+      if (path.includes('/knowledge/property-profiles?')) {
+        return Promise.resolve(json({ items: [] }))
+      }
+      return Promise.reject(new Error(`Unexpected request: GET ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    render(
+      <KnowledgeInformationManagementPage
+        client={new ApiClient('/api/v1', () => 'token', () => 'workspace')}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Property 프로파일' }))
+
+    expect(await screen.findByText('프로파일을 연결할 발행 Property가 없습니다.'))
+      .toBeInTheDocument()
+    expect(screen.getByText(/활성 Studio Release에 포함된 기존 Property/))
+      .toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Knowledge Studio로 이동' }))
+      .toHaveAttribute('href', expect.stringContaining('page=knowledge-studio'))
+    expect(screen.queryByRole('button', { name: /프로파일 생성/ })).not.toBeInTheDocument()
+  })
+
   it('consolidates real Property profile create, update and archive operations', async () => {
     let profile: KnowledgePropertyProfile | null = null
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
