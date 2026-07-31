@@ -363,6 +363,11 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 - Conversation is workspace/owner-bound and persists only under an exact active retention-policy
   ID/hash and policy-derived deadline. Legacy, expired and superseded-policy sessions are
   append-closed. Explicit deletion remains governed backlog and is not a current Chat command.
+- Existing sessions reuse only bounded, server-read completed USER intent under the same current
+  owner/session/retention-policy fence. The fourth request and later re-compress that bounded input
+  on every request; no assistant answer, evidence, citation or durable summary becomes context
+  authority. Context preparation failure visibly degrades to the current question without raw
+  history fallback.
 - User chooses AUTO, general, vector or graph routing; the server records the requested/selected
   route and refuses an unavailable graph adapter without silent fallback.
 - Retrieval filters before any development LLM invocation. Responses include ranked authorized

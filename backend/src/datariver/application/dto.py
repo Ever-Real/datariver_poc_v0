@@ -1600,6 +1600,21 @@ class ChatDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatConversationHistory:
+    """Bounded, server-read user intent from one currently appendable session."""
+
+    completed_user_turns: int
+    user_utterances: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ChatConversationContextDraft:
+    """Untrusted contextualized question; never evidence or citation authority."""
+
+    resolved_question: str
+
+
+@dataclass(frozen=True, slots=True)
 class ChatRetentionBinding:
     policy_id: UUID
     policy_hash: str

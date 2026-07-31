@@ -103,6 +103,34 @@ class RecordingRouteTransport:
         }
 
 
+class RecordingContextTransport:
+    def __init__(self) -> None:
+        self.path = ""
+        self.document: dict[str, object] = {}
+
+    async def post_json(self, *, path: str, document: Mapping[str, object]) -> Mapping[str, Any]:
+        self.path = path
+        self.document = dict(document)
+        return {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "submit_conversation_context",
+                                    "arguments": json.dumps(
+                                        {"resolved_question": ("capital_project 테이블의 컬럼은?")}
+                                    ),
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+
+
 def evidence() -> ChatEvidence:
     return build_evidence_chunk(
         workspace_id=uuid4(),
@@ -207,6 +235,37 @@ async def test_openai_compatible_chat_classifies_with_fixed_zero_temperature_con
         "role": "user",
         "content": '{"question":"Which fields describe the customer order table?"}',
     }
+
+
+@pytest.mark.asyncio
+async def test_openai_compatible_chat_compresses_only_user_intent_with_fixed_tool() -> None:
+    transport = RecordingContextTransport()
+
+    draft = await OpenAICompatibleGroundedChatComposer(
+        model="approved-chat-model",
+        transport=transport,
+        temperature=0.9,
+        enable_thinking=True,
+    ).compress_context(
+        question="그 컬럼은?",
+        user_utterances=("capital_project 테이블을 설명해줘",),
+    )
+
+    assert transport.path == "/chat/completions"
+    assert transport.document["tool_choice"] == {
+        "type": "function",
+        "function": {"name": "submit_conversation_context"},
+    }
+    assert transport.document["temperature"] == 0.0
+    assert "chat_template_kwargs" not in transport.document
+    messages = transport.document["messages"]
+    assert isinstance(messages, list)
+    context_input = json.loads(messages[1]["content"])
+    assert context_input == {
+        "current_question": "그 컬럼은?",
+        "prior_user_utterances": ["capital_project 테이블을 설명해줘"],
+    }
+    assert draft.resolved_question == "capital_project 테이블의 컬럼은?"
 
 
 @pytest.mark.asyncio

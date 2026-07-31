@@ -1508,6 +1508,11 @@ preparation-PC checks remain runtime gates until the committed revision is appli
 - Every graph publish assertion has provenance and passes ontology/reference checks.
 - Release content is immutable; same release rebuild has identical hash/count and golden-query output.
 - Grounded Chat citations are a non-empty, duplicate-free subset of the exact currently authorized immutable chunks; workspace/chunk/content hash is revalidated and invalid output becomes `검증 불가` with no persisted citation. A general-knowledge answer is tested only after successful zero-evidence retrieval, receives no internal candidate data, rejects any citation, carries the visible no-internal-evidence disclosure and persists zero citations. Provider, policy, authorization, retrieval, reranker and citation failures cannot trigger that path. Future model inference additionally requires the ADR-0019 grounding verdict and its longer governed refusal text.
+- Request-time Chat memory tests prove exact Workspace/Subject/server-session and active
+  retention-policy fencing; archived, expired, superseded-policy and revoked-membership negatives;
+  completed USER-only chronological input; raw context before the three-turn start threshold;
+  fresh compression from the fourth request onward; provider/read/malformed-output degradation to
+  the current question with no raw fallback; and unchanged final citation/ABAC failure behavior.
 
 ## Authorization matrix
 

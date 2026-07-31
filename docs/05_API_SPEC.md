@@ -584,6 +584,14 @@ zero citations. The server prefixes it with `※ 사내 인용 근거가 없어 
 답변합니다.` and records explicit general-answer workflow codes. Adapter, policy, authorization,
 retrieval, reranker and citation failures never use this path.
 
+An existing `session_id` also enables server-derived bounded conversation context without changing
+the request or response shape. The database read requires the exact Workspace/owner/session,
+non-archived state, unexpired active retention binding and current policy ID/hash. Only completed
+USER utterances are eligible. With the default start threshold of three completed user turns, the
+fourth request and every later request performs a fresh bounded contextualization; no checkpoint or
+summary is persisted. Context read/compression/validation failure records a terminal degraded
+workflow detail and sends only the current question through the existing pipeline.
+
 `POST /chat/query/stream` has the same request shape and authorization/policy semantics as the
 ordinary endpoint. Its `text/event-stream` body has ordered `workflow` events containing only the
 typed `{stage,status,detail_code}` transition that the server has actually started or completed,

@@ -43,6 +43,8 @@ from datariver.application.dto import (
     ChangeRequestSchemaOverview,
     ChangeRequestSummaryRecord,
     ChatCompositionAudit,
+    ChatConversationContextDraft,
+    ChatConversationHistory,
     ChatDraft,
     ChatEvidence,
     ChatEvidenceRanking,
@@ -2145,6 +2147,15 @@ class ChatGeneralAnswerComposer(Protocol):
     ) -> ChatDraft: ...
 
 
+class ChatConversationContextCompressor(Protocol):
+    async def compress_context(
+        self,
+        *,
+        question: str,
+        user_utterances: Sequence[str],
+    ) -> ChatConversationContextDraft: ...
+
+
 class ChatRouteIntentClassifier(Protocol):
     """Classify a bounded question into a non-executable retrieval contract."""
 
@@ -2283,6 +2294,17 @@ class ChatSessionOwnershipReader(Protocol):
         workspace_id: UUID,
         session_id: UUID,
     ) -> UUID | None: ...
+
+
+class ChatConversationContextReader(Protocol):
+    async def read_user_intent_context(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        session_id: UUID,
+        limit: int,
+    ) -> ChatConversationHistory: ...
 
 
 class ChatSubjectAccessReader(Protocol):

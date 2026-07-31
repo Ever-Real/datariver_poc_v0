@@ -551,6 +551,9 @@ def test_local_ollama_chat_uses_environment_owned_host_allowlist() -> None:
     )
 
     assert configured.local_ollama_chat_context_tokens == 8192
+    assert configured.chat_conversation_memory_enabled is True
+    assert configured.chat_conversation_compression_start_after_user_turns == 3
+    assert configured.chat_conversation_context_max_tokens == 2048
     assert configured.effective_local_inference_allowed_hosts == frozenset({"models.wsl.internal"})
     with pytest.raises(ValidationError, match="allowlisted host"):
         settings(
@@ -558,6 +561,16 @@ def test_local_ollama_chat_uses_environment_owned_host_allowlist() -> None:
             local_ollama_chat_enabled=True,
             local_ollama_chat_base_url="http://example.test:11434/v1",
             local_ollama_chat_model="datariver-gemma4-dev:0.1",
+        )
+
+    with pytest.raises(ValidationError, match="leave at least 1024 provider tokens"):
+        settings(
+            local_inference_allowed_hosts=("models.wsl.internal",),
+            local_ollama_chat_enabled=True,
+            local_ollama_chat_base_url="http://models.wsl.internal:11434/v1",
+            local_ollama_chat_model="datariver-gemma4-dev:0.1",
+            local_ollama_chat_context_tokens=2048,
+            chat_conversation_context_max_tokens=2048,
         )
     with pytest.raises(ValidationError, match="only in development"):
         settings(

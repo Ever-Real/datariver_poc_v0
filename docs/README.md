@@ -159,7 +159,10 @@ readable private object basenames and authorized JSON export are defined by
 Semantic `AUTO` Chat routing is defined by
 [ADR-0085](adr/0085-semantic-chat-route-classification.md), and its server-observed live workflow
 progress boundary is defined by
-[ADR-0089](adr/0089-live-chat-workflow-progress-events.md).
+[ADR-0089](adr/0089-live-chat-workflow-progress-events.md). Owner/session/policy-fenced,
+non-authoritative request-time conversation context is defined by
+[ADR-0102](adr/0102-bounded-request-time-chat-conversation-memory.md); it stores no summary or
+reusable checkpoint.
 Workspace-scoped Monitoring dashboard tabs, administrator updates and the exact-origin frame
 boundary are defined by [ADR-0090](adr/0090-governed-monitoring-dashboard-tabs.md). Registration of
 credential-free HTTP(S) links from any origin, while preserving the existing disabled-first iframe

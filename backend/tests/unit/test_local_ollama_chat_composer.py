@@ -16,6 +16,7 @@ from datariver.domain.chat import ChatRetrievalMode
 from datariver.domain.common import ValidationError
 from datariver.infrastructure.llm.ollama import (
     LocalOllamaChatComposer,
+    ollama_native_conversation_context_request_payload,
     ollama_native_general_chat_request_payload,
     ollama_native_grounded_chat_request_payload,
     ollama_native_route_classification_request_payload,
@@ -107,6 +108,29 @@ def test_grounded_payload_keeps_internal_source_metadata_out_of_model_context() 
     assert evidence.source_version not in payload["messages"][1]["content"]
     assert evidence.source_locator not in json.dumps(payload["tools"])
     assert evidence.source_version not in json.dumps(payload["tools"])
+
+
+def test_conversation_context_payload_contains_only_bounded_user_intent() -> None:
+    payload = ollama_native_conversation_context_request_payload(
+        model="operator-selected-model",
+        question="그 테이블의 컬럼은?",
+        user_utterances=("capital_project 테이블을 설명해줘",),
+        context_tokens=8_192,
+    )
+
+    document = json.loads(payload["messages"][1]["content"])
+    assert document == {
+        "current_question": "그 테이블의 컬럼은?",
+        "prior_user_utterances": ["capital_project 테이블을 설명해줘"],
+    }
+    assert payload["tools"][0]["function"]["name"] == "submit_conversation_context"
+    assert "assistant answers" in payload["messages"][0]["content"]
+    assert "UUIDs, URNs, URLs" in payload["messages"][0]["content"]
+    assert payload["options"] == {
+        "temperature": 0,
+        "num_ctx": 8_192,
+        "num_predict": 1_024,
+    }
 
 
 @pytest.mark.asyncio

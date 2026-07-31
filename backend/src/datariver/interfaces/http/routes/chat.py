@@ -23,6 +23,7 @@ from datariver.application.governance_document_chat import (
 )
 from datariver.application.ports import (
     ChatAnswerComposer,
+    ChatConversationContextCompressor,
     ChatGeneralAnswerComposer,
     ChatRouteIntentClassifier,
     ChatWorkflowProgressObserver,
@@ -84,11 +85,12 @@ def _development_composer(
     ChatAnswerComposer | None,
     ChatGeneralAnswerComposer | None,
     ChatRouteIntentClassifier | None,
+    ChatConversationContextCompressor | None,
     ChatCompositionAudit | None,
 ]:
     settings = container.settings
     if settings.app_env != "development":
-        return None, None, None, None
+        return None, None, None, None, None
     if settings.local_ollama_chat_enabled:
         assert settings.local_ollama_chat_base_url is not None
         assert settings.local_ollama_chat_model is not None
@@ -100,6 +102,7 @@ def _development_composer(
             allowed_hosts=settings.effective_local_inference_allowed_hosts,
         )
         return (
+            local_composer,
             local_composer,
             local_composer,
             local_composer,
@@ -135,6 +138,7 @@ def _development_composer(
             intranet_composer,
             intranet_composer,
             intranet_composer,
+            intranet_composer,
             ChatCompositionAudit(
                 provider="intranet-openai-compatible",
                 model=settings.intranet_openai_compatible_chat_model,
@@ -143,7 +147,21 @@ def _development_composer(
                 provider_profile_version_id=(settings.chat_composition_provider_profile_version_id),
             ),
         )
-    return None, None, None, None
+    return None, None, None, None, None
+
+
+def _conversation_context_tokens(container: AppContainer) -> int:
+    settings = container.settings
+    if settings.local_ollama_chat_enabled:
+        provider_tokens = settings.local_ollama_chat_context_tokens
+    elif settings.intranet_openai_compatible_chat_enabled:
+        provider_tokens = settings.intranet_openai_compatible_chat_context_tokens
+    else:
+        return settings.chat_conversation_context_max_tokens
+    return min(
+        settings.chat_conversation_context_max_tokens,
+        provider_tokens - 1_024,
+    )
 
 
 async def _query_response(
@@ -157,9 +175,13 @@ async def _query_response(
     settings = container.settings
     catalog_index = SqlCatalogIndexReader(session)
     chat_history = SqlChatHistoryStore(session)
-    composer, general_composer, route_classifier, composition_audit = _development_composer(
-        container
-    )
+    (
+        composer,
+        general_composer,
+        route_classifier,
+        context_compressor,
+        composition_audit,
+    ) = _development_composer(container)
     vector_catalog_enabled = (
         settings.app_env == "development"
         and (settings.local_ollama_chat_enabled and settings.local_ollama_embedding_enabled)
@@ -246,6 +268,13 @@ async def _query_response(
         ),
         session_ownership=chat_history,
         subject_access=SqlSubjectReader(session),
+        conversation_context_reader=chat_history,
+        conversation_context_compressor=context_compressor,
+        conversation_memory_enabled=settings.chat_conversation_memory_enabled,
+        conversation_compression_start_after_user_turns=(
+            settings.chat_conversation_compression_start_after_user_turns
+        ),
+        conversation_context_max_tokens=_conversation_context_tokens(container),
         classification_access=ClassificationAccessResolver(
             SqlClassificationAccessSnapshotReader(session)
         ),

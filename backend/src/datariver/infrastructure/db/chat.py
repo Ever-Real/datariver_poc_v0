@@ -5,11 +5,12 @@ from datetime import datetime, timedelta
 from types import TracebackType
 from uuid import UUID
 
-from sqlalchemy import desc, func, select, text, update
+from sqlalchemy import desc, exists, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import (
     ChatCompositionAudit,
+    ChatConversationHistory,
     ChatEvidence,
     ChatEvidenceRanking,
     ChatExchange,
@@ -41,6 +42,7 @@ from datariver.infrastructure.db.models.assistant import (
     ChatSessionModel,
     EvidenceCitationModel,
 )
+from datariver.infrastructure.db.models.retention import RetentionPolicyVersionModel
 from datariver.infrastructure.db.retention import SqlRetentionPolicyRepository
 from datariver.infrastructure.db.rls import set_security_context
 
@@ -209,6 +211,79 @@ class SqlChatHistoryStore(ChatHistoryStore):
                 )
             )
         return tuple(records)
+
+    async def read_user_intent_context(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        session_id: UUID,
+        limit: int,
+    ) -> ChatConversationHistory:
+        """Read only completed user turns from one currently appendable session."""
+
+        if not 1 <= limit <= 100:
+            raise ValueError("Chat conversation context limit must be between 1 and 100.")
+        completed_run = exists(
+            select(AssistantRunModel.id).where(
+                AssistantRunModel.workspace_id == ChatMessageModel.workspace_id,
+                AssistantRunModel.session_id == ChatMessageModel.session_id,
+                AssistantRunModel.request_message_id == ChatMessageModel.id,
+                AssistantRunModel.state == "COMPLETED",
+            )
+        )
+        rows = (
+            await self._session.execute(
+                select(
+                    ChatMessageModel.content,
+                    func.count(ChatMessageModel.id).over().label("completed_user_turns"),
+                )
+                .join(
+                    ChatSessionModel,
+                    (
+                        (ChatSessionModel.workspace_id == ChatMessageModel.workspace_id)
+                        & (ChatSessionModel.id == ChatMessageModel.session_id)
+                    ),
+                )
+                .join(
+                    RetentionPolicyVersionModel,
+                    (
+                        (RetentionPolicyVersionModel.workspace_id == ChatSessionModel.workspace_id)
+                        & (RetentionPolicyVersionModel.id == ChatSessionModel.retention_policy_id)
+                        & (
+                            RetentionPolicyVersionModel.payload_hash
+                            == ChatSessionModel.retention_policy_hash
+                        )
+                    ),
+                )
+                .where(
+                    ChatMessageModel.workspace_id == workspace_id,
+                    ChatMessageModel.session_id == session_id,
+                    ChatMessageModel.actor == "USER",
+                    ChatMessageModel.content.is_not(None),
+                    ChatSessionModel.owner_id == owner_id,
+                    ChatSessionModel.is_archived.is_(False),
+                    ChatSessionModel.retention_binding_version == ACTIVE_RETENTION_BINDING,
+                    ChatSessionModel.retention_until.is_not(None),
+                    ChatSessionModel.retention_until > func.now(),
+                    RetentionPolicyVersionModel.state == "ACTIVE",
+                    completed_run,
+                )
+                .order_by(
+                    desc(ChatMessageModel.created_at),
+                    desc(ChatMessageModel.id),
+                )
+                .limit(limit)
+            )
+        ).all()
+        if not rows:
+            return ChatConversationHistory(completed_user_turns=0, user_utterances=())
+        return ChatConversationHistory(
+            completed_user_turns=int(rows[0].completed_user_turns),
+            user_utterances=tuple(
+                str(row.content).strip() for row in reversed(rows) if str(row.content).strip()
+            ),
+        )
 
     @staticmethod
     def _chronological_message_key(message: ChatMessageModel) -> tuple[datetime, int, str]:

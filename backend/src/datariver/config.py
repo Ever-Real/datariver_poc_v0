@@ -134,6 +134,9 @@ class Settings(BaseSettings):
         ge=2_048,
         le=1_000_000,
     )
+    chat_conversation_memory_enabled: bool = True
+    chat_conversation_compression_start_after_user_turns: int = Field(default=3, ge=1, le=100)
+    chat_conversation_context_max_tokens: int = Field(default=2_048, ge=128, le=4_096)
     # Immutable, stage-specific governance identities selected by the
     # deployment. Configured adapters remain probe-only until the active
     # classification policy binds an eligible rule to every stage that the
@@ -1970,6 +1973,29 @@ class Settings(BaseSettings):
                     )
             elif not self.neo4j_auth_secret_ref.startswith("file:/run/secrets/"):
                 raise ValueError("Neo4j credentials must use a mounted file secret reference.")
+        if self.chat_conversation_memory_enabled:
+            selected_context_windows = tuple(
+                context_tokens
+                for enabled, context_tokens in (
+                    (
+                        self.local_ollama_chat_enabled,
+                        self.local_ollama_chat_context_tokens,
+                    ),
+                    (
+                        self.intranet_openai_compatible_chat_enabled,
+                        self.intranet_openai_compatible_chat_context_tokens,
+                    ),
+                )
+                if enabled
+            )
+            if any(
+                self.chat_conversation_context_max_tokens > context_tokens - 1_024
+                for context_tokens in selected_context_windows
+            ):
+                raise ValueError(
+                    "Chat conversation context must leave at least 1024 provider tokens "
+                    "for the fixed system and output contract."
+                )
         local_ollama_pipeline_ready = (
             self.local_ollama_chat_enabled and self.local_ollama_embedding_enabled
         )

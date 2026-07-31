@@ -2,15 +2,17 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from datariver.application.dto import ChatDraft, ChatEvidence
+from datariver.application.dto import ChatConversationContextDraft, ChatDraft, ChatEvidence
 from datariver.domain.chat import ChatRetrievalMode
 from datariver.infrastructure.knowledge.openai_compatible import (
     OpenAICompatibleChatRequestOptions,
     OpenAIJsonTransport,
 )
 from datariver.infrastructure.llm.ollama import (
+    conversation_context_request_payload,
     general_chat_request_payload,
     grounded_chat_request_payload,
+    parse_conversation_context_response,
     parse_general_chat_response,
     parse_grounded_chat_response,
     parse_route_classification_response,
@@ -95,3 +97,21 @@ class OpenAICompatibleGroundedChatComposer:
             ),
         )
         return parse_route_classification_response(result)
+
+    async def compress_context(
+        self,
+        *,
+        question: str,
+        user_utterances: Sequence[str],
+    ) -> ChatConversationContextDraft:
+        result = await self._transport.post_json(
+            path="/chat/completions",
+            document=self._route_options.apply(
+                conversation_context_request_payload(
+                    model=self._model,
+                    question=question,
+                    user_utterances=user_utterances,
+                )
+            ),
+        )
+        return parse_conversation_context_response(result)

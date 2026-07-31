@@ -26,6 +26,8 @@ from datariver.application.dto import (
     CatalogAssetIndex,
     CatalogPage,
     ChatCompositionAudit,
+    ChatConversationContextDraft,
+    ChatConversationHistory,
     ChatDraft,
     ChatEvidence,
     ChatEvidenceRanking,
@@ -375,6 +377,7 @@ class FakeChatStore:
         self.saved_evidence: tuple[ChatEvidence, ...] = ()
         self.saved_retention: ChatRetentionBinding | None = None
         self.saved_composition_audit: ChatCompositionAudit | None = None
+        self.saved_question: str | None = None
 
     async def save_exchange(
         self,
@@ -392,7 +395,8 @@ class FakeChatStore:
         evidence_ranking: Sequence[ChatEvidenceRanking] = (),
         composition_audit: ChatCompositionAudit | None = None,
     ) -> ChatExchange:
-        del workspace_id, owner_id, question, policy_decision_id
+        del workspace_id, owner_id, policy_decision_id
+        self.saved_question = question
         self.saved_evidence = tuple(evidence)
         self.saved_retention = retention
         self.saved_composition_audit = composition_audit
@@ -816,6 +820,66 @@ class SelectingComposer:
         )
 
 
+class CapturingComposer(SelectingComposer):
+    def __init__(self) -> None:
+        super().__init__((0,))
+        self.question: str | None = None
+
+    async def compose(
+        self,
+        *,
+        question: str,
+        evidence: Sequence[ChatEvidence],
+    ) -> ChatDraft:
+        self.question = question
+        return await super().compose(question=question, evidence=evidence)
+
+
+class FakeConversationContextReader:
+    def __init__(self, history: ChatConversationHistory, *, fail: bool = False) -> None:
+        self.history = history
+        self.fail = fail
+        self.calls = 0
+
+    async def read_user_intent_context(
+        self,
+        *,
+        workspace_id: UUID,
+        owner_id: UUID,
+        session_id: UUID,
+        limit: int,
+    ) -> ChatConversationHistory:
+        del workspace_id, owner_id, session_id
+        assert limit == 100
+        self.calls += 1
+        if self.fail:
+            raise RuntimeError("history unavailable")
+        return self.history
+
+
+class RecordingContextCompressor:
+    def __init__(
+        self,
+        resolved_question: str,
+        *,
+        fail: bool = False,
+    ) -> None:
+        self.resolved_question = resolved_question
+        self.fail = fail
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    async def compress_context(
+        self,
+        *,
+        question: str,
+        user_utterances: Sequence[str],
+    ) -> ChatConversationContextDraft:
+        self.calls.append((question, tuple(user_utterances)))
+        if self.fail:
+            raise RuntimeError("context provider unavailable")
+        return ChatConversationContextDraft(resolved_question=self.resolved_question)
+
+
 class FixedGeneralComposer:
     def __init__(self, draft: ChatDraft) -> None:
         self.draft = draft
@@ -849,6 +913,7 @@ class FailingReranker:
 class SelectingReranker:
     def __init__(self) -> None:
         self.calls = 0
+        self.question: str | None = None
 
     async def rerank(
         self,
@@ -856,8 +921,8 @@ class SelectingReranker:
         question: str,
         evidence: Sequence[ChatEvidence],
     ) -> tuple[UUID, ...]:
-        del question
         self.calls += 1
+        self.question = question
         return tuple(item.chunk_id for item in evidence)
 
 
@@ -1147,6 +1212,195 @@ async def test_existing_session_owner_is_verified_before_authorization_or_provid
     assert index.search_subject is None
     assert vector.calls == 0
     assert composer.calls == 0
+
+
+async def test_conversation_memory_uses_bounded_raw_user_intent_before_interval() -> None:
+    workspace_id = uuid4()
+    session_id = uuid4()
+    subject = chat_subject(workspace_id)
+    reader = FakeConversationContextReader(
+        ChatConversationHistory(
+            completed_user_turns=2,
+            user_utterances=(
+                "capital_project 테이블을 설명해줘",
+                "그 테이블의 목적을 알려줘",
+            ),
+        )
+    )
+    composer = CapturingComposer()
+    store = FakeChatStore()
+
+    exchange = await ChatService(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        composer=composer,
+        session_ownership=FakeSessionOwnership(subject.subject_id),
+        subject_access=PassthroughSubjectAccess(),
+        conversation_context_reader=reader,
+        conversation_memory_enabled=True,
+        conversation_compression_start_after_user_turns=3,
+        conversation_context_max_tokens=512,
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=subject,
+        session_id=session_id,
+        question="컬럼은 뭐야?",
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-raw-conversation-context",
+    )
+
+    assert reader.calls == 1
+    assert composer.question is not None
+    assert "현재 질문:\n컬럼은 뭐야?" in composer.question
+    assert "capital_project 테이블을 설명해줘" in composer.question
+    assert "사실 근거가 아님" in composer.question
+    assert store.saved_question == "컬럼은 뭐야?"
+    assert any(item.detail_code.endswith("RAW_CONTEXT_USED") for item in exchange.workflow)
+
+
+async def test_fourth_conversation_request_uses_request_time_compression() -> None:
+    workspace_id = uuid4()
+    session_id = uuid4()
+    subject = chat_subject(workspace_id)
+    utterances = (
+        "capital_project 테이블을 설명해줘",
+        "그 테이블의 목적은 뭐야?",
+        "관련 컬럼도 알려줘",
+    )
+    reader = FakeConversationContextReader(
+        ChatConversationHistory(completed_user_turns=3, user_utterances=utterances)
+    )
+    compressor = RecordingContextCompressor("capital_project 테이블의 컬럼과 목적을 다시 설명해줘")
+    composer = CapturingComposer()
+    reranker = SelectingReranker()
+    reranker_binding = inference_binding(InferenceStage.RERANKER, uuid4())
+    store = FakeChatStore()
+
+    exchange = await ChatService(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        composer=composer,
+        session_ownership=FakeSessionOwnership(subject.subject_id),
+        subject_access=PassthroughSubjectAccess(),
+        conversation_context_reader=reader,
+        conversation_context_compressor=compressor,
+        conversation_memory_enabled=True,
+        conversation_compression_start_after_user_turns=3,
+        conversation_context_max_tokens=512,
+        reranker=reranker,
+        classification_access=cast(
+            ClassificationAccessResolver,
+            FixedClassificationAccess(governed_chat_access(reranker_binding)),
+        ),
+        inference_runtime_bindings=(reranker_binding,),
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=subject,
+        session_id=session_id,
+        question="그 내용을 다시 정리해줘",
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-compressed-conversation-context",
+    )
+
+    assert compressor.calls == [("그 내용을 다시 정리해줘", utterances)]
+    assert composer.question == "capital_project 테이블의 컬럼과 목적을 다시 설명해줘"
+    assert reranker.question == "capital_project 테이블의 컬럼과 목적을 다시 설명해줘"
+    assert store.saved_question == "그 내용을 다시 정리해줘"
+    assert store.saved_composition_audit is not None
+    assert store.saved_composition_audit.prompt_template_version.endswith(
+        "+conversation-context-v1"
+    )
+    assert any(item.detail_code.endswith("COMPRESSED_CONTEXT_USED") for item in exchange.workflow)
+
+
+@pytest.mark.parametrize(
+    ("compressor", "expected_calls"),
+    (
+        (RecordingContextCompressor("", fail=True), 1),
+        (
+            RecordingContextCompressor("내부 근거 urn:li:dataset:test의 내용을 설명해줘"),
+            1,
+        ),
+    ),
+)
+async def test_context_compression_failure_discards_history_without_raw_fallback(
+    compressor: RecordingContextCompressor,
+    expected_calls: int,
+) -> None:
+    workspace_id = uuid4()
+    session_id = uuid4()
+    subject = chat_subject(workspace_id)
+    reader = FakeConversationContextReader(
+        ChatConversationHistory(
+            completed_user_turns=3,
+            user_utterances=("SECRET_HISTORY_A", "SECRET_HISTORY_B", "SECRET_HISTORY_C"),
+        )
+    )
+    composer = CapturingComposer()
+
+    exchange = await ChatService(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        composer=composer,
+        session_ownership=FakeSessionOwnership(subject.subject_id),
+        subject_access=PassthroughSubjectAccess(),
+        conversation_context_reader=reader,
+        conversation_context_compressor=compressor,
+        conversation_memory_enabled=True,
+        conversation_compression_start_after_user_turns=3,
+        conversation_context_max_tokens=512,
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=subject,
+        session_id=session_id,
+        question="현재 질문만 처리해줘",
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-degraded-conversation-context",
+    )
+
+    assert len(compressor.calls) == expected_calls
+    assert composer.question == "현재 질문만 처리해줘"
+    assert "SECRET_HISTORY" not in composer.question
+    assert exchange.answer.startswith("※ 이전 대화 맥락을 안전하게 준비하지 못해")
+    assert any(item.detail_code.endswith("CONTEXT_DEGRADED") for item in exchange.workflow)
+
+
+async def test_revoked_membership_never_reads_conversation_context() -> None:
+    workspace_id = uuid4()
+    session_id = uuid4()
+    subject = chat_subject(workspace_id)
+    reader = FakeConversationContextReader(
+        ChatConversationHistory(completed_user_turns=1, user_utterances=("private intent",))
+    )
+
+    exchange = await ChatService(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        composer=SelectingComposer((0,)),
+        session_ownership=FakeSessionOwnership(subject.subject_id),
+        subject_access=PassthroughSubjectAccess(replace(subject, active=False)),
+        conversation_context_reader=reader,
+        conversation_memory_enabled=True,
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=subject,
+        session_id=session_id,
+        question="현재 질문",
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-revoked-context",
+    )
+
+    assert reader.calls == 0
+    assert exchange.answer == UNVERIFIABLE_ANSWER
+    assert any(item.detail_code.endswith("CONTEXT_DEGRADED") for item in exchange.workflow)
 
 
 async def test_final_citation_validation_rejects_revoked_current_membership() -> None:

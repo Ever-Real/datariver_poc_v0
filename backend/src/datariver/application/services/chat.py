@@ -19,6 +19,8 @@ from datariver.application.classification_access import (
 from datariver.application.dto import (
     CatalogAssetIndex,
     ChatCompositionAudit,
+    ChatConversationContextDraft,
+    ChatConversationHistory,
     ChatDraft,
     ChatEvidence,
     ChatEvidenceRanking,
@@ -34,6 +36,8 @@ from datariver.application.knowledge_asset_ports import KnowledgeGraphScopeResol
 from datariver.application.ports import (
     CatalogIndexReader,
     ChatAnswerComposer,
+    ChatConversationContextCompressor,
+    ChatConversationContextReader,
     ChatEvidenceReranker,
     ChatGeneralAnswerComposer,
     ChatPersistenceUnitOfWork,
@@ -69,12 +73,21 @@ from datariver.domain.retention import RetentionPolicyState
 
 UNVERIFIABLE_ANSWER = "검증 불가"
 GENERAL_KNOWLEDGE_PREFIX = "※ 사내 인용 근거가 없어 일반 지식으로 답변합니다.\n\n"
+CONTEXT_DEGRADED_PREFIX = (
+    "※ 이전 대화 맥락을 안전하게 준비하지 못해 현재 질문만으로 답변합니다.\n\n"
+)
 _MAXIMUM_CHAT_ANSWER_CHARACTERS = 4_000
+_MAXIMUM_CHAT_CONTEXT_USER_TURNS = 100
+_MAXIMUM_CONTEXTUAL_QUESTION_CHARACTERS = 4_000
 _INTERNAL_EVIDENCE_MARKUP = re.compile(r"\[\[[^\]\r\n]*\]\]")
 _UUID_TOKEN = re.compile(
     r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}(?![0-9A-Fa-f])"
 )
 _EMPTY_CITATION_LIST = re.compile(r"\[\s*(?:[,;]\s*)*\]")
+_CONTEXT_FORBIDDEN_IDENTIFIER = re.compile(
+    r"(?:\burn:|https?://|\bsource[_ -]?locator\b|\bchunk[_ -]?id\b)",
+    re.IGNORECASE,
+)
 _DETERMINISTIC_AUDIT = ChatCompositionAudit(
     provider="datariver",
     model="deterministic-evidence-v1",
@@ -151,6 +164,11 @@ class ChatService:
         authorization: AuthorizationService,
         session_ownership: ChatSessionOwnershipReader,
         subject_access: ChatSubjectAccessReader,
+        conversation_context_reader: ChatConversationContextReader | None = None,
+        conversation_context_compressor: ChatConversationContextCompressor | None = None,
+        conversation_memory_enabled: bool = False,
+        conversation_compression_start_after_user_turns: int = 3,
+        conversation_context_max_tokens: int = 2_048,
         classification_access: ClassificationAccessResolver | None = None,
         composer: ChatAnswerComposer | None = None,
         general_composer: ChatGeneralAnswerComposer | None = None,
@@ -183,6 +201,19 @@ class ChatService:
         self._authorization = authorization
         self._session_ownership = session_ownership
         self._subject_access = subject_access
+        self._conversation_context_reader = conversation_context_reader
+        self._conversation_context_compressor = conversation_context_compressor
+        self._conversation_memory_enabled = conversation_memory_enabled
+        if not (
+            1 <= conversation_compression_start_after_user_turns <= _MAXIMUM_CHAT_CONTEXT_USER_TURNS
+        ):
+            raise ValueError("Chat conversation compression start is outside its bound.")
+        if not 128 <= conversation_context_max_tokens <= 4_096:
+            raise ValueError("Chat conversation context token budget is outside its bound.")
+        self._conversation_compression_start_after_user_turns = (
+            conversation_compression_start_after_user_turns
+        )
+        self._conversation_context_max_tokens = conversation_context_max_tokens
         self._classification_access = classification_access
         self._composer = composer or DeterministicChatAnswerComposer()
         self._general_composer = general_composer
@@ -261,6 +292,21 @@ class ChatService:
             now=environment.requested_at,
         )
         chat_access = self._chat_retrieval_access(access, subject=subject)
+        context_history, context_read_degraded = await self._read_conversation_context(
+            workspace_id=workspace_id,
+            subject=subject,
+            session_id=session_id,
+            requested_at=environment.requested_at,
+        )
+        bounded_user_utterances = self._bounded_user_utterances(
+            context_history.user_utterances,
+            maximum_bytes=self._conversation_context_max_tokens,
+        )
+        context_compression_requested = bool(
+            session_id is not None
+            and context_history.completed_user_turns
+            >= self._conversation_compression_start_after_user_turns
+        )
         route_classifier_requested = (
             requested_mode is ChatRetrievalMode.AUTO
             and self._question_router.requires_composition_inference
@@ -292,20 +338,39 @@ class ChatService:
                     ),
                     reranker_enabled=self._reranker is not None,
                     route_classifier_enabled=route_classifier_requested,
+                    conversation_context_bytes=sum(
+                        len(item.encode("utf-8")) for item in bounded_user_utterances
+                    ),
+                    context_compression_enabled=context_compression_requested,
                 ),
                 request_limit=self._request_limit_per_minute,
                 token_limit=self._token_limit_per_minute,
                 window_seconds=60,
             )
+        (
+            effective_question,
+            context_status,
+            context_compressor_invoked,
+        ) = await self._contextualize_question(
+            question=question,
+            history=context_history,
+            bounded_user_utterances=bounded_user_utterances,
+            read_degraded=context_read_degraded,
+            compression_allowed=(
+                not self._composition_audit.external_service_used
+                or bool(
+                    self._provider_bound_classifications(
+                        chat_access,
+                        required_stages=(InferenceStage.COMPOSITION,),
+                    )
+                )
+            ),
+        )
         workflow.append(
             self._event(
                 ChatWorkflowStage.BUDGET_RESERVATION,
                 ChatWorkflowStatus.COMPLETED,
-                (
-                    "CHAT_RATE_AND_TOKEN_BUDGET_RESERVED"
-                    if self._budget_guard is not None
-                    else "CHAT_BUDGET_GUARD_NOT_CONFIGURED"
-                ),
+                self._context_budget_detail_code(context_status),
             )
         )
         workflow.publish_progress(
@@ -313,7 +378,7 @@ class ChatService:
             detail_code="ROUTING_IN_PROGRESS",
         )
         route = await self._question_router.route(
-            question=question,
+            question=effective_question,
             requested_mode=requested_mode,
             vector_available=(
                 self._vector_catalog is not None or self._governance_evidence is not None
@@ -379,9 +444,11 @@ class ChatService:
             external_stages=(),
         )
         graph_scope: KnowledgeGraphChatScope | None = None
-        external_stages: list[str] = (
-            ["composition"] if route_classifier_requested and route_classifier_allowed else []
-        )
+        external_stages: list[str] = []
+        if context_compressor_invoked and self._composition_audit.external_service_used:
+            external_stages.append("composition")
+        if route_classifier_requested and route_classifier_allowed:
+            external_stages.append("composition")
         if route.adapter_state is ChatAdapterState.UNAVAILABLE:
             cited_evidence: tuple[ChatEvidence, ...] = ()
             rankings: tuple[ChatEvidenceRanking, ...] = ()
@@ -412,7 +479,7 @@ class ChatService:
                     )
                     if self._composition_audit.external_service_used:
                         external_stages.append("composition")
-                    draft = await general_composer.compose_general(question=question)
+                    draft = await general_composer.compose_general(question=effective_question)
                     answer = self._validate_general_draft(draft)
                 except Exception:
                     route = replace(route, adapter_state=ChatAdapterState.FAILED)
@@ -498,7 +565,7 @@ class ChatService:
                     retrieval_subject=retrieval_subject,
                     access=retrieval_access,
                     allowed_classifications=allowed_chat_classifications,
-                    question=question,
+                    question=effective_question,
                     maximum_evidence=maximum_evidence,
                     environment=environment,
                     request_id=request_id,
@@ -586,7 +653,7 @@ class ChatService:
                     rerank_failed,
                     reranker_invoked,
                 ) = await self._rank(
-                    question=question,
+                    question=effective_question,
                     evidence=evidence,
                     route=route,
                     workflow=workflow,
@@ -640,7 +707,7 @@ class ChatService:
                             if self._composition_audit.external_service_used:
                                 external_stages.append("composition")
                             draft = await self._general_composer.compose_general(
-                                question=question,
+                                question=effective_question,
                             )
                             answer = self._validate_general_draft(draft)
                         except Exception:
@@ -700,7 +767,7 @@ class ChatService:
                         if self._composition_audit.external_service_used:
                             external_stages.append("composition")
                         draft = await self._composer.compose(
-                            question=question,
+                            question=effective_question,
                             evidence=ranked_evidence,
                         )
                     except Exception:
@@ -766,7 +833,7 @@ class ChatService:
                                 environment=environment,
                                 request_id=request_id,
                                 parent_resource_id=session_id or workspace_id,
-                                question=question,
+                                question=effective_question,
                                 requested_graph_id=requested_graph_id,
                                 initial_graph_scope=graph_scope,
                             )
@@ -795,6 +862,13 @@ class ChatService:
             access,
             external_stages=tuple(dict.fromkeys(external_stages)),
         )
+        if context_compressor_invoked:
+            request_composition_audit = replace(
+                request_composition_audit,
+                prompt_template_version=(
+                    f"{request_composition_audit.prompt_template_version}+conversation-context-v1"
+                ),
+            )
         if graph_scope is not None:
             request_composition_audit = replace(
                 request_composition_audit,
@@ -804,6 +878,8 @@ class ChatService:
                 knowledge_delivery_policy_version=graph_scope.policy_version,
                 knowledge_delivery_policy_hash=graph_scope.policy_hash,
             )
+        if context_status == "CONTEXT_DEGRADED" and answer != UNVERIFIABLE_ANSWER:
+            answer = self._with_context_degraded_disclosure(answer)
         async with self._uow_factory() as uow:
             await uow.set_security_context(
                 workspace_id=workspace_id,
@@ -877,6 +953,137 @@ class ChatService:
             await uow.commit()
             workflow.append(persistence_event)
             return exchange
+
+    async def _read_conversation_context(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        session_id: UUID | None,
+        requested_at: datetime,
+    ) -> tuple[ChatConversationHistory, bool]:
+        empty = ChatConversationHistory(completed_user_turns=0, user_utterances=())
+        if not self._conversation_memory_enabled or session_id is None:
+            return empty, False
+        if self._conversation_context_reader is None:
+            return empty, True
+        try:
+            refreshed = await self._subject_access.refresh_subject(
+                subject=subject,
+                now=requested_at,
+            )
+            if not refreshed.active or self._subject_security_identity(
+                refreshed
+            ) != self._subject_security_identity(subject):
+                return empty, True
+            history = await self._conversation_context_reader.read_user_intent_context(
+                workspace_id=workspace_id,
+                owner_id=subject.subject_id,
+                session_id=session_id,
+                limit=_MAXIMUM_CHAT_CONTEXT_USER_TURNS,
+            )
+        except Exception:
+            return empty, True
+        return history, False
+
+    async def _contextualize_question(
+        self,
+        *,
+        question: str,
+        history: ChatConversationHistory,
+        bounded_user_utterances: tuple[str, ...],
+        read_degraded: bool,
+        compression_allowed: bool,
+    ) -> tuple[str, str, bool]:
+        if read_degraded:
+            return question, "CONTEXT_DEGRADED", False
+        if not bounded_user_utterances or history.completed_user_turns == 0:
+            return question, "CONTEXT_NOT_NEEDED", False
+        if history.completed_user_turns < self._conversation_compression_start_after_user_turns:
+            return (
+                self._raw_contextual_question(
+                    question=question,
+                    user_utterances=bounded_user_utterances,
+                ),
+                "RAW_CONTEXT_USED",
+                False,
+            )
+        if self._conversation_context_compressor is None or not compression_allowed:
+            return question, "CONTEXT_DEGRADED", False
+        try:
+            draft = await self._conversation_context_compressor.compress_context(
+                question=question,
+                user_utterances=bounded_user_utterances,
+            )
+            resolved_question = self._validate_context_draft(draft)
+        except Exception:
+            return question, "CONTEXT_DEGRADED", True
+        return resolved_question, "COMPRESSED_CONTEXT_USED", True
+
+    def _context_budget_detail_code(self, context_status: str) -> str:
+        if self._budget_guard is None:
+            prefix = "CHAT_BUDGET_GUARD_NOT_CONFIGURED"
+        else:
+            prefix = "CHAT_RATE_AND_TOKEN_BUDGET_RESERVED"
+        return prefix if context_status == "CONTEXT_NOT_NEEDED" else f"{prefix}_{context_status}"
+
+    @staticmethod
+    def _with_context_degraded_disclosure(answer: str) -> str:
+        maximum_body = _MAXIMUM_CHAT_ANSWER_CHARACTERS - len(CONTEXT_DEGRADED_PREFIX)
+        return f"{CONTEXT_DEGRADED_PREFIX}{answer[:maximum_body].rstrip()}"
+
+    @staticmethod
+    def _raw_contextual_question(
+        *,
+        question: str,
+        user_utterances: Sequence[str],
+    ) -> str:
+        prior = "\n".join(f"- {item}" for item in user_utterances)
+        return (
+            "현재 질문:\n"
+            f"{question}\n\n"
+            "이전 사용자 발화(지시대상과 의도 확인용이며 사실 근거가 아님):\n"
+            f"{prior}"
+        )
+
+    @staticmethod
+    def _bounded_user_utterances(
+        user_utterances: Sequence[str],
+        *,
+        maximum_bytes: int,
+    ) -> tuple[str, ...]:
+        retained: list[str] = []
+        remaining = maximum_bytes
+        for utterance in reversed(user_utterances):
+            normalized = utterance.strip()
+            if not normalized or remaining <= 0:
+                continue
+            bounded = ChatService._truncate_utf8(normalized, maximum_bytes=remaining)
+            if bounded:
+                retained.append(bounded)
+                remaining -= len(bounded.encode("utf-8"))
+        retained.reverse()
+        return tuple(retained)
+
+    @staticmethod
+    def _truncate_utf8(value: str, *, maximum_bytes: int) -> str:
+        encoded = value.encode("utf-8")
+        if len(encoded) <= maximum_bytes:
+            return value
+        return encoded[:maximum_bytes].decode("utf-8", errors="ignore").strip()
+
+    @staticmethod
+    def _validate_context_draft(draft: ChatConversationContextDraft) -> str:
+        question = draft.resolved_question.strip()
+        if (
+            not question
+            or len(question) > _MAXIMUM_CONTEXTUAL_QUESTION_CHARACTERS
+            or _INTERNAL_EVIDENCE_MARKUP.search(question)
+            or _UUID_TOKEN.search(question)
+            or _CONTEXT_FORBIDDEN_IDENTIFIER.search(question)
+        ):
+            raise ValueError("The conversation context draft violates its bounded contract.")
+        return question
 
     async def _retrieve(
         self,
@@ -1738,12 +1945,14 @@ class ChatService:
         retrieval_mode: ChatRetrievalMode = ChatRetrievalMode.GENERAL,
         reranker_enabled: bool = False,
         route_classifier_enabled: bool = False,
+        conversation_context_bytes: int = 0,
+        context_compression_enabled: bool = False,
     ) -> int:
         # One reserved token per possible UTF-8 byte deliberately overstates
         # provider tokenization. The base covers the bounded composer request
         # and output. VECTOR and reranker inputs are additive because they are
         # separate provider invocations in the same request.
-        question_bytes = len(question.encode("utf-8"))
+        question_bytes = len(question.encode("utf-8")) + max(conversation_context_bytes, 0)
         total = question_bytes + (maximum_evidence * 16_384) + 8_192 + 1_024
         if retrieval_mode is ChatRetrievalMode.VECTOR:
             candidate_count = min(
@@ -1759,6 +1968,10 @@ class ChatService:
             # The fixed classifier receives only the question and emits one short enum.
             # Reserve a deliberately larger prompt/output envelope before it is invoked.
             total += question_bytes + 2_048
+        if context_compression_enabled:
+            # Compression is a separate fixed provider call. Reserve the bounded
+            # source, fixed prompt and worst-case contextualized question before it runs.
+            total += question_bytes + 8_192 + (_MAXIMUM_CONTEXTUAL_QUESTION_CHARACTERS * 4)
         return total
 
     @staticmethod
