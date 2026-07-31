@@ -148,9 +148,7 @@ async def test_semantic_router_uses_the_model_classification_for_multilingual_in
     )
 
 
-async def test_semantic_router_treats_prompt_injection_as_question_data_and_bypasses_explicit_mode() -> (
-    None
-):
+async def test_semantic_router_bypasses_explicit_mode_for_injection_text() -> None:
     classifier = _RouteClassifier(ChatRetrievalMode.GRAPH)
     router = SemanticChatQuestionRouter(classifier=classifier)
 
