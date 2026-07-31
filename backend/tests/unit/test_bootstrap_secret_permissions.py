@@ -84,7 +84,7 @@ def test_local_demo_identities_match_keycloak_and_use_balanced_human_roles(
     }
     assert Action.CHAT_QUERY in actions_by_username["minjae.oh"]
     assert Action.CHAT_QUERY not in actions_by_username["jihoon.choi"]
-    assert Action.CHAT_QUERY not in actions_by_username["sua.han"]
+    assert Action.CHAT_QUERY in actions_by_username["sua.han"]
     assert {
         Action.ATTACHMENT_DOWNLOAD,
         Action.GOVERNANCE_DOCUMENT_READ,

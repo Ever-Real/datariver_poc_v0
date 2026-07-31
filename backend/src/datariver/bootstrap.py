@@ -85,6 +85,7 @@ LOCAL_DEMO_IDENTITIES = (
             Action.ATTACHMENT_DOWNLOAD,
             Action.CATALOG_READ,
             Action.CATALOG_SEARCH,
+            Action.CHAT_QUERY,
             Action.CHANGE_READ,
             Action.CHANGE_REVIEW,
             Action.CHANGE_APPROVE,
