@@ -152,9 +152,7 @@ def _local_human_membership_attributes(
 ) -> dict[str, object]:
     """Build the single-Workspace local identity authorization envelope."""
 
-    resolved_actions = tuple(
-        dict.fromkeys((*allowed_actions, *LOCAL_HUMAN_DASHBOARD_READ_ACTIONS))
-    )
+    resolved_actions = tuple(dict.fromkeys((*allowed_actions, *LOCAL_HUMAN_DASHBOARD_READ_ACTIONS)))
     return {
         "groups": list(groups),
         "allowed_actions": [action.value for action in resolved_actions],
