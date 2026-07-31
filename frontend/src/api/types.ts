@@ -1088,6 +1088,13 @@ export interface KnowledgeAssetBindingSummary {
   source_name: string
   source_version: string
   mapping_rule_count: number
+  mapping_rules?: Array<{
+    method: 'SUBJECT_ID' | 'PROPERTY' | 'EDGE_LINK' | 'EDGE_PROPERTY'
+    source_field_path: string
+    target_stable_element_id: string
+    source_unit: string | null
+    canonical_unit: string | null
+  }>
 }
 
 export interface KnowledgeAssetProjectionSummary {
@@ -1109,6 +1116,7 @@ export interface KnowledgeAssetOperationalDetail {
     kind: 'CLASS' | 'PROPERTY' | 'RELATION'
     display_name: string
     canonical_name: string
+    parent_stable_element_id?: string | null
     data_type: string | null
     source_stable_element_id: string | null
     target_stable_element_id: string | null

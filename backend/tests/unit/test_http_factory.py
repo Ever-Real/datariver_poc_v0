@@ -1448,6 +1448,34 @@ def test_knowledge_asset_registry_openapi_exposes_an_optional_uuid_domain_fence(
     assert {"type": "null"} in domain["schema"]["anyOf"]
 
 
+def test_knowledge_asset_detail_exposes_only_bounded_binding_field_metadata() -> None:
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+    operation = document["paths"]["/api/v1/knowledge/registry/assets/{graph_id}/detail"]["get"]
+
+    assert "requestBody" not in operation
+    element = document["components"]["schemas"]["KnowledgeAssetSchemaElementSummaryResponse"]
+    assert "parent_stable_element_id" in element["properties"]
+    binding = document["components"]["schemas"]["KnowledgeAssetBindingSummaryResponse"]
+    assert "mapping_rules" in binding["properties"]
+    rule = document["components"]["schemas"]["KnowledgeAssetMappingRuleSummaryResponse"]
+    assert set(rule["properties"]) == {
+        "method",
+        "source_field_path",
+        "target_stable_element_id",
+        "source_unit",
+        "canonical_unit",
+    }
+    assert {
+        "credential",
+        "password",
+        "endpoint_url",
+        "query",
+        "row_data",
+        "selection_document",
+    }.isdisjoint(rule["properties"])
+
+
 def test_typed_upload_template_is_an_authenticated_server_versioned_download() -> None:
     factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
     document = create_app(settings(), container_factory=factory).openapi()

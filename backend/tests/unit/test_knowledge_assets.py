@@ -9,6 +9,7 @@ from uuid import UUID
 import pytest
 
 from datariver.application.knowledge_asset_contracts import (
+    KnowledgeAssetOperationalDetail,
     KnowledgeAssetPage,
     KnowledgeAssetSummary,
     KnowledgeAssetVersionPage,
@@ -201,6 +202,56 @@ def _chat_candidate(asset: KnowledgeAssetSummary) -> KnowledgeChatCandidate:
 
 def _authorization() -> AuthorizationService:
     return AuthorizationService(decision_writer=MemoryDecisionWriter())
+
+
+@pytest.mark.asyncio
+async def test_asset_detail_preserves_exact_graph_kg_read_authorization() -> None:
+    asset = _asset(
+        graph_id=GRAPH_A_ID,
+        release_id=RELEASE_A_ID,
+        policy=_policy(
+            graph_id=GRAPH_A_ID,
+            policy_id=POLICY_A_ID,
+            priority=100,
+            any_terms=("재무",),
+        ),
+    )
+    detail = KnowledgeAssetOperationalDetail(
+        asset=asset,
+        schema_elements=(),
+        bindings=(),
+        projections=(),
+    )
+    repository = SimpleNamespace(get_operational_detail=AsyncMock(return_value=detail))
+    service = KnowledgeAssetService(
+        repository=cast(KnowledgeAssetRepository, repository),
+        authorization=_authorization(),
+    )
+
+    result = await service.get_detail(
+        workspace_id=WORKSPACE_ID,
+        graph_id=GRAPH_A_ID,
+        subject=_subject(allowed_actions=frozenset({Action.KG_READ})),
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="knowledge-asset-coverage",
+    )
+
+    assert result is detail
+    repository.get_operational_detail.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        graph_id=GRAPH_A_ID,
+        clearance=int(Classification.INTERNAL),
+        allowed_domain_ids=frozenset({DOMAIN_ID}),
+    )
+
+    with pytest.raises(ForbiddenError, match="requested action is not permitted"):
+        await service.get_detail(
+            workspace_id=WORKSPACE_ID,
+            graph_id=GRAPH_A_ID,
+            subject=_subject(allowed_actions=frozenset()),
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="knowledge-asset-coverage-denied",
+        )
 
 
 @pytest.mark.asyncio

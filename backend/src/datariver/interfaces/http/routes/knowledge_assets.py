@@ -19,6 +19,7 @@ from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_c
 from datariver.interfaces.http.schemas import (
     KnowledgeAssetBindingSummaryResponse,
     KnowledgeAssetEndpointResponse,
+    KnowledgeAssetMappingRuleSummaryResponse,
     KnowledgeAssetOperationalDetailResponse,
     KnowledgeAssetPageResponse,
     KnowledgeAssetProjectionSummaryResponse,
@@ -108,6 +109,7 @@ def _detail_response(
                 kind=item.kind,
                 display_name=item.display_name,
                 canonical_name=item.canonical_name,
+                parent_stable_element_id=item.parent_stable_element_id,
                 data_type=item.data_type,
                 source_stable_element_id=item.source_stable_element_id,
                 target_stable_element_id=item.target_stable_element_id,
@@ -123,6 +125,16 @@ def _detail_response(
                 source_name=item.source_name,
                 source_version=item.source_version,
                 mapping_rule_count=item.mapping_rule_count,
+                mapping_rules=[
+                    KnowledgeAssetMappingRuleSummaryResponse(
+                        method=rule.method,
+                        source_field_path=rule.source_field_path,
+                        target_stable_element_id=rule.target_stable_element_id,
+                        source_unit=rule.source_unit,
+                        canonical_unit=rule.canonical_unit,
+                    )
+                    for rule in item.mapping_rules
+                ],
             )
             for item in detail.bindings
         ],

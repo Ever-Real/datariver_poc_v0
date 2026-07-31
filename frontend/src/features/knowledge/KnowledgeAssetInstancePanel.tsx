@@ -215,6 +215,29 @@ export function KnowledgeAssetInstancePanel({
     () => detail?.schema_elements.filter((item) => item.kind === 'RELATION') ?? [],
     [detail],
   )
+  const databaseCoverage = useMemo(() => {
+    const properties = detail?.schema_elements.filter((item) => item.kind === 'PROPERTY') ?? []
+    const bindingsByClass = new Map(
+      (detail?.bindings ?? []).map((binding) => [binding.target_stable_element_id, binding]),
+    )
+    return classes.map((classElement) => {
+      const binding = bindingsByClass.get(classElement.stable_element_id)
+      const rulesByTarget = new Map(
+        (binding?.mapping_rules ?? []).map((rule) => [rule.target_stable_element_id, rule]),
+      )
+      return {
+        classElement,
+        properties: properties.filter(
+          (property) => property.parent_stable_element_id === classElement.stable_element_id,
+        ),
+        binding,
+        rulesByTarget,
+        incomplete: Boolean(
+          binding && (binding.mapping_rules?.length ?? 0) < binding.mapping_rule_count,
+        ),
+      }
+    })
+  }, [classes, detail])
   const nodeChoices = useMemo(() => {
     const persisted = (snapshot?.nodes ?? []).map((node) => ({
       id: node.id,
@@ -681,23 +704,108 @@ export function KnowledgeAssetInstancePanel({
               Studio에서 Binding 편집
             </button>
           </div>
-          {detail?.bindings.length ? (
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse text-left text-xs">
-                <thead><tr className="border-b border-slate-300"><th className="p-2">Target</th><th className="p-2">Source</th><th className="p-2">Version</th><th className="p-2">Rules</th></tr></thead>
-                <tbody>
-                  {detail.bindings.map((binding) => (
-                    <tr key={binding.id} className="border-b border-slate-200">
-                      <td className="p-2 font-bold">{binding.target_stable_element_id}</td>
-                      <td className="p-2">{binding.source_name}</td>
-                      <td className="p-2">{binding.source_version}</td>
-                      <td className="p-2">{binding.mapping_rule_count}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+          {databaseCoverage.length ? (
+            <div className="grid gap-3" aria-label="Class 및 Property DB Binding coverage">
+              {databaseCoverage.map((coverage) => {
+                const identifierRule = coverage.rulesByTarget.get(
+                  coverage.classElement.stable_element_id,
+                )
+                return (
+                  <article
+                    key={coverage.classElement.stable_element_id}
+                    className="grid gap-3 rounded-enterprise border border-slate-200 bg-slate-50 p-3"
+                  >
+                    <header className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <strong className="block text-sm text-navy-900">
+                          {coverage.classElement.display_name}
+                        </strong>
+                        <span className="text-[11px] text-slate-500">
+                          {coverage.classElement.canonical_name}
+                        </span>
+                      </div>
+                      <span className={`badge ${coverage.binding ? 'badge-soft' : ''}`}>
+                        {coverage.binding ? 'BOUND' : 'UNMAPPED'}
+                      </span>
+                    </header>
+                    {coverage.binding ? (
+                      <dl className="grid gap-2 text-xs sm:grid-cols-3">
+                        <div>
+                          <dt className="font-bold text-slate-500">Source</dt>
+                          <dd className="m-0 break-words">
+                            {coverage.binding.source_name} · {coverage.binding.source_kind}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="font-bold text-slate-500">Source version</dt>
+                          <dd className="m-0 break-words">{coverage.binding.source_version}</dd>
+                        </div>
+                        <div>
+                          <dt className="font-bold text-slate-500">Class identifier field</dt>
+                          <dd className="m-0 break-words">
+                            {identifierRule?.source_field_path
+                              ?? (coverage.incomplete ? '제한 범위 밖' : '미매핑')}
+                          </dd>
+                        </div>
+                      </dl>
+                    ) : (
+                      <p className="m-0 text-xs text-slate-500">
+                        이 Class에 발행된 source binding이 없습니다.
+                      </p>
+                    )}
+                    <div className="overflow-x-auto">
+                      <table className="w-full border-collapse text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-slate-300">
+                            <th className="p-2">Property</th>
+                            <th className="p-2">Type</th>
+                            <th className="p-2">Binding</th>
+                            <th className="p-2">Source field</th>
+                            <th className="p-2">Unit</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {coverage.properties.length ? coverage.properties.map((property) => {
+                            const rule = coverage.rulesByTarget.get(property.stable_element_id)
+                            return (
+                              <tr key={property.stable_element_id} className="border-b border-slate-200">
+                                <td className="p-2 font-bold">{property.display_name}</td>
+                                <td className="p-2">{property.data_type ?? '—'}</td>
+                                <td className="p-2">
+                                  {rule ? 'MAPPED' : coverage.incomplete ? 'LIMITED' : 'UNMAPPED'}
+                                </td>
+                                <td className="p-2 break-words">{rule?.source_field_path ?? '—'}</td>
+                                <td className="p-2">
+                                  {rule?.source_unit && rule.canonical_unit
+                                    ? `${rule.source_unit} → ${rule.canonical_unit}`
+                                    : '—'}
+                                </td>
+                              </tr>
+                            )
+                          }) : (
+                            <tr>
+                              <td className="p-2 text-slate-500" colSpan={5}>
+                                이 Class에 정의된 Property가 없습니다.
+                              </td>
+                            </tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                    {coverage.incomplete && (
+                      <p className="m-0 text-[11px] text-amber-700">
+                        상세 조회 제한 밖의 mapping은 이 화면에서 미매핑으로 단정하지 않습니다.
+                      </p>
+                    )}
+                  </article>
+                )
+              })}
             </div>
-          ) : <p className="m-0 text-xs text-slate-500">활성 Studio Release에 DB Binding이 없습니다.</p>}
+          ) : (
+            <p className="m-0 text-xs text-slate-500">
+              활성 Studio Release에 조회 가능한 Class가 없습니다.
+            </p>
+          )}
         </section>
       )}
     </section>

@@ -3001,6 +3001,14 @@ class KnowledgeAssetVersionPageResponse(BaseModel):
     limit: int
 
 
+class KnowledgeAssetMappingRuleSummaryResponse(BaseModel):
+    method: Literal["SUBJECT_ID", "PROPERTY", "EDGE_LINK", "EDGE_PROPERTY"]
+    source_field_path: str
+    target_stable_element_id: str
+    source_unit: str | None
+    canonical_unit: str | None
+
+
 class KnowledgeAssetBindingSummaryResponse(BaseModel):
     id: UUID
     target_stable_element_id: str
@@ -3009,6 +3017,7 @@ class KnowledgeAssetBindingSummaryResponse(BaseModel):
     source_name: str
     source_version: str
     mapping_rule_count: int
+    mapping_rules: list[KnowledgeAssetMappingRuleSummaryResponse]
 
 
 class KnowledgeAssetProjectionSummaryResponse(BaseModel):
@@ -3028,6 +3037,7 @@ class KnowledgeAssetSchemaElementSummaryResponse(BaseModel):
     kind: str
     display_name: str
     canonical_name: str
+    parent_stable_element_id: str | None
     data_type: str | None
     source_stable_element_id: str | None
     target_stable_element_id: str | None

@@ -47,11 +47,51 @@ const detail: KnowledgeAssetOperationalDetail = {
     kind: 'CLASS',
     display_name: '고객',
     canonical_name: 'Customer',
+    parent_stable_element_id: null,
     data_type: null,
     source_stable_element_id: null,
     target_stable_element_id: null,
+  }, {
+    stable_element_id: 'property.customer.name',
+    kind: 'PROPERTY',
+    display_name: '고객명',
+    canonical_name: 'name',
+    parent_stable_element_id: 'class.customer',
+    data_type: 'STRING',
+    source_stable_element_id: null,
+    target_stable_element_id: null,
+  }, {
+    stable_element_id: 'property.customer.segment',
+    kind: 'PROPERTY',
+    display_name: '고객군',
+    canonical_name: 'segment',
+    parent_stable_element_id: 'class.customer',
+    data_type: 'STRING',
+    source_stable_element_id: null,
+    target_stable_element_id: null,
   }],
-  bindings: [],
+  bindings: [{
+    id: '019fa57b-52de-74c0-9f5e-06ae7b1e0010',
+    target_stable_element_id: 'class.customer',
+    source_reference_id: '019fa57b-52de-74c0-9f5e-06ae7b1e0011',
+    source_kind: 'CATALOG_DATASET',
+    source_name: 'crm.customer',
+    source_version: 'catalog-v3',
+    mapping_rule_count: 2,
+    mapping_rules: [{
+      method: 'SUBJECT_ID',
+      source_field_path: 'customer_id',
+      target_stable_element_id: 'class.customer',
+      source_unit: null,
+      canonical_unit: null,
+    }, {
+      method: 'PROPERTY',
+      source_field_path: 'customer_name',
+      target_stable_element_id: 'property.customer.name',
+      source_unit: null,
+      canonical_unit: null,
+    }],
+  }],
   projections: [],
 }
 
@@ -74,6 +114,40 @@ const changeset: KnowledgeChangeSet = {
 }
 
 describe('KnowledgeAssetInstancePanel', () => {
+  it('shows released Class and Property binding coverage without exposing source rows', async () => {
+    const onEditAsset = vi.fn()
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/knowledge/registry/assets?')) {
+        return Promise.resolve({
+          items: [asset],
+          next_cursor: null,
+          limit: 100,
+        } satisfies KnowledgeAssetPage)
+      }
+      if (path.endsWith('/detail')) return Promise.resolve(detail)
+      if (path.endsWith('/changesets')) return Promise.resolve([])
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+
+    render(
+      <KnowledgeAssetInstancePanel
+        client={{ request } as unknown as ApiClient}
+        onEditAsset={onEditAsset}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'DB Binding' }))
+    expect(await screen.findByLabelText('Class 및 Property DB Binding coverage'))
+      .toBeInTheDocument()
+    expect(screen.getByText(/crm\.customer · CATALOG_DATASET/)).toBeInTheDocument()
+    expect(screen.getByText('customer_id')).toBeInTheDocument()
+    expect(screen.getByText('customer_name')).toBeInTheDocument()
+    expect(screen.getByText('고객군').closest('tr')).toHaveTextContent('UNMAPPED')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Studio에서 Binding 편집' }))
+    expect(onEditAsset).toHaveBeenCalledWith(asset.id)
+  })
+
   it('focuses the result Changeset supplied by the Studio ingestion route', async () => {
     const focusedChangeset = {
       ...changeset,

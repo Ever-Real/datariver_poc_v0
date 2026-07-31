@@ -79,6 +79,15 @@ class KnowledgeAssetVersionPage:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeAssetMappingRuleSummary:
+    method: str
+    source_field_path: str
+    target_stable_element_id: str
+    source_unit: str | None
+    canonical_unit: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeAssetBindingSummary:
     binding_id: UUID
     target_stable_element_id: str
@@ -87,6 +96,7 @@ class KnowledgeAssetBindingSummary:
     source_name: str
     source_version: str
     mapping_rule_count: int
+    mapping_rules: tuple[KnowledgeAssetMappingRuleSummary, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +118,7 @@ class KnowledgeAssetSchemaElementSummary:
     kind: str
     display_name: str
     canonical_name: str
+    parent_stable_element_id: str | None
     data_type: str | None
     source_stable_element_id: str | None
     target_stable_element_id: str | None

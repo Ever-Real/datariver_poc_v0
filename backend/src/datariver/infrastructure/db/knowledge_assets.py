@@ -14,6 +14,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from datariver.application.knowledge_asset_contracts import (
     KnowledgeAssetBindingSummary,
+    KnowledgeAssetMappingRuleSummary,
     KnowledgeAssetOperationalDetail,
     KnowledgeAssetPage,
     KnowledgeAssetProjectionSummary,
@@ -48,6 +49,7 @@ from datariver.infrastructure.db.models.platform import SubjectModel
 
 _POLICY_OPERATION = "kg.delivery-policy.save.v1"
 _CURSOR_VERSION = 1
+_OPERATIONAL_DETAIL_ELEMENT_LIMIT = 500
 
 
 def _encode_cursor(
@@ -558,7 +560,7 @@ class SqlKnowledgeAssetRepository(KnowledgeAssetRepository):
                             OntologyElementModel.ordinal,
                             OntologyElementModel.stable_element_id,
                         )
-                        .limit(500)
+                        .limit(_OPERATIONAL_DETAIL_ELEMENT_LIMIT)
                     )
                 ).all()
                 schema_elements = tuple(
@@ -567,6 +569,11 @@ class SqlKnowledgeAssetRepository(KnowledgeAssetRepository):
                         kind=model.kind,
                         display_name=model.display_name,
                         canonical_name=model.canonical_name,
+                        parent_stable_element_id=(
+                            str(model.element_document["parent_stable_element_id"])
+                            if model.element_document.get("parent_stable_element_id") is not None
+                            else None
+                        ),
                         data_type=(
                             str(model.element_document["data_type"])
                             if model.element_document.get("data_type") is not None
@@ -584,6 +591,40 @@ class SqlKnowledgeAssetRepository(KnowledgeAssetRepository):
                         ),
                     )
                     for model in element_models
+                )
+            visible_element_ids = tuple(item.stable_element_id for item in schema_elements)
+            rule_models = (
+                (
+                    await self._session.scalars(
+                        select(ABoxMappingRuleVersionModel)
+                        .where(
+                            ABoxMappingRuleVersionModel.workspace_id == workspace_id,
+                            ABoxMappingRuleVersionModel.studio_release_id
+                            == asset.active_studio_release_id,
+                            ABoxMappingRuleVersionModel.target_stable_element_id.in_(
+                                visible_element_ids
+                            ),
+                        )
+                        .order_by(
+                            ABoxMappingRuleVersionModel.binding_version_id,
+                            ABoxMappingRuleVersionModel.ordinal,
+                        )
+                        .limit(_OPERATIONAL_DETAIL_ELEMENT_LIMIT)
+                    )
+                ).all()
+                if visible_element_ids
+                else []
+            )
+            rules_by_binding: dict[UUID, list[KnowledgeAssetMappingRuleSummary]] = {}
+            for rule in rule_models:
+                rules_by_binding.setdefault(rule.binding_version_id, []).append(
+                    KnowledgeAssetMappingRuleSummary(
+                        method=rule.method,
+                        source_field_path=rule.source_field_path,
+                        target_stable_element_id=rule.target_stable_element_id,
+                        source_unit=rule.source_unit,
+                        canonical_unit=rule.canonical_unit,
+                    )
                 )
             rule_count = (
                 select(
@@ -633,6 +674,7 @@ class SqlKnowledgeAssetRepository(KnowledgeAssetRepository):
                     source_name=str(source.selection_document.get("source_name") or source.id),
                     source_version=source.source_version,
                     mapping_rule_count=int(count),
+                    mapping_rules=tuple(rules_by_binding.get(binding.id, ())),
                 )
                 for binding, source, count in rows
             )
