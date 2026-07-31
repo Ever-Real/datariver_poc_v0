@@ -54,6 +54,15 @@ export function KnowledgeWorkspacePage({
   hardwareWebauthnEnabled,
 }: KnowledgeWorkspacePageProps) {
   const [registryRevision, setRegistryRevision] = useState(0)
+  const query = new URLSearchParams(window.location.search)
+  const requestedInformationTab = query.get('information_tab')
+  const informationTab = requestedInformationTab === 'instances'
+    ? 'INSTANCES'
+    : page === 'knowledge-profiles'
+      ? 'PROFILES'
+      : 'DOMAINS'
+  const focusedAssetId = query.get('asset_id') ?? undefined
+  const focusedChangesetId = query.get('changeset_id') ?? undefined
 
   return (
     <section className="grid gap-4">
@@ -93,7 +102,9 @@ export function KnowledgeWorkspacePage({
             onEnroll={onEnroll}
             hardwareWebauthnEnabled={hardwareWebauthnEnabled}
             onEditAsset={onOpenStudio}
-            initialTab={page === 'knowledge-profiles' ? 'PROFILES' : 'DOMAINS'}
+            initialTab={informationTab}
+            initialAssetId={focusedAssetId}
+            initialChangesetId={focusedChangesetId}
           />
         )}
         {page === 'knowledge-studio' && (

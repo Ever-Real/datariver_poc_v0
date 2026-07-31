@@ -18,6 +18,8 @@ export function KnowledgeInformationManagementPage({
   hardwareWebauthnEnabled,
   onEditAsset,
   initialTab = 'DOMAINS',
+  initialAssetId,
+  initialChangesetId,
 }: {
   client: ApiClient
   onStepUp?: () => Promise<void>
@@ -26,6 +28,8 @@ export function KnowledgeInformationManagementPage({
   hardwareWebauthnEnabled?: boolean
   onEditAsset?: (assetId: string) => void
   initialTab?: 'DOMAINS' | 'PROFILES' | 'INSTANCES' | 'DELIVERY'
+  initialAssetId?: string
+  initialChangesetId?: string
 }) {
   const [activeTab, setActiveTab] = useState<
     'DOMAINS' | 'PROFILES' | 'INSTANCES' | 'DELIVERY'
@@ -149,6 +153,8 @@ export function KnowledgeInformationManagementPage({
         <KnowledgeAssetInstancePanel
           client={client}
           onEditAsset={onEditAsset ?? (() => undefined)}
+          initialAssetId={initialAssetId}
+          initialChangesetId={initialChangesetId}
         />
       )}
       {activeTab === 'DELIVERY' && <KnowledgeDeliveryPolicyPanel client={client} />}

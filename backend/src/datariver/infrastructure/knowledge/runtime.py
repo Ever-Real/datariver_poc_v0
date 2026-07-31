@@ -39,6 +39,12 @@ class KnowledgeRuntimeAdapters:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeEmbeddingRuntime:
+    embedding: OpenAICompatibleEmbeddingProvider
+    binding: ModelBinding
+
+
+@dataclass(frozen=True, slots=True)
 class _RuntimeCoordinates:
     provider: str
     allowed_hosts: frozenset[str]
@@ -171,6 +177,96 @@ def build_knowledge_runtime_adapters(settings: Settings) -> KnowledgeRuntimeAdap
         ),
         bindings=bindings,
     )
+
+
+def build_knowledge_embedding_runtime(settings: Settings) -> KnowledgeEmbeddingRuntime:
+    """Build the embedding-only boundary without resolving any Chat credential."""
+    coordinates = _embedding_coordinates(settings)
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
+    embedding_api_key = (
+        resolver.resolve(coordinates.embedding_api_key_secret_ref)
+        if coordinates.embedding_api_key_secret_ref is not None
+        else None
+    )
+    binding = _activated_binding(
+        provider=coordinates.provider,
+        model=coordinates.embedding_model,
+        prompt_version="embedding-v1",
+        tool_schema_version="openai-embeddings-v1",
+        adapter_contract=EMBEDDING_ADAPTER_CONTRACT,
+        deployment_configuration_hash=_deployment_hash(
+            coordinates=coordinates,
+            system_id="LLM_EMBEDDING",
+            adapter_contract=EMBEDDING_ADAPTER_CONTRACT,
+            model=coordinates.embedding_model,
+            prompt_version="embedding-v1",
+            tool_schema_version="openai-embeddings-v1",
+        ),
+    )
+    return KnowledgeEmbeddingRuntime(
+        embedding=OpenAICompatibleEmbeddingProvider(
+            transport=HttpxOpenAIJsonTransport(
+                base_url=coordinates.embedding_base_url,
+                allowed_hosts=coordinates.allowed_hosts,
+                api_key=embedding_api_key,
+                timeout_seconds=coordinates.embedding_timeout_seconds,
+            )
+        ),
+        binding=binding,
+    )
+
+
+def _embedding_coordinates(settings: Settings) -> _RuntimeCoordinates:
+    if settings.local_ollama_embedding_enabled:
+        if (
+            settings.local_ollama_embedding_base_url is None
+            or settings.local_ollama_embedding_model is None
+        ):
+            raise ConflictError("The activated local embedding binding is incomplete.")
+        return _RuntimeCoordinates(
+            provider=LOCAL_OLLAMA_PROVIDER,
+            allowed_hosts=settings.effective_local_inference_allowed_hosts,
+            approved_public_hosts=frozenset(),
+            chat_base_url="",
+            chat_model="",
+            chat_api_key_secret_ref=None,
+            chat_timeout_seconds=0,
+            chat_options=OpenAICompatibleChatRequestOptions(),
+            embedding_base_url=str(settings.local_ollama_embedding_base_url),
+            embedding_model=settings.local_ollama_embedding_model,
+            embedding_api_key_secret_ref=None,
+            embedding_timeout_seconds=settings.local_ollama_embedding_timeout_seconds,
+            connection_mode="LOCAL_OLLAMA",
+        )
+    if settings.intranet_openai_compatible_embedding_enabled:
+        if (
+            settings.intranet_openai_compatible_embedding_base_url is None
+            or settings.intranet_openai_compatible_embedding_model is None
+            or settings.intranet_openai_compatible_embedding_api_key_secret_ref is None
+        ):
+            raise ConflictError("The activated intranet embedding binding is incomplete.")
+        return _RuntimeCoordinates(
+            provider=INTRANET_OPENAI_COMPATIBLE_PROVIDER,
+            allowed_hosts=frozenset(settings.intranet_openai_compatible_allowed_hosts),
+            approved_public_hosts=frozenset(
+                settings.intranet_openai_compatible_approved_public_hosts
+            ),
+            chat_base_url="",
+            chat_model="",
+            chat_api_key_secret_ref=None,
+            chat_timeout_seconds=0,
+            chat_options=OpenAICompatibleChatRequestOptions(),
+            embedding_base_url=str(settings.intranet_openai_compatible_embedding_base_url),
+            embedding_model=settings.intranet_openai_compatible_embedding_model,
+            embedding_api_key_secret_ref=(
+                settings.intranet_openai_compatible_embedding_api_key_secret_ref
+            ),
+            embedding_timeout_seconds=(
+                settings.intranet_openai_compatible_embedding_timeout_seconds
+            ),
+            connection_mode="INTRANET_OPENAI_COMPATIBLE",
+        )
+    raise ConflictError("The activated Knowledge embedding binding is unavailable.")
 
 
 def _coordinates(settings: Settings) -> _RuntimeCoordinates:

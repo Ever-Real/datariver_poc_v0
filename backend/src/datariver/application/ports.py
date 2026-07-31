@@ -126,6 +126,7 @@ from datariver.domain.governance import ApprovalAuthority, ChangeRequest
 from datariver.domain.knowledge import ChangeSetState, GraphChangeOperation, GraphSnapshot
 from datariver.domain.knowledge_pipeline import ModelBinding
 from datariver.domain.knowledge_studio import TBoxElementInput
+from datariver.domain.knowledge_studio_ingestion import StudioSourceProfilePin
 from datariver.domain.manual_metadata import (
     ManualMetadataApplyClaim,
     ManualMetadataAspectReport,
@@ -1641,6 +1642,10 @@ class KnowledgeStudioStore(Protocol):
         draft_id: UUID,
         expected_version: int,
         embedding_binding: dict[str, object] | None,
+        manifest_id: str,
+        manifest_version: int,
+        manifest_hash: str,
+        source_profile_pins: tuple[StudioSourceProfilePin, ...],
         idempotency_key: str,
         request_hash: str,
     ) -> KnowledgeStudioIngestionJobRecord: ...
@@ -1662,6 +1667,31 @@ class KnowledgeStudioStore(Protocol):
         draft_id: UUID,
         limit: int,
     ) -> tuple[KnowledgeStudioIngestionJobRecord, ...]: ...
+
+    async def cancel_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        job_id: UUID,
+        expected_version: int,
+        reason: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioIngestionJobRecord: ...
+
+    async def retry_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        job_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioIngestionJobRecord: ...
 
     async def get_edit_graph(
         self,

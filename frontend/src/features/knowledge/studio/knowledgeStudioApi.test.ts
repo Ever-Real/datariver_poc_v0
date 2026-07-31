@@ -3,6 +3,7 @@ import { ApiClient } from '../../../api/client'
 import {
   advanceKnowledgeStudioDraft,
   autosaveKnowledgeStudioDraft,
+  cancelKnowledgeStudioIngestion,
   createKnowledgeStudioDraft,
   createKnowledgeStudioEditDraft,
   createKnowledgeStudioTBoxCatalogProposal,
@@ -13,6 +14,7 @@ import {
   preflightKnowledgeStudioABox,
   previewKnowledgeStudioBinding,
   publishKnowledgeStudioDraft,
+  retryKnowledgeStudioIngestion,
   submitKnowledgeStudioReview,
   uploadKnowledgeStudioTBoxDocumentProposal,
   type KnowledgeStudioBasicInformation,
@@ -404,5 +406,75 @@ describe('Knowledge Studio API', () => {
     })
     expect(requestUrl(discardCall?.[0])).toContain('/discard')
     expect(new Headers(discardCall?.[1]?.headers).get('Idempotency-Key')).toBe('discard-key')
+  })
+
+  it('uses the job version fence and idempotency key for ingestion cancel and retry', async () => {
+    const job = {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
+      draft_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
+      graph_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d1',
+      studio_release_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d2',
+      requested_by: '019fa57b-52de-74c0-9f5e-06ae7b1bf3b3',
+      state: 'CANCELLED',
+      progress_percent: 0,
+      current_stage: 'COMPLETED',
+      vector_target_count: 0,
+      attempt_count: 1,
+      maximum_attempts: 3,
+      result_changeset_id: null,
+      result_evidence_hash: null,
+      error_code: null,
+      allowed_actions: ['RETRY'],
+      version: 4,
+      created_at: '2026-07-31T01:00:00Z',
+      updated_at: '2026-07-31T01:01:00Z',
+      started_at: '2026-07-31T01:00:05Z',
+      finished_at: '2026-07-31T01:01:00Z',
+    }
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify(job), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"4"' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        ...job,
+        state: 'PENDING',
+        current_stage: 'QUEUED',
+        allowed_actions: ['CANCEL'],
+        version: 5,
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"5"' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    await cancelKnowledgeStudioIngestion(
+      client,
+      job.draft_id,
+      job.id,
+      3,
+      '  운영자가 원천 변경을 확인함  ',
+      'cancel-key',
+    )
+    await retryKnowledgeStudioIngestion(
+      client,
+      job.draft_id,
+      job.id,
+      4,
+      'retry-key',
+    )
+
+    const [cancelCall, retryCall] = fetchMock.mock.calls
+    expect(requestUrl(cancelCall?.[0])).toContain(`/abox/ingestions/${job.id}/cancel`)
+    expect(new Headers(cancelCall?.[1]?.headers).get('If-Match')).toBe('"3"')
+    expect(new Headers(cancelCall?.[1]?.headers).get('Idempotency-Key')).toBe('cancel-key')
+    expect(JSON.parse(cancelCall?.[1]?.body as string)).toEqual({
+      reason: '운영자가 원천 변경을 확인함',
+    })
+    expect(requestUrl(retryCall?.[0])).toContain(`/abox/ingestions/${job.id}/retry`)
+    expect(new Headers(retryCall?.[1]?.headers).get('If-Match')).toBe('"4"')
+    expect(new Headers(retryCall?.[1]?.headers).get('Idempotency-Key')).toBe('retry-key')
+    expect(retryCall?.[1]?.body).toBeUndefined()
   })
 })

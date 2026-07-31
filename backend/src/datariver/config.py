@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     governance_database_secret_ref: str
     knowledge_database_url: str | None = None
     knowledge_database_secret_ref: str | None = None
+    knowledge_ingestion_database_url: str | None = None
+    knowledge_ingestion_database_secret_ref: str | None = None
     export_database_url: str | None = None
     export_database_secret_ref: str | None = None
     retention_scheduler_database_url: str | None = None
@@ -217,6 +219,39 @@ class Settings(BaseSettings):
     knowledge_source_memory_spool_bytes: int = Field(default=1_048_576, ge=4_096, le=52_428_800)
     knowledge_source_spool_directory: str = Field(
         default="/var/spool/datariver-knowledge", min_length=1, max_length=512
+    )
+    knowledge_studio_source_manifest_file: str | None = Field(default=None, max_length=512)
+    knowledge_studio_source_secret_root: str = "/run/secrets/knowledge-studio-sources"  # noqa: S105 - filesystem path
+    knowledge_studio_ingestion_worker_enabled: bool = False
+    knowledge_studio_ingestion_worker_subject_id: UUID | None = None
+    knowledge_studio_ingestion_workspace_id: UUID | None = None
+    knowledge_studio_ingestion_worker_fingerprint: str | None = Field(
+        default=None,
+        max_length=255,
+    )
+    knowledge_studio_ingestion_worker_poll_seconds: float = Field(
+        default=2.0,
+        ge=0.1,
+        le=30.0,
+    )
+    knowledge_studio_ingestion_worker_lease_seconds: int = Field(
+        default=300,
+        ge=60,
+        le=3600,
+    )
+    knowledge_studio_ingestion_source_hard_timeout_seconds: int = Field(
+        default=180,
+        ge=10,
+        le=3300,
+    )
+    knowledge_studio_ingestion_completion_margin_seconds: int = Field(
+        default=30,
+        ge=10,
+        le=300,
+    )
+    knowledge_studio_ingestion_retention_binding_reference: str | None = Field(
+        default=None,
+        max_length=500,
     )
     # Retired compatibility fields. True is rejected below and no runtime consumer
     # reads profile overlays; deployment Settings remain the sole live source.
@@ -615,6 +650,49 @@ class Settings(BaseSettings):
             raise ValueError("Quality source manifest must be one absolute safe path.")
         return str(path)
 
+    @field_validator("knowledge_studio_source_manifest_file")
+    @classmethod
+    def validate_knowledge_studio_source_manifest_file(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        path = PurePosixPath(normalized)
+        if (
+            not normalized
+            or not path.is_absolute()
+            or ".." in path.parts
+            or path == PurePosixPath("/")
+        ):
+            raise ValueError("Knowledge Studio source manifest must be one absolute safe path.")
+        return str(path)
+
+    @field_validator("knowledge_studio_source_secret_root")
+    @classmethod
+    def validate_knowledge_studio_source_secret_root(cls, value: str) -> str:
+        normalized = value.strip()
+        path = PurePosixPath(normalized)
+        if (
+            not normalized
+            or not path.is_absolute()
+            or ".." in path.parts
+            or path == PurePosixPath("/")
+        ):
+            raise ValueError("Knowledge Studio source secret root must be one absolute safe path.")
+        return str(path)
+
+    @field_validator("knowledge_studio_ingestion_worker_fingerprint")
+    @classmethod
+    def validate_knowledge_studio_ingestion_worker_fingerprint(
+        cls,
+        value: str | None,
+    ) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,254}", normalized) is None:
+            raise ValueError("Knowledge Studio ingestion worker fingerprint is invalid.")
+        return normalized
+
     @field_validator("quality_worker_fingerprint")
     @classmethod
     def validate_quality_worker_fingerprint(cls, value: str | None) -> str | None:
@@ -870,6 +948,10 @@ class Settings(BaseSettings):
             credential_urls["catalog_profile_database_url"] = self.catalog_profile_database_url
         if self.quality_database_url is not None:
             credential_urls["quality_database_url"] = self.quality_database_url
+        if self.knowledge_ingestion_database_url is not None:
+            credential_urls["knowledge_ingestion_database_url"] = (
+                self.knowledge_ingestion_database_url
+            )
         embedded_passwords = [
             name for name, url in credential_urls.items() if urlsplit(url).password is not None
         ]
@@ -937,6 +1019,10 @@ class Settings(BaseSettings):
             )
         if self.quality_database_secret_ref is not None:
             references["quality_database"] = self.quality_database_secret_ref
+        if self.knowledge_ingestion_database_secret_ref is not None:
+            references["knowledge_ingestion_database"] = (
+                self.knowledge_ingestion_database_secret_ref
+            )
         invalid_references = [
             name for name, reference in references.items() if not reference.startswith("file:")
         ]
@@ -1423,6 +1509,107 @@ class Settings(BaseSettings):
             ):
                 raise ValueError(
                     "Knowledge source spool directory must be a bounded absolute path."
+                )
+        if self.knowledge_studio_ingestion_worker_enabled:
+            required_ingestion_settings = (
+                self.knowledge_ingestion_database_url,
+                self.knowledge_ingestion_database_secret_ref,
+                self.knowledge_studio_ingestion_worker_subject_id,
+                self.knowledge_studio_ingestion_workspace_id,
+                self.knowledge_studio_ingestion_worker_fingerprint,
+                self.knowledge_studio_source_manifest_file,
+                self.knowledge_studio_ingestion_retention_binding_reference,
+            )
+            if any(value is None for value in required_ingestion_settings):
+                raise ValueError(
+                    "Enabled Knowledge Studio ingestion requires a dedicated database "
+                    "principal, service identity, exact source manifest, deployment "
+                    "fingerprint and approved retention binding."
+                )
+            assert self.knowledge_ingestion_database_url is not None
+            assert self.knowledge_ingestion_database_secret_ref is not None
+            if (
+                urlsplit(self.knowledge_ingestion_database_url).username
+                != "datariver_knowledge_ingestion"
+            ):
+                raise ValueError(
+                    "Knowledge Studio ingestion must use the "
+                    "datariver_knowledge_ingestion database principal."
+                )
+            other_database_urls = {
+                self.database_url,
+                self.migration_database_url,
+                self.relay_database_url,
+                self.upload_database_url,
+                self.governance_database_url,
+                self.bootstrap_database_url,
+                self.knowledge_database_url,
+                self.export_database_url,
+                self.retention_scheduler_database_url,
+                self.archive_database_url,
+                self.catalog_profile_database_url,
+                self.quality_database_url,
+                self.governance_document_database_url,
+            }
+            other_database_principals = {
+                urlsplit(value).username for value in other_database_urls if value is not None
+            }
+            if (
+                self.knowledge_ingestion_database_url in other_database_urls
+                or "datariver_knowledge_ingestion" in other_database_principals
+                or self.knowledge_ingestion_database_secret_ref
+                in {
+                    self.database_secret_ref,
+                    self.migration_database_secret_ref,
+                    self.relay_database_secret_ref,
+                    self.upload_database_secret_ref,
+                    self.governance_database_secret_ref,
+                    self.bootstrap_database_secret_ref,
+                    self.knowledge_database_secret_ref,
+                    self.export_database_secret_ref,
+                    self.retention_scheduler_database_secret_ref,
+                    self.archive_database_secret_ref,
+                    self.catalog_profile_database_secret_ref,
+                    self.quality_database_secret_ref,
+                    self.governance_document_database_secret_ref,
+                }
+            ):
+                raise ValueError(
+                    "Knowledge Studio ingestion database credentials must use a "
+                    "separate principal and secret."
+                )
+            if (
+                self.knowledge_studio_ingestion_source_hard_timeout_seconds
+                + self.knowledge_studio_ingestion_completion_margin_seconds
+                >= self.knowledge_studio_ingestion_worker_lease_seconds
+            ):
+                raise ValueError(
+                    "Knowledge Studio ingestion source timeout and completion margin "
+                    "must fit strictly inside the worker lease."
+                )
+            fingerprint = self.knowledge_studio_ingestion_worker_fingerprint
+            retention_reference = self.knowledge_studio_ingestion_retention_binding_reference
+            assert fingerprint is not None
+            assert retention_reference is not None
+            normalized_retention_reference = retention_reference.strip()
+            if (
+                not normalized_retention_reference
+                or normalized_retention_reference != retention_reference
+                or any(ord(character) < 32 for character in retention_reference)
+            ):
+                raise ValueError(
+                    "Knowledge Studio ingestion requires one bounded retention "
+                    "binding reference without surrounding whitespace or controls."
+                )
+            source_secret_root = PurePosixPath(self.knowledge_studio_source_secret_root)
+            global_secret_root = PurePosixPath(self.system_configuration_secret_root)
+            if (
+                source_secret_root == global_secret_root
+                or source_secret_root in global_secret_root.parents
+            ):
+                raise ValueError(
+                    "Knowledge Studio source secrets require a bounded root that "
+                    "cannot expose the global secret root."
                 )
         if self.local_ollama_chat_enabled:
             if self.app_env != "development":

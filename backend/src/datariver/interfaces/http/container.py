@@ -9,6 +9,11 @@ from datariver.infrastructure.datahub.http import HttpDataHubGateway
 from datariver.infrastructure.db.session import Database
 from datariver.infrastructure.identity.keycloak import KeycloakIdentityAdministration
 from datariver.infrastructure.knowledge.neo4j import BoltNeo4jQueryExecutor
+from datariver.infrastructure.knowledge_studio.postgres_source import (
+    KnowledgeStudioSourceManifest,
+    build_knowledge_studio_sample_reader,
+    load_knowledge_studio_source_manifest,
+)
 from datariver.infrastructure.object_store.governance_document_attachments import (
     S3GovernanceDocumentAttachmentStore,
 )
@@ -32,6 +37,7 @@ class AppContainer:
     governance_document_attachments: S3GovernanceDocumentAttachmentStore | None = None
     identity_admin: KeycloakIdentityAdministration | None = None
     knowledge_studio_samples: KnowledgeStudioSampleReader | None = None
+    knowledge_studio_source_manifest: KnowledgeStudioSourceManifest | None = None
 
     async def close(self) -> None:
         await self.datahub.close()
@@ -56,6 +62,16 @@ def build_container(settings: Settings) -> AppContainer:
     knowledge_neo4j: BoltNeo4jQueryExecutor | None = None
     governance_document_attachments: S3GovernanceDocumentAttachmentStore | None = None
     identity_admin: KeycloakIdentityAdministration | None = None
+    knowledge_studio_samples: KnowledgeStudioSampleReader | None = None
+    knowledge_studio_source_manifest: KnowledgeStudioSourceManifest | None = None
+    if settings.knowledge_studio_source_manifest_file is not None:
+        knowledge_studio_source_manifest = load_knowledge_studio_source_manifest(
+            settings.knowledge_studio_source_manifest_file
+        )
+        knowledge_studio_samples = build_knowledge_studio_sample_reader(
+            manifest=knowledge_studio_source_manifest,
+            secret_root=settings.knowledge_studio_source_secret_root,
+        )
     if settings.neo4j_projection_enabled:
         if settings.neo4j_uri is None or settings.neo4j_auth_secret_ref is None:
             raise ValueError("Enabled Neo4j projection has incomplete settings.")
@@ -162,4 +178,6 @@ def build_container(settings: Settings) -> AppContainer:
         knowledge_neo4j=knowledge_neo4j,
         governance_document_attachments=governance_document_attachments,
         identity_admin=identity_admin,
+        knowledge_studio_samples=knowledge_studio_samples,
+        knowledge_studio_source_manifest=knowledge_studio_source_manifest,
     )

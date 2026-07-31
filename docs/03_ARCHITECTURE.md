@@ -79,6 +79,11 @@ The API gateway is a deployment boundary, not an authorization context. It valid
 
 - DataHub owns metadata after successful application. DataRiver stores a minimal authorized projection and a monotonic local projection version; a true DataHub source watermark remains an ingestion contract.
 - DataRiver PostgreSQL owns intent, approvals, job state, graph release manifests, policy and audit.
+- Knowledge Studio database ingestion starts only from an immutable published Studio Release.
+  PostgreSQL owns its source-profile hashes, Binding pins, requester-authorization snapshot,
+  fenced attempts/events/vector receipts and resulting typed DRAFT Changeset. The deployment-owned
+  source manifest and physical database are fallible inputs; the worker cannot publish a Release
+  or write Neo4j directly.
 - Graph projection data is disposable. Publishing first creates an immutable PostgreSQL/object snapshot, loads a shadow projection, verifies it, then switches the active pointer.
 - Governance Document lifecycle, sanitized content hashes, reviews and exact object/projection
   receipts are PostgreSQL truth. MinIO version bytes and Neo4j document/chunk nodes are verified

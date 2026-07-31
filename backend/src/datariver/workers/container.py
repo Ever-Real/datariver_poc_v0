@@ -52,6 +52,11 @@ class KnowledgeSourceWorkerContainer(RelayWorkerContainer):
 
 
 @dataclass(slots=True)
+class KnowledgeStudioIngestionWorkerContainer(RelayWorkerContainer):
+    pass
+
+
+@dataclass(slots=True)
 class RetentionSchedulerContainer:
     database: Database
 
@@ -365,6 +370,32 @@ def build_knowledge_source_container(settings: Settings) -> KnowledgeSourceWorke
             access_key=resolver.resolve(f"file:{settings.s3_knowledge_access_key_file}"),
             secret_key=resolver.resolve(f"file:{settings.s3_knowledge_secret_key_file}"),
         ),
+    )
+
+
+def build_knowledge_studio_ingestion_container(
+    settings: Settings,
+) -> KnowledgeStudioIngestionWorkerContainer:
+    required = (
+        settings.knowledge_ingestion_database_url,
+        settings.knowledge_ingestion_database_secret_ref,
+        settings.knowledge_studio_ingestion_worker_subject_id,
+        settings.knowledge_studio_ingestion_workspace_id,
+        settings.knowledge_studio_ingestion_worker_fingerprint,
+        settings.knowledge_studio_source_manifest_file,
+        settings.knowledge_studio_ingestion_retention_binding_reference,
+    )
+    if not settings.knowledge_studio_ingestion_worker_enabled or any(
+        value is None for value in required
+    ):
+        raise RuntimeError(
+            "Knowledge Studio ingestion worker requires explicit enablement, "
+            "retention binding, exact manifest and dedicated identity."
+        )
+    resolver = SecretResolver(virtual_secret_root=settings.system_configuration_secret_root)
+    return KnowledgeStudioIngestionWorkerContainer(
+        database=_database(settings, role="knowledge_ingestion"),
+        event_delivery=_delivery(settings, resolver),
     )
 
 

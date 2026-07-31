@@ -170,6 +170,9 @@ authorization-scoped Chat graph selection are defined by
 The governed PDF worker's compatible expansion to CSV, TXT, JSON, XML, HTML and macro-free
 DOCX/XLSX/PPTX evidence sources is defined by
 [ADR-0093](adr/0093-governed-multiformat-knowledge-source-analysis.md).
+Published Studio Release-pinned database ingestion, its dedicated worker/database principal,
+typed DRAFT Changeset result and vector-preparation evidence are defined by
+[ADR-0094](adr/0094-governed-studio-database-ingestion.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

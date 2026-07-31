@@ -52,6 +52,7 @@ QA_MIGRATION = ROOT / "backend/alembic/versions/0062_knowledge_qa_domain_archive
 BUILDER_MIGRATION = ROOT / "backend/alembic/versions/0063_ontology_builder_and_ingestion_jobs.py"
 HIERARCHY_MIGRATION = ROOT / "backend/alembic/versions/0064_normalize_tbox_hierarchy.py"
 SESSION_MIGRATION = ROOT / "backend/alembic/versions/0066_knowledge_studio_session_domains.py"
+INGESTION_MIGRATION = ROOT / "backend/alembic/versions/0081_governed_studio_database_ingestion.py"
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
@@ -177,6 +178,10 @@ def test_ontology_builder_and_ingestion_models_are_typed_and_rls_governed() -> N
     relationships = _table("knowledge.tbox_relationships")
     proposals = _table("knowledge.tbox_proposals")
     jobs = _table("knowledge.studio_ingestion_jobs")
+    binding_pins = _table("knowledge.studio_ingestion_binding_pins")
+    attempts = _table("knowledge.studio_ingestion_attempts")
+    events = _table("knowledge.studio_ingestion_events")
+    vector_receipts = _table("knowledge.studio_ingestion_vector_receipts")
 
     assert {
         "kind",
@@ -236,11 +241,43 @@ def test_ontology_builder_and_ingestion_models_are_typed_and_rls_governed() -> N
     assert {
         "state",
         "progress_percent",
-        "request_document",
-        "vector_policy_document",
+        "studio_release_id",
+        "ontology_version_id",
+        "manifest_hash",
+        "pin_hash",
+        "requester_authorization_hash",
+        "embedding_binding_document",
+        "current_attempt_id",
         "lease_epoch",
         "lease_token_hash",
+        "lease_owner_fingerprint",
+        "result_changeset_id",
     } <= set(jobs.c.keys())
+    assert {
+        "binding_version_id",
+        "source_reference_id",
+        "connection_profile_hash",
+        "selection_hash",
+        "mapping_hash",
+        "rules_document",
+    } <= set(binding_pins.c.keys())
+    assert {
+        "attempt_no",
+        "lease_epoch",
+        "lease_token_hash",
+        "worker_fingerprint",
+        "source_read_receipt_hash",
+        "materialization_hash",
+    } <= set(attempts.c.keys())
+    assert {"sequence", "state", "actor_kind", "evidence_hash"} <= set(events.c.keys())
+    assert {
+        "changeset_id",
+        "property_ontology_element_id",
+        "entity_id",
+        "content_hash",
+        "embedding_binding_hash",
+        "vector_hash",
+    } <= set(vector_receipts.c.keys())
 
     migration = BUILDER_MIGRATION.read_text(encoding="utf-8")
     assert 'revision: str = "0063"' in migration
@@ -269,11 +306,21 @@ def test_ontology_builder_and_ingestion_models_are_typed_and_rls_governed() -> N
     assert "version >= 1" in session_migration
     assert "GRANT UPDATE (version)" in session_migration
     assert "GRANT UPDATE (created_by" not in session_migration
+    ingestion_migration = INGESTION_MIGRATION.read_text(encoding="utf-8")
+    assert 'revision: str = "0081"' in ingestion_migration
+    assert 'down_revision: str | Sequence[str] | None = "0080"' in ingestion_migration
+    assert "datariver_knowledge_ingestion" in ingestion_migration
+    assert "STUDIO_INGESTION_ALL_FUNCTION_SQL" in ingestion_migration
+    assert "0081 requires explicit reconciliation of legacy Studio ingestion jobs" in (
+        ingestion_migration
+    )
     vocabulary = _table("catalog.vocabulary_entries")
     assert {"created_by", "version"} <= set(vocabulary.c.keys())
-    assert '"preflight_receipt_id": str(preflight.id)' in (
-        ROOT / "backend/src/datariver/infrastructure/db/knowledge_studio.py"
-    ).read_text(encoding="utf-8")
+    store_source = (ROOT / "backend/src/datariver/infrastructure/db/knowledge_studio.py").read_text(
+        encoding="utf-8"
+    )
+    assert "SqlKnowledgeStudioIngestionCommandStore(self._session).request(" in (store_source)
+    assert '"preflight_receipt_id": str(preflight.id)' not in store_source
 
 
 def test_studio_typed_mutation_operation_names_fit_the_persisted_bound() -> None:

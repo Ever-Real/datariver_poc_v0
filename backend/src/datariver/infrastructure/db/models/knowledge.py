@@ -221,6 +221,17 @@ class ChangeSetModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
         Index("ix_changesets_graph_state", "graph_id", "state", "created_at"),
         UniqueConstraint("workspace_id", "graph_id", "id"),
         UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "studio_ingestion_job_id",
+            name="uq_changesets_studio_ingestion_job",
+        ),
+        UniqueConstraint(
+            "workspace_id",
+            "id",
+            "studio_ingestion_job_id",
+            name="uq_changesets_studio_ingestion_result",
+        ),
         ForeignKeyConstraint(
             ("workspace_id", "graph_id"),
             ("knowledge.graphs.workspace_id", "knowledge.graphs.id"),
@@ -260,6 +271,24 @@ class ChangeSetModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
             ),
             ondelete="RESTRICT",
             use_alter=True,
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "studio_ingestion_job_id"),
+            (
+                "knowledge.studio_ingestion_jobs.workspace_id",
+                "knowledge.studio_ingestion_jobs.graph_id",
+                "knowledge.studio_ingestion_jobs.id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        CheckConstraint(
+            "NOT (source_analysis_job_id IS NOT NULL AND studio_ingestion_job_id IS NOT NULL)",
+            name="one_automated_source",
         ),
         {"schema": "knowledge"},
     )
@@ -272,6 +301,7 @@ class ChangeSetModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     state: Mapped[str] = mapped_column(String(32), default="DRAFT", nullable=False)
     author_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     source_analysis_job_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    studio_ingestion_job_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     reviewed_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
     reviewed_at: Mapped[datetime | None]
     review_reason: Mapped[str | None] = mapped_column(Text)

@@ -237,7 +237,11 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 | `knowledge.tbox_properties` | workspace/draft/stable Property UQ, exact owner Class, datatype/nullability/unit/vector target flag, nullable opaque metadata reference ID/URN, version | normalized Class-owned Property schema; future rich metadata management resolves the reference instead of expanding Graph Builder |
 | `knowledge.tbox_relationships` | workspace/draft/stable Relationship UQ, exact source/target Classes, fixed `ASSOCIATION` kind, nullable opaque metadata reference ID/URN, version | normalized non-taxonomic Class relationship schema |
 | `knowledge.tbox_proposals` | exact Draft/base version and optional target block, typed proposal/conflict documents, model binding, optional exact upload bucket/key/hash source reference, `READY/APPLIED/REJECTED/FAILED`, merge strategy and timestamps | LLM output remains a Proposal until an authorized, version-fenced acceptance command applies it |
-| `knowledge.studio_ingestion_jobs` | exact Draft/binding request, vector-target-conditional embedding binding and Property/Class/binding/source-field pins, durable `PENDING/RUNNING/FAILED/SUCCESS` progress, reserved lease and terminal result/error | reserved A-Box materialization request contract; the API can persist PENDING but no production worker may claim completion until the approved batch-reader/release-pin design is implemented |
+| `knowledge.studio_ingestion_jobs` | immutable PUBLISHED Studio Release/graph/ontology/base Release, manifest/pin/request/requester-authorization hashes, vector binding, `PENDING/RUNNING/RETRY_WAIT/CANCEL_REQUESTED/SUCCESS/FAILED/STALE/CANCELLED`, fenced current attempt/lease and reciprocal result Changeset | durable A-Box materialization command; API requests and worker transitions are function-owned, versioned and idempotent |
+| `knowledge.studio_ingestion_binding_pins` | job/ordinal and released binding UQ, exact source reference/Asset/version/selection/profile/mapping hashes plus bounded typed rule document | immutable released Class/Property mapping and deployment source-profile evidence; the profile hash covers the bounded workload contract and the row contains no endpoint, username, secret reference or raw row |
+| `knowledge.studio_ingestion_attempts` | job/attempt number and lease epoch UQ, token hash, exact worker fingerprint, state/stage/times, source/materialization/result hashes and bounded failure evidence | worker claim identity and fenced retry/crash evidence; identity is immutable and state transition is function controlled |
+| `knowledge.studio_ingestion_events` | job/sequence UQ, same-job optional attempt, state/reason/actor/evidence hash/details/database time | append-only human/service transition ledger |
+| `knowledge.studio_ingestion_vector_receipts` | job/Changeset/entity/released Property UQ, ontology element, content/embedding/vector hashes, dimension and bounded finite vector document | canonical embedding preparation evidence for every released vector-enabled mapped text Property; not a Neo4j verification claim |
 | `knowledge.source_references` | immutable local catalog asset UUID, exact provider schema version, exact catalog projection version, classification, typed selected-field document/hash and creator | provider-opaque physical Dataset snapshot pin; no external URN, query, endpoint or credential |
 | `knowledge.abox_binding_drafts` | one row per draft + accepted Class/Relation stable ID, immutable source-reference FK, `DRAFT/VALIDATED/STALE`, accepted T-Box version, author/editor and optimistic version | mutable A-Box mapping header; it is not an ingestion job or published assertion |
 | `knowledge.abox_mapping_rule_drafts` | binding/ordinal UQ, typed `SUBJECT_ID/PROPERTY/EDGE_LINK/EDGE_PROPERTY`, selected source field path, accepted T-Box target and fixed `IDENTITY@1` transform | normalized target-scoped mapping contract; arbitrary SQL/Cypher/provider expressions are not accepted |
@@ -249,7 +253,7 @@ privilege. No API or ordinary application unit of work can claim or complete exe
 | `knowledge.delivery_policies` | one row per workspace/graph, API and Chat enable flags, bounded priority, normalized literal ANY/ALL/excluded term arrays, creator/editor/time/version | owner-managed typed alias delivery and Chat graph-scope policy; terms are data and cannot contain SQL/Cypher/regex execution |
 | `knowledge.abox_binding_versions` | Studio Release/target ordinal UQ, exact ontology element/source reference and mapping hash | immutable published A-Box binding headers |
 | `knowledge.abox_mapping_rule_versions` | immutable binding-version/ordinal UQ, ontology target, typed method/source field and `IDENTITY@1` transform | immutable published mapping-rule whitelist |
-| `knowledge.changesets` | `id`, graph/base release/ontology/title/state/author/reviewer/published release, nullable `source_analysis_job_id`, `version`, timestamps | incremental author/review/publish aggregate; a durable worker-created DRAFT is bound to exactly one source-analysis job |
+| `knowledge.changesets` | `id`, graph/base release/ontology/title/state/author/reviewer/published release, mutually exclusive nullable `source_analysis_job_id`/`studio_ingestion_job_id`, `version`, timestamps | incremental author/review/publish aggregate; a durable worker-created DRAFT is reciprocally bound to exactly one source job |
 | `knowledge.change_operations` | `id`, `changeset_id + sequence UQ`, operation/kind/stable ID/document/provenance/confidence | ordered typed node/edge edits; model-proposed provenance includes verified excerpt/excerpt hash/page hash |
 | `knowledge.validation_results` | `id`, changeset/validator/version/severity/code/location/message/time | persisted submission validation evidence |
 | `knowledge.releases` | `id`, `graph_id + release_no UQ`, ontology/content hash/counts/publisher/time | immutable release manifest |
@@ -303,6 +307,25 @@ flags, priority, normalized term arrays, updater/time and version. It has no DEL
 Service reads still apply graph classification/domain pruning, and mutations authorize `kg.edit`
 against the exact graph resource. An enabled Chat policy must contain a positive literal condition;
 raw expressions, provider queries and credentials are not stored.
+
+Revision `0081` replaces the legacy reservation-only ingestion row with an immutable
+Studio-Release-pinned execution aggregate and adds Binding pins, attempts, events and vector
+receipts. Upgrade refuses while any legacy row exists because no exact Release, authorization,
+manifest or attempt evidence can be reconstructed. All five tables use forced Workspace RLS.
+`datariver_app` receives only requester-visible reads and exact request/cancel/retry functions;
+the dedicated NOBYPASSRLS `datariver_knowledge_ingestion` login receives only the exact
+claim/freeze/fence/renew/materialize/fail functions. It has no table UPDATE/DELETE/TRUNCATE grant.
+Every post-claim call carries the job, attempt, lease epoch, raw one-time lease token and exact
+worker fingerprint. Request, claim and completion lock and revalidate the Workspace, graph,
+Studio Release, ontology/base Release and current requester membership/authorization hash.
+
+Successful completion atomically creates one provenance-bound DRAFT Changeset and contiguous typed
+node UPSERT operations; it never publishes an instance Release or writes Neo4j. The reciprocal
+job/Changeset foreign keys prohibit source-analysis dual provenance. Vector receipt count and exact
+entity/Property set must equal the released vector-enabled PROPERTY mappings materialized in those
+operations. Jobs and attempt states may transition only through fixed functions; Binding pins,
+events and vector receipts remain append-only. No retention duration is invented: activation
+requires an operator-approved retention/Legal Hold binding reference.
 
 Pre-flight receipts and published ontology/binding/rule versions are append-only. The application
 role can insert or archive `studio_releases` only as the current independently authorized publisher;

@@ -193,22 +193,39 @@ export interface KnowledgeStudioTBoxProposal {
   rejected_at?: string
 }
 
+export type KnowledgeStudioIngestionState =
+  | 'PENDING'
+  | 'RUNNING'
+  | 'RETRY_WAIT'
+  | 'CANCEL_REQUESTED'
+  | 'SUCCESS'
+  | 'FAILED'
+  | 'STALE'
+  | 'CANCELLED'
+
+export type KnowledgeStudioIngestionAction = 'CANCEL' | 'RETRY'
+
 export interface KnowledgeStudioIngestionJob {
   id: string
   draft_id: string
+  graph_id: string
+  studio_release_id: string
   requested_by: string
-  state: 'PENDING' | 'RUNNING' | 'FAILED' | 'SUCCESS'
+  state: KnowledgeStudioIngestionState
   progress_percent: number
   current_stage: string
   vector_target_count: number
-  result?: Record<string, unknown>
-  error_code?: string
-  error_message?: string
+  attempt_count: number
+  maximum_attempts: number
+  result_changeset_id: string | null
+  result_evidence_hash: string | null
+  error_code: string | null
+  allowed_actions: KnowledgeStudioIngestionAction[]
   version: number
   created_at: string
   updated_at: string
-  started_at?: string
-  finished_at?: string
+  started_at: string | null
+  finished_at: string | null
 }
 
 export type KnowledgeStudioMappingMethod =
@@ -814,6 +831,48 @@ export async function listKnowledgeStudioIngestions(
     { cache: 'no-store', signal },
   )
   return result.items
+}
+
+export async function cancelKnowledgeStudioIngestion(
+  client: ApiClient,
+  draftId: string,
+  jobId: string,
+  version: number,
+  reason: string,
+  idempotencyKey: string,
+): Promise<KnowledgeStudioIngestionJob> {
+  return client.request<KnowledgeStudioIngestionJob>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/ingestions/${
+      encodeURIComponent(jobId)
+    }/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ reason: reason.trim() }),
+      cache: 'no-store',
+      ifMatch: `"${version}"`,
+      idempotencyKey,
+    },
+  )
+}
+
+export async function retryKnowledgeStudioIngestion(
+  client: ApiClient,
+  draftId: string,
+  jobId: string,
+  version: number,
+  idempotencyKey: string,
+): Promise<KnowledgeStudioIngestionJob> {
+  return client.request<KnowledgeStudioIngestionJob>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/ingestions/${
+      encodeURIComponent(jobId)
+    }/retry`,
+    {
+      method: 'POST',
+      cache: 'no-store',
+      ifMatch: `"${version}"`,
+      idempotencyKey,
+    },
+  )
 }
 
 export async function searchKnowledgeStudioSources(

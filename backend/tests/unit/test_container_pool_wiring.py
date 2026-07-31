@@ -5,6 +5,7 @@ from typing import Any
 import pytest
 
 from datariver.config import Settings
+from datariver.infrastructure.knowledge import runtime as knowledge_runtime
 from datariver.interfaces.http import container as http_container
 from datariver.workers import container as worker_container
 
@@ -61,6 +62,54 @@ class Resolver:
 
     def resolve(self, _: str) -> str:
         return "resolved-secret"
+
+
+def test_embedding_only_runtime_never_resolves_the_chat_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    resolved: list[str] = []
+
+    class RecordingResolver:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def resolve(self, reference: str) -> str:
+            resolved.append(reference)
+            return "embedding-secret"
+
+    monkeypatch.setattr(
+        "datariver.config.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [
+            (2, 1, 6, "", ("10.20.30.40", 443)),
+        ],
+    )
+    configured = Settings(
+        **(
+            settings().model_dump()
+            | {
+                "app_env": "development",
+                "intranet_openai_compatible_allowed_hosts": ("models.internal",),
+                "intranet_openai_compatible_chat_enabled": True,
+                "intranet_openai_compatible_chat_base_url": ("https://models.internal/v1"),
+                "intranet_openai_compatible_chat_model": "chat-v1",
+                "intranet_openai_compatible_chat_api_key_secret_ref": (
+                    "file:/run/secrets/chat_api_key"
+                ),
+                "intranet_openai_compatible_embedding_enabled": True,
+                "intranet_openai_compatible_embedding_base_url": ("https://models.internal/v1"),
+                "intranet_openai_compatible_embedding_model": "embedding-v1",
+                "intranet_openai_compatible_embedding_api_key_secret_ref": (
+                    "file:/run/secrets/embedding_api_key"
+                ),
+            }
+        )
+    )
+    monkeypatch.setattr(knowledge_runtime, "SecretResolver", RecordingResolver)
+
+    runtime = knowledge_runtime.build_knowledge_embedding_runtime(configured)
+
+    assert runtime.binding.model == "embedding-v1"
+    assert resolved == ["file:/run/secrets/embedding_api_key"]
 
 
 def test_api_container_passes_the_configured_pool_budget(

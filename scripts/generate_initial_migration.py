@@ -34,6 +34,15 @@ _GOVERNANCE_DOCUMENT_TABLES = frozenset(
         "governance.document_projection_receipts",
     }
 )
+_STUDIO_INGESTION_TABLES = frozenset(
+    {
+        "knowledge.studio_ingestion_jobs",
+        "knowledge.studio_ingestion_binding_pins",
+        "knowledge.studio_ingestion_attempts",
+        "knowledge.studio_ingestion_events",
+        "knowledge.studio_ingestion_vector_receipts",
+    }
+)
 
 
 def _current_subject_sql() -> str:
@@ -251,6 +260,26 @@ def _load_governance_document_management_revision() -> ModuleType:
     return module
 
 
+def _load_studio_ingestion_revision() -> ModuleType:
+    """Load the governed Studio database-ingestion security contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0081_governed_studio_database_ingestion.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_studio_ingestion_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Studio ingestion migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -273,7 +302,7 @@ def build_upgrade() -> ops.UpgradeOps:
         )
         if (
             "workspace_id" in table.columns or table.fullname == "platform.workspaces"
-        ) and table.fullname not in _GOVERNANCE_DOCUMENT_TABLES:
+        ) and table.fullname not in (_GOVERNANCE_DOCUMENT_TABLES | _STUDIO_INGESTION_TABLES):
             workspace_column = "id" if table.fullname == "platform.workspaces" else "workspace_id"
             operations.append(
                 ops.ExecuteSQLOp(f"ALTER TABLE {table.fullname} ENABLE ROW LEVEL SECURITY")
@@ -697,6 +726,34 @@ def build_upgrade() -> ops.UpgradeOps:
         ops.ExecuteSQLOp(governance_document_management._PARENT_MUTATION_FUNCTION_SQL)
     )
     operations.append(ops.ExecuteSQLOp(governance_document_management._PARENT_MUTATION_TRIGGER_SQL))
+    studio_ingestion = _load_studio_ingestion_revision()
+    operations.append(ops.ExecuteSQLOp(studio_ingestion._ROLE_ASSERTION_SQL))
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in studio_ingestion.split_postgresql_statements(
+            studio_ingestion._RLS_AND_IMMUTABILITY_SQL
+        )
+    )
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in studio_ingestion.split_postgresql_statements(
+            studio_ingestion.STUDIO_INGESTION_ALL_FUNCTION_SQL
+        )
+    )
+    for signature in (
+        *studio_ingestion.STUDIO_INGESTION_FUNCTION_SIGNATURES,
+        *studio_ingestion.STUDIO_INGESTION_INTERNAL_FUNCTION_SIGNATURES,
+    ):
+        operations.append(ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {signature} FROM PUBLIC"))
+    for trigger_function in (
+        "knowledge.reject_studio_ingestion_evidence_mutation_v1()",
+        "knowledge.enforce_studio_ingestion_changeset_provenance_v1()",
+        "knowledge.enforce_studio_ingestion_operation_scope_v1()",
+    ):
+        operations.append(
+            ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {trigger_function} FROM PUBLIC")
+        )
+    operations.append(ops.ExecuteSQLOp(studio_ingestion._GRANTS_SQL))
     return ops.UpgradeOps(ops=operations)
 
 
@@ -1141,7 +1198,20 @@ EXECUTE FUNCTION assistant.enforce_chat_message_retention_binding()
 def build_downgrade() -> ops.DowngradeOps:
     phase5 = _load_phase5_revision()
     quality_phase1 = _load_quality_phase1_revision()
+    studio_ingestion = _load_studio_ingestion_revision()
     operations: list[ops.MigrateOperation] = [
+        *(
+            ops.ExecuteSQLOp(f"DROP FUNCTION {signature} CASCADE")
+            for signature in (
+                *studio_ingestion.STUDIO_INGESTION_FUNCTION_SIGNATURES,
+                *studio_ingestion.STUDIO_INGESTION_INTERNAL_FUNCTION_SIGNATURES,
+            )
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION knowledge.reject_studio_ingestion_evidence_mutation_v1(), "
+            "knowledge.enforce_studio_ingestion_changeset_provenance_v1(), "
+            "knowledge.enforce_studio_ingestion_operation_scope_v1() CASCADE"
+        ),
         ops.ExecuteSQLOp(
             "DROP FUNCTION governance.can_read_document_v1(uuid), "
             "governance.can_act_on_document_v1(uuid,text,text), "

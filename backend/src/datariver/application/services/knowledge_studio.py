@@ -18,6 +18,9 @@ from datariver.application.dto import (
     KnowledgeStudioTBoxProposalRecord,
     KnowledgeStudioTBoxRecord,
 )
+from datariver.application.knowledge_studio_ingestion_ports import (
+    KnowledgeStudioIngestionSourceResolver,
+)
 from datariver.application.ports import (
     KnowledgeStudioSchemaAssistant,
     KnowledgeStudioSourceReader,
@@ -58,6 +61,7 @@ from datariver.domain.knowledge_studio import (
     validate_studio_name,
     validate_tbox_element_set,
 )
+from datariver.domain.knowledge_studio_ingestion import StudioSourceProfilePin
 
 
 class KnowledgeStudioService:
@@ -70,6 +74,7 @@ class KnowledgeStudioService:
         schema_assistant: KnowledgeStudioSchemaAssistant | None = None,
         schema_binding: ModelBinding | None = None,
         embedding_binding: ModelBinding | None = None,
+        ingestion_sources: KnowledgeStudioIngestionSourceResolver | None = None,
     ) -> None:
         self._store = store
         self._authorization = authorization
@@ -77,6 +82,7 @@ class KnowledgeStudioService:
         self._schema_assistant = schema_assistant
         self._schema_binding = schema_binding
         self._embedding_binding = embedding_binding
+        self._ingestion_sources = ingestion_sources
 
     async def list_domains(
         self,
@@ -1168,6 +1174,15 @@ class KnowledgeStudioService:
             draft_id=draft_id,
         )
         self._require_abox_step(current)
+        if (
+            current.state != "PUBLISHED"
+            or current.materialized_graph_id is None
+            or current.materialized_ontology_version_id is None
+            or current.published_studio_release_id is None
+        ):
+            raise ConflictError(
+                "Actual A-Box ingestion requires an immutable published Studio Release."
+            )
         await self._authorize_draft(
             draft=current,
             subject=subject,
@@ -1182,6 +1197,32 @@ class KnowledgeStudioService:
         )
         if tbox is None:
             raise NotFoundError("The Knowledge Studio draft does not exist.")
+        abox = await self._store.get_abox(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        if abox is None or not abox.bindings:
+            raise ConflictError("A-Box ingestion requires at least one published Binding.")
+        if self._ingestion_sources is None:
+            raise ConflictError("The governed Studio database source manifest is unavailable.")
+        source_profile_pin_by_asset: dict[UUID, StudioSourceProfilePin] = {}
+        for binding in abox.bindings:
+            pin = self._ingestion_sources.resolve_pin(
+                workspace_id=workspace_id,
+                asset_id=binding.source_asset_id,
+                source_version=binding.source_version,
+                projection_source_version=binding.projection_source_version,
+            )
+            if pin is None:
+                raise ConflictError(
+                    "A published Binding has no exact governed database source profile."
+                )
+            pin.validate()
+            previous = source_profile_pin_by_asset.get(pin.asset_id)
+            if previous is not None and previous != pin:
+                raise ConflictError("A published Dataset resolves to conflicting source profiles.")
+            source_profile_pin_by_asset[pin.asset_id] = pin
         has_vector_targets = any(
             item.vector_index_enabled for block in tbox.blocks for item in block.elements
         )
@@ -1198,6 +1239,13 @@ class KnowledgeStudioService:
                 self._embedding_binding.to_document()
                 if has_vector_targets and self._embedding_binding is not None
                 else None
+            ),
+            manifest_id=self._ingestion_sources.manifest_id,
+            manifest_version=self._ingestion_sources.manifest_version,
+            manifest_hash=self._ingestion_sources.manifest_hash,
+            source_profile_pins=tuple(
+                source_profile_pin_by_asset[key]
+                for key in sorted(source_profile_pin_by_asset, key=str)
             ),
             idempotency_key=idempotency_key,
             request_hash=request_hash,
@@ -1260,6 +1308,81 @@ class KnowledgeStudioService:
             actor_id=subject.subject_id,
             draft_id=draft_id,
             limit=limit,
+        )
+
+    async def cancel_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        job_id: UUID,
+        expected_version: int,
+        reason: str,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioIngestionJobRecord:
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        normalized_reason = reason.strip()
+        if not 1 <= len(normalized_reason) <= 500:
+            raise ValidationError("The ingestion cancellation reason is invalid.")
+        return await self._store.cancel_ingestion_job(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            draft_id=draft_id,
+            job_id=job_id,
+            expected_version=expected_version,
+            reason=normalized_reason,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def retry_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        job_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioIngestionJobRecord:
+        current = await self._require_draft(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+        )
+        await self._authorize_draft(
+            draft=current,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._store.retry_ingestion_job(
+            workspace_id=workspace_id,
+            actor_id=subject.subject_id,
+            draft_id=draft_id,
+            job_id=job_id,
+            expected_version=expected_version,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
         )
 
     async def search_abox_sources(

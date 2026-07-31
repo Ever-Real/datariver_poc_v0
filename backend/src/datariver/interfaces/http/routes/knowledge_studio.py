@@ -78,6 +78,7 @@ from datariver.interfaces.http.schemas import (
     KnowledgeStudioDomainOptionResponse,
     KnowledgeStudioDomainOptionsResponse,
     KnowledgeStudioDraftResponse,
+    KnowledgeStudioIngestionCancelRequest,
     KnowledgeStudioIngestionJobListResponse,
     KnowledgeStudioIngestionJobResponse,
     KnowledgeStudioManagedDomainListResponse,
@@ -258,10 +259,9 @@ def _runtime_service(request: Request, session: SessionDep) -> KnowledgeStudioSe
 
 def _ingestion_service(request: Request, session: SessionDep) -> KnowledgeStudioService:
     store, authorization, sources = _service_components(request, session)
+    container = get_container(request)
     try:
-        embedding_binding = resolve_knowledge_runtime_bindings(
-            get_container(request).settings
-        ).embedding
+        embedding_binding = resolve_knowledge_runtime_bindings(container.settings).embedding
     except ConflictError:
         embedding_binding = None
     return KnowledgeStudioService(
@@ -269,6 +269,11 @@ def _ingestion_service(request: Request, session: SessionDep) -> KnowledgeStudio
         authorization=authorization,
         sources=sources,
         embedding_binding=embedding_binding,
+        ingestion_sources=(
+            container.knowledge_studio_source_manifest
+            if container.settings.knowledge_studio_ingestion_worker_enabled
+            else None
+        ),
     )
 
 
@@ -605,14 +610,19 @@ def _ingestion_response(
     return KnowledgeStudioIngestionJobResponse(
         id=record.job_id,
         draft_id=record.draft_id,
+        graph_id=record.graph_id,
+        studio_release_id=record.studio_release_id,
         requested_by=record.requested_by,
         state=record.state,
         progress_percent=record.progress_percent,
         current_stage=record.current_stage,
         vector_target_count=record.vector_target_count,
-        result=record.result,
+        attempt_count=record.attempt_count,
+        maximum_attempts=record.maximum_attempts,
+        result_changeset_id=record.result_changeset_id,
+        result_evidence_hash=record.result_evidence_hash,
         error_code=record.error_code,
-        error_message=record.error_message,
+        allowed_actions=list(record.allowed_actions),
         version=record.version,
         created_at=record.created_at,
         updated_at=record.updated_at,
@@ -1849,6 +1859,87 @@ async def get_knowledge_studio_ingestion_job(
         environment=context.environment,
         request_id=context.request_id,
     )
+    response.headers["Cache-Control"] = "no-store"
+    return _ingestion_response(record)
+
+
+@router.post(
+    "/drafts/{draft_id}/abox/ingestions/{job_id}/cancel",
+    response_model=KnowledgeStudioIngestionJobResponse,
+)
+async def cancel_knowledge_studio_ingestion_job(
+    draft_id: UUID,
+    job_id: UUID,
+    payload: KnowledgeStudioIngestionCancelRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgeStudioIngestionJobResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "contract": "KNOWLEDGE_STUDIO_INGESTION_CANCEL_V1",
+            "draft_id": str(draft_id),
+            "job_id": str(job_id),
+            "expected_version": expected_version,
+            "reason": payload.reason.strip(),
+        }
+    )
+    record = await _ingestion_service(request, session).cancel_ingestion_job(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        job_id=job_id,
+        expected_version=expected_version,
+        reason=payload.reason,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_version_headers(response, record.version)
+    response.headers["Cache-Control"] = "no-store"
+    return _ingestion_response(record)
+
+
+@router.post(
+    "/drafts/{draft_id}/abox/ingestions/{job_id}/retry",
+    response_model=KnowledgeStudioIngestionJobResponse,
+)
+async def retry_knowledge_studio_ingestion_job(
+    draft_id: UUID,
+    job_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    idempotency_key: IdempotencyKey,
+    if_match: IfMatch,
+) -> KnowledgeStudioIngestionJobResponse:
+    expected_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "contract": "KNOWLEDGE_STUDIO_INGESTION_RETRY_V1",
+            "draft_id": str(draft_id),
+            "job_id": str(job_id),
+            "expected_version": expected_version,
+        }
+    )
+    record = await _ingestion_service(request, session).retry_ingestion_job(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        job_id=job_id,
+        expected_version=expected_version,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    _set_version_headers(response, record.version)
     response.headers["Cache-Control"] = "no-store"
     return _ingestion_response(record)
 

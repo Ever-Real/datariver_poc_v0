@@ -78,6 +78,21 @@ KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS=135
 HOST_DEV_API_PROXY_READ_TIMEOUT_SECONDS=900
 HOST_DEV_KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS=900
 
+# Disabled-by-default Knowledge Studio database-ingestion plane. URLs never contain passwords.
+KNOWLEDGE_STUDIO_INGESTION_WORKER_ENABLED=false
+KNOWLEDGE_INGESTION_DATABASE_URL=<dedicated-datariver_knowledge_ingestion-url>
+KNOWLEDGE_INGESTION_DATABASE_SECRET_REF=file:/run/secrets/postgres_knowledge_ingestion_password
+KNOWLEDGE_STUDIO_INGESTION_WORKER_SUBJECT_ID=<service-subject-uuid>
+KNOWLEDGE_STUDIO_INGESTION_WORKSPACE_ID=<workspace-uuid>
+KNOWLEDGE_STUDIO_INGESTION_WORKER_FINGERPRINT=<deployment-worker-identity>
+KNOWLEDGE_STUDIO_SOURCE_MANIFEST_FILE=<absolute-operator-owned-manifest-path>
+KNOWLEDGE_STUDIO_SOURCE_SECRET_ROOT=/run/secrets/knowledge-studio-sources
+KNOWLEDGE_STUDIO_INGESTION_RETENTION_BINDING_REFERENCE=<approved-control-reference>
+KNOWLEDGE_STUDIO_INGESTION_WORKER_POLL_SECONDS=2
+KNOWLEDGE_STUDIO_INGESTION_WORKER_LEASE_SECONDS=300
+KNOWLEDGE_STUDIO_INGESTION_SOURCE_HARD_TIMEOUT_SECONDS=180
+KNOWLEDGE_STUDIO_INGESTION_COMPLETION_MARGIN_SECONDS=30
+
 DATAHUB_BASE_URL=<gms-origin>
 DATAHUB_SECRET_REF=file:/run/secrets/datahub_token
 
@@ -157,7 +172,8 @@ Portable and WSL profiles never start this Mac-only bridge.
 ### PostgreSQL
 
 - Runtime roles: `DATABASE_*`, `RELAY_DATABASE_*`, `UPLOAD_DATABASE_*`,
-  `GOVERNANCE_DATABASE_*`, `KNOWLEDGE_DATABASE_*`, `EXPORT_DATABASE_*`,
+  `GOVERNANCE_DATABASE_*`, `KNOWLEDGE_DATABASE_*`, `KNOWLEDGE_INGESTION_DATABASE_*`,
+  `EXPORT_DATABASE_*`,
   `RETENTION_SCHEDULER_DATABASE_*`, `ARCHIVE_DATABASE_*`
 - Operator roles: `MIGRATION_DATABASE_*`, `BOOTSTRAP_DATABASE_*`
 - Pool/readiness: `DATABASE_POOL_*`, `WORKER_DATABASE_POOL_*`,
@@ -258,6 +274,20 @@ equivalent least-privilege roles.
   `bolt://127.0.0.1:${NEO4J_BOLT_PORT}`; a containerized API uses `bolt://neo4j:7687`.
 - `KNOWLEDGE_PIPELINE_*` and `KNOWLEDGE_SOURCE_*` remain opt-in and fail closed until all required
   deployment adapters and dedicated storage/database roles validate.
+- `KNOWLEDGE_STUDIO_INGESTION_*`, `KNOWLEDGE_STUDIO_SOURCE_*` and the dedicated
+  `KNOWLEDGE_INGESTION_DATABASE_*` pair activate only the PostgreSQL-backed Studio A-Box worker
+  defined by ADR-0094. The manifest maps exact local Catalog Asset UUID/version pins to
+  operator-owned read-only connection profiles; its credentials remain mounted below the bounded
+  source-secret root. The API never accepts a DSN, SQL string, relation or credential.
+- Before enabling the `knowledge-studio-ingestion` Compose profile, the operator provisions the
+  NOBYPASSRLS database login, bootstraps the exact service Subject/Workspace membership, reconciles
+  any legacy unpinned jobs, installs the immutable manifest and every referenced source secret,
+  records the approved retention binding, then applies revision `0081`. Disabling the flag removes
+  the worker from the required process set; it does not delete jobs, events, attempts or receipts.
+- A source-host deployment translates the container manifest and secret paths to its bounded
+  host-local runtime paths and validates every referenced regular file before starting. The worker
+  resolves only its database/source credentials and, when a released text Property requires it,
+  the embedding credential; it never receives or resolves the Chat credential.
 
 Model IDs are always supplied in the ignored environment. The source never selects, pulls,
 creates, aliases or falls back to a model. Fixed local ports and host allowlists are transport

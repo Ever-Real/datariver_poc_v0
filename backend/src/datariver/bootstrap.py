@@ -30,10 +30,14 @@ LOCAL_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000101")
 LOCAL_AIRFLOW_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000102")
 LOCAL_QUALITY_DISPATCH_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000103")
 LOCAL_QUALITY_WORKER_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000104")
+LOCAL_KNOWLEDGE_INGESTION_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000108")
 LOCAL_KEYCLOAK_SUBJECT = "00000000-0000-4000-8000-000000000001"
 LOCAL_KEYCLOAK_AIRFLOW_SUBJECT = "00000000-0000-4000-8000-000000000002"
 LOCAL_KEYCLOAK_QUALITY_DISPATCH_SUBJECT = "00000000-0000-4000-8000-000000000004"
 LOCAL_QUALITY_WORKER_EXTERNAL_SUBJECT = "urn:datariver:service:quality-worker"
+LOCAL_KNOWLEDGE_INGESTION_EXTERNAL_SUBJECT = (
+    "urn:datariver:service:knowledge-studio-ingestion-worker"
+)
 LOCAL_DEMO_IDENTITIES_PATH = Path("/run/datariver/local-demo-identities.json")
 LOCAL_SERVICE_IDENTITIES_PATH = Path("/run/datariver/local-service-identities.json")
 
@@ -49,6 +53,16 @@ class LocalDemoIdentity:
     clearance: Classification
     groups: tuple[str, ...]
     allowed_actions: tuple[Action, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class LocalServiceIdentity:
+    subject_id: UUID
+    external_subject: str
+    display_name: str
+    groups: tuple[str, ...]
+    allowed_actions: tuple[Action, ...]
+    bootstrap_contract: str
 
 
 LOCAL_DEMO_IDENTITIES = (
@@ -193,6 +207,35 @@ def _local_quality_dispatch_external_subject(
         return str(UUID(value))
     except ValueError as error:
         raise RuntimeError("The local service identity state file is invalid.") from error
+
+
+def _local_service_identities() -> tuple[LocalServiceIdentity, ...]:
+    return (
+        LocalServiceIdentity(
+            subject_id=LOCAL_QUALITY_DISPATCH_SUBJECT_ID,
+            external_subject=_local_quality_dispatch_external_subject(),
+            display_name="DataRiver Quality Dispatch Service",
+            groups=("service-accounts", "quality-dispatchers"),
+            allowed_actions=(Action.QUALITY_DISPATCH,),
+            bootstrap_contract="local-quality-service-v1",
+        ),
+        LocalServiceIdentity(
+            subject_id=LOCAL_QUALITY_WORKER_SUBJECT_ID,
+            external_subject=LOCAL_QUALITY_WORKER_EXTERNAL_SUBJECT,
+            display_name="DataRiver Quality Worker",
+            groups=("service-accounts", "quality-workers"),
+            allowed_actions=(Action.QUALITY_EXECUTE,),
+            bootstrap_contract="local-quality-service-v1",
+        ),
+        LocalServiceIdentity(
+            subject_id=LOCAL_KNOWLEDGE_INGESTION_SUBJECT_ID,
+            external_subject=LOCAL_KNOWLEDGE_INGESTION_EXTERNAL_SUBJECT,
+            display_name="DataRiver Knowledge Studio Ingestion Worker",
+            groups=("service-accounts", "knowledge-ingestion-workers"),
+            allowed_actions=(Action.KG_INGEST_EXECUTE,),
+            bootstrap_contract="local-knowledge-studio-ingestion-service-v1",
+        ),
+    )
 
 
 def _resolve_local_subject(
@@ -358,71 +401,54 @@ async def bootstrap_local_identity() -> dict[str, object]:
                 airflow_membership.clearance = int(Classification.RESTRICTED)
                 airflow_membership.attributes = airflow_attributes
                 airflow_membership.active = True
-            for service_definition in (
-                (
-                    LOCAL_QUALITY_DISPATCH_SUBJECT_ID,
-                    _local_quality_dispatch_external_subject(),
-                    "DataRiver Quality Dispatch Service",
-                    ["service-accounts", "quality-dispatchers"],
-                    [Action.QUALITY_DISPATCH.value],
-                ),
-                (
-                    LOCAL_QUALITY_WORKER_SUBJECT_ID,
-                    LOCAL_QUALITY_WORKER_EXTERNAL_SUBJECT,
-                    "DataRiver Quality Worker",
-                    ["service-accounts", "quality-workers"],
-                    [Action.QUALITY_EXECUTE.value],
-                ),
-            ):
-                (
-                    service_subject_id,
-                    external_subject,
-                    display_name,
-                    groups,
-                    allowed_actions,
-                ) = service_definition
-                fixed_service_subject = await session.get(SubjectModel, service_subject_id)
+            for service_definition in _local_service_identities():
+                fixed_service_subject = await session.get(
+                    SubjectModel,
+                    service_definition.subject_id,
+                )
                 identity_service_subject = (
                     await session.scalars(
                         select(SubjectModel).where(
                             SubjectModel.issuer == settings.oidc_issuer,
-                            SubjectModel.external_subject == external_subject,
+                            SubjectModel.external_subject == service_definition.external_subject,
                         )
                     )
                 ).one_or_none()
                 service_subject = _resolve_local_subject(
                     fixed_service_subject,
                     identity_service_subject,
-                    label=display_name,
+                    label=service_definition.display_name,
                 )
                 if service_subject is None:
                     service_subject = SubjectModel(
-                        id=service_subject_id,
+                        id=service_definition.subject_id,
                         issuer=settings.oidc_issuer,
-                        external_subject=external_subject,
-                        display_name=display_name,
+                        external_subject=service_definition.external_subject,
+                        display_name=service_definition.display_name,
                         active=True,
                     )
                     session.add(service_subject)
                     await session.flush()
                 else:
                     service_subject.issuer = settings.oidc_issuer
-                    service_subject.external_subject = external_subject
-                    service_subject.display_name = display_name
+                    service_subject.external_subject = service_definition.external_subject
+                    service_subject.display_name = service_definition.display_name
                     service_subject.active = True
                 service_membership = await session.get(
                     WorkspaceMembershipModel,
                     {"workspace_id": workspace.id, "subject_id": service_subject.id},
                 )
                 service_attributes = {
-                    "groups": groups,
-                    "allowed_actions": allowed_actions,
+                    "groups": list(service_definition.groups),
+                    "allowed_actions": [
+                        action.value for action in service_definition.allowed_actions
+                    ],
                     "denied_actions": [],
                     # Empty scopes intentionally restrict the local service to PUBLIC
                     # assets until an operator assigns exact governed scopes.
                     "allowed_system_ids": [],
                     "allowed_domain_ids": [],
-                    "bootstrap": "local-quality-service-v1",
+                    "bootstrap": service_definition.bootstrap_contract,
                 }
                 if service_membership is None:
                     session.add(

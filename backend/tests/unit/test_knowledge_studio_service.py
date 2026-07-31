@@ -25,6 +25,9 @@ from datariver.application.dto import (
     KnowledgeStudioTBoxElementRecord,
     KnowledgeStudioTBoxRecord,
 )
+from datariver.application.knowledge_studio_ingestion_ports import (
+    KnowledgeStudioIngestionSourceResolver,
+)
 from datariver.application.ports import KnowledgeStudioSourceReader, KnowledgeStudioStore
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.knowledge_studio import KnowledgeStudioService
@@ -45,6 +48,7 @@ from datariver.domain.knowledge_studio import (
     TBoxOperationKind,
     TBoxProposalMode,
 )
+from datariver.domain.knowledge_studio_ingestion import StudioSourceProfilePin
 
 WORKSPACE_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1")
 SUBJECT_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b2")
@@ -128,11 +132,17 @@ def service(
     store: object,
     *,
     sources: object | None = None,
+    ingestion_sources: object | None = None,
 ) -> KnowledgeStudioService:
     return KnowledgeStudioService(
         store=cast(KnowledgeStudioStore, store),
         authorization=AuthorizationService(decision_writer=MemoryDecisionWriter()),
         sources=(cast(KnowledgeStudioSourceReader, sources) if sources is not None else None),
+        ingestion_sources=(
+            cast(KnowledgeStudioIngestionSourceResolver, ingestion_sources)
+            if ingestion_sources is not None
+            else None
+        ),
     )
 
 
@@ -1094,7 +1104,43 @@ async def test_abox_read_rejects_a_draft_that_has_not_advanced_to_data_enricher(
 
 @pytest.mark.asyncio
 async def test_ingestion_without_vector_targets_does_not_require_embedding_runtime() -> None:
-    current = tbox(vector_index_enabled=False)
+    published = replace(
+        abox().draft,
+        state="PUBLISHED",
+        materialized_graph_id=GRAPH_ID,
+        materialized_ontology_version_id=ONTOLOGY_VERSION_ID,
+        published_studio_release_id=STUDIO_RELEASE_ID,
+    )
+    current = replace(tbox(vector_index_enabled=False), draft=published)
+    current_abox = replace(
+        abox(),
+        draft=published,
+        bindings=(
+            cast(
+                KnowledgeStudioBindingRecord,
+                SimpleNamespace(
+                    source_asset_id=SOURCE_ASSET_ID,
+                    source_version="source-v1",
+                    projection_source_version="projection-v3",
+                ),
+            ),
+        ),
+    )
+    pin = StudioSourceProfilePin(
+        workspace_id=WORKSPACE_ID,
+        asset_id=SOURCE_ASSET_ID,
+        source_version="source-v1",
+        projection_source_version="projection-v3",
+        connection_profile_id="catalog-primary",
+        connection_profile_version=3,
+        connection_profile_hash="a" * 64,
+    )
+    resolver = SimpleNamespace(
+        manifest_id="studio-sources",
+        manifest_version=2,
+        manifest_hash="b" * 64,
+        resolve_pin=lambda **_: pin,
+    )
     queued = cast(
         KnowledgeStudioIngestionJobRecord,
         SimpleNamespace(state="PENDING"),
@@ -1102,10 +1148,11 @@ async def test_ingestion_without_vector_targets_does_not_require_embedding_runti
     store = SimpleNamespace(
         get_draft=AsyncMock(return_value=current.draft),
         get_tbox=AsyncMock(return_value=current),
+        get_abox=AsyncMock(return_value=current_abox),
         create_ingestion_job=AsyncMock(return_value=queued),
     )
 
-    result = await service(store).create_ingestion_job(
+    result = await service(store, ingestion_sources=resolver).create_ingestion_job(
         workspace_id=WORKSPACE_ID,
         subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
         draft_id=DRAFT_ID,
@@ -1123,22 +1170,86 @@ async def test_ingestion_without_vector_targets_does_not_require_embedding_runti
         draft_id=DRAFT_ID,
         expected_version=1,
         embedding_binding=None,
+        manifest_id="studio-sources",
+        manifest_version=2,
+        manifest_hash="b" * 64,
+        source_profile_pins=(pin,),
         idempotency_key="ingestion-no-vector",
         request_hash="ingestion-no-vector-hash",
     )
 
 
 @pytest.mark.asyncio
+async def test_ingestion_rejects_an_unpublished_studio_draft() -> None:
+    current = tbox(vector_index_enabled=False)
+    store = SimpleNamespace(
+        get_draft=AsyncMock(return_value=current.draft),
+        create_ingestion_job=AsyncMock(),
+    )
+
+    with pytest.raises(ConflictError, match="immutable published Studio Release"):
+        await service(store).create_ingestion_job(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+            draft_id=DRAFT_ID,
+            expected_version=1,
+            idempotency_key="ingestion-draft",
+            request_hash="ingestion-draft-hash",
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="request",
+        )
+
+    store.create_ingestion_job.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_vector_target_fails_closed_without_embedding_runtime() -> None:
-    current = tbox(vector_index_enabled=True)
+    published = replace(
+        abox().draft,
+        state="PUBLISHED",
+        materialized_graph_id=GRAPH_ID,
+        materialized_ontology_version_id=ONTOLOGY_VERSION_ID,
+        published_studio_release_id=STUDIO_RELEASE_ID,
+    )
+    current = replace(tbox(vector_index_enabled=True), draft=published)
+    current_abox = replace(
+        abox(),
+        draft=published,
+        bindings=(
+            cast(
+                KnowledgeStudioBindingRecord,
+                SimpleNamespace(
+                    source_asset_id=SOURCE_ASSET_ID,
+                    source_version="source-v1",
+                    projection_source_version="projection-v3",
+                ),
+            ),
+        ),
+    )
+    pin = StudioSourceProfilePin(
+        workspace_id=WORKSPACE_ID,
+        asset_id=SOURCE_ASSET_ID,
+        source_version="source-v1",
+        projection_source_version="projection-v3",
+        connection_profile_id="catalog-primary",
+        connection_profile_version=3,
+        connection_profile_hash="a" * 64,
+    )
+    resolver = SimpleNamespace(
+        manifest_id="studio-sources",
+        manifest_version=2,
+        manifest_hash="b" * 64,
+        resolve_pin=lambda **_: pin,
+    )
     store = SimpleNamespace(
         get_draft=AsyncMock(return_value=current.draft),
         get_tbox=AsyncMock(return_value=current),
+        get_abox=AsyncMock(return_value=current_abox),
         create_ingestion_job=AsyncMock(),
     )
 
     with pytest.raises(ConflictError, match="governed embedding runtime"):
-        await service(store).create_ingestion_job(
+        await service(store, ingestion_sources=resolver).create_ingestion_job(
             workspace_id=WORKSPACE_ID,
             subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
             draft_id=DRAFT_ID,

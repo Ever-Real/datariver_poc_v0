@@ -2393,14 +2393,28 @@ class KnowledgeStudioTBoxProposalApplyRequest(BaseModel):
 class KnowledgeStudioIngestionJobResponse(BaseModel):
     id: UUID
     draft_id: UUID
+    graph_id: UUID
+    studio_release_id: UUID
     requested_by: UUID
-    state: Literal["PENDING", "RUNNING", "FAILED", "SUCCESS"]
+    state: Literal[
+        "PENDING",
+        "RUNNING",
+        "RETRY_WAIT",
+        "CANCEL_REQUESTED",
+        "SUCCESS",
+        "FAILED",
+        "STALE",
+        "CANCELLED",
+    ]
     progress_percent: int = Field(ge=0, le=100)
     current_stage: str
     vector_target_count: int = Field(ge=0)
-    result: dict[str, object] | None
+    attempt_count: int = Field(ge=0)
+    maximum_attempts: int = Field(ge=1)
+    result_changeset_id: UUID | None
+    result_evidence_hash: str | None
     error_code: str | None
-    error_message: str | None
+    allowed_actions: list[Literal["CANCEL", "RETRY"]]
     version: int = Field(ge=1)
     created_at: datetime
     updated_at: datetime
@@ -2410,6 +2424,12 @@ class KnowledgeStudioIngestionJobResponse(BaseModel):
 
 class KnowledgeStudioIngestionJobListResponse(BaseModel):
     items: list[KnowledgeStudioIngestionJobResponse]
+
+
+class KnowledgeStudioIngestionCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=500)
 
 
 class KnowledgeStudioMappingRuleRequest(BaseModel):

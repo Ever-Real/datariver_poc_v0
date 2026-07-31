@@ -4,6 +4,7 @@ from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     CheckConstraint,
     Float,
@@ -691,37 +692,132 @@ class KnowledgeStudioIngestionJobModel(
     TimestampMixin,
     VersionMixin,
 ):
-    """Durable A-Box materialization request processed outside the API process."""
+    """Governed A-Box materialization request for one immutable Studio Release."""
 
     __tablename__ = "studio_ingestion_jobs"
     __table_args__ = (
-        UniqueConstraint("workspace_id", "draft_id", "id"),
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "graph_id", "id"),
+        UniqueConstraint("workspace_id", "studio_release_id", "id"),
         CheckConstraint(
-            "state IN ('PENDING', 'RUNNING', 'FAILED', 'SUCCESS')",
+            "state IN ('PENDING', 'RUNNING', 'RETRY_WAIT', 'CANCEL_REQUESTED', "
+            "'SUCCESS', 'FAILED', 'STALE', 'CANCELLED')",
             name="state_vocabulary",
+        ),
+        CheckConstraint(
+            "stage IN ('QUEUED', 'SOURCE_READ', 'MAPPING', 'EMBEDDING', 'FINALIZING', 'COMPLETED')",
+            name="stage_vocabulary",
         ),
         CheckConstraint(
             "progress_percent BETWEEN 0 AND 100",
             name="progress_range",
         ),
         CheckConstraint(
-            "jsonb_typeof(request_document) = 'object'",
-            name="request_document_object",
+            "graph_classification BETWEEN 0 AND 3",
+            name="classification_range",
         ),
         CheckConstraint(
-            "jsonb_typeof(vector_policy_document) = 'object'",
-            name="vector_policy_document_object",
+            "(graph_domain_ref_id IS NULL AND graph_domain_source_version IS NULL) OR "
+            "(graph_domain_ref_id IS NOT NULL AND graph_domain_source_version IS NOT NULL)",
+            name="domain_reference_shape",
         ),
         CheckConstraint(
-            "(state = 'PENDING' AND progress_percent = 0 AND started_at IS NULL "
-            "AND finished_at IS NULL AND error_code IS NULL) OR "
-            "(state = 'RUNNING' AND progress_percent BETWEEN 0 AND 99 "
-            "AND started_at IS NOT NULL AND finished_at IS NULL AND error_code IS NULL) OR "
-            "(state = 'FAILED' AND started_at IS NOT NULL AND finished_at IS NOT NULL "
-            "AND error_code IS NOT NULL) OR "
-            "(state = 'SUCCESS' AND progress_percent = 100 AND started_at IS NOT NULL "
-            "AND finished_at IS NOT NULL AND error_code IS NULL)",
-            name="state_shape",
+            "graph_version >= 1 AND studio_release_no >= 1 "
+            "AND manifest_version >= 1 AND vector_target_count >= 0 "
+            "AND attempt_count >= 0 AND maximum_attempts BETWEEN 1 AND 20 "
+            "AND attempt_count <= maximum_attempts "
+            "AND lease_epoch >= attempt_count AND version >= 1",
+            name="positive_counters",
+        ),
+        CheckConstraint(
+            "manifest_hash ~ '^[0-9a-f]{64}$' "
+            "AND pin_hash ~ '^[0-9a-f]{64}$' "
+            "AND request_hash ~ '^[0-9a-f]{64}$' "
+            "AND requester_authorization_hash ~ '^[0-9a-f]{64}$' "
+            "AND studio_contract_hash ~ '^[0-9a-f]{64}$' "
+            "AND ontology_checksum ~ '^[0-9a-f]{64}$'",
+            name="evidence_hashes",
+        ),
+        CheckConstraint(
+            "(embedding_binding_document IS NULL AND embedding_binding_hash IS NULL) OR "
+            "(jsonb_typeof(embedding_binding_document) = 'object' "
+            "AND octet_length(embedding_binding_document::text) <= 8192 "
+            "AND embedding_binding_hash ~ '^[0-9a-f]{64}$')",
+            name="embedding_binding_shape",
+        ),
+        CheckConstraint(
+            "(base_release_id IS NULL AND base_release_hash IS NULL) OR "
+            "(base_release_id IS NOT NULL AND base_release_hash ~ '^[0-9a-f]{64}$')",
+            name="base_release_shape",
+        ),
+        CheckConstraint(
+            "lease_token_hash IS NULL OR lease_token_hash ~ '^[0-9a-f]{64}$'",
+            name="lease_token_hash",
+        ),
+        CheckConstraint(
+            "(state IN ('RUNNING', 'CANCEL_REQUESTED') "
+            "AND current_attempt_id IS NOT NULL AND lease_token_hash IS NOT NULL "
+            "AND lease_owner_fingerprint IS NOT NULL AND lease_started_at IS NOT NULL "
+            "AND lease_expires_at IS NOT NULL) OR "
+            "(state NOT IN ('RUNNING', 'CANCEL_REQUESTED') "
+            "AND lease_token_hash IS NULL AND lease_owner_fingerprint IS NULL "
+            "AND lease_started_at IS NULL AND lease_expires_at IS NULL)",
+            name="lease_shape",
+        ),
+        CheckConstraint(
+            "((state = 'SUCCESS') AND result_changeset_id IS NOT NULL "
+            "AND result_evidence_hash ~ '^[0-9a-f]{64}$' "
+            "AND source_read_receipt_hash ~ '^[0-9a-f]{64}$' "
+            "AND completed_at IS NOT NULL AND last_failure_code IS NULL) OR "
+            "((state <> 'SUCCESS') AND result_changeset_id IS NULL "
+            "AND result_evidence_hash IS NULL AND source_read_receipt_hash IS NULL)",
+            name="result_shape",
+        ),
+        CheckConstraint(
+            "((state IN ('FAILED', 'STALE')) AND last_failure_code IS NOT NULL "
+            "AND completed_at IS NOT NULL) OR "
+            "(state = 'RETRY_WAIT' AND last_failure_code IS NOT NULL "
+            "AND completed_at IS NULL) OR "
+            "((state NOT IN ('FAILED', 'STALE', 'RETRY_WAIT')) "
+            "AND last_failure_code IS NULL)",
+            name="failure_shape",
+        ),
+        CheckConstraint(
+            "((state IN ('CANCEL_REQUESTED', 'CANCELLED')) "
+            "AND cancel_requested_by IS NOT NULL AND cancel_requested_at IS NOT NULL "
+            "AND cancel_reason IS NOT NULL) OR "
+            "((state NOT IN ('CANCEL_REQUESTED', 'CANCELLED')) "
+            "AND cancel_requested_by IS NULL AND cancel_requested_at IS NULL "
+            "AND cancel_reason IS NULL)",
+            name="cancel_shape",
+        ),
+        CheckConstraint(
+            "(state IN ('SUCCESS', 'FAILED', 'STALE', 'CANCELLED')) = (completed_at IS NOT NULL)",
+            name="terminal_completion",
+        ),
+        CheckConstraint(
+            "(state IN ('SUCCESS', 'FAILED', 'STALE', 'CANCELLED')) = (stage = 'COMPLETED')",
+            name="terminal_stage",
+        ),
+        CheckConstraint(
+            "(state IN ('PENDING', 'RETRY_WAIT') AND progress_percent = 0) OR "
+            "(state IN ('RUNNING', 'CANCEL_REQUESTED') "
+            "AND progress_percent BETWEEN 1 AND 99) OR "
+            "(state = 'SUCCESS' AND progress_percent = 100) OR "
+            "(state IN ('FAILED', 'STALE', 'CANCELLED') "
+            "AND progress_percent BETWEEN 0 AND 99)",
+            name="state_progress",
+        ),
+        CheckConstraint(
+            "source_access_deadline IS NULL OR "
+            "(source_access_started_at IS NOT NULL "
+            "AND source_access_deadline > source_access_started_at)",
+            name="source_access_window",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id"),
+            ("knowledge.graphs.workspace_id", "knowledge.graphs.id"),
+            ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
             ("workspace_id", "draft_id"),
@@ -729,50 +825,144 @@ class KnowledgeStudioIngestionJobModel(
             ondelete="RESTRICT",
         ),
         ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "studio_release_id"),
+            (
+                "knowledge.studio_releases.workspace_id",
+                "knowledge.studio_releases.graph_id",
+                "knowledge.studio_releases.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "ontology_version_id"),
+            (
+                "knowledge.ontology_versions.workspace_id",
+                "knowledge.ontology_versions.graph_id",
+                "knowledge.ontology_versions.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "result_changeset_id", "id"),
+            (
+                "knowledge.changesets.workspace_id",
+                "knowledge.changesets.id",
+                "knowledge.changesets.studio_ingestion_job_id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "id", "current_attempt_id"),
+            (
+                "knowledge.studio_ingestion_attempts.workspace_id",
+                "knowledge.studio_ingestion_attempts.job_id",
+                "knowledge.studio_ingestion_attempts.id",
+            ),
+            ondelete="RESTRICT",
+            use_alter=True,
+            deferrable=True,
+            initially="DEFERRED",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "graph_id", "base_release_id"),
+            (
+                "knowledge.releases.workspace_id",
+                "knowledge.releases.graph_id",
+                "knowledge.releases.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
             ("workspace_id", "requested_by"),
             ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
             ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "cancel_requested_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_studio_ingestion_jobs_graph_created",
+            "workspace_id",
+            "graph_id",
+            text("created_at DESC"),
+            text("id DESC"),
+        ),
+        Index(
+            "ix_studio_ingestion_jobs_claim",
+            "workspace_id",
+            "next_attempt_at",
+            "created_at",
+            "id",
+            postgresql_where=text("state IN ('PENDING', 'RETRY_WAIT')"),
+        ),
+        Index(
+            "ix_studio_ingestion_jobs_expired",
+            "workspace_id",
+            "lease_expires_at",
+            "id",
+            postgresql_where=text("state IN ('RUNNING', 'CANCEL_REQUESTED')"),
         ),
         Index(
             "ix_studio_ingestion_jobs_draft_created",
             "workspace_id",
             "draft_id",
-            "created_at",
-            "id",
-        ),
-        Index(
-            "ix_studio_ingestion_jobs_claim",
-            "state",
-            "lease_expires_at",
-            "created_at",
-            "id",
+            text("created_at DESC"),
+            text("id DESC"),
         ),
         {"schema": "knowledge"},
     )
 
     workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    graph_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     draft_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    studio_release_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    studio_release_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    studio_contract_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    ontology_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ontology_checksum: Mapped[str] = mapped_column(String(64), nullable=False)
     requested_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
-    state: Mapped[str] = mapped_column(String(16), default="PENDING", nullable=False)
+    graph_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    graph_classification: Mapped[int] = mapped_column(Integer, nullable=False)
+    graph_domain_ref_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    graph_domain_source_version: Mapped[str | None] = mapped_column(String(255))
+    vector_target_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    state: Mapped[str] = mapped_column(String(24), default="PENDING", nullable=False)
     progress_percent: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    current_stage: Mapped[str] = mapped_column(String(100), nullable=False)
-    request_document: Mapped[dict[str, object]] = mapped_column(
-        JSON_DOCUMENT,
-        nullable=False,
-    )
-    vector_policy_document: Mapped[dict[str, object]] = mapped_column(
-        JSON_DOCUMENT,
-        nullable=False,
-    )
-    result_document: Mapped[dict[str, object] | None] = mapped_column(JSON_DOCUMENT)
-    error_code: Mapped[str | None] = mapped_column(String(100))
-    error_message: Mapped[str | None] = mapped_column(Text)
-    started_at: Mapped[datetime | None]
-    finished_at: Mapped[datetime | None]
-    lease_epoch: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), default="QUEUED", nullable=False)
+    manifest_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    manifest_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    manifest_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    pin_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    requester_authorization_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding_binding_document: Mapped[dict[str, object] | None] = mapped_column(JSON_DOCUMENT)
+    embedding_binding_hash: Mapped[str | None] = mapped_column(String(64))
+    base_release_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    base_release_hash: Mapped[str | None] = mapped_column(String(64))
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    maximum_attempts: Mapped[int] = mapped_column(Integer, nullable=False)
+    current_attempt_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    next_attempt_at: Mapped[datetime] = mapped_column(nullable=False)
+    lease_epoch: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     lease_token_hash: Mapped[str | None] = mapped_column(String(64))
     lease_owner_fingerprint: Mapped[str | None] = mapped_column(String(255))
+    lease_started_at: Mapped[datetime | None]
     lease_expires_at: Mapped[datetime | None]
+    source_access_started_at: Mapped[datetime | None]
+    source_access_deadline: Mapped[datetime | None]
+    result_changeset_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    result_evidence_hash: Mapped[str | None] = mapped_column(String(64))
+    source_read_receipt_hash: Mapped[str | None] = mapped_column(String(64))
+    last_failure_code: Mapped[str | None] = mapped_column(String(100))
+    cancel_requested_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    cancel_requested_at: Mapped[datetime | None]
+    cancel_reason: Mapped[str | None] = mapped_column(String(500))
+    completed_at: Mapped[datetime | None]
 
 
 class KnowledgeSourceReferenceModel(Base, UuidPrimaryKeyMixin):
@@ -1599,3 +1789,331 @@ class ABoxMappingRuleVersionModel(Base, UuidPrimaryKeyMixin):
     transform_version: Mapped[str] = mapped_column(String(32), nullable=False)
     source_unit: Mapped[str | None] = mapped_column(String(100))
     canonical_unit: Mapped[str | None] = mapped_column(String(100))
+
+
+class KnowledgeStudioIngestionBindingPinModel(Base, UuidPrimaryKeyMixin):
+    """Immutable source, Mapping and deployment-profile pin for one worker job."""
+
+    __tablename__ = "studio_ingestion_binding_pins"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "job_id", "ordinal"),
+        UniqueConstraint("workspace_id", "job_id", "binding_version_id"),
+        CheckConstraint("source_classification BETWEEN 0 AND 3", name="classification_range"),
+        CheckConstraint(
+            "ordinal >= 0 AND connection_profile_version >= 1 "
+            "AND connection_profile_hash ~ '^[0-9a-f]{64}$' "
+            "AND mapping_hash ~ '^[0-9a-f]{64}$' "
+            "AND selection_hash ~ '^[0-9a-f]{64}$' "
+            "AND pin_hash ~ '^[0-9a-f]{64}$'",
+            name="evidence_shape",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(rules_document) = 'array' "
+            "AND jsonb_array_length(rules_document) BETWEEN 1 AND 1000 "
+            "AND octet_length(rules_document::text) <= 1048576",
+            name="rules_document_array",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id"),
+            (
+                "knowledge.studio_ingestion_jobs.workspace_id",
+                "knowledge.studio_ingestion_jobs.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "studio_release_id", "binding_version_id"),
+            (
+                "knowledge.abox_binding_versions.workspace_id",
+                "knowledge.abox_binding_versions.studio_release_id",
+                "knowledge.abox_binding_versions.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "source_reference_id"),
+            ("knowledge.source_references.workspace_id", "knowledge.source_references.id"),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "source_asset_id"),
+            ("catalog.assets_projection.workspace_id", "catalog.assets_projection.id"),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_studio_ingestion_binding_pins_job",
+            "workspace_id",
+            "job_id",
+            "ordinal",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    studio_release_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    binding_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_reference_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_asset_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    source_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    projection_source_version: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_classification: Mapped[int] = mapped_column(Integer, nullable=False)
+    selection_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_class_stable_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    target_class_canonical_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    mapping_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    connection_profile_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    connection_profile_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    connection_profile_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    rules_document: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON_DOCUMENT,
+        nullable=False,
+    )
+    pin_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(nullable=False)
+
+
+class KnowledgeStudioIngestionAttemptModel(Base, UuidPrimaryKeyMixin):
+    """Append-only lease attempt evidence owned by the dedicated Studio worker."""
+
+    __tablename__ = "studio_ingestion_attempts"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "job_id", "id"),
+        UniqueConstraint("workspace_id", "job_id", "attempt_no"),
+        UniqueConstraint("workspace_id", "job_id", "lease_epoch"),
+        CheckConstraint(
+            "state IN ('RUNNING', 'SUCCESS', 'FAILED', 'STALE', 'CANCELLED', 'SUPERSEDED')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint(
+            "attempt_no >= 1 AND lease_epoch >= 1 AND lease_token_hash ~ '^[0-9a-f]{64}$'",
+            name="claim_shape",
+        ),
+        CheckConstraint(
+            "stage IN ('SOURCE_READ', 'MAPPING', 'EMBEDDING', 'FINALIZING', 'COMPLETED')",
+            name="stage_vocabulary",
+        ),
+        CheckConstraint(
+            "source_read_receipt_hash IS NULL OR source_read_receipt_hash ~ '^[0-9a-f]{64}$'",
+            name="source_read_receipt_hash",
+        ),
+        CheckConstraint(
+            "materialization_hash IS NULL OR materialization_hash ~ '^[0-9a-f]{64}$'",
+            name="materialization_hash",
+        ),
+        CheckConstraint(
+            "result_evidence_hash IS NULL OR result_evidence_hash ~ '^[0-9a-f]{64}$'",
+            name="result_evidence_hash",
+        ),
+        CheckConstraint(
+            "source_access_deadline IS NULL OR "
+            "(source_access_started_at IS NOT NULL "
+            "AND source_access_deadline > source_access_started_at)",
+            name="source_access_window",
+        ),
+        CheckConstraint(
+            "(state = 'RUNNING' AND finished_at IS NULL) OR "
+            "(state <> 'RUNNING' AND finished_at IS NOT NULL)",
+            name="finished_shape",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id"),
+            (
+                "knowledge.studio_ingestion_jobs.workspace_id",
+                "knowledge.studio_ingestion_jobs.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_studio_ingestion_attempts_job",
+            "workspace_id",
+            "job_id",
+            "attempt_no",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    attempt_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    lease_epoch: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    lease_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    worker_fingerprint: Mapped[str] = mapped_column(String(255), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    stage: Mapped[str] = mapped_column(String(32), nullable=False)
+    claimed_at: Mapped[datetime] = mapped_column(nullable=False)
+    lease_expires_at: Mapped[datetime] = mapped_column(nullable=False)
+    source_access_started_at: Mapped[datetime | None]
+    source_access_deadline: Mapped[datetime | None]
+    source_read_receipt_hash: Mapped[str | None] = mapped_column(String(64))
+    materialization_hash: Mapped[str | None] = mapped_column(String(64))
+    retryable: Mapped[bool | None] = mapped_column(Boolean)
+    result_evidence_hash: Mapped[str | None] = mapped_column(String(64))
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+    finished_at: Mapped[datetime | None]
+
+
+class KnowledgeStudioIngestionEventModel(Base):
+    """Append-only transition evidence for one Studio ingestion job."""
+
+    __tablename__ = "studio_ingestion_events"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "job_id", "sequence"),
+        UniqueConstraint(
+            "workspace_id",
+            "job_id",
+            "state",
+            "reason_code",
+            "evidence_hash",
+            name="uq_studio_ingestion_events_transition_evidence",
+        ),
+        CheckConstraint("sequence >= 1", name="sequence_positive"),
+        CheckConstraint(
+            "state IN ('PENDING', 'RUNNING', 'RETRY_WAIT', 'CANCEL_REQUESTED', "
+            "'SUCCESS', 'FAILED', 'STALE', 'CANCELLED')",
+            name="state_vocabulary",
+        ),
+        CheckConstraint(
+            "actor_kind IN ('HUMAN', 'SERVICE') AND evidence_hash ~ '^[0-9a-f]{64}$'",
+            name="evidence_shape",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(details_document) = 'object' "
+            "AND octet_length(details_document::text) <= 8192",
+            name="details_document_bounded",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id"),
+            (
+                "knowledge.studio_ingestion_jobs.workspace_id",
+                "knowledge.studio_ingestion_jobs.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id", "attempt_id"),
+            (
+                "knowledge.studio_ingestion_attempts.workspace_id",
+                "knowledge.studio_ingestion_attempts.job_id",
+                "knowledge.studio_ingestion_attempts.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "actor_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_studio_ingestion_events_job",
+            "workspace_id",
+            "job_id",
+            "sequence",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    reason_code: Mapped[str] = mapped_column(String(100), nullable=False)
+    actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    actor_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    details_document: Mapped[dict[str, object]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(nullable=False)
+
+
+class KnowledgeStudioIngestionVectorReceiptModel(Base, UuidPrimaryKeyMixin):
+    """Canonical vector receipt; Neo4j receives only a shadow projection."""
+
+    __tablename__ = "studio_ingestion_vector_receipts"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint(
+            "workspace_id",
+            "job_id",
+            "entity_id",
+            "property_stable_id",
+        ),
+        CheckConstraint(
+            "content_hash ~ '^[0-9a-f]{64}$' "
+            "AND embedding_binding_hash ~ '^[0-9a-f]{64}$' "
+            "AND vector_hash ~ '^[0-9a-f]{64}$' "
+            "AND dimension BETWEEN 1 AND 16384 "
+            "AND jsonb_typeof(vector_document) = 'array' "
+            "AND jsonb_array_length(vector_document) = dimension "
+            "AND octet_length(vector_document::text) <= 4194304",
+            name="vector_shape",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id"),
+            (
+                "knowledge.studio_ingestion_jobs.workspace_id",
+                "knowledge.studio_ingestion_jobs.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "job_id", "attempt_id"),
+            (
+                "knowledge.studio_ingestion_attempts.workspace_id",
+                "knowledge.studio_ingestion_attempts.job_id",
+                "knowledge.studio_ingestion_attempts.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "changeset_id", "job_id"),
+            (
+                "knowledge.changesets.workspace_id",
+                "knowledge.changesets.id",
+                "knowledge.changesets.studio_ingestion_job_id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            (
+                "workspace_id",
+                "ontology_version_id",
+                "property_ontology_element_id",
+            ),
+            (
+                "knowledge.ontology_elements.workspace_id",
+                "knowledge.ontology_elements.ontology_version_id",
+                "knowledge.ontology_elements.id",
+            ),
+            ondelete="RESTRICT",
+        ),
+        Index(
+            "ix_studio_ingestion_vector_receipts_job",
+            "workspace_id",
+            "job_id",
+            "entity_id",
+        ),
+        {"schema": "knowledge"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    job_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    attempt_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    changeset_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    ontology_version_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    property_ontology_element_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        nullable=False,
+    )
+    entity_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    property_stable_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    embedding_binding_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    vector_document: Mapped[list[float]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    vector_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(nullable=False)

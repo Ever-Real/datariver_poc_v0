@@ -17,6 +17,8 @@ $runtimeDirectory = Join-Path $root "runtime"
 $keycloakRuntimeDirectory = Join-Path $runtimeDirectory "keycloak"
 $qualityRuntimeDirectory = Join-Path $runtimeDirectory "quality"
 $qualitySourceSecretDirectory = Join-Path $secretsDirectory "quality-sources"
+$knowledgeStudioRuntimeDirectory = Join-Path $runtimeDirectory "knowledge-studio"
+$knowledgeStudioSourceSecretDirectory = Join-Path $secretsDirectory "knowledge-studio-sources"
 $retentionControlFile = Join-Path $runtimeDirectory "retention-execution.enabled"
 $nativeWindows = [Runtime.InteropServices.RuntimeInformation]::IsOSPlatform(
     [Runtime.InteropServices.OSPlatform]::Windows
@@ -37,6 +39,8 @@ $managedPaths = @(
     $keycloakRuntimeDirectory,
     $qualityRuntimeDirectory,
     $qualitySourceSecretDirectory,
+    $knowledgeStudioRuntimeDirectory,
+    $knowledgeStudioSourceSecretDirectory,
     (Join-Path $keycloakRuntimeDirectory "datariver-realm.json"),
     $retentionControlFile
 )
@@ -173,10 +177,14 @@ New-Item -ItemType Directory -Force -Path $secretsDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $keycloakRuntimeDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $qualityRuntimeDirectory | Out-Null
 New-Item -ItemType Directory -Force -Path $qualitySourceSecretDirectory | Out-Null
+New-Item -ItemType Directory -Force -Path $knowledgeStudioRuntimeDirectory | Out-Null
+New-Item -ItemType Directory -Force -Path $knowledgeStudioSourceSecretDirectory | Out-Null
 Set-OwnerOnlyWindowsAcl -Path $secretsDirectory -Directory
 Set-OwnerOnlyWindowsAcl -Path $keycloakRuntimeDirectory -Directory
 Set-OwnerOnlyWindowsAcl -Path $qualityRuntimeDirectory -Directory
 Set-OwnerOnlyWindowsAcl -Path $qualitySourceSecretDirectory -Directory
+Set-OwnerOnlyWindowsAcl -Path $knowledgeStudioRuntimeDirectory -Directory
+Set-OwnerOnlyWindowsAcl -Path $knowledgeStudioSourceSecretDirectory -Directory
 if ($IsLinux -or $IsMacOS) {
     [IO.File]::SetUnixFileMode(
         $secretsDirectory,
@@ -288,6 +296,7 @@ $postgresRelayPassword = Get-OrCreateSecret "postgres_relay_password"
 $postgresUploadPassword = Get-OrCreateSecret "postgres_upload_password"
 $postgresGovernancePassword = Get-OrCreateSecret "postgres_governance_password"
 $postgresKnowledgePassword = Get-OrCreateSecret "postgres_knowledge_password"
+$postgresKnowledgeIngestionPassword = Get-OrCreateSecret "postgres_knowledge_ingestion_password"
 $postgresQualityPassword = Get-OrCreateSecret "postgres_quality_password"
 $postgresCatalogProfilePassword = Get-OrCreateSecret "postgres_catalog_profile_password"
 $postgresExportPassword = Get-OrCreateSecret "postgres_export_password"
@@ -457,10 +466,33 @@ if ($IsLinux -or $IsMacOS) {
         [IO.UnixFileMode]::UserWrite -bor [IO.UnixFileMode]::UserExecute
     $readOnlyFileMode = [IO.UnixFileMode]::UserRead -bor
         [IO.UnixFileMode]::GroupRead -bor [IO.UnixFileMode]::OtherRead
+    $readOnlyDirectoryMode = $readOnlyFileMode -bor
+        [IO.UnixFileMode]::UserExecute -bor [IO.UnixFileMode]::GroupExecute -bor
+        [IO.UnixFileMode]::OtherExecute
     [IO.File]::SetUnixFileMode($secretsDirectory, $ownerDirectoryMode)
     [IO.File]::SetUnixFileMode($keycloakRuntimeDirectory, $ownerDirectoryMode)
     [IO.File]::SetUnixFileMode($qualityRuntimeDirectory, $ownerDirectoryMode)
     [IO.File]::SetUnixFileMode($qualitySourceSecretDirectory, $ownerDirectoryMode)
+    [IO.File]::SetUnixFileMode(
+        $knowledgeStudioRuntimeDirectory,
+        $readOnlyDirectoryMode
+    )
+    [IO.File]::SetUnixFileMode(
+        $knowledgeStudioSourceSecretDirectory,
+        $readOnlyDirectoryMode
+    )
+    foreach ($studioDirectory in @(
+        $knowledgeStudioRuntimeDirectory,
+        $knowledgeStudioSourceSecretDirectory
+    )) {
+        foreach ($studioFile in Get-ChildItem -Force -LiteralPath $studioDirectory) {
+            if ([bool]($studioFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+                $studioFile.PSIsContainer) {
+                throw "Knowledge Studio runtime inputs must be regular non-symlink files."
+            }
+            [IO.File]::SetUnixFileMode($studioFile.FullName, $readOnlyFileMode)
+        }
+    }
     [IO.File]::SetUnixFileMode(
         (Join-Path $keycloakRuntimeDirectory "datariver-realm.json"),
         $readOnlyFileMode

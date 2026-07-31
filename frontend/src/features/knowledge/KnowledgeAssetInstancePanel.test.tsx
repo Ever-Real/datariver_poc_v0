@@ -74,6 +74,44 @@ const changeset: KnowledgeChangeSet = {
 }
 
 describe('KnowledgeAssetInstancePanel', () => {
+  it('focuses the result Changeset supplied by the Studio ingestion route', async () => {
+    const focusedChangeset = {
+      ...changeset,
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1e0099',
+      title: 'DB Ingestion 결과',
+    }
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/knowledge/registry/assets?')) {
+        return Promise.resolve({
+          items: [asset],
+          next_cursor: null,
+          limit: 100,
+        } satisfies KnowledgeAssetPage)
+      }
+      if (path.endsWith('/detail')) return Promise.resolve(detail)
+      if (path.endsWith('/changesets')) {
+        return Promise.resolve([changeset, focusedChangeset])
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+
+    render(
+      <KnowledgeAssetInstancePanel
+        client={{ request } as unknown as ApiClient}
+        onEditAsset={vi.fn()}
+        initialAssetId={asset.id}
+        initialChangesetId={focusedChangeset.id}
+      />,
+    )
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('대상 Knowledge Asset')).toHaveValue(asset.id)
+      expect(screen.getByLabelText('편집할 DRAFT')).toHaveValue(
+        focusedChangeset.id,
+      )
+    })
+  })
+
   it('creates a T-Box-bound typed operation with the exact classification and ETag', async () => {
     const operationCalls: RequestOptions[] = []
     const request = vi.fn((path: string, options?: RequestOptions) => {

@@ -6,6 +6,7 @@ relay_password=$(cat /run/secrets/postgres_relay_password)
 upload_password=$(cat /run/secrets/postgres_upload_password)
 governance_password=$(cat /run/secrets/postgres_governance_password)
 knowledge_password=$(cat /run/secrets/postgres_knowledge_password)
+knowledge_ingestion_password=$(cat /run/secrets/postgres_knowledge_ingestion_password)
 quality_password=$(cat /run/secrets/postgres_quality_password)
 governance_document_password=$(cat /run/secrets/postgres_governance_document_password)
 catalog_profile_password=$(cat /run/secrets/postgres_catalog_profile_password)
@@ -22,6 +23,7 @@ psql --username "$POSTGRES_USER" --dbname "$POSTGRES_DB" \
   --set=upload_password="$upload_password" \
   --set=governance_password="$governance_password" \
   --set=knowledge_password="$knowledge_password" \
+  --set=knowledge_ingestion_password="$knowledge_ingestion_password" \
   --set=quality_password="$quality_password" \
   --set=governance_document_password="$governance_document_password" \
   --set=catalog_profile_password="$catalog_profile_password" \
@@ -40,6 +42,14 @@ SELECT format('CREATE ROLE datariver_governance LOGIN PASSWORD %L', :'governance
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_governance') \gexec
 SELECT format('CREATE ROLE datariver_knowledge LOGIN PASSWORD %L', :'knowledge_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_knowledge') \gexec
+SELECT format(
+  'CREATE ROLE datariver_knowledge_ingestion LOGIN PASSWORD %L '
+  'NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS',
+  :'knowledge_ingestion_password'
+)
+WHERE NOT EXISTS (
+  SELECT 1 FROM pg_roles WHERE rolname = 'datariver_knowledge_ingestion'
+) \gexec
 SELECT format('CREATE ROLE datariver_quality LOGIN PASSWORD %L', :'quality_password')
 WHERE NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_quality') \gexec
 SELECT format(
@@ -99,6 +109,32 @@ BEGIN
   ) THEN
     RAISE EXCEPTION
       'datariver_knowledge must not be assumable by another non-superuser principal';
+  END IF;
+END
+$datariver$;
+ALTER ROLE datariver_knowledge_ingestion
+  WITH LOGIN PASSWORD :'knowledge_ingestion_password'
+  NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS;
+DO $datariver$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_knowledge_ingestion'
+      AND pg_has_role('datariver_knowledge_ingestion', candidate.oid, 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_knowledge_ingestion must not inherit or SET ROLE to another principal';
+  END IF;
+  IF EXISTS (
+    SELECT 1
+    FROM pg_roles AS candidate
+    WHERE candidate.rolname <> 'datariver_knowledge_ingestion'
+      AND NOT candidate.rolsuper
+      AND pg_has_role(candidate.oid, 'datariver_knowledge_ingestion', 'MEMBER')
+  ) THEN
+    RAISE EXCEPTION
+      'datariver_knowledge_ingestion must not be assumable by another principal';
   END IF;
 END
 $datariver$;
@@ -341,6 +377,83 @@ BEGIN
       'GRANT EXECUTE ON FUNCTION %s TO datariver_quality',
       execution_function.function_identity
     );
+  END LOOP;
+END
+$datariver$;
+
+-- Reconcile the Knowledge Studio ingestion principal to fixed execution functions only.
+SELECT 'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA knowledge, catalog, integration, iam, platform FROM datariver_knowledge_ingestion'
+WHERE to_regnamespace('knowledge') IS NOT NULL \gexec
+SELECT 'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA knowledge, catalog, integration, iam, platform FROM datariver_knowledge_ingestion'
+WHERE to_regnamespace('knowledge') IS NOT NULL \gexec
+SELECT 'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA knowledge FROM datariver_knowledge_ingestion'
+WHERE to_regnamespace('knowledge') IS NOT NULL \gexec
+SELECT 'REVOKE ALL PRIVILEGES ON SCHEMA knowledge, catalog, integration, iam, platform FROM datariver_knowledge_ingestion'
+WHERE to_regnamespace('knowledge') IS NOT NULL \gexec
+DO $datariver$
+DECLARE
+  schema_ready boolean;
+  function_signature text;
+  worker_function_signatures constant text[] := ARRAY[
+    'knowledge.claim_studio_ingestion_v1(uuid,text,text,integer)',
+    'knowledge.freeze_studio_ingestion_source_access_v1(uuid,uuid,uuid,bigint,text,text,integer,integer)',
+    'knowledge.assert_studio_ingestion_source_statement_fence_v1(uuid,uuid,uuid,bigint,text,text)',
+    'knowledge.renew_studio_ingestion_v1(uuid,uuid,uuid,bigint,text,text,integer,text,integer)',
+    'knowledge.ensure_studio_ingestion_current_v1(uuid,uuid,uuid,bigint,text,text,text,integer,text,jsonb)',
+    'knowledge.begin_studio_ingestion_completion_v1(uuid,uuid,uuid,bigint,text,text)',
+    'knowledge.append_studio_ingestion_result_batch_v1(uuid,uuid,uuid,bigint,text,text,uuid,jsonb,jsonb)',
+    'knowledge.complete_studio_ingestion_v1(uuid,uuid,uuid,bigint,text,text,uuid,text,text,integer,integer,text)',
+    'knowledge.fail_studio_ingestion_v1(uuid,uuid,uuid,bigint,text,text,text,text,boolean,boolean)'
+  ];
+  app_function_signatures constant text[] := ARRAY[
+    'knowledge.request_studio_ingestion_v1(uuid,uuid,integer,text,text,integer,text,jsonb,jsonb,integer)',
+    'knowledge.cancel_studio_ingestion_v1(uuid,uuid,integer,text)',
+    'knowledge.retry_studio_ingestion_v1(uuid,uuid,integer)'
+  ];
+  internal_function_signatures constant text[] := ARRAY[
+    'knowledge.append_studio_ingestion_event_v1(uuid,uuid,uuid,text,text,uuid,text,jsonb)',
+    'knowledge.emit_studio_ingestion_outbox_v1(uuid,uuid,text,integer)',
+    'knowledge.current_studio_ingestion_service_can_v1(uuid,text,integer,uuid)',
+    'knowledge.current_studio_ingestion_human_can_v1(uuid,uuid,integer,uuid)',
+    'knowledge.current_studio_ingestion_lease_matches_v1(uuid,uuid,uuid,bigint,text,text)'
+  ];
+BEGIN
+  SELECT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'knowledge'
+      AND table_name = 'studio_ingestion_jobs'
+      AND column_name = 'manifest_id'
+  ) INTO schema_ready;
+  IF NOT schema_ready THEN
+    RETURN;
+  END IF;
+  GRANT USAGE ON SCHEMA knowledge TO datariver_knowledge_ingestion;
+  FOREACH function_signature IN ARRAY worker_function_signatures
+  LOOP
+    IF to_regprocedure(function_signature) IS NULL THEN
+      RAISE EXCEPTION 'required Knowledge ingestion function is missing';
+    END IF;
+    EXECUTE format(
+      'GRANT EXECUTE ON FUNCTION %s TO datariver_knowledge_ingestion',
+      to_regprocedure(function_signature)
+    );
+  END LOOP;
+  FOREACH function_signature IN ARRAY app_function_signatures
+  LOOP
+    IF to_regprocedure(function_signature) IS NULL THEN
+      RAISE EXCEPTION 'required Knowledge ingestion command function is missing';
+    END IF;
+    EXECUTE format(
+      'GRANT EXECUTE ON FUNCTION %s TO datariver_app',
+      to_regprocedure(function_signature)
+    );
+  END LOOP;
+  FOREACH function_signature IN ARRAY internal_function_signatures
+  LOOP
+    IF to_regprocedure(function_signature) IS NULL THEN
+      RAISE EXCEPTION 'required Knowledge ingestion internal function is missing';
+    END IF;
   END LOOP;
 END
 $datariver$;

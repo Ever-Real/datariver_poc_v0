@@ -64,6 +64,7 @@ def _subject(
         (Action.QUALITY_DISPATCH, "quality-dispatchers"),
         (Action.QUALITY_EXECUTE, "quality-workers"),
         (Action.CATALOG_PROFILE_COLLECT, "catalog-profile-collectors"),
+        (Action.KG_INGEST_EXECUTE, "knowledge-ingestion-workers"),
     ),
 )
 def test_service_actions_require_exact_purpose_identity(action: Action, purpose_group: str) -> None:
@@ -153,4 +154,5 @@ def test_service_actions_are_closed_and_not_accidentally_human_admin_actions() -
         Action.QUALITY_DISPATCH,
         Action.QUALITY_EXECUTE,
         Action.CATALOG_PROFILE_COLLECT,
+        Action.KG_INGEST_EXECUTE,
     }

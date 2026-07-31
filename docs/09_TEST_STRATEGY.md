@@ -1391,6 +1391,30 @@ across two generations. The frontend passed strict TypeScript, zero-warning ESLi
 `73` files and the Vite production build. Live PostgreSQL migration, authenticated browser and
 preparation-PC checks remain runtime gates until the committed revision is applied.
 
+### Governed Studio database ingestion acceptance
+
+- Revision `0081` and canonical `0001` must contain the same five-table execution aggregate,
+  reciprocal result provenance, exact function signatures, forced RLS, immutable evidence triggers
+  and least-privilege grants. Canonical generation runs twice with an identical SHA-256.
+- Migration tests provision the dedicated safe NOBYPASSRLS login before applying `0081`, reject
+  unreconciled legacy jobs and prove the application and worker roles cannot call one another's
+  functions or directly mutate evidence.
+- Source-manifest/adapter tests cover exact Asset/version/profile/workload hashes, safe absolute
+  secret roots, regular-file credentials, exact IP/TLS/quoted identifiers, read-only
+  `REPEATABLE READ`, keyset batches and row/byte/statement/deadline bounds.
+- Service/API tests reject mutable Drafts, missing released Bindings, manifest drift and absent
+  embedding activation; OpenAPI proves ETag/idempotency on request/cancel/retry and redacts lease,
+  authorization and source-coordinate evidence.
+- Worker/database tests cover claim/reclaim, lease token/epoch/fingerprint fencing, cancellation,
+  retry exhaustion, requester authorization/release drift, contiguous typed operation scope,
+  vector-receipt set completeness and atomic DRAFT Changeset success with no Release/Neo4j write.
+- Frontend tests cover PUBLISHED-only start, all eight states, visibility-bounded polling,
+  in-flight duplicate suppression, ETag/idempotent cancel/retry and SPA navigation to the result.
+- Runtime acceptance enables the explicit worker profile only after the manifest, source secrets,
+  service Subject, database role and retention binding are provisioned. It applies the migration,
+  verifies API/Web/worker health, runs one bounded authorized source through `SUCCESS`, opens the
+  returned DRAFT Changeset and proves a revoked requester becomes `STALE` with no result.
+
 ## Core correctness scenarios
 
 - State machine rejects every undeclared transition and stale aggregate version.

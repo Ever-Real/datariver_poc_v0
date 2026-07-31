@@ -20,6 +20,7 @@ import {
   type FlowCanvasNode,
 } from '../../../../components/common/FlowCanvas'
 import {
+  cancelKnowledgeStudioIngestion,
   createKnowledgeStudioIngestion,
   discardKnowledgeStudioDraft,
   getKnowledgeStudioABox,
@@ -29,6 +30,7 @@ import {
   preflightKnowledgeStudioABox,
   previewKnowledgeStudioBinding,
   publishKnowledgeStudioDraft,
+  retryKnowledgeStudioIngestion,
   saveKnowledgeStudioBinding,
   searchKnowledgeStudioSources,
   submitKnowledgeStudioReview,
@@ -65,6 +67,13 @@ interface DataEnricherStepProps {
   onEnroll?: () => Promise<void>
   hardwareWebauthnEnabled?: boolean
 }
+
+const ACTIVE_INGESTION_STATES = new Set<KnowledgeStudioIngestionJob['state']>([
+  'PENDING',
+  'RUNNING',
+  'RETRY_WAIT',
+  'CANCEL_REQUESTED',
+])
 
 function sourceLocation(source: KnowledgeStudioSourceDataset): string {
   return [source.platform, source.database_name, source.schema_name]
@@ -152,6 +161,9 @@ export function DataEnricherStep({
   const [ingestionJobs, setIngestionJobs] = useState<KnowledgeStudioIngestionJob[]>([])
   const [ingestionLoading, setIngestionLoading] = useState(false)
   const [ingestionPollRevision, setIngestionPollRevision] = useState(0)
+  const [ingestionActionJobId, setIngestionActionJobId] = useState<string>()
+  const [cancelTarget, setCancelTarget] = useState<KnowledgeStudioIngestionJob>()
+  const [cancelReason, setCancelReason] = useState('')
 
   useEffect(() => {
     setCachedABox(draftId, {
@@ -213,8 +225,10 @@ export function DataEnricherStep({
     let active = true
     let timer: number | undefined
     let attempts = 0
+    let inFlight = false
     const poll = async () => {
-      if (!active || document.visibilityState === 'hidden') return
+      if (!active || inFlight || document.visibilityState === 'hidden') return
+      inFlight = true
       try {
         const jobs = await listKnowledgeStudioIngestions(client, draftId)
         if (!active) return
@@ -222,12 +236,14 @@ export function DataEnricherStep({
         attempts += 1
         if (
           attempts < 150
-          && jobs.some((job) => job.state === 'PENDING' || job.state === 'RUNNING')
+          && jobs.some((job) => ACTIVE_INGESTION_STATES.has(job.state))
         ) {
           timer = window.setTimeout(() => { void poll() }, 2000)
         }
       } catch {
         if (active) setStatus('Ingestion 진행 상태를 불러오지 못했습니다.')
+      } finally {
+        inFlight = false
       }
     }
     const resumeWhenVisible = () => {
@@ -562,7 +578,12 @@ export function DataEnricherStep({
   }
 
   const runIngestion = async () => {
-    if (!etag || !editable || !exactPreflightPass || ingestionLoading) return
+    if (
+      !etag
+      || abox?.draft.state !== 'PUBLISHED'
+      || ingestionLoading
+      || ingestionJobs.some((job) => ACTIVE_INGESTION_STATES.has(job.state))
+    ) return
     setIngestionLoading(true)
     try {
       const job = await createKnowledgeStudioIngestion(
@@ -582,6 +603,81 @@ export function DataEnricherStep({
     } finally {
       setIngestionLoading(false)
     }
+  }
+
+  const cancelIngestion = async () => {
+    const reason = cancelReason.trim()
+    if (!cancelTarget || !reason || ingestionActionJobId) return
+    setIngestionActionJobId(cancelTarget.id)
+    try {
+      const job = await cancelKnowledgeStudioIngestion(
+        client,
+        draftId,
+        cancelTarget.id,
+        cancelTarget.version,
+        reason,
+        newKnowledgeStudioIdempotencyKey(),
+      )
+      setIngestionJobs((current) => [
+        job,
+        ...current.filter((item) => item.id !== job.id),
+      ])
+      setCancelTarget(undefined)
+      setCancelReason('')
+      setIngestionPollRevision((current) => current + 1)
+      setStatus(`Ingestion 취소 요청을 기록했습니다. 현재 상태: ${job.state}`)
+    } catch (error) {
+      if (error instanceof ApiError && error.problem.status === 412) {
+        setIngestionPollRevision((current) => current + 1)
+        setStatus('Ingestion 상태가 변경되어 취소하지 못했습니다. 최신 상태를 다시 확인합니다.')
+      } else {
+        setStatus(error instanceof Error ? error.message : 'Ingestion 취소 요청에 실패했습니다.')
+      }
+    } finally {
+      setIngestionActionJobId(undefined)
+    }
+  }
+
+  const retryIngestion = async (target: KnowledgeStudioIngestionJob) => {
+    if (ingestionActionJobId) return
+    setIngestionActionJobId(target.id)
+    try {
+      const job = await retryKnowledgeStudioIngestion(
+        client,
+        draftId,
+        target.id,
+        target.version,
+        newKnowledgeStudioIdempotencyKey(),
+      )
+      setIngestionJobs((current) => [
+        job,
+        ...current.filter((item) => item.id !== job.id),
+      ])
+      setIngestionPollRevision((current) => current + 1)
+      setStatus(`Ingestion 재시도를 접수했습니다. 현재 상태: ${job.state}`)
+    } catch (error) {
+      if (error instanceof ApiError && error.problem.status === 412) {
+        setIngestionPollRevision((current) => current + 1)
+        setStatus('Ingestion 상태가 변경되어 재시도하지 못했습니다. 최신 상태를 다시 확인합니다.')
+      } else {
+        setStatus(error instanceof Error ? error.message : 'Ingestion 재시도에 실패했습니다.')
+      }
+    } finally {
+      setIngestionActionJobId(undefined)
+    }
+  }
+
+  const openResultChangeset = (job: KnowledgeStudioIngestionJob) => {
+    if (!job.result_changeset_id) return
+    const url = new URL(window.location.href)
+    url.searchParams.set('page', 'knowledge-instances')
+    url.searchParams.set('information_tab', 'instances')
+    url.searchParams.set('asset_id', job.graph_id)
+    url.searchParams.set('changeset_id', job.result_changeset_id)
+    url.searchParams.delete('draft')
+    url.searchParams.delete('step')
+    window.history.pushState({}, '', `${url.pathname}${url.search}${url.hash}`)
+    window.dispatchEvent(new PopStateEvent('popstate'))
   }
 
   const submitReview = async () => {
@@ -718,6 +814,15 @@ export function DataEnricherStep({
     && preflight.contract_hash,
   )
   const latestIngestion = ingestionJobs[0]
+  const hasActiveIngestion = ingestionJobs.some((job) => (
+    ACTIVE_INGESTION_STATES.has(job.state)
+  ))
+  const canRunIngestion = Boolean(
+    etag
+    && draftState === 'PUBLISHED'
+    && !ingestionLoading
+    && !hasActiveIngestion,
+  )
 
   if (loading) {
     return <section className="grid min-h-[420px] place-items-center rounded-enterprise border border-slate-300 bg-white text-sm text-slate-500">
@@ -799,10 +904,12 @@ export function DataEnricherStep({
           <button
             type="button"
             className="button"
-            disabled={!editable || !etag || !exactPreflightPass || ingestionLoading}
-            title={exactPreflightPass
-              ? '정확한 Draft version과 Embedding binding으로 백그라운드 작업을 접수합니다.'
-              : '현재 Draft version의 Pre-flight PASS가 필요합니다.'}
+            disabled={!canRunIngestion}
+            title={draftState !== 'PUBLISHED'
+              ? 'Schema와 Mapping을 발행한 뒤에만 실제 A-Box Ingestion을 실행할 수 있습니다.'
+              : hasActiveIngestion
+                ? '진행 중인 Ingestion이 끝난 뒤 새 작업을 실행할 수 있습니다.'
+                : '현재 Active Studio Release와 Embedding binding으로 백그라운드 작업을 접수합니다.'}
             onClick={() => void runIngestion()}
           >
             <Play size={14} /> {ingestionLoading ? '접수 중…' : 'Run Ingestion'}
@@ -848,14 +955,23 @@ export function DataEnricherStep({
       {latestIngestion && (
         <section
           aria-label="A-Box Ingestion 진행 상태"
-          className="mb-3 rounded-enterprise border border-blue-200 bg-blue-50 p-3"
+          className={`mb-3 rounded-enterprise border p-3 ${
+            latestIngestion.state === 'SUCCESS'
+              ? 'border-emerald-200 bg-emerald-50'
+              : ['FAILED', 'STALE'].includes(latestIngestion.state)
+                ? 'border-red-200 bg-red-50'
+                : latestIngestion.state === 'CANCELLED'
+                  ? 'border-slate-300 bg-slate-50'
+                  : 'border-blue-200 bg-blue-50'
+          }`}
         >
           <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
             <strong className="text-navy-900">
               {latestIngestion.state} · {latestIngestion.current_stage}
             </strong>
             <span className="text-slate-600">
-              {latestIngestion.progress_percent}% · Vector 대상 {latestIngestion.vector_target_count}개
+              {latestIngestion.progress_percent}% · 시도 {latestIngestion.attempt_count}/
+              {latestIngestion.maximum_attempts} · Vector 대상 {latestIngestion.vector_target_count}개
             </span>
           </div>
           <div
@@ -867,17 +983,68 @@ export function DataEnricherStep({
           >
             <div
               className={`h-full transition-[width] ${
-                latestIngestion.state === 'FAILED' ? 'bg-red-600' : 'bg-enterprise-blue'
+                ['FAILED', 'STALE'].includes(latestIngestion.state)
+                  ? 'bg-red-600'
+                  : latestIngestion.state === 'SUCCESS'
+                    ? 'bg-emerald-600'
+                    : 'bg-enterprise-blue'
               }`}
               style={{ width: `${latestIngestion.progress_percent}%` }}
             />
           </div>
-          {latestIngestion.error_message && (
+          {latestIngestion.error_code && (
             <p role="alert" className="mb-0 mt-2 text-[11px] text-red-800">
-              {latestIngestion.error_code} · {latestIngestion.error_message}
+              실패 코드 · {latestIngestion.error_code}
             </p>
           )}
+          {latestIngestion.result_changeset_id && (
+            <div className="mt-3 flex flex-wrap items-center justify-between gap-2 rounded-enterprise border border-emerald-200 bg-white p-2 text-[11px]">
+              <span className="min-w-0">
+                DRAFT Changeset · <code className="break-all">
+                  {latestIngestion.result_changeset_id}
+                </code>
+              </span>
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => openResultChangeset(latestIngestion)}
+              >
+                Changeset 검토 화면으로 이동
+              </button>
+            </div>
+          )}
+          <div className="mt-3 flex flex-wrap justify-end gap-2">
+            {latestIngestion.allowed_actions.includes('CANCEL') && (
+              <button
+                type="button"
+                className="button button-secondary"
+                disabled={Boolean(ingestionActionJobId)}
+                onClick={() => {
+                  setCancelReason('')
+                  setCancelTarget(latestIngestion)
+                }}
+              >
+                Ingestion 취소
+              </button>
+            )}
+            {latestIngestion.allowed_actions.includes('RETRY') && (
+              <button
+                type="button"
+                className="button"
+                disabled={Boolean(ingestionActionJobId)}
+                onClick={() => void retryIngestion(latestIngestion)}
+              >
+                {ingestionActionJobId === latestIngestion.id ? '재접수 중…' : 'Ingestion 재시도'}
+              </button>
+            )}
+          </div>
         </section>
+      )}
+      {draftState !== 'PUBLISHED' && draftState !== 'DISCARDED' && (
+        <p className="mb-3 rounded-enterprise border border-amber-200 bg-amber-50 p-3 text-xs text-amber-950">
+          실제 A-Box Ingestion은 변경 가능한 Draft가 아니라 독립 검토를 거쳐 발행된
+          Studio Release만 입력으로 사용합니다. Pre-flight를 완료하고 Publish한 뒤 실행하세요.
+        </p>
       )}
       {draftState === 'REVIEW' && isAuthor && (
         <p className="mb-3 rounded-enterprise border border-blue-200 bg-blue-50 p-3 text-xs text-blue-950">
@@ -1134,6 +1301,50 @@ export function DataEnricherStep({
           </section>
         )}
     <p role="status" className="m-0 text-xs text-slate-500">{status}</p>
+
+    <Dialog
+      open={Boolean(cancelTarget)}
+      title="A-Box Ingestion 취소"
+      description="현재 job version을 ETag로 확인한 뒤 취소 요청과 사유를 감사 증거로 기록합니다."
+      onRequestClose={() => {
+        if (!ingestionActionJobId) {
+          setCancelTarget(undefined)
+          setCancelReason('')
+        }
+      }}
+      footer={<>
+        <button
+          type="button"
+          className="button button-secondary"
+          disabled={Boolean(ingestionActionJobId)}
+          onClick={() => {
+            setCancelTarget(undefined)
+            setCancelReason('')
+          }}
+        >
+          닫기
+        </button>
+        <button
+          type="button"
+          className="button"
+          disabled={Boolean(ingestionActionJobId) || !cancelReason.trim()}
+          onClick={() => void cancelIngestion()}
+        >
+          {ingestionActionJobId ? '취소 요청 중…' : 'Ingestion 취소 요청'}
+        </button>
+      </>}
+    >
+      <label className="grid gap-1 text-xs font-black text-navy-900">
+        취소 사유
+        <textarea
+          className="min-h-24"
+          maxLength={500}
+          value={cancelReason}
+          onChange={(event) => setCancelReason(event.target.value)}
+          placeholder="취소가 필요한 운영 사유를 입력하세요."
+        />
+      </label>
+    </Dialog>
 
     <Dialog
       open={Boolean(conflict)}

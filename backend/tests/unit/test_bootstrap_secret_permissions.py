@@ -12,8 +12,11 @@ import pytest
 
 from datariver.bootstrap import (
     LOCAL_DEMO_IDENTITIES,
+    LOCAL_KNOWLEDGE_INGESTION_EXTERNAL_SUBJECT,
+    LOCAL_KNOWLEDGE_INGESTION_SUBJECT_ID,
     _local_demo_identities,
     _local_human_membership_attributes,
+    _local_service_identities,
 )
 from datariver.domain.authz import Action
 
@@ -113,6 +116,19 @@ def test_local_demo_identities_match_keycloak_and_use_balanced_human_roles(
     )
     with pytest.raises(RuntimeError, match="state file is invalid"):
         _local_demo_identities(state_path)
+
+
+def test_local_knowledge_ingestion_service_has_one_exact_machine_envelope() -> None:
+    services = {identity.subject_id: identity for identity in _local_service_identities()}
+    ingestion = services[LOCAL_KNOWLEDGE_INGESTION_SUBJECT_ID]
+
+    assert ingestion.external_subject == LOCAL_KNOWLEDGE_INGESTION_EXTERNAL_SUBJECT
+    assert ingestion.groups == (
+        "service-accounts",
+        "knowledge-ingestion-workers",
+    )
+    assert ingestion.allowed_actions == (Action.KG_INGEST_EXECUTE,)
+    assert ingestion.bootstrap_contract == "local-knowledge-studio-ingestion-service-v1"
 
 
 def test_local_human_memberships_select_the_single_workspace_by_default() -> None:

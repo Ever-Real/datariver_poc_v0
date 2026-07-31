@@ -308,7 +308,9 @@ mkdir -p "$secrets_dir"
 mkdir -p "$keycloak_runtime_dir"
 mkdir -p "$identity_runtime_dir"
 mkdir -p "$secrets_dir/quality-sources"
+mkdir -p "$secrets_dir/knowledge-studio-sources"
 mkdir -p "$root/runtime/quality"
+mkdir -p "$root/runtime/knowledge-studio"
 if [ -e "$legacy_demo_identity_state" ]; then
   [ -f "$legacy_demo_identity_state" ] || {
     echo "Legacy local demo identity state must be a regular file." >&2
@@ -370,6 +372,7 @@ ensure_random_secret postgres_relay_password 32
 ensure_random_secret postgres_upload_password 32
 ensure_random_secret postgres_governance_password 32
 ensure_random_secret postgres_knowledge_password 32
+ensure_random_secret postgres_knowledge_ingestion_password 32
 ensure_random_secret postgres_quality_password 32
 ensure_random_secret postgres_governance_document_password 32
 ensure_random_secret postgres_catalog_profile_password 32
@@ -639,6 +642,9 @@ if [ "$wsl_preparation" = true ]; then
   set_env_value NEO4J_AUTH_SECRET_REF file:/run/secrets/neo4j_auth
   set_env_value KNOWLEDGE_PIPELINE_ENABLED false
   set_env_value KNOWLEDGE_SOURCE_WORKER_ENABLED false
+  set_env_value KNOWLEDGE_STUDIO_INGESTION_WORKER_ENABLED false
+  set_env_value KNOWLEDGE_STUDIO_SOURCE_SECRET_ROOT \
+    /run/secrets/knowledge-studio-sources
 fi
 if [ -n "$datahub_base_url" ]; then
   set_env_value DATAHUB_BASE_URL "$datahub_base_url"
@@ -659,10 +665,26 @@ chmod 0700 \
   "$keycloak_runtime_dir" \
   "$identity_runtime_dir" \
   "$root/runtime/quality"
+chmod 0555 \
+  "$secrets_dir/knowledge-studio-sources" \
+  "$root/runtime/knowledge-studio"
 for secret_file in "$secrets_dir"/*; do
   if [ -f "$secret_file" ]; then
     chmod 0444 "$secret_file"
   fi
+done
+for studio_file in \
+  "$secrets_dir/knowledge-studio-sources"/* \
+  "$root/runtime/knowledge-studio"/*
+do
+  if [ ! -e "$studio_file" ]; then
+    continue
+  fi
+  if [ -L "$studio_file" ] || [ ! -f "$studio_file" ]; then
+    echo "Knowledge Studio runtime inputs must be regular non-symlink files." >&2
+    exit 2
+  fi
+  chmod 0444 "$studio_file"
 done
 chmod 0444 "$keycloak_runtime_dir/datariver-realm.json"
 if [ -f "$demo_identity_state" ]; then

@@ -1209,14 +1209,19 @@ class KnowledgeStudioTBoxProposalRecord:
 class KnowledgeStudioIngestionJobRecord:
     job_id: UUID
     draft_id: UUID
+    graph_id: UUID
+    studio_release_id: UUID
     requested_by: UUID
     state: str
     progress_percent: int
     current_stage: str
     vector_target_count: int
-    result: dict[str, object] | None
+    attempt_count: int
+    maximum_attempts: int
+    result_changeset_id: UUID | None
+    result_evidence_hash: str | None
     error_code: str | None
-    error_message: str | None
+    allowed_actions: tuple[str, ...]
     version: int
     created_at: datetime
     updated_at: datetime

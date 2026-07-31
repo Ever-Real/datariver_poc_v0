@@ -72,6 +72,128 @@ def test_default_governance_worker_is_the_seeded_airflow_service_subject() -> No
     assert settings().governance_worker_subject_id == LOCAL_AIRFLOW_SUBJECT_ID
 
 
+def test_knowledge_studio_ingestion_worker_is_disabled_and_fail_closed_by_default() -> None:
+    configured = settings()
+    assert configured.knowledge_studio_ingestion_worker_enabled is False
+    assert configured.knowledge_ingestion_database_url is None
+    assert configured.knowledge_studio_ingestion_worker_subject_id is None
+
+
+def test_knowledge_studio_ingestion_worker_requires_isolated_exact_settings() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="dedicated database principal",
+    ):
+        settings(knowledge_studio_ingestion_worker_enabled=True)
+
+    enabled = settings(
+        knowledge_studio_ingestion_worker_enabled=True,
+        knowledge_ingestion_database_url=(
+            "postgresql+asyncpg://datariver_knowledge_ingestion@localhost/db"
+        ),
+        knowledge_ingestion_database_secret_ref=(
+            "file:/run/secrets/postgres_knowledge_ingestion_password"
+        ),
+        knowledge_studio_ingestion_worker_subject_id=("00000000-0000-7000-8000-000000000008"),
+        knowledge_studio_ingestion_workspace_id=("00000000-0000-4000-8000-000000000100"),
+        knowledge_studio_ingestion_worker_fingerprint="knowledge-ingestion-dev-v1",
+        knowledge_studio_source_manifest_file="/run/datariver/studio-sources.json",
+        knowledge_studio_ingestion_retention_binding_reference="ADR-0094:test-binding",
+    )
+    assert enabled.knowledge_studio_ingestion_worker_enabled is True
+
+    with pytest.raises(ValidationError, match="datariver_knowledge_ingestion"):
+        settings(
+            knowledge_studio_ingestion_worker_enabled=True,
+            knowledge_ingestion_database_url="postgresql+asyncpg://shared@localhost/db",
+            knowledge_ingestion_database_secret_ref=(
+                "file:/run/secrets/postgres_knowledge_ingestion_password"
+            ),
+            knowledge_studio_ingestion_worker_subject_id=("00000000-0000-7000-8000-000000000008"),
+            knowledge_studio_ingestion_workspace_id=("00000000-0000-4000-8000-000000000100"),
+            knowledge_studio_ingestion_worker_fingerprint="knowledge-ingestion-dev-v1",
+            knowledge_studio_source_manifest_file="/run/datariver/studio-sources.json",
+            knowledge_studio_ingestion_retention_binding_reference="ADR-0094:test-binding",
+        )
+
+    with pytest.raises(ValidationError, match="fit strictly inside"):
+        settings(
+            knowledge_studio_ingestion_worker_enabled=True,
+            knowledge_ingestion_database_url=(
+                "postgresql+asyncpg://datariver_knowledge_ingestion@localhost/db"
+            ),
+            knowledge_ingestion_database_secret_ref=(
+                "file:/run/secrets/postgres_knowledge_ingestion_password"
+            ),
+            knowledge_studio_ingestion_worker_subject_id=("00000000-0000-7000-8000-000000000008"),
+            knowledge_studio_ingestion_workspace_id=("00000000-0000-4000-8000-000000000100"),
+            knowledge_studio_ingestion_worker_fingerprint="knowledge-ingestion-dev-v1",
+            knowledge_studio_source_manifest_file="/run/datariver/studio-sources.json",
+            knowledge_studio_ingestion_retention_binding_reference="ADR-0094:test-binding",
+            knowledge_studio_ingestion_worker_lease_seconds=300,
+            knowledge_studio_ingestion_source_hard_timeout_seconds=270,
+            knowledge_studio_ingestion_completion_margin_seconds=30,
+        )
+
+
+@pytest.mark.parametrize(
+    ("overrides", "message"),
+    (
+        (
+            {"knowledge_studio_source_secret_root": "/"},
+            "source secret root",
+        ),
+        (
+            {"knowledge_studio_source_manifest_file": "/"},
+            "source manifest",
+        ),
+        (
+            {"knowledge_studio_ingestion_worker_fingerprint": "worker fingerprint"},
+            "worker fingerprint",
+        ),
+    ),
+)
+def test_knowledge_studio_ingestion_rejects_unbounded_operator_coordinates(
+    overrides: dict[str, object],
+    message: str,
+) -> None:
+    with pytest.raises(ValidationError, match=message):
+        settings(**overrides)
+
+
+def test_enabled_knowledge_studio_ingestion_rejects_shared_secret_roots_and_controls() -> None:
+    common: dict[str, object] = {
+        "knowledge_studio_ingestion_worker_enabled": True,
+        "knowledge_ingestion_database_url": (
+            "postgresql+asyncpg://datariver_knowledge_ingestion@localhost/db"
+        ),
+        "knowledge_ingestion_database_secret_ref": (
+            "file:/run/secrets/postgres_knowledge_ingestion_password"
+        ),
+        "knowledge_studio_ingestion_worker_subject_id": ("00000000-0000-7000-8000-000000000008"),
+        "knowledge_studio_ingestion_workspace_id": ("00000000-0000-4000-8000-000000000100"),
+        "knowledge_studio_ingestion_worker_fingerprint": "knowledge-ingestion-dev-v1",
+        "knowledge_studio_source_manifest_file": "/run/datariver/studio-sources.json",
+        "knowledge_studio_ingestion_retention_binding_reference": "ADR-0094:test-binding",
+    }
+    with pytest.raises(ValidationError, match="cannot expose the global secret root"):
+        settings(
+            **common,
+            knowledge_studio_source_secret_root="/run/secrets",
+        )
+    with pytest.raises(ValidationError, match="retention binding reference"):
+        settings(
+            **(
+                common
+                | {
+                    "knowledge_studio_ingestion_retention_binding_reference": (
+                        "ADR-0094:test-binding\n"
+                    )
+                }
+            )
+        )
+
+
 def test_quality_dispatch_capacity_is_deployment_owned_and_complete() -> None:
     defaults = settings()
     assert defaults.quality_dispatch_max_due_schedules is None

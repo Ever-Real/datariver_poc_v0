@@ -96,6 +96,11 @@ EXPECTED_SERVICE_SECRETS = {
         "intranet_llm_chat_api_key",
         "intranet_llm_embedding_api_key",
     },
+    "knowledge-studio-ingestion-worker": {
+        "postgres_knowledge_ingestion_password",
+        "redis_delivery_password",
+        "intranet_llm_embedding_api_key",
+    },
 }
 DATAHUB_CONTRACT_DIRECTORY = ROOT / "infra" / "contracts"
 DATAHUB_COMPONENTS = {"actions", "frontend", "gms", "upgrade"}
@@ -1112,6 +1117,9 @@ def verify_ci_supply_chain() -> None:
 def verify_database_roles() -> None:
     generator = (ROOT / "scripts" / "generate_initial_migration.py").read_text(encoding="utf-8")
     role_init = (ROOT / "infra" / "postgres" / "init" / "010_roles.sh").read_text(encoding="utf-8")
+    canonical = (ROOT / "backend" / "alembic" / "versions" / "0001_initial_schema.py").read_text(
+        encoding="utf-8"
+    )
     combined = generator + role_init + (ROOT / "compose.yaml").read_text(encoding="utf-8")
     if "datariver_worker" in combined or "postgres_worker_password" in combined:
         raise AssertionError("legacy all-powerful worker identity is still configured")
@@ -1125,6 +1133,7 @@ def verify_database_roles() -> None:
         "datariver_archive",
         "datariver_bootstrap",
         "datariver_knowledge",
+        "datariver_knowledge_ingestion",
         "datariver_quality",
     }
     missing = {role for role in required_roles if role not in combined}
@@ -1180,10 +1189,42 @@ def verify_database_roles() -> None:
         "datariver_retention_scheduler",
         "datariver_archive",
         "datariver_knowledge",
+        "datariver_knowledge_ingestion",
         "datariver_quality",
     ):
         if re.search(rf"ALTER ROLE {role}[^;]*NOBYPASSRLS;", combined) is None:
             raise AssertionError(f"{role} must remain subject to workspace RLS")
+    required_ingestion_contract = {
+        "datariver_knowledge_ingestion",
+        "request_studio_ingestion_v1",
+        "claim_studio_ingestion_v1",
+        "complete_studio_ingestion_v1",
+        "current_studio_ingestion_lease_matches_v1",
+    }
+    for source_name, source in (
+        ("role reconciliation", role_init),
+        ("canonical initial migration", canonical),
+    ):
+        missing_ingestion = required_ingestion_contract - {
+            value for value in required_ingestion_contract if value in source
+        }
+        if missing_ingestion:
+            raise AssertionError(
+                f"{source_name} is missing the governed Studio ingestion contract: "
+                f"{sorted(missing_ingestion)}"
+            )
+    compose = _yaml(ROOT / "compose.yaml")
+    ingestion_worker = compose["services"].get("knowledge-studio-ingestion-worker")
+    if not isinstance(ingestion_worker, dict):
+        raise AssertionError("Knowledge Studio ingestion worker service is missing")
+    if (
+        ingestion_worker.get("profiles") != ["knowledge-studio-ingestion"]
+        or ingestion_worker.get("read_only") is not True
+        or "no-new-privileges:true" not in ingestion_worker.get("security_opt", [])
+    ):
+        raise AssertionError(
+            "Knowledge Studio ingestion worker isolation/profile contract is incomplete"
+        )
     attachment_migration = (
         ROOT / "backend/alembic/versions/0050_change_request_attachment_upload_intents.py"
     ).read_text(encoding="utf-8")

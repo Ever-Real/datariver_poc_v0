@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../../../api/client'
+import type { KnowledgeStudioIngestionJob } from '../knowledgeStudioApi'
 import { useKnowledgeStudioSessionStore } from '../knowledgeStudioSessionStore'
 import { DataEnricherStep } from './DataEnricherStep'
 
@@ -126,8 +127,41 @@ function binding(version: number) {
   }
 }
 
+function ingestionJob(
+  overrides: Partial<KnowledgeStudioIngestionJob> = {},
+): KnowledgeStudioIngestionJob {
+  return {
+    id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
+    draft_id: draftId,
+    graph_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d8',
+    studio_release_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d9',
+    requested_by: draft(3).author_id,
+    state: 'PENDING',
+    progress_percent: 0,
+    current_stage: 'QUEUED',
+    vector_target_count: 1,
+    attempt_count: 0,
+    maximum_attempts: 3,
+    result_changeset_id: null,
+    result_evidence_hash: null,
+    error_code: null,
+    allowed_actions: ['CANCEL'],
+    version: 1,
+    created_at: '2026-07-29T01:00:00Z',
+    updated_at: '2026-07-29T01:00:00Z',
+    started_at: null,
+    finished_at: null,
+    ...overrides,
+  }
+}
+
 beforeEach(() => {
   useKnowledgeStudioSessionStore.setState({ sessions: {} })
+  window.history.replaceState(
+    {},
+    '',
+    '/?page=knowledge-studio&workspace=workspace&step=abox',
+  )
   vi.stubGlobal('crypto', {
     ...crypto,
     randomUUID: vi.fn(() => '019fa57b-52de-74c0-9f5e-06ae7b1bf399'),
@@ -143,7 +177,7 @@ describe('DataEnricherStep', () => {
   it('maps Dataset columns and marks the persisted T-Box node as Mapped', async () => {
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
-      if (path.endsWith('/abox/ingestions') && !init?.method) {
+      if (path.includes('/abox/ingestions?') && !init?.method) {
         return Promise.resolve(json({ items: [] }))
       }
       if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
@@ -218,7 +252,7 @@ describe('DataEnricherStep', () => {
     let patches = 0
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
-      if (path.endsWith('/abox/ingestions') && !init?.method) {
+      if (path.includes('/abox/ingestions?') && !init?.method) {
         return Promise.resolve(json({ items: [] }))
       }
       if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
@@ -285,7 +319,7 @@ describe('DataEnricherStep', () => {
     const secondNodeId = `preview:${'b'.repeat(64)}`
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
-      if (path.endsWith('/abox/ingestions') && !init?.method) {
+      if (path.includes('/abox/ingestions?') && !init?.method) {
         return Promise.resolve(json({ items: [] }))
       }
       if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
@@ -376,6 +410,7 @@ describe('DataEnricherStep', () => {
     expect(within(preflightResult).getByText(/Pre-flight UNAVAILABLE/)).toBeInTheDocument()
     expect(within(preflightResult).getByText(/SOURCE_ROW_READER_UNAVAILABLE/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Run Ingestion' })).toBeDisabled()
+    expect(screen.getByText(/Studio Release만 입력으로 사용합니다/)).toBeInTheDocument()
 
     const previewCall = fetchMock.mock.calls.find(([input]) => (
       requestUrl(input).endsWith('/abox/previews')
@@ -387,49 +422,33 @@ describe('DataEnricherStep', () => {
     })
   })
 
-  it('queues ingestion only after an exact PASS receipt and renders durable progress', async () => {
-    const job = {
-      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
-      draft_id: draftId,
-      requested_by: draft(3).author_id,
-      state: 'PENDING',
-      progress_percent: 0,
-      current_stage: 'QUEUED',
-      vector_target_count: 1,
-      result: null,
-      error_code: null,
-      error_message: null,
-      version: 1,
-      created_at: '2026-07-29T01:00:00Z',
-      updated_at: '2026-07-29T01:00:00Z',
-      started_at: null,
-      finished_at: null,
+  it('queues ingestion only from a PUBLISHED Studio Release and renders durable progress', async () => {
+    const publishedDraft = {
+      ...draft(5),
+      state: 'PUBLISHED',
+      materialized_graph_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d8',
+      materialized_ontology_version_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d7',
+      published_studio_release_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d9',
+      published_by: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c9',
+      published_at: '2026-07-29T00:59:00Z',
     }
+    const job = ingestionJob()
+    let queued = false
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
       if (path.endsWith('/abox/ingestions') && init?.method === 'POST') {
+        queued = true
         return Promise.resolve(json(job, 202))
       }
-      if (path.endsWith('/abox/ingestions') && !init?.method) {
-        return Promise.resolve(json({ items: [] }))
+      if (path.includes('/abox/ingestions?') && !init?.method) {
+        return Promise.resolve(json({ items: queued ? [job] : [] }))
       }
       if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
         return Promise.resolve(json({
-          draft: draft(3),
+          draft: publishedDraft,
           tbox_elements: tboxElements,
           bindings: [binding(1)],
-        }, 200, '"3"'))
-      }
-      if (path.endsWith('/abox/preflight') && init?.method === 'POST') {
-        return Promise.resolve(json({
-          status: 'PASS',
-          valid: true,
-          draft_version: 3,
-          checked_at: '2026-07-29T01:00:00Z',
-          receipt_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d1',
-          contract_hash: 'a'.repeat(64),
-          evidence: [],
-        }, 200, '"3"'))
+        }, 200, '"5"'))
       }
       return Promise.reject(new Error(`Unexpected request: ${path}`))
     })
@@ -438,20 +457,17 @@ describe('DataEnricherStep', () => {
     render(<DataEnricherStep client={client} draftId={draftId} onDraftUpdate={vi.fn()} />)
 
     const runButton = await screen.findByRole('button', { name: 'Run Ingestion' })
-    expect(runButton).toBeDisabled()
-    fireEvent.click(screen.getByRole('button', { name: 'Pre-flight 검증' }))
-    const preflightResult = await screen.findByLabelText('Ingestion Pre-flight 결과')
-    expect(within(preflightResult).getByText(/Pre-flight PASS/)).toBeInTheDocument()
     expect(runButton).toBeEnabled()
     fireEvent.click(runButton)
 
     const progress = await screen.findByLabelText('A-Box Ingestion 진행 상태')
     expect(within(progress).getByText('PENDING · QUEUED')).toBeInTheDocument()
     expect(within(progress).getByText(/Vector 대상 1개/)).toBeInTheDocument()
+    expect(runButton).toBeDisabled()
     const createCall = fetchMock.mock.calls.find(([input, init]) => (
       init?.method === 'POST' && requestUrl(input).endsWith('/abox/ingestions')
     ))
-    expect(new Headers(createCall?.[1]?.headers).get('If-Match')).toBe('"3"')
+    expect(new Headers(createCall?.[1]?.headers).get('If-Match')).toBe('"5"')
     expect(new Headers(createCall?.[1]?.headers).get('Idempotency-Key')).toBeTruthy()
   })
 
@@ -474,7 +490,7 @@ describe('DataEnricherStep', () => {
     }
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
-      if (path.endsWith('/abox/ingestions') && !init?.method) {
+      if (path.includes('/abox/ingestions?') && !init?.method) {
         return Promise.resolve(json({ items: [] }))
       }
       if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
@@ -544,7 +560,7 @@ describe('DataEnricherStep', () => {
 
     await screen.findByText(/Studio Release #1 발행 완료/)
     expect(screen.getByText('Studio: PUBLISHED')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Run Ingestion' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Run Ingestion' })).toBeEnabled()
     const publishCall = fetchMock.mock.calls.find(([input]) => (
       requestUrl(input).endsWith('/publish')
     ))
@@ -552,5 +568,138 @@ describe('DataEnricherStep', () => {
     expect(JSON.parse(publishCall?.[1]?.body as string)).toEqual({
       review_reason: 'T-Box와 Mapping evidence 검토 완료',
     })
+  })
+
+  it('uses allowed actions to retry and cancel with version fences', async () => {
+    const publishedDraft = {
+      ...draft(5),
+      state: 'PUBLISHED',
+      materialized_graph_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d8',
+      materialized_ontology_version_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d7',
+      published_studio_release_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d9',
+    }
+    let currentJob = ingestionJob({
+      state: 'FAILED',
+      current_stage: 'COMPLETED',
+      error_code: 'PHYSICAL_SOURCE_UNAVAILABLE',
+      allowed_actions: ['RETRY'],
+      attempt_count: 1,
+      version: 3,
+      finished_at: '2026-07-29T01:01:00Z',
+    })
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
+        return Promise.resolve(json({
+          draft: publishedDraft,
+          tbox_elements: tboxElements,
+          bindings: [binding(1)],
+        }, 200, '"5"'))
+      }
+      if (path.includes('/abox/ingestions?') && !init?.method) {
+        return Promise.resolve(json({ items: [currentJob] }))
+      }
+      if (path.endsWith(`/abox/ingestions/${currentJob.id}/retry`) && init?.method === 'POST') {
+        currentJob = ingestionJob({
+          state: 'RETRY_WAIT',
+          allowed_actions: ['CANCEL'],
+          attempt_count: 1,
+          version: 4,
+        })
+        return Promise.resolve(json(currentJob, 200, '"4"'))
+      }
+      if (path.endsWith(`/abox/ingestions/${currentJob.id}/cancel`) && init?.method === 'POST') {
+        currentJob = ingestionJob({
+          state: 'CANCELLED',
+          current_stage: 'COMPLETED',
+          allowed_actions: ['RETRY'],
+          attempt_count: 1,
+          version: 5,
+          finished_at: '2026-07-29T01:02:00Z',
+        })
+        return Promise.resolve(json(currentJob, 200, '"5"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    render(<DataEnricherStep client={client} draftId={draftId} onDraftUpdate={vi.fn()} />)
+
+    const progress = await screen.findByLabelText('A-Box Ingestion 진행 상태')
+    expect(within(progress).getByText('FAILED · COMPLETED')).toBeInTheDocument()
+    expect(within(progress).getByText(/PHYSICAL_SOURCE_UNAVAILABLE/)).toBeInTheDocument()
+    fireEvent.click(within(progress).getByRole('button', { name: 'Ingestion 재시도' }))
+
+    await within(progress).findByText('RETRY_WAIT · QUEUED')
+    const retryCall = fetchMock.mock.calls.find(([input]) => (
+      requestUrl(input).endsWith(`/abox/ingestions/${currentJob.id}/retry`)
+    ))
+    expect(new Headers(retryCall?.[1]?.headers).get('If-Match')).toBe('"3"')
+    expect(new Headers(retryCall?.[1]?.headers).get('Idempotency-Key')).toBeTruthy()
+
+    fireEvent.click(within(progress).getByRole('button', { name: 'Ingestion 취소' }))
+    const cancelDialog = await screen.findByRole('dialog', { name: 'A-Box Ingestion 취소' })
+    fireEvent.change(within(cancelDialog).getByLabelText('취소 사유'), {
+      target: { value: '원천 스키마 변경 확인' },
+    })
+    fireEvent.click(within(cancelDialog).getByRole('button', {
+      name: 'Ingestion 취소 요청',
+    }))
+
+    await within(progress).findByText('CANCELLED · COMPLETED')
+    const cancelCall = fetchMock.mock.calls.find(([input]) => (
+      requestUrl(input).endsWith(`/abox/ingestions/${currentJob.id}/cancel`)
+    ))
+    expect(new Headers(cancelCall?.[1]?.headers).get('If-Match')).toBe('"4"')
+    expect(new Headers(cancelCall?.[1]?.headers).get('Idempotency-Key')).toBeTruthy()
+    expect(JSON.parse(cancelCall?.[1]?.body as string)).toEqual({
+      reason: '원천 스키마 변경 확인',
+    })
+  })
+
+  it('shows a successful result Changeset and navigates through the SPA route', async () => {
+    const success = ingestionJob({
+      state: 'SUCCESS',
+      progress_percent: 100,
+      current_stage: 'COMPLETED',
+      attempt_count: 1,
+      result_changeset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3e0',
+      result_evidence_hash: 'a'.repeat(64),
+      allowed_actions: [],
+      version: 4,
+      started_at: '2026-07-29T01:00:05Z',
+      finished_at: '2026-07-29T01:01:00Z',
+    })
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
+        return Promise.resolve(json({
+          draft: { ...draft(5), state: 'PUBLISHED' },
+          tbox_elements: tboxElements,
+          bindings: [binding(1)],
+        }, 200, '"5"'))
+      }
+      if (path.includes('/abox/ingestions?') && !init?.method) {
+        return Promise.resolve(json({ items: [success] }))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const popstate = vi.fn()
+    window.addEventListener('popstate', popstate)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    render(<DataEnricherStep client={client} draftId={draftId} onDraftUpdate={vi.fn()} />)
+
+    const progress = await screen.findByLabelText('A-Box Ingestion 진행 상태')
+    expect(within(progress).getByText(success.result_changeset_id ?? '')).toBeInTheDocument()
+    fireEvent.click(within(progress).getByRole('button', {
+      name: 'Changeset 검토 화면으로 이동',
+    }))
+
+    expect(window.location.search).toContain('page=knowledge-instances')
+    expect(window.location.search).toContain(`asset_id=${success.graph_id}`)
+    expect(window.location.search).toContain(`changeset_id=${success.result_changeset_id}`)
+    expect(popstate).toHaveBeenCalledOnce()
+    window.removeEventListener('popstate', popstate)
   })
 })

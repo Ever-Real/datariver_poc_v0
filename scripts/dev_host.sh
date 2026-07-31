@@ -49,6 +49,9 @@ configured_oidc_public_authority=$(env_file_value OIDC_PUBLIC_AUTHORITY \
 airflow_source_api_bridge_enabled=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_ENABLED false)
 airflow_source_api_bridge_port=$(env_file_value AIRFLOW_SOURCE_API_BRIDGE_PORT 38103)
 knowledge_source_worker_enabled=$(env_file_value KNOWLEDGE_SOURCE_WORKER_ENABLED false)
+knowledge_studio_ingestion_worker_enabled=$(
+  env_file_value KNOWLEDGE_STUDIO_INGESTION_WORKER_ENABLED false
+)
 enable_airflow_source_bridge=$airflow_source_api_bridge_enabled
 
 usage() {
@@ -248,6 +251,8 @@ show_status() {
   done
   show_optional_status airflow-api-bridge "$enable_airflow_source_bridge"
   show_optional_status knowledge-source-worker "$knowledge_source_worker_enabled"
+  show_optional_status knowledge-studio-ingestion-worker \
+    "$knowledge_studio_ingestion_worker_enabled"
 }
 
 show_optional_status() {
@@ -272,7 +277,7 @@ case "$action" in
     exit 0
     ;;
   stop)
-    for process in vite knowledge-source-worker governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
+    for process in vite knowledge-studio-ingestion-worker knowledge-source-worker governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
       stop_process "$process"
     done
     stop_owned_vite_processes
@@ -413,6 +418,9 @@ if [ "$action" = start ] && [ "$enable_airflow_source_bridge" = true ] && ! comm
 fi
 
 required_secrets=(postgres_password)
+if [ "$action" = migrate ]; then
+  required_secrets+=(postgres_knowledge_ingestion_password)
+fi
 if [ "$action" = bootstrap-identity ]; then
   required_secrets+=(postgres_bootstrap_password)
 fi
@@ -431,6 +439,12 @@ if [ "$action" = start ]; then
     required_secrets+=(
       postgres_knowledge_password s3_knowledge_access_key s3_knowledge_secret_key
     )
+  fi
+  if [ "$knowledge_studio_ingestion_worker_enabled" = true ]; then
+    required_secrets+=(postgres_knowledge_ingestion_password)
+    if [ "$(env_file_value INTRANET_OPENAI_COMPATIBLE_EMBEDDING_ENABLED false)" = true ]; then
+      required_secrets+=(intranet_llm_embedding_api_key)
+    fi
   fi
 fi
 
@@ -560,7 +574,7 @@ if [ "${NEO4J_PROJECTION_ENABLED:-false}" = true ] && [ ! -s "$root/secrets/neo4
 fi
 mkdir -p "$runtime_dir"
 if [ "$action" = start ]; then
-  for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker knowledge-source-worker vite; do
+  for process in api airflow-api-bridge outbox-relay upload-worker upload-validation-worker governance-apply-worker knowledge-source-worker knowledge-studio-ingestion-worker vite; do
     if is_running "$process"; then
       echo "DataRiver source-host process is already running: $process" >&2
       exit 2
@@ -611,6 +625,8 @@ export GOVERNANCE_DATABASE_URL="postgresql+asyncpg://datariver_governance@127.0.
 export GOVERNANCE_DATABASE_SECRET_REF="$(secret_ref postgres_governance_password)"
 export KNOWLEDGE_DATABASE_URL="postgresql+asyncpg://datariver_knowledge@127.0.0.1:$postgres_port/datariver"
 export KNOWLEDGE_DATABASE_SECRET_REF="$(secret_ref postgres_knowledge_password)"
+export KNOWLEDGE_INGESTION_DATABASE_URL="postgresql+asyncpg://datariver_knowledge_ingestion@127.0.0.1:$postgres_port/datariver"
+export KNOWLEDGE_INGESTION_DATABASE_SECRET_REF="$(secret_ref postgres_knowledge_ingestion_password)"
 export REDIS_CACHE_URL="$redis_cache_url"
 export REDIS_DELIVERY_URL="$redis_delivery_url"
 export REDIS_CACHE_SECRET_REF="$(secret_ref redis_cache_password)"
@@ -637,6 +653,37 @@ export DATAHUB_SECRET_REF="$(secret_ref datahub_token)"
 export SEED_PROFILE=none
 export WATCHFILES_FORCE_POLLING=true
 export SYSTEM_CONFIGURATION_SECRET_ROOT="$root/secrets"
+if [ "$knowledge_studio_ingestion_worker_enabled" = true ]; then
+  case "${KNOWLEDGE_STUDIO_SOURCE_MANIFEST_FILE:-}" in
+    /run/datariver/knowledge-studio/postgres-sources.json)
+      export KNOWLEDGE_STUDIO_SOURCE_MANIFEST_FILE="$root/runtime/knowledge-studio/postgres-sources.json"
+      ;;
+  esac
+  case "${KNOWLEDGE_STUDIO_SOURCE_SECRET_ROOT:-}" in
+    /run/secrets/knowledge-studio-sources)
+      export KNOWLEDGE_STUDIO_SOURCE_SECRET_ROOT="$root/secrets/knowledge-studio-sources"
+      ;;
+  esac
+  if [ ! -f "${KNOWLEDGE_STUDIO_SOURCE_MANIFEST_FILE:-}" ] ||
+    [ ! -d "${KNOWLEDGE_STUDIO_SOURCE_SECRET_ROOT:-}" ]; then
+    echo "Enabled Knowledge Studio ingestion requires its bounded manifest and source-secret directory." >&2
+    exit 2
+  fi
+  "$python" - "${KNOWLEDGE_STUDIO_SOURCE_MANIFEST_FILE}" \
+    "${KNOWLEDGE_STUDIO_SOURCE_SECRET_ROOT}" <<'PY'
+import sys
+
+from datariver.infrastructure.knowledge_studio.postgres_source import (
+    KnowledgeStudioSourceSecretReader,
+    load_knowledge_studio_source_manifest,
+)
+
+manifest = load_knowledge_studio_source_manifest(sys.argv[1])
+reader = KnowledgeStudioSourceSecretReader(sys.argv[2])
+for source in manifest.sources:
+    reader.resolve(source.password_secret_ref)
+PY
+fi
 export VITE_API_BASE_URL=/api/v1
 export VITE_API_PROXY_TARGET="http://127.0.0.1:$api_port"
 export VITE_USE_POLLING=true
@@ -770,7 +817,7 @@ cleanup_needed=true
 cleanup_on_error() {
   local status=$?
   if [ "$cleanup_needed" = true ] && [ "$status" -ne 0 ]; then
-    for process in vite knowledge-source-worker governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
+    for process in vite knowledge-studio-ingestion-worker knowledge-source-worker governance-apply-worker upload-validation-worker upload-worker outbox-relay airflow-api-bridge api; do
       stop_process "$process"
     done
   fi
@@ -835,6 +882,10 @@ if [ "${KNOWLEDGE_SOURCE_WORKER_ENABLED:-false}" = true ]; then
   mkdir -p "$KNOWLEDGE_SOURCE_SPOOL_DIRECTORY"
   start_process knowledge-source-worker "$root" "$python" -m datariver.workers.knowledge_source
 fi
+if [ "${KNOWLEDGE_STUDIO_INGESTION_WORKER_ENABLED:-false}" = true ]; then
+  start_process knowledge-studio-ingestion-worker "$root" \
+    "$python" -m datariver.workers.knowledge_studio_ingestion
+fi
 start_process vite "$root/frontend" "$node" "$vite_entry" \
   --host 127.0.0.1 --port "$web_port" --strictPort
 
@@ -847,6 +898,9 @@ if [ "$enable_airflow_source_bridge" = true ]; then
 fi
 if [ "${KNOWLEDGE_SOURCE_WORKER_ENABLED:-false}" = true ]; then
   required_processes+=(knowledge-source-worker)
+fi
+if [ "${KNOWLEDGE_STUDIO_INGESTION_WORKER_ENABLED:-false}" = true ]; then
+  required_processes+=(knowledge-studio-ingestion-worker)
 fi
 for process in "${required_processes[@]}"; do
   if ! is_running "$process"; then

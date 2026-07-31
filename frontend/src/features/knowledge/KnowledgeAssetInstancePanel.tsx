@@ -58,9 +58,13 @@ function asKnowledgeGraph(asset: KnowledgeAssetSummary): KnowledgeGraph {
 export function KnowledgeAssetInstancePanel({
   client,
   onEditAsset,
+  initialAssetId,
+  initialChangesetId,
 }: {
   client: ApiClient
   onEditAsset: (assetId: string) => void
+  initialAssetId?: string
+  initialChangesetId?: string
 }) {
   const [assets, setAssets] = useState<KnowledgeAssetSummary[]>([])
   const [assetId, setAssetId] = useState('')
@@ -102,14 +106,16 @@ export function KnowledgeAssetInstancePanel({
       setAssetId((current) => (
         current && items.some((item) => item.id === current)
           ? current
-          : items[0]?.id ?? ''
+          : initialAssetId && items.some((item) => item.id === initialAssetId)
+            ? initialAssetId
+            : items[0]?.id ?? ''
       ))
     } catch (next) {
       setError(next)
     } finally {
       setLoading(false)
     }
-  }, [client])
+  }, [client, initialAssetId])
 
   useEffect(() => {
     const controller = new AbortController()
@@ -144,7 +150,13 @@ export function KnowledgeAssetInstancePanel({
       setChangesetId((current) => (
         current && nextChangesets.some((item) => item.id === current && item.state === 'DRAFT')
           ? current
-          : nextChangesets.find((item) => item.state === 'DRAFT')?.id ?? ''
+          : selectedAssetId === initialAssetId
+            && initialChangesetId
+            && nextChangesets.some(
+              (item) => item.id === initialChangesetId && item.state === 'DRAFT',
+            )
+            ? initialChangesetId
+            : nextChangesets.find((item) => item.state === 'DRAFT')?.id ?? ''
       ))
       if (nextDetail.asset.active_release_id) {
         try {
@@ -173,7 +185,7 @@ export function KnowledgeAssetInstancePanel({
     } finally {
       if (!signal?.aborted) setLoading(false)
     }
-  }, [client])
+  }, [client, initialAssetId, initialChangesetId])
 
   useEffect(() => {
     const controller = new AbortController()

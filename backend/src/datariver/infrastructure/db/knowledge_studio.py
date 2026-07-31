@@ -64,7 +64,11 @@ from datariver.domain.knowledge_studio import (
     validate_stable_element_id,
     validate_studio_name,
 )
+from datariver.domain.knowledge_studio_ingestion import StudioSourceProfilePin
 from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
+from datariver.infrastructure.db.knowledge_studio_ingestion import (
+    SqlKnowledgeStudioIngestionCommandStore,
+)
 from datariver.infrastructure.db.models.catalog import (
     AssetProjectionModel,
     CatalogVocabularyEntryModel,
@@ -464,24 +468,36 @@ def _proposal_record(model: TBoxProposalModel) -> KnowledgeStudioTBoxProposalRec
 
 def _ingestion_job_record(
     model: KnowledgeStudioIngestionJobModel,
+    *,
+    actor_id: UUID | None = None,
 ) -> KnowledgeStudioIngestionJobRecord:
-    targets = model.vector_policy_document.get("targets")
+    allowed_actions: list[str] = []
+    if actor_id is not None and actor_id == model.requested_by:
+        if model.state in {"PENDING", "RETRY_WAIT", "RUNNING"}:
+            allowed_actions.append("CANCEL")
+        if model.state in {"FAILED", "STALE", "CANCELLED"}:
+            allowed_actions.append("RETRY")
     return KnowledgeStudioIngestionJobRecord(
         job_id=model.id,
         draft_id=model.draft_id,
+        graph_id=model.graph_id,
+        studio_release_id=model.studio_release_id,
         requested_by=model.requested_by,
         state=model.state,
         progress_percent=model.progress_percent,
-        current_stage=model.current_stage,
-        vector_target_count=len(targets) if isinstance(targets, list) else 0,
-        result=model.result_document,
-        error_code=model.error_code,
-        error_message=model.error_message,
+        current_stage=model.stage,
+        vector_target_count=model.vector_target_count,
+        attempt_count=model.attempt_count,
+        maximum_attempts=model.maximum_attempts,
+        result_changeset_id=model.result_changeset_id,
+        result_evidence_hash=model.result_evidence_hash,
+        error_code=model.last_failure_code,
+        allowed_actions=tuple(allowed_actions),
         version=model.version,
         created_at=model.created_at,
         updated_at=model.updated_at,
-        started_at=model.started_at,
-        finished_at=model.finished_at,
+        started_at=model.lease_started_at,
+        finished_at=model.completed_at,
     )
 
 
@@ -2063,6 +2079,10 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         draft_id: UUID,
         expected_version: int,
         embedding_binding: dict[str, object] | None,
+        manifest_id: str,
+        manifest_version: int,
+        manifest_hash: str,
+        source_profile_pins: tuple[StudioSourceProfilePin, ...],
         idempotency_key: str,
         request_hash: str,
     ) -> KnowledgeStudioIngestionJobRecord:
@@ -2093,188 +2113,40 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
             if replay is None:
                 raise ConflictError("The idempotent ingestion result is unavailable.")
             return replay
-        draft = await self._locked_draft(
+        job_id = await SqlKnowledgeStudioIngestionCommandStore(self._session).request(
             workspace_id=workspace_id,
-            author_id=author_id,
+            actor_id=author_id,
             draft_id=draft_id,
-        )
-        self._require_expected_version(draft, expected_version)
-        self._require_mutable(draft)
-        if draft.current_step != StudioStep.ABOX.value:
-            raise ConflictError("A-Box ingestion requires the Data Enricher step.")
-        bindings = tuple(
-            (
-                await self._session.scalars(
-                    select(ABoxBindingDraftModel)
-                    .where(
-                        ABoxBindingDraftModel.workspace_id == workspace_id,
-                        ABoxBindingDraftModel.draft_id == draft_id,
-                    )
-                    .order_by(ABoxBindingDraftModel.id)
-                )
-            ).all()
-        )
-        if not bindings:
-            raise ConflictError("A-Box ingestion requires at least one persisted binding.")
-        contract = await self._load_contract(
-            workspace_id=workspace_id,
-            draft=draft,
-            lock=True,
-        )
-        preflight = (
-            await self._session.scalars(
-                select(KnowledgeStudioPreflightCheckModel)
-                .where(
-                    KnowledgeStudioPreflightCheckModel.workspace_id == workspace_id,
-                    KnowledgeStudioPreflightCheckModel.draft_id == draft_id,
-                    KnowledgeStudioPreflightCheckModel.draft_version == draft.version,
-                    KnowledgeStudioPreflightCheckModel.contract_hash == contract.contract_hash,
-                    KnowledgeStudioPreflightCheckModel.status == "PASS",
-                    KnowledgeStudioPreflightCheckModel.valid.is_(True),
-                    KnowledgeStudioPreflightCheckModel.checked_by == author_id,
-                )
-                .order_by(
-                    KnowledgeStudioPreflightCheckModel.checked_at.desc(),
-                    KnowledgeStudioPreflightCheckModel.id.desc(),
-                )
-                .limit(1)
-                .with_for_update(read=True)
-            )
-        ).one_or_none()
-        if preflight is None:
-            raise ConflictError(
-                "A-Box ingestion requires an exact current-Draft PASS pre-flight receipt."
-            )
-        vector_targets = tuple(
-            (
-                await self._session.execute(
-                    select(TBoxDraftElementModel, TBoxPropertyModel)
-                    .join(
-                        TBoxPropertyModel,
-                        (TBoxPropertyModel.workspace_id == TBoxDraftElementModel.workspace_id)
-                        & (TBoxPropertyModel.draft_id == TBoxDraftElementModel.draft_id)
-                        & (
-                            TBoxPropertyModel.stable_property_id
-                            == TBoxDraftElementModel.stable_element_id
-                        ),
-                    )
-                    .where(
-                        TBoxDraftElementModel.workspace_id == workspace_id,
-                        TBoxDraftElementModel.draft_id == draft_id,
-                        TBoxDraftElementModel.kind == "PROPERTY",
-                        TBoxPropertyModel.vector_index_enabled.is_(True),
-                    )
-                    .order_by(TBoxDraftElementModel.stable_element_id)
-                )
-            ).all()
-        )
-        vector_rules: tuple[ABoxMappingRuleDraftModel, ...] = ()
-        if vector_targets:
-            vector_rules = tuple(
-                (
-                    await self._session.scalars(
-                        select(ABoxMappingRuleDraftModel)
-                        .where(
-                            ABoxMappingRuleDraftModel.workspace_id == workspace_id,
-                            ABoxMappingRuleDraftModel.draft_id == draft_id,
-                            ABoxMappingRuleDraftModel.method == ABoxMappingMethod.PROPERTY.value,
-                            ABoxMappingRuleDraftModel.target_stable_element_id.in_(
-                                tuple(item[0].stable_element_id for item in vector_targets)
-                            ),
-                        )
-                        .order_by(
-                            ABoxMappingRuleDraftModel.target_stable_element_id,
-                            ABoxMappingRuleDraftModel.id,
-                        )
-                    )
-                ).all()
-            )
-        vector_rule_by_target = {item.target_stable_element_id: item for item in vector_rules}
-        unmapped_vector_targets = [
-            item[0].stable_element_id
-            for item in vector_targets
-            if item[0].stable_element_id not in vector_rule_by_target
-        ]
-        if unmapped_vector_targets:
-            raise ConflictError("Every Vector Index Property requires an exact persisted mapping.")
-        if vector_targets and embedding_binding is None:
-            raise ConflictError("A Vector Index target requires the governed embedding runtime.")
-        now = utc_now()
-        job = KnowledgeStudioIngestionJobModel(
-            id=uuid7(),
-            workspace_id=workspace_id,
-            draft_id=draft_id,
-            requested_by=author_id,
-            state="PENDING",
-            progress_percent=0,
-            current_stage="QUEUED",
-            request_document={
-                "contract_version": "KNOWLEDGE_STUDIO_INGESTION_V1",
-                "draft_version": draft.version,
-                "contract_hash": contract.contract_hash,
-                "preflight_receipt_id": str(preflight.id),
-                "binding_ids": [str(binding.id) for binding in bindings],
-            },
-            vector_policy_document={
-                "contract_version": "KNOWLEDGE_STUDIO_VECTOR_POLICY_V1",
-                "embedding_binding": embedding_binding,
-                "targets": [
-                    {
-                        "stable_element_id": item[0].stable_element_id,
-                        "parent_stable_element_id": item[1].owner_stable_class_id,
-                        "data_type": item[1].data_type,
-                        "binding_id": str(
-                            vector_rule_by_target[item[0].stable_element_id].binding_id
-                        ),
-                        "source_field_path": vector_rule_by_target[
-                            item[0].stable_element_id
-                        ].source_field_path,
-                    }
-                    for item in vector_targets
-                ],
-            },
-            result_document=None,
-            error_code=None,
-            error_message=None,
-            started_at=None,
-            finished_at=None,
-            lease_epoch=0,
-            lease_token_hash=None,
-            lease_owner_fingerprint=None,
-            lease_expires_at=None,
-            created_at=now,
-            updated_at=now,
-            version=1,
-        )
-        self._session.add(job)
-        await SqlOutboxWriter(self._session).add_events(
-            [
-                DomainEvent.create(
-                    event_type="knowledge.studio_ingestion.queued.v1",
-                    aggregate_type="knowledge_studio_ingestion",
-                    aggregate_id=job.id,
-                    workspace_id=workspace_id,
-                    payload={
-                        "job_id": str(job.id),
-                        "draft_id": str(draft_id),
-                        "draft_version": draft.version,
-                    },
-                )
-            ]
+            expected_version=expected_version,
+            request_hash=request_hash,
+            manifest_id=manifest_id,
+            manifest_version=manifest_version,
+            manifest_hash=manifest_hash,
+            source_profile_pins=source_profile_pins,
+            embedding_binding=embedding_binding,
+            maximum_attempts=3,
         )
         await idempotency.save_result(
             workspace_id=workspace_id,
             key=idempotency_key,
             operation=operation,
             request_hash=request_hash,
-            result={"job_id": str(job.id)},
+            result={"job_id": str(job_id)},
         )
         try:
             await self._session.commit()
         except IntegrityError as error:
             await self._session.rollback()
             raise ConflictError("The A-Box ingestion job could not be queued.") from error
-        return _ingestion_job_record(job)
+        replay = await self.get_ingestion_job(
+            workspace_id=workspace_id,
+            actor_id=author_id,
+            draft_id=draft_id,
+            job_id=job_id,
+        )
+        if replay is None:
+            raise ConflictError("The queued A-Box ingestion job is unavailable.")
+        return replay
 
     async def get_ingestion_job(
         self,
@@ -2306,7 +2178,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 )
             )
         ).one_or_none()
-        return _ingestion_job_record(model) if model is not None else None
+        return _ingestion_job_record(model, actor_id=actor_id) if model is not None else None
 
     async def list_ingestion_jobs(
         self,
@@ -2347,7 +2219,119 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 )
             ).all()
         )
-        return tuple(_ingestion_job_record(model) for model in models)
+        return tuple(_ingestion_job_record(model, actor_id=actor_id) for model in models)
+
+    async def cancel_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        job_id: UUID,
+        expected_version: int,
+        reason: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioIngestionJobRecord:
+        return await self._transition_ingestion_job(
+            workspace_id=workspace_id,
+            actor_id=actor_id,
+            draft_id=draft_id,
+            job_id=job_id,
+            expected_version=expected_version,
+            operation_name="cancel",
+            reason=reason,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def retry_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        job_id: UUID,
+        expected_version: int,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioIngestionJobRecord:
+        return await self._transition_ingestion_job(
+            workspace_id=workspace_id,
+            actor_id=actor_id,
+            draft_id=draft_id,
+            job_id=job_id,
+            expected_version=expected_version,
+            operation_name="retry",
+            reason=None,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+    async def _transition_ingestion_job(
+        self,
+        *,
+        workspace_id: UUID,
+        actor_id: UUID,
+        draft_id: UUID,
+        job_id: UUID,
+        expected_version: int,
+        operation_name: str,
+        reason: str | None,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> KnowledgeStudioIngestionJobRecord:
+        operation = f"knowledge.studio_ingestion.{operation_name}:{job_id}"
+        idempotency = SqlIdempotencyStore(self._session)
+        await idempotency.acquire_key_lock(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        existing = await idempotency.get_result(
+            workspace_id=workspace_id,
+            key=idempotency_key,
+            operation=operation,
+        )
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise ConflictError("The idempotency key was used with a different request.")
+        else:
+            commands = SqlKnowledgeStudioIngestionCommandStore(self._session)
+            if operation_name == "cancel":
+                if reason is None:
+                    raise ValidationError("A cancellation reason is required.")
+                await commands.cancel(
+                    workspace_id=workspace_id,
+                    job_id=job_id,
+                    expected_version=expected_version,
+                    reason=reason,
+                )
+            elif operation_name == "retry":
+                await commands.retry(
+                    workspace_id=workspace_id,
+                    job_id=job_id,
+                    expected_version=expected_version,
+                )
+            else:
+                raise ValidationError("The ingestion transition is invalid.")
+            await idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={"job_id": str(job_id)},
+            )
+            await self._session.commit()
+        replay = await self.get_ingestion_job(
+            workspace_id=workspace_id,
+            actor_id=actor_id,
+            draft_id=draft_id,
+            job_id=job_id,
+        )
+        if replay is None:
+            raise ConflictError("The transitioned A-Box ingestion job is unavailable.")
+        return replay
 
     async def get_edit_graph(
         self,

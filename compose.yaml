@@ -31,6 +31,7 @@ services:
       - postgres_upload_password
       - postgres_governance_password
       - postgres_knowledge_password
+      - postgres_knowledge_ingestion_password
       - postgres_quality_password
       - postgres_governance_document_password
       - postgres_catalog_profile_password
@@ -131,6 +132,9 @@ services:
       - s3_secret_key
       - s3_governance_document_access_key
       - s3_governance_document_secret_key
+    volumes:
+      - ./runtime/knowledge-studio:/run/datariver/knowledge-studio:ro
+      - ./secrets/knowledge-studio-sources:/run/secrets/knowledge-studio-sources:ro
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -322,6 +326,35 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  knowledge-studio-ingestion-worker:
+    <<: *backend
+    profiles: ["knowledge-studio-ingestion"]
+    secrets:
+      - postgres_knowledge_ingestion_password
+      - redis_delivery_password
+      - source: redis_delivery_password
+        target: valkey_queue_password
+      - intranet_llm_embedding_api_key
+    command:
+      ["/app/.venv/bin/python", "-m", "datariver.workers.knowledge_studio_ingestion"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    networks:
+      - data
+      - connectors
+    volumes:
+      - ./runtime/knowledge-studio:/run/datariver/knowledge-studio:ro
+      - ./secrets/knowledge-studio-sources:/run/secrets/knowledge-studio-sources:ro
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 0.75
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+
   catalog-export-worker:
     <<: *backend
     profiles: ["catalog-export"]
@@ -454,6 +487,8 @@ secrets:
     file: ./secrets/postgres_governance_password
   postgres_knowledge_password:
     file: ./secrets/postgres_knowledge_password
+  postgres_knowledge_ingestion_password:
+    file: ./secrets/postgres_knowledge_ingestion_password
   postgres_quality_password:
     file: ./secrets/postgres_quality_password
   postgres_governance_document_password:

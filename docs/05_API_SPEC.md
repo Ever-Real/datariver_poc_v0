@@ -39,6 +39,22 @@ invalid/unavailable result is a typed `200` document; a stale Draft is `412`. A 
 not create ingestion authority or a release. It becomes publication evidence only while the Draft
 version, canonical contract hash and independent reviewer remain exact.
 
+Actual database ingestion is a separate asynchronous command and accepts no body containing source
+coordinates. `POST /knowledge/studio/drafts/{draft_id}/abox/ingestions` requires the exact Draft
+ETag and an `Idempotency-Key`; the referenced Draft must already be `PUBLISHED` and pinned to the
+current immutable Studio Release. The server resolves every released Binding through the
+deployment-owned source manifest and returns `202` with a sanitized job. No manifest path, profile
+endpoint, username, secret reference, lease token or authorization hash is exposed.
+
+`GET /knowledge/studio/drafts/{draft_id}/abox/ingestions` returns at most 50 requester-visible jobs,
+and `GET .../ingestions/{job_id}` is the bounded polling resource. States are `PENDING`, `RUNNING`,
+`RETRY_WAIT`, `CANCEL_REQUESTED`, `SUCCESS`, `FAILED`, `STALE` and `CANCELLED`. The response includes
+progress/stage, attempt counts, a bounded failure code, allowed actions and an optional resulting
+DRAFT Changeset ID. `POST .../{job_id}/cancel` requires `If-Match`, `Idempotency-Key` and a bounded
+reason; `POST .../{job_id}/retry` requires the same headers and no request body. Database functions
+recheck the current human authorization for both commands, so a stale UI capability cannot mutate
+the job.
+
 ## Conventions
 
 - Base path `/api/v1`; JSON UTF-8; RFC 3339 UTC timestamps.

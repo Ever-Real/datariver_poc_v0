@@ -1404,6 +1404,31 @@ def test_knowledge_studio_draft_openapi_requires_etag_and_idempotency() -> None:
     preflight_response = document["components"]["schemas"]["KnowledgeStudioPreflightResponse"]
     assert {"receipt_id", "contract_hash"}.issubset(preflight_response["properties"])
 
+    ingestion_path = "/api/v1/knowledge/studio/drafts/{draft_id}/abox/ingestions"
+    ingestion_create = document["paths"][ingestion_path]["post"]
+    ingestion_create_headers = {item["name"]: item for item in ingestion_create["parameters"]}
+    assert ingestion_create["responses"]["202"]["content"]
+    assert ingestion_create_headers["If-Match"]["required"] is True
+    assert ingestion_create_headers["Idempotency-Key"]["required"] is True
+    assert "requestBody" not in ingestion_create
+
+    ingestion_action_path = ingestion_path + "/{job_id}"
+    assert document["paths"][ingestion_action_path]["get"]["responses"]["200"]["content"]
+    for action in ("cancel", "retry"):
+        operation = document["paths"][f"{ingestion_action_path}/{action}"]["post"]
+        headers = {item["name"]: item for item in operation["parameters"]}
+        assert headers["If-Match"]["required"] is True
+        assert headers["Idempotency-Key"]["required"] is True
+    cancel_request = document["components"]["schemas"]["KnowledgeStudioIngestionCancelRequest"]
+    assert set(cancel_request["properties"]) == {"reason"}
+    ingestion_response = document["components"]["schemas"]["KnowledgeStudioIngestionJobResponse"]
+    assert {
+        "lease_token",
+        "requester_authorization_hash",
+        "source_profile_pins",
+        "worker_fingerprint",
+    }.isdisjoint(ingestion_response["properties"])
+
 
 def test_typed_upload_template_is_an_authenticated_server_versioned_download() -> None:
     factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
