@@ -3,7 +3,7 @@ services:
   # already present locally. Immutable/offline profiles continue to use the
   # digest pin or a checksum-verified release override.
   postgres:
-    image: ${SOURCE_HOST_POSTGRES_IMAGE:-postgres:17.10-bookworm}
+    image: ${SOURCE_HOST_POSTGRES_IMAGE:-pgvector/pgvector:0.8.2-pg17-bookworm}
     pull_policy: never
 
   # The preparation PC already owns the reviewed, theme-bearing final image.

@@ -10,6 +10,7 @@ from uuid import UUID
 from datariver.application.catalog_security import catalog_permission_scope_hash
 from datariver.application.errors import ExternalDependencyError
 from datariver.application.governance_document_attachments import (
+    GovernanceDocumentAttachmentDownload,
     GovernanceDocumentAttachmentStore,
     GovernanceDocumentAttachmentWrite,
 )
@@ -79,7 +80,10 @@ class GovernanceDocumentService:
         knowledge_projection_ready: bool,
         knowledge_embedding: KnowledgeEmbeddingProvider | None = None,
         knowledge_embedding_binding: ModelBinding | None = None,
+        attachment_download_ttl_seconds: int = 300,
     ) -> None:
+        if not 60 <= attachment_download_ttl_seconds <= 900:
+            raise ValueError("Governance document attachment download TTL is invalid.")
         self._repository = repository
         self._authorization = authorization
         self._attachment_store = attachment_store
@@ -87,6 +91,7 @@ class GovernanceDocumentService:
         self._knowledge_projection_ready = knowledge_projection_ready
         self._knowledge_embedding = knowledge_embedding
         self._knowledge_embedding_binding = knowledge_embedding_binding
+        self._attachment_download_ttl_seconds = attachment_download_ttl_seconds
         self._engine = BuiltinPolicyEngine()
 
     async def capability(
@@ -101,12 +106,12 @@ class GovernanceDocumentService:
         template_resource = self._workspace_resource(subject, kind=GovernanceDocumentKind.TEMPLATE)
 
         def allowed(action: Action, *, template: bool = False) -> bool:
-            return self._engine.decide(
+            return self._authorization.is_entitled(
                 subject=subject,
                 resource=template_resource if template else document_resource,
                 action=action,
                 environment=environment,
-            ).allowed
+            )
 
         read_allowed = allowed(Action.GOVERNANCE_DOCUMENT_READ)
         create_allowed = allowed(Action.GOVERNANCE_DOCUMENT_CREATE)
@@ -725,6 +730,73 @@ class GovernanceDocumentService:
         )
         return values, await self._read_context(subject)
 
+    async def download_attachment(
+        self,
+        *,
+        document_id: UUID,
+        attachment_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> GovernanceDocumentAttachmentDownload:
+        self._require_human(subject)
+        detail = await self._required_detail(document_id=document_id, subject=subject)
+        await self._authorize(
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            action=Action.ATTACHMENT_DOWNLOAD,
+            resource=self._resource(detail.document),
+        )
+        if self._attachment_store is None:
+            raise ExternalDependencyError(
+                "Governance Document attachment storage is unavailable.",
+                dependency="governance_document_attachment_store",
+                retryable=False,
+            )
+        source = await self._repository.get_attachment_source(
+            workspace_id=subject.workspace_id,
+            document_id=document_id,
+            attachment_id=attachment_id,
+            subject=subject,
+        )
+        if source is None:
+            raise NotFoundError("The Governance Document attachment is unavailable.")
+        url = await self._attachment_store.presign_download(
+            source,
+            expires_seconds=self._attachment_download_ttl_seconds,
+        )
+        observed_at = await self._repository.database_now()
+        return GovernanceDocumentAttachmentDownload(
+            attachment=source.attachment,
+            url=url,
+            expires_at_epoch_seconds=(
+                int(observed_at.timestamp()) + self._attachment_download_ttl_seconds
+            ),
+        )
+
+    async def get_current_knowledge(
+        self,
+        *,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        chunk_ids: tuple[UUID, ...],
+    ) -> tuple[GovernanceKnowledgeEvidence, ...]:
+        self._require_human(subject)
+        await self._authorize(
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+            action=Action.GOVERNANCE_KNOWLEDGE_READ,
+            resource=self._workspace_resource(subject, kind=GovernanceDocumentKind.DOCUMENT),
+        )
+        return await self._repository.get_current_knowledge(
+            workspace_id=subject.workspace_id,
+            subject=subject,
+            chunk_ids=chunk_ids,
+        )
+
     async def _required_detail(
         self,
         *,
@@ -803,16 +875,18 @@ class GovernanceDocumentService:
         resource = self._resource(item)
 
         def allowed(action: Action) -> bool:
-            return self._engine.decide(
+            return self._authorization.is_entitled(
                 subject=subject,
                 resource=resource,
                 action=action,
                 environment=environment,
-            ).allowed
+            )
 
         actions: list[str] = []
         if allowed(self._read_action(item.kind, state=item.state)):
             actions.append("read")
+        if allowed(Action.ATTACHMENT_DOWNLOAD):
+            actions.append("download_attachment")
         if item.state is not GovernanceDocumentState.ARCHIVED and allowed(
             self._edit_action(item.kind)
         ):

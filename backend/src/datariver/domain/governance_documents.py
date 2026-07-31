@@ -18,6 +18,8 @@ MAXIMUM_ATTACHMENTS_PER_VERSION = 25
 MAXIMUM_DOCUMENT_VERSIONS_PER_PAGE = 100
 MAXIMUM_KNOWLEDGE_CHUNKS = 512
 MAXIMUM_KNOWLEDGE_CHUNK_CHARACTERS = 2_000
+MAXIMUM_GOVERNANCE_CONCEPTS = 64
+MAXIMUM_GOVERNANCE_CONCEPT_REFERENCE_CHARACTERS = 500
 
 _VERSION_TAG = re.compile(r"^v([1-9][0-9]{0,8})$")
 _HASH = re.compile(r"^[0-9a-f]{64}$")
@@ -71,6 +73,11 @@ class GovernanceDocumentKnowledgeState(StrEnum):
 class GovernanceDocumentReviewDecision(StrEnum):
     APPROVE = "APPROVE"
     REJECT = "REJECT"
+
+
+class GovernanceDocumentConceptKind(StrEnum):
+    DATASET = "DATASET"
+    TERM = "TERM"
 
 
 def normalized_bounded_text(
@@ -191,6 +198,21 @@ class GovernanceDocumentProjectionClaim:
     kind: GovernanceDocumentKind
     category: GovernanceDocumentCategory
     classification: Classification
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceDocumentConcept:
+    kind: GovernanceDocumentConceptKind
+    reference: str
+
+    def __post_init__(self) -> None:
+        if (
+            not self.reference
+            or len(self.reference) > MAXIMUM_GOVERNANCE_CONCEPT_REFERENCE_CHARACTERS
+            or self.reference != self.reference.strip()
+            or any(ord(character) < 32 for character in self.reference)
+        ):
+            raise ValueError("Governance document concept reference is invalid.")
 
 
 @dataclass(frozen=True, slots=True)

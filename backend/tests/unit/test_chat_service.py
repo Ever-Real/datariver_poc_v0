@@ -701,6 +701,76 @@ class FakeKnowledgeEvidence:
         return (self.candidate,) if self.candidate.evidence.resource_id in resource_ids else ()
 
 
+class FakeGovernanceEvidence:
+    def __init__(self, workspace_id: UUID, *, drift_on_refresh: bool = False) -> None:
+        self.workspace_id = workspace_id
+        self.drift_on_refresh = drift_on_refresh
+        self.item = build_evidence_chunk(
+            workspace_id=workspace_id,
+            resource_id=uuid4(),
+            classification=Classification.INTERNAL,
+            system_id=None,
+            domain_id=None,
+            owner_department_id=None,
+            name="Data retention policy (v1)",
+            description="Approved records are retained for seven years.",
+            source_locator="governance://documents/d/versions/v#chunk=1",
+            source_version=f"{uuid4()}:{'a' * 64}",
+            effective_from=datetime.now(UTC),
+            extraction_method="GOVERNANCE_DOCUMENT_PGVECTOR_V1",
+            source_type="GOVERNANCE_DOCUMENT",
+        )
+        self.search_calls = 0
+        self.current_calls = 0
+
+    async def search(
+        self,
+        *,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        question: str,
+        limit: int,
+    ) -> tuple[ChatEvidence, ...]:
+        del environment, request_id, question, limit
+        assert subject.workspace_id == self.workspace_id
+        self.search_calls += 1
+        return (self.item,)
+
+    async def get_current(
+        self,
+        *,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        resource_ids: Sequence[UUID],
+    ) -> tuple[ChatEvidence, ...]:
+        del environment, request_id
+        assert subject.workspace_id == self.workspace_id
+        self.current_calls += 1
+        if self.item.resource_id not in resource_ids:
+            return ()
+        if self.drift_on_refresh:
+            return (
+                build_evidence_chunk(
+                    workspace_id=self.workspace_id,
+                    resource_id=self.item.resource_id,
+                    classification=self.item.classification,
+                    system_id=None,
+                    domain_id=None,
+                    owner_department_id=None,
+                    name=self.item.name,
+                    description="A newer approved policy superseded this content.",
+                    source_locator=self.item.source_locator,
+                    source_version=f"{uuid4()}:{'b' * 64}",
+                    effective_from=datetime.now(UTC),
+                    extraction_method="GOVERNANCE_DOCUMENT_PGVECTOR_V1",
+                    source_type="GOVERNANCE_DOCUMENT",
+                ),
+            )
+        return (self.item,)
+
+
 class FixedComposer:
     def __init__(self, draft: ChatDraft) -> None:
         self.draft = draft
@@ -1657,6 +1727,77 @@ async def test_chat_can_use_only_authorized_release_pinned_knowledge_evidence() 
     assert exchange.evidence[0].source_version == "f" * 64
 
 
+async def test_chat_vector_mode_uses_current_governance_document_evidence() -> None:
+    workspace_id = uuid4()
+    embedding_binding = inference_binding(InferenceStage.EMBEDDING, uuid4())
+    governance = FakeGovernanceEvidence(workspace_id)
+    store = FakeChatStore()
+    service = chat_service(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        governance_evidence=governance,
+        classification_access=cast(
+            ClassificationAccessResolver,
+            FixedClassificationAccess(governed_chat_access(embedding_binding)),
+        ),
+        inference_runtime_bindings=(embedding_binding,),
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+        composer=SelectingComposer((0,)),
+    )
+
+    exchange = await service.query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id, include_governance=True),
+        session_id=None,
+        question="승인된 보존 정책을 알려줘",
+        maximum_evidence=2,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-governance-vector",
+        requested_mode=ChatRetrievalMode.VECTOR,
+    )
+
+    assert exchange.answer == "authorized subset"
+    assert tuple(item.source_type for item in exchange.evidence) == ("GOVERNANCE_DOCUMENT",)
+    assert governance.search_calls == 1
+    assert governance.current_calls == 1
+    assert store.saved_evidence == exchange.evidence
+
+
+async def test_chat_refuses_governance_citation_when_active_version_drifts() -> None:
+    workspace_id = uuid4()
+    embedding_binding = inference_binding(InferenceStage.EMBEDDING, uuid4())
+    governance = FakeGovernanceEvidence(workspace_id, drift_on_refresh=True)
+    store = FakeChatStore()
+    service = chat_service(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        governance_evidence=governance,
+        classification_access=cast(
+            ClassificationAccessResolver,
+            FixedClassificationAccess(governed_chat_access(embedding_binding)),
+        ),
+        inference_runtime_bindings=(embedding_binding,),
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+        composer=SelectingComposer((0,)),
+    )
+
+    exchange = await service.query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id, include_governance=True),
+        session_id=None,
+        question="변경 중인 보존 정책을 알려줘",
+        maximum_evidence=2,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-governance-drift",
+        requested_mode=ChatRetrievalMode.VECTOR,
+    )
+
+    assert exchange.answer == UNVERIFIABLE_ANSWER
+    assert exchange.evidence == ()
+    assert store.saved_evidence == ()
+    assert governance.current_calls == 1
+
+
 async def test_chat_rejects_forged_or_zero_citations_without_persisting_evidence() -> None:
     workspace_id = uuid4()
     subject = chat_subject(workspace_id)
@@ -1759,10 +1900,17 @@ async def test_assistant_red_team_corpus_cannot_forge_citations_or_trigger_tools
         assert store.saved_evidence == ()
 
 
-def chat_subject(workspace_id: UUID, *, include_kg: bool = False) -> SubjectAttributes:
+def chat_subject(
+    workspace_id: UUID,
+    *,
+    include_kg: bool = False,
+    include_governance: bool = False,
+) -> SubjectAttributes:
     actions = {Action.CHAT_QUERY, Action.CATALOG_READ}
     if include_kg:
         actions.add(Action.KG_READ)
+    if include_governance:
+        actions.add(Action.GOVERNANCE_KNOWLEDGE_READ)
     return SubjectAttributes(
         subject_id=uuid4(),
         workspace_id=workspace_id,

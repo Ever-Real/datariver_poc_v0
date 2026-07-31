@@ -3,7 +3,6 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
-import math
 from collections.abc import Sequence
 from datetime import datetime, timedelta
 from uuid import UUID
@@ -13,6 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
 from datariver.application.catalog_security import catalog_permission_scope_hash
+from datariver.application.governance_document_attachments import (
+    GovernanceDocumentAttachmentSource,
+)
 from datariver.application.governance_document_ports import (
     GovernanceDocumentProjectionRepository,
     GovernanceDocumentRepository,
@@ -844,6 +846,52 @@ class SqlGovernanceDocumentRepository(
         await self._session.commit()
         return value
 
+    async def get_attachment_source(
+        self,
+        *,
+        workspace_id: UUID,
+        document_id: UUID,
+        attachment_id: UUID,
+        subject: SubjectAttributes,
+    ) -> GovernanceDocumentAttachmentSource | None:
+        await set_security_context(
+            self._session,
+            workspace_id=workspace_id,
+            subject_id=subject.subject_id,
+        )
+        row = (
+            await self._session.execute(
+                select(
+                    GovernanceDocumentAttachmentModel,
+                    GovernanceDocumentModel,
+                )
+                .join(
+                    GovernanceDocumentModel,
+                    and_(
+                        GovernanceDocumentModel.workspace_id
+                        == GovernanceDocumentAttachmentModel.workspace_id,
+                        GovernanceDocumentModel.id == GovernanceDocumentAttachmentModel.document_id,
+                    ),
+                )
+                .where(
+                    GovernanceDocumentAttachmentModel.workspace_id == workspace_id,
+                    GovernanceDocumentAttachmentModel.document_id == document_id,
+                    GovernanceDocumentAttachmentModel.id == attachment_id,
+                    GovernanceDocumentModel.classification <= int(subject.clearance),
+                    *_subject_scope_conditions(subject),
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        attachment, _document = row
+        return GovernanceDocumentAttachmentSource(
+            attachment=_attachment(attachment),
+            bucket=attachment.bucket,
+            object_key=attachment.object_key,
+            provider_version_id=attachment.provider_version_id,
+        )
+
     async def search_knowledge(
         self,
         *,
@@ -870,6 +918,101 @@ class SqlGovernanceDocumentRepository(
             conditions.append(GovernanceDocumentKnowledgeChunkModel.provider == provider)
         if model is not None:
             conditions.append(GovernanceDocumentKnowledgeChunkModel.model_identity == model)
+        statement = (
+            select(
+                GovernanceDocumentKnowledgeChunkModel,
+                GovernanceDocumentModel,
+                GovernanceDocumentVersionModel,
+            )
+            .join(
+                GovernanceDocumentModel,
+                and_(
+                    GovernanceDocumentModel.workspace_id
+                    == GovernanceDocumentKnowledgeChunkModel.workspace_id,
+                    GovernanceDocumentModel.id == GovernanceDocumentKnowledgeChunkModel.document_id,
+                ),
+            )
+            .join(
+                GovernanceDocumentVersionModel,
+                and_(
+                    GovernanceDocumentVersionModel.workspace_id
+                    == GovernanceDocumentKnowledgeChunkModel.workspace_id,
+                    GovernanceDocumentVersionModel.id
+                    == GovernanceDocumentKnowledgeChunkModel.document_version_id,
+                ),
+            )
+            .where(*conditions)
+        )
+        scored: list[
+            tuple[
+                float,
+                GovernanceDocumentKnowledgeChunkModel,
+                GovernanceDocumentModel,
+                GovernanceDocumentVersionModel,
+            ]
+        ]
+        if query_vector is not None:
+            query_values = [float(value) for value in query_vector]
+            distance = GovernanceDocumentKnowledgeChunkModel.embedding_vector.cosine_distance(
+                query_values
+            )
+            vector_rows = (
+                await self._session.execute(
+                    statement.add_columns(distance.label("distance"))
+                    .where(
+                        GovernanceDocumentKnowledgeChunkModel.embedding_dimension
+                        == len(query_values)
+                    )
+                    .order_by(distance, GovernanceDocumentKnowledgeChunkModel.id)
+                    .limit(limit)
+                )
+            ).all()
+            scored = [
+                (
+                    max(-1.0, min(1.0, 1.0 - float(distance_value))),
+                    chunk,
+                    document,
+                    document_version,
+                )
+                for chunk, document, document_version, distance_value in vector_rows
+                if distance_value is not None
+            ]
+        else:
+            rows = (await self._session.execute(statement.limit(2_000))).all()
+            tokens = frozenset(part.casefold() for part in normalized.split() if part)
+            scored = []
+            for chunk, document, document_version in rows:
+                candidate_tokens = frozenset(
+                    part.casefold() for part in chunk.content.split() if part
+                )
+                score = (
+                    len(tokens & candidate_tokens) / len(tokens)
+                    if tokens and candidate_tokens
+                    else 0.0
+                )
+                if score > 0:
+                    scored.append((score, chunk, document, document_version))
+            scored.sort(key=lambda item: (-item[0], item[1].id.int))
+        return tuple(
+            _knowledge_evidence(
+                chunk=chunk,
+                document=document,
+                document_version=document_version,
+                score_basis_points=max(0, min(10_000, round(score * 10_000))),
+            )
+            for score, chunk, document, document_version in scored[:limit]
+        )
+
+    async def get_current_knowledge(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        chunk_ids: Sequence[UUID],
+    ) -> tuple[GovernanceKnowledgeEvidence, ...]:
+        ordered_ids = tuple(dict.fromkeys(chunk_ids))
+        if not ordered_ids or len(ordered_ids) > 20:
+            raise ValidationError("Governance knowledge citation ids are outside their contract.")
         rows = (
             await self._session.execute(
                 select(
@@ -895,53 +1038,27 @@ class SqlGovernanceDocumentRepository(
                         == GovernanceDocumentKnowledgeChunkModel.document_version_id,
                     ),
                 )
-                .where(*conditions)
-                .limit(2_000)
+                .where(
+                    GovernanceDocumentKnowledgeChunkModel.workspace_id == workspace_id,
+                    GovernanceDocumentKnowledgeChunkModel.id.in_(ordered_ids),
+                    GovernanceDocumentModel.state == GovernanceDocumentState.ACTIVE.value,
+                    GovernanceDocumentModel.classification <= int(subject.clearance),
+                    *_subject_scope_conditions(subject),
+                    GovernanceDocumentModel.current_published_version_id
+                    == GovernanceDocumentKnowledgeChunkModel.document_version_id,
+                )
             )
         ).all()
-        tokens = frozenset(part.casefold() for part in normalized.split() if part)
-        scored: list[
-            tuple[
-                float,
-                GovernanceDocumentKnowledgeChunkModel,
-                GovernanceDocumentModel,
-                GovernanceDocumentVersionModel,
-            ]
-        ] = []
-        for chunk, document, document_version in rows:
-            vector = tuple(float(value) for value in chunk.embedding)
-            if query_vector is not None and len(query_vector) == len(vector):
-                score = _cosine(tuple(float(value) for value in query_vector), vector)
-            else:
-                candidate_tokens = frozenset(
-                    part.casefold() for part in chunk.content.split() if part
-                )
-                score = (
-                    len(tokens & candidate_tokens) / len(tokens)
-                    if tokens and candidate_tokens
-                    else 0.0
-                )
-            if score > 0:
-                scored.append((score, chunk, document, document_version))
-        scored.sort(key=lambda item: (-item[0], item[1].id.int))
-        return tuple(
-            GovernanceKnowledgeEvidence(
-                chunk_id=chunk.id,
-                document_id=document.id,
-                document_version_id=document_version.id,
-                document_title=document.title,
-                version_tag=document_version.version_tag,
-                ordinal=chunk.ordinal,
-                excerpt=chunk.content[:1_000],
-                content_sha256=chunk.content_sha256,
-                score_basis_points=max(0, min(10_000, round(score * 10_000))),
-                classification=Classification(document.classification),
-                published_at=document_version.published_at
-                or document_version.reviewed_at
-                or document_version.created_at,
+        values = {
+            chunk.id: _knowledge_evidence(
+                chunk=chunk,
+                document=document,
+                document_version=document_version,
+                score_basis_points=10_000,
             )
-            for score, chunk, document, document_version in scored[:limit]
-        )
+            for chunk, document, document_version in rows
+        }
+        return tuple(values[value] for value in ordered_ids if value in values)
 
     async def claim_next_projection(
         self,
@@ -1161,6 +1278,7 @@ class SqlGovernanceDocumentRepository(
                         content=content,
                         content_sha256=content_sha256,
                         embedding=[float(value) for value in embedding],
+                        embedding_vector=[float(value) for value in embedding],
                         embedding_dimension=len(embedding),
                         provider=provider,
                         model_identity=model,
@@ -1610,6 +1728,30 @@ def _attachment(model: GovernanceDocumentAttachmentModel) -> GovernanceDocumentA
     )
 
 
+def _knowledge_evidence(
+    *,
+    chunk: GovernanceDocumentKnowledgeChunkModel,
+    document: GovernanceDocumentModel,
+    document_version: GovernanceDocumentVersionModel,
+    score_basis_points: int,
+) -> GovernanceKnowledgeEvidence:
+    return GovernanceKnowledgeEvidence(
+        chunk_id=chunk.id,
+        document_id=document.id,
+        document_version_id=document_version.id,
+        document_title=document.title,
+        version_tag=document_version.version_tag,
+        ordinal=chunk.ordinal,
+        excerpt=chunk.content[:1_000],
+        content_sha256=chunk.content_sha256,
+        score_basis_points=score_basis_points,
+        classification=Classification(document.classification),
+        published_at=document_version.published_at
+        or document_version.reviewed_at
+        or document_version.created_at,
+    )
+
+
 def _require_version(document: GovernanceDocumentModel, expected_version: int) -> None:
     if document.version != expected_version:
         raise PreconditionFailedError("The Governance Document version has changed.")
@@ -1738,14 +1880,6 @@ def _subject_scope_conditions(
             GovernanceDocumentModel.domain_id.in_(tuple(subject.allowed_domain_ids)),
         ),
     )
-
-
-def _cosine(left: tuple[float, ...], right: tuple[float, ...]) -> float:
-    left_norm = math.sqrt(sum(value * value for value in left))
-    right_norm = math.sqrt(sum(value * value for value in right))
-    if not left_norm or not right_norm:
-        return 0.0
-    return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
 
 
 def _graph_node_id(version_id: UUID, ordinal: int) -> UUID:

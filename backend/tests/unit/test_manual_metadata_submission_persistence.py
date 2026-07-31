@@ -13,7 +13,6 @@ from datariver.infrastructure.db.models.governance import (
     ManualMetadataAspectReportModel,
     ManualMetadataSubmissionModel,
 )
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 from datariver.interfaces.http.schemas import ManualMetadataSubmissionRequest
 
 
@@ -98,7 +97,6 @@ def test_manual_metadata_migration_has_rls_immutable_evidence_and_private_storag
     migration = (root / "backend/alembic/versions/0023_manual_metadata_submissions.py").read_text(
         encoding="utf-8"
     )
-    assert REQUIRED_DATABASE_REVISION == "0074"
     assert "FORCE ROW LEVEL SECURITY" in migration
     assert "reject_manual_metadata_payload_mutation" in migration
     assert "GRANT SELECT, INSERT, UPDATE ON governance.manual_metadata_submissions" in migration

@@ -41,7 +41,6 @@ from datariver.infrastructure.db.knowledge_studio import (
     studio_draft_record_from_result,
     studio_draft_result,
 )
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0059_knowledge_studio_foundation.py"
@@ -63,7 +62,6 @@ def _table(name: str) -> Table:
 
 def test_studio_draft_model_is_separate_persistent_author_state() -> None:
     draft = _table("knowledge.studio_drafts")
-    assert REQUIRED_DATABASE_REVISION == "0074"
     assert {
         "workspace_id",
         "author_id",

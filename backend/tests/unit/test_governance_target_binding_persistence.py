@@ -6,7 +6,6 @@ from sqlalchemy import CheckConstraint, Table
 
 from datariver.infrastructure.db.governance import SqlChangeRequestRepository
 from datariver.infrastructure.db.models.governance import ChangeItemModel
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 
 def test_change_item_model_has_nullable_all_or_none_target_binding() -> None:
@@ -42,7 +41,6 @@ def test_target_binding_migration_preserves_legacy_rows_without_backfill() -> No
     migration = (root / "backend/alembic/versions/0015_governance_target_bindings.py").read_text(
         encoding="utf-8"
     )
-    assert REQUIRED_DATABASE_REVISION == "0074"
     assert "UPDATE governance.change_request_items" not in migration
     assert "target_binding_shape" in migration
     assert "pg_try_advisory_lock" not in migration

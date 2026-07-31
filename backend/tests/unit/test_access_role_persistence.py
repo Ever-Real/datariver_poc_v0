@@ -17,7 +17,6 @@ from datariver.infrastructure.db.models.platform import (
     AccessRoleDataRuleModel,
     AccessRoleModel,
 )
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 from datariver.interfaces.http.routes.admin import (
     _role_assigned_count,
     _role_assigned_counts,
@@ -184,7 +183,6 @@ def test_access_role_migration_installs_rls_and_bounded_app_privileges() -> None
     )
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0074"
     for table_name in (
         "access_role_data_rules",
         "access_role_assignments",

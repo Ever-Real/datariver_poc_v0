@@ -74,6 +74,7 @@ class GovernanceDocumentSummaryResponse(BaseModel):
             "publish",
             "archive",
             "add_attachment",
+            "download_attachment",
             "instantiate_template",
         ]
     ]
@@ -138,6 +139,14 @@ class GovernanceDocumentAttachmentResponse(BaseModel):
     content_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     uploaded_by: UUID
     created_at: datetime
+
+
+class GovernanceDocumentAttachmentDownloadResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attachment: GovernanceDocumentAttachmentResponse
+    url: str
+    expires_at: datetime
 
 
 class GovernanceDocumentDetailItemResponse(BaseModel):
@@ -256,3 +265,10 @@ class GovernanceKnowledgeEvidenceResponse(BaseModel):
 
 class GovernanceKnowledgeEvidenceListResponse(GovernanceDocumentReadMetadata):
     items: list[GovernanceKnowledgeEvidenceResponse]
+
+
+class GovernanceRagSearchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=2, max_length=500)
+    limit: int = Field(default=8, ge=1, le=20)

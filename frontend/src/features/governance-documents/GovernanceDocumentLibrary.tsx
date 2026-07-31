@@ -8,6 +8,10 @@ import {
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import { ApiError, newIdempotencyKey, type ApiClient } from '../../api/client'
+import {
+  AssuranceNotice,
+  type AssuranceActions,
+} from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { CursorPagination } from '../../components/common/CursorPagination'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
@@ -46,7 +50,13 @@ const CATEGORIES: Array<{ value: GovernanceDocumentCategory; label: string }> = 
   { value: 'OTHER', label: '기타' },
 ]
 
-export function GovernanceDocumentLibrary({ client }: { client: ApiClient }) {
+export function GovernanceDocumentLibrary({
+  client,
+  assurance,
+}: {
+  client: ApiClient
+  assurance?: AssuranceActions
+}) {
   const api = useMemo(() => new GovernanceDocumentsApi(client), [client])
   const capability = useQuery({
     queryKey: ['governance-documents', 'capability'],
@@ -93,6 +103,7 @@ export function GovernanceDocumentLibrary({ client }: { client: ApiClient }) {
   return <GovernanceDocumentWorkspace
     api={api}
     capability={capability.data}
+    assurance={assurance}
     onRefreshCapability={() => void capability.refetch()}
   />
 }
@@ -100,10 +111,12 @@ export function GovernanceDocumentLibrary({ client }: { client: ApiClient }) {
 function GovernanceDocumentWorkspace({
   api,
   capability,
+  assurance,
   onRefreshCapability,
 }: {
   api: GovernanceDocumentsApi
   capability: GovernanceDocumentCapability
+  assurance?: AssuranceActions
   onRefreshCapability: () => void
 }) {
   const queryClient = useQueryClient()
@@ -498,6 +511,30 @@ function GovernanceDocumentWorkspace({
     )
     if (saved) setAttachmentFile(undefined)
   }
+  const downloadAttachment = async (attachment: GovernanceDocumentAttachment) => {
+    if (!currentDetail || !allowed('download_attachment')) return
+    setBusy(true)
+    setMutationError(undefined)
+    setNotice(undefined)
+    try {
+      const value = await api.downloadAttachment(
+        currentDetail.document.document_id,
+        attachment.attachment_id,
+      )
+      const anchor = document.createElement('a')
+      anchor.href = value.url
+      anchor.download = value.attachment.original_name
+      anchor.rel = 'noopener noreferrer'
+      document.body.append(anchor)
+      anchor.click()
+      anchor.remove()
+      setNotice('정확한 Object Version의 제한시간 다운로드를 시작했습니다.')
+    } catch (error) {
+      setMutationError(error)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const columns = useMemo<ColumnDef<GovernanceDocumentSummary>[]>(() => [
     { accessorKey: 'title', header: '문서명', size: 260, enableSorting: false },
@@ -590,6 +627,7 @@ function GovernanceDocumentWorkspace({
       maximumAttachmentBytes={capability.limits.max_attachment_bytes}
       maximumAttachments={capability.limits.max_attachments_per_version}
       attachmentAvailable={axis('artifact_storage')?.state === 'AVAILABLE' && allowed('add_attachment')}
+      downloadAvailable={allowed('download_attachment')}
       busy={busy}
       mutationError={mutationError}
       notice={notice}
@@ -615,6 +653,7 @@ function GovernanceDocumentWorkspace({
       }}
       onAttachmentFile={setAttachmentFile}
       onUploadAttachment={() => void uploadAttachment()}
+      onDownloadAttachment={(attachment) => void downloadAttachment(attachment)}
       onClose={() => {
         if (!busy) setSelectedDocumentId(undefined)
       }}
@@ -667,6 +706,7 @@ function GovernanceDocumentWorkspace({
       reason={reviewReason}
       busy={busy}
       error={mutationError}
+      assurance={assurance}
       onReason={setReviewReason}
       onSubmit={() => void review()}
       onClose={() => {
@@ -678,6 +718,7 @@ function GovernanceDocumentWorkspace({
       reason={archiveReason}
       busy={busy}
       error={mutationError}
+      assurance={assurance}
       onReason={setArchiveReason}
       onSubmit={() => void archive()}
       onClose={() => {
@@ -710,6 +751,7 @@ function DocumentDetailDialog({
   maximumAttachmentBytes,
   maximumAttachments,
   attachmentAvailable,
+  downloadAvailable,
   busy,
   mutationError,
   notice,
@@ -726,6 +768,7 @@ function DocumentDetailDialog({
   onInstantiate,
   onAttachmentFile,
   onUploadAttachment,
+  onDownloadAttachment,
   onClose,
 }: {
   open: boolean
@@ -740,6 +783,7 @@ function DocumentDetailDialog({
   maximumAttachmentBytes: number
   maximumAttachments: number
   attachmentAvailable: boolean
+  downloadAvailable: boolean
   busy: boolean
   mutationError: unknown
   notice?: string
@@ -756,6 +800,7 @@ function DocumentDetailDialog({
   onInstantiate: () => void
   onAttachmentFile: (file?: File) => void
   onUploadAttachment: () => void
+  onDownloadAttachment: (attachment: GovernanceDocumentAttachment) => void
   onClose: () => void
 }) {
   const attachments = detail && selectedVersion
@@ -835,6 +880,12 @@ function DocumentDetailDialog({
             <span>{attachment.content_type}</span>
             <span>{formatBytes(attachment.size_bytes)}</span>
             <span>{dateTime(attachment.created_at)}</span>
+            {downloadAvailable && <button
+              type="button"
+              className="button button-secondary"
+              disabled={busy}
+              onClick={() => onDownloadAttachment(attachment)}
+            >다운로드</button>}
           </li>)}</ul>}
         {attachmentAvailable && selectedVersion && <div className="governance-attachment-input">
           <label>첨부파일<input type="file" disabled={busy || attachmentLimitReached} onChange={(event) => onAttachmentFile(event.target.files?.[0])} /></label>
@@ -956,7 +1007,9 @@ function EditorDialog({
         {kind === 'TEMPLATE' && <label>기본 양식<select value={blueprintId} disabled={busy} onChange={(event) => onBlueprint(event.target.value)}><option value="">빈 Template</option>{blueprints.map((blueprint) => <option key={blueprint.blueprint_id} value={blueprint.blueprint_id}>{categoryLabel(blueprint.category)} · {blueprint.title}</option>)}</select></label>}
         {kind === 'DOCUMENT' && <label>Template<select value={templateVersionId} disabled={busy} onChange={(event) => onTemplateVersion(event.target.value)}><option value="">빈 문서</option>{templates.map((template) => <option key={template.document_id} value={template.current_published_version_id ?? ''}>{template.title} · v{template.current_version_number}</option>)}</select></label>}
       </>}
-      <label>적용 범위<textarea maxLength={4000} value={applicabilityScope} disabled={busy} onChange={(event) => onApplicabilityScope(event.target.value)} /></label>
+      <label>적용 범위<textarea maxLength={4000} value={applicabilityScope} disabled={busy} onChange={(event) => onApplicabilityScope(event.target.value)} />
+        <small>지식그래프 연결이 필요하면 `dataset:참조` 또는 `term:용어`를 쉼표·줄바꿈으로 선언하세요. 본문에서는 `[[Dataset:참조]]`, `[[Term:용어]]`를 사용할 수 있습니다.</small>
+      </label>
       {mode === 'CREATE_VERSION' && <label>HTML·Markdown·Word 가져오기
         <input
           type="file"
@@ -988,6 +1041,7 @@ function ReviewDialog({
   reason,
   busy,
   error,
+  assurance,
   onReason,
   onSubmit,
   onClose,
@@ -996,6 +1050,7 @@ function ReviewDialog({
   reason: string
   busy: boolean
   error: unknown
+  assurance?: AssuranceActions
   onReason: (value: string) => void
   onSubmit: () => void
   onClose: () => void
@@ -1010,6 +1065,7 @@ function ReviewDialog({
       <button type="button" className="button" disabled={busy || !reason.trim()} onClick={onSubmit}>판단 기록</button>
     </>}
   >
+    {assurance && <AssuranceNotice error={error} {...assurance} />}
     {Boolean(error) && <ErrorNotice error={error} />}
     <label>결재 사유<textarea required maxLength={4000} value={reason} disabled={busy} onChange={(event) => onReason(event.target.value)} /></label>
   </Dialog>
@@ -1020,6 +1076,7 @@ function ArchiveDialog({
   reason,
   busy,
   error,
+  assurance,
   onReason,
   onSubmit,
   onClose,
@@ -1028,6 +1085,7 @@ function ArchiveDialog({
   reason: string
   busy: boolean
   error: unknown
+  assurance?: AssuranceActions
   onReason: (value: string) => void
   onSubmit: () => void
   onClose: () => void
@@ -1042,6 +1100,7 @@ function ArchiveDialog({
       <button type="button" className="button button-danger" disabled={busy || !reason.trim()} onClick={onSubmit}>Archive 확인</button>
     </>}
   >
+    {assurance && <AssuranceNotice error={error} {...assurance} />}
     {Boolean(error) && <ErrorNotice error={error} />}
     <label>Archive 사유<textarea required maxLength={4000} value={reason} disabled={busy} onChange={(event) => onReason(event.target.value)} /></label>
   </Dialog>
@@ -1102,9 +1161,14 @@ function selectedVersionAttachments(
 }
 
 function DocumentStatus({ value }: { value: string }) {
+  const visibleValue = {
+    IN_REVIEW: 'PENDING_APPROVAL',
+    PUBLISHED: 'ACTIVE',
+    SUPERSEDED: 'SUPERSEDED',
+  }[value] ?? value
   return <span className={`governance-document-status status-${value.toLocaleLowerCase().replaceAll('_', '-')}`}>
     <span aria-hidden="true" />
-    {value}
+    {visibleValue}
   </span>
 }
 

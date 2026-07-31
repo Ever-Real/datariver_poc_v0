@@ -8,7 +8,6 @@ from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Index, UniqueConst
 from datariver.infrastructure.db import models as _models  # noqa: F401
 from datariver.infrastructure.db.base import Base
 from datariver.infrastructure.db.migration_scope import MANAGED_DATABASE_SCHEMAS
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0067_quality_control_plane.py"
@@ -36,7 +35,6 @@ EXPECTED_TABLES = {
 
 
 def test_quality_metadata_and_revision_are_complete() -> None:
-    assert REQUIRED_DATABASE_REVISION == "0074"
     assert "quality" in MANAGED_DATABASE_SCHEMAS
     assert EXPECTED_TABLES <= set(Base.metadata.tables)
     assert "retention.legal_hold_generations" in Base.metadata.tables

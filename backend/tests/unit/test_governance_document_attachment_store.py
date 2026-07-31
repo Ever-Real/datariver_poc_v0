@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import inspect
+from datetime import UTC, datetime
 from io import BytesIO
 from typing import Any
 from uuid import UUID, uuid4
@@ -14,11 +15,13 @@ from datariver.application.governance_document_attachments import (
     MAXIMUM_GOVERNANCE_DOCUMENT_ATTACHMENT_BYTES,
     GovernanceDocumentAttachmentCollisionError,
     GovernanceDocumentAttachmentExternalError,
+    GovernanceDocumentAttachmentSource,
     GovernanceDocumentAttachmentStore,
     GovernanceDocumentAttachmentWrite,
     governance_document_attachment_key,
 )
 from datariver.domain.common import ValidationError
+from datariver.domain.governance_documents import GovernanceDocumentAttachment
 from datariver.infrastructure.object_store.governance_document_attachments import (
     S3GovernanceDocumentAttachmentStore,
 )
@@ -102,6 +105,15 @@ class _VersionedS3Client:
             "Body": _Body(content),
         }
 
+    def generate_presigned_url(self, operation: str, **kwargs: Any) -> str:
+        self.calls.append(
+            (
+                "generate_presigned_url",
+                {"operation": operation, **kwargs},
+            )
+        )
+        return "https://minio.example.test/signed-download"
+
 
 def _write() -> GovernanceDocumentAttachmentWrite:
     return GovernanceDocumentAttachmentWrite(
@@ -121,7 +133,9 @@ def _store(client: _VersionedS3Client) -> S3GovernanceDocumentAttachmentStore:
         bucket="datariver-filefolder",
         access_key="governance-attachment-writer",
         secret_key="secret",
+        public_endpoint_url="https://minio.example.test",
         client=client,
+        presign_client=client,
     )
 
 
@@ -243,11 +257,45 @@ async def test_ambiguous_write_and_readback_mismatch_never_delete() -> None:
     assert not any(name == "delete_object" for name, _values in read_client.calls)
 
 
-def test_attachment_port_and_adapter_expose_no_destructive_or_raw_provider_methods() -> None:
+@pytest.mark.asyncio
+async def test_download_is_signed_for_the_exact_immutable_object_version() -> None:
+    client = _VersionedS3Client()
+    write = _write()
+    receipt = await _store(client).ensure_attachment(write)
+    source = GovernanceDocumentAttachmentSource(
+        attachment=GovernanceDocumentAttachment(
+            attachment_id=write.attachment_id,
+            workspace_id=write.workspace_id,
+            document_id=write.document_id,
+            document_version_id=write.version_id,
+            original_name="정책 증빙.txt",
+            content_type="text/plain",
+            size_bytes=len(write.content),
+            content_sha256=write.content_sha256,
+            uploaded_by=uuid4(),
+            created_at=datetime.now(UTC),
+        ),
+        bucket=receipt.bucket,
+        object_key=receipt.object_key,
+        provider_version_id=receipt.provider_version_id,
+    )
+
+    url = await _store(client).presign_download(source, expires_seconds=300)
+
+    assert url == "https://minio.example.test/signed-download"
+    call = next(values for name, values in client.calls if name == "generate_presigned_url")
+    assert call["operation"] == "get_object"
+    assert call["HttpMethod"] == "GET"
+    assert call["ExpiresIn"] == 300
+    assert call["Params"]["VersionId"] == "version-1"
+    assert call["Params"]["Key"] == receipt.object_key
+    assert "filename*=UTF-8''" in call["Params"]["ResponseContentDisposition"]
+
+
+def test_attachment_port_and_adapter_expose_only_bounded_non_destructive_methods() -> None:
     prohibited = {
         "delete_object",
         "copy_object",
-        "presign_download",
         "presign_upload",
         "list_objects",
         "list_object_versions",
@@ -264,4 +312,4 @@ def test_attachment_port_and_adapter_expose_no_destructive_or_raw_provider_metho
 
     assert prohibited.isdisjoint(protocol_methods)
     assert prohibited.isdisjoint(adapter_methods)
-    assert adapter_methods == {"ensure_attachment"}
+    assert adapter_methods == {"ensure_attachment", "presign_download"}

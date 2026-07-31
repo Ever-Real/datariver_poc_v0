@@ -8,6 +8,7 @@ from typing import Sequence
 
 from alembic import op
 import sqlalchemy as sa
+import pgvector.sqlalchemy.vector
 from sqlalchemy import Text
 from sqlalchemy.dialects import postgresql
 
@@ -20,6 +21,7 @@ depends_on: str | Sequence[str] | None = None
 
 def upgrade() -> None:
         op.execute('CREATE EXTENSION IF NOT EXISTS pg_trgm')
+        op.execute('CREATE EXTENSION IF NOT EXISTS vector')
         op.execute('CREATE SCHEMA IF NOT EXISTS platform')
         op.execute('CREATE SCHEMA IF NOT EXISTS iam')
         op.execute('CREATE SCHEMA IF NOT EXISTS authz')
@@ -2424,6 +2426,7 @@ def upgrade() -> None:
         sa.Column('content', sa.Text(), nullable=False),
         sa.Column('content_sha256', sa.String(length=64), nullable=False),
         sa.Column('embedding', sa.JSON().with_variant(postgresql.JSONB(none_as_null=True, astext_type=Text()), 'postgresql'), nullable=False),
+        sa.Column('embedding_vector', pgvector.sqlalchemy.vector.VECTOR(), nullable=False),
         sa.Column('embedding_dimension', sa.Integer(), nullable=False),
         sa.Column('provider', sa.String(length=100), nullable=False),
         sa.Column('model_identity', sa.String(length=255), nullable=False),
@@ -2433,6 +2436,7 @@ def upgrade() -> None:
         sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_document_knowledge_chunks_content_sha256_valid')),
         sa.CheckConstraint('embedding_dimension BETWEEN 1 AND 16384', name=op.f('ck_document_knowledge_chunks_embedding_dimension_range')),
         sa.CheckConstraint('ordinal > 0', name=op.f('ck_document_knowledge_chunks_ordinal_positive')),
+        sa.CheckConstraint('vector_dims(embedding_vector) = embedding_dimension', name=op.f('ck_document_knowledge_chunks_embedding_vector_dimension_matches')),
         sa.ForeignKeyConstraint(['workspace_id', 'document_id'], ['governance.documents.workspace_id', 'governance.documents.id'], name='fk_governance_document_knowledge_chunks_document', ondelete='RESTRICT'),
         sa.ForeignKeyConstraint(['workspace_id', 'document_version_id'], ['governance.document_versions.workspace_id', 'governance.document_versions.id'], name='fk_governance_document_knowledge_chunks_version', ondelete='RESTRICT'),
         sa.PrimaryKeyConstraint('id', name=op.f('pk_document_knowledge_chunks')),

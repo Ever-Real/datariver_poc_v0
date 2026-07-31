@@ -1,4 +1,4 @@
-FROM postgres:17.10-bookworm@sha256:4f736ae292687621d4dbe0d499ffd024a36bd2ee7d8ca6f2ccd4c800f047b394
+FROM pgvector/pgvector:0.8.2-pg17-bookworm@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966
 
 # The isolated target has no source checkout. Embed only the reviewed database
 # initialization hooks; Alembic remains a separate one-shot backend container.

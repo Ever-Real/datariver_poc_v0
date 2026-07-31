@@ -12,10 +12,14 @@ from datariver.application.dto import (
     ChatMessageRecord,
     ChatSessionRecord,
 )
+from datariver.application.governance_document_chat import (
+    GovernanceDocumentChatEvidenceReader,
+)
 from datariver.application.ports import ChatAnswerComposer, ChatGeneralAnswerComposer
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.chat import ChatService
 from datariver.application.services.chat_history import ChatHistoryService
+from datariver.application.services.governance_documents import GovernanceDocumentService
 from datariver.infrastructure.db.authz import SqlDecisionWriter, SqlSubjectReader
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
 from datariver.infrastructure.db.chat import (
@@ -24,6 +28,9 @@ from datariver.infrastructure.db.chat import (
 )
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
+)
+from datariver.infrastructure.db.governance_documents import (
+    SqlGovernanceDocumentRepository,
 )
 from datariver.infrastructure.knowledge.openai_compatible import HttpxOpenAIJsonTransport
 from datariver.infrastructure.knowledge.runtime import build_knowledge_runtime_adapters
@@ -135,8 +142,7 @@ async def query(
     catalog_index = SqlCatalogIndexReader(session)
     chat_history = SqlChatHistoryStore(session)
     composer, general_composer, composition_audit = _development_composer(container)
-    vector_catalog = None
-    if (
+    vector_catalog_enabled = (
         settings.app_env == "development"
         and (settings.local_ollama_chat_enabled and settings.local_ollama_embedding_enabled)
     ) or (
@@ -145,12 +151,32 @@ async def query(
             settings.intranet_openai_compatible_chat_enabled
             and settings.intranet_openai_compatible_embedding_enabled
         )
-    ):
+    )
+    runtime = None
+    if vector_catalog_enabled or settings.governance_document_worker_enabled:
         runtime = build_knowledge_runtime_adapters(settings)
+    vector_catalog = None
+    if vector_catalog_enabled and runtime is not None:
         vector_catalog = BoundedCatalogVectorReader(
             catalog_index=catalog_index,
             embedding=runtime.embedding,
             binding=runtime.bindings.embedding,
+        )
+    governance_evidence = None
+    if settings.governance_document_worker_enabled and runtime is not None:
+        governance_evidence = GovernanceDocumentChatEvidenceReader(
+            GovernanceDocumentService(
+                repository=SqlGovernanceDocumentRepository(session),
+                authorization=AuthorizationService(
+                    decision_writer=SqlDecisionWriter(container.database.session_factory)
+                ),
+                attachment_store=container.governance_document_attachments,
+                artifact_storage_ready=container.governance_document_attachments is not None,
+                knowledge_projection_ready=container.knowledge_neo4j is not None,
+                knowledge_embedding=runtime.embedding,
+                knowledge_embedding_binding=runtime.bindings.embedding,
+                attachment_download_ttl_seconds=settings.presigned_url_ttl_seconds,
+            )
         )
     reranker = None
     if settings.app_env == "development" and settings.local_llama_cpp_reranker_enabled:
@@ -184,6 +210,7 @@ async def query(
     exchange = await ChatService(
         catalog_index=catalog_index,
         vector_catalog=vector_catalog,
+        governance_evidence=governance_evidence,
         # The governed asset-graph adapter is intentionally opened by the port but
         # remains unavailable until the next asset-graph scope is implemented.
         graph_evidence=None,

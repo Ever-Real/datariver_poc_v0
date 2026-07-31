@@ -648,7 +648,7 @@ offline override 순서를 다시 입력하지 않는다. `dev_host.sh migrate`�
 
 이전 raw Compose 절차로 구성되어 아직 applied state가 없는 rapid source 검증 PC는 explicit
 `--env-file`만으로 로컬-image 재사용 경로를 자동 선택한다. 공식
-`postgres:17.10-bookworm`과 기존 `datariver-keycloak:26.7.0` final image를 모두 로컬에서
+`pgvector/pgvector:0.8.2-pg17-bookworm`과 기존 `datariver-keycloak:26.7.0` final image를 모두 로컬에서
 검사하고 `linux/amd64`가 아니거나 없으면 container를 중지하기 전에 실패한다. 이 경로는
 `--pull never --no-build`이므로 폐쇄망에서 registry나 Quay metadata를 조회하지 않는다.
 `SOURCE_HOST_POSTGRES_IMAGE`와 `SOURCE_HOST_KEYCLOAK_IMAGE`로 이미 로드된 다른 승인 reference를

@@ -303,7 +303,7 @@ def verify_multiarch_release_contract() -> None:
             "keycloak:26.7.0@sha256:2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0",
         },
         ROOT / "compose.yaml": {
-            "postgres:17.10-bookworm@sha256:4f736ae292687621d4dbe0d499ffd024a36bd2ee7d8ca6f2ccd4c800f047b394",
+            "pgvector/pgvector:0.8.2-pg17-bookworm@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966",
         },
         ROOT / "compose.local-connectors.yaml": {
             "redis:8.2.6-bookworm@sha256:3055dc25265b0c19ec90a1756dad4e0faff6f79e2557a6ac3d1274e39ee906f6",
@@ -899,7 +899,7 @@ def verify_host_development_ports() -> None:
             '"--no-build", "--pull", "never"',
         },
         ROOT / "compose.connected-source-host.yaml": {
-            "${SOURCE_HOST_POSTGRES_IMAGE:-postgres:17.10-bookworm}",
+            "${SOURCE_HOST_POSTGRES_IMAGE:-pgvector/pgvector:0.8.2-pg17-bookworm}",
             "${SOURCE_HOST_KEYCLOAK_IMAGE:-datariver-keycloak:26.7.0}",
             "pull_policy: never",
         },

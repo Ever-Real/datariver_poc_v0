@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import type { ApiClient, RequestOptions } from '../../api/client'
 import { GovernanceDocumentLibrary } from './GovernanceDocumentLibrary'
@@ -64,6 +64,46 @@ describe('GovernanceDocumentLibrary capability boundary', () => {
     const requestedPaths = request.mock.calls.map((call) => String(call[0]))
     expect(requestedPaths.some((path) => path.includes('/versions'))).toBe(false)
     expect(requestedPaths.some((path) => path.includes('/content'))).toBe(false)
+  })
+
+  it('exposes document authoring and Template selection for an entitled steward', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/governance/documents/capability') {
+        const value = capability('AVAILABLE')
+        value.axes = value.axes.map((axis) => ({
+          ...axis,
+          state: ['read', 'create', 'edit', 'template_manage'].includes(axis.id)
+            ? 'AVAILABLE'
+            : 'DENIED',
+        }))
+        return Promise.resolve(value)
+      }
+      if (path === '/governance/documents?limit=25&kind=DOCUMENT') {
+        return Promise.resolve({
+          items: [],
+          page: { next_cursor: null, limit: 25 },
+          cache_scope: cacheScope,
+          observed_at: now,
+          authorization_valid_until: validUntil,
+        })
+      }
+      if (path === '/governance/documents?limit=25&kind=TEMPLATE') {
+        return Promise.resolve({
+          items: [],
+          page: { next_cursor: null, limit: 25 },
+          cache_scope: cacheScope,
+          observed_at: now,
+          authorization_valid_until: validUntil,
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+    renderLibrary(request)
+
+    const create = await screen.findByRole('button', { name: '새 문서' })
+    expect(screen.getByRole('button', { name: '새 Template' })).toBeInTheDocument()
+    fireEvent.click(create)
+    expect(await screen.findByRole('combobox', { name: 'Template' })).toBeInTheDocument()
   })
 })
 

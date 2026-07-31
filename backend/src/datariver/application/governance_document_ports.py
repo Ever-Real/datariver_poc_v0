@@ -5,10 +5,14 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from datariver.application.governance_document_attachments import (
+    GovernanceDocumentAttachmentSource,
+)
 from datariver.domain.authz import SubjectAttributes
 from datariver.domain.governance_documents import (
     GovernanceDocumentAttachment,
     GovernanceDocumentCategory,
+    GovernanceDocumentConcept,
     GovernanceDocumentDetail,
     GovernanceDocumentKind,
     GovernanceDocumentPage,
@@ -167,6 +171,15 @@ class GovernanceDocumentRepository(Protocol):
         request_id: str,
     ) -> GovernanceDocumentAttachment: ...
 
+    async def get_attachment_source(
+        self,
+        *,
+        workspace_id: UUID,
+        document_id: UUID,
+        attachment_id: UUID,
+        subject: SubjectAttributes,
+    ) -> GovernanceDocumentAttachmentSource | None: ...
+
     async def search_knowledge(
         self,
         *,
@@ -177,6 +190,14 @@ class GovernanceDocumentRepository(Protocol):
         provider: str | None,
         model: str | None,
         limit: int,
+    ) -> tuple[GovernanceKnowledgeEvidence, ...]: ...
+
+    async def get_current_knowledge(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        chunk_ids: Sequence[UUID],
     ) -> tuple[GovernanceKnowledgeEvidence, ...]: ...
 
 
@@ -226,4 +247,5 @@ class GovernanceDocumentGraphProjector(Protocol):
         *,
         claim: GovernanceDocumentProjectionClaim,
         chunks: Sequence[tuple[int, str, str]],
+        concepts: Sequence[GovernanceDocumentConcept],
     ) -> str: ...

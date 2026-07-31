@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import UUID
 
@@ -48,6 +49,7 @@ from datariver.interfaces.http.governance_document_presenters import (
 )
 from datariver.interfaces.http.governance_document_schemas import (
     GovernanceDocumentArchiveRequest,
+    GovernanceDocumentAttachmentDownloadResponse,
     GovernanceDocumentAttachmentResponse,
     GovernanceDocumentBlueprintListResponse,
     GovernanceDocumentBlueprintResponse,
@@ -61,10 +63,12 @@ from datariver.interfaces.http.governance_document_schemas import (
     GovernanceDocumentReviewRequest,
     GovernanceDocumentVersionCreateRequest,
     GovernanceKnowledgeEvidenceListResponse,
+    GovernanceRagSearchRequest,
 )
 from datariver.interfaces.http.schemas import PageMeta
 
 router = APIRouter(prefix="/governance/documents", tags=["governance-documents"])
+rag_router = APIRouter(prefix="/governance/search", tags=["governance-documents"])
 
 _MAXIMUM_IDEMPOTENCY_KEY_CHARACTERS = 200
 
@@ -99,6 +103,7 @@ def _service(
         knowledge_embedding_binding=(
             knowledge_runtime.bindings.embedding if knowledge_runtime is not None else None
         ),
+        attachment_download_ttl_seconds=container.settings.presigned_url_ttl_seconds,
     )
 
 
@@ -275,6 +280,34 @@ async def search_governance_knowledge_evidence(
         request_id=context.request_id,
         query=q,
         limit=limit,
+    )
+    return GovernanceKnowledgeEvidenceListResponse(
+        items=[governance_knowledge_evidence_response(value) for value in values],
+        cache_scope=read_context.cache_scope,
+        observed_at=read_context.observed_at,
+        authorization_valid_until=read_context.authorization_valid_until,
+    )
+
+
+@rag_router.post("/rag", response_model=GovernanceKnowledgeEvidenceListResponse)
+async def search_governance_rag(
+    body: GovernanceRagSearchRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> GovernanceKnowledgeEvidenceListResponse:
+    _private(response)
+    values, read_context = await _service(
+        request,
+        session,
+        knowledge_search=True,
+    ).search_knowledge(
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        query=body.query,
+        limit=body.limit,
     )
     return GovernanceKnowledgeEvidenceListResponse(
         items=[governance_knowledge_evidence_response(value) for value in values],
@@ -506,6 +539,33 @@ async def add_governance_document_attachment(
         content=await _bounded_upload(file),
     )
     return governance_document_attachment_response(value)
+
+
+@router.get(
+    "/{document_id}/attachments/{attachment_id}/download",
+    response_model=GovernanceDocumentAttachmentDownloadResponse,
+)
+async def download_governance_document_attachment(
+    document_id: UUID,
+    attachment_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+) -> GovernanceDocumentAttachmentDownloadResponse:
+    _private(response)
+    value = await _service(request, session).download_attachment(
+        document_id=document_id,
+        attachment_id=attachment_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return GovernanceDocumentAttachmentDownloadResponse(
+        attachment=governance_document_attachment_response(value.attachment),
+        url=value.url,
+        expires_at=datetime.fromtimestamp(value.expires_at_epoch_seconds, tz=UTC),
+    )
 
 
 @router.post(

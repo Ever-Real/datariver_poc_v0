@@ -137,6 +137,9 @@ to atomic multi-asset Rule Set mapping are defined by
 The immutable Governance Document aggregate, safe HTML/import boundary, create-only MinIO
 artifacts, independent approval and authorized vector/Neo4j projection are defined by
 [ADR-0080](adr/0080-governance-document-library-and-knowledge-projection.md).
+Its Bleach policy, exact-version Presigned download, pgvector exact search, declared
+`GovernancePolicy -> Dataset/Term` projection and Chat citation boundary are refined by
+[ADR-0082](adr/0082-governance-document-pgvector-download-and-chat-grounding.md).
 The Step 3 child aggregate and provider boundary are defined by
 [Knowledge Studio A-Box binding drafts](adr/0060-knowledge-studio-abox-binding-drafts.md).
 Its row-sample dry run and version-fenced ingestion readiness evidence are defined by

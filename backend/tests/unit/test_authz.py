@@ -103,6 +103,45 @@ def test_allows_matching_attributes() -> None:
     assert decision.reason_codes == ("POLICY_ALLOW",)
 
 
+def test_entitlement_preview_keeps_high_risk_action_visible_without_relaxing_command_auth() -> None:
+    subject, resource, environment = make_context(action=Action.GOVERNANCE_DOCUMENT_PUBLISH)
+    subject = replace(
+        subject,
+        authentication_assurance=AuthenticationAssurance.PASSWORD,
+        authentication_time=None,
+    )
+    service = AuthorizationService(decision_writer=BatchDecisionWriter())
+
+    assert service.is_entitled(
+        subject=subject,
+        resource=resource,
+        action=Action.GOVERNANCE_DOCUMENT_PUBLISH,
+        environment=environment,
+    )
+    assert (
+        not BuiltinPolicyEngine()
+        .decide(
+            subject=subject,
+            resource=resource,
+            action=Action.GOVERNANCE_DOCUMENT_PUBLISH,
+            environment=environment,
+        )
+        .allowed
+    )
+
+
+def test_entitlement_preview_does_not_override_business_denials() -> None:
+    subject, resource, environment = make_context(action=Action.GOVERNANCE_DOCUMENT_PUBLISH)
+    resource = replace(resource, requester_id=subject.subject_id)
+
+    assert not AuthorizationService(decision_writer=BatchDecisionWriter()).is_entitled(
+        subject=subject,
+        resource=resource,
+        action=Action.GOVERNANCE_DOCUMENT_PUBLISH,
+        environment=environment,
+    )
+
+
 def test_public_resource_does_not_require_system_or_domain_scope() -> None:
     subject, resource, environment = make_context()
     resource = replace(

@@ -4,6 +4,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+from pgvector.sqlalchemy import VECTOR
 from sqlalchemy import (
     CheckConstraint,
     DateTime,
@@ -566,6 +567,10 @@ class GovernanceDocumentKnowledgeChunkModel(Base, UuidPrimaryKeyMixin):
             "embedding_dimension BETWEEN 1 AND 16384",
             name="embedding_dimension_range",
         ),
+        CheckConstraint(
+            "vector_dims(embedding_vector) = embedding_dimension",
+            name="embedding_vector_dimension_matches",
+        ),
         Index(
             "ix_governance_document_knowledge_chunks_search",
             "workspace_id",
@@ -583,6 +588,7 @@ class GovernanceDocumentKnowledgeChunkModel(Base, UuidPrimaryKeyMixin):
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
     embedding: Mapped[list[float]] = mapped_column(JSON_DOCUMENT, nullable=False)
+    embedding_vector: Mapped[list[float]] = mapped_column(VECTOR(), nullable=False)
     embedding_dimension: Mapped[int] = mapped_column(nullable=False)
     provider: Mapped[str] = mapped_column(String(100), nullable=False)
     model_identity: Mapped[str] = mapped_column(String(255), nullable=False)

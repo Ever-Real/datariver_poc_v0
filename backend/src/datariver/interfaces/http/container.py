@@ -80,6 +80,7 @@ def build_container(settings: Settings) -> AppContainer:
             raise ValueError("Enabled Governance Document storage has incomplete settings.")
         governance_document_attachments = S3GovernanceDocumentAttachmentStore(
             endpoint_url=settings.s3_endpoint_url,
+            public_endpoint_url=settings.s3_public_endpoint_url,
             region=settings.s3_region,
             bucket=settings.s3_bucket_filefolder,
             access_key=secret_resolver.resolve(

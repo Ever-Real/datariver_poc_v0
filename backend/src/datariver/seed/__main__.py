@@ -73,7 +73,23 @@ ADMINISTRATOR_ACTIONS = tuple(
     for action in Action
     if action is not Action.CHANGE_RAW_CREATE and action not in SERVICE_ONLY_ACTIONS
 )
-REVIEWER_ACTIONS = (Action.KG_READ.value, Action.KG_REVIEW.value)
+REVIEWER_ACTIONS = (
+    Action.KG_READ.value,
+    Action.KG_REVIEW.value,
+    Action.ATTACHMENT_DOWNLOAD.value,
+    Action.GOVERNANCE_DOCUMENT_READ.value,
+    Action.GOVERNANCE_DOCUMENT_HISTORY_READ.value,
+    Action.GOVERNANCE_DOCUMENT_CREATE.value,
+    Action.GOVERNANCE_DOCUMENT_EDIT.value,
+    Action.GOVERNANCE_DOCUMENT_REVIEW.value,
+    Action.GOVERNANCE_DOCUMENT_PUBLISH.value,
+    Action.GOVERNANCE_DOCUMENT_ARCHIVE.value,
+    Action.GOVERNANCE_TEMPLATE_READ.value,
+    Action.GOVERNANCE_TEMPLATE_PROPOSE.value,
+    Action.GOVERNANCE_TEMPLATE_REVIEW.value,
+    Action.GOVERNANCE_TEMPLATE_ACTIVATE.value,
+    Action.GOVERNANCE_KNOWLEDGE_READ.value,
+)
 
 
 def graph_classification(pack: SemiconductorPack) -> int:
@@ -169,6 +185,11 @@ async def apply_pack(
 ) -> dict[str, object]:
     existing_run = await session.get(SeedRunModel, SEED_RUN_ID)
     if existing_run is not None and existing_run.state == "APPLIED":
+        # The pack payload may be unchanged while platform action contracts evolve.
+        # Reconcile only the seed-owned identities before returning the immutable
+        # content receipt so an idempotent apply cannot leave stale RBAC snapshots.
+        await _ensure_identity(session, settings=settings)
+        await session.commit()
         return await verify_pack(session, pack=pack)
 
     publisher_id, reviewer_id = await _ensure_identity(session, settings=settings)
@@ -528,6 +549,8 @@ async def verify_pack(session: AsyncSession, *, pack: SemiconductorPack) -> dict
         or publisher.external_subject != LOCAL_KEYCLOAK_SUBJECT
         or publisher_membership is None
         or not publisher_membership.active
+        or set(publisher_membership.attributes.get("allowed_actions", []))
+        != set(ADMINISTRATOR_ACTIONS)
         or Action.KG_PUBLISH.value not in publisher_membership.attributes.get("allowed_actions", [])
         or reviewer is None
         or not reviewer.active

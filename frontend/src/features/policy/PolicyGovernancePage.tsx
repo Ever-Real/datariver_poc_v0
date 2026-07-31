@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { BookOpen, CheckCircle2, Eye, FileText, RefreshCw, Shield, Workflow } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
 import type { AdminOperation, ClassificationAccessPolicy, LegalHold, RetentionPolicy } from '../../api/types'
+import type { AssuranceActions } from '../../components/AssuranceNotice'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { useRovingTabs } from '../../components/common/useRovingTabs'
 import { PageTitle } from '../../components/layout/PageTitle'
@@ -30,7 +31,7 @@ interface PolicyData {
   readAllowed: boolean
 }
 
-export function PolicyGovernancePage({ client, mayReadPolicies = false, allowedOperations }: { client: ApiClient; mayReadPolicies?: boolean; allowedOperations?: readonly AdminOperation[] }) {
+export function PolicyGovernancePage({ client, mayReadPolicies = false, allowedOperations, assurance }: { client: ApiClient; mayReadPolicies?: boolean; allowedOperations?: readonly AdminOperation[]; assurance?: AssuranceActions }) {
   const [primaryTab, setPrimaryTab] = useState<GovernancePrimaryTab>('POLICY_STATUS')
   const [active, setActive] = useState<DocumentId>('CLASSIFICATION')
   const [viewMode, setViewMode] = useState<ViewMode>('TEXT')
@@ -99,7 +100,7 @@ export function PolicyGovernancePage({ client, mayReadPolicies = false, allowedO
         <header className="policy-document-toolbar"><div role="tablist" aria-label="문서 보기 방식"><button type="button" role="tab" aria-selected={viewMode === 'TEXT'} className={viewMode === 'TEXT' ? 'active' : ''} onClick={() => setViewMode('TEXT')}><FileText size={13} />문서 뷰어</button><button type="button" role="tab" aria-selected={viewMode === 'FLOW'} className={viewMode === 'FLOW' ? 'active' : ''} onClick={() => setViewMode('FLOW')}><Workflow size={13} />워크플로우 맵</button></div><span>{loading ? '동기화 중' : '서버 read model'}</span></header>
         {viewMode === 'TEXT' ? <PolicyDocumentView document={document} data={data} loading={loading} /> : <PolicyWorkflowView document={document} data={data} loading={loading} />}
       </main>
-      </div> : <GovernanceDocumentLibrary client={client} />}
+      </div> : <GovernanceDocumentLibrary client={client} assurance={assurance} />}
     </div>
   </section>
 }

@@ -2,6 +2,14 @@
 
 ## Current verification status
 
+### Governance Document pgvector/download/Chat refinement — 2026-07-31
+
+Revision `0075` adds Bleach policy evidence, exact-VersionId Presigned download, exact pgvector
+cosine retrieval, declared GovernancePolicy-to-Dataset/Term graph edges, the POST RAG contract and
+Chat current-version citation reauthorization. Source and runtime results are recorded in the
+Phase 9 implementation record after the final clean `dev` gate; no ANN, WORM or production SLO
+claim follows from source tests.
+
 ### Governance Document Phase 9 local release gate — 2026-07-31
 
 Revision `0072` implements forced-RLS document/Template authoring, immutable version and approval
@@ -1285,14 +1293,16 @@ applicable evidence below exists.
 - Evidence API tests prove authorization occurs before external embedding, the query uses the same
   provider/model binding as stored chunks, only active current published authorized documents are
   ranked, and callers cannot supply raw vectors/provider/model/Cypher/SQL.
+- Revision `0075` tests additionally prove exact pgvector SQL ordering after all authorization
+  predicates, vector/JSON dimension equality, exact provider VersionId signing, declared
+  Dataset/Term projection, POST RAG parity and Chat refusal after active-version drift.
 - Frontend tests cover capability-first zero-follow-up denial, cursor/cache scope, ETag and
   idempotency commands, list/detail/history/review/Archive/attachment/import states, controlled
   blueprint loading and the DOM-to-React viewer with no raw HTML insertion. TypeScript, ESLint,
   Vitest and production build are release gates.
-- Representative retrieval candidate count, vector dimension, latency/recall, Neo4j projection,
+- Representative vector dimension, exact-search latency/recall, future ANN sizing, Neo4j projection,
   MinIO throughput, worker crash/reclaim, multi-Workspace leakage, WSL amd64 and accessibility are
-  target acceptance gates. The portable 2,000-candidate vector shadow is not a production SLO
-  claim.
+  target acceptance gates. Exact pgvector search is not a production SLO claim.
 
 ## Core correctness scenarios
 

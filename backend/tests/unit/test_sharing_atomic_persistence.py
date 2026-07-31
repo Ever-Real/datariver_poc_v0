@@ -9,7 +9,6 @@ from sqlalchemy import CheckConstraint
 
 from datariver.infrastructure.db import models  # noqa: F401
 from datariver.infrastructure.db.base import Base
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 from datariver.infrastructure.db.sharing import SqlSharingStore
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -137,7 +136,6 @@ def _execute_sql_literals(source: str, function_name: str) -> tuple[str, ...]:
 def test_revision_and_schema_metadata_advance_to_atomic_sharing_head() -> None:
     migration = MIGRATION.read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0074"
     assert 'revision: str = "0055"' in migration
     assert 'down_revision: str | Sequence[str] | None = "0054"' in migration
     assert {

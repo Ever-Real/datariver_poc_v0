@@ -646,10 +646,11 @@ Version's Run; and latest Profiles on
 these paths with representative `EXPLAIN (ANALYZE, BUFFERS)` evidence rather than merely checking
 that an index exists.
 
-## Governance Document schema (implemented through revision `0072`)
+## Governance Document schema (implemented through revision `0075`)
 
-ADR-0080 adds a document bounded context inside the existing `governance` schema. PostgreSQL owns
-all lifecycle and authorization state; MinIO and Neo4j are verified, rebuildable projections.
+ADR-0080 and ADR-0082 add a document bounded context inside the existing `governance` schema.
+PostgreSQL owns all lifecycle and authorization state; MinIO and Neo4j are verified, rebuildable
+projections.
 
 | Table | Canonical role |
 |---|---|
@@ -659,7 +660,7 @@ all lifecycle and authorization state; MinIO and Neo4j are verified, rebuildable
 | `governance.document_events` | append-only command/audit sequence |
 | `governance.document_artifact_receipts` | exact MinIO body/manifest keys, VersionIds, checksums and verification time |
 | `governance.document_attachments` | immutable version-owned attachment metadata and exact object receipt |
-| `governance.document_knowledge_chunks` | bounded published text chunks and provider/model-bound vector shadow |
+| `governance.document_knowledge_chunks` | bounded published text chunks, immutable JSON audit shadow and provider/model-bound pgvector value |
 | `governance.document_projection_receipts` | relational/Neo4j projection hashes and verified chunk count |
 
 `documents.current_published_version_id` and
@@ -679,10 +680,12 @@ non-zero Workspace/Document/Version/Attachment UUIDs below `governance/documents
 provider VersionIds, ETags and SHA-256 receipts are stored; there is no DB or application physical
 delete path.
 
-Knowledge chunks store portable bounded JSON vectors with exact dimension, provider/model and
-content hash. Retrieval is capped at 2,000 already authorized current-version candidates before
-application cosine ranking. This is the implemented portable vector shadow, not an unrecorded
-claim of pgvector/ANN production capacity.
+Knowledge chunks store an immutable bounded JSON audit shadow and an identical pgvector value with
+exact dimension, provider/model and content hash. Revision `0075` installs the `vector` extension,
+backfills existing JSON values and enforces `vector_dims(embedding_vector) =
+embedding_dimension`. Retrieval applies tenant, ABAC scope, active-document, current-version and
+provider/model predicates before exact PostgreSQL cosine ordering. No ANN index or production
+latency/recall claim is implied.
 
 ## Constraints enforced outside DDL
 

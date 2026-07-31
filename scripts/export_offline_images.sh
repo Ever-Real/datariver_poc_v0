@@ -183,7 +183,7 @@ if [ "$target_platform" != "$os/$architecture" ]; then
 fi
 
 core_images=(
-  postgres:17.10-bookworm@sha256:4f736ae292687621d4dbe0d499ffd024a36bd2ee7d8ca6f2ccd4c800f047b394
+  pgvector/pgvector:0.8.2-pg17-bookworm@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966
   datariver-next-migrate:latest
   datariver-next-storage-init:latest
   datariver-next-local-bootstrap:latest
@@ -200,7 +200,7 @@ core_images=(
 )
 
 external_platform_images=(
-  postgres:17.10-bookworm@sha256:4f736ae292687621d4dbe0d499ffd024a36bd2ee7d8ca6f2ccd4c800f047b394
+  pgvector/pgvector:0.8.2-pg17-bookworm@sha256:feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966
 )
 
 optional_images=()
@@ -486,7 +486,7 @@ write_offline_compose_overrides() {
   printf '%s\n' \
     'services:' \
     '  postgres:' \
-    '    image: postgres:17.10-bookworm' \
+    '    image: pgvector/pgvector:0.8.2-pg17-bookworm' \
     >"$output_dir/offline-core.compose.yaml"
   write_checksum offline-core.compose.yaml
 

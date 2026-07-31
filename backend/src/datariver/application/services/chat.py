@@ -39,6 +39,7 @@ from datariver.application.ports import (
     ChatSessionOwnershipReader,
     ChatSubjectAccessReader,
     ChatVectorCatalogReader,
+    GovernanceChatEvidenceReader,
     KnowledgeEvidenceReader,
 )
 from datariver.application.services.authorization import AuthorizationService
@@ -83,7 +84,7 @@ class DeterministicChatAnswerComposer:
         del question
         if not evidence:
             return ChatDraft(answer=UNVERIFIABLE_ANSWER, cited_chunk_ids=())
-        lines = ["접근 권한이 확인된 카탈로그 근거는 다음과 같습니다."]
+        lines = ["접근 권한이 확인된 사내 근거는 다음과 같습니다."]
         for index, item in enumerate(evidence, start=1):
             description = (item.description or "설명이 등록되지 않았습니다.").strip()
             lines.append(f"[{index}] {item.name}: {description[:500]}")
@@ -109,6 +110,7 @@ class ChatService:
         inference_runtime_bindings: tuple[InferenceRuntimeBinding, ...] = (),
         question_router: ChatQuestionRouter | None = None,
         vector_catalog: ChatVectorCatalogReader | None = None,
+        governance_evidence: GovernanceChatEvidenceReader | None = None,
         graph_evidence: KnowledgeEvidenceReader | None = None,
         knowledge_evidence: KnowledgeEvidenceReader | None = None,
         reranker: ChatEvidenceReranker | None = None,
@@ -121,6 +123,7 @@ class ChatService:
             raise ValueError("Only one governed graph evidence adapter may be supplied.")
         self._catalog_index = catalog_index
         self._vector_catalog = vector_catalog
+        self._governance_evidence = governance_evidence
         self._graph_evidence = graph_evidence or knowledge_evidence
         self._reranker = reranker
         self._budget_guard = budget_guard
@@ -205,7 +208,9 @@ class ChatService:
         route = self._question_router.route(
             question=question,
             requested_mode=requested_mode,
-            vector_available=self._vector_catalog is not None,
+            vector_available=(
+                self._vector_catalog is not None or self._governance_evidence is not None
+            ),
             graph_available=self._graph_evidence is not None,
         )
         if self._budget_guard is not None:
@@ -677,17 +682,29 @@ class ChatService:
             )
         retrieval_stages: tuple[str, ...] = ()
         if route.selected_mode is ChatRetrievalMode.VECTOR:
-            assert self._vector_catalog is not None
-            vector_result = await self._vector_catalog.search(
-                subject=retrieval_subject,
-                access=access,
-                question=question,
-                limit=maximum_evidence,
-            )
-            catalog_items = vector_result.items
-            if vector_result.provider_invoked:
+            catalog_items: Sequence[CatalogAssetIndex] = ()
+            governance_items: tuple[ChatEvidence, ...] = ()
+            if self._vector_catalog is not None:
+                vector_result = await self._vector_catalog.search(
+                    subject=retrieval_subject,
+                    access=access,
+                    question=question,
+                    limit=maximum_evidence,
+                )
+                catalog_items = vector_result.items
+                if vector_result.provider_invoked:
+                    retrieval_stages = ("embedding",)
+            if self._governance_evidence is not None:
+                governance_items = await self._governance_evidence.search(
+                    subject=retrieval_subject,
+                    environment=environment,
+                    request_id=f"{request_id}:governance-retrieval",
+                    question=question,
+                    limit=maximum_evidence,
+                )
                 retrieval_stages = ("embedding",)
         else:
+            governance_items = ()
             page = await self._catalog_index.search(
                 subject=retrieval_subject,
                 access=access,
@@ -697,15 +714,21 @@ class ChatService:
                 limit=maximum_evidence,
             )
             catalog_items = page.items
+        catalog_evidence = await self._authorize_catalog_items(
+            subject=subject,
+            catalog_items=catalog_items,
+            allowed_classifications=allowed_classifications,
+            environment=environment,
+            request_id=request_id,
+            parent_resource_id=parent_resource_id,
+        )
+        eligible_governance = tuple(
+            item
+            for item in governance_items
+            if item.workspace_id == workspace_id and item.classification in allowed_classifications
+        )
         return (
-            await self._authorize_catalog_items(
-                subject=subject,
-                catalog_items=catalog_items,
-                allowed_classifications=allowed_classifications,
-                environment=environment,
-                request_id=request_id,
-                parent_resource_id=parent_resource_id,
-            ),
+            (*eligible_governance, *catalog_evidence)[:maximum_evidence],
             retrieval_stages,
         )
 
@@ -1000,7 +1023,9 @@ class ChatService:
         route: ChatRouteDecision,
     ) -> tuple[InferenceStage, ...]:
         stages: list[InferenceStage] = []
-        if route.selected_mode is ChatRetrievalMode.VECTOR and self._vector_catalog is not None:
+        if route.selected_mode is ChatRetrievalMode.VECTOR and (
+            self._vector_catalog is not None or self._governance_evidence is not None
+        ):
             stages.append(InferenceStage.EMBEDDING)
         if self._reranker is not None:
             stages.append(InferenceStage.RERANKER)
@@ -1212,7 +1237,12 @@ class ChatService:
             knowledge_evidence = tuple(
                 item for item in evidence if item.source_type == "KNOWLEDGE_NODE"
             )
-            if len(catalog_evidence) + len(knowledge_evidence) != len(evidence):
+            governance_evidence = tuple(
+                item for item in evidence if item.source_type == "GOVERNANCE_DOCUMENT"
+            )
+            if len(catalog_evidence) + len(knowledge_evidence) + len(governance_evidence) != len(
+                evidence
+            ):
                 return UNVERIFIABLE_ANSWER, ()
 
             for item in catalog_evidence:
@@ -1283,6 +1313,23 @@ class ChatService:
                         )
                     )
             final_authorized_ids: set[UUID] = set()
+            if governance_evidence:
+                if self._governance_evidence is None:
+                    return UNVERIFIABLE_ANSWER, ()
+                current_governance = await self._governance_evidence.get_current(
+                    subject=refreshed_subject,
+                    environment=final_environment,
+                    request_id=f"{request_id}:governance-citation-final",
+                    resource_ids=tuple(item.resource_id for item in governance_evidence),
+                )
+                governance_by_resource: dict[UUID, list[ChatEvidence]] = {}
+                for current in current_governance:
+                    governance_by_resource.setdefault(current.resource_id, []).append(current)
+                for item in governance_evidence:
+                    candidates = governance_by_resource.get(item.resource_id, [])
+                    if len(candidates) != 1 or candidates[0] != item:
+                        return UNVERIFIABLE_ANSWER, ()
+                    final_authorized_ids.add(item.resource_id)
             for action, resources in resource_groups.items():
                 if not resources:
                     continue

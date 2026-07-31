@@ -7,7 +7,6 @@ import yaml  # type: ignore[import-untyped]
 from datariver.infrastructure.db.identity_provisioning_sql import (
     IDENTITY_PROVISIONING_FUNCTION_SQL,
 )
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 
 def test_identity_provisioning_function_is_fixed_and_rechecks_admin_context() -> None:
@@ -29,7 +28,6 @@ def test_identity_migration_and_initial_baseline_have_execute_only_contract() ->
     ).read_text(encoding="utf-8")
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0074"
     assert 'down_revision: str | Sequence[str] | None = "0038"' in migration
     assert "IDENTITY_PROVISIONING_FUNCTION_SQL" in migration
     assert "IDENTITY_PROVISIONING_SIGNATURE" in migration

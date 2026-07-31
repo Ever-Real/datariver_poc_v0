@@ -16,9 +16,12 @@ from datariver.application.governance_document_ports import (
 from datariver.application.knowledge_pipeline_ports import KnowledgeEmbeddingProvider
 from datariver.domain.common import ConflictError, DomainError
 from datariver.domain.governance_documents import (
+    MAXIMUM_GOVERNANCE_CONCEPTS,
     MAXIMUM_KNOWLEDGE_CHUNK_CHARACTERS,
     MAXIMUM_KNOWLEDGE_CHUNKS,
     GovernanceDocumentArtifactState,
+    GovernanceDocumentConcept,
+    GovernanceDocumentConceptKind,
     GovernanceDocumentProjectionClaim,
     GovernanceDocumentVersionState,
 )
@@ -156,6 +159,10 @@ class GovernanceDocumentProjectionService:
         graph_hash = await self._graph.replace_version(
             claim=claim,
             chunks=graph_chunks,
+            concepts=governance_document_concepts(
+                applicability_scope=claim.version.applicability_scope,
+                plain_text=claim.version.plain_text,
+            ),
         )
         await self._repository.store_projection(
             version=claim.version,
@@ -190,6 +197,58 @@ def _chunks(value: str) -> tuple[str, ...]:
     if not chunks or len(chunks) > MAXIMUM_KNOWLEDGE_CHUNKS:
         raise ConflictError("The Governance Document exceeds its projectable section limit.")
     return tuple(chunks)
+
+
+_EXPLICIT_CONCEPT = re.compile(
+    r"\[\[\s*(dataset|term)\s*:\s*([^\]\r\n]{1,500})\s*\]\]",
+    flags=re.IGNORECASE,
+)
+_SCOPED_CONCEPT = re.compile(
+    r"^\s*(dataset|term)\s*:\s*(.{1,500})\s*$",
+    flags=re.IGNORECASE,
+)
+
+
+def governance_document_concepts(
+    *,
+    applicability_scope: str,
+    plain_text: str,
+) -> tuple[GovernanceDocumentConcept, ...]:
+    candidates: list[tuple[str, str]] = []
+    for item in re.split(
+        r"[;\n]|,(?=\s*(?:dataset|term)\s*:)",
+        applicability_scope,
+        flags=re.IGNORECASE,
+    ):
+        match = _SCOPED_CONCEPT.fullmatch(item)
+        if match is not None:
+            candidates.append((match.group(1), match.group(2)))
+        elif item.strip().casefold().startswith("urn:li:dataset:"):
+            candidates.append(("dataset", item))
+    candidates.extend(
+        (match.group(1), match.group(2))
+        for match in _EXPLICIT_CONCEPT.finditer(f"{applicability_scope}\n{plain_text}")
+    )
+    values: list[GovernanceDocumentConcept] = []
+    seen: set[tuple[str, str]] = set()
+    for raw_kind, raw_reference in candidates:
+        reference = re.sub(r"[ \t]+", " ", raw_reference).strip()
+        if not reference or any(ord(character) < 32 for character in reference):
+            continue
+        kind = (
+            GovernanceDocumentConceptKind.DATASET
+            if raw_kind.casefold() == "dataset"
+            else GovernanceDocumentConceptKind.TERM
+        )
+        key = (kind.value, reference.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(GovernanceDocumentConcept(kind=kind, reference=reference))
+        if len(values) > MAXIMUM_GOVERNANCE_CONCEPTS:
+            raise ConflictError("The Governance Document exceeds its governed concept limit.")
+    values.sort(key=lambda value: (value.kind.value, value.reference.casefold()))
+    return tuple(values)
 
 
 def _retryable(error: Exception) -> bool:

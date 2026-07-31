@@ -8,7 +8,10 @@ from uuid import UUID
 
 from datariver.application.errors import ExternalDependencyError
 from datariver.domain.common import ConflictError, ValidationError
-from datariver.domain.governance_documents import MAXIMUM_ATTACHMENT_BYTES
+from datariver.domain.governance_documents import (
+    MAXIMUM_ATTACHMENT_BYTES,
+    GovernanceDocumentAttachment,
+)
 
 MAXIMUM_GOVERNANCE_DOCUMENT_ATTACHMENT_BYTES = MAXIMUM_ATTACHMENT_BYTES
 _CLASSIFICATION_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
@@ -68,6 +71,25 @@ class GovernanceDocumentAttachmentReceipt:
     metadata: dict[str, str]
 
 
+@dataclass(frozen=True, slots=True)
+class GovernanceDocumentAttachmentSource:
+    attachment: GovernanceDocumentAttachment
+    bucket: str
+    object_key: str
+    provider_version_id: str
+
+    def __post_init__(self) -> None:
+        if not self.bucket or not self.object_key or not self.provider_version_id:
+            raise ValueError("Governance document attachment source evidence is incomplete.")
+
+
+@dataclass(frozen=True, slots=True)
+class GovernanceDocumentAttachmentDownload:
+    attachment: GovernanceDocumentAttachment
+    url: str
+    expires_at_epoch_seconds: int
+
+
 class GovernanceDocumentAttachmentCollisionError(ConflictError):
     def __init__(self, *, provider_code: str) -> None:
         super().__init__(
@@ -104,3 +126,10 @@ class GovernanceDocumentAttachmentStore(Protocol):
         self,
         write: GovernanceDocumentAttachmentWrite,
     ) -> GovernanceDocumentAttachmentReceipt: ...
+
+    async def presign_download(
+        self,
+        source: GovernanceDocumentAttachmentSource,
+        *,
+        expires_seconds: int,
+    ) -> str: ...

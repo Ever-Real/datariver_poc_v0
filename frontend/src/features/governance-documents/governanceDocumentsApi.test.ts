@@ -149,6 +149,38 @@ describe('GovernanceDocumentsApi', () => {
       expect.objectContaining({ cache: 'no-store' }),
     )
   })
+
+  it('requests a bounded exact-version attachment download without object coordinates', async () => {
+    const request = vi.fn().mockResolvedValue({
+      attachment: {
+        attachment_id: 'attachment-one',
+        workspace_id: 'workspace-one',
+        document_id: 'document-one',
+        document_version_id: 'version-one',
+        original_name: 'approved-policy.pdf',
+        content_type: 'application/pdf',
+        size_bytes: 42,
+        content_sha256: 'd'.repeat(64),
+        uploaded_by: 'subject-one',
+        created_at: now,
+      },
+      url: 'http://localhost:9000/datariver-filefolder/signed',
+      expires_at: '2099-07-31T00:00:00Z',
+    })
+    const api = new GovernanceDocumentsApi({
+      request,
+      requestWithMeta: vi.fn(),
+    })
+
+    const value = await api.downloadAttachment('document-one', 'attachment-one')
+
+    expect(value.attachment.original_name).toBe('approved-policy.pdf')
+    expect(request).toHaveBeenCalledWith(
+      '/governance/documents/document-one/attachments/attachment-one/download',
+      expect.objectContaining({ cache: 'no-store' }),
+    )
+    expect(String(request.mock.calls[0]?.[0])).not.toContain('datariver-filefolder')
+  })
 })
 
 function command() {

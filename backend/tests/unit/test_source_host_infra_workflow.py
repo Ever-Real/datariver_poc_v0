@@ -52,7 +52,7 @@ def _release(tmp_path: Path) -> Path:
     _write_checksum(archive)
     offline_compose = platform_directory / "offline-core.compose.yaml"
     offline_compose.write_text(
-        "services:\n  postgres:\n    image: postgres:17.10-bookworm\n",
+        "services:\n  postgres:\n    image: pgvector/pgvector:0.8.2-pg17-bookworm\n",
         encoding="utf-8",
     )
     _write_checksum(offline_compose)
@@ -62,7 +62,7 @@ def _release(tmp_path: Path) -> Path:
     manifest.write_text(
         (
             "image\timage_id\trepository_digests\tplatform\n"
-            "postgres:17.10-bookworm@sha256:"
+            "pgvector/pgvector:0.8.2-pg17-bookworm@sha256:"
             f"{'3' * 64}\t{postgres_id}\t\tlinux/amd64\n"
             f"datariver-keycloak:26.7.0\t{keycloak_id}\t\tlinux/amd64\n"
         ),
@@ -172,7 +172,7 @@ class _ImageRunner:
 
     def output(self, arguments: list[str] | tuple[str, ...]) -> str:
         image = str(arguments[-1])
-        if image == "postgres:17.10-bookworm":
+        if image == "pgvector/pgvector:0.8.2-pg17-bookworm":
             return f"{self.database_id}\t{self.platform_name}"
         if image == "datariver-keycloak:26.7.0":
             return f"sha256:{'2' * 64}\t{self.platform_name}"
@@ -215,7 +215,7 @@ def test_service_images_come_from_the_final_compose_model(tmp_path: Path) -> Non
 
 def test_local_reuse_requires_existing_amd64_infrastructure_before_mutation() -> None:
     images = {
-        "postgres": "postgres:17.10-bookworm",
+        "postgres": "pgvector/pgvector:0.8.2-pg17-bookworm",
         "keycloak": "datariver-keycloak:26.7.0",
     }
 
@@ -277,7 +277,7 @@ def test_offline_image_verification_binds_local_tags_to_release_ids(
         cast(Any, _ImageRunner()),
         release / "amd64",
         {
-            "postgres": "postgres:17.10-bookworm",
+            "postgres": "pgvector/pgvector:0.8.2-pg17-bookworm",
             "keycloak": "datariver-keycloak:26.7.0",
         },
     )
@@ -290,7 +290,7 @@ def test_offline_image_verification_binds_local_tags_to_release_ids(
             cast(Any, _ImageRunner(database_id="sha256:" + "9" * 64)),
             release / "amd64",
             {
-                "postgres": "postgres:17.10-bookworm",
+                "postgres": "pgvector/pgvector:0.8.2-pg17-bookworm",
                 "keycloak": "datariver-keycloak:26.7.0",
             },
         )
@@ -328,7 +328,7 @@ def test_offline_verification_rejects_registry_only_digest_reference(
             cast(Any, _ImageRunner()),
             release / "amd64",
             {
-                "postgres": f"postgres:17.10-bookworm@sha256:{'3' * 64}",
+                "postgres": (f"pgvector/pgvector:0.8.2-pg17-bookworm@sha256:{'3' * 64}"),
                 "keycloak": "datariver-keycloak:26.7.0",
             },
         )

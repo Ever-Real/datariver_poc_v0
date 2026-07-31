@@ -141,12 +141,15 @@ require a quoted positive `If-Match`; every command requires an actor-bound `Ide
 | `POST /governance/documents/{document_id}/versions/{version_id}/submissions` | document edit or Template propose | Draft to independent review |
 | `POST /governance/documents/{document_id}/versions/{version_id}/reviews` | review plus publish/activate for approval | independent approve-and-publish or reject with reason |
 | `POST /governance/documents/{document_id}/versions/{version_id}/attachments` | document edit or Template propose | one create-only Draft-version attachment, maximum 25 MiB and 25 per version |
+| `GET /governance/documents/{document_id}/attachments/{attachment_id}/download` | `attachment.download` | short-lived private/no-store Presigned URL for the receipt's exact MinIO VersionId |
 | `POST /governance/documents/{document_id}/archive` | document/Template archive | logical Archive with reason; no physical deletion |
 | `GET /governance/documents/knowledge/evidence?q=&limit=` | `governance.knowledge.read` | server-embedded query over current published authorized chunks, maximum 20 results |
+| `POST /governance/search/rag` | `governance.knowledge.read` | bounded JSON query over the same pgvector-ranked, current-version authorized evidence used by Chat |
 
 No route accepts an object key, MinIO credential, raw vector, provider/model identifier, SQL,
 Cypher, GraphQL, sanitizer policy override or arbitrary parser/plugin configuration. Attachment
-download/delete and physical document deletion are intentionally absent.
+delete and physical document deletion are intentionally absent. Download authorization precedes
+signing and each URL is bound to the recorded bucket/key/provider VersionId for 60–900 seconds.
 
 ### Catalog facade
 

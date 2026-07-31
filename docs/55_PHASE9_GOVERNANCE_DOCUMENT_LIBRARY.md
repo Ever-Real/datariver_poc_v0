@@ -3,7 +3,9 @@
 - Date: 2026-07-31
 - Scope: document and Template authoring, immutable versions, approval, attachments, safe HTML,
   MinIO artifacts, vector/Neo4j projection and evidence retrieval
-- Decision: [ADR-0080](adr/0080-governance-document-library-and-knowledge-projection.md)
+- Decision: [ADR-0080](adr/0080-governance-document-library-and-knowledge-projection.md),
+  refined by
+  [ADR-0082](adr/0082-governance-document-pgvector-download-and-chat-grounding.md)
 
 ## Implemented boundary
 
@@ -18,6 +20,14 @@ manifest and attachments below `governance/documents/v1/`, records provider Vers
 checksums, embeds only published text and creates a fixed Neo4j document/version/chunk projection.
 The RAG evidence API embeds the server-bounded query using the exact active projection binding and
 returns only current authorized published chunks.
+
+Revision `0075` replaces application cosine ranking with exact pgvector cosine ordering after all
+Workspace/ABAC/current-version predicates. The browser obtains attachments through a short-lived
+Presigned URL bound to the immutable receipt VersionId. Declared Dataset/Term references create
+fixed `GovernancePolicy-[:GOVERNS]` Neo4j edges, `POST /api/v1/governance/search/rag` exposes the
+same evidence contract, and Chat Vector mode reauthorizes each current Governance Document chunk
+before persistence. Bleach is the server sanitizer; the React viewer still avoids raw HTML
+insertion.
 
 ## Verification record
 
@@ -50,8 +60,8 @@ not claim regulatory immutability.
 
 ## Deferred medium/low items
 
-- adopt a capacity-owner-approved pgvector/ANN profile after extension, dimension, rebuild and
-  representative recall/latency evidence are accepted;
+- adopt a capacity-owner-approved pgvector ANN profile only after representative recall/latency
+  evidence is accepted; revision `0075` deliberately uses exact search;
 - add an operator-owned orphan inventory/reconciliation workflow without granting the application
   list or delete authority;
 - add target screen-reader, 200% zoom and 320-CSS-pixel acceptance with real human identities;

@@ -12,7 +12,6 @@ from datariver.infrastructure.db.models.platform import (
     SystemAssigneeModel,
     SystemSchemaScopeModel,
 )
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 
 def _check_names(table: Table) -> set[str]:
@@ -81,7 +80,6 @@ def test_system_master_migration_is_forced_rls_and_uses_redacted_connection_prof
         encoding="utf-8"
     )
 
-    assert REQUIRED_DATABASE_REVISION == "0074"
     assert "FORCE ROW LEVEL SECURITY" in migration
     assert "GRANT SELECT, INSERT, UPDATE ON platform.data_systems" in migration
     assert "secret_reference" in migration

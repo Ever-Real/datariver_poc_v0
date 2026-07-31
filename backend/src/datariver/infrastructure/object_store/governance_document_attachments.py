@@ -5,6 +5,7 @@ import base64
 import hashlib
 import re
 from typing import Any
+from urllib.parse import quote
 
 import boto3
 from botocore.config import Config
@@ -15,6 +16,7 @@ from datariver.application.governance_document_attachments import (
     GovernanceDocumentAttachmentCollisionError,
     GovernanceDocumentAttachmentExternalError,
     GovernanceDocumentAttachmentReceipt,
+    GovernanceDocumentAttachmentSource,
     GovernanceDocumentAttachmentWrite,
     governance_document_attachment_key,
 )
@@ -37,7 +39,9 @@ class S3GovernanceDocumentAttachmentStore:
         bucket: str,
         access_key: str,
         secret_key: str,
+        public_endpoint_url: str | None = None,
         client: Any | None = None,
+        presign_client: Any | None = None,
     ) -> None:
         if _BUCKET_PATTERN.fullmatch(bucket) is None:
             raise ValueError("Governance document attachment bucket name is not S3-portable.")
@@ -52,6 +56,14 @@ class S3GovernanceDocumentAttachmentStore:
         self._client: Any = client or boto3.client(
             "s3",
             endpoint_url=endpoint_url.rstrip("/"),
+            region_name=region,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=configuration,
+        )
+        self._presign_client: Any = presign_client or boto3.client(
+            "s3",
+            endpoint_url=(public_endpoint_url or endpoint_url).rstrip("/"),
             region_name=region,
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
@@ -132,6 +144,65 @@ class S3GovernanceDocumentAttachmentStore:
             provider_checksum=provider_checksum,
             mismatch_is_collision=False,
         )
+
+    async def presign_download(
+        self,
+        source: GovernanceDocumentAttachmentSource,
+        *,
+        expires_seconds: int,
+    ) -> str:
+        if source.bucket != self._bucket:
+            raise GovernanceDocumentAttachmentExternalError(
+                "Governance document attachment bucket evidence is invalid.",
+                retryable=False,
+                provider_code="GOVERNANCE_DOCUMENT_ATTACHMENT_BUCKET_MISMATCH",
+                ambiguous_commit=False,
+            )
+        if not 60 <= expires_seconds <= 900:
+            raise ValueError("Governance document attachment download TTL is invalid.")
+        expected_key = governance_document_attachment_key(
+            workspace_id=source.attachment.workspace_id,
+            document_id=source.attachment.document_id,
+            version_id=source.attachment.document_version_id,
+            attachment_id=source.attachment.attachment_id,
+        )
+        if source.object_key != expected_key:
+            raise GovernanceDocumentAttachmentExternalError(
+                "Governance document attachment key evidence is invalid.",
+                retryable=False,
+                provider_code="GOVERNANCE_DOCUMENT_ATTACHMENT_KEY_MISMATCH",
+                ambiguous_commit=False,
+            )
+        try:
+            value = await asyncio.to_thread(
+                self._presign_client.generate_presigned_url,
+                "get_object",
+                Params={
+                    "Bucket": source.bucket,
+                    "Key": source.object_key,
+                    "VersionId": source.provider_version_id,
+                    "ResponseContentDisposition": _content_disposition(
+                        source.attachment.original_name
+                    ),
+                    "ResponseContentType": source.attachment.content_type,
+                },
+                ExpiresIn=expires_seconds,
+                HttpMethod="GET",
+            )
+        except (BotoCoreError, ClientError, ValueError) as error:
+            raise _external_error(
+                "Governance document attachment download URL could not be signed.",
+                error=error,
+                ambiguous_commit=False,
+            ) from error
+        if not isinstance(value, str) or not value.startswith(("http://", "https://")):
+            raise GovernanceDocumentAttachmentExternalError(
+                "Governance document attachment provider returned an invalid download URL.",
+                retryable=False,
+                provider_code="GOVERNANCE_DOCUMENT_ATTACHMENT_PRESIGN_INVALID",
+                ambiguous_commit=False,
+            )
+        return value
 
     async def _reconcile_collision(
         self,
@@ -281,6 +352,19 @@ def _raise_mismatch(*, mismatch_is_collision: bool) -> None:
         provider_code="GOVERNANCE_DOCUMENT_ATTACHMENT_READBACK_MISMATCH",
         ambiguous_commit=True,
     )
+
+
+def _content_disposition(filename: str) -> str:
+    ascii_name = "".join(
+        character
+        if 32 <= ord(character) < 127 and character not in {'"', "\\", ";", "\r", "\n"}
+        else "_"
+        for character in filename
+    ).strip(" .")
+    if not ascii_name:
+        ascii_name = "attachment"
+    encoded = quote(filename, safe="")
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{encoded}"
 
 
 def _provider_code(error: ClientError) -> str:

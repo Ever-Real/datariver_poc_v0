@@ -5,12 +5,15 @@ import html
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from html.parser import HTMLParser
+from importlib.metadata import version
 from typing import Final
 from urllib.parse import urlsplit
 
+from bleach.sanitizer import Cleaner  # type: ignore[import-untyped]
+
 from datariver.domain.common import ValidationError, canonical_json_hash
 
-GOVERNANCE_HTML_SANITIZER_POLICY_VERSION: Final = "GOVERNANCE_HTML_SANITIZER_V1"
+GOVERNANCE_HTML_SANITIZER_POLICY_VERSION: Final = "GOVERNANCE_HTML_SANITIZER_V2_BLEACH"
 
 _ALLOWED_TAGS: Final = frozenset(
     {
@@ -115,6 +118,13 @@ _HTML_VOID_TAGS: Final = frozenset(
 )
 _OUTPUT_VOID_TAGS: Final = frozenset({"br", "hr"})
 _BLOCKED_ATTRIBUTES: Final = frozenset({"id", "name", "src", "srcdoc", "style"})
+_BLEACH_CLEANER: Final = Cleaner(
+    tags=set(_ALLOWED_TAGS),
+    attributes={tag: sorted(attributes) for tag, attributes in _ALLOWED_ATTRIBUTES.items()},
+    protocols=set(_ALLOWED_URL_SCHEMES),
+    strip=True,
+    strip_comments=True,
+)
 
 
 class GovernanceHtmlSanitizationError(ValidationError):
@@ -173,6 +183,7 @@ def governance_html_policy_sha256(
             },
             "allowed_tags": sorted(_ALLOWED_TAGS),
             "allowed_url_schemes": sorted(_ALLOWED_URL_SCHEMES),
+            "bleach_version": version("bleach"),
             "blocked_attributes": sorted(_BLOCKED_ATTRIBUTES),
             "drop_content_tags": sorted(_DROP_CONTENT_TAGS),
             "limits": asdict(limits),
@@ -222,7 +233,26 @@ def sanitize_governance_html(
             "Governance HTML could not be parsed.",
             details={"code": "HTML_PARSE_INVALID"},
         ) from None
-    canonical = parser.canonical_html()
+    # The bounded pre-filter removes executable/embedded subtrees and applies
+    # DataRiver's stricter relative/HTTPS URL policy before Bleach. Bleach is
+    # the authoritative server-side XSS sanitizer. A final bounded canonical
+    # serialization keeps historical hashes stable (html5lib may insert tbody)
+    # without broadening Bleach's allow-list.
+    sanitized = _BLEACH_CLEANER.clean(parser.canonical_html())
+    canonicalizer = _GovernanceHtmlCanonicalizer(limits)
+    try:
+        canonicalizer.feed(sanitized)
+        canonicalizer.close()
+    except GovernanceHtmlSanitizationError:
+        raise
+    except (AssertionError, ValueError):
+        raise GovernanceHtmlSanitizationError(
+            "Governance HTML could not be canonicalized.",
+            details={"code": "HTML_CANONICALIZATION_INVALID"},
+        ) from None
+    canonical = canonicalizer.canonical_html()
+    if len(canonical.encode("utf-8")) > limits.max_output_bytes:
+        _raise_limit("HTML_OUTPUT_BYTE_LIMIT", limits.max_output_bytes)
     return SanitizedGovernanceHtml(
         html=canonical,
         content_sha256=governance_html_sha256(canonical),

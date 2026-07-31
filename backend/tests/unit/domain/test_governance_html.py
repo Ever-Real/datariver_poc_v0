@@ -33,8 +33,8 @@ def test_sanitizer_canonicalizes_safe_policy_markup_and_attributes() -> None:
         "<h2>Policy &amp; Scope</h2>"
         "<strong>bold</strong><em>italics</em>"
         '<a href="/docs?a=1&amp;b=2" title="A &quot;quote&quot;">link</a>'
-        '<table><tr><th colspan="2" scope="col">Name</th>'
-        '<td colspan="3" rowspan="2">Value</td></tr></table>'
+        '<table><tbody><tr><th colspan="2" scope="col">Name</th>'
+        '<td colspan="3" rowspan="2">Value</td></tr></tbody></table>'
     )
     assert result.content_sha256 == hashlib.sha256(result.html.encode("utf-8")).hexdigest()
     assert result.policy_version == GOVERNANCE_HTML_SANITIZER_POLICY_VERSION

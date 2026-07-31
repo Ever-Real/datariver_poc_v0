@@ -55,6 +55,7 @@ export type GovernanceDocumentAction =
   | 'publish'
   | 'archive'
   | 'add_attachment'
+  | 'download_attachment'
   | 'instantiate_template'
 
 export type GovernanceDocumentSourceFormat = 'HTML' | 'MARKDOWN' | 'DOCX'
@@ -133,6 +134,12 @@ export interface GovernanceDocumentAttachment {
   content_sha256: string
   uploaded_by: string
   created_at: string
+}
+
+export interface GovernanceDocumentAttachmentDownload {
+  attachment: GovernanceDocumentAttachment
+  url: string
+  expires_at: string
 }
 
 export interface GovernanceDocumentReview {

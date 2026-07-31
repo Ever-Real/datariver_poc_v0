@@ -239,7 +239,8 @@ def _sql_statements(sql: str) -> tuple[str, ...]:
 
 def build_upgrade() -> ops.UpgradeOps:
     operations: list[ops.MigrateOperation] = [
-        ops.ExecuteSQLOp("CREATE EXTENSION IF NOT EXISTS pg_trgm")
+        ops.ExecuteSQLOp("CREATE EXTENSION IF NOT EXISTS pg_trgm"),
+        ops.ExecuteSQLOp("CREATE EXTENSION IF NOT EXISTS vector"),
     ]
     for schema in SCHEMAS:
         operations.append(ops.ExecuteSQLOp(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
@@ -1333,6 +1334,7 @@ from typing import Sequence
 
 from alembic import op
 import sqlalchemy as sa
+import pgvector.sqlalchemy.vector
 from sqlalchemy import Text
 from sqlalchemy.dialects import postgresql
 

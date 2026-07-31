@@ -1,6 +1,7 @@
 import type { ApiClient, ApiResponse } from '../../api/client'
 import type {
   GovernanceDocumentAttachment,
+  GovernanceDocumentAttachmentDownload,
   GovernanceDocumentBlueprintListResponse,
   GovernanceDocumentCapability,
   GovernanceDocumentCommandResponse,
@@ -258,6 +259,28 @@ export class GovernanceDocumentsApi {
       || !validSha256(value.content_sha256)
     ) {
       throw new Error('거버넌스 문서 첨부 증빙을 확인할 수 없습니다.')
+    }
+    return value
+  }
+
+  async downloadAttachment(
+    documentId: string,
+    attachmentId: string,
+    signal?: AbortSignal,
+  ): Promise<GovernanceDocumentAttachmentDownload> {
+    const value = await this.client.request<GovernanceDocumentAttachmentDownload>(
+      `${BASE_PATH}/${encodeURIComponent(documentId)}/attachments/${encodeURIComponent(attachmentId)}/download`,
+      { cache: 'no-store', signal },
+    )
+    if (
+      value?.attachment?.document_id !== documentId
+      || value.attachment.attachment_id !== attachmentId
+      || !validSha256(value.attachment.content_sha256)
+      || !validDate(value.expires_at)
+      || Date.parse(value.expires_at) <= Date.now()
+      || !/^https?:\/\//.test(value.url)
+    ) {
+      throw new Error('거버넌스 문서 첨부파일 다운로드 증빙을 확인할 수 없습니다.')
     }
     return value
   }

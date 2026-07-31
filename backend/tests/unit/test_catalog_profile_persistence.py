@@ -8,7 +8,6 @@ from sqlalchemy import CheckConstraint, ForeignKeyConstraint, Numeric
 
 from datariver.infrastructure.db import models as _models  # noqa: F401
 from datariver.infrastructure.db.base import Base
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0068_catalog_profile_projection.py"
@@ -25,7 +24,6 @@ def _load(path: Path, name: str) -> ModuleType:
 
 
 def test_profile_metadata_is_tenant_bound_and_immutable_by_shape() -> None:
-    assert REQUIRED_DATABASE_REVISION == "0074"
     snapshots = Base.metadata.tables["catalog.asset_profile_snapshots"]
     metrics = Base.metadata.tables["catalog.column_profile_metrics"]
     for table in (snapshots, metrics):

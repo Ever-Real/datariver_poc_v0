@@ -115,6 +115,6 @@ def test_pilot_environment_separates_configuration_and_secrets() -> None:
 def test_postgres_initialization_is_embedded_in_the_release_image() -> None:
     dockerfile = (ROOT / "infra" / "pilot" / "postgres" / "Dockerfile").read_text(encoding="utf-8")
 
-    assert "postgres:17.10-bookworm@sha256:" in dockerfile
+    assert "pgvector/pgvector:0.8.2-pg17-bookworm@sha256:" in dockerfile
     assert "infra/postgres/init/" in dockerfile
     assert "/docker-entrypoint-initdb.d/" in dockerfile

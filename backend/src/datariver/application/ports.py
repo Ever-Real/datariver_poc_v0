@@ -2088,6 +2088,27 @@ class ChatVectorCatalogReader(Protocol):
     ) -> ChatVectorSearchResult: ...
 
 
+class GovernanceChatEvidenceReader(Protocol):
+    async def search(
+        self,
+        *,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        question: str,
+        limit: int,
+    ) -> tuple[ChatEvidence, ...]: ...
+
+    async def get_current(
+        self,
+        *,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        resource_ids: Sequence[UUID],
+    ) -> tuple[ChatEvidence, ...]: ...
+
+
 class ChatEvidenceReranker(Protocol):
     async def rerank(
         self,

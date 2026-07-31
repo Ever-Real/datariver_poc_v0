@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from uuid import UUID
 
 from datariver.application.dto import DecisionAuditItem
 from datariver.application.ports import DecisionSetWriter, DecisionWriter
 from datariver.domain.admin_access import AdminFallbackStage
 from datariver.domain.authz import (
+    HIGH_RISK_ACTIONS,
     Action,
     AuthenticationAssurance,
     BuiltinPolicyEngine,
@@ -55,6 +57,36 @@ class AuthorizationService:
         self._decision_writer = decision_writer
         self._engine = engine or BuiltinPolicyEngine()
         self._development_admin_password_bypass_enabled = development_admin_password_bypass_enabled
+
+    def is_entitled(
+        self,
+        *,
+        subject: SubjectAttributes,
+        resource: ResourceAttributes,
+        action: Action,
+        environment: EnvironmentAttributes,
+    ) -> bool:
+        """Check durable action entitlement without treating step-up auth as missing RBAC.
+
+        Capability and action-button discovery use this preview so a high-risk operation remains
+        visible to an entitled human and can initiate its real reauthentication flow. The command
+        path still calls ``authorize`` with the caller's actual assurance and writes the auditable
+        decision used by database command fences.
+        """
+
+        preview_subject = subject
+        if action in HIGH_RISK_ACTIONS:
+            preview_subject = replace(
+                subject,
+                authentication_assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+                authentication_time=environment.requested_at,
+            )
+        return self._engine.decide(
+            subject=preview_subject,
+            resource=resource,
+            action=action,
+            environment=environment,
+        ).allowed
 
     async def authorize(
         self,

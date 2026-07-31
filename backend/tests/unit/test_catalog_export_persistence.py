@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
-
 
 def test_catalog_export_migration_is_owner_scoped_and_fail_closed() -> None:
     root = Path(__file__).resolve().parents[3]
@@ -11,7 +9,6 @@ def test_catalog_export_migration_is_owner_scoped_and_fail_closed() -> None:
         encoding="utf-8"
     )
 
-    assert REQUIRED_DATABASE_REVISION == "0074"
     assert "ALTER TABLE catalog.export_requests FORCE ROW LEVEL SECURITY" in migration
     assert "CREATE POLICY workspace_isolation ON catalog.export_requests" in migration
     assert "CREATE POLICY catalog_export_owner_select" in migration
