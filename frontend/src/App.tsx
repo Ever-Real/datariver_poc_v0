@@ -331,7 +331,14 @@ export function App() {
       onClearNotice={auth.clearNotice}
     >
       <Suspense fallback={<main className="centered"><div className="loader" /><p>화면을 불러오고 있습니다.</p></main>}>
-        {page === 'dashboard' && <DashboardPage client={client} onNavigate={navigate} />}
+        {page === 'dashboard' && <DashboardPage
+          client={client}
+          workspaceId={activeWorkspace}
+          subjectId={authenticatedSubject}
+          securityEpoch={auth.securityEpoch}
+          authorizationRevision={auth.authorizationRevision}
+          onNavigate={navigate}
+        />}
         {page === 'catalog' && <CatalogPage
           client={client}
           initialQuery={catalogQuery}

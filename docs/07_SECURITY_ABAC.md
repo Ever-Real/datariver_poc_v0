@@ -49,7 +49,7 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
 |---|---|
 | Subject | workspace, department, groups, job function, clearance, allowed system/domain IDs, auth strength, active |
 | Resource | workspace, owner department, system/domain, classification, sensitivity, lifecycle, share scope |
-| Action | `catalog.read`, `change.create/review/approve`, `quality.read/profile.read/rule.*/run.*`, `kg.read/edit/publish/share`, `chat.query`, `attachment.download`, `admin.manage`, etc. |
+| Action | `dashboard.read`, `catalog.read`, `change.create/review/approve`, `quality.read/profile.read/rule.*/run.*`, `kg.read/edit/publish/share`, `chat.query`, `attachment.download`, `admin.manage`, etc. |
 | Environment | time, network zone, client type, authentication age, purpose, request/CR ID |
 
 ## Decision algorithm

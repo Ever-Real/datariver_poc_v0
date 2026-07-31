@@ -1,49 +1,93 @@
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
   ArrowRight,
+  BarChart3,
   BookOpen,
   ChevronDown,
   ClipboardList,
-  Clock3,
   Database,
-  HardDrive,
+  Gauge,
   Layers,
-  Network,
   Search,
   ShieldCheck,
   Terminal,
 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { Capability, CatalogSchemaMetric, OperationsSummary } from '../../api/types'
+import type { CatalogSchemaMetric } from '../../api/types'
 import { pageUrl, type Page } from '../../app/navigation'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { PageTitle } from '../../components/layout/PageTitle'
+import { QualityApi, qualityQueryKey } from '../quality/qualityApi'
+import { useQualityAuthorizationLease } from '../quality/useQualityAuthorizationLease'
+import { isAuthorizationBoundaryError } from '../quality/useBoundedQualityRunPolling'
 
 const dashboardPeriods = ['1W', '1M', '3M'] as const
 
+interface DashboardSummary {
+  observed_at: string
+  changes_by_state: Record<string, number>
+  catalog_asset_count: number
+  catalog_described_asset_count: number
+  catalog_glossary_term_count: number
+  catalog_schema_metrics: CatalogSchemaMetric[]
+  catalog_schema_metrics_truncated: boolean
+}
+
 export function DashboardPage({
   client,
+  workspaceId,
+  subjectId,
+  securityEpoch,
+  authorizationRevision,
   onNavigate,
 }: {
   client: ApiClient
+  workspaceId: string
+  subjectId: string
+  securityEpoch: number
+  authorizationRevision: number
   onNavigate: (page: Page) => void
 }) {
-  const [capabilities, setCapabilities] = useState<Capability[]>([])
-  const [summary, setSummary] = useState<OperationsSummary>()
+  const [summary, setSummary] = useState<DashboardSummary>()
   const [error, setError] = useState<unknown>()
   const [loading, setLoading] = useState(true)
   const [expandedPlatforms, setExpandedPlatforms] = useState<Record<string, boolean>>({})
+  const qualityApi = useMemo(() => new QualityApi(client), [client])
+  const qualityLease = useQualityAuthorizationLease({
+    api: qualityApi,
+    workspaceId,
+    subjectId,
+    securityEpoch,
+    authorizationRevision,
+  })
+  const qualityBoundary = qualityLease.boundary
+  const qualityQuery = useQuery({
+    queryKey: qualityBoundary
+      ? qualityQueryKey(qualityBoundary, 'dashboard')
+      : ['quality', 'home-dashboard', workspaceId, subjectId, securityEpoch, authorizationRevision],
+    queryFn: ({ signal }) => {
+      if (!qualityBoundary) throw new Error('품질 권한 lease가 준비되지 않았습니다.')
+      return qualityApi.dashboard(qualityBoundary.cacheScope, signal)
+    },
+    enabled: Boolean(
+      qualityBoundary
+      && qualityLease.axis('read_access')?.state === 'AVAILABLE',
+    ),
+    staleTime: 0,
+    gcTime: 30_000,
+    retry: false,
+  })
+  const quality = qualityQuery.data
+  const qualityLoading = qualityLease.loading || (qualityQuery.isPending && qualityQuery.fetchStatus !== 'idle')
+  const invalidateQualityLease = qualityLease.invalidate
 
   const refresh = useCallback(async () => {
     setError(undefined)
     setLoading(true)
     try {
-      const [capabilityResult, summaryResult] = await Promise.all([
-        client.request<{ items: Capability[] }>('/capabilities'),
-        client.request<OperationsSummary>('/operations/summary'),
-      ])
-      setCapabilities(capabilityResult.items)
+      const summaryResult = await client.request<DashboardSummary>('/operations/dashboard')
       setSummary(summaryResult)
     } catch (next) {
       setError(next)
@@ -53,6 +97,9 @@ export function DashboardPage({
   }, [client])
 
   useEffect(() => { void refresh() }, [refresh])
+  useEffect(() => {
+    if (isAuthorizationBoundaryError(qualityQuery.error)) invalidateQualityLease()
+  }, [invalidateQualityLease, qualityQuery.error])
 
   const platformMetrics = useMemo(
     () => groupMetricsByPlatform(summary?.catalog_schema_metrics ?? []),
@@ -63,6 +110,10 @@ export function DashboardPage({
     : undefined
   const changes = summary?.changes_by_state ?? {}
   const reviewingChanges = countStates(changes, ['IN_REVIEW', 'TESTING', 'FINAL_REVIEW', 'APPLY_QUEUED', 'APPLYING'])
+  const qualityCoverage = quality?.table_coverage_basis_points == null
+    ? undefined
+    : Math.round(quality.table_coverage_basis_points / 100)
+  const managedIndicatorNames = quality?.managed_rule_sets.map((rule) => rule.name).join(' · ')
 
   return (
     <section className="dashboard-page">
@@ -76,14 +127,22 @@ export function DashboardPage({
             <div className="dashboard-periods" aria-label="기간 집계 상태" title="현재 DataRiver read model은 시점별 집계를 제공하지 않습니다.">
               {dashboardPeriods.map((period) => <button key={period} type="button" disabled>{period}</button>)}
             </div>
-            <button className="button button-secondary" type="button" onClick={() => void refresh()} disabled={loading}>
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => {
+                void refresh()
+                qualityLease.refresh()
+              }}
+              disabled={loading || qualityLease.loading}
+            >
               새로고침
             </button>
           </div>
         )}
       />
       <p className="dashboard-contract-note">현재 시점 Snapshot · 기간별 이력은 수집 계약이 준비되기 전까지 비활성화됩니다.</p>
-      <ErrorNotice error={error} />
+      <ErrorNotice error={error ?? qualityLease.error ?? qualityQuery.error} />
 
       <div className="dashboard-stat-grid" aria-busy={loading}>
         <DashboardStatCard
@@ -97,18 +156,21 @@ export function DashboardPage({
         />
         <DashboardStatCard
           title="Business Glossary"
+          value={summary?.catalog_glossary_term_count}
           unit="Terms"
           icon={<BookOpen size={20} />}
-          description="현재 projection 계약에서는 집계하지 않음"
-          unavailable
-          page="knowledge"
+          description="활성화된 서버 동기화 용어"
+          page="governance"
           onNavigate={onNavigate}
         />
         <DashboardStatCard
           title="Data Quality"
-          unit="Score"
-          icon={<ShieldCheck size={20} />}
-          description="품질 대시보드에서 검증 Score와 Run 결과 확인"
+          value={qualityCoverage}
+          unit="%"
+          icon={<Gauge size={20} />}
+          description={quality
+            ? `룰셋 적용 ${quality.covered_table_count.toLocaleString()} / ${quality.table_count.toLocaleString()} 테이블`
+            : '품질 대시보드 집계 중'}
           page="quality"
           onNavigate={onNavigate}
         />
@@ -167,31 +229,22 @@ export function DashboardPage({
         <DashboardSection title="Governance Center" icon={<Activity size={16} />}>
           <nav className="dashboard-quick-actions" aria-label="Governance shortcuts">
             <QuickAction page="catalog" onNavigate={onNavigate} icon={<Search size={18} />} label="Catalog Search" description="메타데이터 전역 검색" />
-            <QuickAction page="knowledge" onNavigate={onNavigate} icon={<Network size={18} />} label="Knowledge Graph" description="지식관리 및 온톨로지" />
-            <QuickAction page="registration" onNavigate={onNavigate} icon={<HardDrive size={18} />} label="Dataset Registration" description="신규 데이터셋 일괄 등록" />
-            <QuickAction page="change-management" onNavigate={onNavigate} icon={<Activity size={18} />} label="Change Management" description="CR 생명주기와 증거" />
+            <QuickAction page="change-management" onNavigate={onNavigate} icon={<ClipboardList size={18} />} label="CR" description="변경요청 생명주기와 증거" />
+            <QuickAction page="governance" onNavigate={onNavigate} icon={<ShieldCheck size={18} />} label="Governance" description="정책과 거버넌스 문서" />
+            <QuickAction page="quality" onNavigate={onNavigate} icon={<BarChart3 size={18} />} label="Quality Management" description="품질 현황과 검증 결과" />
             <QuickAction page="chat" onNavigate={onNavigate} icon={<Terminal size={18} />} label="AI Copilot" description="증거 기반 질의 지원" />
           </nav>
         </DashboardSection>
 
-        <DashboardSection title="Metadata Audit Summary" icon={<Clock3 size={16} />}>
-          <div className="dashboard-audit-unavailable" role="status">
-            <Clock3 size={22} aria-hidden="true" />
-            <div>
-              <strong>감사 원장 요약은 별도 권한으로 보호됩니다.</strong>
-              <p>현재 `operations.read` 계약은 감사 이벤트 행을 제공하지 않습니다. 감사 조회 권한과 전용 read model이 준비될 때까지 이 화면에서 로그를 임의로 표시하지 않습니다.</p>
+        <DashboardSection title="Data Quality Dashboard" icon={<BarChart3 size={16} />}>
+          {qualityLoading && !quality ? <DashboardLoading label="품질 대시보드를 조회하고 있습니다." /> : quality && (
+            <div className="quality-dashboard-kpis dashboard-quality-kpis" aria-label="홈 품질 대시보드 핵심 지표">
+              <QualityFact icon={<Database size={18} />} label="전체 스키마" value={quality.schema_count.toLocaleString()} detail={`${quality.table_count.toLocaleString()} tables`} />
+              <QualityFact icon={<ShieldCheck size={18} />} label="품질 룰셋" value={quality.active_rule_set_count.toLocaleString()} detail={`공통 템플릿 ${quality.common_rule_template_count.toLocaleString()}개`} />
+              <QualityFact icon={<Gauge size={18} />} label="룰셋 적용 테이블" value={basisPointsText(quality.table_coverage_basis_points)} detail={`${quality.covered_table_count.toLocaleString()} / ${quality.table_count.toLocaleString()} tables`} />
+              <QualityFact icon={<BarChart3 size={18} />} label="기본 품질 지표" value={quality.managed_rule_sets.length.toLocaleString()} detail={managedIndicatorNames || '서버 정의 없음'} />
             </div>
-          </div>
-          <div className="dashboard-operation-grid">
-            <OperationFact label="업로드" values={summary?.uploads_by_state} />
-            <OperationFact label="작업" values={summary?.jobs_by_state} />
-            <OperationFact label="Outbox 대기" value={summary?.unpublished_outbox_events} />
-            <OperationFact label="Dead letter" value={summary?.dead_lettered_outbox_events} error={(summary?.dead_lettered_outbox_events ?? 0) > 0} />
-          </div>
-          <div className="dashboard-capabilities" aria-label="의존성 상태">
-            {capabilities.map((capability) => <CapabilityFact key={capability.name} capability={capability} />)}
-            {!loading && capabilities.length === 0 && <span className="muted">표시할 capability 결과가 없습니다.</span>}
-          </div>
+          )}
         </DashboardSection>
       </div>
     </section>
@@ -277,13 +330,11 @@ function QuickAction({
   return <a href={pageUrl(page)} onClick={(event) => { event.preventDefault(); onNavigate(page) }}><span>{icon}</span><span><strong>{label}</strong><small>{description}</small></span><ArrowRight size={15} aria-hidden="true" /></a>
 }
 
-function OperationFact({ label, values, value, error = false }: { label: string; values?: Record<string, number>; value?: number; error?: boolean }) {
-  const display = values ? sumValues(values) : value
-  return <div className={error ? 'dashboard-operation-fact error' : 'dashboard-operation-fact'}><small>{label}</small><strong>{display == null ? '…' : display.toLocaleString()}</strong></div>
-}
-
-function CapabilityFact({ capability }: { capability: Capability }) {
-  return <span className={`dashboard-capability state-${capability.state}`}><i /><b>{capability.name}</b><small>{capability.state}</small></span>
+function QualityFact({ icon, label, value, detail }: { icon: ReactNode; label: string; value: string; detail: string }) {
+  return <article className="quality-dashboard-kpi">
+    <span className="quality-dashboard-kpi-icon" aria-hidden="true">{icon}</span>
+    <div><span>{label}</span><strong>{value}</strong><small>{detail}</small></div>
+  </article>
 }
 
 function DashboardLoading({ label }: { label: string }) {
@@ -311,4 +362,9 @@ function sumValues(values: Record<string, number>): number {
 
 function countStates(values: Record<string, number>, states: string[]): number {
   return states.reduce((total, state) => total + (values[state] ?? 0), 0)
+}
+
+function basisPointsText(value: number | null): string {
+  if (value == null) return '근거 없음'
+  return `${(value / 100).toLocaleString(undefined, { maximumFractionDigits: 2 })}%`
 }

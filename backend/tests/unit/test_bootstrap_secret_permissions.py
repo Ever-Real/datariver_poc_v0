@@ -142,7 +142,12 @@ def test_local_human_memberships_select_the_single_workspace_by_default() -> Non
 
     assert attributes["default_workspace"] is True
     assert attributes["groups"] == ["data-analysts"]
-    assert attributes["allowed_actions"] == [Action.CATALOG_READ.value]
+    assert attributes["allowed_actions"] == [
+        Action.CATALOG_READ.value,
+        Action.DASHBOARD_READ.value,
+        Action.QUALITY_READ.value,
+        Action.QUALITY_PROFILE_READ.value,
+    ]
     assert attributes["allowed_domain_ids"] == [str(domain_id)]
 
 

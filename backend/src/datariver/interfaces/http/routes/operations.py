@@ -11,13 +11,17 @@ from sqlalchemy.orm import InstrumentedAttribute
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.authz import Action, Classification, ResourceAttributes
 from datariver.infrastructure.db.authz import SqlDecisionWriter
-from datariver.infrastructure.db.models.catalog import AssetProjectionModel
+from datariver.infrastructure.db.models.catalog import (
+    AssetProjectionModel,
+    CatalogVocabularyEntryModel,
+)
 from datariver.infrastructure.db.models.governance import ChangeRequestModel
 from datariver.infrastructure.db.models.integration import (
     JobModel,
     ObjectManifestModel,
     OutboxEventModel,
 )
+from datariver.interfaces.http.dashboard_schemas import DashboardSummaryResponse
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.schemas import (
     CatalogSchemaMetricResponse,
@@ -44,6 +48,28 @@ async def _authorize_operations(request: Request, context: ContextDep) -> None:
             lifecycle="ACTIVE",
         ),
         action=Action.OPERATIONS_READ,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+
+
+async def _authorize_dashboard(request: Request, context: ContextDep) -> None:
+    container = get_container(request)
+    await AuthorizationService(
+        decision_writer=SqlDecisionWriter(container.database.session_factory)
+    ).authorize(
+        subject=context.subject,
+        resource=ResourceAttributes(
+            resource_id=context.workspace_id,
+            workspace_id=context.workspace_id,
+            resource_type="dashboard",
+            owner_department_id=None,
+            system_id=None,
+            domain_id=None,
+            classification=Classification.PUBLIC,
+            lifecycle="ACTIVE",
+        ),
+        action=Action.DASHBOARD_READ,
         environment=context.environment,
         request_id=context.request_id,
     )
@@ -134,6 +160,56 @@ async def _catalog_coverage(
             for platform, database_name, schema_name, count, descriptions in metric_rows[:200]
         ],
         truncated,
+    )
+
+
+async def _catalog_glossary_term_count(
+    session: AsyncSession,
+    workspace_id: UUID,
+) -> int:
+    value = await session.scalar(
+        select(func.count())
+        .select_from(CatalogVocabularyEntryModel)
+        .where(
+            CatalogVocabularyEntryModel.workspace_id == workspace_id,
+            CatalogVocabularyEntryModel.kind == "TERM",
+            CatalogVocabularyEntryModel.lifecycle == "ACTIVE",
+        )
+    )
+    return int(value or 0)
+
+
+@router.get("/dashboard", response_model=DashboardSummaryResponse)
+async def dashboard(
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> DashboardSummaryResponse:
+    """Return bounded home-dashboard facts without operator-only telemetry."""
+
+    await _authorize_dashboard(request, context)
+    (
+        catalog_asset_count,
+        catalog_described_asset_count,
+        catalog_schema_metrics,
+        catalog_schema_metrics_truncated,
+    ) = await _catalog_coverage(session, context.workspace_id)
+    return DashboardSummaryResponse(
+        observed_at=datetime.now(UTC),
+        changes_by_state=await _state_counts(
+            session,
+            ChangeRequestModel.state,
+            ChangeRequestModel.workspace_id,
+            context.workspace_id,
+        ),
+        catalog_asset_count=catalog_asset_count,
+        catalog_described_asset_count=catalog_described_asset_count,
+        catalog_glossary_term_count=await _catalog_glossary_term_count(
+            session,
+            context.workspace_id,
+        ),
+        catalog_schema_metrics=catalog_schema_metrics,
+        catalog_schema_metrics_truncated=catalog_schema_metrics_truncated,
     )
 
 

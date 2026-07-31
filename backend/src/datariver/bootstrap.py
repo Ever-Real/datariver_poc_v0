@@ -40,6 +40,11 @@ LOCAL_KNOWLEDGE_INGESTION_EXTERNAL_SUBJECT = (
 )
 LOCAL_DEMO_IDENTITIES_PATH = Path("/run/datariver/local-demo-identities.json")
 LOCAL_SERVICE_IDENTITIES_PATH = Path("/run/datariver/local-service-identities.json")
+LOCAL_HUMAN_DASHBOARD_READ_ACTIONS = (
+    Action.DASHBOARD_READ,
+    Action.QUALITY_READ,
+    Action.QUALITY_PROFILE_READ,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,9 +152,12 @@ def _local_human_membership_attributes(
 ) -> dict[str, object]:
     """Build the single-Workspace local identity authorization envelope."""
 
+    resolved_actions = tuple(
+        dict.fromkeys((*allowed_actions, *LOCAL_HUMAN_DASHBOARD_READ_ACTIONS))
+    )
     return {
         "groups": list(groups),
-        "allowed_actions": [action.value for action in allowed_actions],
+        "allowed_actions": [action.value for action in resolved_actions],
         "denied_actions": [],
         "allowed_system_ids": [],
         "allowed_domain_ids": [str(value) for value in allowed_domain_ids],

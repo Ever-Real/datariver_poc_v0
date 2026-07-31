@@ -2,7 +2,8 @@ from uuid import uuid4
 
 import pytest
 
-from datariver.bootstrap import _resolve_local_subject
+from datariver.bootstrap import _local_human_membership_attributes, _resolve_local_subject
+from datariver.domain.authz import Action
 from datariver.infrastructure.db.models.platform import SubjectModel
 
 
@@ -33,3 +34,18 @@ def test_local_subject_rejects_conflicting_identity() -> None:
 
     with pytest.raises(RuntimeError, match="belongs to another subject"):
         _resolve_local_subject(fixed, identity, label="administrator")
+
+
+def test_local_human_memberships_always_receive_dashboard_read_actions() -> None:
+    attributes = _local_human_membership_attributes(
+        groups=("data-analysts",),
+        allowed_actions=(Action.CATALOG_READ,),
+        bootstrap="test",
+    )
+
+    assert attributes["allowed_actions"] == [
+        "catalog.read",
+        "dashboard.read",
+        "quality.read",
+        "quality.profile.read",
+    ]

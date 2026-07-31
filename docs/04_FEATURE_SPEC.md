@@ -262,7 +262,13 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
 ## Monitoring and operations
 
 - Capability cards for API, PostgreSQL, DataHub, cache, queue, object storage, graph, LLM, Airflow and policy.
-- The dashboard's legacy asset card layout is backed by the current typed DataHub projection: total non-deleted assets and non-blank description coverage, plus a bounded platform/database/schema breakdown. Tags, glossary mappings, quality scores, time-window history and audit rows are not manufactured when their governed read model is absent; their visible cards state that the metric is not collected under the current contract.
+- The ordinary home dashboard uses `/operations/dashboard` for current typed DataHub asset and
+  non-blank description coverage, active synchronized Glossary Term count, CR state and a bounded
+  platform/database/schema breakdown. Its Quality card and compact Quality section use the
+  existing permission-scoped `/quality/dashboard` facts. It does not request capability probes or
+  display upload/job/outbox/dead-letter/audit facts. Local human fixtures receive the required
+  `dashboard.read`, `quality.read` and `quality.profile.read` actions during idempotent bootstrap;
+  Workspace, classification, System and Domain enforcement remain intact.
 - Monitoring presents up to eight ordered Workspace dashboard tabs from the authenticated
   capabilities response. Eligible administrators see a **탭 수정** action on the tab rail and may
   change the label, order, credential-free HTTP(S) Dashboard Link and bounded page height through a

@@ -6,7 +6,10 @@ from uuid import uuid4
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from datariver.interfaces.http.routes.operations import _catalog_coverage
+from datariver.interfaces.http.routes.operations import (
+    _catalog_coverage,
+    _catalog_glossary_term_count,
+)
 
 
 class FakeResult:
@@ -30,6 +33,10 @@ class FakeCoverageSession:
     async def execute(self, statement: object) -> FakeResult:
         self.statements.append(statement)
         return FakeResult(self.responses.pop(0))
+
+    async def scalar(self, statement: object) -> object:
+        self.statements.append(statement)
+        return self.responses.pop(0)
 
 
 @pytest.mark.asyncio
@@ -80,3 +87,16 @@ async def test_catalog_coverage_marks_the_dashboard_schema_limit_explicitly() ->
     assert (assets, described, truncated) == (201, 201, True)
     assert len(metrics) == 200
     assert metrics[-1].schema_name == "schema_199"
+
+
+@pytest.mark.asyncio
+async def test_glossary_count_uses_active_typed_term_vocabulary() -> None:
+    session = FakeCoverageSession([7])
+
+    count = await _catalog_glossary_term_count(cast(AsyncSession, session), uuid4())
+
+    assert count == 7
+    sql = str(session.statements[0])
+    assert "catalog.vocabulary_entries" in sql
+    assert "vocabulary_entries.kind" in sql
+    assert "vocabulary_entries.lifecycle" in sql

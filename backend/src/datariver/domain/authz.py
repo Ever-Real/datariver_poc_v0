@@ -44,6 +44,7 @@ class Action(StrEnum):
     SHARING_PUBLISH = "sharing.publish"
     SHARING_MANAGE = "sharing.manage"
     SHARING_INVOKE = "sharing.invoke"
+    DASHBOARD_READ = "dashboard.read"
     OPERATIONS_READ = "operations.read"
     OPERATIONS_RETRY = "operations.retry"
     AUDIT_READ = "audit.read"
