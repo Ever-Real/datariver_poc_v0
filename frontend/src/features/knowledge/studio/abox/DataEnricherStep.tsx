@@ -63,6 +63,7 @@ interface DataEnricherStepProps {
   onStepUp?: () => Promise<void>
   onPasswordReauth?: () => Promise<void>
   onEnroll?: () => Promise<void>
+  hardwareWebauthnEnabled?: boolean
 }
 
 function sourceLocation(source: KnowledgeStudioSourceDataset): string {
@@ -109,6 +110,7 @@ export function DataEnricherStep({
   onStepUp,
   onPasswordReauth,
   onEnroll,
+  hardwareWebauthnEnabled,
 }: DataEnricherStepProps) {
   const cachedSession = getKnowledgeStudioABoxSession(draftId)
   const setCachedABox = useKnowledgeStudioSessionStore((state) => state.setABox)
@@ -1203,6 +1205,7 @@ export function DataEnricherStep({
                 onStepUp={onStepUp}
                 onPasswordReauth={onPasswordReauth}
                 onEnroll={onEnroll}
+                hardwareWebauthnEnabled={hardwareWebauthnEnabled}
               />
             : <p role="alert" className="m-0 text-xs text-red-700">
                 {publishError instanceof Error ? publishError.message : 'Publish 권한을 확인할 수 없습니다.'}

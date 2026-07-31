@@ -29,6 +29,7 @@ interface DomainManagementPanelProps {
   onStepUp?: () => Promise<void>
   onPasswordReauth?: () => Promise<void>
   onEnroll?: () => Promise<void>
+  hardwareWebauthnEnabled?: boolean
 }
 
 interface DomainManagementDialogProps extends DomainManagementPanelProps {
@@ -109,6 +110,7 @@ export function DomainManagementPanel({
   onStepUp,
   onPasswordReauth,
   onEnroll,
+  hardwareWebauthnEnabled,
 }: DomainManagementPanelProps) {
   const [newName, setNewName] = useState('')
   const [editingId, setEditingId] = useState('')
@@ -353,6 +355,7 @@ export function DomainManagementPanel({
           onStepUp={onStepUp}
           onPasswordReauth={onPasswordReauth}
           onEnroll={onEnroll}
+          hardwareWebauthnEnabled={hardwareWebauthnEnabled}
         />
       )}
     </section>
@@ -369,6 +372,7 @@ export function DomainManagementDialog({
   onStepUp,
   onPasswordReauth,
   onEnroll,
+  hardwareWebauthnEnabled,
 }: DomainManagementDialogProps) {
   return (
     <Dialog
@@ -390,6 +394,7 @@ export function DomainManagementDialog({
         onStepUp={onStepUp}
         onPasswordReauth={onPasswordReauth}
         onEnroll={onEnroll}
+        hardwareWebauthnEnabled={hardwareWebauthnEnabled}
       />
     </Dialog>
   )

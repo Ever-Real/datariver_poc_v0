@@ -29,6 +29,7 @@ interface KnowledgeWorkspacePageProps {
   onStepUp?: () => Promise<void>
   onPasswordReauth?: () => Promise<void>
   onEnroll?: () => Promise<void>
+  hardwareWebauthnEnabled?: boolean
 }
 
 function activeSection(page: KnowledgePage): KnowledgeWorkspaceSection {
@@ -50,6 +51,7 @@ export function KnowledgeWorkspacePage({
   onStepUp,
   onPasswordReauth,
   onEnroll,
+  hardwareWebauthnEnabled,
 }: KnowledgeWorkspacePageProps) {
   const [registryRevision, setRegistryRevision] = useState(0)
 
@@ -89,6 +91,7 @@ export function KnowledgeWorkspacePage({
             onStepUp={onStepUp}
             onPasswordReauth={onPasswordReauth}
             onEnroll={onEnroll}
+            hardwareWebauthnEnabled={hardwareWebauthnEnabled}
           />
         )}
         {page === 'knowledge-studio' && (
@@ -101,6 +104,7 @@ export function KnowledgeWorkspacePage({
             onStepUp={onStepUp}
             onPasswordReauth={onPasswordReauth}
             onEnroll={onEnroll}
+            hardwareWebauthnEnabled={hardwareWebauthnEnabled}
           />
         )}
       </KnowledgeWorkspaceLayout>

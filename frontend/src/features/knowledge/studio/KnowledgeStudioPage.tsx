@@ -96,6 +96,7 @@ interface KnowledgeStudioPageProps {
   onStepUp?: () => Promise<void>
   onPasswordReauth?: () => Promise<void>
   onEnroll?: () => Promise<void>
+  hardwareWebauthnEnabled?: boolean
   recoveryQueue?: DraftRecoveryQueue
   debounceMs?: number
   initializationTimeoutMs?: number
@@ -111,6 +112,7 @@ export function KnowledgeStudioPage({
   onStepUp,
   onPasswordReauth,
   onEnroll,
+  hardwareWebauthnEnabled,
   recoveryQueue,
   debounceMs = 1500,
   initializationTimeoutMs = DEFAULT_INITIALIZATION_TIMEOUT_MS,
@@ -953,6 +955,7 @@ export function KnowledgeStudioPage({
           onStepUp={onStepUp}
           onPasswordReauth={onPasswordReauth}
           onEnroll={onEnroll}
+          hardwareWebauthnEnabled={hardwareWebauthnEnabled}
         />
       : null}
     <Dialog

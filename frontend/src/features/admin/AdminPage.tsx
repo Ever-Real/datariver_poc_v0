@@ -167,6 +167,7 @@ export function AdminPage({
   }
   const shared = {
     api, context, messages, requestConfirmation, keyFor, clearKey, reportError,
+    hardwareWebauthnEnabled,
     ...assurance,
   }
   const locationParameters = new URL(window.location.href).searchParams
@@ -194,7 +195,7 @@ export function AdminPage({
       <span>이 배포에서는 WebAuthn이 비활성화되어 있습니다. 개발 환경의 관리자 작업은 서버가 허용한 비밀번호 보증 예외가 있는 경우에만 실행할 수 있습니다.</span>
       <div className="action-row"><button type="button" className="button button-secondary" onClick={() => setShowWebauthnDisabledWarning(false)}>확인</button></div>
     </div>}
-    <AssuranceNotice error={error} requiredAssurance={assuranceType} {...assurance} />
+    <AssuranceNotice error={error} requiredAssurance={assuranceType} hardwareWebauthnEnabled={hardwareWebauthnEnabled} {...assurance} />
     <ErrorNotice error={error} />
     {activeSection && <div {...primaryTabs.panelProps(activeSection)}>
       {activeSection === 'memberships' && <AccountAccessAdmin {...shared} />}

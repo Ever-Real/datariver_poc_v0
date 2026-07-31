@@ -148,6 +148,7 @@ export function GovernancePage({
   onStepUp,
   onPasswordReauth,
   onEnroll,
+  hardwareWebauthnEnabled,
 }: { client: ApiClient; requesterName: string; requesterEmail?: string; onNavigate?: (page: Page) => void } & AssuranceActions) {
   const [stateFilter, setStateFilter] = useState<'' | ChangeRequestState>('')
   const [textFilter, setTextFilter] = useState('')
@@ -760,6 +761,7 @@ export function GovernancePage({
         onStepUp={onStepUp}
         onPasswordReauth={onPasswordReauth}
         onEnroll={onEnroll}
+        hardwareWebauthnEnabled={hardwareWebauthnEnabled}
       />
       <ErrorNotice error={listError} />
 
@@ -820,6 +822,7 @@ export function GovernancePage({
         onStepUp={onStepUp}
         onPasswordReauth={onPasswordReauth}
         onEnroll={onEnroll}
+        hardwareWebauthnEnabled={hardwareWebauthnEnabled}
       />
       <ChangeRequestCreateDialog
         open={createOpen}

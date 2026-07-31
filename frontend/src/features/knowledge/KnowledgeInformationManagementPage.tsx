@@ -13,11 +13,13 @@ export function KnowledgeInformationManagementPage({
   onStepUp,
   onPasswordReauth,
   onEnroll,
+  hardwareWebauthnEnabled,
 }: {
   client: ApiClient
   onStepUp?: () => Promise<void>
   onPasswordReauth?: () => Promise<void>
   onEnroll?: () => Promise<void>
+  hardwareWebauthnEnabled?: boolean
 }) {
   const [activeTab, setActiveTab] = useState<'DOMAINS' | 'PROFILES' | 'ASSETS'>('DOMAINS')
   const [domains, setDomains] = useState<KnowledgeStudioDomainOption[]>([])
@@ -125,6 +127,7 @@ export function KnowledgeInformationManagementPage({
             onStepUp={onStepUp}
             onPasswordReauth={onPasswordReauth}
             onEnroll={onEnroll}
+            hardwareWebauthnEnabled={hardwareWebauthnEnabled}
           />
         </>
       )}

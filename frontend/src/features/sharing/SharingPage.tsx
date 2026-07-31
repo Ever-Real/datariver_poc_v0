@@ -18,6 +18,7 @@ export function SharingPage({
   onStepUp,
   onPasswordReauth,
   onEnroll,
+  hardwareWebauthnEnabled,
 }: { client: ApiClient } & AssuranceActions) {
   const [products, setProducts] = useState<ApiProduct[]>([])
   const [graphs, setGraphs] = useState<KnowledgeGraph[]>([])
@@ -139,6 +140,7 @@ export function SharingPage({
         onStepUp={onStepUp}
         onPasswordReauth={onPasswordReauth}
         onEnroll={onEnroll}
+        hardwareWebauthnEnabled={hardwareWebauthnEnabled}
       />
       <ErrorNotice error={error} />
       {selected && <article className="result-card governance-detail">
