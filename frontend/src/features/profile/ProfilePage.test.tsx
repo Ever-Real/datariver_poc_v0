@@ -39,7 +39,7 @@ describe('ProfilePage', () => {
     expect(screen.getByLabelText('Email')).toHaveValue('admin@example.test')
     expect(screen.getByLabelText('현재 Workspace')).toHaveValue('workspace-one')
     expect(screen.getByLabelText('Workspace 운영 모드')).toHaveValue('단일 Workspace · 전환 비활성')
-    expect(screen.getByLabelText('WebAuthn')).toHaveValue('비활성 · 고위험 작업 차단')
+    expect(screen.getByLabelText('WebAuthn')).toHaveValue('비활성 · 별도 허용 경로만 사용')
     expect(screen.getByRole('button', { name: '변경사항 저장' })).toBeDisabled()
     expect(screen.getByRole('link', { name: '서버 승인 DataHub 링크 열기' })).toHaveAttribute('href', 'http://localhost:8080')
     fireEvent.click(screen.getByRole('button', { name: '비밀번호 변경' }))

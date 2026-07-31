@@ -115,7 +115,8 @@ class Settings(BaseSettings):
     high_risk_auth_max_age_seconds: int = Field(default=300, ge=60, le=900)
     admin_password_fallback_enabled: bool = False
     admin_password_fallback_ttl_seconds: int = Field(default=300, ge=60, le=300)
-    # Explicit local-development exception for direct admin.manage exercises.
+    # Explicit local-development exception for direct admin.manage exercises
+    # and the separately scoped Governance Document administrator composition.
     # It preserves all non-authentication ABAC denials and records the real
     # password assurance; it never asserts or emulates hardware WebAuthn.
     development_admin_password_bypass_enabled: bool = False

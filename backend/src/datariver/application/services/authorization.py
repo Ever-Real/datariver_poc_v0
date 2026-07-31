@@ -28,6 +28,14 @@ AUTHENTICATION_DENIAL_REASONS = frozenset(
         "AUTHENTICATION_TOO_OLD",
     }
 )
+DEVELOPMENT_GOVERNANCE_PASSWORD_BYPASS_ACTIONS = frozenset(
+    {
+        Action.GOVERNANCE_DOCUMENT_PUBLISH,
+        Action.GOVERNANCE_DOCUMENT_ARCHIVE,
+        Action.GOVERNANCE_TEMPLATE_ACTIVATE,
+        Action.GOVERNANCE_TEMPLATE_ARCHIVE,
+    }
+)
 
 
 def _remediation_kind(
@@ -53,10 +61,14 @@ class AuthorizationService:
         decision_writer: DecisionWriter,
         engine: BuiltinPolicyEngine | None = None,
         development_admin_password_bypass_enabled: bool = False,
+        development_governance_password_bypass_enabled: bool = False,
     ) -> None:
         self._decision_writer = decision_writer
         self._engine = engine or BuiltinPolicyEngine()
         self._development_admin_password_bypass_enabled = development_admin_password_bypass_enabled
+        self._development_governance_password_bypass_enabled = (
+            development_governance_password_bypass_enabled
+        )
 
     def is_entitled(
         self,
@@ -115,7 +127,11 @@ class AuthorizationService:
                 reason_codes=("DEVELOPMENT_PASSWORD_BYPASS",),
                 policy_versions=(
                     *decision.policy_versions,
-                    "development-admin-password-bypass-v1",
+                    (
+                        "development-admin-password-bypass-v1"
+                        if action is Action.ADMIN_MANAGE
+                        else "development-governance-admin-password-bypass-v1"
+                    ),
                 ),
                 authentication_assurance=subject.authentication_assurance,
                 authentication_time=subject.authentication_time,
@@ -131,8 +147,7 @@ class AuthorizationService:
         if not decision.allowed:
             remediation_kind = _remediation_kind(action=action, subject=subject, decision=decision)
             if (
-                self._development_admin_password_bypass_enabled
-                and action is Action.ADMIN_MANAGE
+                self._development_password_bypass_applies(action)
                 and decision.reason_codes
                 and set(decision.reason_codes).issubset(AUTHENTICATION_DENIAL_REASONS)
                 and subject.authentication_assurance is not AuthenticationAssurance.PASSWORD_REAUTH
@@ -163,8 +178,7 @@ class AuthorizationService:
         environment: EnvironmentAttributes,
     ) -> bool:
         return (
-            self._development_admin_password_bypass_enabled
-            and action is Action.ADMIN_MANAGE
+            self._development_password_bypass_applies(action)
             and not decision.allowed
             and bool(decision.reason_codes)
             and set(decision.reason_codes).issubset(AUTHENTICATION_DENIAL_REASONS)
@@ -178,6 +192,14 @@ class AuthorizationService:
             <= environment.requested_at + environment.maximum_clock_skew
             and environment.requested_at - subject.authentication_time
             <= environment.maximum_authentication_age
+        )
+
+    def _development_password_bypass_applies(self, action: Action) -> bool:
+        return (
+            self._development_admin_password_bypass_enabled and action is Action.ADMIN_MANAGE
+        ) or (
+            self._development_governance_password_bypass_enabled
+            and action in DEVELOPMENT_GOVERNANCE_PASSWORD_BYPASS_ACTIONS
         )
 
     async def can_review_quarantined_catalog(

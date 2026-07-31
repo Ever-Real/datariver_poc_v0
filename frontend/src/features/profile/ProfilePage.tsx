@@ -74,10 +74,10 @@ export function ProfilePage({
           <label className="grid gap-1 text-xs font-bold">현재 Workspace<input readOnly value={workspace || '선택되지 않음'} /></label>
           <label className="grid gap-1 text-xs font-bold">인증 보증<input readOnly value={profile.authentication_assurance} /></label>
           <label className="grid gap-1 text-xs font-bold">Workspace 운영 모드<input readOnly value={profile.workspace_selection_enabled === false ? '단일 Workspace · 전환 비활성' : '다중 Workspace · 전환 가능'} /></label>
-          <label className="grid gap-1 text-xs font-bold">WebAuthn<input readOnly value={profile.hardware_webauthn_enabled === false ? '비활성 · 고위험 작업 차단' : '활성 · 고위험 작업 보호'} /></label>
+          <label className="grid gap-1 text-xs font-bold">WebAuthn<input readOnly value={profile.hardware_webauthn_enabled === false ? '비활성 · 별도 허용 경로만 사용' : '활성 · 고위험 작업 보호'} /></label>
           <label className="grid gap-1 text-xs font-bold md:col-span-2">역할<input readOnly value={profile.roles.join(', ') || '역할 없음'} /></label>
         </div>
-        <p className="callout mt-4 mb-0">Workspace는 선택기가 숨겨져도 RLS·권한·캐시를 분리하는 필수 보안 경계입니다. WebAuthn은 시스템·권한 변경 같은 고위험 작업을 보호하며, 비활성화해도 비밀번호로 자동 완화되지 않고 해당 작업이 차단됩니다.</p>
+        <p className="callout mt-4 mb-0">Workspace는 선택기가 숨겨져도 RLS·권한·캐시를 분리하는 필수 보안 경계입니다. WebAuthn은 시스템·권한 변경 같은 고위험 작업을 보호합니다. 비활성화해도 비밀번호로 자동 완화되지 않으며, 서버가 별도로 승인한 개발용 보증 경로가 없는 작업은 차단됩니다.</p>
         <div className="mt-5 flex flex-wrap gap-2">
           {profile.password_change_supported && <button type="button" className="button" onClick={onPasswordChange}><KeyRound size={14} /> 비밀번호 변경</button>}
           <button type="button" className="button button-secondary" onClick={onPasswordReauth}><KeyRound size={14} /> 비밀번호 재인증</button>

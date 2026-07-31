@@ -370,7 +370,7 @@ export function App() {
           />
         )}
         {page === 'monitoring' && <MonitoringPage client={client} />}
-        {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} assurance={{ onStepUp: auth.beginStepUp, onPasswordReauth: auth.beginPasswordReauth, onEnroll: auth.beginWebAuthnEnrollment }} />}
+        {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} assurance={{ onStepUp: auth.beginStepUp, onPasswordReauth: auth.beginPasswordReauth, onEnroll: auth.beginWebAuthnEnrollment, hardwareWebauthnEnabled: auth.profile?.hardware_webauthn_enabled === true }} />}
         {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} />}
         {page === 'chat' && <ChatPage client={client} />}
         {page === 'profile' && auth.profile && <ProfilePage client={client} profile={auth.profile} workspace={activeWorkspace} capabilities={capabilities} externalSystemLinks={externalSystemLinks} onPasswordChange={() => void auth.beginPasswordChange()} onPasswordReauth={() => void auth.beginPasswordReauth()} />}

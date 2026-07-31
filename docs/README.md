@@ -61,6 +61,9 @@ Architecture decisions are immutable records under `adr/`. Superseded artifacts 
 Current retention decisions: [governed retention and immutable archive](adr/0010-governed-retention-and-immutable-archive.md), [maintained S3 and archive promotion](adr/0012-maintained-s3-and-immutable-archive-promotion.md), [Chat active-policy binding](adr/0018-chat-retention-policy-binding.md), and [archive-only execution control plane](adr/0037-retention-execution-control-plane.md).
 
 Current administrator decisions: [hardware WebAuthn and governed password fallback](adr/0009-hardware-webauthn-and-governed-password-fallback.md), [workspace access roles and development connection probes](adr/0024-workspace-access-roles-and-development-connection-probes.md), and [operator security modes and stable authentication renewal](adr/0025-operator-security-modes-and-stable-auth-renewal.md).
+The development-only Governance Document password assurance composition is defined by
+[ADR-0087](adr/0087-development-governance-document-password-assurance.md); it does not relax
+production or unrelated high-risk Actions.
 
 Current account/workflow/runtime decisions: [expiring membership renewal](adr/0026-expiring-human-membership-renewal.md), [CR System-role authority](adr/0027-change-request-system-role-authority.md), and [development System Settings startup activation](adr/0028-development-system-configuration-startup-activation.md).
 

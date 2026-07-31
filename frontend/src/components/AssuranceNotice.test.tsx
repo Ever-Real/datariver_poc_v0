@@ -76,6 +76,40 @@ describe('AssuranceNotice', () => {
     expect(onPasswordReauth).not.toHaveBeenCalled()
   })
 
+  it('uses password reauthentication when WebAuthn is disabled', () => {
+    const onStepUp = vi.fn(() => Promise.resolve())
+    const onPasswordReauth = vi.fn(() => Promise.resolve())
+    render(
+      <AssuranceNotice
+        error={error('REAUTH_REQUIRED')}
+        hardwareWebauthnEnabled={false}
+        onStepUp={onStepUp}
+        onPasswordReauth={onPasswordReauth}
+        onEnroll={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: '비밀번호로 재인증' }))
+
+    expect(onPasswordReauth).toHaveBeenCalledOnce()
+    expect(onStepUp).not.toHaveBeenCalled()
+  })
+
+  it('does not offer a security-key action when WebAuthn is disabled', () => {
+    const { container } = render(
+      <AssuranceNotice
+        error={error('FIDO2_REQUIRED')}
+        hardwareWebauthnEnabled={false}
+        onStepUp={vi.fn()}
+        onPasswordReauth={vi.fn()}
+        onEnroll={vi.fn()}
+      />,
+    )
+
+    expect(within(container).getByText('이 환경에서는 WebAuthn을 사용하지 않습니다.')).toBeInTheDocument()
+    expect(within(container).queryByRole('button')).not.toBeInTheDocument()
+  })
+
   it('uses the bounded unavailable-fallback copy and offers hardware only', () => {
     const onStepUp = vi.fn(() => Promise.resolve())
     const onPasswordReauth = vi.fn(() => Promise.resolve())

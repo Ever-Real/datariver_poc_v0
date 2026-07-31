@@ -660,6 +660,46 @@ async def test_development_admin_password_bypass_requests_password_reauth_before
     }
 
 
+async def test_development_governance_password_bypass_is_explicitly_scoped() -> None:
+    subject, resource, environment = make_context(action=Action.GOVERNANCE_DOCUMENT_PUBLISH)
+    subject = replace(
+        subject,
+        authentication_assurance=AuthenticationAssurance.PASSWORD_REAUTH,
+        authentication_time=environment.requested_at - timedelta(seconds=10),
+    )
+
+    decision = await AuthorizationService(
+        decision_writer=BatchDecisionWriter(),
+        development_governance_password_bypass_enabled=True,
+    ).authorize(
+        subject=subject,
+        resource=resource,
+        action=Action.GOVERNANCE_DOCUMENT_PUBLISH,
+        environment=environment,
+        request_id="development-governance-password-bypass",
+    )
+
+    assert decision.allowed
+    assert decision.authentication_assurance is AuthenticationAssurance.PASSWORD_REAUTH
+    assert decision.reason_codes == ("DEVELOPMENT_PASSWORD_BYPASS",)
+    assert "development-governance-admin-password-bypass-v1" in decision.policy_versions
+
+    with pytest.raises(ForbiddenError):
+        await AuthorizationService(
+            decision_writer=BatchDecisionWriter(),
+            development_governance_password_bypass_enabled=True,
+        ).authorize(
+            subject=replace(
+                subject,
+                allowed_actions=frozenset({Action.KG_PUBLISH}),
+            ),
+            resource=resource,
+            action=Action.KG_PUBLISH,
+            environment=environment,
+            request_id="development-governance-password-bypass-out-of-scope",
+        )
+
+
 async def test_development_admin_password_bypass_never_overrides_other_denials() -> None:
     subject, resource, environment = make_context(action=Action.ADMIN_MANAGE)
     password_subject = replace(

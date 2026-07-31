@@ -4,6 +4,7 @@ export interface AssuranceActions {
   onStepUp: () => Promise<void>
   onPasswordReauth: () => Promise<void>
   onEnroll: () => Promise<void>
+  hardwareWebauthnEnabled?: boolean
 }
 
 export type RequiredAssurance = 'HARDWARE' | 'PASSWORD'
@@ -13,24 +14,38 @@ export function AssuranceNotice({
   onStepUp,
   onPasswordReauth,
   onEnroll,
+  hardwareWebauthnEnabled,
   requiredAssurance = 'HARDWARE',
 }: { error?: unknown; requiredAssurance?: RequiredAssurance } & AssuranceActions) {
   const remediation = remediationKind(error)
   if (!remediation) return null
+  const hardwareAvailable = hardwareWebauthnEnabled !== false
 
   if (remediation === 'FALLBACK_UNAVAILABLE') {
     return (
       <div className="notice notice-error" role="alert">
         <strong>관리자 비밀번호 예외 경로를 사용할 수 없습니다.</strong>
-        <span>이 작업은 조직 인증 정책이 허용한 WebAuthn 보안키로 인증해야 합니다. 특정 USB 장치만을 전제로 하지 않으며, 비밀번호 예외 경로는 두 명의 적격 관리자와 Maker-Checker 절차가 운영 검증된 환경에서만 별도로 제공됩니다.</span>
-        <div className="action-row">
+        <span>{hardwareAvailable
+          ? '이 작업은 조직 인증 정책이 허용한 WebAuthn 보안키로 인증해야 합니다. 특정 USB 장치만을 전제로 하지 않으며, 비밀번호 예외 경로는 두 명의 적격 관리자와 Maker-Checker 절차가 운영 검증된 환경에서만 별도로 제공됩니다.'
+          : '이 배포에서는 WebAuthn이 비활성화되어 있고, 이 작업에 허용된 비밀번호 재인증 경로도 없습니다.'}</span>
+        {hardwareAvailable && <div className="action-row">
           <button className="button" onClick={() => void onStepUp()}>보안키로 인증</button>
-        </div>
+        </div>}
       </div>
     )
   }
 
-  const passwordReauth = remediation === 'REAUTH_REQUIRED' && requiredAssurance === 'PASSWORD'
+  if (remediation === 'FIDO2_REQUIRED' && !hardwareAvailable) {
+    return (
+      <div className="notice notice-error" role="alert">
+        <strong>이 환경에서는 WebAuthn을 사용하지 않습니다.</strong>
+        <span>현재 작업에는 허용된 비밀번호 재인증 대체 경로가 없어 실행할 수 없습니다.</span>
+      </div>
+    )
+  }
+
+  const passwordReauth = remediation === 'REAUTH_REQUIRED'
+    && (requiredAssurance === 'PASSWORD' || !hardwareAvailable)
 
   return (
     <div className="notice notice-error" role="alert">
@@ -47,7 +62,7 @@ export function AssuranceNotice({
         >
           {passwordReauth ? '비밀번호로 재인증' : '보안키로 인증'}
         </button>
-        {remediation === 'FIDO2_REQUIRED' && (
+        {remediation === 'FIDO2_REQUIRED' && hardwareAvailable && (
           <button className="button button-secondary" onClick={() => void onEnroll()}>
             보안키 등록
           </button>

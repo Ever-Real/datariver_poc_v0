@@ -178,8 +178,9 @@ equivalent least-privilege roles.
 - `ADMIN_PASSWORD_FALLBACK_*` is a separately governed recovery workflow, not a WebAuthn bypass.
 - `DEVELOPMENT_ADMIN_PASSWORD_BYPASS_ENABLED` defaults false and is accepted only with
   `APP_ENV=development`, the governed password-fallback switch enabled and hardware WebAuthn
-  disabled. It is a visible, fresh-password `admin.manage` test exception; it never asserts
-  WebAuthn or overrides a non-authentication ABAC denial.
+  disabled. It is a visible, fresh-password `admin.manage` test exception and is additionally
+  scoped to the Governance Document publish/archive and Template activate/archive composition by
+  ADR-0087; it never asserts WebAuthn or overrides a non-authentication ABAC denial.
 
 ### Catalog and workflow systems
 

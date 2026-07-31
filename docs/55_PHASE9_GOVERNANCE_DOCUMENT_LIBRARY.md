@@ -58,6 +58,11 @@ idempotent replay contract, while both prefix listing and exact-version deletion
 through repeated idle DB/Redis cycles without an error log after the lock-scope and bounded stream
 read fixes.
 
+ADR-0087 connects only the development Governance Document high-risk composition to the existing
+fresh-password administrator exception when hardware WebAuthn is disabled. The browser follows the
+verified API capability and does not advertise security-key enrollment in that mode. Production
+and unrelated high-risk actions retain their existing assurance gates.
+
 Target production WORM/Object Lock, representative retrieval/load, WSL amd64 and target human
 identity evidence remain separate gates; local versioning and create-only application behavior do
 not claim regulatory immutability.

@@ -87,7 +87,10 @@ def _service(
     return GovernanceDocumentService(
         repository=SqlGovernanceDocumentRepository(session),
         authorization=AuthorizationService(
-            decision_writer=SqlDecisionWriter(container.database.session_factory)
+            decision_writer=SqlDecisionWriter(container.database.session_factory),
+            development_governance_password_bypass_enabled=(
+                container.settings.development_admin_password_bypass_enabled
+            ),
         ),
         attachment_store=attachment_store,
         artifact_storage_ready=(
