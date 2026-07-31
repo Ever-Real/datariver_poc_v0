@@ -303,9 +303,9 @@ class ChatService:
             access,
             external_stages=(),
         )
-        external_stages: list[str] = [
-            "composition"
-        ] if route_classifier_requested and route_classifier_allowed else []
+        external_stages: list[str] = (
+            ["composition"] if route_classifier_requested and route_classifier_allowed else []
+        )
         if route.adapter_state is ChatAdapterState.UNAVAILABLE:
             workflow.extend(
                 (
