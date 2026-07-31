@@ -4,6 +4,7 @@ import base64
 import binascii
 import json
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
@@ -64,6 +65,29 @@ from datariver.infrastructure.db.models.quality import (
 
 _CURSOR_MAX_LENGTH = 2_000
 _TERMINAL_STATES = ("SUCCEEDED", "FAILED", "STALE", "CANCELLED")
+
+
+@dataclass(frozen=True, slots=True)
+class _AssetQualityAggregate:
+    passed_count: int
+    advisory_failed_count: int
+    blocking_failed_count: int
+
+    @property
+    def evaluated_rule_count(self) -> int:
+        return self.passed_count + self.advisory_failed_count + self.blocking_failed_count
+
+    @property
+    def outcome(self) -> str:
+        return _outcome(
+            evaluated=self.evaluated_rule_count,
+            advisory_failed=self.advisory_failed_count,
+            blocking_failed=self.blocking_failed_count,
+        )
+
+    @property
+    def score_basis_points(self) -> int | None:
+        return _basis_points(self.passed_count, self.evaluated_rule_count)
 
 
 class SqlQualityReadRepository(QualityReadRepository):
@@ -970,7 +994,7 @@ class SqlQualityReadRepository(QualityReadRepository):
             workspace_id=context.subject.workspace_id,
             asset_ids=asset_ids,
         )
-        latest_runs = await self._latest_runs_by_asset(
+        quality_aggregates = await self._latest_active_rule_set_aggregates(
             workspace_id=context.subject.workspace_id,
             asset_ids=asset_ids,
         )
@@ -992,12 +1016,14 @@ class SqlQualityReadRepository(QualityReadRepository):
                 classification=Classification(row.classification).name,
                 lifecycle=row.lifecycle,
                 active_rule_set_count=counts.get(row.id, 0),
-                latest_run_state=(latest_runs[row.id].state if row.id in latest_runs else None),
+                latest_run_state=("SUCCEEDED" if row.id in quality_aggregates else None),
                 latest_quality_outcome=(
-                    latest_runs[row.id].quality_outcome if row.id in latest_runs else None
+                    quality_aggregates[row.id].outcome if row.id in quality_aggregates else None
                 ),
                 latest_score_basis_points=(
-                    _run_basis_points(latest_runs[row.id]) if row.id in latest_runs else None
+                    quality_aggregates[row.id].score_basis_points
+                    if row.id in quality_aggregates
+                    else None
                 ),
                 profile_readiness=(
                     _profile_readiness(
@@ -1012,39 +1038,93 @@ class SqlQualityReadRepository(QualityReadRepository):
             for row in rows
         )
 
-    async def _latest_runs_by_asset(
+    async def _latest_active_rule_set_aggregates(
         self, *, workspace_id: UUID, asset_ids: Sequence[UUID]
-    ) -> dict[UUID, QualityValidationRunModel]:
+    ) -> dict[UUID, _AssetQualityAggregate]:
         if not asset_ids:
             return {}
+        active_versions = (
+            select(
+                QualityRuleSetModel.asset_id,
+                QualityRuleSetModel.id.label("rule_set_id"),
+                QualityRuleSetVersionModel.id.label("version_id"),
+            )
+            .join(
+                QualityRuleSetVersionModel,
+                and_(
+                    QualityRuleSetVersionModel.workspace_id == QualityRuleSetModel.workspace_id,
+                    QualityRuleSetVersionModel.rule_set_id == QualityRuleSetModel.id,
+                    QualityRuleSetVersionModel.state == "ACTIVE",
+                ),
+            )
+            .where(
+                QualityRuleSetModel.workspace_id == workspace_id,
+                QualityRuleSetModel.asset_id.in_(asset_ids),
+                QualityRuleSetModel.state == "ACTIVE",
+            )
+        ).subquery("active_asset_quality_versions")
         ranked = (
             select(
-                QualityValidationRunModel.id,
+                active_versions.c.asset_id,
+                active_versions.c.rule_set_id,
+                QualityValidationRunModel.passed_count,
+                QualityValidationRunModel.advisory_failed_count,
+                QualityValidationRunModel.blocking_failed_count,
                 func.row_number()
                 .over(
-                    partition_by=QualityValidationRunModel.asset_id,
+                    partition_by=(
+                        active_versions.c.asset_id,
+                        active_versions.c.rule_set_id,
+                    ),
                     order_by=(
-                        desc(QualityValidationRunModel.created_at),
+                        desc(QualityValidationRunModel.completed_at),
                         desc(QualityValidationRunModel.id),
                     ),
                 )
                 .label("ordinal"),
-            ).where(
+            )
+            .join(
+                QualityValidationRunModel,
+                and_(
+                    QualityValidationRunModel.workspace_id == workspace_id,
+                    QualityValidationRunModel.rule_set_id == active_versions.c.rule_set_id,
+                    QualityValidationRunModel.rule_set_version_id == active_versions.c.version_id,
+                    QualityValidationRunModel.asset_id == active_versions.c.asset_id,
+                ),
+            )
+            .where(
                 QualityValidationRunModel.workspace_id == workspace_id,
-                QualityValidationRunModel.asset_id.in_(asset_ids),
                 QualityValidationRunModel.state == "SUCCEEDED",
             )
-        ).subquery("ranked_asset_runs")
-        models = list(
+        ).subquery("ranked_active_asset_quality_runs")
+        rows = list(
             (
-                await self._session.scalars(
-                    select(QualityValidationRunModel)
-                    .join(ranked, ranked.c.id == QualityValidationRunModel.id)
+                await self._session.execute(
+                    select(
+                        ranked.c.asset_id,
+                        func.coalesce(func.sum(ranked.c.passed_count), 0).label("passed"),
+                        func.coalesce(
+                            func.sum(ranked.c.advisory_failed_count),
+                            0,
+                        ).label("advisory"),
+                        func.coalesce(
+                            func.sum(ranked.c.blocking_failed_count),
+                            0,
+                        ).label("blocking"),
+                    )
                     .where(ranked.c.ordinal == 1)
+                    .group_by(ranked.c.asset_id)
                 )
             ).all()
         )
-        return {model.asset_id: model for model in models}
+        return {
+            row.asset_id: _AssetQualityAggregate(
+                passed_count=int(row.passed),
+                advisory_failed_count=int(row.advisory),
+                blocking_failed_count=int(row.blocking),
+            )
+            for row in rows
+        }
 
     async def _latest_profiles(
         self, *, workspace_id: UUID, asset_ids: Sequence[UUID]

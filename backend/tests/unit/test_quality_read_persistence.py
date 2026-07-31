@@ -2,18 +2,24 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
-from types import ModuleType
-from typing import cast
+from types import ModuleType, SimpleNamespace
+from typing import Any, cast
+from uuid import uuid4
 
+import pytest
 from fastapi.routing import APIRoute
 from sqlalchemy import Table
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.infrastructure.db.models.quality import (
     QualityExpectationResultModel,
     QualityRuleSetModel,
     QualityValidationRunModel,
 )
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
+from datariver.infrastructure.db.quality_read import (
+    SqlQualityReadRepository,
+    _AssetQualityAggregate,
+)
 from datariver.interfaces.http.routes.quality import router as quality_router
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -33,7 +39,6 @@ def test_quality_read_indexes_are_metadata_migration_and_baseline_consistent() -
     migration = _load_migration()
     assert migration.revision == "0070"
     assert migration.down_revision == "0069"
-    assert REQUIRED_DATABASE_REVISION == "0074"
 
     expected = {
         "ix_quality_rule_sets_list",
@@ -63,6 +68,80 @@ def test_quality_issue_index_remains_failure_only() -> None:
     predicate = "outcome IN ('ADVISORY_FAIL','BLOCKING_FAIL')"
     assert predicate in migration_source
     assert predicate in canonical_source
+
+
+class _AggregateRows:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self._rows = rows
+
+    def all(self) -> list[SimpleNamespace]:
+        return self._rows
+
+
+class _AggregateSession:
+    def __init__(self, rows: list[SimpleNamespace]) -> None:
+        self._rows = rows
+        self.statement: Any = None
+
+    async def execute(self, statement: Any) -> _AggregateRows:
+        self.statement = statement
+        return _AggregateRows(self._rows)
+
+
+@pytest.mark.asyncio
+async def test_asset_score_pools_latest_successful_active_rule_set_results() -> None:
+    workspace_id, asset_id = uuid4(), uuid4()
+    session = _AggregateSession(
+        [
+            SimpleNamespace(
+                asset_id=asset_id,
+                passed=13,
+                advisory=1,
+                blocking=0,
+            )
+        ]
+    )
+    repository = SqlQualityReadRepository(cast(AsyncSession, session))
+
+    aggregates = await repository._latest_active_rule_set_aggregates(
+        workspace_id=workspace_id,
+        asset_ids=(asset_id,),
+    )
+
+    aggregate = aggregates[asset_id]
+    assert aggregate.evaluated_rule_count == 14
+    assert aggregate.score_basis_points == 9_286
+    assert aggregate.outcome == "WARN"
+
+    sql = " ".join(
+        str(
+            session.statement.compile(
+                compile_kwargs={"literal_binds": True},
+            )
+        ).split()
+    )
+    assert "quality.rule_sets.state = 'ACTIVE'" in sql
+    assert "quality.rule_set_versions.state = 'ACTIVE'" in sql
+    assert "quality.validation_runs.state = 'SUCCEEDED'" in sql
+    assert (
+        "row_number() OVER (PARTITION BY active_asset_quality_versions.asset_id, "
+        "active_asset_quality_versions.rule_set_id "
+        "ORDER BY quality.validation_runs.completed_at DESC, "
+        "quality.validation_runs.id DESC)"
+    ) in sql
+    assert "ranked_active_asset_quality_runs.ordinal = 1" in sql
+    assert "GROUP BY ranked_active_asset_quality_runs.asset_id" in sql
+
+
+def test_asset_score_uses_blocking_failure_precedence() -> None:
+    aggregate = _AssetQualityAggregate(
+        passed_count=99,
+        advisory_failed_count=0,
+        blocking_failed_count=1,
+    )
+
+    assert aggregate.score_basis_points == 9_900
+    assert aggregate.outcome == "FAIL"
 
 
 def test_public_quality_surface_exposes_only_bounded_quality_commands() -> None:

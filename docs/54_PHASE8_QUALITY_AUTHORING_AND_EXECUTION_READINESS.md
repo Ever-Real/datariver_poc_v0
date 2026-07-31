@@ -4,7 +4,8 @@
 - Scope: V2 authoring directory, bounded Rule proposal, review/activation, manual Run request,
   search-integrated Quality evidence, reusable common Rules and an asset-centric Quality workspace
 - Decisions: [ADR-0079](adr/0079-quality-authoring-readiness-and-manual-run-commands.md),
-  [ADR-0081](adr/0081-user-centric-quality-workspace-and-common-rule-templates.md)
+  [ADR-0081](adr/0081-user-centric-quality-workspace-and-common-rule-templates.md),
+  [ADR-0084](adr/0084-rule-weighted-asset-quality-score.md)
 
 ## Implemented boundary
 
@@ -35,6 +36,12 @@ canonical per-asset Rule Set/Version/definition aggregates and records their tem
 in the same transaction. Existing activation and immutable audit invariants remain unchanged.
 `REGEX` remains explicitly unavailable.
 
+The score displayed for one table pools the newest `SUCCEEDED` Run for every active Rule Set's
+current active Version. It is calculated as the sum of passed Rules divided by the sum of all
+evaluated Rules across those Runs. Outcome precedence is blocking failure `FAIL`, advisory failure
+`WARN`, then `PASS`. This replaces the former single-latest-Run asset score without changing the
+HTTP response shape or persistence schema.
+
 Revision `0073` supplies the missing RLS-scoped application read grants for Quality Profile
 projection. Revision `0074` adds forced-RLS `quality.common_rule_templates` and
 `quality.common_rule_template_mappings`; the packaged required revision is `0074`.
@@ -48,6 +55,14 @@ passed `1,960` tests with `104` explicitly environment-gated skips, and static
 architecture/security verification passed. Frontend TypeScript/ESLint passed; `69` files /
 `371` tests passed and the production build emitted the lazy Quality chunk at `32.72 kB`
 (`9.74 kB` gzip).
+
+The ADR-0084 Rule-weighted score follow-up was verified again from an isolated `dev` snapshot
+containing Governance revision `0075` plus only the four Quality-owned changes. Ruff format/lint
+and strict mypy passed over `496` backend source/test files, the complete backend suite passed
+`1,974` tests with `104`
+environment-gated skips, and `scripts/verify_static.py` passed. Frontend typecheck and the focused
+Catalog/Quality suite also passed (`9` files / `40` tests). No HTTP response shape or database
+schema changed.
 
 Two consecutive canonical `0001` generations from that isolated source snapshot were
 byte-identical to the staged baseline at SHA-256
