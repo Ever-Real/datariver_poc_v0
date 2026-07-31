@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode } from 'react'
+import { Fragment, useState, type ReactNode } from 'react'
 
 const MAX_MARKDOWN_CHARACTERS = 100_000
 const MAX_TABLE_COLUMNS = 20
@@ -43,6 +43,79 @@ function tableCells(line: string): string[] {
 function isTableDivider(line: string): boolean {
   const cells = tableCells(line)
   return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+}
+
+function tableClipboardCell(value: string): string {
+  const plainText = value
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+    .replace(/\[([^\]\n]+)\]\([^\s)\n]+\)/g, '$1')
+    .replace(/[\t\r\n]+/g, ' ')
+
+  // TSV is intentionally used so Excel can paste cells directly. Prefix formulas
+  // to prevent an answer-provided cell from becoming executable spreadsheet content.
+  return /^[=+\-@]/.test(plainText) ? `'${plainText}` : plainText
+}
+
+function tableClipboardText(headers: string[], rows: string[][]): string {
+  return [headers, ...rows]
+    .map((row) => headers.map((_, index) => tableClipboardCell(row[index] ?? '')).join('\t'))
+    .join('\n')
+}
+
+function MarkdownTable({
+  headers,
+  rows,
+  truncated,
+}: {
+  headers: string[]
+  rows: string[][]
+  truncated: boolean
+}) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  const copyTable = async () => {
+    try {
+      await navigator.clipboard.writeText(tableClipboardText(headers, rows))
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
+  }
+
+  const copyLabel = copyState === 'copied'
+    ? '표 복사됨'
+    : copyState === 'failed'
+      ? '표 복사 실패'
+      : '표 복사'
+
+  return (
+    <div className="chat-markdown-table-frame">
+      <button
+        aria-label={copyLabel}
+        className="chat-markdown-table-copy"
+        onClick={(event) => {
+          event.stopPropagation()
+          void copyTable()
+        }}
+        onKeyDown={(event) => event.stopPropagation()}
+        type="button"
+      >
+        {copyLabel}
+      </button>
+      <div className="chat-markdown-table-scroll">
+        <table className="chat-markdown-table">
+          <thead>
+            <tr>{headers.map((cell, cellIndex) => <th key={`header-${cellIndex}`}>{inlineMarkdown(cell, `header-${cellIndex}`)}</th>)}</tr>
+          </thead>
+          <tbody>{rows.map((row, rowIndex) => (
+            <tr key={`row-${rowIndex}`}>{headers.map((_, cellIndex) => <td key={`cell-${rowIndex}-${cellIndex}`}>{inlineMarkdown(row[cellIndex] ?? '', `cell-${rowIndex}-${cellIndex}`)}</td>)}</tr>
+          ))}</tbody>
+        </table>
+      </div>
+      {truncated && <p role="status">표는 최대 {MAX_TABLE_ROWS}개 행까지만 표시됩니다.</p>}
+    </div>
+  )
 }
 
 function isBlockStart(lines: string[], index: number): boolean {
@@ -112,15 +185,12 @@ export function SafeMarkdown({ value }: { value: string }) {
       const tableWasTruncated = index < lines.length && (lines[index] ?? '').includes('|')
       while (index < lines.length && (lines[index] ?? '').includes('|')) index += 1
       blocks.push(
-        <div className="overflow-x-auto" key={`table-${index}`}>
-          <table>
-            <thead><tr>{headers.map((cell, cellIndex) => <th key={`header-${cellIndex}`}>{inlineMarkdown(cell, `header-${cellIndex}`)}</th>)}</tr></thead>
-            <tbody>{rows.map((row, rowIndex) => (
-              <tr key={`row-${rowIndex}`}>{headers.map((_, cellIndex) => <td key={`cell-${rowIndex}-${cellIndex}`}>{inlineMarkdown(row[cellIndex] ?? '', `cell-${rowIndex}-${cellIndex}`)}</td>)}</tr>
-            ))}</tbody>
-          </table>
-          {tableWasTruncated && <p role="status">표는 최대 {MAX_TABLE_ROWS}개 행까지만 표시됩니다.</p>}
-        </div>,
+        <MarkdownTable
+          headers={headers}
+          key={`table-${index}`}
+          rows={rows}
+          truncated={tableWasTruncated}
+        />,
       )
       continue
     }

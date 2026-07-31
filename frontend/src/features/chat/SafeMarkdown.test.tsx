@@ -1,5 +1,5 @@
-import { render, screen } from '@testing-library/react'
-import { describe, expect, it } from 'vitest'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
 import { SafeMarkdown } from './SafeMarkdown'
 
 describe('SafeMarkdown', () => {
@@ -22,6 +22,29 @@ describe('SafeMarkdown', () => {
     expect(screen.getByText('orders').tagName).toBe('STRONG')
     expect(screen.getByText('customers').tagName).toBe('CODE')
     expect(screen.getByText('권한 확인')).toBeInTheDocument()
+  })
+
+  it('copies only the rendered table as Excel-compatible safe TSV', async () => {
+    const writeText = vi.fn<() => Promise<void>>().mockResolvedValue()
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    })
+    render(<SafeMarkdown value={[
+      '| 테이블 | 설명 |',
+      '| --- | --- |',
+      '| `orders` | **주문** 정보 |',
+      '| formula | =SUM(A1:A2) |',
+    ].join('\n')} />)
+
+    fireEvent.click(screen.getByRole('button', { name: '표 복사' }))
+
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(
+        "테이블\t설명\norders\t주문 정보\nformula\t'=SUM(A1:A2)",
+      )
+    })
+    expect(screen.getByRole('button', { name: '표 복사됨' })).toBeInTheDocument()
   })
 
   it('never interprets raw HTML or activates answer-provided links', () => {

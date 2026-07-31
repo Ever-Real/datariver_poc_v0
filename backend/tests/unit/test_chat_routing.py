@@ -363,6 +363,40 @@ async def test_vector_reader_prefers_a_bounded_matching_table_name_window() -> N
     assert index.searches == [("capital_project_ai_accelerator", {"search_fields": "TABLE"})]
 
 
+async def test_vector_reader_prefers_a_mixed_language_table_name_fragment() -> None:
+    workspace_id = uuid4()
+    matching = _asset(workspace_id, name="capital_project_plan")
+    index = _CatalogIndex(
+        (_asset(workspace_id, name="First"),),
+        query_items={"capital": (matching,)},
+    )
+    binding = ModelBinding.activated(
+        provider="test-provider",
+        model="operator-selected-embedding",
+        prompt_version="embedding-v1",
+        tool_schema_version="openai-embeddings-v1",
+        configuration_version=None,
+        configuration_hash=None,
+        adapter_contract="openai-compatible-embeddings-v1",
+        deployment_configuration_hash="a" * 64,
+    )
+    reader = BoundedCatalogVectorReader(
+        catalog_index=index,
+        embedding=_Embedding(),
+        binding=binding,
+    )
+
+    result = await reader.search(
+        subject=_subject(workspace_id),
+        access=static_classification_access_floor(),
+        question="capital이름을 가진 테이블이 뭐뭐있어?",
+        limit=2,
+    )
+
+    assert result.items == (matching,)
+    assert index.searches == [("capital", {"search_fields": "TABLE"})]
+
+
 async def test_vector_reader_falls_back_when_an_identifier_has_no_visible_table_match() -> None:
     workspace_id = uuid4()
     fallback = _asset(workspace_id, name="First")

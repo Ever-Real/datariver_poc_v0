@@ -17,6 +17,7 @@ from datariver.domain.common import ValidationError
 from datariver.domain.knowledge_pipeline import ModelBinding, PdfPage
 
 _CATALOG_IDENTIFIER = re.compile(r"[A-Za-z][A-Za-z0-9]*(?:[_-][A-Za-z0-9]+)+")
+_CATALOG_MIXED_LANGUAGE_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]{2,99}(?=[가-힣])")
 
 
 class BoundedCatalogVectorReader(ChatVectorCatalogReader):
@@ -102,9 +103,9 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
         question: str,
         candidate_limit: int,
     ) -> CatalogPage:
-        """Prefer an exact catalog-name window without broadening the access scope."""
+        """Prefer a bounded catalog-name window without broadening the access scope."""
 
-        anchor = self._catalog_identifier_anchor(question)
+        anchor = self._catalog_name_anchor(question)
         if anchor:
             anchored_page = await self._catalog_index.search(
                 subject=subject,
@@ -126,15 +127,25 @@ class BoundedCatalogVectorReader(ChatVectorCatalogReader):
         )
 
     @staticmethod
-    def _catalog_identifier_anchor(question: str) -> str:
-        """Return a bounded table-like token; natural-language queries keep vector behavior."""
+    def _catalog_name_anchor(question: str) -> str:
+        """Return a bounded catalog-name token; natural-language queries keep vector behavior."""
 
-        candidates = tuple(
+        identifier_candidates = tuple(
             match.group(0)
             for match in _CATALOG_IDENTIFIER.finditer(question)
             if len(match.group(0)) <= 100
         )
-        return max(candidates, key=len, default="")
+        if identifier_candidates:
+            return max(identifier_candidates, key=len)
+
+        # Korean-language questions commonly attach a requested Latin table-name fragment
+        # directly to a Korean suffix (for example, "capital이름"). Preserve that
+        # fragment as a constrained table-field lookup rather than falling back to
+        # an unrelated blank catalog window.
+        mixed_language_candidates = tuple(
+            match.group(0) for match in _CATALOG_MIXED_LANGUAGE_NAME.finditer(question)
+        )
+        return max(mixed_language_candidates, key=len, default="")
 
     @staticmethod
     def _candidate_text(candidate: CatalogAssetIndex) -> str:
