@@ -78,8 +78,9 @@ source must not be represented as having that protection.
 - `scripts/workflow_fresh_setup.py`: **빈 환경 전용**이다. Docker 아키텍처와 clean checkout을
   검사하고, URL은 형식을 검증하며, token/password/access key는 파일 또는 숨김 입력으로만
   받는다. bootstrap, 이미지 검증·load 또는 build, PostgreSQL/Keycloak, migration, 선택
-  connector, storage 초기화, 기본 runtime, health/DataHub probe, 최초 catalog sync를 순차
-  실행한다. 기존 DB·object를 이관하는 환경은 이 명령 대신
+  connector, storage 초기화, 기본 runtime, health/DataHub probe, 최초 catalog sync와
+  로컬 관리자의 ACTIVE Catalog System/Domain scope 동기화를 순차 실행한다. 기존 DB·object를
+  이관하는 환경은 이 명령 대신
   [Mac-to-WSL runbook](docs/26_MAC_TO_WSL_MIGRATION_RUNBOOK.md)의 백업/복원 게이트를 사용한다.
 - `scripts/workflow_update_restart.py`: 첫 프로그램이 기록한 ignored state를 기준으로
   `git pull --ff-only`를 선택 실행하고 변경 경로를 분류한다. 문서·테스트·이 운영
@@ -2185,6 +2186,9 @@ CI repeats these checks, audits dependencies, scans source/IaC and release-equiv
 - Requester final self-approval is forbidden; high-risk operations require recent strong authentication.
 - Administrator self-access changes are forbidden. Password fallback is typed, five-minute,
   Maker-Checker, one-time and default-disabled; it never converts password/OTP into hardware assurance.
+- Development setup/update may use an independent local checker to add only exact System/Domain
+  UUIDs from non-deleted ACTIVE Catalog projections to the fixed local administrator. It is not a
+  wildcard, does not authorize quarantined data use and never enables RESTRICTED Chat.
 - API, relay, upload, governance, bootstrap and migration database identities are separate; each worker receives only its own table grants and mounted secrets.
 - DataHub writes cannot bypass governance, and an external acknowledgement alone never means applied.
 - Redis loss affects latency/delivery only; PostgreSQL outbox and leased job state recover correctness.

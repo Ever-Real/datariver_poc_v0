@@ -347,6 +347,27 @@ def _sync_catalog(runner: Runner, *, env_file: Path) -> None:
     runner.run((sys.executable, "-"), env=environment, input_text=CATALOG_SYNC_PROGRAM)
 
 
+def _reconcile_local_admin_catalog_access(
+    runner: Runner,
+    *,
+    env_file: Path,
+    files: tuple[Path, ...],
+) -> None:
+    _compose(
+        runner,
+        env_file=env_file,
+        files=files,
+        trailing=(
+            "exec",
+            "-T",
+            "api",
+            "/app/.venv/bin/python",
+            "-m",
+            "datariver.local_admin_catalog_access",
+        ),
+    )
+
+
 def _print_plan(
     *,
     previous_commit: str,
@@ -790,11 +811,20 @@ def main() -> int:
             path.startswith("backend/") or path in {"compose.yaml", "pyproject.toml"}
             for path in changed_paths
         ) or any(key.startswith("DATAHUB_") for key in environment_keys)
+        catalog_synced = False
         if (backend_changed or (plan.restart_datahub and state.local_datahub)) and (
             not args.skip_catalog_sync
         ):
             runner.note("Backend 변경 후 DataHub catalog projection을 동기화합니다.")
             _sync_catalog(runner, env_file=env_file)
+            catalog_synced = True
+        if catalog_synced or reapply_local_identity:
+            runner.note("활성 Catalog System/Domain 범위를 로컬 관리자에게 동기화합니다.")
+            _reconcile_local_admin_catalog_access(
+                runner,
+                env_file=env_file,
+                files=files,
+            )
 
         write_applied_state(
             state_file,

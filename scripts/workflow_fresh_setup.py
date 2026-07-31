@@ -447,6 +447,27 @@ def _sync_catalog(runner: Runner, *, env_file: Path) -> None:
     runner.run((sys.executable, "-"), env=environment, input_text=CATALOG_SYNC_PROGRAM)
 
 
+def _reconcile_local_admin_catalog_access(
+    runner: Runner,
+    *,
+    env_file: Path,
+    files: tuple[Path, ...],
+) -> None:
+    _compose(
+        runner,
+        env_file=env_file,
+        files=files,
+        trailing=(
+            "exec",
+            "-T",
+            "api",
+            "/app/.venv/bin/python",
+            "-m",
+            "datariver.local_admin_catalog_access",
+        ),
+    )
+
+
 def _health_check(runner: Runner, *, env_file: Path) -> None:
     values = read_env_values(env_file)
     api_port = values.get("API_PORT", "8000")
@@ -916,6 +937,12 @@ def main() -> int:
         if not args.skip_catalog_sync:
             runner.note("최초 DataHub catalog projection을 동기화합니다.")
             _sync_catalog(runner, env_file=env_file)
+            runner.note("활성 Catalog System/Domain 범위를 로컬 관리자에게 동기화합니다.")
+            _reconcile_local_admin_catalog_access(
+                runner,
+                env_file=env_file,
+                files=runtime_files,
+            )
 
         write_applied_state(
             state_path(ROOT, args.profile),
