@@ -1043,6 +1043,42 @@ export interface KnowledgeAssetPage {
   limit: number
 }
 
+export type KnowledgeAssetVersionKind =
+  | 'STUDIO_RELEASE'
+  | 'INSTANCE_RELEASE'
+  | 'CHANGESET'
+
+export interface KnowledgeAssetVersionHistoryItem {
+  id: string
+  kind: KnowledgeAssetVersionKind
+  version_label: string
+  title: string | null
+  status: string
+  author_id: string | null
+  author_name: string | null
+  author_email: string | null
+  reviewed_by: string | null
+  reviewer_name: string | null
+  reviewer_email: string | null
+  published_by: string | null
+  publisher_name: string | null
+  publisher_email: string | null
+  created_at: string
+  is_current: boolean
+  studio_release_id: string | null
+  instance_release_id: string | null
+  changeset_id: string | null
+  content_hash: string | null
+  node_count: number | null
+  edge_count: number | null
+}
+
+export interface KnowledgeAssetVersionHistoryPage {
+  items: KnowledgeAssetVersionHistoryItem[]
+  next_cursor: string | null
+  limit: number
+}
+
 export interface KnowledgeAssetBindingSummary {
   id: string
   target_stable_element_id: string

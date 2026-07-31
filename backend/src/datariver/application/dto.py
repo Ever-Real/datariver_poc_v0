@@ -1299,6 +1299,31 @@ class KnowledgeStudioSourceDetail:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeStudioAssetReleaseSource:
+    graph_id: UUID
+    graph_name: str
+    graph_slug: str
+    classification: Classification
+    domain_name: str | None
+    studio_release_id: UUID
+    release_no: int
+    state: str
+    contract_hash: str
+    tbox_hash: str
+    published_at: datetime
+    class_count: int
+    property_count: int
+    relationship_count: int
+    elements: tuple[KnowledgeStudioTBoxElementRecord, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeStudioAssetReleaseSourcePage:
+    items: tuple[KnowledgeStudioAssetReleaseSource, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeStudioSourceAccess:
     asset_id: UUID
     classification: Classification

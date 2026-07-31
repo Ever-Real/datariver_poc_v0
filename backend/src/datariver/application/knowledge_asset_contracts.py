@@ -47,6 +47,38 @@ class KnowledgeAssetPage:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeAssetVersionEvent:
+    event_id: UUID
+    kind: str
+    version_label: str
+    title: str
+    status: str
+    author_id: UUID
+    author_name: str | None
+    author_email: str | None
+    reviewed_by: UUID | None
+    reviewer_name: str | None
+    reviewer_email: str | None
+    published_by: UUID | None
+    publisher_name: str | None
+    publisher_email: str | None
+    created_at: datetime
+    is_current: bool
+    studio_release_id: UUID | None = None
+    instance_release_id: UUID | None = None
+    changeset_id: UUID | None = None
+    content_hash: str | None = None
+    node_count: int | None = None
+    edge_count: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeAssetVersionPage:
+    items: tuple[KnowledgeAssetVersionEvent, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeAssetBindingSummary:
     binding_id: UUID
     target_stable_element_id: str

@@ -24,6 +24,8 @@ from datariver.interfaces.http.schemas import (
     KnowledgeAssetProjectionSummaryResponse,
     KnowledgeAssetSchemaElementSummaryResponse,
     KnowledgeAssetSummaryResponse,
+    KnowledgeAssetVersionEventResponse,
+    KnowledgeAssetVersionPageResponse,
     KnowledgeDeliveryPolicyResponse,
     KnowledgeDeliveryPolicyUpdate,
 )
@@ -195,6 +197,62 @@ async def get_knowledge_asset_detail(
         request_id=context.request_id,
     )
     return _detail_response(detail)
+
+
+@registry_router.get(
+    "/assets/{graph_id}/versions",
+    response_model=KnowledgeAssetVersionPageResponse,
+)
+async def list_knowledge_asset_versions(
+    graph_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    cursor: Annotated[str | None, Query(max_length=2_000)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+) -> KnowledgeAssetVersionPageResponse:
+    page = await _service(request, session).list_versions(
+        workspace_id=context.workspace_id,
+        graph_id=graph_id,
+        subject=context.subject,
+        cursor=cursor,
+        limit=limit,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return KnowledgeAssetVersionPageResponse(
+        items=[
+            KnowledgeAssetVersionEventResponse(
+                id=item.event_id,
+                kind=item.kind,
+                version_label=item.version_label,
+                title=item.title,
+                status=item.status,
+                author_id=item.author_id,
+                author_name=item.author_name,
+                author_email=item.author_email,
+                reviewed_by=item.reviewed_by,
+                reviewer_name=item.reviewer_name,
+                reviewer_email=item.reviewer_email,
+                published_by=item.published_by,
+                publisher_name=item.publisher_name,
+                publisher_email=item.publisher_email,
+                created_at=item.created_at,
+                is_current=item.is_current,
+                studio_release_id=item.studio_release_id,
+                instance_release_id=item.instance_release_id,
+                changeset_id=item.changeset_id,
+                content_hash=item.content_hash,
+                node_count=item.node_count,
+                edge_count=item.edge_count,
+            )
+            for item in page.items
+        ],
+        next_cursor=page.next_cursor,
+        limit=limit,
+    )
 
 
 @registry_router.put(

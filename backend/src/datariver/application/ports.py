@@ -72,6 +72,8 @@ from datariver.application.dto import (
     KnowledgeGraphRecord,
     KnowledgeReleaseRecord,
     KnowledgeStudioABoxRecord,
+    KnowledgeStudioAssetReleaseSource,
+    KnowledgeStudioAssetReleaseSourcePage,
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
@@ -1538,6 +1540,27 @@ class KnowledgeStudioStore(Protocol):
         draft_id: UUID,
     ) -> KnowledgeStudioTBoxRecord | None: ...
 
+    async def list_tbox_asset_release_sources(
+        self,
+        *,
+        workspace_id: UUID,
+        maximum_classification: int,
+        allowed_domain_ids: frozenset[UUID],
+        excluded_graph_id: UUID | None,
+        query: str,
+        cursor: str | None,
+        limit: int,
+    ) -> KnowledgeStudioAssetReleaseSourcePage: ...
+
+    async def get_tbox_asset_release_source(
+        self,
+        *,
+        workspace_id: UUID,
+        studio_release_id: UUID,
+        maximum_classification: int,
+        allowed_domain_ids: frozenset[UUID],
+    ) -> KnowledgeStudioAssetReleaseSource | None: ...
+
     async def create_tbox_block(
         self,
         *,
@@ -1616,6 +1639,13 @@ class KnowledgeStudioStore(Protocol):
         draft_id: UUID,
         proposal_id: UUID,
     ) -> KnowledgeStudioTBoxProposalRecord | None: ...
+
+    async def list_applied_tbox_asset_release_pins(
+        self,
+        *,
+        workspace_id: UUID,
+        draft_id: UUID,
+    ) -> tuple[dict[str, object], ...]: ...
 
     async def apply_tbox_proposal(
         self,

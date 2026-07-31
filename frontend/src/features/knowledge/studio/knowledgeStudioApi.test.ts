@@ -6,6 +6,7 @@ import {
   cancelKnowledgeStudioIngestion,
   createKnowledgeStudioDraft,
   createKnowledgeStudioEditDraft,
+  createKnowledgeStudioTBoxAssetReleaseProposal,
   createKnowledgeStudioTBoxCatalogProposal,
   createKnowledgeStudioManagedDomain,
   discardKnowledgeStudioDraft,
@@ -15,6 +16,7 @@ import {
   previewKnowledgeStudioBinding,
   publishKnowledgeStudioDraft,
   retryKnowledgeStudioIngestion,
+  searchKnowledgeStudioTBoxAssetReleases,
   submitKnowledgeStudioReview,
   uploadKnowledgeStudioTBoxDocumentProposal,
   type KnowledgeStudioBasicInformation,
@@ -275,6 +277,89 @@ describe('Knowledge Studio API', () => {
     expect(JSON.parse(typeof catalogBody === 'string' ? catalogBody : '{}')).toEqual({
       asset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cc',
       selected_field_paths: ['emp_id', 'emp_name'],
+      mode: 'MERGE_INTO_CURRENT',
+    })
+  })
+
+  it('searches exact published T-Box releases and creates a fenced Asset Proposal', async () => {
+    const release = {
+      graph_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
+      graph_name: 'Enterprise glossary',
+      graph_slug: 'enterprise-glossary',
+      classification: 'INTERNAL',
+      domain_name: 'Data Governance',
+      studio_release_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d1',
+      release_no: 7,
+      state: 'ACTIVE',
+      contract_hash: 'a'.repeat(64),
+      tbox_hash: 'b'.repeat(64),
+      published_at: '2026-07-31T01:00:00Z',
+      class_count: 8,
+      property_count: 21,
+      relationship_count: 6,
+    }
+    const proposal = {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d2',
+      draft_id: draftResponse(3).id,
+      state: 'READY',
+      mode: 'MERGE_INTO_CURRENT',
+      merge_strategy: 'KEEP_ORIGINAL',
+      base_draft_version: 3,
+      prompt: 'server-owned exact Asset release import',
+      elements: [],
+      conflicts: [],
+      source_reference: {
+        contract_version: 'KNOWLEDGE_STUDIO_ASSET_RELEASE_SOURCE_V1',
+        studio_release_id: release.studio_release_id,
+        tbox_hash: release.tbox_hash,
+      },
+      version: 1,
+      created_at: '2026-07-31T01:00:00Z',
+      updated_at: '2026-07-31T01:00:00Z',
+    }
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        items: [release],
+        page: { next_cursor: null, limit: 50 },
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(proposal), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    const draftId = String(proposal.draft_id)
+
+    await searchKnowledgeStudioTBoxAssetReleases(client, draftId, 'glossary')
+    await createKnowledgeStudioTBoxAssetReleaseProposal(
+      client,
+      draftId,
+      {
+        studio_release_id: release.studio_release_id,
+        tbox_hash: release.tbox_hash,
+        target_block_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d3',
+        mode: 'MERGE_INTO_CURRENT',
+      },
+      '"3"',
+    )
+
+    expect(requestUrl(fetchMock.mock.calls[0]?.[0])).toContain(
+      '/tbox/asset-releases?q=glossary&limit=50',
+    )
+    expect(fetchMock.mock.calls[0]?.[1]?.cache).toBe('no-store')
+    expect(requestUrl(fetchMock.mock.calls[1]?.[0])).toContain(
+      '/tbox/asset-release-proposals',
+    )
+    const proposalHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers)
+    expect(proposalHeaders.get('If-Match')).toBe('"3"')
+    const proposalBody = fetchMock.mock.calls[1]?.[1]?.body
+    expect(JSON.parse(typeof proposalBody === 'string' ? proposalBody : '{}')).toEqual({
+      studio_release_id: release.studio_release_id,
+      tbox_hash: release.tbox_hash,
+      target_block_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d3',
       mode: 'MERGE_INTO_CURRENT',
     })
   })

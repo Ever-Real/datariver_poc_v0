@@ -41,6 +41,10 @@ Proposal을 거쳐 현재 블록에 병합하거나 새 블록으로 추가한�
 누적되고 최신 블록에서 이전 Class를 참조할 수 있다. 동일 identity/name 충돌은 기본
 `KEEP_ORIGINAL`이며 사용자 승인 없이 덮어쓰지 않는다.
 
+다른 Asset은 mutable alias나 active pointer가 아니라 권한 있는 exact Studio Release와
+contract/T-Box hash를 선택한다. 서버는 Proposal 적용, 검토 요청과 발행 시 해당 pin의
+Workspace·Domain·보안등급·Release 소유권과 aggregate ontology hash를 다시 검증한다.
+
 ## 4. A-Box 구성
 
 ### 직접 입력
@@ -60,9 +64,10 @@ DOC/XLS, XML entity, macro/external OpenXML payload는 허용하지 않는다.
 ### DB Binding
 
 Studio는 Catalog의 로컬 Asset UUID, provider schema version, projection version과 명시적
-field allowlist를 고정한다. 현재 승인된 physical reader는 5–10행 Preview/Preflight
-계약이며 전체 DB ingestion으로 표현하지 않는다. 전체 적재는 운영자가 등록한 batch
-reader, 별도 worker lease/attempt/event와 source read-back이 준비되어야 활성화한다.
+field allowlist를 고정한다. 5–10행 Preview/Preflight와 별개로 ADR-0094의 database-ingestion
+worker는 게시된 Studio Release, 등록된 connection profile/version/hash와 source field pin을
+고정하고 성공 시에도 typed DRAFT Changeset만 만든다. 대상 runtime에서 전용 worker,
+DB principal과 승인 manifest capability가 비활성화되어 있으면 enqueue를 fail closed한다.
 
 ## 5. 외부 API와 Chat
 
@@ -77,7 +82,8 @@ Chat의 의미 라우터는 GRAPH 여부만 판단한다. 이후 Delivery Policy
 
 ## 6. 의도적으로 남은 운영 게이트
 
-- 승인된 DB/CSV batch physical reader와 대용량 A-Box worker
+- 목표 runtime의 승인 DB connection manifest/credential, 전용 worker principal 및 실제
+  source read-back 운영 증거
 - system-managed lineage/glossary 기본 Graph의 scheduler·receipt·managed publish policy
 - 목표 환경의 부하/soak, Neo4j rebuild 및 복구 증거
 

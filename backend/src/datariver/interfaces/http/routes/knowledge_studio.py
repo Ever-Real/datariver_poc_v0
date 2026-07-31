@@ -9,6 +9,7 @@ from fastapi import APIRouter, File, Form, Header, Query, Request, Response, Upl
 
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.dto import (
+    KnowledgeStudioAssetReleaseSource,
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDraftRecord,
     KnowledgeStudioIngestionJobRecord,
@@ -71,6 +72,8 @@ from datariver.interfaces.http.schemas import (
     KnowledgePropertyProfileValuesRequest,
     KnowledgeStudioABoxResponse,
     KnowledgeStudioAdvanceRequest,
+    KnowledgeStudioAssetReleaseSourcePageResponse,
+    KnowledgeStudioAssetReleaseSourceResponse,
     KnowledgeStudioBasicInformationRequest,
     KnowledgeStudioBindingMutationResponse,
     KnowledgeStudioBindingRequest,
@@ -97,6 +100,7 @@ from datariver.interfaces.http.schemas import (
     KnowledgeStudioSourceDatasetResponse,
     KnowledgeStudioSourceDetailResponse,
     KnowledgeStudioSourcePageResponse,
+    KnowledgeStudioTBoxAssetReleaseProposalRequest,
     KnowledgeStudioTBoxBlockCreateRequest,
     KnowledgeStudioTBoxBlockResponse,
     KnowledgeStudioTBoxBlockUpdateRequest,
@@ -459,6 +463,27 @@ def _source_response(
     )
 
 
+def _asset_release_source_response(
+    source: KnowledgeStudioAssetReleaseSource,
+) -> KnowledgeStudioAssetReleaseSourceResponse:
+    return KnowledgeStudioAssetReleaseSourceResponse(
+        graph_id=source.graph_id,
+        graph_name=source.graph_name,
+        graph_slug=source.graph_slug,
+        classification=source.classification.name,
+        domain_name=source.domain_name,
+        studio_release_id=source.studio_release_id,
+        release_no=source.release_no,
+        state=source.state,
+        contract_hash=source.contract_hash,
+        tbox_hash=source.tbox_hash,
+        published_at=source.published_at,
+        class_count=source.class_count,
+        property_count=source.property_count,
+        relationship_count=source.relationship_count,
+    )
+
+
 def _binding_response(
     binding: KnowledgeStudioBindingRecord,
 ) -> KnowledgeStudioBindingResponse:
@@ -522,6 +547,29 @@ def _tbox_element_response(
     )
 
 
+def _public_source_reference(
+    value: dict[str, object] | None,
+) -> dict[str, object] | None:
+    if value is None:
+        return None
+
+    def sanitize(item: object) -> object:
+        if isinstance(item, dict):
+            return {
+                str(key): sanitize(child)
+                for key, child in item.items()
+                if key not in {"bucket", "object_key"}
+            }
+        if isinstance(item, list):
+            return [sanitize(child) for child in item]
+        return item
+
+    sanitized = sanitize(value)
+    if not isinstance(sanitized, dict):
+        raise TypeError("A source reference must be a JSON object.")
+    return sanitized
+
+
 def _tbox_response(record: KnowledgeStudioTBoxRecord) -> KnowledgeStudioTBoxResponse:
     return KnowledgeStudioTBoxResponse(
         draft=_draft_response(record.draft),
@@ -534,7 +582,7 @@ def _tbox_response(record: KnowledgeStudioTBoxRecord) -> KnowledgeStudioTBoxResp
                 ordinal=block.ordinal,
                 collapsed=block.collapsed,
                 version=block.version,
-                source_reference=block.source_reference,
+                source_reference=_public_source_reference(block.source_reference),
                 elements=[_tbox_element_response(item) for item in block.elements],
                 created_at=block.created_at,
                 updated_at=block.updated_at,
@@ -594,7 +642,7 @@ def _proposal_response(
             for item in record.conflicts
         ],
         model_binding=record.model_binding,
-        source_reference=record.source_reference,
+        source_reference=_public_source_reference(record.source_reference),
         error_code=record.error_code,
         version=record.version,
         created_at=record.created_at,
@@ -1205,6 +1253,36 @@ async def create_knowledge_studio_tbox_catalog_proposal(
         target_block_id=payload.target_block_id,
         mode=TBoxProposalMode(payload.mode),
         expected_version=expected_version,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return _proposal_response(record)
+
+
+@router.post(
+    "/drafts/{draft_id}/tbox/asset-release-proposals",
+    response_model=KnowledgeStudioTBoxProposalResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_knowledge_studio_tbox_asset_release_proposal(
+    draft_id: UUID,
+    payload: KnowledgeStudioTBoxAssetReleaseProposalRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: IfMatch,
+) -> KnowledgeStudioTBoxProposalResponse:
+    record = await _service(request, session).create_tbox_asset_release_proposal(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        studio_release_id=payload.studio_release_id,
+        tbox_hash=payload.tbox_hash,
+        target_block_id=payload.target_block_id,
+        mode=TBoxProposalMode(payload.mode),
+        expected_version=_expected_version(if_match),
         environment=context.environment,
         request_id=context.request_id,
     )
@@ -1942,6 +2020,37 @@ async def retry_knowledge_studio_ingestion_job(
     _set_version_headers(response, record.version)
     response.headers["Cache-Control"] = "no-store"
     return _ingestion_response(record)
+
+
+@router.get(
+    "/drafts/{draft_id}/tbox/asset-releases",
+    response_model=KnowledgeStudioAssetReleaseSourcePageResponse,
+)
+async def list_knowledge_studio_tbox_asset_releases(
+    draft_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    q: Annotated[str, Query(max_length=200)] = "",
+    cursor: Annotated[str | None, Query(max_length=2_000)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> KnowledgeStudioAssetReleaseSourcePageResponse:
+    page = await _service(request, session).search_tbox_asset_release_sources(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        draft_id=draft_id,
+        query=q,
+        cursor=cursor,
+        limit=limit,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return KnowledgeStudioAssetReleaseSourcePageResponse(
+        items=[_asset_release_source_response(item) for item in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
 
 
 @router.get(

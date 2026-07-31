@@ -7,6 +7,7 @@ from datariver.application.knowledge_asset_contracts import (
     KnowledgeAssetOperationalDetail,
     KnowledgeAssetPage,
     KnowledgeAssetSummary,
+    KnowledgeAssetVersionPage,
     KnowledgeGraphChatScope,
 )
 from datariver.application.knowledge_asset_ports import (
@@ -97,6 +98,39 @@ class KnowledgeAssetService:
             request_id=request_id,
         )
         return detail
+
+    async def list_versions(
+        self,
+        *,
+        workspace_id: UUID,
+        graph_id: UUID,
+        subject: SubjectAttributes,
+        cursor: str | None,
+        limit: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeAssetVersionPage:
+        asset = await self._repository.get_asset(
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            clearance=int(subject.clearance),
+            allowed_domain_ids=subject.allowed_domain_ids,
+        )
+        if asset is None:
+            raise NotFoundError("The Knowledge Asset does not exist.")
+        await self._authorize_asset(
+            asset=asset,
+            subject=subject,
+            action=Action.KG_READ,
+            environment=environment,
+            request_id=request_id,
+        )
+        return await self._repository.list_version_events(
+            workspace_id=workspace_id,
+            graph_id=graph_id,
+            cursor=cursor,
+            limit=limit,
+        )
 
     async def resolve_api_asset(
         self,

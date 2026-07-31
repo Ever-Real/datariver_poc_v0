@@ -22,6 +22,7 @@ from datariver.application.knowledge_source_job_contracts import (
 from datariver.domain.authz import Action, Classification, SubjectAttributes
 from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.knowledge_pipeline import (
+    KNOWLEDGE_SOURCE_MEDIA_TYPES,
     MAX_SOURCE_BYTES,
     EmbeddingBatch,
     ExtractedNodeDraft,
@@ -444,10 +445,19 @@ async def _enqueue(
         )
 
 
-async def _add_upload(owner: AsyncEngine, *, workspace_id: UUID, actor_id: UUID) -> UUID:
+async def _add_upload(
+    owner: AsyncEngine,
+    *,
+    workspace_id: UUID,
+    actor_id: UUID,
+    display_name: str = "source.pdf",
+    media_type: str = "application/pdf",
+    content: bytes | None = None,
+) -> UUID:
     upload_id = uuid4()
     now = datetime.now(UTC)
-    source_hash = hashlib.sha256(f"%PDF-1.7\n{upload_id}\n%%EOF".encode()).hexdigest()
+    source_content = content if content is not None else f"%PDF-1.7\n{upload_id}\n%%EOF".encode()
+    source_hash = hashlib.sha256(source_content).hexdigest()
     async with owner.begin() as connection:
         await connection.execute(
             text(
@@ -462,8 +472,8 @@ async def _add_upload(owner: AsyncEngine, *, workspace_id: UUID, actor_id: UUID)
                     expires_at, created_at, updated_at, version
                 ) VALUES (
                     :upload_id, :workspace_id, 'datariver-accepted', :object_key,
-                    'source.pdf', NULL, 23, 'application/pdf', :source_hash,
-                    23, 'application/pdf', :source_hash, NULL, 0, 1, NULL,
+                    :display_name, NULL, :size_bytes, :media_type, :source_hash,
+                    :size_bytes, :media_type, :source_hash, NULL, 0, 1, NULL,
                     '{}'::jsonb, '[]'::jsonb, 'ACCEPTED', 'FORMAT_ONLY_V1',
                     1, :actor_id, NULL, NULL, :now, :now, 1
                 )
@@ -472,7 +482,10 @@ async def _add_upload(owner: AsyncEngine, *, workspace_id: UUID, actor_id: UUID)
             {
                 "upload_id": upload_id,
                 "workspace_id": workspace_id,
-                "object_key": f"knowledge/{workspace_id}/{upload_id}.pdf",
+                "object_key": f"knowledge/{workspace_id}/{upload_id}",
+                "display_name": display_name,
+                "size_bytes": len(source_content),
+                "media_type": media_type,
                 "source_hash": source_hash,
                 "actor_id": actor_id,
                 "now": now,
@@ -514,6 +527,124 @@ def _analysis(
             output_tokens=2,
         ),
     )
+
+
+@pytest.mark.skipif(not _ENABLED, reason="isolated Knowledge source PostgreSQL gate not enabled")
+@pytest.mark.asyncio
+async def test_source_snapshot_database_enforces_exact_governed_media_vocabulary() -> None:
+    owner = _engine(_OWNER_URL, _OWNER_SECRET)
+    try:
+        workspace_id, actor_id, _, graph_id, _ = await _seed(owner)
+        inserted: set[str] = set()
+        for index, media_type in enumerate(sorted(KNOWLEDGE_SOURCE_MEDIA_TYPES), start=1):
+            upload_id = await _add_upload(
+                owner,
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                display_name=f"approved-source-{index}",
+                media_type=media_type,
+                content=f"approved-source-{index}".encode(),
+            )
+            async with owner.begin() as connection:
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO knowledge.source_snapshots (
+                            id, workspace_id, graph_id, upload_id, bucket, object_key,
+                            storage_version, media_type, byte_size, content_sha256,
+                            classification, state, created_by, created_at, updated_at
+                        )
+                        SELECT
+                            :source_id, manifest.workspace_id, :graph_id, manifest.id,
+                            manifest.bucket, manifest.object_key, 'manifest-v1',
+                            manifest.mime, manifest.size_bytes, manifest.sha256,
+                            manifest.classification, 'PENDING', manifest.owner_id,
+                            :now, :now
+                        FROM integration.object_manifests AS manifest
+                        WHERE manifest.workspace_id = :workspace_id
+                          AND manifest.id = :upload_id
+                        """
+                    ),
+                    {
+                        "source_id": uuid4(),
+                        "workspace_id": workspace_id,
+                        "graph_id": graph_id,
+                        "upload_id": upload_id,
+                        "now": datetime.now(UTC),
+                    },
+                )
+            inserted.add(media_type)
+
+        async with owner.connect() as connection:
+            stored = frozenset(
+                await connection.scalars(
+                    text(
+                        """
+                        SELECT media_type
+                        FROM knowledge.source_snapshots
+                        WHERE workspace_id = :workspace_id
+                          AND graph_id = :graph_id
+                          AND classification = 1
+                        """
+                    ),
+                    {"workspace_id": workspace_id, "graph_id": graph_id},
+                )
+            )
+        assert stored == KNOWLEDGE_SOURCE_MEDIA_TYPES
+        assert inserted == KNOWLEDGE_SOURCE_MEDIA_TYPES
+
+        rejected_media_types = (
+            "application/msword",
+            "application/vnd.ms-excel",
+            "application/vnd.ms-powerpoint",
+            "application/vnd.ms-word.document.macroEnabled.12",
+            "application/vnd.ms-excel.sheet.macroEnabled.12",
+            "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+            "application/octet-stream",
+        )
+        for index, media_type in enumerate(rejected_media_types, start=1):
+            upload_id = await _add_upload(
+                owner,
+                workspace_id=workspace_id,
+                actor_id=actor_id,
+                display_name=f"rejected-source-{index}",
+                media_type=media_type,
+                content=f"rejected-source-{index}".encode(),
+            )
+            with pytest.raises(
+                DBAPIError,
+                match="ck_source_snapshots_media_type_vocabulary",
+            ):
+                async with owner.begin() as connection:
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO knowledge.source_snapshots (
+                                id, workspace_id, graph_id, upload_id, bucket, object_key,
+                                storage_version, media_type, byte_size, content_sha256,
+                                classification, state, created_by, created_at, updated_at
+                            )
+                            SELECT
+                                :source_id, manifest.workspace_id, :graph_id, manifest.id,
+                                manifest.bucket, manifest.object_key, 'manifest-v1',
+                                manifest.mime, manifest.size_bytes, manifest.sha256,
+                                manifest.classification, 'PENDING', manifest.owner_id,
+                                :now, :now
+                            FROM integration.object_manifests AS manifest
+                            WHERE manifest.workspace_id = :workspace_id
+                              AND manifest.id = :upload_id
+                            """
+                        ),
+                        {
+                            "source_id": uuid4(),
+                            "workspace_id": workspace_id,
+                            "graph_id": graph_id,
+                            "upload_id": upload_id,
+                            "now": datetime.now(UTC),
+                        },
+                    )
+    finally:
+        await owner.dispose()
 
 
 @pytest.mark.skipif(not _ENABLED, reason="isolated Knowledge source PostgreSQL gate not enabled")

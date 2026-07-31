@@ -5,6 +5,7 @@ import type {
   KnowledgeAssetOperationalDetail,
   KnowledgeAssetPage,
   KnowledgeAssetSummary,
+  KnowledgeAssetVersionHistoryPage,
   KnowledgeRelease,
   KnowledgeSnapshot,
 } from '../../api/types'
@@ -69,6 +70,109 @@ const historicalRelease: KnowledgeRelease = {
   published_at: '2026-07-27T10:00:00Z',
 }
 
+const versionHistory: KnowledgeAssetVersionHistoryPage = {
+  items: [
+    {
+      id: asset.active_studio_release_id!,
+      kind: 'STUDIO_RELEASE',
+      version_label: 'T v3',
+      title: 'Finance schema',
+      status: 'ACTIVE',
+      author_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
+      author_name: 'Schema Author',
+      author_email: 'author@example.com',
+      reviewed_by: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d1',
+      reviewer_name: 'Schema Reviewer',
+      reviewer_email: 'reviewer@example.com',
+      published_by: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d2',
+      publisher_name: 'Schema Publisher',
+      publisher_email: 'publisher@example.com',
+      created_at: '2026-07-28T09:00:00Z',
+      is_current: true,
+      studio_release_id: asset.active_studio_release_id,
+      instance_release_id: null,
+      changeset_id: null,
+      content_hash: 'c'.repeat(64),
+      node_count: null,
+      edge_count: null,
+    },
+    {
+      id: currentRelease.id,
+      kind: 'INSTANCE_RELEASE',
+      version_label: 'A v2',
+      title: null,
+      status: 'PUBLISHED',
+      author_id: currentRelease.published_by,
+      author_name: 'Instance Author',
+      author_email: 'instance@example.com',
+      reviewed_by: null,
+      reviewer_name: null,
+      reviewer_email: null,
+      published_by: currentRelease.published_by,
+      publisher_name: 'Instance Publisher',
+      publisher_email: 'publisher@example.com',
+      created_at: currentRelease.published_at,
+      is_current: true,
+      studio_release_id: null,
+      instance_release_id: currentRelease.id,
+      changeset_id: null,
+      content_hash: currentRelease.content_hash,
+      node_count: currentRelease.node_count,
+      edge_count: currentRelease.edge_count,
+    },
+    {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3e0',
+      kind: 'CHANGESET',
+      version_label: 'Changeset v4',
+      title: 'Finance enrichment',
+      status: 'PUBLISHED',
+      author_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3e1',
+      author_name: 'Changeset Author',
+      author_email: 'changeset@example.com',
+      reviewed_by: '019fa57b-52de-74c0-9f5e-06ae7b1bf3e2',
+      reviewer_name: 'Changeset Reviewer',
+      reviewer_email: 'reviewer@example.com',
+      published_by: '019fa57b-52de-74c0-9f5e-06ae7b1bf3e3',
+      publisher_name: 'Changeset Publisher',
+      publisher_email: 'publisher@example.com',
+      created_at: '2026-07-28T08:00:00Z',
+      is_current: false,
+      studio_release_id: null,
+      instance_release_id: currentRelease.id,
+      changeset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3e0',
+      content_hash: null,
+      node_count: null,
+      edge_count: null,
+    },
+    {
+      id: historicalRelease.id,
+      kind: 'INSTANCE_RELEASE',
+      version_label: 'A v1',
+      title: null,
+      status: 'HISTORICAL',
+      author_id: historicalRelease.published_by,
+      author_name: 'Historical Author',
+      author_email: 'historical@example.com',
+      reviewed_by: null,
+      reviewer_name: null,
+      reviewer_email: null,
+      published_by: historicalRelease.published_by,
+      publisher_name: 'Historical Publisher',
+      publisher_email: 'publisher@example.com',
+      created_at: historicalRelease.published_at,
+      is_current: false,
+      studio_release_id: null,
+      instance_release_id: historicalRelease.id,
+      changeset_id: null,
+      content_hash: historicalRelease.content_hash,
+      node_count: historicalRelease.node_count,
+      edge_count: historicalRelease.edge_count,
+    },
+  ],
+  next_cursor: null,
+  limit: 50,
+}
+
 function snapshot(release: KnowledgeRelease): KnowledgeSnapshot {
   return {
     release,
@@ -92,6 +196,9 @@ describe('KnowledgeRegistry', () => {
       }
       if (path === `/knowledge/registry/assets/${asset.id}/detail`) {
         return Promise.resolve(detail)
+      }
+      if (path === `/knowledge/registry/assets/${asset.id}/versions?limit=50`) {
+        return Promise.resolve(versionHistory)
       }
       if (path.endsWith('/releases')) {
         return Promise.resolve([currentRelease, historicalRelease])
@@ -126,7 +233,11 @@ describe('KnowledgeRegistry', () => {
     const drawer = await screen.findByRole('complementary', {
       name: 'Finance Terms 지식 에셋 상세',
     })
-    expect(await within(drawer).findByText('CURRENT')).toBeInTheDocument()
+    expect(await within(drawer).findAllByText('CURRENT')).toHaveLength(2)
+    expect(within(drawer).getByText('T v3')).toBeInTheDocument()
+    expect(within(drawer).getByText('Changeset v4')).toBeInTheDocument()
+    expect(within(drawer).getByText('검토 Schema Reviewer')).toBeInTheDocument()
+    expect(within(drawer).getByText('발행 Changeset Publisher')).toBeInTheDocument()
     fireEvent.click(within(drawer).getByRole('button', { name: '미리보기' }))
     await waitFor(() => expect(request).toHaveBeenCalledWith(
       expect.stringContaining(`/releases/${historicalRelease.id}/snapshot`),

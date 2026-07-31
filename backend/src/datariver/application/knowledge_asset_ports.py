@@ -7,6 +7,7 @@ from datariver.application.knowledge_asset_contracts import (
     KnowledgeAssetOperationalDetail,
     KnowledgeAssetPage,
     KnowledgeAssetSummary,
+    KnowledgeAssetVersionPage,
     KnowledgeChatCandidate,
     KnowledgeGraphChatScope,
 )
@@ -54,6 +55,15 @@ class KnowledgeAssetRepository(Protocol):
         clearance: int,
         allowed_domain_ids: frozenset[UUID],
     ) -> KnowledgeAssetOperationalDetail | None: ...
+
+    async def list_version_events(
+        self,
+        *,
+        workspace_id: UUID,
+        graph_id: UUID,
+        cursor: str | None,
+        limit: int,
+    ) -> KnowledgeAssetVersionPage: ...
 
     async def save_delivery_policy(
         self,

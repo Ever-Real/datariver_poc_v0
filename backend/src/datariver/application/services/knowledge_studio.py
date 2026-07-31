@@ -6,6 +6,7 @@ from uuid import UUID
 
 from datariver.application.dto import (
     KnowledgeStudioABoxRecord,
+    KnowledgeStudioAssetReleaseSourcePage,
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
@@ -710,6 +711,132 @@ class KnowledgeStudioService:
             source_reference=validated_source_reference,
         )
 
+    async def search_tbox_asset_release_sources(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        query: str,
+        cursor: str | None,
+        limit: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioAssetReleaseSourcePage:
+        record = await self.get_tbox(
+            workspace_id=workspace_id,
+            subject=subject,
+            draft_id=draft_id,
+            environment=environment,
+            request_id=request_id,
+        )
+        await self._authorize_draft(
+            draft=record.draft,
+            subject=subject,
+            action=Action.KG_EDIT,
+            environment=environment,
+            request_id=request_id,
+        )
+        self._require_tbox_step(record.draft)
+        return await self._store.list_tbox_asset_release_sources(
+            workspace_id=workspace_id,
+            maximum_classification=min(
+                int(subject.clearance),
+                int(record.draft.classification),
+            ),
+            allowed_domain_ids=subject.allowed_domain_ids,
+            excluded_graph_id=record.draft.base_graph_id,
+            query=query.strip(),
+            cursor=cursor,
+            limit=limit,
+        )
+
+    async def create_tbox_asset_release_proposal(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        draft_id: UUID,
+        studio_release_id: UUID,
+        tbox_hash: str,
+        target_block_id: UUID | None,
+        mode: TBoxProposalMode,
+        expected_version: int,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> KnowledgeStudioTBoxProposalRecord:
+        record = await self.prepare_tbox_proposal(
+            workspace_id=workspace_id,
+            subject=subject,
+            draft_id=draft_id,
+            target_block_id=target_block_id,
+            mode=mode,
+            expected_version=expected_version,
+            environment=environment,
+            request_id=request_id,
+        )
+        source = await self._store.get_tbox_asset_release_source(
+            workspace_id=workspace_id,
+            studio_release_id=studio_release_id,
+            maximum_classification=min(
+                int(subject.clearance),
+                int(record.draft.classification),
+            ),
+            allowed_domain_ids=subject.allowed_domain_ids,
+        )
+        if source is None or source.graph_id == record.draft.base_graph_id:
+            raise NotFoundError("The permitted Knowledge Asset release does not exist.")
+        if source.tbox_hash != tbox_hash:
+            raise ConflictError(
+                "The selected Knowledge Asset T-Box changed. Select the exact release again."
+            )
+        current = tuple(
+            self._tbox_input(item) for block in record.blocks for item in block.elements
+        )
+        proposed = tuple(self._tbox_input(item) for item in source.elements)
+        if not proposed:
+            raise ConflictError("The selected Knowledge Asset release has no T-Box elements.")
+        proposed, corrected_defaults = self._validate_proposal_integrity(
+            current=current,
+            proposed=proposed,
+        )
+        conflicts = self._proposal_conflicts(current=current, proposed=proposed)
+        return await self._store.save_tbox_proposal(
+            workspace_id=workspace_id,
+            author_id=subject.subject_id,
+            draft_id=draft_id,
+            base_draft_version=expected_version,
+            target_block_id=target_block_id,
+            mode=mode.value,
+            prompt=(
+                f"Attach Knowledge Asset {source.graph_name} Studio Release v{source.release_no}."
+            ),
+            elements=proposed,
+            conflicts=conflicts,
+            model_binding={
+                "contract_version": "KNOWLEDGE_STUDIO_ASSET_RELEASE_IMPORT_V1",
+                "provider": "POSTGRESQL_CANONICAL",
+            },
+            source_reference={
+                "contract_version": "KNOWLEDGE_STUDIO_ASSET_RELEASE_SOURCE_V1",
+                "graph_id": str(source.graph_id),
+                "studio_release_id": str(source.studio_release_id),
+                "release_no": source.release_no,
+                "release_state": source.state,
+                "contract_hash": source.contract_hash,
+                "tbox_hash": source.tbox_hash,
+                "classification": source.classification.name,
+                "pipeline_evidence": {
+                    "contract_version": "KNOWLEDGE_STUDIO_PROPOSAL_VALIDATION_V1",
+                    "typed_schema_parse": "PASSED",
+                    "deterministic_correction_passes": 1,
+                    "corrected_default_count": corrected_defaults,
+                    "aggregate_validation_passes": 1,
+                    "cypher_execution": False,
+                },
+            },
+        )
+
     async def prepare_tbox_proposal(
         self,
         *,
@@ -737,7 +864,7 @@ class KnowledgeStudioService:
             request_id=request_id,
         )
         if record.draft.state != "DRAFT" or record.draft.current_step != "TBOX":
-            raise ConflictError("LLM schema proposals require a mutable Graph Builder Draft.")
+            raise ConflictError("T-Box proposals require a mutable Graph Builder Draft.")
         require_studio_version(record.draft.version, expected_version)
         block_ids = {block.block_id for block in record.blocks}
         if mode is TBoxProposalMode.MERGE_INTO_CURRENT:
@@ -821,6 +948,33 @@ class KnowledgeStudioService:
         )
         if proposal.state != "READY":
             raise ConflictError("Only a READY T-Box proposal can be applied.")
+        source_reference = proposal.source_reference or {}
+        if source_reference.get("contract_version") == "KNOWLEDGE_STUDIO_ASSET_RELEASE_SOURCE_V1":
+            try:
+                pinned_release_id = UUID(str(source_reference["studio_release_id"]))
+            except (KeyError, ValueError) as error:
+                raise ConflictError(
+                    "The Knowledge Asset release Proposal has an invalid source pin."
+                ) from error
+            source = await self._store.get_tbox_asset_release_source(
+                workspace_id=workspace_id,
+                studio_release_id=pinned_release_id,
+                maximum_classification=min(
+                    int(subject.clearance),
+                    int(record.draft.classification),
+                ),
+                allowed_domain_ids=subject.allowed_domain_ids,
+            )
+            if source is None or source.graph_id == record.draft.base_graph_id:
+                raise NotFoundError("The permitted Knowledge Asset release does not exist.")
+            if (
+                str(source.graph_id) != source_reference.get("graph_id")
+                or source.contract_hash != source_reference.get("contract_hash")
+                or source.tbox_hash != source_reference.get("tbox_hash")
+            ):
+                raise ConflictError(
+                    "The Knowledge Asset release pin changed before Proposal apply."
+                )
         proposal_elements = tuple(self._tbox_input(item) for item in proposal.elements)
         override_by_id = {item.get("stable_element_id", ""): item for item in element_overrides}
         if len(override_by_id) != len(element_overrides):
@@ -1746,6 +1900,10 @@ class KnowledgeStudioService:
             environment=environment,
             request_id=request_id,
         )
+        await self._revalidate_applied_asset_release_pins(
+            draft=draft,
+            subject=subject,
+        )
         return await self._store.submit_review(
             workspace_id=workspace_id,
             author_id=subject.subject_id,
@@ -1834,6 +1992,10 @@ class KnowledgeStudioService:
             environment=environment,
             request_id=request_id,
         )
+        await self._revalidate_applied_asset_release_pins(
+            draft=draft,
+            subject=subject,
+        )
         return await self._store.publish_draft(
             workspace_id=workspace_id,
             actor_id=subject.subject_id,
@@ -1843,6 +2005,43 @@ class KnowledgeStudioService:
             idempotency_key=idempotency_key,
             request_hash=request_hash,
         )
+
+    async def _revalidate_applied_asset_release_pins(
+        self,
+        *,
+        draft: KnowledgeStudioDraftRecord,
+        subject: SubjectAttributes,
+    ) -> None:
+        pins = await self._store.list_applied_tbox_asset_release_pins(
+            workspace_id=draft.workspace_id,
+            draft_id=draft.draft_id,
+        )
+        for pin in pins:
+            try:
+                studio_release_id = UUID(str(pin["studio_release_id"]))
+            except (KeyError, ValueError) as error:
+                raise ConflictError(
+                    "An applied Knowledge Asset release has an invalid source pin."
+                ) from error
+            source = await self._store.get_tbox_asset_release_source(
+                workspace_id=draft.workspace_id,
+                studio_release_id=studio_release_id,
+                maximum_classification=min(
+                    int(subject.clearance),
+                    int(draft.classification),
+                ),
+                allowed_domain_ids=subject.allowed_domain_ids,
+            )
+            if source is None or source.graph_id == draft.base_graph_id:
+                raise NotFoundError("An applied Knowledge Asset release is no longer permitted.")
+            if (
+                str(source.graph_id) != pin.get("graph_id")
+                or source.contract_hash != pin.get("contract_hash")
+                or source.tbox_hash != pin.get("tbox_hash")
+            ):
+                raise ConflictError(
+                    "An applied Knowledge Asset release pin changed before publication."
+                )
 
     def _source_reader(self) -> KnowledgeStudioSourceReader:
         if self._sources is None:

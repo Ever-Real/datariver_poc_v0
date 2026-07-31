@@ -2527,6 +2527,42 @@ class KnowledgeStudioSourceDetailResponse(BaseModel):
     stale_at: datetime | None
 
 
+class KnowledgeStudioAssetReleaseSourceResponse(BaseModel):
+    graph_id: UUID
+    graph_name: str
+    graph_slug: str
+    classification: Literal[
+        "PUBLIC",
+        "INTERNAL",
+        "CONFIDENTIAL",
+        "RESTRICTED",
+    ]
+    domain_name: str | None
+    studio_release_id: UUID
+    release_no: int = Field(ge=1)
+    state: Literal["ACTIVE", "ARCHIVED"]
+    contract_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    tbox_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    published_at: datetime
+    class_count: int = Field(ge=0)
+    property_count: int = Field(ge=0)
+    relationship_count: int = Field(ge=0)
+
+
+class KnowledgeStudioAssetReleaseSourcePageResponse(BaseModel):
+    items: list[KnowledgeStudioAssetReleaseSourceResponse]
+    page: PageMeta
+
+
+class KnowledgeStudioTBoxAssetReleaseProposalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    studio_release_id: UUID
+    tbox_hash: str = Field(pattern="^[0-9a-f]{64}$")
+    target_block_id: UUID | None = None
+    mode: Literal["MERGE_INTO_CURRENT", "APPEND_LAYER"]
+
+
 class KnowledgeStudioPreviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -2711,6 +2747,37 @@ class KnowledgeAssetSummaryResponse(BaseModel):
 
 class KnowledgeAssetPageResponse(BaseModel):
     items: list[KnowledgeAssetSummaryResponse]
+    next_cursor: str | None
+    limit: int
+
+
+class KnowledgeAssetVersionEventResponse(BaseModel):
+    id: UUID
+    kind: Literal["STUDIO_RELEASE", "INSTANCE_RELEASE", "CHANGESET"]
+    version_label: str
+    title: str
+    status: str
+    author_id: UUID
+    author_name: str | None
+    author_email: str | None
+    reviewed_by: UUID | None
+    reviewer_name: str | None
+    reviewer_email: str | None
+    published_by: UUID | None
+    publisher_name: str | None
+    publisher_email: str | None
+    created_at: datetime
+    is_current: bool
+    studio_release_id: UUID | None
+    instance_release_id: UUID | None
+    changeset_id: UUID | None
+    content_hash: str | None
+    node_count: int | None
+    edge_count: int | None
+
+
+class KnowledgeAssetVersionPageResponse(BaseModel):
+    items: list[KnowledgeAssetVersionEventResponse]
     next_cursor: str | None
     limit: int
 

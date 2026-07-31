@@ -68,17 +68,20 @@ import {
   applyKnowledgeStudioTBoxOperations,
   applyKnowledgeStudioTBoxProposal,
   createKnowledgeStudioTBoxBlock,
+  createKnowledgeStudioTBoxAssetReleaseProposal,
   createKnowledgeStudioTBoxCatalogProposal,
   createKnowledgeStudioTBoxProposal,
   deleteKnowledgeStudioTBoxBlock,
   getKnowledgeStudioTBoxCatalogSource,
   getKnowledgeStudioTBox,
   searchKnowledgeStudioTBoxCatalogSources,
+  searchKnowledgeStudioTBoxAssetReleases,
   newKnowledgeStudioIdempotencyKey,
   uploadKnowledgeStudioTBoxDocumentProposal,
   updateKnowledgeStudioTBoxBlock,
   type KnowledgeStudioDraft,
   type KnowledgeStudioTBox,
+  type KnowledgeStudioTBoxAssetRelease,
   type KnowledgeStudioTBoxBlock,
   type KnowledgeStudioTBoxBlockKind,
   type KnowledgeStudioTBoxElement,
@@ -1493,6 +1496,15 @@ export function GraphBuilder({
   const [selectedCatalogFields, setSelectedCatalogFields] = useState<Set<string>>(new Set())
   const [catalogLoading, setCatalogLoading] = useState(false)
   const [catalogDetailLoading, setCatalogDetailLoading] = useState(false)
+  const [assetReleaseOpen, setAssetReleaseOpen] = useState(false)
+  const [assetReleaseQuery, setAssetReleaseQuery] = useState('')
+  const [assetReleaseResults, setAssetReleaseResults] = useState<
+    KnowledgeStudioTBoxAssetRelease[]
+  >([])
+  const [selectedAssetRelease, setSelectedAssetRelease] = useState<
+    KnowledgeStudioTBoxAssetRelease
+  >()
+  const [assetReleaseLoading, setAssetReleaseLoading] = useState(false)
   const [documentCapabilityOpen, setDocumentCapabilityOpen] = useState(false)
   const [documentFile, setDocumentFile] = useState<File>()
   const [documentProposalMode, setDocumentProposalMode] = useState<
@@ -1591,6 +1603,73 @@ export function GraphBuilder({
       ),
     },
   ], [])
+  const assetReleaseColumns = useMemo<ColumnDef<KnowledgeStudioTBoxAssetRelease>[]>(
+    () => [
+      {
+        accessorKey: 'graph_name',
+        header: '지식 Asset',
+        size: 250,
+        cell: ({ row }) => (
+          <span className="grid min-w-0">
+            <strong className="truncate text-xs text-navy-900">
+              {row.original.graph_name}
+            </strong>
+            <small className="truncate text-[9px] text-slate-500">
+              {row.original.graph_slug}
+            </small>
+          </span>
+        ),
+      },
+      {
+        accessorKey: 'release_no',
+        header: 'Version',
+        size: 90,
+        cell: ({ row }) => (
+          <span className="font-mono text-[10px] font-bold">
+            v{row.original.release_no}
+          </span>
+        ),
+      },
+      {
+        accessorKey: 'state',
+        header: '상태',
+        size: 90,
+        cell: ({ row }) => (
+          <span className={`rounded px-2 py-1 text-[9px] font-black ${
+            row.original.state === 'ACTIVE'
+              ? 'bg-emerald-100 text-emerald-800'
+              : 'bg-slate-100 text-slate-600'
+          }`}>
+            {row.original.state}
+          </span>
+        ),
+      },
+      {
+        accessorKey: 'domain_name',
+        header: '도메인',
+        size: 150,
+        cell: ({ row }) => row.original.domain_name || '—',
+      },
+      {
+        id: 'schema_counts',
+        header: 'Schema',
+        size: 190,
+        cell: ({ row }) => (
+          <span className="whitespace-nowrap text-[10px] text-slate-600">
+            Class {row.original.class_count} · Property {row.original.property_count}
+            {' '}· Relation {row.original.relationship_count}
+          </span>
+        ),
+      },
+      {
+        accessorKey: 'published_at',
+        header: 'Published At',
+        size: 150,
+        cell: ({ row }) => new Date(row.original.published_at).toLocaleString(),
+      },
+    ],
+    [],
+  )
 
   const setOpenEditor = useCallback((nextId: string) => {
     editorOpenIdRef.current = nextId
@@ -2509,6 +2588,61 @@ export function GraphBuilder({
     }
   }
 
+  const searchAssetReleases = async () => {
+    if (assetReleaseLoading) return
+    setAssetReleaseLoading(true)
+    setSelectedAssetRelease(undefined)
+    try {
+      const result = await searchKnowledgeStudioTBoxAssetReleases(
+        client,
+        draftId,
+        assetReleaseQuery,
+      )
+      setAssetReleaseResults(result.items)
+      setStatus(`권한 범위의 게시된 지식 Asset 버전 ${result.items.length}건을 조회했습니다.`)
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '지식 Asset 버전을 조회하지 못했습니다.')
+    } finally {
+      setAssetReleaseLoading(false)
+    }
+  }
+
+  const proposeSelectedAssetRelease = async (
+    mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER',
+  ) => {
+    if (!selectedAssetRelease || working || locked || !selectedBlock) return
+    setWorking(true)
+    setStatus('서버에서 선택한 지식 Asset의 exact Release와 T-Box hash를 검증 중입니다.')
+    try {
+      const next = await createKnowledgeStudioTBoxAssetReleaseProposal(
+        client,
+        draftId,
+        {
+          studio_release_id: selectedAssetRelease.studio_release_id,
+          tbox_hash: selectedAssetRelease.tbox_hash,
+          target_block_id: mode === 'MERGE_INTO_CURRENT' ? selectedBlock.id : undefined,
+          mode,
+        },
+        responseEtag,
+      )
+      setProposal(next)
+      setProposalExcluded(new Set())
+      setProposalOverrides({})
+      setConflictActions(Object.fromEntries(
+        next.conflicts.map((item) => [item.conflict_id, 'KEEP_ORIGINAL']),
+      ))
+      setAssetReleaseOpen(false)
+      setStatus(
+        `${selectedAssetRelease.graph_name} v${selectedAssetRelease.release_no}에서 `
+        + `${next.elements.length}개 Typed 요소를 제안했습니다.`,
+      )
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : '지식 Asset Proposal 생성에 실패했습니다.')
+    } finally {
+      setWorking(false)
+    }
+  }
+
   const updateElement = (
     elementId: string,
     patch: Partial<KnowledgeStudioTBoxElement>,
@@ -2986,6 +3120,18 @@ export function GraphBuilder({
                     <Database size={13} aria-hidden="true" />
                     DB 테이블 검색
                   </button>
+                  <button
+                    type="button"
+                    className="button button-secondary py-1.5 text-[10px]"
+                    disabled={locked || working}
+                    onClick={() => {
+                      setAssetReleaseOpen(true)
+                      if (assetReleaseResults.length === 0) void searchAssetReleases()
+                    }}
+                  >
+                    <GitBranch size={13} aria-hidden="true" />
+                    다른 Asset 붙이기
+                  </button>
                   <span
                     className={`rounded px-2 py-1 text-[9px] font-black ${
                       validationPhase === 'VALID'
@@ -3415,6 +3561,98 @@ export function GraphBuilder({
               )}
             </section>
           </div>
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={assetReleaseOpen}
+        size="workspace"
+        title="다른 지식 Asset의 T-Box 붙이기"
+        description="권한 범위에서 게시된 exact Release를 선택합니다. 선택한 Release ID와 T-Box hash는 서버에서 다시 검증됩니다."
+        onRequestClose={() => {
+          if (!assetReleaseLoading && !working) setAssetReleaseOpen(false)
+        }}
+        footer={<>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={working}
+            onClick={() => setAssetReleaseOpen(false)}
+          >
+            취소
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={!selectedAssetRelease || working}
+            onClick={() => void proposeSelectedAssetRelease('APPEND_LAYER')}
+          >
+            새 블록 Proposal
+          </button>
+          <button
+            type="button"
+            className="button"
+            disabled={!selectedAssetRelease || working}
+            onClick={() => void proposeSelectedAssetRelease('MERGE_INTO_CURRENT')}
+          >
+            현재 블록 Proposal
+          </button>
+        </>}
+      >
+        <div className="grid gap-3">
+          <form
+            className="flex min-w-0 gap-2"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void searchAssetReleases()
+            }}
+          >
+            <input
+              aria-label="T-Box 지식 Asset 검색어"
+              className="input min-w-0 flex-1"
+              value={assetReleaseQuery}
+              maxLength={200}
+              placeholder="Asset 이름, Slug 또는 도메인 검색"
+              onChange={(event) => setAssetReleaseQuery(event.target.value)}
+            />
+            <button type="submit" className="button" disabled={assetReleaseLoading}>
+              <Search size={13} aria-hidden="true" />
+              검색
+            </button>
+          </form>
+          <p className="m-0 text-[10px] leading-4 text-slate-500">
+            각 행은 변경되지 않는 게시 버전입니다. 선택한 버전은 Proposal 미리보기로
+            전환되며, 적용 전까지 현재 T-Box 정본은 변경되지 않습니다.
+          </p>
+          <div className="max-h-[58vh] min-w-0 overflow-auto">
+            <DenseDataTable
+              caption="게시된 지식 Asset 버전 검색 결과"
+              columns={assetReleaseColumns}
+              data={assetReleaseResults}
+              getRowId={(item) => item.studio_release_id}
+              loading={assetReleaseLoading}
+              emptyMessage="검색 가능한 게시 지식 Asset 버전이 없습니다."
+              selectedRowId={selectedAssetRelease?.studio_release_id}
+              onRowActivate={setSelectedAssetRelease}
+            />
+          </div>
+          {selectedAssetRelease && (
+            <section
+              className="grid gap-1 rounded border border-blue-200 bg-blue-50 p-3 text-[10px]"
+              aria-label="선택한 지식 Asset 버전"
+            >
+              <strong className="text-xs text-blue-950">
+                {selectedAssetRelease.graph_name} · v{selectedAssetRelease.release_no}
+              </strong>
+              <span className="text-slate-600">
+                {selectedAssetRelease.classification} · {selectedAssetRelease.domain_name || '미지정'}
+              </span>
+              <span className="break-all font-mono text-[9px] text-slate-500">
+                Release {selectedAssetRelease.studio_release_id} · T-Box{' '}
+                {selectedAssetRelease.tbox_hash}
+              </span>
+            </section>
+          )}
         </div>
       </Dialog>
 

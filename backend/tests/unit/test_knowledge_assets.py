@@ -10,6 +10,7 @@ import pytest
 
 from datariver.application.knowledge_asset_contracts import (
     KnowledgeAssetSummary,
+    KnowledgeAssetVersionPage,
     KnowledgeChatCandidate,
     KnowledgeGraphChatScope,
 )
@@ -33,6 +34,8 @@ from datariver.domain.knowledge_assets import (
     validate_delivery_policy,
 )
 from datariver.infrastructure.db.knowledge_assets import (
+    _decode_version_cursor,
+    _encode_version_cursor,
     _policy_result,
     _replayed_policy,
 )
@@ -47,6 +50,14 @@ RELEASE_B_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1c0007")
 POLICY_A_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1c0008")
 POLICY_B_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1c0009")
 NOW = datetime(2026, 7, 31, 6, 0, tzinfo=UTC)
+
+
+def test_version_cursor_is_canonical_and_rejects_tampering() -> None:
+    cursor = _encode_version_cursor(created_at=NOW, event_id=RELEASE_A_ID)
+
+    assert _decode_version_cursor(cursor) == (NOW, RELEASE_A_ID)
+    with pytest.raises(ValidationError, match="version cursor is invalid"):
+        _decode_version_cursor(cursor + "=")
 
 
 class MemoryDecisionWriter:
@@ -372,4 +383,46 @@ async def test_delivery_policy_save_normalizes_terms_after_exact_asset_authoriza
         expected_version=1,
         idempotency_key="knowledge-delivery-policy",
         request_hash="hash",
+    )
+
+
+@pytest.mark.asyncio
+async def test_version_history_requires_the_same_asset_scope_before_repository_read() -> None:
+    policy = _policy(
+        graph_id=GRAPH_A_ID,
+        policy_id=POLICY_A_ID,
+        priority=100,
+        any_terms=("재무",),
+    )
+    asset = _asset(
+        graph_id=GRAPH_A_ID,
+        release_id=RELEASE_A_ID,
+        policy=policy,
+    )
+    page = KnowledgeAssetVersionPage(items=(), next_cursor=None)
+    repository = SimpleNamespace(
+        get_asset=AsyncMock(return_value=asset),
+        list_version_events=AsyncMock(return_value=page),
+    )
+    service = KnowledgeAssetService(
+        repository=cast(KnowledgeAssetRepository, repository),
+        authorization=_authorization(),
+    )
+
+    result = await service.list_versions(
+        workspace_id=WORKSPACE_ID,
+        graph_id=GRAPH_A_ID,
+        subject=_subject(allowed_actions=frozenset({Action.KG_READ})),
+        cursor=None,
+        limit=50,
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="knowledge-version-history",
+    )
+
+    assert result is page
+    repository.list_version_events.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        graph_id=GRAPH_A_ID,
+        cursor=None,
+        limit=50,
     )

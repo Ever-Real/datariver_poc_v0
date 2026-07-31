@@ -300,6 +300,28 @@ export interface KnowledgeStudioSourceDetail {
   stale_at?: string
 }
 
+export interface KnowledgeStudioTBoxAssetRelease {
+  graph_id: string
+  graph_name: string
+  graph_slug: string
+  classification: KnowledgeClassification
+  domain_name?: string
+  studio_release_id: string
+  release_no: number
+  state: 'ACTIVE' | 'ARCHIVED'
+  contract_hash: string
+  tbox_hash: string
+  published_at: string
+  class_count: number
+  property_count: number
+  relationship_count: number
+}
+
+export interface KnowledgeStudioTBoxAssetReleasePage {
+  items: KnowledgeStudioTBoxAssetRelease[]
+  page: { next_cursor?: string | null; limit: number }
+}
+
 export type KnowledgeStudioPreviewScalar = string | number | boolean | null
 
 export interface KnowledgeStudioValidationEvidence {
@@ -917,6 +939,41 @@ export async function getKnowledgeStudioTBoxCatalogSource(
   return client.request<KnowledgeStudioSourceDetail>(
     `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/catalog-sources/${encodeURIComponent(assetId)}`,
     { cache: 'no-store' },
+  )
+}
+
+export async function searchKnowledgeStudioTBoxAssetReleases(
+  client: ApiClient,
+  draftId: string,
+  query: string,
+  signal?: AbortSignal,
+): Promise<KnowledgeStudioTBoxAssetReleasePage> {
+  const params = new URLSearchParams({ q: query.trim(), limit: '50' })
+  return client.request<KnowledgeStudioTBoxAssetReleasePage>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/asset-releases?${params.toString()}`,
+    { cache: 'no-store', signal },
+  )
+}
+
+export async function createKnowledgeStudioTBoxAssetReleaseProposal(
+  client: ApiClient,
+  draftId: string,
+  payload: {
+    studio_release_id: string
+    tbox_hash: string
+    target_block_id?: string
+    mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
+  },
+  etag: string,
+): Promise<KnowledgeStudioTBoxProposal> {
+  return client.request<KnowledgeStudioTBoxProposal>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/asset-release-proposals`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      cache: 'no-store',
+      ifMatch: etag,
+    },
   )
 }
 

@@ -9,7 +9,6 @@ from datariver.infrastructure.db.knowledge_studio_ingestion_sql import (
     STUDIO_INGESTION_FUNCTION_SIGNATURES,
     STUDIO_INGESTION_INTERNAL_FUNCTION_SIGNATURES,
 )
-from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0081_governed_studio_database_ingestion.py"
@@ -48,7 +47,6 @@ def test_revision_0081_and_canonical_schema_share_the_least_privilege_contract()
     migration = MIGRATION.read_text(encoding="utf-8")
     initial = INITIAL_MIGRATION.read_text(encoding="utf-8")
 
-    assert REQUIRED_DATABASE_REVISION == "0081"
     assert 'revision: str = "0081"' in migration
     assert 'down_revision: str | Sequence[str] | None = "0080"' in migration
     for document in (migration, initial):

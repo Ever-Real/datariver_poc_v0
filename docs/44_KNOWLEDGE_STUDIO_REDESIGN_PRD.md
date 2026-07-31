@@ -71,7 +71,7 @@ ingestion은 Mode A/Mode B와 ADR-0093의 다중 형식 durable source-analysis�
 | page=knowledge | Registry를 연다. 현재 bookmark를 깨지 않는다. |
 | page=knowledge-chat | 그대로 유지한다. 일반 Chat과 합치지 않는다. |
 | graph/release/changeset API | 검토, 발행, projection, GraphRAG 계약을 바꾸지 않는다. Studio는 새 typed command로만 여기에 합류한다. |
-| 문서 schema inference | 승인 형식은 PDF/DOCX/XLSX뿐이며 실제 데이터 적재가 아니라 T-Box proposal을 만든다. 전용 bounded parser/worker가 배포되기 전에는 unavailable이고 DOC/XLS/CSV/TXT는 허용하지 않는다. |
+| 문서 schema inference | ADR-0093의 PDF/CSV/TXT/JSON/XML/HTML 및 macro-free DOCX/XLSX/PPTX만 허용하며 실제 데이터 적재가 아니라 T-Box proposal을 만든다. legacy DOC/XLS/PPT, macro/external OpenXML과 unsafe XML은 허용하지 않는다. |
 | DataHub DB 선택 | 브라우저가 DataHub GraphQL을 호출하지 않는다. 권한 처리된 local catalog projection에서만 후보를 찾는다. |
 | 데이터 적재 메뉴 | 메뉴/직접 진입만 없앤다. AppShell, Catalog, Upload, 다른 menu route와 Chat 상태는 변경하지 않는다. |
 
@@ -592,7 +592,8 @@ materialize/execute 때 다시 확인한다. 달라지면 STALE로 끝내며 최
 | `POST/PATCH/DELETE /knowledge/domains[/{id}]` | DOMAIN 생성/관리 | create는 ADR-0073 author bootstrap, rename/archive는 admin.manage + idempotency/ETag |
 | `GET /knowledge/studio-options/catalog-assets?...` | DB/metadata source picker | permitted bounded summary와 opaque cursor; provider query/credential 없음 |
 | `POST .../tbox/catalog-proposals` | 선택 Catalog metadata Proposal | local Asset UUID, exact source/projection version과 server-returned field path 재검증; raw browser prompt 금지 |
-| `GET /knowledge/studio-options/graph-releases?...` | 다른 Asset picker | governed exact release ID/hash만 |
+| `GET .../drafts/{id}/tbox/asset-releases?...` | 다른 Asset picker | 현재 Draft 권한 범위의 governed exact Studio Release ID/contract/T-Box hash만 |
+| `POST .../drafts/{id}/tbox/asset-release-proposals` | 다른 Asset T-Box Proposal | `If-Match`, exact Studio Release/T-Box hash, apply·review·publish 재검증; LLM 경유 없음 |
 | `GET /knowledge/studio-options/uploads?...` | file source picker | requester가 사용할 수 있는 accepted immutable manifest만 |
 | block/input/operation child commands | T-Box 작성 | fixed enum/typed schema, source UUID, raw query 금지 |
 | `POST .../tbox/proposal-jobs` | assistant/file proposal 시작 | `202`, exact draft/source/base/auth/model pin |

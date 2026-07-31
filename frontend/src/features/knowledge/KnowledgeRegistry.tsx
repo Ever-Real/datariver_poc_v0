@@ -14,6 +14,8 @@ import type {
   KnowledgeAssetOperationalDetail,
   KnowledgeAssetPage,
   KnowledgeAssetSummary,
+  KnowledgeAssetVersionHistoryItem,
+  KnowledgeAssetVersionHistoryPage,
   KnowledgeRelease,
   KnowledgeSnapshot,
 } from '../../api/types'
@@ -38,6 +40,23 @@ function localTime(value: string | undefined): string {
   if (!value) return '—'
   const timestamp = new Date(value)
   return Number.isNaN(timestamp.valueOf()) ? value : timestamp.toLocaleString('ko-KR')
+}
+
+function actorLabel(
+  name: string | null,
+  email: string | null,
+  id: string | null,
+): string {
+  return name ?? email ?? id ?? '—'
+}
+
+function versionKindLabel(kind: KnowledgeAssetVersionHistoryItem['kind']): string {
+  const labels: Record<KnowledgeAssetVersionHistoryItem['kind'], string> = {
+    STUDIO_RELEASE: 'T-Box / Mapping',
+    INSTANCE_RELEASE: 'A-Box Release',
+    CHANGESET: 'Changeset',
+  }
+  return labels[kind]
 }
 
 export function KnowledgeRegistry({
@@ -66,6 +85,7 @@ export function KnowledgeRegistry({
   const [selectedId, setSelectedId] = useState<string>()
   const [focusedReleaseId, setFocusedReleaseId] = useState<string>()
   const [releases, setReleases] = useState<KnowledgeRelease[]>([])
+  const [versionHistory, setVersionHistory] = useState<KnowledgeAssetVersionHistoryPage>()
   const [snapshot, setSnapshot] = useState<KnowledgeSnapshot>()
   const [loading, setLoading] = useState(true)
   const [detailLoading, setDetailLoading] = useState(false)
@@ -171,6 +191,7 @@ export function KnowledgeRegistry({
     if (!selected) {
       setDetail(undefined)
       setReleases([])
+      setVersionHistory(undefined)
       setFocusedReleaseId(undefined)
       setSnapshot(undefined)
       return
@@ -179,6 +200,7 @@ export function KnowledgeRegistry({
     setDetailLoading(true)
     setError(undefined)
     setReleases([])
+    setVersionHistory(undefined)
     setDetail(undefined)
     setSnapshot(undefined)
     void Promise.all([
@@ -190,11 +212,16 @@ export function KnowledgeRegistry({
         `/knowledge/registry/assets/${selected.id}/detail`,
         { cache: 'no-store', signal: controller.signal },
       ),
+      client.request<KnowledgeAssetVersionHistoryPage>(
+        `/knowledge/registry/assets/${selected.id}/versions?limit=50`,
+        { cache: 'no-store', signal: controller.signal },
+      ),
     ])
-      .then(([nextReleases, nextDetail]) => {
+      .then(([nextReleases, nextDetail, nextVersionHistory]) => {
         if (controller.signal.aborted) return
         setDetail(nextDetail)
         setReleases(nextReleases)
+        setVersionHistory(nextVersionHistory)
         setFocusedReleaseId(
           selected.active_release_id
           ?? nextReleases.reduce<KnowledgeRelease | undefined>(
@@ -586,11 +613,11 @@ export function KnowledgeRegistry({
               <AccordionItem
                 itemId="version-history"
                 title="버전 이력"
-                summary={`${releases.length} releases`}
+                summary={`${versionHistory?.items.length ?? 0} events`}
                 expanded={expandedSections.has('version-history')}
                 onToggle={() => toggleSection('version-history')}
               >
-                {releases.length ? (
+                {versionHistory?.items.length ? (
                   <div className="overflow-x-auto">
                     <table className="w-full border-collapse text-left text-xs">
                       <thead>
@@ -603,54 +630,110 @@ export function KnowledgeRegistry({
                         </tr>
                       </thead>
                       <tbody>
-                        {[...releases]
-                          .sort((left, right) => right.release_no - left.release_no)
-                          .map((release) => {
-                            const current = release.id === selected.active_release_id
-                            const focused = release.id === focusedReleaseId
-                            return (
-                              <tr
-                                key={release.id}
-                                className={`border-b border-slate-200 ${
-                                  focused ? 'bg-blue-50' : 'hover:bg-slate-50'
-                                }`}
-                              >
-                                <td className="p-2 font-bold">v{release.release_no}</td>
-                                <td className="p-2">
-                                  {current
-                                    ? (
-                                        <span className="rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-black text-emerald-800">
-                                          CURRENT
-                                        </span>
-                                      )
-                                    : <span className="text-slate-500">HISTORICAL</span>}
-                                </td>
-                                <td className="max-w-36 truncate p-2" title={release.published_by}>
-                                  {release.publisher_name
-                                    ?? release.publisher_email
-                                    ?? release.published_by}
-                                </td>
-                                <td className="whitespace-nowrap p-2">
-                                  {localTime(release.published_at)}
-                                </td>
-                                <td className="p-2">
-                                  <button
-                                    type="button"
-                                    className="button button-secondary"
-                                    aria-pressed={focused}
-                                    onClick={() => setFocusedReleaseId(release.id)}
+                        {versionHistory.items.map((item) => {
+                          const focused = item.kind === 'INSTANCE_RELEASE'
+                            && item.instance_release_id === focusedReleaseId
+                          const canPreview = item.kind === 'INSTANCE_RELEASE'
+                            && item.instance_release_id !== null
+                          return (
+                            <tr
+                              key={`${item.kind}:${item.id}`}
+                              className={`border-b border-slate-200 ${
+                                focused ? 'bg-blue-50' : 'hover:bg-slate-50'
+                              }`}
+                            >
+                              <td className="p-2">
+                                <strong className="block">{item.version_label}</strong>
+                                <small className="mt-0.5 block text-[10px] text-slate-500">
+                                  {versionKindLabel(item.kind)}
+                                  {item.title ? ` · ${item.title}` : ''}
+                                </small>
+                                {item.content_hash && (
+                                  <code
+                                    className="mt-0.5 block max-w-40 truncate text-[9px] text-slate-400"
+                                    title={item.content_hash}
                                   >
-                                    {focused ? '포커스됨' : '미리보기'}
-                                  </button>
-                                </td>
-                              </tr>
-                            )
-                          })}
+                                    {item.content_hash}
+                                  </code>
+                                )}
+                              </td>
+                              <td className="p-2">
+                                <span className="badge badge-soft">{item.status}</span>
+                                {item.is_current && (
+                                  <span className="ml-1 rounded-full bg-emerald-100 px-2 py-1 text-[10px] font-black text-emerald-800">
+                                    CURRENT
+                                  </span>
+                                )}
+                                {item.kind === 'INSTANCE_RELEASE'
+                                  && item.node_count !== null
+                                  && item.edge_count !== null && (
+                                  <small className="mt-1 block text-[10px] text-slate-500">
+                                    {item.node_count} nodes · {item.edge_count} edges
+                                  </small>
+                                )}
+                              </td>
+                              <td
+                                className="max-w-36 truncate p-2"
+                                title={actorLabel(
+                                  item.author_name,
+                                  item.author_email,
+                                  item.author_id,
+                                )}
+                              >
+                                {actorLabel(item.author_name, item.author_email, item.author_id)}
+                              </td>
+                              <td className="whitespace-nowrap p-2">
+                                {localTime(item.created_at)}
+                              </td>
+                              <td className="min-w-40 p-2">
+                                {canPreview
+                                  ? (
+                                      <button
+                                        type="button"
+                                        className="button button-secondary"
+                                        aria-pressed={focused}
+                                        onClick={() => {
+                                          if (item.instance_release_id) {
+                                            setFocusedReleaseId(item.instance_release_id)
+                                          }
+                                        }}
+                                      >
+                                        {focused ? '포커스됨' : '미리보기'}
+                                      </button>
+                                    )
+                                  : (
+                                      <div className="grid gap-0.5 text-[10px] text-slate-500">
+                                        <span>
+                                          검토 {actorLabel(
+                                            item.reviewer_name,
+                                            item.reviewer_email,
+                                            item.reviewed_by,
+                                          )}
+                                        </span>
+                                        <span>
+                                          발행 {actorLabel(
+                                            item.publisher_name,
+                                            item.publisher_email,
+                                            item.published_by,
+                                          )}
+                                        </span>
+                                      </div>
+                                    )}
+                              </td>
+                            </tr>
+                          )
+                        })}
                       </tbody>
                     </table>
+                    {versionHistory.next_cursor && (
+                      <p className="mb-0 mt-2 text-[10px] text-slate-500">
+                        최근 {versionHistory.limit}건만 표시합니다. 이전 이력은 다음 페이지에서
+                        계속 조회할 수 있습니다.
+                      </p>
+                    )}
                   </div>
                 ) : (
-                  <p className="m-0 text-xs text-slate-500">발행된 릴리스가 없습니다.</p>
+                  <p className="m-0 text-xs text-slate-500">버전 이력이 없습니다.</p>
                 )}
               </AccordionItem>
               <AccordionItem

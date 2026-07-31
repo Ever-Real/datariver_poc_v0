@@ -19,6 +19,8 @@ from datariver.application.knowledge_asset_contracts import (
     KnowledgeAssetProjectionSummary,
     KnowledgeAssetSchemaElementSummary,
     KnowledgeAssetSummary,
+    KnowledgeAssetVersionEvent,
+    KnowledgeAssetVersionPage,
     KnowledgeChatCandidate,
 )
 from datariver.application.knowledge_asset_ports import KnowledgeAssetRepository
@@ -28,6 +30,7 @@ from datariver.domain.knowledge_assets import KnowledgeDeliveryPolicy
 from datariver.infrastructure.db.governance import SqlIdempotencyStore
 from datariver.infrastructure.db.models.catalog import CatalogVocabularyEntryModel
 from datariver.infrastructure.db.models.knowledge import (
+    ChangeSetModel,
     GraphModel,
     KnowledgeDeliveryPolicyModel,
     ProjectionDeploymentModel,
@@ -75,6 +78,39 @@ def _decode_cursor(cursor: str, *, sort: str) -> tuple[str, UUID]:
         return key, graph_id
     except (ValueError, TypeError, json.JSONDecodeError) as error:
         raise ValidationError("The Knowledge Asset page cursor is invalid.") from error
+
+
+def _encode_version_cursor(*, created_at: datetime, event_id: UUID) -> str:
+    payload = json.dumps(
+        {
+            "v": _CURSOR_VERSION,
+            "created_at": created_at.isoformat(),
+            "id": str(event_id),
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_version_cursor(cursor: str) -> tuple[datetime, UUID]:
+    try:
+        payload = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        document = json.loads(payload)
+        if (
+            not isinstance(document, dict)
+            or document.get("v") != _CURSOR_VERSION
+            or not isinstance(document.get("created_at"), str)
+            or not isinstance(document.get("id"), str)
+        ):
+            raise ValueError
+        created_at = datetime.fromisoformat(document["created_at"])
+        event_id = UUID(document["id"])
+        if cursor != _encode_version_cursor(created_at=created_at, event_id=event_id):
+            raise ValueError
+        return created_at, event_id
+    except (ValueError, TypeError, json.JSONDecodeError) as error:
+        raise ValidationError("The Knowledge Asset version cursor is invalid.") from error
 
 
 def _policy(model: KnowledgeDeliveryPolicyModel | None) -> KnowledgeDeliveryPolicy | None:
@@ -607,6 +643,273 @@ class SqlKnowledgeAssetRepository(KnowledgeAssetRepository):
             schema_elements=schema_elements,
             bindings=bindings,
             projections=projections,
+        )
+
+    async def list_version_events(
+        self,
+        *,
+        workspace_id: UUID,
+        graph_id: UUID,
+        cursor: str | None,
+        limit: int,
+    ) -> KnowledgeAssetVersionPage:
+        graph = (
+            await self._session.scalars(
+                select(GraphModel).where(
+                    GraphModel.workspace_id == workspace_id,
+                    GraphModel.id == graph_id,
+                    GraphModel.status != "ARCHIVED",
+                )
+            )
+        ).one_or_none()
+        if graph is None:
+            return KnowledgeAssetVersionPage(items=(), next_cursor=None)
+
+        boundary = _decode_version_cursor(cursor) if cursor is not None else None
+        studio_statement = select(KnowledgeStudioReleaseModel).where(
+            KnowledgeStudioReleaseModel.workspace_id == workspace_id,
+            KnowledgeStudioReleaseModel.graph_id == graph_id,
+        )
+        instance_statement = select(ReleaseModel).where(
+            ReleaseModel.workspace_id == workspace_id,
+            ReleaseModel.graph_id == graph_id,
+        )
+        changeset_statement = select(ChangeSetModel).where(
+            ChangeSetModel.workspace_id == workspace_id,
+            ChangeSetModel.graph_id == graph_id,
+        )
+        if boundary is not None:
+            created_at, event_id = boundary
+            studio_statement = studio_statement.where(
+                or_(
+                    KnowledgeStudioReleaseModel.published_at < created_at,
+                    and_(
+                        KnowledgeStudioReleaseModel.published_at == created_at,
+                        KnowledgeStudioReleaseModel.id < event_id,
+                    ),
+                )
+            )
+            instance_statement = instance_statement.where(
+                or_(
+                    ReleaseModel.published_at < created_at,
+                    and_(
+                        ReleaseModel.published_at == created_at,
+                        ReleaseModel.id < event_id,
+                    ),
+                )
+            )
+            changeset_statement = changeset_statement.where(
+                or_(
+                    ChangeSetModel.created_at < created_at,
+                    and_(
+                        ChangeSetModel.created_at == created_at,
+                        ChangeSetModel.id < event_id,
+                    ),
+                )
+            )
+        studio_releases = tuple(
+            (
+                await self._session.scalars(
+                    studio_statement.order_by(
+                        KnowledgeStudioReleaseModel.published_at.desc(),
+                        KnowledgeStudioReleaseModel.id.desc(),
+                    ).limit(limit + 1)
+                )
+            ).all()
+        )
+        instance_releases = tuple(
+            (
+                await self._session.scalars(
+                    instance_statement.order_by(
+                        ReleaseModel.published_at.desc(),
+                        ReleaseModel.id.desc(),
+                    ).limit(limit + 1)
+                )
+            ).all()
+        )
+        changesets = tuple(
+            (
+                await self._session.scalars(
+                    changeset_statement.order_by(
+                        ChangeSetModel.created_at.desc(),
+                        ChangeSetModel.id.desc(),
+                    ).limit(limit + 1)
+                )
+            ).all()
+        )
+        published_changeset_release_ids = {
+            changeset.published_release_id
+            for changeset in changesets
+            if changeset.published_release_id is not None
+        }
+        linked_instance_releases = (
+            tuple(
+                (
+                    await self._session.scalars(
+                        select(ReleaseModel).where(
+                            ReleaseModel.workspace_id == workspace_id,
+                            ReleaseModel.graph_id == graph_id,
+                            ReleaseModel.id.in_(tuple(published_changeset_release_ids)),
+                        )
+                    )
+                ).all()
+            )
+            if published_changeset_release_ids
+            else ()
+        )
+        linked_release_by_id = {release.id: release for release in linked_instance_releases}
+        subject_ids = {
+            subject_id
+            for subject_id in (
+                *(
+                    value
+                    for release in studio_releases
+                    for value in (
+                        release.author_id,
+                        release.reviewed_by,
+                        release.published_by,
+                    )
+                ),
+                *(release.published_by for release in instance_releases),
+                *(
+                    value
+                    for changeset in changesets
+                    for value in (
+                        changeset.author_id,
+                        changeset.reviewed_by,
+                        (
+                            linked_release_by_id[changeset.published_release_id].published_by
+                            if changeset.published_release_id in linked_release_by_id
+                            else None
+                        ),
+                    )
+                    if value is not None
+                ),
+            )
+            if subject_id is not None
+        }
+        subjects = (
+            tuple(
+                (
+                    await self._session.scalars(
+                        select(SubjectModel).where(SubjectModel.id.in_(tuple(subject_ids)))
+                    )
+                ).all()
+            )
+            if subject_ids
+            else ()
+        )
+        subject_by_id = {item.id: item for item in subjects}
+
+        def identity(subject_id: UUID | None) -> tuple[str | None, str | None]:
+            subject = subject_by_id.get(subject_id) if subject_id is not None else None
+            return (
+                subject.display_name if subject is not None else None,
+                subject.email if subject is not None else None,
+            )
+
+        events: list[KnowledgeAssetVersionEvent] = []
+        for studio_release in studio_releases:
+            author_name, author_email = identity(studio_release.author_id)
+            reviewer_name, reviewer_email = identity(studio_release.reviewed_by)
+            publisher_name, publisher_email = identity(studio_release.published_by)
+            events.append(
+                KnowledgeAssetVersionEvent(
+                    event_id=studio_release.id,
+                    kind="STUDIO_RELEASE",
+                    version_label=f"Schema v{studio_release.release_no}",
+                    title="T-Box + Mapping contract",
+                    status=studio_release.state,
+                    author_id=studio_release.author_id,
+                    author_name=author_name,
+                    author_email=author_email,
+                    reviewed_by=studio_release.reviewed_by,
+                    reviewer_name=reviewer_name,
+                    reviewer_email=reviewer_email,
+                    published_by=studio_release.published_by,
+                    publisher_name=publisher_name,
+                    publisher_email=publisher_email,
+                    created_at=studio_release.published_at,
+                    is_current=graph.active_studio_release_id == studio_release.id,
+                    studio_release_id=studio_release.id,
+                    content_hash=studio_release.contract_hash,
+                )
+            )
+        for instance_release in instance_releases:
+            publisher_name, publisher_email = identity(instance_release.published_by)
+            events.append(
+                KnowledgeAssetVersionEvent(
+                    event_id=instance_release.id,
+                    kind="INSTANCE_RELEASE",
+                    version_label=f"Instance v{instance_release.release_no}",
+                    title="Immutable A-Box release",
+                    status=(
+                        "ACTIVE" if graph.active_release_id == instance_release.id else "SUPERSEDED"
+                    ),
+                    author_id=instance_release.published_by,
+                    author_name=publisher_name,
+                    author_email=publisher_email,
+                    reviewed_by=None,
+                    reviewer_name=None,
+                    reviewer_email=None,
+                    published_by=instance_release.published_by,
+                    publisher_name=publisher_name,
+                    publisher_email=publisher_email,
+                    created_at=instance_release.published_at,
+                    is_current=graph.active_release_id == instance_release.id,
+                    instance_release_id=instance_release.id,
+                    content_hash=instance_release.content_hash,
+                    node_count=instance_release.node_count,
+                    edge_count=instance_release.edge_count,
+                )
+            )
+        for changeset in changesets:
+            author_name, author_email = identity(changeset.author_id)
+            reviewer_name, reviewer_email = identity(changeset.reviewed_by)
+            published_release = (
+                linked_release_by_id.get(changeset.published_release_id)
+                if changeset.published_release_id is not None
+                else None
+            )
+            published_by = published_release.published_by if published_release is not None else None
+            publisher_name, publisher_email = identity(published_by)
+            events.append(
+                KnowledgeAssetVersionEvent(
+                    event_id=changeset.id,
+                    kind="CHANGESET",
+                    version_label=f"Changeset {str(changeset.id)[:8]}",
+                    title=changeset.title,
+                    status=changeset.state,
+                    author_id=changeset.author_id,
+                    author_name=author_name,
+                    author_email=author_email,
+                    reviewed_by=changeset.reviewed_by,
+                    reviewer_name=reviewer_name,
+                    reviewer_email=reviewer_email,
+                    published_by=published_by,
+                    publisher_name=publisher_name,
+                    publisher_email=publisher_email,
+                    created_at=changeset.created_at,
+                    is_current=False,
+                    changeset_id=changeset.id,
+                    instance_release_id=changeset.published_release_id,
+                )
+            )
+        events.sort(
+            key=lambda item: (item.created_at, item.event_id),
+            reverse=True,
+        )
+        page_items = tuple(events[:limit])
+        return KnowledgeAssetVersionPage(
+            items=page_items,
+            next_cursor=(
+                _encode_version_cursor(
+                    created_at=page_items[-1].created_at,
+                    event_id=page_items[-1].event_id,
+                )
+                if len(events) > limit and page_items
+                else None
+            ),
         )
 
     async def save_delivery_policy(

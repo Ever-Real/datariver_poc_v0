@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime
@@ -17,6 +19,8 @@ from datariver.application.dto import (
     IdempotencyRecord,
     KnowledgeGraphRecord,
     KnowledgeStudioABoxRecord,
+    KnowledgeStudioAssetReleaseSource,
+    KnowledgeStudioAssetReleaseSourcePage,
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
@@ -611,6 +615,74 @@ def _element_document(model: KnowledgeStudioTBoxElementRecord) -> dict[str, obje
         "layout_y": model.layout_y,
         "ordinal": model.ordinal,
     }
+
+
+def _ontology_element_record(model: OntologyElementModel) -> KnowledgeStudioTBoxElementRecord:
+    document = model.element_document
+    return KnowledgeStudioTBoxElementRecord(
+        stable_element_id=model.stable_element_id,
+        kind=model.kind,
+        canonical_name=model.canonical_name,
+        display_name=model.display_name,
+        parent_stable_element_id=_optional_document_string(
+            document,
+            "parent_stable_element_id",
+        ),
+        hierarchy_relation=_optional_document_string(document, "hierarchy_relation"),
+        source_stable_element_id=_optional_document_string(
+            document,
+            "source_stable_element_id",
+        ),
+        target_stable_element_id=_optional_document_string(
+            document,
+            "target_stable_element_id",
+        ),
+        data_type=_optional_document_string(document, "data_type"),
+        nullable=_optional_document_bool(document, "nullable"),
+        ordinal=model.ordinal,
+        version=1,
+        definition=_optional_document_string(document, "definition"),
+        aliases=tuple(_document_string_list(document, "aliases")),
+        unit=_optional_document_string(document, "unit"),
+        vector_index_enabled=bool(document.get("vector_index_enabled", False)),
+        metadata_reference_id=_optional_document_uuid(
+            document,
+            "metadata_reference_id",
+        ),
+        metadata_reference_urn=_optional_document_string(
+            document,
+            "metadata_reference_urn",
+        ),
+        layout_x=_optional_document_number(document, "layout_x"),
+        layout_y=_optional_document_number(document, "layout_y"),
+    )
+
+
+def _encode_asset_release_cursor(*, published_at: datetime, release_id: UUID) -> str:
+    payload = json.dumps(
+        {"published_at": published_at.isoformat(), "release_id": str(release_id)},
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    return base64.urlsafe_b64encode(payload).decode().rstrip("=")
+
+
+def _decode_asset_release_cursor(cursor: str) -> tuple[datetime, UUID]:
+    try:
+        padded = cursor + ("=" * (-len(cursor) % 4))
+        payload = json.loads(base64.urlsafe_b64decode(padded).decode())
+        if not isinstance(payload, dict):
+            raise ValueError
+        published_at = datetime.fromisoformat(str(payload["published_at"]))
+        release_id = UUID(str(payload["release_id"]))
+        if cursor != _encode_asset_release_cursor(
+            published_at=published_at,
+            release_id=release_id,
+        ):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise ValidationError("The Knowledge Asset release cursor is invalid.") from error
+    return published_at, release_id
 
 
 def _rule_document(model: ABoxMappingRuleDraftModel) -> dict[str, object]:
@@ -1531,6 +1603,228 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         )
         return _tbox_record(draft, blocks, elements)
 
+    @staticmethod
+    def _tbox_asset_release_statement(workspace_id: UUID) -> Any:
+        element_counts = (
+            select(
+                OntologyElementModel.ontology_version_id.label("ontology_version_id"),
+                func.count().filter(OntologyElementModel.kind == "CLASS").label("class_count"),
+                func.count()
+                .filter(OntologyElementModel.kind == "PROPERTY")
+                .label("property_count"),
+                func.count()
+                .filter(OntologyElementModel.kind == "RELATION")
+                .label("relationship_count"),
+            )
+            .where(OntologyElementModel.workspace_id == workspace_id)
+            .group_by(OntologyElementModel.ontology_version_id)
+            .subquery()
+        )
+        return (
+            select(
+                GraphModel,
+                KnowledgeStudioReleaseModel,
+                CatalogVocabularyEntryModel.display_name.label("domain_name"),
+                func.coalesce(element_counts.c.class_count, 0).label("class_count"),
+                func.coalesce(element_counts.c.property_count, 0).label("property_count"),
+                func.coalesce(
+                    element_counts.c.relationship_count,
+                    0,
+                ).label("relationship_count"),
+            )
+            .join(
+                KnowledgeStudioReleaseModel,
+                and_(
+                    KnowledgeStudioReleaseModel.workspace_id == GraphModel.workspace_id,
+                    KnowledgeStudioReleaseModel.graph_id == GraphModel.id,
+                ),
+            )
+            .outerjoin(
+                CatalogVocabularyEntryModel,
+                and_(
+                    CatalogVocabularyEntryModel.workspace_id == GraphModel.workspace_id,
+                    CatalogVocabularyEntryModel.id == GraphModel.domain_ref_id,
+                    CatalogVocabularyEntryModel.kind == "DOMAIN",
+                ),
+            )
+            .outerjoin(
+                element_counts,
+                element_counts.c.ontology_version_id
+                == KnowledgeStudioReleaseModel.ontology_version_id,
+            )
+            .where(GraphModel.workspace_id == workspace_id)
+        )
+
+    @staticmethod
+    def _tbox_asset_release_scope(
+        *,
+        maximum_classification: int,
+        allowed_domain_ids: frozenset[UUID],
+    ) -> tuple[ColumnElement[bool], ...]:
+        return (
+            GraphModel.status != "ARCHIVED",
+            GraphModel.classification <= maximum_classification,
+            or_(
+                GraphModel.classification == int(Classification.PUBLIC),
+                GraphModel.domain_ref_id.is_(None),
+                GraphModel.domain_ref_id.in_(tuple(allowed_domain_ids)),
+            ),
+        )
+
+    @staticmethod
+    def _asset_release_source(row: Any) -> KnowledgeStudioAssetReleaseSource:
+        values = row._mapping
+        graph: GraphModel = values[GraphModel]
+        release: KnowledgeStudioReleaseModel = values[KnowledgeStudioReleaseModel]
+        return KnowledgeStudioAssetReleaseSource(
+            graph_id=graph.id,
+            graph_name=graph.name,
+            graph_slug=graph.slug,
+            classification=Classification(graph.classification),
+            domain_name=values["domain_name"],
+            studio_release_id=release.id,
+            release_no=release.release_no,
+            state=release.state,
+            contract_hash=release.contract_hash,
+            tbox_hash=release.tbox_hash,
+            published_at=release.published_at,
+            class_count=int(values["class_count"]),
+            property_count=int(values["property_count"]),
+            relationship_count=int(values["relationship_count"]),
+        )
+
+    async def list_tbox_asset_release_sources(
+        self,
+        *,
+        workspace_id: UUID,
+        maximum_classification: int,
+        allowed_domain_ids: frozenset[UUID],
+        excluded_graph_id: UUID | None,
+        query: str,
+        cursor: str | None,
+        limit: int,
+    ) -> KnowledgeStudioAssetReleaseSourcePage:
+        statement = self._tbox_asset_release_statement(workspace_id).where(
+            *self._tbox_asset_release_scope(
+                maximum_classification=maximum_classification,
+                allowed_domain_ids=allowed_domain_ids,
+            )
+        )
+        if excluded_graph_id is not None:
+            statement = statement.where(GraphModel.id != excluded_graph_id)
+        if query:
+            escaped = query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
+            statement = statement.where(
+                or_(
+                    func.lower(GraphModel.name).like(pattern, escape="\\"),
+                    func.lower(GraphModel.slug).like(pattern, escape="\\"),
+                    func.lower(CatalogVocabularyEntryModel.display_name).like(
+                        pattern,
+                        escape="\\",
+                    ),
+                )
+            )
+        if cursor is not None:
+            published_at, release_id = _decode_asset_release_cursor(cursor)
+            statement = statement.where(
+                or_(
+                    KnowledgeStudioReleaseModel.published_at < published_at,
+                    and_(
+                        KnowledgeStudioReleaseModel.published_at == published_at,
+                        KnowledgeStudioReleaseModel.id < release_id,
+                    ),
+                )
+            )
+        rows = (
+            await self._session.execute(
+                statement.order_by(
+                    KnowledgeStudioReleaseModel.published_at.desc(),
+                    KnowledgeStudioReleaseModel.id.desc(),
+                ).limit(limit + 1)
+            )
+        ).all()
+        items = tuple(self._asset_release_source(row) for row in rows[:limit])
+        next_cursor = (
+            _encode_asset_release_cursor(
+                published_at=items[-1].published_at,
+                release_id=items[-1].studio_release_id,
+            )
+            if len(rows) > limit and items
+            else None
+        )
+        return KnowledgeStudioAssetReleaseSourcePage(
+            items=items,
+            next_cursor=next_cursor,
+        )
+
+    async def get_tbox_asset_release_source(
+        self,
+        *,
+        workspace_id: UUID,
+        studio_release_id: UUID,
+        maximum_classification: int,
+        allowed_domain_ids: frozenset[UUID],
+    ) -> KnowledgeStudioAssetReleaseSource | None:
+        row = (
+            await self._session.execute(
+                self._tbox_asset_release_statement(workspace_id).where(
+                    *self._tbox_asset_release_scope(
+                        maximum_classification=maximum_classification,
+                        allowed_domain_ids=allowed_domain_ids,
+                    ),
+                    KnowledgeStudioReleaseModel.id == studio_release_id,
+                )
+            )
+        ).one_or_none()
+        if row is None:
+            return None
+        source = self._asset_release_source(row)
+        release = row._mapping[KnowledgeStudioReleaseModel]
+        ontology = (
+            await self._session.scalars(
+                select(OntologyVersionModel).where(
+                    OntologyVersionModel.workspace_id == workspace_id,
+                    OntologyVersionModel.id == release.ontology_version_id,
+                    OntologyVersionModel.graph_id == source.graph_id,
+                    OntologyVersionModel.status == "PUBLISHED",
+                )
+            )
+        ).one_or_none()
+        if (
+            ontology is None
+            or ontology.checksum != release.tbox_hash
+            or canonical_json_hash(ontology.schema_document) != release.tbox_hash
+        ):
+            raise ConflictError("The selected Knowledge Asset T-Box contract hash is invalid.")
+        element_models = tuple(
+            (
+                await self._session.scalars(
+                    select(OntologyElementModel)
+                    .where(
+                        OntologyElementModel.workspace_id == workspace_id,
+                        OntologyElementModel.ontology_version_id == release.ontology_version_id,
+                    )
+                    .order_by(
+                        OntologyElementModel.ordinal,
+                        OntologyElementModel.stable_element_id,
+                    )
+                    .limit(501)
+                )
+            ).all()
+        )
+        if len(element_models) > 500:
+            raise ConflictError("The selected Knowledge Asset T-Box exceeds 500 elements.")
+        if any(
+            item.element_hash != canonical_json_hash(item.element_document)
+            for item in element_models
+        ):
+            raise ConflictError("The selected Knowledge Asset T-Box read-back hash is invalid.")
+        return replace(
+            source,
+            elements=tuple(_ontology_element_record(item) for item in element_models),
+        )
+
     async def create_tbox_block(
         self,
         *,
@@ -1949,6 +2243,36 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         ).one_or_none()
         return _proposal_record(model) if model is not None else None
 
+    async def list_applied_tbox_asset_release_pins(
+        self,
+        *,
+        workspace_id: UUID,
+        draft_id: UUID,
+    ) -> tuple[dict[str, object], ...]:
+        models = tuple(
+            (
+                await self._session.scalars(
+                    select(TBoxProposalModel)
+                    .where(
+                        TBoxProposalModel.workspace_id == workspace_id,
+                        TBoxProposalModel.draft_id == draft_id,
+                        TBoxProposalModel.state == "APPLIED",
+                    )
+                    .order_by(TBoxProposalModel.created_at, TBoxProposalModel.id)
+                    .limit(101)
+                )
+            ).all()
+        )
+        if len(models) > 100:
+            raise ConflictError("A Knowledge Studio Draft exceeds 100 applied Proposals.")
+        return tuple(
+            dict(model.source_reference_document)
+            for model in models
+            if model.source_reference_document is not None
+            and model.source_reference_document.get("contract_version")
+            == "KNOWLEDGE_STUDIO_ASSET_RELEASE_SOURCE_V1"
+        )
+
     async def apply_tbox_proposal(
         self,
         *,
@@ -2022,18 +2346,39 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         if proposal.mode == "APPEND_LAYER":
             if target_block_id is not None or not appended_elements:
                 raise ConflictError("APPEND_LAYER requires a new non-empty proposal block.")
+            source_reference = dict(proposal.source_reference_document or {})
+            raw_source_contract = source_reference.get("contract_version")
+            source_contract = raw_source_contract if isinstance(raw_source_contract, str) else ""
+            block_kind, block_title = {
+                "KNOWLEDGE_STUDIO_ASSET_RELEASE_SOURCE_V1": (
+                    "ASSET_RELEASE",
+                    "다른 Asset Release",
+                ),
+                "KNOWLEDGE_STUDIO_CATALOG_SOURCE_V1": (
+                    "CATALOG_METADATA",
+                    "DB 카탈로그 제안",
+                ),
+                "KNOWLEDGE_STUDIO_DOCUMENT_SOURCE_V1": (
+                    "DOCUMENT_SCHEMA",
+                    "문서 스키마 제안",
+                ),
+            }.get(
+                source_contract,
+                ("LLM_ASSISTANT", "LLM 제안"),
+            )
             new_block = TBoxDraftBlockModel(
                 id=uuid7(),
                 workspace_id=workspace_id,
                 draft_id=draft_id,
-                kind="LLM_ASSISTANT",
-                title="LLM 제안",
+                kind=block_kind,
+                title=block_title,
                 weight=DEFAULT_TBOX_BLOCK_WEIGHT,
                 ordinal=len(blocks),
                 collapsed=False,
                 source_reference={
                     "kind": "TBOX_PROPOSAL",
                     "proposal_id": str(proposal.id),
+                    **source_reference,
                 },
                 created_at=now,
                 updated_at=now,

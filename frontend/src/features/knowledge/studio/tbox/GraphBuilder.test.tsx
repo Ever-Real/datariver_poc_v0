@@ -758,4 +758,121 @@ describe('GraphBuilder', () => {
     expect(within(fields).getByRole('checkbox', { name: 'order_id 컬럼 선택' })).toBeChecked()
     expect(within(fields).getByRole('checkbox', { name: 'amount 컬럼 선택' })).toBeChecked()
   })
+
+  it('selects an exact published Asset release and opens it in the shared Proposal preview', async () => {
+    const release = {
+      graph_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3e0',
+      graph_name: 'Enterprise glossary',
+      graph_slug: 'enterprise-glossary',
+      classification: 'INTERNAL',
+      domain_name: 'Data Governance',
+      studio_release_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3e1',
+      release_no: 7,
+      state: 'ACTIVE',
+      contract_hash: 'a'.repeat(64),
+      tbox_hash: 'b'.repeat(64),
+      published_at: '2026-07-31T01:00:00Z',
+      class_count: 1,
+      property_count: 0,
+      relationship_count: 0,
+    }
+    const proposal = {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3e2',
+      draft_id: draftId,
+      target_block_id: blockId,
+      state: 'READY',
+      mode: 'MERGE_INTO_CURRENT',
+      merge_strategy: 'KEEP_ORIGINAL',
+      base_draft_version: 2,
+      prompt: 'server-owned exact Asset release import',
+      elements: [{
+        stable_element_id: 'class.BusinessTerm',
+        kind: 'CLASS',
+        canonical_name: 'BusinessTerm',
+        display_name: 'Business Term',
+        ordinal: 0,
+        version: 1,
+        aliases: [],
+        vector_index_enabled: false,
+        locked_by_later_block: false,
+      }],
+      conflicts: [],
+      source_reference: {
+        contract_version: 'KNOWLEDGE_STUDIO_ASSET_RELEASE_SOURCE_V1',
+        studio_release_id: release.studio_release_id,
+        tbox_hash: release.tbox_hash,
+      },
+      version: 1,
+      created_at: '2026-07-31T01:00:00Z',
+      updated_at: '2026-07-31T01:00:00Z',
+    }
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`)) {
+        return Promise.resolve(json(tbox()))
+      }
+      if (path.includes(`/drafts/${draftId}/tbox/asset-releases?`)) {
+        return Promise.resolve(json({
+          items: [release],
+          page: { next_cursor: null, limit: 50 },
+        }))
+      }
+      if (
+        path.endsWith(`/drafts/${draftId}/tbox/asset-release-proposals`)
+        && init?.method === 'POST'
+      ) {
+        return Promise.resolve(json(proposal))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    fireEvent.click(screen.getByRole('button', { name: '다른 Asset 붙이기' }))
+    const dialog = await screen.findByRole('dialog', {
+      name: '다른 지식 Asset의 T-Box 붙이기',
+    })
+    expect(dialog).toHaveClass('app-dialog-workspace')
+
+    const query = within(dialog).getByLabelText('T-Box 지식 Asset 검색어')
+    fireEvent.change(query, { target: { value: 'glossary' } })
+    fireEvent.submit(query.closest('form')!)
+
+    const results = await within(dialog).findByRole('table', {
+      name: '게시된 지식 Asset 버전 검색 결과',
+    })
+    fireEvent.click(within(results).getByText('Enterprise glossary'))
+    expect(within(dialog).getByLabelText('선택한 지식 Asset 버전')).toHaveTextContent(
+      'Enterprise glossary · v7',
+    )
+    fireEvent.click(within(dialog).getByRole('button', { name: '현재 블록 Proposal' }))
+
+    const preview = await screen.findByLabelText('T-Box Proposal 미리보기')
+    expect(within(preview).getByLabelText('Business Term Proposal 이름')).toHaveValue(
+      'Business Term',
+    )
+    const proposalCall = fetchMock.mock.calls.find(([input]) => (
+      requestUrl(input).endsWith(`/drafts/${draftId}/tbox/asset-release-proposals`)
+    ))
+    expect(new Headers(proposalCall?.[1]?.headers).get('If-Match')).toBe('"2"')
+    const proposalBody = proposalCall?.[1]?.body
+    expect(JSON.parse(typeof proposalBody === 'string' ? proposalBody : '{}')).toEqual({
+      studio_release_id: release.studio_release_id,
+      tbox_hash: release.tbox_hash,
+      target_block_id: blockId,
+      mode: 'MERGE_INTO_CURRENT',
+    })
+  })
 })

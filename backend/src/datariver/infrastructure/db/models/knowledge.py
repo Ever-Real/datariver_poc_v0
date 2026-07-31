@@ -19,12 +19,19 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
+from datariver.domain.knowledge_pipeline import KNOWLEDGE_SOURCE_MEDIA_TYPES
 from datariver.infrastructure.db.base import (
     JSON_DOCUMENT,
     Base,
     TimestampMixin,
     UuidPrimaryKeyMixin,
     VersionMixin,
+)
+
+_KNOWLEDGE_SOURCE_MEDIA_TYPE_CHECK = (
+    "media_type IN ("
+    + ", ".join(f"'{media_type}'" for media_type in sorted(KNOWLEDGE_SOURCE_MEDIA_TYPES))
+    + ")"
 )
 
 
@@ -479,7 +486,10 @@ class KnowledgeSourceSnapshotModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
             ("integration.object_manifests.workspace_id", "integration.object_manifests.id"),
             ondelete="RESTRICT",
         ),
-        CheckConstraint("media_type = 'application/pdf'", name="pdf_media_type"),
+        CheckConstraint(
+            _KNOWLEDGE_SOURCE_MEDIA_TYPE_CHECK,
+            name="media_type_vocabulary",
+        ),
         CheckConstraint("byte_size > 0 AND byte_size <= 52428800", name="bounded_size"),
         CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name="content_sha256"),
         CheckConstraint("state IN ('PENDING', 'ANALYZED', 'FAILED')", name="state_vocabulary"),

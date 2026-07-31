@@ -2742,7 +2742,7 @@ def upgrade() -> None:
         sa.Column('created_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.Column('updated_at', sa.DateTime(timezone=True), server_default=sa.text('CURRENT_TIMESTAMP'), nullable=False),
         sa.CheckConstraint("content_sha256 ~ '^[0-9a-f]{64}$'", name=op.f('ck_source_snapshots_content_sha256')),
-        sa.CheckConstraint("media_type = 'application/pdf'", name=op.f('ck_source_snapshots_pdf_media_type')),
+        sa.CheckConstraint("media_type IN ('application/json', 'application/pdf', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 'application/xhtml+xml', 'application/xml', 'text/csv', 'text/html', 'text/json', 'text/plain', 'text/xml')", name=op.f('ck_source_snapshots_media_type_vocabulary')),
         sa.CheckConstraint("state IN ('PENDING', 'ANALYZED', 'FAILED')", name=op.f('ck_source_snapshots_state_vocabulary')),
         sa.CheckConstraint('byte_size > 0 AND byte_size <= 52428800', name=op.f('ck_source_snapshots_bounded_size')),
         sa.ForeignKeyConstraint(['workspace_id', 'graph_id'], ['knowledge.graphs.workspace_id', 'knowledge.graphs.id'], name=op.f('fk_source_snapshots_workspace_id_graph_id_graphs'), ondelete='CASCADE'),

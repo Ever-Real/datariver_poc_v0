@@ -19,9 +19,11 @@
   identity/canonical name 충돌은 자동 overwrite하지 않는 정책을 승인한다.
 - [x] Step 2 source는 schema inference만, Step 3 source는 실제 row mapping/ingestion만
   수행한다는 경계를 승인한다.
-- [x] file schema inference 형식을 PDF/DOCX/XLSX로 제한하고 DOC/XLS를 제외한다. bounded
-  parser/worker·classification/provider routing은 capability가 준비되기 전 unavailable이다.
-- [ ] Catalog metadata allowlist, asset release attach, mapping unit/transform registry owner를 승인한다.
+- [x] ADR-0093의 PDF/CSV/TXT/JSON/XML/HTML 및 macro-free DOCX/XLSX/PPTX로 file schema
+  inference vocabulary를 고정하고 legacy DOC/XLS/PPT, macro/external OpenXML과 unsafe XML을
+  제외한다. bounded parser/worker·classification/provider routing은 capability가 없으면 unavailable이다.
+- [x] Catalog metadata allowlist와 exact Studio Release-pinned Asset attach 계약을 승인한다.
+- [ ] mapping unit/transform registry owner를 승인한다.
 - [ ] 현행 catalog table UUID + server-returned field path를 v1 source reference로 쓸지,
   별도 normalized field identity가 필요한지 결정한다. 존재하지 않는 field UUID를 만들지 않는다.
 - [x] 두 system-managed graph의 T-Box 수정자는 System Admin으로 제한하고, 승인된
@@ -38,6 +40,8 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 - [ ] 기존 `GET /knowledge/graphs` 배열과 create/changeset/release/source-analysis/GraphRAG
   응답을 변경하지 않는 contract test를 먼저 고정한다.
 - [x] `/knowledge/registry/assets` page와 drawer summary/version/binding/preview read API를 추가한다.
+- [x] Studio Release, Instance Release와 Changeset의 작성·검토·발행 증거를 하나의 bounded
+  keyset version timeline으로 제공하고 현재 T-Box/A-Box Release를 각각 표시한다.
 - [x] allowlisted sort, opaque keyset cursor, malformed cursor/limit negative를 구현한다.
 - [x] graph domain/classification/action predicate를 SQL에 적용하고 cross-workspace,
   over-clearance, disallowed-domain existence를 노출하지 않는 test를 만든다.
@@ -107,10 +111,11 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
   later-reference lock과 latest-only block delete를 UI와 service/API 양쪽에서 강제한다.
 - [ ] block 순서/enable 변경이 이전 block을 수정하지 않고 `(weight, ordinal)` deterministic
   fold를 수행하며 동률은 최신 block(LIFO)이 우선함을 test한다.
-- [ ] LLM/file/catalog/asset-release proposal의 dotted overlay와 Accept/Reject/Expired/Conflict UI를 구현한다.
+- [x] direct document/catalog/asset-release Proposal을 공통 dotted overlay와
+  Accept/Reject/Conflict UI에 연결한다. durable LLM job의 Expired 상태는 아래 별도 게이트로 남긴다.
 - [x] invalid Cypher buffer가 마지막 valid canvas를 유지하고 line/column diagnostic을 즉시
   표시하며 canvas/tree add/edit/delete가 safe text를 재생성함을 test한다.
-- [ ] proposal conflict dialog가 `KEEP_ORIGINAL`을 기본값으로 사용하고 KIND/ENDPOINT 충돌을
+- [x] proposal conflict dialog가 `KEEP_ORIGINAL`을 기본값으로 사용하고 KIND/ENDPOINT 충돌을
   자동 overwrite하지 않음을 test한다.
 - [ ] provider/file inference는 별도 durable proposal job/attempt/event와 `202` API로 실행하고
   API process가 provider latency를 기다리지 않음을 test한다.
@@ -118,7 +123,9 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 - [ ] unavailable file inference/catalog picker가 provider 호출 없이 사유를 표시함을 test한다.
 - [x] catalog picker가 local Asset UUID/source version과 server-returned aspect/field token만
   받고 arbitrary URN/field path/provider query를 거부함을 test한다.
-- [ ] asset attach가 permitted exact release/version/hash만 pin하고 hidden/over-clearance/retired asset을 찾지 못함을 test한다.
+- [x] asset attach가 권한 있는 exact Studio Release/contract/T-Box hash만 pin하고
+  Workspace/Domain/classification/archived-Asset scope, apply/review/publish revocation과 aggregate
+  ontology read-back mismatch를 fail closed로 처리함을 test한다.
 - [ ] hierarchy cycle, alias collision, domain/range/cardinality, unit/transform, classification/source drift negative cases를 만든다.
 - [ ] canonical ontology schema document/checksum에서 immutable element index가 같은 transaction에
   파생되고 deterministic rebuild/hash/read-back 되는 migration test를 만든다.
@@ -161,6 +168,8 @@ profile과 mapping registry 항목은 해당 Phase 시작 전에 추가 승인�
 - [x] ADR-0093에 따라 동일한 immutable upload/job/Changeset 경계를 CSV/TXT/JSON/XML/HTML과
   macro-free DOCX/XLSX/PPTX로 확장하고 legacy DOC/XLS, XML entity, unsafe OpenXML 및
   parser/model pin drift를 fail closed로 유지한다.
+- [x] `knowledge.source_snapshots`의 PostgreSQL CHECK를 위 canonical MIME vocabulary와
+  일치시키고 모든 승인 MIME positive 및 legacy/macro/generic-binary negative를 검증한다.
 - [ ] 실제 일반 mapping run은 ADR-0044 수준의 separate durable job, attempt/event,
   fencing/retry/cancel/outbox/RLS/worker role/crash matrix가 승인된 source kind에만 구현한다.
 - [x] durable ingestion progress/stage를 PostgreSQL에서 읽고 UI가 visible non-terminal job만

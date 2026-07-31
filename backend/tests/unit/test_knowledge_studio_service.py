@@ -12,6 +12,8 @@ import pytest
 from datariver.application.dto import (
     KnowledgeGraphRecord,
     KnowledgeStudioABoxRecord,
+    KnowledgeStudioAssetReleaseSource,
+    KnowledgeStudioAssetReleaseSourcePage,
     KnowledgeStudioBindingRecord,
     KnowledgeStudioDomainOption,
     KnowledgeStudioDraftRecord,
@@ -23,6 +25,7 @@ from datariver.application.dto import (
     KnowledgeStudioSourcePage,
     KnowledgeStudioTBoxBlockRecord,
     KnowledgeStudioTBoxElementRecord,
+    KnowledgeStudioTBoxProposalRecord,
     KnowledgeStudioTBoxRecord,
 )
 from datariver.application.knowledge_studio_ingestion_ports import (
@@ -983,6 +986,156 @@ async def test_tbox_catalog_proposal_rejects_a_field_outside_the_exact_source() 
 
 
 @pytest.mark.asyncio
+async def test_asset_release_picker_preserves_draft_scope_and_excludes_edit_base() -> None:
+    current = layered_tbox()
+    page = KnowledgeStudioAssetReleaseSourcePage(items=(), next_cursor=None)
+    store = SimpleNamespace(
+        get_tbox=AsyncMock(return_value=current),
+        list_tbox_asset_release_sources=AsyncMock(return_value=page),
+    )
+
+    result = await service(store).search_tbox_asset_release_sources(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+        draft_id=DRAFT_ID,
+        query="finance",
+        cursor=None,
+        limit=25,
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="asset-release-search",
+    )
+
+    assert result is page
+    store.list_tbox_asset_release_sources.assert_awaited_once_with(
+        workspace_id=WORKSPACE_ID,
+        maximum_classification=int(Classification.INTERNAL),
+        allowed_domain_ids=frozenset({DOMAIN_ID}),
+        excluded_graph_id=None,
+        query="finance",
+        cursor=None,
+        limit=25,
+    )
+
+
+@pytest.mark.asyncio
+async def test_asset_release_proposal_pins_exact_release_hash_without_llm() -> None:
+    current = layered_tbox()
+    saved = cast(KnowledgeStudioTBoxProposalRecord, object())
+    imported = (
+        KnowledgeStudioTBoxElementRecord(
+            stable_element_id="class.contract",
+            kind="CLASS",
+            canonical_name="Contract",
+            display_name="계약",
+            parent_stable_element_id=None,
+            source_stable_element_id=None,
+            target_stable_element_id=None,
+            data_type=None,
+            nullable=None,
+            ordinal=0,
+            version=1,
+        ),
+    )
+    source = KnowledgeStudioAssetReleaseSource(
+        graph_id=GRAPH_ID,
+        graph_name="계약 지식",
+        graph_slug="contract-knowledge",
+        classification=Classification.INTERNAL,
+        domain_name="Finance",
+        studio_release_id=STUDIO_RELEASE_ID,
+        release_no=3,
+        state="ARCHIVED",
+        contract_hash="a" * 64,
+        tbox_hash="b" * 64,
+        published_at=NOW,
+        class_count=1,
+        property_count=0,
+        relationship_count=0,
+        elements=imported,
+    )
+    store = SimpleNamespace(
+        get_tbox=AsyncMock(return_value=current),
+        get_tbox_asset_release_source=AsyncMock(return_value=source),
+        save_tbox_proposal=AsyncMock(return_value=saved),
+    )
+
+    result = await service(store).create_tbox_asset_release_proposal(
+        workspace_id=WORKSPACE_ID,
+        subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+        draft_id=DRAFT_ID,
+        studio_release_id=STUDIO_RELEASE_ID,
+        tbox_hash="b" * 64,
+        target_block_id=SECOND_BLOCK_ID,
+        mode=TBoxProposalMode.MERGE_INTO_CURRENT,
+        expected_version=4,
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="asset-release-proposal",
+    )
+
+    assert result is saved
+    call = store.save_tbox_proposal.await_args.kwargs
+    assert call["elements"][0].display_name == "계약"
+    assert call["model_binding"]["provider"] == "POSTGRESQL_CANONICAL"
+    assert call["source_reference"] == {
+        "contract_version": "KNOWLEDGE_STUDIO_ASSET_RELEASE_SOURCE_V1",
+        "graph_id": str(GRAPH_ID),
+        "studio_release_id": str(STUDIO_RELEASE_ID),
+        "release_no": 3,
+        "release_state": "ARCHIVED",
+        "contract_hash": "a" * 64,
+        "tbox_hash": "b" * 64,
+        "classification": "INTERNAL",
+        "pipeline_evidence": {
+            "contract_version": "KNOWLEDGE_STUDIO_PROPOSAL_VALIDATION_V1",
+            "typed_schema_parse": "PASSED",
+            "deterministic_correction_passes": 1,
+            "corrected_default_count": 0,
+            "aggregate_validation_passes": 1,
+            "cypher_execution": False,
+        },
+    }
+
+
+@pytest.mark.asyncio
+async def test_asset_release_proposal_rejects_a_stale_release_hash() -> None:
+    source = KnowledgeStudioAssetReleaseSource(
+        graph_id=GRAPH_ID,
+        graph_name="계약 지식",
+        graph_slug="contract-knowledge",
+        classification=Classification.INTERNAL,
+        domain_name="Finance",
+        studio_release_id=STUDIO_RELEASE_ID,
+        release_no=3,
+        state="ACTIVE",
+        contract_hash="a" * 64,
+        tbox_hash="b" * 64,
+        published_at=NOW,
+        class_count=1,
+        property_count=0,
+        relationship_count=0,
+        elements=(),
+    )
+    store = SimpleNamespace(
+        get_tbox=AsyncMock(return_value=layered_tbox()),
+        get_tbox_asset_release_source=AsyncMock(return_value=source),
+    )
+
+    with pytest.raises(ConflictError, match="exact release again"):
+        await service(store).create_tbox_asset_release_proposal(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+            draft_id=DRAFT_ID,
+            studio_release_id=STUDIO_RELEASE_ID,
+            tbox_hash="c" * 64,
+            target_block_id=SECOND_BLOCK_ID,
+            mode=TBoxProposalMode.MERGE_INTO_CURRENT,
+            expected_version=4,
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="asset-release-stale",
+        )
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     (
         "source",
@@ -1269,6 +1422,7 @@ async def test_author_can_submit_an_abox_draft_for_independent_review() -> None:
     submitted = replace(current, state="REVIEW", version=8)
     store = SimpleNamespace(
         get_draft=AsyncMock(return_value=current),
+        list_applied_tbox_asset_release_pins=AsyncMock(return_value=()),
         submit_review=AsyncMock(return_value=submitted),
     )
 
@@ -1295,6 +1449,41 @@ async def test_author_can_submit_an_abox_draft_for_independent_review() -> None:
 
 
 @pytest.mark.asyncio
+async def test_submit_review_fails_closed_when_an_asset_release_pin_is_revoked() -> None:
+    current = replace(draft(), current_step="ABOX", version=7)
+    store = SimpleNamespace(
+        get_draft=AsyncMock(return_value=current),
+        list_applied_tbox_asset_release_pins=AsyncMock(
+            return_value=(
+                {
+                    "contract_version": "KNOWLEDGE_STUDIO_ASSET_RELEASE_SOURCE_V1",
+                    "graph_id": str(GRAPH_ID),
+                    "studio_release_id": str(STUDIO_RELEASE_ID),
+                    "contract_hash": "a" * 64,
+                    "tbox_hash": "b" * 64,
+                },
+            )
+        ),
+        get_tbox_asset_release_source=AsyncMock(return_value=None),
+        submit_review=AsyncMock(),
+    )
+
+    with pytest.raises(NotFoundError, match="no longer permitted"):
+        await service(store).submit_review(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+            draft_id=DRAFT_ID,
+            expected_version=7,
+            idempotency_key="submit-review-revoked",
+            request_hash="submit-review-revoked-hash",
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="request",
+        )
+
+    store.submit_review.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_independent_hardware_reviewer_can_publish_exact_review_draft() -> None:
     review_draft = replace(draft(), state="REVIEW", current_step="ABOX", version=8)
     published = replace(
@@ -1314,6 +1503,7 @@ async def test_independent_hardware_reviewer_can_publish_exact_review_draft() ->
     release_record = release()
     store = SimpleNamespace(
         get_draft=AsyncMock(return_value=review_draft),
+        list_applied_tbox_asset_release_pins=AsyncMock(return_value=()),
         publish_draft=AsyncMock(return_value=(published, release_record)),
     )
 

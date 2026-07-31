@@ -19,7 +19,7 @@ from datariver.application.dto import (
     KnowledgeStudioMappingRuleRecord,
 )
 from datariver.domain.authz import Classification
-from datariver.domain.common import ConflictError
+from datariver.domain.common import ConflictError, ValidationError
 from datariver.domain.knowledge_studio import (
     DEFAULT_KNOWLEDGE_DOMAIN_SOURCE_VERSION,
     DEFAULT_KNOWLEDGE_DOMAINS,
@@ -35,12 +35,16 @@ from datariver.infrastructure.db.knowledge_studio import (
     TBOX_OPERATIONS_OPERATION,
     TBOX_PROPOSAL_APPLY_OPERATION,
     SqlKnowledgeStudioStore,
+    _decode_asset_release_cursor,
+    _encode_asset_release_cursor,
     abox_binding_result,
     resolve_abox_idempotent_replay,
     resolve_studio_idempotent_replay,
     studio_draft_record_from_result,
     studio_draft_result,
 )
+from datariver.infrastructure.db.models.knowledge import GraphModel
+from datariver.infrastructure.db.models.knowledge_studio import KnowledgeStudioReleaseModel
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0059_knowledge_studio_foundation.py"
@@ -59,6 +63,91 @@ GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
 def _table(name: str) -> Table:
     return Base.metadata.tables[name]
+
+
+def test_asset_release_cursor_is_canonical_and_rejects_tampering() -> None:
+    release_id = UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1101")
+    published_at = datetime(2026, 7, 31, 1, 2, 3, tzinfo=UTC)
+    cursor = _encode_asset_release_cursor(
+        published_at=published_at,
+        release_id=release_id,
+    )
+
+    assert _decode_asset_release_cursor(cursor) == (published_at, release_id)
+    with pytest.raises(ValidationError, match="cursor is invalid"):
+        _decode_asset_release_cursor(cursor + "=")
+
+
+def test_asset_release_picker_sql_is_workspace_and_abac_scoped() -> None:
+    workspace_id = UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1102")
+    domain_id = UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1103")
+    statement = SqlKnowledgeStudioStore._tbox_asset_release_statement(workspace_id).where(
+        *SqlKnowledgeStudioStore._tbox_asset_release_scope(
+            maximum_classification=int(Classification.INTERNAL),
+            allowed_domain_ids=frozenset({domain_id}),
+        )
+    )
+
+    compiled = str(
+        statement.compile(
+            dialect=postgresql.dialect(),  # type: ignore[no-untyped-call]
+            compile_kwargs={"literal_binds": True},
+        )
+    )
+    assert "knowledge.graphs.workspace_id" in compiled
+    assert "knowledge.graphs.status != 'ARCHIVED'" in compiled
+    assert "knowledge.graphs.classification <= 1" in compiled
+    assert "knowledge.graphs.domain_ref_id IN" in compiled
+    assert str(domain_id) in compiled
+
+
+@pytest.mark.asyncio
+async def test_asset_release_read_rejects_aggregate_ontology_hash_mismatch() -> None:
+    graph_id = UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1104")
+    release_id = UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1105")
+    ontology_id = UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1106")
+    graph = SimpleNamespace(
+        id=graph_id,
+        name="Governed glossary",
+        slug="governed-glossary",
+        classification=int(Classification.INTERNAL),
+    )
+    release = SimpleNamespace(
+        id=release_id,
+        release_no=2,
+        state="ACTIVE",
+        contract_hash="a" * 64,
+        tbox_hash="b" * 64,
+        published_at=datetime(2026, 7, 31, 1, 2, 3, tzinfo=UTC),
+        ontology_version_id=ontology_id,
+    )
+    row = SimpleNamespace(
+        _mapping={
+            GraphModel: graph,
+            KnowledgeStudioReleaseModel: release,
+            "domain_name": "Data Governance",
+            "class_count": 1,
+            "property_count": 0,
+            "relationship_count": 0,
+        }
+    )
+    ontology = SimpleNamespace(
+        checksum="b" * 64,
+        schema_document={"contract_version": "tampered"},
+    )
+    session = SimpleNamespace(
+        execute=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: row)),
+        scalars=AsyncMock(return_value=SimpleNamespace(one_or_none=lambda: ontology)),
+    )
+    store = SqlKnowledgeStudioStore(cast(AsyncSession, session))
+
+    with pytest.raises(ConflictError, match="contract hash is invalid"):
+        await store.get_tbox_asset_release_source(
+            workspace_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1107"),
+            studio_release_id=release_id,
+            maximum_classification=int(Classification.INTERNAL),
+            allowed_domain_ids=frozenset({UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1108")}),
+        )
 
 
 def test_studio_draft_model_is_separate_persistent_author_state() -> None:
