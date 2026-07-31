@@ -334,9 +334,11 @@ drift. Physical deletion remains a separate governed retention operation.
   no write/activate route and never accepts a probe destination from the browser.
 - Monitoring tab updates are a separate RLS-protected presentation aggregate, not a connector
   profile. The server accepts credential-free HTTP(S) Dashboard Links from any origin but never
-  fetches, probes or proxies them. Administrator input cannot enable iframe use, widen CSP or
-  provide a connector destination; only the existing deployment-owned exact-origin Grafana gate
-  may produce an iframe descriptor. Other links open with browser opener isolation. Fresh
+  fetches, probes or proxies them. A fresh administrator replacement approves the stored links for
+  sandboxed, no-referrer iframe presentation under the edge's HTTP(S) `frame-src` policy; the
+  browser still uses only the server-returned descriptor and retains an opener-isolated external
+  fallback. The target site's `frame-ancestors` or `X-Frame-Options` remains authoritative and
+  cannot be bypassed. The update cannot provide a connector destination or credential. Fresh
   administrator assurance and optimistic concurrency are required for every replacement.
 - No zero/default encryption key fallback. Startup fails when required secret material is missing or weak.
 - TLS is mandatory outside a single-host private development network. PostgreSQL/object backups are encrypted and restoration is tested.

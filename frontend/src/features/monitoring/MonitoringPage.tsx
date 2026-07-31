@@ -245,7 +245,7 @@ export function MonitoringPage({
       <Dialog
         open={editorOpen}
         title="Monitoring 탭 수정"
-        description="탭별 Dashboard Link와 페이지 높이를 설정합니다. iframe 승인이 없는 외부 링크는 새 창에서 열립니다."
+        description="Admin이 저장한 Dashboard Link는 탭 안에 표시됩니다. 대상 사이트가 iframe을 제한하면 새 창으로 열어 주세요."
         size="large"
         onRequestClose={() => {
           if (!saving) setEditorOpen(false)
@@ -386,7 +386,8 @@ function MonitoringDashboardPanel({ dashboard }: { dashboard: MonitoringDashboar
             <Monitor size={20} aria-hidden="true" />
           </span>
           <p>
-            서버가 iframe 표시를 승인한 <strong>{dashboard.label}</strong> Dashboard입니다.
+            Admin이 승인한 <strong>{dashboard.label}</strong> Dashboard입니다. 대상 사이트가
+            iframe 표시를 제한하면 새 창으로 열어 주세요.
           </p>
           <a
             className="button button-secondary"
@@ -419,8 +420,8 @@ function MonitoringDashboardPanel({ dashboard }: { dashboard: MonitoringDashboar
         <p className="eyebrow">Approved external observability</p>
         <h2>{dashboard.label}</h2>
         <p>
-          이 Dashboard는 서버가 검증한 링크입니다. 현재 배포에서 iframe 표시가 승인되지
-          않아 새 창에서 엽니다.
+          이 배포의 기본 Dashboard Link입니다. Admin에서 탭으로 저장하면 페이지 안에
+          표시할 수 있습니다.
         </p>
         <a
           className="button"

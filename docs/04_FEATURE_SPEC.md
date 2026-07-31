@@ -267,14 +267,15 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   capabilities response. Eligible administrators see a **탭 수정** action on the tab rail and may
   change the label, order, credential-free HTTP(S) Dashboard Link and bounded page height through a
   version-fenced server update. A saved link is presentation metadata only: the server does not
-  fetch it, treat it as a connector or use it to expand CSP. A sandboxed no-referrer iframe appears
-  only when the server reports an available descriptor under deployment-owned `UI_GRAFANA_URL`,
-  matching exact-origin `GRAFANA_EMBED_BASE_URL`, explicit enablement and a non-empty
-  SSO/frame-policy evidence reference; the same origin must be present in web CSP `frame-src`.
-  Otherwise the tab opens the server-validated link in a new window with opener isolation. The
-  browser never creates a frame directly from an entered URL. The explicit `480..2000` pixel height
-  lets each cross-origin Dashboard grow the page downward without unsafe document inspection
-  (ADR-0090, ADR-0095).
+  fetch it or treat it as a connector. Persisting the document with fresh administrator assurance
+  approves those Dashboard Links for sandboxed, no-referrer iframe presentation; the edge CSP
+  allows HTTP(S) frame sources for this server-returned descriptor only. A deployment-default
+  Grafana page that has not been saved by an administrator still requires the exact-origin,
+  explicit-enable and evidence gate. Every framed tab retains a new-window link because the target
+  site may independently deny framing through its own CSP or `X-Frame-Options`, which DataRiver
+  cannot override. The browser never creates a frame directly from an entered URL. The explicit
+  `480..2000` pixel height lets each cross-origin Dashboard grow the page downward without unsafe
+  document inspection (ADR-0090, ADR-0095, ADR-0097).
 - Current platform capability observations are shown with the deployment inventory under Admin
   **System settings**, not repeated below the ordinary Monitoring dashboards.
 - Health is `healthy`, `degraded`, `unavailable`, or `unknown`; an unrelated unavailable capability does not blank the whole UI.

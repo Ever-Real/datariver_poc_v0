@@ -19,7 +19,7 @@ SECURITY_HEADERS = {
         "style-src 'self' 'unsafe-inline'; script-src 'self'; "
         "connect-src 'self' ${S3_PUBLIC_ORIGIN} ${OIDC_PUBLIC_ORIGIN}; "
         "frame-src ${OIDC_PUBLIC_ORIGIN} ${DATAHUB_EMBED_BASE_URL} "
-        "${GRAFANA_EMBED_BASE_URL}; form-action 'self' ${OIDC_PUBLIC_ORIGIN}"
+        "${GRAFANA_EMBED_BASE_URL} http: https:; form-action 'self' ${OIDC_PUBLIC_ORIGIN}"
     ),
     "Permissions-Policy": "camera=(), microphone=(), geolocation=()",
     "Referrer-Policy": "no-referrer",

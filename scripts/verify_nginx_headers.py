@@ -29,7 +29,7 @@ EXPECTED_CSP = (
     "style-src 'self' 'unsafe-inline'; script-src 'self'; "
     f"connect-src 'self' {ORIGINS['S3_PUBLIC_ORIGIN']} {ORIGINS['OIDC_PUBLIC_ORIGIN']}; "
     f"frame-src {ORIGINS['OIDC_PUBLIC_ORIGIN']} {ORIGINS['DATAHUB_EMBED_BASE_URL']} "
-    f"{ORIGINS['GRAFANA_EMBED_BASE_URL']}; "
+    f"{ORIGINS['GRAFANA_EMBED_BASE_URL']} http: https:; "
     f"form-action 'self' {ORIGINS['OIDC_PUBLIC_ORIGIN']}"
 )
 EXPECTED_SECURITY_HEADERS = {

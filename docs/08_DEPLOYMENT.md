@@ -337,6 +337,13 @@ then set `GRAFANA_EMBED_ENABLED=true` and record the SSO, `frame-ancestors` and 
 origin mismatch. The resulting frame is sandboxed and no-referrer. There is no browser endpoint to
 save, test or override either URL, so an unreviewed dashboard remains a new-window link.
 
+Workspace administrators may separately save Monitoring Dashboard Links through the versioned
+Monitoring tab editor. Fresh administrator assurance approves those credential-free HTTP(S) links
+for sandboxed, no-referrer iframe presentation; the edge CSP therefore permits HTTP(S) frame
+sources. This does not create a connector or cause the server to fetch the destination. Each frame
+keeps a new-window fallback because a target site's own `frame-ancestors` or `X-Frame-Options`
+policy may still deny embedding and cannot be overridden by DataRiver.
+
 Static validation and start:
 
 ```bash

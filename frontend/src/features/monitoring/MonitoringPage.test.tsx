@@ -83,6 +83,36 @@ describe('MonitoringPage', () => {
     expect(frame).toHaveStyle({ height: '1040px' })
   })
 
+  it('frames an administrator-approved non-Grafana dashboard link', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/capabilities') {
+        return Promise.resolve(response({
+          monitoring_configuration: {
+            version: 4,
+            items: [{
+              id: '33333333-3333-4333-8333-333333333333',
+              label: 'Vendor status',
+              url: 'https://status.example.com/platform',
+              height_px: 900,
+              embed_state: 'AVAILABLE',
+              embed_url: 'https://status.example.com/platform',
+            }],
+          },
+        }))
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<MonitoringPage client={apiClient(request)} />)
+
+    const frame = await screen.findByTitle('Vendor status Monitoring Dashboard')
+    expect(frame).toHaveAttribute('src', 'https://status.example.com/platform')
+    expect(screen.getByText(/Admin이 승인한/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: '새 창으로 열기' })).toHaveAttribute(
+      'href',
+      'https://status.example.com/platform',
+    )
+  })
+
   it('shows an explicit empty state when no dashboard is configured', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/capabilities') {

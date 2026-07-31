@@ -20,10 +20,19 @@ def monitoring_configuration_response(
     if configuration is None:
         documents = _deployment_default_documents(settings=settings, workspace_id=workspace_id)
         version = 0
+        administrator_approved = False
     else:
         documents = configuration.dashboards
         version = configuration.version
-    items = [_dashboard_response(settings=settings, document=document) for document in documents]
+        administrator_approved = True
+    items = [
+        _dashboard_response(
+            settings=settings,
+            document=document,
+            administrator_approved=administrator_approved,
+        )
+        for document in documents
+    ]
     return MonitoringConfigurationResponse(items=items, version=version)
 
 
@@ -49,9 +58,10 @@ def _dashboard_response(
     *,
     settings: Settings,
     document: dict[str, Any],
+    administrator_approved: bool,
 ) -> MonitoringDashboardResponse:
     url = str(document["url"])
-    embed_url = settings.grafana_embed_url(url)
+    embed_url = url if administrator_approved else settings.grafana_embed_url(url)
     return MonitoringDashboardResponse(
         id=UUID(str(document["id"])),
         label=str(document["label"]),

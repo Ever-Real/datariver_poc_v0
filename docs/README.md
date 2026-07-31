@@ -53,6 +53,7 @@
 | 55 | [Phase 9 Governance Document library](55_PHASE9_GOVERNANCE_DOCUMENT_LIBRARY.md) | immutable document/Template versions, approval, safe HTML, MinIO and knowledge projection | Local source/PostgreSQL 17/MinIO/runtime gates complete; target gates open |
 | 56 | [Governed Monitoring dashboard tabs](adr/0090-governed-monitoring-dashboard-tabs.md) | Workspace Monitoring tab presentation, administrator update and exact-origin embed boundary | Accepted; local implementation |
 | 57 | [External Monitoring dashboard links](adr/0095-external-monitoring-dashboard-links.md) | arbitrary credential-free HTTP(S) Dashboard Links with a disabled-first iframe boundary | Accepted; local implementation |
+| 58 | [Administrator-approved Monitoring frames](adr/0097-administrator-approved-monitoring-frames.md) | persisted Admin approval, sandboxed HTTP(S) frames and target-policy fallback | Accepted; local implementation |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and
@@ -163,6 +164,9 @@ Workspace-scoped Monitoring dashboard tabs, administrator updates and the exact-
 boundary are defined by [ADR-0090](adr/0090-governed-monitoring-dashboard-tabs.md). Registration of
 credential-free HTTP(S) links from any origin, while preserving the existing disabled-first iframe
 gate, is defined by [ADR-0095](adr/0095-external-monitoring-dashboard-links.md).
+Fresh administrator persistence as iframe approval, the bounded HTTP(S) frame CSP and the target
+site frame-policy fallback are defined by
+[ADR-0097](adr/0097-administrator-approved-monitoring-frames.md).
 The consolidated Knowledge Information workspace, immutable-Release Property Profiles, governed
 Catalog tables and bounded document-Proposal proxy bridge are defined by
 [ADR-0083](adr/0083-knowledge-information-property-profiles-and-bounded-proposal-timeout.md).

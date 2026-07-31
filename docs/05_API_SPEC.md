@@ -99,10 +99,10 @@ the job.
 |---|---|---|
 | `GET /health/live` | public | process liveness only |
 | `GET /health/ready` | dependency probe | canonical readiness |
-| `GET /capabilities` | `operations.read` | sanitized capability states, optional server-validated external UI links and the ordered Workspace Monitoring tab document. Each credential-free HTTP(S) Dashboard Link is external unless the deployment-owned exact-origin embed gate returns a sandboxed descriptor; no credential-bearing or active-content URL |
+| `GET /capabilities` | `operations.read` | sanitized capability states, optional server-validated external UI links and the ordered Workspace Monitoring tab document. A persisted administrator-approved credential-free HTTP(S) Dashboard Link receives a sandboxed iframe descriptor plus its external fallback; an unsaved deployment default still uses the exact-origin embed gate. No credential-bearing or active-content URL |
 | `GET /operations/summary` | `operations.read` | current workspace counts for jobs, uploads, changes, outbox lag and non-deleted typed DataHub projections; the bounded (200 branches + explicit truncation) platform/database/schema coverage reports only asset and non-blank-description counts, never catalog rows, classification, tags, glossary terms or provider documents; includes the fail-closed retention-automation state |
 | `GET /operations/metrics` | `operations.read` | bounded-label Prometheus HTTP metrics |
-| `PUT /admin/monitoring-configuration` | eligible human administrator with fresh `MONITORING_CONFIGURATION_UPDATE`; `If-Match` required | replace up to eight ordered Dashboard label/link/height descriptors. Links may use any credential-free HTTP(S) origin; the server never fetches them, and the update never changes connector, secret, CSP or embed enablement |
+| `PUT /admin/monitoring-configuration` | eligible human administrator with fresh `MONITORING_CONFIGURATION_UPDATE`; `If-Match` required | replace and approve for sandboxed iframe presentation up to eight ordered Dashboard label/link/height descriptors. Links may use any credential-free HTTP(S) origin; the server never fetches them and cannot override a target site's own frame-denial headers |
 
 ### Quality read model
 

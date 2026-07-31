@@ -2,6 +2,21 @@
 
 ## Current verification status
 
+### Administrator-approved Monitoring frames — 2026-07-31
+
+ADR-0097 treats a fresh-assurance administrator save as iframe approval for every credential-free
+HTTP(S) Dashboard Link in the persisted Workspace configuration. The response still controls frame
+creation, each frame remains sandboxed/no-referrer with a bounded height, and a new-window fallback
+remains visible because the target site's own CSP or `X-Frame-Options` may independently deny
+framing. Registration causes no server fetch, probe or proxy.
+
+Focused domain/configuration/Nginx tests passed `85` cases and the Monitoring component passed `6`
+cases, including a non-Grafana administrator-approved iframe descriptor. Target Ruff,
+TypeScript/ESLint and static architecture/security verification passed. Exact-image Nginx header,
+complete repository and authenticated browser results are recorded only after the concurrently
+owned Knowledge increment publishes and the clean combined source can run the stable
+`dev-publish` gate.
+
 ### Provider-neutral Monitoring dashboard links — 2026-07-31
 
 ADR-0095 refines the Monitoring presentation boundary so an administrator may save a
