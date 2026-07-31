@@ -4,6 +4,7 @@ import { ApiError, type ApiClient, type RequestOptions } from '../../api/client'
 import type {
   CatalogAsset,
   ChangeRequestRecord,
+  ChangeRequestSchemaOverview,
   ChangeRequestSummary,
 } from '../../api/types'
 import { GovernancePage } from './GovernancePage'
@@ -98,10 +99,15 @@ function summary(record: ChangeRequestRecord): ChangeRequestSummary {
   }
 }
 
-function summaryList(records: ChangeRequestRecord[], nextCursor: string | null = null) {
+function summaryList(
+  records: ChangeRequestRecord[],
+  nextCursor: string | null = null,
+  overview: ChangeRequestSchemaOverview[] = [],
+) {
   return {
     items: records.map(summary),
-    overview: [],
+    overview,
+    overview_truncated: false,
     page: { limit: 25, next_cursor: nextCursor },
   }
 }
@@ -179,6 +185,50 @@ describe('GovernancePage', () => {
     act(() => list.resolve(summaryList([])))
     expect(await screen.findByText('현재 권한 범위에서 조회 가능한 요청이 없습니다.')).toBeInTheDocument()
     expect(screen.getByText('0건 표시')).toBeInTheDocument()
+  })
+
+  it('sizes overview columns from displayed content and exposes clipped values in titles', async () => {
+    const schemaOverview: ChangeRequestSchemaOverview = {
+      platform: 'postgres',
+      database_name: 'semiconductor_warehouse',
+      schema_name: 'semiconductor_seed_with_a_long_authorized_name',
+      system_id: 'system-1',
+      system_code: 'FAB',
+      system_name: 'Fabrication data platform',
+      assignees: [],
+      pending_count: 0,
+      total_count: 0,
+      received_count: 0,
+      recheck_count: 0,
+      testing_count: 0,
+      final_review_count: 0,
+      completed_count: 0,
+    }
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/change-requests/summaries?limit=25') {
+        return Promise.resolve(summaryList([], null, [schemaOverview]))
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderPage(apiClient(request))
+
+    const region = await screen.findByRole('region', {
+      name: '현재 권한 창의 스키마별 변경요청 현황',
+    })
+    const widths = Array.from(region.querySelectorAll('col')).map(
+      (column) => column.getAttribute('style'),
+    )
+    expect(widths).toHaveLength(10)
+    expect(new Set(widths).size).toBeGreaterThan(1)
+    expect(screen.getByText(schemaOverview.schema_name)).toHaveClass('governance-overview-primary')
+    expect(screen.getByText(schemaOverview.schema_name)).toHaveAttribute(
+      'title',
+      schemaOverview.schema_name,
+    )
+    expect(screen.getByText(schemaOverview.system_name!)).toHaveAttribute(
+      'title',
+      schemaOverview.system_name,
+    )
   })
 
   it('renders the bounded dense list and opens independent CR creation', async () => {
