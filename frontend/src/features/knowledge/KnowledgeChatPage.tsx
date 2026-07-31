@@ -137,7 +137,7 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
         setNodeId((current) => (
           current && result.nodes.some((node) => node.id === current)
             ? current
-            : result.nodes[0]?.id ?? ''
+            : ''
         ))
       })
       .catch((next) => {
@@ -152,7 +152,7 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
   const query = async (event: FormEvent) => {
     event.preventDefault()
     const trimmedQuestion = question.trim()
-    if (!graphId || !releaseId || !nodeId || trimmedQuestion.length < 2 || loading) return
+    if (!graphId || !releaseId || trimmedQuestion.length < 2 || loading) return
     const version = ++requestVersion.current
     setSubmittedQuestion(trimmedQuestion)
     setAnalysis(undefined)
@@ -165,7 +165,7 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
           method: 'POST',
           body: JSON.stringify({
             question: trimmedQuestion,
-            start_node_id: nodeId,
+            start_node_id: nodeId || null,
             direction,
             edge_types: [],
             maximum_hops: Number(maximumHops),
@@ -187,22 +187,22 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
   }
 
   const flowNodes = useMemo<FlowCanvasNode[]>(() => (
-    analysis?.nodes ?? []
+    analysis?.nodes ?? snapshot?.nodes ?? []
   ).map((node) => ({
     id: node.id,
     label: label(node.properties, node.id),
     subtitle: `${node.entity_type} · 근거 ${node.provenance.length}`,
     kind: node.id === nodeId ? 'target' : 'neutral',
-  })), [analysis, nodeId])
+  })), [analysis, nodeId, snapshot])
 
   const flowEdges = useMemo<FlowCanvasEdge[]>(() => (
-    analysis?.edges ?? []
+    analysis?.edges ?? snapshot?.edges ?? []
   ).map((edge) => ({
     id: edge.id,
     source: edge.source_id,
     target: edge.target_id,
     label: edge.edge_type,
-  })), [analysis])
+  })), [analysis, snapshot])
 
   const activeGraph = graphs.find((graph) => graph.id === graphId)
   const activeRelease = releases.find((release) => release.id === releaseId)
@@ -241,7 +241,7 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
             <label>
               시작 노드
               <select value={nodeId} onChange={(event) => setNodeId(event.target.value)}>
-                <option value="">선택</option>
+                <option value="">자동 선택 · 질문 의미 기반</option>
                 {(snapshot?.nodes ?? []).map((node) => (
                   <option key={node.id} value={node.id}>
                     {label(node.properties, node.id)} · {node.entity_type}
@@ -283,7 +283,7 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
             </label>
             <button
               className="knowledge-chat-submit"
-              disabled={loading || !nodeId || question.trim().length < 2}
+              disabled={loading || !graphId || !releaseId || question.trim().length < 2}
               type="submit"
             >
               {loading ? <Loader2 className="animate-spin" size={15} /> : <Send size={15} />}
@@ -291,7 +291,8 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
             </button>
             <p className="knowledge-chat-security">
               <ShieldCheck size={14} />
-              릴리스와 계정 권한을 서버에서 재검증하며 브라우저는 그래프 쿼리를 직접 만들지 않습니다.
+              시작 노드를 비우면 질문 의미로 자동 선택합니다. 릴리스와 계정 권한은 서버에서
+              재검증하며 브라우저는 그래프 쿼리를 직접 만들지 않습니다.
             </p>
           </form>
 
@@ -344,15 +345,29 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
               <section className="knowledge-graph-card">
                 <header>
                   <div><GitBranch size={15} /><strong>근거 그래프</strong></div>
-                  {analysis && <small>{analysis.nodes.length} nodes · {analysis.edges.length} edges</small>}
+                  {analysis ? (
+                    <small>
+                      {analysis.nodes.length} nodes · {analysis.edges.length} edges · 답변 근거 경로
+                    </small>
+                  ) : snapshot ? (
+                    <small>
+                      {snapshot.nodes.length} nodes · {snapshot.edges.length} edges · 권한 내 bounded preview
+                      {snapshot.filtered ? ' · filtered' : ''}
+                    </small>
+                  ) : null}
                 </header>
                 <FlowCanvas
                   ariaLabel="GraphRAG 근거 그래프"
                   edges={flowEdges}
-                  emptyDescription="질문을 실행하면 답변에 사용된 노드와 관계가 표시됩니다."
-                  emptyTitle="아직 분석된 지식 근거가 없습니다."
+                  emptyDescription="권한 범위의 선택된 릴리스에 표시 가능한 노드가 없습니다."
+                  emptyTitle="표시할 릴리스 미리보기가 없습니다."
                   height={390}
                   nodes={flowNodes}
+                  onNodeActivate={(selectedNodeId) => {
+                    if (snapshot?.nodes.some((node) => node.id === selectedNodeId)) {
+                      setNodeId(selectedNodeId)
+                    }
+                  }}
                 />
               </section>
               <aside className="knowledge-evidence-list">
@@ -364,7 +379,9 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
                       <ChevronRight size={12} />
                       <span>v{activeRelease?.release_no ?? '-'}</span>
                       <ChevronRight size={12} />
-                      <strong>{activeNode ? label(activeNode.properties, activeNode.id) : nodeId}</strong>
+                      <strong>
+                        {activeNode ? label(activeNode.properties, activeNode.id) : '자동 semantic seed'}
+                      </strong>
                     </div>
                     {analysis.truncated && (
                       <p className="knowledge-truncated">조회 한도로 일부 결과가 생략되었습니다.</p>
