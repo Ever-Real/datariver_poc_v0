@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from datariver.interfaces.http.schemas import PageMeta
 
@@ -341,6 +341,31 @@ class QualityAssetDetailResponse(QualityReadMetadata):
     authoring: QualityAssetAuthoringResponse
 
 
+class QualityScorePolicyResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_id: Literal["UNWEIGHTED_RULE_PASS_RATE_V1"]
+    policy_version: Literal[1]
+    policy_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    calculation: str
+    pass_condition: str
+    warn_condition: str
+    fail_condition: str
+    unknown_condition: str
+
+
+class QualityAssetFieldResponse(QualityAuthoringFieldResponse):
+    configured_rule_count: int = Field(ge=0)
+    active_rule_count: int = Field(ge=0)
+    evaluated_rule_count: int = Field(ge=0)
+    passed_count: int = Field(ge=0)
+    advisory_failed_count: int = Field(ge=0)
+    blocking_failed_count: int = Field(ge=0)
+    latest_score_basis_points: int | None = Field(default=None, ge=0, le=10_000)
+    latest_quality_outcome: Literal["PASS", "WARN", "FAIL", "UNKNOWN"]
+    latest_evaluated_at: datetime | None
+
+
 class QualityAssetWorkspaceItemResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -348,10 +373,72 @@ class QualityAssetWorkspaceItemResponse(BaseModel):
     rule_sets: list[QualityRuleSetResponse] = Field(max_length=50)
     runs: list[QualityRunResponse] = Field(max_length=50)
     trend: list[QualityTrendPointResponse] = Field(max_length=90)
+    authoring: QualityAssetAuthoringResponse
+    fields: list[QualityAssetFieldResponse] = Field(max_length=1000)
+    score_policy: QualityScorePolicyResponse
 
 
 class QualityAssetWorkspaceResponse(QualityReadMetadata):
     item: QualityAssetWorkspaceItemResponse
+
+
+class QualityFieldRuleResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rule_definition_id: UUID
+    rule_set_id: UUID
+    rule_set_name: str
+    version_id: UUID
+    version_number: int = Field(ge=1)
+    version_state: Literal["PROPOSED", "APPROVED", "ACTIVE"]
+    kind: Literal["NOT_NULL", "RANGE"]
+    severity: Literal["BLOCKING", "ADVISORY"]
+    parameters: dict[str, object]
+
+
+class QualityFieldRunResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: UUID
+    rule_set_id: UUID
+    rule_set_name: str
+    state: Literal[
+        "QUEUED",
+        "RUNNING",
+        "RETRY_WAIT",
+        "CANCEL_REQUESTED",
+        "SUCCEEDED",
+        "FAILED",
+        "STALE",
+        "CANCELLED",
+    ]
+    run_quality_outcome: Literal["PASS", "WARN", "FAIL", "UNKNOWN"]
+    field_quality_outcome: Literal["PASS", "WARN", "FAIL", "UNKNOWN"]
+    score_basis_points: int | None = Field(default=None, ge=0, le=10_000)
+    passed_count: int = Field(ge=0)
+    advisory_failed_count: int = Field(ge=0)
+    blocking_failed_count: int = Field(ge=0)
+    evaluated_value_count: int = Field(ge=0)
+    missing_count: int = Field(ge=0)
+    unexpected_count: int = Field(ge=0)
+    created_at: datetime
+    completed_at: datetime | None
+    failure_code: str | None
+
+
+class QualityFieldWorkspaceItemResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: UUID
+    field: QualityAuthoringFieldResponse
+    rules: list[QualityFieldRuleResponse] = Field(max_length=200)
+    runs: list[QualityFieldRunResponse] = Field(max_length=50)
+    trend: list[QualityTrendPointResponse] = Field(max_length=90)
+    score_policy: QualityScorePolicyResponse
+
+
+class QualityFieldWorkspaceResponse(QualityReadMetadata):
+    item: QualityFieldWorkspaceItemResponse
 
 
 class QualityRuleDraftRequest(BaseModel):
@@ -363,12 +450,20 @@ class QualityRuleDraftRequest(BaseModel):
     parameters: dict[str, object] = Field(default_factory=dict)
 
 
+class QualityRuleProposalTargetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: UUID
+    rules: list[QualityRuleDraftRequest] = Field(min_length=1, max_length=100)
+
+
 class QualityRuleBatchProposalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name_prefix: str = Field(min_length=1, max_length=100)
-    asset_ids: list[UUID] = Field(min_length=1, max_length=25)
-    rules: list[QualityRuleDraftRequest] = Field(min_length=1, max_length=100)
+    asset_ids: list[UUID] = Field(default_factory=list, max_length=25)
+    rules: list[QualityRuleDraftRequest] = Field(default_factory=list, max_length=100)
+    targets: list[QualityRuleProposalTargetRequest] = Field(default_factory=list, max_length=25)
 
     @field_validator("asset_ids")
     @classmethod
@@ -376,6 +471,20 @@ class QualityRuleBatchProposalRequest(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("asset_ids must be unique")
         return value
+
+    @model_validator(mode="after")
+    def one_target_shape(self) -> QualityRuleBatchProposalRequest:
+        legacy = bool(self.asset_ids or self.rules)
+        targeted = bool(self.targets)
+        if legacy == targeted:
+            raise ValueError("Supply either asset_ids/rules or targets.")
+        if legacy and (not self.asset_ids or not self.rules):
+            raise ValueError("asset_ids and rules must both be non-empty.")
+        if targeted:
+            asset_ids = [target.asset_id for target in self.targets]
+            if len(asset_ids) != len(set(asset_ids)):
+                raise ValueError("target asset IDs must be unique")
+        return self
 
 
 class QualityRuleProposalItemResponse(BaseModel):
@@ -402,10 +511,49 @@ class QualityCommonRuleTemplateCreateRequest(BaseModel):
     rules: list[QualityRuleDraftRequest] = Field(min_length=1, max_length=100)
 
 
+class QualityCommonRuleTemplateFieldBindingRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    template_rule_ordinal: int = Field(ge=1, le=100)
+    field_identifier: str = Field(
+        min_length=1,
+        max_length=255,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}$",
+    )
+    parameters_override: dict[str, object] | None = None
+
+
+class QualityCommonRuleTemplateTargetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: UUID
+    bindings: list[QualityCommonRuleTemplateFieldBindingRequest] = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    @field_validator("bindings")
+    @classmethod
+    def unique_bindings(
+        cls,
+        value: list[QualityCommonRuleTemplateFieldBindingRequest],
+    ) -> list[QualityCommonRuleTemplateFieldBindingRequest]:
+        identities = [
+            (binding.template_rule_ordinal, binding.field_identifier) for binding in value
+        ]
+        if len(identities) != len(set(identities)):
+            raise ValueError("field bindings must be unique")
+        return value
+
+
 class QualityCommonRuleTemplateMapRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    asset_ids: list[UUID] = Field(min_length=1, max_length=25)
+    asset_ids: list[UUID] = Field(default_factory=list, max_length=25)
+    targets: list[QualityCommonRuleTemplateTargetRequest] = Field(
+        default_factory=list,
+        max_length=25,
+    )
 
     @field_validator("asset_ids")
     @classmethod
@@ -413,6 +561,15 @@ class QualityCommonRuleTemplateMapRequest(BaseModel):
         if len(value) != len(set(value)):
             raise ValueError("asset_ids must be unique")
         return value
+
+    @model_validator(mode="after")
+    def one_mapping_shape(self) -> QualityCommonRuleTemplateMapRequest:
+        if bool(self.asset_ids) == bool(self.targets):
+            raise ValueError("Supply either asset_ids or field targets.")
+        target_ids = [target.asset_id for target in self.targets]
+        if len(target_ids) != len(set(target_ids)):
+            raise ValueError("target asset IDs must be unique")
+        return self
 
 
 class QualityCommonRuleTemplateCreateResponse(BaseModel):

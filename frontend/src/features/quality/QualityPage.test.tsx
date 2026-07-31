@@ -4,10 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../api/client'
 import type {
   QualityAsset,
-  QualityAssetWorkspace,
   QualityCapability,
 } from '../../api/types'
 import { QualityPage } from './QualityPage'
+import type { QualityAssetFieldWorkspace } from './qualityFieldTypes'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -46,6 +46,14 @@ describe('QualityPage', () => {
           authorization_valid_until: '2026-07-30T00:00:30Z',
         }))
       }
+      if (path.endsWith(`/quality/assets/${qualityAsset.asset_id}/fields/wafer_id/workspace`)) {
+        return Promise.resolve(json({
+          item: fieldWorkspace(),
+          cache_scope: cacheScope,
+          observed_at: '2026-07-30T00:00:00Z',
+          authorization_valid_until: '2026-07-30T00:00:30Z',
+        }))
+      }
       return Promise.reject(new Error(`unexpected request: ${requestUrl(input).href}`))
     })
     vi.stubGlobal('fetch', fetchMock)
@@ -61,6 +69,11 @@ describe('QualityPage', () => {
     expect(screen.getAllByText('Not null checks')).toHaveLength(2)
     expect(screen.getByText('최근 품질 검사 이력')).toBeInTheDocument()
     expect(screen.getByRole('img', { name: '최근 30일 품질 점수 추이' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '필드별 품질 관리' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('row', { name: /wafer_id/ }))
+    expect(await screen.findByRole('heading', { name: 'wafer_id' })).toBeInTheDocument()
+    expect(await screen.findByText(/UNWEIGHTED_RULE_PASS_RATE_V1/)).toBeInTheDocument()
+    expect(await screen.findByText('필드 검사 이력')).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: '이슈' })).not.toBeInTheDocument()
     expect(screen.queryByText('승인 대기')).not.toBeInTheDocument()
   })
@@ -157,7 +170,7 @@ function assetPage() {
   }
 }
 
-function assetWorkspace(): QualityAssetWorkspace {
+function assetWorkspace(): QualityAssetFieldWorkspace {
   return {
     asset: qualityAsset,
     rule_sets: [{
@@ -200,6 +213,92 @@ function assetWorkspace(): QualityAssetWorkspace {
       evaluated_rule_count: 80,
       score_basis_points: 9_875,
     }],
+    authoring: {
+      state: 'READY',
+      reason_code: null,
+      source_version: 'wafer-source-v1',
+      schema_hash: 'c'.repeat(64),
+      fields: [{
+        field_identifier: 'wafer_id',
+        display_path: 'wafer_id',
+        logical_type: 'STRING',
+        supported_rule_kinds: ['NOT_NULL'],
+      }],
+    },
+    fields: [{
+      field_identifier: 'wafer_id',
+      display_path: 'wafer_id',
+      logical_type: 'STRING',
+      supported_rule_kinds: ['NOT_NULL'],
+      configured_rule_count: 1,
+      active_rule_count: 1,
+      evaluated_rule_count: 1,
+      passed_count: 1,
+      advisory_failed_count: 0,
+      blocking_failed_count: 0,
+      latest_score_basis_points: 10_000,
+      latest_quality_outcome: 'PASS',
+      latest_evaluated_at: '2026-07-30T00:00:02Z',
+    }],
+    score_policy: scorePolicy(),
+  }
+}
+
+function fieldWorkspace() {
+  return {
+    asset_id: qualityAsset.asset_id,
+    field: assetWorkspace().authoring.fields[0],
+    rules: [{
+      rule_definition_id: 'definition-one',
+      rule_set_id: 'rules-one',
+      rule_set_name: 'Not null checks',
+      version_id: 'version-one',
+      version_number: 1,
+      version_state: 'ACTIVE',
+      kind: 'NOT_NULL',
+      severity: 'BLOCKING',
+      parameters: {},
+    }],
+    runs: [{
+      run_id: 'run-one',
+      rule_set_id: 'rules-one',
+      rule_set_name: 'Not null checks',
+      state: 'SUCCEEDED',
+      run_quality_outcome: 'PASS',
+      field_quality_outcome: 'PASS',
+      score_basis_points: 10_000,
+      passed_count: 1,
+      advisory_failed_count: 0,
+      blocking_failed_count: 0,
+      evaluated_value_count: 80,
+      missing_count: 0,
+      unexpected_count: 0,
+      created_at: '2026-07-30T00:00:00Z',
+      completed_at: '2026-07-30T00:00:02Z',
+      failure_code: null,
+    }],
+    trend: [{
+      bucket_start: '2026-07-30T00:00:00Z',
+      passed_count: 1,
+      advisory_failed_count: 0,
+      blocking_failed_count: 0,
+      evaluated_rule_count: 1,
+      score_basis_points: 10_000,
+    }],
+    score_policy: scorePolicy(),
+  }
+}
+
+function scorePolicy() {
+  return {
+    policy_id: 'UNWEIGHTED_RULE_PASS_RATE_V1' as const,
+    policy_version: 1 as const,
+    policy_hash: 'd'.repeat(64),
+    calculation: 'passed / (passed + advisory_failed + blocking_failed)',
+    pass_condition: 'evaluated > 0 and advisory_failed = 0 and blocking_failed = 0',
+    warn_condition: 'blocking_failed = 0 and advisory_failed > 0',
+    fail_condition: 'blocking_failed > 0',
+    unknown_condition: 'evaluated = 0',
   }
 }
 

@@ -22,6 +22,11 @@ from sqlalchemy import (
 )
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from datariver.application.quality_contracts import (
+    QUALITY_SCORE_POLICY_HASH,
+    QUALITY_SCORE_POLICY_ID,
+    QUALITY_SCORE_POLICY_VERSION,
+)
 from datariver.application.quality_read_contracts import (
     ProfileReadiness,
     QualityAssetPage,
@@ -34,6 +39,10 @@ from datariver.application.quality_read_contracts import (
     QualityDashboard,
     QualityDashboardIndicator,
     QualityDashboardRisk,
+    QualityFieldRuleSummary,
+    QualityFieldRunSummary,
+    QualityFieldSummary,
+    QualityFieldWorkspace,
     QualityIndicatorId,
     QualityIssuePage,
     QualityIssueSummary,
@@ -50,6 +59,7 @@ from datariver.application.quality_read_contracts import (
     QualityRunPage,
     QualityRunSummary,
     QualitySchemaDashboard,
+    QualityScorePolicySummary,
     QualityTrendPoint,
 )
 from datariver.application.quality_read_ports import QualityReadRepository
@@ -83,6 +93,32 @@ class _AssetQualityAggregate:
     passed_count: int
     advisory_failed_count: int
     blocking_failed_count: int
+
+    @property
+    def evaluated_rule_count(self) -> int:
+        return self.passed_count + self.advisory_failed_count + self.blocking_failed_count
+
+    @property
+    def outcome(self) -> str:
+        return _outcome(
+            evaluated=self.evaluated_rule_count,
+            advisory_failed=self.advisory_failed_count,
+            blocking_failed=self.blocking_failed_count,
+        )
+
+    @property
+    def score_basis_points(self) -> int | None:
+        return _basis_points(self.passed_count, self.evaluated_rule_count)
+
+
+@dataclass(frozen=True, slots=True)
+class _FieldQualityAggregate:
+    configured_rule_count: int = 0
+    active_rule_count: int = 0
+    passed_count: int = 0
+    advisory_failed_count: int = 0
+    blocking_failed_count: int = 0
+    latest_evaluated_at: datetime | None = None
 
     @property
     def evaluated_rule_count(self) -> int:
@@ -594,6 +630,46 @@ class SqlQualityReadRepository(QualityReadRepository):
                 visible=asset_visible,
                 since=context.observed_at - timedelta(days=days),
             ),
+            fields=await self._field_summaries(
+                workspace_id=context.subject.workspace_id,
+                asset_id=asset_id,
+            ),
+            score_policy=_score_policy_summary(),
+        )
+
+    async def get_field_workspace(
+        self,
+        *,
+        context: QualityReadContext,
+        asset_id: UUID,
+        field_identifier: str,
+        days: int,
+    ) -> QualityFieldWorkspace | None:
+        if await self.get_asset(context=context, asset_id=asset_id) is None:
+            return None
+        workspace_id = context.subject.workspace_id
+        rules = await self._field_rules(
+            workspace_id=workspace_id,
+            asset_id=asset_id,
+            field_identifier=field_identifier,
+        )
+        runs = await self._field_runs(
+            context=context,
+            asset_id=asset_id,
+            field_identifier=field_identifier,
+        )
+        return QualityFieldWorkspace(
+            asset_id=asset_id,
+            field_identifier=field_identifier,
+            rules=rules,
+            runs=runs,
+            trend=await self._field_trend(
+                workspace_id=workspace_id,
+                asset_id=asset_id,
+                field_identifier=field_identifier,
+                since=context.observed_at - timedelta(days=days),
+            ),
+            score_policy=_score_policy_summary(),
         )
 
     async def list_common_rule_templates(
@@ -1556,6 +1632,420 @@ class SqlQualityReadRepository(QualityReadRepository):
             AssetProjectionModel.domain_id,
         ).where(and_(*catalog_asset_scope_conditions(context.subject, context.access)))
 
+    async def _field_summaries(
+        self,
+        *,
+        workspace_id: UUID,
+        asset_id: UUID,
+    ) -> tuple[QualityFieldSummary, ...]:
+        configured_rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        QualityRuleDefinitionModel.field_identifier,
+                        func.count(QualityRuleDefinitionModel.id).label("configured"),
+                        func.count(QualityRuleDefinitionModel.id)
+                        .filter(QualityRuleSetVersionModel.state == "ACTIVE")
+                        .label("active"),
+                    )
+                    .join(
+                        QualityRuleSetVersionModel,
+                        and_(
+                            QualityRuleSetVersionModel.workspace_id
+                            == QualityRuleDefinitionModel.workspace_id,
+                            QualityRuleSetVersionModel.id
+                            == QualityRuleDefinitionModel.rule_set_version_id,
+                        ),
+                    )
+                    .join(
+                        QualityRuleSetModel,
+                        and_(
+                            QualityRuleSetModel.workspace_id
+                            == QualityRuleSetVersionModel.workspace_id,
+                            QualityRuleSetModel.id == QualityRuleSetVersionModel.rule_set_id,
+                        ),
+                    )
+                    .where(
+                        QualityRuleDefinitionModel.workspace_id == workspace_id,
+                        QualityRuleSetModel.asset_id == asset_id,
+                        QualityRuleSetModel.state == "ACTIVE",
+                        QualityRuleSetVersionModel.state.in_(("PROPOSED", "APPROVED", "ACTIVE")),
+                    )
+                    .group_by(QualityRuleDefinitionModel.field_identifier)
+                )
+            ).all()
+        )
+        configured = {
+            row.field_identifier: (int(row.configured), int(row.active)) for row in configured_rows
+        }
+        if not configured:
+            return ()
+        active_versions = (
+            select(
+                QualityRuleSetVersionModel.id.label("version_id"),
+                QualityRuleSetVersionModel.rule_set_id,
+            )
+            .join(
+                QualityRuleSetModel,
+                and_(
+                    QualityRuleSetModel.workspace_id == QualityRuleSetVersionModel.workspace_id,
+                    QualityRuleSetModel.id == QualityRuleSetVersionModel.rule_set_id,
+                ),
+            )
+            .where(
+                QualityRuleSetVersionModel.workspace_id == workspace_id,
+                QualityRuleSetVersionModel.state == "ACTIVE",
+                QualityRuleSetModel.asset_id == asset_id,
+                QualityRuleSetModel.state == "ACTIVE",
+            )
+        ).subquery("active_field_quality_versions")
+        ranked_runs = (
+            select(
+                QualityValidationRunModel.id.label("run_id"),
+                QualityValidationRunModel.rule_set_version_id,
+                QualityValidationRunModel.completed_at,
+                func.row_number()
+                .over(
+                    partition_by=QualityValidationRunModel.rule_set_version_id,
+                    order_by=(
+                        desc(QualityValidationRunModel.completed_at),
+                        desc(QualityValidationRunModel.id),
+                    ),
+                )
+                .label("ordinal"),
+            )
+            .join(
+                active_versions,
+                active_versions.c.version_id == QualityValidationRunModel.rule_set_version_id,
+            )
+            .where(
+                QualityValidationRunModel.workspace_id == workspace_id,
+                QualityValidationRunModel.asset_id == asset_id,
+                QualityValidationRunModel.state == "SUCCEEDED",
+            )
+        ).subquery("ranked_field_quality_runs")
+        latest_runs = (
+            select(
+                ranked_runs.c.run_id,
+                ranked_runs.c.rule_set_version_id,
+                ranked_runs.c.completed_at,
+            ).where(ranked_runs.c.ordinal == 1)
+        ).subquery("latest_field_quality_runs")
+        evidence_rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        QualityRuleDefinitionModel.field_identifier,
+                        func.count(QualityExpectationResultModel.id)
+                        .filter(QualityExpectationResultModel.outcome == "PASS")
+                        .label("passed"),
+                        func.count(QualityExpectationResultModel.id)
+                        .filter(QualityExpectationResultModel.outcome == "ADVISORY_FAIL")
+                        .label("advisory"),
+                        func.count(QualityExpectationResultModel.id)
+                        .filter(QualityExpectationResultModel.outcome == "BLOCKING_FAIL")
+                        .label("blocking"),
+                        func.max(latest_runs.c.completed_at).label("latest_evaluated_at"),
+                    )
+                    .select_from(active_versions)
+                    .join(
+                        QualityRuleDefinitionModel,
+                        and_(
+                            QualityRuleDefinitionModel.workspace_id == workspace_id,
+                            QualityRuleDefinitionModel.rule_set_version_id
+                            == active_versions.c.version_id,
+                        ),
+                    )
+                    .outerjoin(
+                        latest_runs,
+                        latest_runs.c.rule_set_version_id == active_versions.c.version_id,
+                    )
+                    .outerjoin(
+                        QualityExpectationResultModel,
+                        and_(
+                            QualityExpectationResultModel.workspace_id == workspace_id,
+                            QualityExpectationResultModel.run_id == latest_runs.c.run_id,
+                            QualityExpectationResultModel.rule_definition_id
+                            == QualityRuleDefinitionModel.id,
+                        ),
+                    )
+                    .group_by(QualityRuleDefinitionModel.field_identifier)
+                )
+            ).all()
+        )
+        evidence = {
+            row.field_identifier: _FieldQualityAggregate(
+                configured_rule_count=configured[row.field_identifier][0],
+                active_rule_count=configured[row.field_identifier][1],
+                passed_count=int(row.passed),
+                advisory_failed_count=int(row.advisory),
+                blocking_failed_count=int(row.blocking),
+                latest_evaluated_at=row.latest_evaluated_at,
+            )
+            for row in evidence_rows
+        }
+        values: list[QualityFieldSummary] = []
+        for field_identifier, counts in sorted(configured.items()):
+            aggregate = evidence.get(
+                field_identifier,
+                _FieldQualityAggregate(
+                    configured_rule_count=counts[0],
+                    active_rule_count=counts[1],
+                    passed_count=0,
+                    advisory_failed_count=0,
+                    blocking_failed_count=0,
+                    latest_evaluated_at=None,
+                ),
+            )
+            values.append(
+                QualityFieldSummary(
+                    field_identifier=field_identifier,
+                    configured_rule_count=aggregate.configured_rule_count,
+                    active_rule_count=aggregate.active_rule_count,
+                    evaluated_rule_count=aggregate.evaluated_rule_count,
+                    passed_count=aggregate.passed_count,
+                    advisory_failed_count=aggregate.advisory_failed_count,
+                    blocking_failed_count=aggregate.blocking_failed_count,
+                    latest_score_basis_points=aggregate.score_basis_points,
+                    latest_quality_outcome=aggregate.outcome,
+                    latest_evaluated_at=aggregate.latest_evaluated_at,
+                )
+            )
+        return tuple(values)
+
+    async def _field_rules(
+        self,
+        *,
+        workspace_id: UUID,
+        asset_id: UUID,
+        field_identifier: str,
+    ) -> tuple[QualityFieldRuleSummary, ...]:
+        rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        QualityRuleDefinitionModel,
+                        QualityRuleSetVersionModel,
+                        QualityRuleSetModel,
+                    )
+                    .join(
+                        QualityRuleSetVersionModel,
+                        and_(
+                            QualityRuleSetVersionModel.workspace_id
+                            == QualityRuleDefinitionModel.workspace_id,
+                            QualityRuleSetVersionModel.id
+                            == QualityRuleDefinitionModel.rule_set_version_id,
+                        ),
+                    )
+                    .join(
+                        QualityRuleSetModel,
+                        and_(
+                            QualityRuleSetModel.workspace_id
+                            == QualityRuleSetVersionModel.workspace_id,
+                            QualityRuleSetModel.id == QualityRuleSetVersionModel.rule_set_id,
+                        ),
+                    )
+                    .where(
+                        QualityRuleDefinitionModel.workspace_id == workspace_id,
+                        QualityRuleDefinitionModel.field_identifier == field_identifier,
+                        QualityRuleSetModel.asset_id == asset_id,
+                        QualityRuleSetModel.state == "ACTIVE",
+                        QualityRuleSetVersionModel.state.in_(("PROPOSED", "APPROVED", "ACTIVE")),
+                    )
+                    .order_by(
+                        case((QualityRuleSetVersionModel.state == "ACTIVE", 0), else_=1),
+                        desc(QualityRuleSetVersionModel.version_number),
+                        QualityRuleDefinitionModel.ordinal,
+                    )
+                    .limit(200)
+                )
+            ).all()
+        )
+        return tuple(
+            QualityFieldRuleSummary(
+                rule_definition_id=definition.id,
+                rule_set_id=rule_set.id,
+                rule_set_name=rule_set.name,
+                version_id=version.id,
+                version_number=version.version_number,
+                version_state=version.state,
+                kind=definition.kind,
+                severity=definition.severity,
+                parameters=dict(definition.parameters),
+            )
+            for definition, version, rule_set in rows
+        )
+
+    async def _field_runs(
+        self,
+        *,
+        context: QualityReadContext,
+        asset_id: UUID,
+        field_identifier: str,
+    ) -> tuple[QualityFieldRunSummary, ...]:
+        workspace_id = context.subject.workspace_id
+        target_versions = select(QualityRuleDefinitionModel.rule_set_version_id).where(
+            QualityRuleDefinitionModel.workspace_id == workspace_id,
+            QualityRuleDefinitionModel.field_identifier == field_identifier,
+        )
+        run_rows = await self._run_rows(
+            context=context,
+            conditions=(
+                QualityValidationRunModel.asset_id == asset_id,
+                QualityValidationRunModel.rule_set_version_id.in_(target_versions),
+            ),
+            limit=50,
+        )
+        run_ids = tuple(row[0].id for row in run_rows)
+        metrics: dict[UUID, Any] = {}
+        if run_ids:
+            metric_rows = list(
+                (
+                    await self._session.execute(
+                        select(
+                            QualityExpectationResultModel.run_id,
+                            func.count(QualityExpectationResultModel.id)
+                            .filter(QualityExpectationResultModel.outcome == "PASS")
+                            .label("passed"),
+                            func.count(QualityExpectationResultModel.id)
+                            .filter(QualityExpectationResultModel.outcome == "ADVISORY_FAIL")
+                            .label("advisory"),
+                            func.count(QualityExpectationResultModel.id)
+                            .filter(QualityExpectationResultModel.outcome == "BLOCKING_FAIL")
+                            .label("blocking"),
+                            func.coalesce(
+                                func.sum(QualityExpectationResultModel.evaluated_count), 0
+                            ).label("evaluated"),
+                            func.coalesce(
+                                func.sum(QualityExpectationResultModel.missing_count), 0
+                            ).label("missing"),
+                            func.coalesce(
+                                func.sum(QualityExpectationResultModel.unexpected_count), 0
+                            ).label("unexpected"),
+                        )
+                        .join(
+                            QualityRuleDefinitionModel,
+                            and_(
+                                QualityRuleDefinitionModel.workspace_id
+                                == QualityExpectationResultModel.workspace_id,
+                                QualityRuleDefinitionModel.id
+                                == QualityExpectationResultModel.rule_definition_id,
+                            ),
+                        )
+                        .where(
+                            QualityExpectationResultModel.workspace_id == workspace_id,
+                            QualityExpectationResultModel.run_id.in_(run_ids),
+                            QualityRuleDefinitionModel.field_identifier == field_identifier,
+                        )
+                        .group_by(QualityExpectationResultModel.run_id)
+                    )
+                ).all()
+            )
+            metrics = {row.run_id: row for row in metric_rows}
+        values: list[QualityFieldRunSummary] = []
+        for model, rule_set_name, _asset_name in run_rows:
+            metric = metrics.get(model.id)
+            passed = int(metric.passed) if metric is not None else 0
+            advisory = int(metric.advisory) if metric is not None else 0
+            blocking = int(metric.blocking) if metric is not None else 0
+            field_outcome, field_score = _field_run_quality(
+                state=model.state,
+                passed=passed,
+                advisory_failed=advisory,
+                blocking_failed=blocking,
+            )
+            values.append(
+                QualityFieldRunSummary(
+                    run_id=model.id,
+                    rule_set_id=model.rule_set_id,
+                    rule_set_name=rule_set_name,
+                    state=model.state,
+                    run_quality_outcome=model.quality_outcome,
+                    field_quality_outcome=field_outcome,
+                    score_basis_points=field_score,
+                    passed_count=passed,
+                    advisory_failed_count=advisory,
+                    blocking_failed_count=blocking,
+                    evaluated_value_count=(int(metric.evaluated) if metric is not None else 0),
+                    missing_count=(int(metric.missing) if metric is not None else 0),
+                    unexpected_count=(int(metric.unexpected) if metric is not None else 0),
+                    created_at=model.created_at,
+                    completed_at=model.completed_at,
+                    failure_code=model.failure_code,
+                )
+            )
+        return tuple(values)
+
+    async def _field_trend(
+        self,
+        *,
+        workspace_id: UUID,
+        asset_id: UUID,
+        field_identifier: str,
+        since: datetime,
+    ) -> tuple[QualityTrendPoint, ...]:
+        bucket = func.date_trunc("day", QualityValidationRunModel.completed_at)
+        rows = list(
+            (
+                await self._session.execute(
+                    select(
+                        bucket.label("bucket_start"),
+                        func.count(QualityExpectationResultModel.id)
+                        .filter(QualityExpectationResultModel.outcome == "PASS")
+                        .label("passed"),
+                        func.count(QualityExpectationResultModel.id)
+                        .filter(QualityExpectationResultModel.outcome == "ADVISORY_FAIL")
+                        .label("advisory"),
+                        func.count(QualityExpectationResultModel.id)
+                        .filter(QualityExpectationResultModel.outcome == "BLOCKING_FAIL")
+                        .label("blocking"),
+                    )
+                    .join(
+                        QualityRuleDefinitionModel,
+                        and_(
+                            QualityRuleDefinitionModel.workspace_id
+                            == QualityExpectationResultModel.workspace_id,
+                            QualityRuleDefinitionModel.id
+                            == QualityExpectationResultModel.rule_definition_id,
+                        ),
+                    )
+                    .join(
+                        QualityValidationRunModel,
+                        and_(
+                            QualityValidationRunModel.workspace_id
+                            == QualityExpectationResultModel.workspace_id,
+                            QualityValidationRunModel.id == QualityExpectationResultModel.run_id,
+                        ),
+                    )
+                    .where(
+                        QualityExpectationResultModel.workspace_id == workspace_id,
+                        QualityValidationRunModel.asset_id == asset_id,
+                        QualityValidationRunModel.state == "SUCCEEDED",
+                        QualityValidationRunModel.completed_at.is_not(None),
+                        QualityValidationRunModel.completed_at >= since,
+                        QualityRuleDefinitionModel.field_identifier == field_identifier,
+                    )
+                    .group_by(bucket)
+                    .order_by(bucket)
+                    .limit(90)
+                )
+            ).all()
+        )
+        return tuple(
+            QualityTrendPoint(
+                bucket_start=row.bucket_start,
+                passed_count=int(row.passed),
+                advisory_failed_count=int(row.advisory),
+                blocking_failed_count=int(row.blocking),
+                evaluated_rule_count=int(row.passed) + int(row.advisory) + int(row.blocking),
+                score_basis_points=_basis_points(
+                    int(row.passed),
+                    int(row.passed) + int(row.advisory) + int(row.blocking),
+                ),
+            )
+            for row in rows
+        )
+
     async def _trend(
         self,
         *,
@@ -1974,6 +2464,21 @@ def _common_template_summary(
     )
 
 
+def _score_policy_summary() -> QualityScorePolicySummary:
+    return QualityScorePolicySummary(
+        policy_id=QUALITY_SCORE_POLICY_ID,
+        policy_version=QUALITY_SCORE_POLICY_VERSION,
+        policy_hash=QUALITY_SCORE_POLICY_HASH,
+        calculation="passed / (passed + advisory_failed + blocking_failed)",
+        pass_condition=(  # noqa: S106 - outcome rule, never credential material
+            "evaluated > 0 and advisory_failed = 0 and blocking_failed = 0"
+        ),
+        warn_condition="blocking_failed = 0 and advisory_failed > 0",
+        fail_condition="blocking_failed > 0",
+        unknown_condition="evaluated = 0",
+    )
+
+
 def _managed_rule_sets() -> tuple[QualityManagedRuleSet, ...]:
     return (
         QualityManagedRuleSet(
@@ -2169,6 +2674,26 @@ def _run_basis_points(model: QualityValidationRunModel) -> int | None:
     passed = model.passed_count or 0
     evaluated = passed + (model.advisory_failed_count or 0) + (model.blocking_failed_count or 0)
     return _basis_points(passed, evaluated)
+
+
+def _field_run_quality(
+    *,
+    state: str,
+    passed: int,
+    advisory_failed: int,
+    blocking_failed: int,
+) -> tuple[str, int | None]:
+    if state != "SUCCEEDED":
+        return "UNKNOWN", None
+    evaluated = passed + advisory_failed + blocking_failed
+    return (
+        _outcome(
+            evaluated=evaluated,
+            advisory_failed=advisory_failed,
+            blocking_failed=blocking_failed,
+        ),
+        _basis_points(passed, evaluated),
+    )
 
 
 def _basis_points(numerator: int, denominator: int) -> int | None:

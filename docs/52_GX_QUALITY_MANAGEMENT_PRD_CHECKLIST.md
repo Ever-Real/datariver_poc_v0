@@ -20,6 +20,12 @@ bounded mutation surface를 추가하되 미검증 배포 입력은 capability-c
 - React는 capability를 먼저 확인하고 품질 대시보드/자산별 품질 현황 및 이력/공통 룰셋
   관리 세 탭에서 서버 계산값과 정규화 결과만 표시한다. 권한 lease, cursor와 모든 Quality
   query key는 caller scope에 결합된다.
+- 자산 inspector는 deployment-owned 필드를 검색/타입 필터 가능한 Explorer로 표시하고,
+  선택 필드의 Rule/Run/30일 추이는 우측 Drawer에서 지연 조회한다. 테이블 전체 Run/추이는
+  기존 aggregate로 함께 유지한다.
+- 신규 Rule 또는 공통 Template mapping은 필드 checkbox/Shift 선택 후 `RANGE` 값을 타입별
+  일괄 또는 필드별로 입력받는다. 서버가 모든 field identity, Rule kind/type/parameter를 다시
+  검증한 뒤 최대 25개 자산·자산별 100개 Rule을 단일 repository command로 제출한다.
 - sample/top/distribution, 실패행, provider/source credential은 projection/API/UI 계약에
   포함하지 않는다.
 - field identity/source/workload는 V2 deployment manifest로만 제공하며 현재 로컬 배포에는
@@ -182,6 +188,8 @@ score = pass_rate = 100 * passed / evaluated
 - `blocking_failed > 0`이면 `FAIL`이다.
 - blocking failure 없이 `advisory_failed > 0`이면 `WARN`이다.
 - 하나 이상 평가되고 모두 통과하면 `PASS`다.
+- 이 정책은 asset/field workspace 응답의 policy ID/version/hash와 조건으로 함께 제공된다.
+  별도 숫자 임계치를 도입하지 않으며 UI도 동일 precedence만 설명한다.
 - 응답은 numerator/denominator/unknown count, formula/score-policy ID·version·hash,
   aggregation grain과 `as_of`를 포함한다.
 - weight 또는 업무 threshold가 필요하면 새 score-policy version과 별도 승인을 요구한다.
@@ -357,6 +365,11 @@ no-work와 multi-run replay를 표현한다. dispatch는 deterministic keyset에
 - `GET /quality/dashboard`
 - `GET /quality/assets`
 - `GET /quality/assets/{asset_id}`
+- `GET /quality/assets/{asset_id}/workspace`
+- `GET /quality/assets/{asset_id}/fields/{field_identifier}/workspace`
+- `GET|POST /quality/common-rule-templates`
+- `GET /quality/common-rule-templates/{template_id}`
+- `POST /quality/common-rule-templates/{template_id}/mappings`
 - `GET|POST /quality/rule-sets`
 - `GET /quality/rule-sets/{rule_set_id}`
 - `POST /quality/rule-sets/{rule_set_id}/versions`
@@ -421,6 +434,14 @@ platform/database/schema, classification, lifecycle와 profile-readiness만 포�
 coordinate는 제외한다. `GET /quality/assets/{asset_id}`는 server-owned field ID, bounded
 display path/type, schema/source version을 제공한다. stale/deleted historical target은 권한이
 있으면 과거 evidence read에만 사용할 수 있고 새 Rule/activation target이 될 수 없다.
+
+`GET /quality/assets/{asset_id}/workspace`는 table aggregate와 deployment field 목록, 필드별
+configured/active/evaluated Rule count, 최신 V1 점수와 score-policy metadata를 반환한다.
+`GET /quality/assets/{asset_id}/fields/{field_identifier}/workspace`는 asset read 결정 후 현재
+deployment binding에서 URL field identity를 exact-match한 경우에만 해당 필드의 현재 Rule,
+최근 50 Run과 최대 90개 일별 trend를 반환한다. POST의 targeted field identity와 Template
+ordinal/override도 동일 서버 directory 및 typed Rule domain validation을 통과해야 하며 한
+대상이라도 실패하면 canonical Rule Set write는 발생하지 않는다.
 
 Capability V2는 `read_access`, `profile_readiness`, `rule_authoring`, `review`, `activation`,
 `manual_execution`, `scheduling`, `operations`를 독립 축으로 반환한다. `read_access=DENIED`
@@ -576,6 +597,10 @@ Profile `stale_at`만 사용한다. 승인된 Quality LLM route가 없으면
 - [x] authorization-pruned Overview/assets/rules/runs/results/issues read model을 구현한다.
 - [x] 세 사용자 중심 탭, server cards/trend/grid, Catalog Resource Tree와 선택 후 lazy
   detail UI를 구현한다.
+- [x] field Explorer, 우측 Drawer, 필드별 Rule/Run/trend와 table aggregate 병행 표시를
+  구현한다.
+- [x] 신규/공통 Rule의 targeted field 선택, Shift 범위 선택, 타입별 일괄/필드별 RANGE
+  parameter 입력과 서버 원자 재검증을 구현한다.
 - [x] V2 field directory 기반 bounded Rule wizard와 conflict/review/`MANUAL_ONLY`
   activation UI를 구현하고 readiness가 없으면 capability로 잠근다.
 - [x] 30초 authorization lease, capability/dependency 분리, bounded polling/cache fence와
@@ -583,6 +608,9 @@ Profile `stale_at`만 사용한다. 승인된 Quality LLM route가 없으면
 - [x] roving keyboard tab, chart 대체 표, loading/empty/error/denied/partial 상태를
   source/component gate로 검증한다.
 - [ ] zoom/screen-reader/target browser 수동 접근성 gate를 통과한다.
+- [ ] 승인 schedule profile과 별도 제품 결정을 확보한 뒤 schedule mutation을 설계한다.
+- [ ] source DB hard timeout/circuit breaker와 full-only 계약 변경이 필요한 sampled fallback은
+  별도 ADR·schema·security review 후 구현한다.
 
 ### Phase 5 — 성능·보안·target acceptance
 

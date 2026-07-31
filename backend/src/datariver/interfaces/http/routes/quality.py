@@ -6,13 +6,13 @@ from functools import lru_cache
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Header, Query, Request, Response
+from fastapi import APIRouter, Header, Path, Query, Request, Response
 
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.quality_commands import QualityCommandService
 from datariver.application.services.quality_read import QualityReadService
-from datariver.domain.common import PreconditionRequiredError, ValidationError
+from datariver.domain.common import NotFoundError, PreconditionRequiredError, ValidationError
 from datariver.infrastructure.db.authz import SqlDecisionWriter
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
@@ -33,6 +33,7 @@ from datariver.interfaces.http.quality_presenters import (
     quality_asset_workspace_response,
     quality_common_rule_template_detail_response,
     quality_common_rule_template_response,
+    quality_field_workspace_response,
     quality_issue_response,
     quality_overview_response,
     quality_result_response,
@@ -56,6 +57,7 @@ from datariver.interfaces.http.quality_schemas import (
     QualityCommonRuleTemplateListResponse,
     QualityCommonRuleTemplateMapRequest,
     QualityDashboardResponse,
+    QualityFieldWorkspaceResponse,
     QualityIssueListResponse,
     QualityManualRunRequest,
     QualityManualRunResponse,
@@ -332,8 +334,66 @@ async def get_quality_asset_workspace(
         environment=context.environment,
         request_id=context.request_id,
     )
+    authoring = await _command_service(request, session).asset_detail(
+        workspace_id=context.workspace_id,
+        asset_id=asset_id,
+    )
     return QualityAssetWorkspaceResponse(
-        item=quality_asset_workspace_response(value),
+        item=quality_asset_workspace_response(value, authoring),
+        cache_scope=read_context.cache_scope,
+        observed_at=read_context.observed_at,
+        authorization_valid_until=read_context.authorization_valid_until,
+    )
+
+
+@router.get(
+    "/assets/{asset_id}/fields/{field_identifier}/workspace",
+    response_model=QualityFieldWorkspaceResponse,
+)
+async def get_quality_field_workspace(
+    asset_id: UUID,
+    field_identifier: Annotated[
+        str,
+        Path(min_length=1, max_length=255, pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,254}$"),
+    ],
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    session: SessionDep,
+    days: Annotated[int, Query(ge=1, le=90)] = 30,
+) -> QualityFieldWorkspaceResponse:
+    _private(response)
+    read_service = _service(request, session)
+    await read_service.get_asset(
+        asset_id=asset_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    authoring = await _command_service(request, session).asset_detail(
+        workspace_id=context.workspace_id,
+        asset_id=asset_id,
+    )
+    field = next(
+        (
+            candidate
+            for candidate in authoring.fields
+            if candidate.field_identifier == field_identifier
+        ),
+        None,
+    )
+    if field is None:
+        raise NotFoundError("The Quality field was not found in the active deployment binding.")
+    value, read_context = await read_service.get_field_workspace(
+        asset_id=asset_id,
+        field_identifier=field.field_identifier,
+        days=days,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return QualityFieldWorkspaceResponse(
+        item=quality_field_workspace_response(value, field),
         cache_scope=read_context.cache_scope,
         observed_at=read_context.observed_at,
         authorization_valid_until=read_context.authorization_valid_until,
@@ -448,6 +508,13 @@ async def map_quality_common_rule_template(
         idempotency_key=idempotency_key,
         template_id=template_id,
         asset_ids=payload.asset_ids,
+        targets=tuple(
+            (
+                target.asset_id,
+                tuple(binding.model_dump() for binding in target.bindings),
+            )
+            for target in payload.targets
+        ),
     )
     return QualityRuleBatchProposalResponse(
         items=[
@@ -514,6 +581,13 @@ async def propose_quality_rule_sets(
         name_prefix=payload.name_prefix,
         asset_ids=payload.asset_ids,
         rules=[rule.model_dump() for rule in payload.rules],
+        target_rules=tuple(
+            (
+                target.asset_id,
+                tuple(rule.model_dump() for rule in target.rules),
+            )
+            for target in payload.targets
+        ),
     )
     response.headers["Location"] = "/api/v1/quality/rule-sets"
     return QualityRuleBatchProposalResponse(

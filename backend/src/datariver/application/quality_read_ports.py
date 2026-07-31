@@ -11,6 +11,7 @@ from datariver.application.quality_read_contracts import (
     QualityCommonRuleTemplateDetail,
     QualityCommonRuleTemplateSummary,
     QualityDashboard,
+    QualityFieldWorkspace,
     QualityIssuePage,
     QualityOverview,
     QualityReadContext,
@@ -50,6 +51,15 @@ class QualityReadRepository(Protocol):
     async def get_asset_workspace(
         self, *, context: QualityReadContext, asset_id: UUID, days: int
     ) -> QualityAssetWorkspace | None: ...
+
+    async def get_field_workspace(
+        self,
+        *,
+        context: QualityReadContext,
+        asset_id: UUID,
+        field_identifier: str,
+        days: int,
+    ) -> QualityFieldWorkspace | None: ...
 
     async def list_common_rule_templates(
         self, *, context: QualityReadContext

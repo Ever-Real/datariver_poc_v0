@@ -18,6 +18,7 @@ from datariver.application.quality_read_contracts import (
     QualityCommonRuleTemplateDetail,
     QualityCommonRuleTemplateSummary,
     QualityDashboard,
+    QualityFieldWorkspace,
     QualityIssuePage,
     QualityOverview,
     QualityReadContext,
@@ -322,6 +323,31 @@ class QualityReadService:
         value = await self._repository.get_asset_workspace(
             context=context,
             asset_id=asset_id,
+            days=days,
+        )
+        if value is None:
+            raise NotFoundError("The Quality asset was not found.")
+        return value, context
+
+    async def get_field_workspace(
+        self,
+        *,
+        asset_id: UUID,
+        field_identifier: str,
+        days: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> tuple[QualityFieldWorkspace, QualityReadContext]:
+        context = await self._read_context(
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        value = await self._repository.get_field_workspace(
+            context=context,
+            asset_id=asset_id,
+            field_identifier=field_identifier,
             days=days,
         )
         if value is None:

@@ -158,11 +158,82 @@ class QualityAssetSummary:
 
 
 @dataclass(frozen=True, slots=True)
+class QualityScorePolicySummary:
+    policy_id: str
+    policy_version: int
+    policy_hash: str
+    calculation: str
+    pass_condition: str
+    warn_condition: str
+    fail_condition: str
+    unknown_condition: str
+
+
+@dataclass(frozen=True, slots=True)
+class QualityFieldSummary:
+    field_identifier: str
+    configured_rule_count: int
+    active_rule_count: int
+    evaluated_rule_count: int
+    passed_count: int
+    advisory_failed_count: int
+    blocking_failed_count: int
+    latest_score_basis_points: int | None
+    latest_quality_outcome: str
+    latest_evaluated_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class QualityFieldRuleSummary:
+    rule_definition_id: UUID
+    rule_set_id: UUID
+    rule_set_name: str
+    version_id: UUID
+    version_number: int
+    version_state: str
+    kind: str
+    severity: str
+    parameters: dict[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class QualityFieldRunSummary:
+    run_id: UUID
+    rule_set_id: UUID
+    rule_set_name: str
+    state: str
+    run_quality_outcome: str
+    field_quality_outcome: str
+    score_basis_points: int | None
+    passed_count: int
+    advisory_failed_count: int
+    blocking_failed_count: int
+    evaluated_value_count: int
+    missing_count: int
+    unexpected_count: int
+    created_at: datetime
+    completed_at: datetime | None
+    failure_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class QualityFieldWorkspace:
+    asset_id: UUID
+    field_identifier: str
+    rules: tuple[QualityFieldRuleSummary, ...]
+    runs: tuple[QualityFieldRunSummary, ...]
+    trend: tuple[QualityTrendPoint, ...]
+    score_policy: QualityScorePolicySummary
+
+
+@dataclass(frozen=True, slots=True)
 class QualityAssetWorkspace:
     asset: QualityAssetSummary
     rule_sets: tuple[QualityRuleSetSummary, ...]
     runs: tuple[QualityRunSummary, ...]
     trend: tuple[QualityTrendPoint, ...]
+    fields: tuple[QualityFieldSummary, ...]
+    score_policy: QualityScorePolicySummary
 
 
 @dataclass(frozen=True, slots=True)

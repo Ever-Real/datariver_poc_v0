@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Plus, Search } from 'lucide-react'
 import type {
@@ -13,6 +13,8 @@ import type {
 import { newIdempotencyKey } from '../../api/client'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { Dialog } from '../../components/common/Dialog'
+import { QualityFieldBulkApplyDialog } from './QualityFieldBulkApplyDialog'
+import type { QualityFieldSelection } from './qualityFieldTypes'
 import { qualityQueryKey, type QualityApi, type QualitySecurityBoundary } from './qualityApi'
 import {
   countText,
@@ -223,6 +225,7 @@ export function QualityCommonRulesTab({
       open={mappingOpen}
       api={api}
       boundary={boundary}
+      axes={axes}
       template={detail.data.template}
       mappedAssetIds={new Set(detail.data.mappings.map((mapping) => mapping.asset_id))}
       onBoundaryInvalid={onBoundaryInvalid}
@@ -363,6 +366,7 @@ function MappingDialog({
   open,
   api,
   boundary,
+  axes,
   template,
   mappedAssetIds,
   onClose,
@@ -372,6 +376,7 @@ function MappingDialog({
   open: boolean
   api: QualityApi
   boundary: QualitySecurityBoundary
+  axes: ReadonlyMap<string, QualityCapabilityAxis>
   template: QualityCommonRuleTemplate
   mappedAssetIds: ReadonlySet<string>
   onClose: () => void
@@ -382,9 +387,13 @@ function MappingDialog({
   const [draftSchema, setDraftSchema] = useState('')
   const [query, setQuery] = useState('')
   const [schema, setSchema] = useState('')
+  const [fieldQuery, setFieldQuery] = useState('')
+  const [fieldType, setFieldType] = useState('ALL')
   const [selected, setSelected] = useState<string[]>([])
-  const [busy, setBusy] = useState(false)
+  const [selectedFields, setSelectedFields] = useState(new Set<string>())
+  const [parameterOpen, setParameterOpen] = useState(false)
   const [error, setError] = useState<unknown>()
+  const lastFieldIndex = useRef<number | undefined>(undefined)
   const assets = useQuery({
     queryKey: qualityQueryKey(boundary, 'assets', 'template-mapping', query, schema),
     queryFn: ({ signal }) => api.assets(undefined, signal, {
@@ -418,10 +427,38 @@ function MappingDialog({
     ])),
     [details, selected, template],
   )
-  const selectedReady = selected.length > 0
+  const fieldCandidates = useMemo(() => selected.flatMap((assetId, index) => {
+    const asset = assets.data?.items.find((item) => item.asset_id === assetId)
+    const detail = details[index]?.data
+    if (!asset || detail?.authoring.state !== 'READY') return []
+    return detail.authoring.fields.flatMap((field) => (
+      template.rules.some((rule) => templateRuleCompatible(rule, field))
+        ? [{
+            asset_id: asset.asset_id,
+            asset_name: asset.name,
+            platform: asset.platform,
+            database_name: asset.database_name,
+            schema_name: asset.schema_name,
+            field_identifier: field.field_identifier,
+            display_path: field.display_path,
+            logical_type: field.logical_type,
+            supported_rule_kinds: field.supported_rule_kinds,
+          } satisfies QualityFieldSelection]
+        : []
+    ))
+  }), [assets.data?.items, details, selected, template.rules])
+  const visibleFieldCandidates = useMemo(() => fieldCandidates.filter((field) => (
+    (!fieldQuery || `${field.display_path} ${field.field_identifier}`
+      .toLocaleLowerCase()
+      .includes(fieldQuery.toLocaleLowerCase()))
+    && (fieldType === 'ALL' || field.logical_type === fieldType)
+  )), [fieldCandidates, fieldQuery, fieldType])
+  const chosenFields = fieldCandidates.filter((field) => selectedFields.has(fieldSelectionKey(field)))
+  const bindingCounts = templateBindingCounts(template, chosenFields)
+  const selectedReady = chosenFields.length > 0
     && selected.length <= 25
     && details.every((detail) => !detail.isPending && !detail.error)
-    && selected.every((assetId) => compatibility.get(assetId) === true)
+    && [...bindingCounts.values()].every((count) => count <= 100)
 
   useEffect(() => {
     if (!open) return
@@ -429,7 +466,12 @@ function MappingDialog({
     setDraftSchema('')
     setQuery('')
     setSchema('')
+    setFieldQuery('')
+    setFieldType('ALL')
     setSelected([])
+    setSelectedFields(new Set())
+    setParameterOpen(false)
+    lastFieldIndex.current = undefined
     setError(undefined)
   }, [open, template.template_id])
   const authorizationError = details.some((detail) => isAuthorizationBoundaryError(detail.error))
@@ -446,41 +488,47 @@ function MappingDialog({
   }
   const toggle = (assetId: string, checked: boolean) => {
     setSelected((current) => {
-      if (!checked) return current.filter((value) => value !== assetId)
+      if (!checked) {
+        setSelectedFields((fields) => new Set(
+          [...fields].filter((key) => !key.startsWith(`${assetId}:`)),
+        ))
+        return current.filter((value) => value !== assetId)
+      }
       if (current.includes(assetId) || current.length >= 25) return current
       return [...current, assetId]
     })
   }
-  const map = async () => {
-    if (!selectedReady) return
-    setBusy(true)
-    setError(undefined)
-    try {
-      const value = await api.mapCommonRuleTemplate(
-        template.template_id,
-        selected,
-        newIdempotencyKey('quality-common-mapping'),
-      )
-      await onMapped(value.items.length, value.replayed)
-    } catch (next) {
-      if (isAuthorizationBoundaryError(next)) onBoundaryInvalid()
-      setError(next)
-    } finally {
-      setBusy(false)
-    }
+  const toggleField = (index: number, checked: boolean, shiftKey: boolean) => {
+    setSelectedFields((current) => {
+      const next = new Set(current)
+      const targets = shiftKey && lastFieldIndex.current !== undefined
+        ? visibleFieldCandidates.slice(
+            Math.min(lastFieldIndex.current, index),
+            Math.max(lastFieldIndex.current, index) + 1,
+          )
+        : [visibleFieldCandidates[index]].filter(Boolean) as QualityFieldSelection[]
+      targets.forEach((field) => {
+        const key = fieldSelectionKey(field)
+        if (checked) next.add(key)
+        else next.delete(key)
+      })
+      return next
+    })
+    lastFieldIndex.current = index
   }
 
-  return <Dialog
-    open={open}
+  return <>
+  <Dialog
+    open={open && !parameterOpen}
     title={`${template.name} · 여러 테이블에 적용`}
     description="스키마와 테이블을 검색하고 최대 25개를 선택해 한 번에 적용합니다."
     size="large"
-    onRequestClose={() => { if (!busy) onClose() }}
+    onRequestClose={onClose}
     footer={<>
-      <span className="quality-mapping-selection">{countText(selected.length)}개 선택</span>
-      <button className="button button-secondary" type="button" disabled={busy} onClick={onClose}>취소</button>
-      <button className="button" type="button" disabled={busy || !selectedReady} onClick={() => void map()}>
-        {busy ? '적용 중…' : `${countText(selected.length)}개 테이블에 적용`}
+      <span className="quality-mapping-selection">{countText(selected.length)}개 테이블 · {countText(chosenFields.length)}개 필드</span>
+      <button className="button button-secondary" type="button" onClick={onClose}>취소</button>
+      <button className="button" type="button" disabled={!selectedReady} onClick={() => setParameterOpen(true)}>
+        다음: 파라미터 입력
       </button>
     </>}
   >
@@ -511,10 +559,58 @@ function MappingDialog({
       {assets.isPending && <p className="quality-loading">적용 대상을 검색하는 중입니다.</p>}
       {!assets.isPending && assets.data?.items.length === 0 && <p className="quality-empty">검색 조건에 맞는 테이블이 없습니다.</p>}
     </div>
+    {fieldCandidates.length > 0 && <section className="quality-mapping-fields">
+      <header><strong>필드 선택</strong><span>Shift로 연속 선택 · 테이블별 최대 100개 룰</span></header>
+      <div className="quality-field-toolbar">
+        <label>필드 검색<input value={fieldQuery} maxLength={255} onChange={(event) => setFieldQuery(event.target.value)} placeholder="필드명 또는 field ID" /></label>
+        <label>타입<select value={fieldType} onChange={(event) => setFieldType(event.target.value)}>
+          <option value="ALL">전체 타입</option>
+          {[...new Set(fieldCandidates.map((field) => field.logical_type))].sort().map((type) => <option key={type}>{type}</option>)}
+        </select></label>
+      </div>
+      <div className="quality-mapping-table-scroll"><table className="quality-compact-table">
+        <thead><tr><th>선택</th><th>테이블</th><th>필드</th><th>타입</th><th>적용 가능한 룰</th></tr></thead>
+        <tbody>{visibleFieldCandidates.map((field, index) => {
+          const key = fieldSelectionKey(field)
+          return <tr key={key}>
+            <td><input
+              type="checkbox"
+              aria-label={`${field.asset_name} ${field.display_path} 선택`}
+              checked={selectedFields.has(key)}
+              onChange={(event) => toggleField(
+                index,
+                event.target.checked,
+                event.nativeEvent instanceof MouseEvent && event.nativeEvent.shiftKey,
+              )}
+            /></td>
+            <td>{field.asset_name}</td>
+            <td><strong>{field.display_path}</strong><small>{field.field_identifier}</small></td>
+            <td>{field.logical_type}</td>
+            <td>{template.rules.filter((rule) => templateRuleCompatible(rule, field)).map((rule) => rule.kind).join(', ')}</td>
+          </tr>
+        })}</tbody>
+      </table></div>
+      {visibleFieldCandidates.length === 0 && <p className="quality-empty">검색 조건에 맞는 호환 필드가 없습니다.</p>}
+    </section>}
+    {[...bindingCounts.values()].some((count) => count > 100) && (
+      <p className="callout" role="status">한 테이블에 적용되는 룰은 최대 100개입니다. 선택 필드 수를 줄여 주세요.</p>
+    )}
     {selected.length > 0 && !selectedReady && (
-      <p className="callout" role="status">선택한 테이블의 필드와 룰 호환성을 확인 중이거나, 동일한 필드·타입을 지원하지 않는 테이블이 포함되어 있습니다.</p>
+      <p className="callout" role="status">테이블의 필드 준비를 확인하고 적용할 필드를 하나 이상 선택해 주세요.</p>
     )}
   </Dialog>
+  <QualityFieldBulkApplyDialog
+    open={open && parameterOpen}
+    api={api}
+    boundary={boundary}
+    axes={axes}
+    selections={chosenFields}
+    lockedTemplate={template}
+    onClose={() => setParameterOpen(false)}
+    onApplied={onMapped}
+    onBoundaryInvalid={onBoundaryInvalid}
+  />
+  </>
 }
 
 function MappingAssetRow({
@@ -555,14 +651,43 @@ function templateCompatible(
 ): boolean | undefined {
   if (!detail) return undefined
   if (detail.authoring.state !== 'READY') return false
-  return template.rules.every((rule) => detail.authoring.fields.some((field) => (
-    field.field_identifier === rule.field_identifier
-    && field.supported_rule_kinds.includes(rule.kind)
-    && (
-      rule.kind !== 'RANGE'
-      || field.logical_type === rule.parameters.value_type
-    )
+  return template.rules.some((rule) => detail.authoring.fields.some((field) => (
+    templateRuleCompatible(rule, field)
   )))
+}
+
+function templateRuleCompatible(
+  rule: QualityCommonRuleTemplate['rules'][number],
+  field: QualityFieldSelection | QualityAssetDetailResponse['authoring']['fields'][number],
+): boolean {
+  return field.supported_rule_kinds.includes(rule.kind)
+    && (rule.kind !== 'RANGE' || rangeValueType(field.logical_type) === rule.parameters.value_type)
+}
+
+function rangeValueType(logicalType: QualityFieldSelection['logical_type']): string | undefined {
+  if (logicalType === 'INTEGER') return 'DECIMAL'
+  if (logicalType === 'DECIMAL' || logicalType === 'DATE' || logicalType === 'TIMESTAMP') {
+    return logicalType
+  }
+  return undefined
+}
+
+function fieldSelectionKey(field: QualityFieldSelection): string {
+  return `${field.asset_id}:${field.field_identifier}`
+}
+
+function templateBindingCounts(
+  template: QualityCommonRuleTemplate,
+  fields: QualityFieldSelection[],
+): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const field of fields) {
+    const kinds = new Set(template.rules
+      .filter((rule) => templateRuleCompatible(rule, field))
+      .map((rule) => rule.kind))
+    counts.set(field.asset_id, (counts.get(field.asset_id) ?? 0) + kinds.size)
+  }
+  return counts
 }
 
 function templatePayload(

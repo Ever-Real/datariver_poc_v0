@@ -205,12 +205,18 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   COMPLETE FULL/PARTITION Profile `stale_at` boundary.
 - The asset tab reuses the Catalog global-search control and lazy
   `platform -> database -> schema -> asset` Resource Tree, then shows applied Rule Sets, the latest
-  50 Runs and a 30-day score trend for the selected table. The former separate Overview/Run/Issue
-  and maker-checker navigation is not part of the ordinary UI.
+  50 Runs and a 30-day score trend for the selected table. Its field Explorer lists the active
+  deployment-owned fields with configured/active Rule counts and the latest field score. Selecting
+  a field opens a right-side Drawer with that field's proposed/approved/active Rules, latest 50
+  field-scoped Runs and 30-day trend while the table-wide summary remains visible. The former
+  separate Overview/Run/Issue and maker-checker navigation is not part of the ordinary UI.
 - A common Rule stores reusable typed `NOT_NULL/RANGE` authoring intent. The mapping dialog searches
-  schema/table targets, validates the server field directory and submits at most 25 compatible
-  assets as one atomic per-asset Rule Set proposal. The Template never executes directly and
-  `REGEX` remains safety-disabled.
+  schema/table/field targets, filters by field type, supports checkbox and Shift range selection,
+  and collects typed `RANGE` parameters either per compatible type group or per field. The server
+  re-resolves every selected field inside its asset deployment binding, revalidates kind/type and
+  parameter compatibility, and submits at most 25 assets and 100 Rules per asset as one atomic
+  per-asset Rule Set proposal. The same targeted command can create a new Rule or bind a selected
+  common Rule template. The Template never executes directly and `REGEX` remains safety-disabled.
 - Asset Profile readiness uses only privacy-allowlisted FULL/PARTITION projection after the
   separate Profile read decision. SAMPLE values, raw partitions, distributions, failure rows,
   generated SQL and provider/source credentials are neither requested nor rendered.
@@ -222,6 +228,12 @@ Any pre-apply review state → REJECTED or CANCELLED under policy
   Mapping requires both the deployment-owned V2 field directory and current V3/V4 Quality
   retention readiness even for an administrator; the UI explains this dependency instead of
   treating `FIELD_IDENTITY_MAPPING_UNAVAILABLE` as a role failure.
+- Score-policy metadata is returned with asset and field workspaces. V1 remains
+  `UNWEIGHTED_RULE_PASS_RATE_V1`: score is passed Rules divided by all evaluated Rules; any blocking
+  failure is `FAIL`, otherwise an advisory failure is `WARN`, all evaluated Rules passing is
+  `PASS`, and no evaluated Rule is `UNKNOWN`. No product-specific numeric threshold is inferred.
+  Scheduling is displayed only as capability readiness/reason text; the UI does not create or
+  mutate a schedule.
 - Until an accepted Quality-specific inference route exists, dashboard reports use
   `FACTS_ONLY/QUALITY_LLM_REPORT_ROUTE_UNAVAILABLE` and are labelled as server fact summaries.
   The browser does not impersonate an LLM report.

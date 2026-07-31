@@ -193,6 +193,101 @@ describe('QualityApi authorization contracts', () => {
     ])
   })
 
+  it('sends server-scoped field targets and parameter overrides as one atomic mapping', async () => {
+    const request = vi.fn()
+      .mockResolvedValueOnce({
+        items: [
+          { asset_id: 'asset-one', rule_set_id: 'rules-one', version_id: 'version-one', version: 1 },
+        ],
+        replayed: false,
+      })
+      .mockResolvedValueOnce({
+        items: [
+          { asset_id: 'asset-one', rule_set_id: 'rules-two', version_id: 'version-two', version: 1 },
+        ],
+        replayed: false,
+      })
+    const api = new QualityApi({ request })
+    const proposal = {
+      name_prefix: '금액 품질',
+      targets: [{
+        asset_id: 'asset-one',
+        rules: [{
+          field_identifier: 'orders.amount',
+          kind: 'RANGE' as const,
+          severity: 'ADVISORY' as const,
+          parameters: {
+            value_type: 'DECIMAL',
+            min_value: '0',
+            max_value: '1000',
+            inclusive_min: true,
+            inclusive_max: true,
+          },
+        }],
+      }],
+    }
+    const mapping = {
+      targets: [{
+        asset_id: 'asset-one',
+        bindings: [{
+          template_rule_ordinal: 2,
+          field_identifier: 'orders.amount',
+          parameters_override: proposal.targets[0]?.rules[0]?.parameters,
+        }],
+      }],
+    }
+
+    await api.proposeTargetedRuleSets(proposal, 'targeted-rule-key')
+    await api.mapCommonRuleTemplate('template-one', mapping, 'targeted-template-key')
+
+    expect(request.mock.calls[0]).toEqual([
+      '/quality/rule-sets',
+      expect.objectContaining({
+        method: 'POST',
+        idempotencyKey: 'targeted-rule-key',
+        body: JSON.stringify(proposal),
+      }),
+    ])
+    expect(request.mock.calls[1]).toEqual([
+      '/quality/common-rule-templates/template-one/mappings',
+      expect.objectContaining({
+        method: 'POST',
+        idempotencyKey: 'targeted-template-key',
+        body: JSON.stringify(mapping),
+      }),
+    ])
+  })
+
+  it('accepts a field workspace only when the V1 policy and field identity are bound', async () => {
+    const request = vi.fn().mockResolvedValue({
+      item: {
+        asset_id: 'asset-one',
+        field: {
+          field_identifier: 'orders.amount',
+          display_path: 'orders.amount',
+          logical_type: 'DECIMAL',
+          supported_rule_kinds: ['NOT_NULL', 'RANGE'],
+        },
+        rules: [],
+        runs: [],
+        trend: [],
+        score_policy: scorePolicy(),
+      },
+      cache_scope: cacheScope,
+      observed_at: '2026-07-30T00:00:00Z',
+      authorization_valid_until: '2026-07-30T00:00:30Z',
+    })
+    const api = new QualityApi({ request })
+
+    const result = await api.fieldWorkspace('asset-one', 'orders.amount', cacheScope)
+
+    expect(result.score_policy.warn_condition).toContain('advisory_failed > 0')
+    expect(request).toHaveBeenCalledWith(
+      '/quality/assets/asset-one/fields/orders.amount/workspace?days=30',
+      { cache: 'no-store', signal: undefined },
+    )
+  })
+
   it('uses plural lifecycle routes with quoted version preconditions', async () => {
     const request = vi.fn()
       .mockResolvedValueOnce({
@@ -269,6 +364,19 @@ const capabilityAxes = [
   'operations',
 ].map((id) => ({ id, state: 'AVAILABLE' }))
 const cacheScope = 'a'.repeat(64)
+
+function scorePolicy() {
+  return {
+    policy_id: 'UNWEIGHTED_RULE_PASS_RATE_V1',
+    policy_version: 1,
+    policy_hash: 'd'.repeat(64),
+    calculation: 'passed / (passed + advisory_failed + blocking_failed)',
+    pass_condition: 'evaluated > 0 and advisory_failed = 0 and blocking_failed = 0',
+    warn_condition: 'blocking_failed = 0 and advisory_failed > 0',
+    fail_condition: 'blocking_failed > 0',
+    unknown_condition: 'evaluated = 0',
+  }
+}
 
 function dashboard() {
   const indicators = ['ACCURACY', 'COMPLETENESS', 'TIMELINESS'] as const

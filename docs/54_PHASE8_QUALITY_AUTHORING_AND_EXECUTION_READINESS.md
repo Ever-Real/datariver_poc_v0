@@ -49,11 +49,34 @@ canonical per-asset Rule Set/Version/definition aggregates and records their tem
 in the same transaction. Existing activation and immutable audit invariants remain unchanged.
 `REGEX` remains explicitly unavailable.
 
+The asset workspace now joins that server-owned field directory to Quality evidence without
+manufacturing missing metrics. It returns at most 1,000 fields with configured/active Rule counts
+and the latest V1 field aggregate. Selecting one field calls a separate bounded read route after
+the route field is matched exactly against the current deployment binding; the response contains
+at most 200 current Rule definitions, 50 field-scoped Runs and 90 daily score points. The browser
+keeps the table summary visible and renders the field detail in a focus-contained right Drawer.
+
+Field authoring supports either new targeted Rules or common-template bindings. The browser can
+collect compatible fields across at most 25 assets, including Shift range selection, and collect
+typed RANGE values per type group or per field. The service does not trust those selections: it
+re-resolves every field in the asset deployment, validates supported kind and RANGE value type,
+normalizes all definitions and rejects the complete batch before the single canonical write if any
+target is invalid. Each asset remains bounded to 100 Rules. The existing whole-template and shared
+Rule-list request shapes remain backward compatible and are mutually exclusive with targeted
+shapes.
+
 The score displayed for one table pools the newest `SUCCEEDED` Run for every active Rule Set's
 current active Version. It is calculated as the sum of passed Rules divided by the sum of all
 evaluated Rules across those Runs. Outcome precedence is blocking failure `FAIL`, advisory failure
 `WARN`, then `PASS`. This replaces the former single-latest-Run asset score without changing the
-HTTP response shape or persistence schema.
+HTTP response shape or persistence schema at that score-only step.
+
+The field-workspace follow-up intentionally changes only the public Quality read/command response
+and request shapes described above; it adds no persistence model or migration. Asset and field
+workspace responses expose the fixed `UNWEIGHTED_RULE_PASS_RATE_V1` ID/version/hash and formula.
+`WARN` continues to mean no blocking failure and at least one advisory failure; no numeric product
+threshold was added. Schedule capability reason is read-only. Scheduler mutation, source circuit
+breaker and sampled fallback remain deferred and are not claimed by this increment.
 
 Revision `0073` supplies the missing RLS-scoped application read grants for Quality Profile
 projection. Revision `0074` adds forced-RLS `quality.common_rule_templates` and
@@ -98,6 +121,14 @@ mapping-readiness explanation. Its final isolated full-suite and browser evidenc
 the completion briefing for the publishing commit; it does not change the target source/Profile,
 LLM or accessibility gates below.
 
+The field-workspace source increment passed frontend ESLint and TypeScript, all focused Quality
+frontend tests (`8` files / `26` tests), Ruff format/lint and strict mypy on the ten changed backend
+implementation/test files, focused backend Quality read/command tests (`23` tests), and
+the expanded backend unit selection (`107` tests). `scripts/verify_static.py` also passed.
+Browser/runtime verification was not executed during source work
+because another session owned the shared runtime. These source gates do not replace the existing
+target-browser, representative database or live GX execution gates.
+
 The local deployment has no approved V3/V4 Quality retention values, V2 target manifest,
 read-only TLS source principal, fixed egress identity or enabled Quality worker. Those values are
 owned by operations/security and are not fabricated in source. Consequently a real semiconductor
@@ -114,3 +145,5 @@ capabilities stay fail-closed.
 - hydrate V4 policy details in the retention administration repository;
 - reconcile the stale semiconductor bootstrap manifest `postgres.applied` observation;
 - add scheduled authoring only after an approved schedule-profile directory exists.
+- design source-query timeout/circuit-breaker and any sampled fallback only through a separate
+  full-only contract, schema and security decision.

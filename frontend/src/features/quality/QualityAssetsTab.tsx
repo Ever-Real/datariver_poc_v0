@@ -1,13 +1,16 @@
-import { useEffect, useMemo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import type { ApiClient } from '../../api/client'
-import type { QualityAsset, QualityAssetWorkspace } from '../../api/types'
+import type { QualityAsset, QualityCapabilityAxis } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { AccordionItem } from '../../components/common/Accordion'
 import { CursorPagination } from '../../components/common/CursorPagination'
 import { GlobalCatalogSearch } from '../../components/layout/GlobalCatalogSearch'
 import { CatalogResourceTree } from '../catalog/CatalogResourceTree'
-import { qualityQueryKey, type QualityApi, type QualitySecurityBoundary } from './qualityApi'
+import { QualityFieldDrawer } from './QualityFieldDrawer'
+import { QualityFieldBulkApplyDialog } from './QualityFieldBulkApplyDialog'
+import type { QualityAssetField, QualityAssetFieldWorkspace } from './qualityFieldTypes'
+import { qualityBoundaryPrefix, qualityQueryKey, type QualityApi, type QualitySecurityBoundary } from './qualityApi'
 import {
   basisPointsText,
   countText,
@@ -16,11 +19,13 @@ import {
 } from './QualityShared'
 import { isAuthorizationBoundaryError } from './useBoundedQualityRunPolling'
 import { useQualityCursorPage } from './useQualityCursorPage'
+import './qualityFields.css'
 
 export function QualityAssetsTab({
   client,
   api,
   boundary,
+  axes,
   selectedAssetId,
   onSelectedAsset,
   onBoundaryInvalid,
@@ -28,6 +33,7 @@ export function QualityAssetsTab({
   client: ApiClient
   api: QualityApi
   boundary: QualitySecurityBoundary
+  axes: ReadonlyMap<string, QualityCapabilityAxis>
   selectedAssetId?: string
   onSelectedAsset: (assetId?: string) => void
   onBoundaryInvalid: () => void
@@ -116,7 +122,13 @@ export function QualityAssetsTab({
         <p className="quality-loading" role="status">선택한 자산의 품질 현황을 불러오는 중입니다.</p>
       )}
       {workspace.error && <ErrorNotice error={workspace.error} />}
-      {workspace.data && <AssetInspector value={workspace.data} />}
+      {workspace.data && <AssetInspector
+        value={workspace.data}
+        api={api}
+        boundary={boundary}
+        axes={axes}
+        onBoundaryInvalid={onBoundaryInvalid}
+      />}
     </section>
   </section>
 }
@@ -151,8 +163,21 @@ function AssetButton({
   </button>
 }
 
-function AssetInspector({ value }: { value: QualityAssetWorkspace }) {
+function AssetInspector({
+  value,
+  api,
+  boundary,
+  axes,
+  onBoundaryInvalid,
+}: {
+  value: QualityAssetFieldWorkspace
+  api: QualityApi
+  boundary: QualitySecurityBoundary
+  axes: ReadonlyMap<string, QualityCapabilityAxis>
+  onBoundaryInvalid: () => void
+}) {
   const [expanded, setExpanded] = useState(new Set(['rules', 'runs', 'trend']))
+  const [selectedField, setSelectedField] = useState<QualityAssetField>()
   const toggle = (id: string) => setExpanded((current) => {
     const next = new Set(current)
     if (next.has(id)) next.delete(id)
@@ -160,6 +185,8 @@ function AssetInspector({ value }: { value: QualityAssetWorkspace }) {
     return next
   })
   const latestRun = value.runs[0]
+
+  useEffect(() => { setSelectedField(undefined) }, [value.asset.asset_id])
 
   return <>
     <header className="quality-asset-hero">
@@ -184,6 +211,14 @@ function AssetInspector({ value }: { value: QualityAssetWorkspace }) {
       <div><span>실행 상태</span><QualityStatus value={latestRun?.state} /></div>
       <div><span>Profile</span><QualityStatus value={value.asset.profile_readiness} /></div>
     </div>
+    <FieldExplorer
+      value={value}
+      api={api}
+      boundary={boundary}
+      axes={axes}
+      onOpenField={setSelectedField}
+      onBoundaryInvalid={onBoundaryInvalid}
+    />
     <div className="quality-asset-accordions">
       <AccordionItem
         itemId="rules"
@@ -232,10 +267,146 @@ function AssetInspector({ value }: { value: QualityAssetWorkspace }) {
         <AssetTrend value={value} />
       </AccordionItem>
     </div>
+    <QualityFieldDrawer
+      open={Boolean(selectedField)}
+      api={api}
+      boundary={boundary}
+      assetId={value.asset.asset_id}
+      field={selectedField}
+      onClose={() => setSelectedField(undefined)}
+      onBoundaryInvalid={onBoundaryInvalid}
+    />
   </>
 }
 
-function AssetTrend({ value }: { value: QualityAssetWorkspace }) {
+function FieldExplorer({
+  value,
+  api,
+  boundary,
+  axes,
+  onOpenField,
+  onBoundaryInvalid,
+}: {
+  value: QualityAssetFieldWorkspace
+  api: QualityApi
+  boundary: QualitySecurityBoundary
+  axes: ReadonlyMap<string, QualityCapabilityAxis>
+  onOpenField: (field: QualityAssetField) => void
+  onBoundaryInvalid: () => void
+}) {
+  const queryClient = useQueryClient()
+  const [query, setQuery] = useState('')
+  const [logicalType, setLogicalType] = useState('ALL')
+  const [selected, setSelected] = useState(new Set<string>())
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const lastIndex = useRef<number | undefined>(undefined)
+  const fields = useMemo(() => value.fields.filter((field) => (
+    (!query || `${field.display_path} ${field.field_identifier}`.toLocaleLowerCase().includes(query.toLocaleLowerCase()))
+    && (logicalType === 'ALL' || field.logical_type === logicalType)
+  )), [logicalType, query, value.fields])
+
+  useEffect(() => {
+    setQuery('')
+    setLogicalType('ALL')
+    setSelected(new Set())
+    setBulkOpen(false)
+    lastIndex.current = undefined
+  }, [value.asset.asset_id])
+
+  const toggle = (field: QualityAssetField, index: number, checked: boolean, shiftKey: boolean) => {
+    setSelected((current) => {
+      const next = new Set(current)
+      if (shiftKey && lastIndex.current !== undefined) {
+        const start = Math.min(lastIndex.current, index)
+        const end = Math.max(lastIndex.current, index)
+        fields.slice(start, end + 1).forEach((candidate) => {
+          if (checked) {
+            if (next.has(candidate.field_identifier) || next.size < 100) {
+              next.add(candidate.field_identifier)
+            }
+          } else next.delete(candidate.field_identifier)
+        })
+      } else if (checked && next.size < 100) next.add(field.field_identifier)
+      else next.delete(field.field_identifier)
+      return next
+    })
+    lastIndex.current = index
+  }
+
+  return <section className="quality-field-explorer" aria-labelledby="quality-field-explorer-title">
+    <header>
+      <div><span className="eyebrow">Field explorer</span><h3 id="quality-field-explorer-title">필드별 품질 관리</h3></div>
+      <span>{countText(value.fields.length)}개 필드</span>
+    </header>
+    {value.authoring.state !== 'READY' ? <div className="callout" role="status">
+      현재 deployment field binding을 확인할 수 없습니다. {value.authoring.reason_code ?? 'AUTHORING_TARGET_UNAVAILABLE'}
+    </div> : <>
+      <div className="quality-field-toolbar">
+        <label>필드 검색<input value={query} maxLength={255} onChange={(event) => setQuery(event.target.value)} placeholder="필드명 또는 field ID" /></label>
+        <label>타입<select value={logicalType} onChange={(event) => setLogicalType(event.target.value)}>
+          <option value="ALL">전체 타입</option>
+          {[...new Set(value.fields.map((field) => field.logical_type))].sort().map((type) => <option key={type}>{type}</option>)}
+        </select></label>
+        <button type="button" className="button" disabled={selected.size === 0 || axes.get('rule_authoring')?.state !== 'AVAILABLE'} onClick={() => setBulkOpen(true)}>
+          선택 필드에 룰 적용 ({countText(selected.size)})
+        </button>
+      </div>
+      {axes.get('rule_authoring')?.state !== 'AVAILABLE' && <p className="quality-field-readiness" role="status">
+        룰 적용 준비 필요 · {axes.get('rule_authoring')?.reason_code ?? 'QUALITY_RULE_PROPOSE_DENIED'}
+      </p>}
+      {selected.size === 100 && <p className="quality-field-readiness" role="status">
+        한 테이블에서 한 번에 선택할 수 있는 최대 100개 필드에 도달했습니다.
+      </p>}
+      <div className="quality-field-grid-scroll">
+        <table className="quality-field-grid">
+          <thead><tr><th>선택</th><th>필드</th><th>타입</th><th>설정/활성 룰</th><th>최근 점수</th><th>상태</th><th>최근 평가</th></tr></thead>
+          <tbody>{fields.map((field, index) => <tr key={field.field_identifier} tabIndex={0} onClick={() => onOpenField(field)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onOpenField(field) } }}>
+            <td onClick={(event) => event.stopPropagation()}><input
+              type="checkbox"
+              aria-label={`${field.display_path} 선택`}
+              checked={selected.has(field.field_identifier)}
+              onClick={(event) => event.stopPropagation()}
+              onChange={(event) => toggle(field, index, event.target.checked, event.nativeEvent instanceof MouseEvent && event.nativeEvent.shiftKey)}
+            /></td>
+            <td><strong>{field.display_path}</strong><small>{field.field_identifier}</small></td>
+            <td>{field.logical_type}</td>
+            <td>{countText(field.configured_rule_count)} / {countText(field.active_rule_count)}</td>
+            <td>{basisPointsText(field.latest_score_basis_points)}</td>
+            <td><QualityStatus value={field.latest_quality_outcome} /></td>
+            <td>{dateTimeText(field.latest_evaluated_at)}</td>
+          </tr>)}</tbody>
+        </table>
+        {fields.length === 0 && <p className="quality-empty">검색 조건에 맞는 필드가 없습니다.</p>}
+      </div>
+      <QualityFieldBulkApplyDialog
+        open={bulkOpen}
+        api={api}
+        boundary={boundary}
+        axes={axes}
+        selections={value.fields.filter((field) => selected.has(field.field_identifier)).map((field) => ({
+          asset_id: value.asset.asset_id,
+          asset_name: value.asset.name,
+          platform: value.asset.platform,
+          database_name: value.asset.database_name,
+          schema_name: value.asset.schema_name,
+          field_identifier: field.field_identifier,
+          display_path: field.display_path,
+          logical_type: field.logical_type,
+          supported_rule_kinds: field.supported_rule_kinds,
+        }))}
+        onClose={() => setBulkOpen(false)}
+        onApplied={async () => {
+          setBulkOpen(false)
+          setSelected(new Set())
+          await queryClient.invalidateQueries({ queryKey: qualityBoundaryPrefix(boundary) })
+        }}
+        onBoundaryInvalid={onBoundaryInvalid}
+      />
+    </>}
+  </section>
+}
+
+function AssetTrend({ value }: { value: QualityAssetFieldWorkspace }) {
   const points = useMemo(() => value.trend.flatMap((point, index) => {
     if (point.score_basis_points === null) return []
     const x = value.trend.length <= 1 ? 280 : 18 + index * (524 / (value.trend.length - 1))

@@ -20,6 +20,8 @@ from datariver.infrastructure.db.quality_read import (
     SqlQualityReadRepository,
     _AssetQualityAggregate,
     _DashboardRuleMetric,
+    _field_run_quality,
+    _FieldQualityAggregate,
     _managed_rule_sets,
     _rule_dashboard_indicator,
 )
@@ -147,6 +149,47 @@ def test_asset_score_uses_blocking_failure_precedence() -> None:
     assert aggregate.outcome == "FAIL"
 
 
+@pytest.mark.parametrize(
+    ("aggregate", "score", "outcome"),
+    [
+        (_FieldQualityAggregate(passed_count=3), 10_000, "PASS"),
+        (
+            _FieldQualityAggregate(passed_count=3, advisory_failed_count=1),
+            7_500,
+            "WARN",
+        ),
+        (
+            _FieldQualityAggregate(passed_count=99, blocking_failed_count=1),
+            9_900,
+            "FAIL",
+        ),
+        (_FieldQualityAggregate(), None, "UNKNOWN"),
+    ],
+)
+def test_field_score_uses_existing_unweighted_v1_policy(
+    aggregate: _FieldQualityAggregate,
+    score: int | None,
+    outcome: str,
+) -> None:
+    assert aggregate.score_basis_points == score
+    assert aggregate.outcome == outcome
+
+
+def test_non_success_field_run_never_turns_partial_evidence_into_quality_outcome() -> None:
+    assert _field_run_quality(
+        state="FAILED",
+        passed=9,
+        advisory_failed=0,
+        blocking_failed=1,
+    ) == ("UNKNOWN", None)
+    assert _field_run_quality(
+        state="SUCCEEDED",
+        passed=9,
+        advisory_failed=1,
+        blocking_failed=0,
+    ) == ("WARN", 9_000)
+
+
 def test_dashboard_indicator_uses_value_weighted_latest_success_evidence() -> None:
     metric = _DashboardRuleMetric(
         counted_target_count=3,
@@ -207,6 +250,10 @@ def test_public_quality_surface_exposes_only_bounded_quality_commands() -> None:
         ("POST", "/quality/assets/summary-batch"),
         ("GET", "/quality/assets/{asset_id}"),
         ("GET", "/quality/assets/{asset_id}/workspace"),
+        (
+            "GET",
+            "/quality/assets/{asset_id}/fields/{field_identifier}/workspace",
+        ),
         ("GET", "/quality/common-rule-templates"),
         ("GET", "/quality/common-rule-templates/{template_id}"),
         ("GET", "/quality/rule-sets"),

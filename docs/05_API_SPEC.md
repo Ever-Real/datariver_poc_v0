@@ -145,11 +145,13 @@ rejected from this surface. Hidden resources return `404`.
 | `GET /quality/assets?q=&schema=&limit=&cursor=` | permission-scoped active assets and redacted or approved Profile readiness; literal table/schema search; default 25, maximum 100 |
 | `POST /quality/assets/summary-batch` | one to 100 caller-ordered Catalog asset IDs; returns only authorization-visible latest Quality summaries for Search integration |
 | `GET /quality/assets/{asset_id}` | exact authorized asset summary; no DataHub URN or source coordinate |
-| `GET /quality/assets/{asset_id}/workspace?days=` | one authorized asset with at most 50 Rule Sets, 50 recent Runs and 90 daily score points |
+| `GET /quality/assets/{asset_id}/workspace?days=` | one authorized asset with at most 50 Rule Sets, 50 recent Runs, 90 daily score points, at most 1,000 deployment-owned fields with field aggregates, authoring readiness and the exact V1 score-policy metadata |
+| `GET /quality/assets/{asset_id}/fields/{field_identifier}/workspace?days=` | one asset-authorized, active-deployment-verified field with at most 200 current Rules, 50 field-scoped Runs and 90 daily score points; the URL field is never trusted without exact server binding resolution |
 | `GET /quality/common-rule-templates` | at most 100 reusable typed Rule templates with authorization-visible mapping counts |
 | `POST /quality/common-rule-templates` | actor-bound idempotent creation of one to 100 typed `NOT_NULL/RANGE` Rules |
 | `GET /quality/common-rule-templates/{template_id}` | exact template and at most 500 authorization-visible asset mappings |
-| `POST /quality/common-rule-templates/{template_id}/mappings` | one atomic server-validated mapping to one to 25 unique assets through canonical Rule Set proposals |
+| `POST /quality/common-rule-templates/{template_id}/mappings` | one atomic server-validated mapping to one to 25 unique assets through canonical Rule Set proposals; accepts either the legacy whole-template asset list or targeted field bindings with template ordinal and optional full typed parameter override, never both |
+| `POST /quality/rule-sets` | one atomic Rule proposal for one to 25 unique assets and one to 100 Rules per asset; accepts either the legacy shared Rule list or per-asset targeted Rules, never both |
 | `GET /quality/rule-sets?limit=&cursor=` | bounded Rule Set summaries |
 | `GET /quality/rule-sets/{rule_set_id}` | immutable version and typed Rule detail with an aggregate ETag |
 | `GET /quality/runs?limit=&cursor=` | bounded execution state and separate quality outcome summaries |
@@ -159,11 +161,16 @@ rejected from this surface. Hidden resources return `404`.
 
 List/read wrappers return `cache_scope`, `observed_at`, `authorization_valid_until` and an opaque next
 cursor bound to the exact Workspace and caller scope. Malformed, cross-resource, cross-scope or
-page-size-mismatched cursors fail closed. Common-template mapping reuses the existing bounded
-Rule-proposal command and therefore requires the trusted field identity and deployment readiness
-attestations. Review, activation, manual Run, cancel, retry and scheduling controls remain absent
-from the ordinary user-centric browser surface; unavailable axes are displayed without invented
-values.
+page-size-mismatched cursors fail closed. Field workspace paths and targeted mutation bodies are
+client hints only: the server first authorizes the asset, resolves the current deployment-owned
+field identity, verifies supported Rule kind and `RANGE` value type, normalizes the typed Rule and
+rejects the entire batch before its single repository command if any target is invalid. Duplicate
+asset or field/kind identities and batches above 25 assets or 100 Rules per asset fail closed.
+Common-template mapping reuses that bounded Rule-proposal command and therefore requires trusted
+field identity and deployment readiness attestations. Review, activation, manual Run, cancel,
+retry and scheduling controls remain absent from the ordinary user-centric browser surface;
+unavailable axes and schedule readiness/reason are displayed without invented values or a
+scheduler mutation.
 
 ### Governance Document library
 

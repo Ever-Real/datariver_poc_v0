@@ -134,6 +134,7 @@ export function QualityPage({
             client={client}
             api={api}
             boundary={lease.boundary}
+            axes={new Map(lease.capability.axes.map((axis) => [axis.id, axis]))}
             selectedAssetId={location.assetId}
             onSelectedAsset={(assetId) => navigate({
               tab: 'assets',

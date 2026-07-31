@@ -81,9 +81,16 @@ describe('QualityCommonRulesTab', () => {
     fireEvent.click(await screen.findByRole('button', { name: '여러 테이블에 적용' }))
     fireEvent.click(await screen.findByRole('checkbox', { name: '고객 선택' }))
     fireEvent.click(screen.getByRole('checkbox', { name: '고객 이력 선택' }))
-    const apply = screen.getByRole('button', { name: '2개 테이블에 적용' })
-    await waitFor(() => expect(apply).toBeEnabled())
+    const firstField = await screen.findByRole('checkbox', { name: '고객 email 선택' })
+    const secondField = screen.getByRole('checkbox', { name: '고객 이력 email 선택' })
+    fireEvent.click(firstField)
+    fireEvent.click(secondField)
+    const next = screen.getByRole('button', { name: '다음: 파라미터 입력' })
+    await waitFor(() => expect(next).toBeEnabled())
     expect(screen.getAllByText('적용 가능')).toHaveLength(2)
+    fireEvent.click(next)
+    const apply = await screen.findByRole('button', { name: '룰 적용' })
+    expect(screen.getByText(/스케줄 등록은 현재 read-only/)).toBeInTheDocument()
     fireEvent.click(apply)
 
     await screen.findByText('2개 테이블에 적용했습니다.')
@@ -96,9 +103,24 @@ describe('QualityCommonRulesTab', () => {
       idempotencyKey?: string
     }
     expect(JSON.parse(mappingOptions.body ?? '')).toEqual({
-      asset_ids: ['asset-one', 'asset-two'],
+      targets: [
+        {
+          asset_id: 'asset-one',
+          bindings: [{
+            template_rule_ordinal: 1,
+            field_identifier: 'email',
+          }],
+        },
+        {
+          asset_id: 'asset-two',
+          bindings: [{
+            template_rule_ordinal: 1,
+            field_identifier: 'email',
+          }],
+        },
+      ],
     })
-    expect(mappingOptions.idempotencyKey).toMatch(/^quality-common-mapping-/)
+    expect(mappingOptions.idempotencyKey).toMatch(/^quality-template-field-map-/)
   })
 
   it('keeps template creation usable while explaining deployment mapping readiness', async () => {

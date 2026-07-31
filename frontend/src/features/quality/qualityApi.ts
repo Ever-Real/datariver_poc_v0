@@ -1,9 +1,9 @@
 import type { ApiClient } from '../../api/client'
 import type {
   QualityAsset,
+  QualityAssetAuthoring,
   QualityAssetDetailResponse,
   QualityAssetSummaryBatchResponse,
-  QualityAssetWorkspace,
   QualityCapability,
   QualityCommonRuleTemplateCreateRequest,
   QualityCommonRuleTemplateCreateResponse,
@@ -23,8 +23,15 @@ import type {
   QualityRuleSetSummary,
   QualityRuleVersionCommandResponse,
   QualityRunSummary,
+  QualityAuthoringField,
 } from '../../api/types'
 import type { QualityDashboard } from './qualityDashboardTypes'
+import type {
+  QualityAssetFieldWorkspace,
+  QualityFieldWorkspace,
+  QualityTargetedRuleProposalRequest,
+  QualityTemplateMappingRequest,
+} from './qualityFieldTypes'
 
 export interface QualitySecurityBoundary {
   workspaceId: string
@@ -40,6 +47,7 @@ export type QualityResource =
   | 'assets'
   | 'asset-detail'
   | 'asset-workspace'
+  | 'field-workspace'
   | 'asset-summaries'
   | 'common-rule-templates'
   | 'common-rule-template-detail'
@@ -203,8 +211,8 @@ export class QualityApi {
     assetId: string,
     expectedCacheScope: string,
     signal?: AbortSignal,
-  ): Promise<QualityAssetWorkspace> {
-    const value = await this.client.request<QualityResourceResponse<QualityAssetWorkspace>>(
+  ): Promise<QualityAssetFieldWorkspace> {
+    const value = await this.client.request<QualityResourceResponse<QualityAssetFieldWorkspace>>(
       `/quality/assets/${encodeURIComponent(assetId)}/workspace?days=30`,
       { cache: 'no-store', signal },
     )
@@ -217,8 +225,53 @@ export class QualityApi {
       || value.item.runs.length > 50
       || !Array.isArray(value.item.trend)
       || value.item.trend.length > 90
+      || !validWorkspaceAuthoring(value.item)
+      || !validScorePolicy(value.item.score_policy)
+      || !Array.isArray(value.item.fields)
+      || value.item.fields.length > 1_000
+      || new Set(value.item.fields.map((field) => field.field_identifier)).size
+        !== value.item.fields.length
+      || value.item.fields.some((field) => !validAssetField(field))
     ) {
       throw new Error('자산별 품질 현황 계약이 올바르지 않습니다.')
+    }
+    return value.item
+  }
+
+  async fieldWorkspace(
+    assetId: string,
+    fieldIdentifier: string,
+    expectedCacheScope: string,
+    signal?: AbortSignal,
+  ): Promise<QualityFieldWorkspace> {
+    const value = await this.client.request<QualityResourceResponse<QualityFieldWorkspace>>(
+      `/quality/assets/${encodeURIComponent(assetId)}/fields/${encodeURIComponent(fieldIdentifier)}/workspace?days=30`,
+      { cache: 'no-store', signal },
+    )
+    if (
+      !validReadMetadata(value, expectedCacheScope)
+      || value.item?.asset_id !== assetId
+      || value.item?.field?.field_identifier !== fieldIdentifier
+      || !validAuthoringField(value.item.field)
+      || !validScorePolicy(value.item.score_policy)
+      || !Array.isArray(value.item.rules)
+      || value.item.rules.length > 200
+      || value.item.rules.some((rule) => (
+        !validIdentifier(rule.rule_definition_id)
+        || !validIdentifier(rule.rule_set_id)
+        || !validIdentifier(rule.version_id)
+        || !['PROPOSED', 'APPROVED', 'ACTIVE'].includes(rule.version_state)
+        || !['NOT_NULL', 'RANGE'].includes(rule.kind)
+        || !['BLOCKING', 'ADVISORY'].includes(rule.severity)
+      ))
+      || !Array.isArray(value.item.runs)
+      || value.item.runs.length > 50
+      || value.item.runs.some((run) => !validFieldRun(run))
+      || !Array.isArray(value.item.trend)
+      || value.item.trend.length > 90
+      || value.item.trend.some((point) => !validTrendPoint(point))
+    ) {
+      throw new Error('필드별 품질 현황 계약이 올바르지 않습니다.')
     }
     return value.item
   }
@@ -286,10 +339,13 @@ export class QualityApi {
 
   async mapCommonRuleTemplate(
     templateId: string,
-    assetIds: string[],
+    targets: string[] | QualityTemplateMappingRequest,
     idempotencyKey: string,
     signal?: AbortSignal,
   ): Promise<QualityRuleBatchProposalResponse> {
+    const assetIds = Array.isArray(targets)
+      ? targets
+      : targets.targets.map((target) => target.asset_id)
     const value = await this.client.request<QualityRuleBatchProposalResponse>(
       `/quality/common-rule-templates/${encodeURIComponent(templateId)}/mappings`,
       {
@@ -297,7 +353,7 @@ export class QualityApi {
         cache: 'no-store',
         signal,
         idempotencyKey,
-        body: JSON.stringify({ asset_ids: assetIds }),
+        body: JSON.stringify(Array.isArray(targets) ? { asset_ids: targets } : targets),
       },
     )
     assertProposal(value, assetIds)
@@ -324,6 +380,25 @@ export class QualityApi {
       },
     )
     assertProposal(value, payload.asset_ids)
+    return value
+  }
+
+  async proposeTargetedRuleSets(
+    payload: QualityTargetedRuleProposalRequest,
+    idempotencyKey: string,
+    signal?: AbortSignal,
+  ): Promise<QualityRuleBatchProposalResponse> {
+    const value = await this.client.request<QualityRuleBatchProposalResponse>(
+      '/quality/rule-sets',
+      {
+        method: 'POST',
+        cache: 'no-store',
+        signal,
+        idempotencyKey,
+        body: JSON.stringify(payload),
+      },
+    )
+    assertProposal(value, payload.targets.map((target) => target.asset_id))
     return value
   }
 
@@ -582,9 +657,6 @@ function validDashboard(
   expectedCacheScope: string,
 ): boolean {
   const indicatorIds = new Set(['ACCURACY', 'COMPLETENESS', 'TIMELINESS'])
-  const nonnegative = (candidate: unknown) => (
-    Number.isSafeInteger(candidate) && Number(candidate) >= 0
-  )
   return Boolean(
     value
     && value.contract_version === 'QUALITY_DASHBOARD_V1'
@@ -679,7 +751,14 @@ function assertList<T>(value: QualityListResponse<T>, requestedLimit: number): v
 }
 
 function validAuthoring(value: QualityAssetDetailResponse): boolean {
-  const authoring = value.authoring
+  return validAuthoringDocument(value.authoring)
+}
+
+function validWorkspaceAuthoring(value: { authoring?: QualityAssetAuthoring }): boolean {
+  return validAuthoringDocument(value.authoring)
+}
+
+function validAuthoringDocument(authoring: QualityAssetAuthoring | undefined): boolean {
   const logicalTypes = new Set(['STRING', 'INTEGER', 'DECIMAL', 'DATE', 'TIMESTAMP', 'BOOLEAN', 'OTHER'])
   if (
     !authoring
@@ -693,21 +772,105 @@ function validAuthoring(value: QualityAssetDetailResponse): boolean {
     || !Array.isArray(authoring.fields)
     || authoring.fields.length > 10_000
     || new Set(authoring.fields.map((field) => field.field_identifier)).size !== authoring.fields.length
-    || authoring.fields.some((field) => (
-      !validIdentifier(field.field_identifier)
-      || !validIdentifier(field.display_path)
-      || !logicalTypes.has(field.logical_type)
-      || !Array.isArray(field.supported_rule_kinds)
-      || field.supported_rule_kinds.length > 2
-      || new Set(field.supported_rule_kinds).size !== field.supported_rule_kinds.length
-      || field.supported_rule_kinds.some((kind) => !['NOT_NULL', 'RANGE'].includes(kind))
-    ))
+    || authoring.fields.some((field) => !validAuthoringField(field, logicalTypes))
   ) {
     return false
   }
   return authoring.state === 'READY'
     ? authoring.schema_hash !== null && authoring.fields.length > 0
     : authoring.fields.length === 0 && typeof authoring.reason_code === 'string'
+}
+
+function validAuthoringField(
+  field: QualityAuthoringField,
+  logicalTypes = new Set(['STRING', 'INTEGER', 'DECIMAL', 'DATE', 'TIMESTAMP', 'BOOLEAN', 'OTHER']),
+): boolean {
+  return validIdentifier(field.field_identifier)
+    && validIdentifier(field.display_path)
+    && logicalTypes.has(field.logical_type)
+    && Array.isArray(field.supported_rule_kinds)
+    && field.supported_rule_kinds.length <= 2
+    && new Set(field.supported_rule_kinds).size === field.supported_rule_kinds.length
+    && field.supported_rule_kinds.every((kind) => ['NOT_NULL', 'RANGE'].includes(kind))
+}
+
+function validAssetField(field: QualityAssetFieldWorkspace['fields'][number]): boolean {
+  const counts = [
+      field.configured_rule_count,
+      field.active_rule_count,
+      field.evaluated_rule_count,
+      field.passed_count,
+      field.advisory_failed_count,
+      field.blocking_failed_count,
+    ]
+  return validAuthoringField(field)
+    && counts.every(nonnegative)
+    && field.active_rule_count <= field.configured_rule_count
+    && field.evaluated_rule_count === (
+      field.passed_count + field.advisory_failed_count + field.blocking_failed_count
+    )
+    && validBasisPoints(field.latest_score_basis_points)
+    && ['PASS', 'WARN', 'FAIL', 'UNKNOWN'].includes(field.latest_quality_outcome)
+    && (field.latest_evaluated_at === null || validDate(field.latest_evaluated_at))
+}
+
+function validScorePolicy(value: QualityAssetFieldWorkspace['score_policy'] | undefined): boolean {
+  return Boolean(
+    value
+    && value.policy_id === 'UNWEIGHTED_RULE_PASS_RATE_V1'
+    && value.policy_version === 1
+    && validCacheScope(value.policy_hash)
+    && value.calculation === 'passed / (passed + advisory_failed + blocking_failed)'
+    && value.pass_condition === 'evaluated > 0 and advisory_failed = 0 and blocking_failed = 0'
+    && value.warn_condition === 'blocking_failed = 0 and advisory_failed > 0'
+    && value.fail_condition === 'blocking_failed > 0'
+    && value.unknown_condition === 'evaluated = 0',
+  )
+}
+
+function validFieldRun(run: QualityFieldWorkspace['runs'][number]): boolean {
+  const counts = [
+    run.passed_count,
+    run.advisory_failed_count,
+    run.blocking_failed_count,
+    run.evaluated_value_count,
+    run.missing_count,
+    run.unexpected_count,
+  ]
+  return validIdentifier(run.run_id)
+    && validIdentifier(run.rule_set_id)
+    && validIdentifier(run.rule_set_name)
+    && [
+      'QUEUED',
+      'RUNNING',
+      'RETRY_WAIT',
+      'CANCEL_REQUESTED',
+      'SUCCEEDED',
+      'FAILED',
+      'STALE',
+      'CANCELLED',
+    ].includes(run.state)
+    && ['PASS', 'WARN', 'FAIL', 'UNKNOWN'].includes(run.run_quality_outcome)
+    && ['PASS', 'WARN', 'FAIL', 'UNKNOWN'].includes(run.field_quality_outcome)
+    && validBasisPoints(run.score_basis_points)
+    && counts.every(nonnegative)
+    && validDate(run.created_at)
+    && (run.completed_at === null || validDate(run.completed_at))
+    && (run.failure_code === null || validIdentifier(run.failure_code))
+}
+
+function validTrendPoint(point: QualityFieldWorkspace['trend'][number]): boolean {
+  return validDate(point.bucket_start)
+    && validBasisPoints(point.score_basis_points)
+    && [
+      point.passed_count,
+      point.advisory_failed_count,
+      point.blocking_failed_count,
+      point.evaluated_rule_count,
+    ].every(nonnegative)
+    && point.evaluated_rule_count === (
+      point.passed_count + point.advisory_failed_count + point.blocking_failed_count
+    )
 }
 
 function validReadMetadata(
@@ -791,6 +954,10 @@ function validIdentifier(value: string): boolean {
 
 function validBasisPoints(value: number | null): boolean {
   return value === null || (Number.isInteger(value) && value >= 0 && value <= 10_000)
+}
+
+function nonnegative(value: unknown): boolean {
+  return Number.isSafeInteger(value) && Number(value) >= 0
 }
 
 function validDate(value: string): boolean {

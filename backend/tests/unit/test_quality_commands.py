@@ -26,14 +26,20 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import ConflictError, ForbiddenError
+from datariver.domain.common import ConflictError, ForbiddenError, ValidationError
 
 NOW = datetime(2026, 7, 30, 12, tzinfo=UTC)
 
 
 class _Repository:
-    def __init__(self, asset: QualityAuthoringAsset, *, retention_ready: bool = True) -> None:
-        self.asset = asset
+    def __init__(
+        self,
+        asset: QualityAuthoringAsset | tuple[QualityAuthoringAsset, ...],
+        *,
+        retention_ready: bool = True,
+    ) -> None:
+        self.assets = asset if isinstance(asset, tuple) else (asset,)
+        self.asset = self.assets[0]
         self.ready = retention_ready
         self.command: QualityRuleProposalCommand | None = None
         self.template_command: object | None = None
@@ -51,7 +57,8 @@ class _Repository:
         asset_ids: tuple[UUID, ...],
     ) -> tuple[QualityAuthoringAsset, ...]:
         del workspace_id
-        return (self.asset,) if asset_ids == (self.asset.asset_id,) else ()
+        by_id = {asset.asset_id: asset for asset in self.assets}
+        return tuple(by_id[asset_id] for asset_id in asset_ids if asset_id in by_id)
 
     async def create_rule_sets(
         self, *, command: QualityRuleProposalCommand
@@ -74,17 +81,20 @@ class _Repository:
 
 
 class _Directory:
-    def __init__(self, binding: QualityDeploymentBinding | None) -> None:
-        self.binding = binding
+    def __init__(
+        self,
+        binding: QualityDeploymentBinding | tuple[QualityDeploymentBinding, ...] | None,
+    ) -> None:
+        self.bindings = (
+            () if binding is None else binding if isinstance(binding, tuple) else (binding,)
+        )
 
     @property
     def authoring_available(self) -> bool:
-        return self.binding is not None
+        return bool(self.bindings)
 
     def resolve(self, *, asset_id: UUID) -> QualityDeploymentBinding | None:
-        if self.binding is None or self.binding.asset_id != asset_id:
-            return None
-        return self.binding
+        return next((binding for binding in self.bindings if binding.asset_id == asset_id), None)
 
 
 def _subject(
@@ -178,6 +188,226 @@ async def test_proposal_uses_server_directory_and_one_atomic_repository_command(
 
     assert result.replayed is False
     assert repository.command is not None
+
+
+@pytest.mark.asyncio
+async def test_targeted_field_proposal_revalidates_every_asset_before_atomic_write() -> None:
+    workspace_id = uuid4()
+    asset_a_id, asset_b_id = uuid4(), uuid4()
+    system_a_id, system_b_id = uuid4(), uuid4()
+    assets = (
+        QualityAuthoringAsset(
+            asset_id=asset_a_id,
+            name="orders",
+            system_id=system_a_id,
+            domain_id=None,
+            classification=0,
+            lifecycle="ACTIVE",
+            source_version="orders-v1",
+            column_names=("amount",),
+            column_names_truncated=False,
+        ),
+        QualityAuthoringAsset(
+            asset_id=asset_b_id,
+            name="customers",
+            system_id=system_b_id,
+            domain_id=None,
+            classification=0,
+            lifecycle="ACTIVE",
+            source_version="customers-v1",
+            column_names=("email",),
+            column_names_truncated=False,
+        ),
+    )
+    bindings = (
+        QualityDeploymentBinding(
+            asset_id=asset_a_id,
+            system_id=system_a_id,
+            schema_hash="a" * 64,
+            fields=(
+                QualityAuthoringField(
+                    field_identifier="amount",
+                    display_path="amount",
+                    logical_type="DECIMAL",
+                    supported_rule_kinds=("NOT_NULL", "RANGE"),
+                ),
+            ),
+            source_connection_profile_id="orders-readonly",
+            source_connection_profile_version=1,
+            source_connection_profile_hash="b" * 64,
+            workload_profile_id="quality-bounded",
+            workload_profile_version=1,
+            workload_profile_hash="c" * 64,
+        ),
+        QualityDeploymentBinding(
+            asset_id=asset_b_id,
+            system_id=system_b_id,
+            schema_hash="d" * 64,
+            fields=(
+                QualityAuthoringField(
+                    field_identifier="email",
+                    display_path="email",
+                    logical_type="STRING",
+                    supported_rule_kinds=("NOT_NULL",),
+                ),
+            ),
+            source_connection_profile_id="customers-readonly",
+            source_connection_profile_version=1,
+            source_connection_profile_hash="e" * 64,
+            workload_profile_id="quality-bounded",
+            workload_profile_version=1,
+            workload_profile_hash="f" * 64,
+        ),
+    )
+    repository = _Repository(assets)
+    service = QualityCommandService(
+        repository=cast(QualityCommandRepository, repository),
+        directory=cast(QualityDeploymentDirectory, _Directory(bindings)),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+        worker_enabled=False,
+    )
+    subject = _subject(
+        workspace_id,
+        system_ids=frozenset({system_a_id, system_b_id}),
+    )
+    valid_rule = {
+        "field_identifier": "amount",
+        "kind": "RANGE",
+        "severity": "BLOCKING",
+        "parameters": {
+            "value_type": "DECIMAL",
+            "min_value": "0",
+            "max_value": "1000",
+            "inclusive_min": True,
+            "inclusive_max": True,
+        },
+    }
+
+    with pytest.raises(ValidationError):
+        await service.propose_rule_sets(
+            subject=subject,
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="quality-targeted-invalid",
+            idempotency_key="quality-targeted-invalid-key",
+            name_prefix="Targeted contract",
+            target_rules=(
+                (asset_a_id, (valid_rule,)),
+                (
+                    asset_b_id,
+                    (
+                        {
+                            "field_identifier": "client-supplied-unknown",
+                            "kind": "NOT_NULL",
+                            "severity": "BLOCKING",
+                            "parameters": {},
+                        },
+                    ),
+                ),
+            ),
+        )
+
+    assert repository.command is None
+
+    result = await service.propose_rule_sets(
+        subject=subject,
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="quality-targeted-valid",
+        idempotency_key="quality-targeted-valid-key",
+        name_prefix="Targeted contract",
+        target_rules=(
+            (asset_a_id, (valid_rule,)),
+            (
+                asset_b_id,
+                (
+                    {
+                        "field_identifier": "email",
+                        "kind": "NOT_NULL",
+                        "severity": "ADVISORY",
+                        "parameters": {},
+                    },
+                ),
+            ),
+        ),
+    )
+
+    assert result.replayed is False
+    assert repository.command is not None
+    assert {target.asset.asset_id for target in repository.command.targets} == {
+        asset_a_id,
+        asset_b_id,
+    }
+
+
+@pytest.mark.asyncio
+async def test_range_proposal_rejects_client_value_type_that_disagrees_with_field() -> None:
+    workspace_id, asset_id, system_id = uuid4(), uuid4(), uuid4()
+    asset = QualityAuthoringAsset(
+        asset_id=asset_id,
+        name="events",
+        system_id=system_id,
+        domain_id=None,
+        classification=0,
+        lifecycle="ACTIVE",
+        source_version="events-v1",
+        column_names=("event_at",),
+        column_names_truncated=False,
+    )
+    binding = QualityDeploymentBinding(
+        asset_id=asset_id,
+        system_id=system_id,
+        schema_hash="a" * 64,
+        fields=(
+            QualityAuthoringField(
+                field_identifier="event_at",
+                display_path="event_at",
+                logical_type="TIMESTAMP",
+                supported_rule_kinds=("NOT_NULL", "RANGE"),
+            ),
+        ),
+        source_connection_profile_id="events-readonly",
+        source_connection_profile_version=1,
+        source_connection_profile_hash="b" * 64,
+        workload_profile_id="quality-bounded",
+        workload_profile_version=1,
+        workload_profile_hash="c" * 64,
+    )
+    repository = _Repository(asset)
+    service = QualityCommandService(
+        repository=cast(QualityCommandRepository, repository),
+        directory=cast(QualityDeploymentDirectory, _Directory(binding)),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+        worker_enabled=False,
+    )
+
+    with pytest.raises(ValidationError):
+        await service.propose_rule_sets(
+            subject=_subject(workspace_id, system_ids=frozenset({system_id})),
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="quality-range-type-mismatch",
+            idempotency_key="quality-range-type-mismatch-key",
+            name_prefix="Event timeliness",
+            target_rules=(
+                (
+                    asset_id,
+                    (
+                        {
+                            "field_identifier": "event_at",
+                            "kind": "RANGE",
+                            "severity": "ADVISORY",
+                            "parameters": {
+                                "value_type": "DATE",
+                                "min_value": "2026-01-01",
+                                "max_value": "2026-12-31",
+                                "inclusive_min": True,
+                                "inclusive_max": True,
+                            },
+                        },
+                    ),
+                ),
+            ),
+        )
+
+    assert repository.command is None
 
 
 @pytest.mark.asyncio

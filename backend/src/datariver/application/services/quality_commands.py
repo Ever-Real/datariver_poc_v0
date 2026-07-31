@@ -109,8 +109,9 @@ class QualityCommandService:
         request_id: str,
         idempotency_key: str,
         name_prefix: str,
-        asset_ids: Sequence[UUID],
-        rules: Sequence[Mapping[str, object]],
+        asset_ids: Sequence[UUID] = (),
+        rules: Sequence[Mapping[str, object]] = (),
+        target_rules: Sequence[tuple[UUID, Sequence[Mapping[str, object]]]] = (),
         template_id: UUID | None = None,
     ) -> QualityRuleProposalResult:
         if not await self.authoring_ready(workspace_id=subject.workspace_id):
@@ -119,12 +120,21 @@ class QualityCommandService:
                 details={"code": "AUTHORING_READINESS_UNAVAILABLE"},
             )
         normalized_name = name_prefix.strip()
-        unique_asset_ids = tuple(sorted(dict.fromkeys(asset_ids), key=str))
+        if target_rules:
+            if asset_ids or rules:
+                raise ValidationError("The Quality Rule proposal target shape is ambiguous.")
+            target_asset_ids = tuple(asset_id for asset_id, _ in target_rules)
+            rules_by_asset = {asset_id: tuple(values) for asset_id, values in target_rules}
+        else:
+            target_asset_ids = tuple(asset_ids)
+            rules_by_asset = {asset_id: tuple(rules) for asset_id in target_asset_ids}
+        unique_asset_ids = tuple(sorted(dict.fromkeys(target_asset_ids), key=str))
         if (
             not 1 <= len(normalized_name) <= 100
             or not 1 <= len(unique_asset_ids) <= _MAX_BATCH_TARGETS
-            or len(unique_asset_ids) != len(asset_ids)
-            or not 1 <= len(rules) <= _MAX_RULES
+            or len(unique_asset_ids) != len(target_asset_ids)
+            or set(rules_by_asset) != set(unique_asset_ids)
+            or any(not 1 <= len(values) <= _MAX_RULES for values in rules_by_asset.values())
         ):
             raise ValidationError("The Quality Rule proposal is outside its bounded contract.")
         assets = await self._repository.get_authoring_assets(
@@ -158,12 +168,17 @@ class QualityCommandService:
                 )
             available_fields = {field.field_identifier: field for field in deployment.fields}
             definitions: list[RuleDefinition] = []
-            for ordinal, raw_rule in enumerate(rules, start=1):
+            seen_rule_identities: set[tuple[str, str]] = set()
+            for ordinal, raw_rule in enumerate(rules_by_asset[asset_id], start=1):
                 field_identifier = _required_text(raw_rule, "field_identifier", 255)
                 field = available_fields.get(field_identifier)
                 if field is None:
                     raise ValidationError("A Rule references an unavailable field identity.")
                 kind = _rule_kind(raw_rule.get("kind"))
+                identity = (field_identifier, kind.value)
+                if identity in seen_rule_identities:
+                    raise ValidationError("A Quality proposal cannot repeat a field and Rule kind.")
+                seen_rule_identities.add(identity)
                 if kind.value not in field.supported_rule_kinds:
                     raise ValidationError("The Rule kind is incompatible with the field type.")
                 severity = _rule_severity(raw_rule.get("severity"))
@@ -172,15 +187,20 @@ class QualityCommandService:
                     not isinstance(key, str) for key in parameters
                 ):
                     raise ValidationError("The Rule parameters are invalid.")
-                definitions.append(
-                    RuleDefinition.create(
-                        ordinal=ordinal,
-                        field_identifier=field_identifier,
-                        kind=kind,
-                        severity=severity,
-                        parameters=dict(parameters),
-                    )
+                definition = RuleDefinition.create(
+                    ordinal=ordinal,
+                    field_identifier=field_identifier,
+                    kind=kind,
+                    severity=severity,
+                    parameters=dict(parameters),
                 )
+                if kind is RuleKind.RANGE and definition.parameters.get(
+                    "value_type"
+                ) != _range_value_type(field.logical_type):
+                    raise ValidationError(
+                        "The RANGE value type is incompatible with the server field type."
+                    )
+                definitions.append(definition)
             targets.append(
                 QualityRuleProposalTarget(
                     asset=asset,
@@ -294,7 +314,8 @@ class QualityCommandService:
         request_id: str,
         idempotency_key: str,
         template_id: UUID,
-        asset_ids: Sequence[UUID],
+        asset_ids: Sequence[UUID] = (),
+        targets: Sequence[tuple[UUID, Sequence[Mapping[str, object]]]] = (),
     ) -> QualityRuleProposalResult:
         await self._authorization.authorize(
             subject=subject,
@@ -319,6 +340,15 @@ class QualityCommandService:
         if template is None:
             raise NotFoundError("The Quality common Rule template was not found.")
         name, rules = template
+        if bool(asset_ids) == bool(targets):
+            raise ValidationError("The common Rule mapping target shape is invalid.")
+        target_rules = tuple(
+            (
+                asset_id,
+                _bind_template_rules(template_rules=rules, bindings=bindings),
+            )
+            for asset_id, bindings in targets
+        )
         return await self.propose_rule_sets(
             subject=subject,
             environment=environment,
@@ -326,7 +356,8 @@ class QualityCommandService:
             idempotency_key=idempotency_key,
             name_prefix=name,
             asset_ids=asset_ids,
-            rules=rules,
+            rules=rules if asset_ids else (),
+            target_rules=target_rules,
             template_id=template_id,
         )
 
@@ -535,6 +566,52 @@ def _normalized_template_rules(
     return tuple(normalized)
 
 
+def _bind_template_rules(
+    *,
+    template_rules: Sequence[Mapping[str, object]],
+    bindings: Sequence[Mapping[str, object]],
+) -> tuple[dict[str, object], ...]:
+    if not 1 <= len(bindings) <= _MAX_RULES:
+        raise ValidationError("The common Rule field bindings are outside their bounds.")
+    resolved: list[dict[str, object]] = []
+    identities: set[tuple[str, str]] = set()
+    for binding in bindings:
+        ordinal = binding.get("template_rule_ordinal")
+        if isinstance(ordinal, bool) or not isinstance(ordinal, int):
+            raise ValidationError("A template Rule ordinal is invalid.")
+        if not 1 <= ordinal <= len(template_rules):
+            raise ValidationError("A template Rule ordinal is unavailable.")
+        field_identifier = _required_text(binding, "field_identifier", 255)
+        template_rule = template_rules[ordinal - 1]
+        kind = _rule_kind(template_rule.get("kind"))
+        severity = _rule_severity(template_rule.get("severity"))
+        template_parameters = template_rule.get("parameters")
+        override = binding.get("parameters_override")
+        parameters = template_parameters if override is None else override
+        if not isinstance(parameters, dict) or any(not isinstance(key, str) for key in parameters):
+            raise ValidationError("The bound Rule parameters are invalid.")
+        identity = (field_identifier, kind.value)
+        if identity in identities:
+            raise ValidationError("A mapped field cannot repeat the same Rule kind.")
+        identities.add(identity)
+        definition = RuleDefinition.create(
+            ordinal=len(resolved) + 1,
+            field_identifier=field_identifier,
+            kind=kind,
+            severity=severity,
+            parameters=dict(parameters),
+        )
+        resolved.append(
+            {
+                "field_identifier": definition.field_identifier,
+                "kind": definition.kind.value,
+                "severity": definition.severity.value,
+                "parameters": definition.parameters,
+            }
+        )
+    return tuple(resolved)
+
+
 def _asset_resource(
     asset: QualityAuthoringAsset,
     *,
@@ -593,3 +670,11 @@ def _rule_severity(value: object) -> RuleSeverity:
         return RuleSeverity(str(value))
     except ValueError as error:
         raise ValidationError("The Quality Rule severity is invalid.") from error
+
+
+def _range_value_type(logical_type: str) -> str | None:
+    if logical_type == "INTEGER":
+        return "DECIMAL"
+    if logical_type in {"DECIMAL", "DATE", "TIMESTAMP"}:
+        return logical_type
+    return None
