@@ -95,8 +95,18 @@ def test_grounded_payload_keeps_internal_source_metadata_out_of_model_context() 
             "description": evidence.description,
         }
     ]
+    citation_schema = payload["tools"][0]["function"]["parameters"]["properties"][
+        "cited_chunk_ids"
+    ]["items"]
+    assert citation_schema == {
+        "type": "string",
+        "format": "uuid",
+        "enum": [str(evidence.chunk_id)],
+    }
     assert evidence.source_locator not in payload["messages"][1]["content"]
     assert evidence.source_version not in payload["messages"][1]["content"]
+    assert evidence.source_locator not in json.dumps(payload["tools"])
+    assert evidence.source_version not in json.dumps(payload["tools"])
 
 
 @pytest.mark.asyncio

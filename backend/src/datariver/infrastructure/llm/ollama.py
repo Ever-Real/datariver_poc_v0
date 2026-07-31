@@ -187,6 +187,7 @@ def grounded_chat_request_payload(
     question: str,
     evidence: Sequence[ChatEvidence],
 ) -> dict[str, Any]:
+    authorized_chunk_ids = [str(item.chunk_id) for item in evidence]
     evidence_payload = [
         {
             "chunk_id": str(item.chunk_id),
@@ -240,7 +241,11 @@ def grounded_chat_request_payload(
                                 "minItems": 1,
                                 "maxItems": 10,
                                 "uniqueItems": True,
-                                "items": {"type": "string", "format": "uuid"},
+                                "items": {
+                                    "type": "string",
+                                    "format": "uuid",
+                                    "enum": authorized_chunk_ids,
+                                },
                             },
                         },
                     },

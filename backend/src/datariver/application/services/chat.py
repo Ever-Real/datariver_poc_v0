@@ -723,19 +723,35 @@ class ChatService:
                             )
                         )
                     else:
-                        workflow.append(
-                            self._event(
-                                ChatWorkflowStage.COMPOSITION,
-                                ChatWorkflowStatus.COMPLETED,
-                                "GROUNDED_DRAFT_COMPOSED",
-                            )
-                        )
                         answer, cited_evidence = self._validate_draft(
                             draft=draft,
                             authorized_evidence=ranked_evidence,
                             workspace_id=workspace_id,
                         )
-                        if cited_evidence:
+                        if not cited_evidence:
+                            rankings = ()
+                            workflow.extend(
+                                (
+                                    self._event(
+                                        ChatWorkflowStage.COMPOSITION,
+                                        ChatWorkflowStatus.REFUSED,
+                                        "INVALID_GROUNDED_DRAFT_CITATIONS",
+                                    ),
+                                    self._event(
+                                        ChatWorkflowStage.CITATION_VALIDATION,
+                                        ChatWorkflowStatus.SKIPPED,
+                                        "NO_VALID_GROUNDED_CITATIONS",
+                                    ),
+                                )
+                            )
+                        else:
+                            workflow.append(
+                                self._event(
+                                    ChatWorkflowStage.COMPOSITION,
+                                    ChatWorkflowStatus.COMPLETED,
+                                    "GROUNDED_DRAFT_COMPOSED",
+                                )
+                            )
                             workflow.publish_progress(
                                 stage=ChatWorkflowStage.CITATION_VALIDATION,
                                 detail_code="CITATION_VALIDATION_IN_PROGRESS",
@@ -754,27 +770,27 @@ class ChatService:
                                 requested_graph_id=requested_graph_id,
                                 initial_graph_scope=graph_scope,
                             )
-                        if cited_evidence:
-                            workflow.append(
-                                self._event(
-                                    ChatWorkflowStage.CITATION_VALIDATION,
-                                    ChatWorkflowStatus.COMPLETED,
-                                    "CITATIONS_VALIDATED",
+                            if cited_evidence:
+                                workflow.append(
+                                    self._event(
+                                        ChatWorkflowStage.CITATION_VALIDATION,
+                                        ChatWorkflowStatus.COMPLETED,
+                                        "CITATIONS_VALIDATED",
+                                    )
                                 )
-                            )
-                            ranking_by_id = {item.chunk_id: item for item in rankings}
-                            rankings = tuple(
-                                ranking_by_id[item.chunk_id] for item in cited_evidence
-                            )
-                        else:
-                            rankings = ()
-                            workflow.append(
-                                self._event(
-                                    ChatWorkflowStage.CITATION_VALIDATION,
-                                    ChatWorkflowStatus.REFUSED,
-                                    "INVALID_REVOKED_OR_MISSING_CITATIONS",
+                                ranking_by_id = {item.chunk_id: item for item in rankings}
+                                rankings = tuple(
+                                    ranking_by_id[item.chunk_id] for item in cited_evidence
                                 )
-                            )
+                            else:
+                                rankings = ()
+                                workflow.append(
+                                    self._event(
+                                        ChatWorkflowStage.CITATION_VALIDATION,
+                                        ChatWorkflowStatus.REFUSED,
+                                        "FINAL_CITATION_REAUTHORIZATION_FAILED",
+                                    )
+                                )
         request_composition_audit = self._audit_for_access(
             access,
             external_stages=tuple(dict.fromkeys(external_stages)),

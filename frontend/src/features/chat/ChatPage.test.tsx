@@ -558,6 +558,55 @@ describe('ChatPage', () => {
     expect(screen.getByText('0 items')).toBeInTheDocument()
   })
 
+  it.each([
+    {
+      detailCode: 'INVALID_GROUNDED_DRAFT_CITATIONS',
+      detailText: '답변 초안의 인용 형식을 검증하지 못해 생성을 중단했습니다.',
+      stage: 'COMPOSITION' as const,
+      status: 'REFUSED' as const,
+    },
+    {
+      detailCode: 'FINAL_CITATION_REAUTHORIZATION_FAILED',
+      detailText: '최종 권한 또는 근거 상태가 변경되어 답변을 중단했습니다.',
+      stage: 'CITATION_VALIDATION' as const,
+      status: 'REFUSED' as const,
+    },
+  ])('renders the server refusal state for $detailCode', async ({
+    detailCode,
+    detailText,
+    stage,
+    status,
+  }) => {
+    const refused: ChatResponse = {
+      ...response,
+      answer: '검증 불가',
+      workflow: [{ stage, status, detail_code: detailCode }],
+      evidence: [],
+    }
+    const { client: baseClient } = chatClient()
+    const requestEventStream = vi.fn((
+      path: string,
+      options: RequestOptions,
+      onEvent: (event: { event: string; data: unknown }) => void,
+    ): Promise<unknown> => (
+      path === '/chat/query/stream'
+        ? Promise.resolve(refused)
+        : baseClient.requestEventStream(path, options, onEvent)
+    ))
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
+    await screen.findByText('주문 데이터')
+
+    const question = screen.getByLabelText('카탈로그 질문')
+    fireEvent.change(question, { target: { value: 'capital 이름을 가진 테이블을 찾아줘' } })
+    fireEvent.keyDown(question, { key: 'Enter', code: 'Enter' })
+
+    expect(await screen.findByText('검증 불가')).toBeInTheDocument()
+    expect(screen.getByLabelText('질문 응답 Workflow')).toHaveTextContent(detailText)
+  })
+
   it('explains that provider-policy binding is distinct from model reachability', async () => {
     const unavailable: ChatResponse = {
       ...response,

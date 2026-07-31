@@ -1107,6 +1107,19 @@ async def test_final_citation_validation_rejects_revoked_current_membership() ->
     assert exchange.answer == UNVERIFIABLE_ANSWER
     assert exchange.evidence == ()
     assert store.saved_evidence == ()
+    assert any(
+        item.detail_code == "GROUNDED_DRAFT_COMPOSED"
+        and item.status is ChatWorkflowStatus.COMPLETED
+        for item in exchange.workflow
+    )
+    assert any(
+        item.detail_code == "FINAL_CITATION_REAUTHORIZATION_FAILED"
+        and item.status is ChatWorkflowStatus.REFUSED
+        for item in exchange.workflow
+    )
+    assert not any(
+        item.detail_code == "INVALID_GROUNDED_DRAFT_CITATIONS" for item in exchange.workflow
+    )
 
 
 async def test_final_citation_validation_rejects_canonical_catalog_drift() -> None:
@@ -2057,9 +2070,11 @@ async def test_chat_refuses_governance_citation_when_active_version_drifts() -> 
 async def test_chat_rejects_forged_or_zero_citations_without_persisting_evidence() -> None:
     workspace_id = uuid4()
     subject = chat_subject(workspace_id)
+    duplicated_id = uuid4()
     for draft in (
         ChatDraft(answer="forged", cited_chunk_ids=(uuid4(),)),
         ChatDraft(answer="unsupported prose", cited_chunk_ids=()),
+        ChatDraft(answer="duplicated", cited_chunk_ids=(duplicated_id, duplicated_id)),
     ):
         store = FakeChatStore()
         service = chat_service(
@@ -2080,6 +2095,20 @@ async def test_chat_rejects_forged_or_zero_citations_without_persisting_evidence
         assert exchange.answer == UNVERIFIABLE_ANSWER
         assert exchange.evidence == ()
         assert store.saved_evidence == ()
+        assert any(
+            item.detail_code == "INVALID_GROUNDED_DRAFT_CITATIONS"
+            and item.status is ChatWorkflowStatus.REFUSED
+            for item in exchange.workflow
+        )
+        assert any(
+            item.detail_code == "NO_VALID_GROUNDED_CITATIONS"
+            and item.status is ChatWorkflowStatus.SKIPPED
+            for item in exchange.workflow
+        )
+        assert not any(
+            item.detail_code == "FINAL_CITATION_REAUTHORIZATION_FAILED"
+            for item in exchange.workflow
+        )
 
 
 async def test_chat_rejects_tampered_chunk_hash() -> None:

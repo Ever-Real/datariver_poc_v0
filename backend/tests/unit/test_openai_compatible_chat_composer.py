@@ -136,6 +136,26 @@ async def test_openai_compatible_chat_uses_fixed_grounded_tool_contract() -> Non
         "type": "function",
         "function": {"name": "submit_grounded_answer"},
     }
+    tools = transport.document["tools"]
+    assert isinstance(tools, list)
+    tool = tools[0]
+    assert isinstance(tool, dict)
+    function = tool["function"]
+    assert isinstance(function, dict)
+    parameters = function["parameters"]
+    assert isinstance(parameters, dict)
+    properties = parameters["properties"]
+    assert isinstance(properties, dict)
+    cited_chunk_ids = properties["cited_chunk_ids"]
+    assert isinstance(cited_chunk_ids, dict)
+    citation_schema = cited_chunk_ids["items"]
+    assert citation_schema == {
+        "type": "string",
+        "format": "uuid",
+        "enum": [str(item.chunk_id)],
+    }
+    assert item.source_locator not in json.dumps(transport.document["tools"])
+    assert item.source_version not in json.dumps(transport.document["tools"])
     assert draft.answer == "The answer is grounded."
     assert draft.cited_chunk_ids == (item.chunk_id,)
 

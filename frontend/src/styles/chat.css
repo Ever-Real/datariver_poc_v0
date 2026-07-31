@@ -353,28 +353,31 @@
 
 .chat-conversation .message-user {
   align-self: flex-end;
+  border: 1px solid #bed6e6;
   border-bottom-right-radius: 5px;
-  color: #fff;
-  background: linear-gradient(135deg, #0a5f99, #004b87);
-  box-shadow: 0 7px 20px rgba(0, 75, 135, .16);
+  color: #1b2f40;
+  background: linear-gradient(135deg, #edf6fb, #dcecf7);
+  box-shadow: 0 7px 20px rgba(36, 91, 128, .1);
 }
 
 .chat-conversation .message-assistant {
-  align-self: flex-start;
-  border: 1px solid #dfe7ec;
-  border-bottom-left-radius: 5px;
-  background: #fff;
-  box-shadow: 0 5px 20px rgba(15, 34, 55, .06);
+  width: 100%;
+  max-width: 100%;
+  align-self: stretch;
+  border: 0;
+  border-radius: 0;
+  padding: 10px 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .chat-conversation .message-assistant.is-evidence-selected {
-  border-color: #86b1cb;
-  box-shadow: 0 0 0 3px rgba(0, 75, 135, .08), 0 7px 22px rgba(15, 34, 55, .08);
-  transform: translateX(2px);
+  box-shadow: none;
+  transform: none;
 }
 
 .chat-answer-content {
-  border-radius: 9px;
+  border-radius: 0;
   outline: none;
   cursor: pointer;
 }
@@ -1682,6 +1685,10 @@
 
   .chat-conversation .message {
     max-width: 94%;
+  }
+
+  .chat-conversation .message-assistant {
+    max-width: 100%;
   }
 
   .chat-evidence-modal {
