@@ -28,6 +28,12 @@ describe('AccountAccessAdmin authorization-bound navigation', () => {
     })
 
     expect(await screen.findByRole('table', { name: '워크스페이스 사용자 목록' })).toBeInTheDocument()
+    expect(screen.getByRole('region', { name: '계정/권한 요약' })).toHaveClass(
+      'admin-access-summary',
+    )
+    expect(screen.getByRole('tablist', { name: '계정/권한 관리 영역' })).toHaveClass(
+      'admin-access-tabs',
+    )
     expect(screen.getByRole('button', { name: 'Role 관리' })).toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Role 정의 및 사용자 할당' })).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: '계정 갱신 승인' })).not.toBeInTheDocument()

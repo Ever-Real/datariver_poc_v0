@@ -1,10 +1,11 @@
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { act, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../api/client'
 import type { AdminReadContext } from '../../api/types'
 import { AdminPage } from './AdminPage'
 
 afterEach(() => {
+  vi.useRealTimers()
   vi.unstubAllGlobals()
   window.history.replaceState({}, '', '/')
   window.localStorage?.clear?.()
@@ -82,6 +83,23 @@ describe('AdminPage', () => {
 
     renderPage(adminContext({ subject_id: 'admin-warning' }), false)
     await waitFor(() => expect(screen.queryByText('WebAuthn 보안키 인증이 필요합니다.')).not.toBeInTheDocument())
+  })
+
+  it('dismisses the disabled-WebAuthn warning after three seconds and cleans up its timer', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(json({
+      items: [], page: { next_cursor: null, limit: 25 },
+    }))))
+
+    const view = renderPage(adminContext({ subject_id: 'admin-timed-warning' }), false)
+    expect(screen.getByText('WebAuthn 보안키 인증이 필요합니다.')).toBeInTheDocument()
+
+    await act(() => vi.advanceTimersByTime(2_999))
+    expect(screen.getByText('WebAuthn 보안키 인증이 필요합니다.')).toBeInTheDocument()
+    await act(() => vi.advanceTimersByTime(1))
+    expect(screen.queryByText('WebAuthn 보안키 인증이 필요합니다.')).not.toBeInTheDocument()
+
+    expect(() => view.unmount()).not.toThrow()
   })
 })
 

@@ -107,6 +107,11 @@ export function AdminPage({
     }
   }, [context, hardwareWebauthnEnabled])
   useEffect(() => {
+    if (!showWebauthnDisabledWarning) return
+    const timeoutId = window.setTimeout(() => setShowWebauthnDisabledWarning(false), 3_000)
+    return () => window.clearTimeout(timeoutId)
+  }, [showWebauthnDisabledWarning])
+  useEffect(() => {
     const restore = () => setSection(adminSectionFromLocation())
     window.addEventListener('popstate', restore)
     return () => window.removeEventListener('popstate', restore)
@@ -176,7 +181,7 @@ export function AdminPage({
     || locationParameters.get('adminSection') === 'fallback'
   ) ? 'PASSWORD' as const : 'HARDWARE' as const
 
-  return <section hidden={suspended} aria-busy={suspended}>
+  return <section className="admin-page" hidden={suspended} aria-busy={suspended}>
     <PageTitle
       icon="AD"
       eyebrow={messages.eyebrow}

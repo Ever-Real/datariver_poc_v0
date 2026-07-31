@@ -158,7 +158,7 @@ describe('SystemConfigurationAdmin', () => {
     expect(screen.getByRole('button', { name: '복사됨' })).toBeInTheDocument()
   })
 
-  it('tests a configured connector only through the deployment-owned route', async () => {
+  it('keeps a configured connector unverified until the deployment-owned probe runs', async () => {
     const request = vi.fn((path: string, options?: RequestInit) => {
       if (path === '/admin/system-configuration') {
         return Promise.resolve(inventory([deploymentEntry]))
@@ -181,20 +181,28 @@ describe('SystemConfigurationAdmin', () => {
     })
 
     renderAdmin(request)
-    fireEvent.click(await screen.findByRole('button', { name: '연결 테스트' }))
+    expect(
+      await screen.findByRole('status', { name: '현재 연결 상태: 미확인' }),
+    ).toHaveTextContent('미확인')
+    expect(request).not.toHaveBeenCalledWith(
+      '/admin/system-configuration/DATAHUB_GMS/test-deployment',
+      expect.anything(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: '연결 확인' }))
 
     expect(
       await screen.findByRole('status', { name: 'DataHub GMS 연결 테스트 결과' }),
     ).toHaveTextContent(
-      '연결 가능 · HTTP_HEALTH · 12ms',
+      '정상 연결됨 · HTTP_HEALTH · 12ms',
     )
+    expect(screen.getByRole('status', { name: '현재 연결 상태: 연결됨' })).toBeInTheDocument()
     expect(request).toHaveBeenCalledWith(
       '/admin/system-configuration/DATAHUB_GMS/test-deployment',
       { method: 'POST' },
     )
   })
 
-  it('tests and applies the live connection state without copying a host command', async () => {
+  it('reflects the fixed probe only as the current-page connection state', async () => {
     const writeText = vi.fn(() => Promise.resolve())
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -222,7 +230,7 @@ describe('SystemConfigurationAdmin', () => {
     })
 
     renderAdmin(request)
-    fireEvent.click(await screen.findByRole('button', { name: '테스트 후 반영' }))
+    fireEvent.click(await screen.findByRole('button', { name: '연결 확인' }))
 
     expect(await screen.findByRole('status', { name: '현재 연결 상태: 연결됨' })).toHaveTextContent(
       '연결됨',
@@ -231,10 +239,40 @@ describe('SystemConfigurationAdmin', () => {
       screen.getByRole('status', { name: 'DataHub GMS 연결 테스트 결과' }),
     ).toHaveTextContent('정상 연결됨')
     expect(writeText).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: '연결됨' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '연결 확인' })).toBeEnabled()
   })
 
-  it('shows an error state when the test-and-apply probe fails', async () => {
+  it('returns to an unverified connection state after refreshing the inventory', async () => {
+    const request = vi.fn((path: string) => {
+      if (path === '/admin/system-configuration') {
+        return Promise.resolve(inventory([deploymentEntry]))
+      }
+      if (path === '/admin/system-configuration/DATAHUB_GMS/test-deployment') {
+        return Promise.resolve({
+          system_id: 'DATAHUB_GMS',
+          status: 'AVAILABLE',
+          scope: 'HTTP_HEALTH',
+          latency_ms: 8,
+          detail: 'fixed deployment probe passed',
+          configuration_version: null,
+          tested_at: '2026-07-20T09:01:00Z',
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    renderAdmin(request)
+    fireEvent.click(await screen.findByRole('button', { name: '연결 확인' }))
+    expect(await screen.findByRole('status', { name: '현재 연결 상태: 연결됨' })).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }))
+    await waitFor(() => {
+      expect(request.mock.calls.filter(([path]) => path === '/admin/system-configuration')).toHaveLength(2)
+    })
+    expect(await screen.findByRole('status', { name: '현재 연결 상태: 미확인' })).toBeVisible()
+  })
+
+  it('shows an error state when the fixed connection probe fails', async () => {
     const writeText = vi.fn(() => Promise.resolve())
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -262,7 +300,7 @@ describe('SystemConfigurationAdmin', () => {
     })
 
     renderAdmin(request)
-    fireEvent.click(await screen.findByRole('button', { name: '테스트 후 반영' }))
+    fireEvent.click(await screen.findByRole('button', { name: '연결 확인' }))
 
     expect(
       await screen.findByRole('status', { name: 'DataHub GMS 연결 테스트 결과' }),
@@ -271,10 +309,10 @@ describe('SystemConfigurationAdmin', () => {
     expect(screen.getByRole('status', { name: '현재 연결 상태: 오류' })).toHaveTextContent(
       '오류',
     )
-    expect(screen.getByRole('button', { name: '테스트 후 반영' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '연결 확인' })).toBeInTheDocument()
   })
 
-  it('shows a connecting state while the test-and-apply probe is pending', async () => {
+  it('shows a checking state while the fixed connection probe is pending', async () => {
     let resolveProbe:
       | ((value: {
           system_id: string
@@ -308,11 +346,11 @@ describe('SystemConfigurationAdmin', () => {
     })
 
     renderAdmin(request)
-    fireEvent.click(await screen.findByRole('button', { name: '테스트 후 반영' }))
+    fireEvent.click(await screen.findByRole('button', { name: '연결 확인' }))
 
     expect(
-      await screen.findByRole('status', { name: '현재 연결 상태: 연결중' }),
-    ).toHaveTextContent('연결중')
+      await screen.findByRole('status', { name: '현재 연결 상태: 확인 중' }),
+    ).toHaveTextContent('확인 중')
 
     resolveProbe?.({
       system_id: 'DATAHUB_GMS',
@@ -347,7 +385,7 @@ describe('SystemConfigurationAdmin', () => {
     })
 
     renderAdmin(request)
-    fireEvent.click(await screen.findByRole('button', { name: 'DataHub GMS 테스트 후 반영' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'DataHub GMS 연결 확인' }))
 
     expect((await screen.findByText('Core Dashboard')).closest('button')).toHaveTextContent('연결됨')
   })
@@ -373,16 +411,58 @@ describe('SystemConfigurationAdmin', () => {
     renderAdmin(request)
 
     expect(await screen.findByRole('tab', { name: /LLM Models/ })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Chat Model' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: /Chat Model/ })).toHaveAttribute(
       'aria-pressed',
       'true',
     )
-    fireEvent.click(screen.getByRole('button', { name: 'Reranker' }))
-    expect(screen.getByRole('button', { name: 'Reranker' })).toHaveAttribute(
+    expect(screen.getByRole('status', { name: 'Chat Model 연결 상태: 미확인' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Embedding 연결 상태: 미확인' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Reranker 연결 상태: 미확인' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: /Reranker/ }))
+    expect(screen.getByRole('button', { name: /Reranker/ })).toHaveAttribute(
       'aria-pressed',
       'true',
     )
     expect(screen.getByRole('heading', { name: 'LLM · Reranker' })).toBeInTheDocument()
+  })
+
+  it('tracks Chat, Embedding, and Reranker probe states independently', async () => {
+    const llmSpecs: Array<[SystemConfigurationEntry['system_id'], string]> = [
+      ['LLM_CHAT_MODEL', 'LLM · Chat model'],
+      ['LLM_EMBEDDING', 'LLM · Embedding'],
+      ['LLM_RERANKER', 'LLM · Reranker'],
+    ]
+    const llmEntries = llmSpecs.map(([systemId, label]) => ({
+      ...deploymentEntry,
+      system_id: systemId,
+      label,
+    }))
+    const request = vi.fn((path: string) => {
+      if (path === '/admin/system-configuration') return Promise.resolve(inventory(llmEntries))
+      if (path === '/admin/system-configuration/LLM_CHAT_MODEL/test-deployment') {
+        return Promise.resolve({
+          system_id: 'LLM_CHAT_MODEL',
+          status: 'AVAILABLE',
+          scope: 'MODEL_INFERENCE',
+          latency_ms: 9,
+          detail: 'chat inference probe passed',
+          configuration_version: null,
+          tested_at: '2026-07-20T09:01:00Z',
+        })
+      }
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    renderAdmin(request)
+    fireEvent.click(await screen.findByRole('button', { name: '연결 확인' }))
+
+    expect(await screen.findByRole('status', { name: 'Chat Model 연결 상태: 연결됨' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Embedding 연결 상태: 미확인' })).toBeVisible()
+    expect(screen.getByRole('status', { name: 'Reranker 연결 상태: 미확인' })).toBeVisible()
+    expect(request).toHaveBeenCalledWith(
+      '/admin/system-configuration/LLM_CHAT_MODEL/test-deployment',
+      { method: 'POST' },
+    )
   })
 
   it('separates an available model transport from missing governed Chat binding', async () => {
@@ -404,10 +484,10 @@ describe('SystemConfigurationAdmin', () => {
 
     renderAdmin(request)
 
-    expect(await screen.findByText('추론 승인 필요')).toBeInTheDocument()
+    expect(await screen.findAllByText('추론 승인 필요')).toHaveLength(2)
     expect(
       screen.getByText(/승인된 추론 프로필 UUID 및 활성 분류정책 연결이 필요합니다/),
     ).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '테스트 후 반영' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '연결 확인' })).toBeEnabled()
   })
 })

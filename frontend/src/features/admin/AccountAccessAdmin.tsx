@@ -95,14 +95,14 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
     idPrefix: 'admin-policies', onSelect: selectPolicyView,
   })
 
-  return <div className="grid gap-3">
-    <section className="panel border-l-4 border-l-blue-700 bg-slate-50">
+  return <div className="grid gap-2">
+    <section aria-label="계정/권한 요약" className="panel admin-access-summary border-l-4 border-l-blue-700 bg-slate-50">
       <span className="eyebrow">Accounts &amp; authorization</span>
       <h2 className="mb-1 mt-1 text-base text-navy-900">계정/권한</h2>
       <p className="m-0 text-xs leading-5 text-slate-600">사용자 계정과 Role은 서버가 검증한 Workspace 범위에서만 관리합니다.</p>
     </section>
-    <div className="flex flex-wrap gap-1 border-b border-slate-300" role="tablist" aria-label="계정/권한 관리 영역">
-      {views.map((item) => <button key={item.id} {...accessTabs.tabProps(item.id)} type="button" aria-label={item.label} className={`min-w-40 border border-b-0 px-3 py-2 text-left text-xs font-black ${view === item.id ? 'border-navy-900 bg-navy-900 text-white' : 'border-slate-300 bg-slate-100 text-slate-600'}`} onClick={() => selectView(item.id)}><span className="block">{item.label}</span><small className="mt-0.5 block text-[9px] font-bold opacity-75">{item.description}</small></button>)}
+    <div className="admin-access-tabs flex flex-wrap gap-1 border-b border-slate-300" role="tablist" aria-label="계정/권한 관리 영역">
+      {views.map((item) => <button key={item.id} {...accessTabs.tabProps(item.id)} type="button" aria-label={item.label} className={`min-w-36 border border-b-0 px-3 py-1.5 text-left text-[11px] font-black ${view === item.id ? 'border-navy-900 bg-navy-900 text-white' : 'border-slate-300 bg-slate-100 text-slate-600'}`} onClick={() => selectView(item.id)}><span className="block">{item.label}</span><small className="block text-[8px] font-bold leading-3 opacity-75">{item.description}</small></button>)}
     </div>
     {view === 'users' && <section {...accessTabs.panelProps('users')} aria-label="사용자 관리">
       {canReadMemberships && <MembershipAccessAdmin {...props} onOpenRoleManagement={() => setRoleManagementOpen(true)} onOpenRenewals={canReadRenewals ? () => setRenewalsOpen(true) : undefined} />}
