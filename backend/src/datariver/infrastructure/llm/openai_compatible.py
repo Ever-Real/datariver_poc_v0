@@ -51,6 +51,7 @@ class OpenAICompatibleGroundedChatComposer:
         *,
         question: str,
         evidence: Sequence[ChatEvidence],
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatDraft:
         if not evidence:
             return ChatDraft(answer="", cited_chunk_ids=())
@@ -61,6 +62,7 @@ class OpenAICompatibleGroundedChatComposer:
                     model=self._model,
                     question=question,
                     evidence=evidence,
+                    prior_user_utterances=prior_user_utterances,
                 )
             ),
         )
@@ -70,6 +72,7 @@ class OpenAICompatibleGroundedChatComposer:
         self,
         *,
         question: str,
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatDraft:
         result = await self._transport.post_json(
             path="/chat/completions",
@@ -77,6 +80,7 @@ class OpenAICompatibleGroundedChatComposer:
                 general_chat_request_payload(
                     model=self._model,
                     question=question,
+                    prior_user_utterances=prior_user_utterances,
                 )
             ),
         )
@@ -86,6 +90,7 @@ class OpenAICompatibleGroundedChatComposer:
         self,
         *,
         question: str,
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatRetrievalMode:
         result = await self._transport.post_json(
             path="/chat/completions",
@@ -93,6 +98,7 @@ class OpenAICompatibleGroundedChatComposer:
                 route_classification_request_payload(
                     model=self._model,
                     question=question,
+                    prior_user_utterances=prior_user_utterances,
                 )
             ),
         )

@@ -2136,6 +2136,7 @@ class ChatAnswerComposer(Protocol):
         *,
         question: str,
         evidence: Sequence[ChatEvidence],
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatDraft: ...
 
 
@@ -2144,6 +2145,7 @@ class ChatGeneralAnswerComposer(Protocol):
         self,
         *,
         question: str,
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatDraft: ...
 
 
@@ -2163,6 +2165,7 @@ class ChatRouteIntentClassifier(Protocol):
         self,
         *,
         question: str,
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatRetrievalMode: ...
 
 
@@ -2178,6 +2181,7 @@ class ChatQuestionRouter(Protocol):
         vector_available: bool,
         graph_available: bool,
         inference_allowed: bool,
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatRouteDecision: ...
 
 

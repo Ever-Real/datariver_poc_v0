@@ -141,8 +141,9 @@ class DeterministicChatAnswerComposer:
         *,
         question: str,
         evidence: Sequence[ChatEvidence],
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatDraft:
-        del question
+        del question, prior_user_utterances
         if not evidence:
             return ChatDraft(answer=UNVERIFIABLE_ANSWER, cited_chunk_ids=())
         lines = ["접근 권한이 확인된 사내 근거는 다음과 같습니다."]
@@ -348,7 +349,8 @@ class ChatService:
                 window_seconds=60,
             )
         (
-            effective_question,
+            contextual_question,
+            prior_user_utterances,
             context_status,
             context_compressor_invoked,
         ) = await self._contextualize_question(
@@ -366,6 +368,10 @@ class ChatService:
                 )
             ),
         )
+        retrieval_question = self._retrieval_question(
+            question=contextual_question,
+            prior_user_utterances=prior_user_utterances,
+        )
         workflow.append(
             self._event(
                 ChatWorkflowStage.BUDGET_RESERVATION,
@@ -378,13 +384,14 @@ class ChatService:
             detail_code="ROUTING_IN_PROGRESS",
         )
         route = await self._question_router.route(
-            question=effective_question,
+            question=contextual_question,
             requested_mode=requested_mode,
             vector_available=(
                 self._vector_catalog is not None or self._governance_evidence is not None
             ),
             graph_available=self._graph_evidence is not None,
             inference_allowed=route_classifier_allowed,
+            prior_user_utterances=prior_user_utterances,
         )
         general_composer = self._general_composer
         general_fallback_requested = (
@@ -479,7 +486,10 @@ class ChatService:
                     )
                     if self._composition_audit.external_service_used:
                         external_stages.append("composition")
-                    draft = await general_composer.compose_general(question=effective_question)
+                    draft = await general_composer.compose_general(
+                        question=contextual_question,
+                        prior_user_utterances=prior_user_utterances,
+                    )
                     answer = self._validate_general_draft(draft)
                 except Exception:
                     route = replace(route, adapter_state=ChatAdapterState.FAILED)
@@ -565,7 +575,7 @@ class ChatService:
                     retrieval_subject=retrieval_subject,
                     access=retrieval_access,
                     allowed_classifications=allowed_chat_classifications,
-                    question=effective_question,
+                    question=retrieval_question,
                     maximum_evidence=maximum_evidence,
                     environment=environment,
                     request_id=request_id,
@@ -653,7 +663,7 @@ class ChatService:
                     rerank_failed,
                     reranker_invoked,
                 ) = await self._rank(
-                    question=effective_question,
+                    question=retrieval_question,
                     evidence=evidence,
                     route=route,
                     workflow=workflow,
@@ -707,7 +717,8 @@ class ChatService:
                             if self._composition_audit.external_service_used:
                                 external_stages.append("composition")
                             draft = await self._general_composer.compose_general(
-                                question=effective_question,
+                                question=contextual_question,
+                                prior_user_utterances=prior_user_utterances,
                             )
                             answer = self._validate_general_draft(draft)
                         except Exception:
@@ -767,8 +778,9 @@ class ChatService:
                         if self._composition_audit.external_service_used:
                             external_stages.append("composition")
                         draft = await self._composer.compose(
-                            question=effective_question,
+                            question=contextual_question,
                             evidence=ranked_evidence,
+                            prior_user_utterances=prior_user_utterances,
                         )
                     except Exception:
                         route = replace(route, adapter_state=ChatAdapterState.FAILED)
@@ -833,7 +845,7 @@ class ChatService:
                                 environment=environment,
                                 request_id=request_id,
                                 parent_resource_id=session_id or workspace_id,
-                                question=effective_question,
+                                question=retrieval_question,
                                 requested_graph_id=requested_graph_id,
                                 initial_graph_scope=graph_scope,
                             )
@@ -994,22 +1006,20 @@ class ChatService:
         bounded_user_utterances: tuple[str, ...],
         read_degraded: bool,
         compression_allowed: bool,
-    ) -> tuple[str, str, bool]:
+    ) -> tuple[str, tuple[str, ...], str, bool]:
         if read_degraded:
-            return question, "CONTEXT_DEGRADED", False
+            return question, (), "CONTEXT_DEGRADED", False
         if not bounded_user_utterances or history.completed_user_turns == 0:
-            return question, "CONTEXT_NOT_NEEDED", False
+            return question, (), "CONTEXT_NOT_NEEDED", False
         if history.completed_user_turns < self._conversation_compression_start_after_user_turns:
             return (
-                self._raw_contextual_question(
-                    question=question,
-                    user_utterances=bounded_user_utterances,
-                ),
+                question,
+                bounded_user_utterances,
                 "RAW_CONTEXT_USED",
                 False,
             )
         if self._conversation_context_compressor is None or not compression_allowed:
-            return question, "CONTEXT_DEGRADED", False
+            return question, (), "CONTEXT_DEGRADED", False
         try:
             draft = await self._conversation_context_compressor.compress_context(
                 question=question,
@@ -1017,8 +1027,8 @@ class ChatService:
             )
             resolved_question = self._validate_context_draft(draft)
         except Exception:
-            return question, "CONTEXT_DEGRADED", True
-        return resolved_question, "COMPRESSED_CONTEXT_USED", True
+            return question, (), "CONTEXT_DEGRADED", True
+        return resolved_question, (), "COMPRESSED_CONTEXT_USED", True
 
     def _context_budget_detail_code(self, context_status: str) -> str:
         if self._budget_guard is None:
@@ -1033,18 +1043,12 @@ class ChatService:
         return f"{CONTEXT_DEGRADED_PREFIX}{answer[:maximum_body].rstrip()}"
 
     @staticmethod
-    def _raw_contextual_question(
+    def _retrieval_question(
         *,
         question: str,
-        user_utterances: Sequence[str],
+        prior_user_utterances: Sequence[str],
     ) -> str:
-        prior = "\n".join(f"- {item}" for item in user_utterances)
-        return (
-            "현재 질문:\n"
-            f"{question}\n\n"
-            "이전 사용자 발화(지시대상과 의도 확인용이며 사실 근거가 아님):\n"
-            f"{prior}"
-        )
+        return "\n".join((question, *prior_user_utterances))
 
     @staticmethod
     def _bounded_user_utterances(

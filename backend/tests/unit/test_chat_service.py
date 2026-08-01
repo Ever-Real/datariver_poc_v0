@@ -82,6 +82,7 @@ class FakeIndex:
         self.item = item
         self.detail_item = detail_item or item
         self.search_subject: SubjectAttributes | None = None
+        self.search_query: str | None = None
 
     async def search(
         self,
@@ -94,7 +95,8 @@ class FakeIndex:
         limit: int,
     ) -> CatalogPage:
         self.search_subject = subject
-        del access, query, filters, cursor, limit
+        self.search_query = query
+        del access, filters, cursor, limit
         return CatalogPage(items=(self.item,), next_cursor=None, observed_at=datetime.now(UTC))
 
     async def get_authorized_asset(
@@ -796,8 +798,9 @@ class FixedComposer:
         *,
         question: str,
         evidence: Sequence[ChatEvidence],
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatDraft:
-        del question, evidence
+        del question, evidence, prior_user_utterances
         return self.draft
 
 
@@ -811,8 +814,9 @@ class SelectingComposer:
         *,
         question: str,
         evidence: Sequence[ChatEvidence],
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatDraft:
-        del question
+        del question, prior_user_utterances
         self.calls += 1
         return ChatDraft(
             answer="authorized subset",
@@ -824,15 +828,22 @@ class CapturingComposer(SelectingComposer):
     def __init__(self) -> None:
         super().__init__((0,))
         self.question: str | None = None
+        self.prior_user_utterances: tuple[str, ...] = ()
 
     async def compose(
         self,
         *,
         question: str,
         evidence: Sequence[ChatEvidence],
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatDraft:
         self.question = question
-        return await super().compose(question=question, evidence=evidence)
+        self.prior_user_utterances = tuple(prior_user_utterances)
+        return await super().compose(
+            question=question,
+            evidence=evidence,
+            prior_user_utterances=prior_user_utterances,
+        )
 
 
 class FakeConversationContextReader:
@@ -884,10 +895,16 @@ class FixedGeneralComposer:
     def __init__(self, draft: ChatDraft) -> None:
         self.draft = draft
         self.calls = 0
+        self.questions: list[tuple[str, tuple[str, ...]]] = []
 
-    async def compose_general(self, *, question: str) -> ChatDraft:
-        del question
+    async def compose_general(
+        self,
+        *,
+        question: str,
+        prior_user_utterances: Sequence[str] = (),
+    ) -> ChatDraft:
         self.calls += 1
+        self.questions.append((question, tuple(prior_user_utterances)))
         return self.draft
 
 
@@ -927,10 +944,12 @@ class SelectingReranker:
 
 
 class CapturingVectorCatalog:
-    def __init__(self, item: CatalogAssetIndex) -> None:
+    def __init__(self, item: CatalogAssetIndex, *, provider_invoked: bool = True) -> None:
         self.item = item
+        self.provider_invoked = provider_invoked
         self.access: ClassificationAccessSnapshot | None = None
         self.calls = 0
+        self.question: str | None = None
 
     async def search(
         self,
@@ -940,12 +959,13 @@ class CapturingVectorCatalog:
         question: str,
         limit: int,
     ) -> ChatVectorSearchResult:
-        del subject, question, limit
+        del subject, limit
         self.calls += 1
         self.access = access
+        self.question = question
         return ChatVectorSearchResult(
             items=(self.item,),
-            provider_invoked=True,
+            provider_invoked=self.provider_invoked,
         )
 
 
@@ -1229,9 +1249,14 @@ async def test_conversation_memory_uses_bounded_raw_user_intent_before_interval(
     )
     composer = CapturingComposer()
     store = FakeChatStore()
+    catalog_item = asset(workspace_id)
+    index = FakeIndex(catalog_item)
+    vector = CapturingVectorCatalog(catalog_item, provider_invoked=False)
+    embedding_binding = inference_binding(InferenceStage.EMBEDDING, uuid4())
 
     exchange = await ChatService(
-        catalog_index=FakeIndex(asset(workspace_id)),
+        catalog_index=index,
+        vector_catalog=vector,
         composer=composer,
         session_ownership=FakeSessionOwnership(subject.subject_id),
         subject_access=PassthroughSubjectAccess(),
@@ -1239,6 +1264,11 @@ async def test_conversation_memory_uses_bounded_raw_user_intent_before_interval(
         conversation_memory_enabled=True,
         conversation_compression_start_after_user_turns=3,
         conversation_context_max_tokens=512,
+        classification_access=cast(
+            ClassificationAccessResolver,
+            FixedClassificationAccess(governed_chat_access(embedding_binding)),
+        ),
+        inference_runtime_bindings=(embedding_binding,),
         uow_factory=chat_uow_factory(store),
         authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
     ).query(
@@ -1249,14 +1279,19 @@ async def test_conversation_memory_uses_bounded_raw_user_intent_before_interval(
         maximum_evidence=1,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="request-raw-conversation-context",
+        requested_mode=ChatRetrievalMode.VECTOR,
     )
 
     assert reader.calls == 1
-    assert composer.question is not None
-    assert "현재 질문:\n컬럼은 뭐야?" in composer.question
-    assert "capital_project 테이블을 설명해줘" in composer.question
-    assert "사실 근거가 아님" in composer.question
+    assert composer.question == "컬럼은 뭐야?"
+    assert composer.prior_user_utterances == (
+        "capital_project 테이블을 설명해줘",
+        "그 테이블의 목적을 알려줘",
+    )
     assert store.saved_question == "컬럼은 뭐야?"
+    assert vector.question == (
+        "컬럼은 뭐야?\ncapital_project 테이블을 설명해줘\n그 테이블의 목적을 알려줘"
+    )
     assert any(item.detail_code.endswith("RAW_CONTEXT_USED") for item in exchange.workflow)
 
 
@@ -1308,6 +1343,7 @@ async def test_fourth_conversation_request_uses_request_time_compression() -> No
 
     assert compressor.calls == [("그 내용을 다시 정리해줘", utterances)]
     assert composer.question == "capital_project 테이블의 컬럼과 목적을 다시 설명해줘"
+    assert composer.prior_user_utterances == ()
     assert reranker.question == "capital_project 테이블의 컬럼과 목적을 다시 설명해줘"
     assert store.saved_question == "그 내용을 다시 정리해줘"
     assert store.saved_composition_audit is not None
@@ -1366,6 +1402,7 @@ async def test_context_compression_failure_discards_history_without_raw_fallback
 
     assert len(compressor.calls) == expected_calls
     assert composer.question == "현재 질문만 처리해줘"
+    assert composer.prior_user_utterances == ()
     assert "SECRET_HISTORY" not in composer.question
     assert exchange.answer.startswith("※ 이전 대화 맥락을 안전하게 준비하지 못해")
     assert any(item.detail_code.endswith("CONTEXT_DEGRADED") for item in exchange.workflow)

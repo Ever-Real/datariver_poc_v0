@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from datariver.application.dto import ChatRouteDecision
 from datariver.application.ports import ChatQuestionRouter, ChatRouteIntentClassifier
 from datariver.domain.chat import (
@@ -28,8 +30,9 @@ class DeterministicChatQuestionRouter(ChatQuestionRouter):
         vector_available: bool,
         graph_available: bool,
         inference_allowed: bool,
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatRouteDecision:
-        del question, inference_allowed
+        del question, inference_allowed, prior_user_utterances
         if requested_mode is not ChatRetrievalMode.AUTO:
             return self._decision(
                 requested_mode=requested_mode,
@@ -101,6 +104,7 @@ class SemanticChatQuestionRouter(DeterministicChatQuestionRouter):
         vector_available: bool,
         graph_available: bool,
         inference_allowed: bool,
+        prior_user_utterances: Sequence[str] = (),
     ) -> ChatRouteDecision:
         if requested_mode is not ChatRetrievalMode.AUTO:
             return await super().route(
@@ -109,6 +113,7 @@ class SemanticChatQuestionRouter(DeterministicChatQuestionRouter):
                 vector_available=vector_available,
                 graph_available=graph_available,
                 inference_allowed=inference_allowed,
+                prior_user_utterances=prior_user_utterances,
             )
         if self._classifier is None:
             return await super().route(
@@ -117,6 +122,7 @@ class SemanticChatQuestionRouter(DeterministicChatQuestionRouter):
                 vector_available=vector_available,
                 graph_available=graph_available,
                 inference_allowed=inference_allowed,
+                prior_user_utterances=prior_user_utterances,
             )
         if not inference_allowed:
             return self._unavailable_decision(
@@ -125,7 +131,10 @@ class SemanticChatQuestionRouter(DeterministicChatQuestionRouter):
                 graph_available=graph_available,
             )
         try:
-            selected_mode = await self._classifier.classify_route(question=question)
+            selected_mode = await self._classifier.classify_route(
+                question=question,
+                prior_user_utterances=prior_user_utterances,
+            )
         except Exception:
             return self._unavailable_decision(
                 requested_mode=requested_mode,
