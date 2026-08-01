@@ -108,6 +108,73 @@ ABOX_BINDING_OPERATION = "kg.studio.abox.bind.v1"
 PREFLIGHT_CONTRACT_VERSION = "KNOWLEDGE_STUDIO_PREFLIGHT_V1"
 RELEASE_CONTRACT_VERSION = "KNOWLEDGE_STUDIO_RELEASE_V1"
 
+_PROPOSAL_BLOCK_KIND_BY_SOURCE_CONTRACT = {
+    "KNOWLEDGE_STUDIO_ASSISTANT_INPUT_V1": ("LLM_ASSISTANT", "LLM 제안"),
+    "KNOWLEDGE_STUDIO_ASSET_RELEASE_SOURCE_V1": ("ASSET_RELEASE", "다른 Asset Release"),
+    "KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V1": ("CATALOG_METADATA", "DB 카탈로그 제안"),
+    "KNOWLEDGE_STUDIO_CATALOG_SOURCE_V1": ("CATALOG_METADATA", "DB 카탈로그 제안"),
+    "KNOWLEDGE_STUDIO_DOCUMENT_SOURCE_PIN_V1": ("DOCUMENT_SCHEMA", "문서 스키마 제안"),
+    "KNOWLEDGE_STUDIO_DOCUMENT_SOURCE_V1": ("DOCUMENT_SCHEMA", "문서 스키마 제안"),
+}
+
+
+def _proposal_block_identity(source_reference: dict[str, object]) -> tuple[str, str]:
+    contract = source_reference.get("contract_version")
+    if not isinstance(contract, str) or contract not in _PROPOSAL_BLOCK_KIND_BY_SOURCE_CONTRACT:
+        raise ConflictError("The T-Box Proposal source contract is unsupported.")
+    return _PROPOSAL_BLOCK_KIND_BY_SOURCE_CONTRACT[contract]
+
+
+def _claim_tbox_block_source_mode(
+    *,
+    block: TBoxDraftBlockModel,
+    source_reference: dict[str, object],
+    proposal_id: UUID,
+    persisted_element_count: int,
+    now: datetime,
+) -> None:
+    proposed_kind, _ = _proposal_block_identity(source_reference)
+    if block.kind == "DIRECT":
+        if block.source_reference is not None or persisted_element_count != 0:
+            raise ConflictError(
+                "A DIRECT block with persisted elements cannot change source mode. "
+                "Apply the Proposal as a new block."
+            )
+        block.kind = proposed_kind
+        block.source_reference = {
+            **source_reference,
+            "kind": "TBOX_PROPOSAL",
+            "proposal_id": str(proposal_id),
+        }
+        block.updated_at = now
+        block.version += 1
+        return
+    if block.kind != proposed_kind:
+        raise ConflictError(
+            "This T-Box block already uses a different source mode. "
+            "Apply the Proposal as a new block."
+        )
+    if block.source_reference is None:
+        if persisted_element_count != 0:
+            raise ConflictError(
+                "The T-Box block source provenance is unavailable. "
+                "Apply the Proposal as a new block."
+            )
+        block.source_reference = {
+            **source_reference,
+            "kind": "TBOX_PROPOSAL",
+            "proposal_id": str(proposal_id),
+        }
+        block.updated_at = now
+        block.version += 1
+        return
+    existing_kind, _ = _proposal_block_identity(dict(block.source_reference))
+    if existing_kind != proposed_kind:
+        raise ConflictError(
+            "This T-Box block already uses a different source mode. "
+            "Apply the Proposal as a new block."
+        )
+
 
 def _optional_document_string(document: dict[str, object], key: str) -> str | None:
     value = document.get(key)
@@ -2343,29 +2410,11 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
         if {item[0] for item in elements_by_block} != known_block_ids:
             raise ConflictError("The T-Box block set changed before proposal acceptance.")
         now = utc_now()
+        source_reference = dict(proposal.source_reference_document or {})
+        block_kind, block_title = _proposal_block_identity(source_reference)
         if proposal.mode == "APPEND_LAYER":
             if target_block_id is not None or not appended_elements:
                 raise ConflictError("APPEND_LAYER requires a new non-empty proposal block.")
-            source_reference = dict(proposal.source_reference_document or {})
-            raw_source_contract = source_reference.get("contract_version")
-            source_contract = raw_source_contract if isinstance(raw_source_contract, str) else ""
-            block_kind, block_title = {
-                "KNOWLEDGE_STUDIO_ASSET_RELEASE_SOURCE_V1": (
-                    "ASSET_RELEASE",
-                    "다른 Asset Release",
-                ),
-                "KNOWLEDGE_STUDIO_CATALOG_SOURCE_V1": (
-                    "CATALOG_METADATA",
-                    "DB 카탈로그 제안",
-                ),
-                "KNOWLEDGE_STUDIO_DOCUMENT_SOURCE_V1": (
-                    "DOCUMENT_SCHEMA",
-                    "문서 스키마 제안",
-                ),
-            }.get(
-                source_contract,
-                ("LLM_ASSISTANT", "LLM 제안"),
-            )
             new_block = TBoxDraftBlockModel(
                 id=uuid7(),
                 workspace_id=workspace_id,
@@ -2376,9 +2425,9 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 ordinal=len(blocks),
                 collapsed=False,
                 source_reference={
+                    **source_reference,
                     "kind": "TBOX_PROPOSAL",
                     "proposal_id": str(proposal.id),
-                    **source_reference,
                 },
                 created_at=now,
                 updated_at=now,
@@ -2390,8 +2439,27 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 *elements_by_block,
                 (new_block.id, appended_elements),
             )
-        elif target_block_id is None or target_block_id not in known_block_ids:
-            raise ConflictError("MERGE_INTO_CURRENT requires an existing target block.")
+        else:
+            if target_block_id is None or target_block_id not in known_block_ids:
+                raise ConflictError("MERGE_INTO_CURRENT requires an existing target block.")
+            target_block = next(block for block in blocks if block.id == target_block_id)
+            persisted_element_count = int(
+                await self._session.scalar(
+                    select(func.count(TBoxDraftElementModel.id)).where(
+                        TBoxDraftElementModel.workspace_id == workspace_id,
+                        TBoxDraftElementModel.draft_id == draft_id,
+                        TBoxDraftElementModel.block_id == target_block_id,
+                    )
+                )
+                or 0
+            )
+            _claim_tbox_block_source_mode(
+                block=target_block,
+                source_reference=source_reference,
+                proposal_id=proposal.id,
+                persisted_element_count=persisted_element_count,
+                now=now,
+            )
         await self._replace_tbox_elements(
             workspace_id=workspace_id,
             draft_id=draft_id,

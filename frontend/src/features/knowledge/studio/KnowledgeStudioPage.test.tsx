@@ -333,13 +333,20 @@ describe('KnowledgeStudioPage Draft recovery', () => {
       target: { value: 'Employee' },
     })
     fireEvent.click(screen.getByRole('button', { name: '최상위 Class 추가' }))
-    fireEvent.click(screen.getByRole('button', { name: 'T-Box 저장' }))
-    await screen.findByText(/Typed T-Box 저장 완료/)
-
-    fireEvent.click(screen.getByRole('button', { name: 'Data Enricher' }))
+    fireEvent.click(screen.getByRole('button', { name: 'T-Box 저장 후 A-Box로 이동' }))
     expect(await screen.findByRole('heading', { name: 'Data Enricher' })).toBeInTheDocument()
     expect(await screen.findByText('Employee')).toBeInTheDocument()
     expect(window.location.search).toContain('step=abox')
+    const saveIndex = fetchMock.mock.calls.findIndex(([input]) => requestUrl(input).endsWith(
+      `/tbox/blocks/${blockId}/operations`,
+    ))
+    const aboxAdvanceIndex = fetchMock.mock.calls.findIndex(([input, init]) => {
+      if (!requestUrl(input).endsWith(`/drafts/${draftId}/advance`)) return false
+      if (typeof init?.body !== 'string') return false
+      return (JSON.parse(init.body) as { target_step?: string }).target_step === 'ABOX'
+    })
+    expect(saveIndex).toBeGreaterThanOrEqual(0)
+    expect(aboxAdvanceIndex).toBeGreaterThan(saveIndex)
   })
 
   it('keeps local input on 412 and reloads server state only after explicit choice', async () => {

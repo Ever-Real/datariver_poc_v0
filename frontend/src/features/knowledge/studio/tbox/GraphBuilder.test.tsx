@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiClient } from '../../../../api/client'
 import { useKnowledgeStudioSessionStore } from '../knowledgeStudioSessionStore'
-import { GraphBuilder } from './GraphBuilder'
+import { GraphBuilder, relationshipHandles } from './GraphBuilder'
 
 const draftId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0'
 const blockId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3b1'
@@ -38,7 +38,7 @@ function tbox(elements: unknown[] = []) {
       ordinal: 0,
       collapsed: false,
       version: 1,
-      source_reference: null,
+      source_reference: null as Record<string, unknown> | null,
       elements,
       created_at: '2026-07-29T01:00:00Z',
       updated_at: '2026-07-29T01:00:00Z',
@@ -76,6 +76,25 @@ afterEach(() => {
 })
 
 describe('GraphBuilder', () => {
+  it('chooses the nearest fixed relationship sides as nodes move', () => {
+    expect(relationshipHandles({ x: 0, y: 0 }, { x: 300, y: 20 })).toEqual({
+      sourceHandle: 'source-right',
+      targetHandle: 'target-left',
+    })
+    expect(relationshipHandles({ x: 300, y: 20 }, { x: 0, y: 0 })).toEqual({
+      sourceHandle: 'source-left',
+      targetHandle: 'target-right',
+    })
+    expect(relationshipHandles({ x: 0, y: 0 }, { x: 20, y: 300 })).toEqual({
+      sourceHandle: 'source-bottom',
+      targetHandle: 'target-top',
+    })
+    expect(relationshipHandles({ x: 20, y: 300 }, { x: 0, y: 0 })).toEqual({
+      sourceHandle: 'source-top',
+      targetHandle: 'target-bottom',
+    })
+  })
+
   it('ends a stalled T-Box read with a retry action', async () => {
     const fetchMock = vi.fn<typeof fetch>(() => new Promise(() => undefined))
     vi.stubGlobal('fetch', fetchMock)
@@ -147,6 +166,8 @@ describe('GraphBuilder', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Line 2, Column 1')
     expect(within(canvas).getByText('Employee')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'T-Box 저장 후 A-Box로 이동' }))
+      .toBeDisabled()
 
     fireEvent.change(screen.getByLabelText('T-Box Cypher 편집기'), {
       target: {
@@ -173,6 +194,14 @@ describe('GraphBuilder', () => {
     })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'REPORTS_TO' })).toBeInTheDocument()
     expect(canvas.querySelectorAll('.react-flow__handle')).toHaveLength(22)
+    expect(within(canvas).getByLabelText('Employee 상단 Relationship 연결점'))
+      .toBeInTheDocument()
+    expect(within(canvas).getByLabelText('Employee 우측 Relationship 연결점'))
+      .toBeInTheDocument()
+    expect(within(canvas).getByLabelText('Employee 하단 Relationship 연결점'))
+      .toBeInTheDocument()
+    expect(within(canvas).getByLabelText('Employee 좌측 Relationship 연결점'))
+      .toBeInTheDocument()
   })
 
   it('shows prior layers in a new block and keeps inherited elements read-only', async () => {
@@ -562,6 +591,49 @@ describe('GraphBuilder', () => {
     expect(JSON.stringify(savedBody)).not.toContain('Class__')
   })
 
+  it('does not advance to A-Box when the fenced T-Box save fails', async () => {
+    const onContinue = vi.fn()
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`) && !init?.method) {
+        return Promise.resolve(json(tbox()))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/blocks/${blockId}/operations`)) {
+        return Promise.resolve(new Response(JSON.stringify({ detail: 'Draft ETag changed.' }), {
+          status: 412,
+          headers: { 'Content-Type': 'application/json', ETag: '"3"' },
+        }))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={onContinue}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    fireEvent.change(screen.getByLabelText('최상위 Class 이름'), {
+      target: { value: 'Asset' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '최상위 Class 추가' }))
+    fireEvent.click(screen.getByRole('button', { name: 'T-Box 저장 후 A-Box로 이동' }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining(`/tbox/blocks/${blockId}/operations`),
+      expect.objectContaining({ method: 'POST' }),
+    ))
+    expect(onContinue).not.toHaveBeenCalled()
+  })
+
   it('disables historical block deletion and deletes only the newest block with ETag fencing', async () => {
     const layered = tbox([])
     layered.blocks.push({
@@ -696,7 +768,10 @@ describe('GraphBuilder', () => {
             tags: ['gold'],
             glossary_terms: ['Order'],
           }],
-          page: { next_cursor: null, limit: 50 },
+          page: {
+            next_cursor: path.includes('cursor=catalog-next') ? null : 'catalog-next',
+            limit: 50,
+          },
         }))
       }
       if (path.endsWith(
@@ -815,6 +890,12 @@ describe('GraphBuilder', () => {
         `/tbox/catalog-sources?q=orders&limit=50`,
       ))
     })
+    fireEvent.click(screen.getByRole('button', { name: '다음 50건 불러오기' }))
+    await waitFor(() => {
+      expect(fetchMock.mock.calls.map(([input]) => requestUrl(input))).toContainEqual(
+        expect.stringContaining('cursor=catalog-next'),
+      )
+    })
     const results = await screen.findByRole('table', {
       name: 'T-Box 카탈로그 검색 결과',
     })
@@ -840,6 +921,85 @@ describe('GraphBuilder', () => {
     expect(fetchMock.mock.calls.some(([input]) => (
       requestUrl(input).endsWith('/tbox/catalog-proposals')
     ))).toBe(false)
+  })
+
+  it('keeps one Proposal source per block and exposes append-layer alternatives', async () => {
+    const claimed = tbox([])
+    const claimedBlock = claimed.blocks[0]!
+    claimed.blocks[0] = {
+      ...claimedBlock,
+      kind: 'CATALOG_METADATA',
+      title: '카탈로그 스키마',
+      source_reference: {
+        contract_version: 'KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V1',
+      },
+    }
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`)) return Promise.resolve(json(claimed))
+      if (path.includes(`/drafts/${draftId}/tbox/proposal-jobs?`)) {
+        return Promise.resolve(json({ items: [], page: { next_cursor: null, limit: 20 } }))
+      }
+      if (path.includes(`/drafts/${draftId}/tbox/catalog-sources?`)) {
+        return Promise.resolve(json({ items: [], page: { next_cursor: null, limit: 50 } }))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    expect(screen.getByText('[DB 메타데이터]')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'DB 테이블 검색' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '데이터 업로드' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '다른 Asset 붙이기' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'LLM Assistant' })).toBeDisabled()
+
+    fireEvent.click(screen.getByRole('button', { name: '블록 추가' }))
+    expect(screen.getByRole('button', { name: /새 데이터 업로드 블록/ })).toBeEnabled()
+    expect(screen.getByRole('button', { name: /새 LLM Assistant 블록/ })).toBeEnabled()
+  })
+
+  it('opens LLM Assistant from the active block toolbar instead of a standalone panel', async () => {
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`)) return Promise.resolve(json(tbox()))
+      if (path.includes(`/drafts/${draftId}/tbox/proposal-jobs?`)) {
+        return Promise.resolve(json({ items: [], page: { next_cursor: null, limit: 20 } }))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    expect(screen.queryByRole('dialog', { name: 'LLM Schema Assistant' }))
+      .not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'LLM Assistant' }))
+    expect(await screen.findByRole('dialog', { name: 'LLM Schema Assistant' }))
+      .toBeInTheDocument()
   })
 
   it('uploads a document through accepted storage and renders the durable job Proposal', async () => {

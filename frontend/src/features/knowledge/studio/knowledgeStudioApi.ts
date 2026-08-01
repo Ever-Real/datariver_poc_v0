@@ -1168,6 +1168,7 @@ export async function searchKnowledgeStudioTBoxCatalogSources(
   filters?: {
     domain?: string
     search_fields?: string[]
+    cursor?: string
   },
   signal?: AbortSignal,
 ): Promise<KnowledgeStudioSourcePage> {
@@ -1176,6 +1177,7 @@ export async function searchKnowledgeStudioTBoxCatalogSources(
   if (filters?.search_fields?.length) {
     params.set('search_fields', filters.search_fields.join(','))
   }
+  if (filters?.cursor) params.set('cursor', filters.cursor)
   return client.request<KnowledgeStudioSourcePage>(
     `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/tbox/catalog-sources?${params.toString()}`,
     { cache: 'no-store', signal },

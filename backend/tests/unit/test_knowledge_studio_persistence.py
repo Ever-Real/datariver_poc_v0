@@ -35,6 +35,7 @@ from datariver.infrastructure.db.knowledge_studio import (
     TBOX_OPERATIONS_OPERATION,
     TBOX_PROPOSAL_APPLY_OPERATION,
     SqlKnowledgeStudioStore,
+    _claim_tbox_block_source_mode,
     _decode_asset_release_cursor,
     _encode_asset_release_cursor,
     abox_binding_result,
@@ -44,7 +45,10 @@ from datariver.infrastructure.db.knowledge_studio import (
     studio_draft_result,
 )
 from datariver.infrastructure.db.models.knowledge import GraphModel
-from datariver.infrastructure.db.models.knowledge_studio import KnowledgeStudioReleaseModel
+from datariver.infrastructure.db.models.knowledge_studio import (
+    KnowledgeStudioReleaseModel,
+    TBoxDraftBlockModel,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0059_knowledge_studio_foundation.py"
@@ -428,6 +432,102 @@ def test_studio_typed_mutation_operation_names_fit_the_persisted_bound() -> None
     }
     assert all(len(operation) <= operation_type.length for operation in operations)
     assert len(operations) == 6
+
+
+def _draft_block(
+    *, kind: str = "DIRECT", source: dict[str, object] | None = None
+) -> TBoxDraftBlockModel:
+    now = datetime(2026, 8, 1, 1, 2, 3, tzinfo=UTC)
+    return TBoxDraftBlockModel(
+        id=UUID("019fbaae-8a76-76f3-9838-38927d59edf2"),
+        workspace_id=UUID("00000000-0000-4000-8000-000000000100"),
+        draft_id=UUID("019fbaae-8a76-76f3-9838-38927d59edf3"),
+        kind=kind,
+        title="통합 스키마",
+        weight=50,
+        ordinal=0,
+        collapsed=False,
+        source_reference=source,
+        created_at=now,
+        updated_at=now,
+        version=1,
+    )
+
+
+def test_empty_direct_block_claims_one_proposal_source_mode_and_preserves_first_provenance() -> (
+    None
+):
+    block = _draft_block()
+    proposal_id = UUID("019fbaae-8a76-76f3-9838-38927d59edf4")
+    source = {
+        "contract_version": "KNOWLEDGE_STUDIO_DOCUMENT_SOURCE_PIN_V1",
+        "manifest_id": "019fbaae-8a76-76f3-9838-38927d59edf5",
+    }
+    now = datetime(2026, 8, 1, 2, 3, 4, tzinfo=UTC)
+
+    _claim_tbox_block_source_mode(
+        block=block,
+        source_reference=source,
+        proposal_id=proposal_id,
+        persisted_element_count=0,
+        now=now,
+    )
+
+    assert block.kind == "DOCUMENT_SCHEMA"
+    assert block.source_reference == {
+        **source,
+        "kind": "TBOX_PROPOSAL",
+        "proposal_id": str(proposal_id),
+    }
+    assert block.version == 2
+    first_reference = dict(block.source_reference)
+
+    _claim_tbox_block_source_mode(
+        block=block,
+        source_reference={
+            "contract_version": "KNOWLEDGE_STUDIO_DOCUMENT_SOURCE_V1",
+            "manifest_id": "019fbaae-8a76-76f3-9838-38927d59edf6",
+        },
+        proposal_id=UUID("019fbaae-8a76-76f3-9838-38927d59edf7"),
+        persisted_element_count=3,
+        now=datetime(2026, 8, 1, 3, 4, 5, tzinfo=UTC),
+    )
+
+    assert block.source_reference == first_reference
+    assert block.version == 2
+
+
+def test_block_source_mode_rejects_mixed_provenance_and_requires_append_layer() -> None:
+    now = datetime(2026, 8, 1, 2, 3, 4, tzinfo=UTC)
+    with pytest.raises(ConflictError, match="new block"):
+        _claim_tbox_block_source_mode(
+            block=_draft_block(),
+            source_reference={
+                "contract_version": "KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V1",
+            },
+            proposal_id=UUID("019fbaae-8a76-76f3-9838-38927d59edf8"),
+            persisted_element_count=1,
+            now=now,
+        )
+
+    claimed = _draft_block(
+        kind="CATALOG_METADATA",
+        source={
+            "contract_version": "KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V1",
+            "kind": "TBOX_PROPOSAL",
+            "proposal_id": "019fbaae-8a76-76f3-9838-38927d59edf9",
+        },
+    )
+    with pytest.raises(ConflictError, match="different source mode"):
+        _claim_tbox_block_source_mode(
+            block=claimed,
+            source_reference={
+                "contract_version": "KNOWLEDGE_STUDIO_ASSISTANT_INPUT_V1",
+            },
+            proposal_id=UUID("019fbaae-8a76-76f3-9838-38927d59edfa"),
+            persisted_element_count=2,
+            now=now,
+        )
 
 
 @pytest.mark.asyncio

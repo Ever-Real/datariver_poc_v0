@@ -25,6 +25,7 @@ import {
   publishKnowledgeStudioDraft,
   retryKnowledgeStudioTBoxProposalJob,
   retryKnowledgeStudioIngestion,
+  searchKnowledgeStudioTBoxCatalogSources,
   searchKnowledgeStudioTBoxAssetReleases,
   submitKnowledgeStudioReview,
   uploadKnowledgeStudioSourceUploadPart,
@@ -506,6 +507,29 @@ describe('Knowledge Studio API', () => {
       target_block_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d3',
       mode: 'MERGE_INTO_CURRENT',
     })
+  })
+
+  it('continues the governed catalog search with the opaque server cursor', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse({
+      items: [],
+      page: { next_cursor: null, limit: 50 },
+    }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    await searchKnowledgeStudioTBoxCatalogSources(
+      client,
+      String(draftResponse(3).id),
+      'wafer process',
+      { cursor: 'opaque-catalog-cursor' },
+    )
+
+    const url = requestUrl(fetchMock.mock.calls[0]?.[0])
+    expect(url).toContain('/tbox/catalog-sources?')
+    expect(url).toContain('q=wafer+process')
+    expect(url).toContain('limit=50')
+    expect(url).toContain('cursor=opaque-catalog-cursor')
+    expect(fetchMock.mock.calls[0]?.[1]?.cache).toBe('no-store')
   })
 
   it('fences dry-run preview and pre-flight reads without sending provider queries', async () => {

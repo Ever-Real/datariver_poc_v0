@@ -149,8 +149,17 @@ const directBlockOption: {
 } = {
   kind: 'DIRECT',
   title: '직접 정의',
-  description: '직접 편집, 문서 및 카탈로그 Proposal을 하나의 통합 레이어에서 다룹니다.',
+  description: '엔지니어가 직접 Class, Property, Relationship을 설계합니다.',
   icon: Plus,
+}
+
+type ProposalBlockKind = Exclude<KnowledgeStudioTBoxBlockKind, 'DIRECT'>
+
+const proposalBlockLabels: Record<ProposalBlockKind, string> = {
+  DOCUMENT_SCHEMA: '데이터 업로드',
+  CATALOG_METADATA: 'DB 메타데이터',
+  ASSET_RELEASE: 'Asset 결합',
+  LLM_ASSISTANT: 'LLM Assistant',
 }
 
 const propertyDataTypes = ['STRING', 'TEXT', 'INTEGER', 'FLOAT', 'BOOLEAN', 'DATE', 'DATETIME']
@@ -236,11 +245,6 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
   const [propertyName, setPropertyName] = useState('')
   const [displayName, setDisplayName] = useState(data.label)
   const [hovered, setHovered] = useState(false)
-  const [hoverPoint, setHoverPoint] = useState<{
-    x: number
-    y: number
-    side: Position
-  }>({ x: 69, y: 0, side: Position.Top })
   const connectionInProgress = useConnection((state) => state.inProgress)
   const connectionSourceId = useConnection((state) => (
     state.inProgress ? state.fromNode.id : null
@@ -255,25 +259,6 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
       }`}
       onPointerEnter={() => setHovered(true)}
       onPointerLeave={() => setHovered(false)}
-      onPointerMove={(event) => {
-        const bounds = event.currentTarget.getBoundingClientRect()
-        const x = Math.max(0, Math.min(bounds.width, event.clientX - bounds.left))
-        const y = Math.max(0, Math.min(bounds.height, event.clientY - bounds.top))
-        const distances = [
-          [Position.Top, y],
-          [Position.Right, bounds.width - x],
-          [Position.Bottom, bounds.height - y],
-          [Position.Left, x],
-        ] as const
-        const [side] = distances.reduce((closest, candidate) => (
-          candidate[1] < closest[1] ? candidate : closest
-        ))
-        setHoverPoint({
-          side,
-          x: side === Position.Left ? 0 : side === Position.Right ? bounds.width : x,
-          y: side === Position.Top ? 0 : side === Position.Bottom ? bounds.height : y,
-        })
-      }}
     >
       <span className="absolute -left-2 -top-2 rounded-full border border-sky-200 bg-sky-500 px-2 py-0.5 text-[9px] font-black text-white shadow">
         No. {data.ordinal}
@@ -287,25 +272,27 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
         </span>
       )}
       {([
-        { position: Position.Top, id: 'source-top', style: { left: 8, right: 8, top: -5, height: 10 } },
-        { position: Position.Right, id: 'source-right', style: { right: -5, top: 8, bottom: 8, width: 10 } },
-        { position: Position.Bottom, id: 'source-bottom', style: { left: 8, right: 8, bottom: -5, height: 10 } },
-        { position: Position.Left, id: 'source-left', style: { left: -5, top: 8, bottom: 8, width: 10 } },
-      ] as const).map(({ position, id, style }) => (
+        { position: Position.Top, id: 'source-top', label: '상단' },
+        { position: Position.Right, id: 'source-right', label: '우측' },
+        { position: Position.Bottom, id: 'source-bottom', label: '하단' },
+        { position: Position.Left, id: 'source-left', label: '좌측' },
+      ] as const).map(({ position, id, label }) => (
         <Handle
           key={id}
           id={id}
+          aria-label={`${data.label} ${label} Relationship 연결점`}
           type="source"
           position={position}
           isConnectable={data.canStartConnection}
           isConnectableStart={data.canStartConnection}
           isConnectableEnd={false}
-          className="border-transparent! bg-transparent!"
+          className="border-sky-100! bg-cyan-400! shadow-[0_0_0_3px_rgba(34,211,238,.16)]"
           style={{
-            ...style,
-            transform: 'none',
-            borderRadius: 0,
-            opacity: 0,
+            width: 9,
+            height: 9,
+            minWidth: 9,
+            minHeight: 9,
+            opacity: hovered || connectionInProgress ? 1 : 0.42,
             zIndex: 24,
           }}
         />
@@ -395,14 +382,6 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
             </span>
           )}
         </div>
-      )}
-      {(hovered || connectionInProgress) && (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute z-30 size-2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-sky-100 bg-cyan-400 shadow-[0_0_0_3px_rgba(34,211,238,.16)]"
-          style={{ left: hoverPoint.x, top: hoverPoint.y }}
-          data-side={hoverPoint.side}
-        />
       )}
       {hovered && !data.editorOpen && (
         <div className="nodrag nowheel absolute -right-1 -top-8 z-40 flex gap-1 rounded border border-slate-300 bg-white p-1 shadow-lg">
@@ -1153,7 +1132,7 @@ function effectiveSessionElements(
   return [...merged.values()].sort((left, right) => left.ordinal - right.ordinal)
 }
 
-function relationshipHandles(
+export function relationshipHandles(
   source: { x: number; y: number },
   target: { x: number; y: number },
 ): { sourceHandle: string; targetHandle: string } {
@@ -1490,6 +1469,8 @@ export function GraphBuilder({
   const [working, setWorking] = useState(false)
   const [showBlockMenu, setShowBlockMenu] = useState(false)
   const [assistantPrompt, setAssistantPrompt] = useState('')
+  const [assistantOpen, setAssistantOpen] = useState(false)
+  const [appendOnlySourceMode, setAppendOnlySourceMode] = useState(false)
   const [proposal, setProposal] = useState<KnowledgeStudioTBoxProposal>()
   const [proposalExcluded, setProposalExcluded] = useState<Set<string>>(new Set())
   const [proposalOverrides, setProposalOverrides] = useState<Record<string, {
@@ -1504,6 +1485,7 @@ export function GraphBuilder({
   const [catalogOpen, setCatalogOpen] = useState(false)
   const [catalogQuery, setCatalogQuery] = useState('')
   const [catalogResults, setCatalogResults] = useState<KnowledgeStudioSourceDataset[]>([])
+  const [catalogNextCursor, setCatalogNextCursor] = useState<string>()
   const [selectedCatalog, setSelectedCatalog] = useState<KnowledgeStudioSourceDataset>()
   const [selectedCatalogFields, setSelectedCatalogFields] = useState<Set<string>>(new Set())
   const [catalogLoading, setCatalogLoading] = useState(false)
@@ -1738,6 +1720,20 @@ export function GraphBuilder({
   }, [setNodes])
 
   const selectedBlock = record?.blocks.find((item) => item.id === selectedBlockId)
+  const selectedBlockElementCount = elements.filter((item) => (
+    item.block_id === selectedBlockId || item.block_id === undefined
+  )).length
+  const blockAcceptsSource = (kind: ProposalBlockKind): boolean => Boolean(
+    selectedBlock
+    && (
+      selectedBlock.kind === kind
+      || (
+        selectedBlock.kind === 'DIRECT'
+        && selectedBlock.source_reference === null
+        && selectedBlockElementCount === 0
+      )
+    ),
+  )
   const lastBlockId = record?.blocks.reduce<KnowledgeStudioTBoxBlock | undefined>(
     (latest, block) => !latest || block.ordinal > latest.ordinal ? block : latest,
     undefined,
@@ -2304,8 +2300,8 @@ export function GraphBuilder({
     setStatus(`Property '${name}'을(를) 수정했습니다. 저장 시 Typed Operation으로 반영됩니다.`)
   }
 
-  const save = async () => {
-    if (!selectedBlock || editorError || locked || working) return
+  const save = async (): Promise<boolean> => {
+    if (!selectedBlock || editorError || locked || working) return false
     const positioned = elements.map((item) => {
       const node = nodes.find((candidate) => candidate.id === item.stable_element_id)
       return node ? { ...item, layout_x: node.position.x, layout_y: node.position.y } : item
@@ -2329,7 +2325,7 @@ export function GraphBuilder({
     ]
     if (operations.length === 0) {
       setStatus('현재 블록에는 저장할 Typed T-Box 요소가 없습니다.')
-      return
+      return false
     }
     setWorking(true)
     setStatus('Typed Operation을 검증하고 저장 중입니다.')
@@ -2342,14 +2338,20 @@ export function GraphBuilder({
         responseEtag,
         newKnowledgeStudioIdempotencyKey(),
       )
-      if (!response.etag) return
+      if (!response.etag) return false
       applyResponse(response.data, response.etag)
       setStatus(`Typed T-Box 저장 완료 · version ${response.data.draft.version}`)
+      return true
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'T-Box 저장에 실패했습니다.')
+      return false
     } finally {
       setWorking(false)
     }
+  }
+
+  const saveAndContinue = async () => {
+    if (await save()) onContinue()
   }
 
   const createBlock = async (option: typeof directBlockOption) => {
@@ -2464,7 +2466,13 @@ export function GraphBuilder({
         newKnowledgeStudioIdempotencyKey(),
       )
       if (!response.etag) return
-      applyResponse(response.data, response.etag)
+      const appendedBlockId = selected.mode === 'APPEND_LAYER'
+        ? response.data.blocks.reduce<KnowledgeStudioTBoxBlock | undefined>(
+            (latest, block) => !latest || block.ordinal > latest.ordinal ? block : latest,
+            undefined,
+          )?.id
+        : undefined
+      applyResponse(response.data, response.etag, appendedBlockId)
       setConflictOpen(false)
       setProposal(undefined)
       setProposalExcluded(new Set())
@@ -2483,7 +2491,13 @@ export function GraphBuilder({
     promptOverride?: string,
   ) => {
     const prompt = promptOverride?.trim() || assistantPrompt.trim()
-    if (!prompt || working || locked || !selectedBlock) return
+    if (
+      !prompt
+      || working
+      || locked
+      || !selectedBlock
+      || (mode === 'MERGE_INTO_CURRENT' && !blockAcceptsSource('LLM_ASSISTANT'))
+    ) return
     setWorking(true)
     setStatus('서버의 승인된 LLM 런타임에서 T-Box Proposal을 생성 중입니다.')
     try {
@@ -2498,6 +2512,7 @@ export function GraphBuilder({
       setConflictActions(Object.fromEntries(
         next.conflicts.map((item) => [item.conflict_id, 'KEEP_ORIGINAL']),
       ))
+      setAssistantOpen(false)
       setWorking(false)
       setStatus(
         next.conflicts.length > 0
@@ -2511,7 +2526,16 @@ export function GraphBuilder({
   }
 
   const requestDocumentProposal = async () => {
-    if (!documentFile || documentOperationBusy || locked || !selectedBlock) return
+    if (
+      !documentFile
+      || documentOperationBusy
+      || locked
+      || !selectedBlock
+      || (
+        documentProposalMode === 'MERGE_INTO_CURRENT'
+        && !blockAcceptsSource('DOCUMENT_SCHEMA')
+      )
+    ) return
     setDocumentProposalError('')
     setStatus('문서를 해시하고 승인 업로드 수명주기를 시작합니다.')
     await documentProposalJob.start({
@@ -2523,17 +2547,30 @@ export function GraphBuilder({
     })
   }
 
-  const searchCatalog = async () => {
+  const searchCatalog = async (cursor?: string) => {
     if (catalogLoading) return
     setCatalogLoading(true)
+    if (!cursor) {
+      setSelectedCatalog(undefined)
+      setSelectedCatalogFields(new Set())
+    }
     try {
       const result = await searchKnowledgeStudioTBoxCatalogSources(
         client,
         draftId,
         catalogQuery,
+        { cursor },
       )
-      setCatalogResults(result.items)
-      setStatus(`권한 범위의 카탈로그 ${result.items.length}건을 조회했습니다.`)
+      setCatalogResults((current) => {
+        if (!cursor) return result.items
+        const next = new Map(current.map((item) => [item.id, item]))
+        result.items.forEach((item) => next.set(item.id, item))
+        return [...next.values()]
+      })
+      setCatalogNextCursor(result.page.next_cursor ?? undefined)
+      setStatus(cursor
+        ? `권한 범위의 카탈로그 ${result.items.length}건을 추가 조회했습니다.`
+        : `권한 범위의 카탈로그 ${result.items.length}건을 조회했습니다.`)
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '카탈로그를 조회하지 못했습니다.')
     } finally {
@@ -2574,6 +2611,7 @@ export function GraphBuilder({
       || documentOperationBusy
       || locked
       || !selectedBlock
+      || (mode === 'MERGE_INTO_CURRENT' && !blockAcceptsSource('CATALOG_METADATA'))
     ) return
     setStatus('카탈로그 정본과 선택 컬럼을 고정한 백그라운드 Proposal 작업을 시작합니다.')
     await documentProposalJob.startCatalog({
@@ -2606,7 +2644,13 @@ export function GraphBuilder({
   const proposeSelectedAssetRelease = async (
     mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER',
   ) => {
-    if (!selectedAssetRelease || working || locked || !selectedBlock) return
+    if (
+      !selectedAssetRelease
+      || working
+      || locked
+      || !selectedBlock
+      || (mode === 'MERGE_INTO_CURRENT' && !blockAcceptsSource('ASSET_RELEASE'))
+    ) return
     setWorking(true)
     setStatus('서버에서 선택한 지식 Asset의 exact Release와 T-Box hash를 검증 중입니다.')
     try {
@@ -2952,13 +2996,20 @@ export function GraphBuilder({
       },
     }
   })
+  const liveNodePositions = new Map(nodes.map((node) => [node.id, node.position]))
   const renderedEdges = edges.map((edge): SchemaEdge => {
     const hierarchyClassId = edge.id.startsWith('hierarchy:')
       ? edge.id.replace(/^hierarchy:/, '')
       : undefined
     const editable = Boolean(edge.data?.editable) && !locked && !working
+    const sourcePosition = liveNodePositions.get(edge.source)
+    const targetPosition = liveNodePositions.get(edge.target)
+    const liveHandles = hierarchyClassId || !sourcePosition || !targetPosition
+      ? undefined
+      : relationshipHandles(sourcePosition, targetPosition)
     return {
       ...edge,
+      ...(liveHandles ?? {}),
       type: 'schemaEdge',
       selected: edge.id === selectedElementId,
       data: {
@@ -3024,9 +3075,9 @@ export function GraphBuilder({
               type="button"
               className="button"
               disabled={busy || working || locked || Boolean(editorError) || elements.length === 0}
-              onClick={onContinue}
+              onClick={() => void saveAndContinue()}
             >
-              Data Enricher
+              저장 후 Data Enricher
             </button>
           </div>
         </div>
@@ -3056,7 +3107,7 @@ export function GraphBuilder({
                 onSave={(title) => void updateBlock(block, { title })}
               />
               <span className="rounded bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-500">
-                {block.kind}
+                [{block.kind === 'DIRECT' ? '직접 정의' : proposalBlockLabels[block.kind]}]
               </span>
               <label className="flex items-center gap-2 text-xs font-bold text-slate-600">
                 W
@@ -3098,8 +3149,12 @@ export function GraphBuilder({
                   <button
                     type="button"
                     className="button button-secondary py-1.5 text-[10px]"
-                    disabled={locked || working}
-                    onClick={() => setDocumentCapabilityOpen(true)}
+                    disabled={locked || working || !blockAcceptsSource('DOCUMENT_SCHEMA')}
+                    onClick={() => {
+                      setAppendOnlySourceMode(false)
+                      setDocumentProposalMode('MERGE_INTO_CURRENT')
+                      setDocumentCapabilityOpen(true)
+                    }}
                   >
                     <FileUp size={13} aria-hidden="true" />
                     데이터 업로드
@@ -3107,8 +3162,9 @@ export function GraphBuilder({
                   <button
                     type="button"
                     className="button button-secondary py-1.5 text-[10px]"
-                    disabled={locked || working}
+                    disabled={locked || working || !blockAcceptsSource('CATALOG_METADATA')}
                     onClick={() => {
+                      setAppendOnlySourceMode(false)
                       setCatalogOpen(true)
                       if (catalogResults.length === 0) void searchCatalog()
                     }}
@@ -3119,14 +3175,27 @@ export function GraphBuilder({
                   <button
                     type="button"
                     className="button button-secondary py-1.5 text-[10px]"
-                    disabled={locked || working}
+                    disabled={locked || working || !blockAcceptsSource('ASSET_RELEASE')}
                     onClick={() => {
+                      setAppendOnlySourceMode(false)
                       setAssetReleaseOpen(true)
                       if (assetReleaseResults.length === 0) void searchAssetReleases()
                     }}
                   >
                     <GitBranch size={13} aria-hidden="true" />
                     다른 Asset 붙이기
+                  </button>
+                  <button
+                    type="button"
+                    className="button button-secondary py-1.5 text-[10px]"
+                    disabled={locked || working || !blockAcceptsSource('LLM_ASSISTANT')}
+                    onClick={() => {
+                      setAppendOnlySourceMode(false)
+                      setAssistantOpen(true)
+                    }}
+                  >
+                    <Bot size={13} aria-hidden="true" />
+                    LLM Assistant
                   </button>
                   <span
                     className={`rounded px-2 py-1 text-[9px] font-black ${
@@ -3384,7 +3453,7 @@ export function GraphBuilder({
           블록 추가
         </button>
         {showBlockMenu && (
-          <div className="mt-2 grid gap-2 rounded-enterprise border border-slate-300 bg-white p-3 shadow-lg md:grid-cols-2 xl:grid-cols-4">
+          <div className="mt-2 grid gap-2 rounded-enterprise border border-slate-300 bg-white p-3 shadow-lg md:grid-cols-2 xl:grid-cols-5">
             <button
               type="button"
               className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
@@ -3395,52 +3464,150 @@ export function GraphBuilder({
                 통합 직접 정의 블록
               </strong>
               <span className="mt-1 block text-[11px] leading-4 text-slate-500">
-                직접 편집, 문서, 카탈로그 Proposal을 한 레이어에서 누적합니다.
+                엔지니어가 직접 Class, Property, Relationship을 설계합니다.
+              </span>
+            </button>
+            <button
+              type="button"
+              className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
+              onClick={() => {
+                setShowBlockMenu(false)
+                setAppendOnlySourceMode(true)
+                setDocumentProposalMode('APPEND_LAYER')
+                setDocumentCapabilityOpen(true)
+              }}
+            >
+              <FileUp size={16} className="text-enterprise-blue" aria-hidden="true" />
+              <strong className="mt-2 block text-xs text-navy-900">새 데이터 업로드 블록</strong>
+              <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                문서 Proposal을 새 전용 레이어로 생성합니다.
+              </span>
+            </button>
+            <button
+              type="button"
+              className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
+              onClick={() => {
+                setShowBlockMenu(false)
+                setAppendOnlySourceMode(true)
+                setCatalogOpen(true)
+                if (catalogResults.length === 0) void searchCatalog()
+              }}
+            >
+              <Database size={16} className="text-enterprise-blue" aria-hidden="true" />
+              <strong className="mt-2 block text-xs text-navy-900">새 DB 메타데이터 블록</strong>
+              <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                카탈로그 Proposal을 새 전용 레이어로 생성합니다.
+              </span>
+            </button>
+            <button
+              type="button"
+              className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
+              onClick={() => {
+                setShowBlockMenu(false)
+                setAppendOnlySourceMode(true)
+                setAssetReleaseOpen(true)
+                if (assetReleaseResults.length === 0) void searchAssetReleases()
+              }}
+            >
+              <GitBranch size={16} className="text-enterprise-blue" aria-hidden="true" />
+              <strong className="mt-2 block text-xs text-navy-900">새 Asset 결합 블록</strong>
+              <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                게시 Release Proposal을 새 전용 레이어로 생성합니다.
+              </span>
+            </button>
+            <button
+              type="button"
+              className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
+              onClick={() => {
+                setShowBlockMenu(false)
+                setAppendOnlySourceMode(true)
+                setAssistantOpen(true)
+              }}
+            >
+              <Bot size={16} className="text-enterprise-blue" aria-hidden="true" />
+              <strong className="mt-2 block text-xs text-navy-900">새 LLM Assistant 블록</strong>
+              <span className="mt-1 block text-[11px] leading-4 text-slate-500">
+                LLM Proposal을 새 전용 레이어로 생성합니다.
               </span>
             </button>
           </div>
         )}
       </div>
 
-      <section className="rounded-enterprise border border-violet-200 bg-violet-50 p-4">
-        <div className="flex items-start gap-3">
-          <Bot className="mt-0.5 text-violet-700" size={18} aria-hidden="true" />
-          <div className="min-w-0 flex-1">
-            <h3 className="m-0 text-sm font-black text-violet-950">LLM Schema Assistant</h3>
-            <p className="mb-3 mt-1 text-xs leading-5 text-violet-800">
-              모델 출력은 Proposal로만 저장됩니다. 기본 병합 정책은 기존 사용자 정의 우선
-              (Keep Original)이며, 충돌 시 선택 팝업을 표시합니다.
-            </p>
-            <textarea
-              aria-label="LLM T-Box 요청"
-              className="input min-h-24 w-full bg-white"
-              maxLength={4000}
-              value={assistantPrompt}
-              disabled={locked || working}
-              placeholder="예: 데이터 카탈로그의 Dataset, Owner, Domain 관계와 검색용 설명 속성을 설계해 줘."
-              onChange={(event) => setAssistantPrompt(event.target.value)}
-            />
-            <div className="mt-2 flex flex-wrap gap-2">
-              <button
-                type="button"
-                className="button"
-                disabled={!assistantPrompt.trim() || locked || working || !selectedBlock}
-                onClick={() => void requestProposal('MERGE_INTO_CURRENT')}
-              >
-                현재 그래프에 적용/병합
-              </button>
-              <button
-                type="button"
-                className="button button-secondary"
-                disabled={!assistantPrompt.trim() || locked || working}
-                onClick={() => void requestProposal('APPEND_LAYER')}
-              >
-                추가 그래프로 분리 생성
-              </button>
-            </div>
-          </div>
+      <section className="flex flex-wrap items-center justify-between gap-3 rounded-enterprise border border-slate-300 bg-white p-4">
+        <div>
+          <strong className="text-sm text-navy-900">T-Box 설계를 완료했습니까?</strong>
+          <p className="mb-0 mt-1 text-[11px] text-slate-500">
+            현재 블록의 Typed Operation 저장이 성공한 경우에만 A-Box Data Enricher로 이동합니다.
+          </p>
         </div>
+        <button
+          type="button"
+          className="button"
+          disabled={busy || working || locked || Boolean(editorError) || elements.length === 0}
+          onClick={() => void saveAndContinue()}
+        >
+          <Save size={14} aria-hidden="true" />
+          T-Box 저장 후 A-Box로 이동
+        </button>
       </section>
+
+      <Dialog
+        open={assistantOpen}
+        size="large"
+        title="LLM Schema Assistant"
+        description="모델 출력은 Typed Proposal로만 저장되며, 적용 전까지 T-Box 정본을 변경하지 않습니다."
+        onRequestClose={() => {
+          if (!working) setAssistantOpen(false)
+        }}
+        footer={<>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={working}
+            onClick={() => setAssistantOpen(false)}
+          >
+            닫기
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={!assistantPrompt.trim() || locked || working}
+            onClick={() => void requestProposal('APPEND_LAYER')}
+          >
+            새 블록 Proposal
+          </button>
+          <button
+            type="button"
+            className="button"
+            disabled={
+              appendOnlySourceMode
+              || !assistantPrompt.trim()
+              || locked
+              || working
+              || !blockAcceptsSource('LLM_ASSISTANT')
+            }
+            onClick={() => void requestProposal('MERGE_INTO_CURRENT')}
+          >
+            현재 블록 Proposal
+          </button>
+        </>}
+      >
+        <div className="grid gap-3">
+          <p className="m-0 text-xs leading-5 text-violet-800">
+            기본 병합 정책은 기존 사용자 정의 우선(Keep Original)이며, 충돌 시 선택 팝업을 표시합니다.
+          </p>
+          <textarea
+            aria-label="LLM T-Box 요청"
+            className="input min-h-32 w-full bg-white"
+            maxLength={4000}
+            value={assistantPrompt}
+            disabled={locked || working}
+            placeholder="예: 데이터 카탈로그의 Dataset, Owner, Domain 관계와 검색용 설명 속성을 설계해 줘."
+            onChange={(event) => setAssistantPrompt(event.target.value)}
+          />
+        </div>
+      </Dialog>
 
       <Dialog
         open={catalogOpen}
@@ -3503,6 +3670,8 @@ export function GraphBuilder({
                   || selectedCatalogFields.size === 0
                   || selectedCatalogFields.size > 100
                   || documentProposalJob.busy
+                  || appendOnlySourceMode
+                  || !blockAcceptsSource('CATALOG_METADATA')
                 }
                 onClick={() => void proposeSelectedCatalog('APPEND_LAYER')}
               >
@@ -3539,7 +3708,10 @@ export function GraphBuilder({
               value={catalogQuery}
               maxLength={200}
               placeholder="테이블명, 스키마, 컬럼, 태그, 용어, 설명 검색"
-              onChange={(event) => setCatalogQuery(event.target.value)}
+              onChange={(event) => {
+                setCatalogQuery(event.target.value)
+                setCatalogNextCursor(undefined)
+              }}
             />
             <button type="submit" className="button" disabled={catalogLoading}>
               <Search size={13} aria-hidden="true" />
@@ -3550,6 +3722,16 @@ export function GraphBuilder({
             상단 카탈로그 검색과 동일한 검색 정본을 사용하며, 현재 Draft 보안등급 이하의
             Dataset·Table·View만 T-Box 입력 후보로 표시합니다.
           </p>
+          {catalogNextCursor && (
+            <button
+              type="button"
+              className="button button-secondary justify-self-start"
+              disabled={catalogLoading}
+              onClick={() => void searchCatalog(catalogNextCursor)}
+            >
+              다음 50건 불러오기
+            </button>
+          )}
           {documentProposalJob.job?.input_kind === 'CATALOG_SCHEMA' && (
             <section
               className="grid gap-1 rounded border border-blue-200 bg-blue-50 p-3 text-xs text-blue-900"
@@ -3646,7 +3828,12 @@ export function GraphBuilder({
           <button
             type="button"
             className="button"
-            disabled={!selectedAssetRelease || working}
+            disabled={
+              !selectedAssetRelease
+              || working
+              || appendOnlySourceMode
+              || !blockAcceptsSource('ASSET_RELEASE')
+            }
             onClick={() => void proposeSelectedAssetRelease('MERGE_INTO_CURRENT')}
           >
             현재 블록 Proposal
@@ -3806,7 +3993,11 @@ export function GraphBuilder({
                 type="radio"
                 name="document-proposal-mode"
                 checked={documentProposalMode === 'MERGE_INTO_CURRENT'}
-                disabled={documentOperationBusy}
+                disabled={
+                  documentOperationBusy
+                  || appendOnlySourceMode
+                  || !blockAcceptsSource('DOCUMENT_SCHEMA')
+                }
                 onChange={() => setDocumentProposalMode('MERGE_INTO_CURRENT')}
               />
               <span className="grid gap-1">
