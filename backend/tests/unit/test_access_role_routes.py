@@ -93,10 +93,11 @@ def test_access_role_capability_catalog_is_bounded_and_server_canonical(
     assert response.status_code == 200
     assert response.headers["cache-control"] == "private, no-store"
     document = response.json()
-    assert document["contract_version"] == "ACCESS_ROLE_CAPABILITY_CATALOG_V1"
+    assert document["contract_version"] == "ACCESS_ROLE_CAPABILITY_CATALOG_V2"
     assert document["action_count"] == 69
     assert document["human_action_count"] == 64
     assert document["service_action_count"] == 5
+    assert document["protected_capability_count"] == 1
     actions = [action for service in document["services"] for action in service["actions"]]
     assert len(actions) == 69
     assert len({action["action"] for action in actions}) == 69
@@ -118,6 +119,30 @@ def test_access_role_capability_catalog_is_bounded_and_server_canonical(
     assert admin_manage["assignability"] == "HUMAN_ROLE"
     assert admin_manage["self_approval_policy"] == "NOT_APPLICABLE"
     assert erasure_approve["self_approval_policy"] == "NOT_APPLICABLE"
+    protected = [
+        capability
+        for service in document["services"]
+        for capability in service["protected_capabilities"]
+    ]
+    assert protected == [
+        {
+            "capability_key": "admin.self_approve",
+            "label": "Canonical Admin 자기승인",
+            "description": (
+                "Canonical Admin 전용 자기승인 정책 capability입니다. 일반 Role에는 위임할 수 "
+                "없으며 보호된 서버 바인딩이 구현되기 전에는 실제 승인 동작을 활성화하지 "
+                "않습니다."
+            ),
+            "actor_kind": "HUMAN",
+            "assignability": "CANONICAL_ADMIN_ONLY",
+            "default_admin": True,
+            "assurance": "FRESH_PHISHING_RESISTANT",
+            "reason_policy": "REQUIRED",
+            "self_approval_policy": "CANONICAL_ADMIN_ONLY",
+            "self_approval_binding": "PENDING_PROTECTED_BINDING",
+            "risk": "HIGH",
+        }
+    ]
 
 
 def test_access_role_capability_catalog_requires_membership_read_operation(
@@ -174,4 +199,33 @@ def test_service_only_role_actions_stop_before_authorization_or_repository_acces
         ]
 
     assert [response.status_code for response in responses] == [422] * len(SERVICE_ONLY_ACTIONS)
+    assert service.role_ids == []
+
+
+def test_canonical_admin_only_capability_cannot_enter_a_custom_role_document(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    service = DenyingRoleMutationService()
+    app = FastAPI()
+    app.include_router(admin_routes.router)
+    app.dependency_overrides[get_request_context] = lambda: SimpleNamespace(
+        workspace_id=uuid4(),
+        subject=object(),
+        environment=object(),
+        request_id="role-canonical-admin-boundary",
+    )
+    monkeypatch.setattr(admin_routes, "_service", lambda _: service)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/admin/access-roles",
+            json={
+                "role_key": "invalid-admin-role",
+                "name": "Invalid Admin role",
+                "clearance": "RESTRICTED",
+                "allowed_actions": ["admin.self_approve"],
+            },
+        )
+
+    assert response.status_code == 422
     assert service.role_ids == []

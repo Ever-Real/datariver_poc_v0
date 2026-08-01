@@ -10,6 +10,7 @@ from datariver.domain.capability_catalog import (
     CAPABILITY_CATALOG,
     CUSTOM_ROLE_ASSIGNABLE_ACTIONS,
     DEFAULT_HUMAN_ADMIN_ACTIONS,
+    PROTECTED_ADMIN_CAPABILITIES,
     SELF_APPROVAL_CANDIDATE_ACTIONS,
     CapabilityActorKind,
     CapabilityAssignability,
@@ -17,6 +18,7 @@ from datariver.domain.capability_catalog import (
     CapabilitySelfApprovalBinding,
     CapabilitySelfApprovalPolicy,
     validate_capability_catalog,
+    validate_protected_capabilities,
 )
 
 
@@ -83,3 +85,31 @@ def test_self_approval_metadata_is_pending_and_does_not_activate_a_policy() -> N
         for item in CAPABILITY_CATALOG
         if item.action not in SELF_APPROVAL_CANDIDATE_ACTIONS
     )
+
+
+def test_canonical_admin_self_approval_is_separate_and_non_delegable() -> None:
+    assert len(PROTECTED_ADMIN_CAPABILITIES) == 1
+    protected = PROTECTED_ADMIN_CAPABILITIES[0]
+    assert protected.capability_key == "admin.self_approve"
+    assert protected.service_key == "admin"
+    assert protected.actor_kind is CapabilityActorKind.HUMAN
+    assert protected.assignability is CapabilityAssignability.CANONICAL_ADMIN_ONLY
+    assert protected.default_admin is True
+    assert protected.assurance is CapabilityAssurance.FRESH_PHISHING_RESISTANT
+    assert protected.self_approval_policy is CapabilitySelfApprovalPolicy.CANONICAL_ADMIN_ONLY
+    assert (
+        protected.self_approval_binding is CapabilitySelfApprovalBinding.PENDING_PROTECTED_BINDING
+    )
+    assert protected.capability_key not in {action.value for action in Action}
+
+
+def test_protected_capability_catalog_fails_closed_for_completeness_or_policy_drift() -> None:
+    protected = PROTECTED_ADMIN_CAPABILITIES[0]
+    with pytest.raises(RuntimeError, match="incomplete"):
+        validate_protected_capabilities(())
+    with pytest.raises(RuntimeError, match="duplicate key"):
+        validate_protected_capabilities((protected, protected))
+    with pytest.raises(RuntimeError, match="metadata"):
+        validate_protected_capabilities(
+            (replace(protected, assignability=CapabilityAssignability.HUMAN_ROLE),)
+        )

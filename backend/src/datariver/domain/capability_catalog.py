@@ -13,6 +13,7 @@ class CapabilityActorKind(StrEnum):
 
 class CapabilityAssignability(StrEnum):
     HUMAN_ROLE = "HUMAN_ROLE"
+    CANONICAL_ADMIN_ONLY = "CANONICAL_ADMIN_ONLY"
     SERVICE_PRINCIPAL_ONLY = "SERVICE_PRINCIPAL_ONLY"
 
 
@@ -67,6 +68,22 @@ class CapabilityMetadata:
     risk: CapabilityRisk
 
 
+@dataclass(frozen=True, slots=True)
+class ProtectedCapabilityMetadata:
+    capability_key: str
+    service_key: str
+    label: str
+    description: str
+    actor_kind: CapabilityActorKind
+    assignability: CapabilityAssignability
+    default_admin: bool
+    assurance: CapabilityAssurance
+    reason_policy: CapabilityReasonPolicy
+    self_approval_policy: CapabilitySelfApprovalPolicy
+    self_approval_binding: CapabilitySelfApprovalBinding
+    risk: CapabilityRisk
+
+
 CAPABILITY_SERVICES = (
     CapabilityService("catalog", "카탈로그", "검색, 상세, 동기화 및 반출 capability"),
     CapabilityService("registration", "등록", "파일과 수동 등록 lifecycle capability"),
@@ -84,6 +101,26 @@ CAPABILITY_SERVICES = (
     CapabilityService("retention", "보존", "보존정책, Legal Hold, 삭제 및 archive capability"),
     CapabilityService("quality", "품질관리", "품질 Rule, 실행, 결과 및 worker capability"),
     CapabilityService("governance", "정책 문서", "정책·Template lifecycle 및 지식 투영 capability"),
+)
+
+_DECLARED_PROTECTED_CAPABILITIES = (
+    ProtectedCapabilityMetadata(
+        capability_key="admin.self_approve",
+        service_key="admin",
+        label="Canonical Admin 자기승인",
+        description=(
+            "Canonical Admin 전용 자기승인 정책 capability입니다. 일반 Role에는 위임할 수 없으며 "
+            "보호된 서버 바인딩이 구현되기 전에는 실제 승인 동작을 활성화하지 않습니다."
+        ),
+        actor_kind=CapabilityActorKind.HUMAN,
+        assignability=CapabilityAssignability.CANONICAL_ADMIN_ONLY,
+        default_admin=True,
+        assurance=CapabilityAssurance.FRESH_PHISHING_RESISTANT,
+        reason_policy=CapabilityReasonPolicy.REQUIRED,
+        self_approval_policy=CapabilitySelfApprovalPolicy.CANONICAL_ADMIN_ONLY,
+        self_approval_binding=CapabilitySelfApprovalBinding.PENDING_PROTECTED_BINDING,
+        risk=CapabilityRisk.HIGH,
+    ),
 )
 
 SELF_APPROVAL_CANDIDATE_ACTIONS = frozenset(
@@ -710,7 +747,44 @@ def validate_capability_catalog(
     return tuple(sorted(entries, key=lambda entry: entry.action.value))
 
 
+def validate_protected_capabilities(
+    entries: tuple[ProtectedCapabilityMetadata, ...],
+) -> tuple[ProtectedCapabilityMetadata, ...]:
+    expected_keys = {"admin.self_approve"}
+    declared_keys = tuple(entry.capability_key for entry in entries)
+    if len(declared_keys) != len(set(declared_keys)):
+        raise RuntimeError("The protected capability catalog contains a duplicate key.")
+    if set(declared_keys) != expected_keys:
+        raise RuntimeError(
+            "The protected capability catalog is incomplete or contains an extra key."
+        )
+    service_keys = {service.service_key for service in CAPABILITY_SERVICES}
+    for entry in entries:
+        if (
+            entry.service_key not in service_keys
+            or not entry.label.strip()
+            or not entry.description.strip()
+        ):
+            raise RuntimeError(f"The protected capability {entry.capability_key} is invalid.")
+        if (
+            entry.actor_kind is not CapabilityActorKind.HUMAN
+            or entry.assignability is not CapabilityAssignability.CANONICAL_ADMIN_ONLY
+            or not entry.default_admin
+            or entry.assurance is not CapabilityAssurance.FRESH_PHISHING_RESISTANT
+            or entry.reason_policy is not CapabilityReasonPolicy.REQUIRED
+            or entry.self_approval_policy is not CapabilitySelfApprovalPolicy.CANONICAL_ADMIN_ONLY
+            or entry.self_approval_binding
+            is not CapabilitySelfApprovalBinding.PENDING_PROTECTED_BINDING
+            or entry.risk is not CapabilityRisk.HIGH
+        ):
+            raise RuntimeError(
+                f"The protected capability metadata for {entry.capability_key} is invalid."
+            )
+    return tuple(sorted(entries, key=lambda entry: entry.capability_key))
+
+
 CAPABILITY_CATALOG = validate_capability_catalog(_DECLARED_CAPABILITIES)
+PROTECTED_ADMIN_CAPABILITIES = validate_protected_capabilities(_DECLARED_PROTECTED_CAPABILITIES)
 CAPABILITY_BY_ACTION = {entry.action: entry for entry in CAPABILITY_CATALOG}
 DEFAULT_HUMAN_ADMIN_ACTIONS = frozenset(
     entry.action for entry in CAPABILITY_CATALOG if entry.default_admin

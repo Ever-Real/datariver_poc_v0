@@ -1297,6 +1297,22 @@ class AccessRoleCapabilityResponse(BaseModel):
     risk: CapabilityRisk
 
 
+class AccessRoleProtectedCapabilityResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    capability_key: Literal["admin.self_approve"]
+    label: str = Field(min_length=1, max_length=255)
+    description: str = Field(min_length=1, max_length=1_000)
+    actor_kind: CapabilityActorKind
+    assignability: CapabilityAssignability
+    default_admin: bool
+    assurance: CapabilityAssurance
+    reason_policy: CapabilityReasonPolicy
+    self_approval_policy: CapabilitySelfApprovalPolicy
+    self_approval_binding: CapabilitySelfApprovalBinding
+    risk: CapabilityRisk
+
+
 class AccessRoleCapabilityServiceResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1304,17 +1320,19 @@ class AccessRoleCapabilityServiceResponse(BaseModel):
     label: str = Field(min_length=1, max_length=255)
     description: str = Field(min_length=1, max_length=1_000)
     actions: list[AccessRoleCapabilityResponse] = Field(min_length=1, max_length=100)
+    protected_capabilities: list[AccessRoleProtectedCapabilityResponse] = Field(max_length=10)
 
 
 class AccessRoleCapabilityCatalogResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    contract_version: Literal["ACCESS_ROLE_CAPABILITY_CATALOG_V1"] = (
-        "ACCESS_ROLE_CAPABILITY_CATALOG_V1"
+    contract_version: Literal["ACCESS_ROLE_CAPABILITY_CATALOG_V2"] = (
+        "ACCESS_ROLE_CAPABILITY_CATALOG_V2"
     )
     action_count: int = Field(ge=1, le=100)
     human_action_count: int = Field(ge=1, le=100)
     service_action_count: int = Field(ge=1, le=100)
+    protected_capability_count: int = Field(ge=1, le=10)
     services: list[AccessRoleCapabilityServiceResponse] = Field(min_length=1, max_length=50)
 
 

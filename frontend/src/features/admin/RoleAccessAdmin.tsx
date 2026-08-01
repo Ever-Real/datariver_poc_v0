@@ -39,6 +39,49 @@ function dataAccessLabel(level: DataAccessLevel | 'MISSING') {
   return 'MISSING'
 }
 
+function isCompleteCapabilityCatalog(catalog: AccessRoleCapabilityCatalog): boolean {
+  if (catalog.contract_version !== 'ACCESS_ROLE_CAPABILITY_CATALOG_V2') return false
+  if (catalog.services.length === 0) return false
+  const serviceKeys = catalog.services.map((service) => service.service_key)
+  const actions = catalog.services.flatMap((service) => service.actions)
+  const protectedCapabilities = catalog.services.flatMap(
+    (service) => service.protected_capabilities,
+  )
+  const humanActions = actions.filter((capability) => capability.actor_kind === 'HUMAN')
+  const serviceActions = actions.filter(
+    (capability) => capability.actor_kind === 'SERVICE_PRINCIPAL',
+  )
+  return serviceKeys.length === new Set(serviceKeys).size
+    && catalog.services.every((service) => (
+      Boolean(service.service_key && service.label.trim() && service.description.trim())
+      && service.actions.length > 0
+    ))
+    && actions.length === catalog.action_count
+    && humanActions.length === catalog.human_action_count
+    && serviceActions.length === catalog.service_action_count
+    && catalog.action_count === catalog.human_action_count + catalog.service_action_count
+    && new Set(actions.map((capability) => capability.action)).size === actions.length
+    && actions.every((capability) => (
+      capability.actor_kind === 'HUMAN'
+        ? capability.assignability === 'HUMAN_ROLE' && capability.default_admin
+        : capability.assignability === 'SERVICE_PRINCIPAL_ONLY' && !capability.default_admin
+    ))
+    && catalog.protected_capability_count === 1
+    && protectedCapabilities.length === catalog.protected_capability_count
+    && new Set(protectedCapabilities.map((capability) => capability.capability_key)).size
+      === protectedCapabilities.length
+    && protectedCapabilities.every((capability) => (
+      capability.capability_key === 'admin.self_approve'
+      && capability.actor_kind === 'HUMAN'
+      && capability.assignability === 'CANONICAL_ADMIN_ONLY'
+      && capability.default_admin
+      && capability.assurance === 'FRESH_PHISHING_RESISTANT'
+      && capability.reason_policy === 'REQUIRED'
+      && capability.self_approval_policy === 'CANONICAL_ADMIN_ONLY'
+      && capability.self_approval_binding === 'PENDING_PROTECTED_BINDING'
+    ))
+}
+
 export function RoleManagementDialog({
   open,
   onRequestClose,
@@ -102,7 +145,11 @@ export function RoleManagementDialog({
     setCapabilityCatalogFailed(false)
     void api.getAccessRoleCapabilities(controller.signal)
       .then((catalog) => {
-        if (!controller.signal.aborted) setCapabilityCatalog(catalog)
+        if (controller.signal.aborted) return
+        if (!isCompleteCapabilityCatalog(catalog)) {
+          throw new Error('Server capability catalog failed completeness validation.')
+        }
+        setCapabilityCatalog(catalog)
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) {
@@ -271,7 +318,7 @@ export function RoleManagementDialog({
           {draft.data_access_rules.length < classifications.length && <p className="callout m-0">누락된 분류 등급은 서버에서 차단됩니다.</p>}
           {!dataRulesValid && <p className="notice notice-error m-0" role="note">Partial/Full 규칙에는 상주 지역과 하나 이상의 처리 목적이 필요합니다.</p>}
         </section>
-        <details className="rounded-enterprise border border-slate-300 bg-slate-50 p-3"><summary className="cursor-pointer text-xs font-black text-navy-900">추가 정책 조건</summary><div className="mt-3 grid gap-3"><label>그룹<textarea disabled={securityLocked} value={groupText} onChange={(event) => setGroupText(event.target.value)} /></label><fieldset className="action-matrix"><legend>서비스별 Action</legend><p className="callout m-0">자기승인 표시는 향후 보호된 정책 바인딩을 위한 metadata이며, 현재 승인 동작을 활성화하지 않습니다.</p>{!capabilityCatalog && !capabilityCatalogFailed && <p role="status">서버 Action catalog를 불러오는 중입니다.</p>}{capabilityCatalogFailed && <p className="notice notice-error m-0" role="alert">서버 Action catalog를 불러오지 못해 Role 저장을 차단했습니다.</p>}{capabilityCatalog?.services.map((service) => <section className="grid gap-2 rounded-enterprise border border-slate-200 p-3" key={service.service_key} aria-labelledby={`capability-service-${service.service_key}`}><div><h5 className="m-0 text-sm" id={`capability-service-${service.service_key}`}>{service.label}</h5><p className="mb-0 mt-1 text-xs text-slate-600">{service.description}</p></div>{service.actions.map((capability) => { const effect = draft.allowed_actions.includes(capability.action) ? 'ALLOW' : draft.denied_actions.includes(capability.action) ? 'DENY' : 'NONE'; const serviceOnly = capability.assignability === 'SERVICE_PRINCIPAL_ONLY'; return <label key={capability.action}><span><strong>{capability.label}</strong> <code>{capability.action}</code><small>{capability.description} · assurance: {capability.assurance} · risk: {capability.risk}{capability.reason_policy === 'REQUIRED' ? ' · 사유 필수' : ''}{capability.self_approval_binding === 'PENDING_PROTECTED_BINDING' ? ' · 자기승인 보호 바인딩 대기' : ''}{serviceOnly ? ' · service principal 전용' : ''}</small></span><select aria-label={`Role ${capability.action}`} disabled={securityLocked || serviceOnly} value={effect} onChange={(event) => setAction(capability.action, event.target.value as 'NONE' | 'ALLOW' | 'DENY')}><option value="NONE">—</option><option value="ALLOW">ALLOW</option><option value="DENY">DENY</option></select></label> })}</section>)}</fieldset><label>System IDs<textarea disabled={securityLocked} value={systemText} onChange={(event) => setSystemText(event.target.value)} /></label><label>Domain IDs<textarea disabled={securityLocked} value={domainText} onChange={(event) => setDomainText(event.target.value)} /></label>{classifications.map((classification) => { const rule = draft.data_access_rules.find((item) => item.classification === classification); if (!rule || rule.access_level === 'NO_ACCESS') return null; return <fieldset className="grid gap-2 rounded-enterprise border border-slate-200 p-3" disabled={securityLocked} key={classification}><legend className="px-1 text-xs font-black">{classification} 추가 조건</legend>{rule.access_level === 'PARTIAL_ACCESS' && <label>부분 처리 방식<select value={rule.partial_treatment ?? 'MASK'} onChange={(event) => updateDataRule(classification, (current) => ({ ...current, partial_treatment: event.target.value as AccessRoleDataRule['partial_treatment'] }))}><option>MASK</option><option>REDACT</option><option>TOKENIZE</option></select></label>}<label>상주 지역<textarea value={rule.allowed_residency_regions.join('\n')} onChange={(event) => updateDataRule(classification, (current) => ({ ...current, allowed_residency_regions: lines(event.target.value).map((value) => value.toUpperCase()) }))} /></label><fieldset className="grid gap-1"><legend>처리 목적</legend>{processingPurposes.map((purpose) => <label className="checkbox-line" key={purpose}><input type="checkbox" checked={rule.allowed_processing_purposes.includes(purpose)} onChange={(event) => updateDataRule(classification, (current) => ({ ...current, allowed_processing_purposes: event.target.checked ? [...new Set([...current.allowed_processing_purposes, purpose])] : current.allowed_processing_purposes.filter((value) => value !== purpose) }))} />{purpose}</label>)}</fieldset></fieldset> })}</div></details>
+        <details className="rounded-enterprise border border-slate-300 bg-slate-50 p-3"><summary className="cursor-pointer text-xs font-black text-navy-900">추가 정책 조건</summary><div className="mt-3 grid gap-3"><label>그룹<textarea disabled={securityLocked} value={groupText} onChange={(event) => setGroupText(event.target.value)} /></label><fieldset className="action-matrix"><legend>서비스별 Action</legend><p className="callout m-0">자기승인 표시는 향후 보호된 정책 바인딩을 위한 metadata이며, 현재 승인 동작을 활성화하지 않습니다.</p>{!capabilityCatalog && !capabilityCatalogFailed && <p role="status">서버 Action catalog를 불러오는 중입니다.</p>}{capabilityCatalogFailed && <p className="notice notice-error m-0" role="alert">서버 Action catalog를 불러오지 못해 Role 저장을 차단했습니다.</p>}{capabilityCatalog?.services.map((service) => <section className="grid gap-2 rounded-enterprise border border-slate-200 p-3" key={service.service_key} aria-labelledby={`capability-service-${service.service_key}`}><div><h5 className="m-0 text-sm" id={`capability-service-${service.service_key}`}>{service.label}</h5><p className="mb-0 mt-1 text-xs text-slate-600">{service.description}</p></div>{service.actions.map((capability) => { const effect = draft.allowed_actions.includes(capability.action) ? 'ALLOW' : draft.denied_actions.includes(capability.action) ? 'DENY' : 'NONE'; const nonAssignable = capability.assignability !== 'HUMAN_ROLE'; return <label key={capability.action}><span><strong>{capability.label}</strong> <code>{capability.action}</code><small>{capability.description} · assurance: {capability.assurance} · risk: {capability.risk}{capability.reason_policy === 'REQUIRED' ? ' · 사유 필수' : ''}{capability.self_approval_binding === 'PENDING_PROTECTED_BINDING' ? ' · 자기승인 보호 바인딩 대기' : ''}{capability.assignability === 'SERVICE_PRINCIPAL_ONLY' ? ' · service principal 전용' : ''}</small></span><select aria-label={`Role ${capability.action}`} disabled={securityLocked || nonAssignable} value={effect} onChange={(event) => setAction(capability.action, event.target.value as 'NONE' | 'ALLOW' | 'DENY')}><option value="NONE">—</option><option value="ALLOW">ALLOW</option><option value="DENY">DENY</option></select></label> })}{service.protected_capabilities.map((capability) => <label key={capability.capability_key}><span><strong>{capability.label}</strong> <code>{capability.capability_key}</code><small>{capability.description} · assurance: {capability.assurance} · risk: {capability.risk} · 사유 필수 · Canonical Admin 전용 · 보호 바인딩 대기</small></span><select aria-label={`Role ${capability.capability_key}`} disabled value="CANONICAL_ADMIN_ONLY"><option value="CANONICAL_ADMIN_ONLY">위임 불가</option></select></label>)}</section>)}</fieldset><label>System IDs<textarea disabled={securityLocked} value={systemText} onChange={(event) => setSystemText(event.target.value)} /></label><label>Domain IDs<textarea disabled={securityLocked} value={domainText} onChange={(event) => setDomainText(event.target.value)} /></label>{classifications.map((classification) => { const rule = draft.data_access_rules.find((item) => item.classification === classification); if (!rule || rule.access_level === 'NO_ACCESS') return null; return <fieldset className="grid gap-2 rounded-enterprise border border-slate-200 p-3" disabled={securityLocked} key={classification}><legend className="px-1 text-xs font-black">{classification} 추가 조건</legend>{rule.access_level === 'PARTIAL_ACCESS' && <label>부분 처리 방식<select value={rule.partial_treatment ?? 'MASK'} onChange={(event) => updateDataRule(classification, (current) => ({ ...current, partial_treatment: event.target.value as AccessRoleDataRule['partial_treatment'] }))}><option>MASK</option><option>REDACT</option><option>TOKENIZE</option></select></label>}<label>상주 지역<textarea value={rule.allowed_residency_regions.join('\n')} onChange={(event) => updateDataRule(classification, (current) => ({ ...current, allowed_residency_regions: lines(event.target.value).map((value) => value.toUpperCase()) }))} /></label><fieldset className="grid gap-1"><legend>처리 목적</legend>{processingPurposes.map((purpose) => <label className="checkbox-line" key={purpose}><input type="checkbox" checked={rule.allowed_processing_purposes.includes(purpose)} onChange={(event) => updateDataRule(classification, (current) => ({ ...current, allowed_processing_purposes: event.target.checked ? [...new Set([...current.allowed_processing_purposes, purpose])] : current.allowed_processing_purposes.filter((value) => value !== purpose) }))} />{purpose}</label>)}</fieldset></fieldset> })}</div></details>
         {editingRole && <div className="action-row"><button type="button" className="button button-danger" disabled={!canUpdate || editingRole.assigned_count > 0 || !editingRole.active} onClick={deactivate}>Role 삭제</button></div>}
       </section>}
     </div>

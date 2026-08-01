@@ -34,6 +34,7 @@ from datariver.domain.authz import Action, Classification
 from datariver.domain.capability_catalog import (
     CAPABILITY_CATALOG,
     CAPABILITY_SERVICES,
+    PROTECTED_ADMIN_CAPABILITIES,
     CapabilityActorKind,
 )
 from datariver.domain.common import (
@@ -115,6 +116,7 @@ from datariver.interfaces.http.schemas import (
     AccessRoleCapabilityServiceResponse,
     AccessRoleDataRuleRequest,
     AccessRoleListResponse,
+    AccessRoleProtectedCapabilityResponse,
     AccessRoleResponse,
     AccessRoleWriteRequest,
     AdminAccessConsumeResponse,
@@ -2355,6 +2357,26 @@ async def get_access_role_capabilities(
         ]
         for service in CAPABILITY_SERVICES
     }
+    protected_by_service = {
+        service.service_key: [
+            AccessRoleProtectedCapabilityResponse(
+                capability_key=capability.capability_key,
+                label=capability.label,
+                description=capability.description,
+                actor_kind=capability.actor_kind,
+                assignability=capability.assignability,
+                default_admin=capability.default_admin,
+                assurance=capability.assurance,
+                reason_policy=capability.reason_policy,
+                self_approval_policy=capability.self_approval_policy,
+                self_approval_binding=capability.self_approval_binding,
+                risk=capability.risk,
+            )
+            for capability in PROTECTED_ADMIN_CAPABILITIES
+            if capability.service_key == service.service_key
+        ]
+        for service in CAPABILITY_SERVICES
+    }
     return AccessRoleCapabilityCatalogResponse(
         action_count=len(CAPABILITY_CATALOG),
         human_action_count=sum(
@@ -2364,12 +2386,14 @@ async def get_access_role_capabilities(
             capability.actor_kind is CapabilityActorKind.SERVICE_PRINCIPAL
             for capability in CAPABILITY_CATALOG
         ),
+        protected_capability_count=len(PROTECTED_ADMIN_CAPABILITIES),
         services=[
             AccessRoleCapabilityServiceResponse(
                 service_key=service.service_key,
                 label=service.label,
                 description=service.description,
                 actions=by_service[service.service_key],
+                protected_capabilities=protected_by_service[service.service_key],
             )
             for service in CAPABILITY_SERVICES
         ],

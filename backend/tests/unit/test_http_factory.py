@@ -2144,8 +2144,27 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
     }
     assert set(document["components"]["schemas"]["CapabilityAssignability"]["enum"]) == {
         "HUMAN_ROLE",
+        "CANONICAL_ADMIN_ONLY",
         "SERVICE_PRINCIPAL_ONLY",
     }
+    protected_schema = document["components"]["schemas"]["AccessRoleProtectedCapabilityResponse"]
+    assert set(protected_schema["required"]) == {
+        "capability_key",
+        "label",
+        "description",
+        "actor_kind",
+        "assignability",
+        "default_admin",
+        "assurance",
+        "reason_policy",
+        "self_approval_policy",
+        "self_approval_binding",
+        "risk",
+    }
+    catalog_schema = document["components"]["schemas"]["AccessRoleCapabilityCatalogResponse"]
+    assert "protected_capability_count" in catalog_schema["required"]
+    service_schema = document["components"]["schemas"]["AccessRoleCapabilityServiceResponse"]
+    assert "protected_capabilities" in service_schema["required"]
 
     membership_list = document["paths"]["/api/v1/admin/workspace-memberships"]["get"]
     membership_parameters = {

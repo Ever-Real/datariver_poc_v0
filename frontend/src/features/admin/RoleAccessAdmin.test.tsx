@@ -23,15 +23,17 @@ function role(id: string, key: string, name: string): AccessRole {
 }
 
 const capabilityCatalog: AccessRoleCapabilityCatalog = {
-  contract_version: 'ACCESS_ROLE_CAPABILITY_CATALOG_V1',
+  contract_version: 'ACCESS_ROLE_CAPABILITY_CATALOG_V2',
   action_count: 3,
   human_action_count: 2,
   service_action_count: 1,
+  protected_capability_count: 1,
   services: [
     {
       service_key: 'catalog',
       label: '카탈로그',
       description: '카탈로그 조회 capability',
+      protected_capabilities: [],
       actions: [{
         action: 'catalog.read',
         label: '카탈로그 조회',
@@ -50,6 +52,19 @@ const capabilityCatalog: AccessRoleCapabilityCatalog = {
       service_key: 'admin',
       label: '관리',
       description: '관리 capability',
+      protected_capabilities: [{
+        capability_key: 'admin.self_approve',
+        label: 'Canonical Admin 자기승인',
+        description: '일반 Role에는 위임할 수 없는 보호 capability입니다.',
+        actor_kind: 'HUMAN',
+        assignability: 'CANONICAL_ADMIN_ONLY',
+        default_admin: true,
+        assurance: 'FRESH_PHISHING_RESISTANT',
+        reason_policy: 'REQUIRED',
+        self_approval_policy: 'CANONICAL_ADMIN_ONLY',
+        self_approval_binding: 'PENDING_PROTECTED_BINDING',
+        risk: 'HIGH',
+      }],
       actions: [{
         action: 'admin.manage',
         label: 'Workspace 관리',
@@ -68,6 +83,7 @@ const capabilityCatalog: AccessRoleCapabilityCatalog = {
       service_key: 'quality',
       label: '품질관리',
       description: '품질 worker capability',
+      protected_capabilities: [],
       actions: [{
         action: 'quality.execute',
         label: '품질 Run 실행',
@@ -237,7 +253,7 @@ describe('RoleManagementDialog', () => {
     expect(onStepUp).not.toHaveBeenCalled()
   })
 
-  it('uses the server capability catalog and keeps service-only Actions non-assignable', async () => {
+  it('uses the server catalog and keeps protected and service-only capabilities non-assignable', async () => {
     const api = {
       listAccessRolePage: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
     }
@@ -255,8 +271,52 @@ describe('RoleManagementDialog', () => {
     expect(screen.getByText('품질관리')).toBeInTheDocument()
     expect(screen.getByText(/현재 승인 동작을 활성화하지 않습니다/)).toBeInTheDocument()
     expect(screen.getByLabelText('Role admin.manage')).toBeEnabled()
+    expect(screen.getByText('Canonical Admin 자기승인')).toBeInTheDocument()
+    expect(screen.getByLabelText('Role admin.self_approve')).toBeDisabled()
+    expect(screen.getByText(/Canonical Admin 전용/)).toBeInTheDocument()
     expect(screen.getByLabelText('Role quality.execute')).toBeDisabled()
     expect(screen.getByText(/service principal 전용/)).toBeInTheDocument()
+  })
+
+  it('fails closed when the server catalog completeness metadata is inconsistent', async () => {
+    const malformedCatalog = {
+      ...capabilityCatalog,
+      protected_capability_count: 2,
+    }
+    const api = {
+      getAccessRoleCapabilities: vi.fn(() => Promise.resolve(malformedCatalog)),
+      listAccessRolePage: vi.fn(() => Promise.resolve({
+        items: [role('00000000-0000-4000-8000-000000000301', 'reader', 'Reader')],
+        nextCursor: null,
+        limit: 25,
+      })),
+      updateAccessRole: vi.fn(),
+    }
+    const requestConfirmation = vi.fn()
+    const reportError = vi.fn()
+    render(<RoleManagementDialog
+      open onRequestClose={vi.fn()} api={api as never}
+      context={{
+        subject_id: 'admin', workspace_id: 'workspace', display_name: 'Administrator',
+        authentication_assurance: 'HARDWARE_WEBAUTHN', fallback_enabled: false,
+        allowed_operations: ['MEMBERSHIP_ACCESS_UPDATE'], action_vocabulary: [],
+      }}
+      messages={getAdminMessages('ko')} requestConfirmation={requestConfirmation}
+      keyFor={() => 'stable-role-key'} clearKey={vi.fn()} reportError={reportError}
+      onStepUp={vi.fn(() => Promise.resolve())}
+      onPasswordReauth={vi.fn(() => Promise.resolve())}
+      onEnroll={vi.fn(() => Promise.resolve())}
+    />)
+
+    fireEvent.click(await screen.findByText('Reader'))
+    fireEvent.click(screen.getByText('추가 정책 조건'))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Role 저장을 차단했습니다')
+    expect(screen.getByRole('button', { name: '저장' })).toBeDisabled()
+    expect(reportError).toHaveBeenCalledWith(
+      expect.objectContaining({ message: 'Server capability catalog failed completeness validation.' }),
+    )
+    expect(requestConfirmation).not.toHaveBeenCalled()
+    expect(api.updateAccessRole).not.toHaveBeenCalled()
   })
 
   it('blocks confirmation and mutation when the server capability catalog fails to load', async () => {

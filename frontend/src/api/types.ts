@@ -1433,7 +1433,10 @@ export interface AccessRoleWrite {
 }
 
 export type CapabilityActorKind = 'HUMAN' | 'SERVICE_PRINCIPAL'
-export type CapabilityAssignability = 'HUMAN_ROLE' | 'SERVICE_PRINCIPAL_ONLY'
+export type CapabilityAssignability =
+  | 'HUMAN_ROLE'
+  | 'CANONICAL_ADMIN_ONLY'
+  | 'SERVICE_PRINCIPAL_ONLY'
 export type CapabilityAssurance = 'NOT_APPLICABLE' | 'SESSION' | 'FRESH_PHISHING_RESISTANT'
 export type CapabilityReasonPolicy = 'NOT_REQUIRED' | 'REQUIRED'
 export type CapabilitySelfApprovalPolicy = 'NOT_APPLICABLE' | 'CANONICAL_ADMIN_ONLY'
@@ -1456,18 +1459,34 @@ export interface AccessRoleCapability {
   risk: CapabilityRisk
 }
 
+export interface AccessRoleProtectedCapability {
+  capability_key: 'admin.self_approve'
+  label: string
+  description: string
+  actor_kind: CapabilityActorKind
+  assignability: CapabilityAssignability
+  default_admin: boolean
+  assurance: CapabilityAssurance
+  reason_policy: CapabilityReasonPolicy
+  self_approval_policy: CapabilitySelfApprovalPolicy
+  self_approval_binding: CapabilitySelfApprovalBinding
+  risk: CapabilityRisk
+}
+
 export interface AccessRoleCapabilityService {
   service_key: string
   label: string
   description: string
   actions: AccessRoleCapability[]
+  protected_capabilities: AccessRoleProtectedCapability[]
 }
 
 export interface AccessRoleCapabilityCatalog {
-  contract_version: 'ACCESS_ROLE_CAPABILITY_CATALOG_V1'
+  contract_version: 'ACCESS_ROLE_CAPABILITY_CATALOG_V2'
   action_count: number
   human_action_count: number
   service_action_count: number
+  protected_capability_count: number
   services: AccessRoleCapabilityService[]
 }
 
