@@ -54,9 +54,7 @@ def test_eligible_human_security_administrator_reads_all_active_systems() -> Non
 def test_regular_subject_reads_only_explicitly_allowed_systems() -> None:
     system_ids = frozenset({uuid4(), uuid4()})
 
-    assert _change_request_system_scope(
-        _subject(allowed_system_ids=system_ids)
-    ) == system_ids
+    assert _change_request_system_scope(_subject(allowed_system_ids=system_ids)) == system_ids
 
 
 @pytest.mark.parametrize(
