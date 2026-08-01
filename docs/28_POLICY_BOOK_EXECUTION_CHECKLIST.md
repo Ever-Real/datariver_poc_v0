@@ -46,6 +46,33 @@ target-environment production evidence.
 - [x] Publish the accumulated Phase 1/2 branch to `origin/codex/admin-policy-rbac`; PR creation and
   merge remain separate review actions.
 
+### Canonical Admin A4b-1 extension
+
+- [x] Derive the server-owned Canonical Admin definition from the pinned V2 catalog and exclude all
+  five service-principal Actions.
+- [x] Add one unassigned definition per Workspace without changing Subject, membership, generic
+  assignment, assignment-event or binding counts.
+- [x] Separate `canonical_admin_bindings` from generic assignment and enforce `HUMAN_ROLE` through
+  application validation, provisioning SQL, assignment CHECK and composite FK.
+- [x] Exclude Canonical Admin from the 100 custom-Role quota and reject generic update/deactivate.
+- [x] Keep `datariver_app` binding DML/EXECUTE at zero and expose only status plus non-sensitive
+  versions/time; do not serialize Role UUID or internal hashes.
+- [x] Limit automatic binding to the parameter-free fixed local bootstrap after exact
+  `APP_ENV=development`; production/test/staging/demo/seed create no automatic binding.
+- [x] Block downgrade when binding history or canonical references exist and remove dependent RLS
+  policies before discriminator columns.
+- [x] Keep `admin.self_approve` pending and every workflow maker/checker evaluator unchanged.
+- [x] Record final Ruff, mypy, focused/full pytest, static, deterministic generator, offline
+  migration and any isolated-PostgreSQL evidence for the exact unstaged review.
+
+A4b-1 source evidence on 2026-08-01: Ruff format/lint passed over the repository-standard `571`
+files, strict mypy passed `562` source files, focused tests passed `179` with the isolated
+PostgreSQL test skipped, and the full backend suite passed `2,307` with `112` environment-gated
+skips. Static verification passed. Two independent raw generator runs produced canonical `0001`
+SHA-256 `cee3ac704b823512055e8ffc285f6b2faacb7075ab8c10160e467d6ed3b01b28`; offline
+`0088 -> 0089` and `0089 -> 0088` SQL rendering passed. No isolated PostgreSQL credentials were
+configured, so the live RLS/constraint probe remains explicitly unexecuted.
+
 Executed 2026-07-23 evidence: 804 backend tests plus one environment-gated PostgreSQL test skipped in
 the default suite, that PostgreSQL test separately passing against an isolated real database, strict
 mypy across 279 source files, Ruff format/lint across 286 files, static verification, 170 frontend
@@ -154,6 +181,7 @@ target-profile activation.
 | User detail/access document | Exact detail/ETag and normalized Role evidence | Implemented | stale selection is discarded; selected member and loaded evidence cannot be combined |
 | Role list/create/update/deactivate | Cursor page plus exact four-class rules | Four-class editor and missing-rule warning | Role search is server-bounded; current out-of-page selection remains explicit |
 | Role assignment/removal | Normalized current/event evidence | Exact version/evidence status displayed | no marker-only claim; same exact assignment is rejected |
+| Canonical Admin definition/binding | Server-owned definition plus read-only binding status | No production bind control | generic Role/provisioning structural deny; fixed development bootstrap only; self-approval remains pending |
 | Manual/fallback edit of a Role-bound member | Reserved marker/evidence mismatch denied | Form disabled with repair/removal guidance | verified and unverifiable evidence paths both fail closed |
 | User profile edit from Admin | No dedicated contract | Governed unavailable | no fabricated update control; external IdP remains canonical |
 | User-owned table drill-down | Summary count only | Governed unavailable | no row list until an authorized server cursor contract exists |

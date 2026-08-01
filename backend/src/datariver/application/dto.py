@@ -963,6 +963,16 @@ class MembershipRoleAssignmentEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class CanonicalAdminBindingEvidence:
+    status: str
+    role_version: int | None = None
+    catalog_version: str | None = None
+    membership_version: int | None = None
+    binding_version: int | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceMembershipAccessRecord:
     summary: WorkspaceMembershipSummary
     groups: frozenset[str]
@@ -971,6 +981,7 @@ class WorkspaceMembershipAccessRecord:
     allowed_system_ids: frozenset[UUID]
     allowed_domain_ids: frozenset[UUID]
     role_assignment: MembershipRoleAssignmentEvidence | None = None
+    canonical_admin_binding: CanonicalAdminBindingEvidence | None = None
 
 
 @dataclass(frozen=True, slots=True)

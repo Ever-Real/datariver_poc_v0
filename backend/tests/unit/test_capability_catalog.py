@@ -6,8 +6,12 @@ import pytest
 
 from datariver.domain.authz import HIGH_RISK_ACTIONS, SERVICE_ONLY_ACTIONS, Action
 from datariver.domain.capability_catalog import (
+    CANONICAL_ADMIN_CAPABILITY_DOCUMENT,
+    CANONICAL_ADMIN_CAPABILITY_HASH,
+    CANONICAL_ADMIN_ROLE_KEY,
     CAPABILITY_BY_ACTION,
     CAPABILITY_CATALOG,
+    CAPABILITY_CATALOG_VERSION,
     CUSTOM_ROLE_ASSIGNABLE_ACTIONS,
     DEFAULT_HUMAN_ADMIN_ACTIONS,
     PROTECTED_ADMIN_CAPABILITIES,
@@ -20,6 +24,7 @@ from datariver.domain.capability_catalog import (
     validate_capability_catalog,
     validate_protected_capabilities,
 )
+from datariver.domain.common import canonical_json_hash
 
 
 def test_capability_catalog_is_exhaustive_and_preserves_the_actor_partition() -> None:
@@ -33,6 +38,25 @@ def test_capability_catalog_is_exhaustive_and_preserves_the_actor_partition() ->
         if item.actor_kind is CapabilityActorKind.SERVICE_PRINCIPAL
     } == SERVICE_ONLY_ACTIONS
     assert all(item.label.strip() and item.description.strip() for item in CAPABILITY_CATALOG)
+
+
+def test_canonical_admin_snapshot_is_exactly_the_human_catalog_and_hash_pinned() -> None:
+    document = CANONICAL_ADMIN_CAPABILITY_DOCUMENT
+
+    assert document == {
+        "catalog_version": CAPABILITY_CATALOG_VERSION,
+        "role_kind": "CANONICAL_ADMIN",
+        "role_key": CANONICAL_ADMIN_ROLE_KEY,
+        "clearance": "RESTRICTED",
+        "groups": ["security-administrators"],
+        "allowed_actions": sorted(action.value for action in DEFAULT_HUMAN_ADMIN_ACTIONS),
+        "denied_actions": [],
+    }
+    assert len(document["allowed_actions"]) == 64
+    assert set(document["allowed_actions"]).isdisjoint(
+        action.value for action in SERVICE_ONLY_ACTIONS
+    )
+    assert CANONICAL_ADMIN_CAPABILITY_HASH == canonical_json_hash(document)
 
 
 def test_capability_catalog_fails_closed_for_missing_or_duplicate_actions() -> None:

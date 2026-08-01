@@ -4,6 +4,20 @@ from dataclasses import dataclass
 from enum import StrEnum
 
 from datariver.domain.authz import HIGH_RISK_ACTIONS, SERVICE_ONLY_ACTIONS, Action
+from datariver.domain.common import canonical_json_hash
+
+CAPABILITY_CATALOG_VERSION = "ACCESS_ROLE_CAPABILITY_CATALOG_V2"
+CANONICAL_ADMIN_ROLE_KEY = "canonical-admin"
+
+
+class AccessRoleKind(StrEnum):
+    HUMAN_ROLE = "HUMAN_ROLE"
+    CANONICAL_ADMIN = "CANONICAL_ADMIN"
+
+
+class AccessRoleManagementSource(StrEnum):
+    HUMAN_ADMIN = "HUMAN_ADMIN"
+    SERVER_CANONICAL = "SERVER_CANONICAL"
 
 
 class CapabilityActorKind(StrEnum):
@@ -794,6 +808,16 @@ CUSTOM_ROLE_ASSIGNABLE_ACTIONS = frozenset(
     for entry in CAPABILITY_CATALOG
     if entry.assignability is CapabilityAssignability.HUMAN_ROLE
 )
+CANONICAL_ADMIN_CAPABILITY_DOCUMENT = {
+    "catalog_version": CAPABILITY_CATALOG_VERSION,
+    "role_kind": AccessRoleKind.CANONICAL_ADMIN.value,
+    "role_key": CANONICAL_ADMIN_ROLE_KEY,
+    "clearance": "RESTRICTED",
+    "groups": ["security-administrators"],
+    "allowed_actions": sorted(action.value for action in DEFAULT_HUMAN_ADMIN_ACTIONS),
+    "denied_actions": [],
+}
+CANONICAL_ADMIN_CAPABILITY_HASH = canonical_json_hash(CANONICAL_ADMIN_CAPABILITY_DOCUMENT)
 
 
 def forbidden_custom_role_actions(actions: frozenset[Action]) -> tuple[Action, ...]:

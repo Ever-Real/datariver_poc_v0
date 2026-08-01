@@ -8,17 +8,28 @@ from pathlib import Path
 from uuid import UUID
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.config import get_settings
-from datariver.domain.authz import Action, Classification
-from datariver.domain.capability_catalog import DEFAULT_HUMAN_ADMIN_ACTIONS
+from datariver.domain.authz import SERVICE_ONLY_ACTIONS, Action, Classification
+from datariver.domain.capability_catalog import (
+    CANONICAL_ADMIN_CAPABILITY_HASH,
+    CANONICAL_ADMIN_ROLE_KEY,
+    CAPABILITY_CATALOG_VERSION,
+    DEFAULT_HUMAN_ADMIN_ACTIONS,
+    AccessRoleKind,
+    AccessRoleManagementSource,
+)
 from datariver.domain.common import utc_now
 from datariver.domain.knowledge_studio import (
     DEFAULT_KNOWLEDGE_DOMAINS,
     default_knowledge_domain_id,
 )
 from datariver.domain.membership_renewal import add_calendar_months
+from datariver.infrastructure.db.admin_access import membership_access_payload_hash
 from datariver.infrastructure.db.models.platform import (
+    AccessRoleModel,
+    CanonicalAdminBindingModel,
     SubjectModel,
     WorkspaceMembershipModel,
     WorkspaceModel,
@@ -250,8 +261,8 @@ def _resolve_local_subject(
 
 async def bootstrap_local_identity() -> dict[str, object]:
     settings = get_settings()
-    if settings.app_env == "production":
-        raise RuntimeError("Local identity bootstrap is forbidden in production mode.")
+    if settings.app_env != "development":
+        raise RuntimeError("Local identity bootstrap requires APP_ENV=development exactly.")
     resolver = SecretResolver()
     database = Database(
         settings.bootstrap_database_url,
@@ -315,23 +326,26 @@ async def bootstrap_local_identity() -> dict[str, object]:
                 allowed_domain_ids=default_domain_ids,
             )
             if membership is None:
-                session.add(
-                    WorkspaceMembershipModel(
-                        workspace_id=workspace.id,
-                        subject_id=subject.id,
-                        department_id=None,
-                        job_function="LOCAL_ADMINISTRATOR",
-                        clearance=int(Classification.RESTRICTED),
-                        attributes=attributes,
-                        active=True,
-                        access_expires_at=add_calendar_months(utc_now(), 6),
-                    )
+                membership = WorkspaceMembershipModel(
+                    workspace_id=workspace.id,
+                    subject_id=subject.id,
+                    department_id=None,
+                    job_function="LOCAL_ADMINISTRATOR",
+                    clearance=int(Classification.RESTRICTED),
+                    attributes=attributes,
+                    active=True,
+                    access_expires_at=add_calendar_months(utc_now(), 6),
                 )
+                session.add(membership)
             else:
                 membership.clearance = int(Classification.RESTRICTED)
                 membership.attributes = attributes
                 membership.active = True
                 membership.access_expires_at = add_calendar_months(utc_now(), 6)
+            await session.flush()
+            await _reconcile_local_canonical_admin_binding(
+                session=session,
+            )
             airflow_subject = await session.get(SubjectModel, LOCAL_AIRFLOW_SUBJECT_ID)
             identity_airflow_subject = (
                 await session.scalars(
@@ -529,6 +543,102 @@ async def bootstrap_local_identity() -> dict[str, object]:
         }
     finally:
         await database.close()
+
+
+async def _reconcile_local_canonical_admin_binding(
+    *,
+    session: AsyncSession,
+) -> None:
+    """Bind the fixed local administrator without accepting any target parameters."""
+
+    workspace = await session.get(WorkspaceModel, LOCAL_WORKSPACE_ID)
+    subject = await session.get(SubjectModel, LOCAL_SUBJECT_ID)
+    membership = await session.get(
+        WorkspaceMembershipModel,
+        {"workspace_id": LOCAL_WORKSPACE_ID, "subject_id": LOCAL_SUBJECT_ID},
+    )
+    if workspace is None or subject is None or membership is None:
+        raise RuntimeError("The fixed local Canonical Admin target does not exist.")
+    expected_actions = sorted(action.value for action in DEFAULT_HUMAN_ADMIN_ACTIONS)
+    attributes = membership.attributes
+    if (
+        not subject.active
+        or not membership.active
+        or membership.job_function == "SERVICE_ACCOUNT"
+        or membership.clearance != int(Classification.RESTRICTED)
+        or attributes.get("groups") != ["security-administrators"]
+        or sorted(attributes.get("allowed_actions", [])) != expected_actions
+        or attributes.get("denied_actions") != []
+    ):
+        raise RuntimeError("The local administrator does not match the canonical human envelope.")
+    if not set(expected_actions).isdisjoint(action.value for action in SERVICE_ONLY_ACTIONS):
+        raise RuntimeError("The local administrator contains a service-only Action.")
+
+    canonical_role = (
+        await session.scalars(
+            select(AccessRoleModel).where(
+                AccessRoleModel.workspace_id == LOCAL_WORKSPACE_ID,
+                AccessRoleModel.role_kind == AccessRoleKind.CANONICAL_ADMIN.value,
+            )
+        )
+    ).one_or_none()
+    role_document = {
+        "role_key": CANONICAL_ADMIN_ROLE_KEY,
+        "role_kind": AccessRoleKind.CANONICAL_ADMIN.value,
+        "management_source": AccessRoleManagementSource.SERVER_CANONICAL.value,
+        "capability_catalog_version": CAPABILITY_CATALOG_VERSION,
+        "name": "Canonical Admin",
+        "description": "Server-owned Canonical Admin capability definition.",
+        "clearance": int(Classification.RESTRICTED),
+        "groups": ["security-administrators"],
+        "allowed_actions": expected_actions,
+        "denied_actions": [],
+        "allowed_system_ids": [],
+        "allowed_domain_ids": [],
+        "active": True,
+        "updated_by": None,
+    }
+    if canonical_role is None:
+        canonical_role = AccessRoleModel(workspace_id=LOCAL_WORKSPACE_ID, **role_document)
+        session.add(canonical_role)
+        await session.flush()
+    else:
+        changed = any(getattr(canonical_role, key) != value for key, value in role_document.items())
+        if changed:
+            for key, value in role_document.items():
+                setattr(canonical_role, key, value)
+            canonical_role.version += 1
+            await session.flush()
+
+    access_hash = membership_access_payload_hash(membership)
+    binding = await session.get(
+        CanonicalAdminBindingModel,
+        {"workspace_id": LOCAL_WORKSPACE_ID, "subject_id": LOCAL_SUBJECT_ID},
+    )
+    binding_document = {
+        "canonical_role_id": canonical_role.id,
+        "role_kind": AccessRoleKind.CANONICAL_ADMIN.value,
+        "canonical_role_version": canonical_role.version,
+        "capability_catalog_version": CAPABILITY_CATALOG_VERSION,
+        "capability_hash": CANONICAL_ADMIN_CAPABILITY_HASH,
+        "membership_version": membership.version,
+        "membership_access_hash": access_hash,
+        "state": "ACTIVE",
+        "binding_source": "LOCAL_DEVELOPMENT_BOOTSTRAP",
+    }
+    if binding is None:
+        session.add(
+            CanonicalAdminBindingModel(
+                workspace_id=LOCAL_WORKSPACE_ID,
+                subject_id=LOCAL_SUBJECT_ID,
+                **binding_document,
+            )
+        )
+        return
+    if any(getattr(binding, key) != value for key, value in binding_document.items()):
+        for key, value in binding_document.items():
+            setattr(binding, key, value)
+        binding.version += 1
 
 
 def main() -> None:

@@ -6,6 +6,7 @@ import yaml  # type: ignore[import-untyped]
 
 from datariver.infrastructure.db.identity_provisioning_sql import (
     IDENTITY_PROVISIONING_FUNCTION_SQL,
+    IDENTITY_PROVISIONING_FUNCTION_SQL_V1,
 )
 
 
@@ -17,8 +18,25 @@ def test_identity_provisioning_function_is_fixed_and_rechecks_admin_context() ->
     assert "security-administrators" in sql
     assert "admin.manage" in sql
     assert "IDENTITY_PROVISIONING_V1" in sql
+    assert "role_kind = 'HUMAN_ROLE'" in sql
+    assert "not an assignable human role" in sql
     assert "EXECUTE " not in sql
     assert "password" not in sql.lower()
+
+
+def test_0089_pins_human_role_only_provisioning_and_a_legacy_downgrade_body() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = (root / "backend/alembic/versions/0089_canonical_admin_role_binding.py").read_text(
+        encoding="utf-8"
+    )
+    initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
+
+    assert "role_kind = 'HUMAN_ROLE'" not in IDENTITY_PROVISIONING_FUNCTION_SQL_V1
+    assert "The selected workspace role is not active" in IDENTITY_PROVISIONING_FUNCTION_SQL_V1
+    assert "IDENTITY_PROVISIONING_FUNCTION_SQL_V1" in migration
+    assert "_PROVISIONING_V2_SHA256" in migration
+    assert "_PROVISIONING_V1_SHA256" in migration
+    assert "role_kind = 'HUMAN_ROLE'" in initial
 
 
 def test_identity_migration_and_initial_baseline_have_execute_only_contract() -> None:

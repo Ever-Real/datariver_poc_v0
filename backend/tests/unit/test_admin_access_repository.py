@@ -16,21 +16,34 @@ from datariver.domain.admin_access import (
     SystemAssigneeUpdate,
 )
 from datariver.domain.authz import Action, Classification
+from datariver.domain.capability_catalog import (
+    CANONICAL_ADMIN_CAPABILITY_HASH,
+    CANONICAL_ADMIN_ROLE_KEY,
+    CAPABILITY_CATALOG_VERSION,
+    DEFAULT_HUMAN_ADMIN_ACTIONS,
+    AccessRoleKind,
+    AccessRoleManagementSource,
+)
 from datariver.domain.common import ConflictError, ValidationError
 from datariver.infrastructure.db.admin_access import (
     SqlSystemDirectoryRepository,
+    _canonical_admin_binding_evidence,
     _decode_membership_cursor,
     _encode_membership_cursor,
     _membership_access_record,
     decode_admin_list_cursor,
     encode_admin_list_cursor,
+    membership_access_payload_hash,
 )
 from datariver.infrastructure.db.models.platform import (
+    AccessRoleModel,
+    CanonicalAdminBindingModel,
     DataSystemModel,
     SubjectModel,
     SystemAssigneeModel,
     WorkspaceMembershipModel,
 )
+from datariver.interfaces.http.presenters import workspace_membership_access_response
 
 POSTGRES_DIALECT = cast(Callable[[], Dialect], postgresql.dialect)()
 
@@ -90,6 +103,113 @@ def test_membership_repository_mapping_fails_closed_on_unknown_action() -> None:
 
     with pytest.raises(ConflictError, match="stored workspace membership access is invalid"):
         _membership_access_record(subject, membership)
+
+
+def test_canonical_admin_binding_status_rechecks_exact_role_membership_and_scope_hash() -> None:
+    workspace_id, subject_id, domain_id = uuid4(), uuid4(), uuid4()
+    subject = SubjectModel(
+        id=subject_id,
+        issuer="https://identity.example.internal/realms/company",
+        external_subject="canonical-admin",
+        display_name="Canonical Administrator",
+        active=True,
+    )
+    membership = WorkspaceMembershipModel(
+        workspace_id=workspace_id,
+        subject_id=subject_id,
+        job_function="SECURITY_ADMINISTRATOR",
+        clearance=int(Classification.RESTRICTED),
+        attributes={
+            "groups": ["security-administrators"],
+            "allowed_actions": sorted(action.value for action in DEFAULT_HUMAN_ADMIN_ACTIONS),
+            "denied_actions": [],
+            "allowed_system_ids": [],
+            "allowed_domain_ids": [str(domain_id)],
+        },
+        active=True,
+        access_expires_at=None,
+        version=5,
+    )
+    role = AccessRoleModel(
+        id=uuid4(),
+        workspace_id=workspace_id,
+        role_key=CANONICAL_ADMIN_ROLE_KEY,
+        role_kind=AccessRoleKind.CANONICAL_ADMIN.value,
+        management_source=AccessRoleManagementSource.SERVER_CANONICAL.value,
+        capability_catalog_version=CAPABILITY_CATALOG_VERSION,
+        name="Canonical Admin",
+        description="Server-owned Canonical Admin capability definition.",
+        clearance=int(Classification.RESTRICTED),
+        groups=["security-administrators"],
+        allowed_actions=sorted(action.value for action in DEFAULT_HUMAN_ADMIN_ACTIONS),
+        denied_actions=[],
+        allowed_system_ids=[],
+        allowed_domain_ids=[],
+        active=True,
+        updated_by=None,
+        version=3,
+    )
+    binding = CanonicalAdminBindingModel(
+        workspace_id=workspace_id,
+        subject_id=subject_id,
+        canonical_role_id=role.id,
+        role_kind=AccessRoleKind.CANONICAL_ADMIN.value,
+        canonical_role_version=role.version,
+        capability_catalog_version=CAPABILITY_CATALOG_VERSION,
+        capability_hash=CANONICAL_ADMIN_CAPABILITY_HASH,
+        membership_version=membership.version,
+        membership_access_hash=membership_access_payload_hash(membership),
+        state="ACTIVE",
+        binding_source="LOCAL_DEVELOPMENT_BOOTSTRAP",
+        version=1,
+        updated_at=datetime(2026, 8, 1, tzinfo=UTC),
+    )
+
+    evidence = _canonical_admin_binding_evidence(
+        subject=subject,
+        membership=membership,
+        binding=binding,
+        role=role,
+    )
+    assert evidence.status == "VERIFIED"
+    response = workspace_membership_access_response(
+        _membership_access_record(
+            subject,
+            membership,
+            canonical_admin_binding=evidence,
+        )
+    )
+    binding_document = response.canonical_admin_binding.model_dump()
+    assert set(binding_document) == {
+        "status",
+        "role_version",
+        "catalog_version",
+        "membership_version",
+        "binding_version",
+        "updated_at",
+    }
+    assert not any("hash" in key or key.endswith("_id") for key in binding_document)
+
+    membership.attributes["allowed_domain_ids"] = [str(uuid4())]
+    assert (
+        _canonical_admin_binding_evidence(
+            subject=subject,
+            membership=membership,
+            binding=binding,
+            role=role,
+        ).status
+        == "STALE"
+    )
+    binding.state = "REVOKED"
+    assert (
+        _canonical_admin_binding_evidence(
+            subject=subject,
+            membership=membership,
+            binding=binding,
+            role=role,
+        ).status
+        == "REVOKED"
+    )
 
 
 def test_membership_cursor_is_bound_to_workspace_query_and_status() -> None:

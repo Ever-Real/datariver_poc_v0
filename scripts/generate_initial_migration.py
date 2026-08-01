@@ -54,6 +54,12 @@ _STUDIO_PROPOSAL_TABLES = frozenset(
         "knowledge.tbox_proposal_events",
     }
 )
+_CANONICAL_ADMIN_TABLES = frozenset(
+    {
+        "iam.access_roles",
+        "iam.canonical_admin_bindings",
+    }
+)
 
 
 def _current_subject_sql() -> str:
@@ -391,6 +397,26 @@ def _load_studio_proposal_contract_restore_revision() -> ModuleType:
     return module
 
 
+def _load_canonical_admin_binding_revision() -> ModuleType:
+    """Load the fixed Canonical Admin definition and RLS contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0089_canonical_admin_role_binding.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_admin_binding_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Canonical Admin binding migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -414,7 +440,10 @@ def build_upgrade() -> ops.UpgradeOps:
         if (
             "workspace_id" in table.columns or table.fullname == "platform.workspaces"
         ) and table.fullname not in (
-            _GOVERNANCE_DOCUMENT_TABLES | _STUDIO_INGESTION_TABLES | _STUDIO_PROPOSAL_TABLES
+            _GOVERNANCE_DOCUMENT_TABLES
+            | _STUDIO_INGESTION_TABLES
+            | _STUDIO_PROPOSAL_TABLES
+            | _CANONICAL_ADMIN_TABLES
         ):
             workspace_column = "id" if table.fullname == "platform.workspaces" else "workspace_id"
             operations.append(
@@ -717,6 +746,18 @@ def build_upgrade() -> ops.UpgradeOps:
     operations.append(
         ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {IDENTITY_PROFILE_UPDATE_SIGNATURE} FROM PUBLIC")
     )
+    canonical_admin_binding = _load_canonical_admin_binding_revision()
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in canonical_admin_binding.canonical_admin_definition_security_sql()
+    )
+    operations.append(
+        ops.ExecuteSQLOp(
+            "CREATE TRIGGER ensure_canonical_admin_definition "
+            "AFTER INSERT ON platform.workspaces FOR EACH ROW "
+            "EXECUTE FUNCTION iam.ensure_canonical_admin_definition()"
+        )
+    )
     operations.extend(ops.ExecuteSQLOp(statement) for statement in _default_workspace_lookup_sql())
     operations.extend(
         ops.CreateForeignKeyOp.from_constraint(constraint)
@@ -942,6 +983,7 @@ BEGIN
         GRANT UPDATE (email, last_login_at, last_login_ip, updated_at)
             ON iam.subjects TO datariver_app;
         GRANT SELECT ON iam.workspace_memberships TO datariver_app;
+        GRANT SELECT ON iam.canonical_admin_bindings TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON iam.membership_renewal_requests TO datariver_app;
         GRANT SELECT, INSERT ON iam.access_roles TO datariver_app;
         GRANT UPDATE (name, description, clearance, groups, allowed_actions, denied_actions,
@@ -1203,7 +1245,8 @@ BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_bootstrap') THEN
         GRANT USAGE ON SCHEMA platform, iam TO datariver_bootstrap;
         GRANT SELECT, INSERT, UPDATE ON platform.workspaces, iam.subjects,
-            iam.workspace_memberships TO datariver_bootstrap;
+            iam.workspace_memberships, iam.access_roles,
+            iam.canonical_admin_bindings TO datariver_bootstrap;
     END IF;
 END
 $datariver$

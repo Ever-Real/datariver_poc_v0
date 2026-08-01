@@ -17,6 +17,7 @@ from datariver.interfaces.http.schemas import (
     AdminReadContextResponse,
     ApprovalAuthorityResponse,
     ApprovalResponse,
+    CanonicalAdminBindingEvidenceResponse,
     CatalogAssetResponse,
     CatalogAssetSummary,
     ChangeItemResponse,
@@ -135,6 +136,7 @@ def workspace_membership_access_response(
         "allowed_domain_ids": sorted(str(value) for value in membership.allowed_domain_ids),
     }
     assignment = membership.role_assignment
+    canonical_binding = membership.canonical_admin_binding
     legacy_markers = sorted(
         group for group in membership.groups if group.startswith("datariver-role-")
     )
@@ -177,6 +179,18 @@ def workspace_membership_access_response(
             allowed_domain_ids=sorted(membership.allowed_domain_ids, key=str),
         ),
         role_assignment=assignment_response,
+        canonical_admin_binding=(
+            CanonicalAdminBindingEvidenceResponse(status="NONE")
+            if canonical_binding is None
+            else CanonicalAdminBindingEvidenceResponse(
+                status=canonical_binding.status,
+                role_version=canonical_binding.role_version,
+                catalog_version=canonical_binding.catalog_version,
+                membership_version=canonical_binding.membership_version,
+                binding_version=canonical_binding.binding_version,
+                updated_at=canonical_binding.updated_at,
+            )
+        ),
     )
 
 

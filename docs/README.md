@@ -68,6 +68,10 @@ The exhaustive 69-Action metadata, 64 human/5 service-principal partition, defau
 bootstrap and Role-editor assignment boundary are defined by
 [ADR-0103](adr/0103-server-canonical-human-capability-catalog.md). Its self-approval fields are
 pending metadata only and do not change maker/checker behavior.
+The server-owned Canonical Admin definition, non-delegable binding evidence and development-only
+fixed bootstrap boundary are defined by
+[ADR-0106](adr/0106-canonical-admin-role-binding.md). It creates no production user binding and
+keeps workflow self-approval closed pending a separate decision.
 The ordinary-assurance four-class summary and fresh-assurance full classification-policy detail
 boundary are defined by
 [ADR-0105](adr/0105-redacted-classification-policy-summary.md).

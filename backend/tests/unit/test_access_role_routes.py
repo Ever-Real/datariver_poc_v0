@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from types import SimpleNamespace
 from uuid import UUID, uuid4
 
@@ -72,6 +73,23 @@ def test_access_role_write_routes_require_high_risk_authorization_before_databas
 
     assert [create.status_code, update.status_code, deactivate.status_code] == [403, 403, 403]
     assert service.role_ids == [workspace_id, role_id, role_id]
+
+
+def test_canonical_admin_definition_is_not_mutable_or_assignable_through_generic_routes() -> None:
+    create_source = inspect.getsource(admin_routes.create_access_role)
+    update_source = inspect.getsource(admin_routes.update_access_role)
+    deactivate_source = inspect.getsource(admin_routes.deactivate_access_role)
+    app = FastAPI()
+    app.include_router(admin_routes.router)
+
+    assert "AccessRoleKind.HUMAN_ROLE.value" in create_source
+    assert "AccessRoleKind.HUMAN_ROLE.value" in update_source
+    assert "AccessRoleKind.HUMAN_ROLE.value" in deactivate_source
+    assert not {
+        path
+        for path in app.openapi()["paths"]
+        if "bind" in path.lower() or "self-approve" in path.lower()
+    }
 
 
 def test_access_role_capability_catalog_is_bounded_and_server_canonical(

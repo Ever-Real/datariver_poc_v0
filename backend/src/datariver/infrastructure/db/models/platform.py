@@ -191,6 +191,7 @@ class AccessRoleModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
     __tablename__ = "access_roles"
     __table_args__ = (
         UniqueConstraint("workspace_id", "id"),
+        UniqueConstraint("workspace_id", "id", "role_kind"),
         UniqueConstraint("workspace_id", "role_key"),
         ForeignKeyConstraint(
             ("workspace_id", "updated_by"),
@@ -200,7 +201,29 @@ class AccessRoleModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
         ),
         CheckConstraint("role_key ~ '^[a-z][a-z0-9-]{1,79}$'", name="role_key_shape"),
         CheckConstraint("clearance BETWEEN 0 AND 3", name="clearance_range"),
+        CheckConstraint(
+            "role_kind IN ('HUMAN_ROLE', 'CANONICAL_ADMIN')",
+            name="role_kind_vocabulary",
+        ),
+        CheckConstraint(
+            "management_source IN ('HUMAN_ADMIN', 'SERVER_CANONICAL')",
+            name="management_source_vocabulary",
+        ),
+        CheckConstraint(
+            "(role_kind = 'HUMAN_ROLE' AND management_source = 'HUMAN_ADMIN' "
+            "AND capability_catalog_version IS NULL AND updated_by IS NOT NULL) OR "
+            "(role_kind = 'CANONICAL_ADMIN' AND management_source = 'SERVER_CANONICAL' "
+            "AND role_key = 'canonical-admin' AND capability_catalog_version IS NOT NULL "
+            "AND updated_by IS NULL AND active IS TRUE AND clearance = 3)",
+            name="management_shape",
+        ),
         Index("ix_access_roles_workspace_active_name", "workspace_id", "active", "name"),
+        Index(
+            "uq_access_roles_workspace_canonical_admin",
+            "workspace_id",
+            unique=True,
+            postgresql_where=text("role_kind = 'CANONICAL_ADMIN'"),
+        ),
         {"schema": "iam"},
     )
 
@@ -210,6 +233,13 @@ class AccessRoleModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
         nullable=False,
     )
     role_key: Mapped[str] = mapped_column(String(80), nullable=False)
+    role_kind: Mapped[str] = mapped_column(
+        String(32), default="HUMAN_ROLE", server_default="HUMAN_ROLE", nullable=False
+    )
+    management_source: Mapped[str] = mapped_column(
+        String(32), default="HUMAN_ADMIN", server_default="HUMAN_ADMIN", nullable=False
+    )
+    capability_catalog_version: Mapped[str | None] = mapped_column(String(100))
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     clearance: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -223,7 +253,7 @@ class AccessRoleModel(Base, UuidPrimaryKeyMixin, TimestampMixin, VersionMixin):
         JSON_DOCUMENT, default=list, nullable=False
     )
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    updated_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    updated_by: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
 
 
 class AccessRoleDataRuleModel(Base, UuidPrimaryKeyMixin, TimestampMixin):
@@ -331,8 +361,12 @@ class AccessRoleAssignmentModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versi
             name="fk_access_role_assignments_membership",
         ),
         ForeignKeyConstraint(
-            ("workspace_id", "role_id"),
-            ("iam.access_roles.workspace_id", "iam.access_roles.id"),
+            ("workspace_id", "role_id", "role_kind"),
+            (
+                "iam.access_roles.workspace_id",
+                "iam.access_roles.id",
+                "iam.access_roles.role_kind",
+            ),
             ondelete="RESTRICT",
             name="fk_access_role_assignments_role",
         ),
@@ -343,6 +377,7 @@ class AccessRoleAssignmentModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versi
             name="fk_access_role_assignments_actor",
         ),
         CheckConstraint("role_version > 0", name="role_version_positive"),
+        CheckConstraint("role_kind = 'HUMAN_ROLE'", name="human_role_only"),
         CheckConstraint("membership_version > 0", name="membership_version_positive"),
         CheckConstraint("access_payload_hash ~ '^[0-9a-f]{64}$'", name="payload_hash_sha256"),
         Index("ix_access_role_assignments_workspace_role", "workspace_id", "role_id", "active"),
@@ -356,11 +391,69 @@ class AccessRoleAssignmentModel(Base, UuidPrimaryKeyMixin, TimestampMixin, Versi
     )
     subject_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     role_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    role_kind: Mapped[str] = mapped_column(
+        String(32), default="HUMAN_ROLE", server_default="HUMAN_ROLE", nullable=False
+    )
     role_version: Mapped[int] = mapped_column(Integer, nullable=False)
     membership_version: Mapped[int] = mapped_column(Integer, nullable=False)
     access_payload_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     assigned_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+
+
+class CanonicalAdminBindingModel(Base, TimestampMixin, VersionMixin):
+    """Development-only protected capability evidence, never a Role assignment."""
+
+    __tablename__ = "canonical_admin_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("workspace_id", "subject_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_canonical_admin_bindings_membership",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "canonical_role_id", "role_kind"),
+            (
+                "iam.access_roles.workspace_id",
+                "iam.access_roles.id",
+                "iam.access_roles.role_kind",
+            ),
+            ondelete="RESTRICT",
+            name="fk_canonical_admin_bindings_role",
+        ),
+        CheckConstraint("role_kind = 'CANONICAL_ADMIN'", name="canonical_role_only"),
+        CheckConstraint(
+            "binding_source = 'LOCAL_DEVELOPMENT_BOOTSTRAP'",
+            name="development_bootstrap_only",
+        ),
+        CheckConstraint("state IN ('ACTIVE', 'REVOKED')", name="state_vocabulary"),
+        CheckConstraint("canonical_role_version > 0", name="role_version_positive"),
+        CheckConstraint("membership_version > 0", name="membership_version_positive"),
+        CheckConstraint("capability_hash ~ '^[0-9a-f]{64}$'", name="capability_hash_sha256"),
+        CheckConstraint("membership_access_hash ~ '^[0-9a-f]{64}$'", name="access_hash_sha256"),
+        {"schema": "iam"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    subject_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    canonical_role_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    role_kind: Mapped[str] = mapped_column(
+        String(32), default="CANONICAL_ADMIN", server_default="CANONICAL_ADMIN", nullable=False
+    )
+    canonical_role_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    capability_catalog_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    capability_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    membership_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    membership_access_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(20), default="ACTIVE", nullable=False)
+    binding_source: Mapped[str] = mapped_column(
+        String(64), default="LOCAL_DEVELOPMENT_BOOTSTRAP", nullable=False
+    )
 
 
 class AccessRoleAssignmentEventModel(Base, UuidPrimaryKeyMixin):

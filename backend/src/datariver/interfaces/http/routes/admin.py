@@ -35,6 +35,8 @@ from datariver.domain.capability_catalog import (
     CAPABILITY_CATALOG,
     CAPABILITY_SERVICES,
     PROTECTED_ADMIN_CAPABILITIES,
+    AccessRoleKind,
+    AccessRoleManagementSource,
     CapabilityActorKind,
 )
 from datariver.domain.common import (
@@ -1604,6 +1606,9 @@ def _role_response(
         return AccessRoleResponse(
             id=role.id,
             role_key=role.role_key,
+            role_kind=role.role_kind,
+            management_source=role.management_source,
+            capability_catalog_version=role.capability_catalog_version,
             name=role.name,
             description=role.description,
             clearance=Classification(role.clearance).name,
@@ -2538,7 +2543,10 @@ async def create_access_role(
             count = await session.scalar(
                 select(func.count())
                 .select_from(AccessRoleModel)
-                .where(AccessRoleModel.workspace_id == context.workspace_id)
+                .where(
+                    AccessRoleModel.workspace_id == context.workspace_id,
+                    AccessRoleModel.role_kind == AccessRoleKind.HUMAN_ROLE.value,
+                )
             )
             if int(count or 0) >= 100:
                 raise ValidationError("A workspace can contain at most 100 access roles.")
@@ -2555,6 +2563,9 @@ async def create_access_role(
             role = AccessRoleModel(
                 workspace_id=context.workspace_id,
                 role_key=payload.role_key,
+                role_kind=AccessRoleKind.HUMAN_ROLE.value,
+                management_source=AccessRoleManagementSource.HUMAN_ADMIN.value,
+                capability_catalog_version=None,
                 name=payload.name.strip(),
                 description=payload.description.strip(),
                 clearance=int(Classification[payload.clearance]),
@@ -2650,6 +2661,8 @@ async def update_access_role(
                 raise ValidationError("The access role does not exist in this workspace.")
             if role.version != expected_version:
                 raise ConflictError("The access role was modified by another request.")
+            if role.role_kind != AccessRoleKind.HUMAN_ROLE.value:
+                raise ValidationError("Canonical Admin definitions are server-managed.")
             if role.role_key != payload.role_key:
                 raise ValidationError("The access-role key is immutable.")
             assigned_count = await _role_assigned_count(
@@ -2763,6 +2776,8 @@ async def deactivate_access_role(
                 raise ValidationError("The access role does not exist in this workspace.")
             if role.version != expected_version:
                 raise ConflictError("The access role was modified by another request.")
+            if role.role_kind != AccessRoleKind.HUMAN_ROLE.value:
+                raise ValidationError("Canonical Admin definitions cannot be deactivated.")
             assigned_count = await _role_assigned_count(
                 session,
                 workspace_id=context.workspace_id,
@@ -4337,6 +4352,7 @@ async def assign_membership_role(
                             AccessRoleModel.workspace_id == context.workspace_id,
                             AccessRoleModel.id == payload.role_id,
                             AccessRoleModel.active.is_(True),
+                            AccessRoleModel.role_kind == AccessRoleKind.HUMAN_ROLE.value,
                         )
                     )
                 ).one_or_none()

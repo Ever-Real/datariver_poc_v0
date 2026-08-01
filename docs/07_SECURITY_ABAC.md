@@ -23,6 +23,15 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
   eligible human checker, a five-minute expiry, canonical payload confirmation and one-time consume.
   At least two eligible human security administrators must remain; service accounts, OTP and
   ordinary password assurance are ineligible.
+- Canonical Admin is not a Role label or client claim. Generic Role CRUD, assignment and identity
+  provisioning accept only the DB-constrained `HUMAN_ROLE` kind. A separate server-owned binding is
+  verified against the current active human Subject, RESTRICTED membership, exact 64 human Actions,
+  deny/service-Action absence, resource scopes, catalog/Role versions and full access hash. The API
+  returns only its status and non-sensitive versions/time; binding UUIDs and hashes remain internal.
+  There is no production bind/rebind/revoke route, UI or executable function. Only the fixed,
+  parameter-free local bootstrap may write the exact development binding after an
+  `APP_ENV=development` check that occurs before database access. This evidence does not activate
+  `admin.self_approve`; maker/checker rules remain unchanged pending A4c.
 - The browser keeps the OIDC user/token object and the selected Workspace only in memory: neither
   `localStorage` nor `sessionStorage` holds a bearer token, refresh token or tenant/RLS context.
   Only the OIDC library's short-lived PKCE transaction state is stored in tab-scoped

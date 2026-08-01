@@ -13,8 +13,10 @@ from datariver.application.dto import IdempotencyRecord
 from datariver.application.identity_admin import (
     IdentityAdministration,
     IdentityProfileTarget,
+    IdentityUserDraft,
     IdentityUserProfile,
     IdentityUserProfileDraft,
+    ProvisionedIdentity,
 )
 from datariver.application.ports import AdminAccessUnitOfWork
 from datariver.application.services.authorization import AuthorizationService
@@ -48,8 +50,20 @@ class _DecisionWriter:
 
 class _Provider:
     def __init__(self) -> None:
+        self.ensured: list[IdentityUserDraft] = []
         self.updated: list[tuple[str, IdentityUserProfileDraft]] = []
         self.resets: list[tuple[str, str]] = []
+
+    async def ensure_disabled_user(self, draft: IdentityUserDraft) -> ProvisionedIdentity:
+        self.ensured.append(draft)
+        return ProvisionedIdentity(
+            external_subject="provider-created-user",
+            username=draft.username,
+            created=True,
+        )
+
+    async def enable_user(self, *, external_subject: str) -> None:
+        del external_subject
 
     async def update_user_profile(
         self,
@@ -82,12 +96,19 @@ class _Memberships:
     def __init__(self, target: IdentityProfileTarget) -> None:
         self.target = target
         self.updates: list[dict[str, object]] = []
+        self.assignable_role_error: ValidationError | None = None
 
     async def assert_eligible_human_administrators(
         self, *, workspace_id: UUID, subject_ids: frozenset[UUID]
     ) -> None:
         assert workspace_id == self.target.workspace_id
         assert len(subject_ids) == 1
+
+    async def assert_assignable_human_role(self, *, workspace_id: UUID, role_id: UUID) -> None:
+        assert workspace_id == self.target.workspace_id
+        del role_id
+        if self.assignable_role_error is not None:
+            raise self.assignable_role_error
 
     async def get_identity_profile_target(
         self,
@@ -226,6 +247,39 @@ def _service(target: IdentityProfileTarget) -> tuple[IdentityAdminService, _Uow,
         issuer=target.issuer,
     )
     return service, uow, provider
+
+
+@pytest.mark.asyncio
+async def test_user_provisioning_rejects_non_human_role_before_provider_mutation() -> None:
+    target = _target()
+    service, uow, provider = _service(target)
+    uow.memberships.assignable_role_error = ValidationError(
+        "Canonical Admin cannot be assigned through a generic Role path."
+    )
+
+    with pytest.raises(ValidationError, match="Canonical Admin cannot be assigned"):
+        await service.provision_user(
+            draft=IdentityUserDraft(
+                username="new.user",
+                email="new.user@example.test",
+                first_name="New",
+                last_name="User",
+                temporary_password="temporary-only",
+                workspace_id=target.workspace_id,
+                provisioning_reference="test-reference",
+            ),
+            department_id=None,
+            job_function="DATA_ENGINEER",
+            role_id=uuid4(),
+            subject=_subject(target.workspace_id),
+            environment=EnvironmentAttributes(requested_at=NOW, network_zone="INTERNAL"),
+            request_id="request-provision-canonical",
+            idempotency_key="provision-canonical-role",
+            request_hash="d" * 64,
+        )
+
+    assert provider.ensured == []
+    assert uow.commits == 0
 
 
 @pytest.mark.asyncio

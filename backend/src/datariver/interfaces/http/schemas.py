@@ -1260,6 +1260,9 @@ class AccessRoleWriteRequest(BaseModel):
 class AccessRoleResponse(BaseModel):
     id: UUID
     role_key: str
+    role_kind: Literal["HUMAN_ROLE", "CANONICAL_ADMIN"]
+    management_source: Literal["HUMAN_ADMIN", "SERVER_CANONICAL"]
+    capability_catalog_version: str | None
     name: str
     description: str
     clearance: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
@@ -1598,6 +1601,15 @@ class MembershipRoleAssignmentEvidenceResponse(BaseModel):
     legacy_markers: list[str] = Field(default_factory=list, max_length=100)
 
 
+class CanonicalAdminBindingEvidenceResponse(BaseModel):
+    status: Literal["NONE", "VERIFIED", "STALE", "REVOKED"]
+    role_version: int | None = Field(default=None, ge=1)
+    catalog_version: str | None = None
+    membership_version: int | None = Field(default=None, ge=1)
+    binding_version: int | None = Field(default=None, ge=1)
+    updated_at: datetime | None = None
+
+
 class WorkspaceMembershipAccessResponse(BaseModel):
     subject_id: UUID
     display_name: str
@@ -1607,6 +1619,7 @@ class WorkspaceMembershipAccessResponse(BaseModel):
     membership_version: int = Field(ge=1)
     access: MembershipAccessDocumentResponse
     role_assignment: MembershipRoleAssignmentEvidenceResponse
+    canonical_admin_binding: CanonicalAdminBindingEvidenceResponse
 
 
 class AdminReadContextResponse(BaseModel):

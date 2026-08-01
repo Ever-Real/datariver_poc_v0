@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.domain.admin_access import MembershipAccessUpdate
 from datariver.domain.authz import Action, Classification
-from datariver.domain.common import ConflictError, canonical_json_hash
+from datariver.domain.capability_catalog import AccessRoleKind, AccessRoleManagementSource
+from datariver.domain.common import ConflictError, ValidationError, canonical_json_hash
 from datariver.infrastructure.db.admin_access import SqlMembershipAccessRepository
 from datariver.infrastructure.db.models.platform import (
     AccessRoleAssignmentEventModel,
@@ -55,11 +56,27 @@ class AssignmentSession:
         return None
 
 
-def _role(workspace_id: UUID, *, version: int) -> AccessRoleModel:
+def _role(
+    workspace_id: UUID,
+    *,
+    version: int,
+    role_kind: AccessRoleKind = AccessRoleKind.HUMAN_ROLE,
+) -> AccessRoleModel:
     return AccessRoleModel(
         id=uuid4(),
         workspace_id=workspace_id,
         role_key=f"role-{version}",
+        role_kind=role_kind.value,
+        management_source=(
+            AccessRoleManagementSource.SERVER_CANONICAL.value
+            if role_kind is AccessRoleKind.CANONICAL_ADMIN
+            else AccessRoleManagementSource.HUMAN_ADMIN.value
+        ),
+        capability_catalog_version=(
+            "ACCESS_ROLE_CAPABILITY_CATALOG_V2"
+            if role_kind is AccessRoleKind.CANONICAL_ADMIN
+            else None
+        ),
         name=f"Role {version}",
         description="",
         clearance=2,
@@ -144,6 +161,36 @@ async def test_assignment_repository_rejects_role_version_race_before_writing_ev
             role_id=uuid4(),
             role_version=7,
             role_marker="datariver-role-role-7",
+            membership_version=2,
+            access_payload_hash="a" * 64,
+            actor_id=actor_id,
+        )
+
+    assert session.current is None
+    assert session.events == []
+
+
+@pytest.mark.asyncio
+async def test_assignment_repository_rejects_canonical_admin_even_if_a_fake_query_returns_it() -> (
+    None
+):
+    workspace_id, subject_id, actor_id = uuid4(), uuid4(), uuid4()
+    session = AssignmentSession()
+    repository = SqlMembershipAccessRepository(cast(AsyncSession, session))
+    role = _role(
+        workspace_id,
+        version=1,
+        role_kind=AccessRoleKind.CANONICAL_ADMIN,
+    )
+    session.selected_role = role
+
+    with pytest.raises(ValidationError, match="cannot be assigned"):
+        await repository.record_role_assignment(
+            workspace_id=workspace_id,
+            subject_id=subject_id,
+            role_id=role.id,
+            role_version=role.version,
+            role_marker=f"datariver-role-{role.role_key}",
             membership_version=2,
             access_payload_hash="a" * 64,
             actor_id=actor_id,

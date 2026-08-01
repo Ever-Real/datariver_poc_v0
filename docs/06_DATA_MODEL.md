@@ -82,10 +82,11 @@ migration before use.
 | `iam.subjects` | `id`, `issuer + external_subject UQ`, `display_name`, IdP email, ordinary last-login timestamp/IP, `active`, timestamps | external IdP mapping and profile audit; no credential or password |
 | `iam.workspace_memberships` | PK `workspace_id + subject_id`, `department_id`, `job_function`, `clearance`, `attributes`, `active`, nullable `access_expires_at`, `version` | versioned ABAC attributes/grants; human expiry is authorization-bearing, service-account expiry is operator-managed `NULL`, and the optional default marker only chooses among active unexpired memberships |
 | `iam.membership_renewal_requests` | workspace/target pending partial UQ, observed/requested expiries, requester/checker, reason/decision/policy/time and optimistic version | self-requested six-calendar-month extension with independent global-Admin decision and no self approval |
-| `iam.access_roles` | workspace/key UQ, name/description, clearance, typed group/action/System/Domain scope documents, active flag, updater/version | reusable administrator-managed RBAC template; assignment materializes the existing membership ABAC document and the role marker is not independent authority |
+| `iam.access_roles` | workspace/key UQ, `HUMAN_ROLE | CANONICAL_ADMIN`, management source, optional catalog version, name/description, clearance, typed group/action/System/Domain scope documents, active flag, nullable server-owned updater/version | reusable administrator-managed human RBAC template plus at most one unassigned server-owned Canonical Admin definition per Workspace; assignment materializes only a human Role and the marker is not independent authority |
 | `iam.access_role_data_rules` | Role/version/classification UQ, No/Partial/Full level, nullable typed treatment, residency/purpose JSON, SHA-256 payload hash, creator/time | immutable secret-free Policy Book rule; a missing classification rule denies |
-| `iam.access_role_assignments` | workspace/subject UQ, exact Role/version, membership version, access payload hash, actor, active/version/time | normalized current Role evidence; bounded updates, no application delete |
+| `iam.access_role_assignments` | workspace/subject UQ, fixed `HUMAN_ROLE` discriminator with composite Role FK, exact Role/version, membership version, access payload hash, actor, active/version/time | normalized current human-Role evidence; Canonical Admin is structurally rejected, bounded updates, no application delete |
 | `iam.access_role_assignment_events` | subject, assigned/reassigned/removed, before/after Role versions, membership version, payload hash, actor/time | append-only Role-assignment history |
+| `iam.canonical_admin_bindings` | Workspace/Subject PK, fixed Canonical Role kind/ID/version, catalog version/hash, membership version/full access hash, active/revoked state, fixed local-bootstrap source, optimistic version/time | separate protected evidence for the fixed local development administrator; not a generic assignment and no application DML |
 | `iam.admin_access_requests` | typed command/envelope, maker/target/checker, canonical hash, expiry/state/consume decision, `version`, timestamps | short-lived membership-access maker-checker aggregate; no arbitrary provider payload |
 | `iam.admin_access_approvals` | request/actor, approve/reject, reason, policy decision, payload hash and request version | append-only independent checker evidence |
 | `authz.resources` | `workspace_id + resource_type + resource_key UQ`, scope/classification/lifecycle columns, `attributes`, `version` | durable resource attribute registry |
@@ -105,11 +106,23 @@ no attributes, memberships, roles or cross-workspace data; normal IAM reads rema
 `iam.provision_workspace_identity(...)` is the only app-executable identity-creation function. It
 is `SECURITY DEFINER`, has no dynamic SQL and independently requires matching transaction-local
 Workspace/subject context plus an active, unexpired human `security-administrators` membership with
-RESTRICTED clearance and `admin.manage`. It reads an optional active `iam.access_roles` row and
+RESTRICTED clearance and `admin.manage`. It reads an optional active `HUMAN_ROLE` row and
 atomically inserts exactly one OIDC subject and six-month membership. When a Role is selected, the
 repository also records the normalized assignment and event in the same transaction. The
 application role has execute-only access and still has no direct `INSERT` grant on either IAM table.
 No password or provider client credential is a function argument or database column.
+
+Revision `0089` backfills only one unassigned, hash-pinned Canonical Admin definition for each
+existing Workspace and installs the same definition trigger for future Workspaces. Subject,
+membership, generic assignment, assignment-event and binding row counts are unchanged by upgrade.
+The separate binding table retains hashes only for server-side exact-current comparison. HTTP
+serialization omits the canonical Role UUID and both hashes. `datariver_app` has binding `SELECT`
+only; its binding `INSERT/UPDATE/DELETE` and function execution count are zero. Fixed-target
+bootstrap policies are defense in depth, not an authority boundary for the privileged bootstrap
+principal; the parameter-free caller checks `APP_ENV=development` before opening the database.
+Downgrade is
+blocked by any binding history or canonical reference, otherwise only unassigned definitions and
+the 0089 schema are removed.
 
 `iam.update_workspace_identity_profile(...)` is the only app-executable local identity-profile
 projection update. It is `SECURITY DEFINER`, contains no dynamic SQL and independently requires the

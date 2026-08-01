@@ -502,6 +502,20 @@ async def test_role_assignment_transition_and_failure_rollback_on_postgres() -> 
     )
     environment = EnvironmentAttributes(requested_at=now)
 
+    async with admin_engine.connect() as connection:
+        access_roles_rls = (
+            await connection.execute(
+                text(
+                    """
+                    SELECT relrowsecurity, relforcerowsecurity
+                    FROM pg_class
+                    WHERE oid = 'iam.access_roles'::regclass
+                    """
+                )
+            )
+        ).one()
+    assert tuple(access_roles_rls) == (True, True)
+
     async def apply(
         *,
         role_id: UUID | None,
@@ -530,6 +544,92 @@ async def test_role_assignment_transition_and_failure_rollback_on_postgres() -> 
     try:
         await _prepare_fixture(admin_engine, fixture)
         assert await _sequence_value(admin_engine, fixture) is None
+
+        async with app_engine.begin() as connection:
+            await _set_fixture_security_context(connection, fixture)
+            canonical_role_id = await connection.scalar(
+                text(
+                    """
+                    SELECT id
+                    FROM iam.access_roles
+                    WHERE workspace_id = :workspace_id
+                      AND role_kind = 'CANONICAL_ADMIN'
+                    """
+                ),
+                {"workspace_id": fixture.workspace_id},
+            )
+        assert isinstance(canonical_role_id, UUID)
+
+        with pytest.raises(DBAPIError) as assignment_rejection:
+            async with app_engine.begin() as connection:
+                await _set_fixture_security_context(connection, fixture)
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO iam.access_role_assignments (
+                            id, workspace_id, subject_id, role_id, role_kind, role_version,
+                            membership_version, access_payload_hash, assigned_by, active, version
+                        ) VALUES (
+                            :id, :workspace_id, :target_id, :role_id, 'CANONICAL_ADMIN', 1,
+                            1, :access_hash, :actor_id, true, 1
+                        )
+                        """
+                    ),
+                    {
+                        "id": uuid4(),
+                        "workspace_id": fixture.workspace_id,
+                        "target_id": fixture.target_id,
+                        "role_id": canonical_role_id,
+                        "access_hash": "a" * 64,
+                        "actor_id": fixture.actor_id,
+                    },
+                )
+        assert _dbapi_attribute(assignment_rejection.value, "sqlstate") == "23514"
+
+        rejected_subject_id = uuid4()
+        rejected_external_subject = f"canonical-provision-{fixture.suffix}"
+        with pytest.raises(DBAPIError) as provisioning_rejection:
+            async with app_engine.begin() as connection:
+                await _set_fixture_security_context(connection, fixture)
+                await connection.execute(
+                    text(
+                        """
+                        SELECT iam.provision_workspace_identity(
+                            :subject_id, :workspace_id, 'policy-test', :external_subject,
+                            'Rejected canonical assignment', 'rejected@example.test', NULL,
+                            'DATA_ENGINEER', :role_id, :expires_at
+                        )
+                        """
+                    ),
+                    {
+                        "subject_id": rejected_subject_id,
+                        "workspace_id": fixture.workspace_id,
+                        "external_subject": rejected_external_subject,
+                        "role_id": canonical_role_id,
+                        "expires_at": datetime.now(UTC) + timedelta(days=30),
+                    },
+                )
+        assert _dbapi_attribute(provisioning_rejection.value, "sqlstate") == "23514"
+        async with admin_engine.connect() as connection:
+            assert (
+                await connection.scalar(
+                    text("SELECT count(*) FROM iam.subjects WHERE id = :subject_id"),
+                    {"subject_id": rejected_subject_id},
+                )
+                == 0
+            )
+            assert (
+                await connection.scalar(
+                    text(
+                        """
+                        SELECT count(*) FROM iam.access_role_assignments
+                        WHERE workspace_id = :workspace_id AND subject_id = :subject_id
+                        """
+                    ),
+                    {"workspace_id": fixture.workspace_id, "subject_id": fixture.target_id},
+                )
+                == 0
+            )
 
         assert (
             await apply(

@@ -2,6 +2,36 @@
 
 ## Current verification status
 
+### Canonical Admin definition and protected local binding — 2026-08-01
+
+ADR-0106/revision `0089` add an unassigned server-owned definition and separate development-only
+binding evidence. Tests pin `69 = 64 human + 5 service-only`, the V2 capability hash and the
+`HUMAN_ROLE` assignment/provisioning discriminator. Model/migration tests require the generic
+assignment composite FK and CHECK, one-definition partial unique index, binding RLS, application
+binding DML/EXECUTE zero, no production binding route and zero exposure of the canonical Role UUID
+or internal hashes.
+
+Bootstrap tests invoke only the test fixture helper and prove the public command rejects
+production/test/staging/demo/seed before secret or database access. The helper accepts no target
+IDs, loads the fixed local Workspace/Subject, validates the exact current 64-Action human envelope
+and is idempotent. Migration tests require upgrade to leave Subject, membership, assignment, event
+and binding counts unchanged, and downgrade to stop on any binding history or canonical reference.
+The fixed RLS policies are tested as defense in depth only; the privileged bootstrap principal's
+authoritative guard is the exact pre-database environment check and the target-free command path.
+Canonical `0001` generation runs twice byte-identically; offline 0088→0089→0088 rendering and the
+isolated PostgreSQL gate remain separately reported so a source-only pass is not overstated.
+
+The final A4b-1 unstaged source review passed repository-standard Ruff format/lint (`571` files),
+strict mypy (`562` files), focused tests (`179` passed, one isolated-PostgreSQL skip), the complete
+backend suite (`2,307` passed, `112` environment-gated skips) and static verification. Two raw
+canonical-generation runs produced the same `0001` SHA-256
+`cee3ac704b823512055e8ffc285f6b2faacb7075ab8c10160e467d6ed3b01b28`; offline
+`0088 -> 0089` and `0089 -> 0088` rendering passed. No isolated PostgreSQL credential set was
+available, so these results do not claim live RLS/constraint execution.
+
+`admin.self_approve` remains `PENDING_PROTECTED_BINDING`; existing maker/checker tests must remain
+unchanged and no A4b test may claim that same-subject approval is active.
+
 ### Redacted classification-policy summary — 2026-08-01
 
 ADR-0105 adds an ordinary-assurance summary without relaxing the existing full policy endpoints.

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from datariver.application.dto import (
     AdminAccessRequestPage,
+    CanonicalAdminBindingEvidence,
     MembershipChangeRequestActivity,
     MembershipChangeRequestActivityPage,
     MembershipOwnedTable,
@@ -48,7 +49,15 @@ from datariver.domain.admin_access import (
     SystemAssigneePatchCommand,
     SystemAssigneeUpdateCommand,
 )
-from datariver.domain.authz import Action, Classification
+from datariver.domain.authz import SERVICE_ONLY_ACTIONS, Action, Classification
+from datariver.domain.capability_catalog import (
+    CANONICAL_ADMIN_CAPABILITY_HASH,
+    CANONICAL_ADMIN_ROLE_KEY,
+    CAPABILITY_CATALOG_VERSION,
+    DEFAULT_HUMAN_ADMIN_ACTIONS,
+    AccessRoleKind,
+    AccessRoleManagementSource,
+)
 from datariver.domain.common import (
     ConflictError,
     ForbiddenError,
@@ -67,6 +76,7 @@ from datariver.infrastructure.db.models.platform import (
     AccessRoleModel,
     AdminAccessApprovalModel,
     AdminAccessRequestModel,
+    CanonicalAdminBindingModel,
     DataSystemModel,
     MembershipRenewalRequestModel,
     SubjectModel,
@@ -824,7 +834,47 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             if assignment is not None
             else None
         )
-        return _membership_access_record(subject, membership, role_assignment=evidence)
+        binding = await self._session.get(
+            CanonicalAdminBindingModel,
+            {"workspace_id": workspace_id, "subject_id": subject_id},
+        )
+        canonical_evidence: CanonicalAdminBindingEvidence | None = None
+        if binding is not None:
+            canonical_role = (
+                await self._session.scalars(
+                    select(AccessRoleModel).where(
+                        AccessRoleModel.workspace_id == workspace_id,
+                        AccessRoleModel.id == binding.canonical_role_id,
+                    )
+                )
+            ).one_or_none()
+            canonical_evidence = _canonical_admin_binding_evidence(
+                subject=subject,
+                membership=membership,
+                binding=binding,
+                role=canonical_role,
+            )
+        return _membership_access_record(
+            subject,
+            membership,
+            role_assignment=evidence,
+            canonical_admin_binding=canonical_evidence,
+        )
+
+    async def assert_assignable_human_role(self, *, workspace_id: UUID, role_id: UUID) -> None:
+        role = (
+            await self._session.scalars(
+                select(AccessRoleModel).where(
+                    AccessRoleModel.workspace_id == workspace_id,
+                    AccessRoleModel.id == role_id,
+                    AccessRoleModel.active.is_(True),
+                )
+            )
+        ).one_or_none()
+        if role is None:
+            raise ValidationError("The active access role does not exist in this workspace.")
+        if role.role_kind != AccessRoleKind.HUMAN_ROLE.value:
+            raise ValidationError("Canonical Admin cannot be assigned through a generic Role path.")
 
     async def get_identity_profile_target(
         self,
@@ -1147,6 +1197,7 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                         AccessRoleModel.workspace_id == workspace_id,
                         AccessRoleModel.id == role_id,
                         AccessRoleModel.active.is_(True),
+                        AccessRoleModel.role_kind == AccessRoleKind.HUMAN_ROLE.value,
                     )
                 )
             ).one_or_none()
@@ -1161,7 +1212,12 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             actor_id = await self._session.scalar(
                 text("SELECT NULLIF(current_setting('app.subject_id', true), '')::uuid")
             )
-            if role is None or membership is None or not isinstance(actor_id, UUID):
+            if (
+                role is None
+                or role.role_kind != AccessRoleKind.HUMAN_ROLE.value
+                or membership is None
+                or not isinstance(actor_id, UUID)
+            ):
                 raise ConflictError("The provisioned role-assignment evidence is incomplete.")
             membership_groups = _string_set(membership.attributes, "groups")
             if membership_groups is None:
@@ -1176,7 +1232,7 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 role_version=role.version,
                 role_marker=role_markers[0] if len(role_markers) == 1 else None,
                 membership_version=membership.version,
-                access_payload_hash=_membership_access_payload_hash(membership),
+                access_payload_hash=membership_access_payload_hash(membership),
                 actor_id=actor_id,
             )
         return ProvisionedWorkspaceUser(
@@ -1302,12 +1358,15 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                         AccessRoleModel.id == role_id,
                         AccessRoleModel.version == role_version,
                         AccessRoleModel.active.is_(True),
+                        AccessRoleModel.role_kind == AccessRoleKind.HUMAN_ROLE.value,
                     )
                     .with_for_update()
                 )
             ).one_or_none()
             if role is None:
                 raise ConflictError("The selected access role changed before assignment.")
+            if role.role_kind != AccessRoleKind.HUMAN_ROLE.value:
+                raise ValidationError("Canonical Admin cannot be assigned through a generic path.")
             if role_marker != f"datariver-role-{role.role_key}":
                 raise ConflictError("The membership role marker does not match the selected role.")
             if (
@@ -1324,6 +1383,7 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                     workspace_id=workspace_id,
                     subject_id=subject_id,
                     role_id=role_id,
+                    role_kind=AccessRoleKind.HUMAN_ROLE.value,
                     role_version=role_version,
                     membership_version=membership_version,
                     access_payload_hash=access_payload_hash,
@@ -2009,7 +2069,7 @@ def _string_set(document: object, key: str) -> set[str] | None:
     return set(value)
 
 
-def _membership_access_payload_hash(membership: WorkspaceMembershipModel) -> str:
+def membership_access_payload_hash(membership: WorkspaceMembershipModel) -> str:
     groups = _string_set(membership.attributes, "groups")
     allowed = _string_set(membership.attributes, "allowed_actions")
     denied = _string_set(membership.attributes, "denied_actions")
@@ -2089,6 +2149,7 @@ def _membership_access_record(
     membership: WorkspaceMembershipModel,
     *,
     role_assignment: MembershipRoleAssignmentEvidence | None = None,
+    canonical_admin_binding: CanonicalAdminBindingEvidence | None = None,
 ) -> WorkspaceMembershipAccessRecord:
     attributes = membership.attributes
     groups = _string_set(attributes, "groups")
@@ -2127,4 +2188,66 @@ def _membership_access_record(
         allowed_system_ids=command.allowed_system_ids,
         allowed_domain_ids=command.allowed_domain_ids,
         role_assignment=role_assignment,
+        canonical_admin_binding=canonical_admin_binding,
+    )
+
+
+def _canonical_admin_binding_evidence(
+    *,
+    subject: SubjectModel,
+    membership: WorkspaceMembershipModel,
+    binding: CanonicalAdminBindingModel,
+    role: AccessRoleModel | None,
+) -> CanonicalAdminBindingEvidence:
+    status = "REVOKED" if binding.state == "REVOKED" else "STALE"
+    allowed = _string_set(membership.attributes, "allowed_actions")
+    denied = _string_set(membership.attributes, "denied_actions")
+    groups = _string_set(membership.attributes, "groups")
+    expected_actions = {action.value for action in DEFAULT_HUMAN_ADMIN_ACTIONS}
+    now = utc_now()
+    membership_is_current = (
+        subject.active
+        and membership.active
+        and (membership.access_expires_at is None or membership.access_expires_at > now)
+        and membership.job_function != "SERVICE_ACCOUNT"
+        and membership.clearance == int(Classification.RESTRICTED)
+        and groups is not None
+        and "security-administrators" in groups
+        and allowed == expected_actions
+        and denied is not None
+        and not denied
+        and allowed.isdisjoint(action.value for action in SERVICE_ONLY_ACTIONS)
+    )
+    role_is_current = (
+        role is not None
+        and role.active
+        and role.role_key == CANONICAL_ADMIN_ROLE_KEY
+        and role.role_kind == AccessRoleKind.CANONICAL_ADMIN.value
+        and role.management_source == AccessRoleManagementSource.SERVER_CANONICAL.value
+        and role.version == binding.canonical_role_version
+        and role.capability_catalog_version == CAPABILITY_CATALOG_VERSION
+        and role.allowed_actions == sorted(expected_actions)
+        and role.denied_actions == []
+        and role.groups == ["security-administrators"]
+        and role.allowed_system_ids == []
+        and role.allowed_domain_ids == []
+        and role.clearance == int(Classification.RESTRICTED)
+    )
+    if (
+        binding.state == "ACTIVE"
+        and membership_is_current
+        and role_is_current
+        and binding.capability_catalog_version == CAPABILITY_CATALOG_VERSION
+        and binding.capability_hash == CANONICAL_ADMIN_CAPABILITY_HASH
+        and binding.membership_version == membership.version
+        and binding.membership_access_hash == membership_access_payload_hash(membership)
+    ):
+        status = "VERIFIED"
+    return CanonicalAdminBindingEvidence(
+        status=status,
+        role_version=binding.canonical_role_version,
+        catalog_version=binding.capability_catalog_version,
+        membership_version=binding.membership_version,
+        binding_version=binding.version,
+        updated_at=binding.updated_at,
     )

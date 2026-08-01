@@ -67,10 +67,11 @@ BEGIN
     IF p_role_id IS NOT NULL THEN
         SELECT * INTO selected_role FROM iam.access_roles
         WHERE workspace_id = p_workspace_id AND id = p_role_id AND active IS TRUE
+          AND role_kind = 'HUMAN_ROLE'
         FOR KEY SHARE;
         IF NOT FOUND THEN
-            RAISE EXCEPTION 'The selected workspace role is not active'
-                USING ERRCODE = '23503';
+            RAISE EXCEPTION 'The selected workspace role is not an assignable human role'
+                USING ERRCODE = '23514';
         END IF;
         access_clearance := selected_role.clearance;
         access_attributes := jsonb_build_object(
@@ -111,3 +112,21 @@ BEGIN
 END
 $datariver$
 """.strip()
+
+# The 0089 downgrade restores the exact pre-canonical-role function. Keeping the
+# legacy body derived beside the current function avoids a second drifting copy
+# of the otherwise identical security-definer contract.
+IDENTITY_PROVISIONING_FUNCTION_SQL_V1 = (
+    IDENTITY_PROVISIONING_FUNCTION_SQL.replace(
+        " AND active IS TRUE\n          AND role_kind = 'HUMAN_ROLE'",
+        " AND active IS TRUE",
+    )
+    .replace(
+        "The selected workspace role is not an assignable human role",
+        "The selected workspace role is not active",
+    )
+    .replace(
+        "ERRCODE = '23514';\n        END IF;\n        access_clearance := selected_role.clearance;",
+        "ERRCODE = '23503';\n        END IF;\n        access_clearance := selected_role.clearance;",
+    )
+)

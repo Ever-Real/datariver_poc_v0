@@ -297,6 +297,15 @@ versions, jurisdiction, grant limits, provider bindings, reasons, timestamps, ha
 metadata remain on the existing fresh-assurance full endpoints. Reauthentication never
 automatically replays the full read.
 
+ADR-0106 separates a server-owned Canonical Admin definition from generic Role assignment.
+`iam.access_roles` stores at most one unassigned `CANONICAL_ADMIN` definition per Workspace while
+`iam.canonical_admin_bindings` stores separately verified evidence. Generic assignment and identity
+provisioning accept only `HUMAN_ROLE`; no production bind/rebind/revoke API or UI exists. Only the
+parameter-free local identity bootstrap may write the fixed development binding after checking
+`APP_ENV=development` before database access. Binding hashes and the canonical Role UUID remain
+internal; the Admin response exposes only status and non-sensitive version/timestamp fields.
+`admin.self_approve` remains pending metadata and all maker/checker evaluators remain unchanged.
+
 ## Assistant inference boundary
 
 Current Chat always remains an in-process authorization, routing, evidence-integrity, citation and

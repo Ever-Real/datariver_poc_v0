@@ -55,6 +55,17 @@ markers before any request, approval or membership mutation can be persisted. Th
 that form and directs administrators to remove the Role through the dedicated version-bound path
 first.
 
+Canonical Admin is not a generic Role assignment. Every Workspace has at most one server-owned,
+unassigned Canonical Admin definition derived from the same exhaustive human capability catalog.
+Generic Role create/update/deactivate, assignment and identity provisioning accept only
+`HUMAN_ROLE`; the database repeats that boundary with a discriminator CHECK and composite FK. A
+separate binding may exist only for the fixed local development administrator through the
+parameter-free development bootstrap. Production migration creates no user binding or escalation,
+and no production bind/rebind/revoke API, UI or executable function exists. Binding evidence is
+current only while the exact membership, resource scopes, Role/catalog versions and internal hashes
+still match. It does not activate the pending `admin.self_approve` metadata or alter maker/checker
+rules.
+
 ## Administration and separation of duties
 
 - Read access requires an active, unexpired, human security-administrator membership.

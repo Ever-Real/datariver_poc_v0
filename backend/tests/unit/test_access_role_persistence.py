@@ -16,6 +16,7 @@ from datariver.infrastructure.db.models.platform import (
     AccessRoleAssignmentModel,
     AccessRoleDataRuleModel,
     AccessRoleModel,
+    CanonicalAdminBindingModel,
 )
 from datariver.interfaces.http.routes.admin import (
     _role_assigned_count,
@@ -74,6 +75,7 @@ class MetadataInspector:
                 ),
             }
             for column in self._tables[table_name].columns
+            if not (table_name == "access_role_assignments" and column.name == "role_kind")
         ]
         if self._mutate_column and table_name == "access_role_data_rules":
             next(column for column in columns if column["name"] == "payload_hash")["type"] = (
@@ -152,6 +154,9 @@ def test_access_role_model_is_workspace_scoped_and_contains_no_credential_fields
     assert {
         "workspace_id",
         "role_key",
+        "role_kind",
+        "management_source",
+        "capability_catalog_version",
         "name",
         "description",
         "clearance",
@@ -173,7 +178,52 @@ def test_access_role_model_is_workspace_scoped_and_contains_no_credential_fields
     assert {
         "ck_access_roles_role_key_shape",
         "ck_access_roles_clearance_range",
+        "ck_access_roles_role_kind_vocabulary",
+        "ck_access_roles_management_source_vocabulary",
+        "ck_access_roles_management_shape",
     } <= checks
+
+
+def test_canonical_admin_binding_is_separate_from_generic_role_assignments() -> None:
+    role_table = cast(Table, AccessRoleModel.__table__)
+    assignment_table = cast(Table, AccessRoleAssignmentModel.__table__)
+    binding_table = cast(Table, CanonicalAdminBindingModel.__table__)
+
+    assert "role_kind" in assignment_table.c
+    assignment_checks = {
+        constraint.name
+        for constraint in assignment_table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert "ck_access_role_assignments_human_role_only" in assignment_checks
+    assignment_role_fk = next(
+        constraint
+        for constraint in assignment_table.constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+        and constraint.name == "fk_access_role_assignments_role"
+    )
+    assert [column.name for column in assignment_role_fk.columns] == [
+        "workspace_id",
+        "role_id",
+        "role_kind",
+    ]
+    assert {"workspace_id", "subject_id"} == {column.name for column in binding_table.primary_key}
+    assert {
+        "canonical_role_id",
+        "canonical_role_version",
+        "capability_catalog_version",
+        "capability_hash",
+        "membership_version",
+        "membership_access_hash",
+        "state",
+        "binding_source",
+    } <= set(binding_table.c.keys())
+    canonical_indexes = {
+        index.name
+        for index in role_table.indexes
+        if index.unique and index.dialect_options["postgresql"].get("where") is not None
+    }
+    assert "uq_access_roles_workspace_canonical_admin" in canonical_indexes
 
 
 def test_access_role_migration_installs_rls_and_bounded_app_privileges() -> None:
@@ -195,6 +245,50 @@ def test_access_role_migration_installs_rls_and_bounded_app_privileges() -> None
     assert "REVOKE UPDATE ON iam.access_roles FROM datariver_app" in migration
     assert "GRANT UPDATE (name, description, clearance, groups" in migration
     assert "GRANT SELECT, INSERT, UPDATE ON iam.access_roles TO datariver_app" not in initial
+
+
+def test_0089_migration_has_no_automatic_user_escalation_or_runtime_binding_write() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = (root / "backend/alembic/versions/0089_canonical_admin_role_binding.py").read_text(
+        encoding="utf-8"
+    )
+    initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
+
+    assert 'down_revision: str | Sequence[str] | None = "0088"' in migration
+    for protected_table in (
+        "iam.subjects",
+        "iam.workspace_memberships",
+        "iam.access_role_assignments",
+        "iam.access_role_assignment_events",
+        "iam.canonical_admin_bindings",
+    ):
+        assert f"INSERT INTO {protected_table}" not in migration
+    assert "role_kind = 'HUMAN_ROLE'" in migration
+    assert "fk_access_role_assignments_role" in migration
+    assert "REVOKE INSERT, UPDATE, DELETE ON iam.canonical_admin_bindings FROM datariver_app" in (
+        migration
+    )
+    assert "GRANT SELECT ON iam.canonical_admin_bindings TO datariver_app" in migration
+    assert "GRANT EXECUTE" not in migration
+    assert "capture_local_canonical_admin_binding" not in migration
+    assert "ON iam.workspace_memberships" not in migration
+    assert "binding history" in migration
+    assert "FOR INSERT TO datariver_bootstrap" in migration
+    assert "FOR UPDATE TO datariver_bootstrap" in migration
+    assert "FOR ALL TO datariver_bootstrap" not in migration
+    downgrade = migration.split("def downgrade() -> None:", maxsplit=1)[1]
+    assert downgrade.index("access_roles_bootstrap_canonical_update") < downgrade.index(
+        'op.drop_column("access_roles", "capability_catalog_version"'
+    )
+    assert downgrade.index("access_roles_bootstrap_canonical_insert") < downgrade.index(
+        'op.drop_column("access_roles", "role_kind"'
+    )
+    for source in (migration, initial):
+        assert "ALTER TABLE iam.access_roles ENABLE ROW LEVEL SECURITY" in source
+        assert "ALTER TABLE iam.access_roles FORCE ROW LEVEL SECURITY" in source
+        assert "canonical_admin_bindings_local_insert" in source
+        assert "00000000-0000-4000-8000-000000000100" in source
+        assert "00000000-0000-4000-8000-000000000101" in source
 
 
 def test_policy_book_rbac_models_are_tenant_scoped_and_secret_free() -> None:

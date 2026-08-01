@@ -914,6 +914,8 @@ class MembershipAccessRepository(Protocol):
         for_update: bool = False,
     ) -> IdentityProfileTarget | None: ...
 
+    async def assert_assignable_human_role(self, *, workspace_id: UUID, role_id: UUID) -> None: ...
+
     async def update_identity_profile(
         self,
         *,
