@@ -43,11 +43,13 @@ Adding, removing or changing a scope therefore makes the binding stale until the
 path records the new version and hash, without discarding legitimate reconciliation scopes.
 
 The local development Catalog synchronization uses a second parameter-free fixed-target operator
-path after projection sync. It requires `APP_ENV=development` before secret or database access and
-uses the trusted bootstrap principal to lock only the fixed local membership. The asset-derived
-scope update, membership version, refreshed Canonical binding hash/version, authorization decision,
-outbox event and idempotency result commit in one transaction. Generic membership updates and all
-HTTP paths continue to reject Canonical Admin access changes.
+path after projection sync. It requires `APP_ENV=development` before secret or database access,
+reads the fixed Workspace projection through the ordinary app/RLS connection and uses the trusted
+bootstrap principal to lock only the fixed local membership. The asset-derived scope update,
+membership version and refreshed Canonical binding hash/version commit in one transaction. This
+naturally idempotent bootstrap does not use production integration idempotency, policy-decision,
+audit or outbox stores. Generic membership updates and all HTTP paths continue to reject Canonical
+Admin access changes.
 
 Generic assignment has a fixed `HUMAN_ROLE` discriminator in both its composite FK and CHECK. Role
 assignment, identity provisioning, Role update and Role deactivation also reject Canonical Admin in
@@ -80,6 +82,13 @@ or data rule. Otherwise it removes the unassigned definitions, policies, trigger
 discriminator constraints and columns without deleting user, membership or custom-Role data.
 
 ## Consequences
+
+- The parameter-free local Catalog scope reconciliation is a development-only trusted-operator
+  bootstrap operation. It reads projection scope through the ordinary app/RLS connection, then
+  updates only the fixed local membership and its Canonical Admin binding in one bootstrap
+  transaction. It is naturally idempotent and emits only bounded operator JSON; it does not use
+  production integration idempotency, policy-decision, audit, or outbox stores. Production, HTTP,
+  arbitrary-target, and service-identity invocation remain unavailable.
 
 - Canonical Admin is server-owned evidence, never a delegable custom Role.
 - Existing production users are not promoted by migration, seed or reconciliation.

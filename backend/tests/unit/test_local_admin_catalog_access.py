@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -65,6 +66,41 @@ def test_local_admin_catalog_access_adds_exact_scopes_without_broadening_policy(
     assert command.denied_actions == {Action.CATALOG_EXPORT}
     assert command.allowed_system_ids == {existing_system_id, catalog_system_id}
     assert command.allowed_domain_ids == {existing_domain_id, catalog_domain_id}
+
+
+def test_local_admin_catalog_access_replay_is_a_natural_noop() -> None:
+    system_id = uuid4()
+    domain_id = uuid4()
+    membership = WorkspaceMembershipModel(
+        workspace_id=uuid4(),
+        subject_id=uuid4(),
+        department_id=None,
+        job_function="LOCAL_ADMINISTRATOR",
+        clearance=int(Classification.RESTRICTED),
+        attributes={
+            "groups": ["security-administrators"],
+            "allowed_actions": [Action.ADMIN_MANAGE.value],
+            "denied_actions": [],
+            "allowed_system_ids": [str(system_id)],
+            "allowed_domain_ids": [str(domain_id)],
+        },
+        active=True,
+        version=10,
+    )
+    command = admin_catalog_access_command(
+        membership=membership,
+        system_ids=frozenset({system_id}),
+        domain_ids=frozenset({domain_id}),
+    )
+    current = local_admin_catalog_access_module._subject_access(membership)
+
+    desired = replace(
+        current,
+        allowed_system_ids=command.allowed_system_ids,
+        allowed_domain_ids=command.allowed_domain_ids,
+    )
+
+    assert desired == current
 
 
 def test_operator_workflows_reconcile_admin_scope_after_catalog_sync() -> None:
@@ -184,18 +220,14 @@ def test_local_catalog_reconciliation_is_fixed_atomic_and_binding_current() -> N
     assert "SqlMembershipAccessRepository(session).apply(command)" in source
     assert "_reconcile_local_canonical_admin_binding(session=session)" in source
     assert "_canonical_admin_binding_is_current(" in source
-    assert "SqlOutboxWriter(session).add_events" in source
-    assert "SqlIdempotencyStore(session)" in source
-    assert "idempotency.save_result" in source
+    assert "integration." not in source
+    assert "SqlOutboxWriter" not in source
+    assert "SqlIdempotencyStore" not in source
+    assert "PolicyDecisionModel" not in source
     assert "except " not in bootstrap_transaction
     assert bootstrap_transaction.index(
         "SqlMembershipAccessRepository(session).apply(command)"
     ) < bootstrap_transaction.index("_reconcile_local_canonical_admin_binding(session=session)")
-    assert bootstrap_transaction.index(
-        "_reconcile_local_canonical_admin_binding(session=session)"
-    ) < bootstrap_transaction.index("SqlOutboxWriter(session).add_events")
-    assert bootstrap_transaction.index(
-        "SqlOutboxWriter(session).add_events"
-    ) < bootstrap_transaction.index("idempotency.save_result")
+    assert "await session.refresh(membership)" in bootstrap_transaction
     assert "update_membership_with_hardware_key" not in source
     assert "assert_manual_access_update_allowed" not in source

@@ -3,15 +3,11 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import replace
-from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy import and_, func, or_, select
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from datariver.application.services.authorization import AuthorizationService
 from datariver.bootstrap import (
-    LOCAL_DEMO_IDENTITIES,
     LOCAL_SUBJECT_ID,
     LOCAL_WORKSPACE_ID,
     _reconcile_local_canonical_admin_binding,
@@ -20,24 +16,14 @@ from datariver.config import Settings, get_settings
 from datariver.domain.admin_access import MembershipAccessUpdate
 from datariver.domain.authz import (
     Action,
-    AuthenticationAssurance,
     Classification,
-    Decision,
-    EnvironmentAttributes,
-    ResourceAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import DomainEvent, canonical_json_hash, utc_now
+from datariver.domain.common import utc_now
 from datariver.infrastructure.db.admin_access import (
     SqlMembershipAccessRepository,
 )
-from datariver.infrastructure.db.authz import (
-    _canonical_admin_binding_is_current,
-    subject_attributes_from_models,
-    with_authentication_context,
-)
-from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
-from datariver.infrastructure.db.models.authz import PolicyDecisionModel
+from datariver.infrastructure.db.authz import _canonical_admin_binding_is_current
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.platform import (
     AccessRoleModel,
@@ -48,52 +34,6 @@ from datariver.infrastructure.db.models.platform import (
 from datariver.infrastructure.db.rls import set_security_context
 from datariver.infrastructure.db.session import Database
 from datariver.infrastructure.secrets import SecretResolver
-
-_LOCAL_CHECKER_SUBJECT_ID = next(
-    identity.subject_id for identity in LOCAL_DEMO_IDENTITIES if identity.username == "sua.han"
-)
-_LOCAL_RECONCILIATION_OPERATION = "local.admin.catalog-access.reconcile"
-
-
-class _SessionDecisionWriter:
-    """Append the local reconciliation decision to its mutation transaction."""
-
-    def __init__(self, session: AsyncSession) -> None:
-        self._session = session
-
-    async def append_decision(
-        self,
-        *,
-        decision: Decision,
-        subject_id: UUID,
-        workspace_id: UUID,
-        resource_id: UUID,
-        action: str,
-        request_id: str,
-    ) -> None:
-        self._session.add(
-            PolicyDecisionModel(
-                id=decision.decision_id,
-                workspace_id=workspace_id,
-                subject_id=subject_id,
-                resource_id=resource_id,
-                action=action,
-                effect=decision.effect.value,
-                reason_codes=list(decision.reason_codes),
-                policy_versions=list(decision.policy_versions),
-                evaluation_context={
-                    "kind": "local_admin_catalog_access_reconciliation",
-                    "authentication_assurance": decision.authentication_assurance.value,
-                    "authentication_time": (
-                        decision.authentication_time.isoformat()
-                        if decision.authentication_time is not None
-                        else None
-                    ),
-                },
-                request_id=request_id,
-                decided_at=utc_now(),
-            )
-        )
 
 
 def _subject_access(membership: WorkspaceMembershipModel) -> SubjectAttributes:
@@ -137,50 +77,6 @@ def admin_catalog_access_command(
         denied_actions=current.denied_actions,
         allowed_system_ids=current.allowed_system_ids | system_ids,
         allowed_domain_ids=current.allowed_domain_ids | domain_ids,
-    )
-
-
-async def _actor(
-    session: AsyncSession,
-    *,
-    subject_id: UUID,
-    now: datetime,
-) -> SubjectAttributes:
-    await set_security_context(
-        session,
-        workspace_id=LOCAL_WORKSPACE_ID,
-        subject_id=subject_id,
-    )
-    row = (
-        await session.execute(
-            select(SubjectModel, WorkspaceMembershipModel)
-            .join(
-                WorkspaceMembershipModel,
-                WorkspaceMembershipModel.subject_id == SubjectModel.id,
-            )
-            .where(
-                SubjectModel.id == subject_id,
-                SubjectModel.active.is_(True),
-                WorkspaceMembershipModel.workspace_id == LOCAL_WORKSPACE_ID,
-                WorkspaceMembershipModel.active.is_(True),
-                or_(
-                    WorkspaceMembershipModel.access_expires_at.is_(None),
-                    WorkspaceMembershipModel.access_expires_at > now,
-                ),
-            )
-        )
-    ).one_or_none()
-    if row is None:
-        raise RuntimeError("The local administrator reconciliation identity is unavailable.")
-    subject = subject_attributes_from_models(
-        subject=row[0],
-        membership=row[1],
-        observed_at=now,
-    )
-    return with_authentication_context(
-        subject,
-        authentication_time=now,
-        authentication_assurance=AuthenticationAssurance.PASSWORD,
     )
 
 
@@ -292,11 +188,6 @@ async def reconcile_local_admin_catalog_access() -> dict[str, object]:
     now = utc_now()
     try:
         async with bootstrap_database.session_factory() as session, session.begin():
-            checker = await _actor(
-                session,
-                subject_id=_LOCAL_CHECKER_SUBJECT_ID,
-                now=now,
-            )
             await set_security_context(
                 session,
                 workspace_id=LOCAL_WORKSPACE_ID,
@@ -333,125 +224,38 @@ async def reconcile_local_admin_catalog_access() -> dict[str, object]:
             )
             updated = desired != current
             membership_version = membership.version
-            binding_version: int | None = None
             if updated:
-                scope_hash = canonical_json_hash(
-                    {
-                        "system_ids": sorted(str(value) for value in system_ids),
-                        "domain_ids": sorted(str(value) for value in domain_ids),
-                    }
-                )
-                request_hash = canonical_json_hash(
-                    {
-                        "operation": _LOCAL_RECONCILIATION_OPERATION,
-                        "scope_hash": scope_hash,
-                        "command": command.command_document(),
-                    }
-                )
-                request_id = f"local-admin-catalog-access-{scope_hash[:16]}"
-                idempotency_key = (
-                    f"local-admin-catalog-access-v{membership.version}-{scope_hash[:16]}"
-                )
-                idempotency = SqlIdempotencyStore(session)
-                existing = await idempotency.get_result(
-                    workspace_id=LOCAL_WORKSPACE_ID,
-                    key=idempotency_key,
-                    operation=_LOCAL_RECONCILIATION_OPERATION,
-                )
-                if existing is not None:
-                    if existing.request_hash != request_hash:
-                        raise RuntimeError(
-                            "The local catalog reconciliation idempotency record is invalid."
-                        )
-                    return existing.result
-                decision = await AuthorizationService(
-                    decision_writer=_SessionDecisionWriter(session),
-                    development_admin_password_bypass_enabled=True,
-                ).authorize(
-                    subject=checker,
-                    resource=ResourceAttributes(
-                        resource_id=LOCAL_SUBJECT_ID,
-                        workspace_id=LOCAL_WORKSPACE_ID,
-                        resource_type="workspace_membership_access",
-                        owner_department_id=None,
-                        system_id=None,
-                        domain_id=None,
-                        classification=Classification.RESTRICTED,
-                        lifecycle="ACTIVE",
-                        owner_subject_id=LOCAL_SUBJECT_ID,
-                    ),
-                    action=Action.ADMIN_MANAGE,
-                    environment=EnvironmentAttributes(requested_at=now),
-                    request_id=request_id,
-                )
                 membership_version = await SqlMembershipAccessRepository(session).apply(command)
-                await _reconcile_local_canonical_admin_binding(session=session)
-                await session.flush()
-                binding = await session.get(
-                    CanonicalAdminBindingModel,
-                    {
-                        "workspace_id": LOCAL_WORKSPACE_ID,
-                        "subject_id": LOCAL_SUBJECT_ID,
-                    },
+                await session.refresh(membership)
+            await _reconcile_local_canonical_admin_binding(session=session)
+            await session.flush()
+            binding = await session.get(
+                CanonicalAdminBindingModel,
+                {
+                    "workspace_id": LOCAL_WORKSPACE_ID,
+                    "subject_id": LOCAL_SUBJECT_ID,
+                },
+            )
+            target = await session.get(SubjectModel, LOCAL_SUBJECT_ID)
+            role = (
+                await session.get(AccessRoleModel, binding.canonical_role_id)
+                if binding is not None
+                else None
+            )
+            if (
+                binding is None
+                or target is None
+                or not _canonical_admin_binding_is_current(
+                    subject=target,
+                    membership=membership,
+                    binding=binding,
+                    role=role,
+                    now=now,
                 )
-                target = await session.get(SubjectModel, LOCAL_SUBJECT_ID)
-                role = (
-                    await session.get(AccessRoleModel, binding.canonical_role_id)
-                    if binding is not None
-                    else None
+            ):
+                raise RuntimeError(
+                    "The local Canonical Admin binding did not match the reconciled access."
                 )
-                if (
-                    binding is None
-                    or target is None
-                    or not _canonical_admin_binding_is_current(
-                        subject=target,
-                        membership=membership,
-                        binding=binding,
-                        role=role,
-                        now=now,
-                    )
-                ):
-                    raise RuntimeError(
-                        "The local Canonical Admin binding did not match the reconciled access."
-                    )
-                binding_version = binding.version
-                await SqlOutboxWriter(session).add_events(
-                    [
-                        DomainEvent.create(
-                            event_type="iam.workspace_membership.access_updated.v1",
-                            aggregate_type="workspace_membership",
-                            aggregate_id=LOCAL_SUBJECT_ID,
-                            workspace_id=LOCAL_WORKSPACE_ID,
-                            payload={
-                                "actor_id": str(checker.subject_id),
-                                "payload_hash": command.payload_hash,
-                                "membership_version": membership_version,
-                                "policy_decision_id": str(decision.decision_id),
-                                "assurance": checker.authentication_assurance.value,
-                                "reconciliation": _LOCAL_RECONCILIATION_OPERATION,
-                            },
-                        )
-                    ]
-                )
-                result: dict[str, object] = {
-                    "workspace_id": str(LOCAL_WORKSPACE_ID),
-                    "administrator_subject_id": str(LOCAL_SUBJECT_ID),
-                    "active_asset_count": active_asset_count,
-                    "quarantined_asset_count": quarantined_asset_count,
-                    "system_scope_count": len(system_ids),
-                    "domain_scope_count": len(domain_ids),
-                    "updated": True,
-                    "membership_version": membership_version,
-                    "binding_version": binding_version,
-                }
-                await idempotency.save_result(
-                    workspace_id=LOCAL_WORKSPACE_ID,
-                    key=idempotency_key,
-                    operation=_LOCAL_RECONCILIATION_OPERATION,
-                    request_hash=request_hash,
-                    result=result,
-                )
-                return result
             return {
                 "workspace_id": str(LOCAL_WORKSPACE_ID),
                 "administrator_subject_id": str(LOCAL_SUBJECT_ID),
@@ -459,9 +263,9 @@ async def reconcile_local_admin_catalog_access() -> dict[str, object]:
                 "quarantined_asset_count": quarantined_asset_count,
                 "system_scope_count": len(system_ids),
                 "domain_scope_count": len(domain_ids),
-                "updated": False,
+                "updated": updated,
                 "membership_version": membership_version,
-                "binding_version": binding_version,
+                "binding_version": binding.version,
             }
     finally:
         await bootstrap_database.close()
