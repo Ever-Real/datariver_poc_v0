@@ -300,6 +300,7 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/workspace-memberships/{target_subject_id}/role",
         "/api/v1/admin/workspace-memberships",
         "/api/v1/admin/access-roles",
+        "/api/v1/admin/access-roles/capabilities",
         "/api/v1/admin/access-roles/{role_id}",
         "/api/v1/admin/systems",
         "/api/v1/admin/systems/{system_id}/assignees",
@@ -1925,6 +1926,29 @@ def test_classification_admin_requests_cannot_supply_policy_bindings_for_grants(
 def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
     factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
     document = create_app(settings(), container_factory=factory).openapi()
+
+    capability_operation = document["paths"]["/api/v1/admin/access-roles/capabilities"]["get"]
+    assert capability_operation["responses"]["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/AccessRoleCapabilityCatalogResponse"
+    }
+    capability_schema = document["components"]["schemas"]["AccessRoleCapabilityResponse"]
+    assert set(capability_schema["required"]) == {
+        "action",
+        "label",
+        "description",
+        "actor_kind",
+        "assignability",
+        "default_admin",
+        "assurance",
+        "reason_policy",
+        "self_approval_policy",
+        "self_approval_binding",
+        "risk",
+    }
+    assert set(document["components"]["schemas"]["CapabilityAssignability"]["enum"]) == {
+        "HUMAN_ROLE",
+        "SERVICE_PRINCIPAL_ONLY",
+    }
 
     membership_list = document["paths"]["/api/v1/admin/workspace-memberships"]["get"]
     membership_parameters = {

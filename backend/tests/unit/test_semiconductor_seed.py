@@ -1,4 +1,4 @@
-from datariver.domain.authz import Action
+from datariver.domain.authz import SERVICE_ONLY_ACTIONS, Action
 from datariver.seed.__main__ import (
     ADMINISTRATOR_ACTIONS,
     REVIEWER_ACTIONS,
@@ -47,6 +47,12 @@ def test_seed_publication_has_separate_authorized_publisher_and_reviewer_roles()
     assert Action.KG_PUBLISH.value in ADMINISTRATOR_ACTIONS
     assert Action.KG_REVIEW.value in REVIEWER_ACTIONS
     assert Action.KG_PUBLISH.value not in REVIEWER_ACTIONS
+
+
+def test_seed_administrator_uses_the_default_human_capability_catalog() -> None:
+    assert len(ADMINISTRATOR_ACTIONS) == 64
+    assert Action.CHANGE_RAW_CREATE.value in ADMINISTRATOR_ACTIONS
+    assert not {action.value for action in SERVICE_ONLY_ACTIONS} & set(ADMINISTRATOR_ACTIONS)
 
 
 def test_seed_operation_ledger_exactly_covers_every_assertion() -> None:

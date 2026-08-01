@@ -1171,6 +1171,13 @@ contains Users, Systems, server-managed Role definitions/assignment and the appl
 security/exception workflows;
 **Retention & erasure governance** contains policy, Legal Hold and erasure review. Provider
 eligibility remains a nested policy approval because it is distinct from connection configuration.
+Role definitions load their service-grouped Action labels, descriptions, assurance and assignment
+boundary from `GET /api/v1/admin/access-roles/capabilities`. The catalog is exhaustive over the
+server `Action` enum: all 64 human Actions, including `admin.manage` and `change.raw.create`, are
+human-Role assignable and default to the canonical local human Admin; the 5 worker Actions remain
+visible but disabled. Self-approval fields are pending metadata only and do not relax current
+maker/checker, erasure-owner, worker, RLS or secret boundaries. See
+[ADR-0103](docs/adr/0103-server-canonical-human-capability-catalog.md).
 
 The inventory always shows deployment-managed PostgreSQL/OIDC bootstrap requirements, separate
 Redis cache/delivery and S3/DataHub core connectors, and optional feature connectors. In

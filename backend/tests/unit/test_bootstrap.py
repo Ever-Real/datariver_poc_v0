@@ -2,8 +2,13 @@ from uuid import uuid4
 
 import pytest
 
-from datariver.bootstrap import _local_human_membership_attributes, _resolve_local_subject
-from datariver.domain.authz import Action
+from datariver.bootstrap import (
+    LOCAL_DEMO_IDENTITIES,
+    _local_human_membership_attributes,
+    _resolve_local_subject,
+)
+from datariver.domain.authz import SERVICE_ONLY_ACTIONS, Action
+from datariver.domain.capability_catalog import DEFAULT_HUMAN_ADMIN_ACTIONS
 from datariver.infrastructure.db.models.platform import SubjectModel
 
 
@@ -49,3 +54,18 @@ def test_local_human_memberships_always_receive_dashboard_read_actions() -> None
         "quality.read",
         "quality.profile.read",
     ]
+
+
+def test_default_human_admin_actions_come_from_the_exhaustive_catalog() -> None:
+    assert len(DEFAULT_HUMAN_ADMIN_ACTIONS) == 64
+    assert Action.CHANGE_RAW_CREATE in DEFAULT_HUMAN_ADMIN_ACTIONS
+    assert DEFAULT_HUMAN_ADMIN_ACTIONS.isdisjoint(SERVICE_ONLY_ACTIONS)
+
+
+def test_local_secondary_security_administrator_uses_the_same_default_catalog() -> None:
+    secondary = next(
+        identity for identity in LOCAL_DEMO_IDENTITIES if identity.username == "sua.han"
+    )
+
+    assert set(secondary.allowed_actions) == DEFAULT_HUMAN_ADMIN_ACTIONS
+    assert set(secondary.allowed_actions).isdisjoint(SERVICE_ONLY_ACTIONS)

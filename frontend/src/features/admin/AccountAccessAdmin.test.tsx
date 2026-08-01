@@ -48,6 +48,13 @@ describe('AccountAccessAdmin authorization-bound navigation', () => {
     renderAccounts(context, {
       listMembershipPage: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
       listAccessRolePage: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
+      getAccessRoleCapabilities: vi.fn(() => Promise.resolve({
+        contract_version: 'ACCESS_ROLE_CAPABILITY_CATALOG_V1',
+        action_count: 69,
+        human_action_count: 64,
+        service_action_count: 5,
+        services: [],
+      })),
       listMembershipRenewalPage: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
     })
 

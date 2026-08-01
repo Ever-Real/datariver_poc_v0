@@ -5,6 +5,7 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
+from datariver.domain.authz import SERVICE_ONLY_ACTIONS, Action
 from datariver.domain.common import canonical_json_hash
 from datariver.infrastructure.db.models.platform import AccessRoleModel
 from datariver.interfaces.http.routes.admin import (
@@ -179,6 +180,38 @@ def test_access_role_rejects_duplicate_classification_rules() -> None:
                 "data_access_rules": [_rule("PUBLIC"), _rule("PUBLIC")],
             }
         )
+
+
+@pytest.mark.parametrize(
+    "action",
+    [action.value for action in sorted(SERVICE_ONLY_ACTIONS, key=lambda item: item.value)],
+)
+@pytest.mark.parametrize("field", ["allowed_actions", "denied_actions"])
+def test_human_access_role_rejects_service_only_actions(action: str, field: str) -> None:
+    with pytest.raises(ValidationError, match="cannot assign"):
+        AccessRoleWriteRequest.model_validate(
+            {
+                "role_key": "forbidden-role",
+                "name": "Forbidden role",
+                "clearance": "RESTRICTED",
+                "allowed_actions": [],
+                field: [action],
+            }
+        )
+
+
+@pytest.mark.parametrize("action", ["admin.manage", "change.raw.create"])
+def test_human_access_role_preserves_assignable_admin_actions(action: str) -> None:
+    value = AccessRoleWriteRequest.model_validate(
+        {
+            "role_key": "human-admin-role",
+            "name": "Human Admin role",
+            "clearance": "RESTRICTED",
+            "allowed_actions": [action],
+        }
+    )
+
+    assert value.allowed_actions == [Action(action)]
 
 
 def test_partial_rule_requires_treatment_and_no_access_has_no_scope() -> None:

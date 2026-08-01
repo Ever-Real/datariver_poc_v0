@@ -10,7 +10,8 @@ from uuid import UUID
 from sqlalchemy import select
 
 from datariver.config import get_settings
-from datariver.domain.authz import SERVICE_ONLY_ACTIONS, Action, Classification
+from datariver.domain.authz import Action, Classification
+from datariver.domain.capability_catalog import DEFAULT_HUMAN_ADMIN_ACTIONS
 from datariver.domain.common import utc_now
 from datariver.domain.knowledge_studio import (
     DEFAULT_KNOWLEDGE_DOMAINS,
@@ -101,29 +102,7 @@ LOCAL_DEMO_IDENTITIES = (
         # The local profile needs two independent eligible humans for
         # governed maker/checker initialization. This remains local-only.
         groups=("data-stewards", "security-administrators"),
-        allowed_actions=(
-            Action.ADMIN_MANAGE,
-            Action.ATTACHMENT_DOWNLOAD,
-            Action.CATALOG_READ,
-            Action.CATALOG_SEARCH,
-            Action.CHAT_QUERY,
-            Action.CHANGE_READ,
-            Action.CHANGE_REVIEW,
-            Action.CHANGE_APPROVE,
-            Action.GOVERNANCE_DOCUMENT_READ,
-            Action.GOVERNANCE_DOCUMENT_HISTORY_READ,
-            Action.GOVERNANCE_DOCUMENT_CREATE,
-            Action.GOVERNANCE_DOCUMENT_EDIT,
-            Action.GOVERNANCE_DOCUMENT_REVIEW,
-            Action.GOVERNANCE_DOCUMENT_PUBLISH,
-            Action.GOVERNANCE_DOCUMENT_ARCHIVE,
-            Action.GOVERNANCE_TEMPLATE_READ,
-            Action.GOVERNANCE_TEMPLATE_PROPOSE,
-            Action.GOVERNANCE_TEMPLATE_REVIEW,
-            Action.GOVERNANCE_TEMPLATE_ACTIVATE,
-            Action.GOVERNANCE_KNOWLEDGE_READ,
-            Action.KG_READ,
-        ),
+        allowed_actions=tuple(action for action in Action if action in DEFAULT_HUMAN_ADMIN_ACTIONS),
     ),
     LocalDemoIdentity(
         subject_id=UUID("00000000-0000-4000-8000-000000000107"),
@@ -330,9 +309,7 @@ async def bootstrap_local_identity() -> dict[str, object]:
             attributes = _local_human_membership_attributes(
                 groups=("security-administrators",),
                 allowed_actions=tuple(
-                    action
-                    for action in Action
-                    if action is not Action.CHANGE_RAW_CREATE and action not in SERVICE_ONLY_ACTIONS
+                    action for action in Action if action in DEFAULT_HUMAN_ADMIN_ACTIONS
                 ),
                 bootstrap="local-identity-v1",
                 allowed_domain_ids=default_domain_ids,

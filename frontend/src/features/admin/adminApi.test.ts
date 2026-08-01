@@ -50,6 +50,19 @@ describe('AdminApi', () => {
     })
   })
 
+  it('loads the server-canonical Role capability catalog through no-store', async () => {
+    const { api, request } = mockClient()
+    const controller = new AbortController()
+    request.mockResolvedValue({})
+
+    await api.getAccessRoleCapabilities(controller.signal)
+
+    expect(request).toHaveBeenCalledWith('/admin/access-roles/capabilities', {
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+  })
+
   it('binds administrator cursor pages to their filters and forwards cancellation', async () => {
     const { api, request } = mockClient()
     const controller = new AbortController()

@@ -1083,6 +1083,18 @@ The strategy below remains the production release matrix. Target DataHub/object 
 
 Administrator Role and System Settings changes add the following focused gates:
 
+- the server capability catalog must contain every `Action` exactly once and preserve the exact
+  64 human/5 service-principal, default-Admin and high-risk-assurance partitions; a missing or
+  duplicate entry fails closed;
+- Role write schema/HTTP negatives reject all service-principal Actions before authorization or
+  repository access, while `admin.manage` and `change.raw.create` remain human-Role assignable;
+- API/UI contract tests prove the Role editor uses the private/no-store server catalog for service
+  grouping, labels, descriptions and assurance instead of a hard-coded frontend list or
+  `/admin/me.action_vocabulary`; service-only controls are visible but disabled, and a loading,
+  failed or late catalog response cannot enable save, strip existing Actions, open confirmation or
+  issue a mutation;
+- pending self-approval metadata tests exclude `admin.manage` and `erasure.approve` and must not
+  alter any existing actor-equality, erasure-owner or maker/checker enforcement;
 - access-role metadata and migration checks prove workspace RLS, bounded application grants, no
   credential columns and no delete grant; deterministic initial-migration regeneration must produce
   an identical file;

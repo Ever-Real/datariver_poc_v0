@@ -31,6 +31,11 @@ from datariver.domain.admin_access import (
     SystemAssigneeUpdateCommand,
 )
 from datariver.domain.authz import Action, Classification
+from datariver.domain.capability_catalog import (
+    CAPABILITY_CATALOG,
+    CAPABILITY_SERVICES,
+    CapabilityActorKind,
+)
 from datariver.domain.common import (
     ConflictError,
     DomainEvent,
@@ -105,6 +110,9 @@ from datariver.interfaces.http.presenters import (
     workspace_membership_summary_response,
 )
 from datariver.interfaces.http.schemas import (
+    AccessRoleCapabilityCatalogResponse,
+    AccessRoleCapabilityResponse,
+    AccessRoleCapabilityServiceResponse,
     AccessRoleDataRuleRequest,
     AccessRoleListResponse,
     AccessRoleResponse,
@@ -2291,6 +2299,66 @@ async def provision_identity_user(
         role_id=result.role_id,
         access_expires_at=result.access_expires_at,
         temporary_password_required=result.temporary_password_required,
+    )
+
+
+@router.get(
+    "/access-roles/capabilities",
+    response_model=AccessRoleCapabilityCatalogResponse,
+)
+async def get_access_role_capabilities(
+    request: Request,
+    response: Response,
+    context: ContextDep,
+) -> AccessRoleCapabilityCatalogResponse:
+    admin_context = await _service(request).get_admin_read_context(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if "MEMBERSHIP_ACCESS_READ" not in admin_context.allowed_operations:
+        raise ForbiddenError("Access-role capabilities are not available for this administrator.")
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["Vary"] = "Authorization, X-Workspace-Id"
+    by_service = {
+        service.service_key: [
+            AccessRoleCapabilityResponse(
+                action=capability.action,
+                label=capability.label,
+                description=capability.description,
+                actor_kind=capability.actor_kind,
+                assignability=capability.assignability,
+                default_admin=capability.default_admin,
+                assurance=capability.assurance,
+                reason_policy=capability.reason_policy,
+                self_approval_policy=capability.self_approval_policy,
+                self_approval_binding=capability.self_approval_binding,
+                risk=capability.risk,
+            )
+            for capability in CAPABILITY_CATALOG
+            if capability.service_key == service.service_key
+        ]
+        for service in CAPABILITY_SERVICES
+    }
+    return AccessRoleCapabilityCatalogResponse(
+        action_count=len(CAPABILITY_CATALOG),
+        human_action_count=sum(
+            capability.actor_kind is CapabilityActorKind.HUMAN for capability in CAPABILITY_CATALOG
+        ),
+        service_action_count=sum(
+            capability.actor_kind is CapabilityActorKind.SERVICE_PRINCIPAL
+            for capability in CAPABILITY_CATALOG
+        ),
+        services=[
+            AccessRoleCapabilityServiceResponse(
+                service_key=service.service_key,
+                label=service.label,
+                description=service.description,
+                actions=by_service[service.service_key],
+            )
+            for service in CAPABILITY_SERVICES
+        ],
     )
 
 

@@ -17,6 +17,16 @@ from pydantic import (
 
 from datariver.domain.admin_access import AdminOperation
 from datariver.domain.authz import Action
+from datariver.domain.capability_catalog import (
+    CapabilityActorKind,
+    CapabilityAssignability,
+    CapabilityAssurance,
+    CapabilityReasonPolicy,
+    CapabilityRisk,
+    CapabilitySelfApprovalBinding,
+    CapabilitySelfApprovalPolicy,
+    forbidden_custom_role_actions,
+)
 from datariver.domain.chat import (
     ChatAdapterState,
     ChatRetrievalMode,
@@ -1229,6 +1239,14 @@ class AccessRoleWriteRequest(BaseModel):
             raise ValueError("Role actions must be unique.")
         if set(self.allowed_actions) & set(self.denied_actions):
             raise ValueError("A role action cannot be both allowed and denied.")
+        forbidden_actions = forbidden_custom_role_actions(
+            frozenset((*self.allowed_actions, *self.denied_actions))
+        )
+        if forbidden_actions:
+            raise ValueError(
+                "Human roles cannot assign service-principal-only Actions: "
+                + ", ".join(action.value for action in forbidden_actions)
+            )
         if len(self.allowed_system_ids) != len(set(self.allowed_system_ids)) or len(
             self.allowed_domain_ids
         ) != len(set(self.allowed_domain_ids)):
@@ -1261,6 +1279,43 @@ class AccessRoleResponse(BaseModel):
 class AccessRoleListResponse(BaseModel):
     items: list[AccessRoleResponse]
     page: PageMeta
+
+
+class AccessRoleCapabilityResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    action: Action
+    label: str = Field(min_length=1, max_length=255)
+    description: str = Field(min_length=1, max_length=1_000)
+    actor_kind: CapabilityActorKind
+    assignability: CapabilityAssignability
+    default_admin: bool
+    assurance: CapabilityAssurance
+    reason_policy: CapabilityReasonPolicy
+    self_approval_policy: CapabilitySelfApprovalPolicy
+    self_approval_binding: CapabilitySelfApprovalBinding
+    risk: CapabilityRisk
+
+
+class AccessRoleCapabilityServiceResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    service_key: str = Field(pattern=r"^[a-z][a-z0-9_]{1,79}$")
+    label: str = Field(min_length=1, max_length=255)
+    description: str = Field(min_length=1, max_length=1_000)
+    actions: list[AccessRoleCapabilityResponse] = Field(min_length=1, max_length=100)
+
+
+class AccessRoleCapabilityCatalogResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    contract_version: Literal["ACCESS_ROLE_CAPABILITY_CATALOG_V1"] = (
+        "ACCESS_ROLE_CAPABILITY_CATALOG_V1"
+    )
+    action_count: int = Field(ge=1, le=100)
+    human_action_count: int = Field(ge=1, le=100)
+    service_action_count: int = Field(ge=1, le=100)
+    services: list[AccessRoleCapabilityServiceResponse] = Field(min_length=1, max_length=50)
 
 
 class MembershipRoleAssignmentRequest(BaseModel):

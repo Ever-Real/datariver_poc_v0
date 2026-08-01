@@ -1432,6 +1432,45 @@ export interface AccessRoleWrite {
   active: boolean
 }
 
+export type CapabilityActorKind = 'HUMAN' | 'SERVICE_PRINCIPAL'
+export type CapabilityAssignability = 'HUMAN_ROLE' | 'SERVICE_PRINCIPAL_ONLY'
+export type CapabilityAssurance = 'NOT_APPLICABLE' | 'SESSION' | 'FRESH_PHISHING_RESISTANT'
+export type CapabilityReasonPolicy = 'NOT_REQUIRED' | 'REQUIRED'
+export type CapabilitySelfApprovalPolicy = 'NOT_APPLICABLE' | 'CANONICAL_ADMIN_ONLY'
+export type CapabilitySelfApprovalBinding =
+  | 'NOT_APPLICABLE'
+  | 'PENDING_PROTECTED_BINDING'
+export type CapabilityRisk = 'STANDARD' | 'ELEVATED' | 'HIGH' | 'SERVICE_PRIVILEGED'
+
+export interface AccessRoleCapability {
+  action: string
+  label: string
+  description: string
+  actor_kind: CapabilityActorKind
+  assignability: CapabilityAssignability
+  default_admin: boolean
+  assurance: CapabilityAssurance
+  reason_policy: CapabilityReasonPolicy
+  self_approval_policy: CapabilitySelfApprovalPolicy
+  self_approval_binding: CapabilitySelfApprovalBinding
+  risk: CapabilityRisk
+}
+
+export interface AccessRoleCapabilityService {
+  service_key: string
+  label: string
+  description: string
+  actions: AccessRoleCapability[]
+}
+
+export interface AccessRoleCapabilityCatalog {
+  contract_version: 'ACCESS_ROLE_CAPABILITY_CATALOG_V1'
+  action_count: number
+  human_action_count: number
+  service_action_count: number
+  services: AccessRoleCapabilityService[]
+}
+
 export interface MembershipRoleAssignmentResult {
   subject_id: string
   role_id: string | null

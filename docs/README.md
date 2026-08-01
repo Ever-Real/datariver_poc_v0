@@ -64,6 +64,10 @@ Architecture decisions are immutable records under `adr/`. Superseded artifacts 
 Current retention decisions: [governed retention and immutable archive](adr/0010-governed-retention-and-immutable-archive.md), [maintained S3 and archive promotion](adr/0012-maintained-s3-and-immutable-archive-promotion.md), [Chat active-policy binding](adr/0018-chat-retention-policy-binding.md), and [archive-only execution control plane](adr/0037-retention-execution-control-plane.md).
 
 Current administrator decisions: [hardware WebAuthn and governed password fallback](adr/0009-hardware-webauthn-and-governed-password-fallback.md), [workspace access roles and development connection probes](adr/0024-workspace-access-roles-and-development-connection-probes.md), and [operator security modes and stable authentication renewal](adr/0025-operator-security-modes-and-stable-auth-renewal.md).
+The exhaustive 69-Action metadata, 64 human/5 service-principal partition, default human Admin
+bootstrap and Role-editor assignment boundary are defined by
+[ADR-0103](adr/0103-server-canonical-human-capability-catalog.md). Its self-approval fields are
+pending metadata only and do not change maker/checker behavior.
 The development-only Governance Document password assurance composition is defined by
 [ADR-0087](adr/0087-development-governance-document-password-assurance.md); it does not relax
 production or unrelated high-risk Actions.

@@ -4,6 +4,7 @@ import type {
   AdminAccessRequestState,
   AdminReadContext,
   AccessRole,
+  AccessRoleCapabilityCatalog,
   AccessRoleWrite,
   CapabilitiesResponse,
   CatalogSearch,
@@ -294,6 +295,13 @@ export class AdminApi {
 
   async listAccessRoles() {
     return (await this.listAccessRolePage({ limit: 100 })).items
+  }
+
+  getAccessRoleCapabilities(signal?: AbortSignal) {
+    return this.client.request<AccessRoleCapabilityCatalog>('/admin/access-roles/capabilities', {
+      cache: 'no-store',
+      signal,
+    })
   }
 
   createAccessRole(payload: AccessRoleWrite) {
