@@ -434,11 +434,11 @@ async def test_policy_summary_allows_ordinary_admin_read_and_returns_only_effect
         required_jurisdiction="governed-zone",
         authorization_generation=3,
         rules=tuple(
-                ClassificationRuleRecord(
-                    classification=rule.classification,
-                    search_mode=rule.search_mode,
-                    chat_mode=ChatMode.DENY,
-                    provider_profile_version_id=None,
+            ClassificationRuleRecord(
+                classification=rule.classification,
+                search_mode=rule.search_mode,
+                chat_mode=ChatMode.DENY,
+                provider_profile_version_id=None,
             )
             for rule in _rules()
         ),
