@@ -36,6 +36,16 @@ llama.cpp reranker is restricted to the fixed port-11435 `/v1/rerank` boundary a
 identity, result count, unique indices, finite descending scores and bounded response size. Neither
 adapter accepts a browser URL, executable tool, SQL, Cypher, file operation or mutation.
 
+Clarification (2026-08-01): native Ollama does not expose a fixed `tool_choice` request field. Its
+grounded composition request therefore uses native `format` with a strict JSON Schema whose only
+fields are `answer` and `cited_chunk_ids`; the citation item enum contains only the request's
+already-authorized evidence UUIDs. The adapter accepts only one exact JSON object from
+`message.content` and rejects prose, legacy tool calls, missing or extra fields, empty answers or
+citations, invalid or duplicate UUIDs, and oversized values. The OpenAI-compatible provider keeps
+the existing fixed `submit_grounded_answer` tool-call contract. Both outputs remain untrusted and
+continue through the same application-level citation membership, current-authorization and final
+reauthorization checks without retry or fallback.
+
 Every interactive Chat request reserves both a request count and a conservative input-plus-output
 token envelope before retrieval or direct inference. The envelope reserves one token per possible
 question UTF-8 byte, a fixed maximum serialized envelope for every allowed evidence item and the

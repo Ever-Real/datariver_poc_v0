@@ -104,9 +104,7 @@ def test_grounded_payload_keeps_internal_source_metadata_out_of_model_context() 
             "description": evidence.description,
         }
     ]
-    citation_schema = payload["tools"][0]["function"]["parameters"]["properties"][
-        "cited_chunk_ids"
-    ]["items"]
+    citation_schema = payload["format"]["properties"]["cited_chunk_ids"]["items"]
     assert citation_schema == {
         "type": "string",
         "format": "uuid",
@@ -114,8 +112,11 @@ def test_grounded_payload_keeps_internal_source_metadata_out_of_model_context() 
     }
     assert evidence.source_locator not in payload["messages"][1]["content"]
     assert evidence.source_version not in payload["messages"][1]["content"]
-    assert evidence.source_locator not in json.dumps(payload["tools"])
-    assert evidence.source_version not in json.dumps(payload["tools"])
+    assert evidence.source_locator not in json.dumps(payload["format"])
+    assert evidence.source_version not in json.dumps(payload["format"])
+    assert "tools" not in payload
+    assert "tool_choice" not in payload
+    assert "Return exactly one JSON object" in system_prompt
 
 
 def test_conversation_context_payload_contains_only_bounded_user_intent() -> None:
@@ -142,7 +143,7 @@ def test_conversation_context_payload_contains_only_bounded_user_intent() -> Non
 
 
 @pytest.mark.asyncio
-async def test_composer_uses_one_fixed_tool_and_returns_its_untrusted_draft() -> None:
+async def test_composer_uses_one_strict_json_schema_and_returns_its_untrusted_draft() -> None:
     evidence = _evidence()
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -150,31 +151,31 @@ async def test_composer_uses_one_fixed_tool_and_returns_its_untrusted_draft() ->
         payload = json.loads(request.content)
         assert payload["model"] == "gemma4:e2b-it-qat"
         assert payload["think"] is False
-        assert payload["tools"][0]["function"]["name"] == "submit_grounded_answer"
         system_prompt = payload["messages"][0]["content"]
-        assert "message content must be empty" in system_prompt
-        assert "only in the submit_grounded_answer function arguments" in system_prompt
+        assert "Return exactly one JSON object" in system_prompt
+        assert "tool call" in system_prompt
+        assert "tools" not in payload
+        assert "tool_choice" not in payload
+        assert payload["format"]["additionalProperties"] is False
+        assert payload["format"]["required"] == ["answer", "cited_chunk_ids"]
+        assert payload["format"]["properties"]["cited_chunk_ids"]["items"]["enum"] == [
+            str(evidence.chunk_id)
+        ]
         assert payload["options"] == {
             "temperature": 0,
             "num_ctx": 8192,
             "num_predict": 1024,
         }
-        assert "tool_choice" not in payload
         return httpx.Response(
             200,
             json={
                 "message": {
-                    "tool_calls": [
+                    "content": json.dumps(
                         {
-                            "function": {
-                                "name": "submit_grounded_answer",
-                                "arguments": {
-                                    "answer": "Final inspection yield is measured.",
-                                    "cited_chunk_ids": [str(evidence.chunk_id)],
-                                },
-                            },
+                            "answer": "Final inspection yield is measured.",
+                            "cited_chunk_ids": [str(evidence.chunk_id)],
                         }
-                    ]
+                    )
                 }
             },
         )
@@ -415,7 +416,73 @@ def test_route_classifier_normalizes_resolved_question_to_one_line() -> None:
 
 
 @pytest.mark.asyncio
-async def test_composer_rejects_text_or_unknown_tool_output() -> None:
+@pytest.mark.parametrize(
+    "message",
+    (
+        {"content": "untrusted prose"},
+        {"content": "not json"},
+        {"content": "{}"},
+        {"content": '{"answer":"answer","cited_chunk_ids":[],"extra":true}'},
+        {"content": '{"answer":"","cited_chunk_ids":["not-a-uuid"]}'},
+        {"content": '{"answer":"answer","cited_chunk_ids":[]}'},
+        {"content": '{"answer":"answer","cited_chunk_ids":["not-a-uuid"]}'},
+        {
+            "content": json.dumps(
+                {
+                    "answer": "answer",
+                    "cited_chunk_ids": ["00000000-0000-4000-8000-000000000099"],
+                }
+            )
+        },
+        {
+            "content": json.dumps(
+                {
+                    "answer": "answer",
+                    "cited_chunk_ids": [
+                        "00000000-0000-4000-8000-000000000001",
+                        "00000000-0000-4000-8000-000000000001",
+                    ],
+                }
+            )
+        },
+        {
+            "content": json.dumps(
+                {
+                    "answer": "answer",
+                    "cited_chunk_ids": ["00000000-0000-4000-8000-000000000001"],
+                }
+            ),
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "submit_grounded_answer",
+                        "arguments": {
+                            "answer": "legacy tool call",
+                            "cited_chunk_ids": ["00000000-0000-4000-8000-000000000001"],
+                        },
+                    }
+                }
+            ],
+        },
+        {
+            "tool_calls": [
+                {
+                    "function": {
+                        "name": "submit_grounded_answer",
+                        "arguments": {
+                            "answer": "legacy tool call",
+                            "cited_chunk_ids": ["00000000-0000-4000-8000-000000000001"],
+                        },
+                    }
+                }
+            ]
+        },
+    ),
+)
+@pytest.mark.asyncio
+async def test_composer_rejects_malformed_native_structured_output(
+    message: object,
+) -> None:
     evidence = _evidence()
 
     async with httpx.AsyncClient(
@@ -423,8 +490,36 @@ async def test_composer_rejects_text_or_unknown_tool_output() -> None:
         transport=httpx.MockTransport(
             lambda request: httpx.Response(
                 200,
-                json={"choices": [{"message": {"content": "untrusted prose"}}]},
+                json={"message": message},
             )
+        ),
+    ) as client:
+        draft = await LocalOllamaChatComposer(
+            base_url="http://host.docker.internal:11434/v1",
+            model="gemma4:e2b-it-qat",
+            timeout_seconds=45,
+            context_tokens=8192,
+            allowed_hosts=frozenset({"host.docker.internal"}),
+            client=client,
+        ).compose(question="How is yield measured?", evidence=(evidence,))
+
+    assert draft.answer == ""
+    assert draft.cited_chunk_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_composer_rejects_an_oversized_answer_in_structured_output() -> None:
+    evidence = _evidence()
+    content = json.dumps(
+        {
+            "answer": "x" * 4_001,
+            "cited_chunk_ids": [str(evidence.chunk_id)],
+        }
+    )
+    async with httpx.AsyncClient(
+        base_url="http://host.docker.internal:11434/v1",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"message": {"content": content}})
         ),
     ) as client:
         draft = await LocalOllamaChatComposer(
