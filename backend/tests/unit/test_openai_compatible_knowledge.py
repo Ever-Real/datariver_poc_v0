@@ -12,6 +12,7 @@ import pytest
 from datariver.application.errors import ExternalDependencyError
 from datariver.domain.common import ValidationError
 from datariver.domain.knowledge_pipeline import GraphRagEvidence, ModelBinding, PdfPage
+from datariver.domain.knowledge_studio import TBoxElementInput, TBoxElementKind
 from datariver.infrastructure.knowledge.openai_compatible import (
     MAX_INFERENCE_RESPONSE_BYTES,
     HttpxOpenAIJsonTransport,
@@ -283,20 +284,20 @@ async def test_tbox_schema_assistant_rejects_duplicate_model_identities() -> Non
                     "message": {
                         "content": json.dumps(
                             {
-                                "elements": [
+                                "classes": [
                                     {
                                         "stable_element_id": "class:document-one",
-                                        "kind": "CLASS",
                                         "canonical_name": "Document",
                                         "display_name": "Document",
                                     },
                                     {
                                         "stable_element_id": "class:document-two",
-                                        "kind": "CLASS",
                                         "canonical_name": "Document",
                                         "display_name": "Duplicate Document",
                                     },
-                                ]
+                                ],
+                                "properties": [],
+                                "relations": [],
                             }
                         )
                     }
@@ -322,14 +323,15 @@ async def test_tbox_schema_assistant_uses_bounded_grammar_compatible_schema() ->
                     "message": {
                         "content": json.dumps(
                             {
-                                "elements": [
+                                "classes": [
                                     {
                                         "stable_element_id": "class:document",
-                                        "kind": "CLASS",
                                         "canonical_name": "Document",
                                         "display_name": "Document",
                                     }
-                                ]
+                                ],
+                                "properties": [],
+                                "relations": [],
                             }
                         )
                     }
@@ -357,18 +359,217 @@ async def test_tbox_schema_assistant_uses_bounded_grammar_compatible_schema() ->
     assert "$defs" not in serialized
     assert "anyOf" not in serialized
     assert "maxLength" not in serialized
-    elements = schema["properties"]
-    assert isinstance(elements, dict)
-    element_items = elements["elements"]
-    assert isinstance(element_items, dict)
-    item_schema = element_items["items"]
-    assert isinstance(item_schema, dict)
-    item_properties = item_schema["properties"]
-    assert isinstance(item_properties, dict)
-    kind = item_properties["kind"]
-    assert isinstance(kind, dict)
-    assert kind["enum"] == ["CLASS", "PROPERTY", "RELATION"]
-    assert item_schema["additionalProperties"] is False
+    assert schema_contract["name"] == "knowledge_studio_tbox_proposal_v2"
+    groups = schema["properties"]
+    assert isinstance(groups, dict)
+    assert set(groups) == {"classes", "properties", "relations"}
+    relation_items = groups["relations"]
+    assert isinstance(relation_items, dict)
+    relation_schema = relation_items["items"]
+    assert isinstance(relation_schema, dict)
+    relation_properties = relation_schema["properties"]
+    assert isinstance(relation_properties, dict)
+    assert {"source_stable_element_id", "target_stable_element_id"} <= set(
+        relation_schema["required"]
+    )
+    assert not {
+        "parent_stable_element_id",
+        "hierarchy_relation",
+        "data_type",
+        "nullable",
+        "unit",
+        "vector_index_enabled",
+    } & set(relation_properties)
+    assert relation_schema["additionalProperties"] is False
+
+
+@pytest.mark.asyncio
+async def test_tbox_schema_assistant_maps_kind_specific_elements_and_current_scope() -> None:
+    transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "classes": [
+                                    {
+                                        "stable_element_id": "class:process",
+                                        "canonical_name": "Process",
+                                        "display_name": "Process",
+                                    }
+                                ],
+                                "properties": [
+                                    {
+                                        "stable_element_id": "property:facility-name",
+                                        "canonical_name": "facility_name",
+                                        "display_name": "Facility name",
+                                        "parent_stable_element_id": "class:facility",
+                                        "data_type": "STRING",
+                                        "nullable": False,
+                                        "vector_index_enabled": True,
+                                    }
+                                ],
+                                "relations": [
+                                    {
+                                        "stable_element_id": "relation:runs",
+                                        "canonical_name": "RUNS",
+                                        "display_name": "Runs",
+                                        "source_stable_element_id": "class:facility",
+                                        "target_stable_element_id": "class:process",
+                                    }
+                                ],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+    current = (
+        TBoxElementInput(
+            stable_element_id="class:facility",
+            kind=TBoxElementKind.CLASS,
+            canonical_name="Facility",
+            display_name="Facility",
+        ),
+    )
+
+    result = await OpenAICompatibleTBoxSchemaAssistant(transport=transport).propose(
+        prompt="Facility process schema를 제안해 줘.",
+        current_elements=current,
+        binding=_binding("gemma4:latest"),
+    )
+
+    assert [item.kind for item in result] == [
+        TBoxElementKind.CLASS,
+        TBoxElementKind.PROPERTY,
+        TBoxElementKind.RELATION,
+    ]
+    assert result[1].parent_stable_element_id == "class:facility"
+    assert result[2].source_stable_element_id == "class:facility"
+    assert result[2].target_stable_element_id == "class:process"
+    request = transport.calls[0][1]
+    messages = request["messages"]
+    assert isinstance(messages, list)
+    user_document = json.loads(messages[1]["content"])
+    current_document = user_document["current_tbox"]
+    assert set(current_document) == {"classes", "properties", "relations"}
+    assert current_document["classes"][0]["stable_element_id"] == "class:facility"
+    assert "source_stable_element_id" not in current_document["classes"][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "relation",
+    [
+        {
+            "stable_element_id": "relation:missing-target",
+            "canonical_name": "CONNECTS",
+            "display_name": "Connects",
+            "source_stable_element_id": "class:left",
+        },
+        {
+            "stable_element_id": "relation:cross-kind",
+            "canonical_name": "CONNECTS",
+            "display_name": "Connects",
+            "source_stable_element_id": "class:left",
+            "target_stable_element_id": "class:right",
+            "nullable": False,
+        },
+    ],
+)
+async def test_tbox_schema_assistant_rejects_invalid_relation_shape(
+    relation: dict[str, object],
+) -> None:
+    transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {"classes": [], "properties": [], "relations": [relation]}
+                        )
+                    }
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(ValidationError, match="typed schema"):
+        await OpenAICompatibleTBoxSchemaAssistant(transport=transport).propose(
+            prompt="Invalid relation을 거부해 줘.",
+            current_elements=(),
+            binding=_binding("gemma4:latest"),
+        )
+
+
+@pytest.mark.asyncio
+async def test_tbox_schema_assistant_rejects_unknown_relation_class_and_aggregate_overflow() -> (
+    None
+):
+    unknown_transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "classes": [],
+                                "properties": [],
+                                "relations": [
+                                    {
+                                        "stable_element_id": "relation:unknown",
+                                        "canonical_name": "CONNECTS",
+                                        "display_name": "Connects",
+                                        "source_stable_element_id": "class:left",
+                                        "target_stable_element_id": "class:right",
+                                    }
+                                ],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+    with pytest.raises(ValidationError, match="unknown Class"):
+        await OpenAICompatibleTBoxSchemaAssistant(transport=unknown_transport).propose(
+            prompt="Unknown relation을 거부해 줘.",
+            current_elements=(),
+            binding=_binding("gemma4:latest"),
+        )
+
+    overflow_transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "classes": [
+                                    {
+                                        "stable_element_id": f"class:item-{index}",
+                                        "canonical_name": f"Item_{index}",
+                                        "display_name": f"Item {index}",
+                                    }
+                                    for index in range(101)
+                                ],
+                                "properties": [],
+                                "relations": [],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+    with pytest.raises(ValidationError, match="typed schema"):
+        await OpenAICompatibleTBoxSchemaAssistant(transport=overflow_transport).propose(
+            prompt="Oversized schema를 거부해 줘.",
+            current_elements=(),
+            binding=_binding("gemma4:latest"),
+        )
 
 
 @pytest.mark.asyncio

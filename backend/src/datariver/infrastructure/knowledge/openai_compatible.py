@@ -220,39 +220,47 @@ class _GraphRagResponse(_StrictModel):
     cited_evidence_ids: list[str] = Field(min_length=1, max_length=100)
 
 
-class _TBoxElementProposal(_StrictModel):
+class _TBoxIdentityProposal(_StrictModel):
     stable_element_id: str = Field(min_length=1, max_length=128)
-    kind: Literal["CLASS", "PROPERTY", "RELATION"]
     canonical_name: str = Field(
         min_length=1,
         max_length=255,
     )
     display_name: str = Field(min_length=1, max_length=255)
-    parent_stable_element_id: str | None = Field(default=None, max_length=128)
-    hierarchy_relation: str | None = Field(default=None, max_length=255)
-    source_stable_element_id: str | None = Field(default=None, max_length=128)
-    target_stable_element_id: str | None = Field(default=None, max_length=128)
-    data_type: (
-        Literal[
-            "STRING",
-            "TEXT",
-            "INTEGER",
-            "FLOAT",
-            "BOOLEAN",
-            "DATE",
-            "DATETIME",
-        ]
-        | None
-    ) = None
-    nullable: bool | None = None
     definition: str | None = Field(default=None, max_length=4_000)
     aliases: list[str] = Field(default_factory=list, max_length=50)
+
+
+class _TBoxClassProposal(_TBoxIdentityProposal):
+    parent_stable_element_id: str | None = Field(default=None, max_length=128)
+    hierarchy_relation: str | None = Field(default=None, max_length=255)
+
+
+class _TBoxPropertyProposal(_TBoxIdentityProposal):
+    parent_stable_element_id: str = Field(min_length=1, max_length=128)
+    data_type: Literal[
+        "STRING",
+        "TEXT",
+        "INTEGER",
+        "FLOAT",
+        "BOOLEAN",
+        "DATE",
+        "DATETIME",
+    ]
+    nullable: bool
     unit: str | None = Field(default=None, max_length=100)
     vector_index_enabled: bool = False
 
 
+class _TBoxRelationProposal(_TBoxIdentityProposal):
+    source_stable_element_id: str = Field(min_length=1, max_length=128)
+    target_stable_element_id: str = Field(min_length=1, max_length=128)
+
+
 class _TBoxSchemaProposalResponse(_StrictModel):
-    elements: list[_TBoxElementProposal] = Field(max_length=MAX_TBOX_PROPOSAL_ELEMENTS)
+    classes: list[_TBoxClassProposal] = Field(max_length=MAX_TBOX_PROPOSAL_ELEMENTS)
+    properties: list[_TBoxPropertyProposal] = Field(max_length=MAX_TBOX_PROPOSAL_ELEMENTS)
+    relations: list[_TBoxRelationProposal] = Field(max_length=MAX_TBOX_PROPOSAL_ELEMENTS)
 
 
 class _EvidenceUnit(BaseModel):
@@ -591,21 +599,46 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
             raise ValidationError(
                 "A schema-assistant prompt must contain between 1 and 4,000 characters."
             )
-        current_document = [
-            {
+        current_document: dict[str, list[dict[str, object]]] = {
+            "classes": [],
+            "properties": [],
+            "relations": [],
+        }
+        for item in current_elements:
+            identity: dict[str, object] = {
                 "stable_element_id": item.stable_element_id,
-                "kind": item.kind.value,
                 "canonical_name": item.canonical_name,
                 "display_name": item.display_name,
-                "parent_stable_element_id": item.parent_stable_element_id,
-                "hierarchy_relation": item.hierarchy_relation,
-                "source_stable_element_id": item.source_stable_element_id,
-                "target_stable_element_id": item.target_stable_element_id,
-                "data_type": item.data_type,
-                "nullable": item.nullable,
+                "definition": item.definition,
+                "aliases": list(item.aliases),
             }
-            for item in current_elements
-        ]
+            if item.kind is TBoxElementKind.CLASS:
+                current_document["classes"].append(
+                    {
+                        **identity,
+                        "parent_stable_element_id": item.parent_stable_element_id,
+                        "hierarchy_relation": item.hierarchy_relation,
+                    }
+                )
+            elif item.kind is TBoxElementKind.PROPERTY:
+                current_document["properties"].append(
+                    {
+                        **identity,
+                        "parent_stable_element_id": item.parent_stable_element_id,
+                        "data_type": item.data_type,
+                        "nullable": item.nullable,
+                        "unit": item.unit,
+                        "vector_index_enabled": item.vector_index_enabled,
+                    }
+                )
+            else:
+                current_document["relations"].append(
+                    {
+                        **identity,
+                        "source_stable_element_id": item.source_stable_element_id,
+                        "target_stable_element_id": item.target_stable_element_id,
+                    }
+                )
         document: dict[str, object] = {
             "model": binding.model,
             "temperature": 0,
@@ -615,17 +648,19 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                     "role": "system",
                     "content": (
                         "Design only a logical T-Box schema. Never emit Cypher, instance data, "
-                        "credentials, URLs, or executable content. Return Classes, Properties and "
-                        "Relations through the supplied JSON schema. Stable IDs and canonical "
-                        "canonical names use normalized Unicode letters, digits and underscores "
-                        "as allowed by the schema contract. Properties must reference a proposed "
-                        "or current Class; Relations must reference proposed or current Classes. "
-                        "Apply these shape rules exactly: CLASS uses none of parent/source/target/"
-                        "data_type/nullable unless it has an optional parent Class; PROPERTY puts "
-                        "its owner Class only in parent_stable_element_id, uses no source/target, "
-                        "sets nullable to true or false, and selects data_type only from STRING, "
-                        "TEXT, INTEGER, FLOAT, BOOLEAN, DATE, DATETIME; RELATION uses source and "
-                        "target Classes only and has no parent/data_type/nullable. "
+                        "credentials, URLs, or executable content. Return separate classes, "
+                        "properties and relations arrays through the supplied JSON schema. Stable "
+                        "IDs and canonical names use normalized Unicode letters, digits and "
+                        "underscores as allowed by the schema contract. Properties must reference "
+                        "a proposed or current Class by its exact stable_element_id. Relations "
+                        "must provide both source_stable_element_id and target_stable_element_id, "
+                        "and both must be exact stable IDs of proposed or current Classes. Omit a "
+                        "Property or Relation when its Class stable ID is unknown. Class entries "
+                        "may have only an optional parent and hierarchy relation. Property entries "
+                        "must provide parent_stable_element_id, nullable, and one data_type from "
+                        "STRING, TEXT, INTEGER, FLOAT, BOOLEAN, DATE, DATETIME. Relation entries "
+                        "contain only their source and target Class references besides identity, "
+                        "definition and aliases. "
                         "Mark vector_index_enabled only for STRING or TEXT Properties whose "
                         "semantic text is useful for retrieval. Keep the proposal bounded and "
                         "omit uncertain elements."
@@ -646,7 +681,7 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
             ],
             "response_format": _bounded_grammar_json_schema(
                 _TBoxSchemaProposalResponse,
-                name="knowledge_studio_tbox_proposal_v1",
+                name="knowledge_studio_tbox_proposal_v2",
             ),
         }
         if self._reasoning_effort is not None:
@@ -657,16 +692,26 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
         )
         try:
             parsed = _TBoxSchemaProposalResponse.model_validate_json(_choice_content(result))
-            proposed = tuple(
+            proposed_items = [
                 TBoxElementInput(
                     stable_element_id=item.stable_element_id,
-                    kind=TBoxElementKind(item.kind),
+                    kind=TBoxElementKind.CLASS,
                     canonical_name=item.canonical_name,
                     display_name=item.display_name,
                     parent_stable_element_id=item.parent_stable_element_id,
                     hierarchy_relation=item.hierarchy_relation,
-                    source_stable_element_id=item.source_stable_element_id,
-                    target_stable_element_id=item.target_stable_element_id,
+                    definition=item.definition,
+                    aliases=tuple(item.aliases),
+                )
+                for item in parsed.classes
+            ]
+            proposed_items.extend(
+                TBoxElementInput(
+                    stable_element_id=item.stable_element_id,
+                    kind=TBoxElementKind.PROPERTY,
+                    canonical_name=item.canonical_name,
+                    display_name=item.display_name,
+                    parent_stable_element_id=item.parent_stable_element_id,
                     data_type=item.data_type,
                     nullable=item.nullable,
                     definition=item.definition,
@@ -674,8 +719,24 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                     unit=item.unit,
                     vector_index_enabled=item.vector_index_enabled,
                 )
-                for item in parsed.elements
+                for item in parsed.properties
             )
+            proposed_items.extend(
+                TBoxElementInput(
+                    stable_element_id=item.stable_element_id,
+                    kind=TBoxElementKind.RELATION,
+                    canonical_name=item.canonical_name,
+                    display_name=item.display_name,
+                    source_stable_element_id=item.source_stable_element_id,
+                    target_stable_element_id=item.target_stable_element_id,
+                    definition=item.definition,
+                    aliases=tuple(item.aliases),
+                )
+                for item in parsed.relations
+            )
+            if len(proposed_items) > MAX_TBOX_PROPOSAL_ELEMENTS:
+                raise ValueError("The aggregate T-Box proposal element limit was exceeded.")
+            proposed = tuple(proposed_items)
         except (PydanticValidationError, ValueError) as error:
             raise ValidationError("The LLM T-Box proposal violates the typed schema.") from error
         proposed_ids: set[str] = set()

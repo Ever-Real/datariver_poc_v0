@@ -10,6 +10,11 @@ from datariver.infrastructure.db.models.platform import (
     ExternalServiceProfileModel,
     ExternalServiceProfileVersionModel,
 )
+from datariver.infrastructure.knowledge.runtime import (
+    TBOX_SCHEMA_ASSISTANT_PROMPT_VERSION,
+    TBOX_SCHEMA_ASSISTANT_SCHEMA_VERSION,
+    resolve_knowledge_tbox_schema_binding,
+)
 from datariver.infrastructure.system_configuration_runtime import (
     _document,
     _knowledge_system_bindings,
@@ -52,6 +57,33 @@ def _settings() -> Settings:
         s3_secret_key_file="/run/secrets/s3_secret_key",
         local_inference_allowed_hosts=("host.docker.internal",),
     )
+
+
+def test_tbox_schema_binding_versions_kind_specific_typed_output() -> None:
+    settings = _settings().model_copy(
+        update={
+            "local_ollama_chat_enabled": True,
+            "local_ollama_chat_base_url": "http://host.docker.internal:11434/v1",
+            "local_ollama_chat_model": "gemma4:latest",
+        }
+    )
+
+    binding = resolve_knowledge_tbox_schema_binding(settings)
+    legacy = ModelBinding(
+        provider=binding.provider,
+        model=binding.model,
+        prompt_version="knowledge-tbox-schema-assistant-v1",
+        tool_schema_version="knowledge-tbox-schema-proposal-v1",
+        configuration_source=binding.configuration_source,
+        configuration_version=binding.configuration_version,
+        configuration_hash=binding.configuration_hash,
+    )
+
+    assert TBOX_SCHEMA_ASSISTANT_PROMPT_VERSION == "knowledge-tbox-schema-assistant-v2"
+    assert TBOX_SCHEMA_ASSISTANT_SCHEMA_VERSION == "knowledge-tbox-schema-proposal-v2"
+    assert binding.prompt_version == TBOX_SCHEMA_ASSISTANT_PROMPT_VERSION
+    assert binding.tool_schema_version == TBOX_SCHEMA_ASSISTANT_SCHEMA_VERSION
+    assert binding.to_document() != legacy.to_document()
 
 
 def test_datahub_activation_maps_only_validated_runtime_and_secret_references() -> None:
