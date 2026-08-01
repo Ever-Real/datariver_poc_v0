@@ -393,6 +393,11 @@ class ChatService:
             question=contextual_question,
             prior_user_utterances=prior_user_utterances,
         )
+        composition_question = contextual_question
+        composition_prior_user_utterances = prior_user_utterances
+        if route.requested_mode is ChatRetrievalMode.AUTO and route.resolved_question is not None:
+            composition_question = route.resolved_question
+            composition_prior_user_utterances = ()
         general_composer = self._general_composer
         general_fallback_requested = (
             route.adapter_state is ChatAdapterState.UNAVAILABLE
@@ -487,8 +492,8 @@ class ChatService:
                     if self._composition_audit.external_service_used:
                         external_stages.append("composition")
                     draft = await general_composer.compose_general(
-                        question=contextual_question,
-                        prior_user_utterances=prior_user_utterances,
+                        question=composition_question,
+                        prior_user_utterances=composition_prior_user_utterances,
                     )
                     answer = self._validate_general_draft(draft)
                 except Exception:
@@ -717,8 +722,8 @@ class ChatService:
                             if self._composition_audit.external_service_used:
                                 external_stages.append("composition")
                             draft = await self._general_composer.compose_general(
-                                question=contextual_question,
-                                prior_user_utterances=prior_user_utterances,
+                                question=composition_question,
+                                prior_user_utterances=composition_prior_user_utterances,
                             )
                             answer = self._validate_general_draft(draft)
                         except Exception:
@@ -778,9 +783,9 @@ class ChatService:
                         if self._composition_audit.external_service_used:
                             external_stages.append("composition")
                         draft = await self._composer.compose(
-                            question=contextual_question,
+                            question=composition_question,
                             evidence=ranked_evidence,
-                            prior_user_utterances=prior_user_utterances,
+                            prior_user_utterances=composition_prior_user_utterances,
                         )
                     except Exception:
                         route = replace(route, adapter_state=ChatAdapterState.FAILED)

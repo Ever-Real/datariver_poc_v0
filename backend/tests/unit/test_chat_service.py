@@ -893,9 +893,16 @@ class RecordingContextCompressor:
 
 
 class ResolvedQuestionRouter:
-    def __init__(self, resolved_question: str, mode: ChatRetrievalMode) -> None:
+    def __init__(
+        self,
+        resolved_question: str,
+        mode: ChatRetrievalMode,
+        *,
+        adapter_state: ChatAdapterState = ChatAdapterState.READY,
+    ) -> None:
         self.resolved_question = resolved_question
         self.mode = mode
+        self.adapter_state = adapter_state
         self.calls: list[tuple[str, tuple[str, ...]]] = []
 
     @property
@@ -926,7 +933,7 @@ class ResolvedQuestionRouter:
                     else ChatRouteReason.GENERAL_DEFAULT
                 )
             ),
-            adapter_state=ChatAdapterState.READY,
+            adapter_state=self.adapter_state,
             resolved_question=self.resolved_question,
         )
 
@@ -1335,7 +1342,7 @@ async def test_conversation_memory_uses_bounded_raw_user_intent_before_interval(
     assert any(item.detail_code.endswith("RAW_CONTEXT_USED") for item in exchange.workflow)
 
 
-async def test_auto_route_uses_resolved_question_only_for_retrieval_and_reranking() -> None:
+async def test_auto_route_uses_resolved_question_for_retrieval_reranking_and_composition() -> None:
     workspace_id = uuid4()
     session_id = uuid4()
     subject = chat_subject(workspace_id)
@@ -1387,11 +1394,170 @@ async def test_auto_route_uses_resolved_question_only_for_retrieval_and_rerankin
     assert router.calls == [(current_question, prior)]
     assert vector.question == resolved_question
     assert reranker.question == resolved_question
-    assert composer.question == current_question
-    assert composer.prior_user_utterances == prior
+    assert composer.question == resolved_question
+    assert composer.prior_user_utterances == ()
     assert store.saved_question == current_question
     assert exchange.route.resolved_question == resolved_question
     assert any(item.detail_code.endswith("RAW_CONTEXT_USED") for item in exchange.workflow)
+
+
+async def test_auto_route_uses_resolved_question_for_general_answer() -> None:
+    workspace_id = uuid4()
+    session_id = uuid4()
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function=None,
+        clearance=Classification.INTERNAL,
+        allowed_actions=frozenset({Action.CHAT_QUERY}),
+    )
+    current_question = "그 개념을 다시 설명해줘"
+    prior = ("온톨로지가 무엇인지 설명해줘",)
+    resolved_question = "온톨로지의 개념을 다시 설명해줘"
+    general = FixedGeneralComposer(
+        ChatDraft(answer="온톨로지는 개념과 관계를 구조화한 모델입니다.", cited_chunk_ids=())
+    )
+    store = FakeChatStore()
+
+    exchange = await ChatService(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        composer=SelectingComposer((0,)),
+        general_composer=general,
+        question_router=ResolvedQuestionRouter(
+            resolved_question,
+            ChatRetrievalMode.GENERAL,
+        ),
+        session_ownership=FakeSessionOwnership(subject.subject_id),
+        subject_access=PassthroughSubjectAccess(),
+        conversation_context_reader=FakeConversationContextReader(
+            ChatConversationHistory(completed_user_turns=1, user_utterances=prior)
+        ),
+        conversation_memory_enabled=True,
+        conversation_compression_start_after_user_turns=3,
+        conversation_context_max_tokens=512,
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=subject,
+        session_id=session_id,
+        question=current_question,
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-resolved-general-question",
+        requested_mode=ChatRetrievalMode.AUTO,
+    )
+
+    assert general.questions == [(resolved_question, ())]
+    assert store.saved_question == current_question
+    assert exchange.route.resolved_question == resolved_question
+    assert exchange.answer.startswith(GENERAL_KNOWLEDGE_PREFIX)
+
+
+async def test_auto_route_uses_resolved_question_for_unavailable_route_fallback() -> None:
+    workspace_id = uuid4()
+    session_id = uuid4()
+    subject = chat_subject(workspace_id)
+    current_question = "그 테이블의 downstream 영향은 뭐야?"
+    prior = ("orders 테이블을 설명해줘",)
+    resolved_question = "orders 테이블의 downstream 영향을 설명해줘"
+    general = FixedGeneralComposer(
+        ChatDraft(answer="계보는 데이터 흐름과 의존 관계를 나타냅니다.", cited_chunk_ids=())
+    )
+    store = FakeChatStore()
+
+    exchange = await ChatService(
+        catalog_index=FakeIndex(asset(workspace_id)),
+        composer=SelectingComposer((0,)),
+        general_composer=general,
+        question_router=ResolvedQuestionRouter(
+            resolved_question,
+            ChatRetrievalMode.GRAPH,
+            adapter_state=ChatAdapterState.UNAVAILABLE,
+        ),
+        session_ownership=FakeSessionOwnership(subject.subject_id),
+        subject_access=PassthroughSubjectAccess(),
+        conversation_context_reader=FakeConversationContextReader(
+            ChatConversationHistory(completed_user_turns=1, user_utterances=prior)
+        ),
+        conversation_memory_enabled=True,
+        conversation_compression_start_after_user_turns=3,
+        conversation_context_max_tokens=512,
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=subject,
+        session_id=session_id,
+        question=current_question,
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-resolved-unavailable-route-fallback",
+        requested_mode=ChatRetrievalMode.AUTO,
+    )
+
+    assert general.questions == [(resolved_question, ())]
+    assert store.saved_question == current_question
+    assert exchange.route.resolved_question == resolved_question
+    assert exchange.answer.startswith(GENERAL_KNOWLEDGE_PREFIX)
+
+
+@pytest.mark.parametrize(
+    "requested_mode",
+    (ChatRetrievalMode.VECTOR, ChatRetrievalMode.GENERAL),
+)
+async def test_explicit_route_preserves_current_question_and_bounded_prior(
+    requested_mode: ChatRetrievalMode,
+) -> None:
+    workspace_id = uuid4()
+    session_id = uuid4()
+    subject = chat_subject(workspace_id)
+    current_question = "그 테이블을 다시 설명해줘"
+    prior = ("orders 테이블을 설명해줘",)
+    composer = CapturingComposer()
+    catalog_item = asset(workspace_id)
+    embedding_binding = inference_binding(InferenceStage.EMBEDDING, uuid4())
+    service_kwargs: dict[str, Any] = {}
+    if requested_mode is ChatRetrievalMode.VECTOR:
+        service_kwargs.update(
+            vector_catalog=CapturingVectorCatalog(catalog_item, provider_invoked=False),
+            classification_access=cast(
+                ClassificationAccessResolver,
+                FixedClassificationAccess(governed_chat_access(embedding_binding)),
+            ),
+            inference_runtime_bindings=(embedding_binding,),
+        )
+
+    await ChatService(
+        catalog_index=FakeIndex(catalog_item),
+        composer=composer,
+        session_ownership=FakeSessionOwnership(subject.subject_id),
+        subject_access=PassthroughSubjectAccess(),
+        conversation_context_reader=FakeConversationContextReader(
+            ChatConversationHistory(completed_user_turns=1, user_utterances=prior)
+        ),
+        conversation_memory_enabled=True,
+        conversation_compression_start_after_user_turns=3,
+        conversation_context_max_tokens=512,
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+        **service_kwargs,
+    ).query(
+        workspace_id=workspace_id,
+        subject=subject,
+        session_id=session_id,
+        question=current_question,
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id=f"request-explicit-{requested_mode.value.lower()}-context",
+        requested_mode=requested_mode,
+    )
+
+    assert composer.question == current_question
+    assert composer.prior_user_utterances == prior
 
 
 async def test_fourth_conversation_request_uses_request_time_compression() -> None:
