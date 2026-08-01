@@ -26,7 +26,7 @@ from datariver.application.services.governance_attachments import (
     FinalizedAttachment,
     GovernanceAttachmentUploadService,
 )
-from datariver.domain.authz import BuiltinPolicyEngine, Classification
+from datariver.domain.authz import Action, BuiltinPolicyEngine, Classification, SubjectAttributes
 from datariver.domain.common import (
     ConflictError,
     NotFoundError,
@@ -101,6 +101,25 @@ router = APIRouter(prefix="/change-requests", tags=["governance"])
 _MAXIMUM_ATTACHMENT_BYTES = 10 * 1024 * 1024
 _MAXIMUM_LEGACY_ATTACHMENTS = 200
 _FILE_NAME_DISALLOWED = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def _change_request_system_scope(subject: SubjectAttributes) -> frozenset[UUID] | None:
+    can_create_change_request = (
+        subject.active
+        and subject.job_function != "SERVICE_ACCOUNT"
+        and "service-accounts" not in subject.groups
+        and Action.CHANGE_CREATE in subject.allowed_actions
+        and Action.CHANGE_CREATE not in subject.denied_actions
+    )
+    if not can_create_change_request:
+        return frozenset()
+    global_administrator = (
+        "security-administrators" in subject.groups
+        and Action.ADMIN_MANAGE in subject.allowed_actions
+        and Action.ADMIN_MANAGE not in subject.denied_actions
+        and subject.clearance >= Classification.RESTRICTED
+    )
+    return None if global_administrator else subject.allowed_system_ids
 
 
 def _attachment_cursor(
@@ -390,12 +409,15 @@ async def list_change_request_systems(
     context: ContextDep,
     session: SessionDep,
 ) -> ChangeRequestSystemListResponse:
+    system_scope = _change_request_system_scope(context.subject)
+    if system_scope is not None and not system_scope:
+        return ChangeRequestSystemListResponse(items=[])
     statement = select(DataSystemModel).where(
         DataSystemModel.workspace_id == context.workspace_id,
         DataSystemModel.active.is_(True),
     )
-    if context.subject.allowed_system_ids:
-        statement = statement.where(DataSystemModel.id.in_(context.subject.allowed_system_ids))
+    if system_scope is not None:
+        statement = statement.where(DataSystemModel.id.in_(system_scope))
     values = (
         await session.scalars(statement.order_by(DataSystemModel.name, DataSystemModel.id))
     ).all()

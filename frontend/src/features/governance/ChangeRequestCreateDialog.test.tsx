@@ -106,6 +106,29 @@ describe('ChangeRequestCreateDialog', () => {
     )
   })
 
+  it('keeps focus while typing consecutive characters in a manual column name', async () => {
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/change-requests/systems') return Promise.resolve({
+        items: [{ id: 'system-1', code: 'FAB', name: 'Fabrication' }],
+      })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderDialog(apiClient(request))
+
+    await screen.findByRole('option', { name: 'Fabrication · FAB' })
+    fireEvent.click(screen.getByRole('button', { name: /ADD NEW TABLE MANUALLY/ }))
+    fireEvent.click(screen.getByRole('button', { name: '신규 테이블 1 컬럼 추가' }))
+    const columnName = screen.getByRole('textbox', { name: '신규 테이블 1 컬럼 1 이름' })
+    columnName.focus()
+
+    fireEvent.change(columnName, { target: { value: 's' } })
+    expect(columnName).toHaveFocus()
+    fireEvent.change(columnName, { target: { value: 'ss' } })
+
+    expect(columnName).toHaveFocus()
+    expect(columnName).toHaveValue('ss')
+  })
+
   it('reports missing required fields, then submits a complete manual request', async () => {
     const created = {
       id: 'change-1',
@@ -113,7 +136,10 @@ describe('ChangeRequestCreateDialog', () => {
     } as ChangeRequestRecord
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
       if (path === '/change-requests/systems') return Promise.resolve({
-        items: [{ id: 'system-1', code: 'FAB', name: 'Fabrication' }],
+        items: [
+          { id: 'system-1', code: 'FAB', name: 'Fabrication' },
+          { id: 'system-2', code: 'ERP', name: 'Enterprise Resource Planning' },
+        ],
       })
       if (path === '/change-requests/intake' && options?.method === 'POST') {
         return Promise.resolve(created)
@@ -124,6 +150,12 @@ describe('ChangeRequestCreateDialog', () => {
     renderDialog(apiClient(request), onCreated)
 
     await screen.findByRole('option', { name: 'Fabrication · FAB' })
+    expect(screen.getByRole('option', {
+      name: 'Enterprise Resource Planning · ERP',
+    })).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('관련 시스템'), {
+      target: { value: 'system-2' },
+    })
     const submit = screen.getByRole('button', { name: 'CR 제출' })
     fireEvent.click(submit)
     expect(await screen.findByRole('status')).toHaveTextContent('변경요청 제목')
@@ -150,6 +182,11 @@ describe('ChangeRequestCreateDialog', () => {
       ([path]) => path === '/change-requests/intake',
     )?.[1]
     expect(intakeOptions?.idempotencyKey).toMatch(/^change-request-intake-/)
+    expect(typeof intakeOptions?.body).toBe('string')
+    if (typeof intakeOptions?.body !== 'string') throw new Error('Expected a JSON request body')
+    expect(JSON.parse(intakeOptions.body)).toEqual(expect.objectContaining({
+      system_id: 'system-2',
+    }))
     expect(onCreated).toHaveBeenCalledWith(created)
   })
 })
