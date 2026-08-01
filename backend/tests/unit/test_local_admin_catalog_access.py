@@ -75,11 +75,28 @@ def test_operator_workflows_reconcile_admin_scope_after_catalog_sync() -> None:
         root / "scripts" / "workflow_update_restart.py",
     ):
         source = workflow.read_text(encoding="utf-8")
+        reconciliation = source.split("def _reconcile_local_admin_catalog_access(", maxsplit=1)[
+            1
+        ].split("\ndef ", maxsplit=1)[0]
 
         assert "datariver.local_admin_catalog_access" in source
         assert source.index("_sync_catalog(runner") < source.rindex(
             "_reconcile_local_admin_catalog_access("
         )
+        assert all(
+            token in reconciliation
+            for token in (
+                '"--profile"',
+                '"tools"',
+                '"run"',
+                '"--rm"',
+                '"--no-deps"',
+                '"local-bootstrap"',
+                '"datariver.local_admin_catalog_access"',
+            )
+        )
+        assert '"exec"' not in reconciliation
+        assert '"api"' not in reconciliation
 
 
 @pytest.mark.asyncio
