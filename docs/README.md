@@ -76,6 +76,9 @@ The four product-facing account tiers, separate profile-assignment evidence, req
 responsibility scope and protected Canonical Admin transition are defined by
 [ADR-0107](adr/0107-server-managed-profile-role-authority.md). Profile tier, clearance, job function
 and custom Access Role remain separate authority inputs.
+The Catalog-only, non-RESTRICTED Workspace discovery exception is defined by
+[ADR-0108](adr/0108-confidential-catalog-workspace-discovery.md). It does not widen downstream
+Change, Registration, Quality, Knowledge, Chat or export scope.
 The ordinary-assurance four-class summary and fresh-assurance full classification-policy detail
 boundary are defined by
 [ADR-0105](adr/0105-redacted-classification-policy-summary.md).

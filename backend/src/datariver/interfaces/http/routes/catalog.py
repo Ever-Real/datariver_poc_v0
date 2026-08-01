@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from datariver.application.change_numbers import change_request_number
 from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.dto import CatalogExportRequest
+from datariver.application.ports import CatalogReaderMode
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.catalog import CatalogService
 from datariver.application.services.catalog_description import CatalogDescriptionService
@@ -77,7 +78,10 @@ router = APIRouter(prefix="/catalog", tags=["catalog"])
 
 def _service(request: Request, session: SessionDep) -> CatalogService:
     container = get_container(request)
-    index = SqlCatalogIndexReader(session)
+    index = SqlCatalogIndexReader(
+        session,
+        reader_mode=CatalogReaderMode.WORKSPACE_DISCOVERY,
+    )
     return CatalogService(
         index=index,
         discovery=index,
@@ -96,6 +100,7 @@ def _service(request: Request, session: SessionDep) -> CatalogService:
             SqlClassificationAccessSnapshotReader(session)
         ),
         telemetry=container.metrics,
+        reader_mode=CatalogReaderMode.WORKSPACE_DISCOVERY,
     )
 
 

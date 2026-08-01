@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from types import TracebackType
 from typing import Any, Protocol, Self, runtime_checkable
 from uuid import UUID
@@ -207,6 +208,11 @@ class SubjectReader(Protocol):
     async def get_subject(
         self, *, issuer: str, external_subject: str, workspace_id: UUID
     ) -> SubjectAttributes: ...
+
+
+class CatalogReaderMode(StrEnum):
+    SCOPED = "SCOPED"
+    WORKSPACE_DISCOVERY = "WORKSPACE_DISCOVERY"
 
 
 class CatalogIndexReader(Protocol):

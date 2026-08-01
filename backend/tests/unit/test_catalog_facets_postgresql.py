@@ -12,7 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ClauseElement
 
 from datariver.application.classification_access import static_classification_access_floor
+from datariver.application.ports import CatalogReaderMode
 from datariver.domain.authz import Classification, SubjectAttributes
+from datariver.domain.classification_access import SearchMode
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader, _encode_cursor
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 
@@ -217,3 +219,120 @@ def test_quarantine_review_scope_keeps_workspace_and_tombstone_boundaries() -> N
     assert "classification" in standard
     assert "lifecycle" not in review
     assert "classification" not in review
+
+
+def test_workspace_discovery_omits_nonrestricted_system_and_domain_predicates() -> None:
+    workspace_id = uuid4()
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="USER",
+        clearance=Classification.CONFIDENTIAL,
+        allowed_system_ids=frozenset(),
+        allowed_domain_ids=frozenset(),
+    )
+    reader = SqlCatalogIndexReader(cast(AsyncSession, _Session([])))
+    scoped = _compile_postgresql(
+        select(AssetProjectionModel.id).where(
+            *reader._scope_conditions(subject, static_classification_access_floor())
+        )
+    )
+    discovery = _compile_postgresql(
+        select(AssetProjectionModel.id).where(
+            *reader._scope_conditions(
+                subject,
+                static_classification_access_floor(),
+                CatalogReaderMode.WORKSPACE_DISCOVERY,
+            )
+        )
+    )
+
+    assert "workspace_id" in discovery
+    assert "deleted_at" in discovery
+    assert "lifecycle" in discovery
+    assert "classification" in discovery
+    assert "system_id" in scoped
+    assert "domain_id" in scoped
+    assert "system_id" not in discovery
+    assert "domain_id" not in discovery
+
+
+@pytest.mark.parametrize(
+    ("active", "job_function", "groups"),
+    [
+        (False, "USER", frozenset()),
+        (True, "SERVICE_ACCOUNT", frozenset({"service-accounts"})),
+    ],
+)
+def test_workspace_discovery_rejects_inactive_and_service_subjects_before_read(
+    active: bool,
+    job_function: str,
+    groups: frozenset[str],
+) -> None:
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=uuid4(),
+        active=active,
+        department_id=None,
+        groups=groups,
+        job_function=job_function,
+        clearance=Classification.CONFIDENTIAL,
+    )
+    reader = SqlCatalogIndexReader(cast(AsyncSession, _Session([])))
+    discovery = _compile_postgresql(
+        select(AssetProjectionModel.id).where(
+            *reader._scope_conditions(
+                subject,
+                static_classification_access_floor(),
+                CatalogReaderMode.WORKSPACE_DISCOVERY,
+            )
+        )
+    )
+
+    assert "WHERE false" in discovery
+
+
+def test_workspace_discovery_restricted_branch_keeps_grant_and_scope_intersection() -> None:
+    workspace_id = uuid4()
+    system_id, domain_id, asset_id = uuid4(), uuid4(), uuid4()
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="USER",
+        clearance=Classification.RESTRICTED,
+        allowed_system_ids=frozenset({system_id}),
+        allowed_domain_ids=frozenset({domain_id}),
+    )
+    access = static_classification_access_floor()
+    access = replace(
+        access,
+        rules=tuple(
+            replace(rule, search_mode=SearchMode.EXPLICIT_GRANT_ONLY)
+            if rule.classification is Classification.RESTRICTED
+            else rule
+            for rule in access.rules
+        ),
+        restricted_resource_ids=frozenset({asset_id}),
+    )
+    reader = SqlCatalogIndexReader(cast(AsyncSession, _Session([])))
+
+    sql = _compile_postgresql(
+        select(AssetProjectionModel.id).where(
+            *reader._scope_conditions(
+                subject,
+                access,
+                CatalogReaderMode.WORKSPACE_DISCOVERY,
+            )
+        )
+    )
+
+    assert "classification" in sql
+    assert "catalog.assets_projection.id IN" in sql
+    assert "system_id IN" in sql
+    assert "domain_id IN" in sql

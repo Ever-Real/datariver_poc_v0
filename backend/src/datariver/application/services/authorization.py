@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 from uuid import UUID
 
+from datariver.application.classification_access import ClassificationAccessSnapshot
 from datariver.application.dto import DecisionAuditItem
 from datariver.application.ports import DecisionSetWriter, DecisionWriter
 from datariver.domain.admin_access import AdminFallbackStage
@@ -18,6 +19,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+from datariver.domain.classification_access import SearchMode
 from datariver.domain.common import Effect, ForbiddenError, uuid7
 
 AUTHENTICATION_DENIAL_REASONS = frozenset(
@@ -166,6 +168,81 @@ class AuthorizationService:
             raise ForbiddenError(
                 "The requested action is not permitted.",
                 details=details,
+            )
+        return decision
+
+    async def authorize_catalog_workspace_browse(
+        self,
+        *,
+        subject: SubjectAttributes,
+        resource: ResourceAttributes,
+        classification_access: ClassificationAccessSnapshot,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> Decision:
+        """Authorize the Catalog UI's non-RESTRICTED workspace discovery surface.
+
+        This is an independent, audited policy. It never rewrites a generic
+        BuiltinPolicyEngine denial and is intentionally unavailable to data-use,
+        mutation, export, candidate, Chat, Quality, Change or Knowledge paths.
+        """
+
+        del environment
+        reasons: list[str] = []
+        allowed_resource_types = {"catalog_asset_browse", "catalog_lineage_browse"}
+        if resource.resource_type not in allowed_resource_types:
+            reasons.append("CATALOG_BROWSE_RESOURCE_TYPE_REQUIRED")
+        if not subject.active:
+            reasons.append("SUBJECT_INACTIVE")
+        if not resource.active or resource.lifecycle != "ACTIVE":
+            reasons.append("RESOURCE_INACTIVE")
+        if resource.workspace_id != subject.workspace_id:
+            reasons.append("WORKSPACE_MISMATCH")
+        if "service-accounts" in subject.groups or subject.job_function == "SERVICE_ACCOUNT":
+            reasons.append("HUMAN_ACTOR_REQUIRED")
+        if Action.CATALOG_READ in subject.denied_actions:
+            reasons.append("EXPLICIT_ACTION_DENY")
+        elif Action.CATALOG_READ not in subject.allowed_actions:
+            reasons.append("ACTION_NOT_GRANTED")
+        if resource.classification is Classification.RESTRICTED:
+            reasons.append("RESTRICTED_REQUIRES_SCOPED_AUTHORIZATION")
+        elif resource.classification > subject.clearance:
+            reasons.append("CLEARANCE_INSUFFICIENT")
+        try:
+            search_mode = classification_access.rule_for(resource.classification).search_mode
+        except (StopIteration, ValueError):
+            reasons.append("CLASSIFICATION_POLICY_INVALID")
+        else:
+            if search_mode is not SearchMode.ABAC:
+                reasons.append("CLASSIFICATION_POLICY_DENY")
+        classification_policy_version = (
+            f"classification-access:{classification_access.posture.value}:"
+            f"{classification_access.policy_version or 0}:"
+            f"{classification_access.authorization_generation or 0}"
+        )
+        decision = Decision(
+            decision_id=uuid7(),
+            effect=Effect.DENY if reasons else Effect.ALLOW,
+            reason_codes=tuple(reasons or ["CATALOG_WORKSPACE_DISCOVERY_ALLOW"]),
+            policy_versions=("catalog-workspace-discovery-v1", classification_policy_version),
+            authentication_assurance=subject.authentication_assurance,
+            authentication_time=subject.authentication_time,
+        )
+        await self._decision_writer.append_decision(
+            decision=decision,
+            subject_id=subject.subject_id,
+            workspace_id=subject.workspace_id,
+            resource_id=resource.resource_id,
+            action=Action.CATALOG_READ.value,
+            request_id=request_id,
+        )
+        if not decision.allowed:
+            raise ForbiddenError(
+                "The requested Catalog workspace browse is not permitted.",
+                details={
+                    "decision_id": str(decision.decision_id),
+                    "reason_codes": decision.reason_codes,
+                },
             )
         return decision
 

@@ -227,6 +227,14 @@ Export never includes the bucket, key, VersionId, endpoint, credential or a Pres
 | `GET /catalog/sync/datahub/{sync_id}` | `catalog.sync` | return governed run state, public next-page ordinal, seen/expected counts and the verified-snapshot flag for bounded scheduler resume; never returns the provider cursor |
 | `POST /catalog/sync/datahub` | `catalog.sync` | reserve and idempotently commit one fixed-contract DataHub scroll page; the request carries only the server page ordinal, never a provider cursor; an oversized response adaptively reduces its bounded page size |
 
+The primary Catalog HTTP facade selects `WORKSPACE_DISCOVERY`: active, non-deleted
+PUBLIC/INTERNAL/CONFIDENTIAL presentation rows up to the current subject clearance and Search
+policy may omit System/Domain intersection. Detail and lineage use independent exact
+`catalog_asset_browse` / `catalog_lineage_browse` decisions and retain actual resource scope in
+audit. RESTRICTED always uses the original scoped authorization with both exact grant and
+System/Domain intersection. Mode is bound into cache/cursor material. Change, Registration,
+Quality, Knowledge, Chat, export, candidate and mutation consumers never opt in.
+
 Under ADR-0020, the four discovery endpoints and `GET /catalog/assets/{asset_id}` use the same
 standard response schema for an eligible human security administrator's audited
 `catalog.quarantine.read` review. Its query is restricted to non-deleted rows in that

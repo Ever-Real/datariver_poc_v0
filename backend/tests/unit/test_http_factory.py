@@ -16,6 +16,7 @@ from datariver.application.classification_access_admin import (
     ClassificationPolicySummary,
     ClassificationPolicySummaryRule,
 )
+from datariver.application.ports import CatalogReaderMode
 from datariver.config import Settings
 from datariver.domain.authz import Action, Classification
 from datariver.domain.classification_access import ChatMode, SearchMode
@@ -33,6 +34,7 @@ from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.dependencies import get_request_context
 from datariver.interfaces.http.factory import create_app
 from datariver.interfaces.http.routes import admin as admin_routes
+from datariver.interfaces.http.routes import catalog as catalog_routes
 from datariver.interfaces.http.routes import classification_access_admin as classification_routes
 from datariver.interfaces.http.routes.admin import (
     _SYSTEM_ENVIRONMENT_KEYS,
@@ -108,6 +110,29 @@ def settings() -> Settings:
         s3_access_key_file="/run/secrets/test_s3_access_key",
         s3_secret_key_file="/run/secrets/test_s3_secret_key",
     )
+
+
+def test_catalog_http_service_is_the_only_workspace_discovery_opt_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    container = SimpleNamespace(
+        datahub=object(),
+        cache=object(),
+        database=SimpleNamespace(session_factory=object()),
+        metrics=None,
+        settings=SimpleNamespace(
+            cache_default_ttl_seconds=60,
+            datahub_stale_ttl_seconds=900,
+            catalog_search_cache_ttl_seconds=30,
+            catalog_search_minimum_query_length=2,
+        ),
+    )
+    monkeypatch.setattr(catalog_routes, "get_container", lambda _: container)
+
+    service = catalog_routes._service(cast(Any, object()), cast(Any, object()))
+
+    assert service._reader_mode is CatalogReaderMode.WORKSPACE_DISCOVERY
+    assert getattr(service._index, "_reader_mode") is CatalogReaderMode.WORKSPACE_DISCOVERY
 
 
 def test_liveness_and_security_headers() -> None:

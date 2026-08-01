@@ -84,3 +84,64 @@ def catalog_asset_scope_conditions(
             ),
         ),
     ]
+
+
+def catalog_asset_workspace_discovery_conditions(
+    subject: SubjectAttributes,
+    access: ClassificationAccessSnapshot,
+) -> list[Any]:
+    """Return the Catalog-presentation-only workspace discovery predicate.
+
+    PUBLIC, INTERNAL and CONFIDENTIAL discovery omits System/Domain ownership
+    predicates but preserves workspace, lifecycle, subject clearance and the
+    active classification-access Search rule. RESTRICTED stays on the ordinary
+    intersection plus an explicit governed grant.
+    """
+
+    if (
+        not subject.active
+        or subject.job_function == "SERVICE_ACCOUNT"
+        or "service-accounts" in subject.groups
+    ):
+        return [false()]
+
+    standard_classifications = tuple(
+        int(classification)
+        for classification in Classification
+        if classification is not Classification.RESTRICTED
+        and classification <= subject.clearance
+        and access.rule_for(classification).search_mode is SearchMode.ABAC
+    )
+    restricted_scope: Any = false()
+    restricted_rule = access.rule_for(Classification.RESTRICTED)
+    if (
+        subject.clearance >= Classification.RESTRICTED
+        and restricted_rule.search_mode is SearchMode.EXPLICIT_GRANT_ONLY
+    ):
+        explicit_grants: list[Any] = []
+        if access.restricted_resource_ids:
+            explicit_grants.append(AssetProjectionModel.id.in_(access.restricted_resource_ids))
+        if access.restricted_system_ids:
+            explicit_grants.append(AssetProjectionModel.system_id.in_(access.restricted_system_ids))
+        if access.restricted_domain_ids:
+            explicit_grants.append(AssetProjectionModel.domain_id.in_(access.restricted_domain_ids))
+        if explicit_grants:
+            restricted_scope = and_(
+                or_(*explicit_grants),
+                AssetProjectionModel.system_id.is_not(None),
+                AssetProjectionModel.system_id.in_(subject.allowed_system_ids),
+                AssetProjectionModel.domain_id.is_not(None),
+                AssetProjectionModel.domain_id.in_(subject.allowed_domain_ids),
+            )
+    return [
+        AssetProjectionModel.workspace_id == subject.workspace_id,
+        AssetProjectionModel.deleted_at.is_(None),
+        AssetProjectionModel.lifecycle == "ACTIVE",
+        or_(
+            AssetProjectionModel.classification.in_(standard_classifications),
+            and_(
+                AssetProjectionModel.classification == int(Classification.RESTRICTED),
+                restricted_scope,
+            ),
+        ),
+    ]

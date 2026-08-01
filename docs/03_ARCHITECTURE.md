@@ -81,6 +81,9 @@ The API gateway is a deployment boundary, not an authorization context. It valid
   evidence. `PROFILE_ROLE_POLICY_V1` owns only the Action bundle; membership clearance, explicit
   denies and System responsibility remain separate canonical inputs. Admin is derived from current
   Canonical Admin binding evidence, never a job-function or browser label.
+- Catalog Facade alone may select `WORKSPACE_DISCOVERY` for non-RESTRICTED presentation reads.
+  Every Change, Registration, Quality, Knowledge, Chat, export and mutation consumer retains the
+  default scoped reader, and DataHub projection classification remains unchanged.
 - DataHub owns metadata after successful application. DataRiver stores a minimal authorized projection and a monotonic local projection version; a true DataHub source watermark remains an ingestion contract.
 - DataRiver PostgreSQL owns intent, approvals, job state, graph release manifests, policy and audit.
 - Knowledge Studio database ingestion starts only from an immutable published Studio Release.

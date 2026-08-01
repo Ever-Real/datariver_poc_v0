@@ -34,6 +34,7 @@ from datariver.application.ports import (
     CatalogCandidateTargetReader,
     CatalogDiscoveryReader,
     CatalogIndexReader,
+    CatalogReaderMode,
     CatalogWatermarkReader,
     DataHubGateway,
 )
@@ -86,9 +87,13 @@ class FakeIndex:
         )
 
     async def get_authorized_asset(
-        self, *, subject: SubjectAttributes, access: object, asset_id: object
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        asset_id: object,
     ) -> CatalogAssetDetail | None:
-        del access
+        del access, asset_id, subject
         return self.detail
 
     async def facets(self, **_: object) -> CatalogFacets:
@@ -219,7 +224,16 @@ class FakeCache:
 
 
 class AllowAuthorization:
+    def __init__(self) -> None:
+        self.generic_calls = 0
+        self.workspace_browse_calls = 0
+
     async def authorize(self, **_: object) -> None:
+        self.generic_calls += 1
+        return None
+
+    async def authorize_catalog_workspace_browse(self, **_: object) -> None:
+        self.workspace_browse_calls += 1
         return None
 
     async def can_review_quarantined_catalog(self, **_: object) -> bool:
@@ -296,6 +310,136 @@ async def test_catalog_asset_access_revalidation_is_set_based_and_skips_datahub_
 
     assert values == (asset,)
     assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_catalog_route_mode_uses_workspace_discovery_only_for_presentation_reads() -> None:
+    now = datetime.now(UTC)
+    workspace_id, asset_id = uuid4(), uuid4()
+    asset = CatalogAssetIndex(
+        asset_id=asset_id,
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:workspace-discovery",
+        asset_type="DATASET",
+        name="workspace_visible",
+        description=None,
+        platform="postgres",
+        domain_id=uuid4(),
+        system_id=uuid4(),
+        owner_department_id=None,
+        classification=Classification.INTERNAL,
+        lifecycle="ACTIVE",
+        source_version="projection-v1",
+        observed_at=now,
+    )
+    index_reader = FakeIndex(CatalogAssetDetail(asset, (), (), (), (), {}, "projection-v1", now))
+    authorization = AllowAuthorization()
+    service = CatalogService(
+        index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
+        watermark=cast(CatalogWatermarkReader, index_reader),
+        datahub=cast(
+            DataHubGateway, FakeGateway(DataHubAssetEnrichment((), (), (), (), {}, "v1", now))
+        ),
+        cache=cast(Cache, FakeCache()),
+        authorization=cast(AuthorizationService, authorization),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=30,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+        reader_mode=CatalogReaderMode.WORKSPACE_DISCOVERY,
+    )
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="USER",
+        clearance=Classification.CONFIDENTIAL,
+        allowed_actions=frozenset({Action.CATALOG_SEARCH, Action.CATALOG_READ}),
+    )
+
+    await service.search(
+        subject=subject,
+        query="workspace",
+        filters={},
+        cursor=None,
+        limit=25,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="workspace-discovery-search",
+    )
+    detail = await service.get_asset(
+        subject=subject,
+        asset_id=asset_id,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="workspace-discovery-detail",
+    )
+
+    assert detail is not None
+    assert authorization.generic_calls == 1  # Catalog Search preparation only.
+    assert authorization.workspace_browse_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_restricted_catalog_detail_never_uses_workspace_browse_exception() -> None:
+    now = datetime.now(UTC)
+    workspace_id, asset_id = uuid4(), uuid4()
+    asset = CatalogAssetIndex(
+        asset_id=asset_id,
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:restricted",
+        asset_type="DATASET",
+        name="restricted",
+        description=None,
+        platform="postgres",
+        domain_id=uuid4(),
+        system_id=uuid4(),
+        owner_department_id=None,
+        classification=Classification.RESTRICTED,
+        lifecycle="ACTIVE",
+        source_version="projection-v1",
+        observed_at=now,
+    )
+    index_reader = FakeIndex(CatalogAssetDetail(asset, (), (), (), (), {}, "projection-v1", now))
+    authorization = AllowAuthorization()
+    service = CatalogService(
+        index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
+        watermark=cast(CatalogWatermarkReader, index_reader),
+        datahub=cast(
+            DataHubGateway, FakeGateway(DataHubAssetEnrichment((), (), (), (), {}, "v1", now))
+        ),
+        cache=cast(Cache, FakeCache()),
+        authorization=cast(AuthorizationService, authorization),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=30,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+        reader_mode=CatalogReaderMode.WORKSPACE_DISCOVERY,
+    )
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="USER",
+        clearance=Classification.RESTRICTED,
+        allowed_actions=frozenset({Action.CATALOG_READ}),
+    )
+
+    await service.get_asset(
+        subject=subject,
+        asset_id=asset_id,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="restricted-detail",
+    )
+
+    assert authorization.generic_calls == 1
+    assert authorization.workspace_browse_calls == 0
 
 
 def test_search_cache_ttl_never_crosses_policy_or_grant_boundary() -> None:

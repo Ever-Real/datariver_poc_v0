@@ -44,6 +44,7 @@ from datariver.application.ports import (
     CatalogCandidateTargetReader,
     CatalogDiscoveryReader,
     CatalogIndexReader,
+    CatalogReaderMode,
     CatalogTelemetry,
     CatalogWatermarkReader,
     DataHubGateway,
@@ -159,6 +160,7 @@ class CatalogService:
         classification_access: ClassificationAccessResolver | None = None,
         telemetry: CatalogTelemetry | None = None,
         candidate_targets: CatalogCandidateTargetReader | None = None,
+        reader_mode: CatalogReaderMode = CatalogReaderMode.SCOPED,
     ) -> None:
         self._index = index
         self._discovery = discovery
@@ -174,6 +176,7 @@ class CatalogService:
         self._classification_access = classification_access
         self._telemetry = telemetry
         self._candidate_targets = candidate_targets
+        self._reader_mode = reader_mode
 
     async def search(
         self,
@@ -578,19 +581,12 @@ class CatalogService:
         if authorized is None:
             return None
         if not access.admin_quarantine_review:
-            await self._authorization.authorize(
+            await self._authorize_presentation_read(
                 subject=subject,
-                resource=ResourceAttributes(
-                    resource_id=authorized.index.asset_id,
-                    workspace_id=authorized.index.workspace_id,
-                    resource_type="catalog_asset",
-                    owner_department_id=authorized.index.owner_department_id,
-                    system_id=authorized.index.system_id,
-                    domain_id=authorized.index.domain_id,
-                    classification=authorized.index.classification,
-                    lifecycle=authorized.index.lifecycle,
-                ),
-                action=Action.CATALOG_READ,
+                asset=authorized.index,
+                access=access,
+                scoped_resource_type="catalog_asset",
+                browse_resource_type="catalog_asset_browse",
                 environment=environment,
                 request_id=request_id,
             )
@@ -603,6 +599,7 @@ class CatalogService:
             "classification_policy_floor": CLASSIFICATION_ACCESS_FLOOR_VERSION,
             "classification_access": self._classification_access_document(access),
             "source": authorized.index.source_version,
+            "reader_mode": self._reader_mode.value,
         }
         key_hash = hashlib.sha256(json.dumps(key_document, sort_keys=True).encode()).hexdigest()
         fresh_cache_key = "catalog:asset:fresh:" + key_hash
@@ -683,6 +680,48 @@ class CatalogService:
         self._cache_access(cache="detail_write", outcome="success")
         return detail
 
+    async def _authorize_presentation_read(
+        self,
+        *,
+        subject: SubjectAttributes,
+        asset: CatalogAssetIndex,
+        access: ClassificationAccessSnapshot,
+        scoped_resource_type: str,
+        browse_resource_type: str,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> None:
+        workspace_discovery = (
+            self._reader_mode is CatalogReaderMode.WORKSPACE_DISCOVERY
+            and asset.classification is not Classification.RESTRICTED
+        )
+        resource = ResourceAttributes(
+            resource_id=asset.asset_id,
+            workspace_id=asset.workspace_id,
+            resource_type=browse_resource_type if workspace_discovery else scoped_resource_type,
+            owner_department_id=asset.owner_department_id,
+            system_id=asset.system_id,
+            domain_id=asset.domain_id,
+            classification=asset.classification,
+            lifecycle=asset.lifecycle,
+        )
+        if workspace_discovery:
+            await self._authorization.authorize_catalog_workspace_browse(
+                subject=subject,
+                resource=resource,
+                classification_access=access,
+                environment=environment,
+                request_id=request_id,
+            )
+            return
+        await self._authorization.authorize(
+            subject=subject,
+            resource=resource,
+            action=Action.CATALOG_READ,
+            environment=environment,
+            request_id=request_id,
+        )
+
     async def get_asset_indexes(
         self,
         *,
@@ -757,7 +796,9 @@ class CatalogService:
             request_id=request_id,
         )
         center = await self._index.get_authorized_asset(
-            subject=subject, access=access, asset_id=asset_id
+            subject=subject,
+            access=access,
+            asset_id=asset_id,
         )
         if center is None:
             return None
@@ -767,19 +808,12 @@ class CatalogService:
         # check produces a local 403 before DataHub is contacted.  All normal
         # user requests remain subject to the catalog-read authorization check.
         if not access.admin_quarantine_review:
-            await self._authorization.authorize(
+            await self._authorize_presentation_read(
                 subject=subject,
-                resource=ResourceAttributes(
-                    resource_id=center.index.asset_id,
-                    workspace_id=center.index.workspace_id,
-                    resource_type="catalog_lineage",
-                    owner_department_id=center.index.owner_department_id,
-                    system_id=center.index.system_id,
-                    domain_id=center.index.domain_id,
-                    classification=center.index.classification,
-                    lifecycle=center.index.lifecycle,
-                ),
-                action=Action.CATALOG_READ,
+                asset=center.index,
+                access=access,
+                scoped_resource_type="catalog_lineage",
+                browse_resource_type="catalog_lineage_browse",
                 environment=environment,
                 request_id=request_id,
             )
@@ -903,6 +937,7 @@ class CatalogService:
         key_document = {
             "workspace": str(subject.workspace_id),
             "scope": self._permission_scope_hash(subject),
+            "reader_mode": self._reader_mode.value,
             "policy": self._policy_version,
             "classification_policy_floor": CLASSIFICATION_ACCESS_FLOOR_VERSION,
             "classification_access": self._classification_access_document(access),
@@ -933,6 +968,7 @@ class CatalogService:
         key_document = {
             "workspace": str(subject.workspace_id),
             "scope": self._permission_scope_hash(subject),
+            "reader_mode": self._reader_mode.value,
             "policy": self._policy_version,
             "classification_policy_floor": CLASSIFICATION_ACCESS_FLOOR_VERSION,
             "classification_access": self._classification_access_document(access),
@@ -961,6 +997,7 @@ class CatalogService:
         document = {
             "workspace": str(subject.workspace_id),
             "scope": self._permission_scope_hash(subject),
+            "reader_mode": self._reader_mode.value,
             "policy": self._policy_version,
             "classification_policy_floor": CLASSIFICATION_ACCESS_FLOOR_VERSION,
             "classification_access": self._classification_access_document(access),

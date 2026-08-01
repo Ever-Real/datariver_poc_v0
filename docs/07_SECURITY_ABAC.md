@@ -32,6 +32,16 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
   parameter-free local bootstrap may write the exact development binding after an
   `APP_ENV=development` check that occurs before database access. This evidence does not activate
   `admin.self_approve`; maker/checker rules remain unchanged pending A4c.
+- Profile tier is an actions-only server policy, separate from `job_function`, custom Access Role,
+  per-user clearance and System responsibility. Existing users remain `UNASSIGNED` until an
+  audited transition. A current non-Admin assignment replaces rather than unions with custom-Role
+  evidence; stale/hash/version/revoked evidence yields no profile Actions, and explicit denies
+  continue to win. Admin derives only from a VERIFIED Canonical binding. Admin promotion/demotion
+  additionally requires a different VERIFIED Admin, fresh hardware WebAuthn, reason,
+  version/idempotency fences and the last-Admin guard; it does not enable self-approval workflows.
+- Profile-scoped System IDs are hydrated on each request from active Developer/Data Steward rows
+  joined to active Systems. Stored membership System IDs are not unioned with this overlay, so
+  responsibility removal is effective on the next request. Viewer is never a System candidate.
 - The browser keeps the OIDC user/token object and the selected Workspace only in memory: neither
   `localStorage` nor `sessionStorage` holds a bearer token, refresh token or tenant/RLS context.
   Only the OIDC library's short-lived PKCE transaction state is stored in tab-scoped
@@ -72,6 +82,14 @@ Untrusted inputs include browser/API payloads, OIDC claims before verification, 
 7. Set transaction-local workspace/subject attributes for PostgreSQL RLS.
 8. Apply field-level redaction.
 9. Persist decision ID, policy versions and reason codes; a bounded list/Chat evaluation may use one grouped record containing per-resource effects instead of one transaction/row per candidate. Avoid sensitive raw inputs.
+
+Catalog presentation has one narrow non-RESTRICTED refinement. The HTTP Catalog reader may use
+`WORKSPACE_DISCOVERY` for ACTIVE PUBLIC/INTERNAL/CONFIDENTIAL metadata when Workspace, human actor,
+action/no-deny, clearance and current classification Search policy all pass. It does not remove or
+flip a generic denial: detail and lineage use separate exact browse resource types and audit the
+actual System/Domain. RESTRICTED continues through the generic scoped decision and requires both an
+explicit grant and System/Domain intersection. All mutation, export and downstream
+Change/Registration/Quality/Knowledge/Chat readers remain unchanged.
 
 Typed upload candidate reads require `registration.read`, `catalog.read` and `change.create`. The
 service first validates READY receipt/V2 hash evidence, then batch-loads only current ACTIVE DATASET

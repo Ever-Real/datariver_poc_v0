@@ -14,6 +14,16 @@ human Viewer+CONFIDENTIAL evidence. Migration gates require no existing-user bac
 clearance update, deterministic canonical `0001`, offline up/down rendering and isolated PostgreSQL
 upgrade/downgrade where credentials are available.
 
+### Catalog workspace discovery — 2026-08-01
+
+ADR-0108 tests compare `SCOPED` and `WORKSPACE_DISCOVERY` explicitly. Positive cases cover
+non-RESTRICTED Catalog-only list/detail/lineage access up to current clearance and classification
+Search policy. Negatives cover cross-Workspace, inactive/service actor, explicit action deny,
+insufficient clearance, policy DENY and RESTRICTED without both exact grant and ordinary
+System/Domain scope. Regression tests require Change, Registration, Quality, Knowledge, Chat,
+export, candidates and mutations to keep the default scoped reader byte-for-byte. Cache and cursor
+tests include the reader mode so a scoped result cannot be replayed as discovery.
+
 ### Canonical Admin definition and protected local binding — 2026-08-01
 
 ADR-0106/revision `0089` add an unassigned server-owned definition and separate development-only

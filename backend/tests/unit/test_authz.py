@@ -4,6 +4,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from datariver.application.classification_access import static_classification_access_floor
 from datariver.application.dto import DecisionAuditItem
 from datariver.application.services.authorization import AuthorizationService
 from datariver.domain.admin_access import AdminFallbackStage
@@ -17,12 +18,14 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+from datariver.domain.classification_access import SearchMode
 from datariver.domain.common import ForbiddenError
 
 
 class BatchDecisionWriter:
     def __init__(self) -> None:
         self.single_calls = 0
+        self.decisions: list[Decision] = []
         self.sets: list[tuple[DecisionAuditItem, ...]] = []
 
     async def append_decision(
@@ -35,8 +38,9 @@ class BatchDecisionWriter:
         action: str,
         request_id: str,
     ) -> None:
-        del decision, subject_id, workspace_id, resource_id, action, request_id
+        del subject_id, workspace_id, resource_id, action, request_id
         self.single_calls += 1
+        self.decisions.append(decision)
 
     async def append_decision_set(
         self,
@@ -181,6 +185,97 @@ def test_non_public_resource_still_requires_system_and_domain_scope() -> None:
     assert not decision.allowed
     assert "SYSTEM_SCOPE_MISMATCH" in decision.reason_codes
     assert "DOMAIN_SCOPE_MISMATCH" in decision.reason_codes
+
+
+@pytest.mark.asyncio
+async def test_catalog_workspace_browse_independently_allows_nonrestricted_presentation() -> None:
+    subject, resource, environment = make_context()
+    resource = replace(
+        resource,
+        resource_type="catalog_asset_browse",
+        system_id=uuid4(),
+        domain_id=uuid4(),
+    )
+    writer = BatchDecisionWriter()
+
+    decision = await AuthorizationService(
+        decision_writer=writer
+    ).authorize_catalog_workspace_browse(
+        subject=subject,
+        resource=resource,
+        classification_access=static_classification_access_floor(),
+        environment=environment,
+        request_id="catalog-workspace-browse",
+    )
+
+    assert decision.allowed
+    assert decision.reason_codes == ("CATALOG_WORKSPACE_DISCOVERY_ALLOW",)
+    assert "catalog-workspace-discovery-v1" in decision.policy_versions
+    assert writer.decisions == [decision]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "cross_workspace",
+        "inactive_subject",
+        "inactive_resource",
+        "service_identity",
+        "explicit_deny",
+        "missing_action",
+        "clearance",
+        "policy_deny",
+        "restricted",
+        "wrong_resource_type",
+    ],
+)
+@pytest.mark.asyncio
+async def test_catalog_workspace_browse_fails_closed(case: str) -> None:
+    subject, resource, environment = make_context()
+    resource = replace(resource, resource_type="catalog_lineage_browse")
+    access = static_classification_access_floor()
+    if case == "cross_workspace":
+        resource = replace(resource, workspace_id=uuid4())
+    elif case == "inactive_subject":
+        subject = replace(subject, active=False)
+    elif case == "inactive_resource":
+        resource = replace(resource, active=False)
+    elif case == "service_identity":
+        subject = replace(subject, groups=frozenset({"service-accounts"}))
+    elif case == "explicit_deny":
+        subject = replace(subject, denied_actions=frozenset({Action.CATALOG_READ}))
+    elif case == "missing_action":
+        subject = replace(subject, allowed_actions=frozenset())
+    elif case == "clearance":
+        subject = replace(subject, clearance=Classification.PUBLIC)
+    elif case == "policy_deny":
+        access = replace(
+            access,
+            rules=tuple(
+                replace(rule, search_mode=SearchMode.DENY)
+                if rule.classification is resource.classification
+                else rule
+                for rule in access.rules
+            ),
+        )
+    elif case == "restricted":
+        resource = replace(resource, classification=Classification.RESTRICTED)
+        subject = replace(subject, clearance=Classification.RESTRICTED)
+    elif case == "wrong_resource_type":
+        resource = replace(resource, resource_type="catalog_asset")
+    writer = BatchDecisionWriter()
+
+    with pytest.raises(ForbiddenError):
+        await AuthorizationService(decision_writer=writer).authorize_catalog_workspace_browse(
+            subject=subject,
+            resource=resource,
+            classification_access=access,
+            environment=environment,
+            request_id=f"catalog-workspace-browse-{case}",
+        )
+
+    assert writer.single_calls == 1
+    assert writer.decisions[0].allowed is False
 
 
 def test_denies_cross_workspace_even_when_action_is_granted() -> None:

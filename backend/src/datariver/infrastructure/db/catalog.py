@@ -28,6 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.classification_access import (
     ClassificationAccessSnapshot,
+    static_classification_access_floor,
 )
 from datariver.application.dto import (
     CatalogAssetDetail,
@@ -46,11 +47,18 @@ from datariver.application.dto import (
     CatalogVocabulary,
     DataHubScanAsset,
 )
-from datariver.application.ports import CatalogIndexReader, CatalogProjectionWriter
+from datariver.application.ports import (
+    CatalogIndexReader,
+    CatalogProjectionWriter,
+    CatalogReaderMode,
+)
 from datariver.domain.authz import Classification, SubjectAttributes
 from datariver.domain.catalog import DATASET_ASSET_TYPES
 from datariver.domain.common import ConflictError, ValidationError, utc_now, uuid7
-from datariver.infrastructure.db.catalog_visibility import catalog_asset_scope_conditions
+from datariver.infrastructure.db.catalog_visibility import (
+    catalog_asset_scope_conditions,
+    catalog_asset_workspace_discovery_conditions,
+)
 from datariver.infrastructure.db.governance import SqlIdempotencyStore
 from datariver.infrastructure.db.models.catalog import (
     AssetProjectionModel,
@@ -377,14 +385,26 @@ def _literal_prefix_pattern(query: str) -> str:
 
 
 class SqlCatalogIndexReader(CatalogIndexReader):
-    def __init__(self, session: AsyncSession) -> None:
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        reader_mode: CatalogReaderMode = CatalogReaderMode.SCOPED,
+    ) -> None:
         self._session = session
+        self._reader_mode = reader_mode
 
     def _scope_conditions(
         self,
         subject: SubjectAttributes,
         access: ClassificationAccessSnapshot | None = None,
+        reader_mode: CatalogReaderMode | None = None,
     ) -> list[Any]:
+        if (reader_mode or self._reader_mode) is CatalogReaderMode.WORKSPACE_DISCOVERY:
+            return catalog_asset_workspace_discovery_conditions(
+                subject,
+                access or static_classification_access_floor(),
+            )
         return catalog_asset_scope_conditions(
             subject,
             access,
