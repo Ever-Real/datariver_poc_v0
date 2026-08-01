@@ -52,6 +52,7 @@ from datariver.application.dto import (
     ChatMessageRecord,
     ChatRetentionBinding,
     ChatRouteDecision,
+    ChatRouteIntentDraft,
     ChatSessionRecord,
     ChatVectorSearchResult,
     ChatWorkflowEvent,
@@ -2166,7 +2167,7 @@ class ChatRouteIntentClassifier(Protocol):
         *,
         question: str,
         prior_user_utterances: Sequence[str] = (),
-    ) -> ChatRetrievalMode: ...
+    ) -> ChatRouteIntentDraft: ...
 
 
 class ChatQuestionRouter(Protocol):

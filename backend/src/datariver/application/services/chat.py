@@ -368,10 +368,6 @@ class ChatService:
                 )
             ),
         )
-        retrieval_question = self._retrieval_question(
-            question=contextual_question,
-            prior_user_utterances=prior_user_utterances,
-        )
         workflow.append(
             self._event(
                 ChatWorkflowStage.BUDGET_RESERVATION,
@@ -391,6 +387,10 @@ class ChatService:
             ),
             graph_available=self._graph_evidence is not None,
             inference_allowed=route_classifier_allowed,
+            prior_user_utterances=prior_user_utterances,
+        )
+        retrieval_question = route.resolved_question or self._retrieval_question(
+            question=contextual_question,
             prior_user_utterances=prior_user_utterances,
         )
         general_composer = self._general_composer
@@ -1969,9 +1969,9 @@ class ChatService:
         if reranker_enabled:
             total += question_bytes + (maximum_evidence * 16_384) + 8_192
         if route_classifier_enabled:
-            # The fixed classifier receives only the question and emits one short enum.
-            # Reserve a deliberately larger prompt/output envelope before it is invoked.
-            total += question_bytes + 2_048
+            # The fixed classifier receives bounded user intent and emits one mode plus
+            # one bounded search question. Reserve its full output before invocation.
+            total += question_bytes + 2_048 + (_MAXIMUM_CONTEXTUAL_QUESTION_CHARACTERS * 4)
         if context_compression_enabled:
             # Compression is a separate fixed provider call. Reserve the bounded
             # source, fixed prompt and worst-case contextualized question before it runs.

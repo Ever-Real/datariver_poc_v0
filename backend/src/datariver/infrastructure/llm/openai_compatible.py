@@ -2,8 +2,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from datariver.application.dto import ChatConversationContextDraft, ChatDraft, ChatEvidence
-from datariver.domain.chat import ChatRetrievalMode
+from datariver.application.dto import (
+    ChatConversationContextDraft,
+    ChatDraft,
+    ChatEvidence,
+    ChatRouteIntentDraft,
+)
 from datariver.infrastructure.knowledge.openai_compatible import (
     OpenAICompatibleChatRequestOptions,
     OpenAIJsonTransport,
@@ -91,7 +95,7 @@ class OpenAICompatibleGroundedChatComposer:
         *,
         question: str,
         prior_user_utterances: Sequence[str] = (),
-    ) -> ChatRetrievalMode:
+    ) -> ChatRouteIntentDraft:
         result = await self._transport.post_json(
             path="/chat/completions",
             document=self._route_options.apply(

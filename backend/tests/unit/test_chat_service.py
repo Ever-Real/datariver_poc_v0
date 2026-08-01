@@ -59,6 +59,7 @@ from datariver.domain.chat import (
     MAXIMUM_CHAT_VECTOR_TEXT_CHARACTERS,
     ChatAdapterState,
     ChatRetrievalMode,
+    ChatRouteReason,
     ChatWorkflowStage,
     ChatWorkflowStatus,
 )
@@ -891,6 +892,45 @@ class RecordingContextCompressor:
         return ChatConversationContextDraft(resolved_question=self.resolved_question)
 
 
+class ResolvedQuestionRouter:
+    def __init__(self, resolved_question: str, mode: ChatRetrievalMode) -> None:
+        self.resolved_question = resolved_question
+        self.mode = mode
+        self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+    @property
+    def requires_composition_inference(self) -> bool:
+        return False
+
+    async def route(
+        self,
+        *,
+        question: str,
+        requested_mode: ChatRetrievalMode,
+        vector_available: bool,
+        graph_available: bool,
+        inference_allowed: bool,
+        prior_user_utterances: Sequence[str] = (),
+    ) -> ChatRouteDecision:
+        del vector_available, graph_available, inference_allowed
+        self.calls.append((question, tuple(prior_user_utterances)))
+        return ChatRouteDecision(
+            requested_mode=requested_mode,
+            selected_mode=self.mode,
+            reason=(
+                ChatRouteReason.GRAPH_INTENT
+                if self.mode is ChatRetrievalMode.GRAPH
+                else (
+                    ChatRouteReason.SEMANTIC_INTENT
+                    if self.mode is ChatRetrievalMode.VECTOR
+                    else ChatRouteReason.GENERAL_DEFAULT
+                )
+            ),
+            adapter_state=ChatAdapterState.READY,
+            resolved_question=self.resolved_question,
+        )
+
+
 class FixedGeneralComposer:
     def __init__(self, draft: ChatDraft) -> None:
         self.draft = draft
@@ -1292,6 +1332,65 @@ async def test_conversation_memory_uses_bounded_raw_user_intent_before_interval(
     assert vector.question == (
         "컬럼은 뭐야?\ncapital_project 테이블을 설명해줘\n그 테이블의 목적을 알려줘"
     )
+    assert any(item.detail_code.endswith("RAW_CONTEXT_USED") for item in exchange.workflow)
+
+
+async def test_auto_route_uses_resolved_question_only_for_retrieval_and_reranking() -> None:
+    workspace_id = uuid4()
+    session_id = uuid4()
+    subject = chat_subject(workspace_id)
+    current_question = "그 테이블의 주요 용도를 다시 설명해줘"
+    prior = ("reference_legal_entity_logic_3nm 테이블을 찾아 설명해줘",)
+    resolved_question = "reference_legal_entity_logic_3nm 테이블의 주요 용도를 설명해줘"
+    reader = FakeConversationContextReader(
+        ChatConversationHistory(completed_user_turns=1, user_utterances=prior)
+    )
+    router = ResolvedQuestionRouter(resolved_question, ChatRetrievalMode.VECTOR)
+    composer = CapturingComposer()
+    catalog_item = asset(workspace_id)
+    vector = CapturingVectorCatalog(catalog_item, provider_invoked=False)
+    reranker = SelectingReranker()
+    embedding_binding = inference_binding(InferenceStage.EMBEDDING, uuid4())
+    reranker_binding = inference_binding(InferenceStage.RERANKER, uuid4())
+    store = FakeChatStore()
+
+    exchange = await ChatService(
+        catalog_index=FakeIndex(catalog_item),
+        vector_catalog=vector,
+        reranker=reranker,
+        composer=composer,
+        question_router=router,
+        session_ownership=FakeSessionOwnership(subject.subject_id),
+        subject_access=PassthroughSubjectAccess(),
+        conversation_context_reader=reader,
+        conversation_memory_enabled=True,
+        conversation_compression_start_after_user_turns=3,
+        conversation_context_max_tokens=512,
+        classification_access=cast(
+            ClassificationAccessResolver,
+            FixedClassificationAccess(governed_chat_access(embedding_binding, reranker_binding)),
+        ),
+        inference_runtime_bindings=(embedding_binding, reranker_binding),
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=subject,
+        session_id=session_id,
+        question=current_question,
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-resolved-retrieval-question",
+        requested_mode=ChatRetrievalMode.AUTO,
+    )
+
+    assert router.calls == [(current_question, prior)]
+    assert vector.question == resolved_question
+    assert reranker.question == resolved_question
+    assert composer.question == current_question
+    assert composer.prior_user_utterances == prior
+    assert store.saved_question == current_question
+    assert exchange.route.resolved_question == resolved_question
     assert any(item.detail_code.endswith("RAW_CONTEXT_USED") for item in exchange.workflow)
 
 

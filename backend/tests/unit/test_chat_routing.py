@@ -18,6 +18,7 @@ from datariver.application.dto import (
     CatalogPage,
     ChatEvidence,
     ChatMessageRecord,
+    ChatRouteIntentDraft,
     ChatSessionRecord,
 )
 from datariver.application.errors import ChatExternalAdapterInvocationError
@@ -57,8 +58,20 @@ from datariver.infrastructure.llm.vector_catalog import BoundedCatalogVectorRead
 
 
 class _RouteClassifier:
-    def __init__(self, result: ChatRetrievalMode | Exception) -> None:
-        self._result = result
+    def __init__(
+        self,
+        result: ChatRetrievalMode | Exception,
+        *,
+        resolved_question: str = "self-contained question",
+    ) -> None:
+        self._result = (
+            result
+            if isinstance(result, Exception)
+            else ChatRouteIntentDraft(
+                selected_mode=result,
+                resolved_question=resolved_question,
+            )
+        )
         self.calls: list[tuple[str, tuple[str, ...]]] = []
 
     async def classify_route(
@@ -66,7 +79,7 @@ class _RouteClassifier:
         *,
         question: str,
         prior_user_utterances: Sequence[str] = (),
-    ) -> ChatRetrievalMode:
+    ) -> ChatRouteIntentDraft:
         self.calls.append((question, tuple(prior_user_utterances)))
         if isinstance(self._result, Exception):
             raise self._result
@@ -132,7 +145,7 @@ async def test_semantic_router_uses_the_model_classification_for_multilingual_in
     vector_available: bool,
     graph_available: bool,
 ) -> None:
-    classifier = _RouteClassifier(model_mode)
+    classifier = _RouteClassifier(model_mode, resolved_question=question)
     router = SemanticChatQuestionRouter(classifier=classifier)
 
     route = await router.route(
@@ -145,6 +158,7 @@ async def test_semantic_router_uses_the_model_classification_for_multilingual_in
 
     assert classifier.calls == [(question, ())]
     assert route.selected_mode is model_mode
+    assert route.resolved_question == question
     assert route.reason is expected_reason
     assert route.adapter_state is (
         ChatAdapterState.UNAVAILABLE
@@ -197,7 +211,10 @@ async def test_semantic_router_fails_closed_when_the_classifier_is_not_allowed_o
 
 
 async def test_semantic_router_passes_prior_utterances_as_untrusted_structured_context() -> None:
-    classifier = _RouteClassifier(ChatRetrievalMode.VECTOR)
+    classifier = _RouteClassifier(
+        ChatRetrievalMode.VECTOR,
+        resolved_question="capital_project 테이블의 컬럼은?",
+    )
     router = SemanticChatQuestionRouter(classifier=classifier)
     prior = (
         "capital_project 테이블을 설명해줘",
@@ -215,6 +232,71 @@ async def test_semantic_router_passes_prior_utterances_as_untrusted_structured_c
 
     assert classifier.calls == [("그 테이블의 컬럼은?", prior)]
     assert route.selected_mode is ChatRetrievalMode.VECTOR
+    assert route.resolved_question == "capital_project 테이블의 컬럼은?"
+
+
+@pytest.mark.parametrize(
+    ("current_question", "resolved_question", "mode"),
+    (
+        (
+            "그 테이블의 주요 용도를 다시 설명해줘",
+            "reference_legal_entity_logic_3nm 테이블의 주요 용도를 설명해줘",
+            ChatRetrievalMode.VECTOR,
+        ),
+        (
+            "그 테이블의 하류 영향은 뭐야?",
+            "reference_legal_entity_logic_3nm 테이블의 하류 영향을 찾아줘",
+            ChatRetrievalMode.GRAPH,
+        ),
+        (
+            "그 개념을 쉽게 다시 설명해줘",
+            "온톨로지 개념을 쉽게 다시 설명해줘",
+            ChatRetrievalMode.GENERAL,
+        ),
+    ),
+)
+async def test_semantic_router_keeps_follow_up_operation_when_resolving_referents(
+    current_question: str,
+    resolved_question: str,
+    mode: ChatRetrievalMode,
+) -> None:
+    prior = ("reference_legal_entity_logic_3nm 테이블과 온톨로지를 설명해줘",)
+    classifier = _RouteClassifier(mode, resolved_question=resolved_question)
+
+    route = await SemanticChatQuestionRouter(classifier=classifier).route(
+        question=current_question,
+        requested_mode=ChatRetrievalMode.AUTO,
+        vector_available=True,
+        graph_available=True,
+        inference_allowed=True,
+        prior_user_utterances=prior,
+    )
+
+    assert classifier.calls == [(current_question, prior)]
+    assert route.selected_mode is mode
+    assert route.resolved_question == resolved_question
+
+
+@pytest.mark.parametrize("resolved_question", ("", "x" * 4_001))
+async def test_semantic_router_fails_closed_for_an_invalid_resolved_question(
+    resolved_question: str,
+) -> None:
+    route = await SemanticChatQuestionRouter(
+        classifier=_RouteClassifier(
+            ChatRetrievalMode.VECTOR,
+            resolved_question=resolved_question,
+        )
+    ).route(
+        question="그 테이블을 찾아줘",
+        requested_mode=ChatRetrievalMode.AUTO,
+        vector_available=True,
+        graph_available=True,
+        inference_allowed=True,
+        prior_user_utterances=("capital_project 테이블",),
+    )
+
+    assert route.adapter_state is ChatAdapterState.UNAVAILABLE
+    assert route.resolved_question is None
 
 
 class _CatalogIndex:

@@ -59,6 +59,7 @@ class DeterministicChatQuestionRouter(ChatQuestionRouter):
         vector_available: bool,
         graph_available: bool,
         adapter_state: ChatAdapterState | None = None,
+        resolved_question: str | None = None,
     ) -> ChatRouteDecision:
         return ChatRouteDecision(
             requested_mode=requested_mode,
@@ -70,6 +71,7 @@ class DeterministicChatQuestionRouter(ChatQuestionRouter):
                 vector_available=vector_available,
                 graph_available=graph_available,
             ),
+            resolved_question=resolved_question,
         )
 
     @staticmethod
@@ -87,7 +89,7 @@ class DeterministicChatQuestionRouter(ChatQuestionRouter):
 
 
 class SemanticChatQuestionRouter(DeterministicChatQuestionRouter):
-    """Classify only AUTO intent through a fixed enum-only inference contract."""
+    """Classify AUTO intent and resolve one bounded search question in one call."""
 
     def __init__(self, *, classifier: ChatRouteIntentClassifier | None) -> None:
         self._classifier = classifier
@@ -131,16 +133,20 @@ class SemanticChatQuestionRouter(DeterministicChatQuestionRouter):
                 graph_available=graph_available,
             )
         try:
-            selected_mode = await self._classifier.classify_route(
+            intent = await self._classifier.classify_route(
                 question=question,
                 prior_user_utterances=prior_user_utterances,
             )
+            resolved_question = " ".join(intent.resolved_question.split())
+            if not resolved_question or len(resolved_question) > 4_000:
+                raise ValueError("The resolved route question is invalid.")
         except Exception:
             return self._unavailable_decision(
                 requested_mode=requested_mode,
                 vector_available=vector_available,
                 graph_available=graph_available,
             )
+        selected_mode = intent.selected_mode
         if selected_mode not in {
             ChatRetrievalMode.GENERAL,
             ChatRetrievalMode.VECTOR,
@@ -165,6 +171,7 @@ class SemanticChatQuestionRouter(DeterministicChatQuestionRouter):
             ),
             vector_available=vector_available,
             graph_available=graph_available,
+            resolved_question=resolved_question,
         )
 
     def _unavailable_decision(

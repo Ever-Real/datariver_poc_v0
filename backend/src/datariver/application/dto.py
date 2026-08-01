@@ -1615,6 +1615,14 @@ class ChatConversationContextDraft:
 
 
 @dataclass(frozen=True, slots=True)
+class ChatRouteIntentDraft:
+    """Untrusted route and self-contained search text from one classifier call."""
+
+    selected_mode: ChatRetrievalMode
+    resolved_question: str
+
+
+@dataclass(frozen=True, slots=True)
 class ChatRetentionBinding:
     policy_id: UUID
     policy_hash: str
@@ -1628,6 +1636,7 @@ class ChatRouteDecision:
     selected_mode: ChatRetrievalMode
     reason: ChatRouteReason
     adapter_state: ChatAdapterState
+    resolved_question: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
