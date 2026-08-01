@@ -348,6 +348,13 @@ services:
     volumes:
       - knowledge-proposal-spool:/var/spool/datariver-knowledge-proposal
     restart: unless-stopped
+    healthcheck:
+      test:
+        ["CMD", "/app/.venv/bin/python", "-m", "datariver.workers.knowledge_tbox_proposal", "--healthcheck"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 15s
     mem_limit: 512m
     cpus: 0.5
     read_only: true

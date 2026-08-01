@@ -504,6 +504,15 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
                 maximum_attempts=3,
                 idempotency_key=request_idempotency_key,
             )
+        async with app_sessions() as session:
+            visible = await SqlKnowledgeStudioProposalJobStore(session).get_owned(
+                workspace_id=workspace_id,
+                draft_id=draft_id,
+                job_id=queued.job_id,
+                actor_id=actor_id,
+            )
+        assert visible is not None
+        assert visible.job_id == queued.job_id
         async with app_sessions() as session, session.begin():
             replayed = await KnowledgeStudioProposalJobService(
                 store=SqlKnowledgeStudioProposalJobStore(session)
@@ -534,14 +543,20 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
                         (SELECT count(*) FROM integration.outbox_events
                          WHERE workspace_id = :workspace_id
                            AND aggregate_id = :job_id
+                           AND aggregate_type = 'knowledge_tbox_proposal_job'),
+                        (SELECT array_agg(event_type ORDER BY event_type)
+                         FROM integration.outbox_events
+                         WHERE workspace_id = :workspace_id
+                           AND aggregate_id = :job_id
                            AND aggregate_type = 'knowledge_tbox_proposal_job')
                     """
                 ),
                 {"workspace_id": workspace_id, "job_id": queued.job_id},
             )
-            jobs, request_outbox = replay_side_effects.one()
+            jobs, request_outbox, request_event_types = replay_side_effects.one()
         assert jobs == 1
         assert request_outbox == 1
+        assert request_event_types == ["knowledge.tbox-proposal-job.queued.v1"]
         worker_store = SqlKnowledgeStudioProposalJobWorkerStore(
             async_sessionmaker(worker, expire_on_commit=False)
         )

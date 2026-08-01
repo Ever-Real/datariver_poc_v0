@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import argparse
 import asyncio
 import socket
+from uuid import UUID
 
 import structlog
+from sqlalchemy import text
 
 from datariver.application.knowledge_studio_proposal_job_contracts import (
     KnowledgeStudioProposalJobClaim,
@@ -13,6 +16,7 @@ from datariver.application.services.knowledge_studio_proposal_worker import (
     KnowledgeStudioProposalWorker,
 )
 from datariver.config import get_settings
+from datariver.infrastructure.cache.redis import RedisEventDelivery
 from datariver.infrastructure.db.knowledge_studio_proposal_jobs import (
     SqlKnowledgeStudioProposalJobWorkerStore,
 )
@@ -27,10 +31,50 @@ from datariver.workers.container import build_knowledge_tbox_proposal_container
 LOGGER = structlog.get_logger()
 SIGNAL_EVENT_TYPES = frozenset(
     {
-        "knowledge.tbox-proposal.queued.v1",
-        "knowledge.tbox-proposal.retry-wait.v1",
+        "knowledge.tbox-proposal-job.queued.v1",
+        "knowledge.tbox-proposal-job.retry_wait.v1",
     }
 )
+
+
+async def _run_cycle(
+    *,
+    worker: KnowledgeStudioProposalWorker,
+    event_delivery: RedisEventDelivery,
+    workspace_id: UUID,
+    group: str,
+    consumer: str,
+    block_milliseconds: int,
+    visibility_timeout_milliseconds: int,
+) -> None:
+    if await worker.run_once():
+        return
+    events = await event_delivery.read_events(
+        group=group,
+        consumer=consumer,
+        block_milliseconds=block_milliseconds,
+        visibility_timeout_milliseconds=visibility_timeout_milliseconds,
+    )
+    for event in events:
+        if event.workspace_id == workspace_id and event.event_type in SIGNAL_EVENT_TYPES:
+            await worker.run_once()
+        await event_delivery.acknowledge(
+            group=group,
+            message_id=event.message_id,
+        )
+
+
+async def healthcheck() -> None:
+    settings = get_settings()
+    container = build_knowledge_tbox_proposal_container(settings)
+    try:
+        async with container.database.session_factory() as session:
+            if await session.scalar(text("SELECT 1")) != 1:
+                raise RuntimeError("Knowledge Proposal database health check failed.")
+        if not await container.event_delivery.ping():
+            raise RuntimeError("Knowledge Proposal Redis delivery health check failed.")
+    finally:
+        await container.close()
 
 
 async def run() -> None:
@@ -73,9 +117,10 @@ async def run() -> None:
     try:
         while True:
             try:
-                if await worker.run_once():
-                    continue
-                events = await container.event_delivery.read_events(
+                await _run_cycle(
+                    worker=worker,
+                    event_delivery=container.event_delivery,
+                    workspace_id=workspace_id,
                     group=group,
                     consumer=consumer,
                     block_milliseconds=max(
@@ -86,16 +131,6 @@ async def run() -> None:
                         settings.knowledge_studio_proposal_worker_lease_seconds * 1_000
                     ),
                 )
-                for event in events:
-                    if (
-                        event.workspace_id == workspace_id
-                        and event.event_type in SIGNAL_EVENT_TYPES
-                    ):
-                        await worker.run_once()
-                    await container.event_delivery.acknowledge(
-                        group=group,
-                        message_id=event.message_id,
-                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -111,7 +146,10 @@ async def run() -> None:
 
 
 def main() -> None:
-    asyncio.run(run())
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--healthcheck", action="store_true")
+    arguments = parser.parse_args()
+    asyncio.run(healthcheck() if arguments.healthcheck else run())
 
 
 if __name__ == "__main__":

@@ -39,7 +39,35 @@ from datariver.interfaces.http.routes.knowledge_studio import (
     _proposal_response,
     _public_source_reference,
 )
-from datariver.interfaces.http.schemas import KnowledgeStudioTBoxProposalJobRequest
+from datariver.interfaces.http.schemas import (
+    KnowledgeStudioTBoxProposalJobCancelRequest,
+    KnowledgeStudioTBoxProposalJobRequest,
+)
+
+
+def _queued_proposal_job() -> KnowledgeStudioProposalJobRecord:
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    return KnowledgeStudioProposalJobRecord(
+        job_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1090"),
+        workspace_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1091"),
+        draft_id=UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1092"),
+        requested_by=UUID("019fa57b-52de-74c0-9f5e-06ae7b1c1093"),
+        input_kind=KnowledgeStudioProposalInputKind.DOCUMENT_SCHEMA,
+        mode=TBoxProposalMode.APPEND_LAYER,
+        target_block_id=None,
+        state=KnowledgeStudioProposalJobState.QUEUED,
+        stage=KnowledgeStudioProposalJobStage.QUEUED,
+        progress_percent=0,
+        attempt_count=0,
+        maximum_attempts=3,
+        next_attempt_at=now,
+        last_failure_code=None,
+        version=1,
+        created_at=now,
+        updated_at=now,
+        completed_at=None,
+        result=None,
+    )
 
 
 def test_tbox_proposal_response_redacts_private_object_store_coordinates() -> None:
@@ -373,6 +401,7 @@ async def test_catalog_proposal_builds_v2_pin_from_fresh_server_detail_only(
     )
 
     response = Response()
+    session = AsyncMock()
     result = await knowledge_studio_routes.create_knowledge_studio_tbox_proposal_job(
         draft_id=draft_id,
         payload=KnowledgeStudioTBoxProposalJobRequest(
@@ -393,13 +422,15 @@ async def test_catalog_proposal_builds_v2_pin_from_fresh_server_detail_only(
                 request_id="catalog-current-fence",
             ),
         ),
-        session=cast(Any, object()),
+        session=cast(Any, session),
         if_match='"2"',
         idempotency_key="catalog-current-fence",
     )
 
     assert result.input_kind == "CATALOG_SCHEMA"
     assert response.headers["ETag"] == '"1"'
+    session.commit.assert_awaited_once_with()
+    session.rollback.assert_not_awaited()
     assert enqueue.await_count == 1
     assert enqueue.await_args is not None
     pins = enqueue.await_args.kwargs["pins"]
@@ -408,3 +439,106 @@ async def test_catalog_proposal_builds_v2_pin_from_fresh_server_detail_only(
     assert document["field_metadata"][0]["description"] == "Gross amount"
     assert document["metadata_fingerprint"] == pins.source.metadata_fingerprint
     assert "expected_selection_fingerprint" not in document
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation", ["cancel", "retry"])
+async def test_proposal_job_mutations_commit_once_before_headers(
+    operation: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = _queued_proposal_job()
+    studio = SimpleNamespace(authorize_tbox_source_upload=AsyncMock())
+    cancel = AsyncMock(return_value=record)
+    retry = AsyncMock(return_value=record)
+    monkeypatch.setattr(knowledge_studio_routes, "_service", lambda *_args: studio)
+    monkeypatch.setattr(
+        knowledge_studio_routes,
+        "_proposal_job_service",
+        lambda _session: SimpleNamespace(cancel=cancel, retry=retry),
+    )
+    session = AsyncMock()
+    response = Response()
+    context = cast(
+        Any,
+        SimpleNamespace(
+            workspace_id=record.workspace_id,
+            subject=SimpleNamespace(subject_id=record.requested_by),
+            environment=object(),
+            request_id=f"proposal-{operation}",
+        ),
+    )
+
+    if operation == "cancel":
+        await knowledge_studio_routes.cancel_knowledge_studio_tbox_proposal_job(
+            draft_id=record.draft_id,
+            job_id=record.job_id,
+            payload=KnowledgeStudioTBoxProposalJobCancelRequest(reason="No longer needed"),
+            request=cast(Any, object()),
+            response=response,
+            context=context,
+            session=cast(Any, session),
+            if_match='"1"',
+            idempotency_key="proposal-cancel",
+        )
+        cancel.assert_awaited_once()
+        retry.assert_not_awaited()
+    else:
+        await knowledge_studio_routes.retry_knowledge_studio_tbox_proposal_job(
+            draft_id=record.draft_id,
+            job_id=record.job_id,
+            request=cast(Any, object()),
+            response=response,
+            context=context,
+            session=cast(Any, session),
+            if_match='"1"',
+            idempotency_key="proposal-retry",
+        )
+        retry.assert_awaited_once()
+        cancel.assert_not_awaited()
+
+    session.commit.assert_awaited_once_with()
+    session.rollback.assert_not_awaited()
+    assert response.headers["ETag"] == '"1"'
+
+
+@pytest.mark.asyncio
+async def test_proposal_job_commit_failure_rolls_back_before_response(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    record = _queued_proposal_job()
+    studio = SimpleNamespace(authorize_tbox_source_upload=AsyncMock())
+    monkeypatch.setattr(knowledge_studio_routes, "_service", lambda *_args: studio)
+    monkeypatch.setattr(
+        knowledge_studio_routes,
+        "_proposal_job_service",
+        lambda _session: SimpleNamespace(cancel=AsyncMock(return_value=record)),
+    )
+    session = AsyncMock()
+    session.commit.side_effect = RuntimeError("commit failed")
+    response = Response()
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        await knowledge_studio_routes.cancel_knowledge_studio_tbox_proposal_job(
+            draft_id=record.draft_id,
+            job_id=record.job_id,
+            payload=KnowledgeStudioTBoxProposalJobCancelRequest(reason="No longer needed"),
+            request=cast(Any, object()),
+            response=response,
+            context=cast(
+                Any,
+                SimpleNamespace(
+                    workspace_id=record.workspace_id,
+                    subject=SimpleNamespace(subject_id=record.requested_by),
+                    environment=object(),
+                    request_id="proposal-commit-failure",
+                ),
+            ),
+            session=cast(Any, session),
+            if_match='"1"',
+            idempotency_key="proposal-commit-failure",
+        )
+
+    session.commit.assert_awaited_once_with()
+    session.rollback.assert_awaited_once_with()
+    assert "ETag" not in response.headers

@@ -280,6 +280,14 @@ def _proposal_job_service(session: SessionDep) -> KnowledgeStudioProposalJobServ
     )
 
 
+async def _commit_proposal_job_mutation(session: SessionDep) -> None:
+    try:
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+
+
 def _runtime_service(request: Request, session: SessionDep) -> KnowledgeStudioService:
     store, authorization, sources = _service_components(request, session)
     runtime = build_knowledge_tbox_schema_runtime(get_container(request).settings)
@@ -1712,6 +1720,7 @@ async def create_knowledge_studio_tbox_proposal_job(
         maximum_attempts=(container.settings.knowledge_studio_proposal_job_maximum_attempts),
         idempotency_key=idempotency_key,
     )
+    await _commit_proposal_job_mutation(session)
     _set_proposal_job_headers(response, job)
     response.headers["Location"] = (
         f"/api/v1/knowledge/studio/drafts/{draft_id}/tbox/proposal-jobs/{job.job_id}"
@@ -1830,6 +1839,7 @@ async def cancel_knowledge_studio_tbox_proposal_job(
         request_hash=request_hash,
         idempotency_key=idempotency_key,
     )
+    await _commit_proposal_job_mutation(session)
     _set_proposal_job_headers(response, job)
     return _proposal_job_response(job)
 
@@ -1876,6 +1886,7 @@ async def retry_knowledge_studio_tbox_proposal_job(
         request_hash=request_hash,
         idempotency_key=idempotency_key,
     )
+    await _commit_proposal_job_mutation(session)
     _set_proposal_job_headers(response, job)
     response.headers["Location"] = (
         f"/api/v1/knowledge/studio/drafts/{draft_id}/tbox/proposal-jobs/{job.job_id}"

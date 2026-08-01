@@ -1234,6 +1234,16 @@ def verify_database_roles() -> None:
         raise AssertionError(
             "Knowledge Studio Proposal worker isolation/profile contract is incomplete"
         )
+    if proposal_worker.get("healthcheck", {}).get("test") != [
+        "CMD",
+        "/app/.venv/bin/python",
+        "-m",
+        "datariver.workers.knowledge_tbox_proposal",
+        "--healthcheck",
+    ]:
+        raise AssertionError(
+            "Knowledge Studio Proposal worker must expose its dedicated DB/Redis health check"
+        )
     ingestion_worker = compose["services"].get("knowledge-studio-ingestion-worker")
     if not isinstance(ingestion_worker, dict):
         raise AssertionError("Knowledge Studio ingestion worker service is missing")

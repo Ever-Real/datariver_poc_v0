@@ -47,6 +47,9 @@ if next_tokens == requested_tokens then redis.call('EXPIRE', KEYS[2], window_sec
 return {1, window_seconds}
 """
 
+_MAX_EVENT_BLOCK_MILLISECONDS = 30_000
+_BLOCKING_READ_TIMEOUT_SECONDS = 32
+
 
 class RedisCache(Cache):
     """Redis-protocol cache adapter; the cache never owns canonical state."""
@@ -189,6 +192,14 @@ class RedisEventDelivery:
             socket_timeout=2,
             health_check_interval=30,
         )
+        self._blocking_client: Redis = Redis.from_url(
+            url,
+            password=password,
+            decode_responses=False,
+            socket_connect_timeout=1,
+            socket_timeout=_BLOCKING_READ_TIMEOUT_SECONDS,
+            health_check_interval=30,
+        )
         self._stream_name = stream_name
 
     async def publish_event_id(
@@ -221,6 +232,8 @@ class RedisEventDelivery:
         visibility_timeout_milliseconds: int,
         count: int = 20,
     ) -> tuple[DeliveredEvent, ...]:
+        if not 1 <= block_milliseconds <= _MAX_EVENT_BLOCK_MILLISECONDS:
+            raise ValueError("Redis event blocking reads must be between 1 and 30000 ms.")
         await self._ensure_group(group)
         claimed = await self._client.xautoclaim(
             self._stream_name,
@@ -232,7 +245,7 @@ class RedisEventDelivery:
         )
         messages = claimed[1] if len(claimed) > 1 else []
         if not messages:
-            streams = await self._client.xreadgroup(
+            streams = await self._blocking_client.xreadgroup(
                 group,
                 consumer,
                 {self._stream_name: ">"},
@@ -272,4 +285,5 @@ class RedisEventDelivery:
         return bool(await self._client.ping())
 
     async def close(self) -> None:
+        await self._blocking_client.aclose()
         await self._client.aclose()

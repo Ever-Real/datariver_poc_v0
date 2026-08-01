@@ -5,7 +5,9 @@ from collections.abc import AsyncIterator
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from types import SimpleNamespace
+from typing import Any, cast
+from unittest.mock import AsyncMock
 from uuid import UUID
 
 import pytest
@@ -52,6 +54,8 @@ from datariver.domain.knowledge_studio_proposal_jobs import (
     knowledge_studio_proposal_requester_authorization_hash,
     render_knowledge_studio_catalog_prompt,
 )
+from datariver.infrastructure.cache import redis as redis_cache
+from datariver.infrastructure.cache.redis import DeliveredEvent, RedisEventDelivery
 from datariver.infrastructure.db.knowledge_studio_proposal_jobs import _catalog_source_pin
 from datariver.infrastructure.db.models.knowledge_studio import (
     KnowledgeStudioProposalAttemptModel,
@@ -61,6 +65,7 @@ from datariver.infrastructure.db.models.knowledge_studio import (
 from datariver.infrastructure.knowledge.proposal_document import (
     ObjectStoreKnowledgeStudioProposalDocumentReader,
 )
+from datariver.workers import knowledge_tbox_proposal as proposal_worker_module
 
 WORKSPACE_ID = UUID("10000000-0000-4000-8000-000000000001")
 DRAFT_ID = UUID("10000000-0000-4000-8000-000000000002")
@@ -711,3 +716,202 @@ def test_proposal_job_models_exclude_raw_object_coordinates() -> None:
     assert "bucket" not in job_columns
     assert "object_key" not in job_columns
     assert "prompt" not in job_columns
+
+
+class _RedisClientDouble:
+    def __init__(self) -> None:
+        self.xgroup_create = AsyncMock()
+        self.xautoclaim = AsyncMock(return_value=(b"0-0", []))
+        self.xreadgroup = AsyncMock(return_value=[])
+        self.xack = AsyncMock()
+        self.ping = AsyncMock(return_value=True)
+        self.aclose = AsyncMock()
+
+
+def _redis_delivery_double(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[RedisEventDelivery, _RedisClientDouble, _RedisClientDouble, list[dict[str, object]]]:
+    clients = (_RedisClientDouble(), _RedisClientDouble())
+    configurations: list[dict[str, object]] = []
+
+    def from_url(_url: str, **configuration: object) -> object:
+        configurations.append(configuration)
+        return clients[len(configurations) - 1]
+
+    monkeypatch.setattr(redis_cache, "Redis", SimpleNamespace(from_url=from_url))
+    delivery = RedisEventDelivery("redis://delivery:6379/0", password="secret")
+    return delivery, clients[0], clients[1], configurations
+
+
+@pytest.mark.asyncio
+async def test_event_delivery_separates_bounded_blocking_and_nonblocking_clients(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    delivery, nonblocking, blocking, configurations = _redis_delivery_double(monkeypatch)
+
+    events = await delivery.read_events(
+        group="proposal-v1",
+        consumer="worker-1",
+        block_milliseconds=30_000,
+        visibility_timeout_milliseconds=60_000,
+    )
+
+    assert events == ()
+    assert configurations[0]["socket_connect_timeout"] == 1
+    assert configurations[0]["socket_timeout"] == 2
+    assert configurations[1]["socket_connect_timeout"] == 1
+    assert configurations[1]["socket_timeout"] == 32
+    nonblocking.xautoclaim.assert_awaited_once()
+    nonblocking.xreadgroup.assert_not_awaited()
+    blocking.xreadgroup.assert_awaited_once_with(
+        "proposal-v1",
+        "worker-1",
+        {"datariver:events": ">"},
+        count=20,
+        block=30_000,
+    )
+
+    with pytest.raises(ValueError, match="between 1 and 30000"):
+        await delivery.read_events(
+            group="proposal-v1",
+            consumer="worker-1",
+            block_milliseconds=30_001,
+            visibility_timeout_milliseconds=60_000,
+        )
+
+    await delivery.close()
+    blocking.aclose.assert_awaited_once_with()
+    nonblocking.aclose.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_proposal_worker_polls_database_before_exact_signal_wakeups_and_acks_all() -> None:
+    call_order: list[str] = []
+
+    async def run_once() -> bool:
+        call_order.append("database")
+        return False
+
+    worker = SimpleNamespace(run_once=AsyncMock(side_effect=run_once))
+    events = (
+        DeliveredEvent(
+            "1-0", MANIFEST_ID, "knowledge.tbox-proposal-job.queued.v1", WORKSPACE_ID, JOB_ID
+        ),
+        DeliveredEvent(
+            "2-0",
+            BLOCK_ID,
+            "knowledge.tbox-proposal-job.retry_wait.v1",
+            WORKSPACE_ID,
+            JOB_ID,
+        ),
+        DeliveredEvent("3-0", WORKER_ID, "unrelated.event.v1", WORKSPACE_ID, JOB_ID),
+        DeliveredEvent(
+            "4-0",
+            ATTEMPT_ID,
+            "knowledge.tbox-proposal-job.queued.v1",
+            UUID("20000000-0000-4000-8000-000000000001"),
+            JOB_ID,
+        ),
+    )
+
+    async def read_events(**_kwargs: object) -> tuple[DeliveredEvent, ...]:
+        call_order.append("redis")
+        return events
+
+    delivery = SimpleNamespace(
+        read_events=AsyncMock(side_effect=read_events),
+        acknowledge=AsyncMock(),
+    )
+
+    await proposal_worker_module._run_cycle(
+        worker=cast(Any, worker),
+        event_delivery=cast(Any, delivery),
+        workspace_id=WORKSPACE_ID,
+        group="knowledge-tbox-proposal-v1",
+        consumer="worker-1",
+        block_milliseconds=1_000,
+        visibility_timeout_milliseconds=60_000,
+    )
+
+    assert proposal_worker_module.SIGNAL_EVENT_TYPES == frozenset(
+        {
+            "knowledge.tbox-proposal-job.queued.v1",
+            "knowledge.tbox-proposal-job.retry_wait.v1",
+        }
+    )
+    assert call_order == ["database", "redis", "database", "database"]
+    assert delivery.acknowledge.await_count == 4
+    assert [call.kwargs["message_id"] for call in delivery.acknowledge.await_args_list] == [
+        "1-0",
+        "2-0",
+        "3-0",
+        "4-0",
+    ]
+
+
+class _HealthSessionContext:
+    def __init__(self, scalar_result: object) -> None:
+        self.session = SimpleNamespace(scalar=AsyncMock(return_value=scalar_result))
+
+    async def __aenter__(self) -> object:
+        return self.session
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_proposal_worker_healthcheck_reads_database_and_pings_delivery_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _HealthSessionContext(1)
+    delivery = SimpleNamespace(ping=AsyncMock(return_value=True))
+    container = SimpleNamespace(
+        database=SimpleNamespace(session_factory=lambda: context),
+        event_delivery=delivery,
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(proposal_worker_module, "get_settings", lambda: object())
+    monkeypatch.setattr(
+        proposal_worker_module,
+        "build_knowledge_tbox_proposal_container",
+        lambda _settings: container,
+    )
+
+    await proposal_worker_module.healthcheck()
+
+    context.session.scalar.assert_awaited_once()
+    assert str(context.session.scalar.await_args.args[0]) == "SELECT 1"
+    delivery.ping.assert_awaited_once_with()
+    container.close.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("database_result", "delivery_result", "message"),
+    [(0, True, "database"), (1, False, "Redis delivery")],
+)
+async def test_proposal_worker_healthcheck_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    database_result: int,
+    delivery_result: bool,
+    message: str,
+) -> None:
+    context = _HealthSessionContext(database_result)
+    delivery = SimpleNamespace(ping=AsyncMock(return_value=delivery_result))
+    container = SimpleNamespace(
+        database=SimpleNamespace(session_factory=lambda: context),
+        event_delivery=delivery,
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(proposal_worker_module, "get_settings", lambda: object())
+    monkeypatch.setattr(
+        proposal_worker_module,
+        "build_knowledge_tbox_proposal_container",
+        lambda _settings: container,
+    )
+
+    with pytest.raises(RuntimeError, match=message):
+        await proposal_worker_module.healthcheck()
+
+    container.close.assert_awaited_once_with()
