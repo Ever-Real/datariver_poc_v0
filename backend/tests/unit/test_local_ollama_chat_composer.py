@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import httpx
 import pytest
@@ -104,8 +104,13 @@ def test_grounded_payload_keeps_internal_source_metadata_out_of_model_context() 
             "description": evidence.description,
         }
     ]
-    citation_schema = payload["format"]["properties"]["cited_chunk_ids"]["items"]
-    assert citation_schema == {
+    primary_schema = payload["format"]["properties"]["primary_cited_chunk_id"]
+    additional_schema = payload["format"]["properties"]["additional_cited_chunk_ids"]["items"]
+    assert primary_schema == {
+        "type": "string",
+        "enum": [str(evidence.chunk_id)],
+    }
+    assert additional_schema == {
         "type": "string",
         "enum": [str(evidence.chunk_id)],
     }
@@ -126,6 +131,7 @@ def test_grounded_payload_keeps_internal_source_metadata_out_of_model_context() 
     assert "tools" not in payload
     assert "tool_choice" not in payload
     assert "Return exactly one JSON object" in system_prompt
+    assert "primary_cited_chunk_id and additional_cited_chunk_ids" in system_prompt
 
 
 def test_conversation_context_payload_contains_only_bounded_user_intent() -> None:
@@ -166,10 +172,14 @@ async def test_composer_uses_one_strict_json_schema_and_returns_its_untrusted_dr
         assert "tools" not in payload
         assert "tool_choice" not in payload
         assert payload["format"]["additionalProperties"] is False
-        assert payload["format"]["required"] == ["answer", "cited_chunk_ids"]
-        assert payload["format"]["properties"]["cited_chunk_ids"]["items"]["enum"] == [
-            str(evidence.chunk_id)
+        assert payload["format"]["required"] == [
+            "answer",
+            "primary_cited_chunk_id",
+            "additional_cited_chunk_ids",
         ]
+        properties = payload["format"]["properties"]
+        assert properties["primary_cited_chunk_id"]["enum"] == [str(evidence.chunk_id)]
+        assert properties["additional_cited_chunk_ids"]["items"]["enum"] == [str(evidence.chunk_id)]
         assert payload["format"]["properties"]["answer"] == {"type": "string"}
         assert payload["options"] == {
             "temperature": 0,
@@ -183,7 +193,8 @@ async def test_composer_uses_one_strict_json_schema_and_returns_its_untrusted_dr
                     "content": json.dumps(
                         {
                             "answer": "Final inspection yield is measured.",
-                            "cited_chunk_ids": [str(evidence.chunk_id)],
+                            "primary_cited_chunk_id": str(evidence.chunk_id),
+                            "additional_cited_chunk_ids": [],
                         }
                     )
                 }
@@ -205,6 +216,68 @@ async def test_composer_uses_one_strict_json_schema_and_returns_its_untrusted_dr
 
     assert draft.answer == "Final inspection yield is measured."
     assert draft.cited_chunk_ids == (evidence.chunk_id,)
+
+
+@pytest.mark.asyncio
+async def test_composer_preserves_primary_then_additional_citation_order() -> None:
+    primary = _evidence()
+    additional = replace(_evidence(), chunk_id=uuid4())
+    content = json.dumps(
+        {
+            "answer": "Both authorized records support the answer.",
+            "primary_cited_chunk_id": str(primary.chunk_id),
+            "additional_cited_chunk_ids": [str(additional.chunk_id)],
+        }
+    )
+    async with httpx.AsyncClient(
+        base_url="http://host.docker.internal:11434/v1",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"message": {"content": content}})
+        ),
+    ) as client:
+        draft = await LocalOllamaChatComposer(
+            base_url="http://host.docker.internal:11434/v1",
+            model="gemma4:e2b-it-qat",
+            timeout_seconds=45,
+            context_tokens=8192,
+            allowed_hosts=frozenset({"host.docker.internal"}),
+            client=client,
+        ).compose(
+            question="Which authorized records support the answer?",
+            evidence=(primary, additional),
+        )
+
+    assert draft.answer == "Both authorized records support the answer."
+    assert draft.cited_chunk_ids == (primary.chunk_id, additional.chunk_id)
+
+
+@pytest.mark.asyncio
+async def test_composer_accepts_ten_ordered_authorized_citations() -> None:
+    evidence = tuple(replace(_evidence(), chunk_id=uuid4()) for _ in range(10))
+    content = json.dumps(
+        {
+            "answer": "The authorized records support the answer.",
+            "primary_cited_chunk_id": str(evidence[0].chunk_id),
+            "additional_cited_chunk_ids": [str(item.chunk_id) for item in evidence[1:]],
+        }
+    )
+    async with httpx.AsyncClient(
+        base_url="http://host.docker.internal:11434/v1",
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, json={"message": {"content": content}})
+        ),
+    ) as client:
+        draft = await LocalOllamaChatComposer(
+            base_url="http://host.docker.internal:11434/v1",
+            model="gemma4:e2b-it-qat",
+            timeout_seconds=45,
+            context_tokens=8192,
+            allowed_hosts=frozenset({"host.docker.internal"}),
+            client=client,
+        ).compose(question="Summarize the authorized records.", evidence=evidence)
+
+    assert draft.answer == "The authorized records support the answer."
+    assert draft.cited_chunk_ids == tuple(item.chunk_id for item in evidence)
 
 
 @pytest.mark.asyncio
@@ -433,14 +506,22 @@ def test_route_classifier_normalizes_resolved_question_to_one_line() -> None:
         {"content": "not json"},
         {"content": "{}"},
         {"content": '{"answer":"answer","cited_chunk_ids":[],"extra":true}'},
-        {"content": '{"answer":"","cited_chunk_ids":["not-a-uuid"]}'},
-        {"content": '{"answer":"answer","cited_chunk_ids":[]}'},
-        {"content": '{"answer":"answer","cited_chunk_ids":["not-a-uuid"]}'},
         {
             "content": json.dumps(
                 {
                     "answer": "answer",
-                    "cited_chunk_ids": ["00000000-0000-4000-8000-000000000099"],
+                    "primary_cited_chunk_id": "00000000-0000-4000-8000-000000000001",
+                    "additional_cited_chunk_ids": [],
+                    "extra": True,
+                }
+            )
+        },
+        {
+            "content": json.dumps(
+                {
+                    "answer": "",
+                    "primary_cited_chunk_id": "00000000-0000-4000-8000-000000000001",
+                    "additional_cited_chunk_ids": [],
                 }
             )
         },
@@ -448,8 +529,70 @@ def test_route_classifier_normalizes_resolved_question_to_one_line() -> None:
             "content": json.dumps(
                 {
                     "answer": "answer",
-                    "cited_chunk_ids": [
-                        f"00000000-0000-4000-8000-{index:012d}" for index in range(1, 12)
+                    "primary_cited_chunk_id": "",
+                    "additional_cited_chunk_ids": [],
+                }
+            )
+        },
+        {
+            "content": json.dumps(
+                {
+                    "answer": "answer",
+                    "primary_cited_chunk_id": "not-a-uuid",
+                    "additional_cited_chunk_ids": [],
+                }
+            )
+        },
+        {
+            "content": json.dumps(
+                {
+                    "answer": "answer",
+                    "primary_cited_chunk_id": "00000000-0000-4000-8000-000000000001",
+                }
+            )
+        },
+        {
+            "content": json.dumps(
+                {
+                    "answer": "answer",
+                    "additional_cited_chunk_ids": [],
+                }
+            )
+        },
+        {
+            "content": json.dumps(
+                {
+                    "answer": "answer",
+                    "primary_cited_chunk_id": "00000000-0000-4000-8000-000000000001",
+                    "additional_cited_chunk_ids": "not-an-array",
+                }
+            )
+        },
+        {
+            "content": json.dumps(
+                {
+                    "answer": "answer",
+                    "primary_cited_chunk_id": "00000000-0000-4000-8000-000000000099",
+                    "additional_cited_chunk_ids": [],
+                }
+            )
+        },
+        {
+            "content": json.dumps(
+                {
+                    "answer": "answer",
+                    "primary_cited_chunk_id": "00000000-0000-4000-8000-000000000001",
+                    "additional_cited_chunk_ids": ["00000000-0000-4000-8000-000000000099"],
+                }
+            )
+        },
+        {
+            "content": json.dumps(
+                {
+                    "answer": "answer",
+                    "primary_cited_chunk_id": "00000000-0000-4000-8000-000000000001",
+                    "additional_cited_chunk_ids": [
+                        f"00000000-0000-4000-8000-{index:012d}" for index in range(2, 12)
                     ],
                 }
             )
@@ -458,8 +601,8 @@ def test_route_classifier_normalizes_resolved_question_to_one_line() -> None:
             "content": json.dumps(
                 {
                     "answer": "answer",
-                    "cited_chunk_ids": [
-                        "00000000-0000-4000-8000-000000000001",
+                    "primary_cited_chunk_id": "00000000-0000-4000-8000-000000000001",
+                    "additional_cited_chunk_ids": [
                         "00000000-0000-4000-8000-000000000001",
                     ],
                 }
@@ -469,7 +612,8 @@ def test_route_classifier_normalizes_resolved_question_to_one_line() -> None:
             "content": json.dumps(
                 {
                     "answer": "answer",
-                    "cited_chunk_ids": ["00000000-0000-4000-8000-000000000001"],
+                    "primary_cited_chunk_id": "00000000-0000-4000-8000-000000000001",
+                    "additional_cited_chunk_ids": [],
                 }
             ),
             "tool_calls": [
@@ -478,7 +622,8 @@ def test_route_classifier_normalizes_resolved_question_to_one_line() -> None:
                         "name": "submit_grounded_answer",
                         "arguments": {
                             "answer": "legacy tool call",
-                            "cited_chunk_ids": ["00000000-0000-4000-8000-000000000001"],
+                            "primary_cited_chunk_id": ("00000000-0000-4000-8000-000000000001"),
+                            "additional_cited_chunk_ids": [],
                         },
                     }
                 }
@@ -491,7 +636,8 @@ def test_route_classifier_normalizes_resolved_question_to_one_line() -> None:
                         "name": "submit_grounded_answer",
                         "arguments": {
                             "answer": "legacy tool call",
-                            "cited_chunk_ids": ["00000000-0000-4000-8000-000000000001"],
+                            "primary_cited_chunk_id": ("00000000-0000-4000-8000-000000000001"),
+                            "additional_cited_chunk_ids": [],
                         },
                     }
                 }
@@ -503,7 +649,10 @@ def test_route_classifier_normalizes_resolved_question_to_one_line() -> None:
 async def test_composer_rejects_malformed_native_structured_output(
     message: object,
 ) -> None:
-    evidence = _evidence()
+    evidence = replace(
+        _evidence(),
+        chunk_id=UUID("00000000-0000-4000-8000-000000000001"),
+    )
 
     async with httpx.AsyncClient(
         base_url="http://host.docker.internal:11434/v1",
@@ -533,7 +682,8 @@ async def test_composer_rejects_an_oversized_answer_in_structured_output() -> No
     content = json.dumps(
         {
             "answer": "x" * 4_001,
-            "cited_chunk_ids": [str(evidence.chunk_id)],
+            "primary_cited_chunk_id": str(evidence.chunk_id),
+            "additional_cited_chunk_ids": [],
         }
     )
     async with httpx.AsyncClient(

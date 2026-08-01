@@ -37,17 +37,20 @@ identity, result count, unique indices, finite descending scores and bounded res
 adapter accepts a browser URL, executable tool, SQL, Cypher, file operation or mutation.
 
 Clarification (2026-08-01): native Ollama does not expose a fixed `tool_choice` request field. Its
-grounded composition request therefore uses native `format` with a strict JSON Schema whose only
-fields are `answer` and `cited_chunk_ids`; the citation item enum contains only the request's
-already-authorized evidence UUIDs. Ollama 0.32.1 cannot compile the full string and collection
-bounds into its local grammar, so the provider schema retains the structural object, array,
-required-field and additional-property constraints plus that exact enum. The adapter's exact
-`message.content` parser independently enforces the omitted non-empty, length, item-count, UUID and
-uniqueness constraints and rejects prose, legacy tool calls, missing or extra fields and unknown
-citations. The OpenAI-compatible provider keeps the existing fully constrained
-`submit_grounded_answer` tool-call schema. Both outputs remain untrusted and continue through the
-same application-level citation membership, current-authorization and final reauthorization
-checks without retry or fallback.
+grounded composition request therefore uses native `format` with a strict JSON Schema whose fields
+are `answer`, the required scalar `primary_cited_chunk_id`, and
+`additional_cited_chunk_ids`. Both citation fields enumerate only the request's already-authorized
+evidence UUIDs. The required scalar prevents a zero-citation draft without relying on unsupported
+collection bounds; the additional selection field may be an empty array so a grounded answer can
+cite more than one source. Ollama 0.32.1 cannot compile the full string and collection bounds into
+its local grammar, so the provider schema retains only the supported structural object, string,
+array, required-field, additional-property and exact-enum constraints. The adapter's exact
+`message.content` parser combines primary then additional citations and independently enforces the
+omitted non-empty, answer-length, total-item-count, UUID and uniqueness constraints. It rejects
+prose, legacy tool calls, missing or extra fields, duplicate citations and unknown citations. The
+OpenAI-compatible provider keeps the existing fully constrained `submit_grounded_answer` tool-call
+schema. Both outputs remain untrusted and continue through the same application-level citation
+membership, current-authorization and final reauthorization checks without retry or fallback.
 
 Every interactive Chat request reserves both a request count and a conservative input-plus-output
 token envelope before retrieval or direct inference. The envelope reserves one token per possible

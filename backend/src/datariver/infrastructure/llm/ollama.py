@@ -290,7 +290,11 @@ def grounded_chat_request_payload(
     return payload
 
 
-def _grounded_system_prompt(*, output_contract: str) -> str:
+def _grounded_system_prompt(
+    *,
+    output_contract: str,
+    citation_fields: str = "cited_chunk_ids",
+) -> str:
     return (
         "Answer only from the supplied authorized evidence. "
         "The current question is the only answer target. Use prior user "
@@ -304,7 +308,7 @@ def _grounded_system_prompt(*, output_contract: str) -> str:
         "assets as the requested one. Keep the answer human-readable: never "
         "include chunk IDs, UUIDs, URNs, source locators, versions, hashes, "
         "tool names, raw code, or bracketed citations in the answer. Submit "
-        "citations only through cited_chunk_ids and cite only supplied IDs. "
+        f"citations only through {citation_fields} and cite only supplied IDs. "
         f"{output_contract}"
     )
 
@@ -349,10 +353,18 @@ def _ollama_native_grounded_answer_schema(
     return {
         "type": "object",
         "additionalProperties": False,
-        "required": ["answer", "cited_chunk_ids"],
+        "required": [
+            "answer",
+            "primary_cited_chunk_id",
+            "additional_cited_chunk_ids",
+        ],
         "properties": {
             "answer": {"type": "string"},
-            "cited_chunk_ids": {
+            "primary_cited_chunk_id": {
+                "type": "string",
+                "enum": list(authorized_chunk_ids),
+            },
+            "additional_cited_chunk_ids": {
                 "type": "array",
                 "items": {
                     "type": "string",
@@ -598,9 +610,13 @@ def ollama_native_grounded_chat_request_payload(
     )
     payload["messages"][0]["content"] = _grounded_system_prompt(
         output_contract=(
-            "Return exactly one JSON object with only answer and cited_chunk_ids. "
+            "Return exactly one JSON object with only answer, primary_cited_chunk_id, "
+            "and additional_cited_chunk_ids. Select one supplied ID as "
+            "primary_cited_chunk_id. Use additional_cited_chunk_ids only for other "
+            "supplied IDs needed by the answer; otherwise return an empty array. "
             "Do not return a tool call, Markdown fence, or explanatory text outside that object."
-        )
+        ),
+        citation_fields="primary_cited_chunk_id and additional_cited_chunk_ids",
     )
     payload["format"] = _ollama_native_grounded_answer_schema(
         [str(item.chunk_id) for item in evidence]
@@ -726,10 +742,11 @@ def parse_ollama_native_grounded_chat_response(
         return ChatDraft(answer="", cited_chunk_ids=())
     if not isinstance(arguments, dict) or set(arguments) != {
         "answer",
-        "cited_chunk_ids",
+        "primary_cited_chunk_id",
+        "additional_cited_chunk_ids",
     }:
         return ChatDraft(answer="", cited_chunk_ids=())
-    draft = _parse_grounded_arguments(arguments)
+    draft = _parse_ollama_native_grounded_arguments(arguments)
     if any(chunk_id not in authorized_chunk_ids for chunk_id in draft.cited_chunk_ids):
         return ChatDraft(answer="", cited_chunk_ids=())
     return draft
@@ -836,6 +853,30 @@ def _parse_grounded_arguments(arguments: dict[str, Any]) -> ChatDraft:
         return ChatDraft(answer="", cited_chunk_ids=())
     try:
         parsed_ids = tuple(UUID(str(value)) for value in cited_chunk_ids)
+    except (TypeError, ValueError, AttributeError):
+        return ChatDraft(answer="", cited_chunk_ids=())
+    if len(parsed_ids) != len(set(parsed_ids)):
+        return ChatDraft(answer="", cited_chunk_ids=())
+    return ChatDraft(answer=answer.strip(), cited_chunk_ids=parsed_ids)
+
+
+def _parse_ollama_native_grounded_arguments(arguments: dict[str, Any]) -> ChatDraft:
+    answer = arguments.get("answer")
+    primary_cited_chunk_id = arguments.get("primary_cited_chunk_id")
+    additional_cited_chunk_ids = arguments.get("additional_cited_chunk_ids")
+    if (
+        not isinstance(answer, str)
+        or not answer.strip()
+        or len(answer) > _MAXIMUM_ANSWER_CHARACTERS
+        or not isinstance(primary_cited_chunk_id, str)
+        or not primary_cited_chunk_id
+        or not isinstance(additional_cited_chunk_ids, list)
+        or len(additional_cited_chunk_ids) > 9
+    ):
+        return ChatDraft(answer="", cited_chunk_ids=())
+    raw_ids = (primary_cited_chunk_id, *additional_cited_chunk_ids)
+    try:
+        parsed_ids = tuple(UUID(str(value)) for value in raw_ids)
     except (TypeError, ValueError, AttributeError):
         return ChatDraft(answer="", cited_chunk_ids=())
     if len(parsed_ids) != len(set(parsed_ids)):
