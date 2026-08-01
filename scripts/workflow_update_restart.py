@@ -380,6 +380,7 @@ def _reconcile_local_admin_catalog_access(
             "run",
             "--rm",
             "--no-deps",
+            "--build",
             "local-bootstrap",
             "/app/.venv/bin/python",
             "-m",

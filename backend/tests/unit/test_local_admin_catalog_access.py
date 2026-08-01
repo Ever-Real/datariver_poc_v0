@@ -91,6 +91,7 @@ def test_operator_workflows_reconcile_admin_scope_after_catalog_sync() -> None:
                 '"run"',
                 '"--rm"',
                 '"--no-deps"',
+                '"--build"',
                 '"local-bootstrap"',
                 '"datariver.local_admin_catalog_access"',
             )
