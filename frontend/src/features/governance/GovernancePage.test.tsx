@@ -302,8 +302,11 @@ describe('GovernancePage', () => {
     const existing = changeRequest()
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([existing]))
-      if (path.startsWith('/catalog/assets?q=wafer')) return Promise.resolve({ items: [governedCatalogAsset] })
-      if (path === `/catalog/assets/${governedCatalogAsset.id}`) return Promise.resolve({
+      if (path === '/change-requests/systems') return Promise.resolve({
+        items: [{ id: 'system-1', code: 'FAB', name: 'Fabrication' }],
+      })
+      if (path.startsWith('/change-requests/targets?system_id=system-1&q=wafer')) return Promise.resolve({ items: [governedCatalogAsset] })
+      if (path === `/change-requests/targets/${governedCatalogAsset.id}?system_id=system-1`) return Promise.resolve({
         ...governedCatalogAsset,
         description: 'Current wafer event table',
         ownership: [], glossary_terms: [], quality: {}, projection_source_version: 'projection-v1', source_version: 'source-v1',
