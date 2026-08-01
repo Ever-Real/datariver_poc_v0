@@ -103,7 +103,7 @@ def test_profile_role_sql_keeps_generic_role_and_profile_authority_exclusive() -
 
 def test_canonical_admin_currentness_preserves_unrelated_non_authority_groups() -> None:
     now = datetime.now(UTC)
-    workspace_id, subject_id, role_id = uuid4(), uuid4(), uuid4()
+    workspace_id, subject_id, role_id, system_id, domain_id = (uuid4() for _ in range(5))
     actions = sorted(action.value for action in DEFAULT_HUMAN_ADMIN_ACTIONS)
     subject = SubjectModel(
         id=subject_id,
@@ -125,8 +125,8 @@ def test_canonical_admin_currentness_preserves_unrelated_non_authority_groups() 
             "groups": ["engineering", "security-administrators"],
             "allowed_actions": actions,
             "denied_actions": [],
-            "allowed_system_ids": [],
-            "allowed_domain_ids": [],
+            "allowed_system_ids": [str(system_id)],
+            "allowed_domain_ids": [str(domain_id)],
         },
         active=True,
         access_expires_at=None,
@@ -183,6 +183,56 @@ def test_canonical_admin_currentness_preserves_unrelated_non_authority_groups() 
     assert transition_sql.count("? 'security-administrators'") >= 2
     assert transition_sql.count("? 'service-accounts'") >= 2
     assert transition_sql.count("membership_group.value LIKE 'datariver-role-%'") >= 2
+
+    binding.membership_access_hash = "0" * 64
+    assert not _canonical_admin_binding_is_current(
+        subject=subject, membership=membership, binding=binding, role=role, now=now
+    )
+    binding.membership_access_hash = membership_access_payload_hash(membership)
+    binding.membership_version -= 1
+    assert not _canonical_admin_binding_is_current(
+        subject=subject, membership=membership, binding=binding, role=role, now=now
+    )
+    binding.membership_version = membership.version
+
+    role.allowed_domain_ids = [str(domain_id)]
+    assert not _canonical_admin_binding_is_current(
+        subject=subject, membership=membership, binding=binding, role=role, now=now
+    )
+    role.allowed_domain_ids = []
+    membership.attributes["groups"] = [
+        "engineering",
+        "security-administrators",
+        "service-accounts",
+    ]
+    binding.membership_access_hash = membership_access_payload_hash(membership)
+    assert not _canonical_admin_binding_is_current(
+        subject=subject, membership=membership, binding=binding, role=role, now=now
+    )
+    membership.attributes["groups"] = ["engineering", "security-administrators"]
+    membership.attributes["allowed_actions"] = actions[:-1]
+    binding.membership_access_hash = membership_access_payload_hash(membership)
+    assert not _canonical_admin_binding_is_current(
+        subject=subject, membership=membership, binding=binding, role=role, now=now
+    )
+    membership.attributes["allowed_actions"] = actions
+    binding.capability_catalog_version = "STALE_CATALOG"
+    binding.membership_access_hash = membership_access_payload_hash(membership)
+    assert not _canonical_admin_binding_is_current(
+        subject=subject, membership=membership, binding=binding, role=role, now=now
+    )
+
+    binding.capability_catalog_version = CAPABILITY_CATALOG_VERSION
+    membership.attributes["allowed_system_ids"] = [str(system_id), str(uuid4())]
+    membership.version += 1
+    assert not _canonical_admin_binding_is_current(
+        subject=subject, membership=membership, binding=binding, role=role, now=now
+    )
+    binding.membership_version = membership.version
+    binding.membership_access_hash = membership_access_payload_hash(membership)
+    assert _canonical_admin_binding_is_current(
+        subject=subject, membership=membership, binding=binding, role=role, now=now
+    )
 
 
 @pytest.mark.parametrize(

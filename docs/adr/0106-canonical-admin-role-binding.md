@@ -36,6 +36,12 @@ canonical definition. Its effective state is `NONE`, `VERIFIED`, `STALE` or `REV
 membership response exposes only status, Role/catalog/membership/binding versions and update time;
 Role UUID and both internal hashes never cross the HTTP boundary.
 
+The server-owned Canonical Role definition itself has empty system and domain scopes. A bound
+administrator's current membership may carry governed system or domain scopes; those scopes are
+accepted only when the membership version and complete access hash still match the binding.
+Adding, removing or changing a scope therefore makes the binding stale until the trusted binding
+path records the new version and hash, without discarding legitimate reconciliation scopes.
+
 Generic assignment has a fixed `HUMAN_ROLE` discriminator in both its composite FK and CHECK. Role
 assignment, identity provisioning, Role update and Role deactivation also reject Canonical Admin in
 application code. The application database role has read-only binding access and no binding DML or

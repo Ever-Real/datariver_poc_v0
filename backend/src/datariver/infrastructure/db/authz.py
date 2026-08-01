@@ -426,7 +426,6 @@ def _canonical_admin_binding_is_current(
         and not any(group.startswith("datariver-role-") for group in groups)
         and allowed == expected_actions
         and not denied
-        and not system_ids
         and role is not None
         and role.active
         and role.role_key == CANONICAL_ADMIN_ROLE_KEY
