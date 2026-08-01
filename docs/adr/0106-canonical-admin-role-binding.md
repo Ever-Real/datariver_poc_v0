@@ -42,6 +42,13 @@ accepted only when the membership version and complete access hash still match t
 Adding, removing or changing a scope therefore makes the binding stale until the trusted binding
 path records the new version and hash, without discarding legitimate reconciliation scopes.
 
+The local development Catalog synchronization uses a second parameter-free fixed-target operator
+path after projection sync. It requires `APP_ENV=development` before secret or database access and
+uses the trusted bootstrap principal to lock only the fixed local membership. The asset-derived
+scope update, membership version, refreshed Canonical binding hash/version, authorization decision,
+outbox event and idempotency result commit in one transaction. Generic membership updates and all
+HTTP paths continue to reject Canonical Admin access changes.
+
 Generic assignment has a fixed `HUMAN_ROLE` discriminator in both its composite FK and CHECK. Role
 assignment, identity provisioning, Role update and Role deactivation also reject Canonical Admin in
 application code. The application database role has read-only binding access and no binding DML or

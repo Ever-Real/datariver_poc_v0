@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import inspect
+from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
+import datariver.local_admin_catalog_access as local_admin_catalog_access_module
 from datariver.domain.authz import Action, Classification
 from datariver.infrastructure.db.models.platform import WorkspaceMembershipModel
-from datariver.local_admin_catalog_access import admin_catalog_access_command
+from datariver.local_admin_catalog_access import (
+    admin_catalog_access_command,
+    reconcile_local_admin_catalog_access,
+)
 
 
 def test_local_admin_catalog_access_adds_exact_scopes_without_broadening_policy() -> None:
@@ -72,3 +80,37 @@ def test_operator_workflows_reconcile_admin_scope_after_catalog_sync() -> None:
         assert source.index("_sync_catalog(runner") < source.rindex(
             "_reconcile_local_admin_catalog_access("
         )
+
+
+@pytest.mark.asyncio
+async def test_local_catalog_reconciliation_rejects_non_development_before_database_access(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        local_admin_catalog_access_module,
+        "get_settings",
+        lambda: SimpleNamespace(app_env="production"),
+    )
+
+    with pytest.raises(RuntimeError, match="development-only"):
+        await reconcile_local_admin_catalog_access()
+
+
+def test_local_catalog_reconciliation_is_fixed_atomic_and_binding_current() -> None:
+    source = inspect.getsource(reconcile_local_admin_catalog_access)
+
+    assert source.index('settings.app_env != "development"') < source.index(
+        "resolver = SecretResolver()"
+    )
+    assert "settings.bootstrap_database_url" in source
+    assert "settings.bootstrap_database_secret_ref" in source
+    assert "session.begin()" in source
+    assert ".with_for_update()" in source
+    assert "SqlMembershipAccessRepository(session).apply(command)" in source
+    assert "_reconcile_local_canonical_admin_binding(session=session)" in source
+    assert "_canonical_admin_binding_is_current(" in source
+    assert "SqlOutboxWriter(session).add_events" in source
+    assert "SqlIdempotencyStore(session)" in source
+    assert "idempotency.save_result" in source
+    assert "update_membership_with_hardware_key" not in source
+    assert "assert_manual_access_update_allowed" not in source
