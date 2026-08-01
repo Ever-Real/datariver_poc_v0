@@ -107,9 +107,18 @@ def test_grounded_payload_keeps_internal_source_metadata_out_of_model_context() 
     citation_schema = payload["format"]["properties"]["cited_chunk_ids"]["items"]
     assert citation_schema == {
         "type": "string",
-        "format": "uuid",
         "enum": [str(evidence.chunk_id)],
     }
+    serialized_schema = json.dumps(payload["format"])
+    for unsupported_keyword in (
+        "minLength",
+        "maxLength",
+        "minItems",
+        "maxItems",
+        "uniqueItems",
+        '"format"',
+    ):
+        assert unsupported_keyword not in serialized_schema
     assert evidence.source_locator not in payload["messages"][1]["content"]
     assert evidence.source_version not in payload["messages"][1]["content"]
     assert evidence.source_locator not in json.dumps(payload["format"])
@@ -161,6 +170,7 @@ async def test_composer_uses_one_strict_json_schema_and_returns_its_untrusted_dr
         assert payload["format"]["properties"]["cited_chunk_ids"]["items"]["enum"] == [
             str(evidence.chunk_id)
         ]
+        assert payload["format"]["properties"]["answer"] == {"type": "string"}
         assert payload["options"] == {
             "temperature": 0,
             "num_ctx": 8192,
@@ -431,6 +441,16 @@ def test_route_classifier_normalizes_resolved_question_to_one_line() -> None:
                 {
                     "answer": "answer",
                     "cited_chunk_ids": ["00000000-0000-4000-8000-000000000099"],
+                }
+            )
+        },
+        {
+            "content": json.dumps(
+                {
+                    "answer": "answer",
+                    "cited_chunk_ids": [
+                        f"00000000-0000-4000-8000-{index:012d}" for index in range(1, 12)
+                    ],
                 }
             )
         },

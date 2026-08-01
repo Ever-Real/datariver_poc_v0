@@ -335,6 +335,34 @@ def _grounded_answer_schema(authorized_chunk_ids: Sequence[str]) -> dict[str, An
     }
 
 
+def _ollama_native_grounded_answer_schema(
+    authorized_chunk_ids: Sequence[str],
+) -> dict[str, Any]:
+    """Return the structural subset supported by Ollama's local grammar compiler.
+
+    Ollama 0.32.1 expands string and collection bounds into grammar repetitions
+    and rejects the full schema. The strict native response parser below enforces
+    every omitted bound, UUID format and uniqueness constraint before the draft
+    can reach application-level citation validation.
+    """
+
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["answer", "cited_chunk_ids"],
+        "properties": {
+            "answer": {"type": "string"},
+            "cited_chunk_ids": {
+                "type": "array",
+                "items": {
+                    "type": "string",
+                    "enum": list(authorized_chunk_ids),
+                },
+            },
+        },
+    }
+
+
 def general_chat_request_payload(
     *,
     model: str,
@@ -574,7 +602,9 @@ def ollama_native_grounded_chat_request_payload(
             "Do not return a tool call, Markdown fence, or explanatory text outside that object."
         )
     )
-    payload["format"] = _grounded_answer_schema([str(item.chunk_id) for item in evidence])
+    payload["format"] = _ollama_native_grounded_answer_schema(
+        [str(item.chunk_id) for item in evidence]
+    )
     payload.pop("tools")
     payload.pop("tool_choice")
     payload.pop("temperature")
