@@ -72,8 +72,8 @@ describe('ChangeRequestCreateDialog', () => {
       if (path === '/change-requests/systems') return Promise.resolve({
         items: [{ id: 'system-1', code: 'FAB', name: 'Fabrication' }],
       })
-      if (path.startsWith('/catalog/assets?q=wafer')) return Promise.resolve({ items: [asset] })
-      if (path === `/catalog/assets/${asset.id}`) return Promise.resolve({
+      if (path.startsWith('/change-requests/targets?system_id=system-1&q=wafer')) return Promise.resolve({ items: [asset] })
+      if (path === `/change-requests/targets/${asset.id}?system_id=system-1`) return Promise.resolve({
         ...asset,
         description: 'Current wafer event table',
         ownership: [],
@@ -106,6 +106,89 @@ describe('ChangeRequestCreateDialog', () => {
     )
   })
 
+  it('does not search without a system and clears stale targets when the system changes', async () => {
+    const asset = {
+      id: 'catalog-asset-1',
+      external_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,fab.wafer_events,PROD)',
+      asset_type: 'TABLE',
+      name: 'wafer_events',
+      platform: 'postgres',
+      database_name: 'fab',
+      schema_name: 'quality',
+      classification: 'INTERNAL',
+      lifecycle: 'ACTIVE',
+      observed_at: '2026-07-31T01:02:03Z',
+      matches: [],
+      tags: [],
+      terms: [],
+    }
+    let resolveSystems: ((value: unknown) => void) | undefined
+    const systems = new Promise((resolve) => { resolveSystems = resolve })
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path === '/change-requests/systems') return systems
+      if (path.startsWith('/change-requests/targets?system_id=system-1&q=wafer')) {
+        return Promise.resolve({ items: [asset] })
+      }
+      if (path === `/change-requests/targets/${asset.id}?system_id=system-1`) {
+        return Promise.resolve({
+          ...asset,
+          description: 'Current wafer event table',
+          ownership: [],
+          glossary_terms: [],
+          quality: {},
+          projection_source_version: 'projection-v1',
+          source_version: 'source-v1',
+          schema_fields: [{ fieldPath: 'wafer_id', nativeDataType: 'uuid' }],
+        })
+      }
+      if (path.startsWith('/change-requests/targets?system_id=system-2&q=lot')) {
+        return Promise.resolve({ items: [] })
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderDialog(apiClient(request))
+
+    fireEvent.change(screen.getByLabelText('변경 대상 검색'), {
+      target: { value: 'wafer' },
+    })
+    await new Promise((resolve) => window.setTimeout(resolve, 250))
+    expect(request.mock.calls.some(([path]) => path.includes('/change-requests/targets?'))).toBe(false)
+
+    resolveSystems?.({
+      items: [
+        { id: 'system-1', code: 'FAB', name: 'Fabrication' },
+        { id: 'system-2', code: 'ERP', name: 'Enterprise Resource Planning' },
+      ],
+    })
+    await screen.findByRole('option', { name: 'Fabrication · FAB' })
+    fireEvent.change(screen.getByLabelText('변경 대상 검색'), {
+      target: { value: 'wafer' },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /wafer_events/ }))
+    const columnPicker = await screen.findByLabelText('wafer_events 컬럼 추가')
+    fireEvent.change(columnPicker, { target: { value: 'wafer_id' } })
+    expect(screen.getByText('wafer_id')).toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('관련 시스템'), {
+      target: { value: 'system-2' },
+    })
+
+    expect(screen.queryByText('wafer_id')).not.toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: '변경 대상 테이블 및 컬럼' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('변경 대상 검색')).toHaveValue('')
+    fireEvent.change(screen.getByLabelText('변경 대상 검색'), {
+      target: { value: 'lot' },
+    })
+    await waitFor(() => expect(request.mock.calls.some(
+      ([path]) => path.includes('/change-requests/targets?system_id=system-2&q=lot'),
+    )).toBe(true))
+    const targetOptions = request.mock.calls.find(
+      ([path]) => path.includes('/change-requests/targets?system_id=system-2&q=lot'),
+    )?.[1]
+    expect(targetOptions?.signal).toBeInstanceOf(AbortSignal)
+  })
+
   it('keeps focus while typing consecutive characters in a manual column name', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/change-requests/systems') return Promise.resolve({
@@ -129,7 +212,22 @@ describe('ChangeRequestCreateDialog', () => {
     expect(columnName).toHaveValue('ss')
   })
 
-  it('reports missing required fields, then submits a complete manual request', async () => {
+  it('reports missing fields, then submits existing and manual targets together', async () => {
+    const asset = {
+      id: 'catalog-asset-1',
+      external_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,erp.orders,PROD)',
+      asset_type: 'VIEW',
+      name: 'orders',
+      platform: 'postgres',
+      database_name: 'erp',
+      schema_name: 'public',
+      classification: 'INTERNAL',
+      lifecycle: 'ACTIVE',
+      observed_at: '2026-07-31T01:02:03Z',
+      matches: [],
+      tags: [],
+      terms: [],
+    }
     const created = {
       id: 'change-1',
       number: 'CR-FAB-2026-0001',
@@ -141,6 +239,25 @@ describe('ChangeRequestCreateDialog', () => {
           { id: 'system-2', code: 'ERP', name: 'Enterprise Resource Planning' },
         ],
       })
+      if (path.startsWith('/change-requests/targets?system_id=system-2&q=orders')) {
+        return Promise.resolve({ items: [asset] })
+      }
+      if (path === `/change-requests/targets/${asset.id}?system_id=system-2`) {
+        return Promise.resolve({
+          ...asset,
+          description: 'Current orders view',
+          ownership: [],
+          glossary_terms: [],
+          quality: {},
+          projection_source_version: 'projection-v1',
+          source_version: 'source-v1',
+          schema_fields: [{
+            fieldPath: 'order_id',
+            nativeDataType: 'uuid',
+            description: 'Order identifier',
+          }],
+        })
+      }
       if (path === '/change-requests/intake' && options?.method === 'POST') {
         return Promise.resolve(created)
       }
@@ -168,8 +285,15 @@ describe('ChangeRequestCreateDialog', () => {
     fireEvent.change(screen.getByLabelText('요청사유'), {
       target: { value: '검증된 신규 데이터셋을 등록합니다.' },
     })
+    fireEvent.change(screen.getByLabelText('변경 대상 검색'), {
+      target: { value: 'orders' },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: /orders/ }))
+    fireEvent.change(await screen.findByLabelText('orders 컬럼 추가'), {
+      target: { value: 'order_id' },
+    })
     fireEvent.click(screen.getByRole('button', { name: /ADD NEW TABLE MANUALLY/ }))
-    fireEvent.change(screen.getByLabelText('신규 테이블 1 테이블명'), {
+    fireEvent.change(screen.getByLabelText('신규 테이블 2 테이블명'), {
       target: { value: 'wafer_summary' },
     })
     fireEvent.click(submit)
@@ -186,6 +310,14 @@ describe('ChangeRequestCreateDialog', () => {
     if (typeof intakeOptions?.body !== 'string') throw new Error('Expected a JSON request body')
     expect(JSON.parse(intakeOptions.body)).toEqual(expect.objectContaining({
       system_id: 'system-2',
+      targets: [
+        expect.objectContaining({
+          kind: 'EXISTING',
+          asset_id: 'catalog-asset-1',
+          columns: [expect.objectContaining({ field_path: 'order_id' })],
+        }),
+        expect.objectContaining({ kind: 'MANUAL', table_name: 'wafer_summary' }),
+      ],
     }))
     expect(onCreated).toHaveBeenCalledWith(created)
   })

@@ -121,6 +121,7 @@ export function ChangeRequestCreateDialog({
   const [created, setCreated] = useState<ChangeRequestRecord>()
   const [error, setError] = useState<unknown>()
   const searchController = useRef<AbortController | undefined>(undefined)
+  const detailController = useRef<AbortController | undefined>(undefined)
   const submitController = useRef<AbortController | undefined>(undefined)
   const registeredRequest = useRef<ChangeRequestRecord | undefined>(undefined)
   const registrationReported = useRef(false)
@@ -141,7 +142,7 @@ export function ChangeRequestCreateDialog({
   }, [client, open])
 
   useEffect(() => {
-    if (!open || query.trim().length < 2) {
+    if (!open || !systemId || query.trim().length < 2) {
       setResults([])
       setSearching(false)
       return
@@ -152,7 +153,7 @@ export function ChangeRequestCreateDialog({
     const timer = window.setTimeout(() => {
       setSearching(true)
       void client.request<CatalogSearch>(
-        `/catalog/assets?q=${encodeURIComponent(query.trim())}&limit=12`,
+        `/change-requests/targets?system_id=${encodeURIComponent(systemId)}&q=${encodeURIComponent(query.trim())}&limit=12`,
         { signal: controller.signal },
       )
         .then((value) => { if (!controller.signal.aborted) setResults(value.items) })
@@ -160,15 +161,17 @@ export function ChangeRequestCreateDialog({
         .finally(() => { if (!controller.signal.aborted) setSearching(false) })
     }, 220)
     return () => { controller.abort(); window.clearTimeout(timer) }
-  }, [client, open, query])
+  }, [client, open, query, systemId])
 
   useEffect(() => () => {
     searchController.current?.abort()
+    detailController.current?.abort()
     submitController.current?.abort()
   }, [])
 
   const reset = () => {
     searchController.current?.abort()
+    detailController.current?.abort()
     submitController.current?.abort()
     setQuery('')
     setResults([])
@@ -208,8 +211,13 @@ export function ChangeRequestCreateDialog({
       return
     }
     const controller = new AbortController()
+    detailController.current?.abort()
+    detailController.current = controller
     setError(undefined)
-    void client.request<CatalogAssetDetail>(`/catalog/assets/${summary.id}`, { signal: controller.signal })
+    void client.request<CatalogAssetDetail>(
+      `/change-requests/targets/${summary.id}?system_id=${encodeURIComponent(systemId)}`,
+      { signal: controller.signal },
+    )
       .then((asset) => {
         if (controller.signal.aborted) return
         setTargets((current) => [...current, {
@@ -225,6 +233,15 @@ export function ChangeRequestCreateDialog({
         setResults([])
       })
       .catch((next) => { if (!controller.signal.aborted) setError(next) })
+  }
+
+  const changeSystem = (nextSystemId: string) => {
+    searchController.current?.abort()
+    detailController.current?.abort()
+    setSystemId(nextSystemId)
+    setQuery('')
+    setResults([])
+    setTargets([])
   }
 
   const addManual = () => setTargets((current) => [...current, {
@@ -396,7 +413,7 @@ export function ChangeRequestCreateDialog({
           <div className="governance-create-grid">
             <label className="wide">변경요청 제목<input maxLength={500} onChange={(event) => setTitle(event.target.value)} placeholder="예: A 테이블 컬럼 추가 및 용어 표준화" required value={title} /></label>
             <label>요청자<input readOnly title={requesterEmail ?? requesterName} value={requesterEmail ? `${requesterName} · ${requesterEmail}` : requesterName} /></label>
-            <label>관련 시스템<select onChange={(event) => setSystemId(event.target.value)} required value={systemId}><option value="">시스템 선택</option>{systems.map((system) => <option key={system.id} value={system.id}>{system.name} · {system.code}</option>)}</select></label>
+            <label>관련 시스템<select onChange={(event) => changeSystem(event.target.value)} required value={systemId}><option value="">시스템 선택</option>{systems.map((system) => <option key={system.id} value={system.id}>{system.name} · {system.code}</option>)}</select></label>
             <label>요청일자<input onChange={(event) => setRequestDate(event.target.value)} type="date" value={requestDate} /></label>
             <label>요청부서<input maxLength={500} onChange={(event) => setDepartment(event.target.value)} placeholder="인증 프로필에 부서 정보가 없어 직접 입력" value={department} /></label>
             <label>요청 납기<input onChange={(event) => setDueDate(event.target.value)} type="date" value={dueDate} /></label>

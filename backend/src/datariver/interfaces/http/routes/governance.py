@@ -27,6 +27,7 @@ from datariver.application.services.governance_attachments import (
     GovernanceAttachmentUploadService,
 )
 from datariver.domain.authz import Action, BuiltinPolicyEngine, Classification, SubjectAttributes
+from datariver.domain.catalog import DATASET_ASSET_TYPES, is_dataset_asset_type
 from datariver.domain.common import (
     ConflictError,
     NotFoundError,
@@ -67,12 +68,17 @@ from datariver.infrastructure.db.models.platform import DataSystemModel
 from datariver.infrastructure.db.rls import set_security_context
 from datariver.interfaces.http.dependencies import ContextDep, SessionDep, get_container
 from datariver.interfaces.http.presenters import (
+    catalog_detail,
+    catalog_summary,
     change_request_response,
     change_request_schema_overview_response,
     public_change_item_identity,
 )
 from datariver.interfaces.http.schemas import (
     ApprovalRequest,
+    CatalogAssetResponse,
+    CatalogPolicyMeta,
+    CatalogSearchResponse,
     ChangeRequestAttachmentListResponse,
     ChangeRequestAttachmentPageResponse,
     ChangeRequestAttachmentResponse,
@@ -120,6 +126,43 @@ def _change_request_system_scope(subject: SubjectAttributes) -> frozenset[UUID] 
         and subject.clearance >= Classification.RESTRICTED
     )
     return None if global_administrator else subject.allowed_system_ids
+
+
+async def _change_request_target_system_is_available(
+    *,
+    context: ContextDep,
+    session: SessionDep,
+    system_id: UUID,
+) -> bool:
+    system_scope = _change_request_system_scope(context.subject)
+    if system_scope is not None and system_id not in system_scope:
+        return False
+    return (
+        await session.scalar(
+            select(DataSystemModel.id).where(
+                DataSystemModel.workspace_id == context.workspace_id,
+                DataSystemModel.id == system_id,
+                DataSystemModel.active.is_(True),
+            )
+        )
+        is not None
+    )
+
+
+def _empty_change_request_target_search(
+    context: ContextDep, *, limit: int
+) -> CatalogSearchResponse:
+    return CatalogSearchResponse(
+        items=[],
+        page=PageMeta(next_cursor=None, limit=limit),
+        total=0,
+        total_exact=True,
+        meta=CatalogPolicyMeta(
+            observed_at=context.environment.requested_at,
+            projection_version=0,
+            policy_version=BuiltinPolicyEngine.policy_version,
+        ),
+    )
 
 
 def _attachment_cursor(
@@ -427,6 +470,79 @@ async def list_change_request_systems(
             for value in values
         ]
     )
+
+
+@router.get("/targets", response_model=CatalogSearchResponse)
+async def search_change_request_targets(
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    system_id: Annotated[UUID, Query()],
+    q: Annotated[str, Query(max_length=500)] = "",
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> CatalogSearchResponse:
+    if not await _change_request_target_system_is_available(
+        context=context,
+        session=session,
+        system_id=system_id,
+    ):
+        return _empty_change_request_target_search(context, limit=limit)
+    page = await _catalog_service(request, session).search(
+        subject=context.subject,
+        query=q,
+        filters={
+            "asset_types": tuple(sorted(DATASET_ASSET_TYPES)),
+            "system_id": system_id,
+        },
+        cursor=cursor,
+        limit=limit,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return CatalogSearchResponse(
+        items=[catalog_summary(item) for item in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+        total=page.total,
+        total_exact=page.total_exact,
+        meta=CatalogPolicyMeta(
+            observed_at=page.observed_at,
+            stale_at=page.stale_at,
+            projection_version=page.projection_version,
+            policy_version=page.policy_version,
+            classification_policy_version=page.classification_policy_version,
+            authorization_generation=page.authorization_generation,
+        ),
+    )
+
+
+@router.get("/targets/{asset_id}", response_model=CatalogAssetResponse)
+async def get_change_request_target(
+    asset_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    system_id: Annotated[UUID, Query()],
+) -> CatalogAssetResponse:
+    if not await _change_request_target_system_is_available(
+        context=context,
+        session=session,
+        system_id=system_id,
+    ):
+        raise NotFoundError("The selected change target does not exist.")
+    asset = await _catalog_service(request, session).get_asset(
+        subject=context.subject,
+        asset_id=asset_id,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if (
+        asset is None
+        or asset.index.system_id != system_id
+        or not is_dataset_asset_type(asset.index.asset_type)
+    ):
+        raise NotFoundError("The selected change target does not exist.")
+    return catalog_detail(asset)
 
 
 @router.get("/{change_request_id}", response_model=ChangeRequestResponse)

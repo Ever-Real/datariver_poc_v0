@@ -995,6 +995,7 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             "classification",
             "classification_ceiling",
             "search_fields",
+            "system_id",
         }
         if unknown_filters:
             raise ValidationError(
@@ -1005,6 +1006,11 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             for name, value in filters.items()
             if name in allowed_filters and value not in (None, "")
         ]
+        raw_system_id = filters.get("system_id")
+        if raw_system_id is not None:
+            if not isinstance(raw_system_id, UUID):
+                raise ValidationError("Unsupported catalog System filter.")
+            conditions.append(AssetProjectionModel.system_id == raw_system_id)
         raw_classification = filters.get("classification")
         if raw_classification not in (None, ""):
             try:

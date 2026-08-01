@@ -15,6 +15,7 @@ from datariver.application.classification_access import static_classification_ac
 from datariver.application.ports import CatalogReaderMode
 from datariver.domain.authz import Classification, SubjectAttributes
 from datariver.domain.classification_access import SearchMode
+from datariver.domain.common import ValidationError
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader, _encode_cursor
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 
@@ -189,6 +190,26 @@ async def test_search_uses_only_the_bounded_page_query_and_declares_exactness() 
     assert first.total == 0
     assert first.total_exact is True
     assert continuation.total_exact is False
+
+
+def test_catalog_system_filter_is_uuid_typed_and_applied_before_paging() -> None:
+    system_id = uuid4()
+    conditions = SqlCatalogIndexReader._filter_conditions(
+        {"asset_types": ("DATASET", "TABLE", "VIEW"), "system_id": system_id}
+    )
+    statement = select(AssetProjectionModel.id).where(*conditions)
+    dialect = cast(Any, postgresql).dialect()
+    compiled = cast(Any, statement).compile(dialect=dialect)
+
+    assert "catalog.assets_projection.system_id =" in str(compiled)
+    assert system_id in compiled.params.values()
+    assert "catalog.assets_projection.asset_type IN" in str(compiled)
+
+
+@pytest.mark.parametrize("system_id", ["not-a-uuid", "", 1, True])
+def test_catalog_system_filter_rejects_non_uuid_values(system_id: object) -> None:
+    with pytest.raises(ValidationError, match="Unsupported catalog System filter"):
+        SqlCatalogIndexReader._filter_conditions({"system_id": system_id})
 
 
 def test_quarantine_review_scope_keeps_workspace_and_tombstone_boundaries() -> None:
