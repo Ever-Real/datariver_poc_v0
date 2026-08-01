@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import inspect
-from dataclasses import replace
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -11,6 +10,7 @@ import datariver.local_admin_catalog_access as local_admin_catalog_access_module
 from datariver.domain.authz import Action, Classification
 from datariver.infrastructure.db.models.platform import WorkspaceMembershipModel
 from datariver.local_admin_catalog_access import (
+    _apply_local_catalog_scopes,
     _read_active_catalog_scopes,
     admin_catalog_access_command,
     reconcile_local_admin_catalog_access,
@@ -87,20 +87,59 @@ def test_local_admin_catalog_access_replay_is_a_natural_noop() -> None:
         active=True,
         version=10,
     )
-    command = admin_catalog_access_command(
+    original_attributes = dict(membership.attributes)
+
+    updated = _apply_local_catalog_scopes(
         membership=membership,
         system_ids=frozenset({system_id}),
         domain_ids=frozenset({domain_id}),
     )
-    current = local_admin_catalog_access_module._subject_access(membership)
 
-    desired = replace(
-        current,
-        allowed_system_ids=command.allowed_system_ids,
-        allowed_domain_ids=command.allowed_domain_ids,
+    assert updated is False
+    assert membership.version == 10
+    assert membership.attributes == original_attributes
+
+
+def test_local_admin_catalog_scope_update_preserves_non_scope_authority() -> None:
+    existing_system_id = uuid4()
+    catalog_system_id = uuid4()
+    existing_domain_id = uuid4()
+    catalog_domain_id = uuid4()
+    membership = WorkspaceMembershipModel(
+        workspace_id=uuid4(),
+        subject_id=uuid4(),
+        department_id=None,
+        job_function="LOCAL_ADMINISTRATOR",
+        clearance=int(Classification.RESTRICTED),
+        attributes={
+            "groups": ["security-administrators"],
+            "allowed_actions": [Action.ADMIN_MANAGE.value, Action.CATALOG_READ.value],
+            "denied_actions": [Action.CATALOG_EXPORT.value],
+            "allowed_system_ids": [str(existing_system_id)],
+            "allowed_domain_ids": [str(existing_domain_id)],
+            "bootstrap": "local-identity-v1",
+        },
+        active=True,
+        version=10,
     )
 
-    assert desired == current
+    updated = _apply_local_catalog_scopes(
+        membership=membership,
+        system_ids=frozenset({catalog_system_id}),
+        domain_ids=frozenset({catalog_domain_id}),
+    )
+
+    assert updated is True
+    assert membership.version == 11
+    assert membership.clearance == int(Classification.RESTRICTED)
+    assert membership.attributes == {
+        "groups": ["security-administrators"],
+        "allowed_actions": [Action.ADMIN_MANAGE.value, Action.CATALOG_READ.value],
+        "denied_actions": [Action.CATALOG_EXPORT.value],
+        "allowed_system_ids": sorted((str(existing_system_id), str(catalog_system_id))),
+        "allowed_domain_ids": sorted((str(existing_domain_id), str(catalog_domain_id))),
+        "bootstrap": "local-identity-v1",
+    }
 
 
 def test_operator_workflows_reconcile_admin_scope_after_catalog_sync() -> None:
@@ -217,7 +256,7 @@ def test_local_catalog_reconciliation_is_fixed_atomic_and_binding_current() -> N
     assert "AssetProjectionModel" not in source
     assert "session.begin()" in source
     assert ".with_for_update()" in source
-    assert "SqlMembershipAccessRepository(session).apply(command)" in source
+    assert "_apply_local_catalog_scopes(" in source
     assert "_reconcile_local_canonical_admin_binding(session=session)" in source
     assert "_canonical_admin_binding_is_current(" in source
     assert "integration." not in source
@@ -225,9 +264,9 @@ def test_local_catalog_reconciliation_is_fixed_atomic_and_binding_current() -> N
     assert "SqlIdempotencyStore" not in source
     assert "PolicyDecisionModel" not in source
     assert "except " not in bootstrap_transaction
-    assert bootstrap_transaction.index(
-        "SqlMembershipAccessRepository(session).apply(command)"
-    ) < bootstrap_transaction.index("_reconcile_local_canonical_admin_binding(session=session)")
-    assert "await session.refresh(membership)" in bootstrap_transaction
+    assert bootstrap_transaction.index("_apply_local_catalog_scopes(") < (
+        bootstrap_transaction.index("_reconcile_local_canonical_admin_binding(session=session)")
+    )
+    assert "ProfileRoleAssignmentModel" not in source
     assert "update_membership_with_hardware_key" not in source
     assert "assert_manual_access_update_allowed" not in source

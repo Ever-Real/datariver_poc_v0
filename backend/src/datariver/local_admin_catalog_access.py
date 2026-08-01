@@ -20,9 +20,6 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.common import utc_now
-from datariver.infrastructure.db.admin_access import (
-    SqlMembershipAccessRepository,
-)
 from datariver.infrastructure.db.authz import _canonical_admin_binding_is_current
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.platform import (
@@ -78,6 +75,38 @@ def admin_catalog_access_command(
         allowed_system_ids=current.allowed_system_ids | system_ids,
         allowed_domain_ids=current.allowed_domain_ids | domain_ids,
     )
+
+
+def _apply_local_catalog_scopes(
+    *,
+    membership: WorkspaceMembershipModel,
+    system_ids: frozenset[UUID],
+    domain_ids: frozenset[UUID],
+) -> bool:
+    """Update only fixed local membership scopes; return false for an exact replay."""
+
+    command = admin_catalog_access_command(
+        membership=membership,
+        system_ids=system_ids,
+        domain_ids=domain_ids,
+    )
+    current = _subject_access(membership)
+    desired = replace(
+        current,
+        allowed_system_ids=command.allowed_system_ids,
+        allowed_domain_ids=command.allowed_domain_ids,
+    )
+    if desired == current:
+        return False
+    if not isinstance(membership.attributes, dict):
+        raise RuntimeError("The local administrator membership access is malformed.")
+    membership.attributes = {
+        **membership.attributes,
+        "allowed_system_ids": sorted(str(value) for value in command.allowed_system_ids),
+        "allowed_domain_ids": sorted(str(value) for value in command.allowed_domain_ids),
+    }
+    membership.version += 1
+    return True
 
 
 async def _read_active_catalog_scopes(
@@ -211,22 +240,14 @@ async def reconcile_local_admin_catalog_access() -> dict[str, object]:
             ).one_or_none()
             if membership is None:
                 raise RuntimeError("The local administrator membership is unavailable.")
-            command = admin_catalog_access_command(
+            updated = _apply_local_catalog_scopes(
                 membership=membership,
                 system_ids=system_ids,
                 domain_ids=domain_ids,
             )
-            current = _subject_access(membership)
-            desired = replace(
-                current,
-                allowed_system_ids=command.allowed_system_ids,
-                allowed_domain_ids=command.allowed_domain_ids,
-            )
-            updated = desired != current
             membership_version = membership.version
             if updated:
-                membership_version = await SqlMembershipAccessRepository(session).apply(command)
-                await session.refresh(membership)
+                await session.flush()
             await _reconcile_local_canonical_admin_binding(session=session)
             await session.flush()
             binding = await session.get(
