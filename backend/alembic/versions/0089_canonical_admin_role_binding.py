@@ -121,19 +121,22 @@ BEGIN
 END
 $datariver$
 """.strip()
-    policy_and_grants = f"""
-ALTER TABLE iam.access_roles ENABLE ROW LEVEL SECURITY;
-ALTER TABLE iam.access_roles FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS workspace_isolation ON iam.access_roles;
-DROP POLICY IF EXISTS access_roles_workspace_select ON iam.access_roles;
-DROP POLICY IF EXISTS access_roles_human_insert ON iam.access_roles;
-DROP POLICY IF EXISTS access_roles_human_update ON iam.access_roles;
-DROP POLICY IF EXISTS access_roles_bootstrap_canonical_insert ON iam.access_roles;
-DROP POLICY IF EXISTS access_roles_bootstrap_canonical_update ON iam.access_roles;
+    policy_statements = (
+        "ALTER TABLE iam.access_roles ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE iam.access_roles FORCE ROW LEVEL SECURITY",
+        "DROP POLICY IF EXISTS workspace_isolation ON iam.access_roles",
+        "DROP POLICY IF EXISTS access_roles_workspace_select ON iam.access_roles",
+        "DROP POLICY IF EXISTS access_roles_human_insert ON iam.access_roles",
+        "DROP POLICY IF EXISTS access_roles_human_update ON iam.access_roles",
+        "DROP POLICY IF EXISTS access_roles_bootstrap_canonical_insert ON iam.access_roles",
+        "DROP POLICY IF EXISTS access_roles_bootstrap_canonical_update ON iam.access_roles",
+        """
 CREATE POLICY access_roles_workspace_select ON iam.access_roles
     FOR SELECT USING (
         workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
-    );
+    )
+""".strip(),
+        """
 CREATE POLICY access_roles_human_insert ON iam.access_roles
     FOR INSERT WITH CHECK (
         workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
@@ -141,7 +144,9 @@ CREATE POLICY access_roles_human_insert ON iam.access_roles
         AND management_source = 'HUMAN_ADMIN'
         AND capability_catalog_version IS NULL
         AND updated_by = NULLIF(current_setting('app.subject_id', true), '')::uuid
-    );
+    )
+""".strip(),
+        """
 CREATE POLICY access_roles_human_update ON iam.access_roles
     FOR UPDATE USING (
         workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
@@ -153,7 +158,9 @@ CREATE POLICY access_roles_human_update ON iam.access_roles
         AND management_source = 'HUMAN_ADMIN'
         AND capability_catalog_version IS NULL
         AND updated_by = NULLIF(current_setting('app.subject_id', true), '')::uuid
-    );
+    )
+""".strip(),
+        f"""
 CREATE POLICY access_roles_bootstrap_canonical_insert ON iam.access_roles
     FOR INSERT TO datariver_bootstrap WITH CHECK (
         workspace_id = '00000000-0000-4000-8000-000000000100'::uuid
@@ -169,7 +176,9 @@ CREATE POLICY access_roles_bootstrap_canonical_insert ON iam.access_roles
         AND allowed_domain_ids = '[]'::jsonb
         AND active IS TRUE
         AND updated_by IS NULL
-    );
+    )
+""".strip(),
+        f"""
 CREATE POLICY access_roles_bootstrap_canonical_update ON iam.access_roles
     FOR UPDATE TO datariver_bootstrap USING (
         workspace_id = '00000000-0000-4000-8000-000000000100'::uuid
@@ -188,16 +197,19 @@ CREATE POLICY access_roles_bootstrap_canonical_update ON iam.access_roles
         AND allowed_domain_ids = '[]'::jsonb
         AND active IS TRUE
         AND updated_by IS NULL
-    );
-
-ALTER TABLE iam.canonical_admin_bindings ENABLE ROW LEVEL SECURITY;
-ALTER TABLE iam.canonical_admin_bindings FORCE ROW LEVEL SECURITY;
-DROP POLICY IF EXISTS workspace_isolation ON iam.canonical_admin_bindings;
+    )
+""".strip(),
+        "ALTER TABLE iam.canonical_admin_bindings ENABLE ROW LEVEL SECURITY",
+        "ALTER TABLE iam.canonical_admin_bindings FORCE ROW LEVEL SECURITY",
+        "DROP POLICY IF EXISTS workspace_isolation ON iam.canonical_admin_bindings",
+        """
 CREATE POLICY canonical_admin_bindings_workspace_select
     ON iam.canonical_admin_bindings
     FOR SELECT USING (
         workspace_id = NULLIF(current_setting('app.workspace_id', true), '')::uuid
-    );
+    )
+""".strip(),
+        f"""
 CREATE POLICY canonical_admin_bindings_local_insert ON iam.canonical_admin_bindings
     FOR INSERT TO datariver_bootstrap WITH CHECK (
         workspace_id = '00000000-0000-4000-8000-000000000100'::uuid
@@ -207,7 +219,9 @@ CREATE POLICY canonical_admin_bindings_local_insert ON iam.canonical_admin_bindi
         AND capability_hash = '{_CAPABILITY_HASH}'
         AND state = 'ACTIVE'
         AND binding_source = 'LOCAL_DEVELOPMENT_BOOTSTRAP'
-    );
+    )
+""".strip(),
+        f"""
 CREATE POLICY canonical_admin_bindings_local_update ON iam.canonical_admin_bindings
     FOR UPDATE TO datariver_bootstrap USING (
         workspace_id = '00000000-0000-4000-8000-000000000100'::uuid
@@ -221,9 +235,11 @@ CREATE POLICY canonical_admin_bindings_local_update ON iam.canonical_admin_bindi
         AND capability_hash = '{_CAPABILITY_HASH}'
         AND state = 'ACTIVE'
         AND binding_source = 'LOCAL_DEVELOPMENT_BOOTSTRAP'
-    );
-
-REVOKE ALL ON iam.canonical_admin_bindings FROM PUBLIC;
+    )
+""".strip(),
+        "REVOKE ALL ON iam.canonical_admin_bindings FROM PUBLIC",
+    )
+    grant_block = """
 DO $datariver$
 BEGIN
     IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'datariver_app') THEN
@@ -237,7 +253,10 @@ BEGIN
 END
 $datariver$;
 """.strip()
-    return definition_function, install, policy_and_grants
+    statements = (definition_function, install, *policy_statements, grant_block)
+    if len(statements) != 23:
+        raise RuntimeError("The Canonical Admin security statement boundary changed")
+    return statements
 
 
 def upgrade() -> None:

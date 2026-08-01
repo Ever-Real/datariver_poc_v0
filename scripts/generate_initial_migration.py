@@ -747,9 +747,13 @@ def build_upgrade() -> ops.UpgradeOps:
         ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {IDENTITY_PROFILE_UPDATE_SIGNATURE} FROM PUBLIC")
     )
     canonical_admin_binding = _load_canonical_admin_binding_revision()
+    canonical_admin_security_statements = (
+        canonical_admin_binding.canonical_admin_definition_security_sql()
+    )
+    if len(canonical_admin_security_statements) != 23:
+        raise RuntimeError("Canonical Admin security SQL must remain asyncpg-safe")
     operations.extend(
-        ops.ExecuteSQLOp(statement)
-        for statement in canonical_admin_binding.canonical_admin_definition_security_sql()
+        ops.ExecuteSQLOp(statement) for statement in canonical_admin_security_statements
     )
     operations.append(
         ops.ExecuteSQLOp(

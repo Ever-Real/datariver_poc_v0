@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+import re
 import runpy
 from collections.abc import Callable
 from pathlib import Path
@@ -24,6 +25,55 @@ from datariver.interfaces.http.routes.admin import (
 )
 
 POSTGRES_DIALECT = cast(Callable[[], Dialect], postgresql.dialect)()
+
+
+def _top_level_sql_command_count(statement: str) -> int:
+    """Count commands while treating quoted function/DO bodies as one SQL command."""
+
+    count = 0
+    has_content = False
+    index = 0
+    single_quoted = False
+    dollar_tag: str | None = None
+    while index < len(statement):
+        if dollar_tag is not None:
+            closing = statement.find(dollar_tag, index)
+            if closing < 0:
+                raise AssertionError("unterminated dollar-quoted SQL body")
+            index = closing + len(dollar_tag)
+            dollar_tag = None
+            has_content = True
+            continue
+        character = statement[index]
+        if single_quoted:
+            if character == "'":
+                if index + 1 < len(statement) and statement[index + 1] == "'":
+                    index += 2
+                    continue
+                single_quoted = False
+            index += 1
+            continue
+        if character == "'":
+            single_quoted = True
+            has_content = True
+            index += 1
+            continue
+        if character == "$":
+            match = re.match(r"\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$", statement[index:])
+            if match is not None:
+                dollar_tag = match.group(0)
+                index += len(dollar_tag)
+                continue
+        if character == ";":
+            if has_content:
+                count += 1
+                has_content = False
+        elif not character.isspace():
+            has_content = True
+        index += 1
+    if single_quoted or dollar_tag is not None:
+        raise AssertionError("unterminated quoted SQL")
+    return count + int(has_content)
 
 
 def test_role_assignment_counts_do_not_treat_stale_legacy_markers_as_authority() -> None:
@@ -289,6 +339,30 @@ def test_0089_migration_has_no_automatic_user_escalation_or_runtime_binding_writ
         assert "canonical_admin_bindings_local_insert" in source
         assert "00000000-0000-4000-8000-000000000100" in source
         assert "00000000-0000-4000-8000-000000000101" in source
+
+
+def test_0089_security_sql_is_one_asyncpg_command_per_execute_item() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration_path = root / "backend/alembic/versions/0089_canonical_admin_role_binding.py"
+    migration_source = migration_path.read_text(encoding="utf-8")
+    migration = runpy.run_path(str(migration_path))
+    render = cast(
+        Callable[[], tuple[str, ...]], migration["canonical_admin_definition_security_sql"]
+    )
+
+    statements = render()
+
+    assert len(statements) == 23
+    assert all(_top_level_sql_command_count(statement) == 1 for statement in statements)
+    assert sum(statement.startswith("DO $datariver$") for statement in statements) == 2
+    assert sum(statement.startswith("CREATE OR REPLACE FUNCTION") for statement in statements) == 1
+    assert ".split(';')" not in migration_source
+    assert '.split(";")' not in migration_source
+
+    initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
+    assert "ENABLE ROW LEVEL SECURITY;\\nALTER TABLE iam.access_roles FORCE" not in initial
+    assert initial.count("ALTER TABLE iam.access_roles ENABLE ROW LEVEL SECURITY") == 1
+    assert initial.count("ALTER TABLE iam.access_roles FORCE ROW LEVEL SECURITY") == 1
 
 
 def test_policy_book_rbac_models_are_tenant_scoped_and_secret_free() -> None:
