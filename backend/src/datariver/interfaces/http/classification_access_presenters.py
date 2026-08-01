@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datariver.application.classification_access_admin import ClassificationPolicySummary
 from datariver.domain.classification_access import (
     ClassificationAccessPolicy,
     RestrictedSearchGrant,
@@ -7,11 +8,29 @@ from datariver.domain.classification_access import (
 from datariver.domain.inference_provider import InferenceProviderProfileVersion
 from datariver.interfaces.http.classification_access_schemas import (
     ClassificationPolicyResponse,
+    ClassificationPolicySummaryResponse,
+    ClassificationPolicySummaryRuleResponse,
     ClassificationRuleResponse,
     InferenceProviderProfileResponse,
     ProviderAttestationResponse,
     RestrictedSearchGrantResponse,
 )
+
+
+def classification_policy_summary_response(
+    summary: ClassificationPolicySummary,
+) -> ClassificationPolicySummaryResponse:
+    return ClassificationPolicySummaryResponse(
+        state=summary.state.value,
+        rules=[
+            ClassificationPolicySummaryRuleResponse(
+                classification=rule.classification.name,
+                search_mode=rule.search_mode,
+                chat_mode=rule.chat_mode,
+            )
+            for rule in summary.rules
+        ],
+    )
 
 
 def classification_policy_response(

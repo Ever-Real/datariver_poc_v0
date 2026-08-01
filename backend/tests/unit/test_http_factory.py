@@ -11,8 +11,14 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.responses import Response
 
+from datariver.application.classification_access import ClassificationAccessPosture
+from datariver.application.classification_access_admin import (
+    ClassificationPolicySummary,
+    ClassificationPolicySummaryRule,
+)
 from datariver.config import Settings
-from datariver.domain.authz import Action
+from datariver.domain.authz import Action, Classification
+from datariver.domain.classification_access import ChatMode, SearchMode
 from datariver.domain.common import (
     ForbiddenError,
     PreconditionFailedError,
@@ -27,6 +33,7 @@ from datariver.interfaces.http.container import AppContainer
 from datariver.interfaces.http.dependencies import get_request_context
 from datariver.interfaces.http.factory import create_app
 from datariver.interfaces.http.routes import admin as admin_routes
+from datariver.interfaces.http.routes import classification_access_admin as classification_routes
 from datariver.interfaces.http.routes.admin import (
     _SYSTEM_ENVIRONMENT_KEYS,
     _deployment_configuration_document,
@@ -114,6 +121,62 @@ def test_liveness_and_security_headers() -> None:
     assert response.json() == {"status": "alive"}
     assert response.headers["X-Request-Id"] == "valid-request-id"
     assert response.headers["X-Content-Type-Options"] == "nosniff"
+
+
+@pytest.mark.asyncio
+async def test_classification_policy_summary_route_is_exact_and_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service = SimpleNamespace(
+        current_policy_summary=AsyncMock(
+            return_value=ClassificationPolicySummary(
+                state=ClassificationAccessPosture.GOVERNED,
+                rules=tuple(
+                    ClassificationPolicySummaryRule(
+                        classification=classification,
+                        search_mode=(
+                            SearchMode.DENY
+                            if classification is Classification.RESTRICTED
+                            else SearchMode.ABAC
+                        ),
+                        chat_mode=ChatMode.DENY,
+                    )
+                    for classification in Classification
+                ),
+            )
+        )
+    )
+    monkeypatch.setattr(classification_routes, "_service", lambda _request: service)
+    context = cast(
+        Any,
+        SimpleNamespace(
+            workspace_id=UUID(int=1),
+            subject=SimpleNamespace(subject_id=UUID(int=2)),
+            environment=object(),
+            request_id="request-summary-route",
+        ),
+    )
+    response = Response()
+
+    result = await classification_routes.get_current_classification_policy_summary(
+        request=cast(Any, object()),
+        response=response,
+        context=context,
+    )
+
+    assert response.headers["Cache-Control"] == "private, no-store"
+    assert set(result.model_dump()) == {"state", "rules"}
+    assert len(result.rules) == 4
+    assert all(
+        set(rule.model_dump()) == {"classification", "search_mode", "chat_mode"}
+        for rule in result.rules
+    )
+    service.current_policy_summary.assert_awaited_once_with(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
 
 
 def test_liveness_survives_while_schema_readiness_returns_bounded_503() -> None:
@@ -313,6 +376,7 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/fallback/workspace-membership-access-requests/{access_request_id}/consume",
         "/api/v1/admin/classification-access/policies",
         "/api/v1/admin/classification-access/policies/current",
+        "/api/v1/admin/classification-access/policies/current/summary",
         "/api/v1/admin/classification-access/policies/{policy_id}/decisions",
         "/api/v1/admin/classification-access/restricted-search-grants",
         "/api/v1/admin/classification-access/restricted-search-grants/{grant_id}/decisions",

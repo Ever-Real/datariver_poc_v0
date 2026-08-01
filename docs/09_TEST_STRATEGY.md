@@ -2,6 +2,20 @@
 
 ## Current verification status
 
+### Redacted classification-policy summary — 2026-08-01
+
+ADR-0105 adds an ordinary-assurance summary without relaxing the existing full policy endpoints.
+Service tests cover human security-admin READ fallback, Workspace/Subject security context,
+canonical membership recheck, exact four-rule resolution, authorization denial before repository
+read and membership revocation before policy read. Route tests constrain the response to `state`
+and three rule fields and require `Cache-Control: private, no-store`.
+
+Frontend tests require the default mount to make exactly one summary call and zero full
+policy/history/provider calls. They also cover explicit fresh-assurance detail loading, no automatic
+read replay after reauthentication, redacted four-row rendering and removal of detailed state after
+a server failure. Runtime and authenticated-browser evidence is recorded only after the exact clean
+commit is published.
+
 ### Governed administrator user profile and credential reset — 2026-07-31
 
 ADR-0098 adds only subject-bound typed identity profile read/update and temporary-password reset.

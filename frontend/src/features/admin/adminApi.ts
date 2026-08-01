@@ -11,6 +11,7 @@ import type {
   ClassificationAccessPolicy,
   ClassificationAccessPolicyProposal,
   ClassificationAccessPolicyState,
+  ClassificationPolicySummary,
   ErasureRequest,
   ErasureRequestState,
   ErasureTargetType,
@@ -630,6 +631,13 @@ export class AdminApi {
 
   async listClassificationAccessPolicies(state?: ClassificationAccessPolicyState) {
     return (await this.listClassificationAccessPolicyPage({ state, limit: 100 })).items
+  }
+
+  getCurrentClassificationPolicySummary(signal?: AbortSignal) {
+    return this.client.request<ClassificationPolicySummary>(
+      '/admin/classification-access/policies/current/summary',
+      { cache: 'no-store', signal },
+    )
   }
 
   getCurrentClassificationAccessPolicy(signal?: AbortSignal) {

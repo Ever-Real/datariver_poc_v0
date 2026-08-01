@@ -711,9 +711,10 @@ operation-specific authorization and maker/checker/target validation.
 
 | Method/path | Assurance/authorization | Purpose |
 |---|---|---|
-| `GET /admin/classification-access/policies?state=&limit=&cursor=` | eligible human security administrator | list bounded state-bound policy versions |
-| `GET /admin/classification-access/policies/current` | eligible human security administrator | return the active four-class policy or null |
-| `GET /admin/classification-access/policies/{policy_id}` | eligible human security administrator | return one exact policy version and `ETag` |
+| `GET /admin/classification-access/policies/current/summary` | ordinary assurance + eligible human security administrator READ fallback | return only `state` and four `{classification,search_mode,chat_mode}` rows; `private, no-store` |
+| `GET /admin/classification-access/policies?state=&limit=&cursor=` | fresh `admin.manage` assurance + eligible human security administrator | list bounded state-bound full policy versions |
+| `GET /admin/classification-access/policies/current` | fresh `admin.manage` assurance + eligible human security administrator | return the active full four-class policy or null |
+| `GET /admin/classification-access/policies/{policy_id}` | fresh `admin.manage` assurance + eligible human security administrator | return one exact full policy version and `ETag` |
 | `POST /admin/classification-access/policies` | recent hardware WebAuthn | propose exactly four Search/Chat rules |
 | `POST /admin/classification-access/policies/{policy_id}/decisions` | independent checker + recent hardware WebAuthn | approve/activate or reject a policy |
 | `GET /admin/classification-access/restricted-search-grants?state=&subject_id=&limit=&cursor=` | eligible human security administrator | list bounded policy-bound grants |
@@ -732,6 +733,13 @@ credential or secret. Policy activation and request-time resolution revalidate i
 versions, jurisdiction, classification ceiling and bounded residency/zero-retention attestations.
 RESTRICTED Chat is invariantly denied; RESTRICTED Search still intersects the exact grant with normal
 workspace, clearance and system/domain authorization.
+
+The summary allowlist excludes every UUID, policy number/version, jurisdiction, grant maximum,
+provider-profile identifier, reason, timestamp, hash, decision field, URL, credential and secret.
+It resolves the effective policy through the same governed/static-floor evaluator used by runtime
+authorization. Full list/current/detail and provider responses are never loaded by the default
+classification view; **상세 이력 보기** requires a separate fresh-assurance interaction and is not
+automatically replayed after reauthentication.
 
 ### Retention policy and Legal Hold administration
 

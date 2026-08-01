@@ -4,12 +4,16 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 from uuid import UUID
 
+from datariver.application.classification_access import ClassificationAccessResolver
 from datariver.application.classification_access_admin import (
     ClassificationAccessAdminUnitOfWork,
     ClassificationPolicyPage,
+    ClassificationPolicySummary,
+    ClassificationPolicySummaryRule,
     RestrictedSearchGrantPage,
 )
 from datariver.application.services.authorization import AuthorizationService
+from datariver.domain.admin_access import AdminFallbackStage
 from datariver.domain.authz import (
     Action,
     Classification,
@@ -149,6 +153,39 @@ class ClassificationAccessAdminService:
         async with self._uow_factory() as uow:
             await self._prepare(uow, workspace_id=workspace_id, subject=subject, lock=False)
             return await uow.policies.get_active(workspace_id=workspace_id)
+
+    async def current_policy_summary(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> ClassificationPolicySummary:
+        await self._authorize_summary_read(
+            workspace_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await self._prepare(uow, workspace_id=workspace_id, subject=subject, lock=False)
+            snapshot = await ClassificationAccessResolver(uow.snapshots).resolve(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+                now=environment.requested_at,
+            )
+        return ClassificationPolicySummary(
+            state=snapshot.posture,
+            rules=tuple(
+                ClassificationPolicySummaryRule(
+                    classification=rule.classification,
+                    search_mode=rule.search_mode,
+                    chat_mode=rule.chat_mode,
+                )
+                for rule in snapshot.rules
+            ),
+        )
 
     async def approve_policy(
         self,
@@ -595,6 +632,31 @@ class ClassificationAccessAdminService:
                 lifecycle="ACTIVE",
             ),
             action=Action.ADMIN_MANAGE,
+            environment=environment,
+            request_id=request_id,
+        )
+
+    async def _authorize_summary_read(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> Decision:
+        return await self._authorization.authorize_admin_fallback(
+            subject=subject,
+            resource=ResourceAttributes(
+                resource_id=workspace_id,
+                workspace_id=workspace_id,
+                resource_type="classification_access_policy_summary",
+                owner_department_id=None,
+                system_id=None,
+                domain_id=None,
+                classification=Classification.RESTRICTED,
+                lifecycle="ACTIVE",
+            ),
+            stage=AdminFallbackStage.READ,
             environment=environment,
             request_id=request_id,
         )

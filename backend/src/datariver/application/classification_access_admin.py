@@ -6,14 +6,21 @@ from types import TracebackType
 from typing import Protocol, Self
 from uuid import UUID
 
+from datariver.application.classification_access import (
+    ClassificationAccessPosture,
+    ClassificationAccessSnapshotReader,
+)
 from datariver.application.ports import (
     IdempotencyStore,
     MembershipAccessRepository,
     OutboxWriter,
 )
+from datariver.domain.authz import Classification
 from datariver.domain.classification_access import (
+    ChatMode,
     ClassificationAccessPolicy,
     RestrictedSearchGrant,
+    SearchMode,
 )
 
 
@@ -27,6 +34,19 @@ class ClassificationPolicyPage:
 class RestrictedSearchGrantPage:
     items: tuple[RestrictedSearchGrant, ...]
     next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationPolicySummaryRule:
+    classification: Classification
+    search_mode: SearchMode
+    chat_mode: ChatMode
+
+
+@dataclass(frozen=True, slots=True)
+class ClassificationPolicySummary:
+    state: ClassificationAccessPosture
+    rules: tuple[ClassificationPolicySummaryRule, ...]
 
 
 class ClassificationPolicyRepository(Protocol):
@@ -87,6 +107,7 @@ class RestrictedSearchGrantRepository(Protocol):
 
 
 class ClassificationAccessAdminUnitOfWork(Protocol):
+    snapshots: ClassificationAccessSnapshotReader
     policies: ClassificationPolicyRepository
     grants: RestrictedSearchGrantRepository
     memberships: MembershipAccessRepository

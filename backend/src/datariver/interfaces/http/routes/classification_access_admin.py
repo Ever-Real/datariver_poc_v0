@@ -23,12 +23,14 @@ from datariver.infrastructure.db.classification_access import (
 )
 from datariver.interfaces.http.classification_access_presenters import (
     classification_policy_response,
+    classification_policy_summary_response,
     restricted_search_grant_response,
 )
 from datariver.interfaces.http.classification_access_schemas import (
     ClassificationPolicyListResponse,
     ClassificationPolicyProposalRequest,
     ClassificationPolicyResponse,
+    ClassificationPolicySummaryResponse,
     GovernanceDecisionRequest,
     RestrictedSearchGrantListResponse,
     RestrictedSearchGrantProposalRequest,
@@ -103,6 +105,25 @@ async def get_current_classification_policy(
         return None
     response.headers["ETag"] = f'"{value.version}"'
     return classification_policy_response(value)
+
+
+@router.get(
+    "/policies/current/summary",
+    response_model=ClassificationPolicySummaryResponse,
+)
+async def get_current_classification_policy_summary(
+    request: Request,
+    response: Response,
+    context: ContextDep,
+) -> ClassificationPolicySummaryResponse:
+    response.headers["Cache-Control"] = "private, no-store"
+    value = await _service(request).current_policy_summary(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return classification_policy_summary_response(value)
 
 
 @router.get("/policies/{policy_id}", response_model=ClassificationPolicyResponse)

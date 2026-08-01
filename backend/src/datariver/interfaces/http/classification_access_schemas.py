@@ -25,6 +25,7 @@ class StrictClassificationAccessRequest(BaseModel):
 
 
 ClassificationName = Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+ClassificationPolicySummaryState = Literal["GOVERNED", "STATIC_FLOOR"]
 
 
 class ClassificationRuleRequest(StrictClassificationAccessRequest):
@@ -59,6 +60,20 @@ class ClassificationRuleResponse(BaseModel):
     provider_profile_version_id: UUID | None
     embedding_provider_profile_version_id: UUID | None
     reranker_provider_profile_version_id: UUID | None
+
+
+class ClassificationPolicySummaryRuleResponse(BaseModel):
+    classification: ClassificationName
+    search_mode: SearchMode
+    chat_mode: ChatMode
+
+
+class ClassificationPolicySummaryResponse(BaseModel):
+    state: ClassificationPolicySummaryState
+    rules: Annotated[
+        list[ClassificationPolicySummaryRuleResponse],
+        Field(min_length=4, max_length=4),
+    ]
 
 
 class ClassificationPolicyResponse(BaseModel):

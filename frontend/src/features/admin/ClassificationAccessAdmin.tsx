@@ -8,6 +8,8 @@ import type {
   ClassificationAccessRule,
   ClassificationAccessPolicyState,
   ClassificationChatMode,
+  ClassificationPolicySummary,
+  ClassificationPolicySummaryRule,
   ClassificationSearchMode,
   InferenceProviderProfile,
   InferenceProviderProfileState,
@@ -65,6 +67,35 @@ function classificationLabel(classification: Classification) {
   return classification
 }
 
+const summaryColumns: ColumnDef<ClassificationPolicySummaryRule>[] = [
+  {
+    accessorKey: 'classification',
+    header: '분류 등급',
+    cell: ({ row }) => <strong>{classificationLabel(row.original.classification)}</strong>,
+  },
+  { accessorKey: 'search_mode', header: 'Search 접근' },
+  { accessorKey: 'chat_mode', header: 'Chat 접근' },
+]
+
+function ClassificationPolicySummaryView({ summary }: {
+  summary: ClassificationPolicySummary
+}) {
+  return <>
+    <p className="callout">
+      {summary.state === 'GOVERNED'
+        ? '승인된 정책의 현재 유효 모드입니다.'
+        : '활성 정책을 안전하게 확인할 수 없어 정적 최소 접근 기준을 적용 중입니다.'}
+    </p>
+    <DenseDataTable
+      caption="현재 유효 분류 정책 요약"
+      columns={summaryColumns}
+      data={summary.rules}
+      getRowId={(rule) => rule.classification}
+      emptyMessage="현재 유효 분류 정책이 없습니다."
+    />
+  </>
+}
+
 function emptyPolicyRules(): RuleDraft[] {
   return classifications.map((classification) => ({
     classification,
@@ -79,6 +110,9 @@ function emptyPolicyRules(): RuleDraft[] {
 export function ClassificationPolicyAdmin(props: Props) {
   const { api, context, messages, requestConfirmation, keyFor, clearKey, reportError } = props
   const [policies, setPolicies] = useState<ClassificationAccessPolicy[]>([])
+  const [summary, setSummary] = useState<ClassificationPolicySummary | null>(null)
+  const [summaryLoading, setSummaryLoading] = useState(true)
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const [currentPolicy, setCurrentPolicy] = useState<ClassificationAccessPolicy | null>(null)
   const [profiles, setProfiles] = useState<InferenceProviderProfile[]>([])
   const [selectedId, setSelectedId] = useState('')
@@ -104,14 +138,51 @@ export function ClassificationPolicyAdmin(props: Props) {
   >({})
   const loadGeneration = useRef(0)
   const auxiliaryGeneration = useRef(0)
+  const summaryGeneration = useRef(0)
   const listChannel = useAbortSignalChannel()
   const auxiliaryChannel = useAbortSignalChannel()
+  const summaryChannel = useAbortSignalChannel()
   const canPropose = context?.allowed_operations.includes(
     'CLASSIFICATION_POLICY_PROPOSE',
   ) ?? false
   const canDecide = context?.allowed_operations.includes(
     'CLASSIFICATION_POLICY_DECIDE',
   ) ?? false
+  const canReadDetails = context?.allowed_operations.includes(
+    'CLASSIFICATION_POLICY_READ',
+  ) ?? false
+  const hasFreshDetailAssurance = context?.authentication_assurance === 'HARDWARE_WEBAUTHN'
+    || context?.authentication_assurance === 'PASSWORD_REAUTH'
+
+  const clearDetails = useCallback(() => {
+    loadGeneration.current += 1
+    auxiliaryGeneration.current += 1
+    listChannel.abort()
+    auxiliaryChannel.abort()
+    setDetailsOpen(false)
+    setPolicies([])
+    setCurrentPolicy(null)
+    setProfiles([])
+    setSelectedProfiles({})
+    setSelectedId('')
+    setNextCursor(null)
+    setProviderNextCursor(null)
+  }, [auxiliaryChannel, listChannel])
+
+  const loadSummary = useCallback(async (signal?: AbortSignal) => {
+    const generation = ++summaryGeneration.current
+    setSummaryLoading(true)
+    setSummary(null)
+    try {
+      const next = await api.getCurrentClassificationPolicySummary(signal)
+      if (generation !== summaryGeneration.current) return
+      setSummary(next)
+    } catch (error) {
+      if (!signal?.aborted && generation === summaryGeneration.current) reportError(error)
+    } finally {
+      if (generation === summaryGeneration.current) setSummaryLoading(false)
+    }
+  }, [api, reportError])
 
   const load = useCallback(async (pageCursor: string | undefined, signal?: AbortSignal) => {
     const generation = ++loadGeneration.current
@@ -131,9 +202,12 @@ export function ClassificationPolicyAdmin(props: Props) {
           : policyPage.items[0]?.policy_id || ''
       ))
     } catch (error) {
-      if (!signal?.aborted && generation === loadGeneration.current) reportError(error)
+      if (!signal?.aborted && generation === loadGeneration.current) {
+        clearDetails()
+        reportError(error)
+      }
     }
-  }, [api, reportError, stateFilter])
+  }, [api, clearDetails, reportError, stateFilter])
 
   const loadAuxiliary = useCallback(async (signal?: AbortSignal) => {
     const generation = ++auxiliaryGeneration.current
@@ -154,18 +228,30 @@ export function ClassificationPolicyAdmin(props: Props) {
       setProfilesTruncated(Boolean(profilePage.nextCursor))
       setProviderNextCursor(profilePage.nextCursor)
     } catch (error) {
-      if (!signal?.aborted && generation === auxiliaryGeneration.current) reportError(error)
+      if (!signal?.aborted && generation === auxiliaryGeneration.current) {
+        clearDetails()
+        reportError(error)
+      }
     }
-  }, [api, appliedProviderKeyQuery, providerCursor, reportError])
+  }, [api, appliedProviderKeyQuery, clearDetails, providerCursor, reportError])
 
   useEffect(() => {
+    void loadSummary(summaryChannel.next())
+    return () => { summaryGeneration.current += 1 }
+  }, [loadSummary, summaryChannel])
+  useEffect(() => {
+    if (!detailsOpen) return undefined
     void load(cursor, listChannel.next())
     return () => { loadGeneration.current += 1 }
-  }, [cursor, listChannel, load])
+  }, [cursor, detailsOpen, listChannel, load])
   useEffect(() => {
+    if (!detailsOpen) return undefined
     void loadAuxiliary(auxiliaryChannel.next())
     return () => { auxiliaryGeneration.current += 1 }
-  }, [auxiliaryChannel, loadAuxiliary])
+  }, [auxiliaryChannel, detailsOpen, loadAuxiliary])
+  useEffect(() => {
+    if (detailsOpen && (!canReadDetails || !hasFreshDetailAssurance)) clearDetails()
+  }, [canReadDetails, clearDetails, detailsOpen, hasFreshDetailAssurance])
   useEffect(() => {
     const timer = window.setTimeout(
       () => {
@@ -396,7 +482,41 @@ export function ClassificationPolicyAdmin(props: Props) {
     && context.subject_id !== selected.requester_id,
   )
 
+  const showDetails = () => {
+    if (!canReadDetails) return
+    if (!hasFreshDetailAssurance) {
+      void (props.hardwareWebauthnEnabled === false
+        ? props.onPasswordReauth()
+        : props.onStepUp())
+      return
+    }
+    setDetailsOpen(true)
+  }
+
   return <>
+    <section className="panel form-stack">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">현재 유효 분류 정책</p>
+          <h3>서비스별 데이터 접근 요약</h3>
+        </div>
+        <button
+          type="button"
+          className="button button-secondary"
+          disabled={!canReadDetails}
+          onClick={showDetails}
+        >상세 이력 보기</button>
+      </div>
+      {summaryLoading
+        ? <p className="callout">현재 유효 정책을 확인하고 있습니다.</p>
+        : summary
+          ? <ClassificationPolicySummaryView summary={summary} />
+          : <p className="callout">현재 정책 요약을 표시할 수 없습니다.</p>}
+    </section>
+    {detailsOpen && <>
+    <div className="action-row justify-end">
+      <button type="button" className="button button-secondary" onClick={clearDetails}>상세 닫기</button>
+    </div>
     {currentPolicy
       ? <section className="panel">
         <p className="eyebrow">{messages.currentPolicy}</p>
@@ -484,6 +604,7 @@ export function ClassificationPolicyAdmin(props: Props) {
         </div>
       </>}
     </section>}
+    </>}
   </>
 }
 

@@ -288,6 +288,15 @@ requires an exact subject/resource, system or domain grant bound to the active p
 Missing, malformed, expired or revoked policy/provider/grant state falls back to the static
 fail-closed floor. RESTRICTED Chat is always denied.
 
+ADR-0105 separates classification-policy disclosure from administrator entitlement. The default
+Admin view calls a `private, no-store` ordinary-assurance summary that contains only the effective
+`GOVERNED | STATIC_FLOOR` state and four `{classification, search_mode, chat_mode}` rows. The READ
+fallback still requires the server-canonical human security administrator, `admin.manage`,
+RESTRICTED clearance, Workspace/RLS scope and an in-transaction membership recheck. Policy IDs,
+versions, jurisdiction, grant limits, provider bindings, reasons, timestamps, hashes and decision
+metadata remain on the existing fresh-assurance full endpoints. Reauthentication never
+automatically replays the full read.
+
 ## Assistant inference boundary
 
 Current Chat always remains an in-process authorization, routing, evidence-integrity, citation and

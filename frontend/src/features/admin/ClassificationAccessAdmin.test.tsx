@@ -4,6 +4,7 @@ import type {
   AdminReadContext,
   ClassificationAccessPolicy,
   ClassificationAccessPolicyProposal,
+  ClassificationPolicySummary,
   InferenceProviderProfile,
   RestrictedSearchGrant,
   WorkspaceMembershipSummary,
@@ -47,6 +48,19 @@ function policy(state: ClassificationAccessPolicy['state'] = 'ACTIVE'): Classifi
     state, checker_id: state === 'PROPOSED' ? null : 'checker-one', decision_reason: null,
     decided_at: null, superseded_by: null, supersede_reason: null, superseded_at: null,
     version: state === 'PROPOSED' ? 1 : 2,
+  }
+}
+
+function policySummary(state: ClassificationPolicySummary['state'] = 'GOVERNED'):
+ClassificationPolicySummary {
+  return {
+    state,
+    rules: [
+      { classification: 'PUBLIC', search_mode: 'ABAC', chat_mode: 'DENY' },
+      { classification: 'INTERNAL', search_mode: 'ABAC', chat_mode: 'DENY' },
+      { classification: 'CONFIDENTIAL', search_mode: 'DENY', chat_mode: 'DENY' },
+      { classification: 'RESTRICTED', search_mode: 'DENY', chat_mode: 'DENY' },
+    ],
   }
 }
 
@@ -110,6 +124,28 @@ function props(api: Partial<AdminApi>, requestConfirmation = vi.fn()) {
 }
 
 describe('ClassificationPolicyAdmin', () => {
+  it('mounts with only the redacted four-row summary and no full-detail calls', async () => {
+    const api = {
+      getCurrentClassificationPolicySummary: vi.fn(() => Promise.resolve(policySummary())),
+      listClassificationAccessPolicyPage: vi.fn(),
+      getCurrentClassificationAccessPolicy: vi.fn(),
+      listInferenceProviderProfilePage: vi.fn(),
+    }
+
+    render(<ClassificationPolicyAdmin {...props(api)} />)
+
+    expect(await screen.findByRole('table', {
+      name: '현재 유효 분류 정책 요약',
+    })).toBeInTheDocument()
+    expect(screen.getAllByRole('row')).toHaveLength(5)
+    expect(api.getCurrentClassificationPolicySummary).toHaveBeenCalledOnce()
+    expect(api.listClassificationAccessPolicyPage).not.toHaveBeenCalled()
+    expect(api.getCurrentClassificationAccessPolicy).not.toHaveBeenCalled()
+    expect(api.listInferenceProviderProfilePage).not.toHaveBeenCalled()
+    expect(screen.queryByText(/runtime-jurisdiction/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/maker-one/)).not.toBeInTheDocument()
+  })
+
   it('does not let an older policy load overwrite a newer refresh', async () => {
     const oldPolicies = deferred<ReturnType<typeof page<ClassificationAccessPolicy>>>()
     const oldPolicy = {
@@ -125,6 +161,7 @@ describe('ClassificationPolicyAdmin', () => {
       request_reason: 'New policy response',
     }
     const api = {
+      getCurrentClassificationPolicySummary: vi.fn(() => Promise.resolve(policySummary())),
       listClassificationAccessPolicyPage: vi.fn()
         .mockImplementationOnce(() => oldPolicies.promise)
         .mockResolvedValue(page([newPolicy])),
@@ -133,6 +170,8 @@ describe('ClassificationPolicyAdmin', () => {
     }
     const view = render(<ClassificationPolicyAdmin {...props(api)} />)
 
+    await screen.findByRole('table', { name: '현재 유효 분류 정책 요약' })
+    fireEvent.click(screen.getByRole('button', { name: '상세 이력 보기' }))
     await waitFor(() => {
       expect(api.listClassificationAccessPolicyPage).toHaveBeenCalledOnce()
       expect(api.listInferenceProviderProfilePage).toHaveBeenCalledOnce()
@@ -173,18 +212,24 @@ describe('ClassificationPolicyAdmin', () => {
 
   it('starts without runtime defaults and exposes exactly four immutable classification rows', async () => {
     const api = {
+      getCurrentClassificationPolicySummary: vi.fn(() => Promise.resolve(policySummary())),
       listClassificationAccessPolicyPage: vi.fn(() => Promise.resolve(page([]))),
       getCurrentClassificationAccessPolicy: vi.fn(() => Promise.resolve(null)),
       listInferenceProviderProfilePage: vi.fn(() => Promise.resolve(page([]))),
     }
     render(<ClassificationPolicyAdmin {...props(api)} />)
 
+    await screen.findByRole('table', { name: '현재 유효 분류 정책 요약' })
+    fireEvent.click(screen.getByRole('button', { name: '상세 이력 보기' }))
     await waitFor(() => expect(api.listClassificationAccessPolicyPage).toHaveBeenCalledOnce())
     expect(screen.getByLabelText('승인 관할')).toHaveValue('')
     expect(screen.getByLabelText('RESTRICTED Grant 최대 일수')).toHaveValue(null)
-    expect(screen.getByRole('table', { name: '데이터 분류 접근 정책' })).toBeInTheDocument()
+    const editorTable = screen.getByRole('table', { name: '데이터 분류 접근 정책' })
+    expect(editorTable).toBeInTheDocument()
     for (const classification of ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']) {
-      expect(screen.getByRole('row', { name: new RegExp(`^${classification}`) })).toBeInTheDocument()
+      expect(within(editorTable).getByRole('row', {
+        name: new RegExp(`^${classification}`),
+      })).toBeInTheDocument()
       expect(screen.getByLabelText(`${classification} Search 모드`)).toBeInTheDocument()
       expect(screen.getByLabelText(`${classification} Chat 모드`)).toBeInTheDocument()
     }
@@ -203,6 +248,7 @@ describe('ClassificationPolicyAdmin', () => {
       return Promise.resolve(created)
     })
     const api = {
+      getCurrentClassificationPolicySummary: vi.fn(() => Promise.resolve(policySummary())),
       listClassificationAccessPolicyPage: vi.fn(() => Promise.resolve(page([]))),
       getCurrentClassificationAccessPolicy: vi.fn(() => Promise.resolve(null)),
       listInferenceProviderProfilePage: vi.fn(() => Promise.resolve(page([]))),
@@ -210,6 +256,8 @@ describe('ClassificationPolicyAdmin', () => {
     }
     const requestConfirmation = vi.fn()
     render(<ClassificationPolicyAdmin {...props(api, requestConfirmation)} />)
+    await screen.findByRole('table', { name: '현재 유효 분류 정책 요약' })
+    fireEvent.click(screen.getByRole('button', { name: '상세 이력 보기' }))
     await waitFor(() => expect(api.listClassificationAccessPolicyPage).toHaveBeenCalledOnce())
 
     fireEvent.change(screen.getByLabelText('승인 관할'), { target: { value: 'operator-approved-zone' } })
@@ -227,6 +275,7 @@ describe('ClassificationPolicyAdmin', () => {
 
   it('preserves an explicitly selected provider when a later server page omits it', async () => {
     const api = {
+      getCurrentClassificationPolicySummary: vi.fn(() => Promise.resolve(policySummary())),
       listClassificationAccessPolicyPage: vi.fn(() => Promise.resolve(page([]))),
       getCurrentClassificationAccessPolicy: vi.fn(() => Promise.resolve(null)),
       listInferenceProviderProfilePage: vi.fn(
@@ -236,6 +285,8 @@ describe('ClassificationPolicyAdmin', () => {
       ),
     }
     render(<ClassificationPolicyAdmin {...props(api)} />)
+    await screen.findByRole('table', { name: '현재 유효 분류 정책 요약' })
+    fireEvent.click(screen.getByRole('button', { name: '상세 이력 보기' }))
     await waitFor(() => expect(api.listInferenceProviderProfilePage).toHaveBeenCalled())
 
     fireEvent.change(screen.getByLabelText('승인 관할'), {
@@ -262,9 +313,11 @@ describe('ClassificationPolicyAdmin', () => {
     })).toBeInTheDocument()
   })
 
-  it('does not expose policy mutation controls from a read-only admin context', async () => {
+  it('does not replay detail calls after requesting fresh assurance', async () => {
     const requestConfirmation = vi.fn()
+    const onStepUp = vi.fn(() => Promise.resolve())
     const api = {
+      getCurrentClassificationPolicySummary: vi.fn(() => Promise.resolve(policySummary())),
       listClassificationAccessPolicyPage: vi.fn(() => Promise.resolve(page([]))),
       getCurrentClassificationAccessPolicy: vi.fn(() => Promise.resolve(null)),
       listInferenceProviderProfilePage: vi.fn(() => Promise.resolve(page([]))),
@@ -276,16 +329,49 @@ describe('ClassificationPolicyAdmin', () => {
       allowed_operations: ['CLASSIFICATION_POLICY_READ'] as const,
     }
 
-    render(<ClassificationPolicyAdmin
-      {...props(api, requestConfirmation)}
+    const componentProps = props(api, requestConfirmation)
+    const view = render(<ClassificationPolicyAdmin
+      {...componentProps}
+      onStepUp={onStepUp}
       context={{ ...readOnly, allowed_operations: [...readOnly.allowed_operations] }}
     />)
-    await waitFor(() => expect(api.listClassificationAccessPolicyPage).toHaveBeenCalledOnce())
+    await screen.findByRole('table', { name: '현재 유효 분류 정책 요약' })
+    fireEvent.click(screen.getByRole('button', { name: '상세 이력 보기' }))
 
-    expect(screen.getByRole('button', { name: '정책 제안' })).toBeDisabled()
-    expect(screen.getByText(/WebAuthn 인증 후 정책을 제안/)).toBeInTheDocument()
+    expect(onStepUp).toHaveBeenCalledOnce()
+    expect(api.listClassificationAccessPolicyPage).not.toHaveBeenCalled()
+    expect(api.getCurrentClassificationAccessPolicy).not.toHaveBeenCalled()
+    expect(api.listInferenceProviderProfilePage).not.toHaveBeenCalled()
+    expect(screen.queryByRole('button', { name: '정책 제안' })).not.toBeInTheDocument()
     expect(requestConfirmation).not.toHaveBeenCalled()
     expect(api.proposeClassificationAccessPolicy).not.toHaveBeenCalled()
+
+    view.rerender(<ClassificationPolicyAdmin
+      {...componentProps}
+      onStepUp={onStepUp}
+      context={{ ...context }}
+    />)
+    expect(api.listClassificationAccessPolicyPage).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '상세 이력 보기' }))
+    await waitFor(() => expect(api.listClassificationAccessPolicyPage).toHaveBeenCalledOnce())
+  })
+
+  it('removes full detail after a server failure instead of retaining sensitive state', async () => {
+    const reportError = vi.fn()
+    const api = {
+      getCurrentClassificationPolicySummary: vi.fn(() => Promise.resolve(policySummary())),
+      listClassificationAccessPolicyPage: vi.fn(() => Promise.reject(new Error('revoked'))),
+      getCurrentClassificationAccessPolicy: vi.fn(() => Promise.resolve(policy())),
+      listInferenceProviderProfilePage: vi.fn(() => Promise.resolve(page([provider()]))),
+    }
+
+    render(<ClassificationPolicyAdmin {...props(api)} reportError={reportError} />)
+    await screen.findByRole('table', { name: '현재 유효 분류 정책 요약' })
+    fireEvent.click(screen.getByRole('button', { name: '상세 이력 보기' }))
+
+    await waitFor(() => expect(reportError).toHaveBeenCalled())
+    expect(screen.queryByRole('button', { name: '상세 닫기' })).not.toBeInTheDocument()
+    expect(screen.queryByText('runtime-jurisdiction')).not.toBeInTheDocument()
   })
 })
 

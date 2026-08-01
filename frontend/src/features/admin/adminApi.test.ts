@@ -63,6 +63,19 @@ describe('AdminApi', () => {
     })
   })
 
+  it('loads only the redacted classification summary through no-store', async () => {
+    const { api, request } = mockClient()
+    const controller = new AbortController()
+    request.mockResolvedValue({ state: 'STATIC_FLOOR', rules: [] })
+
+    await api.getCurrentClassificationPolicySummary(controller.signal)
+
+    expect(request).toHaveBeenCalledWith(
+      '/admin/classification-access/policies/current/summary',
+      { cache: 'no-store', signal: controller.signal },
+    )
+  })
+
   it('binds administrator cursor pages to their filters and forwards cancellation', async () => {
     const { api, request } = mockClient()
     const controller = new AbortController()

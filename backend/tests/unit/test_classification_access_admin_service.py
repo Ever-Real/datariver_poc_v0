@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID, uuid4
 
 import pytest
 
+from datariver.application.classification_access import (
+    ClassificationAccessCandidate,
+    ClassificationAccessPosture,
+    ClassificationRuleRecord,
+)
 from datariver.application.classification_access_admin import (
     ClassificationAccessAdminUnitOfWork,
     ClassificationPolicyPage,
@@ -161,12 +167,28 @@ class _Grants:
 class _Memberships:
     def __init__(self) -> None:
         self.checked: list[frozenset[UUID]] = []
+        self.error: ForbiddenError | None = None
 
     async def assert_eligible_human_administrators(
         self, *, workspace_id: UUID, subject_ids: frozenset[UUID]
     ) -> None:
         del workspace_id
+        if self.error is not None:
+            raise self.error
         self.checked.append(subject_ids)
+
+
+class _Snapshots:
+    def __init__(self) -> None:
+        self.candidate: ClassificationAccessCandidate | None = None
+        self.reads = 0
+
+    async def read_candidate(
+        self, *, workspace_id: UUID, subject_id: UUID, now: datetime
+    ) -> ClassificationAccessCandidate | None:
+        del workspace_id, subject_id, now
+        self.reads += 1
+        return self.candidate
 
 
 class _Idempotency:
@@ -202,6 +224,7 @@ class _Outbox:
 
 class _Uow:
     def __init__(self) -> None:
+        self.snapshots = _Snapshots()
         self.policies = _Policies()
         self.grants = _Grants()
         self.memberships = _Memberships()
@@ -397,6 +420,91 @@ async def test_provider_failure_and_nonhardware_actor_fail_before_commit() -> No
             request_id="request-password",
         )
     assert len(uow.memberships.checked) == before
+
+
+@pytest.mark.asyncio
+async def test_policy_summary_allows_ordinary_admin_read_and_returns_only_effective_modes() -> None:
+    now = datetime.now(UTC)
+    workspace_id = uuid4()
+    uow = _Uow()
+    uow.snapshots.candidate = ClassificationAccessCandidate(
+        policy_id=uuid4(),
+        policy_hash="a" * 64,
+        policy_version=2,
+        required_jurisdiction="governed-zone",
+        authorization_generation=3,
+        rules=tuple(
+                ClassificationRuleRecord(
+                    classification=rule.classification,
+                    search_mode=rule.search_mode,
+                    chat_mode=ChatMode.DENY,
+                    provider_profile_version_id=None,
+            )
+            for rule in _rules()
+        ),
+        grants=(),
+        provider_profiles=(),
+    )
+    subject = _subject(
+        workspace_id=workspace_id,
+        now=now,
+        assurance=AuthenticationAssurance.PASSWORD,
+    )
+
+    summary = await _service(uow).current_policy_summary(
+        workspace_id=workspace_id,
+        subject=subject,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="request-summary",
+    )
+
+    assert summary.state is ClassificationAccessPosture.GOVERNED
+    assert len(summary.rules) == 4
+    assert {rule.classification for rule in summary.rules} == set(Classification)
+    assert uow.contexts == [(workspace_id, subject.subject_id)]
+    assert uow.memberships.checked == [frozenset({subject.subject_id})]
+    assert uow.snapshots.reads == 1
+
+
+@pytest.mark.asyncio
+async def test_policy_summary_fails_before_read_after_deny_or_membership_revoke() -> None:
+    now = datetime.now(UTC)
+    workspace_id = uuid4()
+    eligible = _subject(workspace_id=workspace_id, now=now)
+    denied_subjects = (
+        replace(eligible, groups=frozenset()),
+        replace(eligible, allowed_actions=frozenset()),
+        replace(eligible, denied_actions=frozenset({Action.ADMIN_MANAGE})),
+        replace(eligible, clearance=Classification.CONFIDENTIAL),
+        replace(
+            eligible,
+            groups=eligible.groups | frozenset({"service-accounts"}),
+            job_function="SERVICE_ACCOUNT",
+        ),
+    )
+    for denied in denied_subjects:
+        denied_uow = _Uow()
+        with pytest.raises(ForbiddenError):
+            await _service(denied_uow).current_policy_summary(
+                workspace_id=workspace_id,
+                subject=denied,
+                environment=EnvironmentAttributes(requested_at=now),
+                request_id="request-summary-denied",
+            )
+        assert denied_uow.memberships.checked == []
+        assert denied_uow.snapshots.reads == 0
+
+    revoked_uow = _Uow()
+    revoked_uow.memberships.error = ForbiddenError("Administrator membership was revoked.")
+    revoked = _subject(workspace_id=workspace_id, now=now)
+    with pytest.raises(ForbiddenError, match="revoked"):
+        await _service(revoked_uow).current_policy_summary(
+            workspace_id=workspace_id,
+            subject=revoked,
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="request-summary-revoked",
+        )
+    assert revoked_uow.snapshots.reads == 0
 
 
 @pytest.mark.asyncio

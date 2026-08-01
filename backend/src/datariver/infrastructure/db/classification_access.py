@@ -781,6 +781,7 @@ class SqlClassificationAccessAdminUnitOfWork(ClassificationAccessAdminUnitOfWork
 
     async def __aenter__(self) -> SqlClassificationAccessAdminUnitOfWork:
         self._session = self._session_factory()
+        self.snapshots = SqlClassificationAccessSnapshotReader(self._session)
         self.policies = SqlClassificationPolicyRepository(self._session)
         self.grants = SqlRestrictedSearchGrantRepository(self._session)
         self.memberships = SqlMembershipAccessRepository(self._session)

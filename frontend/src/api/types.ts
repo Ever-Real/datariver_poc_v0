@@ -1895,6 +1895,18 @@ export type ClassificationChatMode =
   | 'INTERNAL_APPROVED_ONLY'
   | 'APPROVED_PROVIDER_ONLY'
 export type ClassificationAccessPolicyState = 'PROPOSED' | 'ACTIVE' | 'REJECTED' | 'SUPERSEDED'
+export type ClassificationPolicySummaryState = 'GOVERNED' | 'STATIC_FLOOR'
+
+export interface ClassificationPolicySummaryRule {
+  classification: Classification
+  search_mode: ClassificationSearchMode
+  chat_mode: ClassificationChatMode
+}
+
+export interface ClassificationPolicySummary {
+  state: ClassificationPolicySummaryState
+  rules: ClassificationPolicySummaryRule[]
+}
 
 export interface ClassificationAccessRule {
   classification: Classification

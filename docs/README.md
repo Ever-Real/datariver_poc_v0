@@ -68,6 +68,9 @@ The exhaustive 69-Action metadata, 64 human/5 service-principal partition, defau
 bootstrap and Role-editor assignment boundary are defined by
 [ADR-0103](adr/0103-server-canonical-human-capability-catalog.md). Its self-approval fields are
 pending metadata only and do not change maker/checker behavior.
+The ordinary-assurance four-class summary and fresh-assurance full classification-policy detail
+boundary are defined by
+[ADR-0105](adr/0105-redacted-classification-policy-summary.md).
 The development-only Governance Document password assurance composition is defined by
 [ADR-0087](adr/0087-development-governance-document-password-assurance.md); it does not relax
 production or unrelated high-risk Actions.
