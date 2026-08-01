@@ -2638,9 +2638,9 @@ export function GraphBuilder({
         summary.id,
       )
       setSelectedCatalog(detail.dataset)
-      setSelectedCatalogFields(new Set(detail.dataset.field_paths))
+      setSelectedCatalogFields(new Set())
       setStatus(
-        `${detail.dataset.name}의 실제 컬럼 ${detail.dataset.field_paths.length}개를 불러왔습니다.`,
+        `${detail.dataset.name}의 실제 컬럼 ${detail.dataset.field_paths.length}개를 불러왔습니다. Proposal에 포함할 컬럼을 선택하세요.`,
       )
     } catch (error) {
       setStatus(error instanceof Error ? error.message : '카탈로그 컬럼을 불러오지 못했습니다.')
@@ -3819,6 +3819,11 @@ export function GraphBuilder({
                       {selectedCatalog.description_truncated ? ' · 일부' : ''}
                     </p>
                   )}
+                  <p className="my-2 text-[10px] leading-4 text-slate-600">
+                    선택 {selectedCatalogFields.size}개 / 최대 100개 · 서버가 선택 컬럼의
+                    설명·Tag·Term을 포함한 최종 프롬프트를 4,000자로 검증합니다. 초과 시
+                    메타데이터를 자동으로 제거하지 않으므로 선택을 줄여 다시 시도하세요.
+                  </p>
                   {selectedCatalogFields.size > 100 && (
                     <p role="alert" className="text-[10px] text-red-700">
                       Typed Proposal 입력은 최대 100개 컬럼입니다. 선택을 줄여 주세요.
@@ -3827,6 +3832,16 @@ export function GraphBuilder({
                   {!catalogDetailLoading && !selectedCatalog.selection_fingerprint && (
                     <p role="alert" className="text-[10px] text-red-700">
                       카탈로그 메타데이터 변경 확인값이 없습니다. Dataset을 다시 불러오세요.
+                    </p>
+                  )}
+                  {documentProposalJob.error
+                    && documentProposalJob.job?.input_kind !== 'CATALOG_SCHEMA' && (
+                    <p
+                      role="alert"
+                      aria-label="카탈로그 Proposal 오류"
+                      className="text-[10px] text-red-700"
+                    >
+                      {documentProposalJob.error}
                     </p>
                   )}
                   {catalogDetailLoading && (

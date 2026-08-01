@@ -995,11 +995,20 @@ describe('GraphBuilder', () => {
     })
     fireEvent.click(within(results).getByText('orders'))
     const fields = await screen.findByRole('table', { name: 'orders 컬럼 선택' })
-    expect(within(fields).getByRole('checkbox', { name: 'order_id 컬럼 선택' })).toBeChecked()
-    expect(within(fields).getByRole('checkbox', { name: 'amount 컬럼 선택' })).toBeChecked()
+    const orderId = within(fields).getByRole('checkbox', { name: 'order_id 컬럼 선택' })
+    const amount = within(fields).getByRole('checkbox', { name: 'amount 컬럼 선택' })
+    expect(orderId).not.toBeChecked()
+    expect(amount).not.toBeChecked()
     expect(within(fields).getByText('Order identifier')).toBeInTheDocument()
     expect(within(fields).getByText('numeric(18,2)')).toBeInTheDocument()
+    expect(within(dialog).getByText(/선택 0개 \/ 최대 100개/)).toHaveTextContent(
+      '최종 프롬프트를 4,000자로 검증합니다',
+    )
+    expect(within(dialog).getByRole('button', { name: '새 블록 Proposal' })).toBeDisabled()
     expect(within(dialog).getByRole('button', { name: '현재 블록 Proposal' })).toBeDisabled()
+    fireEvent.click(orderId)
+    fireEvent.click(amount)
+    expect(within(dialog).getByText(/선택 2개 \/ 최대 100개/)).toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: '새 블록 Proposal' }))
 
     expect(await screen.findByLabelText('T-Box Proposal 미리보기')).toBeInTheDocument()
@@ -1018,6 +1027,112 @@ describe('GraphBuilder', () => {
     expect(fetchMock.mock.calls.some(([input]) => (
       requestUrl(input).endsWith('/tbox/catalog-proposals')
     ))).toBe(false)
+  })
+
+  it.each([
+    {
+      code: 'CATALOG_PROPOSAL_PROMPT_TOO_LARGE',
+      detail: '메타데이터가 포함된 Proposal 프롬프트가 4,000자를 초과합니다. 선택을 줄여 주세요.',
+    },
+    {
+      code: 'CATALOG_PROPOSAL_SELECTION_STALE',
+      detail: '카탈로그 메타데이터가 변경되었습니다. Dataset을 다시 불러오세요.',
+    },
+  ])('preserves the exact server Catalog error for $code', async ({ code, detail }) => {
+    const assetId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0'
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`) && !init?.method) {
+        return Promise.resolve(json(tbox()))
+      }
+      if (path.includes(`/drafts/${draftId}/tbox/proposal-jobs?`)) {
+        return Promise.resolve(json({ items: [], page: { next_cursor: null, limit: 20 } }))
+      }
+      if (path.includes(`/drafts/${draftId}/tbox/catalog-sources?`)) {
+        return Promise.resolve(json({
+          items: [{
+            id: assetId,
+            name: 'orders',
+            asset_type: 'TABLE',
+            classification: 'INTERNAL',
+            source_version: 'datahub-v8',
+            projection_source_version: 'projection-v4',
+            field_paths: [],
+            fields_truncated: true,
+            description_truncated: false,
+            field_metadata: [],
+            selection_fingerprint: null,
+          }],
+          page: { next_cursor: null, limit: 50 },
+        }))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/catalog-sources/${assetId}`)) {
+        return Promise.resolve(json({
+          dataset: {
+            id: assetId,
+            name: 'orders',
+            asset_type: 'TABLE',
+            classification: 'INTERNAL',
+            source_version: 'datahub-v8',
+            projection_source_version: 'projection-v4',
+            field_paths: ['order_id'],
+            fields_truncated: false,
+            description_truncated: false,
+            field_metadata: [],
+            selection_fingerprint: 'f'.repeat(64),
+          },
+          observed_at: '2026-08-01T01:00:00Z',
+          stale_at: null,
+        }))
+      }
+      if (
+        path.endsWith(`/drafts/${draftId}/tbox/proposal-jobs`)
+        && init?.method === 'POST'
+      ) {
+        return Promise.resolve(new Response(JSON.stringify({
+          type: 'about:blank',
+          title: 'Conflict',
+          status: 409,
+          detail,
+          code,
+          request_id: `request-${code}`,
+        }), {
+          status: 409,
+          headers: { 'Content-Type': 'application/problem+json' },
+        }))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    fireEvent.click(screen.getByRole('button', { name: '블록 추가' }))
+    fireEvent.click(within(screen.getByRole('button', { name: '블록 추가' }).parentElement!)
+      .getByRole('button', { name: 'DB 메타데이터' }))
+    const dialog = await screen.findByRole('dialog', { name: 'DB 카탈로그에서 T-Box 제안' })
+    const results = await within(dialog).findByRole('table', {
+      name: 'T-Box 카탈로그 검색 결과',
+    })
+    fireEvent.click(within(results).getByText('orders'))
+    const fields = await within(dialog).findByRole('table', { name: 'orders 컬럼 선택' })
+    fireEvent.click(within(fields).getByRole('checkbox', { name: 'order_id 컬럼 선택' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '새 블록 Proposal' }))
+
+    expect(await within(dialog).findByLabelText('카탈로그 Proposal 오류'))
+      .toHaveTextContent(detail)
+    expect(within(fields).getByRole('checkbox', { name: 'order_id 컬럼 선택' })).toBeChecked()
   })
 
   it('requires a fresh server-issued Catalog fingerprint before creating a job', async () => {
