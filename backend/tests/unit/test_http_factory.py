@@ -522,6 +522,10 @@ def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> 
             settings().model_dump()
             | {
                 "app_env": "development",
+                "datahub_secret_ref": "file:/run/secrets/datahub_token",
+                "datahub_timeout_seconds": 10.5,
+                "datahub_queue_timeout_seconds": 2.5,
+                "datahub_circuit_open_seconds": 30.5,
                 "local_inference_allowed_hosts": ("host.docker.internal",),
                 "local_ollama_chat_enabled": True,
                 "local_ollama_chat_base_url": "http://host.docker.internal:11434/v1",
@@ -543,6 +547,10 @@ def test_deployment_probe_documents_use_only_server_owned_runtime_settings() -> 
     assert datahub is not None
     assert datahub["base_url"] == configured.datahub_base_url
     assert datahub["secret_references"] == {"token": configured.datahub_secret_ref}
+    assert datahub["options"]["timeout_seconds"] == 10.5
+    assert datahub["options"]["queue_timeout_seconds"] == 2.5
+    assert datahub["options"]["circuit_open_seconds"] == 30.5
+    _validate_system_configuration("DATAHUB_GMS", datahub)
     assert delivery is not None
     assert delivery["url"] == configured.redis_delivery_url
     assert delivery["secret_references"] == {"password": configured.redis_delivery_secret_ref}
@@ -1154,6 +1162,131 @@ async def test_deployment_system_configuration_routes_fail_closed(
         "/api/v1/admin/system-configuration/{system_id}/test-deployment"
     ]["post"]
     assert "requestBody" not in operation
+
+
+@pytest.mark.asyncio
+async def test_datahub_deployment_probe_accepts_decimal_runtime_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request = cast(Any, object())
+    context = cast(
+        Any,
+        SimpleNamespace(
+            workspace_id=UUID(int=1),
+            subject=SimpleNamespace(subject_id=UUID(int=2)),
+            environment=object(),
+            request_id="request-datahub-decimal-probe",
+        ),
+    )
+    configured = settings().model_copy(
+        update={
+            "app_env": "development",
+            "datahub_secret_ref": "file:/run/secrets/datahub_token",
+            "datahub_timeout_seconds": 10.5,
+            "datahub_queue_timeout_seconds": 2.5,
+            "datahub_circuit_open_seconds": 30.5,
+        }
+    )
+    container = SimpleNamespace(settings=configured)
+    service = SimpleNamespace(
+        get_admin_read_context=AsyncMock(
+            return_value=SimpleNamespace(allowed_operations=("SYSTEM_CONFIGURATION_READ",))
+        )
+    )
+    probe = AsyncMock(
+        return_value=SimpleNamespace(
+            status="AVAILABLE",
+            scope="HTTP_HEALTH",
+            latency_ms=7,
+            detail="The fixed DataHub probe succeeded.",
+        )
+    )
+    monkeypatch.setattr(admin_routes, "get_container", lambda _request: container)
+    monkeypatch.setattr(admin_routes, "_service", lambda _request: service)
+    monkeypatch.setattr(admin_routes, "probe_system_configuration", probe)
+
+    response = Response()
+    result = await admin_routes.test_deployment_system_configuration(
+        system_id="DATAHUB_GMS",
+        request=request,
+        response=response,
+        context=context,
+    )
+
+    assert response.headers["Cache-Control"] == "no-store, private"
+    assert result.status == "AVAILABLE"
+    probe.assert_awaited_once()
+    assert probe.await_args is not None
+    document = probe.await_args.kwargs["document"]
+    assert document["options"]["timeout_seconds"] == 10.5
+    assert document["options"]["queue_timeout_seconds"] == 2.5
+    assert document["options"]["circuit_open_seconds"] == 30.5
+
+
+@pytest.mark.parametrize(
+    ("option_key", "invalid_value"),
+    (
+        ("timeout_seconds", "10"),
+        ("timeout_seconds", True),
+        ("timeout_seconds", 0.09),
+        ("timeout_seconds", 60.01),
+        ("queue_timeout_seconds", "2"),
+        ("queue_timeout_seconds", True),
+        ("queue_timeout_seconds", 0.09),
+        ("queue_timeout_seconds", 30.01),
+        ("circuit_open_seconds", "30"),
+        ("circuit_open_seconds", True),
+        ("circuit_open_seconds", 0.99),
+        ("circuit_open_seconds", 300.01),
+    ),
+)
+@pytest.mark.asyncio
+async def test_datahub_deployment_probe_rejects_invalid_numeric_options_before_probe(
+    monkeypatch: pytest.MonkeyPatch,
+    option_key: str,
+    invalid_value: object,
+) -> None:
+    request = cast(Any, object())
+    context = cast(
+        Any,
+        SimpleNamespace(
+            workspace_id=UUID(int=1),
+            subject=SimpleNamespace(subject_id=UUID(int=2)),
+            environment=object(),
+            request_id="request-datahub-invalid-probe",
+        ),
+    )
+    configured = settings().model_copy(
+        update={
+            "app_env": "development",
+            "datahub_secret_ref": "file:/run/secrets/datahub_token",
+            f"datahub_{option_key}": invalid_value,
+        }
+    )
+    container = SimpleNamespace(settings=configured)
+    service = SimpleNamespace(
+        get_admin_read_context=AsyncMock(
+            return_value=SimpleNamespace(allowed_operations=("SYSTEM_CONFIGURATION_READ",))
+        )
+    )
+    probe = AsyncMock()
+    monkeypatch.setattr(admin_routes, "get_container", lambda _request: container)
+    monkeypatch.setattr(admin_routes, "_service", lambda _request: service)
+    monkeypatch.setattr(admin_routes, "probe_system_configuration", probe)
+
+    response = Response()
+    result = await admin_routes.test_deployment_system_configuration(
+        system_id="DATAHUB_GMS",
+        request=request,
+        response=response,
+        context=context,
+    )
+
+    assert response.headers["Cache-Control"] == "no-store, private"
+    assert result.status == "UNAVAILABLE"
+    assert result.scope == "HTTP_HEALTH"
+    assert option_key in result.detail
+    probe.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

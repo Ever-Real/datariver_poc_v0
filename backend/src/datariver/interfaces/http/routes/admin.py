@@ -593,11 +593,11 @@ _SYSTEM_CONFIGURATION_TEMPLATES: dict[str, dict[str, Any]] = {
             "catalog_pit_evidence_reference": "",
             "catalog_pit_verified": False,
             "circuit_failure_threshold": 5,
-            "circuit_open_seconds": 30,
+            "circuit_open_seconds": 30.0,
             "expected_version": "v1.6.0",
             "maximum_concurrency": 20,
-            "queue_timeout_seconds": 2,
-            "timeout_seconds": 10,
+            "queue_timeout_seconds": 2.0,
+            "timeout_seconds": 10.0,
             "stale_ttl_seconds": 900,
             "version_enforcement": "report",
             "version_probe_ttl_seconds": 300,
@@ -1054,7 +1054,12 @@ def _require_non_empty_string(document: Mapping[str, Any], key: str) -> str:
     return value.strip()
 
 
-def _validate_option_value(key: str, value: object, template: object) -> None:
+def _validate_option_value(
+    system_id: str,
+    key: str,
+    value: object,
+    template: object,
+) -> None:
     if template is None:
         if value is None:
             return
@@ -1105,11 +1110,19 @@ def _validate_option_value(key: str, value: object, template: object) -> None:
     if isinstance(template, float):
         if not isinstance(value, int | float) or isinstance(value, bool):
             raise ValidationError(f"System configuration option {key} must be numeric.")
-        numeric_limits = {
+        connector_numeric_limits = {
+            ("DATAHUB_GMS", "circuit_open_seconds"): (1.0, 300.0),
+            ("DATAHUB_GMS", "queue_timeout_seconds"): (0.1, 30.0),
+            ("DATAHUB_GMS", "timeout_seconds"): (0.1, 60.0),
+        }
+        default_numeric_limits = {
             "connection_timeout_seconds": (1.0, 60.0),
             "timeout_seconds": (1.0, 300.0),
         }
-        numeric_lower, numeric_upper = numeric_limits.get(key, (0.0, 1_000_000.0))
+        numeric_lower, numeric_upper = connector_numeric_limits.get(
+            (system_id, key),
+            default_numeric_limits.get(key, (0.0, 1_000_000.0)),
+        )
         if float(value) < numeric_lower or float(value) > numeric_upper:
             raise ValidationError(
                 f"System configuration option {key} must be between "
@@ -1165,6 +1178,7 @@ def _validate_nested_configuration_schema(system_id: str, document: Mapping[str,
         ):
             option_value_template = "ollama_native_chat"
         _validate_option_value(
+            system_id,
             str(option_key),
             option_value,
             option_value_template,
