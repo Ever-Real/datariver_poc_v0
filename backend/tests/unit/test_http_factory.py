@@ -395,6 +395,8 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/systems",
         "/api/v1/admin/systems/assignee-candidates",
         "/api/v1/admin/systems/{system_id}/assignees",
+        "/api/v1/admin/systems/{system_id}/schema-scopes",
+        "/api/v1/admin/systems/{system_id}/schema-scope-candidates",
         "/api/v1/admin/system-configuration",
         "/api/v1/admin/monitoring-configuration",
         "/api/v1/admin/system-configuration/{system_id}/test-deployment",
@@ -2375,6 +2377,34 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
     patch_schema = document["components"]["schemas"]["SystemAssigneePatchRequest"]
     assert patch_schema["properties"]["upserts"]["maxItems"] == 100
     assert patch_schema["properties"]["removals"]["maxItems"] == 100
+    schema_scope_path = document["paths"]["/api/v1/admin/systems/{system_id}/schema-scopes"]
+    assert set(schema_scope_path) == {"get", "patch"}
+    schema_scope_headers = {
+        parameter["name"]: parameter for parameter in schema_scope_path["patch"]["parameters"]
+    }
+    assert schema_scope_headers["If-Match"]["required"] is True
+    assert schema_scope_headers["Idempotency-Key"]["required"] is True
+    assert schema_scope_path["patch"]["responses"]["200"]["headers"]["ETag"]["schema"] == {
+        "type": "string"
+    }
+    schema_scope_patch = document["components"]["schemas"]["SystemSchemaScopePatchRequest"]
+    assert schema_scope_patch["properties"]["upsert_asset_ids"]["maxItems"] == 100
+    assert schema_scope_patch["properties"]["deactivate_scope_ids"]["maxItems"] == 100
+    assert schema_scope_patch["properties"]["reason"]["minLength"] == 10
+    candidate_path = document["paths"]["/api/v1/admin/systems/{system_id}/schema-scope-candidates"][
+        "get"
+    ]
+    candidate_parameters = {
+        parameter["name"]: parameter for parameter in candidate_path["parameters"]
+    }
+    assert candidate_parameters["q"]["schema"]["anyOf"][0]["maxLength"] == 200
+    candidate_schema = document["components"]["schemas"]["SystemSchemaScopeCandidateResponse"]
+    assert candidate_schema["properties"]["classification"]["enum"] == [
+        "PUBLIC",
+        "INTERNAL",
+        "CONFIDENTIAL",
+        "RESTRICTED",
+    ]
     assert context_schema["properties"]["action_vocabulary"]["items"] == {
         "$ref": "#/components/schemas/Action"
     }

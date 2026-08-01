@@ -1662,6 +1662,39 @@ export interface SystemAssigneeUpdateResult {
   payload_hash: string
 }
 
+export interface SystemSchemaScope {
+  scope_id: string
+  system_id: string
+  platform: string
+  database_name: string
+  schema_name: string
+  active: boolean
+  version: number
+}
+
+export interface SystemSchemaScopePage {
+  system_version: number
+  items: SystemSchemaScope[]
+  page: { next_cursor: string | null; limit: number }
+}
+
+export interface SystemSchemaScopeCandidate {
+  asset_id: string
+  asset_name: string
+  asset_type: 'TABLE' | 'VIEW' | 'DATASET'
+  platform: string
+  database_name: string
+  schema_name: string
+  classification: 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
+  mapped_system_id: string | null
+}
+
+export interface SystemSchemaScopeUpdateResult {
+  system_id: string
+  system_version: number
+  payload_hash: string
+}
+
 export interface SystemConfigurationEntry {
   system_id: 'PLATFORM_RUNTIME' | 'POSTGRESQL' | 'OIDC_IDENTITY' | 'RETENTION_ARCHIVE' | 'DATAHUB_GMS' | 'DATAHUB_FRONTEND' | 'AIRFLOW' | 'REDIS_CACHE' | 'REDIS_DELIVERY' | 'S3_STORAGE' | 'LLM_CHAT_MODEL' | 'LLM_EMBEDDING' | 'LLM_RERANKER' | 'NEO4J' | 'PROMETHEUS' | 'GRAFANA_DASHBOARD'
   label: string

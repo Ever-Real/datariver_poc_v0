@@ -1436,6 +1436,58 @@ class SystemAssigneeUpdateResponse(BaseModel):
     payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
+class SystemSchemaScopeResponse(BaseModel):
+    scope_id: UUID
+    system_id: UUID
+    platform: str
+    database_name: str
+    schema_name: str
+    active: bool
+    version: int = Field(ge=1)
+
+
+class SystemSchemaScopeListResponse(BaseModel):
+    system_version: int = Field(ge=1)
+    items: list[SystemSchemaScopeResponse]
+    page: PageMeta
+
+
+class SystemSchemaScopeCandidateResponse(BaseModel):
+    asset_id: UUID
+    asset_name: str
+    asset_type: Literal["TABLE", "VIEW", "DATASET"]
+    platform: str
+    database_name: str
+    schema_name: str
+    classification: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+    mapped_system_id: UUID | None
+
+
+class SystemSchemaScopeCandidateListResponse(BaseModel):
+    items: list[SystemSchemaScopeCandidateResponse]
+    page: PageMeta
+
+
+class SystemSchemaScopePatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    upsert_asset_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    deactivate_scope_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    reason: str = Field(min_length=10, max_length=1000)
+
+    @model_validator(mode="after")
+    def require_changes(self) -> SystemSchemaScopePatchRequest:
+        if not self.upsert_asset_ids and not self.deactivate_scope_ids:
+            raise ValueError("A system schema-scope patch cannot be empty.")
+        return self
+
+
+class SystemSchemaScopeUpdateResponse(BaseModel):
+    system_id: UUID
+    system_version: int = Field(ge=1)
+    payload_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 SystemConfigurationId = Literal[
     "PLATFORM_RUNTIME",
     "POSTGRESQL",

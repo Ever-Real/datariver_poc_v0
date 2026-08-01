@@ -26,6 +26,10 @@ from datariver.application.dto import (
     SystemDirectoryAssignee,
     SystemDirectoryEntry,
     SystemDirectoryPage,
+    SystemSchemaScope,
+    SystemSchemaScopeCandidate,
+    SystemSchemaScopeCandidatePage,
+    SystemSchemaScopePage,
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipPage,
     WorkspaceMembershipSummary,
@@ -43,6 +47,7 @@ from datariver.domain.admin_access import (
     SystemAssigneePatchCommand,
     SystemAssigneeUpdate,
     SystemAssigneeUpdateCommand,
+    SystemSchemaScopePatchCommand,
 )
 from datariver.domain.authz import (
     Action,
@@ -425,6 +430,113 @@ class MemorySystems:
             next_cursor=(str(start + limit) if len(system.assignees) > start + limit else None),
         )
 
+    async def list_schema_scopes(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> SystemSchemaScopePage:
+        assert workspace_id == self.state["workspace_id"]
+        assert cursor is None
+        self.state["schema_read_count"] = cast(int, self.state["schema_read_count"]) + 1
+        system = next(
+            item
+            for item in cast(list[SystemDirectoryEntry], self.state["systems"])
+            if item.system_id == system_id and item.active
+        )
+        scopes = tuple(
+            item
+            for item in cast(list[SystemSchemaScope], self.state["schema_scopes"])
+            if item.system_id == system_id
+        )
+        return SystemSchemaScopePage(
+            items=scopes[:limit], system_version=system.version, next_cursor=None
+        )
+
+    async def list_schema_scope_candidates(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        subject: SubjectAttributes,
+        limit: int,
+        query: str | None = None,
+        cursor: str | None = None,
+    ) -> SystemSchemaScopeCandidatePage:
+        assert workspace_id == self.state["workspace_id"]
+        assert cursor is None
+        self.state["schema_read_count"] = cast(int, self.state["schema_read_count"]) + 1
+        candidates = tuple(
+            item
+            for item in cast(list[SystemSchemaScopeCandidate], self.state["schema_candidates"])
+            if item.classification is not Classification.RESTRICTED
+            and int(item.classification) <= int(subject.clearance)
+            and (
+                query is None
+                or query in item.asset_name.casefold()
+                or query in item.schema_name.casefold()
+            )
+        )
+        return SystemSchemaScopeCandidatePage(items=candidates[:limit], next_cursor=None)
+
+    async def patch_schema_scopes(
+        self,
+        command: SystemSchemaScopePatchCommand,
+        *,
+        subject: SubjectAttributes,
+    ) -> int:
+        assert subject.workspace_id == command.workspace_id
+        systems = cast(list[SystemDirectoryEntry], self.state["systems"])
+        index = next(
+            (
+                position
+                for position, system in enumerate(systems)
+                if system.system_id == command.system_id and system.active
+            ),
+            None,
+        )
+        if index is None:
+            raise NotFoundError("active data system missing")
+        system = systems[index]
+        if system.version != command.expected_system_version:
+            raise ConflictError("system version mismatch")
+        scopes = cast(list[SystemSchemaScope], self.state["schema_scopes"])
+        candidates = {
+            item.asset_id: item
+            for item in cast(list[SystemSchemaScopeCandidate], self.state["schema_candidates"])
+        }
+        for asset_id in command.upsert_asset_ids:
+            candidate = candidates.get(asset_id)
+            if candidate is None:
+                raise NotFoundError("Catalog asset missing")
+            if candidate.mapped_system_id not in (None, command.system_id):
+                raise ConflictError("schema mapped elsewhere")
+            scopes.append(
+                SystemSchemaScope(
+                    scope_id=uuid4(),
+                    system_id=command.system_id,
+                    platform=candidate.platform,
+                    database_name=candidate.database_name,
+                    schema_name=candidate.schema_name,
+                    active=True,
+                    version=1,
+                )
+            )
+        for scope_id in command.deactivate_scope_ids:
+            scope_index = next(
+                (position for position, item in enumerate(scopes) if item.scope_id == scope_id),
+                None,
+            )
+            if scope_index is None or scopes[scope_index].system_id != command.system_id:
+                raise ConflictError("stale schema scope")
+            scopes[scope_index] = replace(
+                scopes[scope_index], active=False, version=scopes[scope_index].version + 1
+            )
+        systems[index] = replace(system, version=system.version + 1)
+        return systems[index].version
+
     async def patch_assignees(self, command: SystemAssigneePatchCommand) -> int:
         systems = cast(list[SystemDirectoryEntry], self.state["systems"])
         index = next(
@@ -685,6 +797,23 @@ def _system_patch_command(
     )
 
 
+def _schema_scope_command(
+    workspace_id: UUID,
+    system_id: UUID,
+    asset_id: UUID,
+    *,
+    expected_version: int = 1,
+) -> SystemSchemaScopePatchCommand:
+    return SystemSchemaScopePatchCommand(
+        workspace_id=workspace_id,
+        system_id=system_id,
+        expected_system_version=expected_version,
+        upsert_asset_ids=(asset_id,),
+        deactivate_scope_ids=(),
+        reason="Connect the governed schema to this System.",
+    )
+
+
 def _state(
     workspace_id: UUID, target_id: UUID, maker_id: UUID, checker_id: UUID
 ) -> dict[str, object]:
@@ -700,6 +829,9 @@ def _state(
         "member_owned_tables": [],
         "membership_read_count": 0,
         "systems": [],
+        "schema_scopes": [],
+        "schema_candidates": [],
+        "schema_read_count": 0,
         "assignable_subjects": {target_id, maker_id, checker_id},
         "eligible_administrators": {maker_id, checker_id},
         "remaining_admin_count": 2,
@@ -730,6 +862,22 @@ def _membership_record(subject_id: UUID, display_name: str) -> WorkspaceMembersh
         denied_actions=frozenset({Action.CHAT_QUERY}),
         allowed_system_ids=frozenset({system_id}),
         allowed_domain_ids=frozenset({domain_id}),
+    )
+
+
+def _verified_administrator_record(
+    subject_id: UUID, display_name: str, now: datetime
+) -> WorkspaceMembershipAccessRecord:
+    return replace(
+        _membership_record(subject_id, display_name),
+        canonical_admin_binding=CanonicalAdminBindingEvidence(
+            status="VERIFIED",
+            role_version=1,
+            catalog_version="CAPABILITY_CATALOG_V2",
+            membership_version=1,
+            binding_version=1,
+            updated_at=now,
+        ),
     )
 
 
@@ -1802,6 +1950,124 @@ async def test_system_assignee_patch_noop_or_missing_removal_writes_no_evidence(
     assert cast(list[SystemDirectoryEntry], state["systems"]) == [current]
     assert cast(list[DomainEvent], state["outbox"]) == []
     assert cast(dict[tuple[UUID, str, str], IdempotencyRecord], state["idempotency"]) == {}
+
+
+@pytest.mark.asyncio
+async def test_schema_scope_read_requires_current_canonical_admin_before_repository_read() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    system_id = uuid4()
+    state["systems"] = [
+        SystemDirectoryEntry(
+            system_id=system_id,
+            code="FAB",
+            name="Fabrication",
+            description="",
+            active=True,
+            version=1,
+        )
+    ]
+    state["membership_records"] = {
+        administrator_id: _membership_record(administrator_id, "Administrator")
+    }
+
+    with pytest.raises(ForbiddenError, match="Canonical Admin binding"):
+        await _service(state, enabled=False).list_system_schema_scopes(
+            workspace_id=workspace_id,
+            system_id=system_id,
+            limit=25,
+            cursor=None,
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.PASSWORD,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="schema-scopes-noncanonical",
+        )
+
+    assert state["schema_read_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_schema_scope_patch_is_idempotent_and_writes_bounded_audit_evidence() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    system_id, asset_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    state["membership_records"] = {
+        administrator_id: _verified_administrator_record(administrator_id, "Administrator", now)
+    }
+    state["systems"] = [
+        SystemDirectoryEntry(
+            system_id=system_id,
+            code="FAB",
+            name="Fabrication",
+            description="",
+            active=True,
+            version=1,
+        )
+    ]
+    state["schema_candidates"] = [
+        SystemSchemaScopeCandidate(
+            asset_id=asset_id,
+            asset_name="orders",
+            asset_type="TABLE",
+            platform="postgres",
+            database_name="warehouse",
+            schema_name="sales",
+            classification=Classification.CONFIDENTIAL,
+            mapped_system_id=None,
+        )
+    ]
+    command = _schema_scope_command(workspace_id, system_id, asset_id)
+    service = _service(state, enabled=False)
+    actor = _administrator(
+        workspace_id,
+        administrator_id,
+        assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+        now=now,
+    )
+    environment = EnvironmentAttributes(requested_at=now)
+    key = "system-schema-scope-idempotency-0001"
+
+    version = await service.patch_system_schema_scopes(
+        command=command,
+        subject=actor,
+        environment=environment,
+        request_id="schema-scope-patch",
+        idempotency_key=key,
+        request_hash=command.payload_hash,
+    )
+    replayed = await service.patch_system_schema_scopes(
+        command=command,
+        subject=actor,
+        environment=environment,
+        request_id="schema-scope-replay",
+        idempotency_key=key,
+        request_hash=command.payload_hash,
+    )
+
+    assert version == replayed == 2
+    assert len(cast(list[SystemSchemaScope], state["schema_scopes"])) == 1
+    outbox = cast(list[DomainEvent], state["outbox"])
+    assert len(outbox) == 1
+    assert outbox[0].event_type == "platform.data_system.schema_scopes_patched.v1"
+    assert outbox[0].payload["reason"] == command.reason
+    assert outbox[0].payload["upserted_count"] == 1
+    assert "asset_id" not in outbox[0].payload
+
+    with pytest.raises(ConflictError, match="different request"):
+        await service.patch_system_schema_scopes(
+            command=command,
+            subject=actor,
+            environment=environment,
+            request_id="schema-scope-replay-mismatch",
+            idempotency_key=key,
+            request_hash="f" * 64,
+        )
 
 
 def test_system_assignment_requires_one_ranked_developer_and_steward() -> None:

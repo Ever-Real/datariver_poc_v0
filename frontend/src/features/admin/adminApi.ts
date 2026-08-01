@@ -52,6 +52,9 @@ import type {
   SystemAssigneePage,
   SystemAssigneeUpdate,
   SystemAssigneeUpdateResult,
+  SystemSchemaScopeCandidate,
+  SystemSchemaScopePage,
+  SystemSchemaScopeUpdateResult,
   SystemConfigurationInventory,
   SystemConfigurationTestResult,
 } from '../../api/types'
@@ -472,6 +475,52 @@ export class AdminApi {
         ifMatch: quotedVersion(version),
         idempotencyKey,
         body: JSON.stringify({ upserts, removals }),
+      },
+    )
+  }
+
+  listSystemSchemaScopes(
+    systemId: string,
+    signal?: AbortSignal,
+  ) {
+    return this.client.request<SystemSchemaScopePage>(
+      `/admin/systems/${encodeURIComponent(systemId)}/schema-scopes?limit=100`,
+      { cache: 'no-store', signal },
+    )
+  }
+
+  async listSystemSchemaScopeCandidates(
+    systemId: string,
+    query?: string,
+    signal?: AbortSignal,
+  ): Promise<AdminCursorPage<SystemSchemaScopeCandidate>> {
+    const parameters = new URLSearchParams({ limit: '25' })
+    if (query) parameters.set('q', query)
+    return adminCursorPage(await this.client.request<AdminPageResponse<SystemSchemaScopeCandidate>>(
+      `/admin/systems/${encodeURIComponent(systemId)}/schema-scope-candidates?${parameters.toString()}`,
+      { cache: 'no-store', signal },
+    ))
+  }
+
+  patchSystemSchemaScopes(
+    systemId: string,
+    upsertAssetIds: string[],
+    deactivateScopeIds: string[],
+    reason: string,
+    version: number,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<SystemSchemaScopeUpdateResult>(
+      `/admin/systems/${encodeURIComponent(systemId)}/schema-scopes`,
+      {
+        method: 'PATCH',
+        ifMatch: quotedVersion(version),
+        idempotencyKey,
+        body: JSON.stringify({
+          upsert_asset_ids: upsertAssetIds,
+          deactivate_scope_ids: deactivateScopeIds,
+          reason,
+        }),
       },
     )
   }

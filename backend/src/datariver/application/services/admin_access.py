@@ -19,6 +19,8 @@ from datariver.application.dto import (
     SystemAssigneePage,
     SystemDirectoryEntry,
     SystemDirectoryPage,
+    SystemSchemaScopeCandidatePage,
+    SystemSchemaScopePage,
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipPage,
     WorkspaceMembershipSummary,
@@ -34,6 +36,7 @@ from datariver.domain.admin_access import (
     MembershipAccessUpdate,
     SystemAssigneePatchCommand,
     SystemAssigneeUpdateCommand,
+    SystemSchemaScopePatchCommand,
 )
 from datariver.domain.authz import (
     Action,
@@ -299,6 +302,71 @@ class AdminAccessService:
             )
             return await uow.systems.list_assignee_candidates(
                 workspace_id=workspace_id,
+                limit=limit,
+                query=query.strip().casefold() if query and query.strip() else None,
+                cursor=cursor,
+            )
+
+    async def list_system_schema_scopes(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        limit: int,
+        cursor: str | None,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> SystemSchemaScopePage:
+        _validate_admin_page_limit(limit)
+        await self._authorize_read(
+            workspace_id=workspace_id,
+            resource_id=system_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await self._assert_verified_canonical_admin(
+                uow=uow, workspace_id=workspace_id, subject_id=subject.subject_id
+            )
+            return await uow.systems.list_schema_scopes(
+                workspace_id=workspace_id,
+                system_id=system_id,
+                limit=limit,
+                cursor=cursor,
+            )
+
+    async def list_system_schema_scope_candidates(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        limit: int,
+        query: str | None,
+        cursor: str | None,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> SystemSchemaScopeCandidatePage:
+        _validate_admin_page_limit(limit)
+        await self._authorize_read(
+            workspace_id=workspace_id,
+            resource_id=system_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await self._assert_verified_canonical_admin(
+                uow=uow, workspace_id=workspace_id, subject_id=subject.subject_id
+            )
+            return await uow.systems.list_schema_scope_candidates(
+                workspace_id=workspace_id,
+                system_id=system_id,
+                subject=subject,
                 limit=limit,
                 query=query.strip().casefold() if query and query.strip() else None,
                 cursor=cursor,
@@ -1298,6 +1366,81 @@ class AdminAccessService:
             await uow.commit()
             return system_version
 
+    async def patch_system_schema_scopes(
+        self,
+        *,
+        command: SystemSchemaScopePatchCommand,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> int:
+        decision = await self._authorization.authorize(
+            subject=subject,
+            resource=self._resource(command.workspace_id, command.system_id),
+            action=Action.ADMIN_MANAGE,
+            environment=environment,
+            request_id=request_id,
+        )
+        operation = f"admin.system.schema-scopes.patch:{command.system_id}"
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(
+                workspace_id=command.workspace_id, subject_id=subject.subject_id
+            )
+            await uow.lock_workspace_access(workspace_id=command.workspace_id)
+            await self._assert_verified_canonical_admin(
+                uow=uow,
+                workspace_id=command.workspace_id,
+                subject_id=subject.subject_id,
+            )
+            existing = await uow.idempotency.get_result(
+                workspace_id=command.workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
+            if existing is not None:
+                _verify_idempotency(
+                    existing.request_hash,
+                    request_hash,
+                    existing.result.get("actor_id"),
+                    subject.subject_id,
+                )
+                return int(existing.result["system_version"])
+            system_version = await uow.systems.patch_schema_scopes(command, subject=subject)
+            await uow.outbox.add_events(
+                [
+                    DomainEvent.create(
+                        event_type="platform.data_system.schema_scopes_patched.v1",
+                        aggregate_type="data_system",
+                        aggregate_id=command.system_id,
+                        workspace_id=command.workspace_id,
+                        payload={
+                            "actor_id": str(subject.subject_id),
+                            "assurance": subject.authentication_assurance.value,
+                            "deactivated_count": len(command.deactivate_scope_ids),
+                            "payload_hash": command.payload_hash,
+                            "policy_decision_id": str(decision.decision_id),
+                            "reason": command.reason.strip(),
+                            "system_version": system_version,
+                            "upserted_count": len(command.upsert_asset_ids),
+                        },
+                    )
+                ]
+            )
+            await uow.idempotency.save_result(
+                workspace_id=command.workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "actor_id": str(subject.subject_id),
+                    "system_version": system_version,
+                },
+            )
+            await uow.commit()
+            return system_version
+
     async def create_fallback_request(
         self,
         *,
@@ -1584,6 +1727,28 @@ class AdminAccessService:
                 "The administrator password fallback is disabled.",
                 details={"remediation": {"kind": "FALLBACK_UNAVAILABLE"}},
             )
+
+    @staticmethod
+    async def _assert_verified_canonical_admin(
+        *,
+        uow: AdminAccessUnitOfWork,
+        workspace_id: UUID,
+        subject_id: UUID,
+    ) -> None:
+        await uow.memberships.assert_eligible_human_administrators(
+            workspace_id=workspace_id,
+            subject_ids=frozenset({subject_id}),
+        )
+        access = await uow.memberships.get_access(
+            workspace_id=workspace_id,
+            subject_id=subject_id,
+        )
+        if (
+            access is None
+            or access.canonical_admin_binding is None
+            or access.canonical_admin_binding.status != "VERIFIED"
+        ):
+            raise ForbiddenError("A current Canonical Admin binding is required.")
 
     async def _authorize_read(
         self,

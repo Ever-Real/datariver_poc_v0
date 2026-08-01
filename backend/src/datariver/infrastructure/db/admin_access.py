@@ -6,6 +6,7 @@ import json
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from types import TracebackType
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import and_, cast, exists, func, or_, select, text, tuple_
@@ -31,6 +32,10 @@ from datariver.application.dto import (
     SystemDirectoryAssignee,
     SystemDirectoryEntry,
     SystemDirectoryPage,
+    SystemSchemaScope,
+    SystemSchemaScopeCandidate,
+    SystemSchemaScopeCandidatePage,
+    SystemSchemaScopePage,
     WorkspaceMembershipAccessRecord,
     WorkspaceMembershipPage,
     WorkspaceMembershipSummary,
@@ -52,8 +57,9 @@ from datariver.domain.admin_access import (
     MembershipAccessUpdate,
     SystemAssigneePatchCommand,
     SystemAssigneeUpdateCommand,
+    SystemSchemaScopePatchCommand,
 )
-from datariver.domain.authz import SERVICE_ONLY_ACTIONS, Action, Classification
+from datariver.domain.authz import SERVICE_ONLY_ACTIONS, Action, Classification, SubjectAttributes
 from datariver.domain.capability_catalog import (
     CANONICAL_ADMIN_CAPABILITY_HASH,
     CANONICAL_ADMIN_ROLE_KEY,
@@ -62,6 +68,7 @@ from datariver.domain.capability_catalog import (
     AccessRoleKind,
     AccessRoleManagementSource,
 )
+from datariver.domain.catalog import DATASET_ASSET_TYPES
 from datariver.domain.common import (
     ConflictError,
     ForbiddenError,
@@ -92,6 +99,7 @@ from datariver.infrastructure.db.models.platform import (
     ProfileRoleAssignmentModel,
     SubjectModel,
     SystemAssigneeModel,
+    SystemSchemaScopeModel,
     WorkspaceMembershipModel,
 )
 from datariver.infrastructure.db.rls import set_security_context
@@ -1798,6 +1806,48 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
+    @staticmethod
+    def _schema_scope_asset_conditions(
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        subject: SubjectAttributes,
+    ) -> tuple[Any, ...]:
+        if (
+            not subject.active
+            or subject.workspace_id != workspace_id
+            or subject.job_function == "SERVICE_ACCOUNT"
+            or "service-accounts" in subject.groups
+        ):
+            raise ForbiddenError("An active human administrator is required.")
+        return (
+            AssetProjectionModel.workspace_id == workspace_id,
+            AssetProjectionModel.asset_type.in_(tuple(DATASET_ASSET_TYPES)),
+            AssetProjectionModel.lifecycle == "ACTIVE",
+            AssetProjectionModel.deleted_at.is_(None),
+            AssetProjectionModel.platform.is_not(None),
+            AssetProjectionModel.database_name.is_not(None),
+            AssetProjectionModel.schema_name.is_not(None),
+            or_(
+                AssetProjectionModel.classification == int(Classification.PUBLIC),
+                and_(
+                    AssetProjectionModel.classification.in_(
+                        (
+                            int(Classification.INTERNAL),
+                            int(Classification.CONFIDENTIAL),
+                        )
+                    ),
+                    AssetProjectionModel.classification <= int(subject.clearance),
+                    AssetProjectionModel.domain_id.is_not(None),
+                    AssetProjectionModel.domain_id.in_(subject.allowed_domain_ids),
+                ),
+            ),
+            or_(
+                AssetProjectionModel.system_id.is_(None),
+                AssetProjectionModel.system_id == system_id,
+            ),
+        )
+
     async def list(
         self,
         *,
@@ -2066,6 +2116,278 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
             ),
         )
 
+    async def list_schema_scopes(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> SystemSchemaScopePage:
+        _validate_admin_list_limit(limit)
+        system = await self._system_for_read(
+            workspace_id=workspace_id,
+            system_id=system_id,
+        )
+        filters = {
+            "system_id": str(system_id),
+            "system_version": str(system.version),
+        }
+        statement = (
+            select(SystemSchemaScopeModel)
+            .where(
+                SystemSchemaScopeModel.workspace_id == workspace_id,
+                SystemSchemaScopeModel.system_id == system_id,
+            )
+            .order_by(SystemSchemaScopeModel.id.desc())
+            .limit(limit + 1)
+        )
+        if cursor is not None:
+            boundary_id = decode_admin_list_cursor(
+                cursor,
+                scope="SYSTEM_SCHEMA_SCOPES",
+                workspace_id=workspace_id,
+                filters=filters,
+            )
+            statement = statement.where(SystemSchemaScopeModel.id < boundary_id)
+        rows = list((await self._session.scalars(statement)).all())
+        has_more = len(rows) > limit
+        visible = rows[:limit]
+        return SystemSchemaScopePage(
+            items=tuple(
+                SystemSchemaScope(
+                    scope_id=item.id,
+                    system_id=item.system_id,
+                    platform=item.platform,
+                    database_name=item.database_name,
+                    schema_name=item.schema_name,
+                    active=item.active,
+                    version=item.version,
+                )
+                for item in visible
+            ),
+            system_version=system.version,
+            next_cursor=(
+                encode_admin_list_cursor(
+                    scope="SYSTEM_SCHEMA_SCOPES",
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    boundary_id=visible[-1].id,
+                )
+                if has_more and visible
+                else None
+            ),
+        )
+
+    async def list_schema_scope_candidates(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        subject: SubjectAttributes,
+        limit: int,
+        query: str | None = None,
+        cursor: str | None = None,
+    ) -> SystemSchemaScopeCandidatePage:
+        _validate_admin_list_limit(limit)
+        asset_conditions = self._schema_scope_asset_conditions(
+            workspace_id=workspace_id,
+            system_id=system_id,
+            subject=subject,
+        )
+        await self._system_for_read(workspace_id=workspace_id, system_id=system_id)
+        mapped_system_id = (
+            select(SystemSchemaScopeModel.system_id)
+            .where(
+                SystemSchemaScopeModel.workspace_id == AssetProjectionModel.workspace_id,
+                SystemSchemaScopeModel.platform == AssetProjectionModel.platform,
+                SystemSchemaScopeModel.database_name == AssetProjectionModel.database_name,
+                SystemSchemaScopeModel.schema_name == AssetProjectionModel.schema_name,
+                SystemSchemaScopeModel.active.is_(True),
+            )
+            .correlate(AssetProjectionModel)
+            .scalar_subquery()
+        )
+        filters = {"system_id": str(system_id), "query": query}
+        statement = (
+            select(AssetProjectionModel, mapped_system_id.label("mapped_system_id"))
+            .where(*asset_conditions)
+            .order_by(AssetProjectionModel.id.desc())
+            .limit(limit + 1)
+        )
+        if query is not None:
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
+            statement = statement.where(
+                or_(
+                    AssetProjectionModel.name.ilike(pattern, escape="\\"),
+                    AssetProjectionModel.platform.ilike(pattern, escape="\\"),
+                    AssetProjectionModel.database_name.ilike(pattern, escape="\\"),
+                    AssetProjectionModel.schema_name.ilike(pattern, escape="\\"),
+                )
+            )
+        if cursor is not None:
+            boundary_id = decode_admin_list_cursor(
+                cursor,
+                scope="SYSTEM_SCHEMA_SCOPE_CANDIDATES",
+                workspace_id=workspace_id,
+                filters=filters,
+            )
+            statement = statement.where(AssetProjectionModel.id < boundary_id)
+        rows = list((await self._session.execute(statement)).all())
+        has_more = len(rows) > limit
+        visible = rows[:limit]
+        return SystemSchemaScopeCandidatePage(
+            items=tuple(
+                SystemSchemaScopeCandidate(
+                    asset_id=asset.id,
+                    asset_name=asset.name,
+                    asset_type=asset.asset_type,
+                    platform=str(asset.platform),
+                    database_name=str(asset.database_name),
+                    schema_name=str(asset.schema_name),
+                    classification=Classification(asset.classification),
+                    mapped_system_id=(
+                        UUID(str(candidate_system_id)) if candidate_system_id is not None else None
+                    ),
+                )
+                for asset, candidate_system_id in visible
+            ),
+            next_cursor=(
+                encode_admin_list_cursor(
+                    scope="SYSTEM_SCHEMA_SCOPE_CANDIDATES",
+                    workspace_id=workspace_id,
+                    filters=filters,
+                    boundary_id=visible[-1][0].id,
+                )
+                if has_more and visible
+                else None
+            ),
+        )
+
+    async def patch_schema_scopes(
+        self,
+        command: SystemSchemaScopePatchCommand,
+        *,
+        subject: SubjectAttributes,
+    ) -> int:
+        asset_conditions = self._schema_scope_asset_conditions(
+            workspace_id=command.workspace_id,
+            system_id=command.system_id,
+            subject=subject,
+        )
+        system = await self._system_for_update(
+            workspace_id=command.workspace_id,
+            system_id=command.system_id,
+            expected_version=command.expected_system_version,
+        )
+        if not system.active:
+            raise NotFoundError("The active data system does not exist.")
+        assets = {
+            item.id: item
+            for item in (
+                await self._session.scalars(
+                    select(AssetProjectionModel)
+                    .where(
+                        AssetProjectionModel.id.in_(command.upsert_asset_ids),
+                        *asset_conditions,
+                    )
+                    .with_for_update(read=True)
+                )
+            ).all()
+        }
+        if len(assets) != len(command.upsert_asset_ids):
+            raise NotFoundError("A selected Catalog asset is no longer active or available.")
+        coordinates: dict[UUID, tuple[str, str, str]] = {}
+        for asset_id in command.upsert_asset_ids:
+            asset = assets[asset_id]
+            if asset.platform is None or asset.database_name is None or asset.schema_name is None:
+                raise ValidationError("A selected Catalog asset has no complete schema locator.")
+            if asset.system_id is not None and asset.system_id != command.system_id:
+                raise ConflictError(
+                    "The selected Catalog asset has a conflicting native System binding."
+                )
+            coordinates[asset_id] = (
+                asset.platform,
+                asset.database_name,
+                asset.schema_name,
+            )
+        if len(set(coordinates.values())) != len(coordinates):
+            raise ValidationError("Select at most one Catalog asset from each schema.")
+
+        deactivations = {
+            item.id: item
+            for item in (
+                await self._session.scalars(
+                    select(SystemSchemaScopeModel)
+                    .where(
+                        SystemSchemaScopeModel.workspace_id == command.workspace_id,
+                        SystemSchemaScopeModel.id.in_(command.deactivate_scope_ids),
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        }
+        if len(deactivations) != len(command.deactivate_scope_ids) or any(
+            item.system_id != command.system_id or not item.active
+            for item in deactivations.values()
+        ):
+            raise ConflictError("A selected schema mapping is stale or belongs to another System.")
+        if set(coordinates.values()) & {
+            (item.platform, item.database_name, item.schema_name) for item in deactivations.values()
+        }:
+            raise ValidationError(
+                "A schema mapping cannot be activated and deactivated in the same patch."
+            )
+
+        existing = {
+            (item.platform, item.database_name, item.schema_name): item
+            for item in (
+                await self._session.scalars(
+                    select(SystemSchemaScopeModel)
+                    .where(
+                        SystemSchemaScopeModel.workspace_id == command.workspace_id,
+                        tuple_(
+                            SystemSchemaScopeModel.platform,
+                            SystemSchemaScopeModel.database_name,
+                            SystemSchemaScopeModel.schema_name,
+                        ).in_(tuple(coordinates.values())),
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        }
+        effective_changes = bool(deactivations)
+        for coordinate in coordinates.values():
+            current = existing.get(coordinate)
+            if current is not None and current.active and current.system_id != command.system_id:
+                raise ConflictError("The selected schema is already mapped to another System.")
+            if current is None:
+                self._session.add(
+                    SystemSchemaScopeModel(
+                        workspace_id=command.workspace_id,
+                        system_id=command.system_id,
+                        platform=coordinate[0],
+                        database_name=coordinate[1],
+                        schema_name=coordinate[2],
+                        active=True,
+                    )
+                )
+                effective_changes = True
+            elif not current.active or current.system_id != command.system_id:
+                current.system_id = command.system_id
+                current.active = True
+                current.version += 1
+                effective_changes = True
+        if not effective_changes:
+            raise ConflictError("The schema-scope patch contains no effective changes.")
+        for item in deactivations.values():
+            item.active = False
+            item.version += 1
+        system.version += 1
+        await self._session.flush()
+        return system.version
+
     async def patch_assignees(self, command: SystemAssigneePatchCommand) -> int:
         system = await self._system_for_update(
             workspace_id=command.workspace_id,
@@ -2286,6 +2608,23 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
             raise NotFoundError("The data system does not exist.")
         if system.version != expected_version:
             raise ConflictError("The data system was modified by another operation.")
+        return system
+
+    async def _system_for_read(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+    ) -> DataSystemModel:
+        system = await self._session.scalar(
+            select(DataSystemModel).where(
+                DataSystemModel.workspace_id == workspace_id,
+                DataSystemModel.id == system_id,
+                DataSystemModel.active.is_(True),
+            )
+        )
+        if system is None:
+            raise NotFoundError("The active data system does not exist.")
         return system
 
     async def _assert_assignable_subjects(

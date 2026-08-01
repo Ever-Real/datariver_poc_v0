@@ -71,6 +71,48 @@ describe('AdminApi', () => {
     })
   })
 
+  it('uses asset IDs and the System ETag for governed schema-scope changes', async () => {
+    const { api, request } = mockClient()
+    const controller = new AbortController()
+    request.mockResolvedValue({ items: [], page: { next_cursor: null, limit: 25 } })
+
+    await api.listSystemSchemaScopes('system-one', controller.signal)
+    await api.listSystemSchemaScopeCandidates('system-one', 'orders', controller.signal)
+    await api.patchSystemSchemaScopes(
+      'system-one',
+      ['asset-one'],
+      ['scope-one'],
+      '변경관리 대상 스키마 연결',
+      7,
+      'schema-idempotency-key',
+    )
+
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      '/admin/systems/system-one/schema-scopes?limit=100',
+      { cache: 'no-store', signal: controller.signal },
+    )
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      '/admin/systems/system-one/schema-scope-candidates?limit=25&q=orders',
+      { cache: 'no-store', signal: controller.signal },
+    )
+    expect(request).toHaveBeenNthCalledWith(
+      3,
+      '/admin/systems/system-one/schema-scopes',
+      {
+        method: 'PATCH',
+        ifMatch: '"7"',
+        idempotencyKey: 'schema-idempotency-key',
+        body: JSON.stringify({
+          upsert_asset_ids: ['asset-one'],
+          deactivate_scope_ids: ['scope-one'],
+          reason: '변경관리 대상 스키마 연결',
+        }),
+      },
+    )
+  })
+
   it('loads only the redacted classification summary through no-store', async () => {
     const { api, request } = mockClient()
     const controller = new AbortController()

@@ -16,6 +16,7 @@ from datariver.interfaces.http.routes import governance as governance_routes
 from datariver.interfaces.http.routes.governance import (
     _catalog_service,
     _change_request_system_scope,
+    _change_target_catalog_service,
     list_change_request_systems,
     search_change_request_targets,
 )
@@ -142,9 +143,15 @@ def test_change_request_catalog_service_keeps_the_default_scoped_reader(
     monkeypatch.setattr(governance_routes, "get_container", lambda _: container)
 
     service = _catalog_service(cast(Any, object()), cast(Any, object()))
+    change_service, change_reader = _change_target_catalog_service(
+        cast(Any, object()), cast(Any, object())
+    )
 
     assert service._reader_mode is CatalogReaderMode.SCOPED
     assert cast(Any, service._index)._reader_mode is CatalogReaderMode.SCOPED
+    assert change_service._reader_mode is CatalogReaderMode.SCOPED
+    assert change_service._index is change_reader
+    assert change_service._search_cache_ttl_seconds == 0
 
 
 def _context(subject: SubjectAttributes) -> RequestContext:
@@ -207,7 +214,11 @@ async def test_change_target_search_returns_zero_when_selected_system_is_inactiv
     session = AsyncMock(spec=AsyncSession)
     session.scalar.return_value = None
     catalog = AsyncMock()
-    monkeypatch.setattr(governance_routes, "_catalog_service", lambda *_: catalog)
+    monkeypatch.setattr(
+        governance_routes,
+        "_change_target_catalog_service",
+        lambda *_: (catalog, AsyncMock()),
+    )
 
     response = await search_change_request_targets(
         request=cast(Any, object()),
@@ -246,7 +257,11 @@ async def test_change_target_search_uses_selected_system_and_dataset_types(
         classification_policy_version=3,
         authorization_generation=9,
     )
-    monkeypatch.setattr(governance_routes, "_catalog_service", lambda *_: catalog)
+    monkeypatch.setattr(
+        governance_routes,
+        "_change_target_catalog_service",
+        lambda *_: (catalog, AsyncMock()),
+    )
 
     response = await search_change_request_targets(
         request=cast(Any, object()),
@@ -264,7 +279,7 @@ async def test_change_target_search_uses_selected_system_and_dataset_types(
         query="wafer",
         filters={
             "asset_types": ("DATASET", "TABLE", "VIEW"),
-            "system_id": system_id,
+            "routing_system_id": system_id,
         },
         cursor=None,
         limit=12,

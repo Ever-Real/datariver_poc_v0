@@ -110,6 +110,8 @@ from datariver.application.dto import (
     SystemAssigneePage,
     SystemDirectoryEntry,
     SystemDirectoryPage,
+    SystemSchemaScopeCandidatePage,
+    SystemSchemaScopePage,
     UploadPreparationReceiptEvidence,
     UploadRegistrationCandidateEvidence,
     WorkspaceMembershipAccessRecord,
@@ -121,6 +123,7 @@ from datariver.domain.admin_access import (
     MembershipAccessUpdate,
     SystemAssigneePatchCommand,
     SystemAssigneeUpdateCommand,
+    SystemSchemaScopePatchCommand,
 )
 from datariver.domain.authz import (
     Classification,
@@ -1086,6 +1089,33 @@ class SystemDirectoryRepository(Protocol):
         query: str | None = None,
         cursor: str | None = None,
     ) -> SystemAssigneeCandidatePage: ...
+
+    async def list_schema_scopes(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        limit: int,
+        cursor: str | None = None,
+    ) -> SystemSchemaScopePage: ...
+
+    async def list_schema_scope_candidates(
+        self,
+        *,
+        workspace_id: UUID,
+        system_id: UUID,
+        subject: SubjectAttributes,
+        limit: int,
+        query: str | None = None,
+        cursor: str | None = None,
+    ) -> SystemSchemaScopeCandidatePage: ...
+
+    async def patch_schema_scopes(
+        self,
+        command: SystemSchemaScopePatchCommand,
+        *,
+        subject: SubjectAttributes,
+    ) -> int: ...
 
     async def patch_assignees(self, command: SystemAssigneePatchCommand) -> int: ...
 

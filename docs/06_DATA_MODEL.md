@@ -74,7 +74,7 @@ migration before use.
 |---|---|---|
 | `platform.workspaces` | `id`, `slug UQ`, `name`, `status`, `settings`, `version`, timestamps | tenant boundary |
 | `platform.data_systems` | workspace-scoped code/name UQ, description, active flag, version/timestamps | canonical business-system master; not a DataHub provider connection |
-| `platform.system_schema_scopes` | workspace/platform/database/schema UQ, composite system FK, active flag | explicit DataHub projection scope to business-system assignment |
+| `platform.system_schema_scopes` | workspace/platform/database/schema UQ, composite System FK, active/version/timestamps | server-derived, schema-wide DataHub projection locator to business-System assignment; Admin selects an active asset ID and never supplies the locator |
 | `platform.system_assignees` | system/subject/responsibility UQ, `DEVELOPER` or `DATA_STEWARD`, priority `1..999`, active flag | accountable human system assignments; never browser-derived |
 | `platform.external_service_profiles` | workspace/service-key UQ, historical YAML/version, nullable activated version, updater and bounded service vocabulary | retained pre-ADR-0048 development audit data; it is not loaded into API/worker runtime settings |
 | `platform.external_service_profile_versions` | workspace/profile/configuration-version UQ, SHA-256 document hash, immutable historical YAML/endpoint, creator, TEST and activation evidence | retained historical SAVE → TEST → ACTIVATE evidence; no live Admin authoring or runtime overlay |

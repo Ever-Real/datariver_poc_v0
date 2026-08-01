@@ -78,7 +78,10 @@ responsibility scope and protected Canonical Admin transition are defined by
 and custom Access Role remain separate authority inputs.
 The Catalog-only, non-RESTRICTED Workspace discovery exception is defined by
 [ADR-0108](adr/0108-confidential-catalog-workspace-discovery.md). It does not widen downstream
-Change, Registration, Quality, Knowledge, Chat or export scope.
+Change, Registration, Quality, Knowledge, Chat or export data-use authority. Governed,
+schema-wide System routing for Change targets is defined by
+[ADR-0109](adr/0109-governed-system-schema-scope-mapping.md); it reuses the existing scope table
+without changing DataHub, Catalog projection ownership or non-Change readers.
 The ordinary-assurance four-class summary and fresh-assurance full classification-policy detail
 boundary are defined by
 [ADR-0105](adr/0105-redacted-classification-policy-summary.md).

@@ -246,6 +246,92 @@ describe('SystemDirectoryAdmin', () => {
     )
   })
 
+  it('selects a Catalog table but submits only its asset ID as a schema-wide mapping', async () => {
+    const selectedSystem = system(
+      '00000000-0000-4000-8000-000000000722', 'FAB', 'Fabrication',
+    )
+    const api = {
+      listSystemPage: vi.fn(() => Promise.resolve({
+        items: [selectedSystem], nextCursor: null, limit: 25,
+      })),
+      listSystemAssigneeCandidates: vi.fn(() => Promise.resolve({
+        items: [], nextCursor: null, limit: 25,
+      })),
+      listSystemAssigneePage: vi.fn(() => Promise.resolve({
+        system_version: 3, items: [], page: { next_cursor: null, limit: 25 },
+      })),
+      listSystemSchemaScopes: vi.fn(() => Promise.resolve({
+        system_version: 3, items: [], page: { next_cursor: null, limit: 100 },
+      })),
+      listSystemSchemaScopeCandidates: vi.fn(() => Promise.resolve({
+        items: [{
+          asset_id: '00000000-0000-4000-8000-000000000799',
+          asset_name: 'capital_project_advanced_package',
+          asset_type: 'TABLE',
+          platform: 'postgres',
+          database_name: 'warehouse',
+          schema_name: 'capital',
+          classification: 'CONFIDENTIAL',
+          mapped_system_id: null,
+        }],
+        nextCursor: null,
+        limit: 25,
+      })),
+      patchSystemSchemaScopes: vi.fn(() => Promise.resolve({
+        system_id: selectedSystem.system_id,
+        system_version: 4,
+        payload_hash: 'a'.repeat(64),
+      })),
+    }
+    let pending: PendingAdminMutation | undefined
+    render(<SystemDirectoryAdmin
+      api={api as never}
+      context={{
+        subject_id: 'admin', workspace_id: 'workspace', display_name: 'Administrator',
+        authentication_assurance: 'HARDWARE_WEBAUTHN', fallback_enabled: false,
+        allowed_operations: ['SYSTEM_ASSIGNMENT_UPDATE'], action_vocabulary: [],
+      }}
+      messages={getAdminMessages('ko')}
+      requestConfirmation={(value) => { pending = value }}
+      keyFor={() => 'schema-idempotency-key'}
+      clearKey={vi.fn()} reportError={vi.fn()}
+      onStepUp={vi.fn(() => Promise.resolve())}
+      onPasswordReauth={vi.fn(() => Promise.resolve())}
+      onEnroll={vi.fn(() => Promise.resolve())}
+    />)
+
+    await waitFor(() => expect(api.listSystemAssigneePage).toHaveBeenCalledTimes(1))
+    const schemaButton = await screen.findByRole('button', { name: '스키마 조회' })
+    fireEvent.click(schemaButton)
+    await waitFor(() => expect(api.listSystemSchemaScopes).toHaveBeenCalledWith(
+      selectedSystem.system_id,
+      expect.anything(),
+    ))
+    const schemaWideLabel = await screen.findByText('스키마 전체')
+    expect(schemaWideLabel.closest('.callout')).toHaveTextContent(
+      '선택한 테이블이 속한 스키마 전체를 System에 연결합니다.',
+    )
+    fireEvent.click(await screen.findByRole('radio', {
+      name: 'capital_project_advanced_package 스키마 선택',
+    }))
+    fireEvent.change(screen.getByLabelText('변경 사유'), {
+      target: { value: '변경관리 대상 스키마 연결' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '스키마 연결 변경사항 저장' }))
+
+    expect(api.patchSystemSchemaScopes).not.toHaveBeenCalled()
+    expect(pending?.title).toBe('시스템 스키마 연결 변경')
+    await act(async () => { await pending?.execute() })
+    expect(api.patchSystemSchemaScopes).toHaveBeenCalledWith(
+      selectedSystem.system_id,
+      ['00000000-0000-4000-8000-000000000799'],
+      [],
+      '변경관리 대상 스키마 연결',
+      3,
+      'schema-idempotency-key',
+    )
+  })
+
   it('makes no system mutation, confirmation, or step-up call without the capability', async () => {
     const selectedSystem = system(
       '00000000-0000-4000-8000-000000000722', 'FAB', 'Fabrication',

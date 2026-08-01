@@ -15,6 +15,8 @@ from sqlalchemy import (
     and_,
     case,
     cast,
+    exists,
+    false,
     func,
     literal,
     or_,
@@ -54,6 +56,7 @@ from datariver.application.ports import (
 )
 from datariver.domain.authz import Classification, SubjectAttributes
 from datariver.domain.catalog import DATASET_ASSET_TYPES
+from datariver.domain.classification_access import SearchMode
 from datariver.domain.common import ConflictError, ValidationError, utc_now, uuid7
 from datariver.infrastructure.db.catalog_visibility import (
     catalog_asset_scope_conditions,
@@ -65,7 +68,11 @@ from datariver.infrastructure.db.models.catalog import (
     CatalogProjectionWatermarkModel,
     CatalogSyncRunModel,
 )
-from datariver.infrastructure.db.models.platform import WorkspaceModel
+from datariver.infrastructure.db.models.platform import (
+    DataSystemModel,
+    SystemSchemaScopeModel,
+    WorkspaceModel,
+)
 
 CATALOG_SEARCH_FIELDS = frozenset({"SCHEMA", "TABLE", "COLUMN", "TAG", "TERM", "DESCRIPTION"})
 MAX_CATALOG_QUERY_TERMS = 12
@@ -1107,6 +1114,267 @@ class SqlCatalogIndexReader(CatalogIndexReader):
             and_(*self._scope_conditions(subject, access)),
         )
         return tuple(_to_index(model) for model in (await self._session.scalars(statement)).all())
+
+
+class SqlCatalogChangeTargetReader(SqlCatalogIndexReader):
+    """CR-only Catalog reader that resolves a canonical business-System routing overlay."""
+
+    async def search(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        query: str,
+        filters: dict[str, Any],
+        cursor: str | None,
+        limit: int,
+    ) -> CatalogPage:
+        page = await super().search(
+            subject=subject,
+            access=access,
+            query=query,
+            filters=filters,
+            cursor=cursor,
+            limit=limit,
+        )
+        return replace(
+            page,
+            items=await self._effective_indexes(page.items, lock_for_share=False),
+        )
+
+    async def get_authorized_asset(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        asset_id: UUID,
+    ) -> CatalogAssetDetail | None:
+        detail = await super().get_authorized_asset(
+            subject=subject,
+            access=access,
+            asset_id=asset_id,
+        )
+        if detail is None:
+            return None
+        routed = await self._effective_indexes((detail.index,), lock_for_share=False)
+        if len(routed) != 1:
+            return None
+        return replace(detail, index=routed[0])
+
+    @staticmethod
+    def _filter_conditions(filters: dict[str, Any]) -> list[Any]:
+        routing_system_id = filters.get("routing_system_id")
+        if routing_system_id is None:
+            return SqlCatalogIndexReader._filter_conditions(filters)
+        if not isinstance(routing_system_id, UUID):
+            raise ValidationError("Unsupported change-target System filter.")
+        conditions = SqlCatalogIndexReader._filter_conditions(
+            {name: value for name, value in filters.items() if name != "routing_system_id"}
+        )
+        conditions.append(
+            SqlCatalogChangeTargetReader._effective_system_condition(
+                allowed_system_ids=frozenset({routing_system_id})
+            )
+        )
+        return conditions
+
+    def _scope_conditions(
+        self,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot | None = None,
+        reader_mode: CatalogReaderMode | None = None,
+    ) -> list[Any]:
+        del reader_mode
+        resolved_access = access or static_classification_access_floor()
+        if (
+            not subject.active
+            or subject.job_function == "SERVICE_ACCOUNT"
+            or "service-accounts" in subject.groups
+            or not subject.allowed_system_ids
+        ):
+            return [false()]
+        standard_classifications = tuple(
+            int(classification)
+            for classification in Classification
+            if classification is not Classification.RESTRICTED
+            and classification <= subject.clearance
+            and resolved_access.rule_for(classification).search_mode is SearchMode.ABAC
+        )
+        restricted_scope: Any = false()
+        restricted_rule = resolved_access.rule_for(Classification.RESTRICTED)
+        if (
+            subject.clearance >= Classification.RESTRICTED
+            and restricted_rule.search_mode is SearchMode.EXPLICIT_GRANT_ONLY
+        ):
+            grants: list[Any] = []
+            if resolved_access.restricted_resource_ids:
+                grants.append(AssetProjectionModel.id.in_(resolved_access.restricted_resource_ids))
+            if resolved_access.restricted_system_ids:
+                grants.append(
+                    self._effective_system_condition(
+                        allowed_system_ids=(
+                            subject.allowed_system_ids & resolved_access.restricted_system_ids
+                        )
+                    )
+                )
+            if resolved_access.restricted_domain_ids:
+                grants.append(
+                    AssetProjectionModel.domain_id.in_(resolved_access.restricted_domain_ids)
+                )
+            if grants:
+                restricted_scope = or_(*grants)
+        return [
+            AssetProjectionModel.workspace_id == subject.workspace_id,
+            AssetProjectionModel.deleted_at.is_(None),
+            AssetProjectionModel.lifecycle == "ACTIVE",
+            or_(
+                AssetProjectionModel.classification.in_(standard_classifications),
+                and_(
+                    AssetProjectionModel.classification == int(Classification.RESTRICTED),
+                    restricted_scope,
+                ),
+            ),
+            self._effective_system_condition(allowed_system_ids=subject.allowed_system_ids),
+            or_(
+                AssetProjectionModel.classification == int(Classification.PUBLIC),
+                and_(
+                    AssetProjectionModel.domain_id.is_not(None),
+                    AssetProjectionModel.domain_id.in_(subject.allowed_domain_ids),
+                ),
+            ),
+        ]
+
+    @staticmethod
+    def _effective_system_condition(*, allowed_system_ids: frozenset[UUID]) -> Any:
+        if not allowed_system_ids:
+            return false()
+        any_mapping = exists(
+            select(SystemSchemaScopeModel.id).where(
+                SystemSchemaScopeModel.workspace_id == AssetProjectionModel.workspace_id,
+                SystemSchemaScopeModel.platform == AssetProjectionModel.platform,
+                SystemSchemaScopeModel.database_name == AssetProjectionModel.database_name,
+                SystemSchemaScopeModel.schema_name == AssetProjectionModel.schema_name,
+            )
+        )
+        active_mapping = exists(
+            select(SystemSchemaScopeModel.id)
+            .join(
+                DataSystemModel,
+                and_(
+                    DataSystemModel.workspace_id == SystemSchemaScopeModel.workspace_id,
+                    DataSystemModel.id == SystemSchemaScopeModel.system_id,
+                ),
+            )
+            .where(
+                SystemSchemaScopeModel.workspace_id == AssetProjectionModel.workspace_id,
+                SystemSchemaScopeModel.platform == AssetProjectionModel.platform,
+                SystemSchemaScopeModel.database_name == AssetProjectionModel.database_name,
+                SystemSchemaScopeModel.schema_name == AssetProjectionModel.schema_name,
+                SystemSchemaScopeModel.system_id.in_(allowed_system_ids),
+                SystemSchemaScopeModel.active.is_(True),
+                DataSystemModel.active.is_(True),
+                or_(
+                    AssetProjectionModel.system_id.is_(None),
+                    AssetProjectionModel.system_id == SystemSchemaScopeModel.system_id,
+                ),
+            )
+        )
+        native_system = exists(
+            select(DataSystemModel.id).where(
+                DataSystemModel.workspace_id == AssetProjectionModel.workspace_id,
+                DataSystemModel.id == AssetProjectionModel.system_id,
+                DataSystemModel.id.in_(allowed_system_ids),
+                DataSystemModel.active.is_(True),
+            )
+        )
+        return or_(active_mapping, and_(~any_mapping, native_system))
+
+    async def route_authorized_detail(
+        self,
+        *,
+        detail: CatalogAssetDetail,
+        system_id: UUID,
+    ) -> CatalogAssetDetail | None:
+        routed = await self._effective_indexes((detail.index,), lock_for_share=False)
+        if len(routed) != 1 or routed[0].system_id != system_id:
+            return None
+        return replace(detail, index=routed[0])
+
+    async def get_authorized_assets_by_external_urns(
+        self,
+        *,
+        subject: SubjectAttributes,
+        access: ClassificationAccessSnapshot,
+        external_urns: Sequence[str],
+        lock_for_share: bool = False,
+    ) -> Sequence[CatalogAssetIndex]:
+        values = await super().get_authorized_assets_by_external_urns(
+            subject=subject,
+            access=access,
+            external_urns=external_urns,
+            lock_for_share=lock_for_share,
+        )
+        return await self._effective_indexes(values, lock_for_share=lock_for_share)
+
+    async def _effective_indexes(
+        self,
+        values: Sequence[CatalogAssetIndex],
+        *,
+        lock_for_share: bool,
+    ) -> tuple[CatalogAssetIndex, ...]:
+        if not values:
+            return ()
+        coordinates = {
+            (item.platform, item.database_name, item.schema_name)
+            for item in values
+            if item.platform is not None
+            and item.database_name is not None
+            and item.schema_name is not None
+        }
+        scope_statement = select(SystemSchemaScopeModel).where(
+            SystemSchemaScopeModel.workspace_id == values[0].workspace_id,
+            tuple_(
+                SystemSchemaScopeModel.platform,
+                SystemSchemaScopeModel.database_name,
+                SystemSchemaScopeModel.schema_name,
+            ).in_(tuple(coordinates)),
+        )
+        if lock_for_share:
+            scope_statement = scope_statement.with_for_update(read=True, of=SystemSchemaScopeModel)
+        scopes = {
+            (item.platform, item.database_name, item.schema_name): item
+            for item in (await self._session.scalars(scope_statement)).all()
+        }
+        canonical_ids = {item.system_id for item in values if item.system_id is not None} | {
+            item.system_id for item in scopes.values()
+        }
+        active_canonical_ids = frozenset(
+            await self._session.scalars(
+                select(DataSystemModel.id).where(
+                    DataSystemModel.workspace_id == values[0].workspace_id,
+                    DataSystemModel.id.in_(tuple(canonical_ids)),
+                    DataSystemModel.active.is_(True),
+                )
+            )
+        )
+        routed: list[CatalogAssetIndex] = []
+        for item in values:
+            if item.platform is None or item.database_name is None or item.schema_name is None:
+                continue
+            coordinate = (item.platform, item.database_name, item.schema_name)
+            scope = scopes.get(coordinate)
+            if scope is not None:
+                if (
+                    not scope.active
+                    or scope.system_id not in active_canonical_ids
+                    or (item.system_id is not None and item.system_id != scope.system_id)
+                ):
+                    continue
+                routed.append(replace(item, system_id=scope.system_id))
+                continue
+            if item.system_id is not None and item.system_id in active_canonical_ids:
+                routed.append(item)
+        return tuple(routed)
 
 
 class SqlCatalogProjectionWriter(CatalogProjectionWriter):

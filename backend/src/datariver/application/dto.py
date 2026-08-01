@@ -1078,6 +1078,42 @@ class SystemAssigneeCandidatePage:
 
 
 @dataclass(frozen=True, slots=True)
+class SystemSchemaScope:
+    scope_id: UUID
+    system_id: UUID
+    platform: str
+    database_name: str
+    schema_name: str
+    active: bool
+    version: int
+
+
+@dataclass(frozen=True, slots=True)
+class SystemSchemaScopePage:
+    items: tuple[SystemSchemaScope, ...]
+    system_version: int
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SystemSchemaScopeCandidate:
+    asset_id: UUID
+    asset_name: str
+    asset_type: str
+    platform: str
+    database_name: str
+    schema_name: str
+    classification: Classification
+    mapped_system_id: UUID | None
+
+
+@dataclass(frozen=True, slots=True)
+class SystemSchemaScopeCandidatePage:
+    items: tuple[SystemSchemaScopeCandidate, ...]
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
 class AdminAccessRequestPage:
     items: tuple[AdminAccessRequest, ...]
     next_cursor: str | None

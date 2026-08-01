@@ -1,10 +1,21 @@
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
+from uuid import uuid4
 
+import pytest
 from sqlalchemy import CheckConstraint, Table
+from sqlalchemy.dialects import postgresql
 
+from datariver.domain.authz import Classification, SubjectAttributes
+from datariver.domain.common import ForbiddenError, ValidationError
+from datariver.infrastructure.db.admin_access import SqlSystemDirectoryRepository
+from datariver.infrastructure.db.catalog import (
+    SqlCatalogChangeTargetReader,
+    SqlCatalogIndexReader,
+)
 from datariver.infrastructure.db.models.governance import ChangeRequestModel
 from datariver.infrastructure.db.models.platform import (
     DataSystemModel,
@@ -72,6 +83,105 @@ def test_system_master_models_have_workspace_scoped_integrity_and_no_secret_colu
         "ck_external_service_profiles_endpoint_url_scheme",
         "ck_external_service_profiles_secret_reference_present",
     } <= _check_names(profile)
+
+
+def test_change_target_schema_routing_filter_is_cr_reader_only_and_fail_closed() -> None:
+    system_id = uuid4()
+    dialect = cast(Any, postgresql.dialect)()
+
+    with pytest.raises(ValidationError, match="Unsupported catalog filters"):
+        SqlCatalogIndexReader._filter_conditions({"routing_system_id": system_id})
+
+    conditions = SqlCatalogChangeTargetReader._filter_conditions(
+        {"asset_types": ("TABLE",), "routing_system_id": system_id}
+    )
+    rendered = " ".join(str(condition.compile(dialect=dialect)) for condition in conditions)
+    assert "platform.system_schema_scopes" in rendered
+    assert "platform.data_systems" in rendered
+    assert "system_schema_scopes.active IS true" in rendered
+    assert "data_systems.active IS true" in rendered
+    assert (
+        "catalog.assets_projection.system_id = platform.system_schema_scopes.system_id" in rendered
+    )
+
+
+def test_system_schema_scope_asset_predicate_is_actor_scoped_and_excludes_restricted() -> None:
+    workspace_id, system_id, subject_id, domain_id = (uuid4() for _ in range(4))
+    dialect = cast(Any, postgresql.dialect)()
+    subject = SubjectAttributes(
+        subject_id=subject_id,
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset({"security-administrators"}),
+        job_function="SECURITY_ADMINISTRATOR",
+        clearance=Classification.CONFIDENTIAL,
+        allowed_domain_ids=frozenset({domain_id}),
+    )
+
+    compiled = [
+        condition.compile(dialect=dialect)
+        for condition in SqlSystemDirectoryRepository._schema_scope_asset_conditions(
+            workspace_id=workspace_id,
+            system_id=system_id,
+            subject=subject,
+        )
+    ]
+    rendered = " ".join(str(condition) for condition in compiled)
+    parameter_documents = [condition.params for condition in compiled]
+
+    assert "assets_projection.lifecycle" in rendered
+    assert "assets_projection.deleted_at IS NULL" in rendered
+    assert "assets_projection.domain_id IS NOT NULL" in rendered
+    assert "assets_projection.system_id IS NULL" in rendered
+    classification_parameters = next(
+        document for document in parameter_documents if "classification_2" in document
+    )
+    assert classification_parameters["classification_1"] == int(Classification.PUBLIC)
+    assert classification_parameters["classification_2"] == [
+        int(Classification.INTERNAL),
+        int(Classification.CONFIDENTIAL),
+    ]
+    assert int(Classification.RESTRICTED) not in classification_parameters.values()
+    assert classification_parameters["domain_id_1"] == [domain_id]
+    candidate_source = inspect.getsource(SqlSystemDirectoryRepository.list_schema_scope_candidates)
+    patch_source = inspect.getsource(SqlSystemDirectoryRepository.patch_schema_scopes)
+    assert "_schema_scope_asset_conditions(" in candidate_source
+    assert "_schema_scope_asset_conditions(" in patch_source
+    assert ".with_for_update(read=True)" in patch_source
+
+
+@pytest.mark.parametrize(
+    ("active", "workspace_matches", "job_function", "groups"),
+    [
+        (False, True, "SECURITY_ADMINISTRATOR", frozenset({"security-administrators"})),
+        (True, False, "SECURITY_ADMINISTRATOR", frozenset({"security-administrators"})),
+        (True, True, "SERVICE_ACCOUNT", frozenset({"service-accounts"})),
+    ],
+)
+def test_system_schema_scope_asset_predicate_rejects_nonhuman_actor_before_query(
+    active: bool,
+    workspace_matches: bool,
+    job_function: str,
+    groups: frozenset[str],
+) -> None:
+    workspace_id = uuid4()
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id if workspace_matches else uuid4(),
+        active=active,
+        department_id=None,
+        groups=groups,
+        job_function=job_function,
+        clearance=Classification.RESTRICTED,
+    )
+
+    with pytest.raises(ForbiddenError, match="active human administrator"):
+        SqlSystemDirectoryRepository._schema_scope_asset_conditions(
+            workspace_id=workspace_id,
+            system_id=uuid4(),
+            subject=subject,
+        )
 
 
 def test_system_master_migration_is_forced_rls_and_uses_redacted_connection_profiles() -> None:

@@ -2,6 +2,19 @@
 
 ## Current verification status
 
+### Governed System schema-scope mapping — 2026-08-02
+
+ADR-0109 tests require Canonical Admin pre-read checks, active System and asset validation,
+server-derived coordinates, System-version `If-Match`, idempotent audit/outbox evidence and
+conflict instead of silent reassignment. HTTP/frontend tests prove the browser submits only an
+asset ID plus deactivate IDs and labels the result as a schema-wide mapping. CR-specific reader
+tests cover mapped search/detail/intake, native/mapping conflict, inactive mapping/System,
+locator/removal drift and binding-hash reauthorization. Wrong Workspace, service/inactive actor,
+missing Domain/clearance, RESTRICTED asset, missing responsibility, stale version and replay
+mismatch must produce zero effective mutation or
+target access. Regression tests keep manual native targets and generic Catalog, Registration,
+Knowledge, Quality and Chat readers unchanged.
+
 ### Profile Role authority — 2026-08-01
 
 ADR-0107/revision `0090` tests pin the exact four-tier inheritance and the

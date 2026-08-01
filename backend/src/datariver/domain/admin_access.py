@@ -17,6 +17,7 @@ from datariver.domain.common import (
 
 MEMBERSHIP_ACCESS_COMMAND = "WORKSPACE_MEMBERSHIP_ACCESS_UPDATE_V1"
 SYSTEM_ASSIGNMENT_UPDATE_COMMAND = "SYSTEM_ASSIGNMENT_UPDATE_V1"
+SYSTEM_SCHEMA_SCOPE_UPDATE_COMMAND = "SYSTEM_SCHEMA_SCOPE_UPDATE_V1"
 MAXIMUM_FALLBACK_LIFETIME = timedelta(minutes=5)
 _GROUP_PATTERN = re.compile(r"^[a-z][a-z0-9-]{1,99}$")
 _COMMAND_KEYS = {
@@ -311,6 +312,50 @@ class SystemAssigneeUpdateCommand:
                     key=lambda item: (item.responsibility, item.priority, str(item.subject_id)),
                 )
             ],
+        }
+
+    @property
+    def payload_hash(self) -> str:
+        return canonical_json_hash(self.command_document())
+
+
+@dataclass(frozen=True, slots=True)
+class SystemSchemaScopePatchCommand:
+    workspace_id: UUID
+    system_id: UUID
+    expected_system_version: int
+    upsert_asset_ids: tuple[UUID, ...]
+    deactivate_scope_ids: tuple[UUID, ...]
+    reason: str
+
+    def __post_init__(self) -> None:
+        normalized_reason = self.reason.strip()
+        if self.expected_system_version < 1:
+            raise ValidationError("The expected system version must be positive.")
+        if not 10 <= len(normalized_reason) <= 1_000:
+            raise ValidationError(
+                "A system schema-scope change reason must contain between 10 and 1000 characters."
+            )
+        if not self.upsert_asset_ids and not self.deactivate_scope_ids:
+            raise ValidationError("A system schema-scope patch cannot be empty.")
+        if len(self.upsert_asset_ids) + len(self.deactivate_scope_ids) > 100:
+            raise ValidationError(
+                "A system schema-scope patch is limited to 100 changes per operation."
+            )
+        if len(set(self.upsert_asset_ids)) != len(self.upsert_asset_ids):
+            raise ValidationError("A system schema-scope patch contains duplicate assets.")
+        if len(set(self.deactivate_scope_ids)) != len(self.deactivate_scope_ids):
+            raise ValidationError("A system schema-scope patch contains duplicate mappings.")
+
+    def command_document(self) -> dict[str, object]:
+        return {
+            "command_type": SYSTEM_SCHEMA_SCOPE_UPDATE_COMMAND,
+            "workspace_id": str(self.workspace_id),
+            "system_id": str(self.system_id),
+            "expected_system_version": self.expected_system_version,
+            "upsert_asset_ids": sorted(str(value) for value in self.upsert_asset_ids),
+            "deactivate_scope_ids": sorted(str(value) for value in self.deactivate_scope_ids),
+            "reason": self.reason.strip(),
         }
 
     @property

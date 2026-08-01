@@ -29,6 +29,7 @@ from datariver.domain.admin_access import (
     SystemAssigneePatchCommand,
     SystemAssigneeUpdate,
     SystemAssigneeUpdateCommand,
+    SystemSchemaScopePatchCommand,
 )
 from datariver.domain.authz import Action, Classification
 from datariver.domain.capability_catalog import (
@@ -173,6 +174,12 @@ from datariver.interfaces.http.schemas import (
     SystemDirectoryAssigneeResponse,
     SystemDirectoryEntryResponse,
     SystemDirectoryListResponse,
+    SystemSchemaScopeCandidateListResponse,
+    SystemSchemaScopeCandidateResponse,
+    SystemSchemaScopeListResponse,
+    SystemSchemaScopePatchRequest,
+    SystemSchemaScopeResponse,
+    SystemSchemaScopeUpdateResponse,
     WorkspaceMembershipAccessResponse,
     WorkspaceMembershipListResponse,
     WorkspaceMembershipSummaryResponse,
@@ -2006,6 +2013,26 @@ def _system_assignee_patch_command(
         raise ValidationError("The system-assignee patch document is invalid.") from error
 
 
+def _system_schema_scope_patch_command(
+    *,
+    workspace_id: UUID,
+    system_id: UUID,
+    expected_system_version: int,
+    payload: SystemSchemaScopePatchRequest,
+) -> SystemSchemaScopePatchCommand:
+    try:
+        return SystemSchemaScopePatchCommand(
+            workspace_id=workspace_id,
+            system_id=system_id,
+            expected_system_version=expected_system_version,
+            upsert_asset_ids=tuple(payload.upsert_asset_ids),
+            deactivate_scope_ids=tuple(payload.deactivate_scope_ids),
+            reason=payload.reason,
+        )
+    except (TypeError, ValueError) as error:
+        raise ValidationError("The system schema-scope patch document is invalid.") from error
+
+
 @router.get("/me", response_model=AdminReadContextResponse)
 async def get_admin_context(
     request: Request,
@@ -3084,6 +3111,137 @@ async def patch_system_assignees(
     )
     response.headers["ETag"] = f'"{system_version}"'
     return SystemAssigneeUpdateResponse(
+        system_id=system_id,
+        system_version=system_version,
+        payload_hash=command.payload_hash,
+    )
+
+
+@router.get(
+    "/systems/{system_id}/schema-scopes",
+    response_model=SystemSchemaScopeListResponse,
+)
+async def list_system_schema_scopes(
+    system_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+) -> SystemSchemaScopeListResponse:
+    page = await _service(request).list_system_schema_scopes(
+        workspace_id=context.workspace_id,
+        system_id=system_id,
+        limit=limit,
+        cursor=cursor,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    response.headers["ETag"] = f'"{page.system_version}"'
+    return SystemSchemaScopeListResponse(
+        system_version=page.system_version,
+        items=[
+            SystemSchemaScopeResponse(
+                scope_id=item.scope_id,
+                system_id=item.system_id,
+                platform=item.platform,
+                database_name=item.database_name,
+                schema_name=item.schema_name,
+                active=item.active,
+                version=item.version,
+            )
+            for item in page.items
+        ],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.get(
+    "/systems/{system_id}/schema-scope-candidates",
+    response_model=SystemSchemaScopeCandidateListResponse,
+)
+async def list_system_schema_scope_candidates(
+    system_id: UUID,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    q: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+) -> SystemSchemaScopeCandidateListResponse:
+    page = await _service(request).list_system_schema_scope_candidates(
+        workspace_id=context.workspace_id,
+        system_id=system_id,
+        limit=limit,
+        query=q,
+        cursor=cursor,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return SystemSchemaScopeCandidateListResponse(
+        items=[
+            SystemSchemaScopeCandidateResponse(
+                asset_id=item.asset_id,
+                asset_name=item.asset_name,
+                asset_type=item.asset_type,
+                platform=item.platform,
+                database_name=item.database_name,
+                schema_name=item.schema_name,
+                classification=item.classification.name,
+                mapped_system_id=item.mapped_system_id,
+            )
+            for item in page.items
+        ],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
+@router.patch(
+    "/systems/{system_id}/schema-scopes",
+    response_model=SystemSchemaScopeUpdateResponse,
+    responses={
+        200: {
+            "headers": {
+                "ETag": {
+                    "description": "Current system version after the schema-scope patch.",
+                    "schema": {"type": "string"},
+                }
+            }
+        }
+    },
+)
+async def patch_system_schema_scopes(
+    system_id: UUID,
+    payload: SystemSchemaScopePatchRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> SystemSchemaScopeUpdateResponse:
+    command = _system_schema_scope_patch_command(
+        workspace_id=context.workspace_id,
+        system_id=system_id,
+        expected_system_version=_expected_version(if_match),
+        payload=payload,
+    )
+    request_hash = canonical_json_hash(
+        {"operation": "admin.system.schema-scopes.patch", "command": command.command_document()}
+    )
+    system_version = await _service(request).patch_system_schema_scopes(
+        command=command,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    response.headers["ETag"] = f'"{system_version}"'
+    return SystemSchemaScopeUpdateResponse(
         system_id=system_id,
         system_version=system_version,
         payload_hash=command.payload_hash,

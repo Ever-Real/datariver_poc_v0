@@ -48,7 +48,10 @@ from datariver.domain.governance import (
     ChangeUrgency,
 )
 from datariver.infrastructure.db.authz import SqlDecisionWriter
-from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
+from datariver.infrastructure.db.catalog import (
+    SqlCatalogChangeTargetReader,
+    SqlCatalogIndexReader,
+)
 from datariver.infrastructure.db.change_request_overview import SqlChangeRequestOverviewReader
 from datariver.infrastructure.db.classification_access import (
     SqlClassificationAccessSnapshotReader,
@@ -226,7 +229,7 @@ def _service(request: Request, session: AsyncSession | None = None) -> Governanc
         authorization,
         target_authorizer=(
             CatalogChangeTargetAuthorizer(
-                index=SqlCatalogIndexReader(session),
+                index=SqlCatalogChangeTargetReader(session),
                 classification_access=ClassificationAccessResolver(
                     SqlClassificationAccessSnapshotReader(session)
                 ),
@@ -254,7 +257,7 @@ def _attachment_service(
         authorization,
         store=SqlGovernanceAttachmentUploadIntentStore(session),
         target_authorizer=CatalogChangeTargetAuthorizer(
-            index=SqlCatalogIndexReader(session),
+            index=SqlCatalogChangeTargetReader(session),
             classification_access=ClassificationAccessResolver(
                 SqlClassificationAccessSnapshotReader(session)
             ),
@@ -284,6 +287,38 @@ def _catalog_service(request: Request, session: SessionDep) -> CatalogService:
             SqlClassificationAccessSnapshotReader(session)
         ),
         telemetry=container.metrics,
+    )
+
+
+def _change_target_catalog_service(
+    request: Request,
+    session: SessionDep,
+) -> tuple[CatalogService, SqlCatalogChangeTargetReader]:
+    container = get_container(request)
+    index = SqlCatalogChangeTargetReader(session)
+    return (
+        CatalogService(
+            index=index,
+            discovery=index,
+            watermark=index,
+            datahub=container.datahub,
+            cache=container.cache,
+            authorization=AuthorizationService(
+                decision_writer=SqlDecisionWriter(container.database.session_factory)
+            ),
+            detail_cache_ttl_seconds=container.settings.cache_default_ttl_seconds,
+            stale_detail_ttl_seconds=container.settings.datahub_stale_ttl_seconds,
+            # System-schema mappings have their own version fence rather than the Catalog
+            # projection watermark. CR target search therefore revalidates routing on every read.
+            search_cache_ttl_seconds=0,
+            minimum_query_length=container.settings.catalog_search_minimum_query_length,
+            policy_version=BuiltinPolicyEngine.policy_version,
+            classification_access=ClassificationAccessResolver(
+                SqlClassificationAccessSnapshotReader(session)
+            ),
+            telemetry=container.metrics,
+        ),
+        index,
     )
 
 
@@ -488,12 +523,13 @@ async def search_change_request_targets(
         system_id=system_id,
     ):
         return _empty_change_request_target_search(context, limit=limit)
-    page = await _catalog_service(request, session).search(
+    target_catalog, _ = _change_target_catalog_service(request, session)
+    page = await target_catalog.search(
         subject=context.subject,
         query=q,
         filters={
             "asset_types": tuple(sorted(DATASET_ASSET_TYPES)),
-            "system_id": system_id,
+            "routing_system_id": system_id,
         },
         cursor=cursor,
         limit=limit,
@@ -530,17 +566,19 @@ async def get_change_request_target(
         system_id=system_id,
     ):
         raise NotFoundError("The selected change target does not exist.")
-    asset = await _catalog_service(request, session).get_asset(
+    target_catalog, target_reader = _change_target_catalog_service(request, session)
+    asset = await target_catalog.get_asset(
         subject=context.subject,
         asset_id=asset_id,
         environment=context.environment,
         request_id=context.request_id,
     )
-    if (
-        asset is None
-        or asset.index.system_id != system_id
-        or not is_dataset_asset_type(asset.index.asset_type)
-    ):
+    if asset is not None:
+        asset = await target_reader.route_authorized_detail(
+            detail=asset,
+            system_id=system_id,
+        )
+    if asset is None or not is_dataset_asset_type(asset.index.asset_type):
         raise NotFoundError("The selected change target does not exist.")
     return catalog_detail(asset)
 
