@@ -16,7 +16,7 @@ from datariver.bootstrap import (
     LOCAL_WORKSPACE_ID,
     _reconcile_local_canonical_admin_binding,
 )
-from datariver.config import get_settings
+from datariver.config import Settings, get_settings
 from datariver.domain.admin_access import MembershipAccessUpdate
 from datariver.domain.authz import (
     Action,
@@ -184,51 +184,27 @@ async def _actor(
     )
 
 
-async def reconcile_local_admin_catalog_access() -> dict[str, object]:
-    """Materialize exact ACTIVE catalog scopes for the development administrator."""
+async def _read_active_catalog_scopes(
+    *,
+    settings: Settings,
+    resolver: SecretResolver,
+) -> tuple[frozenset[UUID], frozenset[UUID], int, int]:
+    """Read the fixed local workspace projection through the ordinary app/RLS role."""
 
-    settings = get_settings()
-    if settings.app_env != "development":
-        raise RuntimeError("Local administrator catalog reconciliation is development-only.")
-    resolver = SecretResolver()
-    database = Database(
-        settings.bootstrap_database_url,
-        password=resolver.resolve(settings.bootstrap_database_secret_ref),
+    catalog_database = Database(
+        settings.database_url,
+        password=resolver.resolve(settings.database_secret_ref),
         pool_size=1,
         max_overflow=0,
-        application_name="datariver-local-admin-catalog-access",
+        application_name="datariver-local-admin-catalog-read",
     )
-    now = utc_now()
     try:
-        async with database.session_factory() as session, session.begin():
-            checker = await _actor(
-                session,
-                subject_id=_LOCAL_CHECKER_SUBJECT_ID,
-                now=now,
-            )
+        async with catalog_database.session_factory() as session, session.begin():
             await set_security_context(
                 session,
                 workspace_id=LOCAL_WORKSPACE_ID,
                 subject_id=LOCAL_SUBJECT_ID,
             )
-            membership = (
-                await session.scalars(
-                    select(WorkspaceMembershipModel)
-                    .join(
-                        SubjectModel,
-                        SubjectModel.id == WorkspaceMembershipModel.subject_id,
-                    )
-                    .where(
-                        WorkspaceMembershipModel.workspace_id == LOCAL_WORKSPACE_ID,
-                        WorkspaceMembershipModel.subject_id == LOCAL_SUBJECT_ID,
-                        WorkspaceMembershipModel.active.is_(True),
-                        SubjectModel.active.is_(True),
-                    )
-                    .with_for_update()
-                )
-            ).one_or_none()
-            if membership is None:
-                raise RuntimeError("The local administrator membership is unavailable.")
             active_conditions = (
                 AssetProjectionModel.workspace_id == LOCAL_WORKSPACE_ID,
                 AssetProjectionModel.deleted_at.is_(None),
@@ -288,6 +264,62 @@ async def reconcile_local_admin_catalog_access() -> dict[str, object]:
                 )
             system_ids = frozenset(row.system_id for row in scope_rows if row.system_id is not None)
             domain_ids = frozenset(row.domain_id for row in scope_rows if row.domain_id is not None)
+            return system_ids, domain_ids, active_asset_count, quarantined_asset_count
+    finally:
+        await catalog_database.close()
+
+
+async def reconcile_local_admin_catalog_access() -> dict[str, object]:
+    """Materialize exact ACTIVE catalog scopes for the development administrator."""
+
+    settings = get_settings()
+    if settings.app_env != "development":
+        raise RuntimeError("Local administrator catalog reconciliation is development-only.")
+    resolver = SecretResolver()
+    (
+        system_ids,
+        domain_ids,
+        active_asset_count,
+        quarantined_asset_count,
+    ) = await _read_active_catalog_scopes(settings=settings, resolver=resolver)
+    bootstrap_database = Database(
+        settings.bootstrap_database_url,
+        password=resolver.resolve(settings.bootstrap_database_secret_ref),
+        pool_size=1,
+        max_overflow=0,
+        application_name="datariver-local-admin-catalog-access",
+    )
+    now = utc_now()
+    try:
+        async with bootstrap_database.session_factory() as session, session.begin():
+            checker = await _actor(
+                session,
+                subject_id=_LOCAL_CHECKER_SUBJECT_ID,
+                now=now,
+            )
+            await set_security_context(
+                session,
+                workspace_id=LOCAL_WORKSPACE_ID,
+                subject_id=LOCAL_SUBJECT_ID,
+            )
+            membership = (
+                await session.scalars(
+                    select(WorkspaceMembershipModel)
+                    .join(
+                        SubjectModel,
+                        SubjectModel.id == WorkspaceMembershipModel.subject_id,
+                    )
+                    .where(
+                        WorkspaceMembershipModel.workspace_id == LOCAL_WORKSPACE_ID,
+                        WorkspaceMembershipModel.subject_id == LOCAL_SUBJECT_ID,
+                        WorkspaceMembershipModel.active.is_(True),
+                        SubjectModel.active.is_(True),
+                    )
+                    .with_for_update()
+                )
+            ).one_or_none()
+            if membership is None:
+                raise RuntimeError("The local administrator membership is unavailable.")
             command = admin_catalog_access_command(
                 membership=membership,
                 system_ids=system_ids,
@@ -432,7 +464,7 @@ async def reconcile_local_admin_catalog_access() -> dict[str, object]:
                 "binding_version": binding_version,
             }
     finally:
-        await database.close()
+        await bootstrap_database.close()
 
 
 def main() -> None:

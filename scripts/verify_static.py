@@ -35,7 +35,7 @@ EXPECTED_SERVICE_SECRETS = {
     "migrate": {"postgres_password", "postgres_export_password"},
     "storage-init": {"s3_access_key", "s3_secret_key"},
     "semiconductor-seed": {"postgres_password"},
-    "local-bootstrap": {"postgres_bootstrap_password"},
+    "local-bootstrap": {"postgres_app_password", "postgres_bootstrap_password"},
     "api": {
         "postgres_app_password",
         "redis_cache_password",

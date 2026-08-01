@@ -106,6 +106,7 @@ services:
       - ./runtime/identity/local-service-identities.json:/run/datariver/local-service-identities.json:ro
     secrets:
       - postgres_bootstrap_password
+      - postgres_app_password
     depends_on:
       migrate:
         condition: service_completed_successfully

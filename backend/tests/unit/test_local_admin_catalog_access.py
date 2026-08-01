@@ -10,6 +10,7 @@ import datariver.local_admin_catalog_access as local_admin_catalog_access_module
 from datariver.domain.authz import Action, Classification
 from datariver.infrastructure.db.models.platform import WorkspaceMembershipModel
 from datariver.local_admin_catalog_access import (
+    _read_active_catalog_scopes,
     admin_catalog_access_command,
     reconcile_local_admin_catalog_access,
 )
@@ -99,6 +100,13 @@ def test_operator_workflows_reconcile_admin_scope_after_catalog_sync() -> None:
         assert '"exec"' not in reconciliation
         assert '"api"' not in reconciliation
 
+    compose_source = (root / "compose.yaml").read_text(encoding="utf-8")
+    local_bootstrap = compose_source.split("  local-bootstrap:", maxsplit=1)[1].split(
+        "\n  api:", maxsplit=1
+    )[0]
+    assert "postgres_app_password" in local_bootstrap
+    assert "postgres_bootstrap_password" in local_bootstrap
+
 
 @pytest.mark.asyncio
 async def test_local_catalog_reconciliation_rejects_non_development_before_database_access(
@@ -114,14 +122,63 @@ async def test_local_catalog_reconciliation_rejects_non_development_before_datab
         await reconcile_local_admin_catalog_access()
 
 
+@pytest.mark.asyncio
+async def test_catalog_read_failure_prevents_bootstrap_database_mutation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = SimpleNamespace(app_env="development")
+    bootstrap_database_opened = False
+
+    async def fail_catalog_read(**_: object) -> object:
+        raise RuntimeError("catalog read failed")
+
+    class UnexpectedBootstrapDatabase:
+        def __init__(self, *_: object, **__: object) -> None:
+            nonlocal bootstrap_database_opened
+            bootstrap_database_opened = True
+
+    monkeypatch.setattr(local_admin_catalog_access_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        local_admin_catalog_access_module,
+        "_read_active_catalog_scopes",
+        fail_catalog_read,
+    )
+    monkeypatch.setattr(
+        local_admin_catalog_access_module,
+        "Database",
+        UnexpectedBootstrapDatabase,
+    )
+
+    with pytest.raises(RuntimeError, match="catalog read failed"):
+        await reconcile_local_admin_catalog_access()
+
+    assert bootstrap_database_opened is False
+
+
 def test_local_catalog_reconciliation_is_fixed_atomic_and_binding_current() -> None:
     source = inspect.getsource(reconcile_local_admin_catalog_access)
+    catalog_source = inspect.getsource(_read_active_catalog_scopes)
+    bootstrap_transaction = source.split(
+        "async with bootstrap_database.session_factory() as session, session.begin():",
+        maxsplit=1,
+    )[1].split("\n    finally:", maxsplit=1)[0]
 
     assert source.index('settings.app_env != "development"') < source.index(
         "resolver = SecretResolver()"
     )
+    assert source.index("_read_active_catalog_scopes(") < source.index(
+        "settings.bootstrap_database_url"
+    )
+    assert "settings.database_url" in catalog_source
+    assert "settings.database_secret_ref" in catalog_source
+    assert "settings.bootstrap_database_url" not in catalog_source
+    assert "settings.bootstrap_database_secret_ref" not in catalog_source
+    assert "AssetProjectionModel" in catalog_source
+    assert "WorkspaceMembershipModel" not in catalog_source
+    assert "CanonicalAdminBindingModel" not in catalog_source
     assert "settings.bootstrap_database_url" in source
     assert "settings.bootstrap_database_secret_ref" in source
+    assert "AssetProjectionModel" not in source
     assert "session.begin()" in source
     assert ".with_for_update()" in source
     assert "SqlMembershipAccessRepository(session).apply(command)" in source
@@ -130,5 +187,15 @@ def test_local_catalog_reconciliation_is_fixed_atomic_and_binding_current() -> N
     assert "SqlOutboxWriter(session).add_events" in source
     assert "SqlIdempotencyStore(session)" in source
     assert "idempotency.save_result" in source
+    assert "except " not in bootstrap_transaction
+    assert bootstrap_transaction.index(
+        "SqlMembershipAccessRepository(session).apply(command)"
+    ) < bootstrap_transaction.index("_reconcile_local_canonical_admin_binding(session=session)")
+    assert bootstrap_transaction.index(
+        "_reconcile_local_canonical_admin_binding(session=session)"
+    ) < bootstrap_transaction.index("SqlOutboxWriter(session).add_events")
+    assert bootstrap_transaction.index(
+        "SqlOutboxWriter(session).add_events"
+    ) < bootstrap_transaction.index("idempotency.save_result")
     assert "update_membership_with_hardware_key" not in source
     assert "assert_manual_access_update_allowed" not in source
