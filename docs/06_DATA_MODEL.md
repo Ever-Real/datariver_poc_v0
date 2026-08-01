@@ -400,6 +400,11 @@ archiving rather than deleting referenced rows. T-Box Proposals gain an optional
 source reference so create-only filefolder bytes, upload identity and SHA-256 remain auditable.
 All mutations retain the existing workspace RLS, idempotency and ETag boundaries.
 
+Revision `0087` replaces only the existing Knowledge Studio Proposal request function so its
+idempotency-key digest has a distinct local name and every replay column is table-alias qualified.
+It adds no table, column, role, grant or RLS change; the accepted upload/Catalog pin, Draft version,
+request hash, `If-Match`, single job/outbox and exact idempotent replay contracts remain unchanged.
+
 PostgreSQL releases remain canonical; Neo4j can be deleted and rebuilt. Graph classification is a
 maximum envelope enforced on changeset operations, complete submission/review, publication,
 immutable source preparation, model-output persistence and release reads. Model operations inherit

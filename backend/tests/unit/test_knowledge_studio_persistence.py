@@ -65,6 +65,9 @@ INGESTION_MIGRATION = ROOT / "backend/alembic/versions/0081_governed_studio_data
 CATALOG_PIN_MIGRATION = (
     ROOT / "backend/alembic/versions/0086_knowledge_studio_catalog_metadata_pin_v2.py"
 )
+PROPOSAL_IDEMPOTENCY_FIX_MIGRATION = (
+    ROOT / "backend/alembic/versions/0087_fix_knowledge_studio_proposal_job_idempotency.py"
+)
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
@@ -77,6 +80,18 @@ def _catalog_pin_migration() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "test_knowledge_studio_catalog_pin_v2",
         CATALOG_PIN_MIGRATION,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _proposal_idempotency_fix_migration() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "test_knowledge_studio_proposal_idempotency_fix",
+        PROPOSAL_IDEMPOTENCY_FIX_MIGRATION,
     )
     assert spec is not None
     assert spec.loader is not None
@@ -715,6 +730,31 @@ def test_catalog_pin_v2_migration_is_function_only_asyncpg_safe_and_canonical() 
     assert "TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL" in generator
     assert "KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2" in initial
     assert "metadata_fingerprint" in initial
+
+
+def test_proposal_idempotency_fix_is_function_only_reversible_and_canonical() -> None:
+    migration_source = PROPOSAL_IDEMPOTENCY_FIX_MIGRATION.read_text(encoding="utf-8")
+    migration = _proposal_idempotency_fix_migration()
+    fixed = migration.fixed_command_function_sql()
+    legacy = migration.legacy_command_function_sql()
+
+    assert 'revision: str = "0087"' in migration_source
+    assert 'down_revision: str | Sequence[str] | None = "0086"' in migration_source
+    assert fixed.count("CREATE OR REPLACE FUNCTION") == 1
+    assert "idempotency_key_hash text :=" in fixed
+    assert "FROM integration.idempotency_keys AS stored_replay" in fixed
+    assert "stored_replay.key_hash = idempotency_key_hash" in fixed
+    assert "key_hash text := encode" in legacy
+    assert "integration.idempotency_keys.key_hash = key_hash" in legacy
+    for source in (fixed, legacy):
+        assert "CREATE TABLE" not in source
+        assert "ALTER TABLE" not in source
+
+    generator = GENERATOR.read_text(encoding="utf-8")
+    initial = INITIAL_MIGRATION.read_text(encoding="utf-8")
+    assert "0087_fix_knowledge_studio_proposal_job_idempotency.py" in generator
+    assert "idempotency_key_hash text :=" in initial
+    assert "FROM integration.idempotency_keys AS stored_replay" in initial
 
 
 def test_publication_migration_replaces_owner_only_rls_with_maker_checker_policy() -> None:

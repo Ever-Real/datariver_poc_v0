@@ -17,7 +17,7 @@ from datariver.application.services.knowledge_studio_proposal_jobs import (
     KnowledgeStudioProposalJobService,
 )
 from datariver.domain.authz import Action, Classification, SubjectAttributes
-from datariver.domain.common import canonical_json_hash
+from datariver.domain.common import ConflictError, canonical_json_hash
 from datariver.domain.knowledge_pipeline import ModelBinding
 from datariver.domain.knowledge_studio import TBoxProposalMode
 from datariver.domain.knowledge_studio_proposal_jobs import (
@@ -463,6 +463,7 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
             prepared_at=datetime.now(UTC),
         )
         app_sessions = async_sessionmaker(app, expire_on_commit=False)
+        request_idempotency_key = f"proposal-request-{uuid4()}"
         async with app_sessions() as session, session.begin():
             service = KnowledgeStudioProposalJobService(
                 store=SqlKnowledgeStudioProposalJobStore(session)
@@ -471,8 +472,46 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
                 pins=pins,
                 request_hash="e" * 64,
                 maximum_attempts=3,
-                idempotency_key=f"proposal-request-{uuid4()}",
+                idempotency_key=request_idempotency_key,
             )
+        async with app_sessions() as session, session.begin():
+            replayed = await KnowledgeStudioProposalJobService(
+                store=SqlKnowledgeStudioProposalJobStore(session)
+            ).enqueue(
+                pins=pins,
+                request_hash="e" * 64,
+                maximum_attempts=3,
+                idempotency_key=request_idempotency_key,
+            )
+        assert replayed.job_id == queued.job_id
+        with pytest.raises(ConflictError, match="changed concurrently"):
+            async with app_sessions() as session, session.begin():
+                await KnowledgeStudioProposalJobService(
+                    store=SqlKnowledgeStudioProposalJobStore(session)
+                ).enqueue(
+                    pins=pins,
+                    request_hash="9" * 64,
+                    maximum_attempts=3,
+                    idempotency_key=request_idempotency_key,
+                )
+        async with owner.connect() as connection:
+            replay_side_effects = await connection.execute(
+                text(
+                    """
+                    SELECT
+                        (SELECT count(*) FROM knowledge.tbox_proposal_jobs
+                         WHERE workspace_id = :workspace_id AND id = :job_id),
+                        (SELECT count(*) FROM integration.outbox_events
+                         WHERE workspace_id = :workspace_id
+                           AND aggregate_id = :job_id
+                           AND aggregate_type = 'knowledge_tbox_proposal_job')
+                    """
+                ),
+                {"workspace_id": workspace_id, "job_id": queued.job_id},
+            )
+            jobs, request_outbox = replay_side_effects.one()
+        assert jobs == 1
+        assert request_outbox == 1
         worker_store = SqlKnowledgeStudioProposalJobWorkerStore(
             async_sessionmaker(worker, expire_on_commit=False)
         )

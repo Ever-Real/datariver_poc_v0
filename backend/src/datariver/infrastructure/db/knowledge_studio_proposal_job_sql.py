@@ -803,7 +803,9 @@ DECLARE
     asset catalog.assets_projection%ROWTYPE;
     job_id uuid := gen_random_uuid();
     now_at timestamptz := transaction_timestamp();
-    key_hash text := encode(sha256(convert_to(p_idempotency_key, 'UTF8')), 'hex');
+    idempotency_key_hash text := encode(
+        sha256(convert_to(p_idempotency_key, 'UTF8')), 'hex'
+    );
     replay integration.idempotency_keys%ROWTYPE;
     source_manifest_id uuid;
     source_asset_id uuid;
@@ -843,11 +845,11 @@ BEGIN
         p_workspace_id::text || ':' || 'knowledge.tbox-proposal.request.v1' || ':' ||
             p_idempotency_key, 0
     ));
-    SELECT * INTO replay
-    FROM integration.idempotency_keys
-    WHERE workspace_id = p_workspace_id
-      AND operation = 'knowledge.tbox-proposal.request.v1'
-      AND integration.idempotency_keys.key_hash = key_hash;
+    SELECT stored_replay.* INTO replay
+    FROM integration.idempotency_keys AS stored_replay
+    WHERE stored_replay.workspace_id = p_workspace_id
+      AND stored_replay.operation = 'knowledge.tbox-proposal.request.v1'
+      AND stored_replay.key_hash = idempotency_key_hash;
     IF replay.workspace_id IS NOT NULL THEN
         IF replay.request_hash <> p_request_hash THEN
             RAISE EXCEPTION 'T-Box Proposal idempotency key was reused'
@@ -1047,7 +1049,7 @@ BEGIN
         workspace_id, operation, key_hash, request_hash, result,
         created_at, expires_at
     ) VALUES (
-        p_workspace_id, 'knowledge.tbox-proposal.request.v1', key_hash,
+        p_workspace_id, 'knowledge.tbox-proposal.request.v1', idempotency_key_hash,
         p_request_hash, jsonb_build_object('job_id', job_id::text),
         now_at, now_at + interval '24 hours'
     );
