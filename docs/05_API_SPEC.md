@@ -64,7 +64,12 @@ to the presigned private object endpoint, so neither Nginx nor the API buffers t
 
 `POST /knowledge/studio/drafts/{draft_id}/tbox/proposal-jobs` accepts either one exact accepted
 manifest/version pin or one authorization-pruned Catalog Asset/field selection and returns `202`.
-It requires the exact Draft ETag and an `Idempotency-Key`. `GET` collection/detail endpoints are
+The Catalog variant also requires `expected_selection_fingerprint`, an opaque value returned by the
+server's exact source-detail response. The browser neither recomputes that value nor supplies
+metadata. The server reauthorizes and reloads the Asset, rejects a stale/forged fingerprint with
+`409 CATALOG_PROPOSAL_SELECTION_STALE`, and constructs the immutable metadata pin from the current
+server detail only. It requires the exact Draft ETag and an `Idempotency-Key`. `GET`
+collection/detail endpoints are
 owner-scoped resumable polling resources; `POST .../{job_id}/cancel` and
 `POST .../{job_id}/retry` are job-version fenced and idempotent. Every route re-authorizes the
 current mutable T-Box Draft and `kg.edit` policy. States are `QUEUED`, `RUNNING`, `RETRY_WAIT`,
@@ -448,7 +453,8 @@ cannot re-enter the ordinary workflow.
 | `GET /knowledge/studio/drafts/{draft_id}/tbox/proposals/{proposal_id}` | author `kg.read`; independent reviewer `kg.review` | read one typed proposal and its sanitized conflict documents |
 | `POST /knowledge/studio/drafts/{draft_id}/tbox/proposals/{proposal_id}/apply` | author `kg.edit` | one-time, exact-version, idempotent proposal acceptance; default `KEEP_ORIGINAL` rewires dependent proposal references to the retained human-authored stable IDs, explicit `RESOLVE` requires one decision per conflict, and exclusions/name/Property-type overrides are restricted to stable IDs from that exact Proposal before the remaining aggregate is revalidated |
 | `GET /knowledge/studio/drafts/{draft_id}/tbox/catalog-sources` | author `kg.edit` + catalog source policy | use the same governed Catalog search contract as the primary search workspace, then return only authorized Dataset/Table/View metadata while the Draft is in TBOX; classification ceiling, provider policy and bounded field projection match A-Box source selection |
-| `GET /knowledge/studio/drafts/{draft_id}/tbox/catalog-sources/{asset_id}` | author `kg.edit` + catalog source policy | resolve one authorized catalog source for T-Box Proposal preparation; returns exact source/projection versions and bounded field paths, never rows or provider queries |
+| `GET /knowledge/studio/drafts/{draft_id}/tbox/catalog-sources/{asset_id}` | author `kg.edit` + catalog source policy | resolve one authorized catalog source for T-Box Proposal preparation; returns exact source/projection versions, an opaque `selection_fingerprint`, asset description and at most 1,000 bounded field paths with description/type/tag/term metadata and truncation evidence; never returns rows, credentials or provider queries |
+| `POST /knowledge/studio/drafts/{draft_id}/tbox/proposal-jobs` (`CATALOG_SCHEMA`) | author `kg.edit` + catalog source policy | enqueue one durable Catalog Proposal from at most 100 unique exact paths and the server-issued opaque `expected_selection_fingerprint`; reauthorizes Workspace/Draft/Asset/classification, reloads current detail and builds a V2 immutable pin solely from server metadata before returning `202`; stale/forged fences return `409` and create no job/outbox |
 | `POST /knowledge/studio/drafts/{draft_id}/tbox/catalog-proposals` | author `kg.edit` + catalog source policy | ETag-fenced typed Proposal from one authorized local Asset UUID and at most 100 exact server-returned field paths; server pins source/projection versions and records deterministic validation evidence |
 | `POST /knowledge/studio/drafts/{draft_id}/submit-review` | author `kg.edit` | freeze a completed ABOX Draft in REVIEW for independent inspection; requires exact `If-Match` and `Idempotency-Key` |
 | `POST /knowledge/studio/drafts/{draft_id}/discard` | author `kg.edit` | audited terminal Discard from DRAFT or REVIEW; keeps the row/evidence and requires exact `If-Match` and `Idempotency-Key` |

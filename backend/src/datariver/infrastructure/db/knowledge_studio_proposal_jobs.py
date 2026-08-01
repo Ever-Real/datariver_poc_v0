@@ -38,7 +38,10 @@ from datariver.domain.knowledge_studio import (
     TBoxProposalMode,
 )
 from datariver.domain.knowledge_studio_proposal_jobs import (
+    KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V1,
+    KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
     KnowledgeStudioAcceptedUploadPin,
+    KnowledgeStudioCatalogFieldMetadataPin,
     KnowledgeStudioCatalogSourcePin,
     KnowledgeStudioProposalInputKind,
     KnowledgeStudioProposalJobPins,
@@ -713,28 +716,102 @@ def _accepted_upload_pin(
 
 
 def _catalog_source_pin(document: Mapping[str, object]) -> KnowledgeStudioCatalogSourcePin:
+    contract_version = document.get(
+        "contract_version",
+        KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V1,
+    )
+    if not isinstance(contract_version, str) or contract_version not in {
+        KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V1,
+        KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
+    }:
+        raise ValidationError("The Catalog source pin contract is unsupported.")
+    v1_keys = {
+        "kind",
+        "asset_id",
+        "name",
+        "asset_type",
+        "classification",
+        "source_version",
+        "projection_source_version",
+        "selected_field_paths",
+        "platform",
+        "database_name",
+        "schema_name",
+        "domain",
+        "tags",
+        "glossary_terms",
+    }
     _exact_keys(
         document,
-        {
-            "kind",
-            "asset_id",
-            "name",
-            "asset_type",
-            "classification",
-            "source_version",
-            "projection_source_version",
-            "selected_field_paths",
-            "platform",
-            "database_name",
-            "schema_name",
-            "domain",
-            "tags",
-            "glossary_terms",
+        v1_keys
+        if contract_version == KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V1
+        else v1_keys
+        | {
+            "contract_version",
+            "description",
+            "description_truncated",
+            "field_metadata",
+            "metadata_fingerprint",
         },
         "Catalog source pin",
     )
     if document["kind"] != KnowledgeStudioProposalInputKind.CATALOG_SCHEMA.value:
         raise ValidationError("The Catalog source pin kind is invalid.")
+    raw_field_metadata = document.get("field_metadata", [])
+    if not isinstance(raw_field_metadata, list):
+        raise ValidationError("The Catalog source field metadata is invalid.")
+    field_metadata: list[KnowledgeStudioCatalogFieldMetadataPin] = []
+    for raw_item in raw_field_metadata:
+        item = _mapping(raw_item, "Catalog field metadata")
+        _exact_keys(
+            item,
+            {
+                "field_path",
+                "field_type",
+                "native_data_type",
+                "description",
+                "description_truncated",
+                "tags",
+                "tags_truncated",
+                "glossary_terms",
+                "terms_truncated",
+            },
+            "Catalog field metadata",
+        )
+        field_metadata.append(
+            KnowledgeStudioCatalogFieldMetadataPin(
+                field_path=_text(item["field_path"], "Catalog field path", 2_000),
+                field_type=_optional_text(item["field_type"], 500),
+                native_data_type=_optional_text(item["native_data_type"], 500),
+                description=_optional_text(item["description"], 1_000),
+                description_truncated=_boolean(
+                    item["description_truncated"],
+                    "Catalog field description truncation",
+                ),
+                tags=_string_tuple(
+                    item["tags"],
+                    "Catalog field tags",
+                    maximum_items=20,
+                    maximum_length=240,
+                    allow_empty=True,
+                ),
+                tags_truncated=_boolean(
+                    item["tags_truncated"],
+                    "Catalog field tag truncation",
+                ),
+                glossary_terms=_string_tuple(
+                    item["glossary_terms"],
+                    "Catalog field glossary terms",
+                    maximum_items=20,
+                    maximum_length=240,
+                    allow_empty=True,
+                ),
+                terms_truncated=_boolean(
+                    item["terms_truncated"],
+                    "Catalog field term truncation",
+                ),
+            )
+        )
     result = KnowledgeStudioCatalogSourcePin(
         asset_id=_uuid(document["asset_id"], "Catalog asset"),
         name=_text(document["name"], "Catalog source name", 255),
@@ -769,6 +846,18 @@ def _catalog_source_pin(document: Mapping[str, object]) -> KnowledgeStudioCatalo
             maximum_items=100,
             maximum_length=255,
             allow_empty=True,
+        ),
+        contract_version=str(contract_version),
+        description=_optional_text(document.get("description"), 1_000),
+        description_truncated=_boolean(
+            document.get("description_truncated", False),
+            "Catalog description truncation",
+        ),
+        field_metadata=tuple(field_metadata),
+        metadata_fingerprint=(
+            _sha256(document["metadata_fingerprint"], "Catalog metadata fingerprint")
+            if contract_version == KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2
+            else None
         ),
     )
     result.validate()
@@ -1049,6 +1138,12 @@ def _mapping(value: object, label: str) -> Mapping[str, object]:
     if not isinstance(value, Mapping) or any(not isinstance(key, str) for key in value):
         raise ValidationError(f"The {label} is invalid.")
     return cast(Mapping[str, object], value)
+
+
+def _boolean(value: object, label: str) -> bool:
+    if not isinstance(value, bool):
+        raise ValidationError(f"The {label} is invalid.")
+    return value
 
 
 def _exact_keys(document: Mapping[str, object], expected: set[str], label: str) -> None:

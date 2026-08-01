@@ -331,6 +331,26 @@ def _load_knowledge_source_ingress_revision() -> ModuleType:
     return module
 
 
+def _load_studio_catalog_pin_v2_revision() -> ModuleType:
+    """Load the final Catalog metadata pin function contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0086_knowledge_studio_catalog_metadata_pin_v2.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_studio_catalog_pin_v2_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Studio Catalog Pin V2 migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -836,6 +856,13 @@ def build_upgrade() -> ops.UpgradeOps:
     operations.extend(
         ops.ExecuteSQLOp(statement)
         for statement in _sql_statements(knowledge_source_ingress._RUNTIME_FENCES_SQL)
+    )
+    studio_catalog_pin_v2 = _load_studio_catalog_pin_v2_revision()
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in studio_catalog_pin_v2.split_postgresql_statements(
+            studio_catalog_pin_v2.TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL
+        )
     )
     return ops.UpgradeOps(ops=operations)
 

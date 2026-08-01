@@ -2521,7 +2521,14 @@ class KnowledgeStudioTBoxProposalJobRequest(BaseModel):
     source_upload_id: UUID | None = None
     source_manifest_version: int | None = Field(default=None, ge=1)
     asset_id: UUID | None = None
-    selected_field_paths: list[str] = Field(default_factory=list, max_length=100)
+    selected_field_paths: list[Annotated[str, Field(min_length=1, max_length=2_000)]] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    expected_selection_fingerprint: str | None = Field(
+        default=None,
+        pattern="^[0-9a-f]{64}$",
+    )
 
     @model_validator(mode="after")
     def validate_source_shape(self) -> KnowledgeStudioTBoxProposalJobRequest:
@@ -2531,6 +2538,7 @@ class KnowledgeStudioTBoxProposalJobRequest(BaseModel):
                 or self.source_manifest_version is None
                 or self.asset_id is not None
                 or self.selected_field_paths
+                or self.expected_selection_fingerprint is not None
             ):
                 raise ValueError("A document Proposal job requires one accepted upload pin.")
         elif (
@@ -2538,6 +2546,7 @@ class KnowledgeStudioTBoxProposalJobRequest(BaseModel):
             or not self.selected_field_paths
             or self.source_upload_id is not None
             or self.source_manifest_version is not None
+            or self.expected_selection_fingerprint is None
         ):
             raise ValueError("A Catalog Proposal job requires one governed Catalog source.")
         if (self.mode == "MERGE_INTO_CURRENT") != (self.target_block_id is not None):
@@ -2768,6 +2777,24 @@ class KnowledgeStudioBindingMutationResponse(BaseModel):
     binding: KnowledgeStudioBindingResponse
 
 
+class KnowledgeStudioCatalogFieldMetadataResponse(BaseModel):
+    field_path: str = Field(min_length=1, max_length=2_000)
+    field_type: str | None = Field(default=None, max_length=500)
+    native_data_type: str | None = Field(default=None, max_length=500)
+    description: str | None = Field(default=None, max_length=1_000)
+    description_truncated: bool
+    tags: list[Annotated[str, Field(min_length=1, max_length=240)]] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+    tags_truncated: bool
+    glossary_terms: list[Annotated[str, Field(min_length=1, max_length=240)]] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+    terms_truncated: bool
+
+
 class KnowledgeStudioSourceDatasetResponse(BaseModel):
     id: UUID
     name: str
@@ -2786,8 +2813,21 @@ class KnowledgeStudioSourceDatasetResponse(BaseModel):
     field_paths: list[str] = Field(max_length=1_000)
     fields_truncated: bool
     domain: str | None = None
-    tags: list[str] = Field(default_factory=list, max_length=100)
-    glossary_terms: list[str] = Field(default_factory=list, max_length=100)
+    tags: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    glossary_terms: list[Annotated[str, Field(min_length=1, max_length=255)]] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+    description: str | None = Field(default=None, max_length=1_000)
+    description_truncated: bool = False
+    field_metadata: list[KnowledgeStudioCatalogFieldMetadataResponse] = Field(
+        default_factory=list,
+        max_length=1_000,
+    )
+    selection_fingerprint: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
 
 
 class KnowledgeStudioSourcePageResponse(BaseModel):

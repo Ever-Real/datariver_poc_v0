@@ -307,6 +307,57 @@ describe('Knowledge Studio API', () => {
       .toBe('proposal-job-key')
   })
 
+  it('sends the server-issued Catalog selection fingerprint as an opaque fence', async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(jsonResponse({
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cc',
+      draft_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
+      input_kind: 'CATALOG_SCHEMA',
+      mode: 'APPEND_LAYER',
+      target_block_id: null,
+      state: 'QUEUED',
+      stage: 'QUEUED',
+      progress_percent: 0,
+      attempt_count: 0,
+      maximum_attempts: 4,
+      last_failure_code: null,
+      version: 1,
+      created_at: '2026-08-01T01:00:00Z',
+      updated_at: '2026-08-01T01:00:00Z',
+      completed_at: null,
+      result_proposal_id: null,
+      result_evidence_hash: null,
+      supersedes_job_id: null,
+    }, '"1"', 202))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    await createKnowledgeStudioTBoxProposalJob(
+      client,
+      '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0',
+      {
+        input_kind: 'CATALOG_SCHEMA',
+        asset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
+        selected_field_paths: ['order_id'],
+        expected_selection_fingerprint: 'f'.repeat(64),
+        mode: 'APPEND_LAYER',
+      },
+      '"2"',
+      'catalog-proposal-key',
+    )
+
+    const requestBody = fetchMock.mock.calls[0]?.[1]?.body
+    expect(JSON.parse(typeof requestBody === 'string' ? requestBody : '{}')).toEqual({
+      input_kind: 'CATALOG_SCHEMA',
+      asset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
+      selected_field_paths: ['order_id'],
+      expected_selection_fingerprint: 'f'.repeat(64),
+      mode: 'APPEND_LAYER',
+    })
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('If-Match')).toBe('"2"')
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('Idempotency-Key'))
+      .toBe('catalog-proposal-key')
+  })
+
   it('fences Proposal job cancel and retry commands with the current job ETag', async () => {
     const job = {
       id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3cc',

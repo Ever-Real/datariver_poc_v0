@@ -832,6 +832,9 @@ describe('GraphBuilder', () => {
             domain: 'Finance',
             tags: ['gold'],
             glossary_terms: ['Order'],
+            description_truncated: false,
+            field_metadata: [],
+            selection_fingerprint: null,
           }],
           page: {
             next_cursor: path.includes('cursor=catalog-next') ? null : 'catalog-next',
@@ -858,6 +861,30 @@ describe('GraphBuilder', () => {
             domain: 'Finance',
             tags: ['gold'],
             glossary_terms: ['Order'],
+            description: 'Governed order facts',
+            description_truncated: false,
+            field_metadata: [{
+              field_path: 'order_id',
+              field_type: 'KEY',
+              native_data_type: 'uuid',
+              description: 'Order identifier',
+              description_truncated: false,
+              tags: ['gold'],
+              tags_truncated: false,
+              glossary_terms: ['Order'],
+              terms_truncated: false,
+            }, {
+              field_path: 'amount',
+              field_type: null,
+              native_data_type: 'numeric(18,2)',
+              description: 'Gross amount',
+              description_truncated: false,
+              tags: [],
+              tags_truncated: false,
+              glossary_terms: ['Amount'],
+              terms_truncated: false,
+            }],
+            selection_fingerprint: 'f'.repeat(64),
           },
           observed_at: '2026-07-31T01:00:00Z',
           stale_at: null,
@@ -970,6 +997,8 @@ describe('GraphBuilder', () => {
     const fields = await screen.findByRole('table', { name: 'orders 컬럼 선택' })
     expect(within(fields).getByRole('checkbox', { name: 'order_id 컬럼 선택' })).toBeChecked()
     expect(within(fields).getByRole('checkbox', { name: 'amount 컬럼 선택' })).toBeChecked()
+    expect(within(fields).getByText('Order identifier')).toBeInTheDocument()
+    expect(within(fields).getByText('numeric(18,2)')).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: '현재 블록 Proposal' })).toBeDisabled()
     fireEvent.click(within(dialog).getByRole('button', { name: '새 블록 Proposal' }))
 
@@ -983,10 +1012,86 @@ describe('GraphBuilder', () => {
       input_kind: 'CATALOG_SCHEMA',
       asset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
       selected_field_paths: ['amount', 'order_id'],
+      expected_selection_fingerprint: 'f'.repeat(64),
       mode: 'APPEND_LAYER',
     })
     expect(fetchMock.mock.calls.some(([input]) => (
       requestUrl(input).endsWith('/tbox/catalog-proposals')
+    ))).toBe(false)
+  })
+
+  it('requires a fresh server-issued Catalog fingerprint before creating a job', async () => {
+    const assetId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0'
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`)) return Promise.resolve(json(tbox()))
+      if (path.includes(`/drafts/${draftId}/tbox/proposal-jobs?`)) {
+        return Promise.resolve(json({ items: [], page: { next_cursor: null, limit: 20 } }))
+      }
+      if (path.includes(`/drafts/${draftId}/tbox/catalog-sources?`)) {
+        return Promise.resolve(json({
+          items: [{
+            id: assetId,
+            name: 'orders',
+            asset_type: 'TABLE',
+            classification: 'INTERNAL',
+            source_version: 'projection-v4',
+            projection_source_version: 'projection-v4',
+            field_paths: [],
+            fields_truncated: true,
+            description_truncated: false,
+            field_metadata: [],
+            selection_fingerprint: null,
+          }],
+          page: { next_cursor: null, limit: 50 },
+        }))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/catalog-sources/${assetId}`)) {
+        return Promise.resolve(json({
+          dataset: {
+            id: assetId,
+            name: 'orders',
+            asset_type: 'TABLE',
+            classification: 'INTERNAL',
+            source_version: 'datahub-v8',
+            projection_source_version: 'projection-v4',
+            field_paths: ['order_id'],
+            fields_truncated: false,
+            description_truncated: false,
+            field_metadata: [],
+            selection_fingerprint: null,
+          },
+          observed_at: '2026-08-01T01:00:00Z',
+          stale_at: null,
+        }))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    fireEvent.click(screen.getByRole('button', { name: '블록 추가' }))
+    fireEvent.click(within(screen.getByRole('button', { name: '블록 추가' }).parentElement!)
+      .getByRole('button', { name: 'DB 메타데이터' }))
+    const results = await screen.findByRole('table', { name: 'T-Box 카탈로그 검색 결과' })
+    fireEvent.click(within(results).getByText('orders'))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Dataset을 다시 불러오세요')
+    expect(screen.getByRole('button', { name: '새 블록 Proposal' })).toBeDisabled()
+    expect(fetchMock.mock.calls.some(([input, options]) => (
+      requestUrl(input).endsWith(`/drafts/${draftId}/tbox/proposal-jobs`)
+      && options?.method === 'POST'
     ))).toBe(false)
   })
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
 from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import cast
 from unittest.mock import AsyncMock
 from uuid import UUID
@@ -61,12 +62,27 @@ BUILDER_MIGRATION = ROOT / "backend/alembic/versions/0063_ontology_builder_and_i
 HIERARCHY_MIGRATION = ROOT / "backend/alembic/versions/0064_normalize_tbox_hierarchy.py"
 SESSION_MIGRATION = ROOT / "backend/alembic/versions/0066_knowledge_studio_session_domains.py"
 INGESTION_MIGRATION = ROOT / "backend/alembic/versions/0081_governed_studio_database_ingestion.py"
+CATALOG_PIN_MIGRATION = (
+    ROOT / "backend/alembic/versions/0086_knowledge_studio_catalog_metadata_pin_v2.py"
+)
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
 
 def _table(name: str) -> Table:
     return Base.metadata.tables[name]
+
+
+def _catalog_pin_migration() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "test_knowledge_studio_catalog_pin_v2",
+        CATALOG_PIN_MIGRATION,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def test_asset_release_cursor_is_canonical_and_rejects_tampering() -> None:
@@ -676,6 +692,29 @@ def test_graph_and_ontology_provenance_is_additive_and_legacy_nullable() -> None
         assert graph.c[column].nullable is True
     for column in ("schema_contract_version", "base_ontology_version_id", "created_by"):
         assert ontology.c[column].nullable is True
+
+
+def test_catalog_pin_v2_migration_is_function_only_asyncpg_safe_and_canonical() -> None:
+    migration_source = CATALOG_PIN_MIGRATION.read_text(encoding="utf-8")
+    migration = _catalog_pin_migration()
+    statements = migration.split_postgresql_statements(
+        migration.TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL
+    )
+
+    assert 'revision: str = "0086"' in migration_source
+    assert 'down_revision: str | Sequence[str] | None = "0085"' in migration_source
+    assert len(statements) == 11
+    assert all(statement.count("CREATE OR REPLACE FUNCTION") == 1 for statement in statements)
+    assert "CREATE TABLE" not in migration_source
+    assert "ALTER TABLE" not in migration_source
+    assert "knowledge.tbox_proposal_jobs" in migration._DOWNGRADE_REFUSAL_SQL
+    assert "contract_version" in migration._DOWNGRADE_REFUSAL_SQL
+
+    generator = GENERATOR.read_text(encoding="utf-8")
+    initial = INITIAL_MIGRATION.read_text(encoding="utf-8")
+    assert "TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL" in generator
+    assert "KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2" in initial
+    assert "metadata_fingerprint" in initial
 
 
 def test_publication_migration_replaces_owner_only_rls_with_maker_checker_policy() -> None:

@@ -362,6 +362,22 @@ export interface KnowledgeStudioSourceDataset {
   domain?: string
   tags?: string[]
   glossary_terms?: string[]
+  description?: string
+  description_truncated: boolean
+  field_metadata: KnowledgeStudioCatalogFieldMetadata[]
+  selection_fingerprint?: string | null
+}
+
+export interface KnowledgeStudioCatalogFieldMetadata {
+  field_path: string
+  field_type?: string | null
+  native_data_type?: string | null
+  description?: string | null
+  description_truncated: boolean
+  tags: string[]
+  tags_truncated: boolean
+  glossary_terms: string[]
+  terms_truncated: boolean
 }
 
 export interface KnowledgeStudioSourcePage {
@@ -942,6 +958,7 @@ export async function createKnowledgeStudioTBoxProposalJob(
         input_kind: 'CATALOG_SCHEMA'
         asset_id: string
         selected_field_paths: string[]
+        expected_selection_fingerprint: string
         target_block_id?: string
         mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
       },

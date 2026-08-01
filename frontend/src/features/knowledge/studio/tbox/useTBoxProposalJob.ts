@@ -106,6 +106,7 @@ interface StartDocumentProposal {
 interface StartCatalogProposal {
   assetId: string
   selectedFieldPaths: string[]
+  expectedSelectionFingerprint: string
   mode: 'MERGE_INTO_CURRENT' | 'APPEND_LAYER'
   targetBlockId?: string
 }
@@ -505,10 +506,15 @@ export function useTBoxProposalJob({
   const startCatalog = useCallback(async ({
     assetId,
     selectedFieldPaths,
+    expectedSelectionFingerprint,
     mode,
     targetBlockId,
   }: StartCatalogProposal): Promise<void> => {
     if (busy || isActiveTBoxProposalJob(job)) return
+    if (!expectedSelectionFingerprint) {
+      setError('카탈로그 메타데이터가 변경되었을 수 있습니다. Dataset을 다시 불러오세요.')
+      return
+    }
     operationStarted.current = true
     operationGeneration.current += 1
     const { controller, generation } = beginOperation()
@@ -527,6 +533,7 @@ export function useTBoxProposalJob({
           input_kind: 'CATALOG_SCHEMA',
           asset_id: assetId,
           selected_field_paths: selectedFieldPaths,
+          expected_selection_fingerprint: expectedSelectionFingerprint,
           target_block_id: mode === 'MERGE_INTO_CURRENT' ? targetBlockId : undefined,
           mode,
         },

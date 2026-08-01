@@ -117,6 +117,11 @@ type CanvasNode = SchemaNode | LayerGroupNode
 interface CatalogFieldRow {
   path: string
   selected: boolean
+  dataType?: string
+  description?: string
+  tags: string[]
+  glossaryTerms: string[]
+  metadataTruncated: boolean
 }
 
 interface SchemaEdgeData extends Record<string, unknown> {
@@ -1600,11 +1605,28 @@ export function GraphBuilder({
     },
   ], [])
   const catalogFieldRows = useMemo<CatalogFieldRow[]>(
-    () => (selectedCatalog?.field_paths ?? []).map((path) => ({
-      path,
-      selected: selectedCatalogFields.has(path),
-    })),
-    [selectedCatalog?.field_paths, selectedCatalogFields],
+    () => {
+      const metadataByPath = new Map(
+        (selectedCatalog?.field_metadata ?? []).map((item) => [item.field_path, item]),
+      )
+      return (selectedCatalog?.field_paths ?? []).map((path) => {
+        const metadata = metadataByPath.get(path)
+        return {
+          path,
+          selected: selectedCatalogFields.has(path),
+          dataType: metadata?.native_data_type ?? metadata?.field_type ?? undefined,
+          description: metadata?.description ?? undefined,
+          tags: metadata?.tags ?? [],
+          glossaryTerms: metadata?.glossary_terms ?? [],
+          metadataTruncated: Boolean(
+            metadata?.description_truncated
+            || metadata?.tags_truncated
+            || metadata?.terms_truncated
+          ),
+        }
+      })
+    },
+    [selectedCatalog?.field_metadata, selectedCatalog?.field_paths, selectedCatalogFields],
   )
   const catalogFieldColumns = useMemo<ColumnDef<CatalogFieldRow>[]>(() => [
     {
@@ -1635,6 +1657,28 @@ export function GraphBuilder({
       cell: ({ row }) => (
         <span className="block max-w-80 truncate" title={row.original.path}>
           {row.original.path}
+        </span>
+      ),
+    },
+    {
+      accessorKey: 'dataType',
+      header: '타입',
+      size: 120,
+      cell: ({ row }) => row.original.dataType || '—',
+    },
+    {
+      accessorKey: 'description',
+      header: '설명 · Tag · Term',
+      size: 360,
+      cell: ({ row }) => (
+        <span className="grid min-w-0 gap-0.5 text-[10px]">
+          <span className="truncate" title={row.original.description}>
+            {row.original.description || '설명 없음'}
+            {row.original.metadataTruncated ? ' · 일부' : ''}
+          </span>
+          <span className="truncate text-slate-500">
+            {[...row.original.tags, ...row.original.glossaryTerms].join(' · ') || '—'}
+          </span>
         </span>
       ),
     },
@@ -2612,6 +2656,7 @@ export function GraphBuilder({
       !selectedCatalog
       || selectedCatalogFields.size === 0
       || selectedCatalogFields.size > 100
+      || !selectedCatalog.selection_fingerprint
       || documentOperationBusy
       || locked
       || !selectedBlock
@@ -2621,6 +2666,7 @@ export function GraphBuilder({
     await documentProposalJob.startCatalog({
       assetId: selectedCatalog.id,
       selectedFieldPaths: [...selectedCatalogFields].sort(),
+      expectedSelectionFingerprint: selectedCatalog.selection_fingerprint,
       targetBlockId: mode === 'MERGE_INTO_CURRENT' ? selectedBlock.id : undefined,
       mode,
     })
@@ -3659,6 +3705,7 @@ export function GraphBuilder({
                   !selectedCatalog
                   || selectedCatalogFields.size === 0
                   || selectedCatalogFields.size > 100
+                  || !selectedCatalog.selection_fingerprint
                   || documentProposalJob.busy
                 }
                 onClick={() => void proposeSelectedCatalog('APPEND_LAYER')}
@@ -3672,6 +3719,7 @@ export function GraphBuilder({
                   !selectedCatalog
                   || selectedCatalogFields.size === 0
                   || selectedCatalogFields.size > 100
+                  || !selectedCatalog.selection_fingerprint
                   || documentProposalJob.busy
                   || appendOnlySourceMode
                   || !blockAcceptsSource('CATALOG_METADATA')
@@ -3765,9 +3813,20 @@ export function GraphBuilder({
                     Source {selectedCatalog.source_version} · Projection{' '}
                     {selectedCatalog.projection_source_version}
                   </p>
+                  {selectedCatalog.description && (
+                    <p className="my-2 text-[10px] leading-4 text-slate-600">
+                      {selectedCatalog.description}
+                      {selectedCatalog.description_truncated ? ' · 일부' : ''}
+                    </p>
+                  )}
                   {selectedCatalogFields.size > 100 && (
                     <p role="alert" className="text-[10px] text-red-700">
                       Typed Proposal 입력은 최대 100개 컬럼입니다. 선택을 줄여 주세요.
+                    </p>
+                  )}
+                  {!catalogDetailLoading && !selectedCatalog.selection_fingerprint && (
+                    <p role="alert" className="text-[10px] text-red-700">
+                      카탈로그 메타데이터 변경 확인값이 없습니다. Dataset을 다시 불러오세요.
                     </p>
                   )}
                   {catalogDetailLoading && (

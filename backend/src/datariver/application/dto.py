@@ -1268,6 +1268,19 @@ class KnowledgeStudioABoxRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class KnowledgeStudioCatalogFieldMetadata:
+    field_path: str
+    field_type: str | None
+    native_data_type: str | None
+    description: str | None
+    description_truncated: bool
+    tags: tuple[str, ...]
+    tags_truncated: bool
+    glossary_terms: tuple[str, ...]
+    terms_truncated: bool
+
+
+@dataclass(frozen=True, slots=True)
 class KnowledgeStudioSourceDataset:
     asset_id: UUID
     name: str
@@ -1283,6 +1296,10 @@ class KnowledgeStudioSourceDataset:
     domain: str | None = None
     tags: tuple[str, ...] = ()
     glossary_terms: tuple[str, ...] = ()
+    description: str | None = None
+    description_truncated: bool = False
+    field_metadata: tuple[KnowledgeStudioCatalogFieldMetadata, ...] = ()
+    selection_fingerprint: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

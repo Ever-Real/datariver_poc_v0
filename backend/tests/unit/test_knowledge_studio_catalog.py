@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import cast
@@ -21,6 +22,11 @@ from datariver.domain.authz import (
 )
 from datariver.domain.catalog import DATASET_ASSET_TYPES
 from datariver.domain.common import ValidationError
+from datariver.domain.knowledge_studio_proposal_jobs import (
+    KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
+    KnowledgeStudioCatalogFieldMetadataPin,
+    KnowledgeStudioCatalogSourcePin,
+)
 from datariver.infrastructure.db.catalog import SqlCatalogIndexReader
 
 WORKSPACE_ID = UUID("019fa57b-52de-74c0-9f5e-06ae7b1bf3b1")
@@ -152,15 +158,51 @@ async def test_studio_source_search_forwards_catalog_domain_and_search_fields() 
 
 @pytest.mark.asyncio
 async def test_studio_source_detail_pins_datahub_schema_version_and_typed_field_paths() -> None:
+    indexed_asset = replace(
+        asset(),
+        tags=("PII", "urn:li:tag:restricted"),
+        glossary_terms=("Employee", "urn:li:glossaryTerm:restricted"),
+    )
     detail = CatalogAssetDetail(
-        index=asset(),
+        index=indexed_asset,
         ownership=(),
         glossary_terms=(),
         tags=(),
         schema_fields=(
-            {"fieldPath": "emp_id", "nativeDataType": "uuid"},
-            {"fieldPath": "emp_nm", "nativeDataType": "varchar"},
+            {
+                "fieldPath": "emp_id",
+                "type": "KEY",
+                "nativeDataType": "uuid",
+                "description": "Employee identifier",
+                "description_truncated": False,
+                "globalTags": {
+                    "tags": [
+                        {"tag": {"name": "PII"}},
+                        {"tag": {"urn": "urn:li:tag:restricted"}},
+                        {"tag": {"name": "urn:li:tag:name-form-restricted"}},
+                    ]
+                },
+                "tags_truncated": False,
+                "glossaryTerms": {
+                    "terms": [
+                        {"term": {"name": "Employee"}},
+                        {"term": {"name": "urn:li:glossaryTerm:restricted"}},
+                    ]
+                },
+                "terms_truncated": False,
+            },
+            {
+                "fieldPath": "emp_nm",
+                "nativeDataType": "varchar",
+                "description": "N" * 1_001,
+                "globalTags": {
+                    "tags": [{"tag": {"name": f"tag-{index}"}} for index in range(20)]
+                    + [{"tag": {"name": "x" * 241}}]
+                },
+                "glossaryTerms": {"terms": []},
+            },
             {"fieldPath": "emp_nm"},
+            {"fieldPath": "x" * 2_001},
             {"fieldPath": " surrounding "},
             {"providerExpression": "DROP"},
         ),
@@ -182,7 +224,91 @@ async def test_studio_source_detail_pins_datahub_schema_version_and_typed_field_
     assert result.dataset.source_version == "datahub-v7"
     assert result.dataset.projection_source_version == "projection-v1"
     assert result.dataset.field_paths == ("emp_id", "emp_nm")
+    assert result.dataset.fields_truncated is True
+    assert result.dataset.field_metadata[0].field_type == "KEY"
+    assert result.dataset.field_metadata[0].tags == ("PII",)
+    assert result.dataset.field_metadata[0].tags_truncated is True
+    assert result.dataset.field_metadata[0].glossary_terms == ("Employee",)
+    assert result.dataset.field_metadata[0].terms_truncated is True
+    assert result.dataset.tags == ("PII",)
+    assert result.dataset.glossary_terms == ("Employee",)
+    assert "urn:" not in repr(result.dataset)
+    assert result.dataset.field_metadata[1].description == "N" * 1_000
+    assert result.dataset.field_metadata[1].description_truncated is True
+    assert len(result.dataset.field_metadata[1].tags) == 20
+    assert result.dataset.field_metadata[1].tags_truncated is True
+    assert result.dataset.selection_fingerprint is not None
+    assert len(result.dataset.selection_fingerprint) == 64
     assert not hasattr(result.dataset, "external_urn")
+
+    source_pin = KnowledgeStudioCatalogSourcePin(
+        asset_id=result.dataset.asset_id,
+        name=result.dataset.name,
+        asset_type=result.dataset.asset_type,
+        classification=int(result.dataset.classification),
+        source_version=result.dataset.source_version,
+        projection_source_version=result.dataset.projection_source_version,
+        selected_field_paths=result.dataset.field_paths,
+        platform=result.dataset.platform,
+        database_name=result.dataset.database_name,
+        schema_name=result.dataset.schema_name,
+        domain=result.dataset.domain,
+        tags=result.dataset.tags,
+        glossary_terms=result.dataset.glossary_terms,
+        contract_version=KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
+        description=result.dataset.description,
+        description_truncated=result.dataset.description_truncated,
+        field_metadata=tuple(
+            KnowledgeStudioCatalogFieldMetadataPin(
+                field_path=field.field_path,
+                field_type=field.field_type,
+                native_data_type=field.native_data_type,
+                description=field.description,
+                description_truncated=field.description_truncated,
+                tags=field.tags,
+                tags_truncated=field.tags_truncated,
+                glossary_terms=field.glossary_terms,
+                terms_truncated=field.terms_truncated,
+            )
+            for field in result.dataset.field_metadata
+        ),
+    ).with_computed_metadata_fingerprint()
+    assert "urn:" not in repr(source_pin.to_document())
+
+    sanitized_detail = replace(
+        detail,
+        index=replace(
+            indexed_asset,
+            tags=("PII",),
+            glossary_terms=("Employee",),
+        ),
+    )
+    catalog.get_asset.return_value = sanitized_detail
+    sanitized = await reader.get_dataset(
+        subject=subject(),
+        asset_id=ASSET_ID,
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request-sanitized",
+    )
+    assert sanitized is not None
+    assert sanitized.dataset.selection_fingerprint == result.dataset.selection_fingerprint
+
+    changed_detail = replace(
+        sanitized_detail,
+        schema_fields=(
+            {**detail.schema_fields[0], "description": "Changed identifier"},
+            *detail.schema_fields[1:],
+        ),
+    )
+    catalog.get_asset.return_value = changed_detail
+    changed = await reader.get_dataset(
+        subject=subject(),
+        asset_id=ASSET_ID,
+        environment=EnvironmentAttributes(requested_at=NOW),
+        request_id="request-changed",
+    )
+    assert changed is not None
+    assert changed.dataset.selection_fingerprint != result.dataset.selection_fingerprint
 
 
 @pytest.mark.asyncio

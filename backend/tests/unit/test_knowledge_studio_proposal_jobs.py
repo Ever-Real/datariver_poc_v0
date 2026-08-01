@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -38,7 +40,9 @@ from datariver.domain.knowledge_studio import (
     TBoxProposalMode,
 )
 from datariver.domain.knowledge_studio_proposal_jobs import (
+    KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
     KnowledgeStudioAcceptedUploadPin,
+    KnowledgeStudioCatalogFieldMetadataPin,
     KnowledgeStudioCatalogSourcePin,
     KnowledgeStudioProposalInputKind,
     KnowledgeStudioProposalJobPins,
@@ -46,7 +50,9 @@ from datariver.domain.knowledge_studio_proposal_jobs import (
     KnowledgeStudioProposalJobState,
     knowledge_studio_proposal_requester_authorization_document,
     knowledge_studio_proposal_requester_authorization_hash,
+    render_knowledge_studio_catalog_prompt,
 )
+from datariver.infrastructure.db.knowledge_studio_proposal_jobs import _catalog_source_pin
 from datariver.infrastructure.db.models.knowledge_studio import (
     KnowledgeStudioProposalAttemptModel,
     KnowledgeStudioProposalEventModel,
@@ -295,6 +301,155 @@ def test_catalog_source_pin_rejects_duplicate_selected_fields() -> None:
 
     with pytest.raises(ValidationError, match="unique"):
         pin.validate()
+
+
+def _catalog_v2_pin() -> KnowledgeStudioCatalogSourcePin:
+    return KnowledgeStudioCatalogSourcePin(
+        asset_id=MANIFEST_ID,
+        name="orders",
+        asset_type="TABLE",
+        classification=1,
+        source_version="datahub-v7",
+        projection_source_version="projection-v4",
+        selected_field_paths=("order_id", "amount"),
+        platform="postgres",
+        database_name="sales",
+        schema_name="public",
+        domain="Finance",
+        tags=("gold",),
+        glossary_terms=("Order",),
+        contract_version=KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
+        description="Governed order facts",
+        field_metadata=(
+            KnowledgeStudioCatalogFieldMetadataPin(
+                field_path="order_id",
+                field_type="KEY",
+                native_data_type="uuid",
+                description="Order identifier",
+                tags=("gold",),
+                glossary_terms=("Order",),
+            ),
+            KnowledgeStudioCatalogFieldMetadataPin(
+                field_path="amount",
+                native_data_type="numeric(18,2)",
+                description="Gross amount",
+                glossary_terms=("Amount",),
+            ),
+        ),
+    ).with_computed_metadata_fingerprint()
+
+
+def test_catalog_v2_source_pin_is_bounded_ordered_and_hashes_exact_metadata() -> None:
+    pin = _catalog_v2_pin()
+    document = pin.to_document()
+
+    assert document["contract_version"] == KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2
+    assert document["selected_field_paths"] == ["order_id", "amount"]
+    field_metadata = cast(list[dict[str, object]], document["field_metadata"])
+    assert [item["field_path"] for item in field_metadata] == [
+        "order_id",
+        "amount",
+    ]
+    assert document["metadata_fingerprint"] == pin.metadata_fingerprint
+    assert len(render_knowledge_studio_catalog_prompt(pin)) <= 4_000
+
+    changed = replace(
+        pin,
+        field_metadata=(
+            replace(pin.field_metadata[0], description="Changed description"),
+            pin.field_metadata[1],
+        ),
+        metadata_fingerprint=None,
+    ).with_computed_metadata_fingerprint()
+    assert changed.metadata_fingerprint != pin.metadata_fingerprint
+    assert changed.evidence_hash() != pin.evidence_hash()
+
+
+def test_catalog_v1_document_is_unchanged_and_v2_decoder_rejects_tampering() -> None:
+    legacy = KnowledgeStudioCatalogSourcePin(
+        asset_id=MANIFEST_ID,
+        name="orders",
+        asset_type="TABLE",
+        classification=1,
+        source_version="v1",
+        projection_source_version="projection-v1",
+        selected_field_paths=("order_id",),
+    ).to_document()
+    assert "contract_version" not in legacy
+    assert "field_metadata" not in legacy
+
+    document = _catalog_v2_pin().to_document()
+    assert _catalog_source_pin(document).to_document() == document
+    tampered = dict(document)
+    tampered["description"] = "Tampered"
+    with pytest.raises(ValidationError, match="fingerprint"):
+        _catalog_source_pin(tampered)
+    extra = dict(document)
+    extra["browser_metadata"] = {"trusted": True}
+    with pytest.raises(ValidationError, match="fields do not match"):
+        _catalog_source_pin(extra)
+
+
+def test_catalog_v2_source_pin_rejects_metadata_order_and_oversized_prompt() -> None:
+    pin = _catalog_v2_pin()
+    reordered = replace(
+        pin,
+        field_metadata=tuple(reversed(pin.field_metadata)),
+    )
+    with pytest.raises(ValidationError, match="match the selected fields in order"):
+        reordered.validate()
+
+    large = replace(
+        pin,
+        field_metadata=(
+            replace(pin.field_metadata[0], description="가" * 1_000),
+            replace(pin.field_metadata[1], description="나" * 1_000),
+        ),
+        description="다" * 1_000,
+        metadata_fingerprint=None,
+    ).with_computed_metadata_fingerprint()
+    with pytest.raises(ValidationError, match="Select fewer fields"):
+        render_knowledge_studio_catalog_prompt(large)
+
+
+def test_catalog_v2_source_pin_enforces_authoritative_metadata_bounds() -> None:
+    pin = _catalog_v2_pin()
+    with pytest.raises(ValidationError, match="between 1 and 100"):
+        replace(
+            pin,
+            selected_field_paths=tuple(f"field_{index}" for index in range(101)),
+        ).validate()
+    with pytest.raises(ValidationError, match="field path"):
+        replace(pin.field_metadata[0], field_path="x" * 2_001).validate()
+    with pytest.raises(ValidationError, match="field type"):
+        replace(pin.field_metadata[0], field_type="x" * 501).validate()
+    with pytest.raises(ValidationError, match="field tag set"):
+        replace(
+            pin.field_metadata[0],
+            tags=tuple(f"tag-{index}" for index in range(21)),
+        ).validate()
+    with pytest.raises(ValidationError, match="field glossary term"):
+        replace(pin.field_metadata[0], glossary_terms=("x" * 241,)).validate()
+    with pytest.raises(ValidationError, match="catalog tag set"):
+        replace(pin, tags=tuple(f"tag-{index}" for index in range(101))).validate()
+    with pytest.raises(ValidationError, match="catalog glossary term"):
+        replace(pin, glossary_terms=("x" * 256,)).validate()
+
+    paths = tuple(f"field_{index}" for index in range(100))
+    oversized_document = replace(
+        pin,
+        selected_field_paths=paths,
+        field_metadata=tuple(
+            KnowledgeStudioCatalogFieldMetadataPin(
+                field_path=path,
+                description="x" * 1_000,
+            )
+            for path in paths
+        ),
+        metadata_fingerprint=None,
+    ).with_computed_metadata_fingerprint()
+    with pytest.raises(ValidationError, match="source document"):
+        oversized_document.validate()
 
 
 def test_completion_rejects_object_coordinates_and_raw_provider_payloads() -> None:

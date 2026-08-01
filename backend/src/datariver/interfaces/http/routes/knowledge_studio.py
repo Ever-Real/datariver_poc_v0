@@ -65,11 +65,14 @@ from datariver.domain.knowledge_studio import (
     TBoxProposalMode,
 )
 from datariver.domain.knowledge_studio_proposal_jobs import (
+    KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
     KnowledgeStudioAcceptedUploadPin,
+    KnowledgeStudioCatalogFieldMetadataPin,
     KnowledgeStudioCatalogSourcePin,
     KnowledgeStudioProposalInputKind,
     KnowledgeStudioProposalJobPins,
     knowledge_studio_proposal_requester_authorization_hash,
+    render_knowledge_studio_catalog_prompt,
 )
 from datariver.domain.registration import (
     CompletedUploadPart,
@@ -110,6 +113,7 @@ from datariver.interfaces.http.schemas import (
     KnowledgeStudioBindingMutationResponse,
     KnowledgeStudioBindingRequest,
     KnowledgeStudioBindingResponse,
+    KnowledgeStudioCatalogFieldMetadataResponse,
     KnowledgeStudioDomainOptionResponse,
     KnowledgeStudioDomainOptionsResponse,
     KnowledgeStudioDraftResponse,
@@ -509,6 +513,23 @@ def _source_response(
         domain=source.domain,
         tags=list(source.tags),
         glossary_terms=list(source.glossary_terms),
+        description=source.description,
+        description_truncated=source.description_truncated,
+        field_metadata=[
+            KnowledgeStudioCatalogFieldMetadataResponse(
+                field_path=item.field_path,
+                field_type=item.field_type,
+                native_data_type=item.native_data_type,
+                description=item.description,
+                description_truncated=item.description_truncated,
+                tags=list(item.tags),
+                tags_truncated=item.tags_truncated,
+                glossary_terms=list(item.glossary_terms),
+                terms_truncated=item.terms_truncated,
+            )
+            for item in source.field_metadata
+        ],
+        selection_fingerprint=source.selection_fingerprint,
     )
 
 
@@ -1594,14 +1615,29 @@ async def create_knowledge_studio_tbox_proposal_job(
                 "The Catalog source is stale or outside the inference classification boundary.",
                 details={"code": "CATALOG_PROPOSAL_SOURCE_INELIGIBLE"},
             )
-        selected_fields = tuple(payload.selected_field_paths)
-        if len(set(selected_fields)) != len(selected_fields):
+        requested_fields = tuple(payload.selected_field_paths)
+        if len(set(requested_fields)) != len(requested_fields):
             raise ValidationError("Catalog Proposal field paths must be unique.")
+        if source.dataset.selection_fingerprint != payload.expected_selection_fingerprint:
+            raise ConflictError(
+                "The Catalog metadata changed after it was selected. Reload the source detail.",
+                details={"code": "CATALOG_PROPOSAL_SELECTION_STALE"},
+            )
         available_fields = set(source.dataset.field_paths)
-        if any(field not in available_fields for field in selected_fields):
+        if any(field not in available_fields for field in requested_fields):
             raise ValidationError(
                 "Catalog Proposal fields must belong to the authorized source version.",
                 details={"code": "CATALOG_FIELD_NOT_IN_SOURCE"},
+            )
+        requested_field_set = set(requested_fields)
+        selected_metadata = tuple(
+            item for item in source.dataset.field_metadata if item.field_path in requested_field_set
+        )
+        selected_fields = tuple(item.field_path for item in selected_metadata)
+        if len(selected_fields) != len(requested_fields):
+            raise ConflictError(
+                "The selected Catalog metadata is incomplete.",
+                details={"code": "CATALOG_PROPOSAL_METADATA_INCOMPLETE"},
             )
         source_pin = KnowledgeStudioCatalogSourcePin(
             asset_id=source.dataset.asset_id,
@@ -1617,10 +1653,28 @@ async def create_knowledge_studio_tbox_proposal_job(
             domain=source.dataset.domain,
             tags=source.dataset.tags,
             glossary_terms=source.dataset.glossary_terms,
-        )
+            contract_version=KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
+            description=source.dataset.description,
+            description_truncated=source.dataset.description_truncated,
+            field_metadata=tuple(
+                KnowledgeStudioCatalogFieldMetadataPin(
+                    field_path=item.field_path,
+                    field_type=item.field_type,
+                    native_data_type=item.native_data_type,
+                    description=item.description,
+                    description_truncated=item.description_truncated,
+                    tags=item.tags,
+                    tags_truncated=item.tags_truncated,
+                    glossary_terms=item.glossary_terms,
+                    terms_truncated=item.terms_truncated,
+                )
+                for item in selected_metadata
+            ),
+        ).with_computed_metadata_fingerprint()
+        render_knowledge_studio_catalog_prompt(source_pin)
         parser_configuration_hash = canonical_json_hash(
             {
-                "contract": "KNOWLEDGE_STUDIO_CATALOG_SCHEMA_PARSER_V1",
+                "contract": "KNOWLEDGE_STUDIO_CATALOG_SCHEMA_PARSER_V2",
                 "maximum_fields": 100,
                 "maximum_prompt_characters": 4_000,
             }

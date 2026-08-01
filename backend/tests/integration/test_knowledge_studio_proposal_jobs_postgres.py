@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
 from datariver.application.services.knowledge_studio_proposal_jobs import (
@@ -20,13 +21,18 @@ from datariver.domain.common import canonical_json_hash
 from datariver.domain.knowledge_pipeline import ModelBinding
 from datariver.domain.knowledge_studio import TBoxProposalMode
 from datariver.domain.knowledge_studio_proposal_jobs import (
+    KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V1,
+    KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
     KnowledgeStudioAcceptedUploadPin,
+    KnowledgeStudioCatalogFieldMetadataPin,
+    KnowledgeStudioCatalogSourcePin,
     KnowledgeStudioProposalInputKind,
     KnowledgeStudioProposalJobPins,
     knowledge_studio_proposal_requester_authorization_hash,
 )
 from datariver.infrastructure.db.knowledge_studio_proposal_job_sql import (
     TBOX_PROPOSAL_JOB_ALL_FUNCTION_SQL,
+    TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL,
     TBOX_PROPOSAL_JOB_COMMAND_FUNCTION_SIGNATURES,
     TBOX_PROPOSAL_JOB_INTERNAL_FUNCTION_SIGNATURES,
     TBOX_PROPOSAL_JOB_WORKER_FUNCTION_SIGNATURES,
@@ -36,10 +42,14 @@ from datariver.infrastructure.db.knowledge_studio_proposal_jobs import (
     SqlKnowledgeStudioProposalJobWorkerStore,
 )
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
+from datariver.infrastructure.db.rls import set_security_context
 from datariver.infrastructure.secrets import SecretResolver
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0084_governed_knowledge_studio_tbox_proposal_jobs.py"
+PIN_V2_MIGRATION = (
+    ROOT / "backend/alembic/versions/0086_knowledge_studio_catalog_metadata_pin_v2.py"
+)
 
 _OWNER_URL = "DATARIVER_KNOWLEDGE_PROPOSAL_TEST_OWNER_DATABASE_URL"
 _OWNER_SECRET = "DATARIVER_KNOWLEDGE_PROPOSAL_TEST_OWNER_SECRET_REF"
@@ -64,8 +74,11 @@ _ENABLED = (
 )
 
 
-def _migration() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("test_knowledge_proposal_0084", MIGRATION)
+def _migration(path: Path = MIGRATION) -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        f"test_knowledge_proposal_{path.stem}",
+        path,
+    )
     assert spec is not None
     assert spec.loader is not None
     migration = importlib.util.module_from_spec(spec)
@@ -135,6 +148,30 @@ def test_proposal_sql_is_fenced_bounded_and_split_at_top_level_only() -> None:
     assert "object_key" not in job_insert
 
 
+def test_revision_0086_replaces_catalog_guards_with_asyncpg_safe_v2_functions() -> None:
+    migration = _migration(PIN_V2_MIGRATION)
+    statements = migration.split_postgresql_statements(
+        TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL
+    )
+    source = PIN_V2_MIGRATION.read_text(encoding="utf-8")
+
+    assert 'revision: str = "0086"' in source
+    assert 'down_revision: str | Sequence[str] | None = "0085"' in source
+    assert len(statements) == 11
+    assert all(statement.count("CREATE OR REPLACE FUNCTION") == 1 for statement in statements)
+    assert "KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2" in (
+        TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL
+    )
+    assert "metadata_fingerprint" in TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL
+    assert "p_source_pin ?& ARRAY[" in TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL
+    assert "field.value ?& ARRAY[" in TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL
+    assert "IF NOT (p_source_pin ? 'contract_version') THEN\n            IF NOT (" in (
+        TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL
+    )
+    assert "Select fewer fields" not in TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL
+    assert "0086 downgrade requires explicit reconciliation" in migration._DOWNGRADE_REFUSAL_SQL
+
+
 def _subject(workspace_id: UUID, actor_id: UUID) -> SubjectAttributes:
     return SubjectAttributes(
         subject_id=actor_id,
@@ -151,8 +188,9 @@ def _subject(workspace_id: UUID, actor_id: UUID) -> SubjectAttributes:
     )
 
 
-async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID, int, str]:
-    workspace_id, actor_id, worker_id, domain_id, draft_id, upload_id = (
+async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID, UUID, int, str]:
+    workspace_id, actor_id, worker_id, domain_id, draft_id, upload_id, asset_id = (
+        uuid4(),
         uuid4(),
         uuid4(),
         uuid4(),
@@ -246,6 +284,30 @@ async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID, int, 
         await connection.execute(
             text(
                 """
+                INSERT INTO catalog.assets_projection
+                    (id, workspace_id, external_urn, urn_hash, asset_type,
+                     name, description, platform, database_name, schema_name,
+                     tags, glossary_terms, column_names, classification,
+                     lifecycle, source_version, observed_at, projection_source)
+                VALUES
+                    (:id, :workspace_id, :urn, :urn_hash, 'DATASET',
+                     'proposal_orders', 'Governed order facts', 'postgres',
+                     'sales', 'public', '["gold"]'::jsonb, '["Order"]'::jsonb,
+                     '["order_id", "amount"]'::jsonb, 1, 'ACTIVE',
+                     'projection-v1', :now, 'DATAHUB')
+                """
+            ),
+            {
+                "id": asset_id,
+                "workspace_id": workspace_id,
+                "urn": f"urn:li:dataset:proposal-{asset_id}",
+                "urn_hash": canonical_json_hash(str(asset_id)),
+                "now": now,
+            },
+        )
+        await connection.execute(
+            text(
+                """
                 INSERT INTO catalog.vocabulary_entries
                     (id, workspace_id, kind, provider_ref, display_name, lifecycle,
                      source_version, observed_at, created_by, version, updated_at)
@@ -274,7 +336,7 @@ async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID, int, 
                 VALUES
                     (:id, :workspace_id, :actor_id, 'CREATE', 'DRAFT', 'TBOX',
                      'Proposal draft', :alias, CAST(:aliases AS jsonb), :domain_id,
-                     'DOMAIN', 'v1', 0, NULL, NULL, NULL, :now, :now, :now, 1)
+                     'DOMAIN', 'v1', 1, NULL, NULL, NULL, :now, :now, :now, 1)
                 """
             ),
             {
@@ -326,7 +388,16 @@ async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID, int, 
             "validation_summary": validation_summary,
         }
     )
-    return workspace_id, actor_id, worker_id, draft_id, upload_id, 1, validation_hash
+    return (
+        workspace_id,
+        actor_id,
+        worker_id,
+        draft_id,
+        upload_id,
+        asset_id,
+        1,
+        validation_hash,
+    )
 
 
 @pytest.mark.skipif(not _ENABLED, reason="isolated Proposal PostgreSQL test is not enabled")
@@ -342,6 +413,7 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
             worker_id,
             draft_id,
             upload_id,
+            _asset_id,
             version,
             validation_hash,
         ) = await _seed(owner)
@@ -476,6 +548,250 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
         assert forced_rls is True
         assert attempts == 1
         assert outbox == 1
+    finally:
+        await owner.dispose()
+        await app.dispose()
+        await worker.dispose()
+
+
+@pytest.mark.skipif(not _ENABLED, reason="isolated Proposal PostgreSQL test is not enabled")
+@pytest.mark.asyncio
+async def test_catalog_v2_pin_is_enqueued_and_local_projection_drift_fails_closed() -> None:
+    owner = _engine(_OWNER_URL, _OWNER_SECRET)
+    app = _engine(_APP_URL, _APP_SECRET)
+    worker = _engine(_WORKER_URL, _WORKER_SECRET)
+    try:
+        (
+            workspace_id,
+            actor_id,
+            worker_id,
+            draft_id,
+            _upload_id,
+            asset_id,
+            version,
+            _validation_hash,
+        ) = await _seed(owner)
+        subject = _subject(workspace_id, actor_id)
+        binding = ModelBinding(
+            provider="openai-compatible",
+            model="schema-test",
+            prompt_version="knowledge-v1",
+            tool_schema_version="knowledge-schema-v1",
+            configuration_source="DEPLOYMENT",
+            configuration_version=None,
+            configuration_hash="d" * 64,
+        )
+        source = KnowledgeStudioCatalogSourcePin(
+            asset_id=asset_id,
+            name="proposal_orders",
+            asset_type="DATASET",
+            classification=1,
+            source_version="datahub-v7",
+            projection_source_version="projection-v1",
+            selected_field_paths=("order_id", "amount"),
+            platform="postgres",
+            database_name="sales",
+            schema_name="public",
+            tags=("gold",),
+            glossary_terms=("Order",),
+            contract_version=KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
+            description="Governed order facts",
+            field_metadata=(
+                KnowledgeStudioCatalogFieldMetadataPin(
+                    field_path="order_id",
+                    field_type="KEY",
+                    native_data_type="uuid",
+                    description="Order identifier",
+                    tags=("gold",),
+                    glossary_terms=("Order",),
+                ),
+                KnowledgeStudioCatalogFieldMetadataPin(
+                    field_path="amount",
+                    native_data_type="numeric(18,2)",
+                    description="Gross amount",
+                    glossary_terms=("Amount",),
+                ),
+            ),
+        ).with_computed_metadata_fingerprint()
+        base_tbox_hash = canonical_json_hash(
+            {
+                "contract": "KNOWLEDGE_STUDIO_PROPOSAL_BASE_TBOX_V1",
+                "draft_id": str(draft_id),
+                "blocks": [],
+            }
+        )
+        requester_authorization_hash = knowledge_studio_proposal_requester_authorization_hash(
+            subject
+        )
+        parser_configuration_hash = "b" * 64
+        schema_binding = binding.to_document()
+        raw_source = source.to_document()
+        invalid_sources: list[tuple[dict[str, object], str]] = []
+        for missing_key in ("metadata_fingerprint", "source_version"):
+            document = dict(raw_source)
+            document.pop(missing_key)
+            invalid_sources.append((document, "invalid Catalog Proposal V2 pin"))
+        nested_missing = dict(raw_source)
+        raw_metadata = nested_missing["field_metadata"]
+        assert isinstance(raw_metadata, list)
+        nested_metadata = [dict(item) for item in raw_metadata if isinstance(item, dict)]
+        nested_metadata[0].pop("description_truncated")
+        nested_missing["field_metadata"] = nested_metadata
+        invalid_sources.append((nested_missing, "invalid Catalog Proposal V2 pin"))
+        legacy_source = KnowledgeStudioCatalogSourcePin(
+            asset_id=asset_id,
+            name=source.name,
+            asset_type=source.asset_type,
+            classification=source.classification,
+            source_version=source.source_version,
+            projection_source_version=source.projection_source_version,
+            selected_field_paths=source.selected_field_paths,
+            platform=source.platform,
+            database_name=source.database_name,
+            schema_name=source.schema_name,
+            tags=source.tags,
+            glossary_terms=source.glossary_terms,
+            contract_version=KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V1,
+        ).to_document()
+        legacy_source.pop("source_version")
+        invalid_sources.append((legacy_source, "invalid legacy Catalog Proposal pin"))
+
+        app_sessions = async_sessionmaker(app, expire_on_commit=False)
+        request_statement = text(
+            """
+            SELECT knowledge.request_tbox_proposal_job_v1(
+                :workspace_id, :draft_id, :requested_by, NULL,
+                'CATALOG_SCHEMA', 'APPEND_LAYER', :base_draft_version,
+                :base_tbox_hash, :request_hash, :requester_authorization_hash,
+                CAST(:source_pin AS jsonb), :source_pin_hash,
+                :parser_configuration_hash, CAST(:schema_binding AS jsonb),
+                :schema_binding_hash, :pin_hash, 3, :idempotency_key
+            )
+            """
+        )
+        for invalid_source, error_message in invalid_sources:
+            with pytest.raises(DBAPIError, match=error_message):
+                async with app_sessions() as session, session.begin():
+                    await set_security_context(
+                        session,
+                        workspace_id=workspace_id,
+                        subject_id=actor_id,
+                    )
+                    await session.scalar(
+                        request_statement,
+                        {
+                            "workspace_id": workspace_id,
+                            "draft_id": draft_id,
+                            "requested_by": actor_id,
+                            "base_draft_version": version,
+                            "base_tbox_hash": base_tbox_hash,
+                            "request_hash": uuid4().hex.ljust(64, "0"),
+                            "requester_authorization_hash": requester_authorization_hash,
+                            "source_pin": json.dumps(invalid_source),
+                            "source_pin_hash": canonical_json_hash(invalid_source),
+                            "parser_configuration_hash": parser_configuration_hash,
+                            "schema_binding": json.dumps(schema_binding),
+                            "schema_binding_hash": canonical_json_hash(schema_binding),
+                            "pin_hash": "f" * 64,
+                            "idempotency_key": f"invalid-catalog-pin-{uuid4()}",
+                        },
+                    )
+        async with owner.connect() as connection:
+            side_effects = await connection.execute(
+                text(
+                    """
+                    SELECT
+                        (SELECT count(*) FROM knowledge.tbox_proposal_jobs
+                         WHERE workspace_id = :workspace_id),
+                        (SELECT count(*) FROM integration.outbox_events
+                         WHERE workspace_id = :workspace_id
+                           AND aggregate_type = 'knowledge_tbox_proposal_job')
+                    """
+                ),
+                {"workspace_id": workspace_id},
+            )
+            jobs, outbox = side_effects.one()
+        assert jobs == 0
+        assert outbox == 0
+
+        pins = KnowledgeStudioProposalJobPins(
+            workspace_id=workspace_id,
+            draft_id=draft_id,
+            requested_by=actor_id,
+            input_kind=KnowledgeStudioProposalInputKind.CATALOG_SCHEMA,
+            mode=TBoxProposalMode.APPEND_LAYER,
+            target_block_id=None,
+            base_draft_version=version,
+            base_tbox_hash=base_tbox_hash,
+            source=source,
+            parser_configuration_hash=parser_configuration_hash,
+            schema_binding=binding,
+            requester_authorization_hash=requester_authorization_hash,
+            prepared_at=datetime.now(UTC),
+        )
+        async with app_sessions() as session, session.begin():
+            queued = await KnowledgeStudioProposalJobService(
+                store=SqlKnowledgeStudioProposalJobStore(session)
+            ).enqueue(
+                pins=pins,
+                request_hash="e" * 64,
+                maximum_attempts=3,
+                idempotency_key=f"catalog-proposal-{uuid4()}",
+            )
+
+        async with owner.connect() as connection:
+            document = await connection.scalar(
+                text(
+                    """
+                    SELECT catalog_source_document
+                    FROM knowledge.tbox_proposal_jobs
+                    WHERE workspace_id = :workspace_id AND id = :job_id
+                    """
+                ),
+                {"workspace_id": workspace_id, "job_id": queued.job_id},
+            )
+        assert document["contract_version"] == KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2
+        assert document["metadata_fingerprint"] == source.metadata_fingerprint
+        assert document["field_metadata"][1]["field_path"] == "amount"
+
+        worker_store = SqlKnowledgeStudioProposalJobWorkerStore(
+            async_sessionmaker(worker, expire_on_commit=False)
+        )
+        claim = await worker_store.claim_next(
+            workspace_id=workspace_id,
+            worker_subject_id=worker_id,
+            worker_fingerprint="catalog-proposal-worker-test",
+            lease_seconds=60,
+        )
+        assert claim is not None
+        assert (
+            await worker_store.ensure_current(
+                claim=claim,
+                worker_subject_id=worker_id,
+                current_schema_binding=binding,
+            )
+            is None
+        )
+
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE catalog.assets_projection
+                    SET source_version = 'projection-v2'
+                    WHERE workspace_id = :workspace_id AND id = :asset_id
+                    """
+                ),
+                {"workspace_id": workspace_id, "asset_id": asset_id},
+            )
+        assert (
+            await worker_store.ensure_current(
+                claim=claim,
+                worker_subject_id=worker_id,
+                current_schema_binding=binding,
+            )
+            == "STALE_SOURCE"
+        )
     finally:
         await owner.dispose()
         await app.dispose()
