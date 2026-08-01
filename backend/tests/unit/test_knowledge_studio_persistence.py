@@ -459,7 +459,7 @@ def test_empty_direct_block_claims_one_proposal_source_mode_and_preserves_first_
 ):
     block = _draft_block()
     proposal_id = UUID("019fbaae-8a76-76f3-9838-38927d59edf4")
-    source = {
+    source: dict[str, object] = {
         "contract_version": "KNOWLEDGE_STUDIO_DOCUMENT_SOURCE_PIN_V1",
         "manifest_id": "019fbaae-8a76-76f3-9838-38927d59edf5",
     }
