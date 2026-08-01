@@ -34,6 +34,14 @@ const access: WorkspaceMembershipAccess = {
     membership_version: null, access_payload_hash: null, assigned_by: null, updated_at: null,
     legacy_markers: [],
   },
+  canonical_admin_binding: {
+    status: 'NONE', role_version: null, catalog_version: null, membership_version: null,
+    binding_version: null, updated_at: null,
+  },
+  profile_role: {
+    status: 'UNASSIGNED', tier: null, policy_version: null, membership_version: null,
+    assignment_version: null, updated_at: null,
+  },
 }
 
 describe('AdminApi', () => {

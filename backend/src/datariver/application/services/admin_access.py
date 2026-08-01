@@ -11,6 +11,11 @@ from datariver.application.dto import (
     MembershipOwnedTablePage,
     MembershipRenewalPage,
     MembershipRenewalRecord,
+    ProfileRolePolicyCatalog,
+    ProfileRolePolicyItem,
+    ProfileRoleServicePolicy,
+    ProfileRoleTransitionResult,
+    SystemAssigneeCandidatePage,
     SystemAssigneePage,
     SystemDirectoryEntry,
     SystemDirectoryPage,
@@ -38,6 +43,7 @@ from datariver.domain.authz import (
     ResourceAttributes,
     SubjectAttributes,
 )
+from datariver.domain.capability_catalog import CAPABILITY_BY_ACTION, CAPABILITY_SERVICES
 from datariver.domain.common import (
     ConflictError,
     DomainEvent,
@@ -50,6 +56,12 @@ from datariver.domain.membership_renewal import (
     MembershipRenewalDecision,
     MembershipRenewalRequest,
     MembershipRenewalState,
+)
+from datariver.domain.profile_roles import (
+    PROFILE_ROLE_BY_TIER,
+    PROFILE_ROLE_POLICIES,
+    PROFILE_ROLE_POLICY_VERSION,
+    ProfileRoleTier,
 )
 
 
@@ -260,6 +272,87 @@ class AdminAccessService:
                 cursor=cursor,
             )
 
+    async def list_system_assignee_candidates(
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+        query: str | None,
+        cursor: str | None,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> SystemAssigneeCandidatePage:
+        _validate_admin_page_limit(limit)
+        await self._authorize_read(
+            workspace_id=workspace_id,
+            resource_id=workspace_id,
+            subject=subject,
+            environment=environment,
+            request_id=request_id,
+        )
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id,
+                subject_ids=frozenset({subject.subject_id}),
+            )
+            return await uow.systems.list_assignee_candidates(
+                workspace_id=workspace_id,
+                limit=limit,
+                query=query.strip().casefold() if query and query.strip() else None,
+                cursor=cursor,
+            )
+
+    async def get_profile_role_policy(
+        self,
+        *,
+        workspace_id: UUID,
+        subject: SubjectAttributes,
+    ) -> ProfileRolePolicyCatalog:
+        if (
+            not subject.active
+            or subject.workspace_id != workspace_id
+            or subject.job_function == "SERVICE_ACCOUNT"
+            or "service-accounts" in subject.groups
+        ):
+            raise ForbiddenError("An active workspace membership is required.")
+        return ProfileRolePolicyCatalog(
+            policy_version=PROFILE_ROLE_POLICY_VERSION,
+            items=tuple(
+                ProfileRolePolicyItem(
+                    tier=policy.tier.value,
+                    label=policy.label,
+                    description=policy.description,
+                    allowed_actions=tuple(
+                        sorted(policy.allowed_actions, key=lambda item: item.value)
+                    ),
+                    services=tuple(
+                        ProfileRoleServicePolicy(
+                            service_key=service.service_key,
+                            service_label=service.label,
+                            action_labels=tuple(
+                                CAPABILITY_BY_ACTION[action].label
+                                for action in sorted(
+                                    policy.allowed_actions,
+                                    key=lambda action: action.value,
+                                )
+                                if CAPABILITY_BY_ACTION[action].service_key == service.service_key
+                            ),
+                        )
+                        for service in CAPABILITY_SERVICES
+                        if any(
+                            CAPABILITY_BY_ACTION[action].service_key == service.service_key
+                            for action in policy.allowed_actions
+                        )
+                    ),
+                    assignable_to_system=policy.assignable_to_system,
+                    lifecycle_note=policy.lifecycle_note,
+                )
+                for policy in PROFILE_ROLE_POLICIES
+            ),
+        )
+
     async def get_workspace_membership_access(
         self,
         *,
@@ -287,6 +380,171 @@ class AdminAccessService:
             if membership is None:
                 raise NotFoundError("The target workspace membership does not exist.")
             return membership
+
+    async def update_profile_role(
+        self,
+        *,
+        workspace_id: UUID,
+        target_subject_id: UUID,
+        tier: str,
+        expected_membership_version: int,
+        expected_binding_version: int,
+        reason: str,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> ProfileRoleTransitionResult:
+        if subject.subject_id == target_subject_id:
+            raise ValidationError("An administrator cannot change their own profile Role.")
+        try:
+            parsed_tier = ProfileRoleTier(tier)
+        except ValueError as error:
+            raise ValidationError("The profile Role tier is invalid.") from error
+        normalized_reason = reason.strip()
+        if not normalized_reason or len(normalized_reason) > 4_000:
+            raise ValidationError("A bounded profile Role change reason is required.")
+        decision = await self._authorization.authorize(
+            subject=subject,
+            resource=self._resource(workspace_id, target_subject_id),
+            action=Action.ADMIN_MANAGE,
+            environment=environment,
+            request_id=request_id,
+        )
+        operation = f"admin.profile-role.update:{target_subject_id}"
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.lock_workspace_access(workspace_id=workspace_id)
+            await uow.memberships.assert_eligible_human_administrators(
+                workspace_id=workspace_id,
+                subject_ids=frozenset({subject.subject_id}),
+            )
+            existing = await uow.idempotency.get_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
+            if existing is not None:
+                _verify_idempotency(
+                    existing.request_hash,
+                    request_hash,
+                    existing.result.get("actor_id"),
+                    subject.subject_id,
+                )
+                return ProfileRoleTransitionResult(
+                    subject_id=target_subject_id,
+                    tier=str(existing.result["tier"]),
+                    membership_version=int(existing.result["membership_version"]),
+                    assignment_version=int(existing.result["assignment_version"]),
+                    binding_version=(
+                        int(existing.result["binding_version"])
+                        if existing.result.get("binding_version") is not None
+                        else None
+                    ),
+                )
+            actor_access = await uow.memberships.get_access(
+                workspace_id=workspace_id,
+                subject_id=subject.subject_id,
+            )
+            target_access = await uow.memberships.get_access(
+                workspace_id=workspace_id,
+                subject_id=target_subject_id,
+            )
+            if actor_access is None or target_access is None:
+                raise NotFoundError("The profile Role target is unavailable.")
+            if target_access.summary.membership_version != expected_membership_version:
+                raise ConflictError("The target membership changed before the profile update.")
+            target_binding = target_access.canonical_admin_binding
+            protected_transition = parsed_tier is ProfileRoleTier.ADMIN or (
+                target_binding is not None and target_binding.status != "REVOKED"
+            )
+            next_access_hash = _profile_role_access_payload_hash(
+                access=target_access,
+                tier=parsed_tier,
+            )
+            if protected_transition:
+                if (
+                    subject.authentication_assurance
+                    is not AuthenticationAssurance.HARDWARE_WEBAUTHN
+                    or not _authentication_is_fresh(subject=subject, environment=environment)
+                ):
+                    raise ForbiddenError(
+                        "Canonical Admin profile transitions require fresh hardware WebAuthn."
+                    )
+                actor_binding = actor_access.canonical_admin_binding
+                if actor_binding is None or actor_binding.status != "VERIFIED":
+                    raise ForbiddenError("A current separate Canonical Admin binding is required.")
+                actual_binding_version = (
+                    target_binding.binding_version if target_binding is not None else 0
+                )
+                if actual_binding_version != expected_binding_version:
+                    raise ConflictError("The target Canonical Admin binding changed.")
+                if (
+                    parsed_tier is not ProfileRoleTier.ADMIN
+                    and await uow.memberships.count_verified_canonical_admins(
+                        workspace_id=workspace_id
+                    )
+                    <= 1
+                ):
+                    raise ConflictError("The last verified Canonical Admin cannot be demoted.")
+                result = await uow.memberships.transition_canonical_admin_profile(
+                    workspace_id=workspace_id,
+                    subject_id=target_subject_id,
+                    tier=parsed_tier.value,
+                    expected_membership_version=expected_membership_version,
+                    expected_binding_version=expected_binding_version,
+                    reason=normalized_reason,
+                    assurance=subject.authentication_assurance.value,
+                    access_payload_hash=next_access_hash,
+                    policy_decision_id=decision.decision_id,
+                )
+            else:
+                result = await uow.memberships.apply_profile_role(
+                    workspace_id=workspace_id,
+                    subject_id=target_subject_id,
+                    tier=parsed_tier.value,
+                    expected_membership_version=expected_membership_version,
+                    reason=normalized_reason,
+                    assurance=subject.authentication_assurance.value,
+                    access_payload_hash=next_access_hash,
+                    policy_decision_id=decision.decision_id,
+                )
+            await uow.outbox.add_events(
+                [
+                    DomainEvent.create(
+                        event_type="iam.workspace_membership.profile_role_changed.v1",
+                        aggregate_type="workspace_membership",
+                        aggregate_id=target_subject_id,
+                        workspace_id=workspace_id,
+                        payload={
+                            "actor_id": str(subject.subject_id),
+                            "tier": result.tier,
+                            "membership_version": result.membership_version,
+                            "assignment_version": result.assignment_version,
+                            "binding_version": result.binding_version,
+                            "policy_decision_id": str(decision.decision_id),
+                            "reason_hash": canonical_json_hash({"reason": normalized_reason}),
+                            "assurance": subject.authentication_assurance.value,
+                        },
+                    )
+                ]
+            )
+            await uow.idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "actor_id": str(subject.subject_id),
+                    "tier": result.tier,
+                    "membership_version": result.membership_version,
+                    "assignment_version": result.assignment_version,
+                    "binding_version": result.binding_version,
+                },
+            )
+            await uow.commit()
+            return result
 
     async def list_membership_change_request_activity(
         self,
@@ -836,6 +1094,20 @@ class AdminAccessService:
                 return int(existing.result["membership_version"])
             if role_transition:
                 await uow.memberships.assert_current_version(command)
+                if role_id is not None:
+                    current_access = await uow.memberships.get_access(
+                        workspace_id=command.workspace_id,
+                        subject_id=command.target_subject_id,
+                    )
+                    if current_access is None:
+                        raise NotFoundError("The target workspace membership does not exist.")
+                    if (
+                        current_access.profile_role is not None
+                        and current_access.profile_role.status != "REVOKED"
+                    ):
+                        raise ConflictError(
+                            "A custom Role cannot be assigned while a profile Role is active."
+                        )
             else:
                 await uow.memberships.assert_manual_access_update_allowed(
                     workspace_id=command.workspace_id,
@@ -1360,6 +1632,37 @@ def _verify_idempotency(
 def _validate_admin_page_limit(limit: int) -> None:
     if limit < 1 or limit > 100:
         raise ValidationError("An administrator list page must contain between 1 and 100 items.")
+
+
+def _profile_role_access_payload_hash(
+    *,
+    access: WorkspaceMembershipAccessRecord,
+    tier: ProfileRoleTier,
+) -> str:
+    policy = PROFILE_ROLE_BY_TIER[tier]
+    groups = {
+        group
+        for group in access.groups
+        if group != "security-administrators" and not group.startswith("datariver-role-")
+    }
+    if tier is ProfileRoleTier.ADMIN:
+        groups.add("security-administrators")
+    clearance = (
+        Classification.RESTRICTED
+        if tier is ProfileRoleTier.ADMIN
+        else max(access.summary.clearance, Classification.CONFIDENTIAL)
+    )
+    return canonical_json_hash(
+        {
+            "active": access.summary.membership_active,
+            "clearance": clearance.name,
+            "groups": sorted(groups),
+            "allowed_actions": sorted(action.value for action in policy.allowed_actions),
+            "denied_actions": sorted(action.value for action in access.denied_actions),
+            "allowed_system_ids": [],
+            "allowed_domain_ids": sorted(str(value) for value in access.allowed_domain_ids),
+        }
+    )
 
 
 def _assert_role_marker_binding(

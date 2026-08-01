@@ -250,14 +250,17 @@ def _service(target: IdentityProfileTarget) -> tuple[IdentityAdminService, _Uow,
 
 
 @pytest.mark.asyncio
-async def test_user_provisioning_rejects_non_human_role_before_provider_mutation() -> None:
+async def test_user_provisioning_rejects_any_explicit_role_before_provider_mutation() -> None:
     target = _target()
     service, uow, provider = _service(target)
     uow.memberships.assignable_role_error = ValidationError(
         "Canonical Admin cannot be assigned through a generic Role path."
     )
 
-    with pytest.raises(ValidationError, match="Canonical Admin cannot be assigned"):
+    with pytest.raises(
+        ValidationError,
+        match="New human identities always receive the Viewer profile Role",
+    ):
         await service.provision_user(
             draft=IdentityUserDraft(
                 username="new.user",

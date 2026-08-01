@@ -1095,6 +1095,15 @@ class WorkspaceMembershipSummaryResponse(BaseModel):
     job_function: str | None
     clearance: Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
     membership_version: int = Field(ge=1)
+    effective_profile_role: Literal[
+        "VIEWER",
+        "ENGINEER_STEWARD",
+        "MANAGER",
+        "ADMIN",
+        "UNASSIGNED",
+        "STALE",
+        "REVOKED",
+    ]
 
 
 class WorkspaceMembershipListResponse(BaseModel):
@@ -1610,6 +1619,15 @@ class CanonicalAdminBindingEvidenceResponse(BaseModel):
     updated_at: datetime | None = None
 
 
+class ProfileRoleAssignmentEvidenceResponse(BaseModel):
+    status: Literal["VERIFIED", "UNASSIGNED", "STALE", "REVOKED"]
+    tier: Literal["VIEWER", "ENGINEER_STEWARD", "MANAGER", "ADMIN"] | None = None
+    policy_version: str | None = None
+    membership_version: int | None = Field(default=None, ge=1)
+    assignment_version: int | None = Field(default=None, ge=1)
+    updated_at: datetime | None = None
+
+
 class WorkspaceMembershipAccessResponse(BaseModel):
     subject_id: UUID
     display_name: str
@@ -1620,6 +1638,56 @@ class WorkspaceMembershipAccessResponse(BaseModel):
     access: MembershipAccessDocumentResponse
     role_assignment: MembershipRoleAssignmentEvidenceResponse
     canonical_admin_binding: CanonicalAdminBindingEvidenceResponse
+    profile_role: ProfileRoleAssignmentEvidenceResponse
+
+
+class ProfileRoleServicePolicyResponse(BaseModel):
+    service_key: str
+    service_label: str
+    action_labels: list[str]
+
+
+class ProfileRolePolicyItemResponse(BaseModel):
+    tier: Literal["VIEWER", "ENGINEER_STEWARD", "MANAGER", "ADMIN"]
+    label: str
+    description: str
+    allowed_actions: list[Action]
+    services: list[ProfileRoleServicePolicyResponse]
+    assignable_to_system: bool
+    lifecycle_note: str
+
+
+class ProfileRolePolicyResponse(BaseModel):
+    policy_version: str
+    items: list[ProfileRolePolicyItemResponse]
+
+
+class ProfileRoleUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tier: Literal["VIEWER", "ENGINEER_STEWARD", "MANAGER", "ADMIN"]
+    expected_binding_version: int = Field(default=0, ge=0)
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class ProfileRoleTransitionResponse(BaseModel):
+    subject_id: UUID
+    tier: Literal["VIEWER", "ENGINEER_STEWARD", "MANAGER", "ADMIN"]
+    membership_version: int = Field(ge=1)
+    assignment_version: int = Field(ge=1)
+    binding_version: int | None = Field(default=None, ge=1)
+
+
+class SystemAssigneeCandidateResponse(BaseModel):
+    subject_id: UUID
+    display_name: str
+    email: str | None
+    tier: Literal["ENGINEER_STEWARD", "MANAGER", "ADMIN"]
+
+
+class SystemAssigneeCandidateListResponse(BaseModel):
+    items: list[SystemAssigneeCandidateResponse]
+    page: PageMeta
 
 
 class AdminReadContextResponse(BaseModel):

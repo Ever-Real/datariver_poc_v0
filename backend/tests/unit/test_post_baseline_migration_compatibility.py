@@ -258,9 +258,28 @@ def test_complete_schema_reinstalls_mutable_security_contracts_idempotently() ->
     assert "IF NOT EXISTS" in typed_bulk
     assert "FORCE ROW LEVEL SECURITY" in typed_bulk
     assert "GRANT SELECT, INSERT ON integration.upload_preparation_jobs" in typed_bulk
-
     assert "CREATE OR REPLACE FUNCTION" in candidate_evidence
     assert "DROP TRIGGER IF EXISTS" in candidate_evidence
+
+
+def test_0090_profile_role_migration_is_linear_and_has_no_legacy_auto_escalation() -> None:
+    root = Path(__file__).resolve().parents[3]
+    path = root / "backend/alembic/versions/0090_profile_role_authority.py"
+    source = path.read_text(encoding="utf-8")
+    module = _load_migration(path.name)
+
+    assert module.revision == "0090"
+    assert module.down_revision == "0089"
+    assert 'op.create_table(\n        "profile_role_assignments"' in source
+    assert 'op.create_table(\n        "profile_role_assignment_events"' in source
+    assert 'sa.Column("policy_decision_id", sa.Uuid(), nullable=False)' in source
+    assert "IDENTITY_PROVISIONING_FUNCTION_SQL_V3" in source
+    assert "UPDATE iam.workspace_memberships" not in source
+    assert "GOVERNED_ADMIN_ASSIGNMENT" in source
+    assert "0090 downgrade is blocked by profile Role or governed Admin history" in source
+    assert source.index('op.drop_table("profile_role_assignment_events"') < source.index(
+        'op.drop_table("profile_role_assignments"'
+    )
 
 
 def test_registration_execution_bridge_validates_definitions_not_only_names() -> None:

@@ -424,8 +424,8 @@ class CanonicalAdminBindingModel(Base, TimestampMixin, VersionMixin):
         ),
         CheckConstraint("role_kind = 'CANONICAL_ADMIN'", name="canonical_role_only"),
         CheckConstraint(
-            "binding_source = 'LOCAL_DEVELOPMENT_BOOTSTRAP'",
-            name="development_bootstrap_only",
+            "binding_source IN ('LOCAL_DEVELOPMENT_BOOTSTRAP', 'GOVERNED_ADMIN_ASSIGNMENT')",
+            name="binding_source_vocabulary",
         ),
         CheckConstraint("state IN ('ACTIVE', 'REVOKED')", name="state_vocabulary"),
         CheckConstraint("canonical_role_version > 0", name="role_version_positive"),
@@ -453,6 +453,128 @@ class CanonicalAdminBindingModel(Base, TimestampMixin, VersionMixin):
     state: Mapped[str] = mapped_column(String(20), default="ACTIVE", nullable=False)
     binding_source: Mapped[str] = mapped_column(
         String(64), default="LOCAL_DEVELOPMENT_BOOTSTRAP", nullable=False
+    )
+
+
+class ProfileRoleAssignmentModel(Base, TimestampMixin, VersionMixin):
+    """Current server-managed actions-only profile Role assignment."""
+
+    __tablename__ = "profile_role_assignments"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ("workspace_id", "subject_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_profile_role_assignments_membership",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "assigned_by"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_profile_role_assignments_actor",
+        ),
+        CheckConstraint(
+            "tier IN ('VIEWER', 'ENGINEER_STEWARD', 'MANAGER')",
+            name="tier_vocabulary",
+        ),
+        CheckConstraint("state IN ('ACTIVE', 'REVOKED')", name="state_vocabulary"),
+        CheckConstraint("policy_version = 'PROFILE_ROLE_POLICY_V1'", name="policy_version"),
+        CheckConstraint("membership_version > 0", name="membership_version_positive"),
+        CheckConstraint(
+            "materialized_actions_hash ~ '^[0-9a-f]{64}$'",
+            name="actions_hash_sha256",
+        ),
+        CheckConstraint("char_length(trim(reason)) BETWEEN 1 AND 4000", name="reason_bounded"),
+        CheckConstraint(
+            "assurance IN ('PASSWORD_REAUTH', 'HARDWARE_WEBAUTHN')",
+            name="assurance_vocabulary",
+        ),
+        Index("ix_profile_role_assignments_workspace_tier", "workspace_id", "tier", "state"),
+        {"schema": "iam"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    subject_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    tier: Mapped[str] = mapped_column(String(32), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    materialized_actions_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    membership_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(20), nullable=False)
+    assigned_by: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    assurance: Mapped[str] = mapped_column(String(32), nullable=False)
+
+
+class ProfileRoleAssignmentEventModel(Base, UuidPrimaryKeyMixin):
+    """Append-only profile Role and Canonical Admin transition evidence."""
+
+    __tablename__ = "profile_role_assignment_events"
+    __table_args__ = (
+        UniqueConstraint("workspace_id", "id"),
+        ForeignKeyConstraint(
+            ("workspace_id", "subject_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_profile_role_assignment_events_membership",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "actor_id"),
+            ("iam.workspace_memberships.workspace_id", "iam.workspace_memberships.subject_id"),
+            ondelete="RESTRICT",
+            name="fk_profile_role_assignment_events_actor",
+        ),
+        CheckConstraint(
+            "event_type IN ('ASSIGNED', 'CHANGED', 'PROMOTED_TO_ADMIN', 'DEMOTED_FROM_ADMIN')",
+            name="event_type_vocabulary",
+        ),
+        CheckConstraint(
+            "previous_tier IS NULL OR previous_tier IN "
+            "('VIEWER', 'ENGINEER_STEWARD', 'MANAGER', 'ADMIN')",
+            name="previous_tier_vocabulary",
+        ),
+        CheckConstraint(
+            "next_tier IN ('VIEWER', 'ENGINEER_STEWARD', 'MANAGER', 'ADMIN')",
+            name="next_tier_vocabulary",
+        ),
+        CheckConstraint("policy_version = 'PROFILE_ROLE_POLICY_V1'", name="policy_version"),
+        CheckConstraint("membership_version > 0", name="membership_version_positive"),
+        CheckConstraint("assignment_version > 0", name="assignment_version_positive"),
+        CheckConstraint("char_length(trim(reason)) BETWEEN 1 AND 4000", name="reason_bounded"),
+        CheckConstraint(
+            "assurance IN ('PASSWORD_REAUTH', 'HARDWARE_WEBAUTHN')",
+            name="assurance_vocabulary",
+        ),
+        Index(
+            "ix_profile_role_assignment_events_workspace_subject_occurred",
+            "workspace_id",
+            "subject_id",
+            "occurred_at",
+        ),
+        {"schema": "iam"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True),
+        ForeignKey("platform.workspaces.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    subject_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    previous_tier: Mapped[str | None] = mapped_column(String(32))
+    next_tier: Mapped[str] = mapped_column(String(32), nullable=False)
+    policy_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    membership_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    assignment_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    actor_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    policy_decision_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), nullable=False)
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    assurance: Mapped[str] = mapped_column(String(32), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(
+        server_default=text("CURRENT_TIMESTAMP"), nullable=False
     )
 
 

@@ -12,6 +12,7 @@ import pytest
 
 from datariver.application.dto import (
     AdminAccessRequestPage,
+    CanonicalAdminBindingEvidence,
     IdempotencyRecord,
     MembershipChangeRequestActivity,
     MembershipChangeRequestActivityPage,
@@ -19,6 +20,8 @@ from datariver.application.dto import (
     MembershipOwnedTablePage,
     MembershipRenewalPage,
     MembershipRenewalRecord,
+    ProfileRoleAssignmentEvidence,
+    ProfileRoleTransitionResult,
     SystemAssigneePage,
     SystemDirectoryAssignee,
     SystemDirectoryEntry,
@@ -255,6 +258,67 @@ class MemoryMemberships:
         eligible = cast(set[UUID], self.state["eligible_administrators"])
         if not subject_ids.issubset(eligible):
             raise ForbiddenError("administrator eligibility changed")
+
+    async def apply_profile_role(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        tier: str,
+        expected_membership_version: int,
+        reason: str,
+        assurance: str,
+        access_payload_hash: str,
+        policy_decision_id: UUID,
+    ) -> ProfileRoleTransitionResult:
+        del reason, assurance, access_payload_hash
+        assert isinstance(policy_decision_id, UUID)
+        assert workspace_id == self.state["workspace_id"]
+        versions = cast(dict[UUID, int], self.state["membership_versions"])
+        if versions.get(subject_id) != expected_membership_version:
+            raise ConflictError("membership version mismatch")
+        cast(set[UUID], self.state["role_bound_subjects"]).discard(subject_id)
+        calls = cast(list[tuple[str, UUID, str]], self.state["profile_transition_calls"])
+        calls.append(("PROFILE", subject_id, tier))
+        versions[subject_id] = expected_membership_version + 1
+        return ProfileRoleTransitionResult(
+            subject_id=subject_id,
+            tier=tier,
+            membership_version=expected_membership_version + 1,
+            assignment_version=1,
+        )
+
+    async def transition_canonical_admin_profile(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        tier: str,
+        expected_membership_version: int,
+        expected_binding_version: int,
+        reason: str,
+        assurance: str,
+        access_payload_hash: str,
+        policy_decision_id: UUID,
+    ) -> ProfileRoleTransitionResult:
+        del reason, assurance, access_payload_hash
+        assert isinstance(policy_decision_id, UUID)
+        assert workspace_id == self.state["workspace_id"]
+        versions = cast(list[int], self.state["profile_binding_versions"])
+        versions.append(expected_binding_version)
+        calls = cast(list[tuple[str, UUID, str]], self.state["profile_transition_calls"])
+        calls.append(("CANONICAL", subject_id, tier))
+        return ProfileRoleTransitionResult(
+            subject_id=subject_id,
+            tier=tier,
+            membership_version=expected_membership_version + 1,
+            assignment_version=1,
+            binding_version=expected_binding_version + 1,
+        )
+
+    async def count_verified_canonical_admins(self, *, workspace_id: UUID) -> int:
+        assert workspace_id == self.state["workspace_id"]
+        return cast(int, self.state["remaining_admin_count"])
 
 
 class MemoryOutbox:
@@ -642,6 +706,8 @@ def _state(
         "role_assignment_records": [],
         "role_assignment_failure": False,
         "role_bound_subjects": set(),
+        "profile_transition_calls": [],
+        "profile_binding_versions": [],
         "lock_count": 0,
     }
 
@@ -780,6 +846,220 @@ async def test_membership_reads_reuse_admin_read_assurance_when_fallback_is_disa
     assert access == target_record
     assert access.summary.membership_version == 1
     assert access.allowed_actions == frozenset({Action.ADMIN_MANAGE, Action.CATALOG_READ})
+
+
+@pytest.mark.asyncio
+async def test_profile_transition_clears_custom_role_through_one_governed_path() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    state["membership_records"] = {
+        administrator_id: _membership_record(administrator_id, "Administrator"),
+        target_id: _membership_record(target_id, "Target User"),
+    }
+    cast(set[UUID], state["role_bound_subjects"]).add(target_id)
+
+    result = await _service(state, enabled=False).update_profile_role(
+        workspace_id=workspace_id,
+        target_subject_id=target_id,
+        tier="ENGINEER_STEWARD",
+        expected_membership_version=1,
+        expected_binding_version=0,
+        reason="Assign the approved operational profile.",
+        subject=_administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            now=now,
+        ),
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="profile-role-update",
+        idempotency_key="profile-role-update-0001",
+        request_hash="profile-role-update-hash",
+    )
+
+    assert result.tier == "ENGINEER_STEWARD"
+    assert state["profile_transition_calls"] == [("PROFILE", target_id, "ENGINEER_STEWARD")]
+    assert target_id not in cast(set[UUID], state["role_bound_subjects"])
+    assert cast(list[dict[str, object]], state["role_assignment_records"]) == []
+    assert len(cast(list[DomainEvent], state["outbox"])) == 1
+
+
+@pytest.mark.asyncio
+async def test_profile_transition_rejects_self_and_non_hardware_admin_without_writes() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    state["membership_records"] = {
+        administrator_id: _membership_record(administrator_id, "Administrator"),
+        target_id: _membership_record(target_id, "Target User"),
+    }
+    service = _service(state, enabled=False)
+
+    with pytest.raises(ValidationError, match="own profile Role"):
+        await service.update_profile_role(
+            workspace_id=workspace_id,
+            target_subject_id=administrator_id,
+            tier="MANAGER",
+            expected_membership_version=1,
+            expected_binding_version=0,
+            reason="Self transition must be rejected.",
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="profile-role-self",
+            idempotency_key="profile-role-self-0001",
+            request_hash="profile-role-self-hash",
+        )
+    with pytest.raises(ForbiddenError):
+        await service.update_profile_role(
+            workspace_id=workspace_id,
+            target_subject_id=target_id,
+            tier="ADMIN",
+            expected_membership_version=1,
+            expected_binding_version=0,
+            reason="Admin promotion requires hardware assurance.",
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.PASSWORD_REAUTH,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="profile-role-admin-password",
+            idempotency_key="profile-role-admin-password-0001",
+            request_hash="profile-role-admin-password-hash",
+        )
+
+    assert state["profile_transition_calls"] == []
+    assert cast(list[DomainEvent], state["outbox"]) == []
+
+
+@pytest.mark.asyncio
+async def test_profile_role_transition_rejects_last_canonical_admin_demotion() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    binding = CanonicalAdminBindingEvidence(
+        status="VERIFIED",
+        role_version=1,
+        catalog_version="CAPABILITY_CATALOG_V2",
+        membership_version=1,
+        binding_version=1,
+        updated_at=now,
+    )
+    state["remaining_admin_count"] = 1
+    state["membership_records"] = {
+        administrator_id: replace(
+            _membership_record(administrator_id, "Administrator"),
+            canonical_admin_binding=binding,
+        ),
+        target_id: replace(
+            _membership_record(target_id, "Target Admin"),
+            canonical_admin_binding=binding,
+        ),
+    }
+
+    with pytest.raises(ConflictError, match="last verified Canonical Admin"):
+        await _service(state, enabled=False).update_profile_role(
+            workspace_id=workspace_id,
+            target_subject_id=target_id,
+            tier="MANAGER",
+            expected_membership_version=1,
+            expected_binding_version=1,
+            reason="The final administrator must remain bound.",
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="profile-role-last-admin",
+            idempotency_key="profile-role-last-admin-0001",
+            request_hash="profile-role-last-admin-hash",
+        )
+
+    assert state["profile_transition_calls"] == []
+    assert cast(list[DomainEvent], state["outbox"]) == []
+
+
+@pytest.mark.asyncio
+async def test_revoked_canonical_admin_binding_can_be_repromoted_at_current_version() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    actor_binding = CanonicalAdminBindingEvidence(
+        status="VERIFIED",
+        role_version=1,
+        catalog_version="CAPABILITY_CATALOG_V2",
+        membership_version=1,
+        binding_version=1,
+        updated_at=now,
+    )
+    revoked_binding = replace(actor_binding, status="REVOKED", binding_version=7)
+    target_record = replace(
+        _membership_record(target_id, "Former Administrator"),
+        groups=frozenset(),
+        denied_actions=frozenset(),
+        canonical_admin_binding=revoked_binding,
+    )
+    state["membership_records"] = {
+        administrator_id: replace(
+            _membership_record(administrator_id, "Administrator"),
+            canonical_admin_binding=actor_binding,
+        ),
+        target_id: target_record,
+    }
+
+    result = await _service(state, enabled=False).update_profile_role(
+        workspace_id=workspace_id,
+        target_subject_id=target_id,
+        tier="ADMIN",
+        expected_membership_version=1,
+        expected_binding_version=7,
+        reason="Restore the previously revoked Canonical Admin binding.",
+        subject=_administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            now=now,
+        ),
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="profile-role-repromote",
+        idempotency_key="profile-role-repromote-0001",
+        request_hash="profile-role-repromote-hash",
+    )
+
+    assert result.tier == "ADMIN"
+    assert state["profile_binding_versions"] == [7]
+    assert state["profile_transition_calls"] == [("CANONICAL", target_id, "ADMIN")]
+
+
+@pytest.mark.asyncio
+async def test_profile_role_policy_rejects_service_identity() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id = (uuid4() for _ in range(4))
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    subject = replace(
+        _administrator(
+            workspace_id,
+            administrator_id,
+            assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            now=datetime.now(UTC),
+        ),
+        groups=frozenset({"security-administrators", "service-accounts"}),
+        job_function="SERVICE_ACCOUNT",
+    )
+
+    with pytest.raises(ForbiddenError, match="active workspace membership"):
+        await _service(state, enabled=False).get_profile_role_policy(
+            workspace_id=workspace_id,
+            subject=subject,
+        )
 
 
 @pytest.mark.asyncio
@@ -1856,6 +2136,9 @@ async def test_direct_role_assignment_records_exact_role_and_membership_versions
     workspace_id, target_id, administrator_id, other_admin_id, role_id = (uuid4() for _ in range(5))
     now = datetime.now(UTC)
     state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"])[target_id] = (
+        _membership_record(target_id, "Target User")
+    )
     command = replace(
         _command(workspace_id, target_id),
         groups=frozenset({"engineers", "datariver-role-data-steward"}),
@@ -1912,10 +2195,60 @@ async def test_direct_role_assignment_records_exact_role_and_membership_versions
 
 
 @pytest.mark.asyncio
+async def test_custom_role_assignment_rejects_active_profile_without_writes() -> None:
+    workspace_id, target_id, administrator_id, other_admin_id, role_id = (uuid4() for _ in range(5))
+    now = datetime.now(UTC)
+    state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    current = replace(
+        _membership_record(target_id, "Target User"),
+        profile_role=ProfileRoleAssignmentEvidence(
+            status="VERIFIED",
+            tier="ENGINEER_STEWARD",
+            policy_version="PROFILE_ROLE_POLICY_V1",
+            membership_version=1,
+            assignment_version=1,
+            updated_at=now,
+        ),
+    )
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"])[target_id] = (
+        current
+    )
+    command = replace(
+        _command(workspace_id, target_id),
+        groups=frozenset({"engineers", "datariver-role-data-steward"}),
+    )
+
+    with pytest.raises(ConflictError, match="profile Role is active"):
+        await _service(state).update_membership_with_hardware_key(
+            command=command,
+            subject=_administrator(
+                workspace_id,
+                administrator_id,
+                assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+                now=now,
+            ),
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="custom-role-profile-conflict",
+            idempotency_key="custom-role-profile-conflict-0001",
+            request_hash="c" * 64,
+            role_id=role_id,
+            role_version=7,
+            role_transition=True,
+        )
+
+    assert cast(dict[UUID, int], state["membership_versions"])[target_id] == 1
+    assert cast(list[dict[str, object]], state["role_assignment_records"]) == []
+    assert cast(list[DomainEvent], state["outbox"]) == []
+
+
+@pytest.mark.asyncio
 async def test_role_assignment_evidence_failure_rolls_back_membership_and_side_effects() -> None:
     workspace_id, target_id, administrator_id, other_admin_id, role_id = (uuid4() for _ in range(5))
     now = datetime.now(UTC)
     state = _state(workspace_id, target_id, administrator_id, other_admin_id)
+    cast(dict[UUID, WorkspaceMembershipAccessRecord], state["membership_records"])[target_id] = (
+        _membership_record(target_id, "Target User")
+    )
     state["role_assignment_failure"] = True
     command = replace(
         _command(workspace_id, target_id),

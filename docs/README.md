@@ -72,6 +72,10 @@ The server-owned Canonical Admin definition, non-delegable binding evidence and 
 fixed bootstrap boundary are defined by
 [ADR-0106](adr/0106-canonical-admin-role-binding.md). It creates no production user binding and
 keeps workflow self-approval closed pending a separate decision.
+The four product-facing account tiers, separate profile-assignment evidence, request-time System
+responsibility scope and protected Canonical Admin transition are defined by
+[ADR-0107](adr/0107-server-managed-profile-role-authority.md). Profile tier, clearance, job function
+and custom Access Role remain separate authority inputs.
 The ordinary-assurance four-class summary and fresh-assurance full classification-policy detail
 boundary are defined by
 [ADR-0105](adr/0105-redacted-classification-policy-summary.md).

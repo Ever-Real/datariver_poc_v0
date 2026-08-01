@@ -360,12 +360,15 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/workspace-memberships/{target_subject_id}/access",
         "/api/v1/admin/workspace-memberships/{target_subject_id}/change-requests",
         "/api/v1/admin/workspace-memberships/{target_subject_id}/owned-tables",
+        "/api/v1/admin/workspace-memberships/{target_subject_id}/profile-role",
         "/api/v1/admin/workspace-memberships/{target_subject_id}/role",
         "/api/v1/admin/workspace-memberships",
+        "/api/v1/admin/profile-role-policy",
         "/api/v1/admin/access-roles",
         "/api/v1/admin/access-roles/capabilities",
         "/api/v1/admin/access-roles/{role_id}",
         "/api/v1/admin/systems",
+        "/api/v1/admin/systems/assignee-candidates",
         "/api/v1/admin/systems/{system_id}/assignees",
         "/api/v1/admin/system-configuration",
         "/api/v1/admin/monitoring-configuration",
@@ -2232,6 +2235,26 @@ def test_openapi_exposes_bounded_typed_administrator_read_contracts() -> None:
         "denied_actions",
         "allowed_system_ids",
         "allowed_domain_ids",
+    }
+    profile_update = document["paths"][
+        "/api/v1/admin/workspace-memberships/{target_subject_id}/profile-role"
+    ]["put"]
+    profile_headers = {parameter["name"]: parameter for parameter in profile_update["parameters"]}
+    assert profile_headers["If-Match"]["required"] is True
+    assert profile_headers["Idempotency-Key"]["required"] is True
+    profile_request = document["components"]["schemas"]["ProfileRoleUpdateRequest"]
+    assert set(profile_request["properties"]["tier"]["enum"]) == {
+        "VIEWER",
+        "ENGINEER_STEWARD",
+        "MANAGER",
+        "ADMIN",
+    }
+    assert profile_request["properties"]["reason"]["minLength"] == 1
+    candidate_schema = document["components"]["schemas"]["SystemAssigneeCandidateResponse"]
+    assert set(candidate_schema["properties"]["tier"]["enum"]) == {
+        "ENGINEER_STEWARD",
+        "MANAGER",
+        "ADMIN",
     }
 
     context_schema = document["components"]["schemas"]["AdminReadContextResponse"]

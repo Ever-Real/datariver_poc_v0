@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type {
   SystemAssigneeKey,
+  SystemAssigneeCandidate,
   SystemAssigneeUpdate,
   SystemDirectoryAssignee,
   SystemDirectoryEntry,
-  WorkspaceMembershipSummary,
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
@@ -52,9 +52,14 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   const [nextAssigneeCursor, setNextAssigneeCursor] = useState<string | null>(null)
   const [assigneePageNumber, setAssigneePageNumber] = useState(1)
   const [assigneeReload, setAssigneeReload] = useState(0)
-  const [members, setMembers] = useState<WorkspaceMembershipSummary[]>([])
-  const [memberQuery, setMemberQuery] = useState('')
-  const [appliedMemberQuery, setAppliedMemberQuery] = useState('')
+  const [candidates, setCandidates] = useState<Record<Responsibility, SystemAssigneeCandidate[]>>({
+    DEVELOPER: [],
+    DATA_STEWARD: [],
+  })
+  const [candidateQueries, setCandidateQueries] = useState<Record<Responsibility, string>>({
+    DEVELOPER: '',
+    DATA_STEWARD: '',
+  })
   const [draft, setDraft] = useState<AssignmentDraft[]>([])
   const [editingAssignmentKeys, setEditingAssignmentKeys] = useState<Set<string>>(() => new Set())
   const [loading, setLoading] = useState(true)
@@ -64,7 +69,10 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   const [createValidationError, setCreateValidationError] = useState('')
   const systemGeneration = useRef(0)
   const assigneeGeneration = useRef(0)
-  const memberGeneration = useRef(0)
+  const candidateGeneration = useRef<Record<Responsibility, number>>({
+    DEVELOPER: 0,
+    DATA_STEWARD: 0,
+  })
 
   const loadSystems = useCallback(async (signal?: AbortSignal) => {
     const generation = ++systemGeneration.current
@@ -122,25 +130,24 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
     }
   }, [api, assigneeCursor, assigneeReload, reportError, selectedId])
 
-  const loadMembers = useCallback(async (signal?: AbortSignal) => {
-    const generation = ++memberGeneration.current
+  const loadCandidates = useCallback(async (
+    responsibility: Responsibility,
+    signal?: AbortSignal,
+  ) => {
+    const generation = ++candidateGeneration.current[responsibility]
     try {
-      const page = await api.listMembershipPage({
-        query: appliedMemberQuery || undefined,
-        status: 'ACTIVE',
-        limit: 25,
+      const page = await api.listSystemAssigneeCandidates(
+        candidateQueries[responsibility].trim() || undefined,
         signal,
-      })
-      if (signal?.aborted || generation !== memberGeneration.current) return
-      setMembers(page.items.filter((member) => (
-        member.subject_active
-        && member.membership_active
-        && member.job_function !== 'SERVICE_ACCOUNT'
-      )))
+      )
+      if (signal?.aborted || generation !== candidateGeneration.current[responsibility]) return
+      setCandidates((current) => ({ ...current, [responsibility]: page.items }))
     } catch (next) {
-      if (!signal?.aborted && generation === memberGeneration.current) reportError(next)
+      if (!signal?.aborted && generation === candidateGeneration.current[responsibility]) {
+        reportError(next)
+      }
     }
-  }, [api, appliedMemberQuery, reportError])
+  }, [api, candidateQueries, reportError])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -151,10 +158,6 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
     }, 250)
     return () => window.clearTimeout(timer)
   }, [systemQuery])
-  useEffect(() => {
-    const timer = window.setTimeout(() => setAppliedMemberQuery(memberQuery.trim()), 250)
-    return () => window.clearTimeout(timer)
-  }, [memberQuery])
   useEffect(() => {
     const controller = new AbortController()
     void loadSystems(controller.signal)
@@ -177,13 +180,23 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
     }
   }, [loadAssignees])
   useEffect(() => {
-    const controller = new AbortController()
-    void loadMembers(controller.signal)
+    const generation = candidateGeneration.current
+    const controllers = responsibilities.map(({ id }) => {
+      const controller = new AbortController()
+      const timer = window.setTimeout(
+        () => void loadCandidates(id, controller.signal),
+        candidateQueries[id] ? 250 : 0,
+      )
+      return { controller, id, timer }
+    })
     return () => {
-      controller.abort()
-      memberGeneration.current += 1
+      controllers.forEach(({ controller, id, timer }) => {
+        window.clearTimeout(timer)
+        controller.abort()
+        generation[id] += 1
+      })
     }
-  }, [loadMembers])
+  }, [candidateQueries, loadCandidates])
 
   const selected = useMemo(
     () => systems.find((system) => system.system_id === selectedId),
@@ -234,12 +247,15 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
     item.key === key ? { ...item, ...patch } : item
   )))
   const addAssignment = (responsibility: Responsibility) => {
-    setDraft((current) => [...current, {
-      key: `${responsibility}:new:${crypto.randomUUID()}`,
-      subject_id: '',
-      responsibility,
-      priority: 1,
-    }])
+    setDraft((current) => {
+      const lane = current.filter((item) => item.responsibility === responsibility)
+      return [...current, {
+        key: `${responsibility}:new:${crypto.randomUUID()}`,
+        subject_id: '',
+        responsibility,
+        priority: Math.max(0, ...lane.map((item) => item.priority)) + 1,
+      }]
+    })
   }
   const removeAssignment = (key: string) => {
     setDraft((current) => current.filter((value) => value.key !== key))
@@ -311,7 +327,8 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
       caption="워크스페이스 시스템 목록"
       columns={[
         { accessorKey: 'code', header: '코드', size: 125 },
-        { accessorKey: 'name', header: '시스템', size: 220, cell: ({ row }) => <><strong>{row.original.name}</strong><small>{row.original.description || '설명 없음'}</small></> },
+        { accessorKey: 'name', header: '시스템명', size: 170, cell: ({ row }) => <strong>{row.original.name}</strong> },
+        { accessorKey: 'description', header: '시스템 설명', size: 260, cell: ({ row }) => row.original.description || '설명 없음' },
         { accessorKey: 'assignee_count', header: '담당자 수', size: 100 },
         { id: 'schemas', header: 'Target Schemas', size: 160, cell: () => <button type="button" className="button button-secondary" disabled title="시스템-스키마 매핑 조회 API가 아직 없습니다.">스키마 조회</button> },
         { id: 'state', header: '상태', size: 76, cell: ({ row }) => <span className="badge">{row.original.active ? 'ACTIVE' : 'INACTIVE'}</span> },
@@ -328,7 +345,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
       }}
       selectedRowId={selectedId}
     />
-    <PageControls
+    {(systemCursorHistory.length > 0 || nextSystemCursor) && <PageControls
       pageNumber={systemPageNumber}
       canPrevious={systemCursorHistory.length > 0}
       canNext={Boolean(nextSystemCursor)}
@@ -344,21 +361,20 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
         setSystemCursor(nextSystemCursor)
         setSystemPageNumber((current) => current + 1)
       }}
-    />
+    />}
     {selected && <section className="admin-system-assignment" aria-labelledby="system-assignment-title">
       <header><div><span className="eyebrow">{selected.code}</span><h4 id="system-assignment-title">{selected.name} 담당자</h4></div><span className="badge">v{assigneeVersion || selected.version}</span></header>
-      <p className="muted">현재 25건만 브라우저에 유지합니다. 전체 교체 없이 이 페이지의 추가·우선순위 변경·제거만 전송하며, 서버가 두 역할과 전역 우선순위 불변식을 재검증합니다.</p>
-      <label className="mb-3 block max-w-md text-xs font-bold">담당자 후보 검색<input type="search" value={memberQuery} onChange={(event) => setMemberQuery(event.target.value)} placeholder="이름 또는 이메일" /></label>
+      <p className="muted">Engineer/Steward, Manager, Admin 프로필만 서버 검색 결과에 포함됩니다. 저장 시 현재 프로필과 활성 멤버십을 다시 검증합니다.</p>
       <div className="admin-system-assignment-grid">
         {responsibilities.map(({ id, label }) => {
           const assignments = draft.filter((item) => item.responsibility === id)
           return <fieldset key={id}><legend>{label}</legend>
-            <div className="mb-2 flex justify-end"><button className="button button-secondary button-compact" disabled={!canUpdate || draft.length >= 100} onClick={() => addAssignment(id)} type="button">+ {label} 추가</button></div>
+            <div className="mb-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end"><label className="grid gap-1 text-xs font-bold">{label} 검색<input type="search" value={candidateQueries[id]} onChange={(event) => setCandidateQueries((current) => ({ ...current, [id]: event.target.value }))} placeholder="이름 또는 이메일" /></label><button className="button button-secondary button-compact" disabled={!canUpdate || draft.length >= 100} onClick={() => addAssignment(id)} type="button">+ {label} 추가</button></div>
             {assignments.map((assignment) => <div className="admin-system-assignment-row" key={assignment.key}>
               <label><span className="sr-only">{label} 담당자</span><select disabled={!canUpdate || (originalByKey.has(assignment.key) && !editingAssignmentKeys.has(assignment.key))} onChange={(event) => updateDraft(assignment.key, { subject_id: event.target.value })} value={assignment.subject_id}>
                 <option value="">멤버 선택</option>
-                {members.map((member) => <option key={member.subject_id} value={member.subject_id}>{member.display_name} · {member.email ?? '이메일 없음'}</option>)}
-                {assignment.subject_id && !members.some((member) => member.subject_id === assignment.subject_id) && <option value={assignment.subject_id}>{assignees.find((item) => assignmentKey(item) === assignment.key)?.display_name ?? '현재 담당자'} · 검색 결과 외</option>}
+                {candidates[id].map((candidate) => <option key={candidate.subject_id} value={candidate.subject_id}>{candidate.display_name} · {candidate.email ?? '이메일 없음'} · {candidate.tier}</option>)}
+                {assignment.subject_id && !candidates[id].some((candidate) => candidate.subject_id === assignment.subject_id) && <option value={assignment.subject_id}>{assignees.find((item) => assignmentKey(item) === assignment.key)?.display_name ?? '현재 담당자'} · 현재 검색 결과 외</option>}
               </select></label>
               <label><span className="sr-only">{label} 우선순위</span><input disabled={!canUpdate} max={999} min={1} onChange={(event) => updateDraft(assignment.key, { priority: Number(event.target.value) })} type="number" value={assignment.priority} /></label>
               <div className="flex gap-1">{originalByKey.has(assignment.key) && <button aria-label={`${label} 담당자 변경`} className="button button-secondary button-compact" disabled={!canUpdate} onClick={() => setEditingAssignmentKeys((current) => new Set(current).add(assignment.key))} type="button">변경</button>}<button aria-label={`${label} 담당자 삭제`} className="button button-secondary button-compact" disabled={!canUpdate} onClick={() => removeAssignment(assignment.key)} type="button">삭제</button></div>
@@ -366,7 +382,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
           </fieldset>
         })}
       </div>
-      <PageControls
+      {(assigneeCursorHistory.length > 0 || nextAssigneeCursor) && <PageControls
         pageNumber={assigneePageNumber}
         canPrevious={assigneeCursorHistory.length > 0}
         canNext={Boolean(nextAssigneeCursor)}
@@ -382,8 +398,8 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
           setAssigneeCursor(nextAssigneeCursor)
           setAssigneePageNumber((current) => current + 1)
         }}
-      />
-      {canUpdate ? <div className="action-row"><button className="button" disabled={!draftValid || !changed} onClick={() => void save()} type="button">현재 페이지 변경 저장</button><button className="button button-danger" disabled title="시스템 정본 삭제 API와 참조 무결성 검토 계약이 아직 없습니다." type="button">시스템 삭제</button>{!draftValid && <small className="muted">현재 페이지에서 담당자·우선순위가 중복되거나 유효하지 않습니다.</small>}</div> : <p className="callout">서버가 현재 세션에 시스템 담당자 변경 권한을 허용하지 않았습니다.</p>}
+      />}
+      {canUpdate ? <div className="action-row"><button className="button" disabled={!draftValid || !changed} onClick={() => void save()} type="button">변경사항 저장</button><button className="button button-danger" disabled title="시스템 정본 삭제 API와 참조 무결성 검토 계약이 아직 없습니다." type="button">시스템 삭제</button>{!draftValid && <small className="muted">담당자·우선순위가 중복되거나 유효하지 않습니다.</small>}</div> : <p className="callout">서버가 현재 세션에 시스템 담당자 변경 권한을 허용하지 않았습니다.</p>}
     </section>}
     <Dialog open={createOpen} title="시스템 추가" size="medium" onRequestClose={() => setCreateOpen(false)}>
       <form id="system-create-form" onSubmit={handleCreateSubmit} className="grid gap-3">
@@ -399,7 +415,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
         </label>
         <div className="flex justify-end gap-2 pt-2">
           <button className="button button-secondary" onClick={() => setCreateOpen(false)} type="button">취소</button>
-          <button className="button" type="submit">생성</button>
+          <button className="button" type="submit">저장</button>
         </div>
       </form>
     </Dialog>

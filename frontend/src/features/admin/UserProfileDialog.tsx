@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
-  AccessRole,
   AdminReadContext,
+  Classification,
   MembershipChangeRequestActivity,
   MembershipOwnedTable,
+  ProfileRolePolicy,
   WorkspaceMembershipSummary,
 } from '../../api/types'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
@@ -61,10 +62,10 @@ export function UserProfileDialog({
   const [loading, setLoading] = useState(false)
   const [profile, setProfile] = useState<VersionedIdentityUserProfile>()
   const [access, setAccess] = useState<VersionedMembershipAccess>()
-  const [roles, setRoles] = useState<AccessRole[]>([])
-  const [roleQuery, setRoleQuery] = useState('')
-  const [rolesTruncated, setRolesTruncated] = useState(false)
-  const [selectedRoleId, setSelectedRoleId] = useState('')
+  const [profileRolePolicy, setProfileRolePolicy] = useState<ProfileRolePolicy>()
+  const [selectedTier, setSelectedTier] = useState<ProfileRolePolicy['items'][number]['tier']>()
+  const [selectedClearance, setSelectedClearance] = useState<Classification>('CONFIDENTIAL')
+  const [accessReason, setAccessReason] = useState('')
   const [changeRequests, setChangeRequests] = useState<MembershipChangeRequestActivity[]>([])
   const [ownedTables, setOwnedTables] = useState<MembershipOwnedTable[]>([])
   const [activityTruncated, setActivityTruncated] = useState(false)
@@ -79,13 +80,12 @@ export function UserProfileDialog({
   const [passwordConfirmation, setPasswordConfirmation] = useState('')
   const [passwordResetComplete, setPasswordResetComplete] = useState(false)
   const loadGeneration = useRef(0)
-  const roleGeneration = useRef(0)
   const operations = new Set(context?.allowed_operations ?? [])
   const canReadIdentity = operations.has('IDENTITY_USER_PROFILE_READ')
   const canUpdateIdentity = operations.has('IDENTITY_USER_PROFILE_UPDATE')
   const canResetPassword = operations.has('IDENTITY_USER_PASSWORD_RESET')
   const isServiceAccount = member?.job_function === 'SERVICE_ACCOUNT'
-  const canAssignRole = (
+  const canAssignProfile = (
     operations.has('MEMBERSHIP_ACCESS_UPDATE')
     && member?.subject_id !== context?.subject_id
     && Boolean(access?.etag)
@@ -96,17 +96,26 @@ export function UserProfileDialog({
     const generation = ++loadGeneration.current
     setLoading(true)
     try {
-      const [nextAccess, nextProfile, nextChangeRequests, nextOwnedTables] = await Promise.all([
+      const [
+        nextAccess,
+        nextProfile,
+        nextChangeRequests,
+        nextOwnedTables,
+        nextProfileRolePolicy,
+      ] = await Promise.all([
         api.getMembershipAccess(member.subject_id, signal),
         canReadIdentity && !isServiceAccount
           ? api.getIdentityUserProfile(member.subject_id, signal)
           : Promise.resolve(undefined),
         api.listMembershipChangeRequestActivity(member.subject_id, undefined, signal),
         api.listMembershipOwnedTables(member.subject_id, undefined, signal),
+        api.getProfileRolePolicy(signal),
       ])
       if (signal?.aborted || generation !== loadGeneration.current) return
       setAccess(nextAccess)
-      setSelectedRoleId(nextAccess.role_assignment.role_id ?? '')
+      setProfileRolePolicy(nextProfileRolePolicy)
+      setSelectedTier(nextAccess.profile_role.tier ?? undefined)
+      setSelectedClearance(nextAccess.access.clearance)
       setProfile(nextProfile)
       setChangeRequests(nextChangeRequests.items)
       setOwnedTables(nextOwnedTables.items)
@@ -135,30 +144,14 @@ export function UserProfileDialog({
     }
   }, [api, canReadIdentity, isServiceAccount, member, reportError])
 
-  const loadRoles = useCallback(async (signal?: AbortSignal) => {
-    const generation = ++roleGeneration.current
-    try {
-      const page = await api.listAccessRolePage({
-        query: roleQuery.trim() || undefined,
-        status: 'ACTIVE',
-        limit: 25,
-        signal,
-      })
-      if (signal?.aborted || generation !== roleGeneration.current) return
-      setRoles(page.items)
-      setRolesTruncated(Boolean(page.nextCursor))
-    } catch (error) {
-      if (!signal?.aborted && generation === roleGeneration.current) reportError(error)
-    }
-  }, [api, reportError, roleQuery])
-
   useEffect(() => {
     if (!open || !member) return
     setActiveTab('profile')
     setProfile(undefined)
     setAccess(undefined)
-    setRoleQuery('')
-    setRoles([])
+    setProfileRolePolicy(undefined)
+    setSelectedTier(undefined)
+    setAccessReason('')
     setChangeRequests([])
     setOwnedTables([])
     setTemporaryPassword('')
@@ -172,22 +165,7 @@ export function UserProfileDialog({
     }
   }, [loadDetails, member, open])
 
-  useEffect(() => {
-    if (!open) return
-    const controller = new AbortController()
-    const timer = window.setTimeout(
-      () => void loadRoles(controller.signal),
-      roleQuery ? 250 : 0,
-    )
-    return () => {
-      window.clearTimeout(timer)
-      controller.abort()
-      roleGeneration.current += 1
-    }
-  }, [loadRoles, open, roleQuery])
-
   if (!member) return null
-  const selectedRole = roles.find((role) => role.id === selectedRoleId)
   const profileChanged = profile !== undefined && (
     profileDraft.email.trim() !== profile.email
     || profileDraft.firstName.trim() !== profile.first_name
@@ -231,21 +209,48 @@ export function UserProfileDialog({
     })
   }
 
-  const saveRoleAssignment = () => {
-    if (!access || !canAssignRole || access.role_assignment.role_id === selectedRoleId) return
-    const intent = `membership-role:${member.subject_id}:${access.etag}:${selectedRoleId || 'none'}`
+  const saveProfileRole = () => {
+    if (!access || !canAssignProfile || !selectedTier || !accessReason.trim()) return
+    if (access.profile_role.tier === selectedTier && access.profile_role.status === 'VERIFIED') return
+    const intent = `profile-role:${member.subject_id}:${access.etag}:${selectedTier}`
     requestConfirmation({
-      title: `${member.display_name} 데이터·화면 접근 Role ${selectedRole ? '할당' : '해제'}`,
+      title: `${member.display_name} 프로필 권한 변경`,
       summary: [
-        selectedRole?.name ?? 'Role 미할당',
-        selectedRole ? `${selectedRole.clearance} 등급` : 'PUBLIC 최소 권한',
+        `${access.profile_role.tier ?? access.profile_role.status} → ${selectedTier}`,
+        '프로필 권한과 데이터 조회 등급은 별도로 관리됩니다.',
+        accessReason.trim(),
       ],
       execute: async () => {
-        await api.assignMembershipRole(
+        await api.updateProfileRole(
           member.subject_id,
-          selectedRoleId || null,
+          selectedTier,
+          access.canonical_admin_binding.binding_version ?? 0,
+          accessReason.trim(),
           access.etag,
-          keyFor(intent, 'membership-role'),
+          keyFor(intent, 'profile-role'),
+        )
+        clearKey(intent)
+        setAccessReason('')
+        await Promise.all([loadDetails(), onUpdated()])
+      },
+    })
+  }
+
+  const saveClearance = () => {
+    if (!access || !canAssignProfile || access.access.clearance === selectedClearance) return
+    const intent = `membership-clearance:${member.subject_id}:${access.etag}:${selectedClearance}`
+    requestConfirmation({
+      title: `${member.display_name} 데이터 조회 등급 변경`,
+      summary: [
+        `${access.access.clearance} → ${selectedClearance}`,
+        '프로필 권한은 변경하지 않습니다.',
+      ],
+      execute: async () => {
+        await api.updateMembership(
+          member.subject_id,
+          { ...access.access, clearance: selectedClearance },
+          access.etag,
+          keyFor(intent, 'membership-clearance'),
         )
         clearKey(intent)
         await Promise.all([loadDetails(), onUpdated()])
@@ -330,16 +335,17 @@ export function UserProfileDialog({
         </div> : <p className="callout m-0">{isServiceAccount ? '서비스 계정은 사람 사용자용 프로필·비밀번호 변경 대상에서 제외됩니다.' : '이 배포에서는 인증 프로필 편집 기능을 사용할 수 없습니다.'}</p>}
       </section>}
       {!loading && activeTab === 'access' && <section className="grid gap-3" aria-label="데이터 및 화면 접근 관리">
-        <p className="callout m-0">업무 역할과 별개로, 이 Role은 플랫폼 화면·기능·데이터 등급 접근 권한을 결정합니다.</p>
-        <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(260px,0.7fr)]">
-          <label className="grid gap-1 text-xs font-bold">데이터·화면 접근 Role 검색<input type="search" value={roleQuery} onChange={(event) => setRoleQuery(event.target.value)} placeholder="Role 이름 또는 key" /></label>
-          <label className="grid gap-1 text-xs font-bold">데이터·화면 접근 Role<select aria-label="데이터 및 화면 접근 Role" value={selectedRoleId} disabled={!canAssignRole} onChange={(event) => setSelectedRoleId(event.target.value)}><option value="">Role 미할당</option>{access?.role_assignment.role_id && !roles.some((role) => role.id === access.role_assignment.role_id) && <option value={access.role_assignment.role_id}>{access.role_assignment.role_id} · 현재 검색 결과 외 Role</option>}{roles.map((role) => <option key={role.id} value={role.id}>{role.name} · {role.clearance}</option>)}</select></label>
+        <p className="callout m-0">프로필 권한은 서비스 기능을, 데이터 조회 등급은 분류된 데이터의 조회 상한을 결정합니다. 두 값은 서로 암묵적으로 변경되지 않습니다.</p>
+        <div className="grid gap-3 md:grid-cols-2">
+          <label className="grid gap-1 text-xs font-bold">사용자 프로필 권한<select aria-label="사용자 프로필 권한" value={selectedTier ?? ''} disabled={!canAssignProfile || isServiceAccount} onChange={(event) => setSelectedTier(event.target.value as ProfileRolePolicy['items'][number]['tier'])}><option value="" disabled>{access?.profile_role.status === 'UNASSIGNED' ? '전환 필요 (기존 권한)' : '선택'}</option>{profileRolePolicy?.items.map((item) => <option key={item.tier} value={item.tier}>{item.label}</option>)}</select></label>
+          <label className="grid gap-1 text-xs font-bold">데이터 조회 등급<select aria-label="데이터 조회 등급" value={selectedClearance} disabled={!canAssignProfile || isServiceAccount || access?.profile_role.tier === 'ADMIN'} onChange={(event) => setSelectedClearance(event.target.value as Classification)}><option value="PUBLIC">Public</option><option value="INTERNAL">Internal</option><option value="CONFIDENTIAL">Confidential (대외비)</option><option value="RESTRICTED">Restricted</option></select></label>
         </div>
-        {rolesTruncated && <p className="muted m-0">검색 결과는 첫 25개입니다. 이름 또는 key로 범위를 좁히세요.</p>}
-        {selectedRole && <p className="callout m-0"><strong>{selectedRole.name}</strong> · {selectedRole.description || '설명 없음'}</p>}
+        {selectedTier && <p className="callout m-0"><strong>{profileRolePolicy?.items.find((item) => item.tier === selectedTier)?.label}</strong> · {profileRolePolicy?.items.find((item) => item.tier === selectedTier)?.description}</p>}
+        <label className="grid gap-1 text-xs font-bold">변경 사유<textarea value={accessReason} maxLength={4000} onChange={(event) => setAccessReason(event.target.value)} placeholder="프로필 권한 변경 사유" /></label>
         {member.subject_id === context?.subject_id && <p className="callout m-0">관리자는 자신의 접근 Role을 변경할 수 없습니다. 다른 적격 관리자가 변경해야 합니다.</p>}
-        {access?.role_assignment.status === 'EVIDENCE_MISMATCH' && <p className="notice notice-error m-0">Role 할당 증거와 현재 접근 상태가 일치하지 않습니다. Role을 다시 저장해 복구하세요.</p>}
-        <div className="action-row"><button type="button" className="button" disabled={!canAssignRole || access?.role_assignment.role_id === selectedRoleId} onClick={saveRoleAssignment}>접근 Role 저장</button></div>
+        {access?.profile_role.status === 'STALE' && <p className="notice notice-error m-0">프로필 권한 증거가 현재 멤버십과 일치하지 않아 서버가 권한을 차단했습니다. 프로필 권한을 다시 저장해 복구하세요.</p>}
+        {access?.profile_role.status === 'UNASSIGNED' && <p className="callout m-0">기존 사용자는 자동 추정하지 않습니다. 명시적으로 프로필 권한을 선택하면 해당 서버 정책으로 전환됩니다.</p>}
+        <div className="action-row"><button type="button" className="button button-secondary" disabled={!canAssignProfile || access?.access.clearance === selectedClearance} onClick={saveClearance}>데이터 조회 등급 저장</button><button type="button" className="button" disabled={!canAssignProfile || !selectedTier || !accessReason.trim() || (access?.profile_role.tier === selectedTier && access?.profile_role.status === 'VERIFIED')} onClick={saveProfileRole}>프로필 권한 저장</button></div>
       </section>}
       {!loading && activeTab === 'activity' && <section className="grid gap-4" aria-label="CR 신청 및 사용자 활동">
         <div>

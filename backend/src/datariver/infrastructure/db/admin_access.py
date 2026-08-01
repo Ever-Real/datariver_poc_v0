@@ -23,6 +23,10 @@ from datariver.application.dto import (
     MembershipRenewalPage,
     MembershipRenewalRecord,
     MembershipRoleAssignmentEvidence,
+    ProfileRoleAssignmentEvidence,
+    ProfileRoleTransitionResult,
+    SystemAssigneeCandidate,
+    SystemAssigneeCandidatePage,
     SystemAssigneePage,
     SystemDirectoryAssignee,
     SystemDirectoryEntry,
@@ -67,6 +71,12 @@ from datariver.domain.common import (
     utc_now,
 )
 from datariver.domain.membership_renewal import MembershipRenewalRequest, MembershipRenewalState
+from datariver.domain.profile_roles import (
+    PROFILE_ROLE_BY_TIER,
+    PROFILE_ROLE_POLICY_VERSION,
+    EffectiveProfileRoleStatus,
+    ProfileRoleTier,
+)
 from datariver.infrastructure.db.governance import SqlIdempotencyStore, SqlOutboxWriter
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.governance import ApprovalModel, ChangeRequestModel
@@ -79,6 +89,7 @@ from datariver.infrastructure.db.models.platform import (
     CanonicalAdminBindingModel,
     DataSystemModel,
     MembershipRenewalRequestModel,
+    ProfileRoleAssignmentModel,
     SubjectModel,
     SystemAssigneeModel,
     WorkspaceMembershipModel,
@@ -768,6 +779,60 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             ).all():
                 if owner_ref in owner_subjects:
                     owned_table_counts[owner_subjects[owner_ref]] = int(count)
+        profile_assignments = {
+            assignment.subject_id: assignment
+            for assignment in (
+                await self._session.scalars(
+                    select(ProfileRoleAssignmentModel).where(
+                        ProfileRoleAssignmentModel.workspace_id == workspace_id,
+                        ProfileRoleAssignmentModel.subject_id.in_(subject_ids),
+                    )
+                )
+            ).all()
+        }
+        canonical_rows = {
+            binding.subject_id: (binding, role)
+            for binding, role in (
+                await self._session.execute(
+                    select(CanonicalAdminBindingModel, AccessRoleModel)
+                    .join(
+                        AccessRoleModel,
+                        and_(
+                            AccessRoleModel.workspace_id == CanonicalAdminBindingModel.workspace_id,
+                            AccessRoleModel.id == CanonicalAdminBindingModel.canonical_role_id,
+                        ),
+                    )
+                    .where(
+                        CanonicalAdminBindingModel.workspace_id == workspace_id,
+                        CanonicalAdminBindingModel.subject_id.in_(subject_ids),
+                    )
+                )
+            ).all()
+        }
+
+        def effective_profile_role(
+            subject: SubjectModel, membership: WorkspaceMembershipModel
+        ) -> str:
+            binding_row = canonical_rows.get(subject.id)
+            canonical_evidence = (
+                _canonical_admin_binding_evidence(
+                    subject=subject,
+                    membership=membership,
+                    binding=binding_row[0],
+                    role=binding_row[1],
+                )
+                if binding_row is not None
+                else None
+            )
+            return _effective_profile_role_label(
+                _profile_role_assignment_evidence(
+                    subject=subject,
+                    membership=membership,
+                    assignment=profile_assignments.get(subject.id),
+                    canonical_admin_binding=canonical_evidence,
+                )
+            )
+
         items = tuple(
             _membership_summary(
                 subject,
@@ -775,6 +840,7 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 owned_table_count=owned_table_counts[subject.id],
                 change_request_count=len(change_request_ids[subject.id]),
                 pending_renewal_request_id=pending_renewals.get(subject.id),
+                effective_profile_role=effective_profile_role(subject, membership),
             )
             for subject, membership in visible_rows
         )
@@ -854,11 +920,22 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                 binding=binding,
                 role=canonical_role,
             )
+        profile_assignment = await self._session.get(
+            ProfileRoleAssignmentModel,
+            {"workspace_id": workspace_id, "subject_id": subject_id},
+        )
+        profile_evidence = _profile_role_assignment_evidence(
+            subject=subject,
+            membership=membership,
+            assignment=profile_assignment,
+            canonical_admin_binding=canonical_evidence,
+        )
         return _membership_access_record(
             subject,
             membership,
             role_assignment=evidence,
             canonical_admin_binding=canonical_evidence,
+            profile_role=profile_evidence,
         )
 
     async def assert_assignable_human_role(self, *, workspace_id: UUID, role_id: UUID) -> None:
@@ -1148,6 +1225,8 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
         job_function: str | None,
         role_id: UUID | None,
         access_expires_at: datetime,
+        assurance: str,
+        policy_decision_id: UUID,
     ) -> ProvisionedWorkspaceUser:
         try:
             stored_subject_id = await self._session.scalar(
@@ -1156,7 +1235,7 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                     SELECT iam.provision_workspace_identity(
                         :subject_id, :workspace_id, :issuer, :external_subject,
                         :display_name, :email, :department_id, :job_function,
-                        :role_id, :access_expires_at
+                        :role_id, :access_expires_at, :assurance, :policy_decision_id
                     )
                     """
                 ),
@@ -1171,6 +1250,8 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
                     "job_function": job_function,
                     "role_id": role_id,
                     "access_expires_at": access_expires_at,
+                    "assurance": assurance,
+                    "policy_decision_id": policy_decision_id,
                 },
             )
         except DBAPIError as error:
@@ -1190,51 +1271,6 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             raise
         if stored_subject_id != subject_id:
             raise ConflictError("The provisioned identity does not match the requested subject.")
-        if role_id is not None:
-            role = (
-                await self._session.scalars(
-                    select(AccessRoleModel).where(
-                        AccessRoleModel.workspace_id == workspace_id,
-                        AccessRoleModel.id == role_id,
-                        AccessRoleModel.active.is_(True),
-                        AccessRoleModel.role_kind == AccessRoleKind.HUMAN_ROLE.value,
-                    )
-                )
-            ).one_or_none()
-            membership = (
-                await self._session.scalars(
-                    select(WorkspaceMembershipModel).where(
-                        WorkspaceMembershipModel.workspace_id == workspace_id,
-                        WorkspaceMembershipModel.subject_id == subject_id,
-                    )
-                )
-            ).one_or_none()
-            actor_id = await self._session.scalar(
-                text("SELECT NULLIF(current_setting('app.subject_id', true), '')::uuid")
-            )
-            if (
-                role is None
-                or role.role_kind != AccessRoleKind.HUMAN_ROLE.value
-                or membership is None
-                or not isinstance(actor_id, UUID)
-            ):
-                raise ConflictError("The provisioned role-assignment evidence is incomplete.")
-            membership_groups = _string_set(membership.attributes, "groups")
-            if membership_groups is None:
-                raise ConflictError("The provisioned role-assignment evidence is incomplete.")
-            role_markers = tuple(
-                group for group in membership_groups if group.startswith("datariver-role-")
-            )
-            await self.record_role_assignment(
-                workspace_id=workspace_id,
-                subject_id=subject_id,
-                role_id=role.id,
-                role_version=role.version,
-                role_marker=role_markers[0] if len(role_markers) == 1 else None,
-                membership_version=membership.version,
-                access_payload_hash=membership_access_payload_hash(membership),
-                actor_id=actor_id,
-            )
         return ProvisionedWorkspaceUser(
             subject_id=subject_id,
             external_subject=external_subject,
@@ -1242,12 +1278,54 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             display_name=display_name,
             email=email,
             workspace_id=workspace_id,
-            role_id=role_id,
+            role_id=None,
             access_expires_at=access_expires_at,
         )
 
     async def apply(self, command: MembershipAccessUpdate) -> int:
         membership = await self._membership_for_update(command)
+        profile_assignment = (
+            await self._session.scalars(
+                select(ProfileRoleAssignmentModel)
+                .where(
+                    ProfileRoleAssignmentModel.workspace_id == command.workspace_id,
+                    ProfileRoleAssignmentModel.subject_id == command.target_subject_id,
+                    ProfileRoleAssignmentModel.state == "ACTIVE",
+                )
+                .with_for_update()
+            )
+        ).one_or_none()
+        if profile_assignment is not None:
+            try:
+                profile_policy = PROFILE_ROLE_BY_TIER[ProfileRoleTier(profile_assignment.tier)]
+            except (KeyError, ValueError) as error:
+                raise ConflictError("The active profile Role evidence is malformed.") from error
+            current_groups = _string_set(membership.attributes, "groups")
+            current_denied = _string_set(membership.attributes, "denied_actions")
+            current_domains = _string_set(membership.attributes, "allowed_domain_ids")
+            if current_groups is None or current_denied is None or current_domains is None:
+                raise ConflictError("The profile-bound membership access is malformed.")
+            try:
+                current_denied_actions = frozenset(Action(value) for value in current_denied)
+                current_domain_ids = frozenset(UUID(value) for value in current_domains)
+            except ValueError as error:
+                raise ConflictError("The profile-bound membership access is malformed.") from error
+            if (
+                profile_assignment.policy_version != PROFILE_ROLE_POLICY_VERSION
+                or profile_assignment.materialized_actions_hash
+                != profile_policy.materialized_actions_hash
+                or profile_assignment.membership_version != membership.version
+                or profile_policy.tier is ProfileRoleTier.ADMIN
+                or not command.active
+                or command.groups != frozenset(current_groups)
+                or command.allowed_actions != profile_policy.allowed_actions
+                or command.denied_actions != current_denied_actions
+                or command.allowed_system_ids
+                or command.allowed_domain_ids != current_domain_ids
+            ):
+                raise ValidationError(
+                    "A profile-bound membership update may change only its data clearance."
+                )
         membership.active = command.active
         membership.clearance = int(command.clearance)
         membership.attributes = {
@@ -1259,6 +1337,8 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             "managed_by": MEMBERSHIP_ACCESS_COMMAND,
         }
         membership.version += 1
+        if profile_assignment is not None:
+            profile_assignment.membership_version = membership.version
         await self._session.flush()
         administrator_count = await self._session.scalar(
             select(func.count())
@@ -1451,6 +1531,157 @@ class SqlMembershipAccessRepository(MembershipAccessRepository):
             raise ConflictError(
                 "Role-bound access must be changed through the dedicated Role assignment route."
             )
+        canonical_binding = await self._session.get(
+            CanonicalAdminBindingModel,
+            {"workspace_id": workspace_id, "subject_id": subject_id},
+        )
+        if canonical_binding is not None and canonical_binding.state == "ACTIVE":
+            raise ConflictError(
+                "Canonical Admin access must be changed through the protected profile route."
+            )
+
+    async def apply_profile_role(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        tier: str,
+        expected_membership_version: int,
+        reason: str,
+        assurance: str,
+        access_payload_hash: str,
+        policy_decision_id: UUID,
+    ) -> ProfileRoleTransitionResult:
+        try:
+            row = (
+                await self._session.execute(
+                    text(
+                        """
+                        SELECT membership_version, assignment_version
+                        FROM iam.assign_profile_role(
+                            :workspace_id, :subject_id, :tier,
+                            :expected_membership_version, :reason, :assurance,
+                            :access_payload_hash, :policy_decision_id
+                        )
+                        """
+                    ),
+                    {
+                        "workspace_id": workspace_id,
+                        "subject_id": subject_id,
+                        "tier": tier,
+                        "expected_membership_version": expected_membership_version,
+                        "reason": reason,
+                        "assurance": assurance,
+                        "access_payload_hash": access_payload_hash,
+                        "policy_decision_id": policy_decision_id,
+                    },
+                )
+            ).one()
+        except DBAPIError as error:
+            _raise_profile_role_database_error(error)
+            raise
+        return ProfileRoleTransitionResult(
+            subject_id=subject_id,
+            tier=tier,
+            membership_version=int(row.membership_version),
+            assignment_version=int(row.assignment_version),
+        )
+
+    async def transition_canonical_admin_profile(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        tier: str,
+        expected_membership_version: int,
+        expected_binding_version: int,
+        reason: str,
+        assurance: str,
+        access_payload_hash: str,
+        policy_decision_id: UUID,
+    ) -> ProfileRoleTransitionResult:
+        try:
+            row = (
+                await self._session.execute(
+                    text(
+                        """
+                        SELECT membership_version, assignment_version, binding_version
+                        FROM iam.transition_canonical_admin_profile(
+                            :workspace_id, :subject_id, :tier,
+                            :expected_membership_version, :expected_binding_version,
+                            :reason, :assurance, :access_payload_hash, :policy_decision_id
+                        )
+                        """
+                    ),
+                    {
+                        "workspace_id": workspace_id,
+                        "subject_id": subject_id,
+                        "tier": tier,
+                        "expected_membership_version": expected_membership_version,
+                        "expected_binding_version": expected_binding_version,
+                        "reason": reason,
+                        "assurance": assurance,
+                        "access_payload_hash": access_payload_hash,
+                        "policy_decision_id": policy_decision_id,
+                    },
+                )
+            ).one()
+        except DBAPIError as error:
+            _raise_profile_role_database_error(error)
+            raise
+        return ProfileRoleTransitionResult(
+            subject_id=subject_id,
+            tier=tier,
+            membership_version=int(row.membership_version),
+            assignment_version=int(row.assignment_version),
+            binding_version=int(row.binding_version),
+        )
+
+    async def count_verified_canonical_admins(self, *, workspace_id: UUID) -> int:
+        rows = (
+            await self._session.execute(
+                select(
+                    SubjectModel,
+                    WorkspaceMembershipModel,
+                    CanonicalAdminBindingModel,
+                    AccessRoleModel,
+                )
+                .join(
+                    WorkspaceMembershipModel,
+                    WorkspaceMembershipModel.subject_id == SubjectModel.id,
+                )
+                .join(
+                    CanonicalAdminBindingModel,
+                    and_(
+                        CanonicalAdminBindingModel.workspace_id
+                        == WorkspaceMembershipModel.workspace_id,
+                        CanonicalAdminBindingModel.subject_id
+                        == WorkspaceMembershipModel.subject_id,
+                    ),
+                )
+                .join(
+                    AccessRoleModel,
+                    and_(
+                        AccessRoleModel.workspace_id == CanonicalAdminBindingModel.workspace_id,
+                        AccessRoleModel.id == CanonicalAdminBindingModel.canonical_role_id,
+                    ),
+                )
+                .where(
+                    WorkspaceMembershipModel.workspace_id == workspace_id,
+                    CanonicalAdminBindingModel.state == "ACTIVE",
+                )
+            )
+        ).all()
+        return sum(
+            _canonical_admin_binding_evidence(
+                subject=target_subject,
+                membership=membership,
+                binding=binding,
+                role=role,
+            ).status
+            == "VERIFIED"
+            for target_subject, membership, binding, role in rows
+        )
 
     async def get_expiration_for_update(self, *, workspace_id: UUID, subject_id: UUID) -> datetime:
         membership = (
@@ -1728,6 +1959,113 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
             ),
         )
 
+    async def list_assignee_candidates(
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+        query: str | None = None,
+        cursor: str | None = None,
+    ) -> SystemAssigneeCandidatePage:
+        _validate_admin_list_limit(limit)
+        scan_limit = min(500, limit * 5 + 1)
+        statement = (
+            select(SubjectModel, WorkspaceMembershipModel)
+            .join(
+                WorkspaceMembershipModel,
+                WorkspaceMembershipModel.subject_id == SubjectModel.id,
+            )
+            .where(
+                WorkspaceMembershipModel.workspace_id == workspace_id,
+                WorkspaceMembershipModel.active.is_(True),
+                SubjectModel.active.is_(True),
+                or_(
+                    WorkspaceMembershipModel.access_expires_at.is_(None),
+                    WorkspaceMembershipModel.access_expires_at > func.now(),
+                ),
+                or_(
+                    WorkspaceMembershipModel.job_function.is_(None),
+                    WorkspaceMembershipModel.job_function != "SERVICE_ACCOUNT",
+                ),
+            )
+            .order_by(func.lower(SubjectModel.display_name), SubjectModel.id)
+            .limit(scan_limit)
+        )
+        if query is not None:
+            escaped = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            pattern = f"%{escaped}%"
+            statement = statement.where(
+                or_(
+                    SubjectModel.display_name.ilike(pattern, escape="\\"),
+                    SubjectModel.email.ilike(pattern, escape="\\"),
+                )
+            )
+        if cursor is not None:
+            cursor_name, cursor_id = _decode_membership_cursor(
+                cursor,
+                workspace_id=workspace_id,
+                query=query,
+                active=True,
+            )
+            normalized_name = func.lower(SubjectModel.display_name)
+            statement = statement.where(
+                or_(
+                    normalized_name > cursor_name,
+                    and_(normalized_name == cursor_name, SubjectModel.id > cursor_id),
+                )
+            )
+        rows = (await self._session.execute(statement)).all()
+        candidates: list[SystemAssigneeCandidate] = []
+        membership_repository = SqlMembershipAccessRepository(self._session)
+        last_scanned: tuple[SubjectModel, WorkspaceMembershipModel] | None = None
+        for target_subject, membership in rows:
+            last_scanned = (target_subject, membership)
+            access = await membership_repository.get_access(
+                workspace_id=workspace_id,
+                subject_id=target_subject.id,
+            )
+            if access is None or access.summary.effective_profile_role not in {
+                ProfileRoleTier.ENGINEER_STEWARD.value,
+                ProfileRoleTier.MANAGER.value,
+                ProfileRoleTier.ADMIN.value,
+            }:
+                continue
+            candidates.append(
+                SystemAssigneeCandidate(
+                    subject_id=target_subject.id,
+                    display_name=target_subject.display_name,
+                    email=target_subject.email,
+                    tier=access.summary.effective_profile_role,
+                )
+            )
+            if len(candidates) > limit:
+                break
+        has_extra_candidate = len(candidates) > limit
+        has_more = has_extra_candidate or len(rows) == scan_limit
+        visible = candidates[:limit]
+        boundary_name: str | None = None
+        boundary_id: UUID | None = None
+        if has_extra_candidate and visible:
+            boundary_name = visible[-1].display_name.lower()
+            boundary_id = visible[-1].subject_id
+        elif has_more and last_scanned is not None:
+            boundary_name = last_scanned[0].display_name.lower()
+            boundary_id = last_scanned[0].id
+        return SystemAssigneeCandidatePage(
+            items=tuple(visible),
+            next_cursor=(
+                _encode_membership_cursor(
+                    workspace_id=workspace_id,
+                    query=query,
+                    active=True,
+                    display_name=boundary_name,
+                    subject_id=boundary_id,
+                )
+                if boundary_name is not None and boundary_id is not None
+                else None
+            ),
+        )
+
     async def patch_assignees(self, command: SystemAssigneePatchCommand) -> int:
         system = await self._system_for_update(
             workspace_id=command.workspace_id,
@@ -1958,7 +2296,112 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
     ) -> None:
         if not subject_ids:
             return
-        active_subject_ids = set(
+        membership_actions = WorkspaceMembershipModel.attributes["allowed_actions"]
+        membership_groups = WorkspaceMembershipModel.attributes
+        profile_is_current = exists(
+            select(ProfileRoleAssignmentModel.subject_id).where(
+                ProfileRoleAssignmentModel.workspace_id == workspace_id,
+                ProfileRoleAssignmentModel.subject_id == WorkspaceMembershipModel.subject_id,
+                ProfileRoleAssignmentModel.state == "ACTIVE",
+                ProfileRoleAssignmentModel.policy_version == PROFILE_ROLE_POLICY_VERSION,
+                ProfileRoleAssignmentModel.membership_version == WorkspaceMembershipModel.version,
+                or_(
+                    and_(
+                        ProfileRoleAssignmentModel.tier == ProfileRoleTier.ENGINEER_STEWARD.value,
+                        ProfileRoleAssignmentModel.materialized_actions_hash
+                        == PROFILE_ROLE_BY_TIER[
+                            ProfileRoleTier.ENGINEER_STEWARD
+                        ].materialized_actions_hash,
+                        membership_actions
+                        == cast(
+                            json.dumps(
+                                sorted(
+                                    action.value
+                                    for action in PROFILE_ROLE_BY_TIER[
+                                        ProfileRoleTier.ENGINEER_STEWARD
+                                    ].allowed_actions
+                                )
+                            ),
+                            postgresql.JSONB,
+                        ),
+                    ),
+                    and_(
+                        ProfileRoleAssignmentModel.tier == ProfileRoleTier.MANAGER.value,
+                        ProfileRoleAssignmentModel.materialized_actions_hash
+                        == PROFILE_ROLE_BY_TIER[ProfileRoleTier.MANAGER].materialized_actions_hash,
+                        membership_actions
+                        == cast(
+                            json.dumps(
+                                sorted(
+                                    action.value
+                                    for action in PROFILE_ROLE_BY_TIER[
+                                        ProfileRoleTier.MANAGER
+                                    ].allowed_actions
+                                )
+                            ),
+                            postgresql.JSONB,
+                        ),
+                    ),
+                ),
+                ~func.jsonb_path_exists(
+                    membership_groups,
+                    cast(
+                        '$.groups[*] ? (@ == "security-administrators" || '
+                        '@ == "service-accounts" || @ like_regex "^datariver-role-")',
+                        postgresql.JSONPATH,
+                    ),
+                ),
+                WorkspaceMembershipModel.attributes["allowed_system_ids"]
+                == cast("[]", postgresql.JSONB),
+            )
+        )
+        canonical_is_current = exists(
+            select(CanonicalAdminBindingModel.subject_id)
+            .join(
+                AccessRoleModel,
+                and_(
+                    AccessRoleModel.workspace_id == CanonicalAdminBindingModel.workspace_id,
+                    AccessRoleModel.id == CanonicalAdminBindingModel.canonical_role_id,
+                ),
+            )
+            .where(
+                CanonicalAdminBindingModel.workspace_id == workspace_id,
+                CanonicalAdminBindingModel.subject_id == WorkspaceMembershipModel.subject_id,
+                CanonicalAdminBindingModel.state == "ACTIVE",
+                CanonicalAdminBindingModel.membership_version == WorkspaceMembershipModel.version,
+                CanonicalAdminBindingModel.capability_catalog_version == CAPABILITY_CATALOG_VERSION,
+                CanonicalAdminBindingModel.capability_hash == CANONICAL_ADMIN_CAPABILITY_HASH,
+                AccessRoleModel.active.is_(True),
+                AccessRoleModel.role_kind == AccessRoleKind.CANONICAL_ADMIN.value,
+                AccessRoleModel.management_source
+                == AccessRoleManagementSource.SERVER_CANONICAL.value,
+                AccessRoleModel.version == CanonicalAdminBindingModel.canonical_role_version,
+                AccessRoleModel.capability_catalog_version == CAPABILITY_CATALOG_VERSION,
+                WorkspaceMembershipModel.clearance == int(Classification.RESTRICTED),
+                membership_actions
+                == cast(
+                    json.dumps(sorted(action.value for action in DEFAULT_HUMAN_ADMIN_ACTIONS)),
+                    postgresql.JSONB,
+                ),
+                WorkspaceMembershipModel.attributes["denied_actions"]
+                == cast("[]", postgresql.JSONB),
+                func.jsonb_path_exists(
+                    membership_groups,
+                    cast(
+                        '$.groups[*] ? (@ == "security-administrators")',
+                        postgresql.JSONPATH,
+                    ),
+                ),
+                ~func.jsonb_path_exists(
+                    membership_groups,
+                    cast(
+                        '$.groups[*] ? (@ == "service-accounts")',
+                        postgresql.JSONPATH,
+                    ),
+                ),
+            )
+        )
+        eligible_subject_ids = set(
             (
                 await self._session.scalars(
                     select(WorkspaceMembershipModel.subject_id)
@@ -1976,12 +2419,16 @@ class SqlSystemDirectoryRepository(SystemDirectoryRepository):
                             WorkspaceMembershipModel.job_function.is_(None),
                             WorkspaceMembershipModel.job_function != "SERVICE_ACCOUNT",
                         ),
+                        or_(profile_is_current, canonical_is_current),
                     )
                 )
             ).all()
         )
-        if active_subject_ids != subject_ids:
-            raise ValidationError("Every system assignee must be an active human workspace member.")
+        if eligible_subject_ids != subject_ids:
+            raise ValidationError(
+                "Every system assignee must have a current Engineer/Steward, Manager, "
+                "or Canonical Admin profile Role."
+            )
 
 
 class SqlAdminAccessUnitOfWork(AdminAccessUnitOfWork):
@@ -2069,6 +2516,21 @@ def _string_set(document: object, key: str) -> set[str] | None:
     return set(value)
 
 
+def _raise_profile_role_database_error(error: DBAPIError) -> None:
+    sqlstate = getattr(error.orig, "sqlstate", None)
+    message = str(error.orig)
+    if sqlstate == "42501":
+        raise ForbiddenError("Profile Role authority is no longer current.") from error
+    if sqlstate == "40001":
+        raise ConflictError("Profile Role evidence changed before the update.") from error
+    if sqlstate in {"23503", "23505"}:
+        raise ConflictError("Profile Role state changed before the update.") from error
+    if sqlstate == "23514":
+        if "last Canonical Admin" in message:
+            raise ConflictError("The last verified Canonical Admin cannot be demoted.") from error
+        raise ValidationError("The profile Role transition violates policy.") from error
+
+
 def membership_access_payload_hash(membership: WorkspaceMembershipModel) -> str:
     groups = _string_set(membership.attributes, "groups")
     allowed = _string_set(membership.attributes, "allowed_actions")
@@ -2105,6 +2567,7 @@ def _membership_summary(
     owned_table_count: int = 0,
     change_request_count: int = 0,
     pending_renewal_request_id: UUID | None = None,
+    effective_profile_role: str = EffectiveProfileRoleStatus.UNASSIGNED.value,
 ) -> WorkspaceMembershipSummary:
     try:
         clearance = Classification(membership.clearance)
@@ -2141,6 +2604,7 @@ def _membership_summary(
         job_function=membership.job_function,
         clearance=clearance,
         membership_version=membership.version,
+        effective_profile_role=effective_profile_role,
     )
 
 
@@ -2150,6 +2614,7 @@ def _membership_access_record(
     *,
     role_assignment: MembershipRoleAssignmentEvidence | None = None,
     canonical_admin_binding: CanonicalAdminBindingEvidence | None = None,
+    profile_role: ProfileRoleAssignmentEvidence | None = None,
 ) -> WorkspaceMembershipAccessRecord:
     attributes = membership.attributes
     groups = _string_set(attributes, "groups")
@@ -2181,7 +2646,11 @@ def _membership_access_record(
     except (TypeError, ValueError, ValidationError) as error:
         raise ConflictError("The stored workspace membership access is invalid.") from error
     return WorkspaceMembershipAccessRecord(
-        summary=_membership_summary(subject, membership),
+        summary=_membership_summary(
+            subject,
+            membership,
+            effective_profile_role=_effective_profile_role_label(profile_role),
+        ),
         groups=command.groups,
         allowed_actions=command.allowed_actions,
         denied_actions=command.denied_actions,
@@ -2189,6 +2658,76 @@ def _membership_access_record(
         allowed_domain_ids=command.allowed_domain_ids,
         role_assignment=role_assignment,
         canonical_admin_binding=canonical_admin_binding,
+        profile_role=profile_role,
+    )
+
+
+def _effective_profile_role_label(
+    evidence: ProfileRoleAssignmentEvidence | None,
+) -> str:
+    if evidence is None:
+        return EffectiveProfileRoleStatus.UNASSIGNED.value
+    if evidence.status == EffectiveProfileRoleStatus.VERIFIED.value and evidence.tier is not None:
+        return evidence.tier
+    return evidence.status
+
+
+def _profile_role_assignment_evidence(
+    *,
+    subject: SubjectModel,
+    membership: WorkspaceMembershipModel,
+    assignment: ProfileRoleAssignmentModel | None,
+    canonical_admin_binding: CanonicalAdminBindingEvidence | None,
+) -> ProfileRoleAssignmentEvidence | None:
+    if canonical_admin_binding is not None and canonical_admin_binding.status != "REVOKED":
+        return ProfileRoleAssignmentEvidence(
+            status=canonical_admin_binding.status,
+            tier=ProfileRoleTier.ADMIN.value,
+            policy_version=PROFILE_ROLE_POLICY_VERSION,
+            membership_version=canonical_admin_binding.membership_version,
+            assignment_version=canonical_admin_binding.binding_version,
+            updated_at=canonical_admin_binding.updated_at,
+        )
+    if assignment is None:
+        return None
+    status = EffectiveProfileRoleStatus.REVOKED.value
+    if assignment.state == "ACTIVE":
+        status = EffectiveProfileRoleStatus.STALE.value
+        tier: ProfileRoleTier | None = None
+        try:
+            tier = ProfileRoleTier(assignment.tier)
+            policy = PROFILE_ROLE_BY_TIER[tier]
+        except (KeyError, ValueError):
+            policy = None
+        allowed = _string_set(membership.attributes, "allowed_actions")
+        stored_system_ids = _string_set(membership.attributes, "allowed_system_ids")
+        groups = _string_set(membership.attributes, "groups")
+        now = utc_now()
+        if (
+            policy is not None
+            and tier is not ProfileRoleTier.ADMIN
+            and assignment.policy_version == PROFILE_ROLE_POLICY_VERSION
+            and assignment.materialized_actions_hash == policy.materialized_actions_hash
+            and assignment.membership_version == membership.version
+            and subject.active
+            and membership.active
+            and (membership.access_expires_at is None or membership.access_expires_at > now)
+            and membership.job_function != "SERVICE_ACCOUNT"
+            and allowed == {action.value for action in policy.allowed_actions}
+            and stored_system_ids == set()
+            and groups is not None
+            and "service-accounts" not in groups
+            and "security-administrators" not in groups
+            and not any(group.startswith("datariver-role-") for group in groups)
+        ):
+            status = EffectiveProfileRoleStatus.VERIFIED.value
+    return ProfileRoleAssignmentEvidence(
+        status=status,
+        tier=assignment.tier,
+        policy_version=assignment.policy_version,
+        membership_version=assignment.membership_version,
+        assignment_version=assignment.version,
+        updated_at=assignment.updated_at,
     )
 
 
@@ -2213,6 +2752,8 @@ def _canonical_admin_binding_evidence(
         and membership.clearance == int(Classification.RESTRICTED)
         and groups is not None
         and "security-administrators" in groups
+        and "service-accounts" not in groups
+        and not any(group.startswith("datariver-role-") for group in groups)
         and allowed == expected_actions
         and denied is not None
         and not denied

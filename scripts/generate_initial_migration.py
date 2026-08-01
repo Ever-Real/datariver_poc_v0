@@ -17,10 +17,17 @@ from datariver.infrastructure.db.identity_profile_sql import (
     IDENTITY_PROFILE_UPDATE_SIGNATURE,
 )
 from datariver.infrastructure.db.identity_provisioning_sql import (
-    IDENTITY_PROVISIONING_FUNCTION_SQL,
-    IDENTITY_PROVISIONING_SIGNATURE,
+    IDENTITY_PROVISIONING_FUNCTION_SQL_V3,
+    IDENTITY_PROVISIONING_SIGNATURE_V3,
 )
 from datariver.infrastructure.db.migration_scope import MANAGED_DATABASE_SCHEMAS
+from datariver.infrastructure.db.profile_role_sql import (
+    CANONICAL_ADMIN_PROFILE_TRANSITION_FUNCTION_SQL,
+    CANONICAL_ADMIN_PROFILE_TRANSITION_SIGNATURE,
+    PROFILE_ROLE_ASSIGNMENT_FUNCTION_SQL,
+    PROFILE_ROLE_ASSIGNMENT_SIGNATURE,
+    PROFILE_ROLE_SECURITY_SQL,
+)
 
 SCHEMAS = MANAGED_DATABASE_SCHEMAS
 RLS_SETTING = "NULLIF(current_setting('app.workspace_id', true), '')::uuid"
@@ -58,6 +65,8 @@ _CANONICAL_ADMIN_TABLES = frozenset(
     {
         "iam.access_roles",
         "iam.canonical_admin_bindings",
+        "iam.profile_role_assignments",
+        "iam.profile_role_assignment_events",
     }
 )
 
@@ -738,9 +747,11 @@ def build_upgrade() -> ops.UpgradeOps:
         ops.ExecuteSQLOp(statement) for statement in _candidate_evidence_immutability_sql()
     )
     operations.extend(ops.ExecuteSQLOp(statement) for statement in _chat_retention_binding_sql())
-    operations.append(ops.ExecuteSQLOp(IDENTITY_PROVISIONING_FUNCTION_SQL))
+    operations.append(ops.ExecuteSQLOp(IDENTITY_PROVISIONING_FUNCTION_SQL_V3))
     operations.append(
-        ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {IDENTITY_PROVISIONING_SIGNATURE} FROM PUBLIC")
+        ops.ExecuteSQLOp(
+            f"REVOKE ALL ON FUNCTION {IDENTITY_PROVISIONING_SIGNATURE_V3} FROM PUBLIC"
+        )
     )
     operations.append(ops.ExecuteSQLOp(IDENTITY_PROFILE_UPDATE_FUNCTION_SQL))
     operations.append(
@@ -755,6 +766,9 @@ def build_upgrade() -> ops.UpgradeOps:
     operations.extend(
         ops.ExecuteSQLOp(statement) for statement in canonical_admin_security_statements
     )
+    operations.append(ops.ExecuteSQLOp(PROFILE_ROLE_ASSIGNMENT_FUNCTION_SQL))
+    operations.append(ops.ExecuteSQLOp(CANONICAL_ADMIN_PROFILE_TRANSITION_FUNCTION_SQL))
+    operations.extend(ops.ExecuteSQLOp(statement) for statement in PROFILE_ROLE_SECURITY_SQL)
     operations.append(
         ops.ExecuteSQLOp(
             "CREATE TRIGGER ensure_canonical_admin_definition "
@@ -987,7 +1001,8 @@ BEGIN
         GRANT UPDATE (email, last_login_at, last_login_ip, updated_at)
             ON iam.subjects TO datariver_app;
         GRANT SELECT ON iam.workspace_memberships TO datariver_app;
-        GRANT SELECT ON iam.canonical_admin_bindings TO datariver_app;
+        GRANT SELECT ON iam.canonical_admin_bindings, iam.profile_role_assignments,
+            iam.profile_role_assignment_events TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON iam.membership_renewal_requests TO datariver_app;
         GRANT SELECT, INSERT ON iam.access_roles TO datariver_app;
         GRANT UPDATE (name, description, clearance, groups, allowed_actions, denied_actions,
@@ -1000,7 +1015,10 @@ BEGIN
             assigned_by, active, version, updated_at)
             ON iam.access_role_assignments TO datariver_app;
         GRANT EXECUTE ON FUNCTION iam.resolve_default_workspace(text, text) TO datariver_app;
-        GRANT EXECUTE ON FUNCTION {IDENTITY_PROVISIONING_SIGNATURE} TO datariver_app;
+        GRANT EXECUTE ON FUNCTION {IDENTITY_PROVISIONING_SIGNATURE_V3} TO datariver_app;
+        GRANT EXECUTE ON FUNCTION {PROFILE_ROLE_ASSIGNMENT_SIGNATURE} TO datariver_app;
+        GRANT EXECUTE ON FUNCTION {CANONICAL_ADMIN_PROFILE_TRANSITION_SIGNATURE}
+            TO datariver_app;
         GRANT EXECUTE ON FUNCTION {IDENTITY_PROFILE_UPDATE_SIGNATURE} TO datariver_app;
         GRANT UPDATE (active, clearance, attributes, version, updated_at)
             ON iam.workspace_memberships TO datariver_app;
@@ -1594,7 +1612,7 @@ def build_downgrade() -> ops.DowngradeOps:
         ),
         *(ops.ExecuteSQLOp(statement) for statement in _sql_statements(phase5._DROP_TRIGGER_SQL)),
         ops.ExecuteSQLOp(f"DROP FUNCTION {IDENTITY_PROFILE_UPDATE_SIGNATURE}"),
-        ops.ExecuteSQLOp(f"DROP FUNCTION {IDENTITY_PROVISIONING_SIGNATURE}"),
+        ops.ExecuteSQLOp(f"DROP FUNCTION {IDENTITY_PROVISIONING_SIGNATURE_V3}"),
         ops.ExecuteSQLOp("DROP FUNCTION iam.resolve_default_workspace(text, text)"),
         ops.ExecuteSQLOp(
             "DROP TRIGGER enforce_chat_message_retention_binding ON assistant.chat_messages"

@@ -1316,6 +1316,14 @@ export interface WorkspaceMembershipSummary {
   job_function: string | null
   clearance: Classification
   membership_version: number
+  effective_profile_role:
+    | 'VIEWER'
+    | 'ENGINEER_STEWARD'
+    | 'MANAGER'
+    | 'ADMIN'
+    | 'UNASSIGNED'
+    | 'STALE'
+    | 'REVOKED'
 }
 
 export interface MembershipChangeRequestActivity {
@@ -1368,6 +1376,53 @@ export interface WorkspaceMembershipAccess {
   membership_version: number
   access: MembershipAccessDocument
   role_assignment: MembershipRoleAssignmentEvidence
+  canonical_admin_binding: CanonicalAdminBindingEvidence
+  profile_role: ProfileRoleAssignmentEvidence
+}
+
+export interface CanonicalAdminBindingEvidence {
+  status: 'NONE' | 'VERIFIED' | 'STALE' | 'REVOKED'
+  role_version: number | null
+  catalog_version: string | null
+  membership_version: number | null
+  binding_version: number | null
+  updated_at: string | null
+}
+
+export interface ProfileRoleAssignmentEvidence {
+  status: 'VERIFIED' | 'UNASSIGNED' | 'STALE' | 'REVOKED'
+  tier: 'VIEWER' | 'ENGINEER_STEWARD' | 'MANAGER' | 'ADMIN' | null
+  policy_version: string | null
+  membership_version: number | null
+  assignment_version: number | null
+  updated_at: string | null
+}
+
+export interface ProfileRolePolicyItem {
+  tier: 'VIEWER' | 'ENGINEER_STEWARD' | 'MANAGER' | 'ADMIN'
+  label: string
+  description: string
+  allowed_actions: string[]
+  services: Array<{
+    service_key: string
+    service_label: string
+    action_labels: string[]
+  }>
+  assignable_to_system: boolean
+  lifecycle_note: string
+}
+
+export interface ProfileRolePolicy {
+  policy_version: string
+  items: ProfileRolePolicyItem[]
+}
+
+export interface ProfileRoleTransitionResult {
+  subject_id: string
+  tier: ProfileRolePolicyItem['tier']
+  membership_version: number
+  assignment_version: number
+  binding_version: number | null
 }
 
 export type DataAccessLevel = 'NO_ACCESS' | 'PARTIAL_ACCESS' | 'FULL_ACCESS'
@@ -1504,7 +1559,7 @@ export interface IdentityUserProvisionInput {
   last_name: string
   department_id: string | null
   job_function: string | null
-  role_id: string | null
+  role_id: null
   temporary_password: string
 }
 
@@ -1592,6 +1647,13 @@ export interface SystemAssigneePage {
   system_version: number
   items: SystemDirectoryAssignee[]
   page: { next_cursor: string | null; limit: number }
+}
+
+export interface SystemAssigneeCandidate {
+  subject_id: string
+  display_name: string
+  email: string | null
+  tier: 'ENGINEER_STEWARD' | 'MANAGER' | 'ADMIN'
 }
 
 export interface SystemAssigneeUpdateResult {

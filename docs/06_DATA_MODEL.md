@@ -86,7 +86,9 @@ migration before use.
 | `iam.access_role_data_rules` | Role/version/classification UQ, No/Partial/Full level, nullable typed treatment, residency/purpose JSON, SHA-256 payload hash, creator/time | immutable secret-free Policy Book rule; a missing classification rule denies |
 | `iam.access_role_assignments` | workspace/subject UQ, fixed `HUMAN_ROLE` discriminator with composite Role FK, exact Role/version, membership version, access payload hash, actor, active/version/time | normalized current human-Role evidence; Canonical Admin is structurally rejected, bounded updates, no application delete |
 | `iam.access_role_assignment_events` | subject, assigned/reassigned/removed, before/after Role versions, membership version, payload hash, actor/time | append-only Role-assignment history |
-| `iam.canonical_admin_bindings` | Workspace/Subject PK, fixed Canonical Role kind/ID/version, catalog version/hash, membership version/full access hash, active/revoked state, fixed local-bootstrap source, optimistic version/time | separate protected evidence for the fixed local development administrator; not a generic assignment and no application DML |
+| `iam.canonical_admin_bindings` | Workspace/Subject PK, fixed Canonical Role kind/ID/version, catalog version/hash, membership version/full access hash, active/revoked state, local-bootstrap or governed-transition source, optimistic version/time | separate protected Canonical Admin evidence; never a generic assignment and never directly writable by the application role |
+| `iam.profile_role_assignments` | Workspace/Subject PK, `VIEWER | ENGINEER_STEWARD | MANAGER`, fixed policy version/action hash, membership version, active/revoked state, actor/reason/assurance/version/time | current actions-only profile authority; Admin is derived from a VERIFIED Canonical binding and is never stored here |
+| `iam.profile_role_assignment_events` | UUID, Workspace/Subject, assigned/changed/Admin promotion/demotion, previous/next tier, policy/membership/assignment versions, actor, non-null authorization decision ID, reason/assurance/time | append-only profile and protected Admin transition history correlated to the authorizing decision |
 | `iam.admin_access_requests` | typed command/envelope, maker/target/checker, canonical hash, expiry/state/consume decision, `version`, timestamps | short-lived membership-access maker-checker aggregate; no arbitrary provider payload |
 | `iam.admin_access_approvals` | request/actor, approve/reject, reason, policy decision, payload hash and request version | append-only independent checker evidence |
 | `authz.resources` | `workspace_id + resource_type + resource_key UQ`, scope/classification/lifecycle columns, `attributes`, `version` | durable resource attribute registry |
@@ -106,23 +108,29 @@ no attributes, memberships, roles or cross-workspace data; normal IAM reads rema
 `iam.provision_workspace_identity(...)` is the only app-executable identity-creation function. It
 is `SECURITY DEFINER`, has no dynamic SQL and independently requires matching transaction-local
 Workspace/subject context plus an active, unexpired human `security-administrators` membership with
-RESTRICTED clearance and `admin.manage`. It reads an optional active `HUMAN_ROLE` row and
-atomically inserts exactly one OIDC subject and six-month membership. When a Role is selected, the
-repository also records the normalized assignment and event in the same transaction. The
-application role has execute-only access and still has no direct `INSERT` grant on either IAM table.
+RESTRICTED clearance and `admin.manage`. Revision `0090` retains nullable `role_id` only for wire
+compatibility and rejects a non-null value. It atomically inserts exactly one OIDC subject, a
+six-month CONFIDENTIAL membership, a Viewer profile assignment and one append-only event. The
+application role has execute-only access and no direct `INSERT` grant on the IAM authority tables.
 No password or provider client credential is a function argument or database column.
 
 Revision `0089` backfills only one unassigned, hash-pinned Canonical Admin definition for each
 existing Workspace and installs the same definition trigger for future Workspaces. Subject,
 membership, generic assignment, assignment-event and binding row counts are unchanged by upgrade.
 The separate binding table retains hashes only for server-side exact-current comparison. HTTP
-serialization omits the canonical Role UUID and both hashes. `datariver_app` has binding `SELECT`
-only; its binding `INSERT/UPDATE/DELETE` and function execution count are zero. Fixed-target
+serialization omits the canonical Role UUID and both hashes. `datariver_app` has no direct binding
+or profile `INSERT/UPDATE/DELETE`; only the exact governed profile functions may mutate these rows
+after application and database rechecks. Generic Role/provisioning paths cannot call that binding
+transition. Fixed-target
 bootstrap policies are defense in depth, not an authority boundary for the privileged bootstrap
 principal; the parameter-free caller checks `APP_ENV=development` before opening the database.
 Downgrade is
 blocked by any binding history or canonical reference, otherwise only unassigned definitions and
 the 0089 schema are removed.
+
+Revision `0090` does not backfill or infer an existing user tier and does not blanket-update human
+clearance. Its downgrade is blocked by any profile or governed Admin history, restores the previous
+provisioning function, and otherwise removes only the new profile authority schema/functions.
 
 `iam.update_workspace_identity_profile(...)` is the only app-executable local identity-profile
 projection update. It is `SECURITY DEFINER`, contains no dynamic SQL and independently requires the

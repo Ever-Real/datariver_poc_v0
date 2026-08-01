@@ -100,10 +100,12 @@ from datariver.application.dto import (
     MembershipRenewalRecord,
     MultipartUpload,
     ObjectMetadata,
+    ProfileRoleTransitionResult,
     RegistrationCandidateBindingCommand,
     RetentionArchiveVerification,
     RetentionExecutionClaim,
     RetentionExecutionEvidence,
+    SystemAssigneeCandidatePage,
     SystemAssigneePage,
     SystemDirectoryEntry,
     SystemDirectoryPage,
@@ -970,6 +972,35 @@ class MembershipAccessRepository(Protocol):
         self, *, workspace_id: UUID, subject_ids: frozenset[UUID]
     ) -> None: ...
 
+    async def apply_profile_role(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        tier: str,
+        expected_membership_version: int,
+        reason: str,
+        assurance: str,
+        access_payload_hash: str,
+        policy_decision_id: UUID,
+    ) -> ProfileRoleTransitionResult: ...
+
+    async def transition_canonical_admin_profile(
+        self,
+        *,
+        workspace_id: UUID,
+        subject_id: UUID,
+        tier: str,
+        expected_membership_version: int,
+        expected_binding_version: int,
+        reason: str,
+        assurance: str,
+        access_payload_hash: str,
+        policy_decision_id: UUID,
+    ) -> ProfileRoleTransitionResult: ...
+
+    async def count_verified_canonical_admins(self, *, workspace_id: UUID) -> int: ...
+
     async def get_expiration_for_update(
         self, *, workspace_id: UUID, subject_id: UUID
     ) -> datetime: ...
@@ -992,6 +1023,8 @@ class MembershipAccessRepository(Protocol):
         job_function: str | None,
         role_id: UUID | None,
         access_expires_at: datetime,
+        assurance: str,
+        policy_decision_id: UUID,
     ) -> ProvisionedWorkspaceUser: ...
 
 
@@ -1038,6 +1071,15 @@ class SystemDirectoryRepository(Protocol):
         limit: int,
         cursor: str | None = None,
     ) -> SystemAssigneePage: ...
+
+    async def list_assignee_candidates(
+        self,
+        *,
+        workspace_id: UUID,
+        limit: int,
+        query: str | None = None,
+        cursor: str | None = None,
+    ) -> SystemAssigneeCandidatePage: ...
 
     async def patch_assignees(self, command: SystemAssigneePatchCommand) -> int: ...
 

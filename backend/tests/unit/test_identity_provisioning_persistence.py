@@ -7,6 +7,7 @@ import yaml  # type: ignore[import-untyped]
 from datariver.infrastructure.db.identity_provisioning_sql import (
     IDENTITY_PROVISIONING_FUNCTION_SQL,
     IDENTITY_PROVISIONING_FUNCTION_SQL_V1,
+    IDENTITY_PROVISIONING_FUNCTION_SQL_V3,
 )
 
 
@@ -37,6 +38,22 @@ def test_0089_pins_human_role_only_provisioning_and_a_legacy_downgrade_body() ->
     assert "_PROVISIONING_V2_SHA256" in migration
     assert "_PROVISIONING_V1_SHA256" in migration
     assert "role_kind = 'HUMAN_ROLE'" in initial
+
+
+def test_0090_new_human_provisioning_is_atomic_viewer_confidential_only() -> None:
+    sql = IDENTITY_PROVISIONING_FUNCTION_SQL_V3
+
+    assert "access_clearance integer := 2" in sql
+    assert "New human identities always receive the Viewer profile Role" in sql
+    assert "INSERT INTO iam.workspace_memberships" in sql
+    assert "INSERT INTO iam.profile_role_assignments" in sql
+    assert "INSERT INTO iam.profile_role_assignment_events" in sql
+    assert "p_policy_decision_id uuid" in sql
+    assert "p_policy_decision_id IS NULL" in sql
+    assert "policy_decision_id, reason, assurance" in sql
+    assert "'VIEWER', 'PROFILE_ROLE_POLICY_V1'" in sql
+    assert "UPDATE iam.workspace_memberships" not in sql
+    assert sql.index("IF p_role_id IS NOT NULL") < sql.index("INSERT INTO iam.subjects")
 
 
 def test_identity_migration_and_initial_baseline_have_execute_only_contract() -> None:

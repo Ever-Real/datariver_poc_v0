@@ -151,6 +151,13 @@ from datariver.interfaces.http.schemas import (
     MonitoringConfigurationResponse,
     MonitoringConfigurationUpdateRequest,
     PageMeta,
+    ProfileRolePolicyItemResponse,
+    ProfileRolePolicyResponse,
+    ProfileRoleServicePolicyResponse,
+    ProfileRoleTransitionResponse,
+    ProfileRoleUpdateRequest,
+    SystemAssigneeCandidateListResponse,
+    SystemAssigneeCandidateResponse,
     SystemAssigneeListResponse,
     SystemAssigneePatchRequest,
     SystemAssigneeUpdateListRequest,
@@ -2879,6 +2886,40 @@ async def list_systems(
     )
 
 
+@router.get(
+    "/systems/assignee-candidates",
+    response_model=SystemAssigneeCandidateListResponse,
+)
+async def list_system_assignee_candidates(
+    request: Request,
+    context: ContextDep,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+    q: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+) -> SystemAssigneeCandidateListResponse:
+    page = await _service(request).list_system_assignee_candidates(
+        workspace_id=context.workspace_id,
+        limit=limit,
+        query=q,
+        cursor=cursor,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return SystemAssigneeCandidateListResponse(
+        items=[
+            SystemAssigneeCandidateResponse(
+                subject_id=item.subject_id,
+                display_name=item.display_name,
+                email=item.email,
+                tier=item.tier,
+            )
+            for item in page.items
+        ],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+    )
+
+
 @router.post("/systems", response_model=SystemDirectoryEntryResponse)
 async def create_system(
     request: Request,
@@ -4298,6 +4339,88 @@ async def get_workspace_membership_access(
     )
     response.headers["ETag"] = f'"{value.summary.membership_version}"'
     return workspace_membership_access_response(value)
+
+
+@router.get("/profile-role-policy", response_model=ProfileRolePolicyResponse)
+async def get_profile_role_policy(
+    request: Request,
+    response: Response,
+    context: ContextDep,
+) -> ProfileRolePolicyResponse:
+    value = await _service(request).get_profile_role_policy(
+        workspace_id=context.workspace_id,
+        subject=context.subject,
+    )
+    response.headers["Cache-Control"] = "private, no-store"
+    return ProfileRolePolicyResponse(
+        policy_version=value.policy_version,
+        items=[
+            ProfileRolePolicyItemResponse(
+                tier=item.tier,
+                label=item.label,
+                description=item.description,
+                allowed_actions=list(item.allowed_actions),
+                services=[
+                    ProfileRoleServicePolicyResponse(
+                        service_key=service.service_key,
+                        service_label=service.service_label,
+                        action_labels=list(service.action_labels),
+                    )
+                    for service in item.services
+                ],
+                assignable_to_system=item.assignable_to_system,
+                lifecycle_note=item.lifecycle_note,
+            )
+            for item in value.items
+        ],
+    )
+
+
+@router.put(
+    "/workspace-memberships/{target_subject_id}/profile-role",
+    response_model=ProfileRoleTransitionResponse,
+)
+async def update_membership_profile_role(
+    target_subject_id: UUID,
+    payload: ProfileRoleUpdateRequest,
+    request: Request,
+    response: Response,
+    context: ContextDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> ProfileRoleTransitionResponse:
+    expected_membership_version = _expected_version(if_match)
+    request_hash = canonical_json_hash(
+        {
+            "operation": "admin.profile-role.update",
+            "target_subject_id": str(target_subject_id),
+            "tier": payload.tier,
+            "expected_membership_version": expected_membership_version,
+            "expected_binding_version": payload.expected_binding_version,
+            "reason": payload.reason.strip(),
+        }
+    )
+    result = await _service(request).update_profile_role(
+        workspace_id=context.workspace_id,
+        target_subject_id=target_subject_id,
+        tier=payload.tier,
+        expected_membership_version=expected_membership_version,
+        expected_binding_version=payload.expected_binding_version,
+        reason=payload.reason,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
+    )
+    response.headers["ETag"] = f'"{result.membership_version}"'
+    return ProfileRoleTransitionResponse(
+        subject_id=result.subject_id,
+        tier=result.tier,
+        membership_version=result.membership_version,
+        assignment_version=result.assignment_version,
+        binding_version=result.binding_version,
+    )
 
 
 @router.put(

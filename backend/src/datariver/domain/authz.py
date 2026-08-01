@@ -167,6 +167,7 @@ class SubjectAttributes:
     allowed_domain_ids: frozenset[UUID] = field(default_factory=frozenset)
     allowed_actions: frozenset[Action] = field(default_factory=frozenset)
     denied_actions: frozenset[Action] = field(default_factory=frozenset)
+    effective_profile_role: str = "UNASSIGNED"
     authentication_time: datetime | None = None
     authentication_assurance: AuthenticationAssurance = AuthenticationAssurance.UNKNOWN
 

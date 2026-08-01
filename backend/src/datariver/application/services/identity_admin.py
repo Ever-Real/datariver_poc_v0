@@ -324,19 +324,7 @@ class IdentityAdminService:
             request_id=request_id,
         )
         if role_id is not None:
-            async with self._uow_factory() as preflight:
-                await preflight.set_security_context(
-                    workspace_id=draft.workspace_id,
-                    subject_id=subject.subject_id,
-                )
-                await preflight.memberships.assert_eligible_human_administrators(
-                    workspace_id=draft.workspace_id,
-                    subject_ids=frozenset({subject.subject_id}),
-                )
-                await preflight.memberships.assert_assignable_human_role(
-                    workspace_id=draft.workspace_id,
-                    role_id=role_id,
-                )
+            raise ValidationError("New human identities always receive the Viewer profile Role.")
         identity = await self._provider.ensure_disabled_user(draft)
         operation = "admin.identity.provision"
         async with self._uow_factory() as uow:
@@ -391,6 +379,8 @@ class IdentityAdminService:
                     access_expires_at=add_calendar_months(
                         environment.requested_at, RENEWAL_TERM_MONTHS
                     ),
+                    assurance=subject.authentication_assurance.value,
+                    policy_decision_id=decision.decision_id,
                 )
                 await uow.outbox.add_events(
                     [

@@ -43,6 +43,7 @@ describe('SystemDirectoryAdmin', () => {
       access_expired: false,
       pending_renewal_request_id: null,
       renewal_request_eligible: false,
+      effective_profile_role: 'ENGINEER_STEWARD',
     }
     const replacement: WorkspaceMembershipSummary = {
       ...target,
@@ -77,8 +78,11 @@ describe('SystemDirectoryAdmin', () => {
         nextCursor: null,
         limit: 25,
       })),
-      listMembershipPage: vi.fn(() => Promise.resolve({
-        items: [target, replacement], nextCursor: null, limit: 25,
+      listSystemAssigneeCandidates: vi.fn(() => Promise.resolve({
+        items: [
+          { subject_id: target.subject_id, display_name: target.display_name, email: target.email, tier: 'ENGINEER_STEWARD' },
+          { subject_id: replacement.subject_id, display_name: replacement.display_name, email: replacement.email, tier: 'MANAGER' },
+        ], nextCursor: null, limit: 25,
       })),
       listSystemAssigneePage: vi.fn()
         .mockResolvedValueOnce({
@@ -120,20 +124,20 @@ describe('SystemDirectoryAdmin', () => {
     />)
 
     const changeDeveloper = await screen.findByRole('button', { name: 'Developer 담당자 변경' })
-    fireEvent.change(screen.getByLabelText('담당자 후보 검색'), {
+    fireEvent.change(screen.getByLabelText('Developer 검색'), {
       target: { value: 'replacement@example.test' },
     })
-    await waitFor(() => expect(api.listMembershipPage).toHaveBeenLastCalledWith(
-      expect.objectContaining({ query: 'replacement@example.test', status: 'ACTIVE', limit: 25 }),
+    await waitFor(() => expect(api.listSystemAssigneeCandidates).toHaveBeenCalledWith(
+      'replacement@example.test', expect.anything(),
     ))
     expect(screen.getAllByRole('option', {
-      name: 'Replacement User · replacement@example.test',
+      name: 'Replacement User · replacement@example.test · MANAGER',
     })).toHaveLength(2)
     fireEvent.click(changeDeveloper)
     fireEvent.change(screen.getByLabelText('Developer 담당자'), {
       target: { value: replacement.subject_id },
     })
-    fireEvent.click(screen.getByRole('button', { name: '현재 페이지 변경 저장' }))
+    fireEvent.click(screen.getByRole('button', { name: '변경사항 저장' }))
     expect(pending?.title).toBe('시스템 담당자 변경')
     if (!pending) throw new Error('system assignment confirmation was not requested')
     await act(async () => { await pending?.execute() })
@@ -175,7 +179,7 @@ describe('SystemDirectoryAdmin', () => {
       listSystemPage: vi.fn()
         .mockImplementationOnce(() => oldSystems.promise)
         .mockResolvedValue({ items: [newSystem], nextCursor: null, limit: 25 }),
-      listMembershipPage: vi.fn(() => Promise.resolve({
+      listSystemAssigneeCandidates: vi.fn(() => Promise.resolve({
         items: [], nextCursor: null, limit: 25,
       })),
       listSystemAssigneePage: vi.fn(() => Promise.resolve({
@@ -205,7 +209,7 @@ describe('SystemDirectoryAdmin', () => {
   it('creates a system only after confirmation with one idempotency key', async () => {
     const api = {
       listSystemPage: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
-      listMembershipPage: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
+      listSystemAssigneeCandidates: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
       listSystemAssigneePage: vi.fn(),
       createSystem: vi.fn(() => Promise.resolve(system(
         '00000000-0000-4000-8000-000000000799', 'CRM', 'Customer Data',
@@ -232,7 +236,7 @@ describe('SystemDirectoryAdmin', () => {
     fireEvent.change(screen.getByLabelText('시스템 코드'), { target: { value: 'CRM' } })
     fireEvent.change(screen.getByLabelText('시스템 이름'), { target: { value: 'Customer Data' } })
     fireEvent.change(screen.getByLabelText('설명'), { target: { value: 'Customer source' } })
-    fireEvent.click(screen.getByRole('button', { name: '생성' }))
+    fireEvent.click(screen.getByRole('button', { name: '저장' }))
     expect(api.createSystem).not.toHaveBeenCalled()
     expect(pending?.title).toBe('신규 시스템 생성')
     await act(async () => { await pending?.execute() })
@@ -250,8 +254,8 @@ describe('SystemDirectoryAdmin', () => {
       listSystemPage: vi.fn(() => Promise.resolve({
         items: [selectedSystem], nextCursor: null, limit: 25,
       })),
-      listMembershipPage: vi.fn(() => Promise.resolve({
-        items: [], nextCursor: null, limit: 25,
+      listSystemAssigneeCandidates: vi.fn(() => Promise.resolve({
+        items: [{ subject_id: 'member-one', display_name: 'Member One', email: null, tier: 'ENGINEER_STEWARD' }], nextCursor: null, limit: 25,
       })),
       listSystemAssigneePage: vi.fn(() => Promise.resolve({
         system_version: 1,

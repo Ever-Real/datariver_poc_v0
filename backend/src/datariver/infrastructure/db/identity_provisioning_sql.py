@@ -1,8 +1,22 @@
+# ruff: noqa: S608 -- SQL is assembled only from fixed server-owned policy constants.
+
 from __future__ import annotations
+
+import json
+
+from datariver.domain.profile_roles import (
+    PROFILE_ROLE_BY_TIER,
+    PROFILE_ROLE_POLICY_VERSION,
+    ProfileRoleTier,
+)
 
 IDENTITY_PROVISIONING_SIGNATURE = (
     "iam.provision_workspace_identity(uuid, uuid, text, text, text, text, "
     "uuid, text, uuid, timestamptz)"
+)
+IDENTITY_PROVISIONING_SIGNATURE_V3 = (
+    "iam.provision_workspace_identity(uuid, uuid, text, text, text, text, "
+    "uuid, text, uuid, timestamptz, text, uuid)"
 )
 
 IDENTITY_PROVISIONING_FUNCTION_SQL = """
@@ -130,3 +144,103 @@ IDENTITY_PROVISIONING_FUNCTION_SQL_V1 = (
         "ERRCODE = '23503';\n        END IF;\n        access_clearance := selected_role.clearance;",
     )
 )
+
+
+def _identity_provisioning_v3_sql() -> str:
+    viewer_actions = json.dumps(
+        sorted(
+            action.value for action in PROFILE_ROLE_BY_TIER[ProfileRoleTier.VIEWER].allowed_actions
+        ),
+        separators=(",", ":"),
+    ).replace("'", "''")
+    viewer_hash = PROFILE_ROLE_BY_TIER[ProfileRoleTier.VIEWER].materialized_actions_hash
+    sql = IDENTITY_PROVISIONING_FUNCTION_SQL
+    replacements = (
+        (
+            "p_role_id uuid, p_access_expires_at timestamptz\n)",
+            "p_role_id uuid, p_access_expires_at timestamptz, p_assurance text,\n"
+            "    p_policy_decision_id uuid\n)",
+        ),
+        ("access_clearance integer := 0;", "access_clearance integer := 2;"),
+        (
+            "'groups', jsonb_build_array(), 'allowed_actions', jsonb_build_array(),",
+            f"'groups', jsonb_build_array(), 'allowed_actions', '{viewer_actions}'::jsonb,",
+        ),
+        (
+            "'allowed_domain_ids', jsonb_build_array(), 'default_workspace', true,\n"
+            "        'managed_by', 'IDENTITY_PROVISIONING_V1'",
+            "'allowed_domain_ids', jsonb_build_array(), 'default_workspace', true,\n"
+            f"        'managed_by', '{PROFILE_ROLE_POLICY_VERSION}'",
+        ),
+    )
+    for original, replacement in replacements:
+        if sql.count(original) != 1:
+            raise RuntimeError("The identity provisioning V3 derivation source changed")
+        sql = sql.replace(original, replacement)
+    old_role_block = """    IF p_role_id IS NOT NULL THEN
+        SELECT * INTO selected_role FROM iam.access_roles
+        WHERE workspace_id = p_workspace_id AND id = p_role_id AND active IS TRUE
+          AND role_kind = 'HUMAN_ROLE'
+        FOR KEY SHARE;
+        IF NOT FOUND THEN
+            RAISE EXCEPTION 'The selected workspace role is not an assignable human role'
+                USING ERRCODE = '23514';
+        END IF;
+        access_clearance := selected_role.clearance;
+        access_attributes := jsonb_build_object(
+            'groups', selected_role.groups
+                || jsonb_build_array('datariver-role-' || selected_role.role_key),
+            'allowed_actions', selected_role.allowed_actions,
+            'denied_actions', selected_role.denied_actions,
+            'allowed_system_ids', selected_role.allowed_system_ids,
+            'allowed_domain_ids', selected_role.allowed_domain_ids,
+            'default_workspace', true, 'role_id', selected_role.id::text,
+            'managed_by', 'IDENTITY_PROVISIONING_V1'
+        );
+    END IF;
+"""
+    new_role_block = """    IF p_role_id IS NOT NULL THEN
+        RAISE EXCEPTION 'New human identities always receive the Viewer profile Role'
+            USING ERRCODE = '23514';
+    END IF;
+    IF p_assurance NOT IN ('PASSWORD_REAUTH', 'HARDWARE_WEBAUTHN')
+       OR p_policy_decision_id IS NULL THEN
+        RAISE EXCEPTION 'The identity provisioning assurance is invalid'
+            USING ERRCODE = '23514';
+    END IF;
+"""
+    if sql.count(old_role_block) != 1:
+        raise RuntimeError("The identity provisioning Role block changed before V3")
+    sql = sql.replace(old_role_block, new_role_block)
+    return_marker = """    RETURN p_subject_id;
+END
+$datariver$"""
+    viewer_evidence = f"""    INSERT INTO iam.profile_role_assignments (
+        workspace_id, subject_id, tier, policy_version, materialized_actions_hash,
+        membership_version, state, assigned_by, reason, assurance, version,
+        created_at, updated_at
+    ) VALUES (
+        p_workspace_id, p_subject_id, 'VIEWER', '{PROFILE_ROLE_POLICY_VERSION}',
+        '{viewer_hash}', 1, 'ACTIVE', actor_id,
+        'New human provisioned with Viewer default.', p_assurance, 1,
+        transaction_timestamp(), transaction_timestamp()
+    );
+    INSERT INTO iam.profile_role_assignment_events (
+        id, workspace_id, subject_id, event_type, previous_tier, next_tier,
+        policy_version, membership_version, assignment_version, actor_id,
+        policy_decision_id, reason, assurance, occurred_at
+    ) VALUES (
+        gen_random_uuid(), p_workspace_id, p_subject_id, 'ASSIGNED', NULL, 'VIEWER',
+        '{PROFILE_ROLE_POLICY_VERSION}', 1, 1, actor_id,
+        p_policy_decision_id, 'New human provisioned with Viewer default.', p_assurance,
+        transaction_timestamp()
+    );
+    RETURN p_subject_id;
+END
+$datariver$"""
+    if sql.count(return_marker) != 1:
+        raise RuntimeError("The identity provisioning V3 return boundary changed")
+    return sql.replace(return_marker, viewer_evidence)
+
+
+IDENTITY_PROVISIONING_FUNCTION_SQL_V3 = _identity_provisioning_v3_sql()

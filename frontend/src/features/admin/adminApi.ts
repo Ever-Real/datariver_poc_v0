@@ -33,6 +33,8 @@ import type {
   MembershipOwnedTable,
   MembershipRenewalRequest,
   MembershipRoleAssignmentResult,
+  ProfileRolePolicy,
+  ProfileRoleTransitionResult,
   RetentionDataClass,
   RetentionExecutionEvidence,
   RetentionPolicy,
@@ -46,6 +48,7 @@ import type {
   WorkspaceMembershipSummary,
   SystemDirectoryEntry,
   SystemAssigneeKey,
+  SystemAssigneeCandidate,
   SystemAssigneePage,
   SystemAssigneeUpdate,
   SystemAssigneeUpdateResult,
@@ -342,6 +345,36 @@ export class AdminApi {
     )
   }
 
+  getProfileRolePolicy(signal?: AbortSignal) {
+    return this.client.request<ProfileRolePolicy>('/admin/profile-role-policy', {
+      cache: 'no-store',
+      signal,
+    })
+  }
+
+  updateProfileRole(
+    subjectId: string,
+    tier: ProfileRolePolicy['items'][number]['tier'],
+    expectedBindingVersion: number,
+    reason: string,
+    etag: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<ProfileRoleTransitionResult>(
+      `/admin/workspace-memberships/${encodeURIComponent(subjectId)}/profile-role`,
+      {
+        method: 'PUT',
+        ifMatch: etag,
+        idempotencyKey,
+        body: JSON.stringify({
+          tier,
+          expected_binding_version: expectedBindingVersion,
+          reason,
+        }),
+      },
+    )
+  }
+
   async listSystemPage({
     query,
     status,
@@ -387,6 +420,18 @@ export class AdminApi {
       `/admin/systems/${encodeURIComponent(systemId)}/assignees?${parameters.toString()}`,
       { signal },
     )
+  }
+
+  async listSystemAssigneeCandidates(
+    query?: string,
+    signal?: AbortSignal,
+  ): Promise<AdminCursorPage<SystemAssigneeCandidate>> {
+    const parameters = new URLSearchParams({ limit: '25' })
+    if (query) parameters.set('q', query)
+    return adminCursorPage(await this.client.request<AdminPageResponse<SystemAssigneeCandidate>>(
+      `/admin/systems/assignee-candidates?${parameters.toString()}`,
+      { signal },
+    ))
   }
 
   async searchRestrictedGrantTargets(query: string, signal?: AbortSignal) {

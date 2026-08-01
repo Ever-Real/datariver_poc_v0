@@ -30,6 +30,7 @@ from datariver.interfaces.http.schemas import (
     MembershipAccessDocumentRequest,
     MembershipAccessDocumentResponse,
     MembershipRoleAssignmentEvidenceResponse,
+    ProfileRoleAssignmentEvidenceResponse,
     TransitionResponse,
     WorkspaceMembershipAccessResponse,
     WorkspaceMembershipSummaryResponse,
@@ -119,6 +120,7 @@ def workspace_membership_summary_response(
         job_function=membership.job_function,
         clearance=membership.clearance.name,
         membership_version=membership.membership_version,
+        effective_profile_role=membership.effective_profile_role,
     )
 
 
@@ -137,6 +139,7 @@ def workspace_membership_access_response(
     }
     assignment = membership.role_assignment
     canonical_binding = membership.canonical_admin_binding
+    profile_role = membership.profile_role
     legacy_markers = sorted(
         group for group in membership.groups if group.startswith("datariver-role-")
     )
@@ -189,6 +192,18 @@ def workspace_membership_access_response(
                 membership_version=canonical_binding.membership_version,
                 binding_version=canonical_binding.binding_version,
                 updated_at=canonical_binding.updated_at,
+            )
+        ),
+        profile_role=(
+            ProfileRoleAssignmentEvidenceResponse(status="UNASSIGNED")
+            if profile_role is None
+            else ProfileRoleAssignmentEvidenceResponse(
+                status=profile_role.status,
+                tier=profile_role.tier,
+                policy_version=profile_role.policy_version,
+                membership_version=profile_role.membership_version,
+                assignment_version=profile_role.assignment_version,
+                updated_at=profile_role.updated_at,
             )
         ),
     )

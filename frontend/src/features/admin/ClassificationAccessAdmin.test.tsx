@@ -534,6 +534,7 @@ describe('RestrictedSearchGrantAdmin', () => {
         renewal_eligible_at: '2026-12-21T00:00:00Z', access_expired: false,
         renewal_request_eligible: false,
         pending_renewal_request_id: null,
+        effective_profile_role: 'ENGINEER_STEWARD',
       } satisfies WorkspaceMembershipSummary]))),
       listSystemPage: vi.fn(() => Promise.resolve(page([]))),
       getCurrentClassificationAccessPolicy: vi.fn(() => Promise.resolve(policy())),

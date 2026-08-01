@@ -2,6 +2,18 @@
 
 ## Current verification status
 
+### Profile Role authority — 2026-08-01
+
+ADR-0107/revision `0090` tests pin the exact four-tier inheritance and the
+`64 human / 5 service-only` partition. Service negatives cover self-transition, non-hardware Admin
+promotion, last-Admin demotion and custom/profile union prevention. Persistence tests cover typed
+assignment/event schema, append-only evidence, direct application DML denial, stale/malformed/hash/
+policy/membership-version fail-closed behavior and the governed function boundary. Provisioning
+tests require non-null compatibility `role_id` rejection before provider mutation and atomic new
+human Viewer+CONFIDENTIAL evidence. Migration gates require no existing-user backfill or blanket
+clearance update, deterministic canonical `0001`, offline up/down rendering and isolated PostgreSQL
+upgrade/downgrade where credentials are available.
+
 ### Canonical Admin definition and protected local binding — 2026-08-01
 
 ADR-0106/revision `0089` add an unassigned server-owned definition and separate development-only

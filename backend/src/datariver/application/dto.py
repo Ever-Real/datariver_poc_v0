@@ -865,6 +865,7 @@ class WorkspaceMembershipSummary:
     job_function: str | None
     clearance: Classification
     membership_version: int
+    effective_profile_role: str = "UNASSIGNED"
     email: str | None = None
     last_login_at: datetime | None = None
     last_login_ip: str | None = None
@@ -973,6 +974,49 @@ class CanonicalAdminBindingEvidence:
 
 
 @dataclass(frozen=True, slots=True)
+class ProfileRoleAssignmentEvidence:
+    status: str
+    tier: str | None = None
+    policy_version: str | None = None
+    membership_version: int | None = None
+    assignment_version: int | None = None
+    updated_at: datetime | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileRoleTransitionResult:
+    subject_id: UUID
+    tier: str
+    membership_version: int
+    assignment_version: int
+    binding_version: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileRolePolicyItem:
+    tier: str
+    label: str
+    description: str
+    allowed_actions: tuple[Action, ...]
+    services: tuple[ProfileRoleServicePolicy, ...]
+    assignable_to_system: bool
+    lifecycle_note: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileRolePolicyCatalog:
+    policy_version: str
+    items: tuple[ProfileRolePolicyItem, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProfileRoleServicePolicy:
+    service_key: str
+    service_label: str
+    action_labels: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class WorkspaceMembershipAccessRecord:
     summary: WorkspaceMembershipSummary
     groups: frozenset[str]
@@ -982,6 +1026,7 @@ class WorkspaceMembershipAccessRecord:
     allowed_domain_ids: frozenset[UUID]
     role_assignment: MembershipRoleAssignmentEvidence | None = None
     canonical_admin_binding: CanonicalAdminBindingEvidence | None = None
+    profile_role: ProfileRoleAssignmentEvidence | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1015,6 +1060,20 @@ class SystemDirectoryPage:
 class SystemAssigneePage:
     items: tuple[SystemDirectoryAssignee, ...]
     system_version: int
+    next_cursor: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAssigneeCandidate:
+    subject_id: UUID
+    display_name: str
+    email: str | None
+    tier: str
+
+
+@dataclass(frozen=True, slots=True)
+class SystemAssigneeCandidatePage:
+    items: tuple[SystemAssigneeCandidate, ...]
     next_cursor: str | None
 
 

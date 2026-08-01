@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
-  AccessRole,
   AdminAccessRequest,
   AdminReadContext,
   MembershipRenewalRequest,
@@ -48,15 +47,11 @@ export function MembershipAccessAdmin({
   const [profileOpen, setProfileOpen] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
   const [createBusy, setCreateBusy] = useState(false)
-  const [roles, setRoles] = useState<AccessRole[]>([])
-  const [roleQuery, setRoleQuery] = useState('')
-  const [rolesTruncated, setRolesTruncated] = useState(false)
   const [newUser, setNewUser] = useState({
     username: '', email: '', firstName: '', lastName: '', departmentId: '',
-    jobFunction: '', roleId: '', temporaryPassword: '', passwordConfirmation: '',
+    jobFunction: '', temporaryPassword: '', passwordConfirmation: '',
   })
   const memberGeneration = useRef(0)
-  const roleGeneration = useRef(0)
   const canRead = context?.allowed_operations.includes('MEMBERSHIP_ACCESS_READ') ?? false
   const canProvision = context?.allowed_operations.includes('IDENTITY_USER_PROVISION') ?? false
   const loadMembers = useCallback(async (signal?: AbortSignal) => {
@@ -80,19 +75,6 @@ export function MembershipAccessAdmin({
     api, appliedMemberQuery, memberStatus, membershipCursor, reportError,
     setMembers, setNextMembershipCursor, setSelectedId,
   ])
-  const loadRoles = useCallback(async (signal?: AbortSignal) => {
-    const generation = ++roleGeneration.current
-    try {
-      const page = await api.listAccessRolePage({
-        query: roleQuery.trim() || undefined, status: 'ACTIVE', limit: 25, signal,
-      })
-      if (signal?.aborted || generation !== roleGeneration.current) return
-      setRoles(page.items)
-      setRolesTruncated(Boolean(page.nextCursor))
-    } catch (error) {
-      if (!signal?.aborted && generation === roleGeneration.current) reportError(error)
-    }
-  }, [api, reportError, roleQuery, setRoles, setRolesTruncated])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -113,16 +95,6 @@ export function MembershipAccessAdmin({
     }
   }, [canRead, loadMembers])
   useEffect(() => {
-    if (!createOpen) return
-    const controller = new AbortController()
-    const timer = window.setTimeout(() => void loadRoles(controller.signal), roleQuery ? 250 : 0)
-    return () => {
-      window.clearTimeout(timer)
-      controller.abort()
-      roleGeneration.current += 1
-    }
-  }, [createOpen, loadRoles, roleQuery])
-  useEffect(() => {
     if (canProvision) return
     setCreateOpen(false)
     setNewUser((current) => ({ ...current, temporaryPassword: '', passwordConfirmation: '' }))
@@ -138,18 +110,16 @@ export function MembershipAccessAdmin({
   }
   const openCreate = () => {
     if (!canProvision) return
-    setRoleQuery('')
-    setRoles([])
-    setRolesTruncated(false)
     setCreateOpen(true)
   }
   const closeCreate = () => {
     if (createBusy) return
     setCreateOpen(false)
-    setRoleQuery('')
-    setRoles([])
-    setRolesTruncated(false)
-    setNewUser((current) => ({ ...current, roleId: '', temporaryPassword: '', passwordConfirmation: '' }))
+    setNewUser((current) => ({
+      ...current,
+      temporaryPassword: '',
+      passwordConfirmation: '',
+    }))
   }
   const provisionUser = async () => {
     if (!canProvision || createBusy || newUser.temporaryPassword !== newUser.passwordConfirmation) return
@@ -158,7 +128,7 @@ export function MembershipAccessAdmin({
       first_name: newUser.firstName.trim(), last_name: newUser.lastName.trim(),
       department_id: newUser.departmentId.trim() || null,
       job_function: newUser.jobFunction.trim() || null,
-      role_id: newUser.roleId || null,
+      role_id: null,
       temporary_password: newUser.temporaryPassword,
     }
     setCreateBusy(true)
@@ -168,12 +138,9 @@ export function MembershipAccessAdmin({
       clearKey(intent)
       setNewUser({
         username: '', email: '', firstName: '', lastName: '', departmentId: '',
-        jobFunction: '', roleId: '', temporaryPassword: '', passwordConfirmation: '',
+        jobFunction: '', temporaryPassword: '', passwordConfirmation: '',
       })
       setCreateOpen(false)
-      setRoleQuery('')
-      setRoles([])
-      setRolesTruncated(false)
       await loadMembers()
     } catch (error) {
       reportError(error)
@@ -189,6 +156,7 @@ export function MembershipAccessAdmin({
         { accessorKey: 'display_name', header: '사용자', size: 170, cell: ({ row }) => <strong>{row.original.display_name}</strong> },
         { accessorKey: 'email', header: 'Email', size: 220, cell: ({ row }) => row.original.email ?? '—' },
         { accessorKey: 'job_function', header: '업무 역할', size: 120, cell: ({ row }) => row.original.job_function ?? '—' },
+        { accessorKey: 'effective_profile_role', header: '프로필 권한', size: 150, cell: ({ row }) => <span className="badge badge-soft">{row.original.effective_profile_role}</span> },
         { accessorKey: 'department_id', header: '부서', size: 150, cell: ({ row }) => row.original.department_id ?? '미할당' },
         { accessorKey: 'clearance', header: '등급', size: 110, cell: ({ row }) => <span className="badge badge-soft">{row.original.clearance}</span> },
         { accessorKey: 'access_expires_at', header: '갱신 필요일', size: 125, cell: ({ row }) => row.original.access_expires_at ? <span className={row.original.access_expired ? 'font-black text-red-700' : ''}>{new Date(row.original.access_expires_at).toLocaleDateString()}</span> : '운영자 관리' },
@@ -210,7 +178,7 @@ export function MembershipAccessAdmin({
       onUpdated={loadMembers}
     />
     <Dialog open={createOpen} title="사용자 등록" description="인증 계정과 현재 Workspace 멤버십을 하나의 통제된 작업으로 생성합니다." onRequestClose={closeCreate} footer={<><button type="button" className="button button-secondary" disabled={createBusy} onClick={closeCreate}>취소</button><button type="button" className="button" disabled={createBusy || !newUser.username.trim() || !newUser.email.trim() || !newUser.firstName.trim() || !newUser.lastName.trim() || newUser.temporaryPassword.length < 12 || newUser.temporaryPassword !== newUser.passwordConfirmation} onClick={() => void provisionUser()}>{createBusy ? '등록 중…' : '사용자 등록'}</button></>}>
-      <div className="grid gap-3 md:grid-cols-2"><label className="grid gap-1 text-xs font-bold">사용자명<input required minLength={3} maxLength={64} autoComplete="off" value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} placeholder="예: hong.gildong" /></label><label className="grid gap-1 text-xs font-bold">Email<input required type="email" maxLength={320} autoComplete="off" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">이름<input required maxLength={100} value={newUser.firstName} onChange={(event) => setNewUser({ ...newUser, firstName: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">성<input required maxLength={100} value={newUser.lastName} onChange={(event) => setNewUser({ ...newUser, lastName: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">부서 UUID (선택)<input value={newUser.departmentId} onChange={(event) => setNewUser({ ...newUser, departmentId: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">업무 역할 (선택)<input maxLength={100} value={newUser.jobFunction} onChange={(event) => setNewUser({ ...newUser, jobFunction: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold md:col-span-2">데이터·화면 접근 Role 검색<input type="search" value={roleQuery} onChange={(event) => setRoleQuery(event.target.value)} placeholder="Role 이름 또는 key" /></label><label className="grid gap-1 text-xs font-bold md:col-span-2">데이터·화면 접근 Role<select value={newUser.roleId} onChange={(event) => setNewUser({ ...newUser, roleId: event.target.value })}><option value="">Role 미할당 · PUBLIC 최소 권한</option>{roles.map((role) => <option key={role.id} value={role.id}>{role.name} · {role.clearance}</option>)}</select></label>{rolesTruncated && <p className="callout m-0 md:col-span-2">현재 검색 결과는 첫 25개입니다. Role 이름 또는 key로 범위를 좁히세요.</p>}<label className="grid gap-1 text-xs font-bold">임시 비밀번호<input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={newUser.temporaryPassword} onChange={(event) => setNewUser({ ...newUser, temporaryPassword: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">임시 비밀번호 확인<input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={newUser.passwordConfirmation} onChange={(event) => setNewUser({ ...newUser, passwordConfirmation: event.target.value })} /></label></div>
+      <div className="grid gap-3 md:grid-cols-2"><p className="callout m-0 md:col-span-2"><strong>신규 Viewer 기본</strong> · 등록 즉시 Viewer 권한과 CONFIDENTIAL 데이터 조회 등급을 서버가 함께 부여합니다.</p><label className="grid gap-1 text-xs font-bold">사용자명<input required minLength={3} maxLength={64} autoComplete="off" value={newUser.username} onChange={(event) => setNewUser({ ...newUser, username: event.target.value })} placeholder="예: hong.gildong" /></label><label className="grid gap-1 text-xs font-bold">Email<input required type="email" maxLength={320} autoComplete="off" value={newUser.email} onChange={(event) => setNewUser({ ...newUser, email: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">이름<input required maxLength={100} value={newUser.firstName} onChange={(event) => setNewUser({ ...newUser, firstName: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">성<input required maxLength={100} value={newUser.lastName} onChange={(event) => setNewUser({ ...newUser, lastName: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">부서 UUID (선택)<input value={newUser.departmentId} onChange={(event) => setNewUser({ ...newUser, departmentId: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">업무 역할 (선택)<input maxLength={100} value={newUser.jobFunction} onChange={(event) => setNewUser({ ...newUser, jobFunction: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">임시 비밀번호<input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={newUser.temporaryPassword} onChange={(event) => setNewUser({ ...newUser, temporaryPassword: event.target.value })} /></label><label className="grid gap-1 text-xs font-bold">임시 비밀번호 확인<input required type="password" minLength={12} maxLength={128} autoComplete="new-password" value={newUser.passwordConfirmation} onChange={(event) => setNewUser({ ...newUser, passwordConfirmation: event.target.value })} /></label></div>
     </Dialog>
   </>
 }
