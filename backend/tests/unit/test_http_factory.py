@@ -132,7 +132,7 @@ def test_catalog_http_service_is_the_only_workspace_discovery_opt_in(
     service = catalog_routes._service(cast(Any, object()), cast(Any, object()))
 
     assert service._reader_mode is CatalogReaderMode.WORKSPACE_DISCOVERY
-    assert getattr(service._index, "_reader_mode") is CatalogReaderMode.WORKSPACE_DISCOVERY
+    assert service._index._reader_mode is CatalogReaderMode.WORKSPACE_DISCOVERY
 
 
 def test_liveness_and_security_headers() -> None:
