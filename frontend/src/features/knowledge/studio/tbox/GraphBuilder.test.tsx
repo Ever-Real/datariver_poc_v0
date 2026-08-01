@@ -255,7 +255,7 @@ describe('GraphBuilder', () => {
 
     await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
     fireEvent.click(screen.getByRole('button', {
-      name: 'DB 활용 CATALOG_METADATA 블록 열기',
+      name: 'DB 활용 CATALOG_METADATA 블록 선택',
     }))
 
     const canvas = screen.getByLabelText('T-Box 그래프 캔버스')
@@ -320,7 +320,7 @@ describe('GraphBuilder', () => {
 
     await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
     fireEvent.click(screen.getByRole('button', {
-      name: '확장 레이어 DIRECT 블록 열기',
+      name: '확장 레이어 DIRECT 블록 선택',
     }))
     const classInput = screen.getByLabelText('최상위 Class 이름')
     fireEvent.change(classInput, { target: { value: 'Department' } })
@@ -418,16 +418,22 @@ describe('GraphBuilder', () => {
     expect(screen.getByLabelText('T-Box Cypher 편집기')).toHaveValue(
       'CREATE (n0:임시_클래스)',
     )
+    const canvasElement = screen.getByLabelText('T-Box 그래프 캔버스')
+    const editorElement = screen.getByLabelText('T-Box Cypher 편집기')
 
     fireEvent.click(screen.getByRole('button', {
-      name: '확장 레이어 DIRECT 블록 열기',
+      name: '확장 레이어 DIRECT 블록 선택',
     }))
+    expect(screen.getByLabelText('T-Box 그래프 캔버스')).toBe(canvasElement)
+    expect(screen.getByLabelText('T-Box Cypher 편집기')).toBe(editorElement)
     expect(await within(screen.getByLabelText('T-Box 그래프 캔버스'))
       .findByText('임시_클래스')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', {
-      name: '직접 정의 DIRECT 블록 열기',
+      name: '직접 정의 DIRECT 블록 선택',
     }))
 
+    expect(screen.getByLabelText('T-Box 그래프 캔버스')).toBe(canvasElement)
+    expect(screen.getByLabelText('T-Box Cypher 편집기')).toBe(editorElement)
     expect(screen.getByLabelText('T-Box Cypher 편집기')).toHaveValue(
       'CREATE (n0:임시_클래스)',
     )
@@ -677,9 +683,10 @@ describe('GraphBuilder', () => {
     )
 
     await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
-    expect(screen.getByRole('button', {
+    expect(screen.queryByRole('button', {
       name: '직접 정의 블록 삭제',
-    })).toBeDisabled()
+    })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('직접 정의 이전 블록 잠김')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', {
       name: 'DB 활용 블록 삭제',
     }))
@@ -690,6 +697,64 @@ describe('GraphBuilder', () => {
     expect(await screen.findByText(/최신 블록 'DB 활용'을 삭제했습니다/)).toBeInTheDocument()
     const deleteRequest = fetchMock.mock.calls.find(([, init]) => init?.method === 'DELETE')
     expect(new Headers(deleteRequest?.[1]?.headers).get('If-Match')).toBe('"2"')
+  })
+
+  it('creates a direct block immediately from the compact block rail menu', async () => {
+    const layered = tbox([])
+    layered.blocks.push({
+      id: secondBlockId,
+      kind: 'DIRECT',
+      title: '직접 정의',
+      weight: 50,
+      ordinal: 1,
+      collapsed: false,
+      version: 1,
+      source_reference: null,
+      elements: [],
+      created_at: '2026-07-29T01:01:00Z',
+      updated_at: '2026-07-29T01:01:00Z',
+    })
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`) && !init?.method) {
+        return Promise.resolve(json(tbox()))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/blocks`) && init?.method === 'POST') {
+        return Promise.resolve(json(layered, '"3"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    fireEvent.click(screen.getByRole('button', { name: '블록 추가' }))
+    const menu = document.getElementById('tbox-block-add-menu')
+    fireEvent.click(within(menu!).getByRole('button', { name: '직접 정의' }))
+
+    expect(await screen.findByText(/직접 정의 블록을 생성했습니다/)).toBeInTheDocument()
+    expect(screen.getByRole('button', {
+      name: '직접 정의 DIRECT 블록 선택',
+      current: 'step',
+    })).toBeInTheDocument()
+    const createCall = fetchMock.mock.calls.find(([, init]) => init?.method === 'POST')
+    expect(new Headers(createCall?.[1]?.headers).get('If-Match')).toBe('"2"')
+    const createBody = createCall?.[1]?.body
+    expect(JSON.parse(typeof createBody === 'string' ? createBody : '{}')).toEqual({
+      kind: 'DIRECT',
+      title: '직접 정의',
+    })
   })
 
   it('commits a compact block title with Enter and exposes explicit confirm and cancel controls', async () => {
@@ -806,8 +871,8 @@ describe('GraphBuilder', () => {
           id: catalogJobId,
           draft_id: draftId,
           input_kind: 'CATALOG_SCHEMA',
-          mode: 'MERGE_INTO_CURRENT',
-          target_block_id: blockId,
+          mode: 'APPEND_LAYER',
+          target_block_id: secondBlockId,
           state: 'SUCCEEDED',
           stage: 'COMPLETED',
           progress_percent: 100,
@@ -827,9 +892,9 @@ describe('GraphBuilder', () => {
         return Promise.resolve(json({
           id: catalogProposalId,
           draft_id: draftId,
-          target_block_id: blockId,
+          target_block_id: secondBlockId,
           state: 'READY',
-          mode: 'MERGE_INTO_CURRENT',
+          mode: 'APPEND_LAYER',
           merge_strategy: 'KEEP_ORIGINAL',
           base_draft_version: 2,
           prompt: 'Catalog schema proposal: orders',
@@ -875,7 +940,9 @@ describe('GraphBuilder', () => {
     )
 
     await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
-    fireEvent.click(screen.getByRole('button', { name: 'DB 테이블 검색' }))
+    fireEvent.click(screen.getByRole('button', { name: '블록 추가' }))
+    fireEvent.click(within(screen.getByRole('button', { name: '블록 추가' }).parentElement!)
+      .getByRole('button', { name: 'DB 메타데이터' }))
     const dialog = await screen.findByRole('dialog', {
       name: 'DB 카탈로그에서 T-Box 제안',
     })
@@ -903,7 +970,8 @@ describe('GraphBuilder', () => {
     const fields = await screen.findByRole('table', { name: 'orders 컬럼 선택' })
     expect(within(fields).getByRole('checkbox', { name: 'order_id 컬럼 선택' })).toBeChecked()
     expect(within(fields).getByRole('checkbox', { name: 'amount 컬럼 선택' })).toBeChecked()
-    fireEvent.click(within(dialog).getByRole('button', { name: '현재 블록 Proposal' }))
+    expect(within(dialog).getByRole('button', { name: '현재 블록 Proposal' })).toBeDisabled()
+    fireEvent.click(within(dialog).getByRole('button', { name: '새 블록 Proposal' }))
 
     expect(await screen.findByLabelText('T-Box Proposal 미리보기')).toBeInTheDocument()
     const jobCall = fetchMock.mock.calls.find(([input, options]) => (
@@ -915,8 +983,7 @@ describe('GraphBuilder', () => {
       input_kind: 'CATALOG_SCHEMA',
       asset_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
       selected_field_paths: ['amount', 'order_id'],
-      target_block_id: blockId,
-      mode: 'MERGE_INTO_CURRENT',
+      mode: 'APPEND_LAYER',
     })
     expect(fetchMock.mock.calls.some(([input]) => (
       requestUrl(input).endsWith('/tbox/catalog-proposals')
@@ -961,17 +1028,38 @@ describe('GraphBuilder', () => {
 
     await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
     expect(screen.getByText('[DB 메타데이터]')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'DB 테이블 검색' })).toBeEnabled()
-    expect(screen.getByRole('button', { name: '데이터 업로드' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: '다른 Asset 붙이기' })).toBeDisabled()
-    expect(screen.getByRole('button', { name: 'LLM Assistant' })).toBeDisabled()
+    expect(screen.getByLabelText('T-Box 블록 목록')).toBeInTheDocument()
+    const workspace = screen.getByRole('article', { name: 'T-Box 단일 작업공간' })
+    const layout = within(workspace).getByTestId('tbox-shared-workspace-layout')
+    expect(layout).toHaveClass('xl:grid-cols-[240px_minmax(0,1fr)_180px]')
+    expect(within(workspace).getByLabelText('T-Box 블록')).toHaveClass(
+      'xl:col-start-3',
+      'xl:row-start-1',
+    )
+    expect(within(workspace).getByLabelText('T-Box Cypher 편집기').closest('section'))
+      .toHaveClass('xl:col-span-3', 'xl:row-start-2')
+    expect(within(workspace).getByLabelText('T-Box 블록 목록')).toHaveClass(
+      'flex',
+      'overflow-x-auto',
+      'xl:grid',
+    )
+    expect(screen.getByRole('button', {
+      name: '카탈로그 스키마 CATALOG_METADATA 블록 선택',
+    })).toHaveAttribute('aria-current', 'step')
+    expect(screen.getAllByLabelText('T-Box 그래프 캔버스')).toHaveLength(1)
+    expect(screen.getAllByLabelText('T-Box Cypher 편집기')).toHaveLength(1)
 
     fireEvent.click(screen.getByRole('button', { name: '블록 추가' }))
-    expect(screen.getByRole('button', { name: /새 데이터 업로드 블록/ })).toBeEnabled()
-    expect(screen.getByRole('button', { name: /새 LLM Assistant 블록/ })).toBeEnabled()
+    const menu = document.getElementById('tbox-block-add-menu')
+    expect(menu).not.toBeNull()
+    expect(within(menu!).getByRole('button', { name: '직접 정의' })).toBeEnabled()
+    expect(within(menu!).getByRole('button', { name: '데이터 업로드' })).toBeEnabled()
+    expect(within(menu!).getByRole('button', { name: 'DB 메타데이터' })).toBeEnabled()
+    expect(within(menu!).getByRole('button', { name: 'LLM Assistant' })).toBeEnabled()
+    expect(within(menu!).getByRole('button', { name: '다른 Asset' })).toBeEnabled()
   })
 
-  it('opens LLM Assistant from the active block toolbar instead of a standalone panel', async () => {
+  it('opens an append-layer LLM Assistant from the block rail menu', async () => {
     const fetchMock = vi.fn<typeof fetch>((input) => {
       const path = requestUrl(input)
       if (path.endsWith(`/drafts/${draftId}/tbox`)) return Promise.resolve(json(tbox()))
@@ -997,9 +1085,15 @@ describe('GraphBuilder', () => {
     await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
     expect(screen.queryByRole('dialog', { name: 'LLM Schema Assistant' }))
       .not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: 'LLM Assistant' }))
-    expect(await screen.findByRole('dialog', { name: 'LLM Schema Assistant' }))
-      .toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '블록 추가' }))
+    const menu = document.getElementById('tbox-block-add-menu')
+    fireEvent.click(within(menu!).getByRole('button', { name: 'LLM Assistant' }))
+    const dialog = await screen.findByRole('dialog', { name: 'LLM Schema Assistant' })
+    fireEvent.change(within(dialog).getByLabelText('LLM T-Box 요청'), {
+      target: { value: '업무 용어 스키마를 제안해 줘.' },
+    })
+    expect(within(dialog).getByRole('button', { name: '새 블록 Proposal' })).toBeEnabled()
+    expect(within(dialog).getByRole('button', { name: '현재 블록 Proposal' })).toBeDisabled()
   })
 
   it('uploads a document through accepted storage and renders the durable job Proposal', async () => {
@@ -1059,8 +1153,8 @@ describe('GraphBuilder', () => {
           id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d5',
           draft_id: draftId,
           input_kind: 'DOCUMENT_SCHEMA',
-          mode: 'MERGE_INTO_CURRENT',
-          target_block_id: blockId,
+          mode: 'APPEND_LAYER',
+          target_block_id: secondBlockId,
           state: 'SUCCEEDED',
           stage: 'COMPLETED',
           progress_percent: 100,
@@ -1080,9 +1174,9 @@ describe('GraphBuilder', () => {
         return Promise.resolve(json({
           id: proposalId,
           draft_id: draftId,
-          target_block_id: blockId,
+          target_block_id: secondBlockId,
           state: 'READY',
-          mode: 'MERGE_INTO_CURRENT',
+          mode: 'APPEND_LAYER',
           merge_strategy: 'KEEP_ORIGINAL',
           base_draft_version: 2,
           prompt: 'Document schema proposal: schema.json',
@@ -1122,8 +1216,12 @@ describe('GraphBuilder', () => {
     )
 
     await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
-    fireEvent.click(screen.getByRole('button', { name: '데이터 업로드' }))
+    fireEvent.click(screen.getByRole('button', { name: '블록 추가' }))
+    const menu = document.getElementById('tbox-block-add-menu')
+    fireEvent.click(within(menu!).getByRole('button', { name: '데이터 업로드' }))
     const dialog = await screen.findByRole('dialog', { name: '문서 기반 T-Box Proposal' })
+    expect(within(dialog).getByRole('radio', { name: /현재 블록 Proposal/ })).toBeDisabled()
+    expect(within(dialog).getByRole('radio', { name: /새 블록 Proposal/ })).toBeChecked()
     fireEvent.change(within(dialog).getByLabelText('T-Box 분석 파일'), {
       target: { files: [file] },
     })
@@ -1157,9 +1255,9 @@ describe('GraphBuilder', () => {
     const proposal = {
       id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3e2',
       draft_id: draftId,
-      target_block_id: blockId,
+      target_block_id: secondBlockId,
       state: 'READY',
-      mode: 'MERGE_INTO_CURRENT',
+      mode: 'APPEND_LAYER',
       merge_strategy: 'KEEP_ORIGINAL',
       base_draft_version: 2,
       prompt: 'server-owned exact Asset release import',
@@ -1218,11 +1316,14 @@ describe('GraphBuilder', () => {
     )
 
     await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
-    fireEvent.click(screen.getByRole('button', { name: '다른 Asset 붙이기' }))
+    fireEvent.click(screen.getByRole('button', { name: '블록 추가' }))
+    const menu = document.getElementById('tbox-block-add-menu')
+    fireEvent.click(within(menu!).getByRole('button', { name: '다른 Asset' }))
     const dialog = await screen.findByRole('dialog', {
       name: '다른 지식 Asset의 T-Box 붙이기',
     })
     expect(dialog).toHaveClass('app-dialog-workspace')
+    expect(within(dialog).getByRole('button', { name: '현재 블록 Proposal' })).toBeDisabled()
 
     const query = within(dialog).getByLabelText('T-Box 지식 Asset 검색어')
     fireEvent.change(query, { target: { value: 'glossary' } })
@@ -1235,7 +1336,7 @@ describe('GraphBuilder', () => {
     expect(within(dialog).getByLabelText('선택한 지식 Asset 버전')).toHaveTextContent(
       'Enterprise glossary · v7',
     )
-    fireEvent.click(within(dialog).getByRole('button', { name: '현재 블록 Proposal' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: '새 블록 Proposal' }))
 
     const preview = await screen.findByLabelText('T-Box Proposal 미리보기')
     expect(within(preview).getByLabelText('Business Term Proposal 이름')).toHaveValue(
@@ -1249,8 +1350,7 @@ describe('GraphBuilder', () => {
     expect(JSON.parse(typeof proposalBody === 'string' ? proposalBody : '{}')).toEqual({
       studio_release_id: release.studio_release_id,
       tbox_hash: release.tbox_hash,
-      target_block_id: blockId,
-      mode: 'MERGE_INTO_CURRENT',
+      mode: 'APPEND_LAYER',
     })
   })
 })

@@ -36,9 +36,7 @@ import {
 } from '@xyflow/react'
 import type { ColumnDef } from '@tanstack/react-table'
 import {
-  Bot,
   Check,
-  Database,
   FileUp,
   FolderTree,
   GitBranch,
@@ -1377,10 +1375,16 @@ export function schemaIdentifier(value: string, prefix = 'Class'): string {
 interface EditableBlockTitleProps {
   block: KnowledgeStudioTBoxBlock
   disabled: boolean
+  compact?: boolean
   onSave: (title: string) => void
 }
 
-function EditableBlockTitle({ block, disabled, onSave }: EditableBlockTitleProps) {
+function EditableBlockTitle({
+  block,
+  disabled,
+  compact = false,
+  onSave,
+}: EditableBlockTitleProps) {
   const [value, setValue] = useState(block.title)
   useEffect(() => setValue(block.title), [block.title])
   const nextTitle = value.trim()
@@ -1392,7 +1396,7 @@ function EditableBlockTitle({ block, disabled, onSave }: EditableBlockTitleProps
   }
 
   return (
-    <div className="flex min-w-[220px] flex-1 items-center gap-1">
+    <div className={`flex items-center gap-1 ${compact ? 'min-w-0' : 'min-w-[220px] flex-1'}`}>
       <input
         aria-label={`${block.ordinal + 1}번 블록 이름`}
         className={`input min-w-0 flex-1 py-1 text-xs font-black text-navy-900 ${
@@ -3084,137 +3088,39 @@ export function GraphBuilder({
         <p role="status" className="mb-0 mt-3 text-xs font-semibold text-slate-600">{status}</p>
       </header>
 
-      <div className="grid gap-3">
-        {record.blocks.map((block) => (
-          <article
-            key={block.id}
-            className={`rounded-enterprise border bg-white ${block.id === selectedBlockId ? 'border-enterprise-blue shadow-sm' : 'border-slate-300'}`}
+      {selectedBlock && (
+        <article
+          className="rounded-enterprise border border-enterprise-blue bg-white p-3 shadow-sm"
+          aria-label="T-Box 단일 작업공간"
+        >
+          <div className="mb-3 flex items-center justify-between gap-2 rounded-enterprise border border-blue-200 bg-blue-50 px-3 py-2">
+            <span className="min-w-0 truncate text-[11px] font-black text-blue-950">
+              {selectedBlock.title}{' '}
+              [{selectedBlock.kind === 'DIRECT'
+                ? '직접 정의'
+                : proposalBlockLabels[selectedBlock.kind]}]
+            </span>
+            <span
+              className={`shrink-0 rounded px-2 py-1 text-[9px] font-black ${
+                validationPhase === 'VALID'
+                  ? 'bg-emerald-100 text-emerald-800'
+                  : validationPhase === 'INVALID'
+                    ? 'bg-red-100 text-red-800'
+                    : 'bg-amber-100 text-amber-800'
+              }`}
+              role="status"
+            >
+              {validationPhase === 'VALID'
+                ? 'TYPED VALID'
+                : validationPhase === 'INVALID'
+                  ? 'INVALID'
+                  : 'VALIDATING…'}
+            </span>
+          </div>
+          <div
+            className="grid min-h-[520px] gap-3 xl:grid-cols-[240px_minmax(0,1fr)_180px]"
+            data-testid="tbox-shared-workspace-layout"
           >
-            <header className="flex min-h-12 flex-wrap items-center gap-2 px-3 py-2">
-              <button
-                type="button"
-                className="flex min-w-24 items-center gap-2 text-left"
-                aria-label={`${block.title} ${block.kind} 블록 열기`}
-                onClick={() => applyBlock(block, record)}
-              >
-                <span className="rounded bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-600">
-                  {block.ordinal + 1}
-                </span>
-              </button>
-              <EditableBlockTitle
-                block={block}
-                disabled={locked || working}
-                onSave={(title) => void updateBlock(block, { title })}
-              />
-              <span className="rounded bg-slate-100 px-2 py-1 text-[9px] font-bold text-slate-500">
-                [{block.kind === 'DIRECT' ? '직접 정의' : proposalBlockLabels[block.kind]}]
-              </span>
-              <label className="flex items-center gap-2 text-xs font-bold text-slate-600">
-                W
-                <input
-                  aria-label={`${block.title} 가중치`}
-                  className="input w-16 py-1"
-                  type="number"
-                  min={0}
-                  max={100}
-                  defaultValue={block.weight}
-                  disabled={locked || working}
-                  onBlur={(event) => {
-                    const weight = Number(event.currentTarget.value)
-                    if (Number.isInteger(weight) && weight >= 0 && weight <= 100 && weight !== block.weight) {
-                      void updateBlock(block, { weight })
-                    }
-                }}
-              />
-              </label>
-              <button
-                type="button"
-                className="button button-danger px-2 py-1.5"
-                aria-label={`${block.title} 블록 삭제`}
-                title={block.id === lastBlockId
-                  ? '최신 블록 삭제'
-                  : '의존성 보호: 가장 최신 블록만 삭제할 수 있습니다.'}
-                disabled={locked || working || block.id !== lastBlockId}
-                onClick={() => setBlockPendingDelete(block)}
-              >
-                <Trash2 size={13} aria-hidden="true" />
-              </button>
-            </header>
-            {block.id === selectedBlockId && (
-              <div className="border-t border-slate-200 p-3">
-                <div className="mb-3 flex flex-wrap items-center gap-2 rounded-enterprise border border-blue-200 bg-blue-50 p-2">
-                  <strong className="mr-auto text-[11px] text-blue-950">
-                    통합 Schema Proposal Pipeline
-                  </strong>
-                  <button
-                    type="button"
-                    className="button button-secondary py-1.5 text-[10px]"
-                    disabled={locked || working || !blockAcceptsSource('DOCUMENT_SCHEMA')}
-                    onClick={() => {
-                      setAppendOnlySourceMode(false)
-                      setDocumentProposalMode('MERGE_INTO_CURRENT')
-                      setDocumentCapabilityOpen(true)
-                    }}
-                  >
-                    <FileUp size={13} aria-hidden="true" />
-                    데이터 업로드
-                  </button>
-                  <button
-                    type="button"
-                    className="button button-secondary py-1.5 text-[10px]"
-                    disabled={locked || working || !blockAcceptsSource('CATALOG_METADATA')}
-                    onClick={() => {
-                      setAppendOnlySourceMode(false)
-                      setCatalogOpen(true)
-                      if (catalogResults.length === 0) void searchCatalog()
-                    }}
-                  >
-                    <Database size={13} aria-hidden="true" />
-                    DB 테이블 검색
-                  </button>
-                  <button
-                    type="button"
-                    className="button button-secondary py-1.5 text-[10px]"
-                    disabled={locked || working || !blockAcceptsSource('ASSET_RELEASE')}
-                    onClick={() => {
-                      setAppendOnlySourceMode(false)
-                      setAssetReleaseOpen(true)
-                      if (assetReleaseResults.length === 0) void searchAssetReleases()
-                    }}
-                  >
-                    <GitBranch size={13} aria-hidden="true" />
-                    다른 Asset 붙이기
-                  </button>
-                  <button
-                    type="button"
-                    className="button button-secondary py-1.5 text-[10px]"
-                    disabled={locked || working || !blockAcceptsSource('LLM_ASSISTANT')}
-                    onClick={() => {
-                      setAppendOnlySourceMode(false)
-                      setAssistantOpen(true)
-                    }}
-                  >
-                    <Bot size={13} aria-hidden="true" />
-                    LLM Assistant
-                  </button>
-                  <span
-                    className={`rounded px-2 py-1 text-[9px] font-black ${
-                      validationPhase === 'VALID'
-                        ? 'bg-emerald-100 text-emerald-800'
-                        : validationPhase === 'INVALID'
-                          ? 'bg-red-100 text-red-800'
-                          : 'bg-amber-100 text-amber-800'
-                    }`}
-                    role="status"
-                  >
-                    {validationPhase === 'VALID'
-                      ? 'TYPED VALID'
-                      : validationPhase === 'INVALID'
-                        ? 'INVALID'
-                        : 'VALIDATING…'}
-                  </span>
-                </div>
-                <div className="grid min-h-[520px] gap-3 xl:grid-cols-[270px_minmax(0,1fr)]">
                   <ClassHierarchyTree
                     classes={classes}
                     relationships={elements.filter((item) => item.kind === 'RELATION')}
@@ -3411,8 +3317,7 @@ export function GraphBuilder({
                       )}
                     </ReactFlow>
                   </div>
-                </div>
-                <section className="mt-3 flex min-h-0 flex-col rounded-enterprise border border-slate-700 bg-[#081525]">
+                <section className="order-4 flex min-h-0 flex-col rounded-enterprise border border-slate-700 bg-[#081525] xl:col-span-3 xl:row-start-2">
                   <header className="flex items-center justify-between border-b border-slate-700 px-3 py-2 text-xs font-black text-slate-100">
                     <span>SchemaCypherEditor · safe CREATE subset · 실행되지 않음</span>
                     <span className="text-[9px] font-semibold text-slate-400">
@@ -3436,103 +3341,188 @@ export function GraphBuilder({
                       : 'Validation OK · 트리, 캔버스와 마지막 정상 AST가 동기화되었습니다.'}
                   </div>
                 </section>
+
+        <aside
+          className="order-3 min-w-0 rounded-enterprise border border-slate-300 bg-white p-2.5 xl:col-start-3 xl:row-start-1 xl:self-start"
+          aria-label="T-Box 블록"
+        >
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <strong className="text-[11px] font-black text-navy-900">Blocks</strong>
+            <span className="rounded bg-slate-100 px-2 py-0.5 text-[9px] font-bold text-slate-500">
+              {record.blocks.length}
+            </span>
+          </div>
+          <nav
+            className="flex gap-2 overflow-x-auto pb-1 xl:grid xl:max-h-[390px] xl:overflow-y-auto xl:overflow-x-hidden"
+            aria-label="T-Box 블록 목록"
+          >
+            {record.blocks.map((block) => {
+              const active = block.id === selectedBlockId
+              const latest = block.id === lastBlockId
+              return (
+                <div
+                  key={block.id}
+                  className={`relative min-w-40 rounded-enterprise border p-1.5 xl:min-w-0 ${
+                    active
+                      ? 'border-enterprise-blue bg-blue-50 shadow-sm'
+                      : 'border-slate-200 bg-white'
+                  }`}
+                  data-testid={`tbox-block-badge-${block.id}`}
+                >
+                  <button
+                    type="button"
+                    className="grid w-full min-w-0 gap-0.5 rounded px-1.5 py-1.5 text-left hover:bg-white/70 focus:outline-none focus:ring-2 focus:ring-enterprise-blue"
+                    aria-label={`${block.title} ${block.kind} 블록 선택`}
+                    aria-current={active ? 'step' : undefined}
+                    onClick={() => applyBlock(block, record)}
+                  >
+                    <span className="flex items-center gap-1.5">
+                      <span className="grid size-5 shrink-0 place-items-center rounded bg-navy-900 text-[9px] font-black text-white">
+                        {block.ordinal + 1}
+                      </span>
+                      <strong className="min-w-0 flex-1 truncate text-[10px] text-navy-900">
+                        {block.title}
+                      </strong>
+                    </span>
+                    <span className="truncate pl-6 text-[8px] font-bold text-slate-500">
+                      [{block.kind === 'DIRECT' ? '직접 정의' : proposalBlockLabels[block.kind]}]
+                    </span>
+                  </button>
+                  {latest
+                    ? <button
+                        type="button"
+                        className="absolute right-1 top-1 rounded p-1 text-red-600 hover:bg-red-50 disabled:text-slate-300"
+                        aria-label={`${block.title} 블록 삭제`}
+                        title="최신 블록 삭제"
+                        disabled={locked || working}
+                        onClick={() => setBlockPendingDelete(block)}
+                      >
+                        <Trash2 size={11} aria-hidden="true" />
+                      </button>
+                    : <span
+                        className="absolute right-1 top-1 text-[9px] text-slate-400"
+                        title="의존성 보호: 이전 블록은 삭제할 수 없습니다."
+                        aria-label={`${block.title} 이전 블록 잠김`}
+                      >
+                        🔒
+                      </span>}
+                </div>
+              )
+            })}
+          </nav>
+
+          {selectedBlock && (
+            <section className="mt-2 grid gap-2 border-t border-slate-200 pt-2" aria-label="선택 블록 설정">
+              <EditableBlockTitle
+                block={selectedBlock}
+                compact
+                disabled={locked || working}
+                onSave={(title) => void updateBlock(selectedBlock, { title })}
+              />
+              <label className="flex items-center justify-between gap-2 text-[10px] font-bold text-slate-600">
+                Weight
+                <input
+                  aria-label={`${selectedBlock.title} 가중치`}
+                  className="input w-16 py-1 text-xs"
+                  type="number"
+                  min={0}
+                  max={100}
+                  defaultValue={selectedBlock.weight}
+                  disabled={locked || working}
+                  onBlur={(event) => {
+                    const weight = Number(event.currentTarget.value)
+                    if (
+                      Number.isInteger(weight)
+                      && weight >= 0
+                      && weight <= 100
+                      && weight !== selectedBlock.weight
+                    ) {
+                      void updateBlock(selectedBlock, { weight })
+                    }
+                  }}
+                />
+              </label>
+            </section>
+          )}
+
+          <div className="relative mt-2 border-t border-slate-200 pt-2">
+            <button
+              type="button"
+              className="button button-secondary w-full justify-center border-dashed py-2 text-[10px]"
+              aria-expanded={showBlockMenu}
+              aria-controls="tbox-block-add-menu"
+              disabled={locked || working}
+              onClick={() => setShowBlockMenu((value) => !value)}
+            >
+              <Plus size={13} aria-hidden="true" />
+              블록 추가
+            </button>
+            {showBlockMenu && (
+              <div
+                id="tbox-block-add-menu"
+                className="mt-2 grid gap-1.5 rounded-enterprise border border-slate-200 bg-slate-50 p-2"
+              >
+                <button
+                  type="button"
+                  className="rounded border border-slate-200 bg-white px-2 py-2 text-left text-[10px] font-bold text-navy-900 hover:border-enterprise-blue hover:bg-blue-50"
+                  onClick={() => void createBlock(directBlockOption)}
+                >
+                  직접 정의
+                </button>
+                <button
+                  type="button"
+                  className="rounded border border-slate-200 bg-white px-2 py-2 text-left text-[10px] font-bold text-navy-900 hover:border-enterprise-blue hover:bg-blue-50"
+                  onClick={() => {
+                    setShowBlockMenu(false)
+                    setAppendOnlySourceMode(true)
+                    setDocumentProposalMode('APPEND_LAYER')
+                    setDocumentCapabilityOpen(true)
+                  }}
+                >
+                  데이터 업로드
+                </button>
+                <button
+                  type="button"
+                  className="rounded border border-slate-200 bg-white px-2 py-2 text-left text-[10px] font-bold text-navy-900 hover:border-enterprise-blue hover:bg-blue-50"
+                  onClick={() => {
+                    setShowBlockMenu(false)
+                    setAppendOnlySourceMode(true)
+                    setCatalogOpen(true)
+                    if (catalogResults.length === 0) void searchCatalog()
+                  }}
+                >
+                  DB 메타데이터
+                </button>
+                <button
+                  type="button"
+                  className="rounded border border-slate-200 bg-white px-2 py-2 text-left text-[10px] font-bold text-navy-900 hover:border-enterprise-blue hover:bg-blue-50"
+                  onClick={() => {
+                    setShowBlockMenu(false)
+                    setAppendOnlySourceMode(true)
+                    setAssistantOpen(true)
+                  }}
+                >
+                  LLM Assistant
+                </button>
+                <button
+                  type="button"
+                  className="rounded border border-slate-200 bg-white px-2 py-2 text-left text-[10px] font-bold text-navy-900 hover:border-enterprise-blue hover:bg-blue-50"
+                  onClick={() => {
+                    setShowBlockMenu(false)
+                    setAppendOnlySourceMode(true)
+                    setAssetReleaseOpen(true)
+                    if (assetReleaseResults.length === 0) void searchAssetReleases()
+                  }}
+                >
+                  다른 Asset
+                </button>
               </div>
             )}
-          </article>
-        ))}
-      </div>
-
-      <div className="relative">
-        <button
-          type="button"
-          className="button button-secondary w-full justify-center border-dashed py-3"
-          disabled={locked || working}
-          onClick={() => setShowBlockMenu((value) => !value)}
-        >
-          <Plus size={15} aria-hidden="true" />
-          블록 추가
-        </button>
-        {showBlockMenu && (
-          <div className="mt-2 grid gap-2 rounded-enterprise border border-slate-300 bg-white p-3 shadow-lg md:grid-cols-2 xl:grid-cols-5">
-            <button
-              type="button"
-              className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
-              onClick={() => void createBlock(directBlockOption)}
-            >
-              <Plus size={16} className="text-enterprise-blue" aria-hidden="true" />
-              <strong className="mt-2 block text-xs text-navy-900">
-                통합 직접 정의 블록
-              </strong>
-              <span className="mt-1 block text-[11px] leading-4 text-slate-500">
-                엔지니어가 직접 Class, Property, Relationship을 설계합니다.
-              </span>
-            </button>
-            <button
-              type="button"
-              className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
-              onClick={() => {
-                setShowBlockMenu(false)
-                setAppendOnlySourceMode(true)
-                setDocumentProposalMode('APPEND_LAYER')
-                setDocumentCapabilityOpen(true)
-              }}
-            >
-              <FileUp size={16} className="text-enterprise-blue" aria-hidden="true" />
-              <strong className="mt-2 block text-xs text-navy-900">새 데이터 업로드 블록</strong>
-              <span className="mt-1 block text-[11px] leading-4 text-slate-500">
-                문서 Proposal을 새 전용 레이어로 생성합니다.
-              </span>
-            </button>
-            <button
-              type="button"
-              className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
-              onClick={() => {
-                setShowBlockMenu(false)
-                setAppendOnlySourceMode(true)
-                setCatalogOpen(true)
-                if (catalogResults.length === 0) void searchCatalog()
-              }}
-            >
-              <Database size={16} className="text-enterprise-blue" aria-hidden="true" />
-              <strong className="mt-2 block text-xs text-navy-900">새 DB 메타데이터 블록</strong>
-              <span className="mt-1 block text-[11px] leading-4 text-slate-500">
-                카탈로그 Proposal을 새 전용 레이어로 생성합니다.
-              </span>
-            </button>
-            <button
-              type="button"
-              className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
-              onClick={() => {
-                setShowBlockMenu(false)
-                setAppendOnlySourceMode(true)
-                setAssetReleaseOpen(true)
-                if (assetReleaseResults.length === 0) void searchAssetReleases()
-              }}
-            >
-              <GitBranch size={16} className="text-enterprise-blue" aria-hidden="true" />
-              <strong className="mt-2 block text-xs text-navy-900">새 Asset 결합 블록</strong>
-              <span className="mt-1 block text-[11px] leading-4 text-slate-500">
-                게시 Release Proposal을 새 전용 레이어로 생성합니다.
-              </span>
-            </button>
-            <button
-              type="button"
-              className="rounded-enterprise border border-slate-200 p-3 text-left hover:border-enterprise-blue hover:bg-blue-50"
-              onClick={() => {
-                setShowBlockMenu(false)
-                setAppendOnlySourceMode(true)
-                setAssistantOpen(true)
-              }}
-            >
-              <Bot size={16} className="text-enterprise-blue" aria-hidden="true" />
-              <strong className="mt-2 block text-xs text-navy-900">새 LLM Assistant 블록</strong>
-              <span className="mt-1 block text-[11px] leading-4 text-slate-500">
-                LLM Proposal을 새 전용 레이어로 생성합니다.
-              </span>
-            </button>
           </div>
-        )}
-      </div>
+        </aside>
+          </div>
+        </article>
+      )}
 
       <section className="flex flex-wrap items-center justify-between gap-3 rounded-enterprise border border-slate-300 bg-white p-4">
         <div>
@@ -3670,8 +3660,6 @@ export function GraphBuilder({
                   || selectedCatalogFields.size === 0
                   || selectedCatalogFields.size > 100
                   || documentProposalJob.busy
-                  || appendOnlySourceMode
-                  || !blockAcceptsSource('CATALOG_METADATA')
                 }
                 onClick={() => void proposeSelectedCatalog('APPEND_LAYER')}
               >
@@ -3685,6 +3673,8 @@ export function GraphBuilder({
                   || selectedCatalogFields.size === 0
                   || selectedCatalogFields.size > 100
                   || documentProposalJob.busy
+                  || appendOnlySourceMode
+                  || !blockAcceptsSource('CATALOG_METADATA')
                 }
                 onClick={() => void proposeSelectedCatalog('MERGE_INTO_CURRENT')}
               >
