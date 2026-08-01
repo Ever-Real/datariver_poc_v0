@@ -1,7 +1,11 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -15,6 +19,34 @@ from datariver.local_admin_catalog_access import (
     admin_catalog_access_command,
     reconcile_local_admin_catalog_access,
 )
+
+
+@asynccontextmanager
+async def _async_context(value: Any) -> AsyncIterator[Any]:
+    yield value
+
+
+def _catalog_read_database(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    rows: list[object],
+    scalar_values: list[int],
+) -> SimpleNamespace:
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=SimpleNamespace(all=lambda: rows))
+    session.scalar = AsyncMock(side_effect=scalar_values)
+    session.begin.return_value = _async_context(session)
+    database = SimpleNamespace(
+        session_factory=lambda: _async_context(session),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(local_admin_catalog_access_module, "Database", lambda *_a, **_k: database)
+    monkeypatch.setattr(
+        local_admin_catalog_access_module,
+        "set_security_context",
+        AsyncMock(),
+    )
+    return database
 
 
 def test_local_admin_catalog_access_adds_exact_scopes_without_broadening_policy() -> None:
@@ -228,6 +260,74 @@ async def test_catalog_read_failure_prevents_bootstrap_database_mutation(
         await reconcile_local_admin_catalog_access()
 
     assert bootstrap_database_opened is False
+
+
+@pytest.mark.asyncio
+async def test_active_catalog_scope_read_accepts_provider_asset_without_canonical_system(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    canonical_system_id = uuid4()
+    provider_domain_id = uuid4()
+    canonical_domain_id = uuid4()
+    database = _catalog_read_database(
+        monkeypatch,
+        rows=[
+            SimpleNamespace(system_id=None, domain_id=provider_domain_id),
+            SimpleNamespace(
+                system_id=canonical_system_id,
+                domain_id=canonical_domain_id,
+            ),
+        ],
+        scalar_values=[2, 0, 0],
+    )
+
+    system_ids, domain_ids, active_count, quarantined_count = await _read_active_catalog_scopes(
+        settings=SimpleNamespace(  # type: ignore[arg-type]
+            database_url="postgresql+asyncpg://app@postgres/datariver",
+            database_secret_ref="secret://postgres_app_password",
+        ),
+        resolver=SimpleNamespace(resolve=lambda _: "test-only-password"),  # type: ignore[arg-type]
+    )
+
+    assert system_ids == {canonical_system_id}
+    assert domain_ids == {provider_domain_id, canonical_domain_id}
+    assert active_count == 2
+    assert quarantined_count == 0
+    database.close.assert_awaited_once()
+    invalid_predicate = (
+        inspect.getsource(_read_active_catalog_scopes)
+        .split(
+            "invalid_active_count =",
+            maxsplit=1,
+        )[1]
+        .split("if invalid_active_count", maxsplit=1)[0]
+    )
+    assert "AssetProjectionModel.domain_id.is_(None)" in invalid_predicate
+    assert "AssetProjectionModel.system_id.is_(None)" not in invalid_predicate
+
+
+@pytest.mark.asyncio
+async def test_active_catalog_scope_read_rejects_missing_non_public_domain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database = _catalog_read_database(
+        monkeypatch,
+        rows=[SimpleNamespace(system_id=None, domain_id=None)],
+        scalar_values=[1, 0, 1],
+    )
+
+    with pytest.raises(RuntimeError, match="missing its governed Domain scope"):
+        await _read_active_catalog_scopes(
+            settings=SimpleNamespace(  # type: ignore[arg-type]
+                database_url="postgresql+asyncpg://app@postgres/datariver",
+                database_secret_ref="secret://postgres_app_password",
+            ),
+            resolver=SimpleNamespace(  # type: ignore[arg-type]
+                resolve=lambda _: "test-only-password"
+            ),
+        )
+
+    database.close.assert_awaited_once()
 
 
 def test_local_catalog_reconciliation_is_fixed_atomic_and_binding_current() -> None:

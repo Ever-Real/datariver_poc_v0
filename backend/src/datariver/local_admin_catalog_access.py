@@ -5,7 +5,7 @@ import json
 from dataclasses import replace
 from uuid import UUID
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, select
 
 from datariver.bootstrap import (
     LOCAL_SUBJECT_ID,
@@ -173,10 +173,7 @@ async def _read_active_catalog_scopes(
                         and_(
                             *active_conditions,
                             AssetProjectionModel.classification != int(Classification.PUBLIC),
-                            or_(
-                                AssetProjectionModel.system_id.is_(None),
-                                AssetProjectionModel.domain_id.is_(None),
-                            ),
+                            AssetProjectionModel.domain_id.is_(None),
                         )
                     )
                 )
@@ -184,8 +181,7 @@ async def _read_active_catalog_scopes(
             )
             if invalid_active_count:
                 raise RuntimeError(
-                    "A non-PUBLIC ACTIVE catalog asset is missing its governed System or Domain "
-                    "scope."
+                    "A non-PUBLIC ACTIVE catalog asset is missing its governed Domain scope."
                 )
             system_ids = frozenset(row.system_id for row in scope_rows if row.system_id is not None)
             domain_ids = frozenset(row.domain_id for row in scope_rows if row.domain_id is not None)
