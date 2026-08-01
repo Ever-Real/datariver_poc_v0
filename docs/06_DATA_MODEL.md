@@ -189,6 +189,15 @@ typed container stays absent and is never reconstructed from a URN. Facets and t
 derived from the same authorization-prefiltered projection and cached by security and projection
 generation. Facets use one PostgreSQL `GROUPING SETS` aggregation with server-side per-facet ranking;
 a separate facet projection and a true incremental DataHub event cursor remain backlog.
+
+The DataHub scan's `system_ref` is a provider platform URN, not the UUID of a canonical
+`platform.data_systems` row. The DATAHUB projection writer uses its presence only with the provider
+Domain to determine whether a non-PUBLIC row is complete enough for ACTIVE lifecycle, and stores
+`assets_projection.system_id` as null. Every normal upsert therefore clears a legacy UUID that was
+synthetically derived from `system_ref`, without changing the external URN, locator, Domain,
+classification, lifecycle or source-version projection. Seed/manual writers that already hold an
+explicit canonical System ID retain their existing contract.
+
 Alembic `0019` adds only the bounded, non-authoritative display summary needed by dense catalog
 results. Alembic `0045` adds the current string-only/count/identity constraints and provenance flags.
 It is never an authorization selector, provider payload or browser mutation surface. Detail

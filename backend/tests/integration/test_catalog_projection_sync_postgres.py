@@ -22,6 +22,7 @@ from datariver.domain.common import ConflictError
 from datariver.infrastructure.db.catalog import (
     SqlCatalogIndexReader,
     SqlCatalogProjectionWriter,
+    _scope_id,
 )
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 from datariver.infrastructure.db.rls import set_security_context
@@ -114,6 +115,129 @@ async def _cleanup_workspaces(admin: AsyncEngine, workspace_ids: tuple[UUID, ...
             text("DELETE FROM platform.workspaces WHERE id = ANY(:workspace_ids)"),
         ):
             await connection.execute(statement, parameters)
+
+
+@pytest.mark.asyncio
+async def test_datahub_system_ref_never_materializes_canonical_system_authority() -> None:
+    required = (
+        _DATABASE_URL_ENV,
+        _ADMIN_DATABASE_URL_ENV,
+        _SECRET_REF_ENV,
+        _ADMIN_SECRET_REF_ENV,
+    )
+    if os.getenv(_CONFIRM_ENV) != "1" or any(not os.getenv(name) for name in required):
+        pytest.skip("isolated catalog sync PostgreSQL environment is not configured")
+
+    database = _engine(url_env=_DATABASE_URL_ENV, secret_ref_env=_SECRET_REF_ENV)
+    admin = _engine(url_env=_ADMIN_DATABASE_URL_ENV, secret_ref_env=_ADMIN_SECRET_REF_ENV)
+    sessions = async_sessionmaker(database, expire_on_commit=False)
+    workspace_id = uuid4()
+    external_urn = "urn:li:dataset:provider-system-ref"
+    provider_domain_ref = "urn:li:domain:provider-domain"
+    expected_domain_id = _scope_id("domain", provider_domain_ref)
+    legacy_orphan_system_id = uuid4()
+    observed_at = datetime.now(UTC)
+    item = DataHubScanAsset(
+        external_urn=external_urn,
+        asset_type="TABLE",
+        name="provider-system-ref",
+        description="Provider scoped projection",
+        platform="oracle",
+        database_name="ORCL",
+        schema_name="semiconductor_seed",
+        domain_ref=provider_domain_ref,
+        system_ref="urn:li:dataPlatform:oracle",
+        owner_ref=None,
+        classification=Classification.CONFIDENTIAL,
+        source_version="provider-v2",
+        column_names=("unit_cost",),
+    )
+
+    await _prepare_workspaces(admin, (workspace_id,))
+    try:
+        async with admin.begin() as connection:
+            await connection.execute(
+                text(
+                    "INSERT INTO catalog.assets_projection "
+                    "(id, workspace_id, external_urn, urn_hash, asset_type, name, "
+                    "description, platform, database_name, schema_name, domain_ref, "
+                    "tags, glossary_terms, column_names, domain_id, system_id, "
+                    "classification, lifecycle, source_version, observed_at, "
+                    "projection_source) VALUES "
+                    "(:id, :workspace_id, :external_urn, :urn_hash, 'TABLE', :name, "
+                    ":description, :platform, :database_name, :schema_name, :domain_ref, "
+                    "'[]'::jsonb, '[]'::jsonb, '[\"unit_cost\"]'::jsonb, :domain_id, "
+                    ":system_id, 2, 'ACTIVE', 'provider-v1', :observed_at, 'DATAHUB')"
+                ),
+                {
+                    "id": uuid4(),
+                    "workspace_id": workspace_id,
+                    "external_urn": external_urn,
+                    "urn_hash": hashlib.sha256(external_urn.encode()).hexdigest(),
+                    "name": item.name,
+                    "description": item.description,
+                    "platform": item.platform,
+                    "database_name": item.database_name,
+                    "schema_name": item.schema_name,
+                    "domain_ref": provider_domain_ref,
+                    "domain_id": expected_domain_id,
+                    "system_id": legacy_orphan_system_id,
+                    "observed_at": observed_at,
+                },
+            )
+
+        async with sessions() as session:
+            await _security_context(session, workspace_id)
+            await SqlCatalogProjectionWriter(session).upsert_scan(
+                workspace_id=workspace_id,
+                sync_id=uuid4(),
+                offset=0,
+                cursor=None,
+                next_offset=None,
+                next_cursor=None,
+                total=1,
+                snapshot_consistent=False,
+                snapshot_evidence_reference=None,
+                snapshot_contract_hash=None,
+                snapshot_provider_version=None,
+                items=(item,),
+                observed_at=observed_at,
+                idempotency_key="catalog-sync-provider-system-ref",
+                request_hash="f" * 64,
+                operation="catalog.datahub.sync:0:100",
+            )
+
+        async with admin.connect() as connection:
+            projection = (
+                await connection.execute(
+                    text(
+                        "SELECT external_urn, platform, database_name, schema_name, "
+                        "domain_id, system_id, classification, lifecycle, source_version, "
+                        "column_names, projection_source "
+                        "FROM catalog.assets_projection "
+                        "WHERE workspace_id = :workspace_id AND external_urn = :external_urn"
+                    ),
+                    {"workspace_id": workspace_id, "external_urn": external_urn},
+                )
+            ).one()
+
+        assert projection.external_urn == external_urn
+        assert (projection.platform, projection.database_name, projection.schema_name) == (
+            "oracle",
+            "ORCL",
+            "semiconductor_seed",
+        )
+        assert projection.domain_id == expected_domain_id
+        assert projection.system_id is None
+        assert projection.classification == int(Classification.CONFIDENTIAL)
+        assert projection.lifecycle == "ACTIVE"
+        assert projection.source_version == "provider-v2"
+        assert projection.column_names == ["unit_cost"]
+        assert projection.projection_source == "DATAHUB"
+    finally:
+        await _cleanup_workspaces(admin, (workspace_id,))
+        await database.dispose()
+        await admin.dispose()
 
 
 async def _write_replay_first_page(

@@ -1722,7 +1722,11 @@ class SqlCatalogProjectionWriter(CatalogProjectionWriter):
                 else Classification.RESTRICTED
             )
             domain_id = _scope_id("domain", item.domain_ref)
-            system_id = _scope_id("system", item.system_ref)
+            # DataHub exposes the provider platform URN as ``system_ref``. It proves
+            # mapping completeness for lifecycle purposes, but it is not the ID of a
+            # canonical ``platform.data_systems`` row. Normal sync therefore clears
+            # legacy synthetic values instead of manufacturing business authority.
+            system_id = None
             owner_department_id = _scope_id("owner", item.owner_ref)
             lifecycle = "ACTIVE" if mapped else "QUARANTINED"
             statement = insert(AssetProjectionModel).values(

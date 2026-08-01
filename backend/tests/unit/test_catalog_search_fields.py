@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import tracemalloc
 
 import pytest
@@ -8,11 +9,21 @@ from datariver.application.dto import DataHubScanAsset
 from datariver.domain.authz import Classification
 from datariver.domain.common import ValidationError
 from datariver.infrastructure.db.catalog import (
+    SqlCatalogProjectionWriter,
     _bounded_scan_asset,
     _catalog_query_condition,
     _match_fragments,
     _search_fields,
 )
+
+
+def test_datahub_projection_writer_keeps_provider_system_ref_out_of_canonical_system_id() -> None:
+    source = inspect.getsource(SqlCatalogProjectionWriter.upsert_scan)
+
+    assert "item.domain_ref is not None and item.system_ref is not None" in source
+    assert '_scope_id("system", item.system_ref)' not in source
+    assert "system_id = None" in source
+    assert '"system_id": system_id' in source
 
 
 def _compiled_query(fields: str) -> str:

@@ -34,6 +34,14 @@ and an actual asset Domain in the actor's current allowed Domains. RESTRICTED ma
 in this version pending an explicit-grant-aware design. The client cannot supply clearance, Domain
 or a provider locator, and the mutation rechecks the selected asset under a share lock.
 
+DataHub's scan `system_ref` is the provider platform URN and is not a canonical
+`platform.data_systems.id`. The DataHub projection writer continues to require that reference,
+together with a Domain, when deciding whether a non-PUBLIC provider row is mapped enough to become
+ACTIVE, but it writes the projection's canonical `system_id` as null. A later ordinary resync also
+clears legacy synthetic System UUIDs produced from the provider reference. Provider locator,
+external URN, Domain, classification, lifecycle and source-version provenance remain unchanged;
+seed, manual and other explicit canonical-System projection writers are outside this refinement.
+
 Only the Change target adapter resolves an effective routing System. Its SQL predicate accepts an
 active mapped schema when the native projection System is absent or equal, or retains an active
 native System when no scope row exists. A native/mapped conflict, inactive mapping/System,
@@ -46,9 +54,10 @@ invalidates the target on the next request.
 
 Generic Catalog presentation and its workspace-discovery mode, Registration, Knowledge, Quality,
 Chat and Catalog description mutation retain their existing readers and scope policy. This change
-adds no table-level mapping, DDL, migration, Action, DataHub write or AssetProjection mutation.
-Existing manually routed CR targets continue to use their active native System when no schema
-scope exists.
+adds no table-level mapping, DDL, migration, Action or DataHub write. The Admin command never
+mutates `AssetProjection`; only the ordinary DATAHUB projection upsert clears the provider-derived
+legacy synthetic `system_id` described above. Existing manually routed CR targets continue to use
+their active canonical native System when no schema scope exists.
 
 ## Consequences
 
