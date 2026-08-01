@@ -198,6 +198,8 @@ async def test_openai_compatible_chat_uses_fixed_grounded_tool_contract() -> Non
     assert item.source_version not in json.dumps(transport.document["tools"])
     messages = transport.document["messages"]
     assert isinstance(messages, list)
+    assert "message content must be empty" in messages[0]["content"]
+    assert "only in the submit_grounded_answer function arguments" in messages[0]["content"]
     model_input = json.loads(messages[1]["content"])
     assert model_input["current_question"] == "What is supported?"
     assert model_input["prior_user_utterances"] == list(prior)
@@ -266,6 +268,11 @@ async def test_openai_compatible_chat_classifies_with_fixed_zero_temperature_con
     assert "chat_template_kwargs" not in transport.document
     messages = transport.document["messages"]
     assert isinstance(messages, list)
+    route_prompt = messages[0]["content"]
+    assert "Apply this decision order" in route_prompt
+    assert "'sales_orders 테이블을 설명해줘' is VECTOR" in route_prompt
+    assert "'관계형 데이터베이스의 테이블이란?' is GENERAL" in route_prompt
+    assert "'sales_orders의 하류 영향은?' is GRAPH" in route_prompt
     assert messages[1] == {
         "role": "user",
         "content": (
