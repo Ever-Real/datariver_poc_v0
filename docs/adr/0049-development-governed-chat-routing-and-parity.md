@@ -109,6 +109,20 @@ copy/favorite feedback. Assistant Markdown is rendered as bounded React text and
 answer-provided links and untrusted components are never activated. Ranked catalog evidence opens
 the existing authorized detail and lineage surface using an opaque internal asset ID.
 
+Clarification (2026-08-01): a catalog evidence chunk uses the bounded
+`CATALOG_PROJECTION_V2` display projection. After classification eligibility and `catalog.read`
+ABAC succeed, the projection places the canonical platform, database and schema labels before the
+asset description and limits the complete description to the existing 1,000-character composer
+bound. Missing hierarchy values are omitted. Raw URNs, URLs, provider locators, internal UUIDs,
+system/domain/resource identifiers, hashes, versions and control characters are not copied into
+this display projection. A system UUID is not a display label and is therefore never substituted
+for an unavailable system name. Initial evidence creation and final catalog reauthorization build
+the same projection; hierarchy drift changes the evidence identity and fails final reauthorization.
+The original source locator remains only in the governed citation identity and is not added to the
+model-visible or card-visible description. Existing persisted V1 citations remain immutable and
+self-validating. The browser already renders the server-returned evidence description, so this
+projection does not create a second client-side catalog contract.
+
 ## Consequences
 
 - Development can exercise the selected installed Chat, Embedding and Reranker models through the

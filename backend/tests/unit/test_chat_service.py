@@ -830,6 +830,7 @@ class CapturingComposer(SelectingComposer):
         super().__init__((0,))
         self.question: str | None = None
         self.prior_user_utterances: tuple[str, ...] = ()
+        self.evidence: tuple[ChatEvidence, ...] = ()
 
     async def compose(
         self,
@@ -840,6 +841,7 @@ class CapturingComposer(SelectingComposer):
     ) -> ChatDraft:
         self.question = question
         self.prior_user_utterances = tuple(prior_user_utterances)
+        self.evidence = tuple(evidence)
         return await super().compose(
             question=question,
             evidence=evidence,
@@ -1782,6 +1784,43 @@ async def test_final_citation_validation_rejects_canonical_catalog_drift() -> No
     assert store.saved_evidence == ()
 
 
+async def test_final_citation_validation_rejects_catalog_hierarchy_drift() -> None:
+    workspace_id = uuid4()
+    initial = replace(
+        asset(workspace_id),
+        platform="postgres",
+        database_name="semiconductor_seed",
+        schema_name="public",
+    )
+    current = replace(initial, platform="oracle")
+    store = FakeChatStore()
+
+    exchange = await chat_service(
+        catalog_index=FakeIndex(initial, detail_item=current),
+        composer=SelectingComposer((0,)),
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="현재 카탈로그 플랫폼을 알려줘",
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-catalog-hierarchy-drift",
+        requested_mode=ChatRetrievalMode.GENERAL,
+    )
+
+    assert exchange.answer == UNVERIFIABLE_ANSWER
+    assert exchange.evidence == ()
+    assert store.saved_evidence == ()
+    assert any(
+        item.detail_code == "FINAL_CITATION_REAUTHORIZATION_FAILED"
+        and item.status is ChatWorkflowStatus.REFUSED
+        for item in exchange.workflow
+    )
+
+
 async def test_final_citation_validation_rejects_active_release_drift() -> None:
     workspace_id = uuid4()
     store = FakeChatStore()
@@ -1875,6 +1914,126 @@ async def test_chat_persists_only_evidence_that_passes_catalog_read_abac() -> No
     assert exchange.evidence[0].source_locator == "urn:li:dataset:test"
     assert exchange.evidence[0].workspace_id == workspace_id
     assert evidence_chunk_is_valid(exchange.evidence[0])
+
+
+async def test_chat_projects_only_bounded_safe_authorized_catalog_hierarchy() -> None:
+    workspace_id = uuid4()
+    hidden_uuid = uuid4()
+    external_urn = "urn:li:dataset:(postgres,semiconductor_seed.reference,DEV)"
+    item = replace(
+        asset(workspace_id),
+        external_urn=external_urn,
+        description=(
+            "Registered records. "
+            f"{external_urn} https://provider.example/catalog {hidden_uuid}\x00 retained text "
+            + "x"
+            * 1_500
+        ),
+        platform="postgres",
+        database_name="semiconductor\nseed",
+        schema_name=f"public {hidden_uuid}",
+    )
+    composer = CapturingComposer()
+    store = FakeChatStore()
+
+    exchange = await chat_service(
+        catalog_index=FakeIndex(item),
+        composer=composer,
+        uow_factory=chat_uow_factory(store),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="등록 위치와 용도를 알려줘",
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-catalog-hierarchy-projection",
+        requested_mode=ChatRetrievalMode.GENERAL,
+    )
+
+    assert len(composer.evidence) == 1
+    projected = composer.evidence[0]
+    assert projected.description is not None
+    assert projected.description.startswith(
+        "카탈로그 위치 — 데이터 플랫폼: postgres · 데이터베이스: semiconductor seed · "
+        "스키마: public. Registered records."
+    )
+    assert len(projected.description) == 1_000
+    assert "None" not in projected.description
+    assert "urn:" not in projected.description.lower()
+    assert "://" not in projected.description
+    assert str(hidden_uuid) not in projected.description
+    assert "\x00" not in projected.description
+    assert projected.source_locator == external_urn
+    assert projected.extraction_method == "CATALOG_PROJECTION_V2"
+    assert evidence_chunk_is_valid(projected)
+    assert exchange.evidence == (projected,)
+    assert store.saved_evidence == (projected,)
+
+
+async def test_chat_catalog_hierarchy_omits_absent_values_without_placeholders() -> None:
+    workspace_id = uuid4()
+    item = replace(
+        asset(workspace_id),
+        description=None,
+        platform="oracle",
+        database_name=None,
+        schema_name=None,
+    )
+    composer = CapturingComposer()
+
+    exchange = await chat_service(
+        catalog_index=FakeIndex(item),
+        composer=composer,
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="등록 플랫폼을 알려줘",
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-partial-catalog-hierarchy",
+        requested_mode=ChatRetrievalMode.GENERAL,
+    )
+
+    assert exchange.evidence[0].description == "카탈로그 위치 — 데이터 플랫폼: oracle."
+    assert "None" not in (exchange.evidence[0].description or "")
+
+
+@pytest.mark.parametrize("denied_by", ("classification", "workspace"))
+async def test_chat_never_projects_hierarchy_from_ineligible_catalog_asset(
+    denied_by: str,
+) -> None:
+    workspace_id = uuid4()
+    item = asset(workspace_id)
+    if denied_by == "classification":
+        item = replace(item, classification=Classification.CONFIDENTIAL)
+    else:
+        item = replace(item, workspace_id=uuid4())
+    composer = CapturingComposer()
+
+    exchange = await chat_service(
+        catalog_index=FakeIndex(item),
+        composer=composer,
+        uow_factory=chat_uow_factory(FakeChatStore()),
+        authorization=AuthorizationService(decision_writer=NullDecisionWriter()),
+    ).query(
+        workspace_id=workspace_id,
+        subject=chat_subject(workspace_id),
+        session_id=None,
+        question="인가되지 않은 위치를 알려줘",
+        maximum_evidence=1,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id=f"request-ineligible-catalog-{denied_by}",
+        requested_mode=ChatRetrievalMode.GENERAL,
+    )
+
+    assert composer.calls == 0
+    assert composer.evidence == ()
+    assert exchange.evidence == ()
 
 
 async def test_chat_omits_evidence_when_catalog_read_is_not_granted() -> None:

@@ -79,10 +79,16 @@ CONTEXT_DEGRADED_PREFIX = (
 _MAXIMUM_CHAT_ANSWER_CHARACTERS = 4_000
 _MAXIMUM_CHAT_CONTEXT_USER_TURNS = 100
 _MAXIMUM_CONTEXTUAL_QUESTION_CHARACTERS = 4_000
+_MAXIMUM_CATALOG_EVIDENCE_DESCRIPTION_CHARACTERS = 1_000
 _INTERNAL_EVIDENCE_MARKUP = re.compile(r"\[\[[^\]\r\n]*\]\]")
 _UUID_TOKEN = re.compile(
     r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}(?![0-9A-Fa-f])"
 )
+_RESOURCE_LOCATOR_TOKEN = re.compile(
+    r"(?:\burn:[^\s]+|\b[a-z][a-z0-9+.-]*://[^\s]+)",
+    re.IGNORECASE,
+)
+_CONTROL_CHARACTER = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 _EMPTY_CITATION_LIST = re.compile(r"\[\s*(?:[,;]\s*)*\]")
 _CONTEXT_FORBIDDEN_IDENTIFIER = re.compile(
     r"(?:\burn:|https?://|\bsource[_ -]?locator\b|\bchunk[_ -]?id\b)",
@@ -94,6 +100,43 @@ _DETERMINISTIC_AUDIT = ChatCompositionAudit(
     prompt_template_version="catalog-evidence-v1",
     external_service_used=False,
 )
+
+
+def _bounded_catalog_evidence_description(asset: CatalogAssetIndex) -> str | None:
+    """Project authorized catalog hierarchy without exposing internal identifiers."""
+
+    context_values = (
+        ("데이터 플랫폼", _sanitize_catalog_evidence_text(asset.platform, limit=100)),
+        (
+            "데이터베이스",
+            _sanitize_catalog_evidence_text(asset.database_name, limit=255),
+        ),
+        ("스키마", _sanitize_catalog_evidence_text(asset.schema_name, limit=255)),
+    )
+    context = " · ".join(f"{label}: {value}" for label, value in context_values if value)
+    description = _sanitize_catalog_evidence_text(
+        asset.description,
+        limit=_MAXIMUM_CATALOG_EVIDENCE_DESCRIPTION_CHARACTERS,
+    )
+    parts = ([f"카탈로그 위치 — {context}."] if context else []) + (
+        [description] if description else []
+    )
+    if not parts:
+        return None
+    return " ".join(parts)[:_MAXIMUM_CATALOG_EVIDENCE_DESCRIPTION_CHARACTERS].rstrip()
+
+
+def _sanitize_catalog_evidence_text(value: str | None, *, limit: int) -> str | None:
+    if value is None:
+        return None
+    sanitized = _CONTROL_CHARACTER.sub(" ", value)
+    sanitized = _INTERNAL_EVIDENCE_MARKUP.sub(" ", sanitized)
+    sanitized = _RESOURCE_LOCATOR_TOKEN.sub(" ", sanitized)
+    sanitized = _UUID_TOKEN.sub(" ", sanitized)
+    sanitized = " ".join(sanitized.split()).strip(" ,;:-")
+    if not sanitized:
+        return None
+    return sanitized[:limit].rstrip()
 
 
 class _ObservedChatWorkflow(list[ChatWorkflowEvent]):
@@ -1263,11 +1306,11 @@ class ChatService:
                 domain_id=asset.domain_id,
                 owner_department_id=asset.owner_department_id,
                 name=asset.name,
-                description=asset.description,
+                description=_bounded_catalog_evidence_description(asset),
                 source_locator=asset.external_urn,
                 source_version=asset.source_version,
                 effective_from=asset.observed_at,
-                extraction_method="CATALOG_PROJECTION_V1",
+                extraction_method="CATALOG_PROJECTION_V2",
             )
             for asset in eligible_items
             if asset.asset_id in authorized_ids
@@ -1804,11 +1847,11 @@ class ChatService:
                     domain_id=index.domain_id,
                     owner_department_id=index.owner_department_id,
                     name=index.name,
-                    description=index.description,
+                    description=_bounded_catalog_evidence_description(index),
                     source_locator=index.external_urn,
                     source_version=index.source_version,
                     effective_from=index.observed_at,
-                    extraction_method="CATALOG_PROJECTION_V1",
+                    extraction_method="CATALOG_PROJECTION_V2",
                 )
                 if canonical != item or index.lifecycle != "ACTIVE":
                     return UNVERIFIABLE_ANSWER, ()
