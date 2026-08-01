@@ -68,6 +68,9 @@ CATALOG_PIN_MIGRATION = (
 PROPOSAL_IDEMPOTENCY_FIX_MIGRATION = (
     ROOT / "backend/alembic/versions/0087_fix_knowledge_studio_proposal_job_idempotency.py"
 )
+PROPOSAL_CONTRACT_RESTORE_MIGRATION = (
+    ROOT / "backend/alembic/versions/0088_restore_knowledge_studio_proposal_contracts.py"
+)
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
@@ -92,6 +95,18 @@ def _proposal_idempotency_fix_migration() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "test_knowledge_studio_proposal_idempotency_fix",
         PROPOSAL_IDEMPOTENCY_FIX_MIGRATION,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _proposal_contract_restore_migration() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "test_knowledge_studio_proposal_contract_restore",
+        PROPOSAL_CONTRACT_RESTORE_MIGRATION,
     )
     assert spec is not None
     assert spec.loader is not None
@@ -755,6 +770,46 @@ def test_proposal_idempotency_fix_is_function_only_reversible_and_canonical() ->
     assert "0087_fix_knowledge_studio_proposal_job_idempotency.py" in generator
     assert "idempotency_key_hash text :=" in initial
     assert "FROM integration.idempotency_keys AS stored_replay" in initial
+
+
+def test_proposal_contract_restore_is_pinned_reversible_and_canonical() -> None:
+    migration_source = PROPOSAL_CONTRACT_RESTORE_MIGRATION.read_text(encoding="utf-8")
+    migration = _proposal_contract_restore_migration()
+    request = migration._pinned(
+        migration.TBOX_PROPOSAL_JOB_PIN_V2_IDEMPOTENT_REQUEST_FUNCTION_SQL,
+        migration._REQUEST_FUNCTION_SHA256,
+        label="composed Proposal request",
+    )
+    safety = migration._pinned(
+        migration.TBOX_PROPOSAL_CONTENT_SAFETY_STRUCTURAL_FUNCTION_SQL,
+        migration._STRUCTURAL_SAFETY_FUNCTION_SHA256,
+        label="structural content-safety",
+    )
+
+    assert 'revision: str = "0088"' in migration_source
+    assert 'down_revision: str | Sequence[str] | None = "0087"' in migration_source
+    assert request.count("CREATE OR REPLACE FUNCTION") == 1
+    assert "KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2" in request
+    assert "idempotency_key_hash text :=" in request
+    assert "stored_replay.key_hash = idempotency_key_hash" in request
+    assert safety.count("CREATE OR REPLACE FUNCTION") == 1
+    assert "WITH RECURSIVE source_nodes" in safety
+    assert "jsonb_object_keys" in safety
+    assert "content_sha256" not in safety
+    assert "CREATE TABLE" not in migration_source
+    assert "ALTER TABLE" not in migration_source
+    assert "DELETE FROM" not in migration_source
+    assert "UPDATE knowledge.tbox_proposals" not in migration_source
+    assert "0088 downgrade requires reconciliation" in migration._DOWNGRADE_PREFLIGHT_SQL
+
+    generator = GENERATOR.read_text(encoding="utf-8")
+    initial = INITIAL_MIGRATION.read_text(encoding="utf-8")
+    assert "0088_restore_knowledge_studio_proposal_contracts.py" in generator
+    assert "WITH RECURSIVE source_nodes" in initial
+    assert "KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2" in initial
+    assert initial.rfind("WITH RECURSIVE source_nodes") > initial.rfind(
+        "stored_replay.key_hash = idempotency_key_hash"
+    )
 
 
 def test_publication_migration_replaces_owner_only_rls_with_maker_checker_policy() -> None:

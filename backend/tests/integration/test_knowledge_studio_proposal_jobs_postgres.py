@@ -31,10 +31,12 @@ from datariver.domain.knowledge_studio_proposal_jobs import (
     knowledge_studio_proposal_requester_authorization_hash,
 )
 from datariver.infrastructure.db.knowledge_studio_proposal_job_sql import (
+    TBOX_PROPOSAL_CONTENT_SAFETY_STRUCTURAL_FUNCTION_SQL,
     TBOX_PROPOSAL_JOB_ALL_FUNCTION_SQL,
     TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL,
     TBOX_PROPOSAL_JOB_COMMAND_FUNCTION_SIGNATURES,
     TBOX_PROPOSAL_JOB_INTERNAL_FUNCTION_SIGNATURES,
+    TBOX_PROPOSAL_JOB_PIN_V2_IDEMPOTENT_REQUEST_FUNCTION_SQL,
     TBOX_PROPOSAL_JOB_WORKER_FUNCTION_SIGNATURES,
 )
 from datariver.infrastructure.db.knowledge_studio_proposal_jobs import (
@@ -49,6 +51,9 @@ ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0084_governed_knowledge_studio_tbox_proposal_jobs.py"
 PIN_V2_MIGRATION = (
     ROOT / "backend/alembic/versions/0086_knowledge_studio_catalog_metadata_pin_v2.py"
+)
+CONTRACT_RESTORE_MIGRATION = (
+    ROOT / "backend/alembic/versions/0088_restore_knowledge_studio_proposal_contracts.py"
 )
 
 _OWNER_URL = "DATARIVER_KNOWLEDGE_PROPOSAL_TEST_OWNER_DATABASE_URL"
@@ -170,6 +175,31 @@ def test_revision_0086_replaces_catalog_guards_with_asyncpg_safe_v2_functions() 
     )
     assert "Select fewer fields" not in TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL
     assert "0086 downgrade requires explicit reconciliation" in migration._DOWNGRADE_REFUSAL_SQL
+
+
+def test_revision_0088_composes_pin_v2_idempotency_and_structural_safety() -> None:
+    migration = _migration(CONTRACT_RESTORE_MIGRATION)
+    source = CONTRACT_RESTORE_MIGRATION.read_text(encoding="utf-8")
+
+    assert 'revision: str = "0088"' in source
+    assert 'down_revision: str | Sequence[str] | None = "0087"' in source
+    assert (
+        TBOX_PROPOSAL_JOB_PIN_V2_IDEMPOTENT_REQUEST_FUNCTION_SQL.count("CREATE OR REPLACE FUNCTION")
+        == 1
+    )
+    assert "KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2" in (
+        TBOX_PROPOSAL_JOB_PIN_V2_IDEMPOTENT_REQUEST_FUNCTION_SQL
+    )
+    assert "stored_replay.key_hash = idempotency_key_hash" in (
+        TBOX_PROPOSAL_JOB_PIN_V2_IDEMPOTENT_REQUEST_FUNCTION_SQL
+    )
+    assert (
+        TBOX_PROPOSAL_CONTENT_SAFETY_STRUCTURAL_FUNCTION_SQL.count("CREATE OR REPLACE FUNCTION")
+        == 1
+    )
+    assert "WITH RECURSIVE source_nodes" in (TBOX_PROPOSAL_CONTENT_SAFETY_STRUCTURAL_FUNCTION_SQL)
+    assert "jsonb_object_keys" in TBOX_PROPOSAL_CONTENT_SAFETY_STRUCTURAL_FUNCTION_SQL
+    assert "0088 downgrade requires reconciliation" in migration._DOWNGRADE_PREFLIGHT_SQL
 
 
 def _subject(workspace_id: UUID, actor_id: UUID) -> SubjectAttributes:
@@ -779,19 +809,32 @@ async def test_catalog_v2_pin_is_enqueued_and_local_projection_drift_fails_close
             )
 
         async with owner.connect() as connection:
-            document = await connection.scalar(
+            result = await connection.execute(
                 text(
                     """
-                    SELECT catalog_source_document
-                    FROM knowledge.tbox_proposal_jobs
-                    WHERE workspace_id = :workspace_id AND id = :job_id
+                    SELECT
+                        job.catalog_source_document,
+                        (SELECT count(*)
+                         FROM knowledge.tbox_proposal_jobs AS counted_job
+                         WHERE counted_job.workspace_id = :workspace_id
+                           AND counted_job.id = :job_id),
+                        (SELECT count(*)
+                         FROM integration.outbox_events AS event
+                         WHERE event.workspace_id = :workspace_id
+                           AND event.aggregate_id = :job_id
+                           AND event.aggregate_type = 'knowledge_tbox_proposal_job')
+                    FROM knowledge.tbox_proposal_jobs AS job
+                    WHERE job.workspace_id = :workspace_id AND job.id = :job_id
                     """
                 ),
                 {"workspace_id": workspace_id, "job_id": queued.job_id},
             )
+            document, job_count, outbox_count = result.one()
         assert document["contract_version"] == KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2
         assert document["metadata_fingerprint"] == source.metadata_fingerprint
         assert document["field_metadata"][1]["field_path"] == "amount"
+        assert job_count == 1
+        assert outbox_count == 1
 
         worker_store = SqlKnowledgeStudioProposalJobWorkerStore(
             async_sessionmaker(worker, expire_on_commit=False)
@@ -835,3 +878,151 @@ async def test_catalog_v2_pin_is_enqueued_and_local_projection_drift_fails_close
         await owner.dispose()
         await app.dispose()
         await worker.dispose()
+
+
+@pytest.mark.skipif(not _ENABLED, reason="isolated Proposal PostgreSQL test is not enabled")
+@pytest.mark.asyncio
+async def test_structural_proposal_safety_accepts_typed_evidence_and_rejects_exact_keys() -> None:
+    owner = _engine(_OWNER_URL, _OWNER_SECRET)
+    try:
+        (
+            workspace_id,
+            actor_id,
+            _worker_id,
+            draft_id,
+            _upload_id,
+            _asset_id,
+            version,
+            _validation_hash,
+        ) = await _seed(owner)
+        insert_proposal = text(
+            """
+            INSERT INTO knowledge.tbox_proposals (
+                id, workspace_id, draft_id, target_block_id, created_by,
+                state, mode, merge_strategy, base_draft_version, prompt,
+                proposal_document, conflicts_document, model_binding_document,
+                source_reference_document, error_code, applied_at, rejected_at,
+                created_at, updated_at, version
+            ) VALUES (
+                :proposal_id, :workspace_id, :draft_id, NULL, :actor_id,
+                'READY', 'APPEND_LAYER', 'KEEP_ORIGINAL', :base_draft_version,
+                'Governed Schema Assistant proposal',
+                CAST(:proposal_document AS jsonb), '[]'::jsonb,
+                CAST(:model_binding AS jsonb), CAST(:source_reference AS jsonb),
+                NULL, NULL, NULL, :now, :now, 1
+            )
+            """
+        )
+        now = datetime.now(UTC)
+        proposal_document = json.dumps(
+            {
+                "contract_version": "KNOWLEDGE_STUDIO_TBOX_PROPOSAL_V1",
+                "elements": [
+                    {
+                        "stable_element_id": "SemiconductorCompany",
+                        "kind": "CLASS",
+                        "canonical_name": "SemiconductorCompany",
+                        "display_name": "Semiconductor company",
+                    }
+                ],
+            }
+        )
+        model_binding = json.dumps(
+            {
+                "provider": "openai-compatible",
+                "model": "schema-test",
+                "prompt_version": "knowledge-v2",
+                "tool_schema_version": "knowledge-schema-v2",
+                "configuration_source": "DEPLOYMENT",
+                "configuration_version": None,
+                "configuration_hash": "d" * 64,
+            }
+        )
+        pipeline_evidence: dict[str, object] = {
+            "contract_version": "KNOWLEDGE_STUDIO_PROPOSAL_VALIDATION_V1",
+            "typed_schema_parse": "PASSED",
+            "deterministic_correction_passes": 1,
+            "corrected_default_count": 0,
+            "aggregate_validation_passes": 1,
+            "cypher_execution": False,
+            "content_sha256": "b" * 64,
+        }
+        safe_reference: dict[str, object] = {
+            "contract_version": "KNOWLEDGE_STUDIO_ASSISTANT_INPUT_V1",
+            "input_hash": "a" * 64,
+            "pipeline_evidence": pipeline_evidence,
+        }
+        safe_id = uuid4()
+        async with owner.begin() as connection:
+            await connection.execute(
+                insert_proposal,
+                {
+                    "proposal_id": safe_id,
+                    "workspace_id": workspace_id,
+                    "draft_id": draft_id,
+                    "actor_id": actor_id,
+                    "base_draft_version": version,
+                    "proposal_document": proposal_document,
+                    "model_binding": model_binding,
+                    "source_reference": json.dumps(safe_reference),
+                    "now": now,
+                },
+            )
+
+        forbidden_ids: list[UUID] = []
+        for forbidden_key in (
+            "bucket",
+            "object_key",
+            "excerpt",
+            "prompt",
+            "provider_body",
+            "content",
+        ):
+            proposal_id = uuid4()
+            forbidden_ids.append(proposal_id)
+            unsafe_reference = {
+                **safe_reference,
+                "pipeline_evidence": {
+                    **pipeline_evidence,
+                    "nested": [{forbidden_key: "must-not-be-retained"}],
+                },
+            }
+            with pytest.raises(DBAPIError, match="unsafe retained input"):
+                async with owner.begin() as connection:
+                    await connection.execute(
+                        insert_proposal,
+                        {
+                            "proposal_id": proposal_id,
+                            "workspace_id": workspace_id,
+                            "draft_id": draft_id,
+                            "actor_id": actor_id,
+                            "base_draft_version": version,
+                            "proposal_document": proposal_document,
+                            "model_binding": model_binding,
+                            "source_reference": json.dumps(unsafe_reference),
+                            "now": now,
+                        },
+                    )
+
+        async with owner.connect() as connection:
+            counts = await connection.execute(
+                text(
+                    """
+                    SELECT
+                        count(*) FILTER (WHERE id = :safe_id),
+                        count(*) FILTER (WHERE id = ANY(CAST(:forbidden_ids AS uuid[])))
+                    FROM knowledge.tbox_proposals
+                    WHERE workspace_id = :workspace_id
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "safe_id": safe_id,
+                    "forbidden_ids": forbidden_ids,
+                },
+            )
+            safe_count, forbidden_count = counts.one()
+        assert safe_count == 1
+        assert forbidden_count == 0
+    finally:
+        await owner.dispose()

@@ -371,6 +371,26 @@ def _load_studio_proposal_idempotency_fix_revision() -> ModuleType:
     return module
 
 
+def _load_studio_proposal_contract_restore_revision() -> ModuleType:
+    """Load the composed Pin V2 request and structural safety contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0088_restore_knowledge_studio_proposal_contracts.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_studio_proposal_contract_restore_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Studio Proposal restore migration contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -887,6 +907,25 @@ def build_upgrade() -> ops.UpgradeOps:
     studio_proposal_idempotency_fix = _load_studio_proposal_idempotency_fix_revision()
     operations.append(
         ops.ExecuteSQLOp(studio_proposal_idempotency_fix.fixed_command_function_sql())
+    )
+    studio_proposal_contract_restore = _load_studio_proposal_contract_restore_revision()
+    operations.append(
+        ops.ExecuteSQLOp(
+            studio_proposal_contract_restore._pinned(
+                studio_proposal_contract_restore.TBOX_PROPOSAL_JOB_PIN_V2_IDEMPOTENT_REQUEST_FUNCTION_SQL,
+                studio_proposal_contract_restore._REQUEST_FUNCTION_SHA256,
+                label="composed Proposal request",
+            )
+        )
+    )
+    operations.append(
+        ops.ExecuteSQLOp(
+            studio_proposal_contract_restore._pinned(
+                studio_proposal_contract_restore.TBOX_PROPOSAL_CONTENT_SAFETY_STRUCTURAL_FUNCTION_SQL,
+                studio_proposal_contract_restore._STRUCTURAL_SAFETY_FUNCTION_SHA256,
+                label="structural content-safety",
+            )
+        )
     )
     return ops.UpgradeOps(ops=operations)
 

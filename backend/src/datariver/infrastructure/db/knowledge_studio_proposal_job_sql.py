@@ -2508,19 +2508,118 @@ def _replace_function_branch(
     return source[:start] + replacement + source[end + len("    END IF;\n") :]
 
 
+TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_GUARD_FUNCTION_SQL = _replace_function_branch(
+    TBOX_PROPOSAL_JOB_GUARD_FUNCTION_SQL,
+    start_marker=_CATALOG_DRIFT_BRANCH_START,
+    end_marker=_CATALOG_DRIFT_BRANCH_END,
+    replacement=_CATALOG_V2_DRIFT_BRANCH,
+)
+TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_COMMAND_FUNCTION_SQL = _replace_function_branch(
+    TBOX_PROPOSAL_JOB_COMMAND_FUNCTION_SQL,
+    start_marker=_CATALOG_REQUEST_BRANCH_START,
+    end_marker=_CATALOG_REQUEST_BRANCH_END,
+    replacement=_CATALOG_V2_REQUEST_BRANCH,
+)
 TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_FUNCTION_SQL = "\n\n".join(
     (
-        _replace_function_branch(
-            TBOX_PROPOSAL_JOB_GUARD_FUNCTION_SQL,
-            start_marker=_CATALOG_DRIFT_BRANCH_START,
-            end_marker=_CATALOG_DRIFT_BRANCH_END,
-            replacement=_CATALOG_V2_DRIFT_BRANCH,
-        ),
-        _replace_function_branch(
-            TBOX_PROPOSAL_JOB_COMMAND_FUNCTION_SQL,
-            start_marker=_CATALOG_REQUEST_BRANCH_START,
-            end_marker=_CATALOG_REQUEST_BRANCH_END,
-            replacement=_CATALOG_V2_REQUEST_BRANCH,
-        ),
+        TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_GUARD_FUNCTION_SQL,
+        TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_COMMAND_FUNCTION_SQL,
     )
 )
+
+
+_NEXT_COMMAND_FUNCTION_MARKER = (
+    "\n\nCREATE OR REPLACE FUNCTION knowledge.get_owned_tbox_proposal_job_v1("
+)
+_CONTENT_SAFETY_FUNCTION_MARKER = (
+    "CREATE OR REPLACE FUNCTION knowledge.enforce_tbox_proposal_content_safety_v1()"
+)
+
+
+def _request_function(source: str) -> str:
+    if source.count(_NEXT_COMMAND_FUNCTION_MARKER) != 1:
+        raise RuntimeError("The T-Box Proposal request function boundary changed.")
+    request_function, _separator, _remaining = source.partition(_NEXT_COMMAND_FUNCTION_MARKER)
+    return request_function.strip()
+
+
+def _content_safety_function(source: str) -> str:
+    if source.count(_CONTENT_SAFETY_FUNCTION_MARKER) != 1:
+        raise RuntimeError("The T-Box Proposal content-safety function boundary changed.")
+    start = source.index(_CONTENT_SAFETY_FUNCTION_MARKER)
+    return source[start:].strip()
+
+
+# This is the final request contract: the strict V1/V2 Catalog union introduced by
+# 0086 and the qualified idempotency lookup introduced by 0087 are one function.
+TBOX_PROPOSAL_JOB_IDEMPOTENT_V1_REQUEST_FUNCTION_SQL = _request_function(
+    TBOX_PROPOSAL_JOB_COMMAND_FUNCTION_SQL
+)
+TBOX_PROPOSAL_JOB_PIN_V2_IDEMPOTENT_REQUEST_FUNCTION_SQL = _request_function(
+    TBOX_PROPOSAL_JOB_CATALOG_PIN_V2_COMMAND_FUNCTION_SQL
+)
+TBOX_PROPOSAL_CONTENT_SAFETY_TEXT_FUNCTION_SQL = _content_safety_function(
+    TBOX_PROPOSAL_JOB_GUARD_FUNCTION_SQL
+)
+
+
+TBOX_PROPOSAL_CONTENT_SAFETY_STRUCTURAL_FUNCTION_SQL = r"""
+CREATE OR REPLACE FUNCTION knowledge.enforce_tbox_proposal_content_safety_v1()
+RETURNS trigger
+LANGUAGE plpgsql
+SET search_path = pg_catalog
+AS $$
+BEGIN
+    IF char_length(NEW.prompt) > 512
+       OR NEW.prompt ~ '[\\x00-\\x1F\\x7F]'
+       OR NOT (
+           NEW.prompt = 'Governed Schema Assistant proposal'
+           OR NEW.prompt = 'Governed Asset Release proposal'
+           OR NEW.prompt LIKE 'Document schema proposal: %'
+           OR NEW.prompt LIKE 'Catalog schema proposal: %'
+       )
+       OR (
+           NEW.source_reference_document IS NOT NULL
+           AND (
+               jsonb_typeof(NEW.source_reference_document) <> 'object'
+               OR octet_length(NEW.source_reference_document::text) > 65536
+               OR EXISTS (
+                   WITH RECURSIVE source_nodes(node) AS (
+                       SELECT NEW.source_reference_document
+                       UNION ALL
+                       SELECT child.value
+                       FROM source_nodes AS parent
+                       CROSS JOIN LATERAL jsonb_array_elements(
+                           CASE jsonb_typeof(parent.node)
+                               WHEN 'object' THEN jsonb_path_query_array(
+                                   parent.node,
+                                   '$.*'
+                               )
+                               WHEN 'array' THEN parent.node
+                               ELSE '[]'::jsonb
+                           END
+                       ) AS child(value)
+                   )
+                   SELECT 1
+                   FROM source_nodes AS parent
+                   CROSS JOIN LATERAL jsonb_object_keys(
+                       CASE
+                           WHEN jsonb_typeof(parent.node) = 'object'
+                           THEN parent.node
+                           ELSE '{}'::jsonb
+                       END
+                   ) AS retained(key)
+                   WHERE retained.key = ANY (ARRAY[
+                       'bucket','object_key','excerpt','prompt','provider_body','content'
+                   ])
+               )
+           )
+       )
+    THEN
+        RAISE EXCEPTION 'T-Box Proposal content contains unsafe retained input'
+            USING ERRCODE = '55000';
+    END IF;
+    RETURN NEW;
+END
+$$;
+""".strip()

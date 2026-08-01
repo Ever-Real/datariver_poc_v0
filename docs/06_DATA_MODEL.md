@@ -405,6 +405,17 @@ idempotency-key digest has a distinct local name and every replay column is tabl
 It adds no table, column, role, grant or RLS change; the accepted upload/Catalog pin, Draft version,
 request hash, `If-Match`, single job/outbox and exact idempotent replay contracts remain unchanged.
 
+Revision `0088` restores the final request function as the composition of the strict Catalog Pin
+V1/V2 union from `0086` and the qualified idempotency lookup from `0087`; a later function-only
+revision can therefore no longer silently replace the V2 branch with the legacy request body. It
+also replaces text matching over Proposal source evidence with a recursive JSON object/array key
+walk. Exact retained-input keys (`bucket`, `object_key`, `excerpt`, `prompt`, `provider_body`, and
+`content`) remain forbidden at every depth, while typed evidence keys such as `content_sha256`
+remain valid. Prompt labels, control-character and size bounds, RLS, Draft/authorization pins,
+single job/outbox and safe typed T-Box validation are unchanged. Downgrade reinstalls the exact
+`0087` request and prior text guard only after refusing evidence that would not satisfy that guard;
+it never deletes or rewrites Proposal evidence.
+
 PostgreSQL releases remain canonical; Neo4j can be deleted and rebuilt. Graph classification is a
 maximum envelope enforced on changeset operations, complete submission/review, publication,
 immutable source preparation, model-output persistence and release reads. Model operations inherit
