@@ -162,19 +162,24 @@ def _claim(content: bytes) -> KnowledgeStudioProposalJobClaim:
 
 
 class _Assistant:
-    def __init__(self) -> None:
+    def __init__(self, proposed: tuple[TBoxElementInput, ...] | None = None) -> None:
         self.calls = 0
+        self.proposed = (
+            proposed
+            if proposed is not None
+            else (
+                TBoxElementInput(
+                    stable_element_id="asset",
+                    kind=TBoxElementKind.CLASS,
+                    canonical_name="Asset",
+                    display_name="Asset",
+                ),
+            )
+        )
 
     async def propose(self, **_kwargs: object) -> tuple[TBoxElementInput, ...]:
         self.calls += 1
-        return (
-            TBoxElementInput(
-                stable_element_id="asset",
-                kind=TBoxElementKind.CLASS,
-                canonical_name="Asset",
-                display_name="Asset",
-            ),
-        )
+        return self.proposed
 
 
 class _Reader:
@@ -610,6 +615,108 @@ async def test_worker_completes_ready_proposal_without_persisting_document_excer
         "INFERENCE",
         "VALIDATING",
         "FINALIZING",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("proposed", "expected_code"),
+    [
+        (
+            (
+                TBoxElementInput(
+                    stable_element_id="invalid id",
+                    kind=TBoxElementKind.CLASS,
+                    canonical_name="Invalid",
+                    display_name="Invalid",
+                ),
+            ),
+            "TBOX_TYPED_SCHEMA_INVALID",
+        ),
+        (
+            (
+                TBoxElementInput(
+                    stable_element_id="class:asset-one",
+                    kind=TBoxElementKind.CLASS,
+                    canonical_name="Asset",
+                    display_name="Asset one",
+                ),
+                TBoxElementInput(
+                    stable_element_id="class:asset-two",
+                    kind=TBoxElementKind.CLASS,
+                    canonical_name="Asset",
+                    display_name="Asset two",
+                ),
+            ),
+            "TBOX_DUPLICATE_IDENTITY",
+        ),
+        (
+            (
+                TBoxElementInput(
+                    stable_element_id="relation:owns",
+                    kind=TBoxElementKind.RELATION,
+                    canonical_name="OWNS",
+                    display_name="Owns",
+                    source_stable_element_id="class:owner",
+                    target_stable_element_id="class:asset",
+                ),
+            ),
+            "TBOX_UNKNOWN_CLASS",
+        ),
+        (
+            (
+                TBoxElementInput(
+                    stable_element_id="class:left",
+                    kind=TBoxElementKind.CLASS,
+                    canonical_name="Left",
+                    display_name="Left",
+                    parent_stable_element_id="class:right",
+                ),
+                TBoxElementInput(
+                    stable_element_id="class:right",
+                    kind=TBoxElementKind.CLASS,
+                    canonical_name="Right",
+                    display_name="Right",
+                    parent_stable_element_id="class:left",
+                ),
+            ),
+            "TBOX_HIERARCHY_CYCLE",
+        ),
+    ],
+)
+async def test_worker_fails_closed_with_fixed_safe_validation_codes(
+    proposed: tuple[TBoxElementInput, ...],
+    expected_code: str,
+) -> None:
+    content = b"schema"
+    claim = _claim(content)
+    store = _Store(claim)
+    reader = _Reader(content)
+    assistant = _Assistant(proposed)
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=reader,
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 1
+    assert store.completed is None
+    assert store.failed == [(expected_code, False, False)]
+    assert [stage for stage, _progress in store.renewed] == [
+        "PARSING",
+        "INFERENCE",
+        "VALIDATING",
     ]
 
 

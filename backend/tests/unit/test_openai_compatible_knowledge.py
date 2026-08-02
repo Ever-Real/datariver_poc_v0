@@ -306,12 +306,13 @@ async def test_tbox_schema_assistant_rejects_duplicate_model_identities() -> Non
         }
     )
 
-    with pytest.raises(ValidationError, match="duplicate typed identity"):
+    with pytest.raises(ValidationError, match="duplicate typed identity") as caught:
         await OpenAICompatibleTBoxSchemaAssistant(transport=transport).propose(
             prompt="Document schema를 제안해 줘.",
             current_elements=(),
             binding=_binding("gemma4:latest"),
         )
+    assert caught.value.details == {"code": "TBOX_DUPLICATE_IDENTITY"}
 
 
 @pytest.mark.asyncio
@@ -496,12 +497,13 @@ async def test_tbox_schema_assistant_rejects_invalid_relation_shape(
         }
     )
 
-    with pytest.raises(ValidationError, match="typed schema"):
+    with pytest.raises(ValidationError, match="typed schema") as caught:
         await OpenAICompatibleTBoxSchemaAssistant(transport=transport).propose(
             prompt="Invalid relation을 거부해 줘.",
             current_elements=(),
             binding=_binding("gemma4:latest"),
         )
+    assert caught.value.details == {"code": "TBOX_TYPED_SCHEMA_INVALID"}
 
 
 @pytest.mark.asyncio
@@ -533,12 +535,13 @@ async def test_tbox_schema_assistant_rejects_unknown_relation_class_and_aggregat
             ]
         }
     )
-    with pytest.raises(ValidationError, match="unknown Class"):
+    with pytest.raises(ValidationError, match="unknown Class") as unknown_caught:
         await OpenAICompatibleTBoxSchemaAssistant(transport=unknown_transport).propose(
             prompt="Unknown relation을 거부해 줘.",
             current_elements=(),
             binding=_binding("gemma4:latest"),
         )
+    assert unknown_caught.value.details == {"code": "TBOX_UNKNOWN_CLASS"}
 
     overflow_transport = _Transport(
         {
@@ -564,12 +567,13 @@ async def test_tbox_schema_assistant_rejects_unknown_relation_class_and_aggregat
             ]
         }
     )
-    with pytest.raises(ValidationError, match="typed schema"):
+    with pytest.raises(ValidationError, match="typed schema") as overflow_caught:
         await OpenAICompatibleTBoxSchemaAssistant(transport=overflow_transport).propose(
             prompt="Oversized schema를 거부해 줘.",
             current_elements=(),
             binding=_binding("gemma4:latest"),
         )
+    assert overflow_caught.value.details == {"code": "TBOX_TYPED_SCHEMA_INVALID"}
 
 
 @pytest.mark.asyncio

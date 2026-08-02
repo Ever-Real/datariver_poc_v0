@@ -43,6 +43,9 @@ MAX_GRAPHRAG_OUTPUT_TOKENS = 512
 MAX_EVIDENCE_UNIT_CHARACTERS = 240
 MAX_INFERENCE_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_TBOX_PROPOSAL_ELEMENTS = 100
+_TBOX_TYPED_SCHEMA_INVALID = "TBOX_TYPED_SCHEMA_INVALID"
+_TBOX_DUPLICATE_IDENTITY = "TBOX_DUPLICATE_IDENTITY"
+_TBOX_UNKNOWN_CLASS = "TBOX_UNKNOWN_CLASS"
 
 
 @dataclass(frozen=True, slots=True)
@@ -738,14 +741,26 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                 raise ValueError("The aggregate T-Box proposal element limit was exceeded.")
             proposed = tuple(proposed_items)
         except (PydanticValidationError, ValueError) as error:
-            raise ValidationError("The LLM T-Box proposal violates the typed schema.") from error
+            raise ValidationError(
+                "The LLM T-Box proposal violates the typed schema.",
+                details={"code": _TBOX_TYPED_SCHEMA_INVALID},
+            ) from error
         proposed_ids: set[str] = set()
         proposed_names: set[tuple[TBoxElementKind, str]] = set()
         for item in proposed:
-            item.validate()
+            try:
+                item.validate()
+            except ValidationError as error:
+                raise ValidationError(
+                    "The LLM T-Box proposal violates the typed schema.",
+                    details={"code": _TBOX_TYPED_SCHEMA_INVALID},
+                ) from error
             name_identity = (item.kind, item.canonical_name.casefold())
             if item.stable_element_id in proposed_ids or name_identity in proposed_names:
-                raise ValidationError("The LLM T-Box proposal contains a duplicate typed identity.")
+                raise ValidationError(
+                    "The LLM T-Box proposal contains a duplicate typed identity.",
+                    details={"code": _TBOX_DUPLICATE_IDENTITY},
+                )
             proposed_ids.add(item.stable_element_id)
             proposed_names.add(name_identity)
         class_ids = {
@@ -765,7 +780,10 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                 else ()
             )
             if any(reference not in class_ids for reference in references):
-                raise ValidationError("The LLM T-Box proposal references an unknown Class.")
+                raise ValidationError(
+                    "The LLM T-Box proposal references an unknown Class.",
+                    details={"code": _TBOX_UNKNOWN_CLASS},
+                )
         return proposed
 
 

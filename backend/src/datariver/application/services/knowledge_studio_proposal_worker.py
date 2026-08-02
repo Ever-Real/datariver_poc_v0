@@ -37,6 +37,12 @@ class _JobBecameStale(Exception):
     pass
 
 
+_TBOX_TYPED_SCHEMA_INVALID = "TBOX_TYPED_SCHEMA_INVALID"
+_TBOX_DUPLICATE_IDENTITY = "TBOX_DUPLICATE_IDENTITY"
+_TBOX_UNKNOWN_CLASS = "TBOX_UNKNOWN_CLASS"
+_TBOX_HIERARCHY_CYCLE = "TBOX_HIERARCHY_CYCLE"
+
+
 class KnowledgeStudioProposalWorker:
     """Produces a READY typed Proposal; it never applies or mutates the Draft."""
 
@@ -336,7 +342,13 @@ def _validate_proposal_integrity(
         ):
             item = replace(item, hierarchy_relation="SUBCLASS_OF")
             corrected_defaults += 1
-        item.validate()
+        try:
+            item.validate()
+        except ValidationError as error:
+            raise ValidationError(
+                "The T-Box Proposal violates the typed schema.",
+                details={"code": _TBOX_TYPED_SCHEMA_INVALID},
+            ) from error
         normalized.append(item)
     normalized_proposed = tuple(normalized)
     proposed_ids = [item.stable_element_id for item in normalized_proposed]
@@ -344,7 +356,10 @@ def _validate_proposal_integrity(
     if len(set(proposed_ids)) != len(proposed_ids) or len(set(proposed_names)) != len(
         proposed_names
     ):
-        raise ValidationError("The T-Box Proposal contains duplicate typed identities.")
+        raise ValidationError(
+            "The T-Box Proposal contains duplicate typed identities.",
+            details={"code": _TBOX_DUPLICATE_IDENTITY},
+        )
     class_ids = {
         item.stable_element_id
         for item in (*current, *normalized_proposed)
@@ -361,7 +376,10 @@ def _validate_proposal_integrity(
             else ()
         )
         if any(reference not in class_ids for reference in references):
-            raise ValidationError("The T-Box Proposal references an unknown Class.")
+            raise ValidationError(
+                "The T-Box Proposal references an unknown Class.",
+                details={"code": _TBOX_UNKNOWN_CLASS},
+            )
     class_parent_by_id = {
         item.stable_element_id: item.parent_stable_element_id
         for item in (*current, *normalized_proposed)
@@ -372,7 +390,10 @@ def _validate_proposal_integrity(
         cursor: str | None = class_id
         while cursor is not None:
             if cursor in visited:
-                raise ValidationError("The T-Box Proposal hierarchy contains a cycle.")
+                raise ValidationError(
+                    "The T-Box Proposal hierarchy contains a cycle.",
+                    details={"code": _TBOX_HIERARCHY_CYCLE},
+                )
             visited.add(cursor)
             cursor = class_parent_by_id.get(cursor)
     return normalized_proposed, corrected_defaults
