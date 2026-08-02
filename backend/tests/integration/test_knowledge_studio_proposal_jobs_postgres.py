@@ -78,6 +78,9 @@ TRANSITION_IDEMPOTENCY_FIX_MIGRATION = (
 AUTHORIZATION_SCOPE_MIGRATION = (
     ROOT / "backend/alembic/versions/0094_align_knowledge_proposal_authorization_scope.py"
 )
+CONTROL_GUARD_MIGRATION = (
+    ROOT / "backend/alembic/versions/0095_fix_tbox_proposal_control_character_guard.py"
+)
 
 _OWNER_URL = "DATARIVER_KNOWLEDGE_PROPOSAL_TEST_OWNER_DATABASE_URL"
 _OWNER_SECRET = "DATARIVER_KNOWLEDGE_PROPOSAL_TEST_OWNER_SECRET_REF"
@@ -259,6 +262,38 @@ def test_revision_0094_pins_effective_managed_system_scope_only() -> None:
     assert "data_system.active IS TRUE" in current
     assert "iam.canonical_admin_bindings AS admin_binding" not in legacy
     assert "membership.attributes -> 'allowed_system_ids'" in legacy
+
+
+def test_revision_0095_pins_only_finalization_and_structural_control_guards() -> None:
+    migration = _migration(CONTROL_GUARD_MIGRATION)
+    source = CONTROL_GUARD_MIGRATION.read_text(encoding="utf-8")
+    current = migration.current_function_sqls()
+    legacy = migration.legacy_function_sqls()
+
+    assert 'revision: str = "0095"' in source
+    assert 'down_revision: str | Sequence[str] | None = "0094"' in source
+    assert len(current) == len(legacy) == 2
+    assert all(statement.count("CREATE OR REPLACE FUNCTION") == 1 for statement in current)
+    assert all(statement.count("[[:cntrl:]]") == 1 for statement in current)
+    assert all(statement.count(r"[\\x00-\\x1F\\x7F]") == 1 for statement in legacy)
+    assert current[0].startswith(
+        "CREATE OR REPLACE FUNCTION knowledge.complete_tbox_proposal_job_v1("
+    )
+    assert current[1].startswith(
+        "CREATE OR REPLACE FUNCTION knowledge.enforce_tbox_proposal_content_safety_v1()"
+    )
+    for current_statement, legacy_statement in zip(current, legacy, strict=True):
+        assert (
+            current_statement.replace(
+                "~ '[[:cntrl:]]'",
+                r"~ '[\\x00-\\x1F\\x7F]'",
+                1,
+            )
+            == legacy_statement
+        )
+        assert "CREATE TABLE" not in current_statement
+        assert "ALTER TABLE" not in current_statement
+        assert "GRANT " not in current_statement
 
 
 def _subject(workspace_id: UUID, actor_id: UUID, domain_id: UUID) -> SubjectAttributes:
@@ -1416,16 +1451,42 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
                            AND supersedes_job_id = :job_id),
                         (SELECT count(*) FROM knowledge.tbox_proposals
                          WHERE workspace_id = :workspace_id
-                           AND id = :proposal_id)
+                           AND id = :proposal_id),
+                        (SELECT count(*) FROM integration.idempotency_keys
+                         WHERE workspace_id = :workspace_id
+                           AND operation =
+                               'knowledge.tbox-proposal.complete:'
+                               || CAST(:completion_job_id AS text)),
+                        (SELECT count(*) FROM integration.outbox_events
+                         WHERE workspace_id = :workspace_id
+                           AND aggregate_id = :completion_job_id
+                           AND event_type =
+                               'knowledge.tbox-proposal-job.succeeded.v1'),
+                        (SELECT count(*) FROM knowledge.tbox_proposal_jobs
+                         WHERE workspace_id = :workspace_id
+                           AND id = :completion_job_id
+                           AND state = 'SUCCEEDED')
                     """
                 ),
                 {
                     "workspace_id": workspace_id,
                     "job_id": queued.job_id,
                     "proposal_id": completed.result.proposal_id,
+                    "completion_job_id": completion_job.job_id,
                 },
             )
-            app_dml, worker_dml, forced_rls, attempts, outbox, successors, proposals = grants.one()
+            (
+                app_dml,
+                worker_dml,
+                forced_rls,
+                attempts,
+                outbox,
+                successors,
+                proposals,
+                completion_idempotency,
+                completion_outbox,
+                succeeded_job,
+            ) = grants.one()
         assert app_dml is False
         assert worker_dml is False
         assert forced_rls is True
@@ -1433,6 +1494,9 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
         assert outbox == 1
         assert successors == 1
         assert proposals == 1
+        assert completion_idempotency == 1
+        assert completion_outbox == 1
+        assert succeeded_job == 1
     finally:
         await owner.dispose()
         await app.dispose()
@@ -1724,7 +1788,7 @@ async def test_structural_proposal_safety_accepts_typed_evidence_and_rejects_exa
             ) VALUES (
                 :proposal_id, :workspace_id, :draft_id, NULL, :actor_id,
                 'READY', 'APPEND_LAYER', 'KEEP_ORIGINAL', :base_draft_version,
-                'Governed Schema Assistant proposal',
+                :prompt,
                 CAST(:proposal_document AS jsonb), '[]'::jsonb,
                 CAST(:model_binding AS jsonb), CAST(:source_reference AS jsonb),
                 NULL, NULL, NULL, :now, :now, 1
@@ -1770,22 +1834,55 @@ async def test_structural_proposal_safety_accepts_typed_evidence_and_rejects_exa
             "input_hash": "a" * 64,
             "pipeline_evidence": pipeline_evidence,
         }
-        safe_id = uuid4()
-        async with owner.begin() as connection:
-            await connection.execute(
-                insert_proposal,
-                {
-                    "proposal_id": safe_id,
-                    "workspace_id": workspace_id,
-                    "draft_id": draft_id,
-                    "actor_id": actor_id,
-                    "base_draft_version": version,
-                    "proposal_document": proposal_document,
-                    "model_binding": model_binding,
-                    "source_reference": json.dumps(safe_reference),
-                    "now": now,
-                },
-            )
+        safe_ids: list[UUID] = []
+        for prompt in (
+            "Governed Schema Assistant proposal",
+            "Document schema proposal: schema.txt",
+            "Catalog schema proposal: governed_table",
+        ):
+            proposal_id = uuid4()
+            safe_ids.append(proposal_id)
+            async with owner.begin() as connection:
+                await connection.execute(
+                    insert_proposal,
+                    {
+                        "proposal_id": proposal_id,
+                        "workspace_id": workspace_id,
+                        "draft_id": draft_id,
+                        "actor_id": actor_id,
+                        "base_draft_version": version,
+                        "prompt": prompt,
+                        "proposal_document": proposal_document,
+                        "model_binding": model_binding,
+                        "source_reference": json.dumps(safe_reference),
+                        "now": now,
+                    },
+                )
+
+        unsafe_prompt_ids: list[UUID] = []
+        for prompt in (
+            "Document schema proposal: schema.txt\n",
+            "Catalog schema proposal: governed_table" + chr(127),
+        ):
+            proposal_id = uuid4()
+            unsafe_prompt_ids.append(proposal_id)
+            with pytest.raises(DBAPIError, match="unsafe retained input"):
+                async with owner.begin() as connection:
+                    await connection.execute(
+                        insert_proposal,
+                        {
+                            "proposal_id": proposal_id,
+                            "workspace_id": workspace_id,
+                            "draft_id": draft_id,
+                            "actor_id": actor_id,
+                            "base_draft_version": version,
+                            "prompt": prompt,
+                            "proposal_document": proposal_document,
+                            "model_binding": model_binding,
+                            "source_reference": json.dumps(safe_reference),
+                            "now": now,
+                        },
+                    )
 
         forbidden_ids: list[UUID] = []
         for forbidden_key in (
@@ -1815,6 +1912,7 @@ async def test_structural_proposal_safety_accepts_typed_evidence_and_rejects_exa
                             "draft_id": draft_id,
                             "actor_id": actor_id,
                             "base_draft_version": version,
+                            "prompt": "Governed Schema Assistant proposal",
                             "proposal_document": proposal_document,
                             "model_binding": model_binding,
                             "source_reference": json.dumps(unsafe_reference),
@@ -1827,7 +1925,8 @@ async def test_structural_proposal_safety_accepts_typed_evidence_and_rejects_exa
                 text(
                     """
                     SELECT
-                        count(*) FILTER (WHERE id = :safe_id),
+                        count(*) FILTER (WHERE id = ANY(CAST(:safe_ids AS uuid[]))),
+                        count(*) FILTER (WHERE id = ANY(CAST(:unsafe_prompt_ids AS uuid[]))),
                         count(*) FILTER (WHERE id = ANY(CAST(:forbidden_ids AS uuid[])))
                     FROM knowledge.tbox_proposals
                     WHERE workspace_id = :workspace_id
@@ -1835,12 +1934,14 @@ async def test_structural_proposal_safety_accepts_typed_evidence_and_rejects_exa
                 ),
                 {
                     "workspace_id": workspace_id,
-                    "safe_id": safe_id,
+                    "safe_ids": safe_ids,
+                    "unsafe_prompt_ids": unsafe_prompt_ids,
                     "forbidden_ids": forbidden_ids,
                 },
             )
-            safe_count, forbidden_count = counts.one()
-        assert safe_count == 1
+            safe_count, unsafe_prompt_count, forbidden_count = counts.one()
+        assert safe_count == 3
+        assert unsafe_prompt_count == 0
         assert forbidden_count == 0
     finally:
         await owner.dispose()

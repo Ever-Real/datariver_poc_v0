@@ -77,6 +77,9 @@ PROPOSAL_TRANSITION_IDEMPOTENCY_FIX_MIGRATION = (
 PROPOSAL_AUTHORIZATION_SCOPE_MIGRATION = (
     ROOT / "backend/alembic/versions/0094_align_knowledge_proposal_authorization_scope.py"
 )
+PROPOSAL_CONTROL_GUARD_MIGRATION = (
+    ROOT / "backend/alembic/versions/0095_fix_tbox_proposal_control_character_guard.py"
+)
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
@@ -137,6 +140,18 @@ def _proposal_authorization_scope_migration() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "test_knowledge_studio_proposal_authorization_scope",
         PROPOSAL_AUTHORIZATION_SCOPE_MIGRATION,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _proposal_control_guard_migration() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "test_knowledge_studio_proposal_control_guard",
+        PROPOSAL_CONTROL_GUARD_MIGRATION,
     )
     assert spec is not None
     assert spec.loader is not None
@@ -905,7 +920,46 @@ def test_proposal_authorization_scope_is_pinned_reversible_and_canonical() -> No
     assert initial.count("iam.canonical_admin_bindings AS admin_binding") == 2
     assert initial.count("platform.system_assignees AS assignee") >= 1
     assert initial.rfind("iam.canonical_admin_bindings AS admin_binding") > initial.rfind(
-        "stored_replay.key_hash = idempotency_key_hash"
+        "CREATE OR REPLACE FUNCTION knowledge.fail_tbox_proposal_job_v1("
+    )
+
+
+def test_proposal_control_guard_is_pinned_reversible_and_canonical() -> None:
+    source = PROPOSAL_CONTROL_GUARD_MIGRATION.read_text(encoding="utf-8")
+    migration = _proposal_control_guard_migration()
+    current = migration.current_function_sqls()
+    legacy = migration.legacy_function_sqls()
+
+    assert 'revision: str = "0095"' in source
+    assert 'down_revision: str | Sequence[str] | None = "0094"' in source
+    assert len(current) == len(legacy) == 2
+    assert all(statement.count("CREATE OR REPLACE FUNCTION") == 1 for statement in current)
+    assert all(statement.count("[[:cntrl:]]") == 1 for statement in current)
+    assert all(statement.count(r"[\\x00-\\x1F\\x7F]") == 1 for statement in legacy)
+    assert current[0].startswith(
+        "CREATE OR REPLACE FUNCTION knowledge.complete_tbox_proposal_job_v1("
+    )
+    assert current[1].startswith(
+        "CREATE OR REPLACE FUNCTION knowledge.enforce_tbox_proposal_content_safety_v1()"
+    )
+    for current_statement, legacy_statement in zip(current, legacy, strict=True):
+        assert (
+            current_statement.replace(
+                "~ '[[:cntrl:]]'",
+                r"~ '[\\x00-\\x1F\\x7F]'",
+                1,
+            )
+            == legacy_statement
+        )
+        assert "CREATE TABLE" not in current_statement
+        assert "ALTER TABLE" not in current_statement
+        assert "GRANT " not in current_statement
+
+    generator = GENERATOR.read_text(encoding="utf-8")
+    initial = INITIAL_MIGRATION.read_text(encoding="utf-8")
+    assert "0095_fix_tbox_proposal_control_character_guard.py" in generator
+    assert initial.rfind("[[:cntrl:]]") > initial.rfind(
+        "iam.canonical_admin_bindings AS admin_binding"
     )
 
 

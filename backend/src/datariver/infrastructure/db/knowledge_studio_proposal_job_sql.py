@@ -2665,3 +2665,35 @@ BEGIN
 END
 $$;
 """.strip()
+
+
+_LEGACY_CONTROL_CHARACTER_PREDICATE = r"~ '[\\x00-\\x1F\\x7F]'"
+_POSIX_CONTROL_CHARACTER_PREDICATE = "~ '[[:cntrl:]]'"
+_FAIL_JOB_FUNCTION_MARKER = "\n\nCREATE OR REPLACE FUNCTION knowledge.fail_tbox_proposal_job_v1("
+
+
+def _with_posix_control_character_guard(sql: str, *, label: str) -> str:
+    if sql.count(_LEGACY_CONTROL_CHARACTER_PREDICATE) != 1:
+        raise RuntimeError(f"Knowledge Studio Proposal {label} control guard changed")
+    return sql.replace(
+        _LEGACY_CONTROL_CHARACTER_PREDICATE,
+        _POSIX_CONTROL_CHARACTER_PREDICATE,
+        1,
+    )
+
+
+def _complete_job_function(sql: str) -> str:
+    if sql.count(_FAIL_JOB_FUNCTION_MARKER) != 1:
+        raise RuntimeError("Knowledge Studio Proposal completion function boundary changed")
+    complete, _separator, _remaining = sql.partition(_FAIL_JOB_FUNCTION_MARKER)
+    return complete.strip()
+
+
+TBOX_PROPOSAL_JOB_CONTROL_GUARD_FINALIZATION_FUNCTION_SQL = _with_posix_control_character_guard(
+    _complete_job_function(TBOX_PROPOSAL_JOB_FINALIZATION_FUNCTION_SQL),
+    label="finalization",
+)
+TBOX_PROPOSAL_CONTENT_SAFETY_CONTROL_GUARD_FUNCTION_SQL = _with_posix_control_character_guard(
+    TBOX_PROPOSAL_CONTENT_SAFETY_STRUCTURAL_FUNCTION_SQL,
+    label="structural safety",
+)

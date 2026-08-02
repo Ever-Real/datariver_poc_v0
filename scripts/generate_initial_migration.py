@@ -486,6 +486,26 @@ def _load_studio_proposal_authorization_scope_revision() -> ModuleType:
     return module
 
 
+def _load_studio_proposal_control_guard_revision() -> ModuleType:
+    """Load the final Studio Proposal control-character guard contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0095_fix_tbox_proposal_control_character_guard.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_studio_proposal_control_guard_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Studio Proposal control guard contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -1058,6 +1078,11 @@ def build_upgrade() -> ops.UpgradeOps:
     studio_proposal_authorization_scope = _load_studio_proposal_authorization_scope_revision()
     operations.append(
         ops.ExecuteSQLOp(studio_proposal_authorization_scope.current_authorization_function_sql())
+    )
+    studio_proposal_control_guard = _load_studio_proposal_control_guard_revision()
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in studio_proposal_control_guard.current_function_sqls()
     )
     return ops.UpgradeOps(ops=operations)
 
