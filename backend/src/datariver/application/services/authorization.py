@@ -38,6 +38,16 @@ DEVELOPMENT_GOVERNANCE_PASSWORD_BYPASS_ACTIONS = frozenset(
         Action.GOVERNANCE_TEMPLATE_ARCHIVE,
     }
 )
+CHANGE_TARGET_ACTIONS = frozenset(
+    {
+        Action.CATALOG_READ,
+        Action.CHANGE_CREATE,
+        Action.CHANGE_READ,
+        Action.CHANGE_EDIT,
+        Action.CHANGE_REVIEW,
+        Action.CHANGE_APPROVE,
+    }
+)
 
 
 def _remediation_kind(
@@ -245,6 +255,192 @@ class AuthorizationService:
                 },
             )
         return decision
+
+    def _change_target_decision(
+        self,
+        *,
+        subject: SubjectAttributes,
+        resource: ResourceAttributes,
+        action: Action,
+        classification_access: ClassificationAccessSnapshot,
+        environment: EnvironmentAttributes,
+    ) -> Decision:
+        """Evaluate the CR-only System-responsibility projection from first principles."""
+
+        reasons: list[str] = []
+        if resource.resource_type != "catalog_asset_change_target":
+            reasons.append("CHANGE_TARGET_RESOURCE_TYPE_REQUIRED")
+        if action not in CHANGE_TARGET_ACTIONS:
+            reasons.append("CHANGE_TARGET_ACTION_REQUIRED")
+        if subject.job_function == "SERVICE_ACCOUNT" or "service-accounts" in subject.groups:
+            reasons.append("HUMAN_ACTOR_REQUIRED")
+        if resource.lifecycle != "ACTIVE":
+            reasons.append("RESOURCE_INACTIVE")
+        if resource.system_id is None:
+            reasons.append("SYSTEM_SCOPE_REQUIRED")
+        elif resource.system_id not in subject.allowed_system_ids:
+            reasons.append("SYSTEM_SCOPE_MISMATCH")
+
+        try:
+            search_mode = classification_access.rule_for(resource.classification).search_mode
+        except (StopIteration, ValueError):
+            reasons.append("CLASSIFICATION_POLICY_INVALID")
+        else:
+            if resource.classification is Classification.RESTRICTED:
+                if search_mode is not SearchMode.EXPLICIT_GRANT_ONLY:
+                    reasons.append("CLASSIFICATION_POLICY_DENY")
+                if (
+                    resource.domain_id is None
+                    or resource.domain_id not in subject.allowed_domain_ids
+                ):
+                    reasons.append("DOMAIN_SCOPE_MISMATCH")
+                if not (
+                    resource.resource_id in classification_access.restricted_resource_ids
+                    or (
+                        resource.system_id is not None
+                        and resource.system_id in classification_access.restricted_system_ids
+                    )
+                    or (
+                        resource.domain_id is not None
+                        and resource.domain_id in classification_access.restricted_domain_ids
+                    )
+                ):
+                    reasons.append("RESTRICTED_EXPLICIT_GRANT_REQUIRED")
+            elif search_mode is not SearchMode.ABAC:
+                reasons.append("CLASSIFICATION_POLICY_DENY")
+
+        # Domain is deliberately absent only from the non-RESTRICTED CR authorization
+        # projection. The actual Domain remains on the resource and binding evidence.
+        policy_resource = (
+            resource
+            if resource.classification is Classification.RESTRICTED
+            else replace(resource, domain_id=None)
+        )
+        baseline = self._engine.decide(
+            subject=subject,
+            resource=policy_resource,
+            action=action,
+            environment=environment,
+        )
+        if baseline.reason_codes != ("POLICY_ALLOW",):
+            reasons.extend(baseline.reason_codes)
+        unique_reasons = tuple(dict.fromkeys(reasons))
+        classification_policy_version = (
+            f"classification-access:{classification_access.posture.value}:"
+            f"{classification_access.policy_version or 0}:"
+            f"{classification_access.authorization_generation or 0}"
+        )
+        return Decision(
+            decision_id=baseline.decision_id,
+            effect=Effect.DENY if unique_reasons else Effect.ALLOW,
+            reason_codes=unique_reasons or ("CHANGE_TARGET_SYSTEM_SCOPE_ALLOW",),
+            policy_versions=tuple(
+                dict.fromkeys(
+                    (
+                        *baseline.policy_versions,
+                        "change-target-system-responsibility-v1",
+                        classification_policy_version,
+                    )
+                )
+            ),
+            authentication_assurance=baseline.authentication_assurance,
+            authentication_time=baseline.authentication_time,
+        )
+
+    async def authorize_change_target(
+        self,
+        *,
+        subject: SubjectAttributes,
+        resource: ResourceAttributes,
+        action: Action,
+        classification_access: ClassificationAccessSnapshot,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> Decision:
+        decision = self._change_target_decision(
+            subject=subject,
+            resource=resource,
+            action=action,
+            classification_access=classification_access,
+            environment=environment,
+        )
+        await self._decision_writer.append_decision(
+            decision=decision,
+            subject_id=subject.subject_id,
+            workspace_id=subject.workspace_id,
+            resource_id=resource.resource_id,
+            action=action.value,
+            request_id=request_id,
+        )
+        if not decision.allowed:
+            details: dict[str, object] = {
+                "decision_id": str(decision.decision_id),
+                "reason_codes": decision.reason_codes,
+            }
+            remediation_kind = _remediation_kind(
+                action=action,
+                subject=subject,
+                decision=decision,
+            )
+            if remediation_kind is not None:
+                details["remediation"] = {"kind": remediation_kind}
+            raise ForbiddenError(
+                "The requested change target is not permitted.",
+                details=details,
+            )
+        return decision
+
+    async def filter_authorized_change_targets(
+        self,
+        *,
+        subject: SubjectAttributes,
+        resources: Sequence[ResourceAttributes],
+        action: Action,
+        classification_access: ClassificationAccessSnapshot,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        parent_resource_id: UUID,
+    ) -> tuple[ResourceAttributes, ...]:
+        evaluated = tuple(
+            (
+                resource,
+                self._change_target_decision(
+                    subject=subject,
+                    resource=resource,
+                    action=action,
+                    classification_access=classification_access,
+                    environment=environment,
+                ),
+            )
+            for resource in resources
+        )
+        if not evaluated:
+            return ()
+        items = tuple(
+            DecisionAuditItem(resource_id=resource.resource_id, decision=decision)
+            for resource, decision in evaluated
+        )
+        if isinstance(self._decision_writer, DecisionSetWriter):
+            await self._decision_writer.append_decision_set(
+                decision_id=uuid7(),
+                items=items,
+                subject_id=subject.subject_id,
+                workspace_id=subject.workspace_id,
+                parent_resource_id=parent_resource_id,
+                action=action.value,
+                request_id=request_id,
+            )
+        else:
+            for item in items:
+                await self._decision_writer.append_decision(
+                    decision=item.decision,
+                    subject_id=subject.subject_id,
+                    workspace_id=subject.workspace_id,
+                    resource_id=item.resource_id,
+                    action=action.value,
+                    request_id=request_id,
+                )
+        return tuple(resource for resource, decision in evaluated if decision.allowed)
 
     def _can_apply_development_admin_password_bypass(
         self,

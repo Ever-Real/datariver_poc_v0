@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.change_numbers import change_request_number
 from datariver.application.classification_access import ClassificationAccessResolver
+from datariver.application.ports import CatalogReaderMode
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.catalog import CatalogService
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
@@ -295,7 +296,10 @@ def _change_target_catalog_service(
     session: SessionDep,
 ) -> tuple[CatalogService, SqlCatalogChangeTargetReader]:
     container = get_container(request)
-    index = SqlCatalogChangeTargetReader(session)
+    index = SqlCatalogChangeTargetReader(
+        session,
+        reader_mode=CatalogReaderMode.CHANGE_TARGET,
+    )
     return (
         CatalogService(
             index=index,
@@ -317,6 +321,7 @@ def _change_target_catalog_service(
                 SqlClassificationAccessSnapshotReader(session)
             ),
             telemetry=container.metrics,
+            reader_mode=CatalogReaderMode.CHANGE_TARGET,
         ),
         index,
     )
@@ -1147,7 +1152,7 @@ async def create_change_request_intake(
     ).one_or_none()
     if system is None:
         raise ValidationError("The selected canonical data system is not active.")
-    catalog = _catalog_service(request, session)
+    catalog, target_reader = _change_target_catalog_service(request, session)
     items: list[ChangeItem] = []
     for target in payload.targets:
         if target.kind == "MANUAL":
@@ -1195,6 +1200,11 @@ async def create_change_request_intake(
             environment=context.environment,
             request_id=context.request_id,
         )
+        if detail is not None:
+            detail = await target_reader.route_authorized_detail(
+                detail=detail,
+                system_id=system.id,
+            )
         if detail is None:
             raise NotFoundError("The selected catalog asset does not exist.")
         source_fields = {

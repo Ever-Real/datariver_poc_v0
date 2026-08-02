@@ -695,10 +695,17 @@ class CatalogService:
             self._reader_mode is CatalogReaderMode.WORKSPACE_DISCOVERY
             and asset.classification is not Classification.RESTRICTED
         )
+        change_target = self._reader_mode is CatalogReaderMode.CHANGE_TARGET
         resource = ResourceAttributes(
             resource_id=asset.asset_id,
             workspace_id=asset.workspace_id,
-            resource_type=browse_resource_type if workspace_discovery else scoped_resource_type,
+            resource_type=(
+                "catalog_asset_change_target"
+                if change_target
+                else browse_resource_type
+                if workspace_discovery
+                else scoped_resource_type
+            ),
             owner_department_id=asset.owner_department_id,
             system_id=asset.system_id,
             domain_id=asset.domain_id,
@@ -709,6 +716,16 @@ class CatalogService:
             await self._authorization.authorize_catalog_workspace_browse(
                 subject=subject,
                 resource=resource,
+                classification_access=access,
+                environment=environment,
+                request_id=request_id,
+            )
+            return
+        if change_target:
+            await self._authorization.authorize_change_target(
+                subject=subject,
+                resource=resource,
+                action=Action.CATALOG_READ,
                 classification_access=access,
                 environment=environment,
                 request_id=request_id,

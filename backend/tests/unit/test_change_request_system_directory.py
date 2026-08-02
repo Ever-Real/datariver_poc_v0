@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -17,6 +18,8 @@ from datariver.interfaces.http.routes.governance import (
     _catalog_service,
     _change_request_system_scope,
     _change_target_catalog_service,
+    create_change_request_intake,
+    get_change_request_target,
     list_change_request_systems,
     search_change_request_targets,
 )
@@ -125,7 +128,7 @@ async def test_empty_system_scope_returns_zero_without_querying_directory() -> N
     session.scalars.assert_not_awaited()
 
 
-def test_change_request_catalog_service_keeps_the_default_scoped_reader(
+def test_change_request_catalog_service_uses_only_the_change_target_reader_mode(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     container = SimpleNamespace(
@@ -149,9 +152,19 @@ def test_change_request_catalog_service_keeps_the_default_scoped_reader(
 
     assert service._reader_mode is CatalogReaderMode.SCOPED
     assert cast(Any, service._index)._reader_mode is CatalogReaderMode.SCOPED
-    assert change_service._reader_mode is CatalogReaderMode.SCOPED
+    assert change_service._reader_mode is CatalogReaderMode.CHANGE_TARGET
+    assert cast(Any, change_service._index)._reader_mode is CatalogReaderMode.CHANGE_TARGET
     assert change_service._index is change_reader
     assert change_service._search_cache_ttl_seconds == 0
+
+
+def test_change_target_detail_and_intake_share_the_routed_cr_catalog_boundary() -> None:
+    detail_source = inspect.getsource(get_change_request_target)
+    intake_source = inspect.getsource(create_change_request_intake)
+
+    for source in (detail_source, intake_source):
+        assert "_change_target_catalog_service" in source
+        assert "route_authorized_detail" in source
 
 
 def _context(subject: SubjectAttributes) -> RequestContext:

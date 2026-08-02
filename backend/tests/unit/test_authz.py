@@ -214,6 +214,132 @@ async def test_catalog_workspace_browse_independently_allows_nonrestricted_prese
     assert writer.decisions == [decision]
 
 
+@pytest.mark.asyncio
+async def test_change_target_policy_uses_system_scope_without_relaxing_generic_catalog() -> None:
+    subject, resource, environment = make_context()
+    subject = replace(subject, allowed_domain_ids=frozenset())
+    resource = replace(resource, resource_type="catalog_asset_change_target")
+    access = static_classification_access_floor()
+    writer = BatchDecisionWriter()
+
+    decision = await AuthorizationService(decision_writer=writer).authorize_change_target(
+        subject=subject,
+        resource=resource,
+        action=Action.CATALOG_READ,
+        classification_access=access,
+        environment=environment,
+        request_id="change-target-system-scope",
+    )
+
+    assert decision.allowed
+    assert decision.reason_codes == ("CHANGE_TARGET_SYSTEM_SCOPE_ALLOW",)
+    assert "change-target-system-responsibility-v1" in decision.policy_versions
+    assert writer.decisions == [decision]
+
+    generic_writer = BatchDecisionWriter()
+    with pytest.raises(ForbiddenError):
+        await AuthorizationService(decision_writer=generic_writer).authorize(
+            subject=subject,
+            resource=replace(resource, resource_type="catalog_asset"),
+            action=Action.CATALOG_READ,
+            environment=environment,
+            request_id="generic-catalog-remains-scoped",
+        )
+    assert "DOMAIN_SCOPE_MISMATCH" in generic_writer.decisions[0].reason_codes
+
+
+@pytest.mark.asyncio
+async def test_restricted_change_target_keeps_domain_and_explicit_grant_requirements() -> None:
+    subject, resource, environment = make_context()
+    subject = replace(subject, clearance=Classification.RESTRICTED)
+    resource = replace(
+        resource,
+        resource_type="catalog_asset_change_target",
+        classification=Classification.RESTRICTED,
+    )
+    access = replace(
+        static_classification_access_floor(),
+        rules=tuple(
+            replace(rule, search_mode=SearchMode.EXPLICIT_GRANT_ONLY)
+            if rule.classification is Classification.RESTRICTED
+            else rule
+            for rule in static_classification_access_floor().rules
+        ),
+        restricted_resource_ids=frozenset({resource.resource_id}),
+    )
+
+    decision = await AuthorizationService(
+        decision_writer=BatchDecisionWriter()
+    ).authorize_change_target(
+        subject=subject,
+        resource=resource,
+        action=Action.CATALOG_READ,
+        classification_access=access,
+        environment=environment,
+        request_id="restricted-change-target",
+    )
+
+    assert decision.allowed
+    assert "change-target-system-responsibility-v1" in decision.policy_versions
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "cross_workspace",
+        "service_identity",
+        "explicit_deny",
+        "missing_system",
+        "policy_deny",
+        "restricted_without_grant",
+    ],
+)
+@pytest.mark.asyncio
+async def test_change_target_policy_fails_closed(case: str) -> None:
+    subject, resource, environment = make_context()
+    resource = replace(resource, resource_type="catalog_asset_change_target")
+    access = static_classification_access_floor()
+    if case == "cross_workspace":
+        resource = replace(resource, workspace_id=uuid4())
+    elif case == "service_identity":
+        subject = replace(
+            subject,
+            job_function="SERVICE_ACCOUNT",
+            groups=frozenset({"service-accounts"}),
+        )
+    elif case == "explicit_deny":
+        subject = replace(subject, denied_actions=frozenset({Action.CATALOG_READ}))
+    elif case == "missing_system":
+        resource = replace(resource, system_id=None)
+    elif case == "policy_deny":
+        access = replace(
+            access,
+            rules=tuple(
+                replace(rule, search_mode=SearchMode.DENY)
+                if rule.classification is resource.classification
+                else rule
+                for rule in access.rules
+            ),
+        )
+    elif case == "restricted_without_grant":
+        subject = replace(subject, clearance=Classification.RESTRICTED)
+        resource = replace(resource, classification=Classification.RESTRICTED)
+    writer = BatchDecisionWriter()
+
+    with pytest.raises(ForbiddenError):
+        await AuthorizationService(decision_writer=writer).authorize_change_target(
+            subject=subject,
+            resource=resource,
+            action=Action.CATALOG_READ,
+            classification_access=access,
+            environment=environment,
+            request_id=f"change-target-{case}",
+        )
+
+    assert writer.single_calls == 1
+    assert writer.decisions[0].allowed is False
+
+
 @pytest.mark.parametrize(
     "case",
     [

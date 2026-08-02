@@ -4,7 +4,10 @@ from collections.abc import Sequence
 from dataclasses import replace
 from uuid import UUID
 
-from datariver.application.classification_access import ClassificationAccessResolver
+from datariver.application.classification_access import (
+    ClassificationAccessResolver,
+    ClassificationAccessSnapshot,
+)
 from datariver.application.dto import (
     CatalogAssetIndex,
     ChangeRequestSummaryRecord,
@@ -43,6 +46,53 @@ class CatalogChangeTargetAuthorizer:
         self._index = index
         self._classification_access = classification_access
         self._authorization = authorization
+
+    async def _filter_authorized_resources(
+        self,
+        *,
+        subject: SubjectAttributes,
+        resources: Sequence[ResourceAttributes],
+        action: Action,
+        access: ClassificationAccessSnapshot | None,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        parent_resource_id: UUID,
+    ) -> tuple[ResourceAttributes, ...]:
+        catalog_resources = tuple(
+            resource
+            for resource in resources
+            if resource.resource_type == "catalog_asset_change_target"
+        )
+        other_resources = tuple(
+            resource
+            for resource in resources
+            if resource.resource_type != "catalog_asset_change_target"
+        )
+        if catalog_resources and access is None:
+            raise RuntimeError("Change-target classification access is unavailable.")
+        authorized_catalog = (
+            await self._authorization.filter_authorized_change_targets(
+                subject=subject,
+                resources=catalog_resources,
+                action=action,
+                classification_access=access,
+                environment=environment,
+                request_id=request_id,
+                parent_resource_id=parent_resource_id,
+            )
+            if access is not None
+            else ()
+        )
+        authorized_other = await self._authorization.filter_authorized(
+            subject=subject,
+            resources=other_resources,
+            action=action,
+            environment=environment,
+            request_id=request_id,
+            parent_resource_id=parent_resource_id,
+        )
+        authorized_resources = set((*authorized_catalog, *authorized_other))
+        return tuple(resource for resource in resources if resource in authorized_resources)
 
     async def authorize_targets(
         self,
@@ -112,10 +162,11 @@ class CatalogChangeTargetAuthorizer:
             )
             for asset in assets
         )
-        authorized = await self._authorization.filter_authorized(
+        authorized = await self._filter_authorized_resources(
             subject=subject,
             resources=resources,
             action=Action.CHANGE_CREATE,
+            access=access,
             environment=environment,
             request_id=request_id,
             parent_resource_id=workspace_id,
@@ -230,19 +281,20 @@ class CatalogChangeTargetAuthorizer:
             candidates.append((change_request, resources))
 
         flattened = tuple(resource for _, resources in candidates for resource in resources)
-        authorized = await self._authorization.filter_authorized(
+        authorized = await self._filter_authorized_resources(
             subject=subject,
             resources=flattened,
             action=action,
+            access=access,
             environment=environment,
             request_id=request_id,
             parent_resource_id=workspace_id,
         )
-        authorized_ids = {resource.resource_id for resource in authorized}
+        authorized_resources = set(authorized)
         return tuple(
             change_request
             for change_request, resources in candidates
-            if all(resource.resource_id in authorized_ids for resource in resources)
+            if all(resource in authorized_resources for resource in resources)
         )
 
     async def filter_authorized_summaries(
@@ -332,19 +384,20 @@ class CatalogChangeTargetAuthorizer:
                 candidates.append((summary, tuple(resources)))
 
         flattened = tuple(resource for _, resources in candidates for resource in resources)
-        authorized = await self._authorization.filter_authorized(
+        authorized = await self._filter_authorized_resources(
             subject=subject,
             resources=flattened,
             action=action,
+            access=access,
             environment=environment,
             request_id=request_id,
             parent_resource_id=workspace_id,
         )
-        authorized_ids = {resource.resource_id for resource in authorized}
+        authorized_resources = set(authorized)
         return tuple(
             summary
             for summary, resources in candidates
-            if all(resource.resource_id in authorized_ids for resource in resources)
+            if all(resource in authorized_resources for resource in resources)
         )
 
     async def authorize_approval_targets(
@@ -383,6 +436,7 @@ class CatalogChangeTargetAuthorizer:
                 if item.target_type in {"DATAHUB_ASPECT", DATAHUB_INTAKE_TARGET}
             )
         )
+        access: ClassificationAccessSnapshot | None = None
         assets: tuple[CatalogAssetIndex, ...] = ()
         if external_urns:
             access = await self._classification_access.resolve(
@@ -457,10 +511,11 @@ class CatalogChangeTargetAuthorizer:
                     requester_id=change_request.requester_id,
                 )
             )
-        authorized = await self._authorization.filter_authorized(
+        authorized = await self._filter_authorized_resources(
             subject=subject,
             resources=resources,
             action=action,
+            access=access,
             environment=environment,
             request_id=request_id,
             parent_resource_id=workspace_id,

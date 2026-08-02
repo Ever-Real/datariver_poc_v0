@@ -227,6 +227,7 @@ class AllowAuthorization:
     def __init__(self) -> None:
         self.generic_calls = 0
         self.workspace_browse_calls = 0
+        self.change_target_calls = 0
 
     async def authorize(self, **_: object) -> None:
         self.generic_calls += 1
@@ -234,6 +235,10 @@ class AllowAuthorization:
 
     async def authorize_catalog_workspace_browse(self, **_: object) -> None:
         self.workspace_browse_calls += 1
+        return None
+
+    async def authorize_change_target(self, **_: object) -> None:
+        self.change_target_calls += 1
         return None
 
     async def can_review_quarantined_catalog(self, **_: object) -> bool:
@@ -440,6 +445,110 @@ async def test_restricted_catalog_detail_never_uses_workspace_browse_exception()
 
     assert authorization.generic_calls == 1
     assert authorization.workspace_browse_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_change_target_mode_uses_only_the_cr_policy_before_provider_detail() -> None:
+    now = datetime.now(UTC)
+    workspace_id, asset_id, system_id = uuid4(), uuid4(), uuid4()
+    asset = CatalogAssetIndex(
+        asset_id=asset_id,
+        workspace_id=workspace_id,
+        external_urn="urn:li:dataset:change-target",
+        asset_type="TABLE",
+        name="capital_project_advanced_package",
+        description=None,
+        platform="oracle",
+        database_name="ORCL",
+        schema_name="semiconductor_seed",
+        domain_id=uuid4(),
+        system_id=system_id,
+        owner_department_id=None,
+        classification=Classification.CONFIDENTIAL,
+        lifecycle="ACTIVE",
+        source_version="projection-v1",
+        observed_at=now,
+    )
+    index_reader = FakeIndex(CatalogAssetDetail(asset, (), (), (), (), {}, "projection-v1", now))
+    authorization = AllowAuthorization()
+    cache = FakeCache()
+    gateway = FakeGateway(
+        DataHubAssetEnrichment(
+            (),
+            (),
+            (),
+            ({"fieldPath": "unit_cost", "nativeDataType": "NUMBER"},),
+            {},
+            "datahub-v1",
+            now,
+        )
+    )
+    service = CatalogService(
+        index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
+        watermark=cast(CatalogWatermarkReader, index_reader),
+        datahub=cast(DataHubGateway, gateway),
+        cache=cast(Cache, cache),
+        authorization=cast(AuthorizationService, authorization),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=0,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+        reader_mode=CatalogReaderMode.CHANGE_TARGET,
+    )
+    subject = SubjectAttributes(
+        subject_id=uuid4(),
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset(),
+        job_function="DATA_STEWARD",
+        clearance=Classification.CONFIDENTIAL,
+        allowed_system_ids=frozenset({system_id}),
+        allowed_domain_ids=frozenset(),
+        allowed_actions=frozenset({Action.CATALOG_READ}),
+    )
+
+    detail = await service.get_asset(
+        subject=subject,
+        asset_id=asset_id,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="change-target-detail",
+    )
+
+    assert detail is not None
+    assert detail.schema_fields[0]["fieldPath"] == "unit_cost"
+    assert authorization.change_target_calls == 1
+    assert authorization.generic_calls == 0
+    assert authorization.workspace_browse_calls == 0
+    assert gateway.calls == 1
+
+    scoped_service = CatalogService(
+        index=cast(CatalogIndexReader, index_reader),
+        discovery=cast(CatalogDiscoveryReader, index_reader),
+        watermark=cast(CatalogWatermarkReader, index_reader),
+        datahub=cast(DataHubGateway, gateway),
+        cache=cast(Cache, cache),
+        authorization=cast(AuthorizationService, authorization),
+        detail_cache_ttl_seconds=60,
+        stale_detail_ttl_seconds=900,
+        search_cache_ttl_seconds=0,
+        minimum_query_length=2,
+        policy_version=BuiltinPolicyEngine.policy_version,
+        reader_mode=CatalogReaderMode.SCOPED,
+    )
+    assert (
+        await scoped_service.get_asset(
+            subject=subject,
+            asset_id=asset_id,
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="scoped-detail",
+        )
+        is not None
+    )
+    assert gateway.calls == 2
+    assert len(cache.values) == 4
 
 
 def test_search_cache_ttl_never_crosses_policy_or_grant_boundary() -> None:

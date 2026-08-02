@@ -216,6 +216,7 @@ class SubjectReader(Protocol):
 class CatalogReaderMode(StrEnum):
     SCOPED = "SCOPED"
     WORKSPACE_DISCOVERY = "WORKSPACE_DISCOVERY"
+    CHANGE_TARGET = "CHANGE_TARGET"
 
 
 class CatalogIndexReader(Protocol):

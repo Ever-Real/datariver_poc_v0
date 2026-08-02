@@ -12,6 +12,7 @@ from datariver.application.services.authorization import AuthorizationService, N
 from datariver.application.services.change_targets import CatalogChangeTargetAuthorizer
 from datariver.domain.authz import (
     Action,
+    AuthenticationAssurance,
     Classification,
     EnvironmentAttributes,
     SubjectAttributes,
@@ -45,6 +46,7 @@ def asset(
     workspace_id: UUID,
     classification: Classification = Classification.INTERNAL,
     system_id: UUID | None = None,
+    domain_id: UUID | None = None,
     asset_type: str = "DATASET",
     external_urn: str = "urn:li:dataset:test",
 ) -> CatalogAssetIndex:
@@ -56,7 +58,7 @@ def asset(
         name="orders",
         description=None,
         platform="postgres",
-        domain_id=None,
+        domain_id=domain_id,
         system_id=system_id,
         owner_department_id=None,
         classification=classification,
@@ -109,11 +111,21 @@ def authorizer(assets: tuple[CatalogAssetIndex, ...]) -> CatalogChangeTargetAuth
 async def test_authorizes_local_target_with_actual_asset_scope() -> None:
     workspace_id = uuid4()
     system_id = uuid4()
+    domain_id = uuid4()
 
-    target = asset(workspace_id=workspace_id, system_id=system_id, asset_type="VIEW")
+    target = asset(
+        workspace_id=workspace_id,
+        system_id=system_id,
+        domain_id=domain_id,
+        asset_type="VIEW",
+    )
+    actor = replace(
+        subject(workspace_id=workspace_id, system_id=system_id),
+        allowed_domain_ids=frozenset(),
+    )
     bound = await authorizer((target,)).authorize_targets(
         workspace_id=workspace_id,
-        subject=subject(workspace_id=workspace_id, system_id=system_id),
+        subject=actor,
         items=(item(),),
         request_classification=Classification.INTERNAL,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
@@ -121,8 +133,37 @@ async def test_authorizes_local_target_with_actual_asset_scope() -> None:
     )
     assert bound[0].target_asset_id == target.asset_id
     assert bound[0].target_system_id == system_id
+    assert bound[0].target_domain_id == domain_id
     assert bound[0].target_classification is Classification.INTERNAL
     assert bound[0].target_binding_hash == bound[0].expected_target_binding_hash()
+
+
+@pytest.mark.asyncio
+async def test_rejects_restricted_target_without_explicit_grant() -> None:
+    workspace_id = uuid4()
+    system_id = uuid4()
+    domain_id = uuid4()
+    target = asset(
+        workspace_id=workspace_id,
+        classification=Classification.RESTRICTED,
+        system_id=system_id,
+        domain_id=domain_id,
+    )
+    actor = replace(
+        subject(workspace_id=workspace_id, system_id=system_id),
+        clearance=Classification.RESTRICTED,
+        allowed_domain_ids=frozenset({domain_id}),
+    )
+
+    with pytest.raises(ForbiddenError, match="not available"):
+        await authorizer((target,)).authorize_targets(
+            workspace_id=workspace_id,
+            subject=actor,
+            items=(item(),),
+            request_classification=Classification.RESTRICTED,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="restricted-without-grant",
+        )
 
 
 @pytest.mark.asyncio
@@ -320,6 +361,64 @@ async def test_approval_authorization_reads_only_the_actors_system_targets() -> 
 
     assert visible_item_ids == frozenset({request.items[0].item_id})
     assert index.requested_external_urns == [(first_asset.external_urn,)]
+
+
+@pytest.mark.asyncio
+async def test_approval_filter_keeps_same_asset_self_approval_denied_per_request() -> None:
+    now = datetime.now(UTC)
+    workspace_id = uuid4()
+    system_id = uuid4()
+    target = asset(workspace_id=workspace_id, system_id=system_id)
+    actor = replace(
+        subject(
+            workspace_id=workspace_id,
+            system_id=system_id,
+            action=Action.CHANGE_APPROVE,
+        ),
+        authentication_assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+        authentication_time=now,
+    )
+    maker = replace(actor, allowed_actions=frozenset({Action.CHANGE_CREATE}))
+    binding = (
+        await authorizer((target,)).authorize_targets(
+            workspace_id=workspace_id,
+            subject=maker,
+            items=(item(),),
+            request_classification=Classification.INTERNAL,
+            environment=EnvironmentAttributes(requested_at=now),
+            request_id="bind-shared-target",
+        )
+    )[0]
+    self_request = ChangeRequest.create(
+        workspace_id=workspace_id,
+        number="CR-SELF",
+        request_type="CATALOG_METADATA",
+        title="Self",
+        description="",
+        requester_id=actor.subject_id,
+        items=[binding],
+    )
+    other_request = ChangeRequest.create(
+        workspace_id=workspace_id,
+        number="CR-OTHER",
+        request_type="CATALOG_METADATA",
+        title="Other",
+        description="",
+        requester_id=uuid4(),
+        items=[binding],
+    )
+
+    visible = await authorizer((target,)).filter_authorized_change_requests(
+        workspace_id=workspace_id,
+        subject=actor,
+        change_requests=(self_request, other_request),
+        action=Action.CHANGE_APPROVE,
+        environment=EnvironmentAttributes(requested_at=now),
+        request_id="approval-self-check",
+        strict_binding=True,
+    )
+
+    assert visible == (other_request,)
 
 
 @pytest.mark.asyncio
