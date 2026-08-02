@@ -2,6 +2,7 @@
 set -euo pipefail
 
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+export DATARIVER_REPOSITORY_ROOT="$root"
 datahub_root="$root/runtime/datahub-v1.6.0"
 datahub_commit="059a36c0b035a6057de00114ccac0ea9003d6bc2"
 quickstart_compose="$datahub_root/docker/quickstart/docker-compose-without-neo4j-m1.quickstart.yml"

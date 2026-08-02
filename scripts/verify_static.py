@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -238,6 +239,75 @@ def verify_compose() -> None:
     ):
         if setting not in env_example:
             raise AssertionError(f".env.example is missing external connector setting {setting}")
+
+
+def verify_datahub_mac_capacity_contract() -> None:
+    override_path = ROOT / "infra" / "datahub" / "datahub-v1.6.0-mac-dev.images.yaml"
+    override_source = override_path.read_text(encoding="utf-8")
+    override = yaml.safe_load(override_source.replace("!override", ""))
+    if not isinstance(override, dict):
+        raise AssertionError("DataHub Mac override must contain a YAML mapping")
+    services = override.get("services", {})
+    if not isinstance(services, dict):
+        raise AssertionError("DataHub Mac override services must be a mapping")
+
+    actions = services.get("datahub-actions", {})
+    if not isinstance(actions, dict) or actions.get("environment", {}).get("UV_NO_CACHE") != "1":
+        raise AssertionError("DataHub Actions must disable its persistent uv cache")
+
+    gms = services.get("datahub-gms", {})
+    logging = gms.get("logging", {}) if isinstance(gms, dict) else {}
+    if logging != {
+        "driver": "json-file",
+        "options": {"max-size": "64m", "max-file": "4"},
+    }:
+        raise AssertionError("DataHub GMS must keep a bounded local json-file log")
+    expected_logback_mount = (
+        "${DATARIVER_REPOSITORY_ROOT:?required}/infra/datahub/gms-logback.xml:"
+        "/etc/datariver/datahub/gms-logback.xml:ro"
+    )
+    if expected_logback_mount not in gms.get("volumes", []):
+        raise AssertionError("DataHub GMS must mount the checked-in bounded logback policy")
+    java_options = gms.get("environment", {}).get("JAVA_OPTS", "")
+    if java_options != (
+        "-Xms1g -Xmx1g -Dlogback.configurationFile=/etc/datariver/datahub/gms-logback.xml"
+    ):
+        raise AssertionError("DataHub GMS must activate the bounded logback policy")
+
+    logback_path = ROOT / "infra" / "datahub" / "gms-logback.xml"
+    if logback_path.is_symlink() or not logback_path.is_file():
+        raise AssertionError("The checked-in DataHub GMS logback policy is not a regular file")
+    if logback_path.stat().st_size > 16 * 1024:
+        raise AssertionError("The checked-in DataHub GMS logback policy is unexpectedly large")
+    # This parser reads one size-bounded, repository-controlled file, never deployment input.
+    logback_root = ET.parse(logback_path).getroot()  # noqa: S314
+    expected_policies = {
+        "FILE": ("32MB", "128MB", "3"),
+        "DEBUG_FILE": ("16MB", "64MB", "1"),
+        "GRAPHQL_DEBUG_FILE": ("16MB", "64MB", "1"),
+    }
+    for appender_name, expected in expected_policies.items():
+        appender = logback_root.find(f"./appender[@name='{appender_name}']")
+        policy = appender.find("rollingPolicy") if appender is not None else None
+        observed = (
+            policy.findtext("maxFileSize") if policy is not None else None,
+            policy.findtext("totalSizeCap") if policy is not None else None,
+            policy.findtext("maxHistory") if policy is not None else None,
+        )
+        if observed != expected:
+            raise AssertionError(
+                f"DataHub GMS {appender_name} producer log retention is not bounded"
+            )
+
+    start_source = (ROOT / "scripts" / "start_datahub_mac_dev.sh").read_text(encoding="utf-8")
+    for fragment in (
+        'datahub_commit="059a36c0b035a6057de00114ccac0ea9003d6bc2"',
+        'image_override="$root/infra/datahub/datahub-v1.6.0-mac-dev.images.yaml"',
+        'export DATARIVER_REPOSITORY_ROOT="$root"',
+        '-f "$image_override"',
+    ):
+        if fragment not in start_source:
+            raise AssertionError("DataHub Mac startup must use the pinned checked-in override")
 
 
 def verify_observability_contract() -> None:
@@ -1590,6 +1660,7 @@ def verify_document_links() -> None:
 
 def main() -> None:
     verify_compose()
+    verify_datahub_mac_capacity_contract()
     verify_observability_contract()
     verify_build_context()
     verify_multiarch_release_contract()
