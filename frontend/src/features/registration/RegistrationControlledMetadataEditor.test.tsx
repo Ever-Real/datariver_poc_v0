@@ -14,7 +14,13 @@ const asset: CatalogAssetDetail = {
 }
 
 const proposal: ChangeRequestRecord = {
-  id: 'cr-1', number: 'CR-FAB-260718-9A3C', request_type: 'CATALOG_CONTROLLED_METADATA', title: 'wafer Tag 변경', description: 'Governed tag update', state: 'REGISTERED', requester_id: 'subject-1', requester_department_id: null, current_round_id: 'round-1', current_round_number: 1, created_at: '2026-07-18T00:00:00Z', requested_due_date: null, priority: null, urgency: null, classification: 'INTERNAL', version: 1, items: [], approvals: [], transitions: [], rounds: [{ id: 'round-1', round_number: 1, submitted_by: 'subject-1', submitted_at: '2026-07-18T00:00:00Z', closed_at: null, evidence_hash: 'a'.repeat(64) }], test_runs: [],
+  id: 'cr-1', number: 'CR-FAB-260718-9A3C', request_type: 'CATALOG_CONTROLLED_METADATA', title: 'wafer Tag 변경', description: 'Governed tag update', state: 'REGISTERED', requester_id: 'subject-1', requester_department_id: null, current_round_id: 'round-1', current_round_number: 1, revision_allowed: false, created_at: '2026-07-18T00:00:00Z', requested_due_date: null, priority: null, urgency: null, classification: 'INTERNAL', version: 1, items: [], approvals: [], transitions: [], rounds: [{
+    id: 'round-1', round_number: 1, submitted_by: 'subject-1', submitted_at: '2026-07-18T00:00:00Z', closed_at: null, evidence_hash: 'a'.repeat(64),
+    revision_kind: 'LEGACY', title: 'wafer Tag 변경', request_date: null,
+    request_department: '', request_reason: 'Governed tag update', request_content: '',
+    requested_due_date: null, priority: null, urgency: null, classification: 'INTERNAL',
+    selected_system_id: null,
+  }], test_runs: [],
 }
 
 function clientWith(request: unknown): ApiClient {

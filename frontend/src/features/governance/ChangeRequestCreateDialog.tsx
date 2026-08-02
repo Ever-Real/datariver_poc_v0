@@ -84,11 +84,46 @@ function termValues(asset: CatalogAssetDetail): string[] {
   return asset.glossary_terms.flatMap((value) => tokens({ terms: [value] }, 'terms'))
 }
 
+function record(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : ''
+}
+
+function stringValues(value: unknown): string[] {
+  return Array.isArray(value)
+    ? unique(value.filter((item): item is string => typeof item === 'string'))
+    : []
+}
+
+function snapshotColumns(value: unknown, nested: boolean): ColumnDraft[] {
+  if (!Array.isArray(value)) return []
+  return value.flatMap((item) => {
+    const column = record(item)
+    if (!column) return []
+    const requested = nested ? record(column.requested) : column
+    if (!requested) return []
+    return [{
+      field_path: stringValue(column.field_path),
+      data_type: stringValue(requested.data_type),
+      description: stringValue(requested.description),
+      requested_change: stringValue(requested.requested_change),
+      tags: stringValues(requested.tags),
+      terms: stringValues(requested.terms),
+    }]
+  })
+}
+
 export function ChangeRequestCreateDialog({
   open,
   client,
   requesterName,
   requesterEmail,
+  revision,
   onClose,
   onCreated,
 }: {
@@ -96,9 +131,16 @@ export function ChangeRequestCreateDialog({
   client: ApiClient
   requesterName: string
   requesterEmail?: string
+  revision?: ChangeRequestRecord
   onClose: () => void
   onCreated: (changeRequest: ChangeRequestRecord) => void
 }) {
+  const revisionMode = Boolean(
+    revision
+    && revision.request_type === 'CHANGE_INTAKE'
+    && revision.state === 'CHANGES_REQUESTED'
+    && revision.revision_allowed,
+  )
   const [query, setQuery] = useState('')
   const [results, setResults] = useState<CatalogAsset[]>([])
   const [searching, setSearching] = useState(false)
@@ -127,7 +169,88 @@ export function ChangeRequestCreateDialog({
   const registrationReported = useRef(false)
 
   useEffect(() => {
-    if (!open) return
+    if (!open || !revision) return
+    if (!revisionMode) {
+      setError(new Error('현재 변경 요청은 수정하여 재상신할 수 없습니다.'))
+      return
+    }
+    const currentRound = revision.rounds.find((item) => item.id === revision.current_round_id)
+    if (!currentRound?.selected_system_id) {
+      setError(new Error('현재 회차의 정규화된 시스템 정보가 없습니다.'))
+      return
+    }
+    const controller = new AbortController()
+    setQuery('')
+    setResults([])
+    setTargets([])
+    setTitle(currentRound.title)
+    setSystemId(currentRound.selected_system_id)
+    setSystems([{
+      id: currentRound.selected_system_id,
+      code: currentRound.selected_system_id,
+      name: currentRound.selected_system_id,
+    }])
+    setRequestDate(currentRound.request_date ?? '')
+    setDepartment(currentRound.request_department)
+    setRequestSummary(currentRound.request_reason)
+    setRequestContent(currentRound.request_content)
+    setDueDate(currentRound.requested_due_date ?? '')
+    setPriority(currentRound.priority ?? 'NORMAL')
+    setUrgency(currentRound.urgency ?? 'NORMAL')
+    setSecurity(currentRound.classification as typeof security)
+    setFiles([])
+    setSubmissionAttempted(false)
+    setCreated(undefined)
+    setSubmitting(false)
+    setError(undefined)
+    setSystemsLoading(true)
+    registeredRequest.current = undefined
+    registrationReported.current = false
+    void Promise.all(revision.items.map(async (item): Promise<TargetDraft> => {
+      const document = record(item.after_document)
+      if (document?.kind === 'MANUAL') {
+        return {
+          kind: 'MANUAL',
+          database_name: stringValue(document.database_name),
+          schema_name: stringValue(document.schema_name),
+          table_name: stringValue(document.table_name),
+          owner: stringValue(document.owner),
+          description: stringValue(document.description),
+          requested_change: stringValue(document.requested_change),
+          tags: stringValues(document.tags),
+          terms: stringValues(document.terms),
+          columns: snapshotColumns(document.columns, false),
+        }
+      }
+      if (document?.kind !== 'EXISTING' || !item.target_asset_id) {
+        throw new Error('현재 회차에 수정할 수 없는 변경 대상이 포함되어 있습니다.')
+      }
+      const requested = record(document.requested)
+      const asset = await client.request<CatalogAssetDetail>(
+        `/change-requests/${revision.id}/revision-targets/${item.target_asset_id}`,
+        { signal: controller.signal },
+      )
+      return {
+        kind: 'EXISTING',
+        asset,
+        description: stringValue(requested?.description),
+        requested_change: stringValue(requested?.requested_change),
+        tags: stringValues(requested?.tags),
+        terms: stringValues(requested?.terms),
+        columns: snapshotColumns(requested?.columns, true),
+      }
+    })).then((nextTargets) => {
+      if (!controller.signal.aborted) setTargets(nextTargets)
+    }).catch((next) => {
+      if (!controller.signal.aborted) setError(next)
+    }).finally(() => {
+      if (!controller.signal.aborted) setSystemsLoading(false)
+    })
+    return () => controller.abort()
+  }, [client, open, revision, revisionMode])
+
+  useEffect(() => {
+    if (!open || revision) return
     const controller = new AbortController()
     setSystemsLoading(true)
     void client.request<{ items: Array<{ id: string; code: string; name: string }> }>(
@@ -139,7 +262,7 @@ export function ChangeRequestCreateDialog({
     }).catch((next) => { if (!controller.signal.aborted) setError(next) })
       .finally(() => { if (!controller.signal.aborted) setSystemsLoading(false) })
     return () => controller.abort()
-  }, [client, open])
+  }, [client, open, revision])
 
   useEffect(() => {
     if (!open || !systemId || query.trim().length < 2) {
@@ -152,8 +275,11 @@ export function ChangeRequestCreateDialog({
     searchController.current = controller
     const timer = window.setTimeout(() => {
       setSearching(true)
+      const path = revisionMode && revision
+        ? `/change-requests/${revision.id}/revision-targets?q=${encodeURIComponent(query.trim())}&limit=12`
+        : `/change-requests/targets?system_id=${encodeURIComponent(systemId)}&q=${encodeURIComponent(query.trim())}&limit=12`
       void client.request<CatalogSearch>(
-        `/change-requests/targets?system_id=${encodeURIComponent(systemId)}&q=${encodeURIComponent(query.trim())}&limit=12`,
+        path,
         { signal: controller.signal },
       )
         .then((value) => { if (!controller.signal.aborted) setResults(value.items) })
@@ -161,7 +287,7 @@ export function ChangeRequestCreateDialog({
         .finally(() => { if (!controller.signal.aborted) setSearching(false) })
     }, 220)
     return () => { controller.abort(); window.clearTimeout(timer) }
-  }, [client, open, query, systemId])
+  }, [client, open, query, revision, revisionMode, systemId])
 
   useEffect(() => () => {
     searchController.current?.abort()
@@ -214,8 +340,11 @@ export function ChangeRequestCreateDialog({
     detailController.current?.abort()
     detailController.current = controller
     setError(undefined)
+    const path = revisionMode && revision
+      ? `/change-requests/${revision.id}/revision-targets/${summary.id}`
+      : `/change-requests/targets/${summary.id}?system_id=${encodeURIComponent(systemId)}`
     void client.request<CatalogAssetDetail>(
-      `/change-requests/targets/${summary.id}?system_id=${encodeURIComponent(systemId)}`,
+      path,
       { signal: controller.signal },
     )
       .then((asset) => {
@@ -333,10 +462,16 @@ export function ChangeRequestCreateDialog({
     setError(undefined)
     let changeRequest: ChangeRequestRecord | undefined
     try {
-      changeRequest = await client.request<ChangeRequestRecord>('/change-requests/intake', {
+      const path = revisionMode && revision
+        ? `/change-requests/${revision.id}/revisions`
+        : '/change-requests/intake'
+      changeRequest = await client.request<ChangeRequestRecord>(path, {
         method: 'POST',
         signal: controller.signal,
-        idempotencyKey: newIdempotencyKey('change-request-intake'),
+        idempotencyKey: newIdempotencyKey(
+          revisionMode ? 'change-request-revision' : 'change-request-intake',
+        ),
+        ifMatch: revisionMode && revision ? `"${revision.version}"` : undefined,
         body: JSON.stringify({
           title: title.trim(), system_id: systemId, request_date: requestDate || null,
           request_department: department.trim(), request_reason: requestSummary.trim(), request_content: requestContent.trim(),
@@ -366,7 +501,7 @@ export function ChangeRequestCreateDialog({
         if (changeRequest) {
           const detail = next instanceof Error ? next.message : '알 수 없는 오류'
           setError(new Error(
-            `${changeRequest.number} 변경 요청은 등록되었지만 첨부파일 처리가 완료되지 않았습니다. `
+            `${changeRequest.number} 변경 요청은 ${revisionMode ? '재상신' : '등록'}되었지만 첨부파일 처리가 완료되지 않았습니다. `
               + `상세 화면에서 상태를 다시 확인하세요. (${detail})`,
           ))
         } else {
@@ -395,25 +530,29 @@ export function ChangeRequestCreateDialog({
   }
 
   return <Dialog
-    description="기존 테이블은 서버가 현재 DataHub 원본을 재검증하고, 신규 테이블은 감사 가능한 제안으로 기록합니다."
+    description={revisionMode
+      ? '현재 회차를 보존하고 수정된 메타데이터와 대상만 새 회차로 재상신합니다.'
+      : '기존 테이블은 서버가 현재 DataHub 원본을 재검증하고, 신규 테이블은 감사 가능한 제안으로 기록합니다.'}
     footer={<>
       {submissionHint && <span className="governance-create-submit-hint" role="status">{submissionHint}</span>}
       <button className="button button-secondary" onClick={requestClose} type="button">취소</button>
-      {!created && <button className="button" disabled={submitting} form="change-request-create-form" type="submit">{submitting ? '제출 중…' : 'CR 제출'}</button>}
+      {!created && <button className="button" disabled={submitting} form="change-request-create-form" type="submit">{submitting ? '제출 중…' : revisionMode ? '수정 재상신' : 'CR 제출'}</button>}
     </>}
     onRequestClose={requestClose}
     open={open}
     size="workspace"
-    title="신규 CR 신청"
+    title={revisionMode && revision ? `${revision.number} 수정 및 재상신` : '신규 CR 신청'}
   >
     <form className="governance-create-form governance-intake-form" id="change-request-create-form" noValidate onSubmit={(event) => void submit(event)}>
-      {created ? <div className="notice" role="status"><strong>{created.number}</strong> 변경 요청을 등록했습니다. 개발 담당자는 검토, 변경/TEST, 최종검토 단계를 진행할 수 있습니다.</div> : <>
+      {created ? <div className="notice" role="status"><strong>{created.number}</strong> 변경 요청을 {revisionMode ? '새 회차로 재상신했습니다.' : '등록했습니다. 개발 담당자는 검토, 변경/TEST, 최종검토 단계를 진행할 수 있습니다.'}</div> : <>
         <fieldset>
           <legend>CR 기본 정보</legend>
           <div className="governance-create-grid">
             <label className="wide">변경요청 제목<input maxLength={500} onChange={(event) => setTitle(event.target.value)} placeholder="예: A 테이블 컬럼 추가 및 용어 표준화" required value={title} /></label>
             <label>요청자<input readOnly title={requesterEmail ?? requesterName} value={requesterEmail ? `${requesterName} · ${requesterEmail}` : requesterName} /></label>
-            <label>관련 시스템<select onChange={(event) => changeSystem(event.target.value)} required value={systemId}><option value="">시스템 선택</option>{systems.map((system) => <option key={system.id} value={system.id}>{system.name} · {system.code}</option>)}</select></label>
+            <label>관련 시스템{revisionMode
+              ? <input readOnly title="수정 재상신에서는 기존 시스템을 변경할 수 없습니다." value={systemId} />
+              : <select onChange={(event) => changeSystem(event.target.value)} required value={systemId}><option value="">시스템 선택</option>{systems.map((system) => <option key={system.id} value={system.id}>{system.name} · {system.code}</option>)}</select>}</label>
             <label>요청일자<input onChange={(event) => setRequestDate(event.target.value)} type="date" value={requestDate} /></label>
             <label>요청부서<input maxLength={500} onChange={(event) => setDepartment(event.target.value)} placeholder="인증 프로필에 부서 정보가 없어 직접 입력" value={department} /></label>
             <label>요청 납기<input onChange={(event) => setDueDate(event.target.value)} type="date" value={dueDate} /></label>

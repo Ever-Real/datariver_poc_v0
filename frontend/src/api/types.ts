@@ -615,6 +615,7 @@ export interface ChangeRequestRecord {
   requester_department_id: string | null
   current_round_id: string
   current_round_number: number
+  revision_allowed: boolean
   created_at: string
   requested_due_date: string | null
   priority: 'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL' | null
@@ -671,6 +672,17 @@ export interface ChangeRequestRecord {
     submitted_at: string
     closed_at: string | null
     evidence_hash: string
+    revision_kind: 'LEGACY' | 'INITIAL' | 'EDITED'
+    title: string
+    request_date: string | null
+    request_department: string
+    request_reason: string
+    request_content: string
+    requested_due_date: string | null
+    priority: 'LOW' | 'NORMAL' | 'HIGH' | 'CRITICAL' | null
+    urgency: 'NORMAL' | 'URGENT' | 'EMERGENCY' | null
+    classification: string
+    selected_system_id: string | null
   }>
   test_runs: Array<{
     id: string

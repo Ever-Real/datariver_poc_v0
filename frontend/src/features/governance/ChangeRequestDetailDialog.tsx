@@ -39,6 +39,7 @@ interface ChangeRequestDetailDialogProps extends AssuranceActions {
   applyReportLoading: boolean
   applyReportError?: unknown
   onClose: () => void
+  onEdit: () => void
   onRefresh: () => void
   onAction: (action: ChangeActionHint, reason?: string) => void
   onDownloadAttachment: (attachment: ChangeRequestAttachment) => void
@@ -208,6 +209,7 @@ export function ChangeRequestDetailDialog({
   applyReportLoading,
   applyReportError,
   onClose,
+  onEdit,
   onRefresh,
   onAction,
   onDownloadAttachment,
@@ -393,6 +395,12 @@ export function ChangeRequestDetailDialog({
   }, [client, onRefresh, testAttachmentId, testState, testSummary, testSystemId, value])
   const stageHints = selectedStage === activeStage ? hints : []
   const rejectHint = stageHints.find((hint) => hint.targetState === 'REJECTED')
+  const currentRound = value?.rounds.find((item) => item.id === value.current_round_id)
+  const canEdit = Boolean(
+    value?.revision_allowed
+    && value.state === 'CHANGES_REQUESTED'
+    && value.request_type === 'CHANGE_INTAKE',
+  )
 
   return (
     <Dialog
@@ -428,11 +436,11 @@ export function ChangeRequestDetailDialog({
             <h3 id="request-stage-heading" className="sr-only">1단계 요청 상세</h3>
             <aside className="grid content-start gap-3">
               <section className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm">
-                <div className="mb-3 flex items-center justify-between"><h4 className="m-0 text-xs font-black text-navy-900">BASIC METADATA</h4><button type="button" className="button button-secondary" disabled title="등록 후 CR 메타데이터 수정 API가 제공되지 않습니다.">Edit Request</button></div>
+                <div className="mb-3 flex items-center justify-between"><h4 className="m-0 text-xs font-black text-navy-900">BASIC METADATA</h4><button type="button" className="button button-secondary" disabled={!canEdit || busy} title={canEdit ? '현재 회차를 보존하고 수정된 새 회차를 재상신합니다.' : '현재 사용자와 상태에서는 요청을 수정할 수 없습니다.'} onClick={onEdit}>Edit Request</button></div>
                 <dl className="grid gap-2 text-xs">
                   <div><dt className="text-[10px] font-black text-slate-500 uppercase">요청자</dt><dd className="m-0 mt-0.5 break-all">{value.requester_id}</dd></div>
                   <div><dt className="text-[10px] font-black text-slate-500 uppercase">담당자</dt><dd className="m-0 mt-0.5">서버 상세 응답에 미포함</dd></div>
-                  <div><dt className="text-[10px] font-black text-slate-500 uppercase">요청부서</dt><dd className="m-0 mt-0.5">서버 상세 응답에 미포함</dd></div>
+                  <div><dt className="text-[10px] font-black text-slate-500 uppercase">요청부서</dt><dd className="m-0 mt-0.5">{display(currentRound?.request_department)}</dd></div>
                   <div><dt className="text-[10px] font-black text-slate-500 uppercase">긴급도</dt><dd className="m-0 mt-0.5">{display(value.urgency)}</dd></div>
                   <div><dt className="text-[10px] font-black text-slate-500 uppercase">보안등급</dt><dd className="m-0 mt-0.5">{value.classification}</dd></div>
                   <div><dt className="text-[10px] font-black text-slate-500 uppercase">희망 납기일</dt><dd className="m-0 mt-0.5">{display(value.requested_due_date)}</dd></div>
@@ -452,12 +460,13 @@ export function ChangeRequestDetailDialog({
             <div className="grid content-start gap-4">
               <section className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm">
                 <h4 className="mt-0 mb-2 text-xs font-black text-navy-900">REQUEST REASON</h4>
-                <p className="m-0 whitespace-pre-wrap text-sm leading-6 text-slate-700">{display(value.description)}</p>
+                <p className="m-0 whitespace-pre-wrap text-sm leading-6 text-slate-700">{display(currentRound?.request_reason || value.description)}</p>
+                {currentRound?.request_content && <p className="mb-0 mt-3 whitespace-pre-wrap text-sm leading-6 text-slate-700">{currentRound.request_content}</p>}
               </section>
               <section className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm">
                 <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h4 className="m-0 text-xs font-black text-navy-900">CHANGE TARGETS <span className="text-enterprise-blue">{rows.length}</span></h4><span className="text-[10px] text-slate-500">비고와 작업 내용은 불변 요청 증거이며 읽기 전용입니다.</span></div>
                 <DenseDataTable caption="CR 변경 대상" columns={targetColumns} data={rows} getRowId={(row) => row.id} emptyMessage="등록된 변경 대상이 없습니다." />
-                <div className="mt-3"><GovernedUnavailable compact title="등록 후 대상 편집 미지원" description="현재 API는 CR 대상과 해시를 불변 증거로 저장합니다. 인라인 수정 계약이 승인되기 전에는 화면에서 값을 변경하거나 저장하지 않습니다." /></div>
+                <div className="mt-3"><GovernedUnavailable compact title={canEdit ? '새 회차에서 수정 가능' : '현재 요청 수정 불가'} description={canEdit ? 'Edit Request를 누르면 현재 회차의 메타데이터와 대상을 새 revision draft로 불러옵니다. 기존 회차 증거는 변경되지 않습니다.' : '서버가 현재 사용자·상태·대상 권한을 확인한 결과 수정 가능한 revision 명령을 제공하지 않았습니다.'} /></div>
               </section>
               <div className="flex justify-end gap-2">{stageHints.map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy} onClick={() => onAction(hint)}>{hint.label}</button>)}</div>
             </div>

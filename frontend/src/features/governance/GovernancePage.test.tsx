@@ -21,6 +21,7 @@ function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequ
     requester_department_id: null,
     current_round_id: 'round-1',
     current_round_number: 1,
+    revision_allowed: false,
     created_at: '2026-07-17T01:02:03Z',
     requested_due_date: null,
     priority: null,
@@ -66,7 +67,25 @@ function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequ
       occurred_at: '2026-07-17T02:04:05Z',
       round_id: 'round-1',
     }],
-    rounds: [{ id: 'round-1', round_number: 1, submitted_by: 'subject-1', submitted_at: '2026-07-17T01:02:03Z', closed_at: null, evidence_hash: 'a'.repeat(64) }],
+    rounds: [{
+      id: 'round-1',
+      round_number: 1,
+      submitted_by: 'subject-1',
+      submitted_at: '2026-07-17T01:02:03Z',
+      closed_at: null,
+      evidence_hash: 'a'.repeat(64),
+      revision_kind: 'LEGACY',
+      title: 'Governed change',
+      request_date: null,
+      request_department: '',
+      request_reason: '설명 변경을 검토합니다.',
+      request_content: '',
+      requested_due_date: null,
+      priority: null,
+      urgency: null,
+      classification: 'INTERNAL',
+      selected_system_id: null,
+    }],
     test_runs: [],
     ...overrides,
   }
@@ -379,7 +398,8 @@ describe('GovernancePage', () => {
     expect(await within(dialog).findByText('REQUEST REASON')).toBeInTheDocument()
     expect(within(dialog).getByRole('table', { name: 'CR 변경 대상' })).toBeInTheDocument()
     expect(within(dialog).getByLabelText(`${existing.items[0]!.target_ref} 비고`)).toHaveAttribute('readonly')
-    expect(within(dialog).getByText(/등록 후 대상 편집 미지원/)).toBeInTheDocument()
+    expect(within(dialog).getByText('현재 요청 수정 불가')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: 'Edit Request' })).toBeDisabled()
     expect(within(dialog).getByText('화면의 명령은 현재 상태를 기준으로 한 힌트입니다.')).toBeInTheDocument()
     expect(screen.queryByLabelText('DataHub 대상 URN')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('승인 대상 JSON')).not.toBeInTheDocument()
@@ -390,6 +410,142 @@ describe('GovernancePage', () => {
     expect(row).toHaveFocus()
     const detailOptions = request.mock.calls.find(([path]) => path === `/change-requests/${existing.id}`)?.[1]
     expect(detailOptions?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('opens the bounded revision editor only when the server allows it and shows the new round', async () => {
+    const manualItem = {
+      ...changeRequest().items[0]!,
+      id: 'manual-item-1',
+      target_type: 'PROPOSED_DATASET_CHANGE_INTAKE',
+      target_ref: 'urn:datariver:proposed-dataset:manual-item-1',
+      aspect_name: 'changeIntake',
+      operation: 'CREATE',
+      after_document: {
+        contract: 'change-intake-v1',
+        kind: 'MANUAL',
+        database_name: 'analytics',
+        schema_name: 'quality',
+        table_name: 'wafer_summary',
+        owner: 'Data Engineering',
+        description: 'Current summary description',
+        requested_change: 'Create the governed summary',
+        tags: ['tier:silver'],
+        terms: ['Wafer'],
+        columns: [{
+          field_path: 'wafer_id',
+          data_type: 'uuid',
+          description: 'Wafer identifier',
+          requested_change: 'Create the identifier',
+          tags: [],
+          terms: [],
+        }],
+      },
+      target_asset_id: null,
+      target_asset_type: null,
+      target_system_id: null,
+      target_domain_id: null,
+      target_owner_department_id: null,
+      target_classification: null,
+      target_lifecycle: null,
+      target_source_version: null,
+      target_observed_at: null,
+      target_binding_hash: null,
+      routing_system_id: 'system-1',
+    }
+    const editable = changeRequest({
+      request_type: 'CHANGE_INTAKE',
+      title: 'Original intake title',
+      description: 'Original reason\nOriginal content',
+      state: 'CHANGES_REQUESTED',
+      revision_allowed: true,
+      items: [manualItem],
+      rounds: [{
+        id: 'round-1',
+        round_number: 1,
+        submitted_by: 'subject-1',
+        submitted_at: '2026-08-02T01:02:03Z',
+        closed_at: null,
+        evidence_hash: 'a'.repeat(64),
+        revision_kind: 'INITIAL',
+        title: 'Original intake title',
+        request_date: '2026-08-02',
+        request_department: 'Data Platform',
+        request_reason: 'Original reason',
+        request_content: 'Original content',
+        requested_due_date: '2026-08-20',
+        priority: 'HIGH',
+        urgency: 'URGENT',
+        classification: 'CONFIDENTIAL',
+        selected_system_id: 'system-1',
+      }],
+    })
+    const revised = changeRequest({
+      ...editable,
+      title: 'Revised intake title',
+      state: 'REGISTERED',
+      revision_allowed: false,
+      current_round_id: 'round-2',
+      current_round_number: 2,
+      version: 8,
+      rounds: [...editable.rounds, {
+        ...editable.rounds[0]!,
+        id: 'round-2',
+        round_number: 2,
+        revision_kind: 'EDITED',
+        title: 'Revised intake title',
+        evidence_hash: 'b'.repeat(64),
+      }],
+    })
+    let mutationCompleted = false
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path === '/change-requests/summaries?limit=25') {
+        return Promise.resolve(summaryList([mutationCompleted ? revised : editable]))
+      }
+      if (path === `/change-requests/${editable.id}`) return Promise.resolve(editable)
+      if (path === `/change-requests/${editable.id}/attachments/page?limit=25`) {
+        return Promise.resolve({ items: [], page: { limit: 25, next_cursor: null } })
+      }
+      if (path === `/change-requests/${editable.id}/apply-report`) {
+        return Promise.reject(new Error('No apply report yet.'))
+      }
+      if (path === `/change-requests/${editable.id}/revisions` && options?.method === 'POST') {
+        mutationCompleted = true
+        return Promise.resolve(revised)
+      }
+      throw new Error(`Unexpected request: ${path} ${options?.method ?? 'GET'}`)
+    })
+    renderPage(apiClient(request))
+    const detailDialog = await openDetail(editable)
+
+    const edit = within(detailDialog).getByRole('button', { name: 'Edit Request' })
+    expect(edit).toBeEnabled()
+    fireEvent.click(edit)
+    const revisionDialog = await screen.findByRole('dialog', {
+      name: `${editable.number} 수정 및 재상신`,
+    })
+    expect(within(revisionDialog).getByLabelText('관련 시스템')).toHaveAttribute('readonly')
+    expect(within(revisionDialog).getByLabelText('변경요청 제목')).toHaveValue('Original intake title')
+    expect(within(revisionDialog).getByLabelText('신규 테이블 1 테이블명')).toHaveValue('wafer_summary')
+    fireEvent.change(within(revisionDialog).getByLabelText('변경요청 제목'), {
+      target: { value: 'Revised intake title' },
+    })
+    fireEvent.click(within(revisionDialog).getByRole('button', { name: '수정 재상신' }))
+
+    await waitFor(() => expect(request.mock.calls.filter(
+      ([path]) => path === `/change-requests/${editable.id}/revisions`,
+    )).toHaveLength(1))
+    const options = request.mock.calls.find(
+      ([path]) => path === `/change-requests/${editable.id}/revisions`,
+    )?.[1]
+    expect(options).toMatchObject({ method: 'POST', ifMatch: '"7"' })
+    expect(options?.idempotencyKey).toMatch(/^change-request-revision-/)
+
+    const revisedDialog = await screen.findByRole('dialog', {
+      name: `${revised.number} · ${revised.title}`,
+    })
+    expect(within(revisedDialog).getByText('접수 · REGISTERED')).toBeInTheDocument()
+    expect(within(revisedDialog).getByText('8')).toBeInTheDocument()
+    expect(within(revisedDialog).getByRole('button', { name: 'Edit Request' })).toBeDisabled()
   })
 
   it('aborts and discards a late attachment upload when another CR becomes current', async () => {

@@ -219,6 +219,7 @@ export function GovernancePage({
   const [actionError, setActionError] = useState<unknown>()
   const [pendingAction, setPendingAction] = useState<ChangeActionHint>()
   const [createOpen, setCreateOpen] = useState(false)
+  const [revision, setRevision] = useState<ChangeRequestRecord>()
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [nextCursor, setNextCursor] = useState<string>()
@@ -302,6 +303,8 @@ export function GovernancePage({
     setApplyReportError(undefined)
     setActionError(undefined)
     setPendingAction(undefined)
+    setCreateOpen(false)
+    setRevision(undefined)
     setReason('')
     preserveReasonForConflictRetry.current = false
     setBusy(false)
@@ -479,6 +482,7 @@ export function GovernancePage({
     setApplyReportError(undefined)
     setActionError(undefined)
     setPendingAction(undefined)
+    setRevision(undefined)
     setReason('')
     preserveReasonForConflictRetry.current = false
   }, [])
@@ -760,7 +764,7 @@ export function GovernancePage({
         eyebrow="Four-eyes Governance"
         title="변경 요청과 승인"
         description="타입이 지정된 변경을 검토하고 Maker-Checker 상태 전이와 적용 증거를 관리합니다."
-        actions={<div className="page-title-actions"><button type="button" className="button button-secondary" disabled={listLoading} onClick={refreshFirstPage}>새로고침</button><button type="button" className="button" onClick={() => setCreateOpen(true)}>신규 CR 신청</button></div>}
+        actions={<div className="page-title-actions"><button type="button" className="button button-secondary" disabled={listLoading} onClick={refreshFirstPage}>새로고침</button><button type="button" className="button" onClick={() => { setRevision(undefined); setCreateOpen(true) }}>신규 CR 신청</button></div>}
       />
 
       <div className="governance-toolbar panel">
@@ -840,7 +844,7 @@ export function GovernancePage({
 
       <ChangeRequestDetailDialog
         key={selectedId ?? 'closed'}
-        open={Boolean(selectedId)}
+        open={Boolean(selectedId) && !revision}
         client={client}
         fallback={undefined}
         value={detail}
@@ -858,6 +862,7 @@ export function GovernancePage({
         applyReportLoading={applyReportLoading}
         applyReportError={applyReportError}
         onClose={closeDetail}
+        onEdit={() => { if (detail?.revision_allowed) setRevision(detail) }}
         onRefresh={() => { if (selectedId) void loadDetail(selectedId) }}
         onAction={openAction}
         onDownloadAttachment={(attachment) => { void downloadAttachment(attachment) }}
@@ -870,18 +875,21 @@ export function GovernancePage({
         onEnroll={onEnroll}
         hardwareWebauthnEnabled={hardwareWebauthnEnabled}
       />
-      <ChangeRequestCreateDialog
-        open={createOpen}
+      {(createOpen || revision) && <ChangeRequestCreateDialog
+        key={revision ? `revision-${revision.id}-${revision.current_round_id}` : 'create'}
+        open
         client={client}
         requesterName={requesterName}
         requesterEmail={requesterEmail}
-        onClose={() => setCreateOpen(false)}
+        revision={revision}
+        onClose={() => { setCreateOpen(false); setRevision(undefined) }}
         onCreated={(value) => {
           setCreateOpen(false)
-          void value
-          refreshFirstPage()
+          setRevision(undefined)
+          if (selectedId === value.id) setDetail(value)
+          void refreshFirstPage()
         }}
-      />
+      />}
       <ChangeActionConfirmDialog
         action={pendingAction}
         changeRequest={detail}

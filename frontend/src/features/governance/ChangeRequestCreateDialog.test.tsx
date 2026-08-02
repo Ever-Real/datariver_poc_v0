@@ -8,16 +8,144 @@ function apiClient(request: (path: string, options?: RequestOptions) => Promise<
   return { request } as unknown as ApiClient
 }
 
-function renderDialog(client: ApiClient, onCreated = vi.fn()) {
+function renderDialog(
+  client: ApiClient,
+  onCreated = vi.fn(),
+  revision?: ChangeRequestRecord,
+) {
   render(<ChangeRequestCreateDialog
     open
     client={client}
     requesterName="Test Requester"
     requesterEmail="requester@example.test"
+    revision={revision}
     onClose={vi.fn()}
     onCreated={onCreated}
   />)
   return { onCreated }
+}
+
+function editableRevision(): ChangeRequestRecord {
+  return {
+    id: 'change-revision-1',
+    number: 'CR-SCT-2026-1',
+    request_type: 'CHANGE_INTAKE',
+    title: 'Current intake title',
+    description: 'Current reason\nCurrent content',
+    state: 'CHANGES_REQUESTED',
+    requester_id: 'requester-1',
+    requester_department_id: null,
+    current_round_id: 'round-1',
+    current_round_number: 1,
+    revision_allowed: true,
+    created_at: '2026-08-02T01:02:03Z',
+    requested_due_date: '2026-08-20',
+    priority: 'HIGH',
+    urgency: 'URGENT',
+    classification: 'CONFIDENTIAL',
+    version: 11,
+    items: [
+      {
+        id: 'item-existing-1',
+        target_type: 'DATAHUB_DATASET_CHANGE_INTAKE',
+        target_ref: 'urn:li:dataset:(urn:li:dataPlatform:postgres,erp.orders,PROD)',
+        aspect_name: 'changeIntake',
+        operation: 'REVIEW',
+        after_document: {
+          contract: 'change-intake-v1',
+          kind: 'EXISTING',
+          requested: {
+            description: 'Requested orders description',
+            requested_change: 'Clarify order metadata',
+            tags: ['tier:gold'],
+            terms: ['Order'],
+            columns: [{
+              field_path: 'order_id',
+              source: { data_type: 'uuid', description: 'Current order ID', tags: [], terms: [] },
+              requested: {
+                data_type: 'uuid',
+                description: 'Requested order ID',
+                requested_change: 'Clarify identifier',
+                tags: ['identifier'],
+                terms: ['Order ID'],
+              },
+            }],
+          },
+        },
+        target_asset_id: 'catalog-asset-1',
+        target_asset_type: 'VIEW',
+        target_system_id: 'system-1',
+        target_domain_id: null,
+        target_owner_department_id: null,
+        target_classification: 'CONFIDENTIAL',
+        target_lifecycle: 'ACTIVE',
+        target_source_version: 'source-v1',
+        target_observed_at: '2026-08-02T01:02:03Z',
+        target_binding_hash: 'binding-1',
+        routing_system_id: 'system-1',
+      },
+      {
+        id: 'item-manual-1',
+        target_type: 'PROPOSED_DATASET_CHANGE_INTAKE',
+        target_ref: 'urn:datariver:proposed-dataset:item-manual-1',
+        aspect_name: 'changeIntake',
+        operation: 'CREATE',
+        after_document: {
+          contract: 'change-intake-v1',
+          kind: 'MANUAL',
+          database_name: 'analytics',
+          schema_name: 'quality',
+          table_name: 'wafer_summary',
+          owner: 'Data Engineering',
+          description: 'Requested wafer summary',
+          requested_change: 'Create a governed dataset',
+          tags: ['tier:silver'],
+          terms: ['Wafer'],
+          columns: [{
+            field_path: 'wafer_id',
+            data_type: 'uuid',
+            description: 'Wafer identifier',
+            requested_change: 'Create primary identifier',
+            tags: ['identifier'],
+            terms: ['Wafer ID'],
+          }],
+        },
+        target_asset_id: null,
+        target_asset_type: null,
+        target_system_id: null,
+        target_domain_id: null,
+        target_owner_department_id: null,
+        target_classification: null,
+        target_lifecycle: null,
+        target_source_version: null,
+        target_observed_at: null,
+        target_binding_hash: null,
+        routing_system_id: 'system-1',
+      },
+    ],
+    approvals: [],
+    transitions: [],
+    rounds: [{
+      id: 'round-1',
+      round_number: 1,
+      submitted_by: 'requester-1',
+      submitted_at: '2026-08-02T01:02:03Z',
+      closed_at: null,
+      evidence_hash: 'a'.repeat(64),
+      revision_kind: 'INITIAL',
+      title: 'Current intake title',
+      request_date: '2026-08-02',
+      request_department: 'Data Platform',
+      request_reason: 'Current reason',
+      request_content: 'Current content',
+      requested_due_date: '2026-08-20',
+      priority: 'HIGH',
+      urgency: 'URGENT',
+      classification: 'CONFIDENTIAL',
+      selected_system_id: 'system-1',
+    }],
+    test_runs: [],
+  }
 }
 
 describe('ChangeRequestCreateDialog', () => {
@@ -320,5 +448,194 @@ describe('ChangeRequestCreateDialog', () => {
       ],
     }))
     expect(onCreated).toHaveBeenCalledWith(created)
+  })
+
+  it('reuses the bounded editor for one fixed-system revision POST', async () => {
+    const original = editableRevision()
+    const revised: ChangeRequestRecord = {
+      ...original,
+      title: 'Revised intake title',
+      state: 'REGISTERED',
+      current_round_id: 'round-2',
+      current_round_number: 2,
+      revision_allowed: false,
+      version: 12,
+      rounds: [...original.rounds, {
+        ...original.rounds[0]!,
+        id: 'round-2',
+        round_number: 2,
+        revision_kind: 'EDITED',
+        title: 'Revised intake title',
+        evidence_hash: 'b'.repeat(64),
+      }],
+    }
+    let finishRevision!: (value: ChangeRequestRecord) => void
+    const revisionResponse = new Promise<ChangeRequestRecord>((resolve) => {
+      finishRevision = resolve
+    })
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path === `/change-requests/${original.id}/revision-targets/catalog-asset-1`) {
+        return Promise.resolve({
+          id: 'catalog-asset-1',
+          external_urn: original.items[0]!.target_ref,
+          asset_type: 'VIEW',
+          name: 'orders',
+          platform: 'postgres',
+          database_name: 'erp',
+          schema_name: 'public',
+          classification: 'CONFIDENTIAL',
+          lifecycle: 'ACTIVE',
+          observed_at: '2026-08-02T01:02:03Z',
+          matches: [],
+          tags: [],
+          terms: [],
+          description: 'Current orders description',
+          ownership: [],
+          glossary_terms: [],
+          quality: {},
+          projection_source_version: 'projection-v1',
+          source_version: 'source-v1',
+          schema_fields: [{
+            fieldPath: 'order_id',
+            nativeDataType: 'uuid',
+            description: 'Current order ID',
+          }],
+        })
+      }
+      if (path === `/change-requests/${original.id}/revision-targets?q=ledger&limit=12`) {
+        return Promise.resolve({ items: [] })
+      }
+      if (path === `/change-requests/${original.id}/revisions` && options?.method === 'POST') {
+        return revisionResponse
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const onCreated = vi.fn()
+    renderDialog(apiClient(request), onCreated, original)
+
+    expect(await screen.findByDisplayValue('Current intake title')).toBeInTheDocument()
+    expect(screen.getByLabelText('관련 시스템')).toHaveValue('system-1')
+    expect(screen.getByLabelText('관련 시스템')).toHaveAttribute('readonly')
+    expect(screen.queryByRole('combobox', { name: '관련 시스템' })).not.toBeInTheDocument()
+    expect(screen.getByLabelText('orders 설명')).toHaveValue('Requested orders description')
+    expect(screen.getByLabelText('order_id 설명')).toHaveValue('Requested order ID')
+    expect(screen.getByLabelText('신규 테이블 2 테이블명')).toHaveValue('wafer_summary')
+    expect(screen.getByLabelText('wafer_summary 컬럼 1 이름')).toHaveValue('wafer_id')
+    expect(request.mock.calls.some(([path]) => path === '/change-requests/systems')).toBe(false)
+
+    fireEvent.change(screen.getByLabelText('변경 대상 검색'), {
+      target: { value: 'ledger' },
+    })
+    await waitFor(() => expect(request.mock.calls.some(
+      ([path]) => path === `/change-requests/${original.id}/revision-targets?q=ledger&limit=12`,
+    )).toBe(true))
+    const searchOptions = request.mock.calls.find(
+      ([path]) => path === `/change-requests/${original.id}/revision-targets?q=ledger&limit=12`,
+    )?.[1]
+    expect(searchOptions?.signal).toBeInstanceOf(AbortSignal)
+    fireEvent.change(screen.getByLabelText('변경요청 제목'), {
+      target: { value: 'Revised intake title' },
+    })
+    fireEvent.change(screen.getByLabelText('orders 설명'), {
+      target: { value: 'Revised orders description' },
+    })
+    fireEvent.change(screen.getByLabelText('신규 테이블 2 테이블명'), {
+      target: { value: 'wafer_summary_v2' },
+    })
+    const submit = screen.getByRole('button', { name: '수정 재상신' })
+    fireEvent.click(submit)
+
+    await waitFor(() => expect(request.mock.calls.filter(
+      ([path]) => path === `/change-requests/${original.id}/revisions`,
+    )).toHaveLength(1))
+    expect(submit).toBeDisabled()
+    fireEvent.click(submit)
+    expect(request.mock.calls.filter(
+      ([path]) => path === `/change-requests/${original.id}/revisions`,
+    )).toHaveLength(1)
+    const revisionOptions = request.mock.calls.find(
+      ([path]) => path === `/change-requests/${original.id}/revisions`,
+    )?.[1]
+    expect(revisionOptions).toMatchObject({ method: 'POST', ifMatch: '"11"' })
+    expect(revisionOptions?.idempotencyKey).toMatch(/^change-request-revision-/)
+    if (typeof revisionOptions?.body !== 'string') throw new Error('Expected a revision JSON body')
+    expect(JSON.parse(revisionOptions.body)).toEqual(expect.objectContaining({
+      title: 'Revised intake title',
+      system_id: 'system-1',
+      request_date: '2026-08-02',
+      request_department: 'Data Platform',
+      request_reason: 'Current reason',
+      request_content: 'Current content',
+      security_level: 'CONFIDENTIAL',
+      targets: [
+        expect.objectContaining({
+          kind: 'EXISTING',
+          asset_id: 'catalog-asset-1',
+          description: 'Revised orders description',
+          columns: [expect.objectContaining({ field_path: 'order_id' })],
+        }),
+        expect.objectContaining({
+          kind: 'MANUAL',
+          table_name: 'wafer_summary_v2',
+          columns: [expect.objectContaining({ field_path: 'wafer_id' })],
+        }),
+      ],
+    }))
+
+    finishRevision(revised)
+    expect(await screen.findByRole('status')).toHaveTextContent('새 회차로 재상신했습니다.')
+    expect(onCreated).toHaveBeenCalledOnce()
+    expect(onCreated).toHaveBeenCalledWith(revised)
+  })
+
+  it('preserves the original round and draft when revision submission fails', async () => {
+    const original = editableRevision()
+    const originalSnapshot = structuredClone(original)
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path === `/change-requests/${original.id}/revision-targets/catalog-asset-1`) {
+        return Promise.resolve({
+          id: 'catalog-asset-1',
+          external_urn: original.items[0]!.target_ref,
+          asset_type: 'VIEW',
+          name: 'orders',
+          platform: 'postgres',
+          database_name: 'erp',
+          schema_name: 'public',
+          classification: 'CONFIDENTIAL',
+          lifecycle: 'ACTIVE',
+          observed_at: '2026-08-02T01:02:03Z',
+          matches: [],
+          tags: [],
+          terms: [],
+          description: 'Current orders description',
+          ownership: [],
+          glossary_terms: [],
+          quality: {},
+          projection_source_version: 'projection-v1',
+          source_version: 'source-v1',
+          schema_fields: [{ fieldPath: 'order_id', nativeDataType: 'uuid' }],
+        })
+      }
+      if (path === `/change-requests/${original.id}/revisions` && options?.method === 'POST') {
+        return Promise.reject(new Error('revision failed'))
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const onCreated = vi.fn()
+    renderDialog(apiClient(request), onCreated, original)
+
+    await screen.findByDisplayValue('Current intake title')
+    fireEvent.change(screen.getByLabelText('변경요청 제목'), {
+      target: { value: 'Draft remains visible' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '수정 재상신' }))
+
+    expect(await screen.findByText('revision failed')).toBeInTheDocument()
+    expect(request.mock.calls.filter(
+      ([path]) => path === `/change-requests/${original.id}/revisions`,
+    )).toHaveLength(1)
+    expect(onCreated).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('변경요청 제목')).toHaveValue('Draft remains visible')
+    expect(original).toEqual(originalSnapshot)
   })
 })

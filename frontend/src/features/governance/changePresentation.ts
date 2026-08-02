@@ -123,7 +123,6 @@ export function changeActionHints(changeRequest: ChangeRequestRecord): ChangeAct
       ]
     case 'CHANGES_REQUESTED':
       return [
-        transition('REGISTERED', '보완 후 재등록', 'primary'),
         transition('CANCELLED', '요청 취소', 'danger'),
       ]
     default:

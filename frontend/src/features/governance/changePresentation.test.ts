@@ -13,6 +13,7 @@ const changesRequested = {
   requester_department_id: null,
   current_round_id: 'round-1',
   current_round_number: 1,
+  revision_allowed: false,
   created_at: '2026-07-17T01:02:03Z',
   requested_due_date: null,
   priority: null,
@@ -22,15 +23,21 @@ const changesRequested = {
   items: [],
   approvals: [],
   transitions: [],
-  rounds: [{ id: 'round-1', round_number: 1, submitted_by: '4963d725-b788-4db4-80b1-5761d96ff994', submitted_at: '2026-07-17T01:02:03Z', closed_at: null, evidence_hash: 'a'.repeat(64) }],
+  rounds: [{
+    id: 'round-1', round_number: 1, submitted_by: '4963d725-b788-4db4-80b1-5761d96ff994',
+    submitted_at: '2026-07-17T01:02:03Z', closed_at: null, evidence_hash: 'a'.repeat(64),
+    revision_kind: 'LEGACY', title: 'Column description correction', request_date: null,
+    request_department: '', request_reason: 'Correct the asset description.', request_content: '',
+    requested_due_date: null, priority: null, urgency: null, classification: 'INTERNAL',
+    selected_system_id: null,
+  }],
   test_runs: [],
 } satisfies ChangeRequestRecord
 
 describe('change request presentation', () => {
-  it('labels an explicit change request and offers only re-registration or cancellation', () => {
+  it('labels a change request and never offers the removed direct re-registration transition', () => {
     expect(changeStateLabel('CHANGES_REQUESTED')).toBe('보완 요청')
     expect(changeActionHints(changesRequested).map((hint) => hint.targetState)).toEqual([
-      'REGISTERED',
       'CANCELLED',
     ])
   })
