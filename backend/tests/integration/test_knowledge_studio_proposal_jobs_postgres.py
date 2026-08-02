@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType
@@ -20,7 +21,15 @@ from datariver.application.services.knowledge_studio_proposal_jobs import (
     KnowledgeStudioProposalJobService,
 )
 from datariver.domain.authz import Action, Classification, SubjectAttributes
-from datariver.domain.common import ConflictError, canonical_json_hash
+from datariver.domain.capability_catalog import (
+    CANONICAL_ADMIN_CAPABILITY_HASH,
+    CANONICAL_ADMIN_ROLE_KEY,
+    CAPABILITY_CATALOG_VERSION,
+    DEFAULT_HUMAN_ADMIN_ACTIONS,
+    AccessRoleKind,
+    AccessRoleManagementSource,
+)
+from datariver.domain.common import ConflictError, ForbiddenError, canonical_json_hash
 from datariver.domain.knowledge_pipeline import ModelBinding
 from datariver.domain.knowledge_studio import TBoxElementInput, TBoxElementKind, TBoxProposalMode
 from datariver.domain.knowledge_studio_proposal_jobs import (
@@ -32,6 +41,11 @@ from datariver.domain.knowledge_studio_proposal_jobs import (
     KnowledgeStudioProposalInputKind,
     KnowledgeStudioProposalJobPins,
     knowledge_studio_proposal_requester_authorization_hash,
+)
+from datariver.domain.profile_roles import (
+    PROFILE_ROLE_BY_TIER,
+    PROFILE_ROLE_POLICY_VERSION,
+    ProfileRoleTier,
 )
 from datariver.infrastructure.db.knowledge_studio_proposal_job_sql import (
     TBOX_PROPOSAL_CONTENT_SAFETY_STRUCTURAL_FUNCTION_SQL,
@@ -60,6 +74,9 @@ CONTRACT_RESTORE_MIGRATION = (
 )
 TRANSITION_IDEMPOTENCY_FIX_MIGRATION = (
     ROOT / "backend/alembic/versions/0093_fix_knowledge_studio_proposal_job_idempotency.py"
+)
+AUTHORIZATION_SCOPE_MIGRATION = (
+    ROOT / "backend/alembic/versions/0094_align_knowledge_proposal_authorization_scope.py"
 )
 
 _OWNER_URL = "DATARIVER_KNOWLEDGE_PROPOSAL_TEST_OWNER_DATABASE_URL"
@@ -226,7 +243,25 @@ def test_revision_0093_pins_four_transition_idempotency_functions() -> None:
     )
 
 
-def _subject(workspace_id: UUID, actor_id: UUID) -> SubjectAttributes:
+def test_revision_0094_pins_effective_managed_system_scope_only() -> None:
+    migration = _migration(AUTHORIZATION_SCOPE_MIGRATION)
+    source = AUTHORIZATION_SCOPE_MIGRATION.read_text(encoding="utf-8")
+    current = migration.current_authorization_function_sql()
+    legacy = migration.legacy_authorization_function_sql()
+
+    assert 'revision: str = "0094"' in source
+    assert 'down_revision: str | Sequence[str] | None = "0093"' in source
+    assert current.count("CREATE OR REPLACE FUNCTION") == 1
+    assert "iam.canonical_admin_bindings AS admin_binding" in current
+    assert "iam.profile_role_assignments AS profile_assignment" in current
+    assert "SELECT DISTINCT assignee.system_id::text" in current
+    assert "assignee.active IS TRUE" in current
+    assert "data_system.active IS TRUE" in current
+    assert "iam.canonical_admin_bindings AS admin_binding" not in legacy
+    assert "membership.attributes -> 'allowed_system_ids'" in legacy
+
+
+def _subject(workspace_id: UUID, actor_id: UUID, domain_id: UUID) -> SubjectAttributes:
     return SubjectAttributes(
         subject_id=actor_id,
         workspace_id=workspace_id,
@@ -236,13 +271,15 @@ def _subject(workspace_id: UUID, actor_id: UUID) -> SubjectAttributes:
         job_function="DATA_STEWARD",
         clearance=Classification.INTERNAL,
         allowed_system_ids=frozenset(),
-        allowed_domain_ids=frozenset(),
+        allowed_domain_ids=frozenset({domain_id}),
         allowed_actions=frozenset({Action.KG_EDIT, Action.KG_READ}),
         denied_actions=frozenset(),
     )
 
 
-async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID, UUID, int, str]:
+async def _seed(
+    owner: AsyncEngine,
+) -> tuple[UUID, UUID, UUID, UUID, UUID, UUID, UUID, int, str]:
     workspace_id, actor_id, worker_id, domain_id, draft_id, upload_id, asset_id = (
         uuid4(),
         uuid4(),
@@ -260,7 +297,7 @@ async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID, UUID,
         "allowed_actions": ["kg.edit", "kg.read"],
         "denied_actions": [],
         "allowed_system_ids": [],
-        "allowed_domain_ids": [],
+        "allowed_domain_ids": [str(domain_id)],
     }
     worker_attributes = {
         "groups": ["service-accounts", "knowledge-proposal-workers"],
@@ -449,9 +486,595 @@ async def _seed(owner: AsyncEngine) -> tuple[UUID, UUID, UUID, UUID, UUID, UUID,
         draft_id,
         upload_id,
         asset_id,
+        domain_id,
         1,
         validation_hash,
     )
+
+
+@pytest.mark.skipif(not _ENABLED, reason="isolated Proposal PostgreSQL test is not enabled")
+@pytest.mark.asyncio
+async def test_managed_authorization_hash_uses_effective_system_scope_fail_closed() -> None:
+    owner = _engine(_OWNER_URL, _OWNER_SECRET)
+    app = _engine(_APP_URL, _APP_SECRET)
+    try:
+        (
+            workspace_id,
+            actor_id,
+            _worker_id,
+            draft_id,
+            upload_id,
+            _asset_id,
+            domain_id,
+            version,
+            validation_hash,
+        ) = await _seed(owner)
+        raw_system_ids = (uuid4(), uuid4())
+        admin_actions = frozenset(DEFAULT_HUMAN_ADMIN_ACTIONS)
+        admin_attributes = {
+            "groups": ["security-administrators"],
+            "allowed_actions": sorted(action.value for action in admin_actions),
+            "denied_actions": [],
+            "allowed_system_ids": sorted(str(value) for value in raw_system_ids),
+            "allowed_domain_ids": [str(domain_id)],
+        }
+        membership_access_hash = canonical_json_hash(
+            {
+                "active": True,
+                "clearance": Classification.RESTRICTED.name,
+                "groups": ["security-administrators"],
+                "allowed_actions": sorted(action.value for action in admin_actions),
+                "denied_actions": [],
+                "allowed_system_ids": sorted(str(value) for value in raw_system_ids),
+                "allowed_domain_ids": [str(domain_id)],
+            }
+        )
+        canonical_role_id = uuid4()
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE iam.workspace_memberships
+                    SET job_function = 'PLATFORM_ADMIN', clearance = 3,
+                        attributes = CAST(:attributes AS jsonb)
+                    WHERE workspace_id = :workspace_id AND subject_id = :actor_id
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "actor_id": actor_id,
+                    "attributes": json.dumps(admin_attributes),
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO iam.access_roles (
+                        id, workspace_id, role_key, role_kind, management_source,
+                        capability_catalog_version, name, description, clearance,
+                        groups, allowed_actions, denied_actions, allowed_system_ids,
+                        allowed_domain_ids, active, updated_by, version
+                    ) VALUES (
+                        :role_id, :workspace_id, :role_key, :role_kind, :management_source,
+                        :catalog_version, 'Canonical Admin', 'Integration test role', 3,
+                        '["security-administrators"]'::jsonb,
+                        CAST(:actions AS jsonb), '[]'::jsonb, '[]'::jsonb,
+                        '[]'::jsonb, true, NULL, 1
+                    )
+                    """
+                ),
+                {
+                    "role_id": canonical_role_id,
+                    "workspace_id": workspace_id,
+                    "role_key": CANONICAL_ADMIN_ROLE_KEY,
+                    "role_kind": AccessRoleKind.CANONICAL_ADMIN.value,
+                    "management_source": AccessRoleManagementSource.SERVER_CANONICAL.value,
+                    "catalog_version": CAPABILITY_CATALOG_VERSION,
+                    "actions": json.dumps(sorted(action.value for action in admin_actions)),
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO iam.canonical_admin_bindings (
+                        workspace_id, subject_id, canonical_role_id, role_kind,
+                        canonical_role_version, capability_catalog_version,
+                        capability_hash, membership_version, membership_access_hash,
+                        state, binding_source, version
+                    ) VALUES (
+                        :workspace_id, :actor_id, :role_id, 'CANONICAL_ADMIN', 1,
+                        :catalog_version, :capability_hash, 1, :membership_access_hash,
+                        'ACTIVE', 'LOCAL_DEVELOPMENT_BOOTSTRAP', 1
+                    )
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "actor_id": actor_id,
+                    "role_id": canonical_role_id,
+                    "catalog_version": CAPABILITY_CATALOG_VERSION,
+                    "capability_hash": CANONICAL_ADMIN_CAPABILITY_HASH,
+                    "membership_access_hash": membership_access_hash,
+                },
+            )
+
+        admin_subject = SubjectAttributes(
+            subject_id=actor_id,
+            workspace_id=workspace_id,
+            active=True,
+            department_id=None,
+            groups=frozenset({"security-administrators"}),
+            job_function="PLATFORM_ADMIN",
+            clearance=Classification.RESTRICTED,
+            allowed_system_ids=frozenset(),
+            allowed_domain_ids=frozenset({domain_id}),
+            allowed_actions=admin_actions,
+            denied_actions=frozenset(),
+        )
+        async with owner.connect() as connection:
+            database_hash = await connection.scalar(
+                text(
+                    "SELECT knowledge.current_tbox_proposal_authorization_hash_v1("
+                    ":workspace_id, :actor_id)"
+                ),
+                {"workspace_id": workspace_id, "actor_id": actor_id},
+            )
+        assert database_hash == knowledge_studio_proposal_requester_authorization_hash(
+            admin_subject
+        )
+
+        binding = ModelBinding(
+            provider="openai-compatible",
+            model="schema-test",
+            prompt_version="knowledge-v1",
+            tool_schema_version="knowledge-schema-v1",
+            configuration_source="DEPLOYMENT",
+            configuration_version=None,
+            configuration_hash="d" * 64,
+        )
+        pins = KnowledgeStudioProposalJobPins(
+            workspace_id=workspace_id,
+            draft_id=draft_id,
+            requested_by=actor_id,
+            input_kind=KnowledgeStudioProposalInputKind.DOCUMENT_SCHEMA,
+            mode=TBoxProposalMode.APPEND_LAYER,
+            target_block_id=None,
+            base_draft_version=version,
+            base_tbox_hash=canonical_json_hash(
+                {
+                    "contract": "KNOWLEDGE_STUDIO_PROPOSAL_BASE_TBOX_V1",
+                    "draft_id": str(draft_id),
+                    "blocks": [],
+                }
+            ),
+            source=KnowledgeStudioAcceptedUploadPin(
+                manifest_id=upload_id,
+                manifest_version=1,
+                content_sha256="c" * 64,
+                media_type="text/plain",
+                size_bytes=18,
+                classification=0,
+                content_profile="KNOWLEDGE_STUDIO_DOCUMENT_V1",
+                validation_evidence_hash=validation_hash,
+                filename="schema.txt",
+            ),
+            parser_configuration_hash="b" * 64,
+            schema_binding=binding,
+            requester_authorization_hash=(
+                knowledge_studio_proposal_requester_authorization_hash(admin_subject)
+            ),
+            prepared_at=datetime.now(UTC),
+        )
+        app_sessions = async_sessionmaker(app, expire_on_commit=False)
+        async with app_sessions() as session, session.begin():
+            queued = await KnowledgeStudioProposalJobService(
+                store=SqlKnowledgeStudioProposalJobStore(session)
+            ).enqueue(
+                pins=pins,
+                request_hash="a" * 64,
+                maximum_attempts=3,
+                idempotency_key=f"managed-admin-{uuid4()}",
+            )
+        async with owner.connect() as connection:
+            stored_authorization_hash = await connection.scalar(
+                text(
+                    """
+                    SELECT requester_authorization_hash
+                    FROM knowledge.tbox_proposal_jobs
+                    WHERE workspace_id = :workspace_id AND id = :job_id
+                    """
+                ),
+                {"workspace_id": workspace_id, "job_id": queued.job_id},
+            )
+        assert stored_authorization_hash == (
+            knowledge_studio_proposal_requester_authorization_hash(admin_subject)
+        )
+
+        revoked_admin = replace(
+            admin_subject,
+            allowed_actions=frozenset(),
+            allowed_system_ids=frozenset(),
+        )
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE iam.canonical_admin_bindings
+                    SET state = 'REVOKED', version = version + 1
+                    WHERE workspace_id = :workspace_id AND subject_id = :actor_id
+                    """
+                ),
+                {"workspace_id": workspace_id, "actor_id": actor_id},
+            )
+        with pytest.raises(ForbiddenError, match="not permitted"):
+            async with app_sessions() as session, session.begin():
+                await KnowledgeStudioProposalJobService(
+                    store=SqlKnowledgeStudioProposalJobStore(session)
+                ).enqueue(
+                    pins=replace(
+                        pins,
+                        requester_authorization_hash=(
+                            knowledge_studio_proposal_requester_authorization_hash(revoked_admin)
+                        ),
+                    ),
+                    request_hash="b" * 64,
+                    maximum_attempts=3,
+                    idempotency_key=f"revoked-admin-{uuid4()}",
+                )
+
+        active_system_id, inactive_system_id, inactive_assignee_system_id = (
+            uuid4(),
+            uuid4(),
+            uuid4(),
+        )
+        manager_policy = PROFILE_ROLE_BY_TIER[ProfileRoleTier.MANAGER]
+        manager_attributes = {
+            "groups": [],
+            "allowed_actions": sorted(action.value for action in manager_policy.allowed_actions),
+            "denied_actions": [],
+            "allowed_system_ids": [],
+            "allowed_domain_ids": [str(domain_id)],
+        }
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM iam.canonical_admin_bindings "
+                    "WHERE workspace_id = :workspace_id AND subject_id = :actor_id"
+                ),
+                {"workspace_id": workspace_id, "actor_id": actor_id},
+            )
+            await connection.execute(
+                text(
+                    """
+                    UPDATE iam.workspace_memberships
+                    SET job_function = 'DATA_STEWARD', clearance = 1,
+                        attributes = CAST(:attributes AS jsonb)
+                    WHERE workspace_id = :workspace_id AND subject_id = :actor_id
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "actor_id": actor_id,
+                    "attributes": json.dumps(manager_attributes),
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO iam.profile_role_assignments (
+                        workspace_id, subject_id, tier, policy_version,
+                        materialized_actions_hash, membership_version, state,
+                        assigned_by, reason, assurance, version
+                    ) VALUES (
+                        :workspace_id, :actor_id, 'MANAGER', :policy_version,
+                        :actions_hash, 1, 'ACTIVE', :actor_id,
+                        'Proposal authorization integration test',
+                        'HARDWARE_WEBAUTHN', 1
+                    )
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "actor_id": actor_id,
+                    "policy_version": PROFILE_ROLE_POLICY_VERSION,
+                    "actions_hash": manager_policy.materialized_actions_hash,
+                },
+            )
+            for system_id, active in (
+                (active_system_id, True),
+                (inactive_system_id, False),
+                (inactive_assignee_system_id, True),
+            ):
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO platform.data_systems (
+                            id, workspace_id, code, name, description, active, version
+                        ) VALUES (
+                            :id, :workspace_id, :code, :name, '', :active, 1
+                        )
+                        """
+                    ),
+                    {
+                        "id": system_id,
+                        "workspace_id": workspace_id,
+                        "code": f"proposal_{system_id.hex}",
+                        "name": f"Proposal {system_id}",
+                        "active": active,
+                    },
+                )
+            for system_id, active in (
+                (active_system_id, True),
+                (inactive_system_id, True),
+                (inactive_assignee_system_id, False),
+            ):
+                await connection.execute(
+                    text(
+                        """
+                        INSERT INTO platform.system_assignees (
+                            id, workspace_id, system_id, subject_id, responsibility,
+                            priority, active, version
+                        ) VALUES (
+                            :id, :workspace_id, :system_id, :actor_id,
+                            'DATA_STEWARD', 1, :active, 1
+                        )
+                        """
+                    ),
+                    {
+                        "id": uuid4(),
+                        "workspace_id": workspace_id,
+                        "system_id": system_id,
+                        "actor_id": actor_id,
+                        "active": active,
+                    },
+                )
+
+        manager_subject = SubjectAttributes(
+            subject_id=actor_id,
+            workspace_id=workspace_id,
+            active=True,
+            department_id=None,
+            groups=frozenset(),
+            job_function="DATA_STEWARD",
+            clearance=Classification.INTERNAL,
+            allowed_system_ids=frozenset({active_system_id}),
+            allowed_domain_ids=frozenset({domain_id}),
+            allowed_actions=manager_policy.allowed_actions,
+            denied_actions=frozenset(),
+        )
+        async with owner.connect() as connection:
+            database_hash = await connection.scalar(
+                text(
+                    "SELECT knowledge.current_tbox_proposal_authorization_hash_v1("
+                    ":workspace_id, :actor_id)"
+                ),
+                {"workspace_id": workspace_id, "actor_id": actor_id},
+            )
+        assert database_hash == knowledge_studio_proposal_requester_authorization_hash(
+            manager_subject
+        )
+
+        async def assert_denied_without_side_effects(
+            *, subject: SubjectAttributes, request_hash: str
+        ) -> None:
+            with pytest.raises(ForbiddenError, match="not permitted"):
+                async with app_sessions() as session, session.begin():
+                    await KnowledgeStudioProposalJobService(
+                        store=SqlKnowledgeStudioProposalJobStore(session)
+                    ).enqueue(
+                        pins=replace(
+                            pins,
+                            requester_authorization_hash=(
+                                knowledge_studio_proposal_requester_authorization_hash(subject)
+                            ),
+                        ),
+                        request_hash=request_hash,
+                        maximum_attempts=3,
+                        idempotency_key=f"managed-denied-{uuid4()}",
+                    )
+
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE iam.profile_role_assignments
+                    SET state = 'REVOKED', version = version + 1
+                    WHERE workspace_id = :workspace_id AND subject_id = :actor_id
+                    """
+                ),
+                {"workspace_id": workspace_id, "actor_id": actor_id},
+            )
+        await assert_denied_without_side_effects(
+            subject=replace(
+                manager_subject,
+                allowed_actions=frozenset(),
+                allowed_system_ids=frozenset(),
+            ),
+            request_hash="c" * 64,
+        )
+
+        viewer_policy = PROFILE_ROLE_BY_TIER[ProfileRoleTier.VIEWER]
+        viewer_attributes = {
+            **manager_attributes,
+            "allowed_actions": sorted(action.value for action in viewer_policy.allowed_actions),
+        }
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE iam.profile_role_assignments
+                    SET tier = 'VIEWER', state = 'ACTIVE',
+                        materialized_actions_hash = :actions_hash,
+                        version = version + 1
+                    WHERE workspace_id = :workspace_id AND subject_id = :actor_id
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "actor_id": actor_id,
+                    "actions_hash": viewer_policy.materialized_actions_hash,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    UPDATE iam.workspace_memberships
+                    SET attributes = CAST(:attributes AS jsonb)
+                    WHERE workspace_id = :workspace_id AND subject_id = :actor_id
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "actor_id": actor_id,
+                    "attributes": json.dumps(viewer_attributes),
+                },
+            )
+        viewer_subject = replace(
+            manager_subject,
+            allowed_actions=viewer_policy.allowed_actions,
+            allowed_system_ids=frozenset(),
+        )
+        await assert_denied_without_side_effects(subject=viewer_subject, request_hash="d" * 64)
+
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE platform.system_assignees
+                    SET active = false, version = version + 1
+                    WHERE workspace_id = :workspace_id AND subject_id = :actor_id
+                    """
+                ),
+                {"workspace_id": workspace_id, "actor_id": actor_id},
+            )
+        await assert_denied_without_side_effects(subject=viewer_subject, request_hash="e" * 64)
+
+        manager_without_domain = replace(manager_subject, allowed_domain_ids=frozenset())
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE iam.profile_role_assignments
+                    SET tier = 'MANAGER', materialized_actions_hash = :actions_hash,
+                        version = version + 1
+                    WHERE workspace_id = :workspace_id AND subject_id = :actor_id
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "actor_id": actor_id,
+                    "actions_hash": manager_policy.materialized_actions_hash,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    UPDATE iam.workspace_memberships
+                    SET attributes = CAST(:attributes AS jsonb)
+                    WHERE workspace_id = :workspace_id AND subject_id = :actor_id
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "actor_id": actor_id,
+                    "attributes": json.dumps({**manager_attributes, "allowed_domain_ids": []}),
+                },
+            )
+        await assert_denied_without_side_effects(
+            subject=replace(manager_without_domain, allowed_system_ids=frozenset()),
+            request_hash="f" * 64,
+        )
+
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    UPDATE iam.workspace_memberships
+                    SET clearance = 0, attributes = CAST(:attributes AS jsonb)
+                    WHERE workspace_id = :workspace_id AND subject_id = :actor_id
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "actor_id": actor_id,
+                    "attributes": json.dumps(manager_attributes),
+                },
+            )
+        await assert_denied_without_side_effects(
+            subject=replace(
+                manager_subject,
+                clearance=Classification.PUBLIC,
+                allowed_system_ids=frozenset(),
+            ),
+            request_hash="1" * 64,
+        )
+
+        legacy_attributes = {
+            "groups": ["data-stewards"],
+            "allowed_actions": ["kg.edit", "kg.read"],
+            "denied_actions": [],
+            "allowed_system_ids": sorted(str(value) for value in raw_system_ids),
+            "allowed_domain_ids": [str(domain_id)],
+        }
+        async with owner.begin() as connection:
+            await connection.execute(
+                text(
+                    "DELETE FROM iam.profile_role_assignments "
+                    "WHERE workspace_id = :workspace_id AND subject_id = :actor_id"
+                ),
+                {"workspace_id": workspace_id, "actor_id": actor_id},
+            )
+            await connection.execute(
+                text(
+                    """
+                    UPDATE iam.workspace_memberships
+                    SET job_function = 'DATA_STEWARD', clearance = 1,
+                        attributes = CAST(:attributes AS jsonb)
+                    WHERE workspace_id = :workspace_id AND subject_id = :actor_id
+                    """
+                ),
+                {
+                    "workspace_id": workspace_id,
+                    "actor_id": actor_id,
+                    "attributes": json.dumps(legacy_attributes),
+                },
+            )
+        legacy_subject = replace(
+            _subject(workspace_id, actor_id, domain_id),
+            allowed_system_ids=frozenset(raw_system_ids),
+        )
+        async with owner.connect() as connection:
+            legacy_database_hash = await connection.scalar(
+                text(
+                    "SELECT knowledge.current_tbox_proposal_authorization_hash_v1("
+                    ":workspace_id, :actor_id)"
+                ),
+                {"workspace_id": workspace_id, "actor_id": actor_id},
+            )
+            side_effects = await connection.execute(
+                text(
+                    """
+                    SELECT
+                        (SELECT count(*) FROM knowledge.tbox_proposal_jobs
+                         WHERE workspace_id = :workspace_id),
+                        (SELECT count(*) FROM integration.outbox_events
+                         WHERE workspace_id = :workspace_id
+                           AND aggregate_type = 'knowledge_tbox_proposal_job'),
+                        (SELECT count(*) FROM integration.idempotency_keys
+                         WHERE workspace_id = :workspace_id
+                           AND operation = 'knowledge.tbox-proposal.request.v1')
+                    """
+                ),
+                {"workspace_id": workspace_id},
+            )
+            job_count, outbox_count, idempotency_count = side_effects.one()
+        assert legacy_database_hash == knowledge_studio_proposal_requester_authorization_hash(
+            legacy_subject
+        )
+        assert (job_count, outbox_count, idempotency_count) == (1, 1, 1)
+    finally:
+        await owner.dispose()
+        await app.dispose()
 
 
 @pytest.mark.skipif(not _ENABLED, reason="isolated Proposal PostgreSQL test is not enabled")
@@ -468,10 +1091,11 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
             draft_id,
             upload_id,
             _asset_id,
+            domain_id,
             version,
             validation_hash,
         ) = await _seed(owner)
-        subject = _subject(workspace_id, actor_id)
+        subject = _subject(workspace_id, actor_id, domain_id)
         source_hash = "c" * 64
         parser_hash = "b" * 64
         binding = ModelBinding(
@@ -829,10 +1453,11 @@ async def test_catalog_v2_pin_is_enqueued_and_local_projection_drift_fails_close
             draft_id,
             _upload_id,
             asset_id,
+            domain_id,
             version,
             _validation_hash,
         ) = await _seed(owner)
-        subject = _subject(workspace_id, actor_id)
+        subject = _subject(workspace_id, actor_id, domain_id)
         binding = ModelBinding(
             provider="openai-compatible",
             model="schema-test",
@@ -1084,6 +1709,7 @@ async def test_structural_proposal_safety_accepts_typed_evidence_and_rejects_exa
             draft_id,
             _upload_id,
             _asset_id,
+            _domain_id,
             version,
             _validation_hash,
         ) = await _seed(owner)

@@ -116,12 +116,38 @@ AS $$
         ), '[]'::jsonb),
         'job_function', membership.job_function,
         'clearance', membership.clearance,
-        'allowed_system_ids', COALESCE((
-            SELECT jsonb_agg(value ORDER BY value)
-            FROM jsonb_array_elements_text(
-                COALESCE(membership.attributes -> 'allowed_system_ids', '[]'::jsonb)
-            ) AS item(value)
-        ), '[]'::jsonb),
+        'allowed_system_ids', CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM iam.canonical_admin_bindings AS admin_binding
+                WHERE admin_binding.workspace_id = membership.workspace_id
+                  AND admin_binding.subject_id = membership.subject_id
+            ) OR EXISTS (
+                SELECT 1
+                FROM iam.profile_role_assignments AS profile_assignment
+                WHERE profile_assignment.workspace_id = membership.workspace_id
+                  AND profile_assignment.subject_id = membership.subject_id
+            ) THEN COALESCE((
+                SELECT jsonb_agg(active_scope.system_id ORDER BY active_scope.system_id)
+                FROM (
+                    SELECT DISTINCT assignee.system_id::text AS system_id
+                    FROM platform.system_assignees AS assignee
+                    JOIN platform.data_systems AS data_system
+                      ON data_system.workspace_id = assignee.workspace_id
+                     AND data_system.id = assignee.system_id
+                    WHERE assignee.workspace_id = membership.workspace_id
+                      AND assignee.subject_id = membership.subject_id
+                      AND assignee.active IS TRUE
+                      AND data_system.active IS TRUE
+                ) AS active_scope
+            ), '[]'::jsonb)
+            ELSE COALESCE((
+                SELECT jsonb_agg(value ORDER BY value)
+                FROM jsonb_array_elements_text(
+                    COALESCE(membership.attributes -> 'allowed_system_ids', '[]'::jsonb)
+                ) AS item(value)
+            ), '[]'::jsonb)
+        END,
         'allowed_domain_ids', COALESCE((
             SELECT jsonb_agg(value ORDER BY value)
             FROM jsonb_array_elements_text(

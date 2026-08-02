@@ -74,6 +74,9 @@ PROPOSAL_CONTRACT_RESTORE_MIGRATION = (
 PROPOSAL_TRANSITION_IDEMPOTENCY_FIX_MIGRATION = (
     ROOT / "backend/alembic/versions/0093_fix_knowledge_studio_proposal_job_idempotency.py"
 )
+PROPOSAL_AUTHORIZATION_SCOPE_MIGRATION = (
+    ROOT / "backend/alembic/versions/0094_align_knowledge_proposal_authorization_scope.py"
+)
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
@@ -122,6 +125,18 @@ def _proposal_transition_idempotency_fix_migration() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "test_knowledge_studio_proposal_transition_idempotency_fix",
         PROPOSAL_TRANSITION_IDEMPOTENCY_FIX_MIGRATION,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _proposal_authorization_scope_migration() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "test_knowledge_studio_proposal_authorization_scope",
+        PROPOSAL_AUTHORIZATION_SCOPE_MIGRATION,
     )
     assert spec is not None
     assert spec.loader is not None
@@ -859,6 +874,39 @@ def test_proposal_transition_idempotency_fix_is_pinned_and_reversible() -> None:
     initial = INITIAL_MIGRATION.read_text(encoding="utf-8")
     assert "0093_fix_knowledge_studio_proposal_job_idempotency.py" in generator
     assert initial.count("FROM integration.idempotency_keys AS stored_replay") >= 5
+
+
+def test_proposal_authorization_scope_is_pinned_reversible_and_canonical() -> None:
+    source = PROPOSAL_AUTHORIZATION_SCOPE_MIGRATION.read_text(encoding="utf-8")
+    migration = _proposal_authorization_scope_migration()
+    current = migration.current_authorization_function_sql()
+    legacy = migration.legacy_authorization_function_sql()
+
+    assert 'revision: str = "0094"' in source
+    assert 'down_revision: str | Sequence[str] | None = "0093"' in source
+    assert current.count("CREATE OR REPLACE FUNCTION") == 1
+    assert legacy.count("CREATE OR REPLACE FUNCTION") == 1
+    assert "iam.canonical_admin_bindings AS admin_binding" in current
+    assert "iam.profile_role_assignments AS profile_assignment" in current
+    assert "platform.system_assignees AS assignee" in current
+    assert "platform.data_systems AS data_system" in current
+    assert "assignee.active IS TRUE" in current
+    assert "data_system.active IS TRUE" in current
+    assert "iam.canonical_admin_bindings AS admin_binding" not in legacy
+    assert "membership.attributes -> 'allowed_system_ids'" in legacy
+    for statement in (current, legacy):
+        assert "CREATE TABLE" not in statement
+        assert "ALTER TABLE" not in statement
+        assert "GRANT " not in statement
+
+    generator = GENERATOR.read_text(encoding="utf-8")
+    initial = INITIAL_MIGRATION.read_text(encoding="utf-8")
+    assert "0094_align_knowledge_proposal_authorization_scope.py" in generator
+    assert initial.count("iam.canonical_admin_bindings AS admin_binding") == 2
+    assert initial.count("platform.system_assignees AS assignee") >= 1
+    assert initial.rfind("iam.canonical_admin_bindings AS admin_binding") > initial.rfind(
+        "stored_replay.key_hash = idempotency_key_hash"
+    )
 
 
 def test_publication_migration_replaces_owner_only_rls_with_maker_checker_policy() -> None:
