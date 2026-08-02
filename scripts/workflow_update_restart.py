@@ -619,6 +619,32 @@ def main() -> int:
                 trailing=("run", "--rm", "local-bootstrap"),
             )
 
+        if state.local_storage and (
+            environment_values.get("KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED", "").lower() == "true"
+        ):
+            knowledge_storage_files: tuple[Path, ...] = (ROOT / "compose.local-connectors.yaml",)
+            if offline_layout is not None:
+                storage_override = release_optional_compose(
+                    offline_layout,
+                    "offline-local-connectors.compose.yaml",
+                    required=True,
+                )
+                assert storage_override is not None
+                knowledge_storage_files = (*knowledge_storage_files, storage_override)
+            runner.note("Knowledge Proposal worker의 전용 Object Storage identity를 검증합니다.")
+            _compose(
+                runner,
+                env_file=env_file,
+                files=knowledge_storage_files,
+                profiles=("object-storage",),
+                trailing=(
+                    "run",
+                    "--rm",
+                    *(("--pull", "never") if offline else ()),
+                    "minio-knowledge-identity-init",
+                ),
+            )
+
         if restart_services:
             runner.note("영향받은 DataRiver 서비스만 재생성합니다.")
             _compose(

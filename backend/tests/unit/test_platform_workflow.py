@@ -910,6 +910,196 @@ def test_update_main_recreates_only_changed_local_connector(
     assert "api" not in recreate
 
 
+def test_update_main_initializes_knowledge_storage_before_proposal_worker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.portable-development"
+    env_file.write_text(
+        "KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED=true\n",
+        encoding="utf-8",
+    )
+    state = workflow.AppliedState(
+        profile="portable-development",
+        applied_commit="a" * 40,
+        runtime_commit="a" * 40,
+        env_file=os.fspath(env_file),
+        deployment_mode="build",
+        release_dir=None,
+        local_airflow=False,
+        local_datahub=False,
+        local_redis=False,
+        local_storage=True,
+        local_gateway=False,
+        local_graph=False,
+        environment_key_hashes=workflow.environment_key_hashes(
+            {"KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED": "false"}
+        ),
+    )
+    compose_calls: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    written: list[Any] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="portable-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=True,
+            assume_yes=True,
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FakeRunner)
+    monkeypatch.setattr(update, "require_command", lambda _command: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda _root, _profile: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda _runner, _old, _new: ())
+    monkeypatch.setattr(update, "_running_services", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        update,
+        "_compose",
+        lambda _runner, **kwargs: compose_calls.append(
+            (tuple(kwargs.get("profiles", ())), tuple(kwargs["trailing"]))
+        ),
+    )
+    monkeypatch.setattr(update, "_health_check", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "_probe_datahub", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "_reconcile_local_reranker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        update,
+        "write_applied_state",
+        lambda _path, next_state: written.append(next_state),
+    )
+
+    assert update.main() == 0
+    initializer_index = next(
+        index
+        for index, (_profiles, trailing) in enumerate(compose_calls)
+        if trailing[-1:] == ("minio-knowledge-identity-init",)
+    )
+    worker_index = next(
+        index
+        for index, (_profiles, trailing) in enumerate(compose_calls)
+        if trailing[:2] == ("up", "-d") and trailing[-1:] == ("knowledge-tbox-proposal-worker",)
+    )
+    initializer_profiles, initializer = compose_calls[initializer_index]
+    assert initializer_profiles == ("object-storage",)
+    assert initializer == ("run", "--rm", "minio-knowledge-identity-init")
+    assert "--no-deps" not in initializer
+    assert initializer_index < worker_index
+    assert len(written) == 1
+
+    compose_calls.clear()
+    written.clear()
+
+    def fail_initializer(_runner: object, **kwargs: object) -> None:
+        raw_profiles = kwargs.get("profiles", ())
+        raw_trailing = kwargs["trailing"]
+        assert isinstance(raw_profiles, tuple)
+        assert isinstance(raw_trailing, tuple)
+        profiles = raw_profiles
+        trailing = raw_trailing
+        compose_calls.append((profiles, trailing))
+        if trailing[-1:] == ("minio-knowledge-identity-init",):
+            raise workflow.WorkflowError("simulated knowledge storage identity failure")
+
+    monkeypatch.setattr(update, "_compose", fail_initializer)
+    assert update.main() == 2
+    assert not any(
+        trailing[:2] == ("up", "-d") and trailing[-1:] == ("knowledge-tbox-proposal-worker",)
+        for _profiles, trailing in compose_calls
+    )
+    assert written == []
+
+
+@pytest.mark.parametrize(
+    ("local_storage", "proposal_enabled"),
+    ((False, True), (True, False)),
+)
+def test_update_main_skips_knowledge_storage_initializer_outside_local_enabled_scope(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    local_storage: bool,
+    proposal_enabled: bool,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.portable-development"
+    env_file.write_text(
+        f"KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED={'true' if proposal_enabled else 'false'}\n",
+        encoding="utf-8",
+    )
+    state = workflow.AppliedState(
+        profile="portable-development",
+        applied_commit="a" * 40,
+        runtime_commit="a" * 40,
+        env_file=os.fspath(env_file),
+        deployment_mode="build",
+        release_dir=None,
+        local_airflow=False,
+        local_datahub=False,
+        local_redis=False,
+        local_storage=local_storage,
+        local_gateway=False,
+        local_graph=False,
+        environment_key_hashes=workflow.environment_key_hashes(
+            {"KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED": "true"}
+        ),
+    )
+    compose_calls: list[tuple[str, ...]] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="portable-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=True,
+            assume_yes=True,
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FakeRunner)
+    monkeypatch.setattr(update, "require_command", lambda _command: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda _root, _profile: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda _runner, _old, _new: ())
+    monkeypatch.setattr(update, "_running_services", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(
+        update,
+        "_compose",
+        lambda _runner, **kwargs: compose_calls.append(tuple(kwargs["trailing"])),
+    )
+    monkeypatch.setattr(update, "_health_check", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "_probe_datahub", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "_reconcile_local_reranker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "write_applied_state", lambda *_args: None)
+
+    assert update.main() == 0
+    assert not any(
+        trailing[-1:] == ("minio-knowledge-identity-init",) for trailing in compose_calls
+    )
+
+
 def test_merge_no_proxy_adds_hosts_once_and_preserves_existing_order() -> None:
     assert (
         workflow.merge_no_proxy(
