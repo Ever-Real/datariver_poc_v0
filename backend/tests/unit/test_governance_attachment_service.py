@@ -108,8 +108,16 @@ class _UnitOfWork:
 
 
 class _TargetAuthorizer:
-    def __init__(self, *, allowed: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        allowed: bool = True,
+        required_system_id: UUID | None = None,
+        events: list[str] | None = None,
+    ) -> None:
         self.allowed = allowed
+        self.required_system_id = required_system_id
+        self.events = events
         self.subjects: list[SubjectAttributes] = []
 
     async def filter_authorized_change_requests(
@@ -120,7 +128,12 @@ class _TargetAuthorizer:
         **_: object,
     ) -> tuple[ChangeRequest, ...]:
         self.subjects.append(subject)
-        return tuple(change_requests) if self.allowed else ()
+        if self.events is not None:
+            self.events.append("target_authorize")
+        system_allowed = (
+            self.required_system_id is None or self.required_system_id in subject.allowed_system_ids
+        )
+        return tuple(change_requests) if self.allowed and system_allowed else ()
 
 
 class _IntentStore:
@@ -128,30 +141,52 @@ class _IntentStore:
         self,
         current_subject: SubjectAttributes,
         *,
+        refreshed_subject: SubjectAttributes | None = None,
         existing: AttachmentUploadIntent | None = None,
         subject_error: Exception | None = None,
+        refresh_error: Exception | None = None,
     ) -> None:
         self.current_subject = current_subject
+        self.refreshed_subject = refreshed_subject or current_subject
         self.existing = existing
         self.subject_error = subject_error
+        self.refresh_error = refresh_error
         self.dependencies_locked = 0
         self.started: list[AttachmentUploadIntent] = []
         self.finalize_calls = 0
         self.list_calls: list[dict[str, object]] = []
         self.get_calls: list[dict[str, object]] = []
+        self.refresh_calls: list[dict[str, object]] = []
+        self.events: list[str] = []
+        self.target_subjects: list[SubjectAttributes] = []
 
     async def lock_current_subject(self, **_: object) -> SubjectAttributes:
+        self.events.append("lock_current_subject")
         if self.subject_error is not None:
             raise self.subject_error
         return self.current_subject
 
     async def lock_authorization_dependencies(self, **_: object) -> None:
+        self.events.append("lock_authorization_dependencies")
         self.dependencies_locked += 1
+
+    async def refresh_effective_subject(
+        self,
+        *,
+        subject: SubjectAttributes,
+        observed_at: datetime,
+    ) -> SubjectAttributes:
+        self.events.append("refresh_effective_subject")
+        self.refresh_calls.append({"subject": subject, "observed_at": observed_at})
+        if self.refresh_error is not None:
+            raise self.refresh_error
+        return self.refreshed_subject
 
     async def allocate_serial_number(self, **_: object) -> int:
         return 1
 
     async def add_started(self, intent: AttachmentUploadIntent) -> None:
+        self.events.append("add_started")
         self.started.append(intent)
 
     async def get(self, **values: object) -> AttachmentUploadIntent | None:
@@ -269,22 +304,33 @@ def _service(
     *,
     change_request: ChangeRequest,
     current_subject: SubjectAttributes,
+    refreshed_subject: SubjectAttributes | None = None,
     target_allowed: bool = True,
+    target_system_id: UUID | None = None,
     authorities: tuple[ApprovalAuthority, ...] = (),
     existing: AttachmentUploadIntent | None = None,
     subject_error: Exception | None = None,
+    refresh_error: Exception | None = None,
 ) -> tuple[GovernanceAttachmentUploadService, _IntentStore, _UnitOfWork]:
     uow = _UnitOfWork(change_request, authorities=authorities)
     store = _IntentStore(
         current_subject,
+        refreshed_subject=refreshed_subject,
         existing=existing,
         subject_error=subject_error,
+        refresh_error=refresh_error,
     )
+    target_authorizer = _TargetAuthorizer(
+        allowed=target_allowed,
+        required_system_id=target_system_id,
+        events=store.events,
+    )
+    store.target_subjects = target_authorizer.subjects
     service = GovernanceAttachmentUploadService(
         cast(Callable[[], GovernanceUnitOfWork], lambda: uow),
         AuthorizationService(decision_writer=_DecisionWriter()),
         store=store,
-        target_authorizer=_TargetAuthorizer(allowed=target_allowed),
+        target_authorizer=target_authorizer,
     )
     return service, store, uow
 
@@ -333,6 +379,98 @@ async def test_started_intent_is_precommitted_after_current_authorization_locks(
     assert store.started == [intent]
     assert uow.flush_calls == 1
     assert uow.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_effective_profile_and_system_scope_are_refreshed_after_dependency_locks() -> None:
+    workspace_id = uuid4()
+    system_id = uuid4()
+    caller = _subject(workspace_id)
+    effective = replace(caller, allowed_system_ids=frozenset({system_id}))
+    request = _change_request(workspace_id=workspace_id, system_id=system_id)
+    service, store, uow = _service(
+        change_request=request,
+        current_subject=caller,
+        refreshed_subject=effective,
+        target_system_id=system_id,
+    )
+
+    intent = await _start(service, change_request=request, subject=caller)
+
+    assert intent.state == "STARTED"
+    assert store.target_subjects == [effective]
+    assert store.refresh_calls == [
+        {
+            "subject": caller,
+            "observed_at": store.refresh_calls[0]["observed_at"],
+        }
+    ]
+    assert store.events == [
+        "lock_current_subject",
+        "lock_authorization_dependencies",
+        "refresh_effective_subject",
+        "target_authorize",
+        "add_started",
+    ]
+    assert uow.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_refreshed_profile_revocation_blocks_intent_before_object_write() -> None:
+    workspace_id = uuid4()
+    caller = _subject(workspace_id)
+    revoked = replace(
+        caller,
+        allowed_actions=frozenset(),
+        denied_actions=frozenset({Action.CHANGE_EDIT}),
+    )
+    request = _change_request(workspace_id=workspace_id)
+    service, store, uow = _service(
+        change_request=request,
+        current_subject=caller,
+        refreshed_subject=revoked,
+    )
+
+    with pytest.raises(ForbiddenError):
+        await _start(service, change_request=request, subject=caller)
+
+    assert store.events == [
+        "lock_current_subject",
+        "lock_authorization_dependencies",
+        "refresh_effective_subject",
+    ]
+    assert store.started == []
+    assert uow.commit_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_refreshed_responsibility_revocation_blocks_intent_before_object_write() -> None:
+    workspace_id = uuid4()
+    system_id = uuid4()
+    caller = replace(
+        _subject(workspace_id),
+        allowed_system_ids=frozenset({system_id}),
+    )
+    revoked = replace(caller, allowed_system_ids=frozenset())
+    request = _change_request(workspace_id=workspace_id, system_id=system_id)
+    service, store, uow = _service(
+        change_request=request,
+        current_subject=caller,
+        refreshed_subject=revoked,
+        target_system_id=system_id,
+    )
+
+    with pytest.raises(ForbiddenError):
+        await _start(service, change_request=request, subject=caller)
+
+    assert store.target_subjects == []
+    assert store.events == [
+        "lock_current_subject",
+        "lock_authorization_dependencies",
+        "refresh_effective_subject",
+    ]
+    assert store.started == []
+    assert uow.commit_calls == 0
 
 
 @pytest.mark.asyncio

@@ -8,8 +8,26 @@ from uuid import UUID, uuid4
 import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
-from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+from sqlalchemy.ext.asyncio import (
+    AsyncConnection,
+    AsyncEngine,
+    async_sessionmaker,
+    create_async_engine,
+)
 
+from datariver.domain.authz import (
+    AuthenticationAssurance,
+    Classification,
+    SubjectAttributes,
+)
+from datariver.domain.profile_roles import (
+    PROFILE_ROLE_BY_TIER,
+    PROFILE_ROLE_POLICY_VERSION,
+    ProfileRoleTier,
+)
+from datariver.infrastructure.db.governance_attachments import (
+    SqlGovernanceAttachmentUploadIntentStore,
+)
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 from datariver.infrastructure.secrets import SecretResolver
 
@@ -53,19 +71,23 @@ async def _set_upload_role(connection: AsyncConnection) -> None:
 
 async def _prepare_fixture(
     engine: AsyncEngine,
-) -> tuple[UUID, UUID, UUID, UUID, UUID, UUID]:
+) -> tuple[UUID, UUID, UUID, UUID, UUID, UUID, UUID]:
     workspace_id = uuid4()
     uploader_id = uuid4()
     other_subject_id = uuid4()
     change_request_id = uuid4()
     round_id = uuid4()
     attachment_id = uuid4()
+    system_id = uuid4()
     now = datetime.now(UTC)
+    policy = PROFILE_ROLE_BY_TIER[ProfileRoleTier.ENGINEER_STEWARD]
     attributes = json.dumps(
         {
             "groups": ["data-stewards"],
-            "allowed_actions": ["change.edit"],
+            "allowed_actions": sorted(action.value for action in policy.allowed_actions),
             "denied_actions": [],
+            "allowed_system_ids": [],
+            "allowed_domain_ids": [],
         }
     )
     async with engine.begin() as connection:
@@ -107,6 +129,59 @@ async def _prepare_fixture(
                     "attributes": attributes,
                 },
             )
+        await connection.execute(
+            text(
+                """
+                INSERT INTO iam.profile_role_assignments
+                    (workspace_id, subject_id, tier, policy_version,
+                     materialized_actions_hash, membership_version, state, assigned_by,
+                     reason, assurance, version)
+                VALUES
+                    (:workspace_id, :subject_id, 'ENGINEER_STEWARD', :policy_version,
+                     :actions_hash, 1, 'ACTIVE', :subject_id,
+                     'Attachment authorization integration test.', 'HARDWARE_WEBAUTHN', 1)
+                """
+            ),
+            {
+                "workspace_id": workspace_id,
+                "subject_id": uploader_id,
+                "policy_version": PROFILE_ROLE_POLICY_VERSION,
+                "actions_hash": policy.materialized_actions_hash,
+            },
+        )
+        await connection.execute(
+            text(
+                """
+                INSERT INTO platform.data_systems
+                    (id, workspace_id, code, name, description, active, version)
+                VALUES
+                    (:id, :workspace_id, :code, 'Attachment system', '', true, 1)
+                """
+            ),
+            {
+                "id": system_id,
+                "workspace_id": workspace_id,
+                "code": f"attachment_{system_id.hex}",
+            },
+        )
+        await connection.execute(
+            text(
+                """
+                INSERT INTO platform.system_assignees
+                    (id, workspace_id, system_id, subject_id, responsibility,
+                     priority, active, version)
+                VALUES
+                    (:id, :workspace_id, :system_id, :subject_id,
+                     'DATA_STEWARD', 1, true, 1)
+                """
+            ),
+            {
+                "id": uuid4(),
+                "workspace_id": workspace_id,
+                "system_id": system_id,
+                "subject_id": uploader_id,
+            },
+        )
         await connection.execute(
             text(
                 """
@@ -153,6 +228,7 @@ async def _prepare_fixture(
         change_request_id,
         round_id,
         attachment_id,
+        system_id,
     )
 
 
@@ -176,6 +252,7 @@ async def test_attachment_intent_requires_independent_attestation_and_current_re
         change_request_id,
         round_id,
         attachment_id,
+        system_id,
     ) = await _prepare_fixture(engine)
     object_key = (
         f"governance/change-request-attachments/{workspace_id}/{change_request_id}/{attachment_id}"
@@ -191,7 +268,53 @@ async def test_attachment_intent_requires_independent_attestation_and_current_re
         "size_bytes": 17,
         "content_sha256": "b" * 64,
     }
+    policy = PROFILE_ROLE_BY_TIER[ProfileRoleTier.ENGINEER_STEWARD]
     try:
+        observed_at = datetime.now(UTC)
+        authentication_time = observed_at.replace(microsecond=0)
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+        async with session_factory() as session, session.begin():
+            await session.execute(text("SET LOCAL ROLE datariver_app"))
+            await session.execute(
+                text("SELECT set_config('app.workspace_id', :value, true)"),
+                {"value": str(workspace_id)},
+            )
+            await session.execute(
+                text("SELECT set_config('app.subject_id', :value, true)"),
+                {"value": str(uploader_id)},
+            )
+            store = SqlGovernanceAttachmentUploadIntentStore(session)
+            authenticated = SubjectAttributes(
+                subject_id=uploader_id,
+                workspace_id=workspace_id,
+                active=True,
+                department_id=None,
+                groups=frozenset(),
+                job_function=None,
+                clearance=Classification.CONFIDENTIAL,
+                allowed_system_ids=frozenset(),
+                allowed_domain_ids=frozenset(),
+                allowed_actions=frozenset(),
+                denied_actions=frozenset(),
+                authentication_time=authentication_time,
+                authentication_assurance=AuthenticationAssurance.HARDWARE_WEBAUTHN,
+            )
+
+            locked = await store.lock_current_subject(
+                workspace_id=workspace_id,
+                subject=authenticated,
+            )
+            refreshed = await store.refresh_effective_subject(
+                subject=locked,
+                observed_at=observed_at,
+            )
+
+            assert locked.allowed_system_ids == frozenset()
+            assert refreshed.allowed_system_ids == frozenset({system_id})
+            assert refreshed.allowed_actions == policy.allowed_actions
+            assert refreshed.authentication_time == authentication_time
+            assert refreshed.authentication_assurance is AuthenticationAssurance.HARDWARE_WEBAUTHN
+
         async with engine.connect() as connection:
             for role in ("datariver_app", "datariver_upload"):
                 update_columns = list(

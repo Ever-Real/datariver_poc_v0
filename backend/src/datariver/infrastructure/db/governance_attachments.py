@@ -16,7 +16,7 @@ from datariver.application.services.governance_attachments import (
 from datariver.domain.authz import SubjectAttributes
 from datariver.domain.common import ConflictError
 from datariver.domain.governance import ChangeRequest
-from datariver.infrastructure.db.authz import subject_attributes_from_models
+from datariver.infrastructure.db.authz import SqlSubjectReader, subject_attributes_from_models
 from datariver.infrastructure.db.models.catalog import AssetProjectionModel
 from datariver.infrastructure.db.models.governance import (
     ChangeItemModel,
@@ -149,6 +149,17 @@ class SqlGovernanceAttachmentUploadIntentStore(AttachmentUploadIntentStore):
                 .order_by(AssetProjectionModel.id)
                 .with_for_update()
             )
+
+    async def refresh_effective_subject(
+        self,
+        *,
+        subject: SubjectAttributes,
+        observed_at: datetime,
+    ) -> SubjectAttributes:
+        return await SqlSubjectReader(self._session).refresh_subject(
+            subject=subject,
+            now=observed_at,
+        )
 
     async def allocate_serial_number(
         self,

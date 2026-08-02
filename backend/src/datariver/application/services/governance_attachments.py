@@ -102,6 +102,13 @@ class AttachmentUploadIntentStore(Protocol):
         subject_id: UUID,
     ) -> None: ...
 
+    async def refresh_effective_subject(
+        self,
+        *,
+        subject: SubjectAttributes,
+        observed_at: datetime,
+    ) -> SubjectAttributes: ...
+
     async def allocate_serial_number(
         self,
         *,
@@ -421,6 +428,10 @@ class GovernanceAttachmentUploadService:
         await self._store.lock_authorization_dependencies(
             change_request=change_request,
             subject_id=current_subject.subject_id,
+        )
+        current_subject = await self._store.refresh_effective_subject(
+            subject=current_subject,
+            observed_at=environment.requested_at,
         )
         await self._authorize_locked(
             uow=uow,
