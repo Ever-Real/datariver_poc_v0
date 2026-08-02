@@ -43,6 +43,7 @@ from datariver.domain.knowledge_studio import (
     TBoxProposalMode,
 )
 from datariver.domain.knowledge_studio_proposal_jobs import (
+    KNOWLEDGE_STUDIO_CATALOG_INFERENCE_CONTRACT,
     KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
     KnowledgeStudioAcceptedUploadPin,
     KnowledgeStudioCatalogFieldMetadataPin,
@@ -52,6 +53,7 @@ from datariver.domain.knowledge_studio_proposal_jobs import (
     KnowledgeStudioProposalJobStage,
     KnowledgeStudioProposalJobState,
     knowledge_studio_catalog_grounding_ids,
+    knowledge_studio_catalog_inference_document,
     knowledge_studio_proposal_requester_authorization_document,
     knowledge_studio_proposal_requester_authorization_hash,
     render_knowledge_studio_catalog_prompt,
@@ -378,6 +380,97 @@ def _catalog_v2_pin() -> KnowledgeStudioCatalogSourcePin:
     ).with_computed_metadata_fingerprint()
 
 
+def _representative_catalog_eight_field_pin() -> KnowledgeStudioCatalogSourcePin:
+    fields = (
+        ("id", "uuid", "Synthetic id field for local lineage testing.", "identifier"),
+        (
+            "scenario_code",
+            "text",
+            "Synthetic scenario code field for local lineage testing.",
+            "scenario",
+        ),
+        (
+            "business_key",
+            "text",
+            "Synthetic business key field for local lineage testing.",
+            "business_key",
+        ),
+        (
+            "record_name",
+            "text",
+            "Synthetic record name field for local lineage testing.",
+            "record_name",
+        ),
+        (
+            "lifecycle_status",
+            "text",
+            "Synthetic lifecycle status field for local lineage testing.",
+            "lifecycle_status",
+        ),
+        (
+            "operational_region",
+            "text",
+            "Synthetic operational region field for local lineage testing.",
+            "operational_region",
+        ),
+        (
+            "annual_volume",
+            "integer",
+            "Synthetic annual volume field for local lineage testing.",
+            "annual_volume",
+        ),
+        (
+            "unit_cost",
+            "numeric(14,2)",
+            "Synthetic unit cost field for local lineage testing.",
+            "unit_cost",
+        ),
+    )
+    return KnowledgeStudioCatalogSourcePin(
+        asset_id=MANIFEST_ID,
+        name="reference_legal_entity_logic_3nm",
+        asset_type="TABLE",
+        classification=0,
+        source_version=SHA_A,
+        projection_source_version=SHA_B,
+        selected_field_paths=tuple(item[0] for item in fields),
+        platform="postgres",
+        database_name="datariver",
+        schema_name="semiconductor_seed",
+        domain="Semiconductor",
+        tags=("datariver_classification_public", "datariver_execution_applied"),
+        glossary_terms=("Legal Entity",),
+        contract_version=KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
+        description=(
+            "Registered semiconductor group, subsidiary, and joint-venture records. "
+            "Scenario: logic_3nm. DataRiver semiconductor seed (applied)."
+        ),
+        field_metadata=tuple(
+            KnowledgeStudioCatalogFieldMetadataPin(
+                field_path=field_path,
+                native_data_type=native_data_type,
+                description=description,
+                tags=(f"datariver_field_{term}",),
+                glossary_terms=(term,),
+            )
+            for field_path, native_data_type, description, term in fields
+        ),
+    ).with_computed_metadata_fingerprint()
+
+
+def _oversized_catalog_inference_pin() -> KnowledgeStudioCatalogSourcePin:
+    pin = _representative_catalog_eight_field_pin()
+    return replace(
+        pin,
+        field_metadata=tuple(
+            replace(field, description=str(index) * 1_000)
+            for index, field in enumerate(pin.field_metadata, start=1)
+        ),
+        description="asset" * 200,
+        metadata_fingerprint=None,
+    ).with_computed_metadata_fingerprint()
+
+
 def _catalog_claim(
     *,
     current_elements: tuple[TBoxElementInput, ...] = (),
@@ -451,9 +544,10 @@ def _catalog_grounded_elements() -> tuple[TBoxElementInput, ...]:
 def test_catalog_v2_source_pin_is_bounded_ordered_and_hashes_exact_metadata() -> None:
     pin = _catalog_v2_pin()
     document = pin.to_document()
+    evidence_hash = pin.evidence_hash()
     class_id, property_ids = knowledge_studio_catalog_grounding_ids(pin)
     prompt = render_knowledge_studio_catalog_prompt(pin)
-    prompt_document = json.loads(prompt.split("\n", maxsplit=1)[1])
+    prompt_document = json.loads(prompt)
 
     assert document["contract_version"] == KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2
     assert document["selected_field_paths"] == ["order_id", "amount"]
@@ -463,8 +557,48 @@ def test_catalog_v2_source_pin_is_bounded_ordered_and_hashes_exact_metadata() ->
         "amount",
     ]
     assert document["metadata_fingerprint"] == pin.metadata_fingerprint
-    assert prompt_document["g"] == [class_id, list(property_ids)]
-    assert prompt_document["s"] == document
+    assert prompt_document == knowledge_studio_catalog_inference_document(pin)
+    assert prompt_document["contract_version"] == KNOWLEDGE_STUDIO_CATALOG_INFERENCE_CONTRACT
+    assert set(prompt_document) == {"contract_version", "asset", "fields"}
+    asset = cast(dict[str, object], prompt_document["asset"])
+    fields = cast(list[dict[str, object]], prompt_document["fields"])
+    assert set(asset) == {
+        "asset_id",
+        "expected_class_id",
+        "name",
+        "asset_type",
+        "platform",
+        "database_name",
+        "schema_name",
+        "domain",
+        "description",
+        "description_truncated",
+        "tags",
+        "glossary_terms",
+    }
+    assert set(fields[0]) == {
+        "expected_property_id",
+        "field_path",
+        "field_type",
+        "native_data_type",
+        "description",
+        "description_truncated",
+        "tags",
+        "tags_truncated",
+        "glossary_terms",
+        "terms_truncated",
+    }
+    assert asset["expected_class_id"] == class_id
+    assert [item["expected_property_id"] for item in fields] == list(property_ids)
+    assert [item["field_path"] for item in fields] == list(pin.selected_field_paths)
+    assert fields[0]["description"] == "Order identifier"
+    assert fields[0]["tags"] == ["gold"]
+    assert fields[0]["glossary_terms"] == ["Order"]
+    assert fields[0]["description_truncated"] is False
+    assert fields[0]["tags_truncated"] is False
+    assert fields[0]["terms_truncated"] is False
+    assert pin.to_document() == document
+    assert pin.evidence_hash() == evidence_hash
     assert len(prompt) <= 4_000
 
     changed = replace(
@@ -487,6 +621,24 @@ def test_catalog_v2_source_pin_is_bounded_ordered_and_hashes_exact_metadata() ->
     reordered_class_id, reordered_property_ids = knowledge_studio_catalog_grounding_ids(reordered)
     assert reordered_class_id == class_id
     assert reordered_property_ids == tuple(reversed(property_ids))
+
+
+def test_representative_eight_field_catalog_inference_is_bounded_and_ordered() -> None:
+    pin = _representative_catalog_eight_field_pin()
+    class_id, property_ids = knowledge_studio_catalog_grounding_ids(pin)
+    prompt = render_knowledge_studio_catalog_prompt(pin)
+    document = json.loads(prompt)
+    asset = cast(dict[str, object], document["asset"])
+    fields = cast(list[dict[str, object]], document["fields"])
+
+    assert len(prompt) <= 4_000
+    assert asset["expected_class_id"] == class_id
+    assert asset["description"] == pin.description
+    assert asset["tags"] == list(pin.tags)
+    assert asset["glossary_terms"] == list(pin.glossary_terms)
+    assert [item["expected_property_id"] for item in fields] == list(property_ids)
+    assert [item["field_path"] for item in fields] == list(pin.selected_field_paths)
+    assert all(item["description"] for item in fields)
 
 
 def test_catalog_v1_document_is_unchanged_and_v2_decoder_rejects_tampering() -> None:
@@ -523,17 +675,8 @@ def test_catalog_v2_source_pin_rejects_metadata_order_and_oversized_prompt() -> 
     with pytest.raises(ValidationError, match="match the selected fields in order"):
         reordered.validate()
 
-    large = replace(
-        pin,
-        field_metadata=(
-            replace(pin.field_metadata[0], description="가" * 1_000),
-            replace(pin.field_metadata[1], description="나" * 1_000),
-        ),
-        description="다" * 1_000,
-        metadata_fingerprint=None,
-    ).with_computed_metadata_fingerprint()
     with pytest.raises(ValidationError, match="Select fewer fields"):
-        render_knowledge_studio_catalog_prompt(large)
+        render_knowledge_studio_catalog_prompt(_oversized_catalog_inference_pin())
 
 
 def test_catalog_v2_source_pin_enforces_authoritative_metadata_bounds() -> None:
@@ -769,6 +912,37 @@ async def test_worker_completes_only_exact_server_grounded_catalog_schema() -> N
     assert evidence["catalog_grounding_contract"] == ("KNOWLEDGE_STUDIO_CATALOG_TBOX_GROUNDING_V1")
     assert evidence["catalog_grounded_class_count"] == 1
     assert evidence["catalog_grounded_property_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_an_oversized_catalog_inference_before_provider() -> None:
+    base_claim = _catalog_claim()
+    claim = replace(
+        base_claim,
+        pins=replace(base_claim.pins, source=_oversized_catalog_inference_pin()),
+    )
+    store = _Store(claim)
+    assistant = _Assistant(_catalog_grounded_elements())
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=_Reader(b"unused"),
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 0
+    assert store.completed is None
+    assert store.failed == [("VALIDATION_ERROR", False, False)]
 
 
 @pytest.mark.asyncio

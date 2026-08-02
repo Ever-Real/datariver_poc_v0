@@ -13,6 +13,9 @@ from datariver.application.errors import ExternalDependencyError
 from datariver.domain.common import ValidationError
 from datariver.domain.knowledge_pipeline import GraphRagEvidence, ModelBinding, PdfPage
 from datariver.domain.knowledge_studio import TBoxElementInput, TBoxElementKind
+from datariver.domain.knowledge_studio_proposal_jobs import (
+    KNOWLEDGE_STUDIO_CATALOG_INFERENCE_CONTRACT,
+)
 from datariver.infrastructure.knowledge.openai_compatible import (
     MAX_INFERENCE_RESPONSE_BYTES,
     HttpxOpenAIJsonTransport,
@@ -364,7 +367,14 @@ async def test_tbox_schema_assistant_uses_bounded_grammar_compatible_schema() ->
         in system_prompt
     )
     assert "emit only the single most strongly grounded element" in system_prompt
-    assert "copy its exact Class and Property stable IDs" in system_prompt
+    assert "KNOWLEDGE_STUDIO_CATALOG_GROUNDING_INFERENCE_V1" in system_prompt
+    assert "asset.expected_class_id" in system_prompt
+    assert "fields entry in array order using expected_property_id" in system_prompt
+    assert "asset.asset_id into metadata_reference_id" in system_prompt
+    user_message = messages[1]
+    assert isinstance(user_message, dict)
+    user_document = json.loads(user_message["content"])
+    assert user_document["request"] == "Document schema를 제안해 줘."
     response_format = request["response_format"]
     assert isinstance(response_format, dict)
     schema_contract = response_format["json_schema"]
@@ -398,6 +408,68 @@ async def test_tbox_schema_assistant_uses_bounded_grammar_compatible_schema() ->
         "vector_index_enabled",
     } & set(relation_properties)
     assert relation_schema["additionalProperties"] is False
+
+
+@pytest.mark.asyncio
+async def test_tbox_schema_assistant_describes_the_encoded_catalog_request_contract() -> None:
+    catalog_asset_id = uuid4()
+    inference_document = {
+        "contract_version": KNOWLEDGE_STUDIO_CATALOG_INFERENCE_CONTRACT,
+        "asset": {
+            "asset_id": str(catalog_asset_id),
+            "expected_class_id": "class:catalog-asset",
+        },
+        "fields": [
+            {
+                "expected_property_id": "property:catalog-id",
+                "field_path": "id",
+            }
+        ],
+    }
+    transport = _Transport(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": json.dumps(
+                            {
+                                "classes": [
+                                    {
+                                        "stable_element_id": "class:catalog-asset",
+                                        "canonical_name": "CatalogAsset",
+                                        "display_name": "Catalog asset",
+                                        "metadata_reference_id": str(catalog_asset_id),
+                                    }
+                                ],
+                                "properties": [],
+                                "relations": [],
+                            }
+                        )
+                    }
+                }
+            ]
+        }
+    )
+
+    await OpenAICompatibleTBoxSchemaAssistant(transport=transport).propose(
+        prompt=json.dumps(inference_document, separators=(",", ":")),
+        current_elements=(),
+        binding=_binding("gemma4:latest"),
+    )
+
+    request = transport.calls[0][1]
+    messages = request["messages"]
+    assert isinstance(messages, list)
+    system_message = messages[0]
+    user_message = messages[1]
+    assert isinstance(system_message, dict)
+    assert isinstance(user_message, dict)
+    assert "JSON document encoded in the request string" in system_message["content"]
+    user_document = json.loads(user_message["content"])
+    encoded_request = user_document["request"]
+    assert isinstance(encoded_request, str)
+    assert json.loads(encoded_request) == inference_document
+    assert set(json.loads(encoded_request)) == {"contract_version", "asset", "fields"}
 
 
 @pytest.mark.asyncio

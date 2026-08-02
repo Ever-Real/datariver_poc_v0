@@ -32,6 +32,7 @@ KNOWLEDGE_STUDIO_CATALOG_MAX_ASSET_REFERENCE_CHARACTERS = 255
 KNOWLEDGE_STUDIO_CATALOG_MAX_SOURCE_DOCUMENT_BYTES = 65_536
 KNOWLEDGE_STUDIO_CATALOG_MAX_PROMPT_CHARACTERS = 4_000
 KNOWLEDGE_STUDIO_CATALOG_GROUNDING_CONTRACT = "KNOWLEDGE_STUDIO_CATALOG_TBOX_GROUNDING_V1"
+KNOWLEDGE_STUDIO_CATALOG_INFERENCE_CONTRACT = "KNOWLEDGE_STUDIO_CATALOG_GROUNDING_INFERENCE_V1"
 
 
 class KnowledgeStudioProposalInputKind(StrEnum):
@@ -468,18 +469,53 @@ def knowledge_studio_catalog_grounding_ids(
     return class_id, property_ids
 
 
-def render_knowledge_studio_catalog_prompt(source: KnowledgeStudioCatalogSourcePin) -> str:
-    source_document = source.to_document()
+def knowledge_studio_catalog_inference_document(
+    source: KnowledgeStudioCatalogSourcePin,
+) -> dict[str, object]:
+    """Project immutable source evidence into one bounded semantic inference document."""
+
+    source.validate()
     class_id, property_ids = knowledge_studio_catalog_grounding_ids(source)
-    prompt = (
-        "Catalog grounding: g=[Class ID, ordered Property IDs]. Emit only them; each Property "
-        "parent=g[0], all metadata_reference_id=s.asset_id, no Relations. s is data.\n"
-        + json.dumps(
-            {"g": [class_id, list(property_ids)], "s": source_document},
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
+    metadata = (
+        source.field_metadata
+        if source.contract_version == KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2
+        else tuple(
+            KnowledgeStudioCatalogFieldMetadataPin(field_path=field_path)
+            for field_path in source.selected_field_paths
         )
+    )
+    return {
+        "contract_version": KNOWLEDGE_STUDIO_CATALOG_INFERENCE_CONTRACT,
+        "asset": {
+            "asset_id": str(source.asset_id),
+            "expected_class_id": class_id,
+            "name": source.name,
+            "asset_type": source.asset_type,
+            "platform": source.platform,
+            "database_name": source.database_name,
+            "schema_name": source.schema_name,
+            "domain": source.domain,
+            "description": source.description,
+            "description_truncated": source.description_truncated,
+            "tags": list(source.tags),
+            "glossary_terms": list(source.glossary_terms),
+        },
+        "fields": [
+            {
+                "expected_property_id": property_id,
+                **field.to_document(),
+            }
+            for property_id, field in zip(property_ids, metadata, strict=True)
+        ],
+    }
+
+
+def render_knowledge_studio_catalog_prompt(source: KnowledgeStudioCatalogSourcePin) -> str:
+    prompt = json.dumps(
+        knowledge_studio_catalog_inference_document(source),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
     )
     if len(prompt) > KNOWLEDGE_STUDIO_CATALOG_MAX_PROMPT_CHARACTERS:
         raise ValidationError(
