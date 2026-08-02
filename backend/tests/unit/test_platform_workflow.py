@@ -7,7 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -576,6 +576,152 @@ def test_update_starts_an_explicitly_enabled_proposal_worker() -> None:
         )
         == ()
     )
+
+
+def _captured_workflow_failure(sentinel: str) -> Exception:
+    cause = subprocess.CalledProcessError(
+        1,
+        ("compose-query",),
+        output=sentinel,
+        stderr=sentinel,
+    )
+    error = cast(Exception, workflow.WorkflowError("captured child command failure"))
+    error.__cause__ = cause
+    return error
+
+
+class _ScriptedOutputRunner:
+    def __init__(self, outcomes: list[str | Exception]) -> None:
+        self.outcomes = outcomes
+        self.calls: list[tuple[str, ...]] = []
+        self.notes: list[str] = []
+
+    def output(self, arguments: Any) -> str:
+        self.calls.append(tuple(os.fspath(argument) for argument in arguments))
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def note(self, message: str) -> None:
+        self.notes.append(message)
+
+
+def test_running_services_preserves_first_success_behavior(tmp_path: Path) -> None:
+    update = _load_update_module()
+    runner = _ScriptedOutputRunner(["api\nweb\n"])
+
+    result = update._running_services(
+        runner,
+        env_file=tmp_path / ".env.mac-development",
+        files=(tmp_path / "compose.yaml",),
+    )
+
+    assert result == ("api", "web")
+    assert len(runner.calls) == 1
+    assert runner.calls[0][-4:] == ("ps", "--services", "--filter", "status=running")
+    assert runner.notes == []
+
+
+def test_running_services_recovers_once_after_a_successful_daemon_probe(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    runner = _ScriptedOutputRunner(
+        [
+            _captured_workflow_failure("first-query-sensitive-sentinel"),
+            "29.4.2",
+            "api\nweb\n",
+        ]
+    )
+
+    result = update._running_services(
+        runner,
+        env_file=tmp_path / ".env.mac-development",
+        files=(tmp_path / "compose.yaml",),
+    )
+
+    assert result == ("api", "web")
+    assert len(runner.calls) == 3
+    assert runner.calls[0] == runner.calls[2]
+    assert runner.calls[1] == (
+        "docker",
+        "version",
+        "--format",
+        "{{.Server.Version}}",
+    )
+    assert len(runner.notes) == 1
+    captured = capsys.readouterr()
+    observed = captured.out + captured.err + "\n".join(runner.notes)
+    assert "first-query-sensitive-sentinel" not in observed
+    assert "29.4.2" not in observed
+
+
+def test_running_services_stops_safely_when_daemon_probe_fails(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    sentinel = "credential=/private/operator.env"
+    runner = _ScriptedOutputRunner(
+        [
+            _captured_workflow_failure(sentinel),
+            _captured_workflow_failure(sentinel),
+        ]
+    )
+
+    with pytest.raises(
+        workflow.WorkflowError,
+        match="DOCKER_DAEMON_UNAVAILABLE",
+    ) as raised:
+        update._running_services(
+            runner,
+            env_file=tmp_path / ".env.mac-development",
+            files=(tmp_path / "compose.yaml",),
+        )
+
+    assert len(runner.calls) == 2
+    assert runner.calls[0][-4:] == ("ps", "--services", "--filter", "status=running")
+    assert runner.calls[1][:3] == ("docker", "version", "--format")
+    assert runner.notes == []
+    captured = capsys.readouterr()
+    observed = captured.out + captured.err + str(raised.value)
+    assert sentinel not in observed
+
+
+def test_running_services_stops_after_one_sanitized_query_retry(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    sentinel = "future_secret=never-log-this"
+    runner = _ScriptedOutputRunner(
+        [
+            _captured_workflow_failure(sentinel),
+            "29.4.2",
+            _captured_workflow_failure(sentinel),
+        ]
+    )
+
+    with pytest.raises(
+        workflow.WorkflowError,
+        match="COMPOSE_RUNNING_SERVICES_QUERY_FAILED",
+    ) as raised:
+        update._running_services(
+            runner,
+            env_file=tmp_path / ".env.mac-development",
+            files=(tmp_path / "compose.yaml",),
+        )
+
+    assert len(runner.calls) == 3
+    assert runner.calls[0] == runner.calls[2]
+    assert runner.calls[1][:3] == ("docker", "version", "--format")
+    assert len(runner.notes) == 1
+    captured = capsys.readouterr()
+    observed = captured.out + captured.err + str(raised.value) + "\n".join(runner.notes)
+    assert sentinel not in observed
+    assert "29.4.2" not in observed
 
 
 def test_update_remounts_a_new_postgres_role_secret_before_reconciliation() -> None:

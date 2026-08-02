@@ -91,6 +91,14 @@ _POSTGRES_SECRET_MOUNT_ENV_KEYS = frozenset(
         "KNOWLEDGE_PROPOSAL_DATABASE_SECRET_REF",
     }
 )
+_DOCKER_DAEMON_PROBE = (
+    "docker",
+    "version",
+    "--format",
+    "{{.Server.Version}}",
+)
+_DOCKER_DAEMON_UNAVAILABLE = "DOCKER_DAEMON_UNAVAILABLE"
+_COMPOSE_RUNNING_SERVICES_QUERY_FAILED = "COMPOSE_RUNNING_SERVICES_QUERY_FAILED"
 
 
 def parse_args() -> argparse.Namespace:
@@ -194,13 +202,29 @@ def _running_services(
     env_file: Path,
     files: tuple[Path, ...],
 ) -> tuple[str, ...]:
-    output = runner.output(
-        compose_arguments(
-            env_file=env_file,
-            compose_files=files,
-            trailing=("ps", "--services", "--filter", "status=running"),
-        )
+    arguments = compose_arguments(
+        env_file=env_file,
+        compose_files=files,
+        trailing=("ps", "--services", "--filter", "status=running"),
     )
+    try:
+        output = runner.output(arguments)
+    except WorkflowError:
+        try:
+            runner.output(_DOCKER_DAEMON_PROBE)
+        except WorkflowError as error:
+            raise WorkflowError(
+                "The Compose running-service query stopped "
+                f"(classification={_DOCKER_DAEMON_UNAVAILABLE})."
+            ) from error
+        runner.note("Docker daemon probe 통과 후 실행 서비스 조회를 1회 재시도합니다.")
+        try:
+            output = runner.output(arguments)
+        except WorkflowError as error:
+            raise WorkflowError(
+                "The Compose running-service query stopped after one bounded retry "
+                f"(classification={_COMPOSE_RUNNING_SERVICES_QUERY_FAILED})."
+            ) from error
     return tuple(line.strip() for line in output.splitlines() if line.strip())
 
 
