@@ -426,6 +426,26 @@ def _load_canonical_admin_binding_revision() -> ModuleType:
     return module
 
 
+def _load_attachment_authorization_revision() -> ModuleType:
+    """Load the current CR attachment finalization authorization contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0091_align_governance_attachment_authorization.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_attachment_authorization_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the CR attachment authorization contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -749,9 +769,7 @@ def build_upgrade() -> ops.UpgradeOps:
     operations.extend(ops.ExecuteSQLOp(statement) for statement in _chat_retention_binding_sql())
     operations.append(ops.ExecuteSQLOp(IDENTITY_PROVISIONING_FUNCTION_SQL_V3))
     operations.append(
-        ops.ExecuteSQLOp(
-            f"REVOKE ALL ON FUNCTION {IDENTITY_PROVISIONING_SIGNATURE_V3} FROM PUBLIC"
-        )
+        ops.ExecuteSQLOp(f"REVOKE ALL ON FUNCTION {IDENTITY_PROVISIONING_SIGNATURE_V3} FROM PUBLIC")
     )
     operations.append(ops.ExecuteSQLOp(IDENTITY_PROFILE_UPDATE_FUNCTION_SQL))
     operations.append(
@@ -985,6 +1003,10 @@ def build_upgrade() -> ops.UpgradeOps:
                 label="structural content-safety",
             )
         )
+    )
+    attachment_authorization = _load_attachment_authorization_revision()
+    operations.append(
+        ops.ExecuteSQLOp(attachment_authorization.FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL)
     )
     return ops.UpgradeOps(ops=operations)
 

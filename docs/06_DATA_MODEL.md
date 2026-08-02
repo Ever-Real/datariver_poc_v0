@@ -928,10 +928,22 @@ may insert only a current STARTED precommit using the browser's exact upload UUI
 UPDATE or finalized-attachment INSERT grant. The BYPASSRLS upload role can obtain only one due row
 through a SECURITY DEFINER `FOR UPDATE SKIP LOCKED` claim, then records STORED only after HEAD and
 full-byte SHA-256 read-back. The current human is reauthorized before the typed function atomically
-inserts the finalized attachment plus FINALIZED state; a finalized replay returns the same row
-after the same current authorization check. Provider success followed by HEAD/readback failure,
+inserts the finalized attachment plus FINALIZED state. A finalized replay returns the same row
+immediately after the current workspace/uploader/intent and immutable attachment identity match;
+it does not re-evaluate CR state or mutable authority for an effect that already committed. Provider
+success followed by HEAD/readback failure,
 cancellation or ambiguous commit remains operator-queryable evidence and is never converted into
 an automatic object delete.
+
+Alembic `0091` replaces only the attachment-finalization function so its database authorization
+matches current server-managed profile and ADR-0109 routing authority. The function locks and
+rechecks the current profile or Canonical Admin binding, active System responsibilities, effective
+schema mapping/native System, classification policy and RESTRICTED grants before the existing
+atomic STORED-to-FINALIZED insert/update. Managed profiles derive Systems from active
+`platform.system_assignees`; legacy actors without any profile or Canonical binding retain the
+`0050` membership scope only as a compatibility boundary. Non-RESTRICTED targets do not require a
+Domain intersection, while RESTRICTED targets retain current Domain plus explicit grant. Downgrade
+restores the exact `0050` function and changes no table, data or grant.
 
 Alembic `0051` implements ADR-0042's typed catalog-metadata evidence boundary. It adds the local
 DOMAIN/TAG/TERM vocabulary projection and durable kind-scoped reconciliation cursor, immutable

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from textwrap import dedent
 from types import ModuleType
 
 import pytest
@@ -14,6 +15,15 @@ def _load_migration(filename: str) -> ModuleType:
     spec = spec_from_file_location(f"test_{path.stem}", path)
     if spec is None or spec.loader is None:
         raise AssertionError(f"could not load migration: {path}")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_source_module(path: Path) -> ModuleType:
+    spec = spec_from_file_location(f"test_{path.stem}", path)
+    if spec is None or spec.loader is None:
+        raise AssertionError(f"could not load source module: {path}")
     module = module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -190,3 +200,118 @@ def test_0050_model_and_migration_keep_upload_intents_reconcilable_and_monotonic
     assert "expected_indexes" in migration
     assert "actual_column_contract" in migration
     assert "delete_object" not in migration
+
+
+def test_0091_upgrade_and_downgrade_replace_only_the_finalize_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    migration = _load_migration("0091_align_governance_attachment_authorization.py")
+    executed: list[str] = []
+    monkeypatch.setattr(migration.op, "execute", executed.append)
+
+    migration.upgrade()
+    migration.downgrade()
+
+    assert migration.revision == "0091"
+    assert migration.down_revision == "0090"
+    assert executed == [
+        migration.FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL,
+        migration.LEGACY_FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL,
+    ]
+    for statement in executed:
+        assert statement.count("CREATE OR REPLACE FUNCTION") == 1
+        assert "CREATE TABLE" not in statement
+        assert "ALTER TABLE" not in statement
+        assert "GRANT " not in statement
+
+
+def test_0091_downgrade_restores_the_exact_0050_legacy_function(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    legacy = _load_migration("0050_change_request_attachment_upload_intents.py")
+    current = _load_migration("0091_align_governance_attachment_authorization.py")
+    executed: list[str] = []
+    monkeypatch.setattr(legacy.op, "execute", executed.append)
+
+    legacy._install_security()
+
+    original = next(
+        statement
+        for statement in executed
+        if "CREATE OR REPLACE FUNCTION governance.finalize_attachment_upload_intent" in statement
+    )
+    assert " ".join(current.LEGACY_FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL.split()) == (
+        " ".join(dedent(original).split())
+    )
+
+
+def test_0091_finalize_uses_current_profile_responsibility_and_routed_target_authority() -> None:
+    migration = _load_migration("0091_align_governance_attachment_authorization.py")
+    sql = migration.FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL
+
+    for required in (
+        "SECURITY DEFINER",
+        "SET search_path = pg_catalog, governance, iam, platform, catalog, authz",
+        "FOR UPDATE OF membership, subject, workspace",
+        "iam.profile_role_assignments",
+        "PROFILE_ROLE_POLICY_V1",
+        "materialized_actions_hash",
+        "iam.canonical_admin_bindings",
+        "membership_access_hash",
+        "platform.system_assignees",
+        "assignee.active IS TRUE",
+        "platform.data_systems",
+        "system.active IS TRUE",
+        "platform.system_schema_scopes",
+        "current_mapping.active IS NOT TRUE",
+        "target.current_native_system_id IS NOT NULL",
+        "IS DISTINCT FROM current_mapping.system_id",
+        "effective_system_id IS DISTINCT FROM expected_system_id",
+        "intent.kind = 'TEST'",
+        "assignee.responsibility = 'DEVELOPER'",
+        "target.current_classification = 3",
+        "rule.search_mode = 'EXPLICIT_GRANT_ONLY'",
+        "authz.restricted_search_grants",
+        "grant_row.scope = 'RESOURCE'",
+        "grant_row.scope = 'SYSTEM'",
+        "grant_row.scope = 'DOMAIN'",
+        "IF intent.state = 'FINALIZED' THEN",
+    ):
+        assert required in sql
+
+    assert "asset.system_id IS DISTINCT FROM item.target_system_id" not in sql
+    assert "target_source_version" not in sql
+    assert "target_observed_at" not in sql
+    assert "source_version" not in sql
+    assert "observed_at" not in sql
+    assert sql.index("FROM iam.workspace_memberships") < sql.index(
+        "FROM governance.change_request_attachment_upload_intents"
+    )
+    assert sql.index("FROM platform.system_schema_scopes") < sql.index("FOR target IN")
+    assert sql.index("FROM authz.restricted_search_grants") < sql.index("FOR target IN")
+    finalized_branch = sql.index("IF intent.state = 'FINALIZED' THEN")
+    finalized_return = sql.index("RETURN intent.id;", finalized_branch)
+    request_lock = sql.index("FROM governance.change_requests", finalized_branch)
+    assert finalized_branch < finalized_return < request_lock
+    assert (
+        sql.index(
+            "RAISE EXCEPTION 'finalized attachment evidence is inconsistent'",
+            finalized_branch,
+        )
+        < request_lock
+    )
+
+
+def test_0091_is_the_canonical_generated_attachment_authorization() -> None:
+    root = Path(__file__).resolve().parents[3]
+    migration = _load_migration("0091_align_governance_attachment_authorization.py")
+    generator = _load_source_module(root / "scripts/generate_initial_migration.py")
+    initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
+
+    operation = generator.build_upgrade().ops[-1]
+    assert operation.sqltext == migration.FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL
+    assert (
+        initial.count("CREATE OR REPLACE FUNCTION governance.finalize_attachment_upload_intent")
+        == 1
+    )
+    assert "attachment catalog target binding is stale" in initial

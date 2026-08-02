@@ -100,6 +100,17 @@ continues to require its explicit grant together with the same effective System 
 intersection. Search, detail, intake and final reauthorization share this CR-only reader and binding
 hash; generic Catalog, Registration, Quality, Knowledge and Chat predicates are not changed.
 
+CR attachment finalization is a second authorization boundary, not a trusted continuation of the
+application decision. Its SECURITY DEFINER function locks the active human membership and current
+profile or Canonical Admin evidence, derives effective Systems from active responsibilities, and
+rechecks the current schema mapping/native-System result and immutable target binding before any
+attachment insert. REQUEST requires the uploader and current editable round; TEST additionally
+requires an exact active Developer responsibility. Non-RESTRICTED targets use current System,
+clearance and ABAC policy without a Domain intersection. RESTRICTED targets additionally require a
+current Domain intersection and unexpired explicit RESOURCE, SYSTEM or DOMAIN grant. Revoked or
+stale profile/binding/responsibility/mapping/policy/grant evidence leaves the upload intent STORED;
+ordinary roles still receive no direct intent UPDATE or finalized-attachment INSERT authority.
+
 Typed upload candidate reads require `registration.read`, `catalog.read` and `change.create`. The
 service first validates READY receipt/V2 hash evidence, then batch-loads only current ACTIVE DATASET
 targets under the classification snapshot and applies grouped authorization. A missing, denied,

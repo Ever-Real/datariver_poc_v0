@@ -1331,7 +1331,17 @@ red-team corpus.
   acquires one bounded claim only through a SECURITY DEFINER `FOR UPDATE SKIP LOCKED` function,
   then independently verifies HEAD metadata and the full provider byte hash before STORED. The
   actual-PostgreSQL negative enables BYPASSRLS and still requires direct SELECT to fail.
-  Finalization must reauthorize the current human and exact CR round/version/state; the browser
+  Finalization must reauthorize the current human and exact CR round/version/state. Revision `0091`
+  additionally proves a managed profile with empty membership System scope succeeds only through
+  an active System responsibility and the same effective schema mapping/native-System rule as the
+  CR target reader. Profile/binding revocation, inactive or removed responsibility/System/mapping,
+  native/mapped conflict, cross-subject/workspace access and RESTRICTED missing Domain/grant/policy
+  must fail before attachment/intent mutation; TEST requires exact Developer responsibility.
+  Source version and observed time drift alone are not authorization drift. Direct table UPDATE
+  remains denied, downgrade restores the exact `0050` function and generated `0001` must contain
+  the same current function deterministically. Finalized-response replay must return the same ID
+  after later CR version/state or profile/responsibility drift without changing attachment/intent
+  count, state, version or finalized time; wrong Workspace or uploader still denies. The browser
   handles `202 STARTED`, exact upload-UUID response-loss recovery, finalized-response replay,
   hidden-tab pause/resume, 20-read and 120-second limits. A manual recovery query requires the
   current round, filters STORED before its ten-row SQL limit, refreshes successful finalizations

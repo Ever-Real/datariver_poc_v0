@@ -55,6 +55,17 @@ Search, detail, intake and final reauthorization use the same CR-only reader, an
 target binding hash includes the effective System. Removing or changing the mapping therefore
 invalidates the target on the next request.
 
+REQUEST and TEST attachment finalization repeats that same mutable routing decision inside the
+database SECURITY DEFINER boundary. It locks the current human membership/profile or Canonical
+Admin binding, active System/responsibility, asset, schema mapping, classification policy and any
+RESTRICTED grant before converting STORED evidence to FINALIZED. A mapped schema is authoritative
+when its native System is absent or equal; native/mapped conflict, inactive mapping/System,
+responsibility revocation or locator/binding drift fails before the attachment row is inserted.
+Non-RESTRICTED finalization does not reintroduce a Domain-membership requirement. RESTRICTED still
+requires the current Domain intersection and an active RESOURCE, SYSTEM or DOMAIN grant under the
+current explicit-grant policy. Provider `source_version` and `observed_at` remain provenance rather
+than attachment authorization authority.
+
 ## Exclusions
 
 Generic Catalog presentation and its workspace-discovery mode, Registration, Knowledge, Quality,
@@ -73,3 +84,5 @@ their active canonical native System when no schema scope exists.
   browser-controlled provider locator.
 - Mapping removal, reassignment, native conflict and locator drift revoke future CR target use
   instead of preserving stale access.
+- A STORED attachment remains recoverable evidence when current profile, responsibility, mapping,
+  policy or grant authority is revoked; finalization neither rebinds the CR nor bypasses that drift.
