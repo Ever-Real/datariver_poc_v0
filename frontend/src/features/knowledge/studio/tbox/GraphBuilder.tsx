@@ -1551,20 +1551,29 @@ export function GraphBuilder({
     setDocumentProposalError('')
     if (documentProposalJob.job?.input_kind === 'DOCUMENT_SCHEMA') {
       setDocumentCapabilityOpen(true)
-    } else {
+    } else if (!documentProposalJob.restoredFromHistory) {
       setCatalogOpen(false)
     }
     setStatus(`${next.elements.length}개의 Typed 요소 Proposal을 미리보기로 불러왔습니다.`)
-  }, [documentProposalJob.job?.input_kind, documentProposalJob.proposal])
+  }, [
+    documentProposalJob.job?.input_kind,
+    documentProposalJob.proposal,
+    documentProposalJob.restoredFromHistory,
+  ])
 
   useEffect(() => {
-    if (!documentProposalJob.active) return
+    if (!documentProposalJob.active && !documentProposalJob.restoredFromHistory) return
     if (documentProposalJob.job?.input_kind === 'DOCUMENT_SCHEMA') {
       setDocumentCapabilityOpen(true)
     } else if (documentProposalJob.job?.input_kind === 'CATALOG_SCHEMA') {
       setCatalogOpen(true)
     }
-  }, [documentProposalJob.active, documentProposalJob.job?.input_kind])
+  }, [
+    documentProposalJob.active,
+    documentProposalJob.job?.input_kind,
+    documentProposalJob.job?.state,
+    documentProposalJob.restoredFromHistory,
+  ])
   const catalogColumns = useMemo<ColumnDef<KnowledgeStudioSourceDataset>[]>(() => [
     {
       accessorKey: 'name',

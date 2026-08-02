@@ -1455,6 +1455,166 @@ describe('GraphBuilder', () => {
     ))).toBe(false)
   })
 
+  it('restores the latest failed document job in its dialog without replaying it', async () => {
+    const restoredJobId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3d6'
+    const restoredJob = {
+      id: restoredJobId,
+      draft_id: draftId,
+      input_kind: 'DOCUMENT_SCHEMA',
+      mode: 'APPEND_LAYER',
+      target_block_id: null,
+      state: 'FAILED',
+      stage: 'INFERENCE',
+      progress_percent: 70,
+      attempt_count: 3,
+      maximum_attempts: 3,
+      last_failure_code: 'PROVIDER_REJECTED',
+      version: 4,
+      created_at: '2026-07-31T01:00:00Z',
+      updated_at: '2026-07-31T01:02:00Z',
+      completed_at: '2026-07-31T01:02:00Z',
+      result_proposal_id: null,
+      result_evidence_hash: null,
+      supersedes_job_id: null,
+    }
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`)) {
+        return Promise.resolve(json(tbox()))
+      }
+      if (path.includes(`/drafts/${draftId}/tbox/proposal-jobs?`)) {
+        return Promise.resolve(json({
+          items: [restoredJob],
+          page: { next_cursor: null, limit: 20 },
+        }))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/proposal-jobs/${restoredJobId}`)) {
+        return Promise.resolve(json(restoredJob, '"4"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog', { name: '문서 기반 T-Box Proposal' })
+    expect(within(dialog).getByText(/서버 상태 FAILED · 단계 INFERENCE · 70%/))
+      .toBeInTheDocument()
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('PROVIDER_REJECTED')
+    expect(within(dialog).getByRole('button', { name: '작업 다시 시도' })).toBeEnabled()
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+  })
+
+  it('restores the latest successful catalog result for explicit review without applying it', async () => {
+    const restoredJobId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3d7'
+    const restoredProposalId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3d8'
+    const restoredJob = {
+      id: restoredJobId,
+      draft_id: draftId,
+      input_kind: 'CATALOG_SCHEMA',
+      mode: 'APPEND_LAYER',
+      target_block_id: null,
+      state: 'SUCCEEDED',
+      stage: 'COMPLETED',
+      progress_percent: 100,
+      attempt_count: 1,
+      maximum_attempts: 4,
+      last_failure_code: null,
+      version: 3,
+      created_at: '2026-07-31T01:00:00Z',
+      updated_at: '2026-07-31T01:01:00Z',
+      completed_at: '2026-07-31T01:01:00Z',
+      result_proposal_id: restoredProposalId,
+      result_evidence_hash: 'b'.repeat(64),
+      supersedes_job_id: null,
+    }
+    const restoredProposal = {
+      id: restoredProposalId,
+      draft_id: draftId,
+      target_block_id: secondBlockId,
+      state: 'READY',
+      mode: 'APPEND_LAYER',
+      merge_strategy: 'KEEP_ORIGINAL',
+      base_draft_version: 2,
+      prompt: 'Catalog metadata proposal',
+      elements: [{
+        stable_element_id: 'class:CatalogEntity',
+        kind: 'CLASS',
+        canonical_name: 'CatalogEntity',
+        display_name: 'Catalog Entity',
+        ordinal: 0,
+        version: 1,
+        aliases: [],
+        vector_index_enabled: false,
+        locked_by_later_block: false,
+      }],
+      conflicts: [],
+      source_reference: {
+        pipeline_evidence: {
+          typed_schema_parse: 'PASSED',
+          deterministic_correction_passes: 1,
+          aggregate_validation_passes: 1,
+          cypher_execution: false,
+        },
+      },
+      version: 1,
+      created_at: '2026-07-31T01:01:00Z',
+      updated_at: '2026-07-31T01:01:00Z',
+    }
+    const onDraftUpdate = vi.fn()
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`)) {
+        return Promise.resolve(json(tbox()))
+      }
+      if (path.includes(`/drafts/${draftId}/tbox/proposal-jobs?`)) {
+        return Promise.resolve(json({
+          items: [restoredJob],
+          page: { next_cursor: null, limit: 20 },
+        }))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/proposal-jobs/${restoredJobId}`)) {
+        return Promise.resolve(json(restoredJob, '"3"'))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/proposals/${restoredProposalId}`)) {
+        return Promise.resolve(json(restoredProposal))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={onDraftUpdate}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    const dialog = await screen.findByRole('dialog', {
+      name: 'DB 카탈로그에서 T-Box 제안',
+    })
+    expect(within(dialog).getByLabelText('카탈로그 Proposal 작업 상태'))
+      .toHaveTextContent('SUCCEEDED · COMPLETED · 100%')
+    expect(await screen.findByLabelText('T-Box Proposal 미리보기')).toBeInTheDocument()
+    expect(onDraftUpdate).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+  })
+
   it('selects an exact published Asset release and opens it in the shared Proposal preview', async () => {
     const release = {
       graph_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3e0',

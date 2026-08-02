@@ -219,6 +219,7 @@ export function useTBoxProposalJob({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [pollingExhausted, setPollingExhausted] = useState(false)
+  const [restoredFromHistory, setRestoredFromHistory] = useState(false)
   const [pollGeneration, setPollGeneration] = useState(0)
   const controllers = useRef(new Set<AbortController>())
   const operationGeneration = useRef(0)
@@ -251,6 +252,7 @@ export function useTBoxProposalJob({
     setBusy(false)
     setError('')
     setPollingExhausted(false)
+    setRestoredFromHistory(false)
   }, [])
 
   const loadTerminalJobResult = useCallback(async (
@@ -264,7 +266,7 @@ export function useTBoxProposalJob({
       return
     }
     if (!terminalJob.result_proposal_id) {
-      setError('완료된 문서 Proposal 작업에 결과 Proposal ID가 없습니다.')
+      setError('완료된 T-Box Proposal 작업에 결과 Proposal ID가 없습니다.')
       return
     }
     const exactProposal = await getKnowledgeStudioTBoxProposal(
@@ -274,6 +276,17 @@ export function useTBoxProposalJob({
       signal,
     )
     if (generation !== operationGeneration.current) return
+    if (
+      exactProposal.id !== terminalJob.result_proposal_id
+      || exactProposal.draft_id !== draftId
+    ) {
+      setError('완료된 T-Box Proposal 결과가 현재 Draft와 일치하지 않습니다.')
+      return
+    }
+    if (exactProposal.state !== 'READY') {
+      setError(`완료된 T-Box Proposal은 다시 적용할 수 없는 상태입니다. (${exactProposal.state})`)
+      return
+    }
     setProposal(exactProposal)
     setError('')
   }, [client, draftId])
@@ -281,6 +294,7 @@ export function useTBoxProposalJob({
   useEffect(() => {
     operationGeneration.current += 1
     operationStarted.current = false
+    setRestoredFromHistory(false)
     const controller = new AbortController()
     const activeControllers = controllers.current
     activeControllers.add(controller)
@@ -292,8 +306,8 @@ export function useTBoxProposalJob({
           || generation !== operationGeneration.current
           || operationStarted.current
         ) return
-        const resumable = page.items.find((item) => isActiveTBoxProposalJob(item))
-        if (!resumable) return
+        const resumable = page.items[0]
+        if (!resumable || resumable.draft_id !== draftId) return
         const response = await getKnowledgeStudioTBoxProposalJob(
           client,
           draftId,
@@ -305,6 +319,14 @@ export function useTBoxProposalJob({
           || generation !== operationGeneration.current
           || operationStarted.current
         ) return
+        if (
+          response.data.id !== resumable.id
+          || response.data.draft_id !== draftId
+        ) {
+          setError('최근 T-Box Proposal 작업이 현재 Draft와 일치하지 않습니다.')
+          return
+        }
+        setRestoredFromHistory(true)
         setJob(response.data)
         setJobEtag(response.etag ?? '')
         setPhase('JOB')
@@ -419,6 +441,7 @@ export function useTBoxProposalJob({
     setBusy(true)
     setError('')
     setPollingExhausted(false)
+    setRestoredFromHistory(false)
     setProposal(undefined)
     setJob(undefined)
     setJobEtag('')
@@ -521,6 +544,7 @@ export function useTBoxProposalJob({
     setBusy(true)
     setError('')
     setPollingExhausted(false)
+    setRestoredFromHistory(false)
     setProposal(undefined)
     setJob(undefined)
     setJobEtag('')
@@ -645,6 +669,7 @@ export function useTBoxProposalJob({
     busy,
     error,
     pollingExhausted,
+    restoredFromHistory,
     active: isActiveTBoxProposalJob(job),
     canRetry: canRetryTBoxProposalJob(job),
     start,

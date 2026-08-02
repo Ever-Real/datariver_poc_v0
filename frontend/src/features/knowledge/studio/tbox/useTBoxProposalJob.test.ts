@@ -49,7 +49,11 @@ function proposal() {
   }
 }
 
-function job(state: 'QUEUED' | 'RUNNING' | 'SUCCEEDED') {
+type TestJobState = 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'STALE' | 'CANCELLED'
+
+function job(state: TestJobState, overrides: Record<string, unknown> = {}) {
+  const succeeded = state === 'SUCCEEDED'
+  const active = state === 'QUEUED' || state === 'RUNNING'
   return {
     id: jobId,
     draft_id: draftId,
@@ -59,18 +63,19 @@ function job(state: 'QUEUED' | 'RUNNING' | 'SUCCEEDED') {
     state,
     stage: state === 'QUEUED'
       ? 'QUEUED'
-      : state === 'RUNNING' ? 'INFERENCE' : 'COMPLETED',
+      : state === 'RUNNING' ? 'INFERENCE' : succeeded ? 'COMPLETED' : 'FAILED',
     progress_percent: state === 'QUEUED' ? 0 : state === 'RUNNING' ? 55 : 100,
     attempt_count: state === 'QUEUED' ? 0 : 1,
     maximum_attempts: 4,
-    last_failure_code: null,
-    version: state === 'SUCCEEDED' ? 3 : 1,
+    last_failure_code: active || succeeded ? null : 'INFERENCE_REJECTED',
+    version: succeeded ? 3 : 1,
     created_at: '2026-07-31T01:00:00Z',
     updated_at: '2026-07-31T01:01:00Z',
-    completed_at: state === 'SUCCEEDED' ? '2026-07-31T01:01:00Z' : null,
-    result_proposal_id: state === 'SUCCEEDED' ? proposalId : null,
-    result_evidence_hash: state === 'SUCCEEDED' ? 'b'.repeat(64) : null,
+    completed_at: active ? null : '2026-07-31T01:01:00Z',
+    result_proposal_id: succeeded ? proposalId : null,
+    result_evidence_hash: succeeded ? 'b'.repeat(64) : null,
     supersedes_job_id: null,
+    ...overrides,
   }
 }
 
@@ -251,5 +256,120 @@ describe('useTBoxProposalJob', () => {
 
     await waitFor(() => expect(result.current.proposal?.id).toBe(proposalId))
     expect(detailReads).toBe(2)
+  })
+
+  it('restores the latest terminal Proposal without replaying its upload or job request', async () => {
+    const olderActive = job('RUNNING', {
+      id: '019fa57b-52de-74c0-9f5e-06ae7b1bf399',
+      created_at: '2026-07-31T00:00:00Z',
+    })
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.includes('/tbox/proposal-jobs?')) {
+        return Promise.resolve(json({
+          items: [job('SUCCEEDED'), olderActive],
+          page: { next_cursor: null, limit: 20 },
+        }))
+      }
+      if (path.endsWith(`/tbox/proposal-jobs/${jobId}`)) {
+        return Promise.resolve(json(job('SUCCEEDED'), '"3"'))
+      }
+      if (path.endsWith(`/tbox/proposals/${proposalId}`)) {
+        return Promise.resolve(json(proposal()))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    const { result } = renderHook(() => useTBoxProposalJob({
+      client,
+      draftId,
+      draftEtag: '"2"',
+    }))
+
+    await waitFor(() => expect(result.current.proposal?.id).toBe(proposalId))
+    expect(result.current.job?.state).toBe('SUCCEEDED')
+    expect(result.current.restoredFromHistory).toBe(true)
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+    expect(fetchMock.mock.calls.some(([input]) => requestUrl(input).endsWith(olderActive.id)))
+      .toBe(false)
+  })
+
+  it('restores a terminal failure read-only and keeps malformed results fail-closed', async () => {
+    const failedFetch = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.includes('/tbox/proposal-jobs?')) {
+        return Promise.resolve(json({
+          items: [job('FAILED')],
+          page: { next_cursor: null, limit: 20 },
+        }))
+      }
+      if (path.endsWith(`/tbox/proposal-jobs/${jobId}`)) {
+        return Promise.resolve(json(job('FAILED'), '"2"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', failedFetch)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    const failed = renderHook(() => useTBoxProposalJob({
+      client,
+      draftId,
+      draftEtag: '"2"',
+    }))
+
+    await waitFor(() => expect(failed.result.current.job?.state).toBe('FAILED'))
+    expect(failed.result.current.error).toContain('INFERENCE_REJECTED')
+    expect(failed.result.current.canRetry).toBe(true)
+    expect(failed.result.current.proposal).toBeUndefined()
+    expect(failedFetch.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(0)
+    failed.unmount()
+
+    const malformedFetch = vi.fn<typeof fetch>((input) => {
+      const path = requestUrl(input)
+      if (path.includes('/tbox/proposal-jobs?')) {
+        return Promise.resolve(json({
+          items: [job('SUCCEEDED', { result_proposal_id: null })],
+          page: { next_cursor: null, limit: 20 },
+        }))
+      }
+      if (path.endsWith(`/tbox/proposal-jobs/${jobId}`)) {
+        return Promise.resolve(json(job('SUCCEEDED', { result_proposal_id: null }), '"3"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', malformedFetch)
+    const malformed = renderHook(() => useTBoxProposalJob({
+      client,
+      draftId,
+      draftEtag: '"2"',
+    }))
+
+    await waitFor(() => expect(malformed.result.current.error).toContain('결과 Proposal ID'))
+    expect(malformed.result.current.proposal).toBeUndefined()
+  })
+
+  it('ignores a latest job outside the current Draft', async () => {
+    const fetchMock = vi.fn<typeof fetch>((input) => {
+      const path = requestUrl(input)
+      if (path.includes('/tbox/proposal-jobs?')) {
+        return Promise.resolve(json({
+          items: [job('SUCCEEDED', { draft_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf300' })],
+          page: { next_cursor: null, limit: 20 },
+        }))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    const { result } = renderHook(() => useTBoxProposalJob({
+      client,
+      draftId,
+      draftEtag: '"2"',
+    }))
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1))
+    expect(result.current.job).toBeUndefined()
+    expect(result.current.proposal).toBeUndefined()
+    expect(result.current.restoredFromHistory).toBe(false)
   })
 })
