@@ -31,7 +31,11 @@ from datariver.application.dto import (
 from datariver.application.knowledge_studio_ingestion_ports import (
     KnowledgeStudioIngestionSourceResolver,
 )
-from datariver.application.ports import KnowledgeStudioSourceReader, KnowledgeStudioStore
+from datariver.application.ports import (
+    KnowledgeStudioSchemaAssistant,
+    KnowledgeStudioSourceReader,
+    KnowledgeStudioStore,
+)
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.knowledge_studio import KnowledgeStudioService
 from datariver.application.services.knowledge_studio_proposal_worker import (
@@ -46,6 +50,7 @@ from datariver.domain.authz import (
     SubjectAttributes,
 )
 from datariver.domain.common import ConflictError, ForbiddenError, NotFoundError, ValidationError
+from datariver.domain.knowledge_pipeline import ModelBinding
 from datariver.domain.knowledge_studio import (
     TBoxElementInput,
     TBoxElementKind,
@@ -139,6 +144,8 @@ def service(
     *,
     sources: object | None = None,
     ingestion_sources: object | None = None,
+    schema_assistant: object | None = None,
+    schema_binding: ModelBinding | None = None,
 ) -> KnowledgeStudioService:
     return KnowledgeStudioService(
         store=cast(KnowledgeStudioStore, store),
@@ -149,6 +156,12 @@ def service(
             if ingestion_sources is not None
             else None
         ),
+        schema_assistant=(
+            cast(KnowledgeStudioSchemaAssistant, schema_assistant)
+            if schema_assistant is not None
+            else None
+        ),
+        schema_binding=schema_binding,
     )
 
 
@@ -457,6 +470,55 @@ def test_proposal_integrity_rejects_an_unknown_class_reference() -> None:
             current=(),
             proposed=(invalid,),
         )
+
+
+@pytest.mark.asyncio
+async def test_schema_assistant_cannot_assert_catalog_metadata_references() -> None:
+    current = layered_tbox()
+    assistant = SimpleNamespace(
+        propose=AsyncMock(
+            return_value=(
+                TBoxElementInput(
+                    stable_element_id="class.customer",
+                    kind=TBoxElementKind.CLASS,
+                    canonical_name="Customer",
+                    display_name="Customer",
+                    metadata_reference_id=SOURCE_ASSET_ID,
+                ),
+            )
+        )
+    )
+    store = SimpleNamespace(
+        get_tbox=AsyncMock(return_value=current),
+        save_tbox_proposal=AsyncMock(),
+    )
+    binding = ModelBinding(
+        provider="OLLAMA",
+        model="schema-model",
+        prompt_version="knowledge-studio-tbox-v2",
+        tool_schema_version="knowledge-studio-tbox-schema-v2",
+    )
+
+    with pytest.raises(ValidationError) as raised:
+        await service(
+            store,
+            schema_assistant=assistant,
+            schema_binding=binding,
+        ).create_tbox_proposal(
+            workspace_id=WORKSPACE_ID,
+            subject=subject(allowed_domains=frozenset({DOMAIN_ID})),
+            draft_id=DRAFT_ID,
+            target_block_id=None,
+            mode=TBoxProposalMode.APPEND_LAYER,
+            prompt="Create a Customer schema.",
+            expected_version=4,
+            environment=EnvironmentAttributes(requested_at=NOW),
+            request_id="assistant-metadata-reference",
+        )
+
+    assert raised.value.details["code"] == "TBOX_TYPED_SCHEMA_INVALID"
+    assistant.propose.assert_awaited_once()
+    store.save_tbox_proposal.assert_not_awaited()
 
 
 def test_proposal_element_override_accepts_unicode_name_and_property_type() -> None:
@@ -1069,6 +1131,7 @@ async def test_asset_release_proposal_pins_exact_release_hash_without_llm() -> N
             nullable=None,
             ordinal=0,
             version=1,
+            metadata_reference_id=SOURCE_ASSET_ID,
         ),
     )
     source = KnowledgeStudioAssetReleaseSource(
@@ -1110,6 +1173,7 @@ async def test_asset_release_proposal_pins_exact_release_hash_without_llm() -> N
     assert result is saved
     call = store.save_tbox_proposal.await_args.kwargs
     assert call["elements"][0].display_name == "계약"
+    assert call["elements"][0].metadata_reference_id == SOURCE_ASSET_ID
     assert call["model_binding"]["provider"] == "POSTGRESQL_CANONICAL"
     assert call["source_reference"] == {
         "contract_version": "KNOWLEDGE_STUDIO_ASSET_RELEASE_SOURCE_V1",

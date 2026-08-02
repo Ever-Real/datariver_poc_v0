@@ -364,6 +364,7 @@ async def test_tbox_schema_assistant_uses_bounded_grammar_compatible_schema() ->
         in system_prompt
     )
     assert "emit only the single most strongly grounded element" in system_prompt
+    assert "copy its exact Class and Property stable IDs" in system_prompt
     response_format = request["response_format"]
     assert isinstance(response_format, dict)
     schema_contract = response_format["json_schema"]
@@ -401,6 +402,7 @@ async def test_tbox_schema_assistant_uses_bounded_grammar_compatible_schema() ->
 
 @pytest.mark.asyncio
 async def test_tbox_schema_assistant_maps_kind_specific_elements_and_current_scope() -> None:
+    catalog_asset_id = uuid4()
     transport = _Transport(
         {
             "choices": [
@@ -413,6 +415,7 @@ async def test_tbox_schema_assistant_maps_kind_specific_elements_and_current_sco
                                         "stable_element_id": "class:process",
                                         "canonical_name": "Process",
                                         "display_name": "Process",
+                                        "metadata_reference_id": str(catalog_asset_id),
                                     }
                                 ],
                                 "properties": [
@@ -424,6 +427,7 @@ async def test_tbox_schema_assistant_maps_kind_specific_elements_and_current_sco
                                         "data_type": "STRING",
                                         "nullable": False,
                                         "vector_index_enabled": True,
+                                        "metadata_reference_id": str(catalog_asset_id),
                                     }
                                 ],
                                 "relations": [
@@ -463,6 +467,8 @@ async def test_tbox_schema_assistant_maps_kind_specific_elements_and_current_sco
         TBoxElementKind.RELATION,
     ]
     assert result[1].parent_stable_element_id == "class:facility"
+    assert result[0].metadata_reference_id == catalog_asset_id
+    assert result[1].metadata_reference_id == catalog_asset_id
     assert result[2].source_stable_element_id == "class:facility"
     assert result[2].target_stable_element_id == "class:process"
     request = transport.calls[0][1]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -50,6 +51,7 @@ from datariver.domain.knowledge_studio_proposal_jobs import (
     KnowledgeStudioProposalJobPins,
     KnowledgeStudioProposalJobStage,
     KnowledgeStudioProposalJobState,
+    knowledge_studio_catalog_grounding_ids,
     knowledge_studio_proposal_requester_authorization_document,
     knowledge_studio_proposal_requester_authorization_hash,
     render_knowledge_studio_catalog_prompt,
@@ -376,9 +378,82 @@ def _catalog_v2_pin() -> KnowledgeStudioCatalogSourcePin:
     ).with_computed_metadata_fingerprint()
 
 
+def _catalog_claim(
+    *,
+    current_elements: tuple[TBoxElementInput, ...] = (),
+) -> KnowledgeStudioProposalJobClaim:
+    return KnowledgeStudioProposalJobClaim(
+        job=replace(
+            _record(),
+            input_kind=KnowledgeStudioProposalInputKind.CATALOG_SCHEMA,
+            mode=TBoxProposalMode.APPEND_LAYER,
+            target_block_id=None,
+        ),
+        pins=KnowledgeStudioProposalJobPins(
+            workspace_id=WORKSPACE_ID,
+            draft_id=DRAFT_ID,
+            requested_by=ACTOR_ID,
+            input_kind=KnowledgeStudioProposalInputKind.CATALOG_SCHEMA,
+            mode=TBoxProposalMode.APPEND_LAYER,
+            target_block_id=None,
+            base_draft_version=4,
+            base_tbox_hash=SHA_A,
+            source=_catalog_v2_pin(),
+            parser_configuration_hash=SHA_B,
+            schema_binding=_binding(),
+            requester_authorization_hash=SHA_C,
+            prepared_at=NOW,
+        ),
+        current_elements=current_elements,
+        attempt_id=ATTEMPT_ID,
+        attempt_no=1,
+        lease_epoch=1,
+        worker_fingerprint="proposal-worker-1",
+        lease_token="secret-lease-token",
+        source_locator=None,
+    )
+
+
+def _catalog_grounded_elements() -> tuple[TBoxElementInput, ...]:
+    source = _catalog_v2_pin()
+    class_id, property_ids = knowledge_studio_catalog_grounding_ids(source)
+    return (
+        TBoxElementInput(
+            stable_element_id=class_id,
+            kind=TBoxElementKind.CLASS,
+            canonical_name="orders",
+            display_name="Orders",
+            metadata_reference_id=source.asset_id,
+        ),
+        TBoxElementInput(
+            stable_element_id=property_ids[0],
+            kind=TBoxElementKind.PROPERTY,
+            canonical_name="order_id",
+            display_name="Order ID",
+            parent_stable_element_id=class_id,
+            data_type="STRING",
+            nullable=False,
+            metadata_reference_id=source.asset_id,
+        ),
+        TBoxElementInput(
+            stable_element_id=property_ids[1],
+            kind=TBoxElementKind.PROPERTY,
+            canonical_name="amount",
+            display_name="Amount",
+            parent_stable_element_id=class_id,
+            data_type="FLOAT",
+            nullable=True,
+            metadata_reference_id=source.asset_id,
+        ),
+    )
+
+
 def test_catalog_v2_source_pin_is_bounded_ordered_and_hashes_exact_metadata() -> None:
     pin = _catalog_v2_pin()
     document = pin.to_document()
+    class_id, property_ids = knowledge_studio_catalog_grounding_ids(pin)
+    prompt = render_knowledge_studio_catalog_prompt(pin)
+    prompt_document = json.loads(prompt.split("\n", maxsplit=1)[1])
 
     assert document["contract_version"] == KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2
     assert document["selected_field_paths"] == ["order_id", "amount"]
@@ -388,7 +463,9 @@ def test_catalog_v2_source_pin_is_bounded_ordered_and_hashes_exact_metadata() ->
         "amount",
     ]
     assert document["metadata_fingerprint"] == pin.metadata_fingerprint
-    assert len(render_knowledge_studio_catalog_prompt(pin)) <= 4_000
+    assert prompt_document["g"] == [class_id, list(property_ids)]
+    assert prompt_document["s"] == document
+    assert len(prompt) <= 4_000
 
     changed = replace(
         pin,
@@ -400,6 +477,16 @@ def test_catalog_v2_source_pin_is_bounded_ordered_and_hashes_exact_metadata() ->
     ).with_computed_metadata_fingerprint()
     assert changed.metadata_fingerprint != pin.metadata_fingerprint
     assert changed.evidence_hash() != pin.evidence_hash()
+
+    reordered = replace(
+        pin,
+        selected_field_paths=tuple(reversed(pin.selected_field_paths)),
+        field_metadata=tuple(reversed(pin.field_metadata)),
+        metadata_fingerprint=None,
+    ).with_computed_metadata_fingerprint()
+    reordered_class_id, reordered_property_ids = knowledge_studio_catalog_grounding_ids(reordered)
+    assert reordered_class_id == class_id
+    assert reordered_property_ids == tuple(reversed(property_ids))
 
 
 def test_catalog_v1_document_is_unchanged_and_v2_decoder_rejects_tampering() -> None:
@@ -647,6 +734,195 @@ async def test_worker_completes_ready_proposal_without_persisting_document_excer
         "VALIDATING",
         "FINALIZING",
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_completes_only_exact_server_grounded_catalog_schema() -> None:
+    claim = _catalog_claim()
+    store = _Store(claim)
+    reader = _Reader(b"unused")
+    assistant = _Assistant(_catalog_grounded_elements())
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=reader,
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 1
+    assert reader.calls == 0
+    assert store.failed == []
+    assert store.completed is not None
+    assert store.completed.elements == _catalog_grounded_elements()
+    evidence = store.completed.source_reference["pipeline_evidence"]
+    assert isinstance(evidence, dict)
+    assert evidence["catalog_grounding_contract"] == ("KNOWLEDGE_STUDIO_CATALOG_TBOX_GROUNDING_V1")
+    assert evidence["catalog_grounded_class_count"] == 1
+    assert evidence["catalog_grounded_property_count"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "proposed",
+    [
+        (
+            TBoxElementInput(
+                stable_element_id="asset",
+                kind=TBoxElementKind.CLASS,
+                canonical_name="Asset",
+                display_name="Asset",
+            ),
+        ),
+        _catalog_grounded_elements()[:-1],
+        (
+            _catalog_grounded_elements()[0],
+            _catalog_grounded_elements()[2],
+            _catalog_grounded_elements()[1],
+        ),
+        (
+            _catalog_grounded_elements()[0],
+            replace(
+                _catalog_grounded_elements()[1],
+                metadata_reference_id=ACTOR_ID,
+            ),
+            _catalog_grounded_elements()[2],
+        ),
+        (
+            *_catalog_grounded_elements(),
+            TBoxElementInput(
+                stable_element_id="catalog_relation",
+                kind=TBoxElementKind.RELATION,
+                canonical_name="CATALOG_RELATION",
+                display_name="Catalog relation",
+                source_stable_element_id=_catalog_grounded_elements()[0].stable_element_id,
+                target_stable_element_id=_catalog_grounded_elements()[0].stable_element_id,
+            ),
+        ),
+    ],
+)
+async def test_worker_rejects_ungrounded_catalog_schema_without_ready_result(
+    proposed: tuple[TBoxElementInput, ...],
+) -> None:
+    claim = _catalog_claim()
+    store = _Store(claim)
+    assistant = _Assistant(proposed)
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=_Reader(b"unused"),
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 1
+    assert store.completed is None
+    assert store.failed == [("TBOX_CATALOG_GROUNDING_INVALID", False, False)]
+    assert [stage for stage, _progress in store.renewed] == [
+        "PARSING",
+        "INFERENCE",
+        "VALIDATING",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_document_metadata_references_without_regeneration() -> None:
+    content = b"governed document"
+    claim = _claim(content)
+    store = _Store(claim)
+    assistant = _Assistant(
+        (
+            TBoxElementInput(
+                stable_element_id="asset",
+                kind=TBoxElementKind.CLASS,
+                canonical_name="Asset",
+                display_name="Asset",
+                metadata_reference_id=MANIFEST_ID,
+            ),
+        )
+    )
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=_Reader(content),
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 1
+    assert store.completed is None
+    assert store.failed == [("TBOX_TYPED_SCHEMA_INVALID", False, False)]
+
+
+@pytest.mark.asyncio
+async def test_worker_rejects_a_wholesale_current_tbox_copy_for_catalog_input() -> None:
+    current = (
+        TBoxElementInput(
+            stable_element_id="class:semiconductor",
+            kind=TBoxElementKind.CLASS,
+            canonical_name="Semiconductor",
+            display_name="반도체기업",
+        ),
+        TBoxElementInput(
+            stable_element_id="property:company-name",
+            kind=TBoxElementKind.PROPERTY,
+            canonical_name="company_name",
+            display_name="회사명",
+            parent_stable_element_id="class:semiconductor",
+            data_type="STRING",
+            nullable=False,
+        ),
+    )
+    claim = _catalog_claim(current_elements=current)
+    store = _Store(claim)
+    assistant = _Assistant(current)
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=_Reader(b"unused"),
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 1
+    assert store.completed is None
+    assert store.failed == [("TBOX_CATALOG_GROUNDING_INVALID", False, False)]
 
 
 @pytest.mark.asyncio

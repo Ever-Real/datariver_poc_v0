@@ -682,6 +682,7 @@ class KnowledgeStudioService:
         )
         if not proposed:
             raise ConflictError("The LLM returned no typed T-Box elements.")
+        self._reject_untrusted_assistant_metadata_references(proposed)
         proposed, corrected_defaults = self._validate_proposal_integrity(
             current=current,
             proposed=proposed,
@@ -2199,6 +2200,19 @@ class KnowledgeStudioService:
                 visited.add(cursor)
                 cursor = class_parent_by_id.get(cursor)
         return normalized_proposed, corrected_defaults
+
+    @staticmethod
+    def _reject_untrusted_assistant_metadata_references(
+        proposed: tuple[TBoxElementInput, ...],
+    ) -> None:
+        if any(
+            item.metadata_reference_id is not None or item.metadata_reference_urn is not None
+            for item in proposed
+        ):
+            raise ValidationError(
+                "A schema-assistant Proposal cannot assert metadata references.",
+                details={"code": "TBOX_TYPED_SCHEMA_INVALID"},
+            )
 
     @classmethod
     def _resolve_proposal_elements(

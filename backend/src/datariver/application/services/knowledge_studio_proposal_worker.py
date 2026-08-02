@@ -26,9 +26,11 @@ from datariver.domain.common import (
 )
 from datariver.domain.knowledge_studio import TBoxElementInput, TBoxElementKind
 from datariver.domain.knowledge_studio_proposal_jobs import (
+    KNOWLEDGE_STUDIO_CATALOG_GROUNDING_CONTRACT,
     KnowledgeStudioAcceptedUploadPin,
     KnowledgeStudioCatalogSourcePin,
     KnowledgeStudioProposalInputKind,
+    knowledge_studio_catalog_grounding_ids,
     render_knowledge_studio_catalog_prompt,
 )
 
@@ -41,6 +43,7 @@ _TBOX_TYPED_SCHEMA_INVALID = "TBOX_TYPED_SCHEMA_INVALID"
 _TBOX_DUPLICATE_IDENTITY = "TBOX_DUPLICATE_IDENTITY"
 _TBOX_UNKNOWN_CLASS = "TBOX_UNKNOWN_CLASS"
 _TBOX_HIERARCHY_CYCLE = "TBOX_HIERARCHY_CYCLE"
+_TBOX_CATALOG_GROUNDING_INVALID = "TBOX_CATALOG_GROUNDING_INVALID"
 _DUPLICATE_REGENERATION_GUIDANCE = (
     "Correction requirement (TBOX_DUPLICATE_IDENTITY): regenerate the complete proposal. "
     "Every stable_element_id must be globally unique across classes, properties and relations; "
@@ -145,11 +148,19 @@ class KnowledgeStudioProposalWorker:
             )
             if not normalized:
                 raise ConflictError("The schema assistant returned no typed T-Box elements.")
+            catalog_grounding_evidence: dict[str, object] | None = None
+            if isinstance(claim.pins.source, KnowledgeStudioCatalogSourcePin):
+                catalog_grounding_evidence = _validate_catalog_grounding(
+                    source=claim.pins.source,
+                    proposed=normalized,
+                )
+            else:
+                _reject_untrusted_metadata_references(normalized)
             conflicts = _proposal_conflicts(
                 current=claim.current_elements,
                 proposed=normalized,
             )
-            source_reference["pipeline_evidence"] = {
+            pipeline_evidence: dict[str, object] = {
                 "contract_version": "KNOWLEDGE_STUDIO_PROPOSAL_VALIDATION_V1",
                 "typed_schema_parse": "PASSED",
                 "deterministic_correction_passes": 1,
@@ -159,6 +170,9 @@ class KnowledgeStudioProposalWorker:
                 "regeneration_reason_code": regeneration_reason_code,
                 "cypher_execution": False,
             }
+            if catalog_grounding_evidence is not None:
+                pipeline_evidence.update(catalog_grounding_evidence)
+            source_reference["pipeline_evidence"] = pipeline_evidence
             await self._store.renew(
                 claim=claim,
                 worker_subject_id=self._worker_subject_id,
@@ -436,6 +450,54 @@ def _validate_proposal_integrity(
             visited.add(cursor)
             cursor = class_parent_by_id.get(cursor)
     return normalized_proposed, corrected_defaults
+
+
+def _validate_catalog_grounding(
+    *,
+    source: KnowledgeStudioCatalogSourcePin,
+    proposed: tuple[TBoxElementInput, ...],
+) -> dict[str, object]:
+    expected_class_id, expected_property_ids = knowledge_studio_catalog_grounding_ids(source)
+    classes = tuple(item for item in proposed if item.kind is TBoxElementKind.CLASS)
+    properties = tuple(item for item in proposed if item.kind is TBoxElementKind.PROPERTY)
+    relations = tuple(item for item in proposed if item.kind is TBoxElementKind.RELATION)
+    if (
+        len(classes) != 1
+        or classes[0].stable_element_id != expected_class_id
+        or classes[0].metadata_reference_id != source.asset_id
+        or classes[0].metadata_reference_urn is not None
+        or len(properties) != len(expected_property_ids)
+        or tuple(item.stable_element_id for item in properties) != expected_property_ids
+        or any(
+            item.parent_stable_element_id != expected_class_id
+            or item.metadata_reference_id != source.asset_id
+            or item.metadata_reference_urn is not None
+            for item in properties
+        )
+        or relations
+    ):
+        raise ValidationError(
+            "The Catalog T-Box Proposal is not grounded in the selected source fields.",
+            details={"code": _TBOX_CATALOG_GROUNDING_INVALID},
+        )
+    return {
+        "catalog_grounding_contract": KNOWLEDGE_STUDIO_CATALOG_GROUNDING_CONTRACT,
+        "catalog_grounded_class_count": 1,
+        "catalog_grounded_property_count": len(properties),
+    }
+
+
+def _reject_untrusted_metadata_references(
+    proposed: tuple[TBoxElementInput, ...],
+) -> None:
+    if any(
+        item.metadata_reference_id is not None or item.metadata_reference_urn is not None
+        for item in proposed
+    ):
+        raise ValidationError(
+            "A non-Catalog T-Box Proposal cannot assert metadata references.",
+            details={"code": _TBOX_TYPED_SCHEMA_INVALID},
+        )
 
 
 def _proposal_conflicts(

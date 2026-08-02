@@ -5,6 +5,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
+from uuid import UUID
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
@@ -232,6 +233,7 @@ class _TBoxIdentityProposal(_StrictModel):
     display_name: str = Field(min_length=1, max_length=255)
     definition: str | None = Field(default=None, max_length=4_000)
     aliases: list[str] = Field(default_factory=list, max_length=50)
+    metadata_reference_id: UUID | None = None
 
 
 class _TBoxClassProposal(_TBoxIdentityProposal):
@@ -614,6 +616,11 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                 "display_name": item.display_name,
                 "definition": item.definition,
                 "aliases": list(item.aliases),
+                "metadata_reference_id": (
+                    str(item.metadata_reference_id)
+                    if item.metadata_reference_id is not None
+                    else None
+                ),
             }
             if item.kind is TBoxElementKind.CLASS:
                 current_document["classes"].append(
@@ -668,6 +675,10 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                         "STRING, TEXT, INTEGER, FLOAT, BOOLEAN, DATE, DATETIME. Relation entries "
                         "contain only their source and target Class references besides identity, "
                         "definition and aliases. "
+                        "When the request supplies a Catalog grounding contract, copy its exact "
+                        "Class and Property stable IDs, Property parent, and asset UUID into "
+                        "metadata_reference_id; do not invent or substitute grounding values. "
+                        "For other requests metadata_reference_id must be null. "
                         "Mark vector_index_enabled only for STRING or TEXT Properties whose "
                         "semantic text is useful for retrieval. Keep the proposal bounded and "
                         "omit uncertain elements."
@@ -709,6 +720,7 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                     hierarchy_relation=item.hierarchy_relation,
                     definition=item.definition,
                     aliases=tuple(item.aliases),
+                    metadata_reference_id=item.metadata_reference_id,
                 )
                 for item in parsed.classes
             ]
@@ -725,6 +737,7 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                     aliases=tuple(item.aliases),
                     unit=item.unit,
                     vector_index_enabled=item.vector_index_enabled,
+                    metadata_reference_id=item.metadata_reference_id,
                 )
                 for item in parsed.properties
             )
@@ -738,6 +751,7 @@ class OpenAICompatibleTBoxSchemaAssistant(KnowledgeStudioSchemaAssistant):
                     target_stable_element_id=item.target_stable_element_id,
                     definition=item.definition,
                     aliases=tuple(item.aliases),
+                    metadata_reference_id=item.metadata_reference_id,
                 )
                 for item in parsed.relations
             )
