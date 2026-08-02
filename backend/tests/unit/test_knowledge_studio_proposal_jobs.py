@@ -947,47 +947,107 @@ async def test_worker_rejects_an_oversized_catalog_inference_before_provider() -
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "proposed",
+    ("proposed", "current_elements", "expected_code"),
     [
         (
-            TBoxElementInput(
-                stable_element_id="asset",
-                kind=TBoxElementKind.CLASS,
-                canonical_name="Asset",
-                display_name="Asset",
+            (
+                *_catalog_grounded_elements(),
+                TBoxElementInput(
+                    stable_element_id="extra_catalog_class",
+                    kind=TBoxElementKind.CLASS,
+                    canonical_name="extra_catalog_class",
+                    display_name="Extra Catalog Class",
+                ),
             ),
-        ),
-        _catalog_grounded_elements()[:-1],
-        (
-            _catalog_grounded_elements()[0],
-            _catalog_grounded_elements()[2],
-            _catalog_grounded_elements()[1],
+            (),
+            "TBOX_CATALOG_GROUNDING_CLASS_CARDINALITY",
         ),
         (
-            _catalog_grounded_elements()[0],
-            replace(
+            (
+                replace(
+                    _catalog_grounded_elements()[0],
+                    stable_element_id="catalog_asset_mismatch",
+                ),
+                replace(
+                    _catalog_grounded_elements()[1],
+                    parent_stable_element_id="catalog_asset_mismatch",
+                ),
+                replace(
+                    _catalog_grounded_elements()[2],
+                    parent_stable_element_id="catalog_asset_mismatch",
+                ),
+            ),
+            (),
+            "TBOX_CATALOG_GROUNDING_CLASS_ID",
+        ),
+        (
+            _catalog_grounded_elements()[:-1],
+            (),
+            "TBOX_CATALOG_GROUNDING_PROPERTY_CARDINALITY",
+        ),
+        (
+            (
+                _catalog_grounded_elements()[0],
+                _catalog_grounded_elements()[2],
                 _catalog_grounded_elements()[1],
-                metadata_reference_id=ACTOR_ID,
             ),
-            _catalog_grounded_elements()[2],
+            (),
+            "TBOX_CATALOG_GROUNDING_PROPERTY_ORDER",
         ),
         (
-            *_catalog_grounded_elements(),
-            TBoxElementInput(
-                stable_element_id="catalog_relation",
-                kind=TBoxElementKind.RELATION,
-                canonical_name="CATALOG_RELATION",
-                display_name="Catalog relation",
-                source_stable_element_id=_catalog_grounded_elements()[0].stable_element_id,
-                target_stable_element_id=_catalog_grounded_elements()[0].stable_element_id,
+            (
+                _catalog_grounded_elements()[0],
+                replace(
+                    _catalog_grounded_elements()[1],
+                    metadata_reference_id=ACTOR_ID,
+                ),
+                _catalog_grounded_elements()[2],
             ),
+            (),
+            "TBOX_CATALOG_GROUNDING_METADATA_REFERENCE",
+        ),
+        (
+            (
+                _catalog_grounded_elements()[0],
+                replace(
+                    _catalog_grounded_elements()[1],
+                    parent_stable_element_id="current_catalog_class",
+                ),
+                _catalog_grounded_elements()[2],
+            ),
+            (
+                TBoxElementInput(
+                    stable_element_id="current_catalog_class",
+                    kind=TBoxElementKind.CLASS,
+                    canonical_name="current_catalog_class",
+                    display_name="Current Catalog Class",
+                ),
+            ),
+            "TBOX_CATALOG_GROUNDING_PROPERTY_PARENT",
+        ),
+        (
+            (
+                *_catalog_grounded_elements(),
+                TBoxElementInput(
+                    stable_element_id="catalog_relation",
+                    kind=TBoxElementKind.RELATION,
+                    canonical_name="CATALOG_RELATION",
+                    display_name="Catalog relation",
+                    source_stable_element_id=_catalog_grounded_elements()[0].stable_element_id,
+                    target_stable_element_id=_catalog_grounded_elements()[0].stable_element_id,
+                ),
+            ),
+            (),
+            "TBOX_CATALOG_GROUNDING_RELATION_NOT_ALLOWED",
         ),
     ],
 )
 async def test_worker_rejects_ungrounded_catalog_schema_without_ready_result(
     proposed: tuple[TBoxElementInput, ...],
+    current_elements: tuple[TBoxElementInput, ...],
+    expected_code: str,
 ) -> None:
-    claim = _catalog_claim()
+    claim = _catalog_claim(current_elements=current_elements)
     store = _Store(claim)
     assistant = _Assistant(proposed)
 
@@ -1009,7 +1069,7 @@ async def test_worker_rejects_ungrounded_catalog_schema_without_ready_result(
     assert await worker.run_once() is True
     assert assistant.calls == 1
     assert store.completed is None
-    assert store.failed == [("TBOX_CATALOG_GROUNDING_INVALID", False, False)]
+    assert store.failed == [(expected_code, False, False)]
     assert [stage for stage, _progress in store.renewed] == [
         "PARSING",
         "INFERENCE",
@@ -1096,7 +1156,7 @@ async def test_worker_rejects_a_wholesale_current_tbox_copy_for_catalog_input() 
     assert await worker.run_once() is True
     assert assistant.calls == 1
     assert store.completed is None
-    assert store.failed == [("TBOX_CATALOG_GROUNDING_INVALID", False, False)]
+    assert store.failed == [("TBOX_CATALOG_GROUNDING_CLASS_ID", False, False)]
 
 
 @pytest.mark.asyncio

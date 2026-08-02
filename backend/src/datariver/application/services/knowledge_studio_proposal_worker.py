@@ -43,7 +43,13 @@ _TBOX_TYPED_SCHEMA_INVALID = "TBOX_TYPED_SCHEMA_INVALID"
 _TBOX_DUPLICATE_IDENTITY = "TBOX_DUPLICATE_IDENTITY"
 _TBOX_UNKNOWN_CLASS = "TBOX_UNKNOWN_CLASS"
 _TBOX_HIERARCHY_CYCLE = "TBOX_HIERARCHY_CYCLE"
-_TBOX_CATALOG_GROUNDING_INVALID = "TBOX_CATALOG_GROUNDING_INVALID"
+_TBOX_CATALOG_GROUNDING_CLASS_CARDINALITY = "TBOX_CATALOG_GROUNDING_CLASS_CARDINALITY"
+_TBOX_CATALOG_GROUNDING_CLASS_ID = "TBOX_CATALOG_GROUNDING_CLASS_ID"
+_TBOX_CATALOG_GROUNDING_PROPERTY_CARDINALITY = "TBOX_CATALOG_GROUNDING_PROPERTY_CARDINALITY"
+_TBOX_CATALOG_GROUNDING_PROPERTY_ORDER = "TBOX_CATALOG_GROUNDING_PROPERTY_ORDER"
+_TBOX_CATALOG_GROUNDING_METADATA_REFERENCE = "TBOX_CATALOG_GROUNDING_METADATA_REFERENCE"
+_TBOX_CATALOG_GROUNDING_PROPERTY_PARENT = "TBOX_CATALOG_GROUNDING_PROPERTY_PARENT"
+_TBOX_CATALOG_GROUNDING_RELATION_NOT_ALLOWED = "TBOX_CATALOG_GROUNDING_RELATION_NOT_ALLOWED"
 _DUPLICATE_REGENERATION_GUIDANCE = (
     "Correction requirement (TBOX_DUPLICATE_IDENTITY): regenerate the complete proposal. "
     "Every stable_element_id must be globally unique across classes, properties and relations; "
@@ -461,24 +467,47 @@ def _validate_catalog_grounding(
     classes = tuple(item for item in proposed if item.kind is TBoxElementKind.CLASS)
     properties = tuple(item for item in proposed if item.kind is TBoxElementKind.PROPERTY)
     relations = tuple(item for item in proposed if item.kind is TBoxElementKind.RELATION)
+    if len(classes) != 1:
+        raise ValidationError(
+            "The Catalog T-Box Proposal is not grounded in the selected source fields.",
+            details={"code": _TBOX_CATALOG_GROUNDING_CLASS_CARDINALITY},
+        )
+    if classes[0].stable_element_id != expected_class_id:
+        raise ValidationError(
+            "The Catalog T-Box Proposal is not grounded in the selected source fields.",
+            details={"code": _TBOX_CATALOG_GROUNDING_CLASS_ID},
+        )
+    if len(properties) != len(expected_property_ids):
+        raise ValidationError(
+            "The Catalog T-Box Proposal is not grounded in the selected source fields.",
+            details={"code": _TBOX_CATALOG_GROUNDING_PROPERTY_CARDINALITY},
+        )
+    if tuple(item.stable_element_id for item in properties) != expected_property_ids:
+        raise ValidationError(
+            "The Catalog T-Box Proposal is not grounded in the selected source fields.",
+            details={"code": _TBOX_CATALOG_GROUNDING_PROPERTY_ORDER},
+        )
     if (
-        len(classes) != 1
-        or classes[0].stable_element_id != expected_class_id
-        or classes[0].metadata_reference_id != source.asset_id
+        classes[0].metadata_reference_id != source.asset_id
         or classes[0].metadata_reference_urn is not None
-        or len(properties) != len(expected_property_ids)
-        or tuple(item.stable_element_id for item in properties) != expected_property_ids
         or any(
-            item.parent_stable_element_id != expected_class_id
-            or item.metadata_reference_id != source.asset_id
-            or item.metadata_reference_urn is not None
+            item.metadata_reference_id != source.asset_id or item.metadata_reference_urn is not None
             for item in properties
         )
-        or relations
     ):
         raise ValidationError(
             "The Catalog T-Box Proposal is not grounded in the selected source fields.",
-            details={"code": _TBOX_CATALOG_GROUNDING_INVALID},
+            details={"code": _TBOX_CATALOG_GROUNDING_METADATA_REFERENCE},
+        )
+    if any(item.parent_stable_element_id != expected_class_id for item in properties):
+        raise ValidationError(
+            "The Catalog T-Box Proposal is not grounded in the selected source fields.",
+            details={"code": _TBOX_CATALOG_GROUNDING_PROPERTY_PARENT},
+        )
+    if relations:
+        raise ValidationError(
+            "The Catalog T-Box Proposal is not grounded in the selected source fields.",
+            details={"code": _TBOX_CATALOG_GROUNDING_RELATION_NOT_ALLOWED},
         )
     return {
         "catalog_grounding_contract": KNOWLEDGE_STUDIO_CATALOG_GROUNDING_CONTRACT,
