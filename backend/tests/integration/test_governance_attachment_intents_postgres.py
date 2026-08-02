@@ -269,6 +269,42 @@ async def test_attachment_intent_requires_independent_attestation_and_current_re
                 parameters,
             )
 
+        async with engine.begin() as connection:
+            await _set_app_context(
+                connection,
+                workspace_id=workspace_id,
+                subject_id=uploader_id,
+            )
+            visible = await connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM governance.change_request_attachment_upload_intents
+                    WHERE id = :id
+                    """
+                ),
+                parameters,
+            )
+            assert int(visible or 0) == 1
+
+        async with engine.begin() as connection:
+            await _set_app_context(
+                connection,
+                workspace_id=uuid4(),
+                subject_id=uploader_id,
+            )
+            visible = await connection.scalar(
+                text(
+                    """
+                    SELECT count(*)
+                    FROM governance.change_request_attachment_upload_intents
+                    WHERE id = :id
+                    """
+                ),
+                parameters,
+            )
+            assert int(visible or 0) == 0
+
         async with engine.connect() as connection:
             with pytest.raises(DBAPIError):
                 async with connection.begin():

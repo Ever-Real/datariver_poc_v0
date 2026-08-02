@@ -391,16 +391,17 @@ class GovernanceService:
                 state=state.value if state else None,
                 limit=limit,
             )
+            authorized = await self._authorize_current_targets(
+                change_requests=values,
+                workspace_id=workspace_id,
+                subject=subject,
+                action=Action.CHANGE_READ,
+                environment=environment,
+                request_id=request_id,
+                strict_binding=False,
+            )
             await uow.commit()
-        return await self._authorize_current_targets(
-            change_requests=values,
-            workspace_id=workspace_id,
-            subject=subject,
-            action=Action.CHANGE_READ,
-            environment=environment,
-            request_id=request_id,
-            strict_binding=False,
-        )
+            return authorized
 
     async def list_change_request_summaries(
         self,
@@ -456,18 +457,18 @@ class GovernanceService:
                     limit=limit + 1,
                 )
             )
+            window = raw[:limit]
+            if self._target_authorizer is None:
+                raise RuntimeError("Change-target authorization is unavailable.")
+            visible = await self._target_authorizer.filter_authorized_summaries(
+                workspace_id=workspace_id,
+                subject=subject,
+                summaries=window,
+                action=Action.CHANGE_READ,
+                environment=environment,
+                request_id=request_id,
+            )
             await uow.commit()
-        window = raw[:limit]
-        if self._target_authorizer is None:
-            raise RuntimeError("Change-target authorization is unavailable.")
-        visible = await self._target_authorizer.filter_authorized_summaries(
-            workspace_id=workspace_id,
-            subject=subject,
-            summaries=window,
-            action=Action.CHANGE_READ,
-            environment=environment,
-            request_id=request_id,
-        )
         next_cursor = (
             _wrap_change_summary_cursor(
                 created_at=window[-1].created_at,

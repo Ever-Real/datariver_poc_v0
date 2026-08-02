@@ -92,15 +92,20 @@ class SqlGovernanceAttachmentUploadIntentStore(AttachmentUploadIntentStore):
                 "The current change-request round no longer exists.",
                 details={"code": "ATTACHMENT_AUTHORIZATION_STALE"},
             )
-        await self._session.scalars(
-            select(ChangeItemModel.id)
-            .where(
-                ChangeItemModel.workspace_id == workspace_id,
-                ChangeItemModel.change_request_id == change_request_id,
+        stored_item_ids = frozenset(
+            await self._session.scalars(
+                select(ChangeItemModel.id).where(
+                    ChangeItemModel.workspace_id == workspace_id,
+                    ChangeItemModel.change_request_id == change_request_id,
+                )
             )
-            .order_by(ChangeItemModel.id)
-            .with_for_update()
         )
+        expected_item_ids = frozenset(item.item_id for item in change_request.items)
+        if stored_item_ids != expected_item_ids:
+            raise ConflictError(
+                "The change-request items no longer match the locked aggregate.",
+                details={"code": "ATTACHMENT_AUTHORIZATION_STALE"},
+            )
 
         system_ids = tuple(sorted(change_request.required_system_ids(), key=str))
         if system_ids:
@@ -217,7 +222,7 @@ class SqlGovernanceAttachmentUploadIntentStore(AttachmentUploadIntentStore):
         self._session.add(model)
         self._tracked[intent.attachment_id] = model
 
-    async def get_for_update(
+    async def get(
         self,
         *,
         workspace_id: UUID,
@@ -225,12 +230,10 @@ class SqlGovernanceAttachmentUploadIntentStore(AttachmentUploadIntentStore):
     ) -> AttachmentUploadIntent | None:
         model = (
             await self._session.scalars(
-                select(ChangeRequestAttachmentUploadIntentModel)
-                .where(
+                select(ChangeRequestAttachmentUploadIntentModel).where(
                     ChangeRequestAttachmentUploadIntentModel.workspace_id == workspace_id,
                     ChangeRequestAttachmentUploadIntentModel.id == attachment_id,
                 )
-                .with_for_update()
             )
         ).one_or_none()
         if model is None:
@@ -241,7 +244,7 @@ class SqlGovernanceAttachmentUploadIntentStore(AttachmentUploadIntentStore):
     def _model(self, intent: AttachmentUploadIntent) -> ChangeRequestAttachmentUploadIntentModel:
         model = self._tracked.get(intent.attachment_id)
         if model is None:
-            raise RuntimeError("The attachment upload intent was not locked in this transaction.")
+            raise RuntimeError("The attachment upload intent was not loaded in this transaction.")
         return model
 
     async def mark_stored(

@@ -48,6 +48,11 @@ class MemoryTargetAuthorizer:
         self.approval_scopes: list[frozenset[UUID]] = []
         self.enforce_full_scope = False
         self.filter_calls = 0
+        self.committed: Callable[[], bool] | None = None
+
+    def _assert_request_scope(self) -> None:
+        if self.committed is not None:
+            assert not self.committed(), "target authorization ran after the request UoW committed"
 
     async def authorize_targets(
         self,
@@ -94,6 +99,7 @@ class MemoryTargetAuthorizer:
         change_requests: Sequence[ChangeRequest],
         **_: object,
     ) -> tuple[ChangeRequest, ...]:
+        self._assert_request_scope()
         self.filter_calls += 1
         if not self.enforce_full_scope:
             return tuple(change_requests)
@@ -110,6 +116,7 @@ class MemoryTargetAuthorizer:
         summaries: Sequence[ChangeRequestSummaryRecord],
         **_: object,
     ) -> tuple[ChangeRequestSummaryRecord, ...]:
+        self._assert_request_scope()
         self.filter_calls += 1
         if not self.enforce_full_scope:
             return tuple(summaries)
@@ -180,6 +187,22 @@ class MemoryChangeRequests:
 
     async def save(self, change_request: ChangeRequest) -> None:
         self.values[change_request.change_request_id] = change_request
+
+    async def list(
+        self,
+        *,
+        workspace_id: UUID,
+        maximum_classification: int,
+        state: str | None,
+        limit: int,
+    ) -> Sequence[ChangeRequest]:
+        return tuple(
+            value
+            for value in self.values.values()
+            if value.workspace_id == workspace_id
+            and value.classification <= Classification(maximum_classification)
+            and (state is None or value.state.value == state)
+        )[:limit]
 
     async def list_summaries(
         self,
@@ -450,6 +473,118 @@ async def test_change_request_summary_cursor_is_bounded_and_subject_scoped() -> 
             environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
             request_id="summary-page-other-subject",
         )
+
+
+@pytest.mark.asyncio
+async def test_change_request_lists_authorize_targets_before_shared_uow_commit() -> None:
+    workspace_id = uuid4()
+    system_id = uuid4()
+    actor = replace(
+        subject(workspace_id),
+        allowed_actions=frozenset({Action.CHANGE_READ}),
+        allowed_system_ids=frozenset({system_id}),
+    )
+    target_authorizer = MemoryTargetAuthorizer()
+    target_authorizer.system_id = system_id
+    target_authorizer.enforce_full_scope = True
+    bound_items = await target_authorizer.authorize_targets(
+        workspace_id=workspace_id,
+        subject=actor,
+        items=(
+            ChangeItem(
+                uuid4(),
+                "DATAHUB_ASPECT",
+                "urn:li:dataset:list-scope",
+                "UPSERT",
+                {"name": "list-scope"},
+                "datasetProperties",
+                "b" * 64,
+            ),
+        ),
+        request_classification=Classification.INTERNAL,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="list-target-bind",
+    )
+    change_request = ChangeRequest.create(
+        workspace_id=workspace_id,
+        number="CR-LIST-SCOPE",
+        request_type="CATALOG_METADATA",
+        title="List request scope",
+        description="Authorize before commit",
+        requester_id=actor.subject_id,
+        items=list(bound_items),
+    )
+    state: dict[str, object] = {
+        "requests": {change_request.change_request_id: change_request},
+        "outbox": [],
+        "idempotency": {},
+    }
+    uow = MemoryUnitOfWork(state)
+    target_authorizer.committed = lambda: uow.committed
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: uow),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=target_authorizer,
+    )
+
+    values = await service.list_change_requests(
+        workspace_id=workspace_id,
+        state=None,
+        limit=25,
+        subject=actor,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="list-target-scope",
+    )
+
+    assert values == (change_request,)
+    assert uow.committed is True
+
+
+@pytest.mark.asyncio
+async def test_summary_denial_keeps_raw_cursor_after_precommit_authorization() -> None:
+    workspace_id = uuid4()
+    visible_system_id = uuid4()
+    actor = replace(
+        subject(workspace_id),
+        allowed_actions=frozenset({Action.CHANGE_READ}),
+        allowed_system_ids=frozenset({uuid4()}),
+    )
+    summaries = tuple(
+        change_request_summary(
+            created_at=datetime(2026, 8, 2, 12, minute, tzinfo=UTC),
+            system_id=visible_system_id,
+        )
+        for minute in (2, 1)
+    )
+    state: dict[str, object] = {
+        "requests": {},
+        "summaries": summaries,
+        "outbox": [],
+        "idempotency": {},
+    }
+    uow = MemoryUnitOfWork(state)
+    target_authorizer = MemoryTargetAuthorizer()
+    target_authorizer.enforce_full_scope = True
+    target_authorizer.committed = lambda: uow.committed
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: uow),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=target_authorizer,
+    )
+
+    page = await service.list_change_request_summaries(
+        workspace_id=workspace_id,
+        state=None,
+        cursor=None,
+        limit=1,
+        subject=actor,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="summary-target-scope-denied",
+    )
+
+    assert page.items == ()
+    assert page.next_cursor is not None
+    assert uow.committed is True
 
 
 @pytest.mark.asyncio

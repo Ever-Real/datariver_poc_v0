@@ -26,7 +26,7 @@ from datariver.domain.authz import (
     EnvironmentAttributes,
     SubjectAttributes,
 )
-from datariver.domain.common import ConflictError, ForbiddenError
+from datariver.domain.common import ConflictError, ForbiddenError, NotFoundError
 from datariver.domain.governance import (
     ApprovalAuthority,
     ChangeRequest,
@@ -138,6 +138,7 @@ class _IntentStore:
         self.started: list[AttachmentUploadIntent] = []
         self.finalize_calls = 0
         self.list_calls: list[dict[str, object]] = []
+        self.get_calls: list[dict[str, object]] = []
 
     async def lock_current_subject(self, **_: object) -> SubjectAttributes:
         if self.subject_error is not None:
@@ -153,7 +154,10 @@ class _IntentStore:
     async def add_started(self, intent: AttachmentUploadIntent) -> None:
         self.started.append(intent)
 
-    async def get_for_update(self, **_: object) -> AttachmentUploadIntent | None:
+    async def get(self, **values: object) -> AttachmentUploadIntent | None:
+        self.get_calls.append(values)
+        if self.existing is None or self.existing.workspace_id != values["workspace_id"]:
+            return None
         return self.existing
 
     async def mark_stored(
@@ -363,6 +367,59 @@ async def test_current_round_stored_recovery_filters_before_the_bounded_store_li
         }
     ]
     assert uow.commit_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_upload_intent_read_is_subject_and_workspace_scoped() -> None:
+    workspace_id = uuid4()
+    caller = _subject(workspace_id)
+    request = _change_request(workspace_id=workspace_id)
+    intent = AttachmentUploadIntent(
+        attachment_id=uuid4(),
+        workspace_id=workspace_id,
+        change_request_id=request.change_request_id,
+        round_id=request.current_round_id,
+        kind="REQUEST",
+        original_name="evidence.csv",
+        serial_number=1,
+        bucket="datariver-filefolder",
+        object_key=f"attachment/{uuid4()}",
+        content_type="text/csv",
+        expected_size_bytes=17,
+        expected_content_sha256="a" * 64,
+        uploaded_by=caller.subject_id,
+        state="STARTED",
+    )
+    service, store, uow = _service(
+        change_request=request,
+        current_subject=caller,
+        existing=intent,
+    )
+
+    observed = await service.get_upload_intent(
+        workspace_id=workspace_id,
+        attachment_id=intent.attachment_id,
+        subject_id=caller.subject_id,
+    )
+
+    assert observed == intent
+    assert store.get_calls == [
+        {"workspace_id": workspace_id, "attachment_id": intent.attachment_id}
+    ]
+    assert uow.commit_calls == 1
+
+    with pytest.raises(NotFoundError):
+        await service.get_upload_intent(
+            workspace_id=workspace_id,
+            attachment_id=intent.attachment_id,
+            subject_id=uuid4(),
+        )
+    with pytest.raises(NotFoundError):
+        await service.get_upload_intent(
+            workspace_id=uuid4(),
+            attachment_id=intent.attachment_id,
+            subject_id=caller.subject_id,
+        )
 
 
 @pytest.mark.asyncio

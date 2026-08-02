@@ -113,7 +113,7 @@ class AttachmentUploadIntentStore(Protocol):
 
     async def add_started(self, intent: AttachmentUploadIntent) -> None: ...
 
-    async def get_for_update(
+    async def get(
         self,
         *,
         workspace_id: UUID,
@@ -511,7 +511,7 @@ class GovernanceAttachmentUploadService:
     ) -> AttachmentUploadIntent:
         async with self._uow_factory() as uow:
             await uow.set_security_context(workspace_id=workspace_id, subject_id=subject_id)
-            intent = await self._store.get_for_update(
+            intent = await self._store.get(
                 workspace_id=workspace_id,
                 attachment_id=attachment_id,
             )
@@ -541,7 +541,7 @@ class GovernanceAttachmentUploadService:
             raise ValidationError("The object-store failure is not a proven create rejection.")
         async with self._uow_factory() as uow:
             await uow.set_security_context(workspace_id=workspace_id, subject_id=subject_id)
-            intent = await self._store.get_for_update(
+            intent = await self._store.get(
                 workspace_id=workspace_id,
                 attachment_id=attachment_id,
             )
@@ -572,7 +572,7 @@ class GovernanceAttachmentUploadService:
                 workspace_id=workspace_id,
                 subject_id=subject.subject_id,
             )
-            intent = await self._store.get_for_update(
+            intent = await self._store.get(
                 workspace_id=workspace_id,
                 attachment_id=attachment_id,
             )
@@ -619,7 +619,7 @@ class GovernanceAttachmentUploadService:
     ) -> AttachmentUploadIntent:
         async with self._uow_factory() as uow:
             await uow.set_security_context(workspace_id=workspace_id, subject_id=subject_id)
-            intent = await self._store.get_for_update(
+            intent = await self._store.get(
                 workspace_id=workspace_id,
                 attachment_id=attachment_id,
             )
