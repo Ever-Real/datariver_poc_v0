@@ -9,11 +9,14 @@ server-derived coordinates, System-version `If-Match`, idempotent audit/outbox e
 conflict instead of silent reassignment. HTTP/frontend tests prove the browser submits only an
 asset ID plus deactivate IDs and labels the result as a schema-wide mapping. CR-specific reader
 tests cover mapped search/detail/intake, native/mapping conflict, inactive mapping/System,
-locator/removal drift and binding-hash reauthorization. Wrong Workspace, service/inactive actor,
-missing Domain/clearance, RESTRICTED asset, missing responsibility, stale version and replay
-mismatch must produce zero effective mutation or
-target access. Regression tests keep manual native targets and generic Catalog, Registration,
-Knowledge, Quality and Chat readers unchanged.
+locator/removal drift and binding-hash reauthorization. A current System assignee may target an
+ACTIVE PUBLIC/INTERNAL/CONFIDENTIAL mapped asset without a separate Domain assignment, while
+clearance and the classification Search policy remain mandatory. Wrong Workspace,
+service/inactive actor, missing clearance, missing responsibility, stale version and replay
+mismatch must produce zero effective mutation or target access. RESTRICTED still requires both an
+explicit grant and the ordinary System/Domain intersection. Admin mapping candidates continue to
+require Domain scope for INTERNAL/CONFIDENTIAL and exclude RESTRICTED. Regression tests keep manual
+native targets and generic Catalog, Registration, Knowledge, Quality and Chat readers unchanged.
 
 ### Profile Role authority — 2026-08-01
 

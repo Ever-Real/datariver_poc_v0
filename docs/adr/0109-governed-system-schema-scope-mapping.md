@@ -46,6 +46,11 @@ Only the Change target adapter resolves an effective routing System. Its SQL pre
 active mapped schema when the native projection System is absent or equal, or retains an active
 native System when no scope row exists. A native/mapped conflict, inactive mapping/System,
 incomplete or drifted locator, wrong Workspace or missing current responsibility fails closed.
+For PUBLIC, INTERNAL and CONFIDENTIAL Change targets, that current System responsibility plus the
+active mapping/native consistency, subject clearance and active classification Search policy is
+the mutable-data scope boundary; the adapter does not add a second Domain-membership requirement.
+The canonical Domain remains part of resource and audit evidence. RESTRICTED targets retain the
+existing explicit grant, effective System and Domain-intersection requirements without exception.
 Search, detail, intake and final reauthorization use the same CR-only reader, and the existing
 target binding hash includes the effective System. Removing or changing the mapping therefore
 invalidates the target on the next request.
@@ -62,6 +67,8 @@ their active canonical native System when no schema scope exists.
 ## Consequences
 
 - The mapping is authoritative only for CR routing and uses an existing canonical relation.
+- A non-RESTRICTED CR target follows current System responsibility without widening generic
+  Catalog or downstream service scope; RESTRICTED continues to require Domain and explicit grant.
 - Operator-visible changes are version fenced, idempotent and auditable without exposing a
   browser-controlled provider locator.
 - Mapping removal, reassignment, native conflict and locator drift revoke future CR target use

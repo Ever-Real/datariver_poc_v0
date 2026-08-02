@@ -105,6 +105,50 @@ def test_change_target_schema_routing_filter_is_cr_reader_only_and_fail_closed()
     )
 
 
+def test_change_target_scope_uses_system_responsibility_for_nonrestricted_rows_only() -> None:
+    workspace_id, system_id, subject_id = (uuid4() for _ in range(3))
+    dialect = cast(Any, postgresql.dialect)()
+    subject = SubjectAttributes(
+        subject_id=subject_id,
+        workspace_id=workspace_id,
+        active=True,
+        department_id=None,
+        groups=frozenset({"data-engineers"}),
+        job_function="DATA_ENGINEER",
+        clearance=Classification.CONFIDENTIAL,
+        allowed_system_ids=frozenset({system_id}),
+        allowed_domain_ids=frozenset(),
+    )
+
+    change_scope = " ".join(
+        str(
+            condition.compile(
+                dialect=dialect,
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        for condition in SqlCatalogChangeTargetReader(cast(Any, object()))._scope_conditions(
+            subject
+        )
+    )
+    generic_scope = " ".join(
+        str(
+            condition.compile(
+                dialect=dialect,
+                compile_kwargs={"literal_binds": True},
+            )
+        )
+        for condition in SqlCatalogIndexReader(cast(Any, object()))._scope_conditions(subject)
+    )
+
+    assert "assets_projection.classification != 3" in change_scope
+    assert "assets_projection.classification = 3" in change_scope
+    assert "assets_projection.domain_id IS NOT NULL" in change_scope
+    assert "platform.system_schema_scopes" in change_scope
+    assert "assets_projection.classification != 3" not in generic_scope
+    assert "assets_projection.domain_id IS NOT NULL" in generic_scope
+
+
 def test_system_schema_scope_asset_predicate_is_actor_scoped_and_excludes_restricted() -> None:
     workspace_id, system_id, subject_id, domain_id = (uuid4() for _ in range(4))
     dialect = cast(Any, postgresql.dialect)()

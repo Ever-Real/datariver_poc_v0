@@ -1236,8 +1236,9 @@ class SqlCatalogChangeTargetReader(SqlCatalogIndexReader):
             ),
             self._effective_system_condition(allowed_system_ids=subject.allowed_system_ids),
             or_(
-                AssetProjectionModel.classification == int(Classification.PUBLIC),
+                AssetProjectionModel.classification != int(Classification.RESTRICTED),
                 and_(
+                    AssetProjectionModel.classification == int(Classification.RESTRICTED),
                     AssetProjectionModel.domain_id.is_not(None),
                     AssetProjectionModel.domain_id.in_(subject.allowed_domain_ids),
                 ),

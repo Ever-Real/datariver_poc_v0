@@ -91,6 +91,15 @@ actual System/Domain. RESTRICTED continues through the generic scoped decision a
 explicit grant and System/Domain intersection. All mutation, export and downstream
 Change/Registration/Quality/Knowledge/Chat readers remain unchanged.
 
+Change target mutation has a separate, narrower System-responsibility rule. For ACTIVE PUBLIC,
+INTERNAL and CONFIDENTIAL table/view/dataset targets, the CR-only reader requires an active human,
+current `change.create`/no-deny authorization, sufficient clearance, an ABAC-enabled classification
+Search rule and a current System responsibility whose active native or schema mapping resolves the
+target without conflict. It does not additionally require the Subject's Domain list. RESTRICTED
+continues to require its explicit grant together with the same effective System and ordinary Domain
+intersection. Search, detail, intake and final reauthorization share this CR-only reader and binding
+hash; generic Catalog, Registration, Quality, Knowledge and Chat predicates are not changed.
+
 Typed upload candidate reads require `registration.read`, `catalog.read` and `change.create`. The
 service first validates READY receipt/V2 hash evidence, then batch-loads only current ACTIVE DATASET
 targets under the classification snapshot and applies grouped authorization. A missing, denied,

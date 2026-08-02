@@ -394,8 +394,12 @@ ETag-fenced typed Change Request; it never exposes the raw proposal or direct Da
 | `POST /change-requests/{id}/complete-intake` | `change.review` | after independent final approval, records an accountable `COMPLETED` result for a non-executable intake; cannot create `APPLIED` |
 
 At creation time, the service resolves every `target_ref` through the authorization-pruned local catalog projection in
-the request workspace, evaluates `change.create` against the target's actual system, domain and
-classification, and rejects a request classification lower than any target. The executable aspect
+the request workspace and evaluates `change.create` against the target's effective routing System
+and classification. PUBLIC, INTERNAL and CONFIDENTIAL targets use the requester's current System
+responsibility and active schema mapping/native consistency without an additional Domain-membership
+gate. RESTRICTED retains the existing explicit grant plus System and Domain intersection. Generic
+Catalog and all non-Change readers remain unchanged. The service rejects a request classification
+lower than any target. The executable aspect
 allowlist is `datasetProperties`, `domains`, `globalTags`, `glossaryTerms`, `ownership` and
 `schemaMetadata`. A request currently contains exactly one item until durable per-item checkpoints
 exist. The item must carry the current provider aspect SHA-256; omission or mismatch fails closed
