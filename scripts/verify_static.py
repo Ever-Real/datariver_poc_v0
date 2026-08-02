@@ -1234,6 +1234,20 @@ def verify_database_roles() -> None:
         raise AssertionError(
             "Knowledge Studio Proposal worker isolation/profile contract is incomplete"
         )
+    expected_proposal_spool = (
+        "/var/spool/datariver-knowledge-proposal:"
+        "size=16m,noexec,nosuid,mode=0700,uid=10001,gid=10001"
+    )
+    if proposal_worker.get("tmpfs") != [expected_proposal_spool]:
+        raise AssertionError(
+            "Knowledge Studio Proposal worker must use its bounded owner-only tmpfs spool"
+        )
+    if proposal_worker.get("volumes"):
+        raise AssertionError(
+            "Knowledge Studio Proposal worker must not use a persistent spool volume"
+        )
+    if "knowledge-proposal-spool" in compose.get("volumes", {}):
+        raise AssertionError("Knowledge Studio Proposal spool named volume must remain absent")
     if proposal_worker.get("healthcheck", {}).get("test") != [
         "CMD",
         "/app/.venv/bin/python",

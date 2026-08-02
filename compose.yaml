@@ -346,8 +346,8 @@ services:
     networks:
       - data
       - connectors
-    volumes:
-      - knowledge-proposal-spool:/var/spool/datariver-knowledge-proposal
+    tmpfs:
+      - /var/spool/datariver-knowledge-proposal:size=16m,noexec,nosuid,mode=0700,uid=10001,gid=10001
     restart: unless-stopped
     healthcheck:
       test:
@@ -508,7 +508,6 @@ networks:
 volumes:
   postgres-data:
   knowledge-spool:
-  knowledge-proposal-spool:
 
 secrets:
   postgres_password:

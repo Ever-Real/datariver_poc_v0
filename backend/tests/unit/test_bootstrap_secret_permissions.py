@@ -9,6 +9,7 @@ from pathlib import Path
 from uuid import UUID
 
 import pytest
+import yaml  # type: ignore[import-untyped]
 
 from datariver.bootstrap import (
     LOCAL_DEMO_IDENTITIES,
@@ -1184,3 +1185,18 @@ def test_knowledge_worker_image_prepares_owner_only_spool_mountpoint() -> None:
         "install -d -o datariver -g datariver -m 0700 /var/spool/datariver-knowledge"
     ) in dockerfile
     assert "knowledge-spool:/var/spool/datariver-knowledge" in compose
+
+
+def test_knowledge_proposal_worker_uses_bounded_owner_only_tmpfs() -> None:
+    root = Path(__file__).resolve().parents[3]
+    compose = yaml.safe_load((root / "compose.yaml").read_text(encoding="utf-8"))
+    worker = compose["services"]["knowledge-tbox-proposal-worker"]
+
+    assert worker["tmpfs"] == [
+        "/var/spool/datariver-knowledge-proposal:"
+        "size=16m,noexec,nosuid,mode=0700,uid=10001,gid=10001"
+    ]
+    assert worker.get("volumes") is None
+    assert "knowledge-proposal-spool" not in compose["volumes"]
+    assert worker["read_only"] is True
+    assert "no-new-privileges:true" in worker["security_opt"]
