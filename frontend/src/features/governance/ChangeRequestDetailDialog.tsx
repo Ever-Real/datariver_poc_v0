@@ -473,8 +473,8 @@ export function ChangeRequestDetailDialog({
               <textarea className="min-h-24 resize-y border border-slate-300 p-3 text-sm font-normal" maxLength={4000} placeholder="승인·반려 사유로 기록할 검토 의견을 입력하세요." value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} />
             </label>
             <div className="flex flex-wrap justify-end gap-2">
-              {rejectHint && !rejectionArmed && <button type="button" className="button button-danger" disabled={busy} onClick={() => setRejectionArmed(true)}>반려/재요청 (REJECTED)</button>}
-              {rejectHint && rejectionArmed && <><button type="button" className="button button-secondary" onClick={() => setRejectionArmed(false)}><RotateCcw size={13} /> 반려 취소</button><button type="button" className="button button-danger" disabled={busy || !reviewComment.trim()} onClick={() => onAction(rejectHint, reviewComment)}>반려 확정</button></>}
+              {rejectHint && !rejectionArmed && <button type="button" className="button button-danger" disabled={busy} onClick={() => setRejectionArmed(true)}>최종 반려 (재상신 불가)</button>}
+              {rejectHint && rejectionArmed && <><button type="button" className="button button-secondary" onClick={() => setRejectionArmed(false)}><RotateCcw size={13} /> 최종 반려 취소</button><button type="button" className="button button-danger" disabled={busy || !reviewComment.trim()} onClick={() => onAction(rejectHint, reviewComment)}>최종 반려 확정</button></>}
               {stageHints.filter((hint) => hint !== rejectHint).map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy || !reviewComment.trim()} onClick={() => onAction(hint, reviewComment)}>{hint.label}</button>)}
             </div>
           </section>}

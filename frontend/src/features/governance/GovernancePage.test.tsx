@@ -897,6 +897,63 @@ describe('GovernancePage', () => {
     expect(await within(detailDialog).findByText('검토 중 · IN_REVIEW')).toBeInTheDocument()
   })
 
+  it('keeps recoverable changes requests distinct from terminal rejection', async () => {
+    const existing = changeRequest({ state: 'IN_REVIEW' })
+    const changesRequested = changeRequest({
+      state: 'CHANGES_REQUESTED',
+      version: 8,
+      transitions: [
+        ...existing.transitions,
+        {
+          id: 'transition-changes-requested',
+          from_state: 'IN_REVIEW',
+          to_state: 'CHANGES_REQUESTED',
+          actor_id: 'reviewer-1',
+          reason: '보완 후 재상신이 필요합니다.',
+          occurred_at: '2026-07-17T03:04:05Z',
+          round_id: existing.current_round_id,
+        },
+      ],
+    })
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([existing]))
+      if (path === `/change-requests/${existing.id}`) return Promise.resolve(existing)
+      if (path === `/change-requests/${existing.id}/transitions` && options?.method === 'POST') {
+        return Promise.resolve(changesRequested)
+      }
+      if (path.includes(`/catalog/assets/${existing.items[0]!.target_asset_id}/lineage`)) {
+        return Promise.resolve({ center_asset_id: 'asset-1', nodes: [], edges: [], direction: 'BOTH', depth: 2, truncated: false, meta: { projection_version: 1, policy_version: 'test' } })
+      }
+      throw new Error(`Unexpected request: ${path} ${options?.method ?? 'GET'}`)
+    })
+    renderPage(apiClient(request))
+    const detailDialog = await openDetail(existing)
+    fireEvent.change(
+      await within(detailDialog).findByRole('textbox', { name: 'REVIEWER COMMENTS · Data Steward 검토 의견' }),
+      { target: { value: '변경 근거를 보완해 재상신해 주세요.' } },
+    )
+
+    expect(within(detailDialog).getByRole('button', { name: '보완 요청' })).toBeInTheDocument()
+    fireEvent.click(within(detailDialog).getByRole('button', { name: '최종 반려 (재상신 불가)' }))
+    expect(within(detailDialog).getByRole('button', { name: '최종 반려 확정' })).toBeInTheDocument()
+    expect(request.mock.calls.filter(([path]) => path.endsWith('/transitions'))).toHaveLength(0)
+    fireEvent.click(within(detailDialog).getByRole('button', { name: '최종 반려 취소' }))
+
+    fireEvent.click(within(detailDialog).getByRole('button', { name: '보완 요청' }))
+    const confirmDialog = screen.getByRole('dialog', { name: '변경관리 명령 확인' })
+    expect(within(confirmDialog).getByText('보완 요청')).toBeInTheDocument()
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: '확인 후 제출' }))
+
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path.endsWith('/transitions'))).toHaveLength(1))
+    const mutation = request.mock.calls.find(([path]) => path.endsWith('/transitions'))
+    const requestBody = typeof mutation?.[1]?.body === 'string' ? mutation[1].body : ''
+    expect(JSON.parse(requestBody) as unknown).toEqual({
+      target_state: 'CHANGES_REQUESTED',
+      reason: '변경 근거를 보완해 재상신해 주세요.',
+    })
+    expect(await within(detailDialog).findByText('보완 요청 · CHANGES_REQUESTED')).toBeInTheDocument()
+  })
+
   it('does not replay a denied mutation after step-up', async () => {
     const existing = changeRequest()
     const denied = problem(403, 'strong assurance required', 'FIDO2_REQUIRED')
