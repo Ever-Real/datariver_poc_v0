@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -7,6 +8,8 @@ from types import ModuleType
 from typing import Never, cast
 
 import pytest
+
+from datariver.infrastructure.db.governance import SqlChangeRequestRepository
 
 MigrationCase = tuple[str, str, str | None]
 MIGRATIONS: tuple[MigrationCase, ...] = (
@@ -280,6 +283,83 @@ def test_0090_profile_role_migration_is_linear_and_has_no_legacy_auto_escalation
     assert source.index('op.drop_table("profile_role_assignment_events"') < source.index(
         'op.drop_table("profile_role_assignments"'
     )
+
+
+def test_0092_editable_change_request_revision_migration_is_additive_and_fail_closed() -> None:
+    root = Path(__file__).resolve().parents[3]
+    path = root / "backend/alembic/versions/0092_change_request_editable_revisions.py"
+    source = path.read_text(encoding="utf-8")
+    module = _load_migration(path.name)
+
+    assert module.revision == "0092"
+    assert module.down_revision == "0091"
+    assert "0092 found a partial editable Change Request revision schema" in source
+    assert "0092 forbids a second round snapshot hash" in source
+    assert '"change_request_round_items"' in source
+    assert "revision_kind = 'LEGACY'" in source
+    assert "request_date = NULL" in source
+    assert "request_date = request.created_at::date" not in source
+    assert "UPDATE governance.change_request_rounds AS round" in source
+    assert "JOIN governance.change_request_items AS item" in source
+    assert "round.id" in source
+    assert "item.id" in source
+    assert "item.ordinal" in source
+    assert '"ordinal >= 0"' in source
+    assert "ck_change_request_round_items_ordinal_non_negative" in source
+    assert source.index("INSERT INTO governance.change_request_round_items") < source.index(
+        "op.drop_constraint(\n        _LEGACY_ITEM_ORDINAL_CONSTRAINT"
+    )
+    assert "UPDATE governance.change_request_items" not in source
+    assert "SET evidence_hash" not in source
+    assert "DROP TABLE governance.change_request_items" not in source
+    assert "REVOKE UPDATE ON governance.change_request_rounds" in source
+    assert "GRANT UPDATE (closed_at)" in source
+    assert "GRANT SELECT, INSERT ON governance.change_request_round_items" in source
+    assert "GRANT UPDATE, DELETE ON governance.change_request_round_items" not in source
+    assert "REVOKE UPDATE, DELETE ON governance.change_request_round_items" in source
+    assert "0092 downgrade is blocked by editable Change Request history" in source
+    assert "0092 current round item association is incomplete" in source
+    downgrade = source.index("def downgrade() -> None:")
+    assert source.index("_assert_downgrade_preconditions()", downgrade) < source.index(
+        'op.drop_table("change_request_round_items"'
+    )
+    assert "0052_governance_apply_reauthorization.py" not in source
+    repository_add = inspect.getsource(SqlChangeRequestRepository.add)
+    assert "for ordinal, item in enumerate(change_request.items)" in repository_add
+    assert "enumerate(change_request.items, start=1)" not in repository_add
+    assert "item.ordinal" in source
+    assert '"ordinal >= 0"' in source
+
+
+def test_0092_canonical_reentry_only_reasserts_current_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_migration("0092_change_request_editable_revisions.py")
+    calls: list[str] = []
+
+    monkeypatch.setattr(module, "_schema_state", lambda: "CURRENT")
+    monkeypatch.setattr(module, "_assert_current_contract", lambda: calls.append("assert"))
+    monkeypatch.setattr(module, "_install_security_contract", lambda: calls.append("grants"))
+    monkeypatch.setattr(module.op, "execute", lambda sql: calls.append(str(sql)))
+
+    module.upgrade()
+
+    assert calls[:2] == ["assert", "grants"]
+    assert calls[2:] == [module.FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL]
+
+
+def test_0052_raw_single_item_apply_stays_outside_editable_intake_revisions() -> None:
+    root = Path(__file__).resolve().parents[3]
+    path = root / "backend/alembic/versions/0052_governance_apply_reauthorization.py"
+    source = path.read_text(encoding="utf-8")
+    module = _load_migration(path.name)
+
+    assert module.revision == "0052"
+    assert "CREATE OR REPLACE FUNCTION governance.reauthorize_datahub_apply(" in source
+    assert "p_target_type <> 'DATAHUB_ASPECT'" in source
+    assert "request.request_type = p_request_type" in source
+    assert "item.id = p_item_id" in source
+    assert "change_request_round_items" not in source
 
 
 def test_registration_execution_bridge_validates_definitions_not_only_names() -> None:

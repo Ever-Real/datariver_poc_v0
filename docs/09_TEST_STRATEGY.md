@@ -2,6 +2,19 @@
 
 ## Current verification status
 
+### Editable Change Request revision rounds — 2026-08-02
+
+ADR-0110/revision `0092` tests require an honest multi-round legacy backfill, unchanged legacy
+item IDs/documents/hashes, typed INITIAL/EDITED snapshots and an append-only ordered round/item
+association. Legacy request dates remain NULL because the input was not persisted, and existing
+zero-based item ordinals are preserved. The obsolete request-wide item ordinal UQ is replaced by
+round-local non-negative ordinal identity;
+cross-request links, duplicate round ordinals and application UPDATE/DELETE remain denied. The
+dedicated revision command must prove original-requester `change.edit`, current System/target
+reauthorization, optimistic versioning and exact idempotency with one round/item/link/transition/
+outbox effect. Current aggregate reads and STORED attachment finalization use only current-round
+items. Terminal REJECTED, prior-round evidence reuse and downgrade with EDITED history fail closed.
+
 ### Governed System schema-scope mapping — 2026-08-02
 
 ADR-0109 tests require Canonical Admin pre-read checks, active System and asset validation,
@@ -1346,6 +1359,19 @@ red-team corpus.
   hidden-tab pause/resume, 20-read and 120-second limits. A manual recovery query requires the
   current round, filters STORED before its ten-row SQL limit, refreshes successful finalizations
   and still reports any partial failure.
+- Editable-revision tests require migration `0092` to backfill every legacy round to the same
+  unchanged legacy item IDs/ordinals while preserving every legacy evidence hash byte-for-byte.
+  The first association ordinal is zero and LEGACY request_date is NULL rather than inferred.
+  INITIAL/EDITED rows must have typed metadata, one canonical V2 evidence hash and a distinct new
+  item/link set; association ordinal duplicates, cross-request/round links and application-role
+  UPDATE/DELETE are denied. Repository get/lock/list/summary and attachment finalization use only
+  `current_round_id` membership. Revision is restricted to the active original requester with
+  current `change.edit`, exact System, `CHANGES_REQUESTED`, `If-Match` and idempotency evidence;
+  exact replay produces no second round/item/link/transition/outbox, while changed payload, stale
+  version, service actor, wrong requester/System, binding drift and terminal REJECTED fail closed.
+  Downgrade blocks EDITED history before DDL and otherwise proves the legacy ordinal UQ is
+  restorable. Offline 0091→0092→0091 rendering, deterministic generated `0001`, and a source
+  assertion that the 0052 single-item apply function is outside this CHANGE_INTAKE flow are gates.
 - Frontend fake-provider tests retain only one Manual schema page plus sparse edits, abort stale
   requests, ignore a late Save after draft/page/asset revision, abort an attachment upload after a
   CR switch, reset attachment cursors after upload, stop polling while hidden and after 20 checks or

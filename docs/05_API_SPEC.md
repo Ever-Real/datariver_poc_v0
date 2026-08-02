@@ -382,11 +382,14 @@ ETag-fenced typed Change Request; it never exposes the raw proposal or direct Da
 | `GET /change-requests?state=&limit=` | `change.read` | compatibility route retaining the published v1 full-record list and overview envelope for existing consumers; private/no-store, maximum 100 |
 | `GET /change-requests/summaries?state=&cursor=&limit=` | `change.read` | additive low-resource route used by the current UI: keyset-paged scalar summaries followed by one grouped current-target authorization; hidden, deleted and legacy-unbound targets are omitted; maximum 50 |
 | `GET /change-requests/{id}` | `change.read` | exact selected aggregate only; hard caps are 200 items, 600 approvals, 200 transitions, 50 rounds and 200 test runs; current-target denial is existence-hiding 404 |
+| `GET /change-requests/{id}/revision-targets?q=&cursor=&limit=` | original requester + current `change.edit` | bounded current Catalog target search anchored to a `CHANGES_REQUESTED` intake; the server derives its exact selected System from the current round and never accepts a client System override or generic Catalog fallback |
+| `GET /change-requests/{id}/revision-targets/{asset_id}` | original requester + current `change.edit` | exact revision target/field detail under the same request and server-derived current System/binding authority |
+| `POST /change-requests/{id}/revisions` | original requester + current `change.edit` | `If-Match` and `Idempotency-Key` fenced bounded intake replacement for `CHANGES_REQUESTED`; atomically appends a typed `EDITED` round and new item/link set, advances the root mirror to `REGISTERED`, and never mutates historical evidence |
 | `GET /change-requests/{id}/apply-report` | `change.read` | private/no-store fresh-authorized provider reconciliation evidence; at most 200 item results and 20 attempts, hashes/versions only |
 | `POST /change-requests/{id}/attachments` | current `change.edit` target authorization | multipart upload with optional client-generated `upload_id`; precommits the exact ID, writes create-only provider bytes and returns private `202 STARTED`, never bucket/object key |
 | `GET /change-requests/{id}/attachment-uploads/{upload_id}` | initiating current subject | private/no-store exact intent status for ambiguous response recovery |
 | `GET /change-requests/{id}/attachment-uploads?round_id=&limit=` | initiating current subject | `round_id` required, limit 1–10; server filters the exact CR, round and STORED state before ordering/limit so historical rounds cannot starve recovery |
-| `POST /change-requests/{id}/attachment-uploads/{upload_id}/finalize` | current `change.edit` target authorization | rechecks membership, deny rules, classification, System/Domain, TEST assignment, target binding and current CR round/version/state; FINALIZED replay repeats authorization and returns the same immutable attachment |
+| `POST /change-requests/{id}/attachment-uploads/{upload_id}/finalize` | current `change.edit` target authorization | STORED finalization rechecks membership, deny rules, classification, System/Domain, TEST assignment, current-round item association, target binding and current CR round/version/state; matching FINALIZED replay returns the same immutable attachment after uploader/workspace/identity checks without creating a second effect |
 | `POST /change-requests` | `change.raw.create` + `change.create` | hardware-human operator/recovery raw DataHub Aspect proposal; absent from the ordinary UI |
 | `POST /change-requests/intake` | `change.create` | ordinary v0.3-shaped CR registration: server re-reads authorized existing table/column identity, records typed multi-target intake evidence including a separate bounded `requested_change` note at table/column level, and server-mints any new-table proposal identifier; no provider mutation occurs |
 | `POST /change-requests/{id}/approvals` | `change.review` / `change.approve` | append immutable decision |
@@ -407,6 +410,12 @@ before provider mutation. The server persists a creation-time target binding and
 transition re-resolves current identity and scope under the same request transaction. Apply-time
 requester/policy reauthorization, DataRiver target serialization and an external atomic CAS remain
 required hardening gates.
+
+Revision uses the same typed target validation but a request-anchored `change.edit` reader and the
+current selected System; creation-only `change.create` discovery is not accepted as revision
+authority. An exact idempotency replay returns the committed revision result, while a changed body,
+stale version, non-requester, service actor, wrong System, target drift or terminal `REJECTED` state
+fails without another round, item, association, transition or outbox effect.
 
 `change.raw.create` is deny-by-default, classified as both high-risk and human-governance-only, and
 is not granted by local identity or semiconductor seed bootstrap. A hardware-authenticated human

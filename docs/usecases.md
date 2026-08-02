@@ -273,7 +273,7 @@ stateDiagram-v2
     IN_REVIEW --> CHANGES_REQUESTED
     TESTING --> CHANGES_REQUESTED
     FINAL_REVIEW --> CHANGES_REQUESTED
-    CHANGES_REQUESTED --> REGISTERED: new revision round
+    CHANGES_REQUESTED --> REGISTERED: edited immutable revision round
 ```
 
 신규 CR 모달의 multi-target `CHANGE_INTAKE`는 final approval 이후 `COMPLETED`가 되지만 DataHub
@@ -290,7 +290,7 @@ stateDiagram-v2
 | `CR-04` | list/detail | target authorization을 재검증하고 opaque CR ID/number, current round, targets, approvals, transitions, attachments를 조회한다. |
 | `CR-05` | REVIEW 시작 | `REGISTERED -> IN_REVIEW`를 version-fenced command로 수행한다. |
 | `CR-06` | multi-System REVIEW | 모든 routed System에 대해 현재 active/unexpired Developer 한 명의 APPROVED evidence가 있어야 TESTING으로 이동한다. 한 actor가 여러 System의 동일 role을 담당할 수 있다. |
-| `CR-07` | 보완 재요청 | 현재 round를 `CHANGES_REQUESTED`로 닫고 requester가 새 round evidence로 재제출한다. 이전 round approval은 재사용하지 않는다. |
+| `CR-07` | 보완 재요청 | reviewer가 현재 round를 `CHANGES_REQUESTED`로 닫는다. original requester는 제목/요청 사유·내용/기존·신규 table·field를 실제 수정하고, exact System과 current target을 재검증한 뒤 새 typed snapshot, 새 item IDs와 ordered association으로 재제출한다. 이전 metadata/item/attachment/approval/transition은 변경하거나 재사용하지 않는다. |
 | `CR-08` | TEST evidence | server-owned typed test plan/run 또는 scanned TEST attachment를 현재 round/item/System에 결합한다. raw browser SQL을 실행하지 않는다. |
 | `CR-09` | multi-System TEST approval | 모든 routed System Developer의 별도 TEST approval과 필수 test receipt가 있어야 FINAL_REVIEW로 이동한다. |
 | `CR-10` | FINAL approval | 각 routed System별 Developer + Data Steward, 그리고 CR 전체 global Admin 한 명이 APPROVED해야 한다. 세 role class는 서로 다른 actor이고 requester는 FINAL 불가다. |
@@ -319,11 +319,16 @@ stateDiagram-v2
 | `CR-N10` | attachment size/MIME/scanner/storage 실패 | CR intent와 attachment 실패를 분리 표시하고 duplicate CR 생성 없이 재시도 |
 | `CR-N11` | WebAuthn disabled 또는 stale assurance | high-risk direct approval 거부; password로 자동 downgrade하지 않음 |
 | `CR-N12` | legacy item에 routing binding 없음 | 읽기만 가능하거나 quarantine, 진행/완료 금지 |
+| `CR-N13` | terminal `REJECTED` 또는 requester가 아닌 actor의 revision | 새 round/item/effect 없이 거부 |
+| `CR-N14` | revision의 wrong System, stale target/binding 또는 service actor | 존재 비공개/권한 거부, 기존 history 불변 |
+| `CR-N15` | 같은 idempotency key의 다른 revision body | conflict, 두 번째 round/item/link/transition/outbox 0 |
+| `CR-N16` | prior-round item/attachment가 current validation을 만족하지만 current round는 불충분 | 진행/attachment/finalization 거부; 과거 evidence 격리 |
 
 ### 6.4 CR에서 확인된 DB/권한 결함
 
-1. **Revision round 부재 (`P0`)**: 현재 approval unique key는 request/stage/actor이고 round가 없다.
-   보완 재요청 후 과거 APPROVED/REJECTED가 재사용되고 동일 actor가 다시 판단할 수 없다.
+1. **실제 editable revision (`P0`, ADR-0110으로 해결)**: round-bound approval은 이미 과거 판단을
+   격리했지만 기존 재상신은 같은 root/item 내용을 다시 참조했다. 0092 association과 전용 revision
+   command는 새 typed snapshot/item set을 append하고 current pointer/mirror만 이동한다.
 2. **FINAL reject 우회 (`P0`)**: UI가 FINAL rejection을 typed FINAL decision이 아닌 일반 transition으로
    호출할 수 있어 System/global role과 assurance gate를 우회한다.
 3. **부분 담당자 조회 충돌 (`P0`)**: 한 System 담당자가 multi-System CR의 모든 target을 볼 권한이

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import inspect
+from dataclasses import replace
 from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any, cast
@@ -8,21 +9,36 @@ from unittest.mock import AsyncMock
 from uuid import UUID, uuid4
 
 import pytest
+from fastapi import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from datariver.application.ports import CatalogReaderMode
 from datariver.domain.authz import Action, Classification, SubjectAttributes
+from datariver.domain.common import ForbiddenError, NotFoundError
+from datariver.domain.governance import (
+    CHANGE_INTAKE_ASPECT,
+    MANUAL_DATASET_INTAKE_TARGET,
+    ChangeItem,
+    ChangeRequest,
+    ChangeState,
+)
 from datariver.interfaces.http.dependencies import RequestContext
 from datariver.interfaces.http.routes import governance as governance_routes
 from datariver.interfaces.http.routes.governance import (
     _catalog_service,
+    _change_intake_items,
     _change_request_system_scope,
     _change_target_catalog_service,
     create_change_request_intake,
+    get_change_request,
+    get_change_request_revision_target,
     get_change_request_target,
     list_change_request_systems,
+    revise_change_request_intake,
+    search_change_request_revision_targets,
     search_change_request_targets,
 )
+from datariver.interfaces.http.schemas import ChangeRequestRevisionCreate
 
 
 def _subject(
@@ -160,11 +176,197 @@ def test_change_request_catalog_service_uses_only_the_change_target_reader_mode(
 
 def test_change_target_detail_and_intake_share_the_routed_cr_catalog_boundary() -> None:
     detail_source = inspect.getsource(get_change_request_target)
-    intake_source = inspect.getsource(create_change_request_intake)
+    intake_builder_source = inspect.getsource(_change_intake_items)
 
-    for source in (detail_source, intake_source):
+    for source in (detail_source, intake_builder_source):
         assert "_change_target_catalog_service" in source
         assert "route_authorized_detail" in source
+    assert "_change_intake_items" in inspect.getsource(create_change_request_intake)
+    assert "_change_intake_items" in inspect.getsource(revise_change_request_intake)
+
+
+def test_revision_target_directory_is_request_anchored_and_has_no_create_scope_fallback() -> None:
+    search_source = inspect.getsource(search_change_request_revision_targets)
+    detail_source = inspect.getsource(get_change_request_revision_target)
+    system_source = inspect.getsource(governance_routes._revision_system_id)
+
+    assert "_revision_system_id" in search_source
+    assert "_revision_system_id" in detail_source
+    assert "get_change_request_for_revision" in system_source
+    assert "_change_request_system_scope" not in search_source
+    assert "_change_request_system_scope" not in detail_source
+    assert "action=Action.CHANGE_CREATE" not in search_source + detail_source + system_source
+
+
+def _editable_request(*, subject: SubjectAttributes, system_id: UUID) -> ChangeRequest:
+    item_id = uuid4()
+    value = ChangeRequest.create(
+        workspace_id=subject.workspace_id,
+        number="CR-REVISION-PREFLIGHT",
+        request_type="CHANGE_INTAKE",
+        title="Editable request",
+        description="Correct the requested table.",
+        requester_id=subject.subject_id,
+        items=[
+            ChangeItem(
+                item_id=item_id,
+                target_type=MANUAL_DATASET_INTAKE_TARGET,
+                target_ref=f"urn:datariver:proposed-dataset:{item_id}",
+                operation="CREATE",
+                aspect_name=CHANGE_INTAKE_ASPECT,
+                after_document={"contract": "change-intake-v1"},
+                routing_system_id=system_id,
+            )
+        ],
+        request_reason="Correct the requested table.",
+        selected_system_id=system_id,
+    )
+    value.state = ChangeState.CHANGES_REQUESTED
+    value.events.clear()
+    return value
+
+
+@pytest.mark.asyncio
+async def test_revision_system_restores_rls_before_active_system_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_id = uuid4()
+    subject = _subject(
+        allowed_actions=frozenset({Action.CHANGE_EDIT}),
+        allowed_system_ids=frozenset({system_id}),
+    )
+    value = _editable_request(subject=subject, system_id=system_id)
+    events: list[str] = []
+    service = SimpleNamespace(get_change_request_for_revision=AsyncMock())
+
+    async def preflight(**_: object) -> ChangeRequest:
+        events.append("service-commit")
+        return value
+
+    async def restore_context(*_: object, **__: object) -> None:
+        events.append("security-context")
+
+    async def read_system(_: object) -> UUID:
+        events.append("system-read")
+        return system_id
+
+    service.get_change_request_for_revision.side_effect = preflight
+    session = AsyncMock(spec=AsyncSession)
+    session.scalar.side_effect = read_system
+    monkeypatch.setattr(governance_routes, "_service", lambda *_: service)
+    monkeypatch.setattr(governance_routes, "set_security_context", restore_context)
+
+    observed = await governance_routes._revision_system_id(
+        change_request_id=value.change_request_id,
+        request=cast(Any, object()),
+        context=_context(subject),
+        session=cast(AsyncSession, session),
+    )
+
+    assert observed == system_id
+    assert events == ["service-commit", "security-context", "system-read"]
+
+
+@pytest.mark.asyncio
+async def test_change_request_detail_only_claims_revision_for_authorized_requester(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    system_id = uuid4()
+    requester = _subject(
+        allowed_actions=frozenset({Action.CHANGE_EDIT}),
+        allowed_system_ids=frozenset({system_id}),
+    )
+    value = _editable_request(subject=requester, system_id=system_id)
+    other = replace(
+        _subject(allowed_actions=frozenset({Action.CHANGE_READ})),
+        workspace_id=requester.workspace_id,
+    )
+    service = SimpleNamespace(
+        get_change_request=AsyncMock(return_value=value),
+        get_change_request_for_revision=AsyncMock(return_value=value),
+    )
+    monkeypatch.setattr(governance_routes, "_service", lambda *_: service)
+
+    other_response = await get_change_request(
+        change_request_id=value.change_request_id,
+        request=cast(Any, object()),
+        response=Response(),
+        context=_context(other),
+        session=cast(AsyncSession, AsyncMock(spec=AsyncSession)),
+    )
+
+    assert other_response.revision_allowed is False
+    service.get_change_request_for_revision.assert_not_awaited()
+
+    service.get_change_request_for_revision.side_effect = ForbiddenError(
+        "The requested action is not permitted."
+    )
+    denied_response = await get_change_request(
+        change_request_id=value.change_request_id,
+        request=cast(Any, object()),
+        response=Response(),
+        context=_context(requester),
+        session=cast(AsyncSession, AsyncMock(spec=AsyncSession)),
+    )
+
+    assert denied_response.revision_allowed is False
+
+    service.get_change_request_for_revision.reset_mock(side_effect=True)
+    service.get_change_request_for_revision.return_value = value
+    requester_response = await get_change_request(
+        change_request_id=value.change_request_id,
+        request=cast(Any, object()),
+        response=Response(),
+        context=_context(requester),
+        session=cast(AsyncSession, AsyncMock(spec=AsyncSession)),
+    )
+
+    assert requester_response.revision_allowed is True
+    service.get_change_request_for_revision.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["non-requester", "rejected", "stale-target"])
+async def test_revision_post_stops_before_system_or_provider_resolution_on_preflight_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    system_id = uuid4()
+    subject = _subject(
+        allowed_actions=frozenset({Action.CHANGE_EDIT}),
+        allowed_system_ids=frozenset({system_id}),
+    )
+    service = SimpleNamespace(
+        get_change_request_for_revision=AsyncMock(
+            side_effect=NotFoundError(f"revision preflight rejected: {failure}")
+        ),
+        revise_change_request=AsyncMock(),
+    )
+    item_builder = AsyncMock()
+    session = AsyncMock(spec=AsyncSession)
+    monkeypatch.setattr(governance_routes, "_service", lambda *_: service)
+    monkeypatch.setattr(governance_routes, "_change_intake_items", item_builder)
+
+    payload = ChangeRequestRevisionCreate(
+        title="Corrected request",
+        system_id=system_id,
+        request_reason="Correct the requested table.",
+        targets=[{"kind": "MANUAL", "table_name": "new_table"}],
+    )
+    with pytest.raises(NotFoundError, match=failure):
+        await revise_change_request_intake(
+            change_request_id=uuid4(),
+            payload=payload,
+            request=cast(Any, object()),
+            context=_context(subject),
+            session=cast(AsyncSession, session),
+            if_match='"3"',
+            idempotency_key="revision-preflight-idempotency",
+        )
+
+    session.scalars.assert_not_awaited()
+    item_builder.assert_not_awaited()
+    service.revise_change_request.assert_not_awaited()
 
 
 def _context(subject: SubjectAttributes) -> RequestContext:

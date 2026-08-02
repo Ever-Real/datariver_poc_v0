@@ -2,10 +2,14 @@ import inspect
 from pathlib import Path
 from typing import cast
 
-from sqlalchemy import CheckConstraint, Table
+from sqlalchemy import CheckConstraint, Table, UniqueConstraint
 
 from datariver.infrastructure.db.governance import SqlChangeRequestRepository
-from datariver.infrastructure.db.models.governance import ChangeItemModel
+from datariver.infrastructure.db.models.governance import (
+    ChangeItemModel,
+    ChangeRequestRoundItemModel,
+    ChangeRequestRoundModel,
+)
 
 
 def test_change_item_model_has_nullable_all_or_none_target_binding() -> None:
@@ -55,8 +59,59 @@ def test_change_request_summary_query_never_selects_mutable_documents() -> None:
 
 
 def test_change_request_repository_round_trips_optional_item_contract_hash() -> None:
-    add_source = inspect.getsource(SqlChangeRequestRepository.add)
+    item_model_source = inspect.getsource(SqlChangeRequestRepository._item_model)
     hydrate_source = inspect.getsource(SqlChangeRequestRepository.get_for_update)
 
-    assert "item_contract_hash=item.item_contract_hash" in add_source
+    assert "item_contract_hash=item.item_contract_hash" in item_model_source
     assert "item_contract_hash=item.item_contract_hash" in hydrate_source
+
+
+def test_change_request_round_snapshot_and_item_association_are_immutable_contracts() -> None:
+    round_table = cast(Table, ChangeRequestRoundModel.__table__)
+    association_table = cast(Table, ChangeRequestRoundItemModel.__table__)
+    item_table = cast(Table, ChangeItemModel.__table__)
+
+    assert {
+        "revision_kind",
+        "title",
+        "request_date",
+        "request_department",
+        "request_reason",
+        "request_content",
+        "requested_due_date",
+        "priority",
+        "urgency",
+        "classification",
+        "selected_system_id",
+    } <= set(round_table.columns.keys())
+    assert "snapshot_hash" not in round_table.columns
+    assert {
+        "workspace_id",
+        "change_request_id",
+        "round_id",
+        "item_id",
+        "ordinal",
+    } == set(association_table.columns.keys())
+    association_uniques = {
+        constraint.name
+        for constraint in association_table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert "uq_change_request_round_items_ordinal" in association_uniques
+    association_checks = {
+        constraint.name: str(constraint.sqltext)
+        for constraint in association_table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+    assert association_checks["ck_change_request_round_items_ordinal_non_negative"] == (
+        "ordinal >= 0"
+    )
+    repository_add = inspect.getsource(SqlChangeRequestRepository.add)
+    assert "for ordinal, item in enumerate(change_request.items)" in repository_add
+    assert "enumerate(change_request.items, start=1)" not in repository_add
+    item_uniques = {
+        tuple(column.name for column in constraint.columns)
+        for constraint in item_table.constraints
+        if isinstance(constraint, UniqueConstraint)
+    }
+    assert ("change_request_id", "ordinal") not in item_uniques

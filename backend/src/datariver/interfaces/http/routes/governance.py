@@ -31,6 +31,7 @@ from datariver.domain.authz import Action, BuiltinPolicyEngine, Classification, 
 from datariver.domain.catalog import DATASET_ASSET_TYPES, is_dataset_asset_type
 from datariver.domain.common import (
     ConflictError,
+    ForbiddenError,
     NotFoundError,
     ValidationError,
     canonical_json_hash,
@@ -92,6 +93,7 @@ from datariver.interfaces.http.schemas import (
     ChangeRequestIntakeCreate,
     ChangeRequestListResponse,
     ChangeRequestResponse,
+    ChangeRequestRevisionCreate,
     ChangeRequestSummaryItemResponse,
     ChangeRequestSummaryListResponse,
     ChangeRequestSummaryResponse,
@@ -346,6 +348,152 @@ def _unique_values(values: list[str]) -> list[str]:
     return list(dict.fromkeys(value.strip() for value in values if value.strip()))[:100]
 
 
+async def _change_intake_items(
+    *,
+    payload: ChangeRequestIntakeCreate,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    system: DataSystemModel,
+) -> list[ChangeItem]:
+    catalog, target_reader = _change_target_catalog_service(request, session)
+    items: list[ChangeItem] = []
+    for target in payload.targets:
+        if target.kind == "MANUAL":
+            manual_after_document = {
+                "contract": "change-intake-v1",
+                "kind": "MANUAL",
+                "database_name": target.database_name.strip(),
+                "schema_name": target.schema_name.strip(),
+                "table_name": target.table_name.strip(),
+                "owner": target.owner.strip(),
+                "description": target.description.strip(),
+                "requested_change": target.requested_change.strip(),
+                "tags": _unique_values(target.tags),
+                "terms": _unique_values(target.terms),
+                "columns": [
+                    {
+                        "field_path": column.field_path.strip(),
+                        "data_type": column.data_type.strip(),
+                        "description": column.description.strip(),
+                        "requested_change": column.requested_change.strip(),
+                        "tags": _unique_values(column.tags),
+                        "terms": _unique_values(column.terms),
+                    }
+                    for column in target.columns
+                ],
+            }
+            item_id = uuid7()
+            items.append(
+                ChangeItem(
+                    item_id=item_id,
+                    target_type=MANUAL_DATASET_INTAKE_TARGET,
+                    target_ref=f"urn:datariver:proposed-dataset:{item_id}",
+                    operation="CREATE",
+                    aspect_name=CHANGE_INTAKE_ASPECT,
+                    after_document=manual_after_document,
+                    after_hash=canonical_json_hash(manual_after_document),
+                    routing_system_id=system.id,
+                )
+            )
+            continue
+
+        detail = await catalog.get_asset(
+            subject=context.subject,
+            asset_id=target.asset_id,
+            environment=context.environment,
+            request_id=context.request_id,
+        )
+        if detail is not None:
+            detail = await target_reader.route_authorized_detail(
+                detail=detail,
+                system_id=system.id,
+            )
+        if detail is None:
+            raise NotFoundError("The selected catalog asset does not exist.")
+        source_fields = {
+            str(field.get("fieldPath")): field
+            for field in detail.schema_fields
+            if isinstance(field, dict) and isinstance(field.get("fieldPath"), str)
+        }
+        requested_columns: list[dict[str, object]] = []
+        seen_fields: set[str] = set()
+        for column in target.columns:
+            field_path = column.field_path.strip()
+            if field_path in seen_fields or field_path not in source_fields:
+                raise ValidationError("A requested existing-table column is not available.")
+            seen_fields.add(field_path)
+            source = source_fields[field_path]
+            source_tags = _metadata_tokens(
+                (source.get("globalTags") or source.get("tags") or {}).get("tags", [])
+                if isinstance(source.get("globalTags") or source.get("tags"), dict)
+                else [],
+                "tag",
+            )
+            source_terms = _metadata_tokens(
+                (source.get("glossaryTerms") or source.get("terms") or {}).get("terms", [])
+                if isinstance(source.get("glossaryTerms") or source.get("terms"), dict)
+                else [],
+                "term",
+            )
+            requested_columns.append(
+                {
+                    "field_path": field_path,
+                    "source": {
+                        "data_type": str(source.get("type") or source.get("nativeDataType") or ""),
+                        "description": str(source.get("description") or ""),
+                        "tags": _unique_values(source_tags),
+                        "terms": _unique_values(source_terms),
+                    },
+                    "requested": {
+                        "data_type": column.data_type.strip(),
+                        "description": column.description.strip(),
+                        "requested_change": column.requested_change.strip(),
+                        "tags": _unique_values(column.tags),
+                        "terms": _unique_values(column.terms),
+                    },
+                }
+            )
+        source_document: dict[str, Any] = {
+            "asset_id": str(detail.index.asset_id),
+            "external_urn": detail.index.external_urn,
+            "platform": detail.index.platform,
+            "database_name": detail.index.database_name,
+            "schema_name": detail.index.schema_name,
+            "table_name": detail.index.name,
+            "owner": detail.index.owner,
+            "description": detail.index.description or "",
+            "tags": _unique_values(list(detail.tags)),
+            "terms": _unique_values(_metadata_tokens(list(detail.glossary_terms), "term")),
+            "source_version": detail.raw_version,
+        }
+        after_document: dict[str, Any] = {
+            "contract": "change-intake-v1",
+            "kind": "EXISTING",
+            "source": source_document,
+            "requested": {
+                "description": target.description.strip(),
+                "requested_change": target.requested_change.strip(),
+                "tags": _unique_values(target.tags),
+                "terms": _unique_values(target.terms),
+                "columns": requested_columns,
+            },
+        }
+        items.append(
+            ChangeItem(
+                item_id=uuid7(),
+                target_type=DATAHUB_INTAKE_TARGET,
+                target_ref=detail.index.external_urn,
+                operation="REVIEW",
+                aspect_name=CHANGE_INTAKE_ASPECT,
+                before_hash=canonical_json_hash(source_document),
+                after_document=after_document,
+                after_hash=canonical_json_hash(after_document),
+            )
+        )
+    return items
+
+
 def _expected_version(if_match: str) -> int:
     value = if_match.strip().strip('"')
     if not value.isdigit() or int(value) < 1:
@@ -588,6 +736,126 @@ async def get_change_request_target(
     return catalog_detail(asset)
 
 
+async def _revision_system_id(
+    *,
+    change_request_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> UUID:
+    change_request = await _service(request, session).get_change_request_for_revision(
+        workspace_id=context.workspace_id,
+        change_request_id=change_request_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    await set_security_context(
+        session,
+        workspace_id=context.workspace_id,
+        subject_id=context.subject.subject_id,
+    )
+    current_round = next(
+        (
+            round_value
+            for round_value in change_request.rounds
+            if round_value.round_id == change_request.current_round_id
+        ),
+        None,
+    )
+    if current_round is None or current_round.selected_system_id is None:
+        raise NotFoundError("The editable change request does not exist.")
+    active_system_id = await session.scalar(
+        select(DataSystemModel.id).where(
+            DataSystemModel.workspace_id == context.workspace_id,
+            DataSystemModel.id == current_round.selected_system_id,
+            DataSystemModel.active.is_(True),
+        )
+    )
+    if active_system_id is None:
+        raise NotFoundError("The editable change request does not exist.")
+    return active_system_id
+
+
+@router.get("/{change_request_id}/revision-targets", response_model=CatalogSearchResponse)
+async def search_change_request_revision_targets(
+    change_request_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    q: Annotated[str, Query(max_length=500)] = "",
+    cursor: Annotated[str | None, Query(max_length=2000)] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 25,
+) -> CatalogSearchResponse:
+    system_id = await _revision_system_id(
+        change_request_id=change_request_id,
+        request=request,
+        context=context,
+        session=session,
+    )
+    target_catalog, _ = _change_target_catalog_service(request, session)
+    page = await target_catalog.search(
+        subject=context.subject,
+        query=q,
+        filters={
+            "asset_types": tuple(sorted(DATASET_ASSET_TYPES)),
+            "routing_system_id": system_id,
+        },
+        cursor=cursor,
+        limit=limit,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    return CatalogSearchResponse(
+        items=[catalog_summary(item) for item in page.items],
+        page=PageMeta(next_cursor=page.next_cursor, limit=limit),
+        total=page.total,
+        total_exact=page.total_exact,
+        meta=CatalogPolicyMeta(
+            observed_at=page.observed_at,
+            stale_at=page.stale_at,
+            projection_version=page.projection_version,
+            policy_version=page.policy_version,
+            classification_policy_version=page.classification_policy_version,
+            authorization_generation=page.authorization_generation,
+        ),
+    )
+
+
+@router.get(
+    "/{change_request_id}/revision-targets/{asset_id}",
+    response_model=CatalogAssetResponse,
+)
+async def get_change_request_revision_target(
+    change_request_id: UUID,
+    asset_id: UUID,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+) -> CatalogAssetResponse:
+    system_id = await _revision_system_id(
+        change_request_id=change_request_id,
+        request=request,
+        context=context,
+        session=session,
+    )
+    target_catalog, target_reader = _change_target_catalog_service(request, session)
+    asset = await target_catalog.get_asset(
+        subject=context.subject,
+        asset_id=asset_id,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    if asset is not None:
+        asset = await target_reader.route_authorized_detail(
+            detail=asset,
+            system_id=system_id,
+        )
+    if asset is None or not is_dataset_asset_type(asset.index.asset_type):
+        raise NotFoundError("The selected revision target does not exist.")
+    return catalog_detail(asset)
+
+
 @router.get("/{change_request_id}", response_model=ChangeRequestResponse)
 async def get_change_request(
     change_request_id: UUID,
@@ -596,15 +864,34 @@ async def get_change_request(
     context: ContextDep,
     session: SessionDep,
 ) -> ChangeRequestResponse:
-    value = await _service(request, session).get_change_request(
+    service = _service(request, session)
+    value = await service.get_change_request(
         workspace_id=context.workspace_id,
         change_request_id=change_request_id,
         subject=context.subject,
         environment=context.environment,
         request_id=context.request_id,
     )
+    revision_allowed = False
+    if (
+        value.request_type == "CHANGE_INTAKE"
+        and value.state is ChangeState.CHANGES_REQUESTED
+        and value.requester_id == context.subject.subject_id
+    ):
+        try:
+            value = await service.get_change_request_for_revision(
+                workspace_id=context.workspace_id,
+                change_request_id=change_request_id,
+                subject=context.subject,
+                environment=context.environment,
+                request_id=context.request_id,
+            )
+        except (ForbiddenError, NotFoundError):
+            pass
+        else:
+            revision_allowed = True
     response.headers["Cache-Control"] = "private, no-store"
-    return change_request_response(value)
+    return change_request_response(value, revision_allowed=revision_allowed)
 
 
 @router.get(
@@ -1152,141 +1439,13 @@ async def create_change_request_intake(
     ).one_or_none()
     if system is None:
         raise ValidationError("The selected canonical data system is not active.")
-    catalog, target_reader = _change_target_catalog_service(request, session)
-    items: list[ChangeItem] = []
-    for target in payload.targets:
-        if target.kind == "MANUAL":
-            manual_after_document = {
-                "contract": "change-intake-v1",
-                "kind": "MANUAL",
-                "database_name": target.database_name.strip(),
-                "schema_name": target.schema_name.strip(),
-                "table_name": target.table_name.strip(),
-                "owner": target.owner.strip(),
-                "description": target.description.strip(),
-                "requested_change": target.requested_change.strip(),
-                "tags": _unique_values(target.tags),
-                "terms": _unique_values(target.terms),
-                "columns": [
-                    {
-                        "field_path": column.field_path.strip(),
-                        "data_type": column.data_type.strip(),
-                        "description": column.description.strip(),
-                        "requested_change": column.requested_change.strip(),
-                        "tags": _unique_values(column.tags),
-                        "terms": _unique_values(column.terms),
-                    }
-                    for column in target.columns
-                ],
-            }
-            item_id = uuid7()
-            items.append(
-                ChangeItem(
-                    item_id=item_id,
-                    target_type=MANUAL_DATASET_INTAKE_TARGET,
-                    target_ref=f"urn:datariver:proposed-dataset:{item_id}",
-                    operation="CREATE",
-                    aspect_name=CHANGE_INTAKE_ASPECT,
-                    after_document=manual_after_document,
-                    after_hash=canonical_json_hash(manual_after_document),
-                    routing_system_id=system.id,
-                )
-            )
-            continue
-
-        detail = await catalog.get_asset(
-            subject=context.subject,
-            asset_id=target.asset_id,
-            environment=context.environment,
-            request_id=context.request_id,
-        )
-        if detail is not None:
-            detail = await target_reader.route_authorized_detail(
-                detail=detail,
-                system_id=system.id,
-            )
-        if detail is None:
-            raise NotFoundError("The selected catalog asset does not exist.")
-        source_fields = {
-            str(field.get("fieldPath")): field
-            for field in detail.schema_fields
-            if isinstance(field, dict) and isinstance(field.get("fieldPath"), str)
-        }
-        requested_columns: list[dict[str, object]] = []
-        seen_fields: set[str] = set()
-        for column in target.columns:
-            field_path = column.field_path.strip()
-            if field_path in seen_fields or field_path not in source_fields:
-                raise ValidationError("A requested existing-table column is not available.")
-            seen_fields.add(field_path)
-            source = source_fields[field_path]
-            source_tags = _metadata_tokens(
-                (source.get("globalTags") or source.get("tags") or {}).get("tags", [])
-                if isinstance(source.get("globalTags") or source.get("tags"), dict)
-                else [],
-                "tag",
-            )
-            source_terms = _metadata_tokens(
-                (source.get("glossaryTerms") or source.get("terms") or {}).get("terms", [])
-                if isinstance(source.get("glossaryTerms") or source.get("terms"), dict)
-                else [],
-                "term",
-            )
-            requested_columns.append(
-                {
-                    "field_path": field_path,
-                    "source": {
-                        "data_type": str(source.get("type") or source.get("nativeDataType") or ""),
-                        "description": str(source.get("description") or ""),
-                        "tags": _unique_values(source_tags),
-                        "terms": _unique_values(source_terms),
-                    },
-                    "requested": {
-                        "data_type": column.data_type.strip(),
-                        "description": column.description.strip(),
-                        "requested_change": column.requested_change.strip(),
-                        "tags": _unique_values(column.tags),
-                        "terms": _unique_values(column.terms),
-                    },
-                }
-            )
-        source_document: dict[str, Any] = {
-            "asset_id": str(detail.index.asset_id),
-            "external_urn": detail.index.external_urn,
-            "platform": detail.index.platform,
-            "database_name": detail.index.database_name,
-            "schema_name": detail.index.schema_name,
-            "table_name": detail.index.name,
-            "owner": detail.index.owner,
-            "description": detail.index.description or "",
-            "tags": _unique_values(list(detail.tags)),
-            "terms": _unique_values(_metadata_tokens(list(detail.glossary_terms), "term")),
-            "source_version": detail.raw_version,
-        }
-        after_document: dict[str, Any] = {
-            "contract": "change-intake-v1",
-            "kind": "EXISTING",
-            "source": source_document,
-            "requested": {
-                "description": target.description.strip(),
-                "requested_change": target.requested_change.strip(),
-                "tags": _unique_values(target.tags),
-                "terms": _unique_values(target.terms),
-                "columns": requested_columns,
-            },
-        }
-        items.append(
-            ChangeItem(
-                item_id=uuid7(),
-                target_type=DATAHUB_INTAKE_TARGET,
-                target_ref=detail.index.external_urn,
-                operation="REVIEW",
-                aspect_name=CHANGE_INTAKE_ASPECT,
-                before_hash=canonical_json_hash(source_document),
-                after_document=after_document,
-                after_hash=canonical_json_hash(after_document),
-            )
-        )
+    items = await _change_intake_items(
+        payload=payload,
+        request=request,
+        context=context,
+        session=session,
+        system=system,
+    )
 
     request_hash = hashlib.sha256(
         orjson.dumps(payload.model_dump(mode="json"), option=orjson.OPT_SORT_KEYS)
@@ -1313,6 +1472,97 @@ async def create_change_request_intake(
         requested_due_date=payload.requested_due_date,
         priority=ChangePriority(payload.priority),
         urgency=ChangeUrgency(payload.urgency),
+        request_date=payload.request_date,
+        request_department=payload.request_department,
+        request_reason=payload.request_reason,
+        request_content=payload.request_content,
+        selected_system_id=system.id,
+    )
+    return change_request_response(change_request)
+
+
+@router.post("/{change_request_id}/revisions", response_model=ChangeRequestResponse)
+async def revise_change_request_intake(
+    change_request_id: UUID,
+    payload: ChangeRequestRevisionCreate,
+    request: Request,
+    context: ContextDep,
+    session: SessionDep,
+    if_match: Annotated[str, Header(alias="If-Match", max_length=100)],
+    idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=16, max_length=200)],
+) -> ChangeRequestResponse:
+    expected_version = _expected_version(if_match)
+    service = _service(request, session)
+    current = await service.get_change_request_for_revision(
+        workspace_id=context.workspace_id,
+        change_request_id=change_request_id,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+    )
+    current_round = next(
+        (
+            round_value
+            for round_value in current.rounds
+            if round_value.round_id == current.current_round_id
+        ),
+        None,
+    )
+    if current_round is None or current_round.selected_system_id != payload.system_id:
+        raise ValidationError("A change-request revision cannot change its selected system.")
+    await set_security_context(
+        session,
+        workspace_id=context.workspace_id,
+        subject_id=context.subject.subject_id,
+    )
+    system = (
+        await session.scalars(
+            select(DataSystemModel).where(
+                DataSystemModel.workspace_id == context.workspace_id,
+                DataSystemModel.id == payload.system_id,
+                DataSystemModel.active.is_(True),
+            )
+        )
+    ).one_or_none()
+    if system is None:
+        raise ValidationError("The selected canonical data system is not active.")
+    items = await _change_intake_items(
+        payload=payload,
+        request=request,
+        context=context,
+        session=session,
+        system=system,
+    )
+    request_hash = hashlib.sha256(
+        orjson.dumps(
+            {
+                "change_request_id": str(change_request_id),
+                "expected_version": expected_version,
+                "revision": payload.model_dump(mode="json"),
+            },
+            option=orjson.OPT_SORT_KEYS,
+        )
+    ).hexdigest()
+    change_request = await service.revise_change_request(
+        workspace_id=context.workspace_id,
+        change_request_id=change_request_id,
+        title=payload.title,
+        request_date=payload.request_date,
+        request_department=payload.request_department,
+        request_reason=payload.request_reason,
+        request_content=payload.request_content,
+        requested_due_date=payload.requested_due_date,
+        priority=ChangePriority(payload.priority),
+        urgency=ChangeUrgency(payload.urgency),
+        classification=Classification[payload.security_level],
+        selected_system_id=system.id,
+        items=items,
+        expected_version=expected_version,
+        subject=context.subject,
+        environment=context.environment,
+        request_id=context.request_id,
+        idempotency_key=idempotency_key,
+        request_hash=request_hash,
     )
     return change_request_response(change_request)
 

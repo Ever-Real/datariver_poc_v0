@@ -101,9 +101,12 @@ class CatalogChangeTargetAuthorizer:
         subject: SubjectAttributes,
         items: Sequence[ChangeItem],
         request_classification: Classification,
+        action: Action,
         environment: EnvironmentAttributes,
         request_id: str,
     ) -> tuple[ChangeItem, ...]:
+        if action not in {Action.CHANGE_CREATE, Action.CHANGE_EDIT}:
+            raise ValidationError("The change-target authorization action is invalid.")
         external_urns = tuple(
             dict.fromkeys(
                 item.target_ref
@@ -165,7 +168,7 @@ class CatalogChangeTargetAuthorizer:
         authorized = await self._filter_authorized_resources(
             subject=subject,
             resources=resources,
-            action=Action.CHANGE_CREATE,
+            action=action,
             access=access,
             environment=environment,
             request_id=request_id,

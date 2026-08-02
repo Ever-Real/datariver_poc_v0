@@ -433,7 +433,7 @@ def _load_attachment_authorization_revision() -> ModuleType:
         / "backend"
         / "alembic"
         / "versions"
-        / "0091_align_governance_attachment_authorization.py"
+        / "0092_change_request_editable_revisions.py"
     )
     spec = importlib.util.spec_from_file_location(
         "datariver_attachment_authorization_revision",
@@ -1060,9 +1060,11 @@ BEGIN
         GRANT SELECT, INSERT ON quality.common_rule_templates,
             quality.common_rule_template_mappings TO datariver_app;
         GRANT SELECT, INSERT ON governance.change_request_items,
+            governance.change_request_round_items,
             governance.approvals, governance.state_transitions TO datariver_app;
         GRANT SELECT, INSERT ON governance.change_request_attachments TO datariver_app;
-        GRANT SELECT, INSERT, UPDATE ON governance.change_request_rounds TO datariver_app;
+        GRANT SELECT, INSERT ON governance.change_request_rounds TO datariver_app;
+        GRANT UPDATE (closed_at) ON governance.change_request_rounds TO datariver_app;
         GRANT SELECT, INSERT ON governance.change_test_runs TO datariver_app;
         GRANT SELECT, INSERT ON governance.registration_content_bindings TO datariver_app;
         GRANT SELECT, INSERT, UPDATE ON governance.change_requests TO datariver_app;
@@ -1204,7 +1206,8 @@ BEGIN
         GRANT SELECT ON governance.change_requests TO datariver_governance;
         GRANT UPDATE (state, version, updated_at)
             ON governance.change_requests TO datariver_governance;
-        GRANT SELECT ON governance.change_request_items, governance.approvals,
+        GRANT SELECT ON governance.change_request_items,
+            governance.change_request_round_items, governance.approvals,
             governance.state_transitions, governance.change_request_rounds,
             governance.change_test_runs TO datariver_governance;
         GRANT INSERT ON governance.state_transitions TO datariver_governance;

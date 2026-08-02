@@ -22,6 +22,7 @@ from datariver.infrastructure.db.models.governance import (
     ChangeItemModel,
     ChangeRequestAttachmentModel,
     ChangeRequestAttachmentUploadIntentModel,
+    ChangeRequestRoundItemModel,
     ChangeRequestRoundModel,
 )
 from datariver.infrastructure.db.models.platform import (
@@ -94,9 +95,20 @@ class SqlGovernanceAttachmentUploadIntentStore(AttachmentUploadIntentStore):
             )
         stored_item_ids = frozenset(
             await self._session.scalars(
-                select(ChangeItemModel.id).where(
+                select(ChangeItemModel.id)
+                .join(
+                    ChangeRequestRoundItemModel,
+                    (ChangeRequestRoundItemModel.workspace_id == ChangeItemModel.workspace_id)
+                    & (
+                        ChangeRequestRoundItemModel.change_request_id
+                        == ChangeItemModel.change_request_id
+                    )
+                    & (ChangeRequestRoundItemModel.item_id == ChangeItemModel.id),
+                )
+                .where(
                     ChangeItemModel.workspace_id == workspace_id,
                     ChangeItemModel.change_request_id == change_request_id,
+                    ChangeRequestRoundItemModel.round_id == round_id,
                 )
             )
         )

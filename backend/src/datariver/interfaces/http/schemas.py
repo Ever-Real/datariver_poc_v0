@@ -573,6 +573,10 @@ class ChangeRequestIntakeCreate(BaseModel):
     )
 
 
+class ChangeRequestRevisionCreate(ChangeRequestIntakeCreate):
+    """A full replacement snapshot for one recoverable change-intake revision."""
+
+
 class IntakeCompletionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -658,6 +662,17 @@ class ChangeRequestRoundResponse(BaseModel):
     submitted_at: datetime
     closed_at: datetime | None
     evidence_hash: str
+    revision_kind: Literal["LEGACY", "INITIAL", "EDITED"]
+    title: str
+    request_date: date | None
+    request_department: str
+    request_reason: str
+    request_content: str
+    requested_due_date: date | None
+    priority: str | None
+    urgency: str | None
+    classification: str
+    selected_system_id: UUID | None
 
 
 class ChangeTestRunResponse(BaseModel):
@@ -684,6 +699,7 @@ class ChangeRequestResponse(BaseModel):
     requester_department_id: UUID | None
     current_round_id: UUID
     current_round_number: int = Field(ge=1)
+    revision_allowed: bool
     created_at: datetime
     requested_due_date: date | None
     priority: str | None

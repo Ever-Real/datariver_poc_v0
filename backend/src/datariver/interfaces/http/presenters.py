@@ -10,7 +10,7 @@ from datariver.application.dto import (
 )
 from datariver.domain.admin_access import AdminAccessRequest
 from datariver.domain.common import canonical_json_hash
-from datariver.domain.governance import ChangeRequest
+from datariver.domain.governance import ChangeRequest, ChangeState
 from datariver.interfaces.http.schemas import (
     AdminAccessApprovalResponse,
     AdminAccessRequestResponse,
@@ -343,7 +343,11 @@ def catalog_detail(
     )
 
 
-def change_request_response(change_request: ChangeRequest) -> ChangeRequestResponse:
+def change_request_response(
+    change_request: ChangeRequest,
+    *,
+    revision_allowed: bool = False,
+) -> ChangeRequestResponse:
     redact_provider_document = change_request.request_type == _TYPED_CATALOG_METADATA_REQUEST
     return ChangeRequestResponse(
         id=change_request.change_request_id,
@@ -356,6 +360,11 @@ def change_request_response(change_request: ChangeRequest) -> ChangeRequestRespo
         requester_department_id=change_request.requester_department_id,
         current_round_id=change_request.current_round_id,
         current_round_number=change_request.current_round_number,
+        revision_allowed=(
+            revision_allowed
+            and change_request.request_type == "CHANGE_INTAKE"
+            and change_request.state is ChangeState.CHANGES_REQUESTED
+        ),
         created_at=change_request.created_at,
         requested_due_date=change_request.requested_due_date,
         priority=change_request.priority.value if change_request.priority is not None else None,
@@ -441,6 +450,17 @@ def change_request_response(change_request: ChangeRequest) -> ChangeRequestRespo
                 submitted_at=round_value.submitted_at,
                 closed_at=round_value.closed_at,
                 evidence_hash=round_value.evidence_hash,
+                revision_kind=round_value.revision_kind.value,
+                title=round_value.title,
+                request_date=round_value.request_date,
+                request_department=round_value.request_department,
+                request_reason=round_value.request_reason,
+                request_content=round_value.request_content,
+                requested_due_date=round_value.requested_due_date,
+                priority=(round_value.priority.value if round_value.priority is not None else None),
+                urgency=(round_value.urgency.value if round_value.urgency is not None else None),
+                classification=round_value.classification.name,
+                selected_system_id=round_value.selected_system_id,
             )
             for round_value in change_request.rounds
         ],

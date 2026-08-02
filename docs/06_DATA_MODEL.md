@@ -208,7 +208,9 @@ continues to read the typed DataHub enrichment through the server anti-corruptio
 | Table | Key columns and constraints | Purpose |
 |---|---|---|
 | `governance.change_requests` | `id`, `workspace_id + number UQ`, type/title/description/state/requester/classification, nullable requested due date/priority/urgency vocabulary, `version`, timestamps | change aggregate/state machine |
-| `governance.change_request_items` | `id`, `change_request_id + ordinal UQ`, typed provider or intake target/aspect/operation, before/after hashes/document, nullable historical target binding, canonical `routing_system_id` and nullable server-authored item-contract SHA-256 | immutable executable item or typed multi-target intake evidence; every new item routes workflow authority through an active canonical System |
+| `governance.change_request_rounds` | workspace/request/round-number UQ, typed `LEGACY/INITIAL/EDITED` metadata snapshot, selected canonical System, one canonical `evidence_hash`, submitter/times | append-only revision authority; `LEGACY` preserves its old hash, while new INITIAL/EDITED hashes cover V2 metadata plus ordered item identities/contracts; only `closed_at` may be updated by the governed path |
+| `governance.change_request_items` | workspace/request/item identity, legacy physical ordinal, typed provider or intake target/aspect/operation, before/after hashes/document, nullable historical target binding, canonical `routing_system_id` and nullable server-authored item-contract SHA-256 | immutable executable item or typed multi-target intake evidence; a new initial/edited round mints new item IDs and every new item routes workflow authority through an active canonical System |
+| `governance.change_request_round_items` | composite round and item FKs, zero-based non-negative `(workspace, request, round, ordinal)` UQ, forced RLS | authoritative ordered item membership for each immutable round; legacy migration links every old round to its unchanged shared item set, and direct update/delete is not granted |
 | `governance.registration_content_bindings` | candidate/hash UQ, Change Request UQ, change item UQ, request/item/creator composite workspace FKs, created time | append-only one-candidate/one-request/one-item provenance committed with the governed command; no ordinary update/delete grant |
 | `governance.registration_metadata_content_bindings` | typed candidate/hash/profile/kind/Aspect, before/after/item-contract hashes, one candidate/request/item UQ, creator and composite content FKs | append-only V3 one-candidate/one-request/one-fixed-Aspect provenance; prevents browser-controlled Aspect/document and duplicate execution |
 | `governance.manual_metadata_submissions` | workspace/asset/requester/lease-owner FKs, per-workspace serial UQ, catalog `source_version` plus mandatory 64-hex `provider_source_version`, immutable complete typed table/field payload, private bucket/key UQ, CSV SHA-256/size/row count, state, DB-time retry/lease epoch/token, at most 20 attempts, version/timestamps; one APPLYING row per workspace/asset | independent MANUAL registration intent/CSV receipt and lost-update evidence; ordinary writes may update only fenced execution columns after receipt verification |
@@ -944,6 +946,18 @@ atomic STORED-to-FINALIZED insert/update. Managed profiles derive Systems from a
 `0050` membership scope only as a compatibility boundary. Non-RESTRICTED targets do not require a
 Domain intersection, while RESTRICTED targets retain current Domain plus explicit grant. Downgrade
 restores the exact `0050` function and changes no table, data or grant.
+
+Alembic `0092` implements ADR-0110 with typed round snapshots and the additive
+`change_request_round_items` association. Upgrade marks existing rounds `LEGACY`, copies only the
+root metadata needed for an honest snapshot, links every old round to the unchanged old item set,
+preserves every old item ID/document/hash and removes only the obsolete request-wide ordinal UQ.
+The original entered request date was not persisted before 0092, so LEGACY `request_date` remains
+NULL rather than being inferred from creation time. The association ordinal remains zero-based and
+becomes authoritative per round. New INITIAL/EDITED rows use new item IDs;
+root request columns remain a current compatibility mirror. The forward-replaced attachment
+finalizer authorizes only items linked to `current_round_id` on its STORED path and preserves the
+0091 FINALIZED early replay. Downgrade refuses before DDL when EDITED evidence exists or the legacy
+request/ordinal uniqueness cannot be restored, then restores the exact 0091 function.
 
 Alembic `0051` implements ADR-0042's typed catalog-metadata evidence boundary. It adds the local
 DOMAIN/TAG/TERM vocabulary projection and durable kind-scoped reconciliation cursor, immutable

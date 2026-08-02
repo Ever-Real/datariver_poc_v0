@@ -356,6 +356,9 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/uploads/{upload_id}/preparations/{preparation_id}/metadata-candidates/{candidate_id}/change-request",
         "/api/v1/uploads/{upload_id}/registration-proposals",
         "/api/v1/change-requests",
+        "/api/v1/change-requests/{change_request_id}/revisions",
+        "/api/v1/change-requests/{change_request_id}/revision-targets",
+        "/api/v1/change-requests/{change_request_id}/revision-targets/{asset_id}",
         "/api/v1/change-requests/{change_request_id}/apply-report",
         "/api/v1/operations/summary",
         "/api/v1/operations/metrics",
@@ -415,6 +418,32 @@ def test_openapi_contains_all_required_product_modules() -> None:
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/decisions",
         "/api/v1/admin/inference/provider-profiles/{profile_version_id}/revocations",
     }.issubset(document["paths"])
+
+
+def test_change_request_revision_http_contract_is_versioned_idempotent_and_request_anchored() -> (
+    None
+):
+    factory = cast(Callable[[Settings], AppContainer], lambda _: LiveOnlyContainer())
+    document = create_app(settings(), container_factory=factory).openapi()
+    revision = document["paths"]["/api/v1/change-requests/{change_request_id}/revisions"]["post"]
+    required_headers = {
+        parameter["name"]
+        for parameter in revision["parameters"]
+        if parameter["in"] == "header" and parameter.get("required") is True
+    }
+    assert {"If-Match", "Idempotency-Key"} < required_headers
+    assert required_headers - {"If-Match", "Idempotency-Key"} == {"X-Workspace-Id"}
+    schema_reference = revision["requestBody"]["content"]["application/json"]["schema"]["$ref"]
+    assert schema_reference.endswith("/ChangeRequestRevisionCreate")
+
+    search = document["paths"]["/api/v1/change-requests/{change_request_id}/revision-targets"][
+        "get"
+    ]
+    query_parameters = {
+        parameter["name"] for parameter in search["parameters"] if parameter["in"] == "query"
+    }
+    assert query_parameters == {"q", "cursor", "limit"}
+    assert "system_id" not in query_parameters
 
 
 def test_direct_knowledge_release_publication_is_explicitly_retired() -> None:

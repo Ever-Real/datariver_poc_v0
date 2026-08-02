@@ -18,7 +18,7 @@ from datariver.application.dto import (
 )
 from datariver.application.ports import GovernanceUnitOfWork
 from datariver.application.services.authorization import AuthorizationService
-from datariver.application.services.governance import GovernanceService
+from datariver.application.services.governance import ChangeRequestNotFound, GovernanceService
 from datariver.domain.authz import (
     Action,
     AuthenticationAssurance,
@@ -33,9 +33,11 @@ from datariver.domain.governance import (
     ApprovalAuthorityKind,
     ApprovalDecision,
     ChangeItem,
+    ChangePriority,
     ChangeRequest,
     ChangeState,
     ChangeTestRunState,
+    ChangeUrgency,
     change_target_binding_hash,
 )
 
@@ -43,10 +45,12 @@ from datariver.domain.governance import (
 class MemoryTargetAuthorizer:
     def __init__(self) -> None:
         self.calls = 0
+        self.actions: list[Action] = []
         self.system_id = uuid4()
         self.systems_by_target: dict[str, UUID] = {}
         self.approval_scopes: list[frozenset[UUID]] = []
         self.enforce_full_scope = False
+        self.targets_available = True
         self.filter_calls = 0
         self.committed: Callable[[], bool] | None = None
 
@@ -61,11 +65,13 @@ class MemoryTargetAuthorizer:
         subject: SubjectAttributes,
         items: Sequence[ChangeItem],
         request_classification: Classification,
+        action: Action,
         environment: EnvironmentAttributes,
         request_id: str,
     ) -> tuple[ChangeItem, ...]:
         del subject, environment, request_id
         self.calls += 1
+        self.actions.append(action)
         asset_id = uuid4()
         return tuple(
             replace(
@@ -101,6 +107,8 @@ class MemoryTargetAuthorizer:
     ) -> tuple[ChangeRequest, ...]:
         self._assert_request_scope()
         self.filter_calls += 1
+        if not self.targets_available:
+            return ()
         if not self.enforce_full_scope:
             return tuple(change_requests)
         return tuple(
@@ -502,6 +510,7 @@ async def test_change_request_lists_authorize_targets_before_shared_uow_commit()
             ),
         ),
         request_classification=Classification.INTERNAL,
+        action=Action.CHANGE_CREATE,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="list-target-bind",
     )
@@ -1016,26 +1025,29 @@ async def test_resubmission_requires_the_requester_and_uses_change_edit_authoriz
         items=[
             ChangeItem(
                 uuid4(),
-                "DATAHUB_ASPECT",
+                "DATAHUB_INTAKE",
                 "urn:li:dataset:resubmit",
-                "UPSERT",
+                "REVIEW",
                 {"name": "resubmit"},
-                "datasetProperties",
+                "changeIntake",
                 "b" * 64,
             )
         ],
         request_classification=Classification.INTERNAL,
+        action=Action.CHANGE_CREATE,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="request-resubmit-bind-1",
     )
     change_request = ChangeRequest.create(
         workspace_id=workspace_id,
         number="CR-FAB-260717-7F2A",
-        request_type="CATALOG_METADATA",
+        request_type="CHANGE_INTAKE",
         title="Update table description",
         description="Correct the governed description.",
         requester_id=requester.subject_id,
         items=list(items),
+        request_reason="Correct the governed description.",
+        selected_system_id=target_authorizer.system_id,
     )
     reviewer = uuid4()
     change_request.transition(
@@ -1052,6 +1064,7 @@ async def test_resubmission_requires_the_requester_and_uses_change_edit_authoriz
         policy_decision_id=uuid4(),
         expected_version=change_request.version,
     )
+    change_request.events.clear()
     state: dict[str, object] = {
         "requests": {change_request.change_request_id: change_request},
         "outbox": [],
@@ -1064,22 +1077,241 @@ async def test_resubmission_requires_the_requester_and_uses_change_edit_authoriz
         target_authorizer=target_authorizer,
     )
 
-    result = await service.transition(
+    with pytest.raises(ValidationError, match="dedicated editable revision"):
+        await service.transition(
+            workspace_id=workspace_id,
+            change_request_id=change_request.change_request_id,
+            target=ChangeState.REGISTERED,
+            actor_id=requester.subject_id,
+            reason="Legacy transition resubmission must remain closed.",
+            expected_version=change_request.version,
+            subject=requester,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="request-resubmit-transition-denied",
+            idempotency_key="idempotency-resubmit-transition-denied",
+            request_hash="b" * 64,
+        )
+
+    revision_item = ChangeItem(
+        uuid4(),
+        "DATAHUB_INTAKE",
+        "urn:li:dataset:resubmit-edited",
+        "REVIEW",
+        {"name": "resubmit-edited"},
+        "changeIntake",
+        "c" * 64,
+    )
+    non_requester = replace(requester, subject_id=uuid4())
+    with pytest.raises(ForbiddenError, match="original requester"):
+        await service.revise_change_request(
+            workspace_id=workspace_id,
+            change_request_id=change_request.change_request_id,
+            title="Update table and owner",
+            request_date=None,
+            request_department="Engineering",
+            request_reason="Evidence attached and corrected.",
+            request_content="Add owner.",
+            requested_due_date=None,
+            priority=ChangePriority.NORMAL,
+            urgency=ChangeUrgency.NORMAL,
+            classification=Classification.INTERNAL,
+            selected_system_id=target_authorizer.system_id,
+            items=[revision_item],
+            expected_version=change_request.version,
+            subject=non_requester,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="request-resubmit-non-requester",
+            idempotency_key="idempotency-resubmit-denied-0001",
+            request_hash="c" * 64,
+        )
+
+    revision_expected_version = change_request.version
+    result = await service.revise_change_request(
         workspace_id=workspace_id,
         change_request_id=change_request.change_request_id,
-        target=ChangeState.REGISTERED,
-        actor_id=requester.subject_id,
-        reason="Evidence attached and resubmitted.",
-        expected_version=change_request.version,
+        title="Update table and owner",
+        request_date=None,
+        request_department="Engineering",
+        request_reason="Evidence attached and corrected.",
+        request_content="Add owner.",
+        requested_due_date=None,
+        priority=ChangePriority.NORMAL,
+        urgency=ChangeUrgency.NORMAL,
+        classification=Classification.INTERNAL,
+        selected_system_id=target_authorizer.system_id,
+        items=[revision_item],
+        expected_version=revision_expected_version,
         subject=requester,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="request-resubmit-1",
         idempotency_key="idempotency-resubmit-0001",
         request_hash="d" * 64,
     )
+    effect_counts = (
+        len(result.rounds),
+        len(result.items),
+        len(result.transitions),
+        len(cast(list[DomainEvent], state["outbox"])),
+        len(cast(dict[object, object], state["idempotency"])),
+    )
+    replay = await service.revise_change_request(
+        workspace_id=workspace_id,
+        change_request_id=change_request.change_request_id,
+        title="Update table and owner",
+        request_date=None,
+        request_department="Engineering",
+        request_reason="Evidence attached and corrected.",
+        request_content="Add owner.",
+        requested_due_date=None,
+        priority=ChangePriority.NORMAL,
+        urgency=ChangeUrgency.NORMAL,
+        classification=Classification.INTERNAL,
+        selected_system_id=target_authorizer.system_id,
+        items=[revision_item],
+        expected_version=revision_expected_version,
+        subject=requester,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="request-resubmit-replay",
+        idempotency_key="idempotency-resubmit-0001",
+        request_hash="d" * 64,
+    )
+    with pytest.raises(ConflictError, match="different request"):
+        await service.revise_change_request(
+            workspace_id=workspace_id,
+            change_request_id=change_request.change_request_id,
+            title="Different revision payload",
+            request_date=None,
+            request_department="Engineering",
+            request_reason="Different body.",
+            request_content="",
+            requested_due_date=None,
+            priority=ChangePriority.NORMAL,
+            urgency=ChangeUrgency.NORMAL,
+            classification=Classification.INTERNAL,
+            selected_system_id=target_authorizer.system_id,
+            items=[revision_item],
+            expected_version=revision_expected_version,
+            subject=requester,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="request-resubmit-key-mismatch",
+            idempotency_key="idempotency-resubmit-0001",
+            request_hash="e" * 64,
+        )
 
     assert result.state is ChangeState.REGISTERED
-    assert writer.actions == [Action.CHANGE_EDIT.value]
+    assert replay is result
+    assert result.current_round_number == 2
+    assert (
+        len(result.rounds),
+        len(result.items),
+        len(result.transitions),
+        len(cast(list[DomainEvent], state["outbox"])),
+        len(cast(dict[object, object], state["idempotency"])),
+    ) == effect_counts
+    assert effect_counts[-2:] == (1, 1)
+    assert writer.actions == [
+        Action.CHANGE_EDIT.value,
+        Action.CHANGE_EDIT.value,
+        Action.CHANGE_EDIT.value,
+        Action.CHANGE_EDIT.value,
+    ]
+    assert target_authorizer.actions == [Action.CHANGE_CREATE, Action.CHANGE_EDIT]
+
+
+@pytest.mark.asyncio
+async def test_revision_preflight_negatives_leave_round_items_and_effects_unchanged() -> None:
+    workspace_id = uuid4()
+    target_authorizer = MemoryTargetAuthorizer()
+    requester = replace(
+        subject(workspace_id),
+        allowed_actions=frozenset({Action.CHANGE_EDIT}),
+        allowed_system_ids=frozenset({target_authorizer.system_id}),
+    )
+    bound_items = await target_authorizer.authorize_targets(
+        workspace_id=workspace_id,
+        subject=requester,
+        items=[
+            ChangeItem(
+                uuid4(),
+                "DATAHUB_INTAKE",
+                "urn:li:dataset:revision-preflight",
+                "REVIEW",
+                {"name": "revision-preflight"},
+                "changeIntake",
+                "a" * 64,
+            )
+        ],
+        request_classification=Classification.INTERNAL,
+        action=Action.CHANGE_CREATE,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="revision-preflight-bind",
+    )
+    change_request = ChangeRequest.create(
+        workspace_id=workspace_id,
+        number="CR-REVISION-PREFLIGHT",
+        request_type="CHANGE_INTAKE",
+        title="Editable request",
+        description="Correct the requested table.",
+        requester_id=requester.subject_id,
+        items=list(bound_items),
+        request_reason="Correct the requested table.",
+        selected_system_id=target_authorizer.system_id,
+    )
+    change_request.state = ChangeState.CHANGES_REQUESTED
+    change_request.events.clear()
+    state: dict[str, object] = {
+        "requests": {change_request.change_request_id: change_request},
+        "outbox": [],
+        "idempotency": {},
+    }
+    service = GovernanceService(
+        cast(Callable[[], GovernanceUnitOfWork], lambda: MemoryUnitOfWork(state)),
+        AuthorizationService(decision_writer=MemoryDecisionWriter()),
+        target_authorizer=target_authorizer,
+    )
+    original = (
+        tuple(round_value.round_id for round_value in change_request.rounds),
+        tuple(item.item_id for item in change_request.items),
+        change_request.version,
+    )
+
+    with pytest.raises(ChangeRequestNotFound):
+        await service.get_change_request_for_revision(
+            workspace_id=workspace_id,
+            change_request_id=change_request.change_request_id,
+            subject=replace(requester, subject_id=uuid4()),
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="revision-preflight-non-requester",
+        )
+
+    change_request.state = ChangeState.REJECTED
+    with pytest.raises(ChangeRequestNotFound):
+        await service.get_change_request_for_revision(
+            workspace_id=workspace_id,
+            change_request_id=change_request.change_request_id,
+            subject=requester,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="revision-preflight-rejected",
+        )
+
+    change_request.state = ChangeState.CHANGES_REQUESTED
+    target_authorizer.targets_available = False
+    with pytest.raises(ChangeRequestNotFound):
+        await service.get_change_request_for_revision(
+            workspace_id=workspace_id,
+            change_request_id=change_request.change_request_id,
+            subject=requester,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="revision-preflight-stale-target",
+        )
+
+    assert (
+        tuple(round_value.round_id for round_value in change_request.rounds),
+        tuple(item.item_id for item in change_request.items),
+        change_request.version,
+    ) == original
+    assert state["outbox"] == []
+    assert state["idempotency"] == {}
 
 
 @pytest.mark.asyncio
@@ -1107,6 +1339,7 @@ async def test_complete_intake_replay_is_bound_to_the_original_actor() -> None:
             ),
         ),
         request_classification=Classification.INTERNAL,
+        action=Action.CHANGE_CREATE,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="bind-intake-replay",
     )
@@ -1179,6 +1412,7 @@ async def test_complete_intake_replay_rechecks_current_developer_authority() -> 
             ),
         ),
         request_classification=Classification.INTERNAL,
+        action=Action.CHANGE_CREATE,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="bind-intake-revoked",
     )
@@ -1265,13 +1499,14 @@ async def test_multi_system_review_approval_is_scoped_without_leaking_unrelated_
             ),
         ),
         request_classification=Classification.INTERNAL,
+        action=Action.CHANGE_CREATE,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="bind-multi-system-review",
     )
     change_request = ChangeRequest.create(
         workspace_id=workspace_id,
         number="CR-MULTI-SYSTEM",
-        request_type="CHANGE_INTAKE",
+        request_type="CATALOG_REVIEW",
         title="Multi-system review",
         description="Each developer approves only their own system.",
         requester_id=requester.subject_id,

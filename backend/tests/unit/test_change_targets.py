@@ -128,6 +128,7 @@ async def test_authorizes_local_target_with_actual_asset_scope() -> None:
         subject=actor,
         items=(item(),),
         request_classification=Classification.INTERNAL,
+        action=Action.CHANGE_CREATE,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="request-1",
     )
@@ -136,6 +137,39 @@ async def test_authorizes_local_target_with_actual_asset_scope() -> None:
     assert bound[0].target_domain_id == domain_id
     assert bound[0].target_classification is Classification.INTERNAL
     assert bound[0].target_binding_hash == bound[0].expected_target_binding_hash()
+
+
+@pytest.mark.asyncio
+async def test_revision_target_binding_uses_change_edit_without_change_create_fallback() -> None:
+    workspace_id = uuid4()
+    system_id = uuid4()
+    target = asset(workspace_id=workspace_id, system_id=system_id)
+    actor = replace(
+        subject(workspace_id=workspace_id, system_id=system_id),
+        allowed_actions=frozenset({Action.CHANGE_EDIT}),
+    )
+
+    bound = await authorizer((target,)).authorize_targets(
+        workspace_id=workspace_id,
+        subject=actor,
+        items=(item(),),
+        request_classification=Classification.INTERNAL,
+        action=Action.CHANGE_EDIT,
+        environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+        request_id="revision-edit-target",
+    )
+
+    assert bound[0].routing_system_id == system_id
+    with pytest.raises(ForbiddenError, match="not available"):
+        await authorizer((target,)).authorize_targets(
+            workspace_id=workspace_id,
+            subject=actor,
+            items=(item(),),
+            request_classification=Classification.INTERNAL,
+            action=Action.CHANGE_CREATE,
+            environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
+            request_id="revision-must-not-fallback-to-create",
+        )
 
 
 @pytest.mark.asyncio
@@ -161,6 +195,7 @@ async def test_rejects_restricted_target_without_explicit_grant() -> None:
             subject=actor,
             items=(item(),),
             request_classification=Classification.RESTRICTED,
+            action=Action.CHANGE_CREATE,
             environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
             request_id="restricted-without-grant",
         )
@@ -184,6 +219,7 @@ async def test_current_target_authorization_ignores_source_only_drift_but_reject
         subject=replace(actor, allowed_actions=frozenset({Action.CHANGE_CREATE})),
         items=(item(),),
         request_classification=Classification.INTERNAL,
+        action=Action.CHANGE_CREATE,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="bind",
     )
@@ -254,6 +290,7 @@ async def test_list_resolves_targets_once_and_omits_any_request_outside_current_
             item(target_ref=second_asset.external_urn),
         ),
         request_classification=Classification.INTERNAL,
+        action=Action.CHANGE_CREATE,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="bind-list",
     )
@@ -321,13 +358,14 @@ async def test_approval_authorization_reads_only_the_actors_system_targets() -> 
             item(target_ref=second_asset.external_urn),
         ),
         request_classification=Classification.INTERNAL,
+        action=Action.CHANGE_CREATE,
         environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
         request_id="bind-approval-targets",
     )
     request = ChangeRequest.create(
         workspace_id=workspace_id,
         number="CR-APPROVAL-SCOPE",
-        request_type="CHANGE_INTAKE",
+        request_type="CATALOG_REVIEW",
         title="Scoped approval",
         description="",
         requester_id=uuid4(),
@@ -385,6 +423,7 @@ async def test_approval_filter_keeps_same_asset_self_approval_denied_per_request
             subject=maker,
             items=(item(),),
             request_classification=Classification.INTERNAL,
+            action=Action.CHANGE_CREATE,
             environment=EnvironmentAttributes(requested_at=now),
             request_id="bind-shared-target",
         )
@@ -431,6 +470,7 @@ async def test_rejects_target_missing_from_authorized_local_catalog() -> None:
             subject=subject(workspace_id=workspace_id),
             items=(item(),),
             request_classification=Classification.INTERNAL,
+            action=Action.CHANGE_CREATE,
             environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
             request_id="request-2",
         )
@@ -447,6 +487,7 @@ async def test_rejects_catalog_adapter_result_from_another_workspace() -> None:
             subject=subject(workspace_id=workspace_id),
             items=(item(),),
             request_classification=Classification.INTERNAL,
+            action=Action.CHANGE_CREATE,
             environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
             request_id="request-cross-workspace",
         )
@@ -467,6 +508,7 @@ async def test_rejects_non_dataset_provider_target() -> None:
             subject=subject(workspace_id=workspace_id),
             items=(item(),),
             request_classification=Classification.INTERNAL,
+            action=Action.CHANGE_CREATE,
             environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
             request_id="request-non-dataset",
         )
@@ -486,6 +528,7 @@ async def test_rejects_request_classification_below_target() -> None:
             subject=subject(workspace_id=workspace_id),
             items=(item(),),
             request_classification=Classification.INTERNAL,
+            action=Action.CHANGE_CREATE,
             environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
             request_id="request-3",
         )
@@ -505,6 +548,7 @@ async def test_rejects_target_outside_subject_system_scope() -> None:
             subject=actor,
             items=(item(),),
             request_classification=Classification.INTERNAL,
+            action=Action.CHANGE_CREATE,
             environment=EnvironmentAttributes(requested_at=datetime.now(UTC)),
             request_id="request-4",
         )

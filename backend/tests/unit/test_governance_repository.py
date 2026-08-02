@@ -23,7 +23,10 @@ from datariver.infrastructure.db.governance import (
     SqlChangeRequestRepository,
     SqlManualMetadataSubmissionRepository,
 )
-from datariver.infrastructure.db.models.governance import ChangeRequestModel
+from datariver.infrastructure.db.models.governance import (
+    ChangeRequestModel,
+    ChangeRequestRoundItemModel,
+)
 
 
 class RecordingSession:
@@ -32,6 +35,9 @@ class RecordingSession:
 
     def add(self, value: object) -> None:
         self.events.append(("add", value))
+
+    async def scalar(self, _statement: object) -> object:
+        return uuid4()
 
     async def flush(self, values: list[object]) -> None:
         self.events.append(("flush", tuple(values)))
@@ -92,10 +98,19 @@ async def test_new_change_request_flushes_parent_before_rounds_and_items() -> No
 
     await repository.add(make_request())
 
-    assert [event[0] for event in session.events] == ["add", "flush", "add_all", "add_all"]
+    assert [event[0] for event in session.events] == [
+        "add",
+        "flush",
+        "add_all",
+        "flush",
+        "add_all",
+    ]
     parent = session.events[0][1]
     assert isinstance(parent, ChangeRequestModel)
     assert session.events[1][1] == (parent,)
+    association = cast(tuple[object, ...], session.events[-1][1])[0]
+    assert isinstance(association, ChangeRequestRoundItemModel)
+    assert association.ordinal == 0
 
 
 def test_change_request_hydration_bounds_every_child_collection_before_materialization() -> None:
@@ -110,6 +125,22 @@ def test_change_request_hydration_bounds_every_child_collection_before_materiali
     ):
         assert f".limit({constant} + 1)" in source
     assert source.count("require_bounded(") == 6
+
+
+def test_change_request_repository_reads_and_writes_only_current_round_items() -> None:
+    hydrate_source = inspect.getsource(SqlChangeRequestRepository.get_for_update)
+    summary_source = inspect.getsource(SqlChangeRequestRepository.list_summaries)
+    save_source = inspect.getsource(SqlChangeRequestRepository.save)
+
+    assert "ChangeRequestRoundItemModel.round_id == model.current_round_id" in hydrate_source
+    assert "CHANGE_REQUEST_ROUND_ITEMS_MISSING" in hydrate_source
+    assert "ChangeRequestModel.current_round_id" in summary_source
+    assert "ChangeRequestRoundItemModel.round_id" in summary_source
+    assert "stored_round.closed_at = round_value.closed_at" in save_source
+    assert "newly minted immutable items" in save_source
+    assert "ChangeRequestRoundItemModel(" in save_source
+    assert "item.after_document =" not in save_source
+    assert "item.target_ref =" not in save_source
 
 
 def test_manual_claim_is_fifo_per_asset_and_recovers_expired_final_attempts() -> None:

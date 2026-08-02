@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import (
     Boolean,
     CheckConstraint,
+    Date,
     DateTime,
     ForeignKeyConstraint,
     Index,
@@ -93,11 +94,34 @@ class ChangeRequestRoundModel(Base, UuidPrimaryKeyMixin):
         UniqueConstraint("workspace_id", "change_request_id", "id"),
         CheckConstraint("round_number > 0", name="round_number_positive"),
         CheckConstraint("evidence_hash ~ '^[0-9a-f]{64}$'", name="evidence_hash_valid"),
+        CheckConstraint(
+            "revision_kind IN ('LEGACY', 'INITIAL', 'EDITED')",
+            name="revision_kind_vocabulary",
+        ),
+        CheckConstraint("char_length(trim(title)) > 0", name="title_required"),
+        CheckConstraint(
+            "priority IS NULL OR priority IN ('LOW', 'NORMAL', 'HIGH', 'CRITICAL')",
+            name="priority_vocabulary",
+        ),
+        CheckConstraint(
+            "urgency IS NULL OR urgency IN ('NORMAL', 'URGENT', 'EMERGENCY')",
+            name="urgency_vocabulary",
+        ),
+        CheckConstraint(
+            "classification BETWEEN 0 AND 3",
+            name="classification_range",
+        ),
         ForeignKeyConstraint(
             ("workspace_id", "change_request_id"),
             ("governance.change_requests.workspace_id", "governance.change_requests.id"),
             ondelete="CASCADE",
             name="fk_change_request_rounds_request",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "selected_system_id"),
+            ("platform.data_systems.workspace_id", "platform.data_systems.id"),
+            ondelete="RESTRICT",
+            name="fk_change_request_rounds_selected_system",
         ),
         Index("ix_change_request_rounds_request", "workspace_id", "change_request_id"),
         {"schema": "governance"},
@@ -110,6 +134,17 @@ class ChangeRequestRoundModel(Base, UuidPrimaryKeyMixin):
     submitted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     evidence_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    revision_kind: Mapped[str] = mapped_column(String(16), nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    request_date: Mapped[date | None] = mapped_column(Date())
+    request_department: Mapped[str] = mapped_column(String(500), nullable=False)
+    request_reason: Mapped[str] = mapped_column(Text, nullable=False)
+    request_content: Mapped[str] = mapped_column(Text, nullable=False)
+    requested_due_date: Mapped[date | None] = mapped_column(Date())
+    priority: Mapped[str | None] = mapped_column(String(16))
+    urgency: Mapped[str | None] = mapped_column(String(16))
+    classification: Mapped[int] = mapped_column(nullable=False)
+    selected_system_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
 
 
 class ChangeItemModel(Base, UuidPrimaryKeyMixin):
@@ -122,7 +157,6 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
             "target_asset_id",
             "aspect_name",
         ),
-        UniqueConstraint("change_request_id", "ordinal"),
         UniqueConstraint("workspace_id", "id"),
         UniqueConstraint(
             "workspace_id",
@@ -201,6 +235,56 @@ class ChangeItemModel(Base, UuidPrimaryKeyMixin):
     target_binding_hash: Mapped[str | None] = mapped_column(String(64))
     item_contract_hash: Mapped[str | None] = mapped_column(String(64))
     routing_system_id: Mapped[UUID | None] = mapped_column(Uuid(as_uuid=True))
+
+
+class ChangeRequestRoundItemModel(Base):
+    __tablename__ = "change_request_round_items"
+    __table_args__ = (
+        CheckConstraint("ordinal >= 0", name="ordinal_non_negative"),
+        UniqueConstraint(
+            "workspace_id",
+            "change_request_id",
+            "round_id",
+            "ordinal",
+            name="uq_change_request_round_items_ordinal",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id", "round_id"),
+            (
+                "governance.change_request_rounds.workspace_id",
+                "governance.change_request_rounds.change_request_id",
+                "governance.change_request_rounds.id",
+            ),
+            ondelete="RESTRICT",
+            name="fk_change_request_round_items_round",
+        ),
+        ForeignKeyConstraint(
+            ("workspace_id", "change_request_id", "item_id"),
+            (
+                "governance.change_request_items.workspace_id",
+                "governance.change_request_items.change_request_id",
+                "governance.change_request_items.id",
+            ),
+            ondelete="RESTRICT",
+            name="fk_change_request_round_items_item",
+        ),
+        Index(
+            "ix_change_request_round_items_current",
+            "workspace_id",
+            "change_request_id",
+            "round_id",
+            "ordinal",
+        ),
+        {"schema": "governance"},
+    )
+
+    workspace_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, nullable=False)
+    change_request_id: Mapped[UUID] = mapped_column(
+        Uuid(as_uuid=True), primary_key=True, nullable=False
+    )
+    round_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, nullable=False)
+    item_id: Mapped[UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, nullable=False)
+    ordinal: Mapped[int] = mapped_column(nullable=False)
 
 
 class ChangeRequestAttachmentModel(Base, UuidPrimaryKeyMixin, TimestampMixin):

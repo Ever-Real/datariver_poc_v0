@@ -52,6 +52,7 @@ class ChangeTargetAuthorizer(Protocol):
         subject: SubjectAttributes,
         items: Sequence[ChangeItem],
         request_classification: Classification,
+        action: Action,
         environment: EnvironmentAttributes,
         request_id: str,
     ) -> tuple[ChangeItem, ...]: ...
@@ -357,6 +358,52 @@ class GovernanceService:
             await uow.commit()
             return change_request
 
+    async def get_change_request_for_revision(
+        self,
+        *,
+        workspace_id: UUID,
+        change_request_id: UUID,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+    ) -> ChangeRequest:
+        """Return the current editable snapshot after fresh mutation-grade authorization."""
+
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            change_request = await uow.change_requests.get_for_update(
+                workspace_id=workspace_id,
+                change_request_id=change_request_id,
+            )
+            if change_request is None:
+                raise ChangeRequestNotFound("The change request does not exist.")
+            if (
+                change_request.request_type != "CHANGE_INTAKE"
+                or change_request.state is not ChangeState.CHANGES_REQUESTED
+                or change_request.requester_id != subject.subject_id
+            ):
+                raise ChangeRequestNotFound("The change request does not exist.")
+            await self._authorization.authorize(
+                subject=subject,
+                resource=self._resource(change_request),
+                action=Action.CHANGE_EDIT,
+                environment=environment,
+                request_id=request_id,
+            )
+            authorized = await self._authorize_current_targets(
+                change_requests=(change_request,),
+                workspace_id=workspace_id,
+                subject=subject,
+                action=Action.CHANGE_EDIT,
+                environment=environment,
+                request_id=request_id,
+                strict_binding=True,
+            )
+            if not authorized:
+                raise ChangeRequestNotFound("The change request does not exist.")
+            await uow.commit()
+            return change_request
+
     async def list_change_requests(
         self,
         *,
@@ -502,6 +549,11 @@ class GovernanceService:
         requested_due_date: date | None = None,
         priority: ChangePriority | None = None,
         urgency: ChangeUrgency | None = None,
+        request_date: date | None = None,
+        request_department: str = "",
+        request_reason: str | None = None,
+        request_content: str = "",
+        selected_system_id: UUID | None = None,
     ) -> ChangeRequest:
         if self._target_authorizer is None:
             raise RuntimeError("Change-request creation requires a target authorizer.")
@@ -530,6 +582,7 @@ class GovernanceService:
             subject=subject,
             items=items,
             request_classification=classification,
+            action=Action.CHANGE_CREATE,
             environment=environment,
             request_id=request_id,
         )
@@ -597,6 +650,11 @@ class GovernanceService:
                 requested_due_date=requested_due_date,
                 priority=priority,
                 urgency=urgency,
+                request_date=request_date,
+                request_department=request_department,
+                request_reason=request_reason,
+                request_content=request_content,
+                selected_system_id=selected_system_id,
             )
             await uow.change_requests.add(change_request)
             if registration_candidate_binding is not None:
@@ -622,6 +680,143 @@ class GovernanceService:
                 result={
                     "change_request_id": str(change_request.change_request_id),
                     "requester_id": str(subject.subject_id),
+                },
+            )
+            await uow.commit()
+        change_request.events.clear()
+        return change_request
+
+    async def revise_change_request(
+        self,
+        *,
+        workspace_id: UUID,
+        change_request_id: UUID,
+        title: str,
+        request_date: date | None,
+        request_department: str,
+        request_reason: str,
+        request_content: str,
+        requested_due_date: date | None,
+        priority: ChangePriority,
+        urgency: ChangeUrgency,
+        classification: Classification,
+        selected_system_id: UUID,
+        items: list[ChangeItem],
+        expected_version: int,
+        subject: SubjectAttributes,
+        environment: EnvironmentAttributes,
+        request_id: str,
+        idempotency_key: str,
+        request_hash: str,
+    ) -> ChangeRequest:
+        if self._target_authorizer is None:
+            raise RuntimeError("Change-request revision requires a target authorizer.")
+        operation = f"change_request.revise:{change_request_id}"
+        async with self._uow_factory() as uow:
+            await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
+            await uow.idempotency.acquire_key_lock(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
+            existing = await uow.idempotency.get_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+            )
+            change_request = await uow.change_requests.get_for_update(
+                workspace_id=workspace_id,
+                change_request_id=change_request_id,
+            )
+            if change_request is None:
+                raise ChangeRequestNotFound("The change request does not exist.")
+            decision = await self._authorization.authorize(
+                subject=subject,
+                resource=self._resource(change_request),
+                action=Action.CHANGE_EDIT,
+                environment=environment,
+                request_id=request_id,
+            )
+            if not await self._authorize_current_targets(
+                change_requests=(change_request,),
+                workspace_id=workspace_id,
+                subject=subject,
+                action=Action.CHANGE_EDIT,
+                environment=environment,
+                request_id=request_id,
+                strict_binding=True,
+            ):
+                raise ForbiddenError("The change target is not available.")
+            if existing is not None:
+                if existing.request_hash != request_hash:
+                    raise ConflictError("The idempotency key was used with a different request.")
+                if existing.result.get("requester_id") != str(subject.subject_id):
+                    raise ConflictError("The idempotency key belongs to another subject.")
+                revision_round_id = UUID(str(existing.result["round_id"]))
+                if not any(
+                    round_value.round_id == revision_round_id
+                    for round_value in change_request.rounds
+                ):
+                    raise ConflictError("The idempotent revision result is no longer available.")
+                return change_request
+            if change_request.requester_id != subject.subject_id:
+                raise ForbiddenError("Only the original requester can revise this request.")
+            if (
+                change_request.request_type != "CHANGE_INTAKE"
+                or change_request.state is not ChangeState.CHANGES_REQUESTED
+            ):
+                raise ValidationError("Only a recoverable change-intake request can be revised.")
+            current_round = next(
+                (
+                    round_value
+                    for round_value in change_request.rounds
+                    if round_value.round_id == change_request.current_round_id
+                ),
+                None,
+            )
+            if current_round is None or current_round.selected_system_id != selected_system_id:
+                raise ValidationError(
+                    "A change-request revision cannot change its selected system."
+                )
+            bound_items = await self._target_authorizer.authorize_targets(
+                workspace_id=workspace_id,
+                subject=subject,
+                items=items,
+                request_classification=classification,
+                action=Action.CHANGE_EDIT,
+                environment=environment,
+                request_id=request_id,
+            )
+            if any(item.routing_system_id != selected_system_id for item in bound_items):
+                raise ForbiddenError("One or more revised targets belong to another system.")
+            change_request.revise(
+                actor_id=subject.subject_id,
+                title=title,
+                request_date=request_date,
+                request_department=request_department,
+                request_reason=request_reason,
+                request_content=request_content,
+                requested_due_date=requested_due_date,
+                priority=priority,
+                urgency=urgency,
+                classification=classification,
+                selected_system_id=selected_system_id,
+                items=list(bound_items),
+                policy_decision_id=decision.decision_id,
+                expected_version=expected_version,
+            )
+            await uow.change_requests.save(change_request)
+            await uow.outbox.add_events(change_request.events)
+            await uow.idempotency.save_result(
+                workspace_id=workspace_id,
+                key=idempotency_key,
+                operation=operation,
+                request_hash=request_hash,
+                result={
+                    "change_request_id": str(change_request.change_request_id),
+                    "requester_id": str(subject.subject_id),
+                    "round_id": str(change_request.current_round_id),
+                    "version": change_request.version,
                 },
             )
             await uow.commit()
@@ -718,6 +913,8 @@ class GovernanceService:
             ChangeState.COMPLETED,
         }:
             raise ValidationError("The requested state is controlled by the application worker.")
+        if target is ChangeState.REGISTERED:
+            raise ValidationError("Resubmission requires the dedicated editable revision command.")
         async with self._uow_factory() as uow:
             await uow.set_security_context(workspace_id=workspace_id, subject_id=subject.subject_id)
             operation = f"change_request.transition:{change_request_id}"
@@ -732,12 +929,7 @@ class GovernanceService:
             if change_request is None:
                 raise ChangeRequestNotFound("The change request does not exist.")
             action = Action.CHANGE_REVIEW
-            if (
-                change_request.state is ChangeState.CHANGES_REQUESTED
-                and target is ChangeState.REGISTERED
-            ):
-                action = Action.CHANGE_EDIT
-            elif target is ChangeState.APPLY_QUEUED:
+            if target is ChangeState.APPLY_QUEUED:
                 action = (
                     Action.CHANGE_RETRY
                     if change_request.state is ChangeState.APPLY_FAILED

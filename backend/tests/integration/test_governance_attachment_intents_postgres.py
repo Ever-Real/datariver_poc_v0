@@ -71,7 +71,7 @@ async def _set_upload_role(connection: AsyncConnection) -> None:
 
 async def _prepare_fixture(
     engine: AsyncEngine,
-) -> tuple[UUID, UUID, UUID, UUID, UUID, UUID, UUID, UUID, UUID]:
+) -> tuple[UUID, UUID, UUID, UUID, UUID, UUID, UUID, UUID, UUID, UUID]:
     workspace_id = uuid4()
     uploader_id = uuid4()
     other_subject_id = uuid4()
@@ -80,6 +80,7 @@ async def _prepare_fixture(
     attachment_id = uuid4()
     system_id = uuid4()
     asset_id = uuid4()
+    item_id = uuid4()
     schema_scope_id = uuid4()
     now = datetime.now(UTC)
     policy = PROFILE_ROLE_BY_TIER[ProfileRoleTier.ENGINEER_STEWARD]
@@ -209,9 +210,14 @@ async def _prepare_fixture(
                 """
                 INSERT INTO governance.change_request_rounds
                     (id, workspace_id, change_request_id, round_number, submitted_by,
-                     submitted_at, evidence_hash)
+                     submitted_at, evidence_hash, revision_kind, title, request_date,
+                     request_department, request_reason, request_content,
+                     requested_due_date, priority, urgency, classification,
+                     selected_system_id)
                 VALUES (:id, :workspace_id, :change_request_id, 1, :submitted_by,
-                        :submitted_at, :evidence_hash)
+                        :submitted_at, :evidence_hash, 'INITIAL', 'Attachment test',
+                        CAST(:submitted_at AS date), '', '', '', NULL, NULL, NULL, 1,
+                        :selected_system_id)
                 """
             ),
             {
@@ -221,6 +227,7 @@ async def _prepare_fixture(
                 "submitted_by": uploader_id,
                 "submitted_at": now,
                 "evidence_hash": "a" * 64,
+                "selected_system_id": system_id,
             },
         )
         await connection.execute(
@@ -276,13 +283,13 @@ async def _prepare_fixture(
                      target_observed_at, target_binding_hash, routing_system_id)
                 VALUES
                     (:id, :workspace_id, :change_request_id, 'TABLE', :target_ref,
-                     'schemaMetadata', 1, 'UPDATE', '{}'::jsonb,
+                     'schemaMetadata', 0, 'UPDATE', '{}'::jsonb,
                      :target_asset_id, 'TABLE', :system_id, 1, 'ACTIVE',
                      'fixture-v1', :target_observed_at, :target_binding_hash, :system_id)
                 """
             ),
             {
-                "id": uuid4(),
+                "id": item_id,
                 "workspace_id": workspace_id,
                 "change_request_id": change_request_id,
                 "target_ref": f"urn:li:dataset:attachment:{asset_id}",
@@ -290,6 +297,22 @@ async def _prepare_fixture(
                 "system_id": system_id,
                 "target_observed_at": now,
                 "target_binding_hash": "e" * 64,
+            },
+        )
+        await connection.execute(
+            text(
+                """
+                INSERT INTO governance.change_request_round_items
+                    (workspace_id, change_request_id, round_id, item_id, ordinal)
+                VALUES
+                    (:workspace_id, :change_request_id, :round_id, :item_id, 0)
+                """
+            ),
+            {
+                "workspace_id": workspace_id,
+                "change_request_id": change_request_id,
+                "round_id": round_id,
+                "item_id": item_id,
             },
         )
     return (
@@ -301,6 +324,7 @@ async def _prepare_fixture(
         attachment_id,
         system_id,
         asset_id,
+        item_id,
         schema_scope_id,
     )
 
@@ -327,6 +351,7 @@ async def test_attachment_intent_requires_independent_attestation_and_current_re
         attachment_id,
         system_id,
         asset_id,
+        item_id,
         schema_scope_id,
     ) = await _prepare_fixture(engine)
     object_key = (
@@ -343,6 +368,7 @@ async def test_attachment_intent_requires_independent_attestation_and_current_re
         "size_bytes": 17,
         "content_sha256": "b" * 64,
         "asset_id": asset_id,
+        "item_id": item_id,
         "schema_scope_id": schema_scope_id,
         "system_id": system_id,
         "domain_id": uuid4(),
@@ -394,6 +420,90 @@ async def test_attachment_intent_requires_independent_attestation_and_current_re
             assert refreshed.allowed_actions == policy.allowed_actions
             assert refreshed.authentication_time == authentication_time
             assert refreshed.authentication_assurance is AuthenticationAssurance.HARDWARE_WEBAUTHN
+
+        for statement in (
+            """
+            UPDATE governance.change_request_round_items
+            SET ordinal = 2
+            WHERE workspace_id = :workspace_id
+              AND change_request_id = :change_request_id
+              AND round_id = :round_id
+              AND item_id = :item_id
+            """,
+            """
+            DELETE FROM governance.change_request_round_items
+            WHERE workspace_id = :workspace_id
+              AND change_request_id = :change_request_id
+              AND round_id = :round_id
+              AND item_id = :item_id
+            """,
+        ):
+            async with engine.connect() as connection:
+                with pytest.raises(DBAPIError):
+                    async with connection.begin():
+                        await _set_app_context(
+                            connection,
+                            workspace_id=workspace_id,
+                            subject_id=uploader_id,
+                        )
+                        await connection.execute(text(statement), parameters)
+
+        async with engine.connect() as connection:
+            with pytest.raises(DBAPIError):
+                async with connection.begin():
+                    await _set_app_context(
+                        connection,
+                        workspace_id=workspace_id,
+                        subject_id=uploader_id,
+                    )
+                    duplicate_item_id = uuid4()
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO governance.change_request_items
+                                (id, workspace_id, change_request_id, target_type,
+                                 target_ref, aspect_name, ordinal, operation,
+                                 after_document)
+                            VALUES
+                                (:duplicate_item_id, :workspace_id, :change_request_id,
+                                 'TABLE', 'manual:duplicate-ordinal', 'schemaMetadata',
+                                 0, 'UPDATE', '{}'::jsonb)
+                            """
+                        ),
+                        {**parameters, "duplicate_item_id": duplicate_item_id},
+                    )
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO governance.change_request_round_items
+                                (workspace_id, change_request_id, round_id, item_id, ordinal)
+                            VALUES
+                                (:workspace_id, :change_request_id, :round_id,
+                                 :duplicate_item_id, 0)
+                            """
+                        ),
+                        {**parameters, "duplicate_item_id": duplicate_item_id},
+                    )
+
+        async with engine.connect() as connection:
+            with pytest.raises(DBAPIError):
+                async with connection.begin():
+                    await _set_app_context(
+                        connection,
+                        workspace_id=workspace_id,
+                        subject_id=uploader_id,
+                    )
+                    await connection.execute(
+                        text(
+                            """
+                            INSERT INTO governance.change_request_round_items
+                                (workspace_id, change_request_id, round_id, item_id, ordinal)
+                            VALUES
+                                (:workspace_id, :wrong_request_id, :round_id, :item_id, 2)
+                            """
+                        ),
+                        {**parameters, "wrong_request_id": uuid4()},
+                    )
 
         async with engine.connect() as connection:
             for role in ("datariver_app", "datariver_upload"):
@@ -1258,6 +1368,74 @@ async def test_attachment_intent_requires_independent_attestation_and_current_re
                 ),
                 parameters,
             )
+        non_current_round_id = uuid4()
+        non_current_item_id = uuid4()
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO platform.data_systems
+                        (id, workspace_id, code, name, description, active, version)
+                    VALUES
+                        (:conflicting_system_id, :workspace_id, :code,
+                         'Unassigned non-current system', '', true, 1)
+                    """
+                ),
+                {**parameters, "code": f"non_current_{non_current_round_id.hex}"},
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO governance.change_request_rounds
+                        (id, workspace_id, change_request_id, round_number, submitted_by,
+                         submitted_at, evidence_hash, revision_kind, title, request_date,
+                         request_department, request_reason, request_content,
+                         requested_due_date, priority, urgency, classification,
+                         selected_system_id)
+                    VALUES
+                        (:non_current_round_id, :workspace_id, :change_request_id, 2,
+                         :uploaded_by, now(), :evidence_hash, 'LEGACY',
+                         'Non-current snapshot', CURRENT_DATE, '', '', '', NULL,
+                         NULL, NULL, 1, :system_id)
+                    """
+                ),
+                {
+                    **parameters,
+                    "non_current_round_id": non_current_round_id,
+                    "evidence_hash": "f" * 64,
+                },
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO governance.change_request_items
+                        (id, workspace_id, change_request_id, target_type, target_ref,
+                         aspect_name, ordinal, operation, after_document, routing_system_id)
+                    VALUES
+                        (:non_current_item_id, :workspace_id, :change_request_id,
+                         'TABLE', 'manual:non-current', 'schemaMetadata', 0,
+                         'UPDATE', '{}'::jsonb, :conflicting_system_id)
+                    """
+                ),
+                {**parameters, "non_current_item_id": non_current_item_id},
+            )
+            await connection.execute(
+                text(
+                    """
+                    INSERT INTO governance.change_request_round_items
+                        (workspace_id, change_request_id, round_id, item_id, ordinal)
+                    VALUES
+                        (:workspace_id, :change_request_id, :non_current_round_id,
+                         :non_current_item_id, 0)
+                    """
+                ),
+                {
+                    **parameters,
+                    "non_current_round_id": non_current_round_id,
+                    "non_current_item_id": non_current_item_id,
+                },
+            )
+
         async with engine.begin() as connection:
             await _set_app_context(
                 connection,

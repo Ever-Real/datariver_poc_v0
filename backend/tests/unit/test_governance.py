@@ -13,9 +13,12 @@ from datariver.domain.governance import (
     ApprovalAuthorityKind,
     ApprovalDecision,
     ChangeItem,
+    ChangePriority,
     ChangeRequest,
+    ChangeRevisionKind,
     ChangeState,
     ChangeTestRunState,
+    ChangeUrgency,
     change_target_binding_hash,
 )
 
@@ -60,6 +63,32 @@ def make_request() -> ChangeRequest:
                 routing_system_id=system_id,
             )
         ],
+    )
+
+
+def make_intake_request() -> ChangeRequest:
+    system_id = uuid4()
+    item_id = uuid4()
+    return ChangeRequest.create(
+        workspace_id=uuid4(),
+        number="CR-INTAKE-2026-000001",
+        request_type="CHANGE_INTAKE",
+        title="Create governed table",
+        description="Create a governed table.",
+        requester_id=uuid4(),
+        items=[
+            ChangeItem(
+                item_id=item_id,
+                target_type=MANUAL_DATASET_INTAKE_TARGET,
+                target_ref=f"urn:datariver:proposed-dataset:{item_id}",
+                operation="CREATE",
+                aspect_name=CHANGE_INTAKE_ASPECT,
+                after_document={"contract": "change-intake-v1", "table_name": "orders"},
+                routing_system_id=system_id,
+            )
+        ],
+        request_reason="Create a governed table.",
+        selected_system_id=system_id,
     )
 
 
@@ -116,15 +145,37 @@ def test_change_request_histories_fail_before_exceeding_governed_capacity(
         )
 
     monkeypatch.setattr(governance_module, "MAX_CHANGE_ROUNDS", 1)
+    request = make_intake_request()
     request.state = ChangeState.CHANGES_REQUESTED
+    system_id = next(iter(request.required_system_ids()))
+    item_id = uuid4()
     with pytest.raises(
         ConflictError,
         match="revision history reached its governed capacity",
     ):
-        request.transition(
-            target=ChangeState.REGISTERED,
+        request.revise(
             actor_id=request.requester_id,
-            reason="Resubmit.",
+            title="Revised table",
+            request_date=None,
+            request_department="Data Engineering",
+            request_reason="Revise the table.",
+            request_content="Add the missing field.",
+            requested_due_date=None,
+            priority=ChangePriority.NORMAL,
+            urgency=ChangeUrgency.NORMAL,
+            classification=Classification.INTERNAL,
+            selected_system_id=system_id,
+            items=[
+                ChangeItem(
+                    item_id=item_id,
+                    target_type=MANUAL_DATASET_INTAKE_TARGET,
+                    target_ref=f"urn:datariver:proposed-dataset:{item_id}",
+                    operation="CREATE",
+                    aspect_name=CHANGE_INTAKE_ASPECT,
+                    after_document={"contract": "change-intake-v1"},
+                    routing_system_id=system_id,
+                )
+            ],
             policy_decision_id=policy_decision_id,
             expected_version=request.version,
         )
@@ -233,7 +284,7 @@ def test_undeclared_transition_is_rejected() -> None:
 
 
 def test_changes_requested_requires_an_explicit_resubmission_before_review_restarts() -> None:
-    request = make_request()
+    request = make_intake_request()
     actor = uuid4()
     request.transition(
         target=ChangeState.IN_REVIEW,
@@ -267,7 +318,7 @@ def test_changes_requested_requires_an_explicit_resubmission_before_review_resta
             policy_decision_id=uuid4(),
             expected_version=request.version,
         )
-    with pytest.raises(ValidationError, match="Only the requester"):
+    with pytest.raises(ValidationError, match="not allowed"):
         request.transition(
             target=ChangeState.REGISTERED,
             actor_id=actor,
@@ -275,15 +326,43 @@ def test_changes_requested_requires_an_explicit_resubmission_before_review_resta
             policy_decision_id=uuid4(),
             expected_version=request.version,
         )
-    request.transition(
-        target=ChangeState.REGISTERED,
+    prior_round_id = request.current_round_id
+    prior_evidence_hash = request.rounds[0].evidence_hash
+    prior_item_id = request.items[0].item_id
+    item_id = uuid4()
+    request.revise(
         actor_id=request.requester_id,
-        reason="Supplemented and resubmitted.",
+        title="Create governed table with owner",
+        request_date=None,
+        request_department="Data Engineering",
+        request_reason="Supplemented and resubmitted.",
+        request_content="Add the owner field.",
+        requested_due_date=None,
+        priority=ChangePriority.NORMAL,
+        urgency=ChangeUrgency.NORMAL,
+        classification=Classification.INTERNAL,
+        selected_system_id=system_id,
+        items=[
+            ChangeItem(
+                item_id=item_id,
+                target_type=MANUAL_DATASET_INTAKE_TARGET,
+                target_ref=f"urn:datariver:proposed-dataset:{item_id}",
+                operation="CREATE",
+                aspect_name=CHANGE_INTAKE_ASPECT,
+                after_document={"contract": "change-intake-v1", "table_name": "orders_v2"},
+                routing_system_id=system_id,
+            )
+        ],
         policy_decision_id=uuid4(),
         expected_version=request.version,
     )
     assert request.state is ChangeState.REGISTERED
     assert request.current_round_number == 2
+    assert request.current_round_id != prior_round_id
+    assert request.items[0].item_id != prior_item_id
+    assert request.rounds[0].evidence_hash == prior_evidence_hash
+    assert request.rounds[0].closed_at is not None
+    assert request.rounds[-1].revision_kind is ChangeRevisionKind.EDITED
     assert request.approvals[0].round_id != request.current_round_id
     request.transition(
         target=ChangeState.IN_REVIEW,
@@ -302,6 +381,82 @@ def test_changes_requested_requires_an_explicit_resubmission_before_review_resta
         authorities=(ApprovalAuthority(ApprovalAuthorityKind.SYSTEM_DEVELOPER, system_id),),
     )
     assert request.approvals[-1].round_id == request.current_round_id
+
+
+def test_terminal_rejected_change_request_cannot_create_an_editable_revision() -> None:
+    request = make_intake_request()
+    request.state = ChangeState.REJECTED
+    original = (
+        request.current_round_id,
+        request.current_round_number,
+        request.version,
+        tuple(item.item_id for item in request.items),
+        tuple(round_value.evidence_hash for round_value in request.rounds),
+    )
+
+    with pytest.raises(ValidationError, match="only be revised after"):
+        request.revise(
+            actor_id=request.requester_id,
+            title="Must remain terminal",
+            request_date=None,
+            request_department="Engineering",
+            request_reason="Must remain terminal.",
+            request_content="",
+            requested_due_date=None,
+            priority=ChangePriority.NORMAL,
+            urgency=ChangeUrgency.NORMAL,
+            classification=Classification.INTERNAL,
+            selected_system_id=next(iter(request.required_system_ids())),
+            items=list(request.items),
+            policy_decision_id=uuid4(),
+            expected_version=request.version,
+        )
+
+    assert (
+        request.current_round_id,
+        request.current_round_number,
+        request.version,
+        tuple(item.item_id for item in request.items),
+        tuple(round_value.evidence_hash for round_value in request.rounds),
+    ) == original
+
+
+def test_editable_revision_cannot_rebind_the_selected_system() -> None:
+    request = make_intake_request()
+    request.state = ChangeState.CHANGES_REQUESTED
+    other_system_id = uuid4()
+    item_id = uuid4()
+
+    with pytest.raises(ValidationError, match="cannot change its selected system"):
+        request.revise(
+            actor_id=request.requester_id,
+            title="Cross-system revision",
+            request_date=None,
+            request_department="Engineering",
+            request_reason="Attempt a prohibited rebind.",
+            request_content="",
+            requested_due_date=None,
+            priority=ChangePriority.NORMAL,
+            urgency=ChangeUrgency.NORMAL,
+            classification=Classification.INTERNAL,
+            selected_system_id=other_system_id,
+            items=[
+                ChangeItem(
+                    item_id=item_id,
+                    target_type=MANUAL_DATASET_INTAKE_TARGET,
+                    target_ref=f"urn:datariver:proposed-dataset:{item_id}",
+                    operation="CREATE",
+                    aspect_name=CHANGE_INTAKE_ASPECT,
+                    after_document={"contract": "change-intake-v1"},
+                    routing_system_id=other_system_id,
+                )
+            ],
+            policy_decision_id=uuid4(),
+            expected_version=request.version,
+        )
+
+    assert request.state is ChangeState.CHANGES_REQUESTED
+    assert request.current_round_number == 1
 
 
 def test_change_creation_requires_source_hash() -> None:
@@ -366,7 +521,7 @@ def test_change_creation_rejects_multiple_items_until_checkpoints_exist() -> Non
 
 def test_multi_target_manual_intake_completes_only_after_independent_final_approval() -> None:
     requester = uuid4()
-    system_ids = (uuid4(), uuid4())
+    system_id = uuid4()
     items = [
         ChangeItem(
             item_id=uuid4(),
@@ -377,9 +532,7 @@ def test_multi_target_manual_intake_completes_only_after_independent_final_appro
             after_document={"contract": "change-intake-v1", "table_name": table_name},
             routing_system_id=system_id,
         )
-        for table_name, system_id in zip(
-            ("wafer_forecast", "yield_forecast"), system_ids, strict=True
-        )
+        for table_name in ("wafer_forecast", "yield_forecast")
     ]
     request = ChangeRequest.create(
         workspace_id=uuid4(),
@@ -389,6 +542,7 @@ def test_multi_target_manual_intake_completes_only_after_independent_final_appro
         description="Register proposed tables for review.",
         requester_id=requester,
         items=items,
+        selected_system_id=system_id,
     )
     move_to_final_review(request)
     add_required_final_approvals(request)

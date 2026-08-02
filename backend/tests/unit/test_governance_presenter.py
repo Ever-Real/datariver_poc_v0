@@ -1,10 +1,13 @@
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from uuid import uuid4
 
 from datariver.domain.authz import Classification
 from datariver.domain.governance import (
     ChangeItem,
+    ChangePriority,
     ChangeRequest,
+    ChangeState,
+    ChangeUrgency,
     change_target_binding_hash,
 )
 from datariver.interfaces.http.presenters import (
@@ -90,3 +93,28 @@ def test_existing_change_response_and_summary_identity_remain_compatible() -> No
         aspect_name=item.aspect_name,
         target_asset_id=item.target_asset_id,
     ) == (item.target_ref, item.aspect_name)
+
+
+def test_change_intake_response_requires_an_explicit_authorized_revision_hint() -> None:
+    request = _request(request_type="CHANGE_INTAKE")
+    current_round = request.rounds[0]
+    current_round.request_date = date(2026, 8, 2)
+    current_round.request_department = "Engineering"
+    current_round.request_reason = "Correct the requested table."
+    current_round.request_content = "Add the missing owner field."
+    current_round.priority = ChangePriority.HIGH
+    current_round.urgency = ChangeUrgency.URGENT
+    request.state = ChangeState.CHANGES_REQUESTED
+
+    response = change_request_response(request)
+
+    assert response.revision_allowed is False
+    assert response.rounds[0].request_date == date(2026, 8, 2)
+    assert response.rounds[0].request_department == "Engineering"
+    assert response.rounds[0].request_reason == "Correct the requested table."
+    assert response.rounds[0].request_content == "Add the missing owner field."
+    assert response.rounds[0].priority == "HIGH"
+    assert response.rounds[0].urgency == "URGENT"
+    assert change_request_response(request, revision_allowed=True).revision_allowed is True
+    request.state = ChangeState.REJECTED
+    assert change_request_response(request, revision_allowed=True).revision_allowed is False

@@ -49,6 +49,7 @@ from datariver.domain.governance import (
     ChangePriority,
     ChangeRequest,
     ChangeRequestRound,
+    ChangeRevisionKind,
     ChangeState,
     ChangeTestRun,
     ChangeTestRunState,
@@ -75,6 +76,7 @@ from datariver.infrastructure.db.models.governance import (
     ApprovalModel,
     ChangeItemModel,
     ChangeRequestModel,
+    ChangeRequestRoundItemModel,
     ChangeRequestRoundModel,
     ChangeTestRunModel,
     ManualMetadataApplyAttemptModel,
@@ -137,7 +139,96 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
         self._session = session
         self._tracked: dict[UUID, ChangeRequestModel] = {}
 
+    @staticmethod
+    def _round_model(
+        *, change_request: ChangeRequest, round_value: ChangeRequestRound
+    ) -> ChangeRequestRoundModel:
+        return ChangeRequestRoundModel(
+            id=round_value.round_id,
+            workspace_id=change_request.workspace_id,
+            change_request_id=change_request.change_request_id,
+            round_number=round_value.round_number,
+            submitted_by=round_value.submitted_by,
+            submitted_at=round_value.submitted_at,
+            closed_at=round_value.closed_at,
+            evidence_hash=round_value.evidence_hash,
+            revision_kind=round_value.revision_kind.value,
+            title=round_value.title,
+            request_date=round_value.request_date,
+            request_department=round_value.request_department,
+            request_reason=round_value.request_reason,
+            request_content=round_value.request_content,
+            requested_due_date=round_value.requested_due_date,
+            priority=(round_value.priority.value if round_value.priority is not None else None),
+            urgency=(round_value.urgency.value if round_value.urgency is not None else None),
+            classification=int(round_value.classification),
+            selected_system_id=round_value.selected_system_id,
+        )
+
+    @staticmethod
+    def _item_model(
+        *, change_request: ChangeRequest, item: ChangeItem, ordinal: int
+    ) -> ChangeItemModel:
+        return ChangeItemModel(
+            id=item.item_id,
+            workspace_id=change_request.workspace_id,
+            change_request_id=change_request.change_request_id,
+            target_type=item.target_type,
+            target_ref=item.target_ref,
+            aspect_name=item.aspect_name,
+            ordinal=ordinal,
+            operation=item.operation,
+            before_hash=item.before_hash,
+            after_document=item.after_document,
+            after_hash=item.after_hash,
+            target_asset_id=item.target_asset_id,
+            target_asset_type=item.target_asset_type,
+            target_system_id=item.target_system_id,
+            target_domain_id=item.target_domain_id,
+            target_owner_department_id=item.target_owner_department_id,
+            target_classification=(
+                int(item.target_classification) if item.target_classification is not None else None
+            ),
+            target_lifecycle=item.target_lifecycle,
+            target_source_version=item.target_source_version,
+            target_observed_at=item.target_observed_at,
+            target_binding_hash=item.target_binding_hash,
+            item_contract_hash=item.item_contract_hash,
+            routing_system_id=item.routing_system_id,
+        )
+
+    async def _lock_selected_system(self, change_request: ChangeRequest) -> None:
+        current_round = next(
+            (
+                round_value
+                for round_value in change_request.rounds
+                if round_value.round_id == change_request.current_round_id
+            ),
+            None,
+        )
+        if current_round is None:
+            raise ConflictError("The current change-request round is unavailable.")
+        if change_request.request_type != "CHANGE_INTAKE":
+            return
+        system_id = current_round.selected_system_id
+        if system_id is None or any(
+            item.routing_system_id != system_id for item in change_request.items
+        ):
+            raise ConflictError("The current change-request System binding is invalid.")
+        locked_system_id = await self._session.scalar(
+            select(DataSystemModel.id)
+            .where(
+                DataSystemModel.workspace_id == change_request.workspace_id,
+                DataSystemModel.id == system_id,
+                DataSystemModel.active.is_(True),
+            )
+            .with_for_update()
+        )
+        if locked_system_id is None:
+            raise ConflictError("The selected change-request System is no longer active.")
+
     async def add(self, change_request: ChangeRequest) -> None:
+        await self._lock_selected_system(change_request)
         model = ChangeRequestModel(
             id=change_request.change_request_id,
             workspace_id=change_request.workspace_id,
@@ -164,51 +255,24 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
         # explicitly so SQLAlchemy cannot schedule child items before change_requests when
         # the round and items are attached as independent ORM models.
         await self._session.flush([model])
+        round_models = [
+            self._round_model(change_request=change_request, round_value=round_value)
+            for round_value in change_request.rounds
+        ]
+        item_models = [
+            self._item_model(change_request=change_request, item=item, ordinal=ordinal)
+            for ordinal, item in enumerate(change_request.items)
+        ]
+        self._session.add_all([*round_models, *item_models])
+        await self._session.flush([*round_models, *item_models])
         self._session.add_all(
             [
-                ChangeRequestRoundModel(
-                    id=round_value.round_id,
+                ChangeRequestRoundItemModel(
                     workspace_id=change_request.workspace_id,
                     change_request_id=change_request.change_request_id,
-                    round_number=round_value.round_number,
-                    submitted_by=round_value.submitted_by,
-                    submitted_at=round_value.submitted_at,
-                    closed_at=round_value.closed_at,
-                    evidence_hash=round_value.evidence_hash,
-                )
-                for round_value in change_request.rounds
-            ]
-        )
-        self._session.add_all(
-            [
-                ChangeItemModel(
-                    id=item.item_id,
-                    workspace_id=change_request.workspace_id,
-                    change_request_id=change_request.change_request_id,
-                    target_type=item.target_type,
-                    target_ref=item.target_ref,
-                    aspect_name=item.aspect_name,
+                    round_id=change_request.current_round_id,
+                    item_id=item.item_id,
                     ordinal=ordinal,
-                    operation=item.operation,
-                    before_hash=item.before_hash,
-                    after_document=item.after_document,
-                    after_hash=item.after_hash,
-                    target_asset_id=item.target_asset_id,
-                    target_asset_type=item.target_asset_type,
-                    target_system_id=item.target_system_id,
-                    target_domain_id=item.target_domain_id,
-                    target_owner_department_id=item.target_owner_department_id,
-                    target_classification=(
-                        int(item.target_classification)
-                        if item.target_classification is not None
-                        else None
-                    ),
-                    target_lifecycle=item.target_lifecycle,
-                    target_source_version=item.target_source_version,
-                    target_observed_at=item.target_observed_at,
-                    target_binding_hash=item.target_binding_hash,
-                    item_contract_hash=item.item_contract_hash,
-                    routing_system_id=item.routing_system_id,
                 )
                 for ordinal, item in enumerate(change_request.items)
             ]
@@ -242,13 +306,32 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
             (
                 await self._session.scalars(
                     select(ChangeItemModel)
-                    .where(ChangeItemModel.change_request_id == change_request_id)
-                    .order_by(ChangeItemModel.ordinal)
+                    .join(
+                        ChangeRequestRoundItemModel,
+                        and_(
+                            ChangeRequestRoundItemModel.workspace_id
+                            == ChangeItemModel.workspace_id,
+                            ChangeRequestRoundItemModel.change_request_id
+                            == ChangeItemModel.change_request_id,
+                            ChangeRequestRoundItemModel.item_id == ChangeItemModel.id,
+                        ),
+                    )
+                    .where(
+                        ChangeItemModel.workspace_id == workspace_id,
+                        ChangeItemModel.change_request_id == change_request_id,
+                        ChangeRequestRoundItemModel.round_id == model.current_round_id,
+                    )
+                    .order_by(ChangeRequestRoundItemModel.ordinal)
                     .limit(MAX_CHANGE_ITEMS + 1)
                 )
             ).all()
         )
         require_bounded(items, MAX_CHANGE_ITEMS, "items")
+        if not items:
+            raise ConflictError(
+                "The current change-request round has no immutable item association.",
+                details={"code": "CHANGE_REQUEST_ROUND_ITEMS_MISSING"},
+            )
         approvals = list(
             (
                 await self._session.scalars(
@@ -280,6 +363,53 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
             ).all()
         )
         require_bounded(rounds, MAX_CHANGE_ROUNDS, "rounds")
+        current_round_model = next(
+            (round_value for round_value in rounds if round_value.id == model.current_round_id),
+            None,
+        )
+        if current_round_model is None:
+            raise ConflictError(
+                "The current change-request round is unavailable.",
+                details={"code": "CHANGE_REQUEST_CURRENT_ROUND_MISSING"},
+            )
+        current_description = "\n\n".join(
+            value
+            for value in (
+                current_round_model.request_reason.strip(),
+                current_round_model.request_content.strip(),
+            )
+            if value
+        )
+        if (
+            model.title != current_round_model.title
+            or model.description != current_description
+            or model.requested_due_date != current_round_model.requested_due_date
+            or model.priority != current_round_model.priority
+            or model.urgency != current_round_model.urgency
+            or model.classification != current_round_model.classification
+            or model.current_round_number != current_round_model.round_number
+        ):
+            raise ConflictError(
+                "The change-request root mirror does not match its current round.",
+                details={"code": "CHANGE_REQUEST_CURRENT_MIRROR_DRIFT"},
+            )
+        if current_round_model.revision_kind in {"INITIAL", "EDITED"} and (
+            current_round_model.title.strip() == ""
+            or (
+                model.request_type == "CHANGE_INTAKE"
+                and (
+                    current_round_model.selected_system_id is None
+                    or any(
+                        item.routing_system_id != current_round_model.selected_system_id
+                        for item in items
+                    )
+                )
+            )
+        ):
+            raise ConflictError(
+                "The current typed change-request snapshot is invalid.",
+                details={"code": "CHANGE_REQUEST_CURRENT_SNAPSHOT_INVALID"},
+            )
         test_runs = list(
             (
                 await self._session.scalars(
@@ -297,17 +427,25 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
             workspace_id=model.workspace_id,
             number=model.number,
             request_type=model.request_type,
-            title=model.title,
-            description=model.description,
+            title=current_round_model.title,
+            description=current_description,
             requester_id=model.requester_id,
             requester_department_id=model.requester_department_id,
             current_round_id=model.current_round_id,
             current_round_number=model.current_round_number,
             created_at=model.created_at,
-            requested_due_date=model.requested_due_date,
-            priority=ChangePriority(model.priority) if model.priority is not None else None,
-            urgency=ChangeUrgency(model.urgency) if model.urgency is not None else None,
-            classification=Classification(model.classification),
+            requested_due_date=current_round_model.requested_due_date,
+            priority=(
+                ChangePriority(current_round_model.priority)
+                if current_round_model.priority is not None
+                else None
+            ),
+            urgency=(
+                ChangeUrgency(current_round_model.urgency)
+                if current_round_model.urgency is not None
+                else None
+            ),
+            classification=Classification(current_round_model.classification),
             state=ChangeState(model.state),
             version=model.version,
             items=[
@@ -374,6 +512,25 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                     submitted_at=round_value.submitted_at,
                     closed_at=round_value.closed_at,
                     evidence_hash=round_value.evidence_hash,
+                    revision_kind=ChangeRevisionKind(round_value.revision_kind),
+                    title=round_value.title,
+                    request_date=round_value.request_date,
+                    request_department=round_value.request_department,
+                    request_reason=round_value.request_reason,
+                    request_content=round_value.request_content,
+                    requested_due_date=round_value.requested_due_date,
+                    priority=(
+                        ChangePriority(round_value.priority)
+                        if round_value.priority is not None
+                        else None
+                    ),
+                    urgency=(
+                        ChangeUrgency(round_value.urgency)
+                        if round_value.urgency is not None
+                        else None
+                    ),
+                    classification=Classification(round_value.classification),
+                    selected_system_id=round_value.selected_system_id,
                 )
                 for round_value in rounds
             ],
@@ -506,11 +663,31 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                     ChangeItemModel.target_binding_hash,
                     ChangeItemModel.routing_system_id,
                 )
+                .join(
+                    ChangeRequestRoundItemModel,
+                    and_(
+                        ChangeRequestRoundItemModel.workspace_id == ChangeItemModel.workspace_id,
+                        ChangeRequestRoundItemModel.change_request_id
+                        == ChangeItemModel.change_request_id,
+                        ChangeRequestRoundItemModel.item_id == ChangeItemModel.id,
+                    ),
+                )
+                .join(
+                    ChangeRequestModel,
+                    and_(
+                        ChangeRequestModel.workspace_id == ChangeItemModel.workspace_id,
+                        ChangeRequestModel.id == ChangeItemModel.change_request_id,
+                        ChangeRequestModel.current_round_id == ChangeRequestRoundItemModel.round_id,
+                    ),
+                )
                 .where(
                     ChangeItemModel.workspace_id == workspace_id,
                     ChangeItemModel.change_request_id.in_(request_ids),
                 )
-                .order_by(ChangeItemModel.change_request_id, ChangeItemModel.ordinal)
+                .order_by(
+                    ChangeItemModel.change_request_id,
+                    ChangeRequestRoundItemModel.ordinal,
+                )
             )
         ).all()
         targets_by_request: dict[UUID, list[ChangeRequestSummaryTarget]] = {}
@@ -565,15 +742,32 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
         ]
 
     async def save(self, change_request: ChangeRequest) -> None:
+        await self._lock_selected_system(change_request)
         model = self._tracked[change_request.change_request_id]
+        model.title = change_request.title
+        model.description = change_request.description
         model.state = change_request.state.value
         model.version = change_request.version
         model.current_round_id = change_request.current_round_id
         model.current_round_number = change_request.current_round_number
+        model.requested_due_date = change_request.requested_due_date
+        model.priority = (
+            change_request.priority.value if change_request.priority is not None else None
+        )
+        model.urgency = change_request.urgency.value if change_request.urgency is not None else None
+        model.classification = int(change_request.classification)
         stored_round_ids = set(
             await self._session.scalars(
                 select(ChangeRequestRoundModel.id).where(
                     ChangeRequestRoundModel.change_request_id == change_request.change_request_id
+                )
+            )
+        )
+        stored_item_ids = set(
+            await self._session.scalars(
+                select(ChangeItemModel.id).where(
+                    ChangeItemModel.workspace_id == change_request.workspace_id,
+                    ChangeItemModel.change_request_id == change_request.change_request_id,
                 )
             )
         )
@@ -598,6 +792,7 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                 )
             )
         )
+        new_round_models: list[ChangeRequestRoundModel] = []
         for round_value in change_request.rounds:
             if round_value.round_id in stored_round_ids:
                 stored_round = await self._session.get(
@@ -606,18 +801,42 @@ class SqlChangeRequestRepository(ChangeRequestRepository):
                 if stored_round is not None:
                     stored_round.closed_at = round_value.closed_at
                 continue
-            self._session.add(
-                ChangeRequestRoundModel(
-                    id=round_value.round_id,
-                    workspace_id=change_request.workspace_id,
-                    change_request_id=change_request.change_request_id,
-                    round_number=round_value.round_number,
-                    submitted_by=round_value.submitted_by,
-                    submitted_at=round_value.submitted_at,
-                    closed_at=round_value.closed_at,
-                    evidence_hash=round_value.evidence_hash,
+            new_round_models.append(
+                self._round_model(
+                    change_request=change_request,
+                    round_value=round_value,
                 )
             )
+        if new_round_models:
+            if (
+                len(new_round_models) != 1
+                or new_round_models[0].id != change_request.current_round_id
+            ):
+                raise ConflictError("Only one new current change-request round may be saved.")
+            if any(item.item_id in stored_item_ids for item in change_request.items):
+                raise ConflictError(
+                    "A revised change-request round must contain newly minted immutable items."
+                )
+            new_item_models = [
+                self._item_model(change_request=change_request, item=item, ordinal=ordinal)
+                for ordinal, item in enumerate(change_request.items)
+            ]
+            self._session.add_all([*new_round_models, *new_item_models])
+            await self._session.flush([*new_round_models, *new_item_models])
+            self._session.add_all(
+                [
+                    ChangeRequestRoundItemModel(
+                        workspace_id=change_request.workspace_id,
+                        change_request_id=change_request.change_request_id,
+                        round_id=change_request.current_round_id,
+                        item_id=item.item_id,
+                        ordinal=ordinal,
+                    )
+                    for ordinal, item in enumerate(change_request.items)
+                ]
+            )
+        elif any(item.item_id not in stored_item_ids for item in change_request.items):
+            raise ConflictError("New change-request items require a new immutable revision round.")
         self._session.add_all(
             [
                 ApprovalModel(

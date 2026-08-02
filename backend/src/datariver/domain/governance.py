@@ -69,7 +69,7 @@ ALLOWED_TRANSITIONS: dict[ChangeState, frozenset[ChangeState]] = {
     ChangeState.APPLYING: frozenset({ChangeState.APPLIED, ChangeState.APPLY_FAILED}),
     ChangeState.APPLY_FAILED: frozenset({ChangeState.APPLY_QUEUED, ChangeState.CANCELLED}),
     ChangeState.COMPLETED: frozenset(),
-    ChangeState.CHANGES_REQUESTED: frozenset({ChangeState.REGISTERED, ChangeState.CANCELLED}),
+    ChangeState.CHANGES_REQUESTED: frozenset({ChangeState.CANCELLED}),
     ChangeState.APPLIED: frozenset(),
     ChangeState.REJECTED: frozenset(),
     ChangeState.CANCELLED: frozenset(),
@@ -103,6 +103,12 @@ class ChangeUrgency(StrEnum):
     NORMAL = "NORMAL"
     URGENT = "URGENT"
     EMERGENCY = "EMERGENCY"
+
+
+class ChangeRevisionKind(StrEnum):
+    LEGACY = "LEGACY"
+    INITIAL = "INITIAL"
+    EDITED = "EDITED"
 
 
 ALLOWED_DATAHUB_ASPECTS = frozenset(
@@ -257,6 +263,17 @@ class ChangeRequestRound:
     submitted_by: UUID
     submitted_at: datetime
     evidence_hash: str
+    revision_kind: ChangeRevisionKind = ChangeRevisionKind.LEGACY
+    title: str = ""
+    request_date: date | None = None
+    request_department: str = ""
+    request_reason: str = ""
+    request_content: str = ""
+    requested_due_date: date | None = None
+    priority: ChangePriority | None = None
+    urgency: ChangeUrgency | None = None
+    classification: Classification = Classification.INTERNAL
+    selected_system_id: UUID | None = None
     closed_at: datetime | None = None
 
 
@@ -316,9 +333,96 @@ class ChangeRequest:
         requested_due_date: date | None = None,
         priority: ChangePriority | None = None,
         urgency: ChangeUrgency | None = None,
+        request_date: date | None = None,
+        request_department: str = "",
+        request_reason: str | None = None,
+        request_content: str = "",
+        selected_system_id: UUID | None = None,
     ) -> ChangeRequest:
         if not title.strip():
             raise ValidationError("Change request title is required.")
+        cls._validate_items(items=items, classification=classification)
+        selected_system_id = cls._validated_selected_system_id(
+            request_type=request_type,
+            items=items,
+            selected_system_id=selected_system_id,
+        )
+        change_request_id = uuid7()
+        current_round_id = uuid7()
+        created_at = utc_now()
+        normalized_title = title.strip()
+        normalized_description = description.strip()
+        normalized_reason = (
+            normalized_description if request_reason is None else request_reason.strip()
+        )
+        normalized_content = request_content.strip()
+        normalized_department = request_department.strip()
+        request = cls(
+            change_request_id=change_request_id,
+            workspace_id=workspace_id,
+            number=number,
+            request_type=request_type,
+            title=normalized_title,
+            description=normalized_description,
+            requester_id=requester_id,
+            requester_department_id=requester_department_id,
+            current_round_id=current_round_id,
+            current_round_number=1,
+            created_at=created_at,
+            requested_due_date=requested_due_date,
+            priority=priority,
+            urgency=urgency,
+            classification=classification,
+            items=list(items),
+            rounds=[
+                ChangeRequestRound(
+                    round_id=current_round_id,
+                    round_number=1,
+                    submitted_by=requester_id,
+                    submitted_at=created_at,
+                    evidence_hash=cls._revision_evidence_hash(
+                        change_request_id=change_request_id,
+                        round_number=1,
+                        revision_kind=ChangeRevisionKind.INITIAL,
+                        title=normalized_title,
+                        request_date=request_date,
+                        request_department=normalized_department,
+                        request_reason=normalized_reason,
+                        request_content=normalized_content,
+                        requested_due_date=requested_due_date,
+                        priority=priority,
+                        urgency=urgency,
+                        classification=classification,
+                        selected_system_id=selected_system_id,
+                        items=items,
+                    ),
+                    revision_kind=ChangeRevisionKind.INITIAL,
+                    title=normalized_title,
+                    request_date=request_date,
+                    request_department=normalized_department,
+                    request_reason=normalized_reason,
+                    request_content=normalized_content,
+                    requested_due_date=requested_due_date,
+                    priority=priority,
+                    urgency=urgency,
+                    classification=classification,
+                    selected_system_id=selected_system_id,
+                )
+            ],
+        )
+        request.events.append(
+            DomainEvent.create(
+                event_type="governance.change_request.registered.v1",
+                aggregate_type="change_request",
+                aggregate_id=request.change_request_id,
+                workspace_id=workspace_id,
+                payload={"number": number, "request_type": request_type},
+            )
+        )
+        return request
+
+    @staticmethod
+    def _validate_items(*, items: list[ChangeItem], classification: Classification) -> None:
         if not 1 <= len(items) <= MAX_CHANGE_ITEMS:
             raise ValidationError("A change request must contain between one and 200 change items.")
         if len(items) != 1 and any(item.target_type == "DATAHUB_ASPECT" for item in items):
@@ -334,6 +438,7 @@ class ChangeRequest:
                     or not item.target_ref.startswith("urn:datariver:proposed-dataset:")
                     or item.before_hash is not None
                     or item.has_complete_target_binding
+                    or item.routing_system_id is None
                 ):
                     raise ValidationError("The manual dataset intake item is invalid.")
                 continue
@@ -377,54 +482,85 @@ class ChangeRequest:
                 raise ValidationError("The catalog target observation time must be timezone-aware.")
             if item.expected_target_binding_hash() != item.target_binding_hash:
                 raise ValidationError("The catalog target binding is invalid.")
-        change_request_id = uuid7()
-        current_round_id = uuid7()
-        created_at = utc_now()
-        request = cls(
-            change_request_id=change_request_id,
-            workspace_id=workspace_id,
-            number=number,
-            request_type=request_type,
-            title=title.strip(),
-            description=description.strip(),
-            requester_id=requester_id,
-            requester_department_id=requester_department_id,
-            current_round_id=current_round_id,
-            current_round_number=1,
-            created_at=created_at,
-            requested_due_date=requested_due_date,
-            priority=priority,
-            urgency=urgency,
-            classification=classification,
-            items=list(items),
-            rounds=[
-                ChangeRequestRound(
-                    round_id=current_round_id,
-                    round_number=1,
-                    submitted_by=requester_id,
-                    submitted_at=created_at,
-                    evidence_hash=canonical_json_hash(
-                        {
-                            "change_request_id": str(change_request_id),
-                            "round_number": 1,
-                            "title": title.strip(),
-                            "description": description.strip(),
-                            "item_ids": [str(item.item_id) for item in items],
-                        }
-                    ),
-                )
-            ],
-        )
-        request.events.append(
-            DomainEvent.create(
-                event_type="governance.change_request.registered.v1",
-                aggregate_type="change_request",
-                aggregate_id=request.change_request_id,
-                workspace_id=workspace_id,
-                payload={"number": number, "request_type": request_type},
+
+    @staticmethod
+    def _validated_selected_system_id(
+        *,
+        request_type: str,
+        items: list[ChangeItem],
+        selected_system_id: UUID | None,
+    ) -> UUID | None:
+        if request_type != "CHANGE_INTAKE":
+            return selected_system_id
+        routed_system_ids = {item.routing_system_id for item in items}
+        if selected_system_id is None and len(routed_system_ids) == 1:
+            selected_system_id = next(iter(routed_system_ids))
+        if selected_system_id is None or routed_system_ids != {selected_system_id}:
+            raise ValidationError(
+                "Every intake target must match the selected canonical data system."
             )
+        return selected_system_id
+
+    @staticmethod
+    def _revision_evidence_hash(
+        *,
+        change_request_id: UUID,
+        round_number: int,
+        revision_kind: ChangeRevisionKind,
+        title: str,
+        request_date: date | None,
+        request_department: str,
+        request_reason: str,
+        request_content: str,
+        requested_due_date: date | None,
+        priority: ChangePriority | None,
+        urgency: ChangeUrgency | None,
+        classification: Classification,
+        selected_system_id: UUID | None,
+        items: list[ChangeItem],
+    ) -> str:
+        return canonical_json_hash(
+            {
+                "contract": "change-request-round-snapshot-v2",
+                "change_request_id": str(change_request_id),
+                "round_number": round_number,
+                "revision_kind": revision_kind.value,
+                "title": title,
+                "request_date": request_date.isoformat() if request_date is not None else None,
+                "request_department": request_department,
+                "request_reason": request_reason,
+                "request_content": request_content,
+                "requested_due_date": (
+                    requested_due_date.isoformat() if requested_due_date is not None else None
+                ),
+                "priority": priority.value if priority is not None else None,
+                "urgency": urgency.value if urgency is not None else None,
+                "classification": int(classification),
+                "selected_system_id": (
+                    str(selected_system_id) if selected_system_id is not None else None
+                ),
+                "items": [
+                    {
+                        "ordinal": ordinal,
+                        "item_id": str(item.item_id),
+                        "target_type": item.target_type,
+                        "target_ref": item.target_ref,
+                        "aspect_name": item.aspect_name,
+                        "operation": item.operation,
+                        "before_hash": item.before_hash,
+                        "after_hash": item.after_hash,
+                        "target_binding_hash": item.target_binding_hash,
+                        "item_contract_hash": item.item_contract_hash,
+                        "routing_system_id": (
+                            str(item.routing_system_id)
+                            if item.routing_system_id is not None
+                            else None
+                        ),
+                    }
+                    for ordinal, item in enumerate(items)
+                ],
+            }
         )
-        return request
 
     def add_approval(
         self,
@@ -547,12 +683,6 @@ class ChangeRequest:
         if self.state is ChangeState.FINAL_REVIEW and target is ChangeState.REJECTED:
             raise ValidationError("Final rejection requires a typed FINAL approval decision.")
         self._assert_transition_allowed(target)
-        if (
-            self.state is ChangeState.CHANGES_REQUESTED
-            and target is ChangeState.REGISTERED
-            and actor_id != self.requester_id
-        ):
-            raise ValidationError("Only the requester can resubmit a change request.")
         if target is ChangeState.APPLY_QUEUED:
             if any(
                 approval.stage == "FINAL" and approval.decision is ApprovalDecision.REJECTED
@@ -566,38 +696,114 @@ class ChangeRequest:
         if target is ChangeState.FINAL_REVIEW:
             self._assert_complete_system_developer_approval("TEST")
             self._assert_complete_test_evidence()
-        resubmitting = (
-            self.state is ChangeState.CHANGES_REQUESTED and target is ChangeState.REGISTERED
-        )
-        if resubmitting and len(self.rounds) >= MAX_CHANGE_ROUNDS:
+        self._record_transition(target, actor_id, reason, policy_decision_id)
+
+    def revise(
+        self,
+        *,
+        actor_id: UUID,
+        title: str,
+        request_date: date | None,
+        request_department: str,
+        request_reason: str,
+        request_content: str,
+        requested_due_date: date | None,
+        priority: ChangePriority,
+        urgency: ChangeUrgency,
+        classification: Classification,
+        selected_system_id: UUID,
+        items: list[ChangeItem],
+        policy_decision_id: UUID,
+        expected_version: int,
+    ) -> None:
+        """Replace the current editable intake snapshot without rewriting history."""
+
+        self._check_version(expected_version)
+        if self.request_type != "CHANGE_INTAKE":
+            raise ValidationError("Only ordinary change-intake requests can be revised.")
+        if self.state is not ChangeState.CHANGES_REQUESTED:
+            raise ValidationError(
+                "A change request can only be revised after a recoverable change request."
+            )
+        if actor_id != self.requester_id:
+            raise ValidationError("Only the original requester can revise a change request.")
+        current_round = self._current_round()
+        if current_round.selected_system_id != selected_system_id:
+            raise ValidationError("A change-request revision cannot change its selected system.")
+        if len(self.rounds) >= MAX_CHANGE_ROUNDS:
             raise ConflictError(
                 "The change-request revision history reached its governed capacity.",
                 details={"code": "CHANGE_REQUEST_ROUND_CAPACITY"},
             )
-        self._record_transition(target, actor_id, reason, policy_decision_id)
-        if resubmitting:
-            now = utc_now()
-            current_round = self._current_round()
-            if current_round.closed_at is None:
-                current_round.closed_at = now
-            self.current_round_number += 1
-            self.current_round_id = uuid7()
-            self.rounds.append(
-                ChangeRequestRound(
-                    round_id=self.current_round_id,
-                    round_number=self.current_round_number,
-                    submitted_by=actor_id,
-                    submitted_at=now,
-                    evidence_hash=canonical_json_hash(
-                        {
-                            "change_request_id": str(self.change_request_id),
-                            "round_number": self.current_round_number,
-                            "prior_version": self.version,
-                            "item_ids": [str(item.item_id) for item in self.items],
-                        }
-                    ),
-                )
-            )
+        normalized_title = title.strip()
+        if not normalized_title:
+            raise ValidationError("Change request title is required.")
+        self._validate_items(items=items, classification=classification)
+        self._validated_selected_system_id(
+            request_type=self.request_type,
+            items=items,
+            selected_system_id=selected_system_id,
+        )
+        now = utc_now()
+        if current_round.closed_at is None:
+            current_round.closed_at = now
+        next_round_number = self.current_round_number + 1
+        next_round_id = uuid7()
+        normalized_department = request_department.strip()
+        normalized_reason = request_reason.strip()
+        normalized_content = request_content.strip()
+        combined_description = "\n\n".join(
+            value for value in (normalized_reason, normalized_content) if value
+        )
+        new_round = ChangeRequestRound(
+            round_id=next_round_id,
+            round_number=next_round_number,
+            submitted_by=actor_id,
+            submitted_at=now,
+            evidence_hash=self._revision_evidence_hash(
+                change_request_id=self.change_request_id,
+                round_number=next_round_number,
+                revision_kind=ChangeRevisionKind.EDITED,
+                title=normalized_title,
+                request_date=request_date,
+                request_department=normalized_department,
+                request_reason=normalized_reason,
+                request_content=normalized_content,
+                requested_due_date=requested_due_date,
+                priority=priority,
+                urgency=urgency,
+                classification=classification,
+                selected_system_id=selected_system_id,
+                items=items,
+            ),
+            revision_kind=ChangeRevisionKind.EDITED,
+            title=normalized_title,
+            request_date=request_date,
+            request_department=normalized_department,
+            request_reason=normalized_reason,
+            request_content=normalized_content,
+            requested_due_date=requested_due_date,
+            priority=priority,
+            urgency=urgency,
+            classification=classification,
+            selected_system_id=selected_system_id,
+        )
+        self._record_transition(
+            ChangeState.REGISTERED,
+            actor_id,
+            "Revised request resubmitted.",
+            policy_decision_id,
+        )
+        self.current_round_id = next_round_id
+        self.current_round_number = next_round_number
+        self.title = normalized_title
+        self.description = combined_description
+        self.requested_due_date = requested_due_date
+        self.priority = priority
+        self.urgency = urgency
+        self.classification = classification
+        self.items = list(items)
+        self.rounds.append(new_round)
 
     def record_test_run(
         self,

@@ -302,9 +302,30 @@ def test_0091_finalize_uses_current_profile_responsibility_and_routed_target_aut
     )
 
 
-def test_0091_is_the_canonical_generated_attachment_authorization() -> None:
+def test_0092_scopes_current_attachment_authorization_to_current_round_items() -> None:
+    previous = _load_migration("0091_align_governance_attachment_authorization.py")
+    current = _load_migration("0092_change_request_editable_revisions.py")
+    sql = current.FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL
+
+    assert current.revision == "0092"
+    assert current.down_revision == "0091"
+    assert current.PREVIOUS_FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL == (
+        previous.FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL
+    )
+    assert sql.count("FROM governance.change_request_round_items AS round_item") == 8
+    assert sql.count("round_item.round_id = request.current_round_id") == 8
+    assert "governance.change_request_round_items" not in (
+        current.PREVIOUS_FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL
+    )
+    finalized_branch = sql.index("IF intent.state = 'FINALIZED' THEN")
+    finalized_return = sql.index("RETURN intent.id;", finalized_branch)
+    request_lock = sql.index("FROM governance.change_requests", finalized_branch)
+    assert finalized_branch < finalized_return < request_lock
+
+
+def test_0092_is_the_canonical_generated_attachment_authorization() -> None:
     root = Path(__file__).resolve().parents[3]
-    migration = _load_migration("0091_align_governance_attachment_authorization.py")
+    migration = _load_migration("0092_change_request_editable_revisions.py")
     generator = _load_source_module(root / "scripts/generate_initial_migration.py")
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
 
@@ -315,3 +336,4 @@ def test_0091_is_the_canonical_generated_attachment_authorization() -> None:
         == 1
     )
     assert "attachment catalog target binding is stale" in initial
+    assert "governance.change_request_round_items" in initial

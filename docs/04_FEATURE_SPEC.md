@@ -159,12 +159,18 @@ REGISTERED → IN_REVIEW → TESTING → FINAL_REVIEW → APPLY_QUEUED
 → APPLYING → APPLIED
                  └→ APPLY_FAILED → APPLY_QUEUED (authorized retry)
 REGISTERED → IN_REVIEW → TESTING → FINAL_REVIEW → COMPLETED (typed intake only)
+IN_REVIEW / TESTING / FINAL_REVIEW → CHANGES_REQUESTED
+CHANGES_REQUESTED → REGISTERED (requester submits an edited immutable round)
 Any pre-apply review state → REJECTED or CANCELLED under policy
 ```
 
 - Each transition declares allowed prior state, action, required evidence and actor separation.
 - Requester cannot be final approver; high-classification changes require two distinct approvers and strong authentication.
 - Optimistic `version` prevents lost updates.
+- `CHANGES_REQUESTED` is recoverable only through the dedicated revision command. The original
+  requester edits the bounded intake metadata and target set; the server inserts a new typed round,
+  new item identities and one ordered round/item association set. Prior snapshots, targets,
+  attachments, approvals and transitions are never overwritten or reused. `REJECTED` is terminal.
 - `APPLIED` requires target aspect re-read and content-hash match.
 - Lists return scalar summaries through keyset pagination; exact details are fetched only after
   selection and are hard-capped at 200 items, 600 approvals, 200 transitions, 50 rounds and 200

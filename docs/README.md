@@ -82,6 +82,9 @@ Change, Registration, Quality, Knowledge, Chat or export data-use authority. Gov
 schema-wide System routing for Change targets is defined by
 [ADR-0109](adr/0109-governed-system-schema-scope-mapping.md); it reuses the existing scope table
 without changing DataHub, Catalog projection ownership or non-Change readers.
+Immutable editable Change Request revisions after a recoverable reviewer request are defined by
+[ADR-0110](adr/0110-editable-change-request-revision-rounds.md); terminal rejection remains
+unchanged and historical rounds, targets, decisions and attachments stay append-only.
 The ordinary-assurance four-class summary and fresh-assurance full classification-policy detail
 boundary are defined by
 [ADR-0105](adr/0105-redacted-classification-policy-summary.md).

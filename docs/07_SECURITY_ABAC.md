@@ -100,6 +100,14 @@ continues to require its explicit grant together with the same effective System 
 intersection. Search, detail, intake and final reauthorization share this CR-only reader and binding
 hash; generic Catalog, Registration, Quality, Knowledge and Chat predicates are not changed.
 
+A recoverable revision is a distinct `change.edit` command, not a transition shortcut. It requires
+the active original requester, exact `CHANGES_REQUESTED` state/version and current selected System,
+then reuses the same current target/binding predicate through request-anchored search and detail.
+Creation-only `change.create` discovery, a browser locator or a previous authorization decision
+cannot authorize revision. The transaction appends one typed round and new item/link set; terminal
+`REJECTED`, wrong requester/System, stale binding, explicit deny and idempotency mismatch remain
+fail closed with no partial history.
+
 CR attachment finalization is a second authorization boundary, not a trusted continuation of the
 application decision. Its SECURITY DEFINER function locks the active human membership and current
 profile or Canonical Admin evidence, derives effective Systems from active responsibilities, and
@@ -110,6 +118,10 @@ clearance and ABAC policy without a Domain intersection. RESTRICTED targets addi
 current Domain intersection and unexpired explicit RESOURCE, SYSTEM or DOMAIN grant. Revoked or
 stale profile/binding/responsibility/mapping/policy/grant evidence leaves the upload intent STORED;
 ordinary roles still receive no direct intent UPDATE or finalized-attachment INSERT authority.
+For a STORED intent, every target dependency query is scoped by the root `current_round_id` and the
+round/item association, so prior-round evidence cannot authorize a new attachment. Matching
+FINALIZED replay remains an immutable response-recovery path after workspace/uploader/identity
+checks and does not create or reauthorize a second business effect.
 
 Typed upload candidate reads require `registration.read`, `catalog.read` and `change.create`. The
 service first validates READY receipt/V2 hash evidence, then batch-loads only current ACTIVE DATASET
