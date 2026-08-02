@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
@@ -180,6 +180,33 @@ class _Assistant:
     async def propose(self, **_kwargs: object) -> tuple[TBoxElementInput, ...]:
         self.calls += 1
         return self.proposed
+
+
+class _SequencedAssistant:
+    def __init__(
+        self,
+        outcomes: tuple[tuple[TBoxElementInput, ...] | ValidationError, ...],
+        *,
+        after_first: Callable[[], None] | None = None,
+    ) -> None:
+        self.outcomes = outcomes
+        self.after_first = after_first
+        self.prompts: list[str] = []
+
+    @property
+    def calls(self) -> int:
+        return len(self.prompts)
+
+    async def propose(self, **kwargs: object) -> tuple[TBoxElementInput, ...]:
+        prompt = kwargs["prompt"]
+        assert isinstance(prompt, str)
+        self.prompts.append(prompt)
+        outcome = self.outcomes[len(self.prompts) - 1]
+        if len(self.prompts) == 1 and self.after_first is not None:
+            self.after_first()
+        if isinstance(outcome, ValidationError):
+            raise outcome
+        return outcome
 
 
 class _Reader:
@@ -610,12 +637,215 @@ async def test_worker_completes_ready_proposal_without_persisting_document_excer
     assert store.completed is not None
     assert store.completed.prompt_label == "Document schema proposal: schema.txt"
     assert "고객" not in str(store.completed.source_reference)
+    pipeline_evidence = store.completed.source_reference["pipeline_evidence"]
+    assert isinstance(pipeline_evidence, dict)
+    assert pipeline_evidence["provider_generation_attempts"] == 1
+    assert pipeline_evidence["regeneration_reason_code"] is None
     assert [stage for stage, _progress in store.renewed] == [
         "PARSING",
         "INFERENCE",
         "VALIDATING",
         "FINALIZING",
     ]
+
+
+@pytest.mark.asyncio
+async def test_worker_regenerates_duplicate_identity_once_without_reusing_invalid_output() -> None:
+    content = b"schema"
+    claim = _claim(content)
+    store = _Store(claim)
+    reader = _Reader(content)
+    valid = (
+        TBoxElementInput(
+            stable_element_id="class:asset",
+            kind=TBoxElementKind.CLASS,
+            canonical_name="Asset",
+            display_name="Asset",
+        ),
+    )
+    assistant = _SequencedAssistant(
+        (
+            ValidationError(
+                "RAW-DUPLICATE-ELEMENT-MUST-NOT-BE-REUSED",
+                details={"code": "TBOX_DUPLICATE_IDENTITY"},
+            ),
+            valid,
+        )
+    )
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=reader,
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 2
+    assert all(len(prompt) <= 4_000 for prompt in assistant.prompts)
+    assert "TBOX_DUPLICATE_IDENTITY" in assistant.prompts[1]
+    assert "globally unique across classes, properties and relations" in assistant.prompts[1]
+    assert "RAW-DUPLICATE-ELEMENT-MUST-NOT-BE-REUSED" not in assistant.prompts[1]
+    assert store.failed == []
+    assert store.completed is not None
+    pipeline_evidence = store.completed.source_reference["pipeline_evidence"]
+    assert isinstance(pipeline_evidence, dict)
+    assert pipeline_evidence["provider_generation_attempts"] == 2
+    assert pipeline_evidence["regeneration_reason_code"] == "TBOX_DUPLICATE_IDENTITY"
+    assert [stage for stage, _progress in store.renewed] == [
+        "PARSING",
+        "INFERENCE",
+        "INFERENCE",
+        "VALIDATING",
+        "FINALIZING",
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("second_code", "expected_code"),
+    [
+        ("TBOX_DUPLICATE_IDENTITY", "TBOX_DUPLICATE_IDENTITY"),
+        ("TBOX_UNKNOWN_CLASS", "TBOX_UNKNOWN_CLASS"),
+    ],
+)
+async def test_worker_stops_after_failed_duplicate_regeneration(
+    second_code: str,
+    expected_code: str,
+) -> None:
+    content = b"schema"
+    claim = _claim(content)
+    store = _Store(claim)
+    reader = _Reader(content)
+    assistant = _SequencedAssistant(
+        (
+            ValidationError(
+                "first rejected output",
+                details={"code": "TBOX_DUPLICATE_IDENTITY"},
+            ),
+            ValidationError("second rejected output", details={"code": second_code}),
+        )
+    )
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=reader,
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 2
+    assert store.completed is None
+    assert store.failed == [(expected_code, False, False)]
+
+
+@pytest.mark.asyncio
+async def test_worker_does_not_regenerate_other_validation_failures() -> None:
+    content = b"schema"
+    claim = _claim(content)
+    store = _Store(claim)
+    reader = _Reader(content)
+    assistant = _SequencedAssistant(
+        (
+            ValidationError(
+                "typed output rejected",
+                details={"code": "TBOX_TYPED_SCHEMA_INVALID"},
+            ),
+        )
+    )
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=reader,
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 1
+    assert store.completed is None
+    assert store.failed == [("TBOX_TYPED_SCHEMA_INVALID", False, False)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("drift_code", "expected_failure"),
+    [
+        ("CANCELLED", []),
+        ("STALE_DRAFT", [("STALE_DRAFT", False, True)]),
+    ],
+)
+async def test_worker_rechecks_current_fences_before_duplicate_regeneration(
+    drift_code: str,
+    expected_failure: list[tuple[str, bool, bool]],
+) -> None:
+    content = b"schema"
+    claim = _claim(content)
+    store = _Store(claim)
+    reader = _Reader(content)
+    valid = (
+        TBoxElementInput(
+            stable_element_id="class:asset",
+            kind=TBoxElementKind.CLASS,
+            canonical_name="Asset",
+            display_name="Asset",
+        ),
+    )
+    assistant = _SequencedAssistant(
+        (
+            ValidationError(
+                "duplicate output",
+                details={"code": "TBOX_DUPLICATE_IDENTITY"},
+            ),
+            valid,
+        ),
+        after_first=lambda: setattr(store, "drift", drift_code),
+    )
+
+    async def runtime(
+        _claim: KnowledgeStudioProposalJobClaim,
+    ) -> KnowledgeStudioProposalRuntime:
+        return KnowledgeStudioProposalRuntime(assistant=assistant, binding=_binding())
+
+    worker = KnowledgeStudioProposalWorker(
+        store=store,
+        document_reader=reader,
+        runtime_resolver=runtime,
+        workspace_id=WORKSPACE_ID,
+        worker_subject_id=WORKER_ID,
+        worker_fingerprint="proposal-worker-1",
+        lease_seconds=60,
+    )
+
+    assert await worker.run_once() is True
+    assert assistant.calls == 1
+    assert store.completed is None
+    assert store.failed == expected_failure
 
 
 @pytest.mark.asyncio

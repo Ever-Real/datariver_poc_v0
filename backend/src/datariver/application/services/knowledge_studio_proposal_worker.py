@@ -41,6 +41,13 @@ _TBOX_TYPED_SCHEMA_INVALID = "TBOX_TYPED_SCHEMA_INVALID"
 _TBOX_DUPLICATE_IDENTITY = "TBOX_DUPLICATE_IDENTITY"
 _TBOX_UNKNOWN_CLASS = "TBOX_UNKNOWN_CLASS"
 _TBOX_HIERARCHY_CYCLE = "TBOX_HIERARCHY_CYCLE"
+_DUPLICATE_REGENERATION_GUIDANCE = (
+    "Correction requirement (TBOX_DUPLICATE_IDENTITY): regenerate the complete proposal. "
+    "Every stable_element_id must be globally unique across classes, properties and relations; "
+    "every canonical_name must be case-insensitively unique within its own kind. When the same "
+    "concept appears more than once, emit only the single most strongly grounded element."
+)
+_MAX_SCHEMA_ASSISTANT_PROMPT_CHARACTERS = 4_000
 
 
 class KnowledgeStudioProposalWorker:
@@ -97,11 +104,34 @@ class KnowledgeStudioProposalWorker:
             )
             if runtime is None:
                 return True
-            proposed = await runtime.assistant.propose(
-                prompt=prompt,
-                current_elements=claim.current_elements,
-                binding=runtime.binding,
-            )
+            provider_generation_attempts = 1
+            regeneration_reason_code: str | None = None
+            try:
+                proposed = await runtime.assistant.propose(
+                    prompt=prompt,
+                    current_elements=claim.current_elements,
+                    binding=runtime.binding,
+                )
+            except ValidationError as error:
+                if error.details.get("code") != _TBOX_DUPLICATE_IDENTITY:
+                    raise
+                regeneration_prompt = _duplicate_identity_regeneration_prompt(prompt)
+                if regeneration_prompt is None:
+                    raise
+                runtime = await self._checkpoint(
+                    claim,
+                    stage="INFERENCE",
+                    progress_percent=50,
+                )
+                if runtime is None:
+                    return True
+                provider_generation_attempts = 2
+                regeneration_reason_code = _TBOX_DUPLICATE_IDENTITY
+                proposed = await runtime.assistant.propose(
+                    prompt=regeneration_prompt,
+                    current_elements=claim.current_elements,
+                    binding=runtime.binding,
+                )
             runtime = await self._checkpoint(
                 claim,
                 stage="VALIDATING",
@@ -125,6 +155,8 @@ class KnowledgeStudioProposalWorker:
                 "deterministic_correction_passes": 1,
                 "corrected_default_count": corrected_defaults,
                 "aggregate_validation_passes": 1,
+                "provider_generation_attempts": provider_generation_attempts,
+                "regeneration_reason_code": regeneration_reason_code,
                 "cypher_execution": False,
             }
             await self._store.renew(
@@ -325,6 +357,13 @@ class KnowledgeStudioProposalWorker:
             )
             return None
         return runtime
+
+
+def _duplicate_identity_regeneration_prompt(prompt: str) -> str | None:
+    candidate = f"{prompt}\n\n{_DUPLICATE_REGENERATION_GUIDANCE}"
+    if len(candidate) > _MAX_SCHEMA_ASSISTANT_PROMPT_CHARACTERS:
+        return None
+    return candidate
 
 
 def _validate_proposal_integrity(

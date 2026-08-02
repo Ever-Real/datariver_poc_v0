@@ -349,6 +349,21 @@ async def test_tbox_schema_assistant_uses_bounded_grammar_compatible_schema() ->
 
     assert len(result) == 1
     request = transport.calls[0][1]
+    messages = request["messages"]
+    assert isinstance(messages, list)
+    system_message = messages[0]
+    assert isinstance(system_message, dict)
+    system_prompt = system_message["content"]
+    assert isinstance(system_prompt, str)
+    assert (
+        "Every stable_element_id must be globally unique across classes, properties and relations."
+        in system_prompt
+    )
+    assert (
+        "Every canonical_name must be case-insensitively unique within its own kind."
+        in system_prompt
+    )
+    assert "emit only the single most strongly grounded element" in system_prompt
     response_format = request["response_format"]
     assert isinstance(response_format, dict)
     schema_contract = response_format["json_schema"]
