@@ -1516,6 +1516,66 @@ def verify_seed() -> None:
         )
 
 
+def verify_amd64_source_readiness_contract() -> None:
+    workflow_path = ROOT / "scripts" / "development_cycle.py"
+    workflow = workflow_path.read_text(encoding="utf-8")
+    required_fragments = {
+        'choices=("verify", "dev-publish", "prep-update", "prep-check")',
+        'DEFAULT_PREPARATION_ENV = Path(".env.wsl-intranet-development")',
+        'READINESS_CONTRACT = "DATARIVER_PREPARATION_READINESS_V1"',
+        'ROOT / "runtime" / "portability" / "amd64-readiness.json"',
+        '("git", "merge-base", "--is-ancestor", previous_commit, current_source_commit)',
+        '("git", "merge", "--ff-only", "origin/dev")',
+        "verify_remote_dev(runner, newer)",
+        '"{{.Server.Os}}/{{.Server.Arch}}"',
+        '"proof": "api-ready-required-revision"',
+        'safe_output = json.dumps(capabilities, sort_keys=True, separators=(",", ":"))',
+        "reveal_failure_output=False",
+        "os.replace(temporary, path)",
+        "verify_readiness_manifest(evidence)",
+    }
+    missing = {fragment for fragment in required_fragments if fragment not in workflow}
+    if missing:
+        raise AssertionError(
+            f"the stable amd64 source-readiness workflow has drifted: {sorted(missing)}"
+        )
+    forbidden_transfer_commands = ("docker save", "docker load", "docker push")
+    if any(command in workflow for command in forbidden_transfer_commands):
+        raise AssertionError(
+            "the daily source workflow must not transfer Docker images or use a registry"
+        )
+    if 'print(f"     {output}")' in workflow:
+        raise AssertionError("raw source-host preflight output must never reach operator logs")
+    if workflow.index("runtime = prepare_source_host") > workflow.index(
+        "write_readiness_manifest(evidence)"
+    ):
+        raise AssertionError("readiness evidence must be written only after runtime verification")
+
+    test_source = (ROOT / "backend" / "tests" / "unit" / "test_development_cycle.py").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (
+        "test_environment_schema_hash_never_depends_on_values",
+        "test_preflight_capture_logs_only_allowlisted_capabilities",
+        "test_invalid_preflight_capture_never_echoes_raw_content",
+        "test_preflight_subprocess_failure_suppresses_captured_raw_output",
+        "test_failed_atomic_replace_preserves_last_successful_manifest",
+        "test_missing_readiness_manifest_fails_closed",
+    ):
+        if fragment not in test_source:
+            raise AssertionError(f"the amd64 readiness direct test is missing: {fragment}")
+
+    for document in (
+        ROOT / "docs" / "adr" / "0111-source-built-amd64-portability-layer.md",
+        ROOT / "docs" / "57_AMD64_SOURCE_BUILT_PORTABILITY_CONTRACT.md",
+    ):
+        content = document.read_text(encoding="utf-8")
+        if "DATARIVER_PREPARATION_READINESS_V1" not in content:
+            raise AssertionError(
+                f"{document.relative_to(ROOT)} omits the readiness contract identity"
+            )
+
+
 def verify_document_links() -> None:
     pattern = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
     for path in (ROOT / "docs").rglob("*.md"):
@@ -1545,13 +1605,15 @@ def main() -> None:
     verify_phase7_source_integrity()
     verify_tenant_referential_integrity()
     verify_seed()
+    verify_amd64_source_readiness_contract()
     verify_document_links()
     print(
         "static verification passed: compose, build/release context, DataHub release contract, "
         "identity assurance contract, "
         "runtime hardening/readiness/browser storage/web headers, "
         "CI supply chain, "
-        "database roles, architecture, source integrity, tenant foreign keys, seed, documentation"
+        "database roles, architecture, source integrity, tenant foreign keys, seed, "
+        "amd64 source readiness, documentation"
     )
 
 
