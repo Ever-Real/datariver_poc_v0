@@ -34,6 +34,9 @@ from datariver.application.knowledge_studio_ingestion_ports import (
 from datariver.application.ports import KnowledgeStudioSourceReader, KnowledgeStudioStore
 from datariver.application.services.authorization import AuthorizationService
 from datariver.application.services.knowledge_studio import KnowledgeStudioService
+from datariver.application.services.knowledge_studio_proposal_worker import (
+    _element_document as worker_element_document,
+)
 from datariver.domain.authz import (
     Action,
     AuthenticationAssurance,
@@ -380,6 +383,38 @@ def test_keep_original_rewires_nonconflicting_proposal_dependants() -> None:
             parent_stable_element_id=original.stable_element_id,
         ),
     )
+
+
+def test_layout_conflict_id_matches_worker_and_resolves() -> None:
+    original = TBoxElementInput(
+        stable_element_id="class:semiconductor-company",
+        kind=TBoxElementKind.CLASS,
+        canonical_name="SemiconductorCompany",
+        display_name="Semiconductor Company",
+        layout_x=80,
+        layout_y=100,
+    )
+    proposed = replace(original, layout_x=None, layout_y=None)
+
+    conflicts = KnowledgeStudioService._proposal_conflicts(
+        current=(original,),
+        proposed=(proposed,),
+    )
+
+    assert KnowledgeStudioService._tbox_document(original) == worker_element_document(original)
+    assert KnowledgeStudioService._tbox_document(proposed) == worker_element_document(proposed)
+    assert len(conflicts) == 1
+    conflict_id = str(conflicts[0]["conflict_id"])
+
+    accepted = KnowledgeStudioService._resolve_proposal_elements(
+        current=(original,),
+        proposed=(proposed,),
+        conflicts=conflicts,
+        merge_strategy=TBoxMergeStrategy.RESOLVE,
+        resolution_by_conflict={conflict_id: {"action": "KEEP_ORIGINAL"}},
+    )
+
+    assert accepted == ()
 
 
 def test_proposal_integrity_materializes_only_the_hierarchy_default() -> None:

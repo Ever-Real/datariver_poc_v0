@@ -2287,6 +2287,8 @@ class KnowledgeStudioService:
                 str(item.metadata_reference_id) if item.metadata_reference_id else None
             ),
             "metadata_reference_urn": item.metadata_reference_urn,
+            "layout_x": item.layout_x,
+            "layout_y": item.layout_y,
         }
 
     @staticmethod
