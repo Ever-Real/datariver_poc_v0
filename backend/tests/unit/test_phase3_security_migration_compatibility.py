@@ -329,8 +329,13 @@ def test_0092_is_the_canonical_generated_attachment_authorization() -> None:
     generator = _load_source_module(root / "scripts/generate_initial_migration.py")
     initial = (root / "backend/alembic/versions/0001_initial_schema.py").read_text(encoding="utf-8")
 
-    operation = generator.build_upgrade().ops[-1]
-    assert operation.sqltext == migration.FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL
+    matching_operations = [
+        operation
+        for operation in generator.build_upgrade().ops
+        if getattr(operation, "sqltext", None)
+        == migration.FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL
+    ]
+    assert len(matching_operations) == 1
     assert (
         initial.count("CREATE OR REPLACE FUNCTION governance.finalize_attachment_upload_intent")
         == 1
