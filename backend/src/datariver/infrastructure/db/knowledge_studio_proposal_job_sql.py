@@ -1204,7 +1204,9 @@ DECLARE
     draft knowledge.studio_drafts%ROWTYPE;
     now_at timestamptz := transaction_timestamp();
     operation_name text := 'knowledge.tbox-proposal.cancel:' || p_job_id::text;
-    key_hash text := encode(sha256(convert_to(p_idempotency_key, 'UTF8')), 'hex');
+    idempotency_key_hash text := encode(
+        sha256(convert_to(p_idempotency_key, 'UTF8')), 'hex'
+    );
     replay integration.idempotency_keys%ROWTYPE;
     target_state text;
 BEGIN
@@ -1226,9 +1228,11 @@ BEGIN
     PERFORM pg_advisory_xact_lock(hashtextextended(
         p_workspace_id::text || ':' || operation_name || ':' || p_idempotency_key, 0
     ));
-    SELECT * INTO replay FROM integration.idempotency_keys
-    WHERE workspace_id = p_workspace_id AND operation = operation_name
-      AND integration.idempotency_keys.key_hash = key_hash;
+    SELECT stored_replay.* INTO replay
+    FROM integration.idempotency_keys AS stored_replay
+    WHERE stored_replay.workspace_id = p_workspace_id
+      AND stored_replay.operation = operation_name
+      AND stored_replay.key_hash = idempotency_key_hash;
     IF replay.workspace_id IS NOT NULL THEN
         IF replay.request_hash <> p_request_hash THEN
             RAISE EXCEPTION 'T-Box Proposal cancellation key was reused'
@@ -1279,7 +1283,7 @@ BEGIN
         workspace_id, operation, key_hash, request_hash, result,
         created_at, expires_at
     ) VALUES (
-        p_workspace_id, operation_name, key_hash, p_request_hash,
+        p_workspace_id, operation_name, idempotency_key_hash, p_request_hash,
         jsonb_build_object('job_id', p_job_id::text),
         now_at, now_at + interval '24 hours'
     );
@@ -1308,7 +1312,9 @@ DECLARE
     successor_id uuid := gen_random_uuid();
     now_at timestamptz := transaction_timestamp();
     operation_name text := 'knowledge.tbox-proposal.retry:' || p_job_id::text;
-    key_hash text := encode(sha256(convert_to(p_idempotency_key, 'UTF8')), 'hex');
+    idempotency_key_hash text := encode(
+        sha256(convert_to(p_idempotency_key, 'UTF8')), 'hex'
+    );
     replay integration.idempotency_keys%ROWTYPE;
     drift_code text;
 BEGIN
@@ -1327,9 +1333,11 @@ BEGIN
     PERFORM pg_advisory_xact_lock(hashtextextended(
         p_workspace_id::text || ':' || operation_name || ':' || p_idempotency_key, 0
     ));
-    SELECT * INTO replay FROM integration.idempotency_keys
-    WHERE workspace_id = p_workspace_id AND operation = operation_name
-      AND integration.idempotency_keys.key_hash = key_hash;
+    SELECT stored_replay.* INTO replay
+    FROM integration.idempotency_keys AS stored_replay
+    WHERE stored_replay.workspace_id = p_workspace_id
+      AND stored_replay.operation = operation_name
+      AND stored_replay.key_hash = idempotency_key_hash;
     IF replay.workspace_id IS NOT NULL THEN
         IF replay.request_hash <> p_request_hash THEN
             RAISE EXCEPTION 'T-Box Proposal retry key was reused'
@@ -1411,7 +1419,7 @@ BEGIN
         workspace_id, operation, key_hash, request_hash, result,
         created_at, expires_at
     ) VALUES (
-        p_workspace_id, operation_name, key_hash, p_request_hash,
+        p_workspace_id, operation_name, idempotency_key_hash, p_request_hash,
         jsonb_build_object('job_id', successor_id::text),
         now_at, now_at + interval '24 hours'
     );
@@ -1807,7 +1815,9 @@ DECLARE
     token_hash text := encode(sha256(convert_to(p_lease_token, 'UTF8')), 'hex');
     proposal_id uuid := gen_random_uuid();
     operation_name text := 'knowledge.tbox-proposal.complete:' || p_job_id::text;
-    key_hash text := encode(sha256(convert_to(p_call_id, 'UTF8')), 'hex');
+    idempotency_key_hash text := encode(
+        sha256(convert_to(p_call_id, 'UTF8')), 'hex'
+    );
     replay integration.idempotency_keys%ROWTYPE;
     drift_code text;
     element jsonb;
@@ -1865,9 +1875,11 @@ BEGIN
     PERFORM pg_advisory_xact_lock(hashtextextended(
         p_workspace_id::text || ':' || operation_name || ':' || p_call_id, 0
     ));
-    SELECT * INTO replay FROM integration.idempotency_keys
-    WHERE workspace_id = p_workspace_id AND operation = operation_name
-      AND integration.idempotency_keys.key_hash = key_hash;
+    SELECT stored_replay.* INTO replay
+    FROM integration.idempotency_keys AS stored_replay
+    WHERE stored_replay.workspace_id = p_workspace_id
+      AND stored_replay.operation = operation_name
+      AND stored_replay.key_hash = idempotency_key_hash;
     IF replay.workspace_id IS NOT NULL THEN
         IF replay.request_hash <> p_result_hash THEN
             RAISE EXCEPTION 'T-Box Proposal completion call was reused'
@@ -1948,7 +1960,7 @@ BEGIN
             'reason_code', 'PROPOSAL_READY',
             'proposal_id', proposal_id::text,
             'result_hash', p_result_hash,
-            'call_id_hash', key_hash
+            'call_id_hash', idempotency_key_hash
         )
     );
     PERFORM knowledge.emit_tbox_proposal_outbox_v1(
@@ -1958,7 +1970,7 @@ BEGIN
         workspace_id, operation, key_hash, request_hash, result,
         created_at, expires_at
     ) VALUES (
-        p_workspace_id, operation_name, key_hash, p_result_hash,
+        p_workspace_id, operation_name, idempotency_key_hash, p_result_hash,
         jsonb_build_object(
             'job_id', p_job_id::text,
             'proposal_id', proposal_id::text
@@ -1992,7 +2004,9 @@ DECLARE
     now_at timestamptz := transaction_timestamp();
     token_hash text := encode(sha256(convert_to(p_lease_token, 'UTF8')), 'hex');
     operation_name text := 'knowledge.tbox-proposal.fail:' || p_job_id::text;
-    key_hash text := encode(sha256(convert_to(p_call_id, 'UTF8')), 'hex');
+    idempotency_key_hash text := encode(
+        sha256(convert_to(p_call_id, 'UTF8')), 'hex'
+    );
     request_hash text;
     replay integration.idempotency_keys%ROWTYPE;
     target_state text;
@@ -2012,9 +2026,11 @@ BEGIN
     PERFORM pg_advisory_xact_lock(hashtextextended(
         p_workspace_id::text || ':' || operation_name || ':' || p_call_id, 0
     ));
-    SELECT * INTO replay FROM integration.idempotency_keys
-    WHERE workspace_id = p_workspace_id AND operation = operation_name
-      AND integration.idempotency_keys.key_hash = key_hash;
+    SELECT stored_replay.* INTO replay
+    FROM integration.idempotency_keys AS stored_replay
+    WHERE stored_replay.workspace_id = p_workspace_id
+      AND stored_replay.operation = operation_name
+      AND stored_replay.key_hash = idempotency_key_hash;
     IF replay.workspace_id IS NOT NULL THEN
         IF replay.request_hash <> request_hash THEN
             RAISE EXCEPTION 'T-Box Proposal failure call was reused'
@@ -2091,7 +2107,7 @@ BEGIN
         jsonb_build_object(
             'reason_code', p_failure_code,
             'retryable', p_retryable,
-            'call_id_hash', key_hash
+            'call_id_hash', idempotency_key_hash
         )
     );
     PERFORM knowledge.emit_tbox_proposal_outbox_v1(
@@ -2101,7 +2117,7 @@ BEGIN
         workspace_id, operation, key_hash, request_hash, result,
         created_at, expires_at
     ) VALUES (
-        p_workspace_id, operation_name, key_hash, request_hash,
+        p_workspace_id, operation_name, idempotency_key_hash, request_hash,
         jsonb_build_object('job_id', p_job_id::text),
         now_at, now_at + interval '24 hours'
     );

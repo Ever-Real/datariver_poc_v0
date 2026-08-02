@@ -446,6 +446,26 @@ def _load_attachment_authorization_revision() -> ModuleType:
     return module
 
 
+def _load_studio_proposal_transition_idempotency_fix_revision() -> ModuleType:
+    """Load the final Studio Proposal transition idempotency contracts."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0093_fix_knowledge_studio_proposal_job_idempotency.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_studio_proposal_transition_idempotency_fix_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Studio Proposal transition idempotency contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -1007,6 +1027,13 @@ def build_upgrade() -> ops.UpgradeOps:
     attachment_authorization = _load_attachment_authorization_revision()
     operations.append(
         ops.ExecuteSQLOp(attachment_authorization.FINALIZE_ATTACHMENT_UPLOAD_INTENT_FUNCTION_SQL)
+    )
+    studio_proposal_transition_idempotency_fix = (
+        _load_studio_proposal_transition_idempotency_fix_revision()
+    )
+    operations.extend(
+        ops.ExecuteSQLOp(statement)
+        for statement in studio_proposal_transition_idempotency_fix.current_function_sqls()
     )
     return ops.UpgradeOps(ops=operations)
 

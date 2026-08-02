@@ -71,6 +71,9 @@ PROPOSAL_IDEMPOTENCY_FIX_MIGRATION = (
 PROPOSAL_CONTRACT_RESTORE_MIGRATION = (
     ROOT / "backend/alembic/versions/0088_restore_knowledge_studio_proposal_contracts.py"
 )
+PROPOSAL_TRANSITION_IDEMPOTENCY_FIX_MIGRATION = (
+    ROOT / "backend/alembic/versions/0093_fix_knowledge_studio_proposal_job_idempotency.py"
+)
 INITIAL_MIGRATION = ROOT / "backend/alembic/versions/0001_initial_schema.py"
 GENERATOR = ROOT / "scripts/generate_initial_migration.py"
 
@@ -107,6 +110,18 @@ def _proposal_contract_restore_migration() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "test_knowledge_studio_proposal_contract_restore",
         PROPOSAL_CONTRACT_RESTORE_MIGRATION,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _proposal_transition_idempotency_fix_migration() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "test_knowledge_studio_proposal_transition_idempotency_fix",
+        PROPOSAL_TRANSITION_IDEMPOTENCY_FIX_MIGRATION,
     )
     assert spec is not None
     assert spec.loader is not None
@@ -807,9 +822,43 @@ def test_proposal_contract_restore_is_pinned_reversible_and_canonical() -> None:
     assert "0088_restore_knowledge_studio_proposal_contracts.py" in generator
     assert "WITH RECURSIVE source_nodes" in initial
     assert "KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2" in initial
-    assert initial.rfind("WITH RECURSIVE source_nodes") > initial.rfind(
+    assert initial.find("WITH RECURSIVE source_nodes") > initial.find(
         "stored_replay.key_hash = idempotency_key_hash"
     )
+
+
+def test_proposal_transition_idempotency_fix_is_pinned_and_reversible() -> None:
+    source = PROPOSAL_TRANSITION_IDEMPOTENCY_FIX_MIGRATION.read_text(encoding="utf-8")
+    migration = _proposal_transition_idempotency_fix_migration()
+    current = migration.current_function_sqls()
+    legacy = migration.legacy_function_sqls()
+
+    assert 'revision: str = "0093"' in source
+    assert 'down_revision: str | Sequence[str] | None = "0092"' in source
+    assert len(current) == len(legacy) == 4
+    assert all(statement.count("CREATE OR REPLACE FUNCTION") == 1 for statement in current)
+    assert all("idempotency_key_hash text :=" in statement for statement in current)
+    assert all(
+        "FROM integration.idempotency_keys AS stored_replay" in statement for statement in current
+    )
+    assert all("stored_replay.workspace_id = p_workspace_id" in statement for statement in current)
+    assert all("stored_replay.operation = operation_name" in statement for statement in current)
+    assert all(
+        "stored_replay.key_hash = idempotency_key_hash" in statement for statement in current
+    )
+    assert all("key_hash text := encode" in statement for statement in legacy)
+    assert all(
+        "integration.idempotency_keys.key_hash = key_hash" in statement for statement in legacy
+    )
+    for statement in (*current, *legacy):
+        assert "CREATE TABLE" not in statement
+        assert "ALTER TABLE" not in statement
+        assert "GRANT " not in statement
+
+    generator = GENERATOR.read_text(encoding="utf-8")
+    initial = INITIAL_MIGRATION.read_text(encoding="utf-8")
+    assert "0093_fix_knowledge_studio_proposal_job_idempotency.py" in generator
+    assert initial.count("FROM integration.idempotency_keys AS stored_replay") >= 5
 
 
 def test_publication_migration_replaces_owner_only_rls_with_maker_checker_policy() -> None:

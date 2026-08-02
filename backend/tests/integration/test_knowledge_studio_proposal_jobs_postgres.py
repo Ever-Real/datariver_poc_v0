@@ -13,13 +13,16 @@ from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker, create_async_engine
 
+from datariver.application.knowledge_studio_proposal_job_contracts import (
+    KnowledgeStudioProposalCompletion,
+)
 from datariver.application.services.knowledge_studio_proposal_jobs import (
     KnowledgeStudioProposalJobService,
 )
 from datariver.domain.authz import Action, Classification, SubjectAttributes
 from datariver.domain.common import ConflictError, canonical_json_hash
 from datariver.domain.knowledge_pipeline import ModelBinding
-from datariver.domain.knowledge_studio import TBoxProposalMode
+from datariver.domain.knowledge_studio import TBoxElementInput, TBoxElementKind, TBoxProposalMode
 from datariver.domain.knowledge_studio_proposal_jobs import (
     KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V1,
     KNOWLEDGE_STUDIO_CATALOG_SOURCE_PIN_V2,
@@ -54,6 +57,9 @@ PIN_V2_MIGRATION = (
 )
 CONTRACT_RESTORE_MIGRATION = (
     ROOT / "backend/alembic/versions/0088_restore_knowledge_studio_proposal_contracts.py"
+)
+TRANSITION_IDEMPOTENCY_FIX_MIGRATION = (
+    ROOT / "backend/alembic/versions/0093_fix_knowledge_studio_proposal_job_idempotency.py"
 )
 
 _OWNER_URL = "DATARIVER_KNOWLEDGE_PROPOSAL_TEST_OWNER_DATABASE_URL"
@@ -200,6 +206,24 @@ def test_revision_0088_composes_pin_v2_idempotency_and_structural_safety() -> No
     assert "WITH RECURSIVE source_nodes" in (TBOX_PROPOSAL_CONTENT_SAFETY_STRUCTURAL_FUNCTION_SQL)
     assert "jsonb_object_keys" in TBOX_PROPOSAL_CONTENT_SAFETY_STRUCTURAL_FUNCTION_SQL
     assert "0088 downgrade requires reconciliation" in migration._DOWNGRADE_PREFLIGHT_SQL
+
+
+def test_revision_0093_pins_four_transition_idempotency_functions() -> None:
+    migration = _migration(TRANSITION_IDEMPOTENCY_FIX_MIGRATION)
+    source = TRANSITION_IDEMPOTENCY_FIX_MIGRATION.read_text(encoding="utf-8")
+    current = migration.current_function_sqls()
+    legacy = migration.legacy_function_sqls()
+
+    assert 'revision: str = "0093"' in source
+    assert 'down_revision: str | Sequence[str] | None = "0092"' in source
+    assert len(current) == len(legacy) == 4
+    assert all(statement.count("CREATE OR REPLACE FUNCTION") == 1 for statement in current)
+    assert all(
+        "stored_replay.key_hash = idempotency_key_hash" in statement for statement in current
+    )
+    assert all(
+        "integration.idempotency_keys.key_hash = key_hash" in statement for statement in legacy
+    )
 
 
 def _subject(workspace_id: UUID, actor_id: UUID) -> SubjectAttributes:
@@ -494,6 +518,7 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
         )
         app_sessions = async_sessionmaker(app, expire_on_commit=False)
         request_idempotency_key = f"proposal-request-{uuid4()}"
+        cancel_key = f"proposal-cancel-{uuid4()}"
         async with app_sessions() as session, session.begin():
             service = KnowledgeStudioProposalJobService(
                 store=SqlKnowledgeStudioProposalJobStore(session)
@@ -581,9 +606,24 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
                 expected_version=claim.job.version,
                 reason="Browser cancellation",
                 request_hash="f" * 64,
-                idempotency_key=f"proposal-cancel-{uuid4()}",
+                idempotency_key=cancel_key,
             )
         assert cancelling.state.value == "CANCEL_REQUESTED"
+        async with app_sessions() as session, session.begin():
+            cancel_replay = await KnowledgeStudioProposalJobService(
+                store=SqlKnowledgeStudioProposalJobStore(session)
+            ).cancel(
+                workspace_id=workspace_id,
+                draft_id=draft_id,
+                job_id=queued.job_id,
+                actor_id=actor_id,
+                expected_version=claim.job.version,
+                reason="Browser cancellation",
+                request_hash="f" * 64,
+                idempotency_key=cancel_key,
+            )
+        assert cancel_replay.job_id == cancelling.job_id
+        assert cancel_replay.version == cancelling.version
         assert (
             await worker_store.ensure_current(
                 claim=claim,
@@ -602,6 +642,131 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
         assert record is not None
         assert record.state.value == "CANCELLED"
         assert record.stage.value == "COMPLETED"
+
+        retry_key = f"proposal-retry-{uuid4()}"
+        async with app_sessions() as session, session.begin():
+            retried = await KnowledgeStudioProposalJobService(
+                store=SqlKnowledgeStudioProposalJobStore(session)
+            ).retry(
+                workspace_id=workspace_id,
+                draft_id=draft_id,
+                job_id=queued.job_id,
+                actor_id=actor_id,
+                expected_version=record.version,
+                request_hash="1" * 64,
+                idempotency_key=retry_key,
+            )
+        async with app_sessions() as session, session.begin():
+            retry_replay = await KnowledgeStudioProposalJobService(
+                store=SqlKnowledgeStudioProposalJobStore(session)
+            ).retry(
+                workspace_id=workspace_id,
+                draft_id=draft_id,
+                job_id=queued.job_id,
+                actor_id=actor_id,
+                expected_version=record.version,
+                request_hash="1" * 64,
+                idempotency_key=retry_key,
+            )
+        assert retry_replay.job_id == retried.job_id
+        with pytest.raises(ConflictError, match="changed concurrently"):
+            async with app_sessions() as session, session.begin():
+                await KnowledgeStudioProposalJobService(
+                    store=SqlKnowledgeStudioProposalJobStore(session)
+                ).retry(
+                    workspace_id=workspace_id,
+                    draft_id=draft_id,
+                    job_id=queued.job_id,
+                    actor_id=actor_id,
+                    expected_version=record.version,
+                    request_hash="2" * 64,
+                    idempotency_key=retry_key,
+                )
+
+        retry_claim = await worker_store.claim_next(
+            workspace_id=workspace_id,
+            worker_subject_id=worker_id,
+            worker_fingerprint="proposal-worker-retry-test",
+            lease_seconds=60,
+        )
+        assert retry_claim is not None
+        assert retry_claim.job.job_id == retried.job_id
+        failure_call_id = f"proposal-fail-{uuid4()}"
+        for _ in range(2):
+            await worker_store.fail(
+                claim=retry_claim,
+                worker_subject_id=worker_id,
+                call_id=failure_call_id,
+                failure_code="PROVIDER_REJECTED",
+                retryable=False,
+                stale=False,
+            )
+        async with app_sessions() as session:
+            failed = await SqlKnowledgeStudioProposalJobStore(session).get_owned(
+                workspace_id=workspace_id,
+                draft_id=draft_id,
+                job_id=retried.job_id,
+                actor_id=actor_id,
+            )
+        assert failed is not None
+        assert failed.state.value == "FAILED"
+
+        completion_retry_key = f"proposal-completion-retry-{uuid4()}"
+        async with app_sessions() as session, session.begin():
+            completion_job = await KnowledgeStudioProposalJobService(
+                store=SqlKnowledgeStudioProposalJobStore(session)
+            ).retry(
+                workspace_id=workspace_id,
+                draft_id=draft_id,
+                job_id=failed.job_id,
+                actor_id=actor_id,
+                expected_version=failed.version,
+                request_hash="3" * 64,
+                idempotency_key=completion_retry_key,
+            )
+        completion_claim = await worker_store.claim_next(
+            workspace_id=workspace_id,
+            worker_subject_id=worker_id,
+            worker_fingerprint="proposal-worker-completion-test",
+            lease_seconds=60,
+        )
+        assert completion_claim is not None
+        assert completion_claim.job.job_id == completion_job.job_id
+        completion = KnowledgeStudioProposalCompletion(
+            elements=(
+                TBoxElementInput(
+                    stable_element_id="proposal_asset",
+                    kind=TBoxElementKind.CLASS,
+                    canonical_name="ProposalAsset",
+                    display_name="Proposal asset",
+                ),
+            ),
+            conflicts=(),
+            prompt_label="Document schema proposal: schema.txt",
+            model_binding=binding.to_document(),
+            source_reference={
+                "contract_version": "KNOWLEDGE_STUDIO_DOCUMENT_SOURCE_V1",
+                "content_sha256": source_hash,
+            },
+            result_hash="4" * 64,
+        )
+        completion_call_id = f"proposal-complete-{uuid4()}"
+        completed = await worker_store.complete(
+            claim=completion_claim,
+            worker_subject_id=worker_id,
+            call_id=completion_call_id,
+            completion=completion,
+        )
+        completion_replay = await worker_store.complete(
+            claim=completion_claim,
+            worker_subject_id=worker_id,
+            call_id=completion_call_id,
+            completion=completion,
+        )
+        assert completion_replay.job_id == completed.job_id
+        assert completed.result is not None
+        assert completion_replay.result == completed.result
+
         async with owner.connect() as connection:
             grants = await connection.execute(
                 text(
@@ -621,17 +786,29 @@ async def test_function_only_claim_and_running_cancel_are_atomically_fenced() ->
                          WHERE workspace_id = :workspace_id
                            AND aggregate_id = :job_id
                            AND event_type =
-                               'knowledge.tbox-proposal-job.cancelled.v1')
+                               'knowledge.tbox-proposal-job.cancelled.v1'),
+                        (SELECT count(*) FROM knowledge.tbox_proposal_jobs
+                         WHERE workspace_id = :workspace_id
+                           AND supersedes_job_id = :job_id),
+                        (SELECT count(*) FROM knowledge.tbox_proposals
+                         WHERE workspace_id = :workspace_id
+                           AND id = :proposal_id)
                     """
                 ),
-                {"workspace_id": workspace_id, "job_id": queued.job_id},
+                {
+                    "workspace_id": workspace_id,
+                    "job_id": queued.job_id,
+                    "proposal_id": completed.result.proposal_id,
+                },
             )
-            app_dml, worker_dml, forced_rls, attempts, outbox = grants.one()
+            app_dml, worker_dml, forced_rls, attempts, outbox, successors, proposals = grants.one()
         assert app_dml is False
         assert worker_dml is False
         assert forced_rls is True
         assert attempts == 1
         assert outbox == 1
+        assert successors == 1
+        assert proposals == 1
     finally:
         await owner.dispose()
         await app.dispose()
