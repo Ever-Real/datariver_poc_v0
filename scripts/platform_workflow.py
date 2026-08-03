@@ -13,9 +13,9 @@ import stat
 import subprocess
 import tempfile
 from collections.abc import Sequence
-from dataclasses import asdict, dataclass, field, fields
+from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, Self
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -65,6 +65,16 @@ OPTIONAL_RELEASE_COMPOSE_FILES = {
     "offline-local-connectors.compose.yaml",
 }
 LOCAL_CONNECTOR_SERVICES = ("redis-cache", "redis-delivery", "minio")
+LOCAL_TOPOLOGY_RECONCILIATION = "mac-development-graph-gateway-v1"
+TOPOLOGY_RECONCILIATION_SECRET_NAMES = (
+    "postgres_governance_document_password",
+    "redis_delivery_password",
+    "s3_governance_document_access_key",
+    "s3_governance_document_secret_key",
+    "intranet_llm_chat_api_key",
+    "intranet_llm_embedding_api_key",
+    "neo4j_auth",
+)
 
 _CORE_TOPOLOGY_SERVICES = (
     "postgres",
@@ -369,6 +379,15 @@ class LocalTopologyAudit:
 
 
 @dataclass(frozen=True)
+class TopologyReconciliationPlan:
+    """One immutable, reviewed Mac-development topology transition."""
+
+    name: str
+    target_state: AppliedState
+    missing_worker_service: str
+
+
+@dataclass(frozen=True)
 class ChangePlan:
     services: tuple[str, ...]
     requires_migration: bool
@@ -652,6 +671,261 @@ def enforce_local_topology(
     if audit.has_findings:
         raise WorkflowError("LOCAL_TOPOLOGY_DRIFT")
     return audit
+
+
+def build_topology_reconciliation_plan(
+    name: str,
+    *,
+    state: AppliedState,
+    environment_values: dict[str, str],
+    audit: LocalTopologyAudit,
+) -> TopologyReconciliationPlan:
+    """Validate the sole reviewed graph/gateway adoption without wildcard state mutation."""
+
+    exact_findings = LocalTopologyAudit(
+        expected_missing=("worker.governance-document",),
+        unexpected_running=("gateway.apisix", "graph.neo4j"),
+        selected_unhealthy=(),
+        intent_mismatch=("graph.neo4j",),
+        unexpected_unknown_count=0,
+    )
+    precondition = all(
+        (
+            name == LOCAL_TOPOLOGY_RECONCILIATION,
+            state.profile == "mac-development",
+            state.deployment_mode == "build",
+            state.local_airflow,
+            not state.local_gateway,
+            not state.local_graph,
+            _local_graph_intent(environment_values),
+            environment_values.get("GOVERNANCE_DOCUMENT_WORKER_ENABLED", "").strip().casefold()
+            == "true",
+            audit == exact_findings,
+        )
+    )
+    if not precondition:
+        raise WorkflowError("TOPOLOGY_RECONCILIATION_PRECONDITION_FAILED")
+    return TopologyReconciliationPlan(
+        name=name,
+        target_state=replace(state, local_gateway=True, local_graph=True),
+        missing_worker_service="governance-document-worker",
+    )
+
+
+def _same_file_identity(first: os.stat_result, second: os.stat_result) -> bool:
+    return (
+        first.st_dev,
+        first.st_ino,
+        stat.S_IFMT(first.st_mode),
+        first.st_uid,
+        first.st_gid,
+    ) == (
+        second.st_dev,
+        second.st_ino,
+        stat.S_IFMT(second.st_mode),
+        second.st_uid,
+        second.st_gid,
+    )
+
+
+def _open_trusted_directory_chain(directory: Path) -> int:
+    resolved = Path(os.path.abspath(directory))
+    if not resolved.is_absolute():
+        raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = os.open("/", flags)
+    traversed = Path("/")
+    try:
+        for component in resolved.parts[1:]:
+            linked = os.stat(component, dir_fd=descriptor, follow_symlinks=False)
+            child = os.open(component, flags, dir_fd=descriptor)
+            opened = os.fstat(child)
+            if not stat.S_ISDIR(linked.st_mode) or not _same_file_identity(linked, opened):
+                os.close(child)
+                raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+            traversed /= component
+            mode = stat.S_IMODE(opened.st_mode)
+            if mode & 0o002:
+                os.close(child)
+                raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+            if mode & 0o020 and not (traversed == Path("/Volumes/SSD_Mac") and mode == 0o775):
+                os.close(child)
+                raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _directory_guard_identity(value: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_uid,
+        value.st_gid,
+    )
+
+
+def _secret_guard_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+    return (
+        *_directory_guard_identity(value),
+        value.st_nlink,
+        value.st_size,
+    )
+
+
+@dataclass
+class TopologyReconciliationSecretGuard:
+    """Retain exact selected bind-secret identities across governed Docker creates."""
+
+    root: Path
+    root_descriptor: int
+    secret_descriptor: int
+    file_descriptors: dict[str, int]
+    root_identity: tuple[int, int, int, int, int]
+    secret_identity: tuple[int, int, int, int, int]
+    file_identities: dict[str, tuple[int, int, int, int, int, int, int]]
+    closed: bool = False
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        self.closed = True
+        for descriptor in reversed(tuple(self.file_descriptors.values())):
+            os.close(descriptor)
+        os.close(self.secret_descriptor)
+        os.close(self.root_descriptor)
+
+    def revalidate(self) -> None:
+        reopened_root: int | None = None
+        try:
+            if self.closed or len(TOPOLOGY_RECONCILIATION_SECRET_NAMES) != 7:
+                raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+            reopened_root = _open_trusted_directory_chain(self.root)
+            reopened_root_evidence = os.fstat(reopened_root)
+            held_root_evidence = os.fstat(self.root_descriptor)
+            linked_secret_dir = os.stat(
+                "secrets",
+                dir_fd=reopened_root,
+                follow_symlinks=False,
+            )
+            held_secret_dir = os.fstat(self.secret_descriptor)
+            if (
+                _directory_guard_identity(reopened_root_evidence) != self.root_identity
+                or _directory_guard_identity(held_root_evidence) != self.root_identity
+                or not stat.S_ISDIR(linked_secret_dir.st_mode)
+                or not _same_file_identity(linked_secret_dir, held_secret_dir)
+                or _directory_guard_identity(held_secret_dir) != self.secret_identity
+                or held_secret_dir.st_dev != held_root_evidence.st_dev
+                or stat.S_IMODE(held_secret_dir.st_mode) != 0o700
+                or held_secret_dir.st_uid != os.getuid()
+            ):
+                raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+            for name in TOPOLOGY_RECONCILIATION_SECRET_NAMES:
+                linked = os.stat(
+                    name,
+                    dir_fd=self.secret_descriptor,
+                    follow_symlinks=False,
+                )
+                opened = os.fstat(self.file_descriptors[name])
+                if (
+                    not stat.S_ISREG(linked.st_mode)
+                    or not _same_file_identity(linked, opened)
+                    or _secret_guard_identity(opened) != self.file_identities[name]
+                    or stat.S_IMODE(opened.st_mode) != 0o444
+                    or opened.st_uid != os.getuid()
+                    or opened.st_nlink != 1
+                    or opened.st_size < 1
+                    or opened.st_dev != held_secret_dir.st_dev
+                ):
+                    raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+        except (KeyError, OSError, WorkflowError):
+            raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED") from None
+        finally:
+            if reopened_root is not None:
+                os.close(reopened_root)
+
+
+def require_topology_reconciliation_secrets(
+    root: Path,
+) -> TopologyReconciliationSecretGuard:
+    """Open and validate the exact selected subset of canonical bind secrets."""
+
+    root_descriptor: int | None = None
+    secret_descriptor: int | None = None
+    file_descriptors: dict[str, int] = {}
+    try:
+        root_descriptor = _open_trusted_directory_chain(root)
+        opened_root = os.fstat(root_descriptor)
+        linked_secret_dir = os.stat(
+            "secrets",
+            dir_fd=root_descriptor,
+            follow_symlinks=False,
+        )
+        secret_descriptor = os.open(
+            "secrets",
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=root_descriptor,
+        )
+        opened_secret_dir = os.fstat(secret_descriptor)
+        if (
+            not stat.S_ISDIR(linked_secret_dir.st_mode)
+            or not _same_file_identity(linked_secret_dir, opened_secret_dir)
+            or opened_secret_dir.st_dev != opened_root.st_dev
+            or stat.S_IMODE(opened_secret_dir.st_mode) != 0o700
+            or opened_secret_dir.st_uid != os.getuid()
+            or len(TOPOLOGY_RECONCILIATION_SECRET_NAMES) != 7
+        ):
+            raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+        file_identities: dict[str, tuple[int, int, int, int, int, int, int]] = {}
+        for name in TOPOLOGY_RECONCILIATION_SECRET_NAMES:
+            linked = os.stat(name, dir_fd=secret_descriptor, follow_symlinks=False)
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=secret_descriptor)
+            file_descriptors[name] = descriptor
+            opened = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(linked.st_mode)
+                or not _same_file_identity(linked, opened)
+                or stat.S_IMODE(opened.st_mode) != 0o444
+                or opened.st_uid != os.getuid()
+                or opened.st_nlink != 1
+                or opened.st_size < 1
+                or opened.st_dev != opened_secret_dir.st_dev
+            ):
+                raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+            file_identities[name] = _secret_guard_identity(opened)
+        guard = TopologyReconciliationSecretGuard(
+            root=Path(os.path.abspath(root)),
+            root_descriptor=root_descriptor,
+            secret_descriptor=secret_descriptor,
+            file_descriptors=file_descriptors,
+            root_identity=_directory_guard_identity(opened_root),
+            secret_identity=_directory_guard_identity(opened_secret_dir),
+            file_identities=file_identities,
+        )
+        guard.revalidate()
+        root_descriptor = None
+        secret_descriptor = None
+        file_descriptors = {}
+        return guard
+    except (OSError, WorkflowError):
+        raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED") from None
+    finally:
+        for descriptor in reversed(tuple(file_descriptors.values())):
+            os.close(descriptor)
+        if secret_descriptor is not None:
+            os.close(secret_descriptor)
+        if root_descriptor is not None:
+            os.close(root_descriptor)
 
 
 def fail(message: str) -> NoReturn:
@@ -990,6 +1264,11 @@ def classify_changes(paths: Sequence[str]) -> ChangePlan:
             continue
         if normalized.startswith("infra/apisix/") or normalized == "compose.gateway.yaml":
             meaningful = True
+            restart_gateway = True
+            continue
+        if normalized == "compose.gateway-routing.yaml":
+            meaningful = True
+            services.add("web")
             restart_gateway = True
             continue
         if normalized.startswith("infra/neo4j/") or normalized == "compose.graph.yaml":

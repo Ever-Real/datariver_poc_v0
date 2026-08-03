@@ -1820,6 +1820,20 @@ def verify_governed_local_topology_contract() -> None:
     platform = platform_path.read_text(encoding="utf-8")
     for fragment in (
         "class LocalTopologyAudit:",
+        "class TopologyReconciliationPlan:",
+        'LOCAL_TOPOLOGY_RECONCILIATION = "mac-development-graph-gateway-v1"',
+        'expected_missing=("worker.governance-document",)',
+        'unexpected_running=("gateway.apisix", "graph.neo4j")',
+        "target_state=replace(state, local_gateway=True, local_graph=True)",
+        "class TopologyReconciliationSecretGuard:",
+        "TOPOLOGY_RECONCILIATION_SECRET_NAMES",
+        "len(TOPOLOGY_RECONCILIATION_SECRET_NAMES) != 7",
+        "def revalidate(self) -> None:",
+        "_secret_guard_identity(opened) != self.file_identities[name]",
+        'traversed == Path("/Volumes/SSD_Mac") and mode == 0o775',
+        "opened_secret_dir.st_dev != opened_root.st_dev",
+        "os.O_RDONLY | os.O_NOFOLLOW",
+        "stat.S_IMODE(opened.st_mode) != 0o444",
         '"expected_missing"',
         '"unexpected_running"',
         '"selected_unhealthy"',
@@ -1833,6 +1847,8 @@ def verify_governed_local_topology_contract() -> None:
     ):
         if fragment not in platform:
             raise AssertionError(f"the governed local-topology contract is missing: {fragment}")
+    if "set(os.listdir(secret_descriptor))" in platform:
+        raise AssertionError("unrelated canonical secrets cannot influence topology selection")
 
     private_query = platform.split("def local_topology_output(", maxsplit=1)[1].split(
         "def _topology_health_class", maxsplit=1
@@ -1865,15 +1881,67 @@ def verify_governed_local_topology_contract() -> None:
 
     workflow = (ROOT / "scripts" / "workflow_update_restart.py").read_text(encoding="utf-8")
     main_source = workflow.split("def main() -> int:", maxsplit=1)[1]
+    early_lock = main_source.index(
+        "capacity_lock = mutation_stack.enter_context(exclusive_docker_workflow_lock(ROOT))"
+    )
+    evidence_gate = main_source.index(
+        "_require_gateway_auth_parity_evidence_available(reconciliation_name)", early_lock
+    )
+    refresh_bootstrap = main_source.index("if args.refresh_bootstrap:", evidence_gate)
     config = main_source.index('trailing=("config", "--quiet")')
     running = main_source.index("running = _running_services", config)
     audit = main_source.index("enforce_local_topology(", running)
     plan = main_source.index("_print_plan(", audit)
     confirmation = main_source.index("if not args.assume_yes", plan)
-    lock = main_source.index("exclusive_docker_workflow_lock", confirmation)
+    normal_lock_guard = main_source.index("if capacity_lock is None:", confirmation)
+    lock = main_source.index("exclusive_docker_workflow_lock", normal_lock_guard)
     reranker = main_source.index("_reconcile_local_reranker", lock)
-    if not config < running < audit < plan < confirmation < lock < reranker:
+    if not (
+        early_lock
+        < evidence_gate
+        < refresh_bootstrap
+        < config
+        < running
+        < audit
+        < plan
+        < confirmation
+        < normal_lock_guard
+        < lock
+        < reranker
+    ):
         raise AssertionError("local-topology audit must precede every update mutation boundary")
+    for fragment in (
+        "mutation_stack.enter_context(\n                    "
+        "require_topology_reconciliation_secrets(ROOT)",
+        "topology_secret_guard.revalidate()",
+    ):
+        if fragment not in main_source:
+            raise AssertionError("the retained topology secret guard has drifted")
+
+    reconciliation = workflow.split("def _apply_topology_reconciliation(", maxsplit=1)[1].split(
+        "def _compose(", maxsplit=1
+    )[0]
+    guard_before = reconciliation.index("secret_guard.revalidate()")
+    worker = reconciliation.index("plan.missing_worker_service")
+    guard_after = reconciliation.index("secret_guard.revalidate()", guard_before + 1)
+    database = reconciliation.index("_verify_governance_document_worker_database", worker)
+    gateway_build = reconciliation.index('trailing=("build", "apisix")', database)
+    gateway_up = reconciliation.index('"apisix",', gateway_build)
+    web = reconciliation.index('"web",', gateway_up)
+    airflow = reconciliation.index("*AIRFLOW_SERVICES", web)
+    if (
+        not guard_before
+        < worker
+        < guard_after
+        < database
+        < gateway_build
+        < gateway_up
+        < web
+        < airflow
+    ):
+        raise AssertionError("topology reconciliation mutation order has drifted")
+    if any(fragment in reconciliation for fragment in ('"stop"', '"rm"', '"down"')):
+        raise AssertionError("topology reconciliation cannot stop or delete selected services")
 
     test_source = (ROOT / "backend" / "tests" / "unit" / "test_platform_workflow.py").read_text(
         encoding="utf-8"
@@ -1890,6 +1958,20 @@ def verify_governed_local_topology_contract() -> None:
         "test_local_topology_private_capture_failure_is_fixed_and_sanitized",
         "test_local_topology_private_capture_timeout_is_fixed_sanitized_and_not_retried",
         "test_update_topology_drift_stops_before_lock_reranker_or_state_mutation",
+        "test_exact_mac_topology_reconciliation_changes_only_graph_and_gateway",
+        "test_topology_reconciliation_rejects_any_nonexact_prestate_or_finding",
+        "test_topology_secret_preflight_accepts_selected_subset_of_canonical_metadata",
+        "test_topology_secret_preflight_rejects_a_symlinked_root",
+        "test_topology_secret_guard_detects_selected_file_replacement_after_preflight",
+        "test_topology_secret_preflight_fails_closed_without_reading_values",
+        "test_topology_reconciliation_mutation_order_is_worker_gateway_web_airflow",
+        "test_worker_create_is_bracketed_by_retained_secret_guard_on_ambiguous_failure",
+        "test_worker_create_stops_before_mutation_when_retained_secret_guard_drifted",
+        "test_governance_document_role_and_backlog_are_separate_sanitized_queries",
+        "test_topology_reconciliation_failure_stops_before_later_mutations",
+        "test_gateway_live_auth_parity_unavailable_is_state_write_precondition",
+        "test_unavailable_gateway_auth_parity_stops_under_lock_before_runtime_mutation",
+        "test_gateway_log_probe_rejects_credential_persistence_without_raw_output",
     ):
         if test_name not in test_source:
             raise AssertionError(f"the local-topology direct test is missing: {test_name}")
@@ -1904,9 +1986,168 @@ def verify_governed_local_topology_contract() -> None:
         "selected-unhealthy",
         "intent-mismatch",
         "no auto-stop",
+        "mac-development-graph-gateway-v1",
+        "governance-document-worker",
+        "required subset",
+        "GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE",
+        "Keycloak remains the sole identity provider",
+        "do not claim that",
+        "remote_addr",
+        "OPEN_TARGET_GATE",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0113 omits local-topology term: {fragment}")
+
+
+def verify_transparent_gateway_contract() -> None:
+    route_document = _yaml(ROOT / "infra" / "apisix" / "apisix.yaml")
+    routes = route_document.get("routes")
+    if not isinstance(routes, list) or len(routes) != 2:
+        raise AssertionError("APISIX must expose only the two reviewed API routes")
+    allowed_plugins = {"request-id", "limit-count", "proxy-rewrite"}
+    auth_plugins = {
+        "jwt-auth",
+        "openid-connect",
+        "key-auth",
+        "basic-auth",
+        "hmac-auth",
+        "authz-keycloak",
+        "forward-auth",
+        "consumer-restriction",
+        "cors",
+    }
+    for route in routes:
+        plugins = route.get("plugins")
+        if not isinstance(plugins, dict) or set(plugins) != allowed_plugins:
+            raise AssertionError("APISIX route plugin allowlist has drifted")
+        if auth_plugins.intersection(plugins):
+            raise AssertionError("APISIX cannot authenticate or authorize DataRiver callers")
+        if plugins.get("proxy-rewrite") != {"headers": {"set": {"X-Forwarded-Proto": "$scheme"}}}:
+            raise AssertionError("APISIX cannot strip or synthesize caller credentials")
+        limit = plugins.get("limit-count")
+        if not isinstance(limit, dict) or (
+            limit.get("key") != "remote_addr" or limit.get("rejected_code") != 429
+        ):
+            raise AssertionError("Mac gateway rate limiting must remain an availability decision")
+    general = next((route for route in routes if route.get("id") == "datariver-api-v1"), None)
+    if not isinstance(general, dict) or set(general.get("methods", [])) != {
+        "GET",
+        "POST",
+        "PUT",
+        "PATCH",
+        "DELETE",
+        "OPTIONS",
+    }:
+        raise AssertionError("APISIX must preserve the complete API method contract")
+
+    config = _yaml(ROOT / "infra" / "apisix" / "config.yaml")
+    if "plugins" in config:
+        raise AssertionError("APISIX global plugins are forbidden")
+    if (
+        config.get("apisix", {}).get("enable_admin") is not False
+        or config.get("apisix", {}).get("enable_control") is not False
+    ):
+        raise AssertionError("APISIX must remain a YAML-only data plane")
+    http = config.get("nginx_config", {}).get("http", {})
+    if http.get("client_max_body_size") != "12m":
+        raise AssertionError("APISIX and Web bounded multipart limits must agree")
+    config_source = (
+        (ROOT / "infra" / "apisix" / "config.yaml").read_text(encoding="utf-8").casefold()
+    )
+    for forbidden in ("$http_authorization", "$http_cookie", "$request_body"):
+        if forbidden in config_source:
+            raise AssertionError("APISIX logs must not include credentials or request bodies")
+
+    routing = _yaml(ROOT / "compose.gateway-routing.yaml")["services"]["web"]
+    if routing.get("environment") != {"API_PROXY_UPSTREAM": "apisix:9080"}:
+        raise AssertionError("selected Web traffic must use the fixed APISIX upstream")
+    if routing.get("depends_on") != {"apisix": {"condition": "service_healthy"}}:
+        raise AssertionError("Web must fail unavailable without a healthy selected gateway")
+    routing_source = (ROOT / "compose.gateway-routing.yaml").read_text(encoding="utf-8")
+    for forbidden in (
+        "api:8000",
+        "BROWSER_OIDC_AUTHORITY",
+        "BROWSER_OIDC_CLIENT_ID",
+        "BROWSER_OIDC_REDIRECT_URI",
+    ):
+        if forbidden in routing_source:
+            raise AssertionError("gateway routing cannot bypass API or rewrite browser identity")
+
+    airflow = _yaml(ROOT / "compose.airflow.host-dev.yaml")["services"]
+    for service in (
+        "airflow-api-server",
+        "airflow-scheduler",
+        "airflow-dag-processor",
+        "airflow-triggerer",
+    ):
+        if airflow[service]["environment"].get("DATARIVER_API_BASE_URL") != ("http://apisix:9080"):
+            raise AssertionError("selected Airflow API traffic must use fixed APISIX routing")
+    if (
+        airflow["airflow-scheduler"]["environment"].get("DATARIVER_QUALITY_DISPATCH_API_BASE_URL")
+        != "http://apisix:9080"
+    ):
+        raise AssertionError("selected Airflow quality dispatch must use fixed APISIX routing")
+
+    tests = ROOT / "backend" / "tests" / "unit" / "test_apisix_transparent_gateway.py"
+    test_source = tests.read_text(encoding="utf-8")
+    for test_name in (
+        "test_apisix_is_a_transparent_rate_limited_router_not_an_identity_provider",
+        "test_apisix_has_no_global_plugin_or_credential_log_surface",
+        "test_web_proxy_preserves_identity_cors_and_retry_headers_without_direct_fallback",
+        "test_gateway_overlay_does_not_change_browser_oidc_or_public_origin_contract",
+        "test_selected_airflow_uses_gateway_but_acquires_tokens_directly_from_keycloak",
+        "test_every_auth_or_global_plugin_injection_is_rejected",
+        "test_request_and_response_identity_headers_are_transparent",
+        "test_static_status_echo_is_not_accepted_as_gateway_auth_parity_evidence",
+    ):
+        if test_name not in test_source:
+            raise AssertionError(f"the transparent gateway direct test is missing: {test_name}")
+
+    update = (ROOT / "scripts" / "workflow_update_restart.py").read_text(encoding="utf-8")
+    probe = update.split("GATEWAY_TRANSPARENCY_PROGRAM =", maxsplit=1)[1].split(
+        "_POSTGRES_SECRET_MOUNT_ENV_KEYS", maxsplit=1
+    )[0]
+    for fragment in (
+        '"/api/v1/knowledge/registry/assets"',
+        '"/api/v1/change-requests"',
+        '"Authorization"',
+        '"Cookie"',
+        '"Origin"',
+        '"Access-Control-Request-Method"',
+        '"WWW-Authenticate"',
+        '"Set-Cookie"',
+        '"Access-Control-Allow-Origin"',
+        "status != 401",
+        'method="POST"',
+        "gateway-body-secret-sentinel",
+        'method="OPTIONS"',
+        "GATEWAY_TRANSPARENCY_OK",
+    ):
+        if fragment not in probe:
+            raise AssertionError(f"the transparent gateway runtime probe is missing: {fragment}")
+    if "response.read" in probe or "print(response" in probe:
+        raise AssertionError("transparent gateway evidence cannot retain response bodies")
+    if "GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE" not in update:
+        raise AssertionError(
+            "gateway adoption must fail closed without governed live auth evidence"
+        )
+    update_main = update.split("def main() -> int:", maxsplit=1)[1]
+    availability_gate = update_main.index(
+        "_require_gateway_auth_parity_evidence_available(reconciliation_name)"
+    )
+    if availability_gate > update_main.index("if args.refresh_bootstrap:"):
+        raise AssertionError("unavailable auth parity must stop before refresh-bootstrap")
+    if "_forward_api_status_below_rate_limit" in test_source:
+        raise AssertionError("static status echo cannot be gateway auth-parity evidence")
+
+    main_source = update_main
+    if "_airflow_compose_files(" not in main_source:
+        raise AssertionError("selected Airflow restarts must retain transparent gateway routing")
+    transparency = main_source.index("_verify_gateway_transparency(")
+    target_audit = main_source.index("enforce_local_topology(", transparency)
+    state_write = main_source.index("write_applied_state(", target_audit)
+    if not transparency < target_audit < state_write:
+        raise AssertionError("transparent gateway evidence must precede audit and state write")
 
 
 def verify_governed_persistent_data_bind_probe_contract() -> None:
@@ -2492,6 +2733,7 @@ def main() -> None:
     verify_amd64_source_readiness_contract()
     verify_governed_docker_build_capacity_contract()
     verify_governed_local_topology_contract()
+    verify_transparent_gateway_contract()
     verify_governed_persistent_data_bind_probe_contract()
     verify_document_links()
     print(

@@ -4,7 +4,7 @@ server {
     server_tokens off;
     root /usr/share/nginx/html;
     resolver 127.0.0.11 valid=10s ipv6=off;
-    set $api_backend http://api:8000;
+    set $api_backend http://${API_PROXY_UPSTREAM};
 
     # nginx normally drops every parent add_header when a location declares
     # even one local header. The pinned 1.30 runtime supports recursive merge,

@@ -93,6 +93,20 @@ def test_studio_proposal_jobs_use_the_standard_bounded_api_proxy() -> None:
     assert "KNOWLEDGE_STUDIO_DOCUMENT_PROXY_READ_TIMEOUT_SECONDS" not in host_development
 
 
+def test_api_upstream_is_exactly_validated_and_gateway_overlay_has_no_fallback() -> None:
+    source = TEMPLATE.read_text(encoding="utf-8")
+    entrypoint = (ROOT / "frontend" / "docker-entrypoint.sh").read_text(encoding="utf-8")
+    overlay = (ROOT / "compose.gateway-routing.yaml").read_text(encoding="utf-8")
+
+    assert "set $api_backend http://${API_PROXY_UPSTREAM};" in source
+    assert "api_proxy_upstream=${API_PROXY_UPSTREAM:-api:8000}" in entrypoint
+    assert "api:8000|apisix:9080" in entrypoint
+    assert "API_PROXY_UPSTREAM must be api:8000 or apisix:9080." in entrypoint
+    assert "API_PROXY_UPSTREAM: apisix:9080" in overlay
+    assert "condition: service_healthy" in overlay
+    assert "api:8000" not in overlay
+
+
 def test_live_verifier_parses_headers_and_rejects_duplicates() -> None:
     module = _module()
     csp = "default-src 'self'; frame-ancestors 'none'"

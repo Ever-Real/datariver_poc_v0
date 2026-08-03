@@ -697,6 +697,632 @@ def test_local_topology_keeps_runtime_and_intent_drift_separate() -> None:
     assert audit.intent_mismatch == ("graph.neo4j",)
 
 
+def test_exact_mac_topology_reconciliation_changes_only_graph_and_gateway() -> None:
+    state = _topology_state(
+        profile="mac-development",
+        local_airflow=True,
+        local_datahub=True,
+        local_redis=True,
+        local_storage=True,
+        environment_key_hashes={"UNCHANGED": "a" * 64},
+    )
+    audit = workflow.LocalTopologyAudit(
+        expected_missing=("worker.governance-document",),
+        unexpected_running=("gateway.apisix", "graph.neo4j"),
+        selected_unhealthy=(),
+        intent_mismatch=("graph.neo4j",),
+    )
+
+    plan = workflow.build_topology_reconciliation_plan(
+        "mac-development-graph-gateway-v1",
+        state=state,
+        environment_values={
+            "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
+            "NEO4J_PROJECTION_ENABLED": "true",
+            "NEO4J_URI": "bolt://neo4j:7687",
+        },
+        audit=audit,
+    )
+
+    assert plan.missing_worker_service == "governance-document-worker"
+    assert plan.target_state == workflow.replace(
+        state,
+        local_graph=True,
+        local_gateway=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("state_overrides", "environment", "audit_overrides"),
+    (
+        ({"profile": "portable-development"}, {}, {}),
+        ({"local_graph": True}, {}, {}),
+        ({"local_gateway": True}, {}, {}),
+        ({}, {"NEO4J_PROJECTION_ENABLED": "false"}, {}),
+        ({}, {"GOVERNANCE_DOCUMENT_WORKER_ENABLED": "false"}, {}),
+        ({}, {}, {"expected_missing": ()}),
+        ({}, {}, {"unexpected_unknown_count": 1}),
+        ({}, {}, {"selected_unhealthy": (("core.api", "unhealthy"),)}),
+    ),
+)
+def test_topology_reconciliation_rejects_any_nonexact_prestate_or_finding(
+    state_overrides: dict[str, object],
+    environment: dict[str, str],
+    audit_overrides: dict[str, object],
+) -> None:
+    state_values: dict[str, object] = {
+        "profile": "mac-development",
+        "local_airflow": True,
+        "local_datahub": True,
+        "local_redis": True,
+        "local_storage": True,
+    }
+    state_values.update(state_overrides)
+    state = _topology_state(**state_values)
+    audit_values: dict[str, object] = {
+        "expected_missing": ("worker.governance-document",),
+        "unexpected_running": ("gateway.apisix", "graph.neo4j"),
+        "selected_unhealthy": (),
+        "intent_mismatch": ("graph.neo4j",),
+        "unexpected_unknown_count": 0,
+    }
+    audit_values.update(audit_overrides)
+    values = {
+        "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
+        "NEO4J_PROJECTION_ENABLED": "true",
+        "NEO4J_URI": "bolt://neo4j:7687",
+        **environment,
+    }
+
+    with pytest.raises(workflow.WorkflowError, match="TOPOLOGY_RECONCILIATION_PRECONDITION"):
+        workflow.build_topology_reconciliation_plan(
+            "mac-development-graph-gateway-v1",
+            state=state,
+            environment_values=values,
+            audit=workflow.LocalTopologyAudit(**audit_values),
+        )
+
+
+def test_gateway_routing_overlay_has_narrow_change_classification() -> None:
+    plan = workflow.classify_changes(("compose.gateway-routing.yaml",))
+
+    assert plan.services == ("web",)
+    assert plan.restart_gateway is True
+    assert plan.requires_migration is False
+    assert plan.configure_keycloak is False
+    assert plan.restart_airflow is False
+    assert plan.restart_graph is False
+
+
+def test_selected_gateway_state_renders_only_reviewed_routing_overlays() -> None:
+    update = _load_update_module()
+    state = _topology_state(
+        profile="mac-development",
+        local_gateway=True,
+        local_graph=True,
+    )
+
+    files = update._compose_files(state, release_override=None)
+
+    assert files == (
+        ROOT / "compose.yaml",
+        ROOT / "compose.identity.yaml",
+        ROOT / "compose.gateway.yaml",
+        ROOT / "compose.gateway-routing.yaml",
+    )
+
+    assert update._airflow_compose_files(files, local_gateway=True) == (
+        *files,
+        ROOT / "compose.airflow.yaml",
+        ROOT / "compose.airflow.host-dev.yaml",
+    )
+    assert update._airflow_compose_files(files[:2], local_gateway=False) == (
+        *files[:2],
+        ROOT / "compose.airflow.yaml",
+    )
+
+
+def _topology_reconciliation_plan() -> Any:
+    state = _topology_state(
+        profile="mac-development",
+        local_airflow=True,
+        local_datahub=True,
+        local_redis=True,
+        local_storage=True,
+    )
+    return workflow.TopologyReconciliationPlan(
+        name="mac-development-graph-gateway-v1",
+        target_state=workflow.replace(state, local_gateway=True, local_graph=True),
+        missing_worker_service="governance-document-worker",
+    )
+
+
+def test_topology_reconciliation_mutation_order_is_worker_gateway_web_airflow(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    events: list[tuple[str, ...]] = []
+
+    def compose(_runner: object, **kwargs: object) -> None:
+        trailing = cast(tuple[str, ...], kwargs["trailing"])
+        events.append(trailing)
+
+    monkeypatch.setattr(update, "_compose", compose)
+    monkeypatch.setattr(
+        update,
+        "_verify_governance_document_worker_database",
+        lambda *_args, **_kwargs: events.append(("database-gates",)),
+    )
+    monkeypatch.setattr(
+        update,
+        "_require_idle_builder",
+        lambda *_args, **_kwargs: events.append(("builder-idle",)),
+    )
+
+    class SecretGuard:
+        def revalidate(self) -> None:
+            events.append(("secret-guard",))
+
+    update._apply_topology_reconciliation(
+        SimpleNamespace(note=lambda _message: None),
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml", ROOT / "compose.gateway.yaml"),
+        plan=_topology_reconciliation_plan(),
+        selected_builder="builder",
+        capacity_lock=object(),
+        secret_guard=SecretGuard(),
+    )
+
+    assert events[0] == ("secret-guard",)
+    assert events[1][-1] == "governance-document-worker"
+    assert events[2] == ("secret-guard",)
+    assert events[3] == ("database-gates",)
+    assert events[4] == ("builder-idle",)
+    assert events[5] == ("build", "apisix")
+    assert events[6][-1] == "apisix"
+    assert events[7][-1] == "web"
+    assert events[8][-4:] == workflow.AIRFLOW_SERVICES
+
+
+def test_governance_document_role_and_backlog_are_separate_sanitized_queries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    commands: list[tuple[str, ...]] = []
+    outputs = iter(("datariver_governance_document", "12"))
+    notes: list[str] = []
+
+    def private_output(**kwargs: object) -> str:
+        commands.append(cast(tuple[str, ...], kwargs["trailing"]))
+        return next(outputs)
+
+    monkeypatch.setattr(update, "_private_compose_output", private_output)
+    update._verify_governance_document_worker_database(
+        SimpleNamespace(note=notes.append),
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+    )
+
+    assert len(commands) == 2
+    assert "SELECT current_user;" in commands[0][-1]
+    assert "count(*)" not in commands[0][-1]
+    assert "SELECT count(*)" in commands[1][-1]
+    assert "current_user" not in commands[1][-1]
+    assert notes == ["Governance document worker database role/backlog verified count=12"]
+
+
+def test_topology_reconciliation_failure_stops_before_later_mutations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    calls: list[tuple[str, ...]] = []
+
+    def compose(_runner: object, **kwargs: object) -> None:
+        trailing = cast(tuple[str, ...], kwargs["trailing"])
+        calls.append(trailing)
+        if trailing == ("build", "apisix"):
+            raise workflow.WorkflowError("fixed-gateway-build-failure")
+
+    monkeypatch.setattr(update, "_compose", compose)
+    monkeypatch.setattr(
+        update,
+        "_verify_governance_document_worker_database",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(update, "_require_idle_builder", lambda *_args, **_kwargs: None)
+
+    class SecretGuard:
+        def revalidate(self) -> None:
+            return None
+
+    with pytest.raises(workflow.WorkflowError, match="fixed-gateway-build-failure"):
+        update._apply_topology_reconciliation(
+            SimpleNamespace(note=lambda _message: None),
+            env_file=tmp_path / ".env",
+            files=(ROOT / "compose.yaml", ROOT / "compose.gateway.yaml"),
+            plan=_topology_reconciliation_plan(),
+            selected_builder="builder",
+            capacity_lock=object(),
+            secret_guard=SecretGuard(),
+        )
+
+    assert calls[0][-1] == "governance-document-worker"
+    assert calls[1] == ("build", "apisix")
+    assert all(call[-1] not in {"web", "airflow-triggerer"} for call in calls)
+
+
+def _write_topology_secret_fixture(root: Path) -> Path:
+    secret_dir = root / "secrets"
+    secret_dir.mkdir(mode=0o700)
+    secret_dir.chmod(0o700)
+    for name in workflow.TOPOLOGY_RECONCILIATION_SECRET_NAMES:
+        target = secret_dir / name
+        target.write_text("fixture\n", encoding="utf-8")
+        target.chmod(0o444)
+    return secret_dir
+
+
+def test_topology_secret_preflight_accepts_selected_subset_of_canonical_metadata(
+    tmp_path: Path,
+) -> None:
+    secret_dir = _write_topology_secret_fixture(tmp_path)
+    unrelated = secret_dir / "unrelated-canonical-secret"
+    unrelated.write_text("unrelated\n", encoding="utf-8")
+    unrelated.chmod(0o444)
+
+    guard = workflow.require_topology_reconciliation_secrets(tmp_path)
+    with guard:
+        assert guard.closed is False
+        guard.revalidate()
+    assert guard.closed is True
+
+
+def test_topology_secret_preflight_rejects_a_symlinked_root(tmp_path: Path) -> None:
+    actual_root = tmp_path / "actual"
+    actual_root.mkdir()
+    _write_topology_secret_fixture(actual_root)
+    linked_root = tmp_path / "linked"
+    linked_root.symlink_to(actual_root, target_is_directory=True)
+
+    with pytest.raises(workflow.WorkflowError, match="TOPOLOGY_SECRET_PREFLIGHT_FAILED"):
+        with workflow.require_topology_reconciliation_secrets(linked_root):
+            pass
+
+
+def test_topology_secret_guard_detects_selected_file_replacement_after_preflight(
+    tmp_path: Path,
+) -> None:
+    secret_dir = _write_topology_secret_fixture(tmp_path)
+    target = secret_dir / workflow.TOPOLOGY_RECONCILIATION_SECRET_NAMES[0]
+
+    with workflow.require_topology_reconciliation_secrets(tmp_path) as guard:
+        replacement = tmp_path / "replacement"
+        replacement.write_text("replacement\n", encoding="utf-8")
+        replacement.chmod(0o444)
+        target.rename(tmp_path / "original")
+        replacement.rename(target)
+        with pytest.raises(workflow.WorkflowError, match="TOPOLOGY_SECRET_PREFLIGHT_FAILED"):
+            guard.revalidate()
+
+
+def test_worker_create_is_bracketed_by_retained_secret_guard_on_ambiguous_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    events: list[str] = []
+
+    class SecretGuard:
+        def revalidate(self) -> None:
+            events.append("guard")
+            if events == ["guard", "create", "guard"]:
+                raise workflow.WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+
+    def compose(_runner: object, **kwargs: object) -> None:
+        trailing = cast(tuple[str, ...], kwargs["trailing"])
+        if trailing[-1] == "governance-document-worker":
+            events.append("create")
+            raise workflow.WorkflowError("ambiguous-create-failure")
+        events.append("later-mutation")
+
+    monkeypatch.setattr(update, "_compose", compose)
+
+    with pytest.raises(workflow.WorkflowError, match="TOPOLOGY_SECRET_PREFLIGHT_FAILED"):
+        update._apply_topology_reconciliation(
+            SimpleNamespace(note=lambda _message: None),
+            env_file=tmp_path / ".env",
+            files=(ROOT / "compose.yaml",),
+            plan=_topology_reconciliation_plan(),
+            selected_builder=None,
+            capacity_lock=object(),
+            secret_guard=SecretGuard(),
+        )
+
+    assert events == ["guard", "create", "guard"]
+
+
+def test_gateway_live_auth_parity_unavailable_is_state_write_precondition(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    calls: list[tuple[str, ...]] = []
+    notes: list[str] = []
+
+    class ProbeRunner:
+        def run(
+            self,
+            command: tuple[object, ...],
+            **kwargs: object,
+        ) -> None:
+            calls.append(tuple(os.fspath(cast(str | os.PathLike[str], item)) for item in command))
+            program = cast(str, kwargs["input_text"])
+            assert "gateway-invalid-token-sentinel" in program
+            assert "gateway-cookie-sentinel" in program
+            assert "gateway-code-sentinel" in program
+            assert "gateway-secret-sentinel" in program
+            assert "gateway-body-secret-sentinel" in program
+            assert "response.read" not in program
+            assert 'paths = ("/api/v1/knowledge/registry/assets", "/api/v1/change-requests")' in (
+                program
+            )
+
+        def note(self, message: str) -> None:
+            notes.append(message)
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "API_PORT=8000\nAPISIX_PORT=9080\nWEB_PORT=8080\nAPP_PUBLIC_ORIGIN=http://localhost:8080\n",
+        encoding="utf-8",
+    )
+    log_checks: list[tuple[Path, ...]] = []
+    monkeypatch.setattr(
+        update,
+        "_verify_gateway_logs_do_not_persist_probe_credentials",
+        lambda **kwargs: log_checks.append(cast(tuple[Path, ...], kwargs["files"])),
+    )
+
+    with pytest.raises(
+        workflow.WorkflowError,
+        match="GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE",
+    ):
+        update._verify_gateway_transparency(
+            ProbeRunner(),
+            env_file=env_file,
+            files=(ROOT / "compose.yaml", ROOT / "compose.gateway-routing.yaml"),
+        )
+
+    assert len(calls) == 1
+    assert calls[0][-4:] == (
+        "http://127.0.0.1:8000",
+        "http://127.0.0.1:9080",
+        "http://127.0.0.1:8080",
+        "http://localhost:8080",
+    )
+    assert log_checks == [(ROOT / "compose.yaml", ROOT / "compose.gateway-routing.yaml")]
+    assert notes == []
+
+
+def test_unavailable_gateway_auth_parity_stops_under_lock_before_runtime_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    env_file.write_text("NEO4J_PROJECTION_ENABLED=true\n", encoding="utf-8")
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        local_airflow=True,
+        local_datahub=True,
+        local_redis=True,
+        local_storage=True,
+    )
+    events: list[str] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+    class Lock:
+        def __enter__(self) -> object:
+            events.append("lock-enter")
+            return object()
+
+        def __exit__(self, *_args: object) -> None:
+            events.append("lock-exit")
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="mac-development",
+            env_file=None,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=True,
+            skip_catalog_sync=True,
+            assume_yes=True,
+            reconcile_local_topology="mac-development-graph-gateway-v1",
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FakeRunner)
+    monkeypatch.setattr(update, "require_command", lambda _command: None)
+    monkeypatch.setattr(update, "state_path", lambda _root, _profile: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda *_args: ())
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lambda _root: Lock())
+
+    for name in (
+        "_bootstrap",
+        "_preflight_build_capacity",
+        "_reconcile_local_reranker",
+        "_compose",
+        "_apply_topology_reconciliation",
+        "write_applied_state",
+    ):
+        monkeypatch.setattr(
+            update,
+            name,
+            lambda *_args, _name=name, **_kwargs: events.append(_name),
+        )
+
+    assert update.main() == 2
+
+    assert events == ["lock-enter", "lock-exit"]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err.strip() == "ERROR: GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE"
+
+
+def test_worker_create_stops_before_mutation_when_retained_secret_guard_drifted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    compose_calls: list[tuple[str, ...]] = []
+
+    class SecretGuard:
+        def revalidate(self) -> None:
+            raise workflow.WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+
+    monkeypatch.setattr(
+        update,
+        "_compose",
+        lambda _runner, **kwargs: compose_calls.append(cast(tuple[str, ...], kwargs["trailing"])),
+    )
+
+    with pytest.raises(workflow.WorkflowError, match="TOPOLOGY_SECRET_PREFLIGHT_FAILED"):
+        update._apply_topology_reconciliation(
+            SimpleNamespace(note=lambda _message: None),
+            env_file=tmp_path / ".env",
+            files=(ROOT / "compose.yaml",),
+            plan=_topology_reconciliation_plan(),
+            selected_builder=None,
+            capacity_lock=object(),
+            secret_guard=SecretGuard(),
+        )
+
+    assert compose_calls == []
+
+
+def test_gateway_log_probe_rejects_credential_persistence_without_raw_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    sentinel = b"gateway-invalid-token-sentinel"
+
+    monkeypatch.setattr(
+        update.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=sentinel, stderr=b""),
+    )
+
+    with pytest.raises(
+        workflow.WorkflowError, match="GATEWAY_CREDENTIAL_LOG_PROBE_FAILED"
+    ) as error:
+        update._verify_gateway_logs_do_not_persist_probe_credentials(
+            env_file=tmp_path / ".env",
+            files=(ROOT / "compose.yaml",),
+        )
+
+    captured = capsys.readouterr()
+    exposed = captured.out + captured.err + str(error.value)
+    assert sentinel.decode() not in exposed
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "mode",
+        "empty",
+        "hardlink",
+        "symlink",
+        "missing",
+        "nonregular",
+        "owner",
+        "directory-mode",
+        "ancestor-mode",
+        "fd-replacement",
+        "device-drift",
+    ),
+)
+def test_topology_secret_preflight_fails_closed_without_reading_values(
+    tmp_path: Path,
+    failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret_dir = _write_topology_secret_fixture(tmp_path)
+    target = secret_dir / workflow.TOPOLOGY_RECONCILIATION_SECRET_NAMES[0]
+    sentinel = "secret-value-must-not-leak"
+    if failure == "mode":
+        target.chmod(0o400)
+    elif failure == "empty":
+        target.chmod(0o600)
+        target.write_text("", encoding="utf-8")
+        target.chmod(0o444)
+    elif failure == "hardlink":
+        os.link(target, tmp_path / "hardlink-fixture")
+    elif failure == "symlink":
+        target.unlink()
+        target.symlink_to(secret_dir / workflow.TOPOLOGY_RECONCILIATION_SECRET_NAMES[1])
+    elif failure == "missing":
+        target.unlink()
+    elif failure == "nonregular":
+        target.unlink()
+        target.mkdir()
+    elif failure == "owner":
+        actual_uid = os.getuid()
+        monkeypatch.setattr(workflow.os, "getuid", lambda: actual_uid + 1)
+    elif failure == "directory-mode":
+        secret_dir.chmod(0o755)
+    elif failure == "ancestor-mode":
+        tmp_path.chmod(0o777)
+    elif failure == "fd-replacement":
+        alternate = tmp_path / "alternate-secret"
+        alternate.write_text("alternate\n", encoding="utf-8")
+        alternate.chmod(0o444)
+        original_open = workflow.os.open
+
+        def replaced_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+            if path == workflow.TOPOLOGY_RECONCILIATION_SECRET_NAMES[0]:
+                return cast(int, original_open(alternate, flags))
+            return cast(int, original_open(path, flags, *args, **kwargs))
+
+        monkeypatch.setattr(workflow.os, "open", replaced_open)
+    else:
+        target_identity = target.stat()
+        original_fstat = workflow.os.fstat
+
+        def drifted_fstat(descriptor: int) -> os.stat_result:
+            evidence = cast(os.stat_result, original_fstat(descriptor))
+            if evidence.st_ino != target_identity.st_ino:
+                return evidence
+            fields = list(evidence)
+            fields[2] += 1
+            return os.stat_result(fields)
+
+        monkeypatch.setattr(workflow.os, "fstat", drifted_fstat)
+
+    with pytest.raises(workflow.WorkflowError, match="TOPOLOGY_SECRET_PREFLIGHT_FAILED") as error:
+        with workflow.require_topology_reconciliation_secrets(tmp_path):
+            pass
+
+    captured = capsys.readouterr()
+    exposed = captured.out + captured.err + str(error.value)
+    assert sentinel not in exposed
+
+
 def test_local_topology_reports_missing_and_selected_unhealthy_separately() -> None:
     observations = [item for item in _core_topology_observations() if item.service != "api"]
     for service in workflow.AIRFLOW_SERVICES:

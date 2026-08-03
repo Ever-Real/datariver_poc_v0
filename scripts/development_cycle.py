@@ -30,6 +30,7 @@ EXPECTED_GITHUB_HOST = "github.com"
 EXPECTED_GITHUB_PATH = "Ever-Real/datariver_v1"
 DEFAULT_PREPARATION_ENV = Path(".env.wsl-intranet-development")
 READINESS_CONTRACT = "DATARIVER_PREPARATION_READINESS_V1"
+LOCAL_TOPOLOGY_RECONCILIATION = "mac-development-graph-gateway-v1"
 READINESS_MANIFEST = ROOT / "runtime" / "portability" / "amd64-readiness.json"
 CANONICAL_ENV_SCHEMA = ROOT / ".env.example"
 PYTHON_LOCK = ROOT / "uv.lock"
@@ -178,7 +179,22 @@ def parse_arguments() -> argparse.Namespace:
         default=DEFAULT_PREPARATION_ENV,
         help=("Preparation source-host environment (default: .env.wsl-intranet-development)."),
     )
+    parser.add_argument(
+        "--reconcile-local-topology",
+        choices=(LOCAL_TOPOLOGY_RECONCILIATION,),
+        help=("One reviewed Mac-development graph/gateway adoption, valid only with dev-publish."),
+    )
     return parser.parse_args()
+
+
+def validate_local_topology_reconciliation(action: str, value: str | None) -> str | None:
+    if value is None:
+        return None
+    if action != "dev-publish" or value != LOCAL_TOPOLOGY_RECONCILIATION:
+        raise DevelopmentCycleError(
+            "Local topology reconciliation is valid only for the reviewed dev-publish action."
+        )
+    return value
 
 
 def require_command(name: str) -> None:
@@ -291,7 +307,22 @@ def require_platform(*, expected_system: str, expected_machines: set[str]) -> No
         )
 
 
-def dev_publish(runner: Runner) -> None:
+def dev_runtime_update_command(
+    reconciliation: str | None,
+) -> tuple[str | os.PathLike[str], ...]:
+    command: list[str | os.PathLike[str]] = [
+        ROOT / "scripts" / "workflow_update_restart.py",
+        "--profile",
+        "mac-development",
+        "--refresh-bootstrap",
+        "--assume-yes",
+    ]
+    if reconciliation is not None:
+        command.extend(("--reconcile-local-topology", reconciliation))
+    return tuple(command)
+
+
+def dev_publish(runner: Runner, *, reconciliation: str | None = None) -> None:
     require_platform(expected_system="Darwin", expected_machines={"arm64", "aarch64"})
     require_command("git")
     require_command("npm")
@@ -301,15 +332,7 @@ def dev_publish(runner: Runner) -> None:
     runner.note("현재 dev commit 전체 소스 검증")
     verify_source(runner)
     runner.note("검증한 commit을 Mac 개발 runtime에 적용")
-    runner.run(
-        (
-            ROOT / "scripts" / "workflow_update_restart.py",
-            "--profile",
-            "mac-development",
-            "--refresh-bootstrap",
-            "--assume-yes",
-        )
-    )
+    runner.run(dev_runtime_update_command(reconciliation))
     runner.note("검증한 dev commit을 Ever-Real GitHub에 push")
     runner.run(("git", "push", "origin", "dev"))
     runner.note("GitHub origin/dev SHA 일치 확인")
@@ -849,10 +872,14 @@ def main() -> int:
     arguments = parse_arguments()
     runner = Runner()
     try:
+        reconciliation = validate_local_topology_reconciliation(
+            arguments.action,
+            arguments.reconcile_local_topology,
+        )
         if arguments.action == "verify":
             verify_source(runner)
         elif arguments.action == "dev-publish":
-            dev_publish(runner)
+            dev_publish(runner, reconciliation=reconciliation)
         elif arguments.action == "prep-update":
             prep_update(runner, env_path(arguments.env_file))
         else:

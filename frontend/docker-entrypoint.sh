@@ -14,6 +14,17 @@ if [ "$api_proxy_read_timeout_seconds" -lt 1 ] || [ "$api_proxy_read_timeout_sec
 fi
 export API_PROXY_READ_TIMEOUT_SECONDS="$api_proxy_read_timeout_seconds"
 
+api_proxy_upstream=${API_PROXY_UPSTREAM:-api:8000}
+case "$api_proxy_upstream" in
+  api:8000|apisix:9080)
+    ;;
+  *)
+    echo "API_PROXY_UPSTREAM must be api:8000 or apisix:9080." >&2
+    exit 2
+    ;;
+esac
+export API_PROXY_UPSTREAM="$api_proxy_upstream"
+
 S3_PUBLIC_ORIGIN=${S3_PUBLIC_ORIGIN:-}
 OIDC_PUBLIC_ORIGIN=${OIDC_PUBLIC_ORIGIN:-}
 DATAHUB_EMBED_BASE_URL=${DATAHUB_EMBED_BASE_URL:-}

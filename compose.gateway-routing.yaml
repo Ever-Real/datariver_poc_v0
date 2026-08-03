@@ -1,0 +1,10 @@
+services:
+  # This overlay is selected only after the governed Mac topology adoption.
+  # Browser credentials keep their existing same-origin Web path; Nginx uses
+  # APISIX only as a transparent internal API hop and has no direct fallback.
+  web:
+    environment:
+      API_PROXY_UPSTREAM: apisix:9080
+    depends_on:
+      apisix:
+        condition: service_healthy

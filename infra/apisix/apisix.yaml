@@ -44,7 +44,7 @@ routes:
   - id: datariver-api-v1
     name: DataRiver governed API v1
     uri: /api/v1/*
-    methods: [GET, POST, PATCH, DELETE, OPTIONS]
+    methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
     plugins:
       request-id:
         header_name: X-Request-Id

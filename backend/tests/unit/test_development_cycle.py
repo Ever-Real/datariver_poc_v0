@@ -65,6 +65,120 @@ def test_unapproved_origin_is_rejected(remote_url: str) -> None:
         cycle.validate_origin_url(remote_url)
 
 
+def test_local_topology_reconciliation_is_optional_and_dev_publish_only() -> None:
+    assert cycle.validate_local_topology_reconciliation("dev-publish", None) is None
+    assert (
+        cycle.validate_local_topology_reconciliation(
+            "dev-publish",
+            "mac-development-graph-gateway-v1",
+        )
+        == "mac-development-graph-gateway-v1"
+    )
+
+    for action in ("verify", "prep-update", "prep-check"):
+        with pytest.raises(cycle.DevelopmentCycleError, match="dev-publish"):
+            cycle.validate_local_topology_reconciliation(
+                action,
+                "mac-development-graph-gateway-v1",
+            )
+
+
+def test_dev_runtime_update_command_keeps_normal_contract_and_exact_opt_in() -> None:
+    normal = tuple(os.fspath(value) for value in cycle.dev_runtime_update_command(None))
+    adopted = tuple(
+        os.fspath(value)
+        for value in cycle.dev_runtime_update_command("mac-development-graph-gateway-v1")
+    )
+
+    assert normal == (
+        os.fspath(ROOT / "scripts" / "workflow_update_restart.py"),
+        "--profile",
+        "mac-development",
+        "--refresh-bootstrap",
+        "--assume-yes",
+    )
+    assert adopted == (
+        *normal,
+        "--reconcile-local-topology",
+        "mac-development-graph-gateway-v1",
+    )
+
+
+def test_dev_publish_keeps_runtime_reconciliation_before_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[tuple[str, ...] | str] = []
+
+    class FakeRunner:
+        def note(self, message: str) -> None:
+            events.append(message)
+
+        def run(self, arguments: object, **_kwargs: object) -> None:
+            assert isinstance(arguments, tuple)
+            events.append(tuple(os.fspath(value) for value in arguments))
+
+    monkeypatch.setattr(cycle, "require_platform", lambda **_kwargs: None)
+    monkeypatch.setattr(cycle, "require_command", lambda _name: None)
+    monkeypatch.setattr(cycle, "require_dev_checkout", lambda _runner: None)
+    monkeypatch.setattr(cycle, "require_expected_origin", lambda _runner: None)
+    monkeypatch.setattr(cycle, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(cycle, "verify_source", lambda _runner: events.append("source-gates"))
+    monkeypatch.setattr(
+        cycle,
+        "verify_remote_dev",
+        lambda _runner, _commit: events.append("remote-verified"),
+    )
+
+    cycle.dev_publish(
+        FakeRunner(),
+        reconciliation="mac-development-graph-gateway-v1",
+    )
+
+    runtime = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple) and "--reconcile-local-topology" in event
+    )
+    push = next(
+        index
+        for index, event in enumerate(events)
+        if isinstance(event, tuple) and event[:3] == ("git", "push", "origin")
+    )
+    assert events.index("source-gates") < runtime < push < events.index("remote-verified")
+
+
+def test_dev_publish_never_pushes_after_reconciliation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+        def run(self, arguments: object, **_kwargs: object) -> None:
+            assert isinstance(arguments, tuple)
+            command = tuple(os.fspath(value) for value in arguments)
+            commands.append(command)
+            if "--reconcile-local-topology" in command:
+                raise cycle.WorkflowError("fixed-reconciliation-failure")
+
+    monkeypatch.setattr(cycle, "require_platform", lambda **_kwargs: None)
+    monkeypatch.setattr(cycle, "require_command", lambda _name: None)
+    monkeypatch.setattr(cycle, "require_dev_checkout", lambda _runner: None)
+    monkeypatch.setattr(cycle, "require_expected_origin", lambda _runner: None)
+    monkeypatch.setattr(cycle, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(cycle, "verify_source", lambda _runner: None)
+
+    with pytest.raises(cycle.WorkflowError, match="fixed-reconciliation-failure"):
+        cycle.dev_publish(
+            FakeRunner(),
+            reconciliation="mac-development-graph-gateway-v1",
+        )
+
+    assert all(command[:2] != ("git", "push") for command in commands)
+
+
 def test_preparation_bootstrap_preserves_selected_operator_modes(tmp_path: Path) -> None:
     env_file = tmp_path / ".env.wsl-intranet-development"
     command = tuple(

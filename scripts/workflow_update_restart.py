@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 from contextlib import ExitStack
 from dataclasses import replace
@@ -24,7 +25,12 @@ from platform_workflow import (
     AppliedState,
     ChangePlan,
     Runner,
+    TopologyReconciliationPlan,
+    TopologyReconciliationSecretGuard,
     WorkflowError,
+    build_local_topology_audit,
+    build_topology_reconciliation_plan,
+    capture_local_topology,
     changed_environment_keys,
     classify_changes,
     classify_environment_changes,
@@ -43,6 +49,7 @@ from platform_workflow import (
     require_command,
     require_regular_file,
     require_release_compatible_checkout,
+    require_topology_reconciliation_secrets,
     requires_local_identity_bootstrap,
     select_restart_services,
     state_path,
@@ -95,6 +102,89 @@ for url in sys.argv[1:]:
     print(f"{url} -> HTTP {response.status} {body}")
 """
 
+GATEWAY_TRANSPARENCY_PROGRAM = """\
+import sys
+import urllib.error
+import urllib.request
+
+direct, gateway, web, origin = sys.argv[1:]
+selected_headers = (
+    "WWW-Authenticate",
+    "Set-Cookie",
+    "Access-Control-Allow-Origin",
+    "Access-Control-Allow-Methods",
+    "Access-Control-Allow-Headers",
+    "Cache-Control",
+    "Content-Type",
+    "X-Request-Id",
+)
+
+def fail():
+    raise SystemExit("GATEWAY_TRANSPARENCY_FAILED")
+
+def request(base, path, *, method="GET", headers=None, data=None):
+    selected = dict(headers or {})
+    selected["X-Request-Id"] = "gateway-transparency-probe"
+    value = urllib.request.Request(base + path, method=method, headers=selected, data=data)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        response = opener.open(value, timeout=10)
+    except urllib.error.HTTPError as error:
+        response = error
+    except (OSError, ValueError, urllib.error.URLError):
+        fail()
+    header_evidence = tuple(
+        (name.casefold(), tuple(response.headers.get_all(name, [])))
+        for name in selected_headers
+    )
+    return response.status, header_evidence
+
+paths = ("/api/v1/knowledge/registry/assets", "/api/v1/change-requests")
+for path in paths:
+    for headers in (
+        {},
+        {
+            "Authorization": "Bearer gateway-invalid-token-sentinel",
+            "Cookie": "session=gateway-cookie-sentinel",
+            "Origin": origin,
+            "X-Gateway-Probe-Code": "gateway-code-sentinel",
+            "X-Gateway-Probe-Secret": "gateway-secret-sentinel",
+        },
+    ):
+        evidence = tuple(request(base, path, headers=headers) for base in (direct, gateway, web))
+        if any(status != 401 for status, _ in evidence) or len(set(evidence)) != 1:
+            fail()
+
+body_evidence = tuple(
+    request(
+        base,
+        paths[1],
+        method="POST",
+        headers={
+            "Authorization": "Bearer gateway-invalid-token-sentinel",
+            "Content-Type": "application/json",
+        },
+        data=b'{"probe":"gateway-body-secret-sentinel"}',
+    )
+    for base in (direct, gateway, web)
+)
+if any(status != 401 for status, _ in body_evidence) or len(set(body_evidence)) != 1:
+    fail()
+
+preflight_headers = {
+    "Origin": origin,
+    "Access-Control-Request-Method": "GET",
+    "Access-Control-Request-Headers": "authorization,x-request-id",
+}
+preflight = tuple(
+    request(base, paths[0], method="OPTIONS", headers=preflight_headers)
+    for base in (direct, gateway, web)
+)
+if len(set(preflight)) != 1 or preflight[0][0] not in (200, 204):
+    fail()
+print("GATEWAY_TRANSPARENCY_OK")
+"""
+
 _POSTGRES_SECRET_MOUNT_ENV_KEYS = frozenset(
     {
         "KNOWLEDGE_PROPOSAL_DATABASE_SECRET_REF",
@@ -108,6 +198,27 @@ _DOCKER_DAEMON_PROBE = (
 )
 _DOCKER_DAEMON_UNAVAILABLE = "DOCKER_DAEMON_UNAVAILABLE"
 _COMPOSE_RUNNING_SERVICES_QUERY_FAILED = "COMPOSE_RUNNING_SERVICES_QUERY_FAILED"
+_TOPOLOGY_RECONCILIATION = "mac-development-graph-gateway-v1"
+_GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE = "GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE"
+_GOVERNANCE_DOCUMENT_ROLE_QUERY = """\
+password="$(tr -d '\\r\\n' </run/secrets/postgres_governance_document_password)"
+export PGPASSWORD="$password"
+exec psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+  --username datariver_governance_document --dbname "$POSTGRES_DB" \
+  --command 'SELECT current_user;'
+"""
+_GOVERNANCE_DOCUMENT_BACKLOG_QUERY = """\
+password="$(tr -d '\\r\\n' </run/secrets/postgres_governance_document_password)"
+export PGPASSWORD="$password"
+exec psql --no-psqlrc --tuples-only --no-align --set ON_ERROR_STOP=1 \
+  --username datariver_governance_document --dbname "$POSTGRES_DB" \
+  --command "SELECT count(*)
+    FROM governance.document_versions
+    WHERE state = 'PUBLISHED'
+      AND knowledge_state IN ('PENDING','FAILED')
+      AND next_attempt_at <= clock_timestamp()
+      AND (lease_until IS NULL OR lease_until <= clock_timestamp());"
+"""
 
 
 def parse_args() -> argparse.Namespace:
@@ -145,6 +256,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--skip-catalog-sync", action="store_true")
     parser.add_argument("--assume-yes", action="store_true")
+    parser.add_argument(
+        "--reconcile-local-topology",
+        choices=(_TOPOLOGY_RECONCILIATION,),
+        help="Apply the sole reviewed Mac-development graph/gateway adoption.",
+    )
     return parser.parse_args()
 
 
@@ -154,7 +270,13 @@ def _resolve_repo_path(value: str | Path) -> Path:
 
 
 def _compose_files(state: AppliedState, *, release_override: Path | None) -> tuple[Path, ...]:
-    files = (ROOT / "compose.yaml", ROOT / "compose.identity.yaml")
+    files: tuple[Path, ...] = (ROOT / "compose.yaml", ROOT / "compose.identity.yaml")
+    if state.local_gateway:
+        files = (
+            *files,
+            ROOT / "compose.gateway.yaml",
+            ROOT / "compose.gateway-routing.yaml",
+        )
     if state.deployment_mode == "build":
         return files
     release_dir = release_override or (
@@ -164,6 +286,293 @@ def _compose_files(state: AppliedState, *, release_override: Path | None) -> tup
         raise WorkflowError("The offline state has no release directory.")
     layout = release_layout(release_dir, architecture="amd64")
     return (*files, layout.offline_compose)
+
+
+def _airflow_compose_files(
+    files: tuple[Path, ...],
+    *,
+    local_gateway: bool,
+) -> tuple[Path, ...]:
+    selected = (*files, ROOT / "compose.airflow.yaml")
+    if local_gateway:
+        selected = (*selected, ROOT / "compose.airflow.host-dev.yaml")
+    return tuple(dict.fromkeys(selected))
+
+
+def _private_compose_output(
+    *,
+    env_file: Path,
+    files: tuple[Path, ...],
+    trailing: tuple[str, ...],
+    classification: str,
+) -> str:
+    command = [
+        os.fspath(argument)
+        for argument in compose_arguments(
+            env_file=env_file,
+            compose_files=files,
+            trailing=trailing,
+        )
+    ]
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, never a shell on the host.
+            command,
+            cwd=ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise WorkflowError(classification) from None
+    output = result.stdout.strip()
+    if len(output.encode("utf-8")) > 256 or "\n" in output or "\r" in output:
+        raise WorkflowError(classification)
+    return output
+
+
+def _verify_governance_document_worker_database(
+    runner: Runner,
+    *,
+    env_file: Path,
+    files: tuple[Path, ...],
+) -> None:
+    role = _private_compose_output(
+        env_file=env_file,
+        files=files,
+        trailing=(
+            "exec",
+            "-T",
+            "postgres",
+            "sh",
+            "-ec",
+            _GOVERNANCE_DOCUMENT_ROLE_QUERY,
+        ),
+        classification="GOVERNANCE_DOCUMENT_DATABASE_ROLE_INVALID",
+    )
+    if role != "datariver_governance_document":
+        raise WorkflowError("GOVERNANCE_DOCUMENT_DATABASE_ROLE_INVALID")
+    raw_backlog = _private_compose_output(
+        env_file=env_file,
+        files=files,
+        trailing=(
+            "exec",
+            "-T",
+            "postgres",
+            "sh",
+            "-ec",
+            _GOVERNANCE_DOCUMENT_BACKLOG_QUERY,
+        ),
+        classification="GOVERNANCE_DOCUMENT_BACKLOG_INVALID",
+    )
+    if not raw_backlog.isascii() or not raw_backlog.isdecimal():
+        raise WorkflowError("GOVERNANCE_DOCUMENT_BACKLOG_INVALID")
+    backlog = int(raw_backlog)
+    if backlog > 1_000_000_000:
+        raise WorkflowError("GOVERNANCE_DOCUMENT_BACKLOG_INVALID")
+    runner.note(f"Governance document worker database role/backlog verified count={backlog}")
+
+
+def _verify_gateway_logs_do_not_persist_probe_credentials(
+    *,
+    env_file: Path,
+    files: tuple[Path, ...],
+) -> None:
+    command = [
+        os.fspath(argument)
+        for argument in compose_arguments(
+            env_file=env_file,
+            compose_files=files,
+            trailing=(
+                "logs",
+                "--no-color",
+                "--since",
+                "2m",
+                "--tail",
+                "200",
+                "apisix",
+                "web",
+            ),
+        )
+    ]
+    try:
+        result = subprocess.run(  # noqa: S603 - fixed argv, never a shell on the host.
+            command,
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise WorkflowError("GATEWAY_CREDENTIAL_LOG_PROBE_FAILED") from None
+    combined = result.stdout + result.stderr
+    if len(combined) > 256 * 1024:
+        raise WorkflowError("GATEWAY_CREDENTIAL_LOG_PROBE_FAILED")
+    for sentinel in (
+        b"gateway-invalid-token-sentinel",
+        b"gateway-cookie-sentinel",
+        b"gateway-code-sentinel",
+        b"gateway-secret-sentinel",
+        b"gateway-body-secret-sentinel",
+    ):
+        if sentinel in combined:
+            raise WorkflowError("GATEWAY_CREDENTIAL_LOG_PROBE_FAILED")
+
+
+def _verify_gateway_transparency(
+    runner: Runner,
+    *,
+    env_file: Path,
+    files: tuple[Path, ...],
+) -> None:
+    values = read_env_values(env_file)
+    api_port = values.get("API_PORT", "8000")
+    gateway_port = values.get("APISIX_PORT", "9080")
+    web_port = values.get("WEB_PORT", "8080")
+    origin = values.get("APP_PUBLIC_ORIGIN", f"http://127.0.0.1:{web_port}")
+    runner.run(
+        (
+            sys.executable,
+            "-",
+            f"http://127.0.0.1:{api_port}",
+            f"http://127.0.0.1:{gateway_port}",
+            f"http://127.0.0.1:{web_port}",
+            origin,
+        ),
+        input_text=GATEWAY_TRANSPARENCY_PROGRAM,
+    )
+    _verify_gateway_logs_do_not_persist_probe_credentials(
+        env_file=env_file,
+        files=files,
+    )
+    # The checked-in development identities cannot currently provide the full live
+    # authorized/denied/expired/revoked matrix without provisioning credentials or
+    # mutating policy/session state. A static status echo is not adoption evidence.
+    raise WorkflowError(_GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE)
+
+
+def _require_gateway_auth_parity_evidence_available(reconciliation_name: str | None) -> None:
+    """Stop the optional topology transaction before mutation until its live plan exists."""
+
+    if reconciliation_name is not None:
+        raise WorkflowError(_GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE)
+
+
+def _prepare_topology_reconciliation(
+    runner: Runner,
+    *,
+    state: AppliedState,
+    environment_values: dict[str, str],
+    reconciliation: str,
+) -> TopologyReconciliationPlan:
+    audit = build_local_topology_audit(
+        state=state,
+        environment_values=environment_values,
+        observations=capture_local_topology(runner),
+    )
+    runner.note(f"Local topology reconciliation preflight {audit.summary()}")
+    return build_topology_reconciliation_plan(
+        reconciliation,
+        state=state,
+        environment_values=environment_values,
+        audit=audit,
+    )
+
+
+def _apply_topology_reconciliation(
+    runner: Runner,
+    *,
+    env_file: Path,
+    files: tuple[Path, ...],
+    plan: TopologyReconciliationPlan,
+    selected_builder: str | None,
+    capacity_lock: DockerWorkflowLock | None,
+    secret_guard: TopologyReconciliationSecretGuard,
+) -> None:
+    runner.note("누락된 governance document worker만 복구합니다.")
+    secret_guard.revalidate()
+    try:
+        _compose(
+            runner,
+            env_file=env_file,
+            files=files,
+            profiles=("governance-documents",),
+            trailing=(
+                "up",
+                "-d",
+                "--wait",
+                "--no-deps",
+                "--no-build",
+                plan.missing_worker_service,
+            ),
+        )
+    finally:
+        secret_guard.revalidate()
+    _verify_governance_document_worker_database(
+        runner,
+        env_file=env_file,
+        files=files,
+    )
+
+    _require_idle_builder(selected_builder, capacity_lock)
+    gateway_files = tuple(dict.fromkeys((*files, ROOT / "compose.gateway.yaml")))
+    runner.note("검증된 APISIX image만 빌드하고 기존 gateway를 재생성합니다.")
+    _compose(
+        runner,
+        env_file=env_file,
+        files=gateway_files,
+        trailing=("build", "apisix"),
+    )
+    _compose(
+        runner,
+        env_file=env_file,
+        files=gateway_files,
+        trailing=(
+            "up",
+            "-d",
+            "--wait",
+            "--no-deps",
+            "--force-recreate",
+            "--no-build",
+            "apisix",
+        ),
+    )
+
+    runner.note("Web의 내부 API upstream을 APISIX로 고정해 재생성합니다.")
+    _compose(
+        runner,
+        env_file=env_file,
+        files=files,
+        trailing=(
+            "up",
+            "-d",
+            "--wait",
+            "--no-deps",
+            "--force-recreate",
+            "--no-build",
+            "web",
+        ),
+    )
+    if plan.target_state.local_airflow:
+        airflow_files = _airflow_compose_files(
+            files,
+            local_gateway=True,
+        )
+        runner.note("선택된 Airflow API 호출만 동일 Bearer로 APISIX를 경유시킵니다.")
+        _compose(
+            runner,
+            env_file=env_file,
+            files=airflow_files,
+            trailing=(
+                "up",
+                "-d",
+                "--wait",
+                "--no-deps",
+                "--force-recreate",
+                "--no-build",
+                *AIRFLOW_SERVICES,
+            ),
+        )
 
 
 def _compose(
@@ -492,6 +901,7 @@ def _print_plan(
 
 def main() -> int:
     args = parse_args()
+    reconciliation_name = getattr(args, "reconcile_local_topology", None)
     runner = Runner()
     mutation_stack = ExitStack()
     try:
@@ -501,6 +911,10 @@ def main() -> int:
         state = load_applied_state(state_file)
         if state.profile != args.profile:
             raise WorkflowError("The requested profile does not match its applied state.")
+        capacity_lock: DockerWorkflowLock | None = None
+        if reconciliation_name is not None:
+            capacity_lock = mutation_stack.enter_context(exclusive_docker_workflow_lock(ROOT))
+            _require_gateway_auth_parity_evidence_available(reconciliation_name)
         if args.git_pull:
             require_clean_worktree(runner)
             runner.note("현재 branch를 fast-forward 방식으로 pull합니다.")
@@ -596,15 +1010,33 @@ def main() -> int:
             trailing=("config", "--quiet"),
         )
         running = _running_services(runner, env_file=env_file, files=files)
-        enforce_local_topology(
-            runner,
-            state=state,
-            environment_values=environment_values,
+        reconciliation_plan: TopologyReconciliationPlan | None = None
+        if reconciliation_name is None:
+            enforce_local_topology(
+                runner,
+                state=state,
+                environment_values=environment_values,
+            )
+        else:
+            reconciliation_plan = _prepare_topology_reconciliation(
+                runner,
+                state=state,
+                environment_values=environment_values,
+                reconciliation=reconciliation_name,
+            )
+        operating_state = (
+            reconciliation_plan.target_state if reconciliation_plan is not None else state
         )
+        files = _compose_files(operating_state, release_override=release_dir)
         enabled_optional_services = _enabled_optional_runtime_services(environment_values)
         restart_services = select_restart_services(
             plan.services,
             running_services=(*running, *enabled_optional_services),
+        )
+        immediate_restart_services = tuple(
+            service
+            for service in restart_services
+            if reconciliation_plan is None or service != "web"
         )
         _print_plan(
             previous_commit=state.applied_commit,
@@ -630,19 +1062,45 @@ def main() -> int:
                 selected_build_services.extend(core_build_services)
             if reapply_local_identity:
                 selected_build_services.append("local-bootstrap")
-            if plan.restart_airflow and state.local_airflow:
+            if (
+                plan.restart_airflow
+                and operating_state.local_airflow
+                and reconciliation_plan is None
+            ):
                 selected_build_services.extend(AIRFLOW_SERVICES)
                 capacity_files.append(ROOT / "compose.airflow.yaml")
-            if plan.restart_gateway and state.local_gateway:
+            if plan.restart_gateway and operating_state.local_gateway:
                 selected_build_services.append("apisix")
                 capacity_files.append(ROOT / "compose.gateway.yaml")
         core_build_services = list(dict.fromkeys(core_build_services))
         selected_build_services = list(dict.fromkeys(selected_build_services))
 
-        capacity_lock: DockerWorkflowLock | None = None
+        topology_secret_guard: TopologyReconciliationSecretGuard | None = None
         selected_builder: str | None = None
         if not offline:
-            capacity_lock = mutation_stack.enter_context(exclusive_docker_workflow_lock(ROOT))
+            if capacity_lock is None:
+                capacity_lock = mutation_stack.enter_context(exclusive_docker_workflow_lock(ROOT))
+            if reconciliation_plan is not None:
+                runner.note(
+                    "Topology mutation 전 canonical secret/config/runtime preflight를 반복합니다."
+                )
+                topology_secret_guard = mutation_stack.enter_context(
+                    require_topology_reconciliation_secrets(ROOT)
+                )
+                locked_plan = _prepare_topology_reconciliation(
+                    runner,
+                    state=state,
+                    environment_values=environment_values,
+                    reconciliation=reconciliation_plan.name,
+                )
+                if locked_plan != reconciliation_plan:
+                    raise WorkflowError("TOPOLOGY_RECONCILIATION_PRECONDITION_FAILED")
+                _compose(
+                    runner,
+                    env_file=env_file,
+                    files=files,
+                    trailing=("config", "--quiet"),
+                )
             if selected_build_services:
                 runner.note("Docker 변경 전에 선택 build의 용량·cache 계약을 검증합니다.")
                 selected_builder = _preflight_build_capacity(
@@ -755,7 +1213,7 @@ def main() -> int:
                 ),
             )
 
-        if restart_services:
+        if immediate_restart_services:
             runner.note("영향받은 DataRiver 서비스만 재생성합니다.")
             _compose(
                 runner,
@@ -768,7 +1226,7 @@ def main() -> int:
                     "--no-deps",
                     "--force-recreate",
                     *(("--no-build", "--pull", "never") if offline else ("--no-build",)),
-                    *restart_services,
+                    *immediate_restart_services,
                 ),
             )
 
@@ -841,8 +1299,11 @@ def main() -> int:
                     env=connector_env,
                 )
 
-        if plan.restart_airflow and state.local_airflow:
-            airflow_files = (*files, ROOT / "compose.airflow.yaml")
+        if plan.restart_airflow and state.local_airflow and reconciliation_plan is None:
+            airflow_files = _airflow_compose_files(
+                files,
+                local_gateway=operating_state.local_gateway,
+            )
             if offline_layout is not None:
                 airflow_override = release_optional_compose(
                     offline_layout,
@@ -910,7 +1371,7 @@ def main() -> int:
             runner.note("Mac 개발용 DataHub 구성을 재적용합니다.")
             runner.run((ROOT / "scripts" / "start_datahub_mac_dev.sh", "start-offline"))
 
-        if plan.restart_graph and state.local_graph:
+        if plan.restart_graph and operating_state.local_graph:
             graph_files = (*files, ROOT / "compose.graph.yaml")
             if offline_layout is not None:
                 graph_override = release_optional_compose(
@@ -936,8 +1397,8 @@ def main() -> int:
                 ),
             )
 
-        if plan.restart_gateway and state.local_gateway:
-            gateway_files = (*files, ROOT / "compose.gateway.yaml")
+        if reconciliation_plan is None and plan.restart_gateway and operating_state.local_gateway:
+            gateway_files = tuple(dict.fromkeys((*files, ROOT / "compose.gateway.yaml")))
             if not offline:
                 _require_idle_builder(selected_builder, capacity_lock)
                 _compose(
@@ -962,6 +1423,19 @@ def main() -> int:
                 ),
             )
 
+        if reconciliation_plan is not None:
+            if topology_secret_guard is None:
+                raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+            _apply_topology_reconciliation(
+                runner,
+                env_file=env_file,
+                files=files,
+                plan=reconciliation_plan,
+                selected_builder=selected_builder,
+                capacity_lock=capacity_lock,
+                secret_guard=topology_secret_guard,
+            )
+
         connector_changed = (
             state.local_redis
             and any(
@@ -973,8 +1447,8 @@ def main() -> int:
             (
                 plan.restart_datahub and state.local_datahub,
                 plan.restart_airflow and state.local_airflow,
-                plan.restart_graph and state.local_graph,
-                plan.restart_gateway and state.local_gateway,
+                plan.restart_graph and operating_state.local_graph,
+                plan.restart_gateway and operating_state.local_gateway,
                 connector_changed,
             )
         )
@@ -983,6 +1457,14 @@ def main() -> int:
             _health_check(runner, env_file=env_file)
             runner.note("DataHub GMS token/version 계약을 API 컨테이너에서 검증합니다.")
             _probe_datahub(runner, env_file=env_file, files=files)
+
+        if reconciliation_plan is not None:
+            runner.note("APISIX transparent auth/header/log 계약을 state write 전에 검증합니다.")
+            _verify_gateway_transparency(
+                runner,
+                env_file=env_file,
+                files=files,
+            )
 
         backend_changed = any(
             path.startswith("backend/") or path in {"compose.yaml", "pyproject.toml"}
@@ -1003,10 +1485,21 @@ def main() -> int:
                 files=files,
             )
 
+        if reconciliation_plan is not None:
+            if topology_secret_guard is None:
+                raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
+            topology_secret_guard.revalidate()
+            runner.note("Graph/gateway target topology를 state write 전에 최종 검증합니다.")
+            enforce_local_topology(
+                runner,
+                state=operating_state,
+                environment_values=environment_values,
+            )
+
         write_applied_state(
             state_file,
             replace(
-                state,
+                operating_state,
                 applied_commit=current_source_commit,
                 runtime_commit=runtime_commit,
                 env_file=(
