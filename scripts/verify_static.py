@@ -1646,6 +1646,151 @@ def verify_amd64_source_readiness_contract() -> None:
             )
 
 
+def verify_governed_docker_build_capacity_contract() -> None:
+    capacity_path = ROOT / "scripts" / "docker_capacity.py"
+    capacity = capacity_path.read_text(encoding="utf-8")
+    required_capacity_fragments = {
+        'runtime / "operator-locks"',
+        'lock_directory / "update-build.lock"',
+        "LOCK_EX | LOCK_NB",
+        '"docker",\n            "context",\n            "inspect"',
+        '"docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"',
+        '"docker",\n            "buildx",\n            "history",\n            "ls"',
+        '"status=running"',
+        '"docker",\n                    "buildx",\n                    "prune"',
+        '"--all"',
+        '"--reserved-space"',
+        '"--max-used-space"',
+        '"--min-free-space"',
+        "reserve = (filesystem_total + 9) // 10",
+        "cache_budget = (filesystem_total + 7) // 8",
+        "reclaimable_before < required_cache_recovery",
+        "free_before + recoverable_while_retaining_floor < required",
+        "DOCKER_BUILD_CACHE_ACTION_FAILED_POST_MEASUREMENT_OK",
+        "DOCKER_BUILD_CACHE_ACTION_FAILED_POST_MEASUREMENT_FAILED",
+        "DOCKER_BUILD_CACHE_ACTION_SUCCEEDED_POST_MEASUREMENT_FAILED",
+        '"action_attempts=1"',
+        '"retry_count=0"',
+        'f"cache_probe_ok={',
+        'f"filesystem_probe_ok={',
+        'f"cache_delta_signed={',
+        'f"free_delta_signed={',
+        'raise DockerCapacityError("DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE")',
+        'raise DockerCapacityError("DOCKER_BUILDER_OVERRIDE_NOT_CURRENT")',
+        'raise DockerCapacityError("DOCKER_ACTIVE_BUILD_PRESENT")',
+        'raise DockerCapacityError("BUILD_CAPACITY_REQUIRES_CLEAN_CHECKOUT")',
+        'raise DockerCapacityError("DOCKER_CONTEXT_MUST_BE_LOCAL_UNIX")',
+        "selected_image_tags=sum(",
+    }
+    missing = {fragment for fragment in required_capacity_fragments if fragment not in capacity}
+    if missing:
+        raise AssertionError(
+            f"the governed Docker build-capacity contract has drifted: {sorted(missing)}"
+        )
+    for forbidden in (
+        "docker system prune",
+        "docker image prune",
+        "docker container prune",
+        "docker volume prune",
+        "docker builder prune",
+    ):
+        if forbidden in capacity:
+            raise AssertionError(f"the capacity gate contains a forbidden cleanup: {forbidden}")
+
+    workflow = (ROOT / "scripts" / "workflow_update_restart.py").read_text(encoding="utf-8")
+    main_source = workflow.split("def main() -> int:", maxsplit=1)[1]
+    lock_start = main_source.index("capacity_lock = mutation_stack.enter_context")
+    preflight = main_source.index("selected_builder = _preflight_build_capacity")
+    reranker = main_source.index("_reconcile_local_reranker")
+    if not lock_start < preflight < reranker:
+        raise AssertionError("capacity lock/preflight must precede local reranker mutation")
+    if main_source.count("_require_idle_builder(selected_builder, capacity_lock)") != 4:
+        raise AssertionError("every update-workflow Compose build must recheck active builds")
+    for fragment in (
+        "selected_build_services=tuple(selected_build_services)",
+        'trailing=("build", *core_build_services)',
+    ):
+        if fragment not in main_source:
+            raise AssertionError("capacity selection must not widen an individual Compose build")
+    if 'trailing=("build", *selected_build_services)' in main_source:
+        raise AssertionError("aggregate capacity selection cannot become a Compose build target")
+    datahub_update = main_source.split(
+        "if plan.restart_datahub and state.local_datahub:", maxsplit=1
+    )[1].split("if plan.restart_graph", maxsplit=1)[0]
+    if '"start-offline"' not in datahub_update or '"start"' in datahub_update:
+        raise AssertionError("daily DataHub update must not pull unbudgeted image bytes")
+    if "finally:\n        mutation_stack.close()" not in main_source:
+        raise AssertionError("the Docker workflow lock must release on every exit")
+
+    platform_workflow = (ROOT / "scripts" / "platform_workflow.py").read_text(encoding="utf-8")
+    if '"scripts/docker_capacity.py"' not in platform_workflow:
+        raise AssertionError("the capacity controller must remain an operator-only source path")
+
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+    for rule in (
+        ".git",
+        ".env",
+        ".env.*",
+        "secrets",
+        "runtime",
+        "docker_imgs",
+        ".venv",
+        ".venv-wsl",
+        "frontend/node_modules",
+        "frontend/dist",
+    ):
+        if rule not in dockerignore:
+            raise AssertionError(f"the Docker build-capacity exclusion is missing: {rule}")
+
+    test_source = (ROOT / "backend" / "tests" / "unit" / "test_docker_capacity.py").read_text(
+        encoding="utf-8"
+    )
+    workflow_test_source = (
+        ROOT / "backend" / "tests" / "unit" / "test_platform_workflow.py"
+    ).read_text(encoding="utf-8")
+    for test_name in (
+        "test_cache_over_budget_runs_one_bounded_action_and_remeasures",
+        "test_active_build_blocks_cache_action_without_mutation",
+        "test_lock_is_nonblocking_and_released_after_failure",
+        "test_build_args_and_probe_failure_payload_never_escape",
+        "test_remote_docker_context_is_rejected_before_cache_or_filesystem_probe",
+        "test_historical_images_for_one_fingerprint_use_conservative_maximum",
+        "test_missing_invalid_or_wrong_platform_image_evidence_fails_closed",
+        "test_failed_cache_action_and_failed_post_probe_report_composite_failure",
+        "test_successful_cache_action_and_failed_post_probe_fail_closed",
+        "test_cache_action_requires_enough_reclaimable_bytes_to_restore_budget",
+        "test_cache_action_preserves_floor_when_proving_required_free_space",
+        "test_non_current_builder_override_is_rejected",
+        "test_multi_node_current_builder_is_rejected",
+        "test_current_builder_must_match_current_local_context",
+        "test_post_action_policy_failures_preserve_full_numeric_evidence",
+    ):
+        if test_name not in test_source:
+            raise AssertionError(f"the Docker capacity direct test is missing: {test_name}")
+    for test_name in (
+        "test_update_capacity_lock_spans_preflight_build_mutation_and_state_write",
+        "test_update_capacity_failure_releases_lock_before_any_docker_mutation",
+        "test_docker_capacity_controller_is_operator_only",
+        "test_update_reuses_existing_datahub_images_without_registry_pull",
+        "test_offline_identity_build_keeps_existing_no_capacity_evidence_semantics",
+    ):
+        if test_name not in workflow_test_source:
+            raise AssertionError(f"the update-workflow capacity test is missing: {test_name}")
+
+    adr = (ROOT / "docs" / "adr" / "0112-governed-docker-build-capacity.md").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (
+        "P = Σ(2 \u00d7 Iᵢ + Cᵢ)",
+        "F = P + S",
+        "B = ceil(T / 8)",
+        "R = floor(B / 2)",
+        "runtime/operator-locks/update-build.lock",
+    ):
+        if fragment not in adr:
+            raise AssertionError(f"ADR-0112 omits governed capacity term: {fragment}")
+
+
 def verify_document_links() -> None:
     pattern = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
     for path in (ROOT / "docs").rglob("*.md"):
@@ -1677,6 +1822,7 @@ def main() -> None:
     verify_tenant_referential_integrity()
     verify_seed()
     verify_amd64_source_readiness_contract()
+    verify_governed_docker_build_capacity_contract()
     verify_document_links()
     print(
         "static verification passed: compose, build/release context, DataHub release contract, "

@@ -5,6 +5,8 @@ import json
 import os
 import subprocess
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
@@ -17,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = ROOT / "scripts" / "platform_workflow.py"
 FRESH_SETUP_MODULE_PATH = ROOT / "scripts" / "workflow_fresh_setup.py"
 UPDATE_MODULE_PATH = ROOT / "scripts" / "workflow_update_restart.py"
+CAPACITY_MODULE_PATH = ROOT / "scripts" / "docker_capacity.py"
 
 
 def _load_module() -> ModuleType:
@@ -61,14 +64,37 @@ def _load_update_module() -> ModuleType:
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     previous_platform_module = sys.modules.get("platform_workflow")
+    previous_capacity_module = sys.modules.get("docker_capacity")
+    capacity_spec = importlib.util.spec_from_file_location(
+        "docker_capacity",
+        CAPACITY_MODULE_PATH,
+    )
+    assert capacity_spec is not None
+    assert capacity_spec.loader is not None
+    capacity_module = importlib.util.module_from_spec(capacity_spec)
     sys.modules["platform_workflow"] = workflow
+    sys.modules["docker_capacity"] = capacity_module
     try:
+        capacity_spec.loader.exec_module(capacity_module)
         spec.loader.exec_module(module)
     finally:
         if previous_platform_module is None:
             sys.modules.pop("platform_workflow", None)
         else:
             sys.modules["platform_workflow"] = previous_platform_module
+        if previous_capacity_module is None:
+            sys.modules.pop("docker_capacity", None)
+        else:
+            sys.modules["docker_capacity"] = previous_capacity_module
+
+    @contextmanager
+    def test_lock(_root: Path) -> Iterator[Any]:
+        yield SimpleNamespace()
+
+    dynamic_module = cast(Any, module)
+    dynamic_module.exclusive_docker_workflow_lock = test_lock
+    dynamic_module._preflight_build_capacity = lambda *_args, **_kwargs: "test-builder"
+    dynamic_module._require_idle_builder = lambda *_args, **_kwargs: None
     return module
 
 
@@ -920,6 +946,235 @@ def test_update_main_recreates_env_consumer_and_persists_state_only_after_succes
     assert written == []
 
 
+def test_update_capacity_lock_spans_preflight_build_mutation_and_state_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.portable-development"
+    env_file.write_text(
+        "LOCAL_OLLAMA_CHAT_ENABLED=true\nLOCAL_OLLAMA_CHAT_MODEL=new-model\n",
+        encoding="utf-8",
+    )
+    state = workflow.AppliedState(
+        profile="portable-development",
+        applied_commit="a" * 40,
+        runtime_commit="a" * 40,
+        env_file=os.fspath(env_file),
+        deployment_mode="build",
+        release_dir=None,
+        local_airflow=False,
+        local_datahub=False,
+        local_redis=False,
+        local_storage=False,
+        local_gateway=False,
+        local_graph=False,
+        environment_key_hashes=workflow.environment_key_hashes(
+            {
+                "LOCAL_OLLAMA_CHAT_ENABLED": "true",
+                "LOCAL_OLLAMA_CHAT_MODEL": "old-model",
+            }
+        ),
+    )
+    events: list[str] = []
+    lock_token = object()
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+    @contextmanager
+    def held_lock(_root: Path) -> Iterator[object]:
+        events.append("lock-enter")
+        try:
+            yield lock_token
+        finally:
+            events.append("lock-exit")
+
+    def preflight(*_args: object, **kwargs: object) -> str:
+        assert kwargs["lock"] is lock_token
+        selected = kwargs["selected_build_services"]
+        assert isinstance(selected, tuple)
+        assert "api" in selected
+        events.append("preflight")
+        return "desktop-linux"
+
+    def idle(builder: object, lock: object) -> None:
+        assert builder == "desktop-linux"
+        assert lock is lock_token
+        events.append("active-build-check")
+
+    def compose(_runner: object, **kwargs: object) -> None:
+        trailing = cast(tuple[str, ...], kwargs["trailing"])
+        if trailing == ("config", "--quiet"):
+            events.append("config")
+        elif trailing[0] == "build":
+            events.append("build")
+        elif trailing[:2] == ("up", "-d"):
+            events.append("recreate")
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="portable-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=True,
+            assume_yes=True,
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FakeRunner)
+    monkeypatch.setattr(update, "require_command", lambda _command: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda _root, _profile: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda _runner, _old, _new: ())
+    monkeypatch.setattr(update, "_running_services", lambda *_args, **_kwargs: ("api", "web"))
+    monkeypatch.setattr(update, "_compose", compose)
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", held_lock)
+    monkeypatch.setattr(update, "_preflight_build_capacity", preflight)
+    monkeypatch.setattr(update, "_require_idle_builder", idle)
+    monkeypatch.setattr(
+        update,
+        "_reconcile_local_reranker",
+        lambda *_args, **_kwargs: events.append("reranker"),
+    )
+    monkeypatch.setattr(update, "_health_check", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "_probe_datahub", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        update,
+        "write_applied_state",
+        lambda *_args, **_kwargs: events.append("state-write"),
+    )
+
+    assert update.main() == 0
+    assert events.index("config") < events.index("lock-enter")
+    assert events.index("lock-enter") < events.index("preflight")
+    assert events.index("preflight") < events.index("reranker")
+    assert events.index("reranker") < events.index("active-build-check")
+    assert events.index("active-build-check") < events.index("build")
+    assert events.index("build") < events.index("recreate")
+    assert events.index("recreate") < events.index("state-write")
+    assert events.index("state-write") < events.index("lock-exit")
+
+
+def test_update_capacity_failure_releases_lock_before_any_docker_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.portable-development"
+    env_file.write_text("LOCAL_OLLAMA_CHAT_MODEL=new-model\n", encoding="utf-8")
+    state = workflow.AppliedState(
+        profile="portable-development",
+        applied_commit="a" * 40,
+        runtime_commit="a" * 40,
+        env_file=os.fspath(env_file),
+        deployment_mode="build",
+        release_dir=None,
+        local_airflow=False,
+        local_datahub=False,
+        local_redis=False,
+        local_storage=False,
+        local_gateway=False,
+        local_graph=False,
+        environment_key_hashes=workflow.environment_key_hashes(
+            {"LOCAL_OLLAMA_CHAT_MODEL": "old-model"}
+        ),
+    )
+    events: list[str] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+    @contextmanager
+    def held_lock(_root: Path) -> Iterator[object]:
+        events.append("lock-enter")
+        try:
+            yield object()
+        finally:
+            events.append("lock-exit")
+
+    def compose(_runner: object, **kwargs: object) -> None:
+        trailing = cast(tuple[str, ...], kwargs["trailing"])
+        events.append("config" if trailing == ("config", "--quiet") else "mutation")
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="portable-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=True,
+            assume_yes=True,
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FakeRunner)
+    monkeypatch.setattr(update, "require_command", lambda _command: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda _root, _profile: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda _runner, _old, _new: ())
+    monkeypatch.setattr(update, "_running_services", lambda *_args, **_kwargs: ("api", "web"))
+    monkeypatch.setattr(update, "_compose", compose)
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", held_lock)
+    safe_failure = (
+        "classification=DOCKER_BUILD_CACHE_ACTION_FAILED_POST_MEASUREMENT_OK "
+        "builder=desktop-linux action_succeeded=false filesystem_total_before=1024000000 "
+        "cache_before=140000000 reclaimable_before=140000000 free_before=204800000 "
+        "action_attempts=1 retry_count=0 cache_probe_ok=true filesystem_probe_ok=true "
+        "cache_after=20000000 reclaimable_after=20000000 cache_delta_signed=-120000000 "
+        "filesystem_total_after=1024000000 free_after=358400000 "
+        "free_delta_signed=153600000"
+    )
+    monkeypatch.setattr(
+        update,
+        "_preflight_build_capacity",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(update.DockerCapacityError(safe_failure)),
+    )
+    monkeypatch.setattr(
+        update,
+        "_reconcile_local_reranker",
+        lambda *_args, **_kwargs: events.append("reranker"),
+    )
+    monkeypatch.setattr(
+        update,
+        "write_applied_state",
+        lambda *_args, **_kwargs: events.append("state-write"),
+    )
+
+    assert update.main() == 2
+    assert events == ["config", "lock-enter", "lock-exit"]
+    assert capsys.readouterr().err.splitlines() == [f"ERROR: {safe_failure}"]
+
+    def contended_lock(_root: Path) -> object:
+        events.append("lock-contended")
+        raise update.DockerCapacityError("DOCKER_WORKFLOW_LOCK_UNAVAILABLE")
+
+    events.clear()
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", contended_lock)
+    monkeypatch.setattr(
+        update,
+        "_preflight_build_capacity",
+        lambda *_args, **_kwargs: events.append("unexpected-preflight"),
+    )
+
+    assert update.main() == 2
+    assert events == ["config", "lock-contended"]
+
+
 def test_update_main_with_unchanged_environment_does_not_recreate(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1488,6 +1743,7 @@ def test_release_compatibility_allows_operator_only_checkout_changes() -> None:
         "docs/26_MAC_TO_WSL_MIGRATION_RUNBOOK.md",
         "backend/tests/unit/test_platform_workflow.py",
         "compose.connected-source-host.yaml",
+        "scripts/docker_capacity.py",
         "scripts/platform_workflow.py",
         "scripts/dev_host.sh",
         "scripts/workflow_fresh_setup.py",
@@ -1542,12 +1798,50 @@ def test_operator_workflow_changes_do_not_restart_runtime() -> None:
     assert result.requires_migration is False
 
 
+def test_docker_capacity_controller_is_operator_only() -> None:
+    result = workflow.classify_changes(("scripts/docker_capacity.py",))
+
+    assert result.services == ()
+    assert result.requires_migration is False
+    assert result.local_connector_services == ()
+    assert result.restart_datahub is False
+    assert result.restart_airflow is False
+    assert result.restart_gateway is False
+    assert result.restart_graph is False
+
+
 def test_datahub_wrapper_change_only_restarts_local_datahub_when_selected() -> None:
     result = workflow.classify_changes(("scripts/start_datahub_mac_dev.sh",))
 
     assert result.services == ()
     assert result.restart_datahub is True
     assert result.requires_migration is False
+
+
+def test_update_reuses_existing_datahub_images_without_registry_pull() -> None:
+    source = UPDATE_MODULE_PATH.read_text(encoding="utf-8")
+    datahub_block = source.split(
+        "if plan.restart_datahub and state.local_datahub:",
+        maxsplit=1,
+    )[1].split("if plan.restart_graph", maxsplit=1)[0]
+
+    assert '"start-offline"' in datahub_block
+    assert '"start"' not in datahub_block
+
+
+def test_offline_identity_build_keeps_existing_no_capacity_evidence_semantics() -> None:
+    source = UPDATE_MODULE_PATH.read_text(encoding="utf-8")
+    identity_block = source.split("if reapply_local_identity:", maxsplit=1)[1].split(
+        "if plan.requires_migration:", maxsplit=1
+    )[0]
+
+    assert "if not offline:" in identity_block
+    assert identity_block.index("if not offline:") < identity_block.index(
+        "_require_idle_builder(selected_builder, capacity_lock)"
+    )
+    assert identity_block.index("_require_idle_builder") < identity_block.index(
+        'trailing=("build", "local-bootstrap")'
+    )
 
 
 def test_normalize_secret_permissions_keeps_private_directory_and_readable_mounts(

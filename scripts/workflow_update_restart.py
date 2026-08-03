@@ -6,9 +6,17 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from contextlib import ExitStack
 from dataclasses import replace
 from pathlib import Path
 
+from docker_capacity import (
+    DockerCapacityError,
+    DockerWorkflowLock,
+    exclusive_docker_workflow_lock,
+    governed_compose_build_capacity,
+    require_no_active_builds,
+)
 from platform_workflow import (
     AIRFLOW_SERVICES,
     ROOT,
@@ -177,6 +185,44 @@ def _compose(
         env=env,
         input_text=input_text,
     )
+
+
+def _preflight_build_capacity(
+    runner: Runner,
+    *,
+    env_file: Path,
+    files: tuple[Path, ...],
+    selected_build_services: tuple[str, ...],
+    lock: DockerWorkflowLock,
+) -> str:
+    evidence = governed_compose_build_capacity(
+        root=ROOT,
+        compose_config_command=compose_arguments(
+            env_file=env_file,
+            compose_files=files,
+            profiles=("*",),
+            trailing=("config", "--format", "json"),
+        ),
+        docker_filesystem_probe_command=compose_arguments(
+            env_file=env_file,
+            compose_files=files,
+            trailing=("exec", "-T", "postgres", "df", "-Pk", "/"),
+        ),
+        selected_build_services=selected_build_services,
+        environ=os.environ,
+        lock=lock,
+    )
+    runner.note(evidence.summary())
+    return evidence.builder
+
+
+def _require_idle_builder(
+    builder: str | None,
+    lock: DockerWorkflowLock | None,
+) -> None:
+    if builder is None or lock is None:
+        raise DockerCapacityError("DOCKER_BUILD_CAPACITY_EVIDENCE_MISSING")
+    require_no_active_builds(builder=builder, lock=lock)
 
 
 def _git_paths(runner: Runner, older: str, newer: str) -> tuple[str, ...]:
@@ -446,6 +492,7 @@ def _print_plan(
 def main() -> int:
     args = parse_args()
     runner = Runner()
+    mutation_stack = ExitStack()
     try:
         for command in ("docker", "git"):
             require_command(command)
@@ -566,21 +613,54 @@ def main() -> int:
             if not prompt_confirm("위 변경만 적용할까요?", default=True):
                 raise WorkflowError("Operator cancelled before service mutation.")
 
+        offline = state.deployment_mode == "offline"
+        core_build_services: list[str] = []
+        selected_build_services: list[str] = []
+        capacity_files = list(files)
+        if not offline:
+            if restart_services:
+                core_build_services.extend(restart_services)
+                core_build_services.extend(("migrate",) if plan.requires_migration else ())
+                selected_build_services.extend(core_build_services)
+            if reapply_local_identity:
+                selected_build_services.append("local-bootstrap")
+            if plan.restart_airflow and state.local_airflow:
+                selected_build_services.extend(AIRFLOW_SERVICES)
+                capacity_files.append(ROOT / "compose.airflow.yaml")
+            if plan.restart_gateway and state.local_gateway:
+                selected_build_services.append("apisix")
+                capacity_files.append(ROOT / "compose.gateway.yaml")
+        core_build_services = list(dict.fromkeys(core_build_services))
+        selected_build_services = list(dict.fromkeys(selected_build_services))
+
+        capacity_lock: DockerWorkflowLock | None = None
+        selected_builder: str | None = None
+        if not offline:
+            capacity_lock = mutation_stack.enter_context(exclusive_docker_workflow_lock(ROOT))
+            if selected_build_services:
+                runner.note("Docker 변경 전에 선택 build의 용량·cache 계약을 검증합니다.")
+                selected_builder = _preflight_build_capacity(
+                    runner,
+                    env_file=env_file,
+                    files=tuple(dict.fromkeys(capacity_files)),
+                    selected_build_services=tuple(selected_build_services),
+                    lock=capacity_lock,
+                )
+
         _reconcile_local_reranker(runner, env_file=env_file, profile=state.profile)
 
-        offline = state.deployment_mode == "offline"
         if not offline and restart_services:
-            build_services = list(restart_services)
-            if plan.requires_migration and "migrate" not in build_services:
-                build_services.append("migrate")
+            _require_idle_builder(selected_builder, capacity_lock)
             runner.note("선택한 build 프로필에서 영향받은 이미지만 빌드합니다.")
             _compose(
                 runner,
                 env_file=env_file,
                 files=files,
-                trailing=("build", *build_services),
+                trailing=("build", *core_build_services),
             )
         if reapply_local_identity:
+            if not offline:
+                _require_idle_builder(selected_builder, capacity_lock)
             runner.note("변경된 Mac 로컬 identity bootstrap 이미지를 빌드합니다.")
             _compose(
                 runner,
@@ -766,6 +846,7 @@ def main() -> int:
                 assert airflow_override is not None
                 airflow_files = (*airflow_files, airflow_override)
             if not offline:
+                _require_idle_builder(selected_builder, capacity_lock)
                 _compose(
                     runner,
                     env_file=env_file,
@@ -821,7 +902,7 @@ def main() -> int:
 
         if plan.restart_datahub and state.local_datahub:
             runner.note("Mac 개발용 DataHub 구성을 재적용합니다.")
-            runner.run((ROOT / "scripts" / "start_datahub_mac_dev.sh", "start"))
+            runner.run((ROOT / "scripts" / "start_datahub_mac_dev.sh", "start-offline"))
 
         if plan.restart_graph and state.local_graph:
             graph_files = (*files, ROOT / "compose.graph.yaml")
@@ -852,6 +933,7 @@ def main() -> int:
         if plan.restart_gateway and state.local_gateway:
             gateway_files = (*files, ROOT / "compose.gateway.yaml")
             if not offline:
+                _require_idle_builder(selected_builder, capacity_lock)
                 _compose(
                     runner,
                     env_file=env_file,
@@ -935,9 +1017,11 @@ def main() -> int:
         else:
             runner.note("업데이트 적용과 선택적 재시작을 완료했습니다.")
         return 0
-    except (WorkflowError, KeyError, OSError, ValueError) as error:
+    except (DockerCapacityError, WorkflowError, KeyError, OSError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
+    finally:
+        mutation_stack.close()
 
 
 if __name__ == "__main__":

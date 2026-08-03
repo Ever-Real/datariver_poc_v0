@@ -108,6 +108,11 @@ Current external infrastructure connector decision: [external Redis and S3 conne
 
 Current multi-architecture release decision: [runtime configuration and release bundles](adr/0034-multi-architecture-runtime-configuration-and-release-bundles.md).
 
+The exact-source amd64 readiness evidence and stable preparation-PC daily interface are defined
+by [ADR-0111](adr/0111-source-built-amd64-portability-layer.md). The development update workflow's
+exclusive build lock, Docker backing-filesystem capacity formula and bounded cache-only recovery
+are defined by [ADR-0112](adr/0112-governed-docker-build-capacity.md).
+
 Current low-resource client and preparation Chat decision: [bounded client state and preparation Chat provider](adr/0035-bounded-client-state-and-preparation-chat-provider.md).
 
 Current Policy Book decision: [normalized RBAC rules and Admin approval gates](adr/0036-policy-book-rbac-and-admin-approval-gates.md).

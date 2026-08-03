@@ -73,6 +73,7 @@ OPERATOR_ONLY_SOURCE_PATHS = frozenset(
         "compose.connected-source-host.yaml",
         "scripts/development_cycle.py",
         "scripts/dev_host.sh",
+        "scripts/docker_capacity.py",
         "scripts/platform_workflow.py",
         "scripts/workflow_fresh_setup.py",
         "scripts/workflow_source_host_infra.py",
