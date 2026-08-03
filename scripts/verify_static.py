@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import re
 import xml.etree.ElementTree as ET
@@ -1893,6 +1894,59 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
     tests = test_path.read_text(encoding="utf-8")
     adr = adr_path.read_text(encoding="utf-8")
 
+    syntax = ast.parse(probe, filename=probe_path.as_posix())
+
+    def assigned_frozen_string_set(name: str) -> frozenset[str]:
+        for statement in syntax.body:
+            target: ast.expr | None = None
+            value: ast.expr | None = None
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                target = statement.targets[0]
+                value = statement.value
+            elif isinstance(statement, ast.AnnAssign):
+                target = statement.target
+                value = statement.value
+            if not isinstance(target, ast.Name) or target.id != name:
+                continue
+            if (
+                not isinstance(value, ast.Call)
+                or not isinstance(value.func, ast.Name)
+                or value.func.id != "frozenset"
+                or len(value.args) != 1
+                or value.keywords
+            ):
+                raise AssertionError(f"the persistent-data bind {name} is not a literal frozenset")
+            evaluated = ast.literal_eval(value.args[0])
+            if not isinstance(evaluated, set) or not all(
+                isinstance(item, str) for item in evaluated
+            ):
+                raise AssertionError(f"the persistent-data bind {name} is not a string set")
+            return frozenset(evaluated)
+        raise AssertionError(f"the persistent-data bind {name} is missing")
+
+    expected_image_environment_keys = {
+        "POSTGRES_IMAGE_ENVIRONMENT_KEY_ALLOWLIST": frozenset(
+            {"GOSU_VERSION", "LANG", "PATH", "PGDATA", "PG_MAJOR", "PG_VERSION"}
+        ),
+        "MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST": frozenset(
+            {
+                "MC_CONFIG_DIR",
+                "MINIO_ACCESS_KEY_FILE",
+                "MINIO_CONFIG_ENV_FILE",
+                "MINIO_KMS_SECRET_KEY_FILE",
+                "MINIO_ROOT_PASSWORD_FILE",
+                "MINIO_ROOT_USER_FILE",
+                "MINIO_SECRET_KEY_FILE",
+                "MINIO_UPDATE_MINISIGN_PUBKEY",
+                "PATH",
+            }
+        ),
+    }
+    for name, expected in expected_image_environment_keys.items():
+        actual = assigned_frozen_string_set(name)
+        if actual != expected or len(actual) != len(expected):
+            raise AssertionError(f"the persistent-data bind {name} exact key set has drifted")
+
     for fragment in (
         'DATA_PARENT = Path("/Volumes/SSD_Mac/datariver-data")',
         'PROBE_LEAF_NAME = ".c2-bind-probe-v1"',
@@ -1910,9 +1964,12 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
         "os.fstat(stream.fileno())",
         "if current_identities != identities:",
         "if current_identities != secret_file_identities:",
+        "if frozenset(environment) != expected_environment_keys or any(",
         "if environment != expected_environment:",
         'governed_environment_prefixes=("POSTGRES_",)',
         'governed_environment_prefixes=("MINIO_", "MC_")',
+        "expected_environment_keys=POSTGRES_IMAGE_ENVIRONMENT_KEY_ALLOWLIST",
+        "expected_environment_keys=MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST",
         "stderr=subprocess.DEVNULL",
         'fail("POSTGRES_PROBE_DUMP_LIMIT_EXCEEDED")',
         'fail("POSTGRES_PROBE_DUMP_PATH_CHANGED")',
@@ -2026,6 +2083,30 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
     if not lock < baseline < host_mutation < postgres < minio < final_identity:
         raise AssertionError("the bind probe lock, identity and mutation order has drifted")
 
+    container_contract = probe.split("def require_probe_container_contract(", maxsplit=1)[1].split(
+        "def _wait_ready(", maxsplit=1
+    )[0]
+    environment_contract_fragments = (
+        "expected_environment = dict(spec.image_environment)",
+        "required_environment = dict(spec.required_environment)",
+        "len(expected_environment) != len(spec.image_environment)",
+        "len(required_environment) != len(spec.required_environment)",
+        "frozenset(required_environment) != spec.reviewed_override_keys",
+        ".intersection(required_environment)",
+        ".issubset(spec.reviewed_override_keys)",
+        "expected_environment.update(required_environment)",
+        "if environment != expected_environment:",
+    )
+    positions = []
+    for fragment in environment_contract_fragments:
+        if container_contract.count(fragment) != 1:
+            raise AssertionError(
+                f"the probe container exact environment contract has drifted: {fragment}"
+            )
+        positions.append(container_contract.index(fragment))
+    if positions != sorted(positions):
+        raise AssertionError("the probe container baseline/override comparison order has drifted")
+
     for test_name in (
         "test_checked_in_image_references_remain_exactly_pinned",
         "test_postgres_create_argv_has_only_the_approved_capabilities_and_limits",
@@ -2044,6 +2125,17 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
         "test_probe_container_contract_rejects_a_nonzero_restart_count",
         "test_probe_container_contract_rejects_an_anonymous_volume",
         "test_image_environment_rejects_unreviewed_governed_keys_before_mutation",
+        "test_pinned_minio_image_environment_accepts_only_the_reviewed_baseline_keys",
+        "test_pinned_image_environment_rejects_any_key_set_drift",
+        "test_pinned_image_environment_failure_never_exposes_opaque_values",
+        "test_image_environment_rejects_malformed_entries",
+        "test_probe_container_rejects_a_replaced_image_baseline_value",
+        "test_probe_container_rejects_a_missing_image_baseline_key",
+        "test_probe_container_rejects_a_changed_required_override",
+        "test_probe_container_rejects_an_unreviewed_baseline_override_collision",
+        "test_probe_container_applies_reviewed_overrides_without_duplicate_keys",
+        "test_probe_container_contract_rejects_duplicate_environment_keys",
+        "test_execute_probe_rejects_image_key_drift_before_any_mutation",
         "test_failure_cleanup_unlinks_secrets_only_after_both_containers_are_stopped",
         "test_failure_cleanup_retains_all_secrets_when_any_stop_fails",
         "test_failure_cleanup_never_unlinks_replaced_or_linked_secret_files",

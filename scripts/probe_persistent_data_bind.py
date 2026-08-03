@@ -87,6 +87,26 @@ MINIO_REQUIRED_ENVIRONMENT = (
     ("MINIO_ROOT_PASSWORD_FILE", "/run/secrets/minio_secret_key"),
     ("MC_CONFIG_DIR", "/tmp/mc"),  # noqa: S108 - bounded probe tmpfs.
 )
+POSTGRES_IMAGE_ENVIRONMENT_KEY_ALLOWLIST = frozenset(
+    {"GOSU_VERSION", "LANG", "PATH", "PGDATA", "PG_MAJOR", "PG_VERSION"}
+)
+POSTGRES_REVIEWED_IMAGE_ENVIRONMENT_KEYS: frozenset[str] = frozenset()
+MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST = frozenset(
+    {
+        "MC_CONFIG_DIR",
+        "MINIO_ACCESS_KEY_FILE",
+        "MINIO_CONFIG_ENV_FILE",
+        "MINIO_KMS_SECRET_KEY_FILE",
+        "MINIO_ROOT_PASSWORD_FILE",
+        "MINIO_ROOT_USER_FILE",
+        "MINIO_SECRET_KEY_FILE",
+        "MINIO_UPDATE_MINISIGN_PUBKEY",
+        "PATH",
+    }
+)
+MINIO_REVIEWED_IMAGE_ENVIRONMENT_KEYS = frozenset(
+    key for key in MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST if key != "PATH"
+)
 
 
 class ProbeError(RuntimeError):
@@ -795,6 +815,7 @@ def require_image(
     *,
     image_id: str,
     entrypoint: tuple[str, ...],
+    expected_environment_keys: frozenset[str],
     governed_environment_prefixes: tuple[str, ...] = (),
     reviewed_environment_keys: frozenset[str] = frozenset(),
 ) -> ImageEvidence:
@@ -820,7 +841,7 @@ def require_image(
         config.get("Env"),
         classification="PROBE_IMAGE_ENVIRONMENT_INVALID",
     )
-    if any(
+    if frozenset(environment) != expected_environment_keys or any(
         key.startswith(governed_environment_prefixes) and key not in reviewed_environment_keys
         for key in environment
     ):
@@ -959,6 +980,7 @@ class ProbeContainerSpec:
     binds: dict[str, tuple[Path, bool]]
     image_environment: tuple[tuple[str, str], ...]
     required_environment: tuple[tuple[str, str], ...]
+    reviewed_override_keys: frozenset[str]
 
 
 def _container_specs(
@@ -986,6 +1008,7 @@ def _container_specs(
             },
             image_environment=postgres_image_environment,
             required_environment=POSTGRES_REQUIRED_ENVIRONMENT,
+            reviewed_override_keys=frozenset(key for key, _value in POSTGRES_REQUIRED_ENVIRONMENT),
         ),
         MINIO_PROBE_CONTAINER: ProbeContainerSpec(
             name=MINIO_PROBE_CONTAINER,
@@ -1003,6 +1026,7 @@ def _container_specs(
             },
             image_environment=minio_image_environment,
             required_environment=MINIO_REQUIRED_ENVIRONMENT,
+            reviewed_override_keys=frozenset(key for key, _value in MINIO_REQUIRED_ENVIRONMENT),
         ),
     }
 
@@ -1069,7 +1093,17 @@ def require_probe_container_contract(
         classification="PROBE_CONTAINER_ENVIRONMENT_DRIFT",
     )
     expected_environment = dict(spec.image_environment)
-    expected_environment.update(spec.required_environment)
+    required_environment = dict(spec.required_environment)
+    if (
+        len(expected_environment) != len(spec.image_environment)
+        or len(required_environment) != len(spec.required_environment)
+        or frozenset(required_environment) != spec.reviewed_override_keys
+        or not frozenset(expected_environment)
+        .intersection(required_environment)
+        .issubset(spec.reviewed_override_keys)
+    ):
+        fail("PROBE_CONTAINER_ENVIRONMENT_DRIFT")
+    expected_environment.update(required_environment)
     if environment != expected_environment:
         fail("PROBE_CONTAINER_ENVIRONMENT_DRIFT")
 
@@ -1878,17 +1912,17 @@ def execute_probe(
             executor,
             image_id=POSTGRES_IMAGE_ID,
             entrypoint=("docker-entrypoint.sh",),
+            expected_environment_keys=POSTGRES_IMAGE_ENVIRONMENT_KEY_ALLOWLIST,
             governed_environment_prefixes=("POSTGRES_",),
-            reviewed_environment_keys=frozenset(
-                key for key, _value in POSTGRES_REQUIRED_ENVIRONMENT
-            ),
+            reviewed_environment_keys=POSTGRES_REVIEWED_IMAGE_ENVIRONMENT_KEYS,
         )
         minio_image = require_image(
             executor,
             image_id=MINIO_IMAGE_ID,
             entrypoint=("/usr/bin/docker-entrypoint.sh",),
+            expected_environment_keys=MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST,
             governed_environment_prefixes=("MINIO_", "MC_"),
-            reviewed_environment_keys=frozenset(key for key, _value in MINIO_REQUIRED_ENVIRONMENT),
+            reviewed_environment_keys=MINIO_REVIEWED_IMAGE_ENVIRONMENT_KEYS,
         )
         filesystem_noowners = _filesystem_noowners(executor)
         try:

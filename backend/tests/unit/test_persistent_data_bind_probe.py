@@ -6,6 +6,7 @@ import os
 import stat
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType
 from typing import Any, cast
@@ -461,6 +462,10 @@ class _OneOutputExecutor:
         return json.dumps([self.document], separators=(",", ":")).encode("utf-8")
 
 
+def _sanitized_image_environment(keys: frozenset[str]) -> list[str]:
+    return [f"{key}=sanitized-image-baseline-{index}" for index, key in enumerate(sorted(keys))]
+
+
 def _container_document(
     layout: Any,
     name: str,
@@ -531,6 +536,134 @@ def test_image_environment_baseline_is_duplicate_free_and_precedes_container_cre
             _OneOutputExecutor(document),
             image_id=probe.MINIO_IMAGE_ID,
             entrypoint=("/usr/bin/docker-entrypoint.sh",),
+            expected_environment_keys=probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST,
+        )
+
+
+def test_pinned_minio_image_environment_accepts_only_the_reviewed_baseline_keys() -> None:
+    baseline = _sanitized_image_environment(probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST)
+    document = {
+        "Id": probe.MINIO_IMAGE_ID,
+        "Os": "linux",
+        "Architecture": probe._expected_architecture(),
+        "Config": {
+            "Entrypoint": ["/usr/bin/docker-entrypoint.sh"],
+            "Env": baseline,
+        },
+    }
+
+    evidence = probe.require_image(
+        _OneOutputExecutor(document),
+        image_id=probe.MINIO_IMAGE_ID,
+        entrypoint=("/usr/bin/docker-entrypoint.sh",),
+        expected_environment_keys=probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST,
+        governed_environment_prefixes=("MINIO_", "MC_"),
+        reviewed_environment_keys=probe.MINIO_REVIEWED_IMAGE_ENVIRONMENT_KEYS,
+    )
+
+    assert {key for key, _value in evidence.environment} == set(
+        probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST
+    )
+    assert probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST == frozenset(
+        {
+            "MC_CONFIG_DIR",
+            "MINIO_ACCESS_KEY_FILE",
+            "MINIO_CONFIG_ENV_FILE",
+            "MINIO_KMS_SECRET_KEY_FILE",
+            "MINIO_ROOT_PASSWORD_FILE",
+            "MINIO_ROOT_USER_FILE",
+            "MINIO_SECRET_KEY_FILE",
+            "MINIO_UPDATE_MINISIGN_PUBKEY",
+            "PATH",
+        }
+    )
+    assert len(probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST) == 9
+    assert probe.POSTGRES_IMAGE_ENVIRONMENT_KEY_ALLOWLIST == frozenset(
+        {"GOSU_VERSION", "LANG", "PATH", "PGDATA", "PG_MAJOR", "PG_VERSION"}
+    )
+    assert len(probe.POSTGRES_IMAGE_ENVIRONMENT_KEY_ALLOWLIST) == 6
+
+
+@pytest.mark.parametrize("mutation", ("extra-governed", "extra-unrelated", "missing"))
+def test_pinned_image_environment_rejects_any_key_set_drift(mutation: str) -> None:
+    environment = _sanitized_image_environment(probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST)
+    if mutation == "extra-governed":
+        environment.append("MINIO_SERVER_URL=sanitized-unreviewed")
+    elif mutation == "extra-unrelated":
+        environment.append("UNRELATED_EXTRA=sanitized-unreviewed")
+    else:
+        environment.pop()
+    document = {
+        "Id": probe.MINIO_IMAGE_ID,
+        "Os": "linux",
+        "Architecture": probe._expected_architecture(),
+        "Config": {
+            "Entrypoint": ["/usr/bin/docker-entrypoint.sh"],
+            "Env": environment,
+        },
+    }
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_IMAGE_ENVIRONMENT_INVALID$"):
+        probe.require_image(
+            _OneOutputExecutor(document),
+            image_id=probe.MINIO_IMAGE_ID,
+            entrypoint=("/usr/bin/docker-entrypoint.sh",),
+            expected_environment_keys=probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST,
+            governed_environment_prefixes=("MINIO_", "MC_"),
+            reviewed_environment_keys=probe.MINIO_REVIEWED_IMAGE_ENVIRONMENT_KEYS,
+        )
+
+
+def test_pinned_image_environment_failure_never_exposes_opaque_values(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sentinel = "future-image-secret-sentinel"
+    document = {
+        "Id": probe.MINIO_IMAGE_ID,
+        "Os": "linux",
+        "Architecture": probe._expected_architecture(),
+        "Config": {
+            "Entrypoint": ["/usr/bin/docker-entrypoint.sh"],
+            "Env": [
+                *_sanitized_image_environment(probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST),
+                f"UNRELATED_EXTRA={sentinel}",
+            ],
+        },
+    }
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_IMAGE_ENVIRONMENT_INVALID$") as raised:
+        probe.require_image(
+            _OneOutputExecutor(document),
+            image_id=probe.MINIO_IMAGE_ID,
+            entrypoint=("/usr/bin/docker-entrypoint.sh",),
+            expected_environment_keys=probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST,
+        )
+
+    captured = capsys.readouterr()
+    assert sentinel not in captured.out + captured.err + str(raised.value)
+
+
+@pytest.mark.parametrize("entry", ("MALFORMED", "=missing-key", "BROKEN\x00KEY=value"))
+def test_image_environment_rejects_malformed_entries(entry: str) -> None:
+    document = {
+        "Id": probe.MINIO_IMAGE_ID,
+        "Os": "linux",
+        "Architecture": probe._expected_architecture(),
+        "Config": {
+            "Entrypoint": ["/usr/bin/docker-entrypoint.sh"],
+            "Env": [
+                *_sanitized_image_environment(probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST),
+                entry,
+            ],
+        },
+    }
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_IMAGE_ENVIRONMENT_INVALID$"):
+        probe.require_image(
+            _OneOutputExecutor(document),
+            image_id=probe.MINIO_IMAGE_ID,
+            entrypoint=("/usr/bin/docker-entrypoint.sh",),
+            expected_environment_keys=probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST,
         )
 
 
@@ -538,6 +671,7 @@ def test_image_environment_baseline_is_duplicate_free_and_precedes_container_cre
     "entry",
     (
         "POSTGRES_PASSWORD=unexpected",
+        "MINIO_ROOT_USER=unexpected",
         "MINIO_ROOT_PASSWORD=unexpected",
         "MINIO_SERVER_URL=http://unexpected",
         "MC_HOST_probe=unexpected",
@@ -547,15 +681,25 @@ def test_image_environment_rejects_unreviewed_governed_keys_before_mutation(entr
     is_postgres = entry.startswith("POSTGRES_")
     image_id = probe.POSTGRES_IMAGE_ID if is_postgres else probe.MINIO_IMAGE_ID
     entrypoint = ("docker-entrypoint.sh",) if is_postgres else ("/usr/bin/docker-entrypoint.sh",)
+    expected = (
+        probe.POSTGRES_IMAGE_ENVIRONMENT_KEY_ALLOWLIST
+        if is_postgres
+        else probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST
+    )
     prefixes = ("POSTGRES_",) if is_postgres else ("MINIO_", "MC_")
     reviewed = (
-        probe.POSTGRES_REQUIRED_ENVIRONMENT if is_postgres else probe.MINIO_REQUIRED_ENVIRONMENT
+        probe.POSTGRES_REVIEWED_IMAGE_ENVIRONMENT_KEYS
+        if is_postgres
+        else probe.MINIO_REVIEWED_IMAGE_ENVIRONMENT_KEYS
     )
     document = {
         "Id": image_id,
         "Os": "linux",
         "Architecture": probe._expected_architecture(),
-        "Config": {"Entrypoint": list(entrypoint), "Env": ["PATH=/usr/bin", entry]},
+        "Config": {
+            "Entrypoint": list(entrypoint),
+            "Env": [*_sanitized_image_environment(expected), entry],
+        },
     }
 
     with pytest.raises(probe.ProbeError, match=r"^PROBE_IMAGE_ENVIRONMENT_INVALID$"):
@@ -563,8 +707,9 @@ def test_image_environment_rejects_unreviewed_governed_keys_before_mutation(entr
             _OneOutputExecutor(document),
             image_id=image_id,
             entrypoint=entrypoint,
+            expected_environment_keys=expected,
             governed_environment_prefixes=prefixes,
-            reviewed_environment_keys=frozenset(key for key, _value in reviewed),
+            reviewed_environment_keys=reviewed,
         )
 
 
@@ -597,6 +742,130 @@ def test_probe_container_allows_only_an_equal_immutable_image_environment(
             secret_values=(b"Z" * 24,),
             require_running=True,
         )
+
+
+def test_probe_container_rejects_a_replaced_image_baseline_value(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    _bundle(layout)
+    name = probe.MINIO_PROBE_CONTAINER
+    baseline_key = sorted(probe.MINIO_REVIEWED_IMAGE_ENVIRONMENT_KEYS)[0]
+    spec = probe._container_specs(
+        layout,
+        minio_image_environment=((baseline_key, "sanitized-image-baseline"),),
+    )[name]
+    document = _container_document(layout, name, spec=spec)
+    document["Config"]["Env"] = [
+        (f"{baseline_key}=replaced" if entry.startswith(f"{baseline_key}=") else entry)
+        for entry in document["Config"]["Env"]
+    ]
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_CONTAINER_ENVIRONMENT_DRIFT$"):
+        probe.require_probe_container_contract(
+            _OneOutputExecutor(document),
+            spec=spec,
+            secret_values=(b"Z" * 24,),
+            require_running=True,
+        )
+
+
+def test_probe_container_rejects_a_missing_image_baseline_key(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    _bundle(layout)
+    name = probe.MINIO_PROBE_CONTAINER
+    baseline_key = sorted(probe.MINIO_REVIEWED_IMAGE_ENVIRONMENT_KEYS)[0]
+    spec = probe._container_specs(
+        layout,
+        minio_image_environment=((baseline_key, "sanitized-image-baseline"),),
+    )[name]
+    document = _container_document(layout, name, spec=spec)
+    document["Config"]["Env"] = [
+        entry for entry in document["Config"]["Env"] if not entry.startswith(f"{baseline_key}=")
+    ]
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_CONTAINER_ENVIRONMENT_DRIFT$"):
+        probe.require_probe_container_contract(
+            _OneOutputExecutor(document),
+            spec=spec,
+            secret_values=(b"Z" * 24,),
+            require_running=True,
+        )
+
+
+def test_probe_container_rejects_a_changed_required_override(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    _bundle(layout)
+    name = probe.MINIO_PROBE_CONTAINER
+    override_key, _override_value = probe.MINIO_REQUIRED_ENVIRONMENT[0]
+    spec = probe._container_specs(
+        layout,
+        minio_image_environment=((override_key, "sanitized-image-default"),),
+    )[name]
+    document = _container_document(layout, name, spec=spec)
+    document["Config"]["Env"] = [
+        f"{override_key}=changed" if entry.startswith(f"{override_key}=") else entry
+        for entry in document["Config"]["Env"]
+    ]
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_CONTAINER_ENVIRONMENT_DRIFT$"):
+        probe.require_probe_container_contract(
+            _OneOutputExecutor(document),
+            spec=spec,
+            secret_values=(b"Z" * 24,),
+            require_running=True,
+        )
+
+
+def test_probe_container_rejects_an_unreviewed_baseline_override_collision(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    _bundle(layout)
+    name = probe.MINIO_PROBE_CONTAINER
+    base_spec = probe._container_specs(
+        layout,
+        minio_image_environment=(("MINIO_ACCESS_KEY_FILE", "sanitized-image-default"),),
+    )[name]
+    spec = replace(
+        base_spec,
+        required_environment=(
+            *base_spec.required_environment,
+            ("MINIO_ACCESS_KEY_FILE", "changed"),
+        ),
+    )
+    document = _container_document(layout, name, spec=spec)
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_CONTAINER_ENVIRONMENT_DRIFT$"):
+        probe.require_probe_container_contract(
+            _OneOutputExecutor(document),
+            spec=spec,
+            secret_values=(b"Z" * 24,),
+            require_running=True,
+        )
+
+
+def test_probe_container_applies_reviewed_overrides_without_duplicate_keys(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    _bundle(layout)
+    name = probe.MINIO_PROBE_CONTAINER
+    overridden_key, overridden_value = probe.MINIO_REQUIRED_ENVIRONMENT[0]
+    spec = probe._container_specs(
+        layout,
+        minio_image_environment=((overridden_key, "sanitized-image-default"),),
+    )[name]
+    document = _container_document(layout, name, spec=spec)
+    environment = document["Config"]["Env"]
+
+    assert sum(entry.startswith(f"{overridden_key}=") for entry in environment) == 1
+    assert f"{overridden_key}={overridden_value}" in environment
+    assert (
+        probe.require_probe_container_contract(
+            _OneOutputExecutor(document),
+            spec=spec,
+            secret_values=(b"Z" * 24,),
+            require_running=True,
+        )
+        == "a" * 64
+    )
 
 
 def test_probe_container_contract_accepts_only_the_exact_security_and_bind_set(
@@ -1134,10 +1403,14 @@ class _ProbeProtocolExecutor:
         *,
         injected: tuple[str, BaseException] | None = None,
         ambiguous_created_name: str | None = None,
+        image_environment_extra: str | None = None,
+        remove_image_environment_key: bool = False,
     ) -> None:
         self.events = events
         self.injected = injected
         self.ambiguous_created_name = ambiguous_created_name
+        self.image_environment_extra = image_environment_extra
+        self.remove_image_environment_key = remove_image_environment_key
         self.calls: list[tuple[str, ...]] = []
         self.layout: Any | None = None
         self.running = {
@@ -1145,6 +1418,7 @@ class _ProbeProtocolExecutor:
             probe.MINIO_PROBE_CONTAINER: False,
         }
         self.minio_values: list[bytes] = []
+        self.image_environments: dict[str, tuple[tuple[str, str], ...]] = {}
 
     def set_forbidden(self, _values: Any) -> None:
         self.events.append("secrets.registered")
@@ -1171,6 +1445,20 @@ class _ProbeProtocolExecutor:
         self._inject(classification)
         if command[:3] == ("docker", "image", "inspect"):
             image_id = command[3]
+            environment_keys = (
+                probe.POSTGRES_IMAGE_ENVIRONMENT_KEY_ALLOWLIST
+                if image_id == probe.POSTGRES_IMAGE_ID
+                else probe.MINIO_IMAGE_ENVIRONMENT_KEY_ALLOWLIST
+            )
+            environment = _sanitized_image_environment(environment_keys)
+            if image_id == probe.MINIO_IMAGE_ID:
+                if self.remove_image_environment_key:
+                    environment.pop()
+                if self.image_environment_extra is not None:
+                    environment.append(self.image_environment_extra)
+            self.image_environments[image_id] = tuple(
+                sorted((entry.partition("=")[0], entry.partition("=")[2]) for entry in environment)
+            )
             entrypoint = (
                 ["docker-entrypoint.sh"]
                 if image_id == probe.POSTGRES_IMAGE_ID
@@ -1182,7 +1470,7 @@ class _ProbeProtocolExecutor:
                         "Id": image_id,
                         "Os": "linux",
                         "Architecture": probe._expected_architecture(),
-                        "Config": {"Entrypoint": entrypoint, "Env": ["PATH=/usr/bin"]},
+                        "Config": {"Entrypoint": entrypoint, "Env": environment},
                     }
                 ]
             ).encode()
@@ -1213,8 +1501,8 @@ class _ProbeProtocolExecutor:
             assert self.layout is not None
             spec = probe._container_specs(
                 self.layout,
-                postgres_image_environment=(("PATH", "/usr/bin"),),
-                minio_image_environment=(("PATH", "/usr/bin"),),
+                postgres_image_environment=self.image_environments[probe.POSTGRES_IMAGE_ID],
+                minio_image_environment=self.image_environments[probe.MINIO_IMAGE_ID],
             )[name]
             document = _container_document(self.layout, name, spec=spec)
             running = self.running[name]
@@ -1324,12 +1612,16 @@ def _run_recorded_probe(
     injected: tuple[str, BaseException] | None = None,
     holder: dict[str, Any] | None = None,
     ambiguous_created_name: str | None = None,
+    image_environment_extra: str | None = None,
+    remove_image_environment_key: bool = False,
 ) -> tuple[_ProbeProtocolExecutor, list[str], Any]:
     events: list[str] = []
     executor = _ProbeProtocolExecutor(
         events,
         injected=injected,
         ambiguous_created_name=ambiguous_created_name,
+        image_environment_extra=image_environment_extra,
+        remove_image_environment_key=remove_image_environment_key,
     )
     if holder is not None:
         holder["executor"] = executor
@@ -1429,6 +1721,53 @@ def test_execute_probe_pre_mutation_gates_fail_before_any_create_or_host_write(
         for call in executor.calls
     )
     assert holder["events"][-1] == "lock.exit"
+
+
+@pytest.mark.parametrize(
+    ("extra", "remove_key"),
+    (
+        ("UNRELATED_EXTRA=future-image-secret-sentinel", False),
+        ("MINIO_SERVER_URL=future-image-secret-sentinel", False),
+        ("PATH=future-image-secret-sentinel", False),
+        ("MALFORMED", False),
+        (None, True),
+    ),
+)
+def test_execute_probe_rejects_image_key_drift_before_any_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    extra: str | None,
+    remove_key: bool,
+) -> None:
+    holder: dict[str, Any] = {}
+    sentinel = "future-image-secret-sentinel"
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_IMAGE_ENVIRONMENT_INVALID$") as raised:
+        events: list[str] = []
+        executor = _ProbeProtocolExecutor(
+            events,
+            image_environment_extra=extra,
+            remove_image_environment_key=remove_key,
+        )
+        holder["executor"] = executor
+        holder["events"] = events
+        monkeypatch.setattr(
+            probe,
+            "exclusive_docker_workflow_lock",
+            lambda _root: _RecorderLock(events),
+        )
+        probe.execute_probe(executor, data_parent=tmp_path / "datariver-data")
+
+    captured = capsys.readouterr()
+    assert not (tmp_path / "datariver-data").exists()
+    assert not any(
+        call[:2] in {("docker", "create"), ("docker", "start"), ("docker", "stop")}
+        or call[:3] == ("docker", "container", "rm")
+        for call in holder["executor"].calls
+    )
+    assert holder["events"][-1] == "lock.exit"
+    assert sentinel not in captured.out + captured.err + str(raised.value)
 
 
 def test_execute_probe_tracks_ambiguous_daemon_creation_before_client_error(
