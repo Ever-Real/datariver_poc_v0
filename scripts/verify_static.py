@@ -1730,8 +1730,8 @@ def verify_governed_docker_build_capacity_contract() -> None:
         'f"private_cache_delta_signed={',
         'f"shared_cache_delta_signed={',
         'f"free_delta_signed={',
-        'raise DockerCapacityError("DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE")',
-        'raise DockerCapacityError("DOCKER_BUILDER_OVERRIDE_NOT_CURRENT")',
+        '"DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE"',
+        '"DOCKER_BUILDER_OVERRIDE_NOT_CURRENT"',
         'raise DockerCapacityError("DOCKER_ACTIVE_BUILD_PRESENT")',
         'raise DockerCapacityError("BUILD_CAPACITY_REQUIRES_CLEAN_CHECKOUT")',
         'raise DockerCapacityError("DOCKER_CONTEXT_MUST_BE_LOCAL_UNIX")',
@@ -1808,6 +1808,44 @@ def verify_governed_docker_build_capacity_contract() -> None:
         ("MEASURE_ONLY", "MEASURE_ONLY"),
     ):
         raise AssertionError("the default-preserving capacity mode has drifted")
+    expected_builder_selection_predicates = tuple(
+        (value, value)
+        for value in (
+            "EXTERNAL_BUILDKIT_HOST",
+            "LIST_JSON",
+            "ROW_SCHEMA",
+            "NODE_COUNT",
+            "NODE_SCHEMA",
+            "DUPLICATE_CONFLICT",
+            "CURRENT_MISSING",
+            "CURRENT_AMBIGUOUS",
+            "OVERRIDE_INVALID",
+            "OVERRIDE_NOT_CURRENT",
+            "DRIVER_NOT_DOCKER",
+            "NODE_NOT_RUNNING",
+            "BUILDER_CONTEXT_MISMATCH",
+            "NODE_NAME_MISMATCH",
+            "ENDPOINT_CONTEXT_MISMATCH",
+            "PASS",
+            "UNKNOWN",
+        )
+    )
+    if capacity_enum_members("BuilderSelectionPredicate") != expected_builder_selection_predicates:
+        raise AssertionError("the builder-selection predicate vocabulary has drifted")
+    builder_selection_recorder = capacity.split("class BuilderSelectionRecorder:", maxsplit=1)[
+        1
+    ].split("class BuildCapacityPreflightPredicate", maxsplit=1)[0]
+    for fragment in (
+        "predicate: BuilderSelectionPredicate = BuilderSelectionPredicate.UNKNOWN",
+        "return self.predicate is not BuilderSelectionPredicate.UNKNOWN",
+        "not isinstance(predicate, BuilderSelectionPredicate)",
+        "predicate is BuilderSelectionPredicate.UNKNOWN",
+        "or self.known",
+        'raise DockerCapacityError("BUILDER_SELECTION_EVIDENCE_INVALID")',
+        "self.predicate = predicate",
+    ):
+        if fragment not in builder_selection_recorder:
+            raise AssertionError(f"the builder-selection recorder is missing: {fragment}")
     expected_capacity_predicates = tuple(
         (value, value)
         for value in (
@@ -1839,6 +1877,60 @@ def verify_governed_docker_build_capacity_contract() -> None:
     )
     if capacity_enum_members("BuildCapacityPreflightPredicate") != expected_capacity_predicates:
         raise AssertionError("the build-capacity predicate vocabulary has drifted")
+    selected_builder_functions = [
+        node
+        for node in capacity_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_selected_builder"
+    ]
+    if len(selected_builder_functions) != 1:
+        raise AssertionError("the canonical builder selector must remain unique")
+    builder_failure_pairs: list[tuple[str, object]] = []
+
+    class BuilderFailureOrderVisitor(ast.NodeVisitor):
+        def visit_Call(self, node: ast.Call) -> None:
+            if (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "_builder_selection_failure"
+                and len(node.args) >= 3
+                and isinstance(node.args[1], ast.Attribute)
+                and isinstance(node.args[1].value, ast.Name)
+                and node.args[1].value.id == "BuilderSelectionPredicate"
+            ):
+                builder_failure_pairs.append((node.args[1].attr, ast.literal_eval(node.args[2])))
+            self.generic_visit(node)
+
+    BuilderFailureOrderVisitor().visit(selected_builder_functions[0])
+    expected_builder_failure_pairs = (
+        ("EXTERNAL_BUILDKIT_HOST", "EXTERNAL_BUILDKIT_HOST_UNSUPPORTED"),
+        ("LIST_JSON", "Docker builder evidence is invalid."),
+        ("ROW_SCHEMA", "Docker builder evidence is invalid."),
+        ("ROW_SCHEMA", "Docker builder evidence is invalid."),
+        ("NODE_COUNT", "DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE"),
+        ("NODE_SCHEMA", "Docker builder node evidence is invalid."),
+        ("NODE_SCHEMA", "Docker builder node evidence is invalid."),
+        ("DUPLICATE_CONFLICT", "Docker builder duplicate evidence conflicts."),
+        ("CURRENT_MISSING", "DOCKER_BUILDER_AMBIGUOUS"),
+        ("CURRENT_AMBIGUOUS", "DOCKER_BUILDER_AMBIGUOUS"),
+        ("OVERRIDE_INVALID", "DOCKER_BUILDER_OVERRIDE_INVALID"),
+        ("OVERRIDE_NOT_CURRENT", "DOCKER_BUILDER_OVERRIDE_NOT_CURRENT"),
+        ("CURRENT_MISSING", "DOCKER_BUILDER_NOT_CURRENT"),
+        ("DRIVER_NOT_DOCKER", "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER"),
+        ("NODE_NOT_RUNNING", "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER"),
+        ("BUILDER_CONTEXT_MISMATCH", "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER"),
+        ("NODE_NAME_MISMATCH", "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER"),
+        ("ENDPOINT_CONTEXT_MISMATCH", "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER"),
+    )
+    if tuple(builder_failure_pairs) != expected_builder_failure_pairs:
+        raise AssertionError("the exact builder-selection branches or legacy errors have drifted")
+    selected_builder_source = ast.get_source_segment(capacity, selected_builder_functions[0])
+    if selected_builder_source is None or not (
+        "builder_selection_recorder: BuilderSelectionRecorder | None = None"
+        in selected_builder_source
+        and "builder_selection_recorder.record(BuilderSelectionPredicate.PASS)"
+        in selected_builder_source
+        and "str(error)" not in selected_builder_source
+    ):
+        raise AssertionError("builder selection is not structurally recorded without text parsing")
     governed_capacity = capacity.split("def governed_compose_build_capacity(", maxsplit=1)[1]
     capacity_phase_order = tuple(
         governed_capacity.index(fragment)
@@ -1873,6 +1965,8 @@ def verify_governed_docker_build_capacity_contract() -> None:
     for fragment in (
         "mode: DockerCapacityMode = DockerCapacityMode.ACTION_ENABLED",
         "phase_recorder: DockerCapacityPhaseRecorder | None = None",
+        "builder_selection_recorder: BuilderSelectionRecorder | None = None",
+        "builder_selection_recorder=builder_selection_recorder",
         "except DockerCapacityPhaseError:",
         "raise DockerCapacityPhaseError(str(error), predicate) from None",
     ):
@@ -1996,6 +2090,11 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_measure_only_cache_policy_and_active_build_fail_before_action",
         "test_initial_builder_idle_uses_distinct_structured_predicates",
         "test_capacity_interrupts_are_not_falsely_classified_as_provider_failures",
+        "test_builder_selection_recorder_classifies_every_existing_failure_branch",
+        "test_builder_selection_recorder_records_pass_once_and_never_serializes_unknown",
+        "test_governed_capacity_threads_exact_builder_selection_outcome",
+        "test_builder_selection_interrupt_never_invents_a_known_outcome",
+        "test_builder_selection_reports_the_first_simultaneous_final_defect",
     ):
         if test_name not in test_source:
             raise AssertionError(f"the Docker capacity direct test is missing: {test_name}")
@@ -2005,6 +2104,12 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_docker_capacity_controller_is_operator_only",
         "test_update_reuses_existing_datahub_images_without_registry_pull",
         "test_offline_identity_build_keeps_existing_no_capacity_evidence_semantics",
+        "test_build_capacity_preflight_builder_selection_output_is_closed_and_optional",
+        "test_build_capacity_preflight_rejects_contradictory_builder_selection_evidence",
+        "test_build_capacity_preflight_retains_monotonic_builder_selection_outcome",
+        "test_build_capacity_preflight_rejects_nonboolean_raw_or_extra_builder_fields",
+        "test_builder_selection_failure_survives_later_lock_exit_failure",
+        "test_build_capacity_review_required_forbids_every_other_nonunknown_top_predicate",
     ):
         if test_name not in workflow_test_source:
             raise AssertionError(f"the update-workflow capacity test is missing: {test_name}")
@@ -2022,6 +2127,12 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "logical = private + shared",
         "Shared=false",
         "diagnosis-only",
+        "closed, value-free structural recorder",
+        "`builder_selection_known`",
+        "optional closed `builder_selection_predicate`",
+        "Unknown or pre-selection stops\nomit the subpredicate",
+        "fixed first-defect order is driver",
+        "sole review-required result\nwhose top-level predicate is not `UNKNOWN`",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0112 omits governed capacity term: {fragment}")
@@ -2889,6 +3000,27 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         ("BUILD_CAPACITY_PREFLIGHT", "BUILD_CAPACITY_PREFLIGHT"),
     ):
         raise AssertionError("the build-capacity diagnostic phase has drifted")
+    build_capacity_evidence = workflow.split("class BuildCapacityPreflightEvidence:", maxsplit=1)[
+        1
+    ].split("class _HostEnvironmentPreflightResult:", maxsplit=1)[0]
+    for fragment in (
+        "builder_selection_known: bool = False",
+        "builder_selection_predicate: BuilderSelectionPredicate | None = None",
+        "type(self.builder_selection_known) is not bool",
+        "self.builder_selection_known",
+        "!= (self.builder_selection_predicate is not None)",
+        "self.builder_selection_predicate is BuilderSelectionPredicate.UNKNOWN",
+        "self.predicate is BuildCapacityPreflightPredicate.BUILDER_SELECTION",
+        "builder_selection_failure",
+        "self.builder_selection_predicate is BuilderSelectionPredicate.PASS",
+        "builder_selection_pass_required",
+        "review_preserves_selection_failure",
+        "and not review_preserves_selection_failure",
+    ):
+        if fragment not in build_capacity_evidence:
+            raise AssertionError(
+                f"the builder-selection evidence consistency rule is missing: {fragment}"
+            )
     if workflow_enum_members("HostEnvironmentPreflightPredicate") != (
         ("APPLIED_STATE_CONTRACT", "APPLIED_STATE_CONTRACT"),
         ("PROFILE_SELECTION", "PROFILE_SELECTION"),
@@ -3178,13 +3310,14 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     ].split("def _host_environment_preflight_failure(", maxsplit=1)[0]
     capacity_output_keys = tuple(
         re.findall(
-            r'^\s{12}"([a-z_]+)": evidence\.',
+            r'^\s{8}"([a-z_]+)": evidence\.',
             capacity_output,
             flags=re.MULTILINE,
         )
     )
     if capacity_output_keys != (
         "build_count",
+        "builder_selection_known",
         "cache_action_count",
         "classification",
         "container_count",
@@ -3194,6 +3327,14 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "retry_count",
     ):
         raise AssertionError("the build-capacity output allowlist has drifted")
+    if not (
+        "if evidence.builder_selection_known:" in capacity_output
+        and 'fields["builder_selection_predicate"] = evidence.builder_selection_predicate.value'
+        in capacity_output
+        and capacity_output.count('"builder_selection_predicate"') == 1
+        and '"builder_selection_predicate":' not in capacity_output
+    ):
+        raise AssertionError("the optional builder-selection output contract has drifted")
     host_functions = [
         node
         for node in workflow_syntax.body
@@ -3287,13 +3428,30 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     )
     if capacity_operator_order != tuple(sorted(capacity_operator_order)):
         raise AssertionError("the build-capacity diagnostic phase order has drifted")
+    review_required = workflow.split("def _build_capacity_preflight_review_required(", maxsplit=1)[
+        1
+    ].split("def _fixture_diagnostic_source_is_stable(", maxsplit=1)[0]
+    review_order = tuple(
+        review_required.index(fragment)
+        for fragment in (
+            "preserve_selection_failure = builder_selection_recorder.known",
+            "builder_selection_recorder.predicate is not BuilderSelectionPredicate.PASS",
+            "classification=BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED",
+            "BuildCapacityPreflightPredicate.BUILDER_SELECTION",
+            "if preserve_selection_failure",
+            "else BuildCapacityPreflightPredicate.UNKNOWN",
+        )
+    )
+    if review_order != tuple(sorted(review_order)):
+        raise AssertionError("the simultaneous builder/outer failure evidence order has drifted")
     for fragment in (
         'selected_build_services=("local-bootstrap",)',
         "executor=command_executor",
         "phase_recorder=phase_recorder",
+        "builder_selection_recorder=builder_selection_recorder",
         "except DockerCapacityMeasureOnlyStop:",
         "except DockerCapacityPhaseError as error:",
-        "return _build_capacity_preflight_review_required()",
+        "return _build_capacity_preflight_review_required(builder_selection_recorder)",
     ):
         if fragment not in capacity_operator:
             raise AssertionError(f"the build-capacity diagnostic guard is missing: {fragment}")
@@ -4627,6 +4785,10 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "A child `PASS` is accepted by both the standalone diagnostic and canonical parity session",
         "A\nnon-PASS child predicate remains the first defect when cleanup also fails",
         "before any identity creation",
+        "separate closed subpredicate distinguishes every\nreviewed selection branch",
+        "`builder_selection_known` is always present",
+        "no phase name is used to reconstruct it",
+        "every other review-required\ntop-level result remains `UNKNOWN`",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0113 omits gateway parity term: {fragment}")

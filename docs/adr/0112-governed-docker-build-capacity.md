@@ -47,6 +47,15 @@ multi-node builders and a `BUILDX_BUILDER` override to any non-current builder a
 Immediately before an optional prune and before each online Compose build, Buildx history must
 report zero running builds for that builder.
 
+Builder selection also advances one closed, value-free structural recorder. It distinguishes an
+external BuildKit host; invalid list, row, node-count or node shapes; conflicting duplicates;
+missing or ambiguous current selection; invalid or non-current overrides; non-`docker` driver;
+non-running node; and builder/context, node-name or endpoint/context mismatch. The recorder exposes
+none of the builder, context, node, endpoint, driver, status or environment values. Without a
+recorder, the canonical action-enabled failure text and fail-closed behavior remain unchanged.
+When several final checks are simultaneously defective, the fixed first-defect order is driver,
+node status, builder/context, node name, then endpoint/context.
+
 Resolved Compose JSON stays in process memory. Each selected build is reduced to a SHA-256
 fingerprint of its allowlisted context, Dockerfile, target and resolved build arguments. Raw
 configuration, argument values, image references, image IDs and provider output are never logged
@@ -143,9 +152,16 @@ observed active build.
 Every boundary advances one shared typed, value-free phase recorder. Existing
 `DockerCapacityError` text and action-enabled behavior are unchanged when the recorder is absent;
 the diagnostic receives a structured phase rather than matching exception text. Its evidence
-contains no builder name, Compose configuration, service/image/cache identity, byte count, path,
-environment or provider output. The operation performs cache action, build and container action
-zero and stops before database, login, identity, topology, AppliedState or push work.
+contains `builder_selection_known` and the optional closed `builder_selection_predicate`: an exact
+selection failure keeps the top-level `BUILDER_SELECTION`, while any observed success is retained
+as `PASS` through later phases and outer review-required failures. Unknown or pre-selection stops
+omit the subpredicate; null and reconstructed results are forbidden. The evidence contains no
+builder name, Compose configuration, service/image/cache identity, byte count, path, environment
+or provider output. The operation performs cache action, build and container action zero and stops
+before database, login, identity, topology, AppliedState or push work.
+If a selection failure is followed by a lock/context-exit defect, review-required evidence retains
+top-level `BUILDER_SELECTION` and its exact first subtype. This is the sole review-required result
+whose top-level predicate is not `UNKNOWN`.
 
 ## Compatibility and deferred scope
 

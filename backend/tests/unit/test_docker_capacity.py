@@ -5,7 +5,7 @@ import json
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -169,6 +169,7 @@ def _run(
     environ: dict[str, str] | None = None,
     mode: Any = None,
     phase_recorder: Any = None,
+    builder_selection_recorder: Any = None,
 ) -> Any:
     with capacity.exclusive_docker_workflow_lock(root) as lock:
         kwargs: dict[str, Any] = {}
@@ -176,6 +177,8 @@ def _run(
             kwargs["mode"] = mode
         if phase_recorder is not None:
             kwargs["phase_recorder"] = phase_recorder
+        if builder_selection_recorder is not None:
+            kwargs["builder_selection_recorder"] = builder_selection_recorder
         return capacity.governed_compose_build_capacity(
             root=root,
             compose_config_command=("compose", "config", "--format", "json"),
@@ -1138,6 +1141,271 @@ def test_current_builder_must_match_current_local_context(tmp_path: Path) -> Non
         match="DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
     ):
         _run(tmp_path, FakeExecutor(outputs))
+
+
+@pytest.mark.parametrize(
+    ("case", "expected", "message"),
+    (
+        ("external-host", "EXTERNAL_BUILDKIT_HOST", "EXTERNAL_BUILDKIT_HOST_UNSUPPORTED"),
+        ("list-json", "LIST_JSON", "Docker builder evidence is invalid."),
+        ("row-nonmapping", "ROW_SCHEMA", "Docker builder evidence is invalid."),
+        ("row-schema", "ROW_SCHEMA", "Docker builder evidence is invalid."),
+        ("builder-name", "ROW_SCHEMA", "Docker builder evidence is invalid."),
+        ("current-type", "ROW_SCHEMA", "Docker builder evidence is invalid."),
+        ("driver-type", "ROW_SCHEMA", "Docker builder evidence is invalid."),
+        ("nodes-type", "ROW_SCHEMA", "Docker builder evidence is invalid."),
+        ("node-count", "NODE_COUNT", "DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE"),
+        ("node-nonmapping", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
+        ("node-schema", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
+        ("node-name", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
+        ("node-endpoint", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
+        ("node-status-type", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
+        ("duplicate", "DUPLICATE_CONFLICT", "Docker builder duplicate evidence conflicts."),
+        ("current-missing", "CURRENT_MISSING", "DOCKER_BUILDER_AMBIGUOUS"),
+        ("current-ambiguous", "CURRENT_AMBIGUOUS", "DOCKER_BUILDER_AMBIGUOUS"),
+        ("override-invalid", "OVERRIDE_INVALID", "DOCKER_BUILDER_OVERRIDE_INVALID"),
+        (
+            "override-not-current",
+            "OVERRIDE_NOT_CURRENT",
+            "DOCKER_BUILDER_OVERRIDE_NOT_CURRENT",
+        ),
+        (
+            "driver",
+            "DRIVER_NOT_DOCKER",
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        ),
+        (
+            "node-status",
+            "NODE_NOT_RUNNING",
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        ),
+        (
+            "builder-context",
+            "BUILDER_CONTEXT_MISMATCH",
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        ),
+        (
+            "node-name-mismatch",
+            "NODE_NAME_MISMATCH",
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        ),
+        (
+            "endpoint",
+            "ENDPOINT_CONTEXT_MISMATCH",
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        ),
+    ),
+)
+def test_builder_selection_recorder_classifies_every_existing_failure_branch(
+    case: str,
+    expected: str,
+    message: str,
+) -> None:
+    current_context = "desktop-linux"
+    environment: dict[str, str] = {}
+    row = {
+        "Current": True,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [
+            {
+                "Endpoint": "desktop-linux",
+                "Name": "desktop-linux",
+                "Status": "running",
+            }
+        ],
+    }
+    rows: list[object] = [row]
+    if case == "external-host":
+        environment["BUILDKIT_HOST"] = "raw-host-sentinel"
+    elif case == "list-json":
+        rows = []
+    elif case == "row-nonmapping":
+        rows = ["raw-row-sentinel"]
+    elif case == "row-schema":
+        rows = [{}]
+    elif case == "builder-name":
+        row["Name"] = "raw/builder-sentinel"
+    elif case == "current-type":
+        row["Current"] = 1
+    elif case == "driver-type":
+        row["Driver"] = 1
+    elif case == "nodes-type":
+        row["Nodes"] = {}
+    elif case == "node-count":
+        row["Nodes"] = [*cast(list[object], row["Nodes"]), {}]
+    elif case == "node-nonmapping":
+        row["Nodes"] = ["raw-node-sentinel"]
+    elif case == "node-schema":
+        row["Nodes"] = [{}]
+    elif case == "node-name":
+        cast(list[dict[str, object]], row["Nodes"])[0]["Name"] = "raw/node-sentinel"
+    elif case == "node-endpoint":
+        cast(list[dict[str, object]], row["Nodes"])[0]["Endpoint"] = "raw/endpoint-sentinel"
+    elif case == "node-status-type":
+        cast(list[dict[str, object]], row["Nodes"])[0]["Status"] = 1
+    elif case == "duplicate":
+        conflict = json.loads(json.dumps(row))
+        conflict["Driver"] = "docker-container"
+        rows.append(conflict)
+    elif case == "current-missing":
+        row["Current"] = False
+    elif case == "current-ambiguous":
+        second = json.loads(json.dumps(row))
+        second["Name"] = "another-builder"
+        second["Nodes"][0]["Name"] = "another-builder"
+        second["Nodes"][0]["Endpoint"] = "another-builder"
+        rows.append(second)
+    elif case == "override-invalid":
+        environment["BUILDX_BUILDER"] = "missing-builder"
+    elif case == "override-not-current":
+        alternate = json.loads(json.dumps(row))
+        alternate["Current"] = False
+        alternate["Name"] = "alternate"
+        alternate["Nodes"][0]["Name"] = "alternate"
+        alternate["Nodes"][0]["Endpoint"] = "alternate"
+        rows.append(alternate)
+        environment["BUILDX_BUILDER"] = "alternate"
+    elif case == "driver":
+        row["Driver"] = "docker-container"
+    elif case == "node-status":
+        cast(list[dict[str, object]], row["Nodes"])[0]["Status"] = "stopped"
+    elif case == "builder-context":
+        current_context = "another-context"
+    elif case == "node-name-mismatch":
+        cast(list[dict[str, object]], row["Nodes"])[0]["Name"] = "another-node"
+    elif case == "endpoint":
+        cast(list[dict[str, object]], row["Nodes"])[0]["Endpoint"] = "another-endpoint"
+    raw = "not-json" if case == "list-json" else "\n".join(json.dumps(item) for item in rows)
+    recorder = capacity.BuilderSelectionRecorder()
+
+    with pytest.raises(capacity.DockerCapacityError, match=message) as structured:
+        capacity._selected_builder(
+            raw,
+            environment,
+            current_context=current_context,
+            builder_selection_recorder=recorder,
+        )
+    with pytest.raises(capacity.DockerCapacityError) as default:
+        capacity._selected_builder(raw, environment, current_context=current_context)
+
+    assert str(default.value) == str(structured.value)
+    assert recorder.known is True
+    assert recorder.predicate.value == expected
+    assert "raw-" not in str(structured.value)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    (
+        ("driver", "DRIVER_NOT_DOCKER"),
+        ("status", "NODE_NOT_RUNNING"),
+        ("context", "BUILDER_CONTEXT_MISMATCH"),
+        ("node-name", "NODE_NAME_MISMATCH"),
+        ("endpoint", "ENDPOINT_CONTEXT_MISMATCH"),
+    ),
+)
+def test_builder_selection_reports_the_first_simultaneous_final_defect(
+    case: str,
+    expected: str,
+) -> None:
+    row = {
+        "Current": True,
+        "Driver": "docker-container",
+        "Name": "desktop-linux",
+        "Nodes": [
+            {
+                "Endpoint": "another-endpoint",
+                "Name": "another-node",
+                "Status": "stopped",
+            }
+        ],
+    }
+    current_context = "another-context"
+    if case != "driver":
+        row["Driver"] = "docker"
+    if case not in {"driver", "status"}:
+        cast(list[dict[str, object]], row["Nodes"])[0]["Status"] = "running"
+    if case not in {"driver", "status", "context"}:
+        current_context = "desktop-linux"
+    if case == "endpoint":
+        cast(list[dict[str, object]], row["Nodes"])[0]["Name"] = "desktop-linux"
+    recorder = capacity.BuilderSelectionRecorder()
+
+    with pytest.raises(
+        capacity.DockerCapacityError,
+        match="DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+    ) as structured:
+        capacity._selected_builder(
+            json.dumps(row),
+            {},
+            current_context=current_context,
+            builder_selection_recorder=recorder,
+        )
+    with pytest.raises(capacity.DockerCapacityError) as default:
+        capacity._selected_builder(
+            json.dumps(row),
+            {},
+            current_context=current_context,
+        )
+
+    assert recorder.predicate.value == expected
+    assert str(default.value) == str(structured.value)
+
+
+def test_builder_selection_recorder_records_pass_once_and_never_serializes_unknown() -> None:
+    recorder = capacity.BuilderSelectionRecorder()
+
+    selected = capacity._selected_builder(
+        _builder_lines(),
+        {},
+        current_context="desktop-linux",
+        builder_selection_recorder=recorder,
+    )
+
+    assert selected == "desktop-linux"
+    assert recorder.known is True
+    assert recorder.predicate is capacity.BuilderSelectionPredicate.PASS
+    with pytest.raises(capacity.DockerCapacityError, match="BUILDER_SELECTION_EVIDENCE_INVALID"):
+        recorder.record(capacity.BuilderSelectionPredicate.UNKNOWN)
+
+
+def test_governed_capacity_threads_exact_builder_selection_outcome(tmp_path: Path) -> None:
+    _prepare_context(tmp_path)
+    recorder = capacity.BuilderSelectionRecorder()
+
+    evidence = _run(
+        tmp_path,
+        FakeExecutor(_base_outputs(tmp_path)),
+        builder_selection_recorder=recorder,
+    )
+
+    assert evidence.builder == "desktop-linux"
+    assert recorder.known is True
+    assert recorder.predicate is capacity.BuilderSelectionPredicate.PASS
+
+
+@pytest.mark.parametrize("failure", (KeyboardInterrupt, SystemExit, BaseException))
+def test_builder_selection_interrupt_never_invents_a_known_outcome(
+    failure: type[BaseException],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recorder = capacity.BuilderSelectionRecorder()
+
+    def interrupted(_value: str) -> Any:
+        raise failure("raw-builder-selection-sentinel")
+
+    monkeypatch.setattr(capacity.json, "loads", interrupted)
+
+    with pytest.raises(failure):
+        capacity._selected_builder(
+            _builder_lines(),
+            {},
+            current_context="desktop-linux",
+            builder_selection_recorder=recorder,
+        )
+    assert recorder.known is False
+    assert recorder.predicate is capacity.BuilderSelectionPredicate.UNKNOWN
 
 
 def test_compose_context_outside_checkout_is_rejected(tmp_path: Path) -> None:

@@ -20,6 +20,8 @@ from uuid import UUID
 
 from docker_capacity import (
     BuildCapacityPreflightPredicate,
+    BuilderSelectionPredicate,
+    BuilderSelectionRecorder,
     CapacityExecutor,
     DockerCapacityError,
     DockerCapacityMeasureOnlyStop,
@@ -694,6 +696,8 @@ class BuildCapacityPreflightEvidence:
     build_count: int = 0
     container_count: int = 0
     retry_count: int = 0
+    builder_selection_known: bool = False
+    builder_selection_predicate: BuilderSelectionPredicate | None = None
 
     def __post_init__(self) -> None:
         counts = (
@@ -703,9 +707,61 @@ class BuildCapacityPreflightEvidence:
             self.container_count,
             self.retry_count,
         )
+        builder_selection_predicate_valid = self.builder_selection_predicate is None or isinstance(
+            self.builder_selection_predicate, BuilderSelectionPredicate
+        )
+        builder_selection_failure = isinstance(
+            self.builder_selection_predicate, BuilderSelectionPredicate
+        ) and self.builder_selection_predicate not in {
+            BuilderSelectionPredicate.PASS,
+            BuilderSelectionPredicate.UNKNOWN,
+        }
+        builder_selection_later_predicates = {
+            BuildCapacityPreflightPredicate.DOCKER_PLATFORM,
+            BuildCapacityPreflightPredicate.IMAGE_EVIDENCE,
+            BuildCapacityPreflightPredicate.CACHE_EVIDENCE,
+            BuildCapacityPreflightPredicate.FILESYSTEM_EVIDENCE,
+            BuildCapacityPreflightPredicate.CAPACITY_POLICY,
+            BuildCapacityPreflightPredicate.CAPACITY_CACHE_POLICY_SUPPORT,
+            BuildCapacityPreflightPredicate.CAPACITY_CACHE_ACTIVE_BUILD,
+            BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED,
+            BuildCapacityPreflightPredicate.INITIAL_BUILDER_IDLE_PROBE,
+            BuildCapacityPreflightPredicate.INITIAL_BUILDER_ACTIVE,
+            BuildCapacityPreflightPredicate.PASS,
+        }
+        builder_selection_pass_required = self.predicate in builder_selection_later_predicates
+        builder_selection_pass_allowed = self.predicate in {
+            *builder_selection_later_predicates,
+            BuildCapacityPreflightPredicate.UNKNOWN,
+        }
+        review_preserves_selection_failure = (
+            self.classification is BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED
+            and self.predicate is BuildCapacityPreflightPredicate.BUILDER_SELECTION
+            and builder_selection_failure
+        )
         if (
             self.phase is not BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT
             or any(type(value) is not int or value != 0 for value in counts)
+            or type(self.builder_selection_known) is not bool
+            or not builder_selection_predicate_valid
+            or self.builder_selection_known != (self.builder_selection_predicate is not None)
+            or self.builder_selection_predicate is BuilderSelectionPredicate.UNKNOWN
+            or (
+                self.predicate is BuildCapacityPreflightPredicate.BUILDER_SELECTION
+                and (not self.builder_selection_known or not builder_selection_failure)
+            )
+            or (
+                builder_selection_failure
+                and self.predicate is not BuildCapacityPreflightPredicate.BUILDER_SELECTION
+            )
+            or (
+                self.builder_selection_predicate is BuilderSelectionPredicate.PASS
+                and not builder_selection_pass_allowed
+            )
+            or (
+                builder_selection_pass_required
+                and self.builder_selection_predicate is not BuilderSelectionPredicate.PASS
+            )
             or (
                 self.classification is BuildCapacityPreflightClassification.PASS
                 and self.predicate is not BuildCapacityPreflightPredicate.PASS
@@ -717,6 +773,7 @@ class BuildCapacityPreflightEvidence:
             or (
                 self.classification is BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED
                 and self.predicate is not BuildCapacityPreflightPredicate.UNKNOWN
+                and not review_preserves_selection_failure
             )
         ):
             raise WorkflowError("BUILD_CAPACITY_PREFLIGHT_EVIDENCE_INVALID")
@@ -1888,6 +1945,7 @@ def _preflight_build_capacity(
     executor: CapacityExecutor | None = None,
     mode: DockerCapacityMode = DockerCapacityMode.ACTION_ENABLED,
     phase_recorder: DockerCapacityPhaseRecorder | None = None,
+    builder_selection_recorder: BuilderSelectionRecorder | None = None,
 ) -> str:
     if phase_recorder is not None:
         phase_recorder.mark(BuildCapacityPreflightPredicate.COMPOSE_ARGUMENTS)
@@ -1910,6 +1968,7 @@ def _preflight_build_capacity(
         executor=executor,
         mode=mode,
         phase_recorder=phase_recorder,
+        builder_selection_recorder=builder_selection_recorder,
     )
     runner.note(evidence.summary())
     return evidence.builder
@@ -2229,17 +2288,22 @@ def format_host_environment_preflight_line(
 def format_build_capacity_preflight_line(
     evidence: BuildCapacityPreflightEvidence,
 ) -> str:
+    fields: dict[str, bool | int | str] = {
+        "build_count": evidence.build_count,
+        "builder_selection_known": evidence.builder_selection_known,
+        "cache_action_count": evidence.cache_action_count,
+        "classification": evidence.classification.value,
+        "container_count": evidence.container_count,
+        "mutation_count": evidence.mutation_count,
+        "phase": evidence.phase.value,
+        "predicate": evidence.predicate.value,
+        "retry_count": evidence.retry_count,
+    }
+    if evidence.builder_selection_known:
+        assert evidence.builder_selection_predicate is not None
+        fields["builder_selection_predicate"] = evidence.builder_selection_predicate.value
     line = json.dumps(
-        {
-            "build_count": evidence.build_count,
-            "cache_action_count": evidence.cache_action_count,
-            "classification": evidence.classification.value,
-            "container_count": evidence.container_count,
-            "mutation_count": evidence.mutation_count,
-            "phase": evidence.phase.value,
-            "predicate": evidence.predicate.value,
-            "retry_count": evidence.retry_count,
-        },
+        fields,
         sort_keys=True,
         separators=(",", ":"),
     )
@@ -2363,6 +2427,7 @@ def _host_environment_preflight_diagnostic() -> HostEnvironmentPreflightEvidence
 
 def _build_capacity_preflight_failure(
     predicate: BuildCapacityPreflightPredicate,
+    builder_selection_recorder: BuilderSelectionRecorder,
 ) -> BuildCapacityPreflightEvidence:
     if predicate in {
         BuildCapacityPreflightPredicate.PASS,
@@ -2373,14 +2438,31 @@ def _build_capacity_preflight_failure(
         classification=BuildCapacityPreflightClassification.REJECTED,
         phase=BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
         predicate=predicate,
+        builder_selection_known=builder_selection_recorder.known,
+        builder_selection_predicate=(
+            builder_selection_recorder.predicate if builder_selection_recorder.known else None
+        ),
     )
 
 
-def _build_capacity_preflight_review_required() -> BuildCapacityPreflightEvidence:
+def _build_capacity_preflight_review_required(
+    builder_selection_recorder: BuilderSelectionRecorder,
+) -> BuildCapacityPreflightEvidence:
+    preserve_selection_failure = builder_selection_recorder.known and (
+        builder_selection_recorder.predicate is not BuilderSelectionPredicate.PASS
+    )
     return BuildCapacityPreflightEvidence(
         classification=BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED,
         phase=BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
-        predicate=BuildCapacityPreflightPredicate.UNKNOWN,
+        predicate=(
+            BuildCapacityPreflightPredicate.BUILDER_SELECTION
+            if preserve_selection_failure
+            else BuildCapacityPreflightPredicate.UNKNOWN
+        ),
+        builder_selection_known=builder_selection_recorder.known,
+        builder_selection_predicate=(
+            builder_selection_recorder.predicate if builder_selection_recorder.known else None
+        ),
     )
 
 
@@ -2396,24 +2478,32 @@ def _fixture_diagnostic_source_is_stable(expected_sha256: str) -> bool:
 
 def _build_capacity_preflight_under_lock(
     capacity_lock: DockerWorkflowLock,
+    builder_selection_recorder: BuilderSelectionRecorder,
 ) -> BuildCapacityPreflightEvidence:
     preflight = _host_environment_preflight_under_lock()
     if preflight.evidence.predicate is not HostEnvironmentPreflightPredicate.PASS:
         return _build_capacity_preflight_failure(
-            BuildCapacityPreflightPredicate.HOST_ENVIRONMENT_PREFLIGHT
+            BuildCapacityPreflightPredicate.HOST_ENVIRONMENT_PREFLIGHT,
+            builder_selection_recorder,
         )
     assert preflight.env_file is not None
     env_file = preflight.env_file
     files = preflight.files
     source_state = _fixture_diagnostic_source_state()
     if source_state is _FixtureSourceCleanState.UNKNOWN:
-        return _build_capacity_preflight_review_required()
+        return _build_capacity_preflight_review_required(builder_selection_recorder)
     if source_state is not _FixtureSourceCleanState.CLEAN:
-        return _build_capacity_preflight_failure(BuildCapacityPreflightPredicate.CLEAN_CHECKOUT)
+        return _build_capacity_preflight_failure(
+            BuildCapacityPreflightPredicate.CLEAN_CHECKOUT,
+            builder_selection_recorder,
+        )
     try:
         source_sha256 = current_fixture_source_sha256()
     except Exception:
-        return _build_capacity_preflight_failure(BuildCapacityPreflightPredicate.SOURCE_PROVENANCE)
+        return _build_capacity_preflight_failure(
+            BuildCapacityPreflightPredicate.SOURCE_PROVENANCE,
+            builder_selection_recorder,
+        )
 
     phase_recorder = DockerCapacityPhaseRecorder()
     command_executor = _BuildCapacityPreflightExecutor()
@@ -2427,15 +2517,20 @@ def _build_capacity_preflight_under_lock(
             executor=command_executor,
             mode=DockerCapacityMode.MEASURE_ONLY,
             phase_recorder=phase_recorder,
+            builder_selection_recorder=builder_selection_recorder,
         )
     except DockerCapacityMeasureOnlyStop:
         if not _fixture_diagnostic_source_is_stable(source_sha256):
-            return _build_capacity_preflight_review_required()
+            return _build_capacity_preflight_review_required(builder_selection_recorder)
         return _build_capacity_preflight_failure(
-            BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED
+            BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED,
+            builder_selection_recorder,
         )
     except DockerCapacityPhaseError as error:
-        return _build_capacity_preflight_failure(error.predicate)
+        return _build_capacity_preflight_failure(
+            error.predicate,
+            builder_selection_recorder,
+        )
     except Exception:
         predicate = phase_recorder.predicate
         if predicate in {
@@ -2445,9 +2540,12 @@ def _build_capacity_preflight_under_lock(
             predicate = BuildCapacityPreflightPredicate.UNKNOWN
         if predicate is BuildCapacityPreflightPredicate.UNKNOWN:
             raise
-        return _build_capacity_preflight_failure(predicate)
+        return _build_capacity_preflight_failure(
+            predicate,
+            builder_selection_recorder,
+        )
     if not _fixture_diagnostic_source_is_stable(source_sha256):
-        return _build_capacity_preflight_review_required()
+        return _build_capacity_preflight_review_required(builder_selection_recorder)
 
     try:
         _require_idle_builder(
@@ -2457,7 +2555,10 @@ def _build_capacity_preflight_under_lock(
             phase_recorder=phase_recorder,
         )
     except DockerCapacityPhaseError as error:
-        return _build_capacity_preflight_failure(error.predicate)
+        return _build_capacity_preflight_failure(
+            error.predicate,
+            builder_selection_recorder,
+        )
     except Exception:
         predicate = phase_recorder.predicate
         if predicate not in {
@@ -2465,24 +2566,35 @@ def _build_capacity_preflight_under_lock(
             BuildCapacityPreflightPredicate.INITIAL_BUILDER_ACTIVE,
         }:
             raise
-        return _build_capacity_preflight_failure(predicate)
+        return _build_capacity_preflight_failure(
+            predicate,
+            builder_selection_recorder,
+        )
     if not _fixture_diagnostic_source_is_stable(source_sha256):
-        return _build_capacity_preflight_review_required()
+        return _build_capacity_preflight_review_required(builder_selection_recorder)
 
     phase_recorder.mark(BuildCapacityPreflightPredicate.PASS)
     return BuildCapacityPreflightEvidence(
         classification=BuildCapacityPreflightClassification.PASS,
         phase=BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
         predicate=phase_recorder.predicate,
+        builder_selection_known=builder_selection_recorder.known,
+        builder_selection_predicate=(
+            builder_selection_recorder.predicate if builder_selection_recorder.known else None
+        ),
     )
 
 
 def _build_capacity_preflight_diagnostic() -> BuildCapacityPreflightEvidence:
+    builder_selection_recorder = BuilderSelectionRecorder()
     try:
         with exclusive_docker_workflow_lock(ROOT) as capacity_lock:
-            evidence = _build_capacity_preflight_under_lock(capacity_lock)
+            evidence = _build_capacity_preflight_under_lock(
+                capacity_lock,
+                builder_selection_recorder,
+            )
     except BaseException:
-        return _build_capacity_preflight_review_required()
+        return _build_capacity_preflight_review_required(builder_selection_recorder)
     return evidence
 
 

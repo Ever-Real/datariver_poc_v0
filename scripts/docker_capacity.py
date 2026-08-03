@@ -15,7 +15,7 @@ from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from pathlib import Path, PurePosixPath
-from typing import Protocol
+from typing import NoReturn, Protocol
 
 COMPOSE_BUILD_CONFIG_PROBE = "COMPOSE_BUILD_CONFIG_PROBE_FAILED"
 DOCKER_BUILDER_LIST_PROBE = "DOCKER_BUILDER_LIST_PROBE_FAILED"
@@ -71,6 +71,48 @@ class DockerCapacityMode(StrEnum):
 
     ACTION_ENABLED = "ACTION_ENABLED"
     MEASURE_ONLY = "MEASURE_ONLY"
+
+
+class BuilderSelectionPredicate(StrEnum):
+    """Closed, value-free outcome of the canonical builder selection contract."""
+
+    EXTERNAL_BUILDKIT_HOST = "EXTERNAL_BUILDKIT_HOST"
+    LIST_JSON = "LIST_JSON"
+    ROW_SCHEMA = "ROW_SCHEMA"
+    NODE_COUNT = "NODE_COUNT"
+    NODE_SCHEMA = "NODE_SCHEMA"
+    DUPLICATE_CONFLICT = "DUPLICATE_CONFLICT"
+    CURRENT_MISSING = "CURRENT_MISSING"
+    CURRENT_AMBIGUOUS = "CURRENT_AMBIGUOUS"
+    OVERRIDE_INVALID = "OVERRIDE_INVALID"
+    OVERRIDE_NOT_CURRENT = "OVERRIDE_NOT_CURRENT"
+    DRIVER_NOT_DOCKER = "DRIVER_NOT_DOCKER"
+    NODE_NOT_RUNNING = "NODE_NOT_RUNNING"
+    BUILDER_CONTEXT_MISMATCH = "BUILDER_CONTEXT_MISMATCH"
+    NODE_NAME_MISMATCH = "NODE_NAME_MISMATCH"
+    ENDPOINT_CONTEXT_MISMATCH = "ENDPOINT_CONTEXT_MISMATCH"
+    PASS = "PASS"  # noqa: S105 - fixed diagnostic predicate, not a secret.
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(slots=True)
+class BuilderSelectionRecorder:
+    """Retain one structurally observed builder-selection outcome."""
+
+    predicate: BuilderSelectionPredicate = BuilderSelectionPredicate.UNKNOWN
+
+    @property
+    def known(self) -> bool:
+        return self.predicate is not BuilderSelectionPredicate.UNKNOWN
+
+    def record(self, predicate: BuilderSelectionPredicate) -> None:
+        if (
+            not isinstance(predicate, BuilderSelectionPredicate)
+            or predicate is BuilderSelectionPredicate.UNKNOWN
+            or self.known
+        ):
+            raise DockerCapacityError("BUILDER_SELECTION_EVIDENCE_INVALID")
+        self.predicate = predicate
 
 
 class BuildCapacityPreflightPredicate(StrEnum):
@@ -599,22 +641,50 @@ def _tracked_context_bytes(
     return sizes
 
 
+def _builder_selection_failure(
+    recorder: BuilderSelectionRecorder | None,
+    predicate: BuilderSelectionPredicate,
+    message: str,
+    *,
+    cause: BaseException | None = None,
+) -> NoReturn:
+    if recorder is not None:
+        recorder.record(predicate)
+    if cause is None:
+        raise DockerCapacityError(message)
+    raise DockerCapacityError(message) from cause
+
+
 def _selected_builder(
     raw: str,
     environ: Mapping[str, str],
     *,
     current_context: str,
+    builder_selection_recorder: BuilderSelectionRecorder | None = None,
 ) -> str:
     if environ.get("BUILDKIT_HOST", "").strip():
-        raise DockerCapacityError("EXTERNAL_BUILDKIT_HOST_UNSUPPORTED")
+        _builder_selection_failure(
+            builder_selection_recorder,
+            BuilderSelectionPredicate.EXTERNAL_BUILDKIT_HOST,
+            "EXTERNAL_BUILDKIT_HOST_UNSUPPORTED",
+        )
     builders: dict[str, tuple[bool, str, str, str, str]] = {}
     try:
         rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
     except json.JSONDecodeError as error:
-        raise DockerCapacityError("Docker builder evidence is invalid.") from error
+        _builder_selection_failure(
+            builder_selection_recorder,
+            BuilderSelectionPredicate.LIST_JSON,
+            "Docker builder evidence is invalid.",
+            cause=error,
+        )
     for row in rows:
         if not isinstance(row, dict):
-            raise DockerCapacityError("Docker builder evidence is invalid.")
+            _builder_selection_failure(
+                builder_selection_recorder,
+                BuilderSelectionPredicate.ROW_SCHEMA,
+                "Docker builder evidence is invalid.",
+            )
         name = row.get("Name")
         current = row.get("Current")
         driver = row.get("Driver")
@@ -626,15 +696,27 @@ def _selected_builder(
             or not isinstance(driver, str)
             or not isinstance(nodes, list)
         ):
-            raise DockerCapacityError("Docker builder evidence is invalid.")
+            _builder_selection_failure(
+                builder_selection_recorder,
+                BuilderSelectionPredicate.ROW_SCHEMA,
+                "Docker builder evidence is invalid.",
+            )
         if len(nodes) != 1:
-            raise DockerCapacityError("DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE")
+            _builder_selection_failure(
+                builder_selection_recorder,
+                BuilderSelectionPredicate.NODE_COUNT,
+                "DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE",
+            )
         node_names: list[str] = []
         endpoints: list[str] = []
         status_values: list[str] = []
         for node in nodes:
             if not isinstance(node, dict):
-                raise DockerCapacityError("Docker builder node evidence is invalid.")
+                _builder_selection_failure(
+                    builder_selection_recorder,
+                    BuilderSelectionPredicate.NODE_SCHEMA,
+                    "Docker builder node evidence is invalid.",
+                )
             node_name = node.get("Name")
             endpoint = node.get("Endpoint")
             status = node.get("Status")
@@ -645,36 +727,90 @@ def _selected_builder(
                 or _BUILDER_NAME.fullmatch(endpoint) is None
                 or not isinstance(status, str)
             ):
-                raise DockerCapacityError("Docker builder node evidence is invalid.")
+                _builder_selection_failure(
+                    builder_selection_recorder,
+                    BuilderSelectionPredicate.NODE_SCHEMA,
+                    "Docker builder node evidence is invalid.",
+                )
             node_names.append(node_name)
             endpoints.append(endpoint)
             status_values.append(status)
         evidence = (current, driver, node_names[0], endpoints[0], status_values[0])
         if name in builders and builders[name] != evidence:
-            raise DockerCapacityError("Docker builder duplicate evidence conflicts.")
+            _builder_selection_failure(
+                builder_selection_recorder,
+                BuilderSelectionPredicate.DUPLICATE_CONFLICT,
+                "Docker builder duplicate evidence conflicts.",
+            )
         builders[name] = evidence
 
     current_names = sorted(name for name, evidence in builders.items() if evidence[0])
-    if len(current_names) != 1:
-        raise DockerCapacityError("DOCKER_BUILDER_AMBIGUOUS")
+    if not current_names:
+        _builder_selection_failure(
+            builder_selection_recorder,
+            BuilderSelectionPredicate.CURRENT_MISSING,
+            "DOCKER_BUILDER_AMBIGUOUS",
+        )
+    if len(current_names) > 1:
+        _builder_selection_failure(
+            builder_selection_recorder,
+            BuilderSelectionPredicate.CURRENT_AMBIGUOUS,
+            "DOCKER_BUILDER_AMBIGUOUS",
+        )
     selected = current_names[0]
     override = environ.get("BUILDX_BUILDER", "").strip()
     if override:
         if _BUILDER_NAME.fullmatch(override) is None or override not in builders:
-            raise DockerCapacityError("DOCKER_BUILDER_OVERRIDE_INVALID")
+            _builder_selection_failure(
+                builder_selection_recorder,
+                BuilderSelectionPredicate.OVERRIDE_INVALID,
+                "DOCKER_BUILDER_OVERRIDE_INVALID",
+            )
         if override != selected:
-            raise DockerCapacityError("DOCKER_BUILDER_OVERRIDE_NOT_CURRENT")
+            _builder_selection_failure(
+                builder_selection_recorder,
+                BuilderSelectionPredicate.OVERRIDE_NOT_CURRENT,
+                "DOCKER_BUILDER_OVERRIDE_NOT_CURRENT",
+            )
     current, driver, node_name, endpoint, status = builders[selected]
     if not current:
-        raise DockerCapacityError("DOCKER_BUILDER_NOT_CURRENT")
-    if (
-        driver != "docker"
-        or status != "running"
-        or selected != current_context
-        or node_name != selected
-        or endpoint != current_context
-    ):
-        raise DockerCapacityError("DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER")
+        _builder_selection_failure(
+            builder_selection_recorder,
+            BuilderSelectionPredicate.CURRENT_MISSING,
+            "DOCKER_BUILDER_NOT_CURRENT",
+        )
+    if driver != "docker":
+        _builder_selection_failure(
+            builder_selection_recorder,
+            BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        )
+    if status != "running":
+        _builder_selection_failure(
+            builder_selection_recorder,
+            BuilderSelectionPredicate.NODE_NOT_RUNNING,
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        )
+    if selected != current_context:
+        _builder_selection_failure(
+            builder_selection_recorder,
+            BuilderSelectionPredicate.BUILDER_CONTEXT_MISMATCH,
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        )
+    if node_name != selected:
+        _builder_selection_failure(
+            builder_selection_recorder,
+            BuilderSelectionPredicate.NODE_NAME_MISMATCH,
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        )
+    if endpoint != current_context:
+        _builder_selection_failure(
+            builder_selection_recorder,
+            BuilderSelectionPredicate.ENDPOINT_CONTEXT_MISMATCH,
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        )
+    if builder_selection_recorder is not None:
+        builder_selection_recorder.record(BuilderSelectionPredicate.PASS)
     return selected
 
 
@@ -1045,6 +1181,7 @@ def governed_compose_build_capacity(
     executor: CapacityExecutor | None = None,
     mode: DockerCapacityMode = DockerCapacityMode.ACTION_ENABLED,
     phase_recorder: DockerCapacityPhaseRecorder | None = None,
+    builder_selection_recorder: BuilderSelectionRecorder | None = None,
 ) -> DockerCapacityEvidence:
     """Prove selected builds fit before any Docker runtime mutation."""
 
@@ -1119,6 +1256,7 @@ def governed_compose_build_capacity(
             raw_builder_list,
             environ,
             current_context=current_context,
+            builder_selection_recorder=builder_selection_recorder,
         )
     with _capacity_phase(
         phase_recorder,

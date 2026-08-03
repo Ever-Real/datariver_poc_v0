@@ -2869,6 +2869,8 @@ def test_build_capacity_preflight_is_locked_ordered_read_only_and_value_free(
         assert kwargs["mode"] is update.DockerCapacityMode.MEASURE_ONLY
         recorder = cast(Any, kwargs["phase_recorder"])
         recorder.mark(update.BuildCapacityPreflightPredicate.CAPACITY_POLICY)
+        selection = cast(Any, kwargs["builder_selection_recorder"])
+        selection.record(update.BuilderSelectionPredicate.PASS)
         return "desktop-linux"
 
     def idle(_builder: object, _lock: object, **kwargs: object) -> None:
@@ -2921,6 +2923,8 @@ def test_build_capacity_preflight_is_locked_ordered_read_only_and_value_free(
     assert evidence.predicate is update.BuildCapacityPreflightPredicate.PASS
     assert json.loads(line) == {
         "build_count": 0,
+        "builder_selection_known": True,
+        "builder_selection_predicate": "PASS",
         "cache_action_count": 0,
         "classification": "PASS",
         "container_count": 0,
@@ -2968,9 +2972,15 @@ def test_build_capacity_preflight_preserves_structured_first_failure(
     def lock(_root: Path) -> Iterator[object]:
         yield object()
 
-    def capacity(*_args: object, **_kwargs: object) -> str:
+    def capacity(*_args: object, **kwargs: object) -> str:
+        selection = cast(Any, kwargs["builder_selection_recorder"])
         if predicate.startswith("INITIAL_"):
+            selection.record(update.BuilderSelectionPredicate.PASS)
             return "desktop-linux"
+        if predicate == "BUILDER_SELECTION":
+            selection.record(update.BuilderSelectionPredicate.ROW_SCHEMA)
+        elif predicate not in {"COMPOSE_CONFIG"}:
+            selection.record(update.BuilderSelectionPredicate.PASS)
         raise update.DockerCapacityPhaseError("fixed-safe-error", closed)
 
     def idle(*_args: object, **_kwargs: object) -> None:
@@ -3063,8 +3073,233 @@ def test_build_capacity_preflight_evidence_rejects_nonzero_actions() -> None:
                 classification=update.BuildCapacityPreflightClassification.REJECTED,
                 phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
                 predicate=update.BuildCapacityPreflightPredicate.CAPACITY_POLICY,
+                builder_selection_known=True,
+                builder_selection_predicate=update.BuilderSelectionPredicate.PASS,
                 **{field: 1},
             )
+
+
+def test_build_capacity_preflight_builder_selection_output_is_closed_and_optional() -> None:
+    update = _load_update_module()
+    failure = update.BuildCapacityPreflightEvidence(
+        classification=update.BuildCapacityPreflightClassification.REJECTED,
+        phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+        predicate=update.BuildCapacityPreflightPredicate.BUILDER_SELECTION,
+        builder_selection_known=True,
+        builder_selection_predicate=(update.BuilderSelectionPredicate.DRIVER_NOT_DOCKER),
+    )
+    later = update.BuildCapacityPreflightEvidence(
+        classification=update.BuildCapacityPreflightClassification.REJECTED,
+        phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+        predicate=update.BuildCapacityPreflightPredicate.DOCKER_PLATFORM,
+        builder_selection_known=True,
+        builder_selection_predicate=update.BuilderSelectionPredicate.PASS,
+    )
+    before = update.BuildCapacityPreflightEvidence(
+        classification=update.BuildCapacityPreflightClassification.REJECTED,
+        phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+        predicate=update.BuildCapacityPreflightPredicate.COMPOSE_CONFIG,
+    )
+
+    failure_line = json.loads(update.format_build_capacity_preflight_line(failure))
+    later_line = json.loads(update.format_build_capacity_preflight_line(later))
+    before_line = json.loads(update.format_build_capacity_preflight_line(before))
+
+    assert failure_line["builder_selection_known"] is True
+    assert failure_line["builder_selection_predicate"] == "DRIVER_NOT_DOCKER"
+    assert later_line["builder_selection_known"] is True
+    assert later_line["builder_selection_predicate"] == "PASS"
+    assert before_line["builder_selection_known"] is False
+    assert "builder_selection_predicate" not in before_line
+    assert "null" not in update.format_build_capacity_preflight_line(before)
+
+
+@pytest.mark.parametrize(
+    ("top", "known", "selection"),
+    (
+        ("BUILDER_SELECTION", False, None),
+        ("BUILDER_SELECTION", True, "PASS"),
+        ("BUILDER_SELECTION", True, "UNKNOWN"),
+        ("DOCKER_PLATFORM", True, "DRIVER_NOT_DOCKER"),
+        ("COMPOSE_CONFIG", True, "PASS"),
+        ("DOCKER_PLATFORM", False, "PASS"),
+        ("DOCKER_PLATFORM", True, None),
+    ),
+)
+def test_build_capacity_preflight_rejects_contradictory_builder_selection_evidence(
+    top: str,
+    known: bool,
+    selection: str | None,
+) -> None:
+    update = _load_update_module()
+    closed_selection = None if selection is None else update.BuilderSelectionPredicate(selection)
+
+    with pytest.raises(
+        update.WorkflowError,
+        match="BUILD_CAPACITY_PREFLIGHT_EVIDENCE_INVALID",
+    ):
+        update.BuildCapacityPreflightEvidence(
+            classification=update.BuildCapacityPreflightClassification.REJECTED,
+            phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+            predicate=update.BuildCapacityPreflightPredicate(top),
+            builder_selection_known=known,
+            builder_selection_predicate=closed_selection,
+        )
+
+
+def test_build_capacity_preflight_rejects_nonboolean_raw_or_extra_builder_fields() -> None:
+    update = _load_update_module()
+    base = {
+        "classification": update.BuildCapacityPreflightClassification.REJECTED,
+        "phase": update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+        "predicate": update.BuildCapacityPreflightPredicate.COMPOSE_CONFIG,
+    }
+
+    for fields in (
+        {"builder_selection_known": cast(Any, 1)},
+        {
+            "builder_selection_known": True,
+            "builder_selection_predicate": cast(Any, "PASS"),
+        },
+    ):
+        with pytest.raises(
+            update.WorkflowError,
+            match="BUILD_CAPACITY_PREFLIGHT_EVIDENCE_INVALID",
+        ):
+            update.BuildCapacityPreflightEvidence(**base, **fields)
+    with pytest.raises(TypeError):
+        update.BuildCapacityPreflightEvidence(
+            **base,
+            raw_builder_name=cast(Any, "raw-builder-sentinel"),
+        )
+
+
+def test_build_capacity_review_required_forbids_every_other_nonunknown_top_predicate() -> None:
+    update = _load_update_module()
+
+    with pytest.raises(
+        update.WorkflowError,
+        match="BUILD_CAPACITY_PREFLIGHT_EVIDENCE_INVALID",
+    ):
+        update.BuildCapacityPreflightEvidence(
+            classification=(update.BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED),
+            phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+            predicate=update.BuildCapacityPreflightPredicate.DOCKER_PLATFORM,
+            builder_selection_known=True,
+            builder_selection_predicate=update.BuilderSelectionPredicate.PASS,
+        )
+
+
+@pytest.mark.parametrize(
+    ("case", "expected_top", "expected_known", "expected_selection"),
+    (
+        ("before-interrupt", "UNKNOWN", False, None),
+        ("selection-failure", "BUILDER_SELECTION", True, "DRIVER_NOT_DOCKER"),
+        ("later-failure", "DOCKER_PLATFORM", True, "PASS"),
+        ("lock-exit", "UNKNOWN", True, "PASS"),
+    ),
+)
+def test_build_capacity_preflight_retains_monotonic_builder_selection_outcome(
+    case: str,
+    expected_top: str,
+    expected_known: bool,
+    expected_selection: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    preflight = _passed_host_preflight(update, env_file=tmp_path / ".env.mac-development")
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+        if case == "lock-exit":
+            raise RuntimeError("raw-lock-exit-sentinel")
+
+    def capacity(*_args: object, **kwargs: object) -> str:
+        if case == "before-interrupt":
+            raise KeyboardInterrupt("raw-selection-interrupt-sentinel")
+        recorder = cast(Any, kwargs["builder_selection_recorder"])
+        if case == "selection-failure":
+            recorder.record(update.BuilderSelectionPredicate.DRIVER_NOT_DOCKER)
+            raise update.DockerCapacityPhaseError(
+                "fixed-safe-error",
+                update.BuildCapacityPreflightPredicate.BUILDER_SELECTION,
+            )
+        recorder.record(update.BuilderSelectionPredicate.PASS)
+        if case == "later-failure":
+            raise update.DockerCapacityPhaseError(
+                "fixed-safe-error",
+                update.BuildCapacityPreflightPredicate.DOCKER_PLATFORM,
+            )
+        return "desktop-linux"
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_host_environment_preflight_under_lock", lambda: preflight)
+    _stub_clean_capacity_source(update, monkeypatch)
+    monkeypatch.setattr(update, "_preflight_build_capacity", capacity)
+    monkeypatch.setattr(update, "_require_idle_builder", lambda *_args, **_kwargs: None)
+
+    evidence = update._build_capacity_preflight_diagnostic()
+    rendered = update.format_build_capacity_preflight_line(evidence)
+
+    assert evidence.predicate.value == expected_top
+    assert evidence.builder_selection_known is expected_known
+    assert (
+        None
+        if evidence.builder_selection_predicate is None
+        else evidence.builder_selection_predicate.value
+    ) == expected_selection
+    assert "raw-selection-interrupt-sentinel" not in rendered
+    assert "raw-lock-exit-sentinel" not in rendered
+
+
+@pytest.mark.parametrize("failure", (RuntimeError, KeyboardInterrupt, BaseException))
+def test_builder_selection_failure_survives_later_lock_exit_failure(
+    failure: type[BaseException],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    preflight = _passed_host_preflight(update, env_file=tmp_path / ".env.mac-development")
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+        raise failure("raw-lock-exit-after-selection-sentinel")
+
+    def capacity(*_args: object, **kwargs: object) -> str:
+        selection = cast(Any, kwargs["builder_selection_recorder"])
+        selection.record(update.BuilderSelectionPredicate.DRIVER_NOT_DOCKER)
+        raise update.DockerCapacityPhaseError(
+            "fixed-selection-failure",
+            update.BuildCapacityPreflightPredicate.BUILDER_SELECTION,
+        )
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_host_environment_preflight_under_lock", lambda: preflight)
+    _stub_clean_capacity_source(update, monkeypatch)
+    monkeypatch.setattr(update, "_preflight_build_capacity", capacity)
+
+    evidence = update._build_capacity_preflight_diagnostic()
+    rendered = update.format_build_capacity_preflight_line(evidence)
+
+    assert evidence.classification is (
+        update.BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is update.BuildCapacityPreflightPredicate.BUILDER_SELECTION
+    assert evidence.builder_selection_known is True
+    assert evidence.builder_selection_predicate is (
+        update.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+    )
+    assert evidence.mutation_count == 0
+    assert evidence.cache_action_count == 0
+    assert evidence.build_count == 0
+    assert evidence.container_count == 0
+    assert evidence.retry_count == 0
+    assert rendered.count("\n") == 0
+    assert "raw-lock-exit-after-selection-sentinel" not in rendered
+    assert "fixed-selection-failure" not in rendered
 
 
 def test_build_capacity_measure_only_action_required_never_runs_prune_or_later_paths(
@@ -3079,7 +3314,9 @@ def test_build_capacity_measure_only_action_required_never_runs_prune_or_later_p
     def lock(_root: Path) -> Iterator[object]:
         yield object()
 
-    def action_required(*_args: object, **_kwargs: object) -> str:
+    def action_required(*_args: object, **kwargs: object) -> str:
+        selection = cast(Any, kwargs["builder_selection_recorder"])
+        selection.record(update.BuilderSelectionPredicate.PASS)
         raise update.DockerCapacityMeasureOnlyStop()
 
     monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
@@ -3446,6 +3683,8 @@ def test_build_capacity_preflight_main_accepts_only_exact_phase_argv(
         classification=update.BuildCapacityPreflightClassification.PASS,
         phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
         predicate=update.BuildCapacityPreflightPredicate.PASS,
+        builder_selection_known=True,
+        builder_selection_predicate=update.BuilderSelectionPredicate.PASS,
     )
     calls: list[str] = []
 

@@ -231,6 +231,15 @@ local Docker context, builder-list probe, builder selection, platform, image, ca
 filesystem, capacity policy, cache-policy support and cache active-build boundaries without parsing
 exception text. `CACHE_ACTION_REQUIRED` stops immediately before a prune. A following initial
 builder-idle probe distinguishes an unavailable/invalid probe from an observed active build.
+Within the top-level builder-selection phase, a separate closed subpredicate distinguishes every
+reviewed selection branch without disclosing builder, context, node, endpoint, driver, status or
+environment values. `builder_selection_known` is always present; the subpredicate is present only
+when structurally observed. A selection failure retains top-level `BUILDER_SELECTION`; observed
+success records `PASS` monotonically through later or outer review-required results. Pre-selection
+or interrupted unknown results omit it, and no phase name is used to reconstruct it.
+If lock/context exit also fails after a recorded selection failure, the review-required result
+retains top-level `BUILDER_SELECTION` plus that exact first subtype; every other review-required
+top-level result remains `UNKNOWN`.
 The source-clean boundary preserves the closed states `CLEAN`, `DIRTY`, `INVALID` and `UNKNOWN`
 without reducing an interrupted Git or file-identity proof to an environment defect. The initial
 source fingerprint remains private and is revalidated after capacity evaluation, before an action-
