@@ -41,6 +41,12 @@ GIT_BUILD_CONTEXT_PROBE = "GIT_BUILD_CONTEXT_PROBE_FAILED"
 DOCKER_WORKFLOW_LOCK_UNAVAILABLE = "DOCKER_WORKFLOW_LOCK_UNAVAILABLE"
 
 _BUILDER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_OFFICIAL_BUILDX_DRIVER_KINDS = (
+    "docker",
+    "docker-container",
+    "kubernetes",
+    "remote",
+)
 _COMPOSE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 _IMAGE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$")
 _IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -174,6 +180,36 @@ class DockerBuilderSelectionPlanRecorder:
         if self.predicate is not DockerBuilderSelectionPlanPredicate.PASS:
             raise DockerCapacityError("DOCKER_BUILDER_SELECTION_PLAN_EVIDENCE_INVALID")
         self.predicate = DockerBuilderSelectionPlanPredicate.PLAN_DRIFT
+
+
+class PriorDriverPredicate(StrEnum):
+    """Closed, value-free classification of the plan's current prior driver."""
+
+    KUBERNETES = "KUBERNETES"
+    REMOTE = "REMOTE"
+    UNRECOGNIZED = "UNRECOGNIZED"
+    PASS = "PASS"  # noqa: S105 - fixed diagnostic predicate, not a secret.
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(slots=True)
+class PriorDriverRecorder:
+    """Retain one exact prior-driver outcome without exposing its raw value."""
+
+    predicate: PriorDriverPredicate = PriorDriverPredicate.UNKNOWN
+
+    @property
+    def known(self) -> bool:
+        return self.predicate is not PriorDriverPredicate.UNKNOWN
+
+    def record(self, predicate: PriorDriverPredicate) -> None:
+        if (
+            not isinstance(predicate, PriorDriverPredicate)
+            or predicate is PriorDriverPredicate.UNKNOWN
+            or self.known
+        ):
+            raise DockerCapacityError("PRIOR_DRIVER_EVIDENCE_INVALID")
+        self.predicate = predicate
 
 
 @dataclass(slots=True)
@@ -1050,6 +1086,7 @@ def require_docker_builder_selection_plan(
     plan_recorder: DockerBuilderSelectionPlanRecorder | None = None,
     builder_selection_recorder: BuilderSelectionRecorder | None = None,
     node_schema_recorder: NodeSchemaRecorder | None = None,
+    prior_driver_recorder: PriorDriverRecorder | None = None,
 ) -> DockerBuilderSelectionPlan:
     """Resolve one exact docker-container to context-docker selection transition."""
 
@@ -1068,6 +1105,7 @@ def require_docker_builder_selection_plan(
         )
     builder_selection = builder_selection_recorder or BuilderSelectionRecorder()
     node_schema = node_schema_recorder or NodeSchemaRecorder()
+    prior_driver = prior_driver_recorder or PriorDriverRecorder()
     try:
         _selected_builder(
             raw,
@@ -1121,7 +1159,15 @@ def require_docker_builder_selection_plan(
             DockerBuilderSelectionPlanPredicate.CURRENT_SELECTION_CONTRACT,
             "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
         )
-    if prior.driver != "docker-container":
+    if prior.driver == "docker-container":
+        prior_driver.record(PriorDriverPredicate.PASS)
+    elif prior.driver == "kubernetes":
+        prior_driver.record(PriorDriverPredicate.KUBERNETES)
+    elif prior.driver == "remote":
+        prior_driver.record(PriorDriverPredicate.REMOTE)
+    else:
+        prior_driver.record(PriorDriverPredicate.UNRECOGNIZED)
+    if prior_driver.predicate is not PriorDriverPredicate.PASS:
         fail(
             DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER,
             "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",

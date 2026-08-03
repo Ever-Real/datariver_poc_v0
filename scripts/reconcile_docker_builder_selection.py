@@ -29,6 +29,8 @@ from docker_capacity import (
     DockerWorkflowLock,
     NodeSchemaPredicate,
     NodeSchemaRecorder,
+    PriorDriverPredicate,
+    PriorDriverRecorder,
     docker_builder_is_idle,
     docker_builder_selection_residual_count,
     exclusive_docker_workflow_lock,
@@ -93,17 +95,22 @@ def _prestate_nested_evidence_is_consistent(
     plan: DockerBuilderSelectionPlanPredicate | None,
     builder: BuilderSelectionPredicate | None,
     node: NodeSchemaPredicate | None,
+    prior_driver: PriorDriverPredicate | None,
 ) -> bool:
     if plan is None:
-        return builder is None and node is None
+        return builder is None and node is None and prior_driver is None
     if node is not None and builder is None:
         return False
     if plan is DockerBuilderSelectionPlanPredicate.CURRENT_SELECTION_CONTRACT:
         if builder is None:
-            return node is None
-        return builder is not BuilderSelectionPredicate.PASS
+            return node is None and prior_driver is None
+        return builder is not BuilderSelectionPredicate.PASS and prior_driver is None
     if plan is DockerBuilderSelectionPlanPredicate.CURRENT_ALREADY_CANONICAL:
-        return builder is BuilderSelectionPredicate.PASS and node is NodeSchemaPredicate.PASS
+        return (
+            builder is BuilderSelectionPredicate.PASS
+            and node is NodeSchemaPredicate.PASS
+            and prior_driver is None
+        )
     if plan is DockerBuilderSelectionPlanPredicate.CURRENT_COUNT:
         return (
             builder
@@ -112,14 +119,35 @@ def _prestate_nested_evidence_is_consistent(
                 BuilderSelectionPredicate.CURRENT_AMBIGUOUS,
             }
             and node is NodeSchemaPredicate.PASS
+            and prior_driver is None
+        )
+    if plan is DockerBuilderSelectionPlanPredicate.INVENTORY_DUPLICATE:
+        return (
+            builder is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+            and node is NodeSchemaPredicate.PASS
+            and prior_driver is None
+        )
+    if plan is DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER:
+        return (
+            builder is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+            and node is NodeSchemaPredicate.PASS
+            and prior_driver
+            in {
+                PriorDriverPredicate.KUBERNETES,
+                PriorDriverPredicate.REMOTE,
+                PriorDriverPredicate.UNRECOGNIZED,
+            }
         )
     if plan is DockerBuilderSelectionPlanPredicate.PRIOR_STATUS:
         return (
             builder is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
             and node is NodeSchemaPredicate.PASS
+            and prior_driver is PriorDriverPredicate.PASS
         )
     return (
-        builder is BuilderSelectionPredicate.DRIVER_NOT_DOCKER and node is NodeSchemaPredicate.PASS
+        builder is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+        and node is NodeSchemaPredicate.PASS
+        and prior_driver is PriorDriverPredicate.PASS
     )
 
 
@@ -143,6 +171,8 @@ class BuilderSelectionReconcileEvidence:
     prestate_predicate: DockerBuilderSelectionPlanPredicate | None = None
     builder_selection_predicate: BuilderSelectionPredicate | None = None
     node_schema_predicate: NodeSchemaPredicate | None = None
+    prior_driver_known: bool = False
+    prior_driver_predicate: PriorDriverPredicate | None = None
     cache_action_count: int = 0
     build_count: int = 0
     container_action_count: int = 0
@@ -160,6 +190,7 @@ class BuilderSelectionReconcileEvidence:
             self.rollback_outcome_known,
             self.residual_known,
             self.prestate_known,
+            self.prior_driver_known,
         )
         counts = (
             self.selection_mutation_count,
@@ -189,6 +220,7 @@ class BuilderSelectionReconcileEvidence:
             or self.residual_known != (self.residual_count is not None)
             or self.prestate_known
             != (self.prestate_checkpoint is not None and self.prestate_predicate is not None)
+            or self.prior_driver_known != (self.prior_driver_predicate is not None)
             or (
                 self.prestate_checkpoint is not None
                 and not isinstance(
@@ -215,21 +247,29 @@ class BuilderSelectionReconcileEvidence:
                 and not isinstance(self.node_schema_predicate, NodeSchemaPredicate)
             )
             or (
+                self.prior_driver_predicate is not None
+                and not isinstance(self.prior_driver_predicate, PriorDriverPredicate)
+            )
+            or (
                 not self.prestate_known
                 and (
                     self.prestate_checkpoint is not None
                     or self.prestate_predicate is not None
                     or self.builder_selection_predicate is not None
                     or self.node_schema_predicate is not None
+                    or self.prior_driver_known
+                    or self.prior_driver_predicate is not None
                 )
             )
             or self.prestate_predicate is DockerBuilderSelectionPlanPredicate.UNKNOWN
             or self.builder_selection_predicate is BuilderSelectionPredicate.UNKNOWN
             or self.node_schema_predicate is NodeSchemaPredicate.UNKNOWN
+            or self.prior_driver_predicate is PriorDriverPredicate.UNKNOWN
             or not _prestate_nested_evidence_is_consistent(
                 self.prestate_predicate,
                 self.builder_selection_predicate,
                 self.node_schema_predicate,
+                self.prior_driver_predicate,
             )
             or (
                 self.residual_count is not None
@@ -283,6 +323,8 @@ class BuilderSelectionReconcileEvidence:
             prestate_predicate=DockerBuilderSelectionPlanPredicate.PASS,
             builder_selection_predicate=BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
             node_schema_predicate=NodeSchemaPredicate.PASS,
+            prior_driver_known=True,
+            prior_driver_predicate=PriorDriverPredicate.PASS,
         )
 
     @classmethod
@@ -306,6 +348,8 @@ class BuilderSelectionReconcileEvidence:
             prestate_predicate=DockerBuilderSelectionPlanPredicate.PASS,
             builder_selection_predicate=BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
             node_schema_predicate=NodeSchemaPredicate.PASS,
+            prior_driver_known=True,
+            prior_driver_predicate=PriorDriverPredicate.PASS,
         )
 
 
@@ -329,6 +373,7 @@ def format_builder_selection_reconcile_evidence(
         "selection_mutation_count": evidence.selection_mutation_count,
         "residual_known": evidence.residual_known,
         "prestate_known": evidence.prestate_known,
+        "prior_driver_known": evidence.prior_driver_known,
         "cache_action_count": evidence.cache_action_count,
         "build_count": evidence.build_count,
         "container_action_count": evidence.container_action_count,
@@ -346,6 +391,9 @@ def format_builder_selection_reconcile_evidence(
             fields["builder_selection_predicate"] = evidence.builder_selection_predicate.value
         if evidence.node_schema_predicate is not None:
             fields["node_schema_predicate"] = evidence.node_schema_predicate.value
+    if evidence.prior_driver_known:
+        assert evidence.prior_driver_predicate is not None
+        fields["prior_driver_predicate"] = evidence.prior_driver_predicate.value
     line = json.dumps(fields, sort_keys=True, separators=(",", ":"))
     if len(line.encode("utf-8")) > MAXIMUM_EVIDENCE_BYTES:
         raise ValueError("DOCKER_BUILDER_SELECTION_EVIDENCE_INVALID")
@@ -361,6 +409,8 @@ class BuilderSelectionPrestateDiagnosticEvidence:
     prestate_predicate: DockerBuilderSelectionPlanPredicate | None = None
     builder_selection_predicate: BuilderSelectionPredicate | None = None
     node_schema_predicate: NodeSchemaPredicate | None = None
+    prior_driver_known: bool = False
+    prior_driver_predicate: PriorDriverPredicate | None = None
     phase: str = _PRESTATE_DIAGNOSTIC_PHASE
     action_count: int = 0
     rollback_count: int = 0
@@ -387,16 +437,22 @@ class BuilderSelectionPrestateDiagnosticEvidence:
             self.prestate_predicate,
             self.builder_selection_predicate,
             self.node_schema_predicate,
+            self.prior_driver_predicate,
         )
         if (
             not isinstance(self.classification, BuilderSelectionReconcileClassification)
             or not isinstance(self.predicate, BuilderSelectionReconcilePredicate)
             or self.phase != _PRESTATE_DIAGNOSTIC_PHASE
             or type(self.prestate_known) is not bool
+            or type(self.prior_driver_known) is not bool
             or any(type(count) is not int or count != 0 for count in counts)
             or self.prestate_known
             != (self.prestate_checkpoint is not None and self.prestate_predicate is not None)
-            or (not self.prestate_known and any(value is not None for value in structured))
+            or self.prior_driver_known != (self.prior_driver_predicate is not None)
+            or (
+                not self.prestate_known
+                and (any(value is not None for value in structured) or self.prior_driver_known)
+            )
             or (
                 self.prestate_checkpoint is not None
                 and not isinstance(
@@ -431,10 +487,18 @@ class BuilderSelectionPrestateDiagnosticEvidence:
                     or self.node_schema_predicate is NodeSchemaPredicate.UNKNOWN
                 )
             )
+            or (
+                self.prior_driver_predicate is not None
+                and (
+                    not isinstance(self.prior_driver_predicate, PriorDriverPredicate)
+                    or self.prior_driver_predicate is PriorDriverPredicate.UNKNOWN
+                )
+            )
             or not _prestate_nested_evidence_is_consistent(
                 self.prestate_predicate,
                 self.builder_selection_predicate,
                 self.node_schema_predicate,
+                self.prior_driver_predicate,
             )
         ):
             raise ValueError("DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID")
@@ -449,6 +513,7 @@ class BuilderSelectionPrestateDiagnosticEvidence:
                 and self.prestate_predicate is DockerBuilderSelectionPlanPredicate.PASS
                 and self.builder_selection_predicate is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
                 and self.node_schema_predicate is NodeSchemaPredicate.PASS
+                and self.prior_driver_predicate is PriorDriverPredicate.PASS
             ):
                 raise ValueError("DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID")
         elif self.classification is BuilderSelectionReconcileClassification.REJECTED:
@@ -472,6 +537,7 @@ class BuilderSelectionPrestateDiagnosticEvidence:
         plan_predicate: DockerBuilderSelectionPlanPredicate,
         builder_predicate: BuilderSelectionPredicate,
         node_predicate: NodeSchemaPredicate,
+        prior_driver_predicate: PriorDriverPredicate,
     ) -> BuilderSelectionPrestateDiagnosticEvidence:
         return cls(
             classification=BuilderSelectionReconcileClassification.PASS,
@@ -481,6 +547,8 @@ class BuilderSelectionPrestateDiagnosticEvidence:
             prestate_predicate=plan_predicate,
             builder_selection_predicate=builder_predicate,
             node_schema_predicate=node_predicate,
+            prior_driver_known=True,
+            prior_driver_predicate=prior_driver_predicate,
         )
 
 
@@ -494,6 +562,7 @@ def format_builder_selection_prestate_diagnostic(
         "phase": evidence.phase,
         "predicate": evidence.predicate.value,
         "prestate_known": evidence.prestate_known,
+        "prior_driver_known": evidence.prior_driver_known,
         "action_count": evidence.action_count,
         "rollback_count": evidence.rollback_count,
         "selection_mutation_count": evidence.selection_mutation_count,
@@ -512,6 +581,9 @@ def format_builder_selection_prestate_diagnostic(
             fields["builder_selection_predicate"] = evidence.builder_selection_predicate.value
         if evidence.node_schema_predicate is not None:
             fields["node_schema_predicate"] = evidence.node_schema_predicate.value
+    if evidence.prior_driver_known:
+        assert evidence.prior_driver_predicate is not None
+        fields["prior_driver_predicate"] = evidence.prior_driver_predicate.value
     line = json.dumps(fields, sort_keys=True, separators=(",", ":"))
     if len(line.encode("utf-8")) > MAXIMUM_EVIDENCE_BYTES:
         raise ValueError("DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID")
@@ -706,6 +778,7 @@ class _RuntimeState:
         default_factory=BuilderSelectionRecorder
     )
     node_schema_recorder: NodeSchemaRecorder = field(default_factory=NodeSchemaRecorder)
+    prior_driver_recorder: PriorDriverRecorder = field(default_factory=PriorDriverRecorder)
 
     @property
     def mutation_count(self) -> int:
@@ -716,6 +789,7 @@ class _RuntimeState:
         self.plan_recorder = DockerBuilderSelectionPlanRecorder()
         self.builder_selection_recorder = BuilderSelectionRecorder()
         self.node_schema_recorder = NodeSchemaRecorder()
+        self.prior_driver_recorder = PriorDriverRecorder()
 
 
 def _failure(predicate: BuilderSelectionReconcilePredicate) -> NoReturn:
@@ -833,6 +907,7 @@ def _capture_plan_prestate(
             plan_recorder=runtime.plan_recorder,
             builder_selection_recorder=runtime.builder_selection_recorder,
             node_schema_recorder=runtime.node_schema_recorder,
+            prior_driver_recorder=runtime.prior_driver_recorder,
         )
     except DockerCapacityError:
         _failure(BuilderSelectionReconcilePredicate.PRESTATE)
@@ -916,6 +991,7 @@ def _reprove_plan_prestate(
             plan_recorder=runtime.plan_recorder,
             builder_selection_recorder=runtime.builder_selection_recorder,
             node_schema_recorder=runtime.node_schema_recorder,
+            prior_driver_recorder=runtime.prior_driver_recorder,
         )
     except DockerCapacityError:
         _failure(BuilderSelectionReconcilePredicate.PRESTATE)
@@ -1080,6 +1156,12 @@ def _evidence_from_runtime(
         node_schema_predicate=(
             runtime.node_schema_recorder.predicate
             if prestate_known and runtime.node_schema_recorder.known
+            else None
+        ),
+        prior_driver_known=(prestate_known and runtime.prior_driver_recorder.known),
+        prior_driver_predicate=(
+            runtime.prior_driver_recorder.predicate
+            if prestate_known and runtime.prior_driver_recorder.known
             else None
         ),
     )
@@ -1333,6 +1415,12 @@ def _diagnostic_evidence_from_runtime(
         node_schema_predicate=(
             runtime.node_schema_recorder.predicate
             if prestate_known and runtime.node_schema_recorder.known
+            else None
+        ),
+        prior_driver_known=(prestate_known and runtime.prior_driver_recorder.known),
+        prior_driver_predicate=(
+            runtime.prior_driver_recorder.predicate
+            if prestate_known and runtime.prior_driver_recorder.known
             else None
         ),
     )

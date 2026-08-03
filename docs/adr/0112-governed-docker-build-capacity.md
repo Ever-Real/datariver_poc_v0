@@ -66,6 +66,15 @@ only when those structural outcomes were actually observed. It records whether t
 from the initial `CAPTURE` or immediate `REPROOF`; unknown results omit the predicate and checkpoint
 rather than reconstructing them from an outer error.
 
+The nested prior-driver recorder uses Docker's official
+[`docker`, `docker-container`, `kubernetes`, and `remote` driver vocabulary](https://docs.docker.com/build/builders/drivers/)
+and the corresponding [`buildx create` driver contract](https://docs.docker.com/reference/cli/docker/buildx/create/).
+It reports `KUBERNETES`, `REMOTE`, or `UNRECOGNIZED` when the exact current driver is not the
+required `docker-container`; only exact `docker-container` records `PASS`. It does not expose the
+provider string, accept a new driver, normalize a spelling or claim that the current host binary
+is pinned to a particular Buildx version. Later plan findings retain the observed prior-driver
+`PASS`, while findings before that check omit it.
+
 The fixed `--diagnostic-phase BUILDER_SELECTION_PRESTATE` mode is read-only. Under the same
 exclusive lock it performs the operator's canonical source, AppliedState/environment, Docker
 override, local-context and complete-inventory capture, then repeats that exact plan proof once.

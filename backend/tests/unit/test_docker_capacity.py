@@ -1528,6 +1528,7 @@ def test_selection_plan_recorder_preserves_nested_expected_transition() -> None:
     plan_recorder = capacity.DockerBuilderSelectionPlanRecorder()
     builder_recorder = capacity.BuilderSelectionRecorder()
     node_recorder = capacity.NodeSchemaRecorder()
+    prior_driver_recorder = capacity.PriorDriverRecorder()
 
     capacity.require_docker_builder_selection_plan(
         "\n".join((json.dumps(prior), json.dumps(target))),
@@ -1536,6 +1537,7 @@ def test_selection_plan_recorder_preserves_nested_expected_transition() -> None:
         plan_recorder=plan_recorder,
         builder_selection_recorder=builder_recorder,
         node_schema_recorder=node_recorder,
+        prior_driver_recorder=prior_driver_recorder,
     )
 
     assert tuple(capacity.DockerBuilderSelectionPlanPredicate) == (
@@ -1558,6 +1560,70 @@ def test_selection_plan_recorder_preserves_nested_expected_transition() -> None:
     assert plan_recorder.predicate is capacity.DockerBuilderSelectionPlanPredicate.PASS
     assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
     assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+    assert tuple(capacity.PriorDriverPredicate) == (
+        capacity.PriorDriverPredicate.KUBERNETES,
+        capacity.PriorDriverPredicate.REMOTE,
+        capacity.PriorDriverPredicate.UNRECOGNIZED,
+        capacity.PriorDriverPredicate.PASS,
+        capacity.PriorDriverPredicate.UNKNOWN,
+    )
+    assert capacity._OFFICIAL_BUILDX_DRIVER_KINDS == (
+        "docker",
+        "docker-container",
+        "kubernetes",
+        "remote",
+    )
+    assert prior_driver_recorder.predicate is capacity.PriorDriverPredicate.PASS
+
+
+@pytest.mark.parametrize(
+    ("driver", "expected"),
+    (
+        ("kubernetes", "KUBERNETES"),
+        ("remote", "REMOTE"),
+        ("future-driver-raw-sentinel", "UNRECOGNIZED"),
+    ),
+)
+def test_selection_plan_classifies_prior_driver_before_status_or_target(
+    driver: str,
+    expected: str,
+) -> None:
+    prior = {
+        "Current": True,
+        "Driver": driver,
+        "Name": "managed-builder",
+        "Nodes": [{"Endpoint": "desktop-linux", "Name": "managed-builder0", "Status": "stopped"}],
+    }
+    target = {
+        "Current": False,
+        "Driver": "remote",
+        "Name": "desktop-linux",
+        "Nodes": [{"Endpoint": "other", "Name": "other", "Status": "stopped"}],
+    }
+    plan_recorder = capacity.DockerBuilderSelectionPlanRecorder()
+    builder_recorder = capacity.BuilderSelectionRecorder()
+    node_recorder = capacity.NodeSchemaRecorder()
+    prior_driver_recorder = capacity.PriorDriverRecorder()
+
+    with pytest.raises(
+        capacity.DockerCapacityError,
+        match=r"^DOCKER_BUILDER_SELECTION_PRESTATE_INVALID$",
+    ) as captured:
+        capacity.require_docker_builder_selection_plan(
+            "\n".join((json.dumps(prior), json.dumps(target))),
+            {},
+            current_context="desktop-linux",
+            plan_recorder=plan_recorder,
+            builder_selection_recorder=builder_recorder,
+            node_schema_recorder=node_recorder,
+            prior_driver_recorder=prior_driver_recorder,
+        )
+
+    assert plan_recorder.predicate is capacity.DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER
+    assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+    assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+    assert prior_driver_recorder.predicate.value == expected
+    assert "raw-sentinel" not in str(captured.value)
 
 
 @pytest.mark.parametrize(
@@ -1623,6 +1689,7 @@ def test_selection_plan_records_every_reachable_first_defect(case: str, expected
     recorder = capacity.DockerBuilderSelectionPlanRecorder()
     builder_recorder = capacity.BuilderSelectionRecorder()
     node_recorder = capacity.NodeSchemaRecorder()
+    prior_driver_recorder = capacity.PriorDriverRecorder()
 
     with pytest.raises(capacity.DockerCapacityError) as captured:
         capacity.require_docker_builder_selection_plan(
@@ -1632,24 +1699,41 @@ def test_selection_plan_records_every_reachable_first_defect(case: str, expected
             plan_recorder=recorder,
             builder_selection_recorder=builder_recorder,
             node_schema_recorder=node_recorder,
+            prior_driver_recorder=prior_driver_recorder,
         )
 
     assert recorder.predicate.value == expected
     if case == "malformed":
         assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.LIST_JSON
         assert node_recorder.predicate is capacity.NodeSchemaPredicate.UNKNOWN
+        assert prior_driver_recorder.predicate is capacity.PriorDriverPredicate.UNKNOWN
     elif case == "canonical":
         assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.PASS
         assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
-    elif case == "current-count":
-        assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.CURRENT_AMBIGUOUS
+        assert prior_driver_recorder.predicate is capacity.PriorDriverPredicate.UNKNOWN
+    elif case in {"duplicate", "current-count"}:
+        if case == "current-count":
+            assert (
+                builder_recorder.predicate is capacity.BuilderSelectionPredicate.CURRENT_AMBIGUOUS
+            )
+        else:
+            assert (
+                builder_recorder.predicate is capacity.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+            )
         assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+        assert prior_driver_recorder.predicate is capacity.PriorDriverPredicate.UNKNOWN
+    elif case == "prior-driver":
+        assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+        assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+        assert prior_driver_recorder.predicate is capacity.PriorDriverPredicate.REMOTE
     elif case == "prior-status":
         assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
         assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+        assert prior_driver_recorder.predicate is capacity.PriorDriverPredicate.PASS
     else:
         assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
         assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+        assert prior_driver_recorder.predicate is capacity.PriorDriverPredicate.PASS
     assert "raw-provider-sentinel" not in str(captured.value)
 
 

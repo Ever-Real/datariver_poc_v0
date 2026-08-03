@@ -242,6 +242,8 @@ def test_builder_selection_output_is_fixed_value_free_and_bounded() -> None:
         "poststate_known": True,
         "poststate_valid": True,
         "predicate": "PASS",
+        "prior_driver_known": True,
+        "prior_driver_predicate": "PASS",
         "prestate_checkpoint": "REPROOF",
         "prestate_known": True,
         "prestate_predicate": "PASS",
@@ -275,6 +277,9 @@ def test_unknown_residual_never_estimates_or_leaks() -> None:
         "false-with-fields",
         "known-with-null",
         "known-with-unknown",
+        "prior-known-without-predicate",
+        "prior-known-with-unknown",
+        "prior-contradiction",
     ),
 )
 def test_prestate_evidence_rejects_partial_null_unknown_and_untyped_shapes(
@@ -305,10 +310,29 @@ def test_prestate_evidence_rejects_partial_null_unknown_and_untyped_shapes(
         values["prestate_known"] = True
         values["prestate_checkpoint"] = None
         values["prestate_predicate"] = None
-    else:
+    elif case == "known-with-unknown":
         values["prestate_known"] = True
         values["prestate_checkpoint"] = operator.BuilderSelectionPrestateCheckpoint.CAPTURE
         values["prestate_predicate"] = operator.DockerBuilderSelectionPlanPredicate.UNKNOWN
+    elif case == "prior-known-without-predicate":
+        values["prior_driver_known"] = True
+    elif case == "prior-known-with-unknown":
+        values["prior_driver_known"] = True
+        values["prior_driver_predicate"] = operator.PriorDriverPredicate.UNKNOWN
+    else:
+        values.update(
+            {
+                "prestate_known": True,
+                "prestate_checkpoint": operator.BuilderSelectionPrestateCheckpoint.CAPTURE,
+                "prestate_predicate": (
+                    operator.DockerBuilderSelectionPlanPredicate.CURRENT_ALREADY_CANONICAL
+                ),
+                "builder_selection_predicate": operator.BuilderSelectionPredicate.PASS,
+                "node_schema_predicate": operator.NodeSchemaPredicate.PASS,
+                "prior_driver_known": True,
+                "prior_driver_predicate": operator.PriorDriverPredicate.REMOTE,
+            }
+        )
 
     with pytest.raises(ValueError, match="DOCKER_BUILDER_SELECTION_EVIDENCE_INVALID"):
         operator.BuilderSelectionReconcileEvidence(**values)
@@ -1068,6 +1092,8 @@ def test_read_only_prestate_diagnostic_reproves_plan_and_stops_before_active_or_
     assert evidence.prestate_predicate.value == "PASS"
     assert evidence.builder_selection_predicate.value == "DRIVER_NOT_DOCKER"
     assert evidence.node_schema_predicate.value == "PASS"
+    assert evidence.prior_driver_known is True
+    assert evidence.prior_driver_predicate.value == "PASS"
     assert evidence.action_count == 0
     assert evidence.rollback_count == 0
     assert evidence.selection_mutation_count == 0
@@ -1096,6 +1122,8 @@ def test_read_only_prestate_diagnostic_classifies_capture_and_reproof(
     assert capture.prestate_predicate.value == "CURRENT_ALREADY_CANONICAL"
     assert capture.builder_selection_predicate.value == "PASS"
     assert capture.node_schema_predicate.value == "PASS"
+    assert capture.prior_driver_known is False
+    assert capture.prior_driver_predicate is None
     assert capture_executor.selection_calls == []
 
     class ReorderedExecutor(_Executor):
@@ -1119,7 +1147,63 @@ def test_read_only_prestate_diagnostic_classifies_capture_and_reproof(
     assert reproof.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
     assert reproof.prestate_checkpoint.value == "REPROOF"
     assert reproof.prestate_predicate.value == "PLAN_DRIFT"
+    assert reproof.prior_driver_known is True
+    assert reproof.prior_driver_predicate.value == "PASS"
     assert reproof_executor.selection_calls == []
+
+
+@pytest.mark.parametrize(
+    ("driver", "expected"),
+    (
+        ("kubernetes", "KUBERNETES"),
+        ("remote", "REMOTE"),
+        ("future-driver-raw-sentinel", "UNRECOGNIZED"),
+    ),
+)
+def test_prestate_diagnostic_classifies_prior_driver_without_action(
+    driver: str,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+
+    class PriorDriverExecutor(_Executor):
+        def _rows(self) -> str:
+            rows = [json.loads(row) for row in super()._rows().splitlines()]
+            rows[0]["Driver"] = driver
+            rows[0]["Nodes"][0]["Status"] = "stopped"
+            rows[1]["Driver"] = "remote"
+            return "\n".join(json.dumps(row) for row in rows)
+
+    diagnostic_executor = PriorDriverExecutor()
+    diagnostic = operator._run_prestate_diagnostic(
+        operator._RuntimeState(),
+        executor=diagnostic_executor,
+        environ={},
+    )
+    operator_executor = PriorDriverExecutor()
+    ordinary = operator._run_operator(
+        operator._RuntimeState(),
+        executor=operator_executor,
+        environ={},
+    )
+
+    assert diagnostic.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert diagnostic.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
+    assert diagnostic.prestate_checkpoint is operator.BuilderSelectionPrestateCheckpoint.CAPTURE
+    assert (
+        diagnostic.prestate_predicate is operator.DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER
+    )
+    assert diagnostic.prior_driver_known is True
+    assert diagnostic.prior_driver_predicate.value == expected
+    assert diagnostic.action_count == 0
+    assert diagnostic_executor.selection_calls == []
+    assert ordinary.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
+    assert ordinary.prior_driver_predicate.value == expected
+    assert ordinary.action_attempted is False
+    assert operator_executor.selection_calls == []
+    assert "raw-sentinel" not in operator.format_builder_selection_prestate_diagnostic(diagnostic)
 
 
 def test_normal_operator_prestate_failure_retains_exact_capture_predicate(
@@ -1145,6 +1229,8 @@ def test_normal_operator_prestate_failure_retains_exact_capture_predicate(
     )
     assert evidence.builder_selection_predicate is operator.BuilderSelectionPredicate.PASS
     assert evidence.node_schema_predicate is operator.NodeSchemaPredicate.PASS
+    assert evidence.prior_driver_known is False
+    assert evidence.prior_driver_predicate is None
     assert evidence.action_attempted is False
     assert executor.selection_calls == []
 
@@ -1178,6 +1264,8 @@ def test_prestate_diagnostic_lock_exit_is_unknown_and_retains_observed_pass(
     assert evidence.prestate_known is True
     assert evidence.prestate_checkpoint is operator.BuilderSelectionPrestateCheckpoint.REPROOF
     assert evidence.prestate_predicate is operator.DockerBuilderSelectionPlanPredicate.PASS
+    assert evidence.prior_driver_known is True
+    assert evidence.prior_driver_predicate is operator.PriorDriverPredicate.PASS
     assert executor.selection_calls == []
     line = operator.format_builder_selection_prestate_diagnostic(evidence)
     assert "raw-lock" not in line
@@ -1214,6 +1302,8 @@ def test_read_only_prestate_diagnostic_interrupt_is_unknown_and_value_free(
     )
     assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.UNKNOWN
     assert evidence.prestate_known is False
+    assert evidence.prior_driver_known is False
+    assert evidence.prior_driver_predicate is None
     assert evidence.action_count == 0
     assert evidence.selection_mutation_count == 0
     assert executor.selection_calls == []
@@ -1230,6 +1320,7 @@ def test_fixed_prestate_diagnostic_argv_outputs_one_bounded_line(
         plan_predicate=operator.DockerBuilderSelectionPlanPredicate.PASS,
         builder_predicate=operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
         node_predicate=operator.NodeSchemaPredicate.PASS,
+        prior_driver_predicate=operator.PriorDriverPredicate.PASS,
     )
     calls: list[str] = []
 
@@ -1257,6 +1348,8 @@ def test_fixed_prestate_diagnostic_argv_outputs_one_bounded_line(
     assert document["phase"] == "BUILDER_SELECTION_PRESTATE"
     assert document["prestate_checkpoint"] == "REPROOF"
     assert document["prestate_predicate"] == "PASS"
+    assert document["prior_driver_known"] is True
+    assert document["prior_driver_predicate"] == "PASS"
     assert document["mutation_count"] == 0
     assert document["retry_count"] == 0
 
@@ -1300,6 +1393,8 @@ def test_malformed_prestate_diagnostic_arguments_stop_before_lock_without_raw(
         "pass-with-capture",
         "rejected-with-pass",
         "nested-contradiction",
+        "prior-driver-partial",
+        "prior-driver-contradiction",
         "nonzero-action",
     ),
 )
@@ -1315,6 +1410,7 @@ def test_prestate_diagnostic_evidence_rejects_contradictory_shapes(case: str) ->
         ),
         "builder_selection_predicate": operator.BuilderSelectionPredicate.PASS,
         "node_schema_predicate": operator.NodeSchemaPredicate.PASS,
+        "prior_driver_known": False,
     }
     if case == "partial-known":
         values["prestate_predicate"] = None
@@ -1330,6 +1426,11 @@ def test_prestate_diagnostic_evidence_rejects_contradictory_shapes(case: str) ->
         values["builder_selection_predicate"] = operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
     elif case == "nested-contradiction":
         values["builder_selection_predicate"] = operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+    elif case == "prior-driver-partial":
+        values["prior_driver_known"] = True
+    elif case == "prior-driver-contradiction":
+        values["prior_driver_known"] = True
+        values["prior_driver_predicate"] = operator.PriorDriverPredicate.REMOTE
     else:
         values["action_count"] = 1
 

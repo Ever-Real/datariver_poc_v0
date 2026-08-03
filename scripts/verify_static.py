@@ -1874,9 +1874,21 @@ def verify_governed_docker_build_capacity_contract() -> None:
         != expected_selection_plan_predicates
     ):
         raise AssertionError("the builder-selection plan predicate vocabulary has drifted")
+    official_driver_assignments = [
+        node
+        for node in capacity_syntax.body
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "_OFFICIAL_BUILDX_DRIVER_KINDS"
+    ]
+    if len(official_driver_assignments) != 1 or ast.literal_eval(
+        official_driver_assignments[0].value
+    ) != ("docker", "docker-container", "kubernetes", "remote"):
+        raise AssertionError("the official Buildx driver vocabulary has drifted")
     plan_recorder = capacity.split("class DockerBuilderSelectionPlanRecorder:", maxsplit=1)[
         1
-    ].split("class NodeSchemaRecorder:", maxsplit=1)[0]
+    ].split("class PriorDriverPredicate", maxsplit=1)[0]
     for fragment in (
         "predicate: DockerBuilderSelectionPlanPredicate =",
         "DockerBuilderSelectionPlanPredicate.UNKNOWN",
@@ -1888,6 +1900,33 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ):
         if fragment not in plan_recorder:
             raise AssertionError(f"the builder-selection plan recorder is missing: {fragment}")
+    expected_prior_driver_predicates = tuple(
+        (value, value)
+        for value in (
+            "KUBERNETES",
+            "REMOTE",
+            "UNRECOGNIZED",
+            "PASS",
+            "UNKNOWN",
+        )
+    )
+    if capacity_enum_members("PriorDriverPredicate") != expected_prior_driver_predicates:
+        raise AssertionError("the prior-driver predicate vocabulary has drifted")
+    prior_driver_recorder = capacity.split("class PriorDriverRecorder:", maxsplit=1)[1].split(
+        "class NodeSchemaRecorder:",
+        maxsplit=1,
+    )[0]
+    for fragment in (
+        "predicate: PriorDriverPredicate = PriorDriverPredicate.UNKNOWN",
+        "return self.predicate is not PriorDriverPredicate.UNKNOWN",
+        "not isinstance(predicate, PriorDriverPredicate)",
+        "predicate is PriorDriverPredicate.UNKNOWN",
+        "or self.known",
+        'raise DockerCapacityError("PRIOR_DRIVER_EVIDENCE_INVALID")',
+        "self.predicate = predicate",
+    ):
+        if fragment not in prior_driver_recorder:
+            raise AssertionError(f"the prior-driver recorder is missing: {fragment}")
     builder_selection_recorder = capacity.split("class BuilderSelectionRecorder:", maxsplit=1)[
         1
     ].split("class NodeSchemaPredicate", maxsplit=1)[0]
@@ -2234,7 +2273,6 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "def require_docker_builder_selection_plan(",
         "def require_docker_builder_selection_poststate(",
         "def docker_builder_selection_residual_count(",
-        'prior.driver != "docker-container"',
         "builder.name == current_context",
         'target.driver != "docker"',
         'target.status != "running"',
@@ -2292,6 +2330,77 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ):
         raise AssertionError("the builder-selection plan first-defect order has drifted")
 
+    def prior_driver_condition(node: ast.If, expected: str) -> bool:
+        test = node.test
+        return (
+            isinstance(test, ast.Compare)
+            and isinstance(test.left, ast.Attribute)
+            and isinstance(test.left.value, ast.Name)
+            and test.left.value.id == "prior"
+            and test.left.attr == "driver"
+            and len(test.ops) == 1
+            and isinstance(test.ops[0], ast.Eq)
+            and len(test.comparators) == 1
+            and isinstance(test.comparators[0], ast.Constant)
+            and test.comparators[0].value == expected
+        )
+
+    def prior_driver_records(statements: list[ast.stmt]) -> tuple[str, ...]:
+        return tuple(
+            call.args[0].attr
+            for statement in statements
+            for call in ast.walk(statement)
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "prior_driver"
+            and call.func.attr == "record"
+            and len(call.args) == 1
+            and isinstance(call.args[0], ast.Attribute)
+            and isinstance(call.args[0].value, ast.Name)
+            and call.args[0].value.id == "PriorDriverPredicate"
+        )
+
+    prior_driver_roots = [
+        node
+        for node in ast.walk(plan_functions[0])
+        if isinstance(node, ast.If) and prior_driver_condition(node, "docker-container")
+    ]
+    if len(prior_driver_roots) != 1:
+        raise AssertionError("the exact docker-container prior-driver branch has drifted")
+    docker_container_branch = prior_driver_roots[0]
+    if (
+        prior_driver_records(docker_container_branch.body) != ("PASS",)
+        or len(docker_container_branch.orelse) != 1
+        or not isinstance(docker_container_branch.orelse[0], ast.If)
+    ):
+        raise AssertionError("exact docker-container must record prior-driver PASS")
+    kubernetes_branch = docker_container_branch.orelse[0]
+    if (
+        not prior_driver_condition(kubernetes_branch, "kubernetes")
+        or prior_driver_records(kubernetes_branch.body) != ("KUBERNETES",)
+        or len(kubernetes_branch.orelse) != 1
+        or not isinstance(kubernetes_branch.orelse[0], ast.If)
+    ):
+        raise AssertionError("exact kubernetes must record its closed prior-driver subtype")
+    remote_branch = kubernetes_branch.orelse[0]
+    if (
+        not prior_driver_condition(remote_branch, "remote")
+        or prior_driver_records(remote_branch.body) != ("REMOTE",)
+        or prior_driver_records(remote_branch.orelse) != ("UNRECOGNIZED",)
+    ):
+        raise AssertionError("remote and unrecognized prior-driver subtypes have drifted")
+    prior_driver_semantic_order = tuple(
+        plan_source.index(fragment)
+        for fragment in (
+            "if prior_driver.predicate is not PriorDriverPredicate.PASS:",
+            "DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER",
+            'if prior.status != "running":',
+        )
+    )
+    if prior_driver_semantic_order != tuple(sorted(prior_driver_semantic_order)):
+        raise AssertionError("prior-driver evidence must precede status and target validation")
+
     selection_operator_path = ROOT / "scripts" / "reconcile_docker_builder_selection.py"
     if not selection_operator_path.is_file() or not selection_operator_path.stat().st_mode & 0o111:
         raise AssertionError("the fixed builder-selection operator must be executable")
@@ -2338,6 +2447,39 @@ def verify_governed_docker_build_capacity_contract() -> None:
     )
     if operator_enum_members("BuilderSelectionReconcilePredicate") != expected_reconcile_predicates:
         raise AssertionError("the builder-selection operator predicate vocabulary has drifted")
+    nested_prestate_evidence = selection_operator.split(
+        "def _prestate_nested_evidence_is_consistent(",
+        maxsplit=1,
+    )[1].split("class BuilderSelectionReconcileEvidence:", maxsplit=1)[0]
+    reconcile_evidence_source = selection_operator.split(
+        "class BuilderSelectionReconcileEvidence:",
+        maxsplit=1,
+    )[1].split("def format_builder_selection_reconcile_evidence(", maxsplit=1)[0]
+    diagnostic_evidence_source = selection_operator.split(
+        "class BuilderSelectionPrestateDiagnosticEvidence:",
+        maxsplit=1,
+    )[1].split("def format_builder_selection_prestate_diagnostic(", maxsplit=1)[0]
+    for fragment in (
+        "plan is DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER",
+        "PriorDriverPredicate.KUBERNETES",
+        "PriorDriverPredicate.REMOTE",
+        "PriorDriverPredicate.UNRECOGNIZED",
+        "plan is DockerBuilderSelectionPlanPredicate.PRIOR_STATUS",
+        "prior_driver is PriorDriverPredicate.PASS",
+    ):
+        if fragment not in nested_prestate_evidence:
+            raise AssertionError(f"the prior-driver evidence relationship is missing: {fragment}")
+    for evidence_source in (reconcile_evidence_source, diagnostic_evidence_source):
+        for fragment in (
+            "prior_driver_known: bool = False",
+            "prior_driver_predicate: PriorDriverPredicate | None = None",
+            "self.prior_driver_known",
+            "self.prior_driver_known != (self.prior_driver_predicate is not None)",
+            "self.prior_driver_predicate is PriorDriverPredicate.UNKNOWN",
+            "_prestate_nested_evidence_is_consistent(",
+        ):
+            if fragment not in evidence_source:
+                raise AssertionError(f"the prior-driver evidence contract is missing: {fragment}")
     for fragment in (
         "with exclusive_docker_workflow_lock(root) as lock:",
         'platform.system() != "Darwin"',
@@ -2477,6 +2619,8 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "prestate_predicate",
         "builder_selection_predicate",
         "node_schema_predicate",
+        "prior_driver_known",
+        "prior_driver_predicate",
         "cache_action_count",
         "build_count",
         "container_action_count",
@@ -2509,6 +2653,14 @@ def verify_governed_docker_build_capacity_contract() -> None:
     )
     if output_keys != expected_output_keys:
         raise AssertionError("the builder-selection value-free output keys have drifted")
+    reconcile_output_source = ast.get_source_segment(selection_operator, format_functions[0])
+    if reconcile_output_source is None or not (
+        '"prior_driver_known": evidence.prior_driver_known' in reconcile_output_source
+        and "if evidence.prior_driver_known:" in reconcile_output_source
+        and 'fields["prior_driver_predicate"] = evidence.prior_driver_predicate.value'
+        in reconcile_output_source
+    ):
+        raise AssertionError("the prior-driver operator output contract has drifted")
     diagnostic_functions = [
         node
         for node in selection_operator_syntax.body
@@ -2543,6 +2695,8 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "prestate_predicate",
         "builder_selection_predicate",
         "node_schema_predicate",
+        "prior_driver_known",
+        "prior_driver_predicate",
         "action_count",
         "rollback_count",
         "selection_mutation_count",
@@ -2553,6 +2707,14 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "retry_count",
     }:
         raise AssertionError("the prestate diagnostic value-free output keys have drifted")
+    diagnostic_output_source = ast.get_source_segment(selection_operator, diagnostic_functions[0])
+    if diagnostic_output_source is None or not (
+        '"prior_driver_known": evidence.prior_driver_known' in diagnostic_output_source
+        and "if evidence.prior_driver_known:" in diagnostic_output_source
+        and 'fields["prior_driver_predicate"] = evidence.prior_driver_predicate.value'
+        in diagnostic_output_source
+    ):
+        raise AssertionError("the prior-driver diagnostic output contract has drifted")
     diagnostic_under_lock = selection_operator.split(
         "def _run_prestate_diagnostic_under_lock(", maxsplit=1
     )[1].split("def _run_prestate_diagnostic(", maxsplit=1)[0]
@@ -2609,6 +2771,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_extra_arguments_are_rejected_before_lock_without_raw_output",
         "test_read_only_prestate_diagnostic_reproves_plan_and_stops_before_active_or_action",
         "test_read_only_prestate_diagnostic_classifies_capture_and_reproof",
+        "test_prestate_diagnostic_classifies_prior_driver_without_action",
         "test_normal_operator_prestate_failure_retains_exact_capture_predicate",
         "test_prestate_diagnostic_lock_exit_is_unknown_and_retains_observed_pass",
         "test_read_only_prestate_diagnostic_interrupt_is_unknown_and_value_free",
@@ -2749,6 +2912,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_node_schema_interrupt_before_structural_outcome_remains_unknown",
         "test_selection_plan_preserves_complete_private_inventory_and_fixed_argv",
         "test_selection_plan_recorder_preserves_nested_expected_transition",
+        "test_selection_plan_classifies_prior_driver_before_status_or_target",
         "test_selection_plan_records_every_reachable_first_defect",
         "test_selection_plan_predicate_priority_is_deterministic",
         "test_selection_plan_rejects_every_unreviewed_prestate",
@@ -2813,6 +2977,9 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "`SEC-DOCKER-BUILDER-SELECT-001`",
         "does not make `docker-container` acceptable",
         "Plan construction advances a separate closed, value-free prestate recorder",
+        "official\n[`docker`, `docker-container`, `kubernetes`, and `remote` driver vocabulary]",
+        "only exact `docker-container` records `PASS`",
+        "does not expose the\nprovider string, accept a new driver, normalize a spelling",
         "initial `CAPTURE` or immediate `REPROOF`",
         "`--diagnostic-phase BUILDER_SELECTION_PRESTATE`",
         "stops before active-build history",
@@ -2824,6 +2991,8 @@ def verify_governed_docker_build_capacity_contract() -> None:
     if (
         "fixed `BUILDER_SELECTION_PRESTATE` phase" not in docs_index
         or "cannot select a builder or authorize a host change" not in docs_index
+        or "closed\nprior-driver evidence distinguishes Kubernetes, remote and unrecognized drivers"
+        not in docs_index
     ):
         raise AssertionError("the controlled index omits the read-only builder prestate phase")
 
