@@ -1888,6 +1888,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
 def verify_governed_local_topology_contract() -> None:
     platform_path = ROOT / "scripts" / "platform_workflow.py"
     platform = platform_path.read_text(encoding="utf-8")
+    platform_tree = ast.parse(platform)
     expected_topology_secrets = (
         "postgres_governance_document_password",
         "redis_delivery_password",
@@ -1900,7 +1901,7 @@ def verify_governed_local_topology_contract() -> None:
     )
     assignments = (
         node
-        for node in ast.walk(ast.parse(platform))
+        for node in ast.walk(platform_tree)
         if isinstance(node, ast.Assign)
         and any(
             isinstance(target, ast.Name) and target.id == "TOPOLOGY_RECONCILIATION_SECRET_NAMES"
@@ -1914,12 +1915,135 @@ def verify_governed_local_topology_contract() -> None:
         raise AssertionError("the exact topology secret allowlist has drifted")
     if platform.count("len(TOPOLOGY_RECONCILIATION_SECRET_NAMES) != 8") != 2:
         raise AssertionError("both topology secret count guards must pin the exact eight names")
+    audit_keyword_names = {
+        "expected_missing",
+        "unexpected_running",
+        "selected_unhealthy",
+        "unexpected_unhealthy",
+        "intent_mismatch",
+        "unexpected_unknown_count",
+    }
+    expected_audits = {
+        "exact_initial_findings": {
+            "expected_missing": ("worker.governance-document",),
+            "unexpected_running": ("gateway.apisix", "graph.neo4j"),
+            "selected_unhealthy": (),
+            "unexpected_unhealthy": (),
+            "intent_mismatch": ("graph.neo4j",),
+            "unexpected_unknown_count": 0,
+        },
+        "exact_web_missing_recovery_findings": {
+            "expected_missing": ("core.web", "worker.governance-document"),
+            "unexpected_running": ("gateway.apisix", "graph.neo4j"),
+            "selected_unhealthy": (),
+            "unexpected_unhealthy": (),
+            "intent_mismatch": ("graph.neo4j",),
+            "unexpected_unknown_count": 0,
+        },
+    }
+    for assignment_name, expected_values in expected_audits.items():
+        audit_assignments = [
+            node
+            for node in ast.walk(platform_tree)
+            if isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == assignment_name
+        ]
+        if len(audit_assignments) != 1:
+            raise AssertionError(
+                f"the exact topology audit assignment is ambiguous: {assignment_name}"
+            )
+        audit_call = audit_assignments[0].value
+        if not (
+            isinstance(audit_call, ast.Call)
+            and isinstance(audit_call.func, ast.Name)
+            and audit_call.func.id == "LocalTopologyAudit"
+            and not audit_call.args
+            and all(keyword.arg is not None for keyword in audit_call.keywords)
+        ):
+            raise AssertionError(
+                f"the exact topology audit must be a direct literal: {assignment_name}"
+            )
+        actual_keyword_names = {keyword.arg for keyword in audit_call.keywords}
+        if actual_keyword_names != audit_keyword_names:
+            raise AssertionError(f"the exact topology audit fields have drifted: {assignment_name}")
+        try:
+            actual_values = {
+                keyword.arg: ast.literal_eval(keyword.value) for keyword in audit_call.keywords
+            }
+        except (TypeError, ValueError) as error:
+            raise AssertionError(
+                f"the exact topology audit contains a nonliteral: {assignment_name}"
+            ) from error
+        if actual_values != expected_values:
+            raise AssertionError(f"the exact topology audit values have drifted: {assignment_name}")
+
+    reconciliation_builders = [
+        node
+        for node in platform_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "build_topology_reconciliation_plan"
+    ]
+    if len(reconciliation_builders) != 1:
+        raise AssertionError("the topology reconciliation builder is ambiguous")
+    reconciliation_builder_node = reconciliation_builders[0]
+
+    def audit_equality(node: ast.If, expected_name: str) -> bool:
+        return (
+            isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "audit"
+            and len(node.test.ops) == 1
+            and isinstance(node.test.ops[0], ast.Eq)
+            and len(node.test.comparators) == 1
+            and isinstance(node.test.comparators[0], ast.Name)
+            and node.test.comparators[0].id == expected_name
+        )
+
+    def exact_checkpoint_assignment(statements: list[ast.stmt], value: str | None) -> bool:
+        return (
+            len(statements) == 1
+            and isinstance(statements[0], ast.Assign)
+            and len(statements[0].targets) == 1
+            and isinstance(statements[0].targets[0], ast.Name)
+            and statements[0].targets[0].id == "checkpoint"
+            and isinstance(statements[0].value, ast.Constant)
+            and statements[0].value.value == value
+        )
+
+    initial_checks = [
+        node
+        for node in reconciliation_builder_node.body
+        if isinstance(node, ast.If) and audit_equality(node, "exact_initial_findings")
+    ]
+    if len(initial_checks) != 1:
+        raise AssertionError("the initial topology checkpoint equality is ambiguous")
+    initial_check = initial_checks[0]
+    if not exact_checkpoint_assignment(initial_check.body, "initial") or not (
+        len(initial_check.orelse) == 1
+        and isinstance(initial_check.orelse[0], ast.If)
+        and audit_equality(initial_check.orelse[0], "exact_web_missing_recovery_findings")
+        and exact_checkpoint_assignment(initial_check.orelse[0].body, "web-missing-recovery")
+        and exact_checkpoint_assignment(initial_check.orelse[0].orelse, None)
+    ):
+        raise AssertionError("the exact topology checkpoint mapping has drifted")
     for fragment in (
         "class LocalTopologyAudit:",
         "class TopologyReconciliationPlan:",
         'LOCAL_TOPOLOGY_RECONCILIATION = "mac-development-graph-gateway-v1"',
+        'checkpoint: Literal["initial", "web-missing-recovery"]',
+        "exact_initial_findings = LocalTopologyAudit(",
         'expected_missing=("worker.governance-document",)',
+        "exact_web_missing_recovery_findings = LocalTopologyAudit(",
+        'expected_missing=("core.web", "worker.governance-document")',
         'unexpected_running=("gateway.apisix", "graph.neo4j")',
+        "unexpected_unhealthy=()",
+        "or self.unexpected_unhealthy",
+        "if audit == exact_initial_findings:",
+        'checkpoint = "initial"',
+        "elif audit == exact_web_missing_recovery_findings:",
+        'checkpoint = "web-missing-recovery"',
+        "checkpoint=checkpoint",
         "target_state=replace(state, local_gateway=True, local_graph=True)",
         "class TopologyReconciliationSecretGuard:",
         "TOPOLOGY_RECONCILIATION_SECRET_NAMES",
@@ -1938,6 +2062,7 @@ def verify_governed_local_topology_contract() -> None:
         '"expected_missing"',
         '"unexpected_running"',
         '"selected_unhealthy"',
+        '"unexpected_unhealthy"',
         '"intent_mismatch"',
         '"unexpected_unknown_count"',
         'raise WorkflowError("LOCAL_TOPOLOGY_QUERY_FAILED")',
@@ -1948,6 +2073,29 @@ def verify_governed_local_topology_contract() -> None:
     ):
         if fragment not in platform:
             raise AssertionError(f"the governed local-topology contract is missing: {fragment}")
+    reconciliation_builder = platform.split("def build_topology_reconciliation_plan(", maxsplit=1)[
+        1
+    ].split("def _same_file_identity(", maxsplit=1)[0]
+    for forbidden in ("issubset", "issuperset", "startswith", "audit in "):
+        if forbidden in reconciliation_builder:
+            raise AssertionError("topology recovery cannot use a generalized prestate predicate")
+    topology_audit_builder = platform.split("def build_local_topology_audit(", maxsplit=1)[1].split(
+        "def enforce_local_topology(", maxsplit=1
+    )[0]
+    unexpected_loop = topology_audit_builder.split(
+        "for identity, items in grouped.items():", maxsplit=1
+    )[1].split("intent_mismatch: set[str]", maxsplit=1)[0]
+    unexpected_running = unexpected_loop.index(
+        'running = [item for item in items if item.state == "running"]'
+    )
+    base_finding = unexpected_loop.index("unexpected_running.add(logical_key)", unexpected_running)
+    duplicate_check = unexpected_loop.index("if len(running) > 1:", base_finding)
+    duplicate_finding = unexpected_loop.index(
+        'unexpected_running.add(f"duplicate.{logical_key}")', duplicate_check
+    )
+    health_finding = unexpected_loop.index("for observation in running:", duplicate_finding)
+    if not unexpected_running < base_finding < duplicate_check < duplicate_finding < health_finding:
+        raise AssertionError("unexpected managed target duplicate evidence ordering has drifted")
     if "set(os.listdir(secret_descriptor))" in platform:
         raise AssertionError("unrelated canonical secrets cannot influence topology selection")
 
@@ -2085,6 +2233,12 @@ def verify_governed_local_topology_contract() -> None:
     for test_name in (
         "test_local_topology_clean_fast_path_has_no_findings",
         "test_local_topology_keeps_runtime_and_intent_drift_separate",
+        "test_topology_reconciliation_rejects_unexpected_target_unhealthy_before_mutation",
+        "test_local_topology_rejects_invalid_health_without_raw_evidence",
+        "test_local_topology_audit_rejects_invalid_unexpected_health_evidence",
+        "test_unexpected_target_duplicate_running_is_bounded_and_rejected",
+        "test_unexpected_target_running_and_stopped_is_not_duplicate",
+        "test_unexpected_target_duplicate_retains_unhealthy_evidence",
         "test_local_topology_reports_missing_and_selected_unhealthy_separately",
         "test_local_topology_unknown_service_is_counted_without_identifier_leak",
         "test_local_topology_reverse_intent_mismatch_does_not_adopt_env_silently",
@@ -2095,7 +2249,9 @@ def verify_governed_local_topology_contract() -> None:
         "test_local_topology_private_capture_timeout_is_fixed_sanitized_and_not_retried",
         "test_update_topology_drift_stops_before_lock_reranker_or_state_mutation",
         "test_exact_mac_topology_reconciliation_changes_only_graph_and_gateway",
+        "test_exact_mac_topology_reconciliation_accepts_only_web_missing_recovery",
         "test_topology_reconciliation_rejects_any_nonexact_prestate_or_finding",
+        "test_locked_topology_checkpoint_transition_stops_before_mutation",
         "test_topology_secret_preflight_accepts_selected_subset_of_canonical_metadata",
         "test_topology_secret_preflight_rejects_a_symlinked_root",
         "test_topology_secret_guard_detects_selected_file_replacement_after_preflight",
@@ -2105,12 +2261,20 @@ def verify_governed_local_topology_contract() -> None:
         "test_worker_create_stops_before_mutation_when_retained_secret_guard_drifted",
         "test_governance_document_role_and_backlog_are_separate_sanitized_queries",
         "test_topology_reconciliation_failure_stops_before_later_mutations",
+        "test_reconciliation_target_audit_requires_web_worker_gateway_and_graph",
         "test_gateway_transparency_is_only_a_routing_negative_not_positive_auth_evidence",
         "test_unreviewed_gateway_reconciliation_stops_under_lock_before_runtime_mutation",
         "test_gateway_log_probe_rejects_credential_persistence_without_raw_output",
     ):
         if test_name not in test_source:
             raise AssertionError(f"the local-topology direct test is missing: {test_name}")
+    if "if locked_plan != reconciliation_plan:" not in workflow:
+        raise AssertionError("the locked topology plan must retain exact checkpoint equality")
+    development_test_source = (
+        ROOT / "backend" / "tests" / "unit" / "test_development_cycle.py"
+    ).read_text(encoding="utf-8")
+    if "test_dev_publish_never_pushes_after_reconciliation_failure" not in development_test_source:
+        raise AssertionError("dev-publish must retain reconciliation-failure push0 coverage")
 
     adr = (ROOT / "docs" / "adr" / "0113-governed-local-topology-drift.md").read_text(
         encoding="utf-8"
@@ -2118,6 +2282,8 @@ def verify_governed_local_topology_contract() -> None:
     for fragment in (
         "LOCAL_TOPOLOGY_DRIFT",
         "expected-missing",
+        "web-missing-recovery",
+        "not a general resumability contract",
         "unexpected-running",
         "selected-unhealthy",
         "intent-mismatch",

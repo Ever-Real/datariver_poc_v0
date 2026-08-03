@@ -661,6 +661,43 @@ def _core_topology_observations() -> list[Any]:
     ]
 
 
+def _topology_reconciliation_observations(
+    *,
+    web_running: bool,
+    apisix_health: str = "healthy",
+    neo4j_health: str = "healthy",
+) -> tuple[Any, ...]:
+    observations = [
+        item for item in _core_topology_observations() if web_running or item.service != "web"
+    ]
+    observations.extend(
+        workflow.LocalServiceObservation(
+            project="datariver-next",
+            service=service,
+            state="running",
+            health="none",
+        )
+        for service in workflow.AIRFLOW_SERVICES
+    )
+    observations.extend(
+        (
+            workflow.LocalServiceObservation(
+                project="datariver-next",
+                service="apisix",
+                state="running",
+                health=apisix_health,
+            ),
+            workflow.LocalServiceObservation(
+                project="datariver-next",
+                service="neo4j",
+                state="running",
+                health=neo4j_health,
+            ),
+        )
+    )
+    return tuple(observations)
+
+
 def test_local_topology_clean_fast_path_has_no_findings() -> None:
     audit = workflow.build_local_topology_audit(
         state=_topology_state(),
@@ -673,6 +710,7 @@ def test_local_topology_clean_fast_path_has_no_findings() -> None:
         "expected_missing": [],
         "intent_mismatch": [],
         "selected_unhealthy": [],
+        "unexpected_unhealthy": [],
         "unexpected_running": [],
         "unexpected_unknown_count": 0,
     }
@@ -709,7 +747,232 @@ def test_local_topology_keeps_runtime_and_intent_drift_separate() -> None:
     assert audit.expected_missing == ()
     assert audit.unexpected_running == ("gateway.apisix", "graph.neo4j")
     assert audit.selected_unhealthy == ()
+    assert audit.unexpected_unhealthy == ()
     assert audit.intent_mismatch == ("graph.neo4j",)
+
+
+@pytest.mark.parametrize(
+    ("service", "health", "logical_key"),
+    (
+        ("apisix", "starting", "gateway.apisix"),
+        ("apisix", "unhealthy", "gateway.apisix"),
+        ("neo4j", "starting", "graph.neo4j"),
+        ("neo4j", "unhealthy", "graph.neo4j"),
+    ),
+)
+def test_topology_reconciliation_rejects_unexpected_target_unhealthy_before_mutation(
+    service: str,
+    health: str,
+    logical_key: str,
+) -> None:
+    state = _topology_state(profile="mac-development", local_airflow=True)
+    environment = {
+        "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
+        "NEO4J_PROJECTION_ENABLED": "true",
+        "NEO4J_URI": "bolt://neo4j:7687",
+    }
+    audit = workflow.build_local_topology_audit(
+        state=state,
+        environment_values=environment,
+        observations=_topology_reconciliation_observations(
+            web_running=False,
+            apisix_health=health if service == "apisix" else "healthy",
+            neo4j_health=health if service == "neo4j" else "healthy",
+        ),
+    )
+
+    assert audit.unexpected_unhealthy == ((logical_key, health),)
+    assert json.loads(audit.summary())["unexpected_unhealthy"] == [
+        {"service": logical_key, "status": health}
+    ]
+    with pytest.raises(
+        workflow.WorkflowError,
+        match="TOPOLOGY_RECONCILIATION_PRECONDITION_FAILED",
+    ):
+        workflow.build_topology_reconciliation_plan(
+            "mac-development-graph-gateway-v1",
+            state=state,
+            environment_values=environment,
+            audit=audit,
+        )
+
+
+def test_local_topology_rejects_invalid_health_without_raw_evidence() -> None:
+    sentinel = "future-health-secret-path"
+    observations = _core_topology_observations()
+    observations.append(
+        workflow.LocalServiceObservation(
+            project="datariver-next",
+            service="apisix",
+            state="running",
+            health=sentinel,
+        )
+    )
+
+    with pytest.raises(workflow.WorkflowError, match="LOCAL_TOPOLOGY_EVIDENCE_INVALID") as raised:
+        workflow.build_local_topology_audit(
+            state=_topology_state(),
+            environment_values={"NEO4J_PROJECTION_ENABLED": "false"},
+            observations=observations,
+        )
+
+    assert sentinel not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    "unexpected_unhealthy",
+    (
+        (("gateway.apisix", "healthy"),),
+        (("future-secret-service", "unhealthy"),),
+        (("graph.neo4j", "starting"), ("gateway.apisix", "unhealthy")),
+        (("gateway.apisix", "unhealthy"), ("gateway.apisix", "unhealthy")),
+    ),
+)
+def test_local_topology_audit_rejects_invalid_unexpected_health_evidence(
+    unexpected_unhealthy: tuple[tuple[str, str], ...],
+) -> None:
+    with pytest.raises(workflow.WorkflowError, match="LOCAL_TOPOLOGY_EVIDENCE_INVALID") as raised:
+        workflow.LocalTopologyAudit(
+            expected_missing=(),
+            unexpected_running=(),
+            selected_unhealthy=(),
+            unexpected_unhealthy=unexpected_unhealthy,
+            intent_mismatch=(),
+        )
+
+    assert "future-secret-service" not in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("service", "duplicate_key"),
+    (
+        ("apisix", "duplicate.gateway.apisix"),
+        ("neo4j", "duplicate.graph.neo4j"),
+    ),
+)
+def test_unexpected_target_duplicate_running_is_bounded_and_rejected(
+    service: str,
+    duplicate_key: str,
+) -> None:
+    state = _topology_state(profile="mac-development", local_airflow=True)
+    environment = {
+        "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
+        "NEO4J_PROJECTION_ENABLED": "true",
+        "NEO4J_URI": "bolt://neo4j:7687",
+    }
+    observations = (
+        *_topology_reconciliation_observations(web_running=False),
+        workflow.LocalServiceObservation(
+            project="datariver-next",
+            service=service,
+            state="running",
+            health="healthy",
+        ),
+    )
+
+    audit = workflow.build_local_topology_audit(
+        state=state,
+        environment_values=environment,
+        observations=observations,
+    )
+
+    assert duplicate_key in audit.unexpected_running
+    assert audit.unexpected_unhealthy == ()
+    with pytest.raises(
+        workflow.WorkflowError,
+        match="TOPOLOGY_RECONCILIATION_PRECONDITION_FAILED",
+    ):
+        workflow.build_topology_reconciliation_plan(
+            "mac-development-graph-gateway-v1",
+            state=state,
+            environment_values=environment,
+            audit=audit,
+        )
+
+
+@pytest.mark.parametrize("service", ("apisix", "neo4j"))
+def test_unexpected_target_running_and_stopped_is_not_duplicate(service: str) -> None:
+    state = _topology_state(profile="mac-development", local_airflow=True)
+    environment = {
+        "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
+        "NEO4J_PROJECTION_ENABLED": "true",
+        "NEO4J_URI": "bolt://neo4j:7687",
+    }
+    observations = (
+        *_topology_reconciliation_observations(web_running=False),
+        workflow.LocalServiceObservation(
+            project="datariver-next",
+            service=service,
+            state="exited",
+            health="none",
+        ),
+    )
+
+    audit = workflow.build_local_topology_audit(
+        state=state,
+        environment_values=environment,
+        observations=observations,
+    )
+    plan = workflow.build_topology_reconciliation_plan(
+        "mac-development-graph-gateway-v1",
+        state=state,
+        environment_values=environment,
+        audit=audit,
+    )
+
+    assert all(not finding.startswith("duplicate.") for finding in audit.unexpected_running)
+    assert plan.checkpoint == "web-missing-recovery"
+
+
+@pytest.mark.parametrize(
+    ("service", "health", "duplicate_key", "logical_key"),
+    (
+        ("apisix", "starting", "duplicate.gateway.apisix", "gateway.apisix"),
+        ("apisix", "unhealthy", "duplicate.gateway.apisix", "gateway.apisix"),
+        ("neo4j", "starting", "duplicate.graph.neo4j", "graph.neo4j"),
+        ("neo4j", "unhealthy", "duplicate.graph.neo4j", "graph.neo4j"),
+    ),
+)
+def test_unexpected_target_duplicate_retains_unhealthy_evidence(
+    service: str,
+    health: str,
+    duplicate_key: str,
+    logical_key: str,
+) -> None:
+    state = _topology_state(profile="mac-development", local_airflow=True)
+    environment = {
+        "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
+        "NEO4J_PROJECTION_ENABLED": "true",
+        "NEO4J_URI": "bolt://neo4j:7687",
+    }
+    observations = (
+        *_topology_reconciliation_observations(web_running=False),
+        workflow.LocalServiceObservation(
+            project="datariver-next",
+            service=service,
+            state="running",
+            health=health,
+        ),
+    )
+
+    audit = workflow.build_local_topology_audit(
+        state=state,
+        environment_values=environment,
+        observations=observations,
+    )
+
+    assert duplicate_key in audit.unexpected_running
+    assert audit.unexpected_unhealthy == ((logical_key, health),)
+    with pytest.raises(
+        workflow.WorkflowError,
+        match="TOPOLOGY_RECONCILIATION_PRECONDITION_FAILED",
+    ):
+        workflow.build_topology_reconciliation_plan(
+            "mac-development-graph-gateway-v1",
+            state=state,
+            environment_values=environment,
+            audit=audit,
+        )
 
 
 def test_exact_mac_topology_reconciliation_changes_only_graph_and_gateway() -> None:
@@ -717,28 +980,63 @@ def test_exact_mac_topology_reconciliation_changes_only_graph_and_gateway() -> N
         profile="mac-development",
         local_airflow=True,
         local_datahub=True,
-        local_redis=True,
-        local_storage=True,
         environment_key_hashes={"UNCHANGED": "a" * 64},
     )
-    audit = workflow.LocalTopologyAudit(
-        expected_missing=("worker.governance-document",),
-        unexpected_running=("gateway.apisix", "graph.neo4j"),
-        selected_unhealthy=(),
-        intent_mismatch=("graph.neo4j",),
+    environment = {
+        "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
+        "NEO4J_PROJECTION_ENABLED": "true",
+        "NEO4J_URI": "bolt://neo4j:7687",
+    }
+    audit = workflow.build_local_topology_audit(
+        state=state,
+        environment_values=environment,
+        observations=_topology_reconciliation_observations(web_running=True),
     )
 
     plan = workflow.build_topology_reconciliation_plan(
         "mac-development-graph-gateway-v1",
         state=state,
-        environment_values={
-            "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
-            "NEO4J_PROJECTION_ENABLED": "true",
-            "NEO4J_URI": "bolt://neo4j:7687",
-        },
+        environment_values=environment,
         audit=audit,
     )
 
+    assert plan.checkpoint == "initial"
+    assert audit.unexpected_unhealthy == ()
+    assert plan.missing_worker_service == "governance-document-worker"
+    assert plan.target_state == workflow.replace(
+        state,
+        local_graph=True,
+        local_gateway=True,
+    )
+
+
+def test_exact_mac_topology_reconciliation_accepts_only_web_missing_recovery() -> None:
+    state = _topology_state(
+        profile="mac-development",
+        local_airflow=True,
+        local_datahub=True,
+        environment_key_hashes={"UNCHANGED": "a" * 64},
+    )
+    environment = {
+        "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
+        "NEO4J_PROJECTION_ENABLED": "true",
+        "NEO4J_URI": "bolt://neo4j:7687",
+    }
+    audit = workflow.build_local_topology_audit(
+        state=state,
+        environment_values=environment,
+        observations=_topology_reconciliation_observations(web_running=False),
+    )
+
+    plan = workflow.build_topology_reconciliation_plan(
+        "mac-development-graph-gateway-v1",
+        state=state,
+        environment_values=environment,
+        audit=audit,
+    )
+
+    assert plan.checkpoint == "web-missing-recovery"
+    assert audit.unexpected_unhealthy == ()
     assert plan.missing_worker_service == "governance-document-worker"
     assert plan.target_state == workflow.replace(
         state,
@@ -751,12 +1049,42 @@ def test_exact_mac_topology_reconciliation_changes_only_graph_and_gateway() -> N
     ("state_overrides", "environment", "audit_overrides"),
     (
         ({"profile": "portable-development"}, {}, {}),
+        ({"deployment_mode": "offline", "release_dir": "/release"}, {}, {}),
+        ({"local_airflow": False}, {}, {}),
         ({"local_graph": True}, {}, {}),
         ({"local_gateway": True}, {}, {}),
         ({}, {"NEO4J_PROJECTION_ENABLED": "false"}, {}),
+        ({}, {"NEO4J_URI": "bolt://external-graph:7687"}, {}),
         ({}, {"GOVERNANCE_DOCUMENT_WORKER_ENABLED": "false"}, {}),
         ({}, {}, {"expected_missing": ()}),
+        ({}, {}, {"expected_missing": ("core.web",)}),
+        ({}, {}, {"expected_missing": ("core.api", "worker.governance-document")}),
+        (
+            {},
+            {},
+            {
+                "expected_missing": (
+                    "core.web",
+                    "worker.governance-document",
+                    "worker.upload",
+                )
+            },
+        ),
+        ({}, {}, {"unexpected_running": ("graph.neo4j",)}),
+        (
+            {},
+            {},
+            {
+                "unexpected_running": (
+                    "duplicate.gateway.apisix",
+                    "gateway.apisix",
+                    "graph.neo4j",
+                )
+            },
+        ),
+        ({}, {}, {"intent_mismatch": ()}),
         ({}, {}, {"unexpected_unknown_count": 1}),
+        ({}, {}, {"selected_unhealthy": (("core.web", "starting"),)}),
         ({}, {}, {"selected_unhealthy": (("core.api", "unhealthy"),)}),
     ),
 )
@@ -778,6 +1106,7 @@ def test_topology_reconciliation_rejects_any_nonexact_prestate_or_finding(
         "expected_missing": ("worker.governance-document",),
         "unexpected_running": ("gateway.apisix", "graph.neo4j"),
         "selected_unhealthy": (),
+        "unexpected_unhealthy": (),
         "intent_mismatch": ("graph.neo4j",),
         "unexpected_unknown_count": 0,
     }
@@ -796,6 +1125,147 @@ def test_topology_reconciliation_rejects_any_nonexact_prestate_or_finding(
             environment_values=values,
             audit=workflow.LocalTopologyAudit(**audit_values),
         )
+
+
+@pytest.mark.parametrize(
+    "checkpoint_order",
+    (("initial", "recovery"), ("recovery", "initial")),
+)
+def test_locked_topology_checkpoint_transition_stops_before_mutation(
+    checkpoint_order: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    environment = {
+        "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
+        "NEO4J_PROJECTION_ENABLED": "true",
+        "NEO4J_URI": "bolt://neo4j:7687",
+    }
+    env_file.write_text(
+        "\n".join(f"{key}={value}" for key, value in environment.items()) + "\n",
+        encoding="utf-8",
+    )
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        local_airflow=True,
+        local_datahub=True,
+        local_redis=True,
+        local_storage=True,
+        environment_key_hashes=workflow.environment_key_hashes(environment),
+    )
+    initial = workflow.build_topology_reconciliation_plan(
+        "mac-development-graph-gateway-v1",
+        state=state,
+        environment_values=environment,
+        audit=workflow.LocalTopologyAudit(
+            expected_missing=("worker.governance-document",),
+            unexpected_running=("gateway.apisix", "graph.neo4j"),
+            selected_unhealthy=(),
+            unexpected_unhealthy=(),
+            intent_mismatch=("graph.neo4j",),
+        ),
+    )
+    recovery = workflow.build_topology_reconciliation_plan(
+        "mac-development-graph-gateway-v1",
+        state=state,
+        environment_values=environment,
+        audit=workflow.LocalTopologyAudit(
+            expected_missing=("core.web", "worker.governance-document"),
+            unexpected_running=("gateway.apisix", "graph.neo4j"),
+            selected_unhealthy=(),
+            unexpected_unhealthy=(),
+            intent_mismatch=("graph.neo4j",),
+        ),
+    )
+    plans_by_checkpoint = {"initial": initial, "recovery": recovery}
+    plans = iter(plans_by_checkpoint[name] for name in checkpoint_order)
+    events: list[str] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+    @contextmanager
+    def held_lock(_root: Path) -> Iterator[object]:
+        events.append("lock-enter")
+        try:
+            yield object()
+        finally:
+            events.append("lock-exit")
+
+    @contextmanager
+    def held_secrets(_root: Path) -> Iterator[object]:
+        events.append("secret-enter")
+        try:
+            yield object()
+        finally:
+            events.append("secret-exit")
+
+    def compose(_runner: object, **kwargs: object) -> None:
+        trailing = cast(tuple[str, ...], kwargs["trailing"])
+        events.append("config" if trailing == ("config", "--quiet") else "docker-mutation")
+
+    def prepared(*_args: object, **_kwargs: object) -> Any:
+        events.append("audit")
+        return next(plans)
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="mac-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=True,
+            assume_yes=True,
+            reconcile_local_topology="mac-development-graph-gateway-v1",
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FakeRunner)
+    monkeypatch.setattr(update, "require_command", lambda _command: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda _root, _profile: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: state.applied_commit)
+    monkeypatch.setattr(update, "_git_paths", lambda *_args: ())
+    monkeypatch.setattr(update, "_running_services", lambda *_args, **_kwargs: ())
+    monkeypatch.setattr(update, "_compose", compose)
+    monkeypatch.setattr(update, "_prepare_topology_reconciliation", prepared)
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", held_lock)
+    monkeypatch.setattr(update, "require_topology_reconciliation_secrets", held_secrets)
+    for name in (
+        "_bootstrap",
+        "_preflight_build_capacity",
+        "_reconcile_local_reranker",
+        "_reconcile_topology_with_gateway_parity",
+        "write_applied_state",
+    ):
+        monkeypatch.setattr(
+            update,
+            name,
+            lambda *_args, _name=name, **_kwargs: events.append(_name),
+        )
+
+    assert update.main() == 2
+    assert events == [
+        "lock-enter",
+        "config",
+        "audit",
+        "secret-enter",
+        "audit",
+        "secret-exit",
+        "lock-exit",
+    ]
+    assert capsys.readouterr().err.splitlines() == [
+        "ERROR: TOPOLOGY_RECONCILIATION_PRECONDITION_FAILED"
+    ]
 
 
 def test_gateway_routing_overlay_has_narrow_change_classification() -> None:
@@ -847,6 +1317,7 @@ def _topology_reconciliation_plan() -> Any:
     )
     return workflow.TopologyReconciliationPlan(
         name="mac-development-graph-gateway-v1",
+        checkpoint="initial",
         target_state=workflow.replace(state, local_gateway=True, local_graph=True),
         missing_worker_service="governance-document-worker",
     )
@@ -895,8 +1366,12 @@ def test_topology_reconciliation_mutation_order_is_worker_gateway_web_airflow(
     assert events[3] == ("database-gates",)
     assert events[4] == ("builder-idle",)
     assert events[5] == ("build", "apisix")
+    assert "--wait" in events[6]
     assert events[6][-1] == "apisix"
+    assert "--wait" in events[7]
+    assert "--force-recreate" in events[7]
     assert events[7][-1] == "web"
+    assert sum(event[-1:] == ("web",) for event in events) == 1
     assert events[8][-4:] == workflow.AIRFLOW_SERVICES
 
 
@@ -928,7 +1403,12 @@ def test_governance_document_role_and_backlog_are_separate_sanitized_queries(
     assert notes == ["Governance document worker database role/backlog verified count=12"]
 
 
+@pytest.mark.parametrize(
+    "failed_step",
+    ("worker", "apisix", "web", "airflow"),
+)
 def test_topology_reconciliation_failure_stops_before_later_mutations(
+    failed_step: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -938,8 +1418,19 @@ def test_topology_reconciliation_failure_stops_before_later_mutations(
     def compose(_runner: object, **kwargs: object) -> None:
         trailing = cast(tuple[str, ...], kwargs["trailing"])
         calls.append(trailing)
-        if trailing == ("build", "apisix"):
-            raise workflow.WorkflowError("fixed-gateway-build-failure")
+        current_step = (
+            "worker"
+            if trailing[-1] == "governance-document-worker"
+            else "apisix"
+            if trailing[-1] == "apisix"
+            else "web"
+            if trailing[-1] == "web"
+            else "airflow"
+            if trailing[-4:] == workflow.AIRFLOW_SERVICES
+            else "other"
+        )
+        if current_step == failed_step:
+            raise workflow.WorkflowError(f"fixed-{failed_step}-failure")
 
     monkeypatch.setattr(update, "_compose", compose)
     monkeypatch.setattr(
@@ -953,7 +1444,7 @@ def test_topology_reconciliation_failure_stops_before_later_mutations(
         def revalidate(self) -> None:
             return None
 
-    with pytest.raises(workflow.WorkflowError, match="fixed-gateway-build-failure"):
+    with pytest.raises(workflow.WorkflowError, match=f"fixed-{failed_step}-failure"):
         update._apply_topology_reconciliation(
             SimpleNamespace(note=lambda _message: None),
             env_file=tmp_path / ".env",
@@ -964,9 +1455,76 @@ def test_topology_reconciliation_failure_stops_before_later_mutations(
             secret_guard=SecretGuard(),
         )
 
-    assert calls[0][-1] == "governance-document-worker"
-    assert calls[1] == ("build", "apisix")
-    assert all(call[-1] not in {"web", "airflow-triggerer"} for call in calls)
+    observed_steps = [
+        "worker"
+        if call[-1] == "governance-document-worker"
+        else "apisix"
+        if call[-1] == "apisix"
+        else "web"
+        if call[-1] == "web"
+        else "airflow"
+        if call[-4:] == workflow.AIRFLOW_SERVICES
+        else "other"
+        for call in calls
+    ]
+    expected_prefixes = {
+        "worker": ["worker"],
+        "apisix": ["worker", "apisix"],
+        "web": ["worker", "apisix", "apisix", "web"],
+        "airflow": ["worker", "apisix", "apisix", "web", "airflow"],
+    }
+    assert observed_steps == expected_prefixes[failed_step]
+
+
+def test_reconciliation_target_audit_requires_web_worker_gateway_and_graph() -> None:
+    state = _topology_state(local_gateway=True, local_graph=True)
+    services = (
+        *_core_topology_observations(),
+        workflow.LocalServiceObservation(
+            project="datariver-next",
+            service="governance-document-worker",
+            state="running",
+            health="healthy",
+        ),
+        workflow.LocalServiceObservation(
+            project="datariver-next",
+            service="apisix",
+            state="running",
+            health="healthy",
+        ),
+        workflow.LocalServiceObservation(
+            project="datariver-next",
+            service="neo4j",
+            state="running",
+            health="healthy",
+        ),
+    )
+    environment = {
+        "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
+        "NEO4J_PROJECTION_ENABLED": "true",
+        "NEO4J_URI": "bolt://neo4j:7687",
+    }
+
+    clean = workflow.build_local_topology_audit(
+        state=state,
+        environment_values=environment,
+        observations=services,
+    )
+    assert clean.has_findings is False
+
+    required = {
+        "web": "core.web",
+        "governance-document-worker": "worker.governance-document",
+        "apisix": "gateway.apisix",
+        "neo4j": "graph.neo4j",
+    }
+    for service, logical_key in required.items():
+        audit = workflow.build_local_topology_audit(
+            state=state,
+            environment_values=environment,
+            observations=tuple(item for item in services if item.service != service),
+        )
+        assert audit.expected_missing == (logical_key,)
 
 
 def _write_topology_secret_fixture(root: Path) -> Path:

@@ -15,7 +15,7 @@ import tempfile
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
-from typing import NoReturn, Self
+from typing import Literal, NoReturn, Self
 from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -352,8 +352,21 @@ class LocalTopologyAudit:
     expected_missing: tuple[str, ...]
     unexpected_running: tuple[str, ...]
     selected_unhealthy: tuple[tuple[str, str], ...]
+    unexpected_unhealthy: tuple[tuple[str, str], ...]
     intent_mismatch: tuple[str, ...]
     unexpected_unknown_count: int = 0
+
+    def __post_init__(self) -> None:
+        valid_services = frozenset(_TOPOLOGY_SERVICE_KEYS.values())
+        if (
+            len(self.unexpected_unhealthy) > len(valid_services)
+            or self.unexpected_unhealthy != tuple(sorted(set(self.unexpected_unhealthy)))
+            or any(
+                service not in valid_services or status not in {"starting", "unhealthy"}
+                for service, status in self.unexpected_unhealthy
+            )
+        ):
+            raise WorkflowError("LOCAL_TOPOLOGY_EVIDENCE_INVALID")
 
     @property
     def has_findings(self) -> bool:
@@ -361,6 +374,7 @@ class LocalTopologyAudit:
             self.expected_missing
             or self.unexpected_running
             or self.selected_unhealthy
+            or self.unexpected_unhealthy
             or self.intent_mismatch
             or self.unexpected_unknown_count
         )
@@ -373,6 +387,10 @@ class LocalTopologyAudit:
                 {"service": service, "status": status}
                 for service, status in self.selected_unhealthy
             ],
+            "unexpected_unhealthy": [
+                {"service": service, "status": status}
+                for service, status in self.unexpected_unhealthy
+            ],
             "unexpected_running": list(self.unexpected_running),
             "unexpected_unknown_count": self.unexpected_unknown_count,
         }
@@ -384,6 +402,7 @@ class TopologyReconciliationPlan:
     """One immutable, reviewed Mac-development topology transition."""
 
     name: str
+    checkpoint: Literal["initial", "web-missing-recovery"]
     target_state: AppliedState
     missing_worker_service: str
 
@@ -610,7 +629,11 @@ def build_local_topology_audit(
     grouped: dict[tuple[str, str], list[LocalServiceObservation]] = {}
     unexpected_unknown_count = 0
     for observation in observations:
-        if observation.project not in _TOPOLOGY_PROJECTS:
+        if (
+            observation.project not in _TOPOLOGY_PROJECTS
+            or observation.state not in _TOPOLOGY_DOCKER_STATES
+            or observation.health not in {"none", "healthy", "starting", "unhealthy"}
+        ):
             raise WorkflowError("LOCAL_TOPOLOGY_EVIDENCE_INVALID")
         if observation.service == "__unknown__":
             if observation.state == "running":
@@ -624,6 +647,7 @@ def build_local_topology_audit(
     expected_missing: set[str] = set()
     unexpected_running: set[str] = set()
     selected_unhealthy: set[tuple[str, str]] = set()
+    unexpected_unhealthy: set[tuple[str, str]] = set()
     for identity in expected:
         logical_key = _TOPOLOGY_SERVICE_KEYS[identity]
         running = [item for item in grouped.get(identity, ()) if item.state == "running"]
@@ -639,8 +663,15 @@ def build_local_topology_audit(
     for identity, items in grouped.items():
         if identity in expected:
             continue
-        if any(item.state == "running" for item in items):
-            unexpected_running.add(_TOPOLOGY_SERVICE_KEYS[identity])
+        logical_key = _TOPOLOGY_SERVICE_KEYS[identity]
+        running = [item for item in items if item.state == "running"]
+        if running:
+            unexpected_running.add(logical_key)
+        if len(running) > 1:
+            unexpected_running.add(f"duplicate.{logical_key}")
+        for observation in running:
+            if observation.health in {"starting", "unhealthy"}:
+                unexpected_unhealthy.add((logical_key, observation.health))
 
     intent_mismatch: set[str] = set()
     if state.local_graph != _local_graph_intent(environment_values):
@@ -650,6 +681,7 @@ def build_local_topology_audit(
         expected_missing=tuple(sorted(expected_missing)),
         unexpected_running=tuple(sorted(unexpected_running)),
         selected_unhealthy=tuple(sorted(selected_unhealthy)),
+        unexpected_unhealthy=tuple(sorted(unexpected_unhealthy)),
         intent_mismatch=tuple(sorted(intent_mismatch)),
         unexpected_unknown_count=unexpected_unknown_count,
     )
@@ -683,13 +715,29 @@ def build_topology_reconciliation_plan(
 ) -> TopologyReconciliationPlan:
     """Validate the sole reviewed graph/gateway adoption without wildcard state mutation."""
 
-    exact_findings = LocalTopologyAudit(
+    exact_initial_findings = LocalTopologyAudit(
         expected_missing=("worker.governance-document",),
         unexpected_running=("gateway.apisix", "graph.neo4j"),
         selected_unhealthy=(),
+        unexpected_unhealthy=(),
         intent_mismatch=("graph.neo4j",),
         unexpected_unknown_count=0,
     )
+    exact_web_missing_recovery_findings = LocalTopologyAudit(
+        expected_missing=("core.web", "worker.governance-document"),
+        unexpected_running=("gateway.apisix", "graph.neo4j"),
+        selected_unhealthy=(),
+        unexpected_unhealthy=(),
+        intent_mismatch=("graph.neo4j",),
+        unexpected_unknown_count=0,
+    )
+    checkpoint: Literal["initial", "web-missing-recovery"] | None
+    if audit == exact_initial_findings:
+        checkpoint = "initial"
+    elif audit == exact_web_missing_recovery_findings:
+        checkpoint = "web-missing-recovery"
+    else:
+        checkpoint = None
     precondition = all(
         (
             name == LOCAL_TOPOLOGY_RECONCILIATION,
@@ -701,13 +749,14 @@ def build_topology_reconciliation_plan(
             _local_graph_intent(environment_values),
             environment_values.get("GOVERNANCE_DOCUMENT_WORKER_ENABLED", "").strip().casefold()
             == "true",
-            audit == exact_findings,
+            checkpoint is not None,
         )
     )
-    if not precondition:
+    if not precondition or checkpoint is None:
         raise WorkflowError("TOPOLOGY_RECONCILIATION_PRECONDITION_FAILED")
     return TopologyReconciliationPlan(
         name=name,
+        checkpoint=checkpoint,
         target_state=replace(state, local_gateway=True, local_graph=True),
         missing_worker_service="governance-document-worker",
     )

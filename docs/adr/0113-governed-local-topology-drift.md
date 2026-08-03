@@ -53,23 +53,34 @@ the JSON file directly.
 
 The sole in-place transition is the optional, development-only command
 `development_cycle.py dev-publish --reconcile-local-topology
-mac-development-graph-gateway-v1`. It accepts only the observed Mac pre-state: graph and gateway
-are false in AppliedState, healthy Neo4j and APISIX are already running, local Neo4j intent is true,
-and the explicitly enabled `governance-document-worker` is missing. Any additional missing,
-unexpected, unhealthy, unknown or intent finding stops before mutation. Under the existing Docker
-workflow lock, the operation opens the reviewed seven bind secrets as a required subset of the
-shared canonical secret directory. Unrelated canonical entries neither fail nor influence the
-selection. The operation retains the root, secret-directory and seven file descriptors, rechecks
-their linked identities immediately before and after the worker Compose create (including an
-ambiguous create failure), recovers only the missing worker, verifies its database role and backlog
-with two separate fixed queries, then applies the checked-in APISIX/Web/Airflow routing overlays.
-Neo4j is not recreated or written.
+mac-development-graph-gateway-v1`. It accepts only either of two complete Mac pre-states. The
+`initial` checkpoint requires graph and gateway false in AppliedState, healthy Neo4j and APISIX
+already running, local Neo4j intent true, and only the explicitly enabled
+`governance-document-worker` missing. The `web-missing-recovery` checkpoint requires that same
+complete evidence plus `core.web` missing, which is the one reviewed partial state left by the same
+governed transition. For unexpected running managed services, health remains separate bounded
+`unexpected-unhealthy` evidence rather than being discarded or overloaded into
+`selected-unhealthy`. Both complete checkpoints require healthy APISIX and Neo4j and empty selected
+and unexpected unhealthy evidence. Any other missing, unexpected, unhealthy, unknown or intent
+finding stops before mutation. The immutable plan records the checkpoint, so a change between the
+first audit and the locked audit also stops. This is not a general resumability contract; any other
+partial state requires a separate exact RCA and review.
+
+Under the existing Docker workflow lock, the operation opens the reviewed eight bind secrets as a
+required subset of the shared canonical secret directory. Unrelated canonical entries neither fail
+nor influence the selection. The operation retains the root, secret-directory and eight file
+descriptors, rechecks their linked identities immediately before and after the worker Compose
+create (including an ambiguous create failure), recovers only the missing worker, verifies its
+database role and backlog with two separate fixed queries, then applies the checked-in
+APISIX/Web/Airflow routing overlays. Both checkpoints use that same governed order: APISIX is
+reconciled before Web is force-recreated exactly once through its selected gateway overlay. There
+is no preliminary manual Web start. Neo4j is not recreated or written.
 Only after the target audit passes does the normal atomic writer change `local_graph` and
 `local_gateway` to true while preserving every other state field and fingerprint. Origin push
 remains after the complete runtime transaction.
 
 The metadata-only secret preflight follows the repository's canonical Mac bind-secret contract:
-the directory is mode `0700` and each of the selected seven regular files is mode `0444`. The held
+the directory is mode `0700` and each of the selected eight regular files is mode `0444`. The held
 descriptors stay under the Docker workflow lock until the topology transaction ends. On an APFS
 volume mounted with `noowners`, those metadata checks detect path and identity drift but do not
 claim that Unix ownership bits provide confidentiality or ownership enforcement.
