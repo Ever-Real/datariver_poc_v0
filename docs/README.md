@@ -114,6 +114,10 @@ exclusive build lock, Docker backing-filesystem capacity formula and bounded cac
 are defined by [ADR-0112](adr/0112-governed-docker-build-capacity.md).
 The AppliedState-to-runtime comparison, bounded four-class drift evidence and explicit no-auto-stop
 boundary are defined by [ADR-0113](adr/0113-governed-local-topology-drift.md).
+The isolated PostgreSQL/MinIO host-bind feasibility probe, exact secret transport, rollback anchors
+and noowners evidence boundary are defined by
+[ADR-0114](adr/0114-governed-persistent-data-bind-migration.md). Source acceptance does not
+authorize the runtime probe or canonical-data migration.
 
 Current low-resource client and preparation Chat decision: [bounded client state and preparation Chat provider](adr/0035-bounded-client-state-and-preparation-chat-provider.md).
 

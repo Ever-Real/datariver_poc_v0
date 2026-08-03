@@ -1885,6 +1885,208 @@ def verify_governed_local_topology_contract() -> None:
             raise AssertionError(f"ADR-0113 omits local-topology term: {fragment}")
 
 
+def verify_governed_persistent_data_bind_probe_contract() -> None:
+    probe_path = ROOT / "scripts" / "probe_persistent_data_bind.py"
+    test_path = ROOT / "backend" / "tests" / "unit" / "test_persistent_data_bind_probe.py"
+    adr_path = ROOT / "docs" / "adr" / "0114-governed-persistent-data-bind-migration.md"
+    probe = probe_path.read_text(encoding="utf-8")
+    tests = test_path.read_text(encoding="utf-8")
+    adr = adr_path.read_text(encoding="utf-8")
+
+    for fragment in (
+        'DATA_PARENT = Path("/Volumes/SSD_Mac/datariver-data")',
+        'PROBE_LEAF_NAME = ".c2-bind-probe-v1"',
+        'CONFIRMATION = "SEC-DURABLE-BIND-PROBE-001-A"',
+        'POSTGRES_IMAGE_ID = "sha256:'
+        'feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966"',
+        'MINIO_IMAGE_ID = "sha256:'
+        '14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e"',
+        'POSTGRES_CAPABILITIES = ("CHOWN", "DAC_OVERRIDE", "FOWNER", "SETGID", "SETUID")',
+        "with exclusive_docker_workflow_lock(ROOT) as lock:",
+        '"PROBE_SECRET_CLEANUP_REQUIRED"',
+        '"ownership_enforcement_claimed=false "',
+        'input_bytes=bundle.minio_access + b"\\n" + bundle.minio_secret + b"\\n"',
+        "class RegularFileIdentity:",
+        "os.fstat(stream.fileno())",
+        "if current_identities != identities:",
+        "if current_identities != secret_file_identities:",
+        "if environment != expected_environment:",
+        'governed_environment_prefixes=("POSTGRES_",)',
+        'governed_environment_prefixes=("MINIO_", "MC_")',
+        "stderr=subprocess.DEVNULL",
+        'fail("POSTGRES_PROBE_DUMP_LIMIT_EXCEEDED")',
+        'fail("POSTGRES_PROBE_DUMP_PATH_CHANGED")',
+        "digest.update(chunk)",
+        'parts.append(f"{name}_known={str(known).lower()}")',
+        "def _require_minio_versioning_state(",
+        '"--versions",',
+        '"--version-id",',
+        "except BaseException as error:",
+        'raise ProbeError("PROBE_INTERNAL_FAILURE") from None',
+        'print("ERROR: PROBE_OPERATOR_INTERRUPT"',
+        "os.O_EXCL",
+        "os.O_NOFOLLOW",
+        "os.fsync(",
+        "os.replace(",
+        "require_production_unchanged(executor, baseline)",
+        "if _volume_names(executor) != volume_names:",
+        "def _failure_probe_is_stopped(",
+    ):
+        if fragment not in probe:
+            raise AssertionError(f"the persistent-data bind probe is missing: {fragment}")
+
+    postgres_argv = probe.split("def postgres_create_arguments(", maxsplit=1)[1].split(
+        "def minio_create_arguments(", maxsplit=1
+    )[0]
+    minio_argv = probe.split("def minio_create_arguments(", maxsplit=1)[1].split(
+        "def mc_alias_arguments(", maxsplit=1
+    )[0]
+    alias_argv = probe.split("def mc_alias_arguments(", maxsplit=1)[1].split(
+        "def _fsync_directory(", maxsplit=1
+    )[0]
+    for required in (
+        '"--pull",\n        "never"',
+        '"--network",\n        "none"',
+        '"--read-only"',
+        '"no-new-privileges=true"',
+        '"--cap-drop",\n        "ALL"',
+        '"--log-driver",\n            "none"',
+        '"--restart",\n            "no"',
+    ):
+        if required not in postgres_argv:
+            raise AssertionError("PostgreSQL probe isolation argv has drifted")
+    if postgres_argv.count('arguments.extend(("--cap-add", capability))') != 1:
+        raise AssertionError(
+            "PostgreSQL probe capabilities must come only from the exact allowlist"
+        )
+    for required in (
+        '"--pull",\n        "never"',
+        '"--network",\n        "none"',
+        '"--read-only"',
+        '"no-new-privileges=true"',
+        '"--cap-drop",\n        "ALL"',
+        '"MINIO_ROOT_USER_FILE=/run/secrets/minio_access_key"',
+        '"MINIO_ROOT_PASSWORD_FILE=/run/secrets/minio_secret_key"',
+        '"MC_CONFIG_DIR=/tmp/mc"',
+    ):
+        if required not in minio_argv:
+            raise AssertionError("MinIO probe isolation or file-secret argv has drifted")
+    if '"--cap-add"' in minio_argv:
+        raise AssertionError("the MinIO probe must not add a Linux capability")
+    for required in (
+        '"docker",',
+        '"exec",',
+        '"-i",',
+        '"alias",',
+        '"set",',
+        '"http://127.0.0.1:9000",',
+    ):
+        if required not in alias_argv:
+            raise AssertionError("the fixed MinIO stdin alias contract has drifted")
+    for forbidden in ("shell=True", '"--privileged"', '"docker.sock"'):
+        if forbidden in probe:
+            raise AssertionError(
+                f"the bind probe contains a forbidden execution surface: {forbidden}"
+            )
+    if "_sha256_file(destination)" in probe:
+        raise AssertionError("the bounded PostgreSQL dump must not reopen its destination")
+
+    postgres_start = probe.split("def _start_postgres(", maxsplit=1)[1].split(
+        "def _verify_postgres_after_restart(", maxsplit=1
+    )[0]
+    minio_start = probe.split("def _start_minio(", maxsplit=1)[1].split(
+        "def _verify_minio_after_restart(", maxsplit=1
+    )[0]
+    for start, container in (
+        (postgres_start, "POSTGRES_PROBE_CONTAINER"),
+        (minio_start, "MINIO_PROBE_CONTAINER"),
+    ):
+        tracked = start.index(f"created_containers.add({container})")
+        create = start.index("executor.output(")
+        if tracked >= create:
+            raise AssertionError("a probe name must be tracked before docker create")
+
+    failure_cleanup = probe.split("def cleanup_failure(", maxsplit=1)[1].split(
+        "def _cleanup_manifest(", maxsplit=1
+    )[0]
+    if failure_cleanup.count("_failure_probe_is_stopped(executor, name)") != 2:
+        raise AssertionError("failure cleanup must perform one initial and one final inspect")
+    if failure_cleanup.count('("docker", "stop", "--time", str(timeouts[name]), name)') != 1:
+        raise AssertionError("failure cleanup must contain one bounded stop site")
+
+    execute = probe.split("def execute_probe(", maxsplit=1)[1].split(
+        "def _parse_args(", maxsplit=1
+    )[0]
+    lock = execute.index("with exclusive_docker_workflow_lock(ROOT) as lock:")
+    baseline = execute.index("baseline = capture_production_identity(executor)", lock)
+    host_mutation = execute.index("layout = prepare_layout(data_parent)", baseline)
+    postgres = execute.index("_start_postgres(", host_mutation)
+    minio = execute.index("_start_minio(", postgres)
+    final_identity = execute.rindex("require_production_unchanged(executor, baseline)")
+    if not lock < baseline < host_mutation < postgres < minio < final_identity:
+        raise AssertionError("the bind probe lock, identity and mutation order has drifted")
+
+    for test_name in (
+        "test_checked_in_image_references_remain_exactly_pinned",
+        "test_postgres_create_argv_has_only_the_approved_capabilities_and_limits",
+        "test_minio_create_argv_drops_all_capabilities_and_uses_file_only_server_secrets",
+        "test_mc_alias_uses_exact_non_tty_stdin_credential_contract",
+        "test_probe_secrets_use_csprng_lengths_and_private_files",
+        "test_private_executor_never_exposes_a_secret_echo",
+        "test_pg_dump_capture_is_binary_bounded_fsynced_and_hashed",
+        "test_pg_dump_capture_never_writes_past_the_in_flight_limit",
+        "test_pg_dump_overflow_terminates_and_reaps_the_child",
+        "test_pg_dump_digest_is_streamed_without_reopening_the_destination",
+        "test_pg_dump_capture_rejects_destination_path_replacement",
+        "test_prepare_rejects_a_symlinked_parent",
+        "test_probe_evidence_never_claims_apfs_noowners_as_ownership_enforcement",
+        "test_probe_container_contract_rejects_postgres_capability_expansion",
+        "test_probe_container_contract_rejects_a_nonzero_restart_count",
+        "test_probe_container_contract_rejects_an_anonymous_volume",
+        "test_image_environment_rejects_unreviewed_governed_keys_before_mutation",
+        "test_failure_cleanup_unlinks_secrets_only_after_both_containers_are_stopped",
+        "test_failure_cleanup_retains_all_secrets_when_any_stop_fails",
+        "test_failure_cleanup_never_unlinks_replaced_or_linked_secret_files",
+        "test_secret_bundle_rejects_replacement_between_open_fd_and_post_fsync_check",
+        "test_unknown_cleanup_evidence_omits_all_unobserved_numeric_claims",
+        "test_failure_cleanup_continues_after_stop_inspect_exception_without_false_counts",
+        "test_failure_cleanup_always_final_inspects_after_ambiguous_initial_or_stop",
+        "test_minio_versioning_and_object_version_json_are_structured_and_exact",
+        "test_execute_probe_records_exact_governed_order_and_success_cleanup",
+        "test_execute_probe_pre_mutation_gates_fail_before_any_create_or_host_write",
+        "test_execute_probe_tracks_ambiguous_daemon_creation_before_client_error",
+        "test_execute_probe_mutation_failures_use_one_cleanup_and_recheck_production",
+        "test_execute_probe_recorder_covers_each_mutation_failure_stage",
+        "test_execute_probe_host_pass_cleanup_failure_excludes_failure_cleanup_success",
+        "test_execute_probe_cleanup_exception_after_partial_unlink_reports_unknown_counts",
+        "test_main_maps_a_cleaned_operator_interrupt_to_a_fixed_safe_exit",
+        "test_production_container_or_volume_identity_change_fails_closed",
+    ):
+        if test_name not in tests:
+            raise AssertionError(f"the persistent-data bind direct test is missing: {test_name}")
+
+    for fragment in (
+        "runtime probe and migration open",
+        "ownership_enforcement_claimed=false",
+        "PROBE_SECRET_CLEANUP_REQUIRED",
+        "creation-time",
+        "duplicate-free `Config.Env` baseline",
+        "never writes beyond 16 MiB",
+        "exactly two distinct non-delete version IDs",
+        "PROBE_OPERATOR_INTERRUPT",
+        "original file descriptor",
+        "never reopened after capture",
+        "`*_known=false`",
+        "possibly created before its `docker create`",
+        "exactly one final inspect",
+        "AppliedState.environment_key_hashes",
+        "original named volumes remain untouched indefinitely",
+        "OPEN_TARGET_GATE",
+    ):
+        if fragment not in adr:
+            raise AssertionError(f"ADR-0114 omits persistent-data term: {fragment}")
+
+
 def verify_document_links() -> None:
     pattern = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
     for path in (ROOT / "docs").rglob("*.md"):
@@ -1918,6 +2120,7 @@ def main() -> None:
     verify_amd64_source_readiness_contract()
     verify_governed_docker_build_capacity_contract()
     verify_governed_local_topology_contract()
+    verify_governed_persistent_data_bind_probe_contract()
     verify_document_links()
     print(
         "static verification passed: compose, build/release context, DataHub release contract, "
