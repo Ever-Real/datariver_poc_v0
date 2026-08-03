@@ -1931,6 +1931,68 @@ def verify_governed_docker_build_capacity_contract() -> None:
         and "str(error)" not in selected_builder_source
     ):
         raise AssertionError("builder selection is not structurally recorded without text parsing")
+    status_assignments = [
+        node
+        for node in ast.walk(selected_builder_functions[0])
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id == "status"
+    ]
+    if len(status_assignments) != 1 or ast.dump(
+        status_assignments[0].value, include_attributes=False
+    ) != ast.dump(
+        ast.Call(
+            func=ast.Attribute(
+                value=ast.Name(id="node", ctx=ast.Load()),
+                attr="get",
+                ctx=ast.Load(),
+            ),
+            args=[ast.Constant(value="Status"), ast.Constant(value="")],
+            keywords=[],
+        ),
+        include_attributes=False,
+    ):
+        raise AssertionError("missing Buildx node status must remain unavailable, not malformed")
+    builder_name_fullmatch_calls = sorted(
+        (
+            call
+            for call in ast.walk(selected_builder_functions[0])
+            if isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "fullmatch"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id == "_BUILDER_NAME"
+            and len(call.args) == 1
+            and isinstance(call.args[0], ast.Name)
+        ),
+        key=lambda call: (call.lineno, call.col_offset),
+    )
+    builder_name_fullmatch_targets = tuple(
+        call.args[0].id
+        for call in builder_name_fullmatch_calls
+        if isinstance(call.args[0], ast.Name)
+    )
+    if builder_name_fullmatch_targets != ("name", "node_name", "override"):
+        raise AssertionError("Buildx endpoint strings must not use the builder-name grammar")
+    provider_shape_order = tuple(
+        selected_builder_source.index(fragment)
+        for fragment in (
+            'status = node.get("Status", "")',
+            "or not isinstance(endpoint, str)",
+            "or not isinstance(status, str)",
+            'if driver != "docker":',
+            'if status != "running":',
+            "if selected != current_context:",
+            "if node_name != selected:",
+            "if endpoint != current_context:",
+        )
+    )
+    if provider_shape_order != tuple(sorted(provider_shape_order)):
+        raise AssertionError("Buildx node structural and semantic validation order has drifted")
+    for forbidden in ("endpoint.strip", "status.strip", "urlparse"):
+        if forbidden in selected_builder_source:
+            raise AssertionError(f"Buildx node evidence cannot be normalized: {forbidden}")
     governed_capacity = capacity.split("def governed_compose_build_capacity(", maxsplit=1)[1]
     capacity_phase_order = tuple(
         governed_capacity.index(fragment)
@@ -2095,6 +2157,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_governed_capacity_threads_exact_builder_selection_outcome",
         "test_builder_selection_interrupt_never_invents_a_known_outcome",
         "test_builder_selection_reports_the_first_simultaneous_final_defect",
+        "test_provider_valid_node_shapes_reach_semantic_checks_before_later_probes",
     ):
         if test_name not in test_source:
             raise AssertionError(f"the Docker capacity direct test is missing: {test_name}")
@@ -2133,6 +2196,12 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "Unknown or pre-selection stops\nomit the subpredicate",
         "fixed first-defect order is driver",
         "sole review-required result\nwhose top-level predicate is not `UNKNOWN`",
+        "https://raw.githubusercontent.com/docker/buildx/v0.35.0/commands/ls.go",
+        "https://raw.githubusercontent.com/docker/buildx/v0.35.0/builder/builder.go",
+        "https://raw.githubusercontent.com/docker/buildx/v0.35.0/builder/node.go",
+        "https://docs.docker.com/reference/cli/docker/buildx/ls/",
+        "does not claim that the current host binary is pinned to that tag",
+        "An omitted or empty node status",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0112 omits governed capacity term: {fragment}")

@@ -56,6 +56,19 @@ recorder, the canonical action-enabled failure text and fail-closed behavior rem
 When several final checks are simultaneously defective, the fixed first-defect order is driver,
 node status, builder/context, node name, then endpoint/context.
 
+The bounded JSON compatibility contract is tied to the immutable upstream `docker/buildx`
+`v0.35.0` formatter sources in
+[`commands/ls.go`](https://raw.githubusercontent.com/docker/buildx/v0.35.0/commands/ls.go),
+[`builder/builder.go`](https://raw.githubusercontent.com/docker/buildx/v0.35.0/builder/builder.go),
+and [`builder/node.go`](https://raw.githubusercontent.com/docker/buildx/v0.35.0/builder/node.go),
+together with the official [`docker buildx ls` documentation](https://docs.docker.com/reference/cli/docker/buildx/ls/).
+This source authority does not claim that the current host binary is pinned to that tag. A node
+must remain a mapping with an exact reviewed name, while its endpoint is structurally only a
+string: no URI parsing, normalization or builder-name coercion is allowed. The selected endpoint
+must still equal the validated current context exactly. An omitted or empty node status is the
+upstream representation of unavailable status and fails as not running; a present non-string
+status remains invalid schema, and only exact `running` can pass.
+
 Resolved Compose JSON stays in process memory. Each selected build is reduced to a SHA-256
 fingerprint of its allowlisted context, Dockerfile, target and resolved build arguments. Raw
 configuration, argument values, image references, image IDs and provider output are never logged

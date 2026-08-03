@@ -719,12 +719,11 @@ def _selected_builder(
                 )
             node_name = node.get("Name")
             endpoint = node.get("Endpoint")
-            status = node.get("Status")
+            status = node.get("Status", "")
             if (
                 not isinstance(node_name, str)
                 or _BUILDER_NAME.fullmatch(node_name) is None
                 or not isinstance(endpoint, str)
-                or _BUILDER_NAME.fullmatch(endpoint) is None
                 or not isinstance(status, str)
             ):
                 _builder_selection_failure(

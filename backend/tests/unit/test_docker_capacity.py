@@ -1158,8 +1158,28 @@ def test_current_builder_must_match_current_local_context(tmp_path: Path) -> Non
         ("node-nonmapping", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
         ("node-schema", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
         ("node-name", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
-        ("node-endpoint", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
+        ("node-endpoint-type", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
         ("node-status-type", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
+        (
+            "node-status-missing",
+            "NODE_NOT_RUNNING",
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        ),
+        (
+            "node-status-empty",
+            "NODE_NOT_RUNNING",
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        ),
+        (
+            "node-endpoint-uri",
+            "ENDPOINT_CONTEXT_MISMATCH",
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        ),
+        (
+            "node-endpoint-empty",
+            "ENDPOINT_CONTEXT_MISMATCH",
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        ),
         ("duplicate", "DUPLICATE_CONFLICT", "Docker builder duplicate evidence conflicts."),
         ("current-missing", "CURRENT_MISSING", "DOCKER_BUILDER_AMBIGUOUS"),
         ("current-ambiguous", "CURRENT_AMBIGUOUS", "DOCKER_BUILDER_AMBIGUOUS"),
@@ -1240,10 +1260,18 @@ def test_builder_selection_recorder_classifies_every_existing_failure_branch(
         row["Nodes"] = [{}]
     elif case == "node-name":
         cast(list[dict[str, object]], row["Nodes"])[0]["Name"] = "raw/node-sentinel"
-    elif case == "node-endpoint":
-        cast(list[dict[str, object]], row["Nodes"])[0]["Endpoint"] = "raw/endpoint-sentinel"
+    elif case == "node-endpoint-type":
+        cast(list[dict[str, object]], row["Nodes"])[0]["Endpoint"] = 1
     elif case == "node-status-type":
         cast(list[dict[str, object]], row["Nodes"])[0]["Status"] = 1
+    elif case == "node-status-missing":
+        del cast(list[dict[str, object]], row["Nodes"])[0]["Status"]
+    elif case == "node-status-empty":
+        cast(list[dict[str, object]], row["Nodes"])[0]["Status"] = ""
+    elif case == "node-endpoint-uri":
+        cast(list[dict[str, object]], row["Nodes"])[0]["Endpoint"] = "unix:///raw-endpoint-sentinel"
+    elif case == "node-endpoint-empty":
+        cast(list[dict[str, object]], row["Nodes"])[0]["Endpoint"] = ""
     elif case == "duplicate":
         conflict = json.loads(json.dumps(row))
         conflict["Driver"] = "docker-container"
@@ -1293,6 +1321,66 @@ def test_builder_selection_recorder_classifies_every_existing_failure_branch(
     assert recorder.known is True
     assert recorder.predicate.value == expected
     assert "raw-" not in str(structured.value)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    (
+        ("missing-status", "NODE_NOT_RUNNING"),
+        ("empty-status", "NODE_NOT_RUNNING"),
+        ("uri-endpoint", "ENDPOINT_CONTEXT_MISMATCH"),
+        ("empty-endpoint", "ENDPOINT_CONTEXT_MISMATCH"),
+        ("other-endpoint", "ENDPOINT_CONTEXT_MISMATCH"),
+    ),
+)
+def test_provider_valid_node_shapes_reach_semantic_checks_before_later_probes(
+    tmp_path: Path,
+    case: str,
+    expected: str,
+) -> None:
+    _prepare_context(tmp_path)
+    outputs = _base_outputs(tmp_path)
+    row = {
+        "Current": True,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [
+            {
+                "Endpoint": "desktop-linux",
+                "Name": "desktop-linux",
+                "Status": "running",
+            }
+        ],
+    }
+    node = cast(list[dict[str, object]], row["Nodes"])[0]
+    if case == "missing-status":
+        del node["Status"]
+    elif case == "empty-status":
+        node["Status"] = ""
+    elif case == "uri-endpoint":
+        node["Endpoint"] = "unix:///raw-endpoint-sentinel"
+    elif case == "empty-endpoint":
+        node["Endpoint"] = ""
+    elif case == "other-endpoint":
+        node["Endpoint"] = "other-endpoint"
+    outputs[capacity.DOCKER_BUILDER_LIST_PROBE] = [json.dumps(row)]
+    executor = FakeExecutor(outputs)
+    recorder = capacity.BuilderSelectionRecorder()
+
+    with pytest.raises(
+        capacity.DockerCapacityError,
+        match="DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+    ):
+        _run(tmp_path, executor, builder_selection_recorder=recorder)
+
+    assert recorder.predicate.value == expected
+    assert [classification for classification, _ in executor.calls] == [
+        capacity.COMPOSE_BUILD_CONFIG_PROBE,
+        capacity.GIT_CLEAN_CHECKOUT_PROBE,
+        capacity.GIT_BUILD_CONTEXT_PROBE,
+        capacity.DOCKER_CONTEXT_PROBE,
+        capacity.DOCKER_BUILDER_LIST_PROBE,
+    ]
 
 
 @pytest.mark.parametrize(
