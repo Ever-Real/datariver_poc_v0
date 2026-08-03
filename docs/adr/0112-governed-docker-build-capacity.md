@@ -63,11 +63,22 @@ The bounded JSON compatibility contract is tied to the immutable upstream `docke
 and [`builder/node.go`](https://raw.githubusercontent.com/docker/buildx/v0.35.0/builder/node.go),
 together with the official [`docker buildx ls` documentation](https://docs.docker.com/reference/cli/docker/buildx/ls/).
 This source authority does not claim that the current host binary is pinned to that tag. A node
-must remain a mapping with an exact reviewed name, while its endpoint is structurally only a
-string: no URI parsing, normalization or builder-name coercion is allowed. The selected endpoint
-must still equal the validated current context exactly. An omitted or empty node status is the
-upstream representation of unavailable status and fails as not running; a present non-string
-status remains invalid schema, and only exact `running` can pass.
+must remain a mapping whose name and endpoint are exact strings. The upstream serializer does not
+apply DataRiver's builder-name grammar to the node name, so the node name is not separately matched
+against that grammar; it must still equal the already validated selected builder exactly. Empty or
+unusual node-name strings therefore fail as a node-name mismatch and can never pass. No endpoint
+URI parsing, normalization or builder-name coercion is allowed, and the selected endpoint must
+still equal the validated current context exactly. An omitted or empty node status is the upstream
+representation of unavailable status and fails as not running; a present non-string status remains
+invalid schema, and only exact `running` can pass.
+
+The read-only diagnostic also retains one closed node-schema subpredicate without exposing a node
+value. It distinguishes a non-mapping node; missing, null and non-string name or endpoint fields;
+and null or non-string present status fields. Missing status remains the reviewed unavailable
+state. `PASS` is recorded only after the complete row/node structural scan; later duplicate,
+selection or semantic failures retain it. An interrupt before a structured outcome remains unknown.
+This finer evidence does not relax any mapping, type, exact-equality, running-status, driver or
+current-context invariant and is not evidence that the host binary is pinned to upstream v0.35.0.
 
 Resolved Compose JSON stays in process memory. Each selected build is reduced to a SHA-256
 fingerprint of its allowlisted context, Dockerfile, target and resolved build arguments. Raw

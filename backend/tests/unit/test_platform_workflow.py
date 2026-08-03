@@ -2870,6 +2870,8 @@ def test_build_capacity_preflight_is_locked_ordered_read_only_and_value_free(
         recorder = cast(Any, kwargs["phase_recorder"])
         recorder.mark(update.BuildCapacityPreflightPredicate.CAPACITY_POLICY)
         selection = cast(Any, kwargs["builder_selection_recorder"])
+        node_schema = cast(Any, kwargs["node_schema_recorder"])
+        node_schema.record(update.NodeSchemaPredicate.PASS)
         selection.record(update.BuilderSelectionPredicate.PASS)
         return "desktop-linux"
 
@@ -2929,6 +2931,8 @@ def test_build_capacity_preflight_is_locked_ordered_read_only_and_value_free(
         "classification": "PASS",
         "container_count": 0,
         "mutation_count": 0,
+        "node_schema_known": True,
+        "node_schema_predicate": "PASS",
         "phase": "BUILD_CAPACITY_PREFLIGHT",
         "predicate": "PASS",
         "retry_count": 0,
@@ -2974,12 +2978,15 @@ def test_build_capacity_preflight_preserves_structured_first_failure(
 
     def capacity(*_args: object, **kwargs: object) -> str:
         selection = cast(Any, kwargs["builder_selection_recorder"])
+        node_schema = cast(Any, kwargs["node_schema_recorder"])
         if predicate.startswith("INITIAL_"):
+            node_schema.record(update.NodeSchemaPredicate.PASS)
             selection.record(update.BuilderSelectionPredicate.PASS)
             return "desktop-linux"
         if predicate == "BUILDER_SELECTION":
             selection.record(update.BuilderSelectionPredicate.ROW_SCHEMA)
         elif predicate not in {"COMPOSE_CONFIG"}:
+            node_schema.record(update.NodeSchemaPredicate.PASS)
             selection.record(update.BuilderSelectionPredicate.PASS)
         raise update.DockerCapacityPhaseError("fixed-safe-error", closed)
 
@@ -3075,6 +3082,8 @@ def test_build_capacity_preflight_evidence_rejects_nonzero_actions() -> None:
                 predicate=update.BuildCapacityPreflightPredicate.CAPACITY_POLICY,
                 builder_selection_known=True,
                 builder_selection_predicate=update.BuilderSelectionPredicate.PASS,
+                node_schema_known=True,
+                node_schema_predicate=update.NodeSchemaPredicate.PASS,
                 **{field: 1},
             )
 
@@ -3087,6 +3096,8 @@ def test_build_capacity_preflight_builder_selection_output_is_closed_and_optiona
         predicate=update.BuildCapacityPreflightPredicate.BUILDER_SELECTION,
         builder_selection_known=True,
         builder_selection_predicate=(update.BuilderSelectionPredicate.DRIVER_NOT_DOCKER),
+        node_schema_known=True,
+        node_schema_predicate=update.NodeSchemaPredicate.PASS,
     )
     later = update.BuildCapacityPreflightEvidence(
         classification=update.BuildCapacityPreflightClassification.REJECTED,
@@ -3094,6 +3105,8 @@ def test_build_capacity_preflight_builder_selection_output_is_closed_and_optiona
         predicate=update.BuildCapacityPreflightPredicate.DOCKER_PLATFORM,
         builder_selection_known=True,
         builder_selection_predicate=update.BuilderSelectionPredicate.PASS,
+        node_schema_known=True,
+        node_schema_predicate=update.NodeSchemaPredicate.PASS,
     )
     before = update.BuildCapacityPreflightEvidence(
         classification=update.BuildCapacityPreflightClassification.REJECTED,
@@ -3107,11 +3120,126 @@ def test_build_capacity_preflight_builder_selection_output_is_closed_and_optiona
 
     assert failure_line["builder_selection_known"] is True
     assert failure_line["builder_selection_predicate"] == "DRIVER_NOT_DOCKER"
+    assert failure_line["node_schema_known"] is True
+    assert failure_line["node_schema_predicate"] == "PASS"
     assert later_line["builder_selection_known"] is True
     assert later_line["builder_selection_predicate"] == "PASS"
+    assert later_line["node_schema_known"] is True
+    assert later_line["node_schema_predicate"] == "PASS"
     assert before_line["builder_selection_known"] is False
     assert "builder_selection_predicate" not in before_line
+    assert before_line["node_schema_known"] is False
+    assert "node_schema_predicate" not in before_line
     assert "null" not in update.format_build_capacity_preflight_line(before)
+
+
+def test_build_capacity_preflight_node_schema_output_is_closed_and_optional() -> None:
+    update = _load_update_module()
+    assert tuple(predicate.value for predicate in update.NodeSchemaPredicate) == (
+        "NODE_NOT_MAPPING",
+        "NAME_MISSING",
+        "NAME_NULL",
+        "NAME_NOT_STRING",
+        "ENDPOINT_MISSING",
+        "ENDPOINT_NULL",
+        "ENDPOINT_NOT_STRING",
+        "STATUS_NULL",
+        "STATUS_NOT_STRING",
+        "PASS",
+        "UNKNOWN",
+    )
+    failure = update.BuildCapacityPreflightEvidence(
+        classification=update.BuildCapacityPreflightClassification.REJECTED,
+        phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+        predicate=update.BuildCapacityPreflightPredicate.BUILDER_SELECTION,
+        builder_selection_known=True,
+        builder_selection_predicate=update.BuilderSelectionPredicate.NODE_SCHEMA,
+        node_schema_known=True,
+        node_schema_predicate=update.NodeSchemaPredicate.NAME_MISSING,
+    )
+    before = update.BuildCapacityPreflightEvidence(
+        classification=update.BuildCapacityPreflightClassification.REJECTED,
+        phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+        predicate=update.BuildCapacityPreflightPredicate.BUILDER_SELECTION,
+        builder_selection_known=True,
+        builder_selection_predicate=update.BuilderSelectionPredicate.ROW_SCHEMA,
+    )
+
+    failure_line = json.loads(update.format_build_capacity_preflight_line(failure))
+    before_line = json.loads(update.format_build_capacity_preflight_line(before))
+
+    assert failure_line["builder_selection_predicate"] == "NODE_SCHEMA"
+    assert failure_line["node_schema_known"] is True
+    assert failure_line["node_schema_predicate"] == "NAME_MISSING"
+    assert before_line["node_schema_known"] is False
+    assert "node_schema_predicate" not in before_line
+    assert "null" not in update.format_build_capacity_preflight_line(before)
+
+
+@pytest.mark.parametrize(
+    ("builder", "node_known", "node"),
+    (
+        ("NODE_SCHEMA", False, None),
+        ("NODE_SCHEMA", True, "PASS"),
+        ("NODE_SCHEMA", True, "UNKNOWN"),
+        ("DRIVER_NOT_DOCKER", True, "NAME_MISSING"),
+        ("DRIVER_NOT_DOCKER", False, None),
+        ("ROW_SCHEMA", True, "PASS"),
+        ("PASS", False, None),
+    ),
+)
+def test_build_capacity_preflight_rejects_contradictory_node_schema_evidence(
+    builder: str,
+    node_known: bool,
+    node: str | None,
+) -> None:
+    update = _load_update_module()
+    closed_node = None if node is None else update.NodeSchemaPredicate(node)
+
+    with pytest.raises(
+        update.WorkflowError,
+        match="BUILD_CAPACITY_PREFLIGHT_EVIDENCE_INVALID",
+    ):
+        update.BuildCapacityPreflightEvidence(
+            classification=update.BuildCapacityPreflightClassification.REJECTED,
+            phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+            predicate=(
+                update.BuildCapacityPreflightPredicate.DOCKER_PLATFORM
+                if builder == "PASS"
+                else update.BuildCapacityPreflightPredicate.BUILDER_SELECTION
+            ),
+            builder_selection_known=True,
+            builder_selection_predicate=update.BuilderSelectionPredicate(builder),
+            node_schema_known=node_known,
+            node_schema_predicate=closed_node,
+        )
+
+
+def test_build_capacity_preflight_rejects_raw_or_extra_node_schema_fields() -> None:
+    update = _load_update_module()
+    base = {
+        "classification": update.BuildCapacityPreflightClassification.REJECTED,
+        "phase": update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+        "predicate": update.BuildCapacityPreflightPredicate.COMPOSE_CONFIG,
+    }
+
+    for fields in (
+        {"node_schema_known": cast(Any, 1)},
+        {
+            "node_schema_known": True,
+            "node_schema_predicate": cast(Any, "PASS"),
+        },
+    ):
+        with pytest.raises(
+            update.WorkflowError,
+            match="BUILD_CAPACITY_PREFLIGHT_EVIDENCE_INVALID",
+        ):
+            update.BuildCapacityPreflightEvidence(**base, **fields)
+    with pytest.raises(TypeError):
+        update.BuildCapacityPreflightEvidence(
+            **base,
+            raw_node_name=cast(Any, "raw-node-schema-sentinel"),
+        )
 
 
 @pytest.mark.parametrize(
@@ -3187,16 +3315,26 @@ def test_build_capacity_review_required_forbids_every_other_nonunknown_top_predi
             predicate=update.BuildCapacityPreflightPredicate.DOCKER_PLATFORM,
             builder_selection_known=True,
             builder_selection_predicate=update.BuilderSelectionPredicate.PASS,
+            node_schema_known=True,
+            node_schema_predicate=update.NodeSchemaPredicate.PASS,
         )
 
 
 @pytest.mark.parametrize(
-    ("case", "expected_top", "expected_known", "expected_selection"),
     (
-        ("before-interrupt", "UNKNOWN", False, None),
-        ("selection-failure", "BUILDER_SELECTION", True, "DRIVER_NOT_DOCKER"),
-        ("later-failure", "DOCKER_PLATFORM", True, "PASS"),
-        ("lock-exit", "UNKNOWN", True, "PASS"),
+        "case",
+        "expected_top",
+        "expected_known",
+        "expected_selection",
+        "expected_node_known",
+        "expected_node",
+    ),
+    (
+        ("before-interrupt", "UNKNOWN", False, None, False, None),
+        ("node-pass-interrupt", "UNKNOWN", False, None, True, "PASS"),
+        ("selection-failure", "BUILDER_SELECTION", True, "DRIVER_NOT_DOCKER", True, "PASS"),
+        ("later-failure", "DOCKER_PLATFORM", True, "PASS", True, "PASS"),
+        ("lock-exit", "UNKNOWN", True, "PASS", True, "PASS"),
     ),
 )
 def test_build_capacity_preflight_retains_monotonic_builder_selection_outcome(
@@ -3204,6 +3342,8 @@ def test_build_capacity_preflight_retains_monotonic_builder_selection_outcome(
     expected_top: str,
     expected_known: bool,
     expected_selection: str | None,
+    expected_node_known: bool,
+    expected_node: str | None,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3220,6 +3360,10 @@ def test_build_capacity_preflight_retains_monotonic_builder_selection_outcome(
         if case == "before-interrupt":
             raise KeyboardInterrupt("raw-selection-interrupt-sentinel")
         recorder = cast(Any, kwargs["builder_selection_recorder"])
+        node_schema = cast(Any, kwargs["node_schema_recorder"])
+        node_schema.record(update.NodeSchemaPredicate.PASS)
+        if case == "node-pass-interrupt":
+            raise KeyboardInterrupt("raw-node-schema-pass-interrupt-sentinel")
         if case == "selection-failure":
             recorder.record(update.BuilderSelectionPredicate.DRIVER_NOT_DOCKER)
             raise update.DockerCapacityPhaseError(
@@ -3250,7 +3394,12 @@ def test_build_capacity_preflight_retains_monotonic_builder_selection_outcome(
         if evidence.builder_selection_predicate is None
         else evidence.builder_selection_predicate.value
     ) == expected_selection
+    assert evidence.node_schema_known is expected_node_known
+    assert (
+        None if evidence.node_schema_predicate is None else evidence.node_schema_predicate.value
+    ) == expected_node
     assert "raw-selection-interrupt-sentinel" not in rendered
+    assert "raw-node-schema-pass-interrupt-sentinel" not in rendered
     assert "raw-lock-exit-sentinel" not in rendered
 
 
@@ -3270,6 +3419,8 @@ def test_builder_selection_failure_survives_later_lock_exit_failure(
 
     def capacity(*_args: object, **kwargs: object) -> str:
         selection = cast(Any, kwargs["builder_selection_recorder"])
+        node_schema = cast(Any, kwargs["node_schema_recorder"])
+        node_schema.record(update.NodeSchemaPredicate.PASS)
         selection.record(update.BuilderSelectionPredicate.DRIVER_NOT_DOCKER)
         raise update.DockerCapacityPhaseError(
             "fixed-selection-failure",
@@ -3292,6 +3443,8 @@ def test_builder_selection_failure_survives_later_lock_exit_failure(
     assert evidence.builder_selection_predicate is (
         update.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
     )
+    assert evidence.node_schema_known is True
+    assert evidence.node_schema_predicate is update.NodeSchemaPredicate.PASS
     assert evidence.mutation_count == 0
     assert evidence.cache_action_count == 0
     assert evidence.build_count == 0
@@ -3300,6 +3453,55 @@ def test_builder_selection_failure_survives_later_lock_exit_failure(
     assert rendered.count("\n") == 0
     assert "raw-lock-exit-after-selection-sentinel" not in rendered
     assert "fixed-selection-failure" not in rendered
+
+
+@pytest.mark.parametrize("failure", (RuntimeError, KeyboardInterrupt, BaseException))
+def test_node_schema_failure_survives_later_lock_exit_failure(
+    failure: type[BaseException],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    preflight = _passed_host_preflight(update, env_file=tmp_path / ".env.mac-development")
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+        raise failure("raw-lock-exit-after-node-schema-sentinel")
+
+    def capacity(*_args: object, **kwargs: object) -> str:
+        selection = cast(Any, kwargs["builder_selection_recorder"])
+        node_schema = cast(Any, kwargs["node_schema_recorder"])
+        node_schema.record(update.NodeSchemaPredicate.ENDPOINT_NULL)
+        selection.record(update.BuilderSelectionPredicate.NODE_SCHEMA)
+        raise update.DockerCapacityPhaseError(
+            "fixed-node-schema-failure",
+            update.BuildCapacityPreflightPredicate.BUILDER_SELECTION,
+        )
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_host_environment_preflight_under_lock", lambda: preflight)
+    _stub_clean_capacity_source(update, monkeypatch)
+    monkeypatch.setattr(update, "_preflight_build_capacity", capacity)
+
+    evidence = update._build_capacity_preflight_diagnostic()
+    rendered = update.format_build_capacity_preflight_line(evidence)
+
+    assert evidence.classification is (
+        update.BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is update.BuildCapacityPreflightPredicate.BUILDER_SELECTION
+    assert evidence.builder_selection_predicate is update.BuilderSelectionPredicate.NODE_SCHEMA
+    assert evidence.node_schema_known is True
+    assert evidence.node_schema_predicate is update.NodeSchemaPredicate.ENDPOINT_NULL
+    assert evidence.mutation_count == 0
+    assert evidence.cache_action_count == 0
+    assert evidence.build_count == 0
+    assert evidence.container_count == 0
+    assert evidence.retry_count == 0
+    assert rendered.count("\n") == 0
+    assert "raw-lock-exit-after-node-schema-sentinel" not in rendered
+    assert "fixed-node-schema-failure" not in rendered
 
 
 def test_build_capacity_measure_only_action_required_never_runs_prune_or_later_paths(
@@ -3316,6 +3518,8 @@ def test_build_capacity_measure_only_action_required_never_runs_prune_or_later_p
 
     def action_required(*_args: object, **kwargs: object) -> str:
         selection = cast(Any, kwargs["builder_selection_recorder"])
+        node_schema = cast(Any, kwargs["node_schema_recorder"])
+        node_schema.record(update.NodeSchemaPredicate.PASS)
         selection.record(update.BuilderSelectionPredicate.PASS)
         raise update.DockerCapacityMeasureOnlyStop()
 
@@ -3685,6 +3889,8 @@ def test_build_capacity_preflight_main_accepts_only_exact_phase_argv(
         predicate=update.BuildCapacityPreflightPredicate.PASS,
         builder_selection_known=True,
         builder_selection_predicate=update.BuilderSelectionPredicate.PASS,
+        node_schema_known=True,
+        node_schema_predicate=update.NodeSchemaPredicate.PASS,
     )
     calls: list[str] = []
 

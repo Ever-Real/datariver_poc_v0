@@ -115,6 +115,42 @@ class BuilderSelectionRecorder:
         self.predicate = predicate
 
 
+class NodeSchemaPredicate(StrEnum):
+    """Closed, value-free outcome of the Buildx node structural contract."""
+
+    NODE_NOT_MAPPING = "NODE_NOT_MAPPING"
+    NAME_MISSING = "NAME_MISSING"
+    NAME_NULL = "NAME_NULL"
+    NAME_NOT_STRING = "NAME_NOT_STRING"
+    ENDPOINT_MISSING = "ENDPOINT_MISSING"
+    ENDPOINT_NULL = "ENDPOINT_NULL"
+    ENDPOINT_NOT_STRING = "ENDPOINT_NOT_STRING"
+    STATUS_NULL = "STATUS_NULL"
+    STATUS_NOT_STRING = "STATUS_NOT_STRING"
+    PASS = "PASS"  # noqa: S105 - fixed diagnostic predicate, not a secret.
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(slots=True)
+class NodeSchemaRecorder:
+    """Retain one structurally observed Buildx node-schema outcome."""
+
+    predicate: NodeSchemaPredicate = NodeSchemaPredicate.UNKNOWN
+
+    @property
+    def known(self) -> bool:
+        return self.predicate is not NodeSchemaPredicate.UNKNOWN
+
+    def record(self, predicate: NodeSchemaPredicate) -> None:
+        if (
+            not isinstance(predicate, NodeSchemaPredicate)
+            or predicate is NodeSchemaPredicate.UNKNOWN
+            or self.known
+        ):
+            raise DockerCapacityError("NODE_SCHEMA_EVIDENCE_INVALID")
+        self.predicate = predicate
+
+
 class BuildCapacityPreflightPredicate(StrEnum):
     """Closed, value-free first-failure phases for the read-only diagnostic."""
 
@@ -655,12 +691,27 @@ def _builder_selection_failure(
     raise DockerCapacityError(message) from cause
 
 
+def _node_schema_failure(
+    builder_selection_recorder: BuilderSelectionRecorder | None,
+    node_schema_recorder: NodeSchemaRecorder | None,
+    predicate: NodeSchemaPredicate,
+) -> NoReturn:
+    if node_schema_recorder is not None:
+        node_schema_recorder.record(predicate)
+    _builder_selection_failure(
+        builder_selection_recorder,
+        BuilderSelectionPredicate.NODE_SCHEMA,
+        "Docker builder node evidence is invalid.",
+    )
+
+
 def _selected_builder(
     raw: str,
     environ: Mapping[str, str],
     *,
     current_context: str,
     builder_selection_recorder: BuilderSelectionRecorder | None = None,
+    node_schema_recorder: NodeSchemaRecorder | None = None,
 ) -> str:
     if environ.get("BUILDKIT_HOST", "").strip():
         _builder_selection_failure(
@@ -668,7 +719,7 @@ def _selected_builder(
             BuilderSelectionPredicate.EXTERNAL_BUILDKIT_HOST,
             "EXTERNAL_BUILDKIT_HOST_UNSUPPORTED",
         )
-    builders: dict[str, tuple[bool, str, str, str, str]] = {}
+    parsed_builders: list[tuple[str, tuple[bool, str, str, str, str]]] = []
     try:
         rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
     except json.JSONDecodeError as error:
@@ -712,29 +763,72 @@ def _selected_builder(
         status_values: list[str] = []
         for node in nodes:
             if not isinstance(node, dict):
-                _builder_selection_failure(
+                _node_schema_failure(
                     builder_selection_recorder,
-                    BuilderSelectionPredicate.NODE_SCHEMA,
-                    "Docker builder node evidence is invalid.",
+                    node_schema_recorder,
+                    NodeSchemaPredicate.NODE_NOT_MAPPING,
                 )
-            node_name = node.get("Name")
-            endpoint = node.get("Endpoint")
-            status = node.get("Status", "")
-            if (
-                not isinstance(node_name, str)
-                or _BUILDER_NAME.fullmatch(node_name) is None
-                or not isinstance(endpoint, str)
-                or not isinstance(status, str)
-            ):
-                _builder_selection_failure(
+            if "Name" not in node:
+                _node_schema_failure(
                     builder_selection_recorder,
-                    BuilderSelectionPredicate.NODE_SCHEMA,
-                    "Docker builder node evidence is invalid.",
+                    node_schema_recorder,
+                    NodeSchemaPredicate.NAME_MISSING,
+                )
+            node_name = node["Name"]
+            if node_name is None:
+                _node_schema_failure(
+                    builder_selection_recorder,
+                    node_schema_recorder,
+                    NodeSchemaPredicate.NAME_NULL,
+                )
+            if not isinstance(node_name, str):
+                _node_schema_failure(
+                    builder_selection_recorder,
+                    node_schema_recorder,
+                    NodeSchemaPredicate.NAME_NOT_STRING,
+                )
+            if "Endpoint" not in node:
+                _node_schema_failure(
+                    builder_selection_recorder,
+                    node_schema_recorder,
+                    NodeSchemaPredicate.ENDPOINT_MISSING,
+                )
+            endpoint = node["Endpoint"]
+            if endpoint is None:
+                _node_schema_failure(
+                    builder_selection_recorder,
+                    node_schema_recorder,
+                    NodeSchemaPredicate.ENDPOINT_NULL,
+                )
+            if not isinstance(endpoint, str):
+                _node_schema_failure(
+                    builder_selection_recorder,
+                    node_schema_recorder,
+                    NodeSchemaPredicate.ENDPOINT_NOT_STRING,
+                )
+            status = node.get("Status", "")
+            if status is None:
+                _node_schema_failure(
+                    builder_selection_recorder,
+                    node_schema_recorder,
+                    NodeSchemaPredicate.STATUS_NULL,
+                )
+            if not isinstance(status, str):
+                _node_schema_failure(
+                    builder_selection_recorder,
+                    node_schema_recorder,
+                    NodeSchemaPredicate.STATUS_NOT_STRING,
                 )
             node_names.append(node_name)
             endpoints.append(endpoint)
             status_values.append(status)
         evidence = (current, driver, node_names[0], endpoints[0], status_values[0])
+        parsed_builders.append((name, evidence))
+
+    if node_schema_recorder is not None:
+        node_schema_recorder.record(NodeSchemaPredicate.PASS)
+    builders: dict[str, tuple[bool, str, str, str, str]] = {}
+    for name, evidence in parsed_builders:
         if name in builders and builders[name] != evidence:
             _builder_selection_failure(
                 builder_selection_recorder,
@@ -1181,6 +1275,7 @@ def governed_compose_build_capacity(
     mode: DockerCapacityMode = DockerCapacityMode.ACTION_ENABLED,
     phase_recorder: DockerCapacityPhaseRecorder | None = None,
     builder_selection_recorder: BuilderSelectionRecorder | None = None,
+    node_schema_recorder: NodeSchemaRecorder | None = None,
 ) -> DockerCapacityEvidence:
     """Prove selected builds fit before any Docker runtime mutation."""
 
@@ -1256,6 +1351,7 @@ def governed_compose_build_capacity(
             environ,
             current_context=current_context,
             builder_selection_recorder=builder_selection_recorder,
+            node_schema_recorder=node_schema_recorder,
         )
     with _capacity_phase(
         phase_recorder,

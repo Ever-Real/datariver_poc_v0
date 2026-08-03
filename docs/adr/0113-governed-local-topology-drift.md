@@ -240,6 +240,15 @@ or interrupted unknown results omit it, and no phase name is used to reconstruct
 If lock/context exit also fails after a recorded selection failure, the review-required result
 retains top-level `BUILDER_SELECTION` plus that exact first subtype; every other review-required
 top-level result remains `UNKNOWN`.
+Within the builder `NODE_SCHEMA` subtype, `node_schema_known` is always present and an optional
+closed node-schema predicate is emitted only when structurally observed. It distinguishes a
+non-mapping node and missing, null or non-string name/endpoint or present-status fields without
+emitting any provider value. A non-PASS node subtype requires the top-level builder subtype to
+remain `NODE_SCHEMA`; a complete structural scan records `PASS` monotonically through later
+selection or outer failures. A simultaneous node-schema first defect and lock/context-exit defect
+therefore remains review-required with top-level `BUILDER_SELECTION`, builder subtype
+`NODE_SCHEMA` and the exact closed node subtype. Pre-scan interruption remains unknown and omits
+the subtype; null and reconstructed values are forbidden.
 The source-clean boundary preserves the closed states `CLEAN`, `DIRTY`, `INVALID` and `UNKNOWN`
 without reducing an interrupted Git or file-identity proof to an environment defect. The initial
 source fingerprint remains private and is revalidated after capacity evaluation, before an action-

@@ -170,6 +170,7 @@ def _run(
     mode: Any = None,
     phase_recorder: Any = None,
     builder_selection_recorder: Any = None,
+    node_schema_recorder: Any = None,
 ) -> Any:
     with capacity.exclusive_docker_workflow_lock(root) as lock:
         kwargs: dict[str, Any] = {}
@@ -179,6 +180,8 @@ def _run(
             kwargs["phase_recorder"] = phase_recorder
         if builder_selection_recorder is not None:
             kwargs["builder_selection_recorder"] = builder_selection_recorder
+        if node_schema_recorder is not None:
+            kwargs["node_schema_recorder"] = node_schema_recorder
         return capacity.governed_compose_build_capacity(
             root=root,
             compose_config_command=("compose", "config", "--format", "json"),
@@ -1157,7 +1160,11 @@ def test_current_builder_must_match_current_local_context(tmp_path: Path) -> Non
         ("node-count", "NODE_COUNT", "DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE"),
         ("node-nonmapping", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
         ("node-schema", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
-        ("node-name", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
+        (
+            "node-name",
+            "NODE_NAME_MISMATCH",
+            "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+        ),
         ("node-endpoint-type", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
         ("node-status-type", "NODE_SCHEMA", "Docker builder node evidence is invalid."),
         (
@@ -1366,14 +1373,21 @@ def test_provider_valid_node_shapes_reach_semantic_checks_before_later_probes(
     outputs[capacity.DOCKER_BUILDER_LIST_PROBE] = [json.dumps(row)]
     executor = FakeExecutor(outputs)
     recorder = capacity.BuilderSelectionRecorder()
+    node_recorder = capacity.NodeSchemaRecorder()
 
     with pytest.raises(
         capacity.DockerCapacityError,
         match="DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
     ):
-        _run(tmp_path, executor, builder_selection_recorder=recorder)
+        _run(
+            tmp_path,
+            executor,
+            builder_selection_recorder=recorder,
+            node_schema_recorder=node_recorder,
+        )
 
     assert recorder.predicate.value == expected
+    assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
     assert [classification for classification, _ in executor.calls] == [
         capacity.COMPOSE_BUILD_CONFIG_PROBE,
         capacity.GIT_CLEAN_CHECKOUT_PROBE,
@@ -1458,19 +1472,204 @@ def test_builder_selection_recorder_records_pass_once_and_never_serializes_unkno
         recorder.record(capacity.BuilderSelectionPredicate.UNKNOWN)
 
 
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    (
+        ("node-not-mapping", "NODE_NOT_MAPPING"),
+        ("name-missing", "NAME_MISSING"),
+        ("name-null", "NAME_NULL"),
+        ("name-not-string", "NAME_NOT_STRING"),
+        ("endpoint-missing", "ENDPOINT_MISSING"),
+        ("endpoint-null", "ENDPOINT_NULL"),
+        ("endpoint-not-string", "ENDPOINT_NOT_STRING"),
+        ("status-null", "STATUS_NULL"),
+        ("status-not-string", "STATUS_NOT_STRING"),
+    ),
+)
+def test_node_schema_recorder_classifies_each_structural_failure(
+    case: str,
+    expected: str,
+) -> None:
+    node: object = {
+        "Endpoint": "desktop-linux",
+        "Name": "desktop-linux",
+        "Status": "running",
+    }
+    if case == "node-not-mapping":
+        node = "raw-node-schema-sentinel"
+    else:
+        node_mapping = cast(dict[str, object], node)
+        field, defect = case.split("-", maxsplit=1)
+        key = {"name": "Name", "endpoint": "Endpoint", "status": "Status"}[field]
+        if defect == "missing":
+            del node_mapping[key]
+        elif defect == "null":
+            node_mapping[key] = None
+        else:
+            node_mapping[key] = {"raw": "node-schema-sentinel"}
+    row = {
+        "Current": True,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [node],
+    }
+    builder_recorder = capacity.BuilderSelectionRecorder()
+    node_recorder = capacity.NodeSchemaRecorder()
+
+    with pytest.raises(
+        capacity.DockerCapacityError,
+        match=r"Docker builder node evidence is invalid.",
+    ):
+        capacity._selected_builder(
+            json.dumps(row),
+            {},
+            current_context="desktop-linux",
+            builder_selection_recorder=builder_recorder,
+            node_schema_recorder=node_recorder,
+        )
+
+    assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.NODE_SCHEMA
+    assert node_recorder.known is True
+    assert node_recorder.predicate.value == expected
+
+
+@pytest.mark.parametrize("node_name", ("", "raw/node-name-sentinel", "x" * 65))
+def test_structural_node_name_strings_reach_exact_name_mismatch(node_name: str) -> None:
+    row = {
+        "Current": True,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [
+            {
+                "Endpoint": "desktop-linux",
+                "Name": node_name,
+                "Status": "running",
+            }
+        ],
+    }
+    builder_recorder = capacity.BuilderSelectionRecorder()
+    node_recorder = capacity.NodeSchemaRecorder()
+
+    with pytest.raises(
+        capacity.DockerCapacityError,
+        match="DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER",
+    ):
+        capacity._selected_builder(
+            json.dumps(row),
+            {},
+            current_context="desktop-linux",
+            builder_selection_recorder=builder_recorder,
+            node_schema_recorder=node_recorder,
+        )
+
+    assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.NODE_NAME_MISMATCH
+    assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+
+
+def test_complete_node_scan_records_pass_before_duplicate_selection_failure() -> None:
+    row = {
+        "Current": True,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [
+            {
+                "Endpoint": "desktop-linux",
+                "Name": "desktop-linux",
+                "Status": "running",
+            }
+        ],
+    }
+    conflict = json.loads(json.dumps(row))
+    conflict["Driver"] = "docker-container"
+    builder_recorder = capacity.BuilderSelectionRecorder()
+    node_recorder = capacity.NodeSchemaRecorder()
+
+    with pytest.raises(
+        capacity.DockerCapacityError,
+        match=r"Docker builder duplicate evidence conflicts.",
+    ):
+        capacity._selected_builder(
+            "\n".join((json.dumps(row), json.dumps(conflict))),
+            {},
+            current_context="desktop-linux",
+            builder_selection_recorder=builder_recorder,
+            node_schema_recorder=node_recorder,
+        )
+
+    assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.DUPLICATE_CONFLICT
+    assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+
+
+def test_incomplete_multirow_node_scan_precedes_duplicate_conflict() -> None:
+    row = {
+        "Current": True,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [
+            {
+                "Endpoint": "desktop-linux",
+                "Name": "desktop-linux",
+                "Status": "running",
+            }
+        ],
+    }
+    conflict = json.loads(json.dumps(row))
+    conflict["Driver"] = "docker-container"
+    malformed = json.loads(json.dumps(row))
+    del malformed["Nodes"][0]["Endpoint"]
+    builder_recorder = capacity.BuilderSelectionRecorder()
+    node_recorder = capacity.NodeSchemaRecorder()
+
+    with pytest.raises(
+        capacity.DockerCapacityError,
+        match=r"Docker builder node evidence is invalid.",
+    ):
+        capacity._selected_builder(
+            "\n".join(json.dumps(item) for item in (row, conflict, malformed)),
+            {},
+            current_context="desktop-linux",
+            builder_selection_recorder=builder_recorder,
+            node_schema_recorder=node_recorder,
+        )
+
+    assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.NODE_SCHEMA
+    assert node_recorder.predicate is capacity.NodeSchemaPredicate.ENDPOINT_MISSING
+
+
+def test_official_node_shape_records_schema_pass_and_selection_pass() -> None:
+    builder_recorder = capacity.BuilderSelectionRecorder()
+    node_recorder = capacity.NodeSchemaRecorder()
+
+    selected = capacity._selected_builder(
+        _builder_lines(),
+        {},
+        current_context="desktop-linux",
+        builder_selection_recorder=builder_recorder,
+        node_schema_recorder=node_recorder,
+    )
+
+    assert selected == "desktop-linux"
+    assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.PASS
+    assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+
+
 def test_governed_capacity_threads_exact_builder_selection_outcome(tmp_path: Path) -> None:
     _prepare_context(tmp_path)
     recorder = capacity.BuilderSelectionRecorder()
+    node_recorder = capacity.NodeSchemaRecorder()
 
     evidence = _run(
         tmp_path,
         FakeExecutor(_base_outputs(tmp_path)),
         builder_selection_recorder=recorder,
+        node_schema_recorder=node_recorder,
     )
 
     assert evidence.builder == "desktop-linux"
     assert recorder.known is True
     assert recorder.predicate is capacity.BuilderSelectionPredicate.PASS
+    assert node_recorder.known is True
+    assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
 
 
 @pytest.mark.parametrize("failure", (KeyboardInterrupt, SystemExit, BaseException))
@@ -1494,6 +1693,36 @@ def test_builder_selection_interrupt_never_invents_a_known_outcome(
         )
     assert recorder.known is False
     assert recorder.predicate is capacity.BuilderSelectionPredicate.UNKNOWN
+
+
+def test_node_schema_interrupt_before_structural_outcome_remains_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class InterruptingNode(dict[str, object]):
+        def __contains__(self, key: object) -> bool:
+            raise KeyboardInterrupt("raw-node-schema-interrupt-sentinel")
+
+    row = {
+        "Current": True,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [InterruptingNode()],
+    }
+    builder_recorder = capacity.BuilderSelectionRecorder()
+    node_recorder = capacity.NodeSchemaRecorder()
+    monkeypatch.setattr(capacity.json, "loads", lambda _raw: row)
+
+    with pytest.raises(KeyboardInterrupt):
+        capacity._selected_builder(
+            "fixed-row",
+            {},
+            current_context="desktop-linux",
+            builder_selection_recorder=builder_recorder,
+            node_schema_recorder=node_recorder,
+        )
+
+    assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.UNKNOWN
+    assert node_recorder.predicate is capacity.NodeSchemaPredicate.UNKNOWN
 
 
 def test_compose_context_outside_checkout_is_rejected(tmp_path: Path) -> None:

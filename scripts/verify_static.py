@@ -1834,7 +1834,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
         raise AssertionError("the builder-selection predicate vocabulary has drifted")
     builder_selection_recorder = capacity.split("class BuilderSelectionRecorder:", maxsplit=1)[
         1
-    ].split("class BuildCapacityPreflightPredicate", maxsplit=1)[0]
+    ].split("class NodeSchemaPredicate", maxsplit=1)[0]
     for fragment in (
         "predicate: BuilderSelectionPredicate = BuilderSelectionPredicate.UNKNOWN",
         "return self.predicate is not BuilderSelectionPredicate.UNKNOWN",
@@ -1846,6 +1846,39 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ):
         if fragment not in builder_selection_recorder:
             raise AssertionError(f"the builder-selection recorder is missing: {fragment}")
+    expected_node_schema_predicates = tuple(
+        (value, value)
+        for value in (
+            "NODE_NOT_MAPPING",
+            "NAME_MISSING",
+            "NAME_NULL",
+            "NAME_NOT_STRING",
+            "ENDPOINT_MISSING",
+            "ENDPOINT_NULL",
+            "ENDPOINT_NOT_STRING",
+            "STATUS_NULL",
+            "STATUS_NOT_STRING",
+            "PASS",
+            "UNKNOWN",
+        )
+    )
+    if capacity_enum_members("NodeSchemaPredicate") != expected_node_schema_predicates:
+        raise AssertionError("the node-schema predicate vocabulary has drifted")
+    node_schema_recorder = capacity.split("class NodeSchemaRecorder:", maxsplit=1)[1].split(
+        "class BuildCapacityPreflightPredicate",
+        maxsplit=1,
+    )[0]
+    for fragment in (
+        "predicate: NodeSchemaPredicate = NodeSchemaPredicate.UNKNOWN",
+        "return self.predicate is not NodeSchemaPredicate.UNKNOWN",
+        "not isinstance(predicate, NodeSchemaPredicate)",
+        "predicate is NodeSchemaPredicate.UNKNOWN",
+        "or self.known",
+        'raise DockerCapacityError("NODE_SCHEMA_EVIDENCE_INVALID")',
+        "self.predicate = predicate",
+    ):
+        if fragment not in node_schema_recorder:
+            raise AssertionError(f"the node-schema recorder is missing: {fragment}")
     expected_capacity_predicates = tuple(
         (value, value)
         for value in (
@@ -1906,8 +1939,6 @@ def verify_governed_docker_build_capacity_contract() -> None:
         ("ROW_SCHEMA", "Docker builder evidence is invalid."),
         ("ROW_SCHEMA", "Docker builder evidence is invalid."),
         ("NODE_COUNT", "DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE"),
-        ("NODE_SCHEMA", "Docker builder node evidence is invalid."),
-        ("NODE_SCHEMA", "Docker builder node evidence is invalid."),
         ("DUPLICATE_CONFLICT", "Docker builder duplicate evidence conflicts."),
         ("CURRENT_MISSING", "DOCKER_BUILDER_AMBIGUOUS"),
         ("CURRENT_AMBIGUOUS", "DOCKER_BUILDER_AMBIGUOUS"),
@@ -1931,6 +1962,40 @@ def verify_governed_docker_build_capacity_contract() -> None:
         and "str(error)" not in selected_builder_source
     ):
         raise AssertionError("builder selection is not structurally recorded without text parsing")
+    node_schema_failure = capacity.split("def _node_schema_failure(", maxsplit=1)[1].split(
+        "def _selected_builder(",
+        maxsplit=1,
+    )[0]
+    for fragment in (
+        "node_schema_recorder.record(predicate)",
+        "BuilderSelectionPredicate.NODE_SCHEMA",
+        '"Docker builder node evidence is invalid."',
+    ):
+        if fragment not in node_schema_failure:
+            raise AssertionError(f"the node-schema failure boundary is missing: {fragment}")
+    node_schema_failures = tuple(
+        node.args[2].attr
+        for node in ast.walk(selected_builder_functions[0])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_node_schema_failure"
+        and len(node.args) == 3
+        and isinstance(node.args[2], ast.Attribute)
+        and isinstance(node.args[2].value, ast.Name)
+        and node.args[2].value.id == "NodeSchemaPredicate"
+    )
+    if node_schema_failures != (
+        "NODE_NOT_MAPPING",
+        "NAME_MISSING",
+        "NAME_NULL",
+        "NAME_NOT_STRING",
+        "ENDPOINT_MISSING",
+        "ENDPOINT_NULL",
+        "ENDPOINT_NOT_STRING",
+        "STATUS_NULL",
+        "STATUS_NOT_STRING",
+    ):
+        raise AssertionError("the exact node-schema branch order has drifted")
     status_assignments = [
         node
         for node in ast.walk(selected_builder_functions[0])
@@ -1973,14 +2038,24 @@ def verify_governed_docker_build_capacity_contract() -> None:
         for call in builder_name_fullmatch_calls
         if isinstance(call.args[0], ast.Name)
     )
-    if builder_name_fullmatch_targets != ("name", "node_name", "override"):
-        raise AssertionError("Buildx endpoint strings must not use the builder-name grammar")
+    if builder_name_fullmatch_targets != ("name", "override"):
+        raise AssertionError(
+            "Buildx node and endpoint strings must not use the builder-name grammar"
+        )
     provider_shape_order = tuple(
         selected_builder_source.index(fragment)
         for fragment in (
+            'if "Name" not in node:',
+            "if node_name is None:",
+            "if not isinstance(node_name, str):",
+            'if "Endpoint" not in node:',
+            "if endpoint is None:",
+            "if not isinstance(endpoint, str):",
             'status = node.get("Status", "")',
-            "or not isinstance(endpoint, str)",
-            "or not isinstance(status, str)",
+            "if status is None:",
+            "if not isinstance(status, str):",
+            "node_schema_recorder.record(NodeSchemaPredicate.PASS)",
+            "for name, evidence in parsed_builders:",
             'if driver != "docker":',
             'if status != "running":',
             "if selected != current_context:",
@@ -2028,12 +2103,16 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "mode: DockerCapacityMode = DockerCapacityMode.ACTION_ENABLED",
         "phase_recorder: DockerCapacityPhaseRecorder | None = None",
         "builder_selection_recorder: BuilderSelectionRecorder | None = None",
+        "node_schema_recorder: NodeSchemaRecorder | None = None",
         "builder_selection_recorder=builder_selection_recorder",
+        "node_schema_recorder=node_schema_recorder",
         "except DockerCapacityPhaseError:",
         "raise DockerCapacityPhaseError(str(error), predicate) from None",
     ):
         if fragment not in capacity:
             raise AssertionError(f"structured capacity phase evidence is missing: {fragment}")
+    if "_BUILDER_NAME.fullmatch(node_name)" in selected_builder_source:
+        raise AssertionError("Buildx node names must reach the exact selected-name equality check")
     private_policy = capacity.split('cache_action = "none"', maxsplit=1)[1].split(
         "help_output = _safe_output", maxsplit=1
     )[0]
@@ -2158,6 +2237,12 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_builder_selection_interrupt_never_invents_a_known_outcome",
         "test_builder_selection_reports_the_first_simultaneous_final_defect",
         "test_provider_valid_node_shapes_reach_semantic_checks_before_later_probes",
+        "test_node_schema_recorder_classifies_each_structural_failure",
+        "test_structural_node_name_strings_reach_exact_name_mismatch",
+        "test_complete_node_scan_records_pass_before_duplicate_selection_failure",
+        "test_incomplete_multirow_node_scan_precedes_duplicate_conflict",
+        "test_official_node_shape_records_schema_pass_and_selection_pass",
+        "test_node_schema_interrupt_before_structural_outcome_remains_unknown",
     ):
         if test_name not in test_source:
             raise AssertionError(f"the Docker capacity direct test is missing: {test_name}")
@@ -2173,6 +2258,10 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_build_capacity_preflight_rejects_nonboolean_raw_or_extra_builder_fields",
         "test_builder_selection_failure_survives_later_lock_exit_failure",
         "test_build_capacity_review_required_forbids_every_other_nonunknown_top_predicate",
+        "test_build_capacity_preflight_node_schema_output_is_closed_and_optional",
+        "test_build_capacity_preflight_rejects_contradictory_node_schema_evidence",
+        "test_build_capacity_preflight_rejects_raw_or_extra_node_schema_fields",
+        "test_node_schema_failure_survives_later_lock_exit_failure",
     ):
         if test_name not in workflow_test_source:
             raise AssertionError(f"the update-workflow capacity test is missing: {test_name}")
@@ -2202,6 +2291,9 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "https://docs.docker.com/reference/cli/docker/buildx/ls/",
         "does not claim that the current host binary is pinned to that tag",
         "An omitted or empty node status",
+        "node name is not separately matched\nagainst that grammar",
+        "closed node-schema subpredicate",
+        "`PASS` is recorded only after the complete row/node structural scan",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0112 omits governed capacity term: {fragment}")
@@ -3085,6 +3177,17 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "builder_selection_pass_required",
         "review_preserves_selection_failure",
         "and not review_preserves_selection_failure",
+        "node_schema_known: bool = False",
+        "node_schema_predicate: NodeSchemaPredicate | None = None",
+        "type(self.node_schema_known) is not bool",
+        "self.node_schema_known",
+        "!= (self.node_schema_predicate is not None)",
+        "self.node_schema_predicate is NodeSchemaPredicate.UNKNOWN",
+        "self.builder_selection_predicate is BuilderSelectionPredicate.NODE_SCHEMA",
+        "node_schema_failure",
+        "self.node_schema_predicate is NodeSchemaPredicate.PASS",
+        "node_schema_pass_required",
+        "review_preserves_node_schema_pass",
     ):
         if fragment not in build_capacity_evidence:
             raise AssertionError(
@@ -3391,6 +3494,7 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "classification",
         "container_count",
         "mutation_count",
+        "node_schema_known",
         "phase",
         "predicate",
         "retry_count",
@@ -3404,6 +3508,14 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         and '"builder_selection_predicate":' not in capacity_output
     ):
         raise AssertionError("the optional builder-selection output contract has drifted")
+    if not (
+        "if evidence.node_schema_known:" in capacity_output
+        and 'fields["node_schema_predicate"] = evidence.node_schema_predicate.value'
+        in capacity_output
+        and capacity_output.count('"node_schema_predicate"') == 1
+        and '"node_schema_predicate":' not in capacity_output
+    ):
+        raise AssertionError("the optional node-schema output contract has drifted")
     host_functions = [
         node
         for node in workflow_syntax.body
@@ -3518,9 +3630,12 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "executor=command_executor",
         "phase_recorder=phase_recorder",
         "builder_selection_recorder=builder_selection_recorder",
+        "node_schema_recorder=node_schema_recorder",
         "except DockerCapacityMeasureOnlyStop:",
         "except DockerCapacityPhaseError as error:",
-        "return _build_capacity_preflight_review_required(builder_selection_recorder)",
+        "node_schema_recorder = NodeSchemaRecorder()",
+        "node_schema_known=node_schema_recorder.known",
+        "node_schema_recorder.predicate if node_schema_recorder.known else None",
     ):
         if fragment not in capacity_operator:
             raise AssertionError(f"the build-capacity diagnostic guard is missing: {fragment}")
@@ -4858,6 +4973,10 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "`builder_selection_known` is always present",
         "no phase name is used to reconstruct it",
         "every other review-required\ntop-level result remains `UNKNOWN`",
+        "`node_schema_known` is always present",
+        "non-mapping node and missing, null or non-string name/endpoint",
+        "simultaneous node-schema first defect and lock/context-exit defect",
+        "Pre-scan interruption remains unknown",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0113 omits gateway parity term: {fragment}")
