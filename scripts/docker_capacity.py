@@ -10,12 +10,32 @@ import stat
 import subprocess
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import astuple, dataclass, field
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from pathlib import Path, PurePosixPath
-from typing import NoReturn, Protocol
+from typing import NoReturn, Protocol, get_type_hints
+
+from docker_builder_prestate import (
+    BuilderDriverKind,
+    BuilderErrorPredicate,
+    BuilderPrestateRow,
+    BuilderPrestateSnapshot,
+    BuilderSelectionPredicate,
+    BuildxAuthorityPredicate,
+    BuildxDistributionPredicate,
+    BuildxVersionObservation,
+    DockerBuilderSelectionPlanPredicate,
+    NodeSchemaPredicate,
+    PriorDriverPredicate,
+    PriorStatusPredicate,
+    PriorTargetRelationPredicate,
+    TargetContractPredicate,
+    observe_builder_prestate,
+)
+
+__all__ = ("BuildxAuthorityPredicate",)
 
 COMPOSE_BUILD_CONFIG_PROBE = "COMPOSE_BUILD_CONFIG_PROBE_FAILED"
 DOCKER_BUILDER_LIST_PROBE = "DOCKER_BUILDER_LIST_PROBE_FAILED"
@@ -41,39 +61,15 @@ GIT_BUILD_CONTEXT_PROBE = "GIT_BUILD_CONTEXT_PROBE_FAILED"
 DOCKER_WORKFLOW_LOCK_UNAVAILABLE = "DOCKER_WORKFLOW_LOCK_UNAVAILABLE"
 
 _BUILDER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
-_BUILDX_AUTHORITY_MAXIMUM_BYTES = 256
-_BUILDX_AUTHORITY_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+:-]{0,127}$")
-_BUILDX_REVISION = re.compile(r"^[0-9a-f]{7,64}$")
-_BUILDX_UPSTREAM_RELEASE = re.compile(
-    r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
-    r"(?:-(?:alpha|beta|rc)[0-9]+)?$"
-)
-_BUILDX_UPSTREAM_MODULE = "github.com/docker/buildx"
-_OFFICIAL_BUILDX_DRIVER_KINDS = (
-    "docker",
-    "docker-container",
-    "cloud",
-    "kubernetes",
-    "remote",
-)
+_OFFICIAL_BUILDX_DRIVER_KINDS = ("docker", "docker-container", "cloud", "kubernetes", "remote")
 _COMPOSE_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,62}$")
 _IMAGE_REFERENCE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@:-]{0,254}$")
 _IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 _SIZE = re.compile(r"^(\d+(?:\.\d+)?)(B|kB|MB|GB|TB|KiB|MiB|GiB|TiB)$")
 
 _REQUIRED_DOCKERIGNORE_RULES = frozenset(
-    {
-        ".git",
-        ".env",
-        ".env.*",
-        "secrets",
-        "runtime",
-        "docker_imgs",
-        ".venv",
-        ".venv-wsl",
-        "frontend/node_modules",
-        "frontend/dist",
-    }
+    ".git .env .env.* secrets runtime docker_imgs .venv .venv-wsl "
+    "frontend/node_modules frontend/dist".split()
 )
 
 
@@ -88,26 +84,112 @@ class DockerCapacityMode(StrEnum):
     MEASURE_ONLY = "MEASURE_ONLY"
 
 
-class BuilderSelectionPredicate(StrEnum):
-    """Closed, value-free outcome of the canonical builder selection contract."""
+def classify_driver(value: str) -> BuilderDriverKind:
+    return {
+        "docker": BuilderDriverKind.DOCKER,
+        "docker-container": BuilderDriverKind.DOCKER_CONTAINER,
+        "": BuilderDriverKind.EMPTY,
+        "cloud": BuilderDriverKind.CLOUD,
+        "kubernetes": BuilderDriverKind.KUBERNETES,
+        "remote": BuilderDriverKind.REMOTE,
+    }.get(value, BuilderDriverKind.OTHER)
 
-    EXTERNAL_BUILDKIT_HOST = "EXTERNAL_BUILDKIT_HOST"
-    LIST_JSON = "LIST_JSON"
-    ROW_SCHEMA = "ROW_SCHEMA"
-    NODE_COUNT = "NODE_COUNT"
-    NODE_SCHEMA = "NODE_SCHEMA"
-    DUPLICATE_CONFLICT = "DUPLICATE_CONFLICT"
-    CURRENT_MISSING = "CURRENT_MISSING"
-    CURRENT_AMBIGUOUS = "CURRENT_AMBIGUOUS"
-    OVERRIDE_INVALID = "OVERRIDE_INVALID"
-    OVERRIDE_NOT_CURRENT = "OVERRIDE_NOT_CURRENT"
-    DRIVER_NOT_DOCKER = "DRIVER_NOT_DOCKER"
-    NODE_NOT_RUNNING = "NODE_NOT_RUNNING"
-    BUILDER_CONTEXT_MISMATCH = "BUILDER_CONTEXT_MISMATCH"
-    NODE_NAME_MISMATCH = "NODE_NAME_MISMATCH"
-    ENDPOINT_CONTEXT_MISMATCH = "ENDPOINT_CONTEXT_MISMATCH"
-    PASS = "PASS"  # noqa: S105 - fixed diagnostic predicate, not a secret.
-    UNKNOWN = "UNKNOWN"
+
+def classify_status(value: str) -> PriorStatusPredicate:
+    return {
+        "running": PriorStatusPredicate.RUNNING,
+        "stopped": PriorStatusPredicate.STOPPED,
+        "error": PriorStatusPredicate.ERROR,
+        "": PriorStatusPredicate.EMPTY,
+    }.get(value, PriorStatusPredicate.OTHER)
+
+
+def legacy_plan_error(predicate: DockerBuilderSelectionPlanPredicate) -> str | None:
+    if predicate is DockerBuilderSelectionPlanPredicate.PASS:
+        return None
+    if predicate is DockerBuilderSelectionPlanPredicate.INVENTORY_DUPLICATE:
+        return "DOCKER_BUILDER_SELECTION_INVENTORY_DUPLICATE"
+    if predicate.name.startswith("TARGET_"):
+        return "DOCKER_BUILDER_SELECTION_TARGET_INVALID"
+    return "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID"
+
+
+def builder_prestate_snapshot_is_consistent(snapshot: BuilderPrestateSnapshot) -> bool:
+    field_types = tuple(get_type_hints(BuilderPrestateSnapshot).values())
+    if tuple(map(type, astuple(snapshot))) != field_types:
+        return False
+    A, D = BuildxAuthorityPredicate, BuildxDistributionPredicate
+    S, T = BuilderSelectionPredicate, TargetContractPredicate
+    P, R = DockerBuilderSelectionPlanPredicate, PriorTargetRelationPredicate
+    authority, distribution = snapshot.buildx_authority, snapshot.buildx_distribution
+    distribution_valid = (authority is A.OTHER_DISTRIBUTION and distribution in tuple(D)[:3]) or (
+        distribution is D.NOT_APPLICABLE and authority in (*tuple(A)[:2], A.OUTPUT_INVALID)
+    )
+    selection, target = snapshot.builder_selection, snapshot.target_contract
+    target_defects = {
+        T.PASS: P.PASS,
+        T.MISSING: P.TARGET_MISSING,
+        T.MULTIPLE: P.TARGET_MISSING,
+        T.DRIVER: P.TARGET_DRIVER,
+        T.STATUS: P.TARGET_STATUS,
+        T.NODE_NAME: P.TARGET_NODE_NAME,
+        T.ENDPOINT: P.TARGET_ENDPOINT,
+    }
+    reachable_selections = (*tuple(S)[6:8], *tuple(S)[10:16])
+    if (
+        not distribution_valid
+        or selection not in reachable_selections
+        or snapshot.node_schema is not NodeSchemaPredicate.PASS
+        or target not in target_defects
+    ):
+        return False
+    no_prior = selection in tuple(S)[6:8]
+    prior_unknown = tuple(
+        value.name == "UNKNOWN" for value in astuple(snapshot)[4:6] + astuple(snapshot)[7:9]
+    )
+    if prior_unknown != ((True,) * 4 if no_prior else (False,) * 4):
+        return False
+    relation = snapshot.prior_target_relation
+    expected_relations = (
+        ((R.TARGET_MISSING,), (R.TARGET_MULTIPLE,))[target is T.MULTIPLE]
+        if target in {T.MISSING, T.MULTIPLE}
+        else (R.UNKNOWN,)
+        if no_prior
+        else (R.SAME, R.DISTINCT)
+    )
+    if relation not in expected_relations:
+        return False
+    same_targets = (None, None, T.DRIVER, T.STATUS, None, T.NODE_NAME, T.ENDPOINT, T.PASS)
+    prior_semantics_valid = selection is S.DRIVER_NOT_DOCKER or (
+        snapshot.prior_driver is PriorDriverPredicate.UNRECOGNIZED
+        and (selection is S.NODE_NOT_RUNNING)
+        != (snapshot.prior_status is PriorStatusPredicate.RUNNING)
+    )
+    same_target = same_targets[reachable_selections.index(selection)]
+    if (
+        (not no_prior and not prior_semantics_valid)
+        or (relation is R.SAME and same_target is not target)
+        or (
+            selection in {S.NODE_NAME_MISMATCH, S.ENDPOINT_CONTEXT_MISMATCH, S.PASS}
+            and not (target is T.MULTIPLE or (relation is R.SAME and target is same_target))
+        )
+    ):
+        return False
+    if selection is S.PASS:
+        expected = P.CURRENT_ALREADY_CANONICAL
+    elif no_prior:
+        expected = P.CURRENT_COUNT
+    elif selection is not S.DRIVER_NOT_DOCKER:
+        expected = P.CURRENT_SELECTION_CONTRACT
+    elif snapshot.prior_driver is not PriorDriverPredicate.PASS:
+        expected = P.PRIOR_DRIVER
+    elif snapshot.prior_status is not PriorStatusPredicate.RUNNING:
+        expected = P.PRIOR_STATUS
+    else:
+        expected = target_defects[target]
+    return snapshot.first_defect is expected or (
+        snapshot.first_defect is P.INVENTORY_DUPLICATE and selection is not S.PASS
+    )
 
 
 @dataclass(slots=True)
@@ -128,42 +210,6 @@ class BuilderSelectionRecorder:
         ):
             raise DockerCapacityError("BUILDER_SELECTION_EVIDENCE_INVALID")
         self.predicate = predicate
-
-
-class NodeSchemaPredicate(StrEnum):
-    """Closed, value-free outcome of the Buildx node structural contract."""
-
-    NODE_NOT_MAPPING = "NODE_NOT_MAPPING"
-    NAME_MISSING = "NAME_MISSING"
-    NAME_NULL = "NAME_NULL"
-    NAME_NOT_STRING = "NAME_NOT_STRING"
-    ENDPOINT_MISSING = "ENDPOINT_MISSING"
-    ENDPOINT_NULL = "ENDPOINT_NULL"
-    ENDPOINT_NOT_STRING = "ENDPOINT_NOT_STRING"
-    STATUS_NULL = "STATUS_NULL"
-    STATUS_NOT_STRING = "STATUS_NOT_STRING"
-    PASS = "PASS"  # noqa: S105 - fixed diagnostic predicate, not a secret.
-    UNKNOWN = "UNKNOWN"
-
-
-class DockerBuilderSelectionPlanPredicate(StrEnum):
-    """Closed, value-free plan construction outcome."""
-
-    CURRENT_SELECTION_CONTRACT = "CURRENT_SELECTION_CONTRACT"
-    CURRENT_ALREADY_CANONICAL = "CURRENT_ALREADY_CANONICAL"
-    INVENTORY_DUPLICATE = "INVENTORY_DUPLICATE"
-    CURRENT_COUNT = "CURRENT_COUNT"
-    PRIOR_DRIVER = "PRIOR_DRIVER"
-    PRIOR_STATUS = "PRIOR_STATUS"
-    TARGET_MISSING = "TARGET_MISSING"
-    TARGET_DRIVER = "TARGET_DRIVER"
-    TARGET_STATUS = "TARGET_STATUS"
-    TARGET_NODE_NAME = "TARGET_NODE_NAME"
-    TARGET_ENDPOINT = "TARGET_ENDPOINT"
-    TARGET_CURRENT = "TARGET_CURRENT"
-    PLAN_DRIFT = "PLAN_DRIFT"
-    PASS = "PASS"  # noqa: S105 - fixed diagnostic predicate, not a secret.
-    UNKNOWN = "UNKNOWN"
 
 
 @dataclass(slots=True)
@@ -191,18 +237,6 @@ class DockerBuilderSelectionPlanRecorder:
         self.predicate = DockerBuilderSelectionPlanPredicate.PLAN_DRIFT
 
 
-class PriorDriverPredicate(StrEnum):
-    """Closed, value-free classification of the plan's current prior driver."""
-
-    EMPTY = "EMPTY"
-    CLOUD = "CLOUD"
-    KUBERNETES = "KUBERNETES"
-    REMOTE = "REMOTE"
-    UNRECOGNIZED = "UNRECOGNIZED"
-    PASS = "PASS"  # noqa: S105 - fixed diagnostic predicate, not a secret.
-    UNKNOWN = "UNKNOWN"
-
-
 @dataclass(slots=True)
 class PriorDriverRecorder:
     """Retain one exact prior-driver outcome without exposing its raw value."""
@@ -223,15 +257,6 @@ class PriorDriverRecorder:
         self.predicate = predicate
 
 
-class BuilderErrorPredicate(StrEnum):
-    """Closed shape of the optional Buildx builder-level Err field."""
-
-    ABSENT = "ABSENT"
-    PRESENT = "PRESENT"
-    INVALID = "INVALID"
-    UNKNOWN = "UNKNOWN"
-
-
 @dataclass(slots=True)
 class BuilderErrorRecorder:
     """Retain only whether an observed builder error is absent, present, or invalid."""
@@ -250,63 +275,6 @@ class BuilderErrorRecorder:
         ):
             raise DockerCapacityError("BUILDER_ERROR_EVIDENCE_INVALID")
         self.predicate = predicate
-
-
-class BuildxAuthorityPredicate(StrEnum):
-    """Closed provenance class for one bounded official Buildx version line."""
-
-    UPSTREAM_V0_35_0 = "UPSTREAM_V0_35_0"
-    UPSTREAM_OTHER = "UPSTREAM_OTHER"
-    OTHER_DISTRIBUTION = "OTHER_DISTRIBUTION"
-    OUTPUT_INVALID = "OUTPUT_INVALID"
-    UNKNOWN = "UNKNOWN"
-
-
-@dataclass(slots=True)
-class BuildxAuthorityRecorder:
-    """Retain one value-free Buildx version authority classification."""
-
-    predicate: BuildxAuthorityPredicate = BuildxAuthorityPredicate.UNKNOWN
-
-    @property
-    def known(self) -> bool:
-        return self.predicate is not BuildxAuthorityPredicate.UNKNOWN
-
-    def record(self, predicate: BuildxAuthorityPredicate) -> None:
-        if (
-            not isinstance(predicate, BuildxAuthorityPredicate)
-            or predicate is BuildxAuthorityPredicate.UNKNOWN
-            or self.known
-        ):
-            raise DockerCapacityError("BUILDX_AUTHORITY_EVIDENCE_INVALID")
-        self.predicate = predicate
-
-
-def record_buildx_authority(raw: str, recorder: BuildxAuthorityRecorder) -> None:
-    """Classify one official-format version line without retaining any source value."""
-
-    predicate = BuildxAuthorityPredicate.OUTPUT_INVALID
-    if len(raw.encode("utf-8")) <= _BUILDX_AUTHORITY_MAXIMUM_BYTES:
-        line = raw[:-1] if raw.endswith("\n") else raw
-        fields = line.split(" ")
-        if (
-            "\n" not in line
-            and "\r" not in line
-            and len(fields) == 3
-            and all(_BUILDX_AUTHORITY_TOKEN.fullmatch(value) is not None for value in fields[:2])
-            and _BUILDX_REVISION.fullmatch(fields[2]) is not None
-        ):
-            module, version, _revision = fields
-            if module == _BUILDX_UPSTREAM_MODULE and version == "v0.35.0":
-                predicate = BuildxAuthorityPredicate.UPSTREAM_V0_35_0
-            elif (
-                module == _BUILDX_UPSTREAM_MODULE
-                and _BUILDX_UPSTREAM_RELEASE.fullmatch(version) is not None
-            ):
-                predicate = BuildxAuthorityPredicate.UPSTREAM_OTHER
-            else:
-                predicate = BuildxAuthorityPredicate.OTHER_DISTRIBUTION
-    recorder.record(predicate)
 
 
 @dataclass(slots=True)
@@ -340,6 +308,7 @@ class DockerBuilderIdentity:
     endpoint: str
     status: str
     builder_error: BuilderErrorPredicate = field(compare=False, repr=False)
+    node_error: BuilderErrorPredicate = field(compare=False, repr=False)
 
     @property
     def stable_identity(self) -> tuple[str, str, str, str, str]:
@@ -355,6 +324,7 @@ class DockerBuilderInventory:
     current_context: str
     builders: tuple[DockerBuilderIdentity, ...]
     row_count: int
+    context_target_count: int
 
     @property
     def stable_identity(self) -> tuple[tuple[str, str, str, str, str], ...]:
@@ -380,6 +350,13 @@ class DockerBuilderSelectionPlan:
     @property
     def rollback_argv(self) -> tuple[str, ...]:
         return ("docker", "buildx", "use", self.prior_builder)
+
+
+@dataclass(frozen=True)
+class DockerBuilderSelectionEvaluation:
+    inventory: DockerBuilderInventory
+    snapshot: BuilderPrestateSnapshot
+    plan: DockerBuilderSelectionPlan | None
 
 
 class BuildCapacityPreflightPredicate(StrEnum):
@@ -936,6 +913,102 @@ def _node_schema_failure(
     )
 
 
+def _error_shape(value: Mapping[str, object], key: str) -> BuilderErrorPredicate:
+    if key not in value:
+        return BuilderErrorPredicate.ABSENT
+    error = value[key]
+    if not isinstance(error, str) or not error:
+        return BuilderErrorPredicate.INVALID
+    return BuilderErrorPredicate.PRESENT
+
+
+def _parse_builder_node(
+    node: object,
+    *,
+    builder_recorder: BuilderSelectionRecorder | None,
+    node_recorder: NodeSchemaRecorder | None,
+) -> tuple[str, str, str, BuilderErrorPredicate]:
+    if not isinstance(node, dict):
+        _node_schema_failure(builder_recorder, node_recorder, NodeSchemaPredicate.NODE_NOT_MAPPING)
+    for key, missing, null, wrong_type in (
+        (
+            "Name",
+            NodeSchemaPredicate.NAME_MISSING,
+            NodeSchemaPredicate.NAME_NULL,
+            NodeSchemaPredicate.NAME_NOT_STRING,
+        ),
+        (
+            "Endpoint",
+            NodeSchemaPredicate.ENDPOINT_MISSING,
+            NodeSchemaPredicate.ENDPOINT_NULL,
+            NodeSchemaPredicate.ENDPOINT_NOT_STRING,
+        ),
+    ):
+        if key not in node:
+            _node_schema_failure(builder_recorder, node_recorder, missing)
+        if node[key] is None:
+            _node_schema_failure(builder_recorder, node_recorder, null)
+        if not isinstance(node[key], str):
+            _node_schema_failure(builder_recorder, node_recorder, wrong_type)
+    status = node.get("Status", "")
+    if status is None:
+        _node_schema_failure(builder_recorder, node_recorder, NodeSchemaPredicate.STATUS_NULL)
+    if not isinstance(status, str):
+        _node_schema_failure(builder_recorder, node_recorder, NodeSchemaPredicate.STATUS_NOT_STRING)
+    return node["Name"], node["Endpoint"], status, _error_shape(node, "Err")
+
+
+def _parse_builder_row(
+    row: object,
+    *,
+    builder_recorder: BuilderSelectionRecorder | None,
+    node_recorder: NodeSchemaRecorder | None,
+) -> tuple[str, DockerBuilderIdentity]:
+    if not isinstance(row, dict):
+        _builder_selection_failure(
+            builder_recorder,
+            BuilderSelectionPredicate.ROW_SCHEMA,
+            "Docker builder evidence is invalid.",
+        )
+    name, current, driver, nodes = (
+        row.get("Name"),
+        row.get("Current"),
+        row.get("Driver"),
+        row.get("Nodes"),
+    )
+    if (
+        not isinstance(name, str)
+        or _BUILDER_NAME.fullmatch(name) is None
+        or not isinstance(current, bool)
+        or not isinstance(driver, str)
+        or not isinstance(nodes, list)
+    ):
+        _builder_selection_failure(
+            builder_recorder,
+            BuilderSelectionPredicate.ROW_SCHEMA,
+            "Docker builder evidence is invalid.",
+        )
+    if len(nodes) != 1:
+        _builder_selection_failure(
+            builder_recorder,
+            BuilderSelectionPredicate.NODE_COUNT,
+            "DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE",
+        )
+    node_name, endpoint, status, node_error = _parse_builder_node(
+        nodes[0], builder_recorder=builder_recorder, node_recorder=node_recorder
+    )
+    return name, DockerBuilderIdentity(
+        name=name,
+        current=current,
+        driver=driver,
+        node_name=node_name,
+        endpoint=endpoint,
+        status=status,
+        builder_error=_error_shape(row, "Err"),
+        node_error=node_error,
+    )
+
+
 def parse_docker_builder_inventory(
     raw: str,
     environ: Mapping[str, str],
@@ -952,7 +1025,6 @@ def parse_docker_builder_inventory(
             BuilderSelectionPredicate.EXTERNAL_BUILDKIT_HOST,
             "EXTERNAL_BUILDKIT_HOST_UNSUPPORTED",
         )
-    parsed_builders: list[tuple[str, tuple[bool, str, str, str, str, BuilderErrorPredicate]]] = []
     try:
         rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
     except json.JSONDecodeError as error:
@@ -962,128 +1034,18 @@ def parse_docker_builder_inventory(
             "Docker builder evidence is invalid.",
             cause=error,
         )
-    for row in rows:
-        if not isinstance(row, dict):
-            _builder_selection_failure(
-                builder_selection_recorder,
-                BuilderSelectionPredicate.ROW_SCHEMA,
-                "Docker builder evidence is invalid.",
-            )
-        name = row.get("Name")
-        current = row.get("Current")
-        driver = row.get("Driver")
-        nodes = row.get("Nodes")
-        if "Err" not in row:
-            builder_error = BuilderErrorPredicate.ABSENT
-        elif not isinstance(row["Err"], str) or row["Err"] == "":
-            builder_error = BuilderErrorPredicate.INVALID
-        else:
-            builder_error = BuilderErrorPredicate.PRESENT
-        if (
-            not isinstance(name, str)
-            or _BUILDER_NAME.fullmatch(name) is None
-            or not isinstance(current, bool)
-            or not isinstance(driver, str)
-            or not isinstance(nodes, list)
-        ):
-            _builder_selection_failure(
-                builder_selection_recorder,
-                BuilderSelectionPredicate.ROW_SCHEMA,
-                "Docker builder evidence is invalid.",
-            )
-        if len(nodes) != 1:
-            _builder_selection_failure(
-                builder_selection_recorder,
-                BuilderSelectionPredicate.NODE_COUNT,
-                "DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE",
-            )
-        node_names: list[str] = []
-        endpoints: list[str] = []
-        status_values: list[str] = []
-        for node in nodes:
-            if not isinstance(node, dict):
-                _node_schema_failure(
-                    builder_selection_recorder,
-                    node_schema_recorder,
-                    NodeSchemaPredicate.NODE_NOT_MAPPING,
-                )
-            if "Name" not in node:
-                _node_schema_failure(
-                    builder_selection_recorder,
-                    node_schema_recorder,
-                    NodeSchemaPredicate.NAME_MISSING,
-                )
-            node_name = node["Name"]
-            if node_name is None:
-                _node_schema_failure(
-                    builder_selection_recorder,
-                    node_schema_recorder,
-                    NodeSchemaPredicate.NAME_NULL,
-                )
-            if not isinstance(node_name, str):
-                _node_schema_failure(
-                    builder_selection_recorder,
-                    node_schema_recorder,
-                    NodeSchemaPredicate.NAME_NOT_STRING,
-                )
-            if "Endpoint" not in node:
-                _node_schema_failure(
-                    builder_selection_recorder,
-                    node_schema_recorder,
-                    NodeSchemaPredicate.ENDPOINT_MISSING,
-                )
-            endpoint = node["Endpoint"]
-            if endpoint is None:
-                _node_schema_failure(
-                    builder_selection_recorder,
-                    node_schema_recorder,
-                    NodeSchemaPredicate.ENDPOINT_NULL,
-                )
-            if not isinstance(endpoint, str):
-                _node_schema_failure(
-                    builder_selection_recorder,
-                    node_schema_recorder,
-                    NodeSchemaPredicate.ENDPOINT_NOT_STRING,
-                )
-            status = node.get("Status", "")
-            if status is None:
-                _node_schema_failure(
-                    builder_selection_recorder,
-                    node_schema_recorder,
-                    NodeSchemaPredicate.STATUS_NULL,
-                )
-            if not isinstance(status, str):
-                _node_schema_failure(
-                    builder_selection_recorder,
-                    node_schema_recorder,
-                    NodeSchemaPredicate.STATUS_NOT_STRING,
-                )
-            node_names.append(node_name)
-            endpoints.append(endpoint)
-            status_values.append(status)
-        evidence = (
-            current,
-            driver,
-            node_names[0],
-            endpoints[0],
-            status_values[0],
-            builder_error,
+    parsed = tuple(
+        _parse_builder_row(
+            row,
+            builder_recorder=builder_selection_recorder,
+            node_recorder=node_schema_recorder,
         )
-        parsed_builders.append((name, evidence))
-
+        for row in rows
+    )
     if node_schema_recorder is not None:
         node_schema_recorder.record(NodeSchemaPredicate.PASS)
     builders: dict[str, DockerBuilderIdentity] = {}
-    for name, evidence in parsed_builders:
-        identity = DockerBuilderIdentity(
-            name=name,
-            current=evidence[0],
-            driver=evidence[1],
-            node_name=evidence[2],
-            endpoint=evidence[3],
-            status=evidence[4],
-            builder_error=evidence[5],
-        )
+    for name, identity in parsed:
         if name in builders and builders[name] != identity:
             _builder_selection_failure(
                 builder_selection_recorder,
@@ -1092,9 +1054,10 @@ def parse_docker_builder_inventory(
             )
         builders[name] = identity
     return DockerBuilderInventory(
-        current_context=current_context,
-        builders=tuple(builders.values()),
-        row_count=len(parsed_builders),
+        current_context,
+        tuple(builders.values()),
+        len(parsed),
+        sum(name == current_context for name, _identity in parsed),
     )
 
 
@@ -1190,6 +1153,87 @@ def _selected_builder(
     return selected
 
 
+def _builder_prestate_rows(inventory: DockerBuilderInventory) -> tuple[BuilderPrestateRow, ...]:
+    return tuple(
+        BuilderPrestateRow(
+            current=builder.current,
+            driver=classify_driver(builder.driver),
+            status=classify_status(builder.status),
+            name_is_context=builder.name == inventory.current_context,
+            node_name_is_builder=builder.node_name == builder.name,
+            node_name_is_context=builder.node_name == inventory.current_context,
+            endpoint_is_context=builder.endpoint == inventory.current_context,
+            builder_error=builder.builder_error,
+            node_error=builder.node_error,
+        )
+        for builder in inventory.builders
+    )
+
+
+def _record_builder_prestate_snapshot(
+    snapshot: BuilderPrestateSnapshot,
+    *,
+    builder_selection_recorder: BuilderSelectionRecorder | None,
+    prior_driver_recorder: PriorDriverRecorder | None,
+    builder_error_recorder: BuilderErrorRecorder | None,
+) -> None:
+    if builder_selection_recorder is not None and not builder_selection_recorder.known:
+        builder_selection_recorder.record(snapshot.builder_selection)
+    prior_observed = snapshot.first_defect in {
+        DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER,
+        DockerBuilderSelectionPlanPredicate.PRIOR_STATUS,
+        DockerBuilderSelectionPlanPredicate.TARGET_MISSING,
+        DockerBuilderSelectionPlanPredicate.TARGET_DRIVER,
+        DockerBuilderSelectionPlanPredicate.TARGET_STATUS,
+        DockerBuilderSelectionPlanPredicate.TARGET_NODE_NAME,
+        DockerBuilderSelectionPlanPredicate.TARGET_ENDPOINT,
+        DockerBuilderSelectionPlanPredicate.TARGET_CURRENT,
+        DockerBuilderSelectionPlanPredicate.PASS,
+    }
+    if prior_observed and prior_driver_recorder is not None:
+        prior_driver_recorder.record(snapshot.prior_driver)
+    if prior_observed and builder_error_recorder is not None:
+        builder_error_recorder.record(snapshot.builder_error)
+
+
+def evaluate_docker_builder_selection_plan(
+    raw: str,
+    environ: Mapping[str, str],
+    *,
+    current_context: str,
+    version: BuildxVersionObservation | None = None,
+    builder_selection_recorder: BuilderSelectionRecorder | None = None,
+    node_schema_recorder: NodeSchemaRecorder | None = None,
+    prior_driver_recorder: PriorDriverRecorder | None = None,
+    builder_error_recorder: BuilderErrorRecorder | None = None,
+) -> DockerBuilderSelectionEvaluation:
+    inventory = parse_docker_builder_inventory(
+        raw,
+        environ,
+        current_context=current_context,
+        builder_selection_recorder=builder_selection_recorder,
+        node_schema_recorder=node_schema_recorder,
+    )
+    snapshot = observe_builder_prestate(
+        _builder_prestate_rows(inventory),
+        row_count=inventory.row_count,
+        context_target_count=inventory.context_target_count,
+        version=version,
+    )
+    _record_builder_prestate_snapshot(
+        snapshot,
+        builder_selection_recorder=builder_selection_recorder,
+        prior_driver_recorder=prior_driver_recorder,
+        builder_error_recorder=builder_error_recorder,
+    )
+    plan = None
+    if snapshot.first_defect is DockerBuilderSelectionPlanPredicate.PASS:
+        prior = next(builder for builder in inventory.builders if builder.current)
+        target = next(builder for builder in inventory.builders if builder.name == current_context)
+        plan = DockerBuilderSelectionPlan(inventory, prior.name, target.name)
+    return DockerBuilderSelectionEvaluation(inventory, snapshot, plan)
+
+
 def require_docker_builder_selection_plan(
     raw: str,
     environ: Mapping[str, str],
@@ -1216,123 +1260,28 @@ def require_docker_builder_selection_plan(
             DockerBuilderSelectionPlanPredicate.CURRENT_SELECTION_CONTRACT,
             "DOCKER_BUILDER_SELECTION_ENVIRONMENT_OVERRIDE",
         )
-    builder_selection = builder_selection_recorder or BuilderSelectionRecorder()
-    node_schema = node_schema_recorder or NodeSchemaRecorder()
-    prior_driver = prior_driver_recorder or PriorDriverRecorder()
     try:
-        _selected_builder(
+        evaluation = evaluate_docker_builder_selection_plan(
             raw,
             environ,
             current_context=current_context,
-            builder_selection_recorder=builder_selection,
-            node_schema_recorder=node_schema,
-        )
-    except DockerCapacityError:
-        pass
-    else:
-        fail(
-            DockerBuilderSelectionPlanPredicate.CURRENT_ALREADY_CANONICAL,
-            "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
-        )
-
-    try:
-        inventory = parse_docker_builder_inventory(
-            raw,
-            environ,
-            current_context=current_context,
+            builder_selection_recorder=builder_selection_recorder,
+            node_schema_recorder=node_schema_recorder,
+            prior_driver_recorder=prior_driver_recorder,
+            builder_error_recorder=builder_error_recorder,
         )
     except DockerCapacityError:
         fail(
             DockerBuilderSelectionPlanPredicate.CURRENT_SELECTION_CONTRACT,
             "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
         )
-    if inventory.row_count != len(inventory.builders):
-        fail(
-            DockerBuilderSelectionPlanPredicate.INVENTORY_DUPLICATE,
-            "DOCKER_BUILDER_SELECTION_INVENTORY_DUPLICATE",
-        )
-    current_builders = tuple(builder for builder in inventory.builders if builder.current)
-    if len(current_builders) != 1:
-        fail(
-            DockerBuilderSelectionPlanPredicate.CURRENT_COUNT,
-            "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
-        )
-    prior = current_builders[0]
-    expected_driver_transition = (
-        builder_selection.predicate is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
-        and node_schema.predicate is NodeSchemaPredicate.PASS
-    )
-    expected_stopped_prior = (
-        builder_selection.predicate is BuilderSelectionPredicate.NODE_NOT_RUNNING
-        and node_schema.predicate is NodeSchemaPredicate.PASS
-        and prior.driver == "docker-container"
-    )
-    if not (expected_driver_transition or expected_stopped_prior):
-        fail(
-            DockerBuilderSelectionPlanPredicate.CURRENT_SELECTION_CONTRACT,
-            "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
-        )
-    if builder_error_recorder is not None:
-        builder_error_recorder.record(prior.builder_error)
-    if prior.driver == "docker-container":
-        prior_driver.record(PriorDriverPredicate.PASS)
-    elif prior.driver == "":
-        prior_driver.record(PriorDriverPredicate.EMPTY)
-    elif prior.driver == "cloud":
-        prior_driver.record(PriorDriverPredicate.CLOUD)
-    elif prior.driver == "kubernetes":
-        prior_driver.record(PriorDriverPredicate.KUBERNETES)
-    elif prior.driver == "remote":
-        prior_driver.record(PriorDriverPredicate.REMOTE)
-    else:
-        prior_driver.record(PriorDriverPredicate.UNRECOGNIZED)
-    if prior_driver.predicate is not PriorDriverPredicate.PASS:
-        fail(
-            DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER,
-            "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
-        )
-    if prior.status != "running":
-        fail(
-            DockerBuilderSelectionPlanPredicate.PRIOR_STATUS,
-            "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
-        )
-    targets = tuple(builder for builder in inventory.builders if builder.name == current_context)
-    if len(targets) != 1:
-        fail(
-            DockerBuilderSelectionPlanPredicate.TARGET_MISSING,
-            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
-        )
-    target = targets[0]
-    if target.driver != "docker":
-        fail(
-            DockerBuilderSelectionPlanPredicate.TARGET_DRIVER,
-            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
-        )
-    if target.status != "running":
-        fail(
-            DockerBuilderSelectionPlanPredicate.TARGET_STATUS,
-            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
-        )
-    if target.node_name != current_context:
-        fail(
-            DockerBuilderSelectionPlanPredicate.TARGET_NODE_NAME,
-            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
-        )
-    if target.endpoint != current_context:
-        fail(
-            DockerBuilderSelectionPlanPredicate.TARGET_ENDPOINT,
-            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
-        )
-    if target.current:
-        fail(
-            DockerBuilderSelectionPlanPredicate.TARGET_CURRENT,
-            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
-        )
-    plan = DockerBuilderSelectionPlan(
-        inventory=inventory,
-        prior_builder=prior.name,
-        target_builder=target.name,
-    )
+    snapshot = evaluation.snapshot
+    if snapshot.first_defect is not DockerBuilderSelectionPlanPredicate.PASS:
+        message = legacy_plan_error(snapshot.first_defect)
+        assert message is not None
+        fail(snapshot.first_defect, message)
+    plan = evaluation.plan
+    assert plan is not None
     if plan_recorder is not None:
         plan_recorder.record(DockerBuilderSelectionPlanPredicate.PASS)
     return plan

@@ -118,9 +118,10 @@ requires `SEC-DOCKER-BUILDER-SELECT-001` user approval before any host mutation.
 Its separate fixed `BUILDER_SELECTION_PRESTATE` phase performs only a locked, value-free
 capture-and-reproof diagnostic and cannot select a builder or authorize a host change. Its closed
 prior-driver evidence distinguishes an empty unresolved factory result, Docker Build Cloud,
-Kubernetes, remote and nonempty unrecognized drivers. The phase also reduces the optional builder
-error shape and one bounded Buildx version query to closed predicates without exposing provider or
-version values, and none of that evidence accepts a non-`docker-container` prior state.
+Kubernetes, remote and nonempty unrecognized drivers. One immutable `BUILDER_PRESTATE_V2` snapshot
+also reduces distribution shape, prior/target relation, prior status/error and target contract from
+the already-fetched inventory and one bounded Buildx version query, without exposing provider or
+version values or accepting a non-`docker-container` prior state.
 The AppliedState-to-runtime comparison, bounded four-class drift evidence and explicit no-auto-stop
 boundary are defined by [ADR-0113](adr/0113-governed-local-topology-drift.md). Its sole optional
 Mac reconciliation prepares the already-selected Neo4j/APISIX topology through canonical

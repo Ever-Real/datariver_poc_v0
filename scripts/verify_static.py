@@ -1825,199 +1825,142 @@ def verify_governed_docker_build_capacity_contract() -> None:
         ("MEASURE_ONLY", "MEASURE_ONLY"),
     ):
         raise AssertionError("the default-preserving capacity mode has drifted")
-    expected_builder_selection_predicates = tuple(
-        (value, value)
-        for value in (
-            "EXTERNAL_BUILDKIT_HOST",
-            "LIST_JSON",
-            "ROW_SCHEMA",
-            "NODE_COUNT",
-            "NODE_SCHEMA",
-            "DUPLICATE_CONFLICT",
-            "CURRENT_MISSING",
-            "CURRENT_AMBIGUOUS",
-            "OVERRIDE_INVALID",
-            "OVERRIDE_NOT_CURRENT",
-            "DRIVER_NOT_DOCKER",
-            "NODE_NOT_RUNNING",
-            "BUILDER_CONTEXT_MISMATCH",
-            "NODE_NAME_MISMATCH",
-            "ENDPOINT_CONTEXT_MISMATCH",
-            "PASS",
-            "UNKNOWN",
+    prestate_path = ROOT / "scripts" / "docker_builder_prestate.py"
+    prestate_source = prestate_path.read_text(encoding="utf-8")
+    prestate_syntax = ast.parse(prestate_source, filename=prestate_path.as_posix())
+
+    def prestate_enum(class_name: str) -> tuple[str, ...]:
+        matches = [
+            node
+            for node in prestate_syntax.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        ]
+        if len(matches) != 1:
+            raise AssertionError(f"the pure prestate enum is not unique: {class_name}")
+        return tuple(
+            statement.targets[0].id
+            for statement in matches[0].body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
         )
-    )
-    if capacity_enum_members("BuilderSelectionPredicate") != expected_builder_selection_predicates:
-        raise AssertionError("the builder-selection predicate vocabulary has drifted")
-    expected_selection_plan_predicates = tuple(
-        (value, value)
-        for value in (
-            "CURRENT_SELECTION_CONTRACT",
-            "CURRENT_ALREADY_CANONICAL",
-            "INVENTORY_DUPLICATE",
-            "CURRENT_COUNT",
-            "PRIOR_DRIVER",
-            "PRIOR_STATUS",
-            "TARGET_MISSING",
-            "TARGET_DRIVER",
-            "TARGET_STATUS",
-            "TARGET_NODE_NAME",
-            "TARGET_ENDPOINT",
-            "TARGET_CURRENT",
-            "PLAN_DRIFT",
-            "PASS",
-            "UNKNOWN",
-        )
-    )
-    if (
-        capacity_enum_members("DockerBuilderSelectionPlanPredicate")
-        != expected_selection_plan_predicates
+
+    expected_prestate_enums = {
+        "BuilderSelectionPredicate": tuple(
+            "EXTERNAL_BUILDKIT_HOST LIST_JSON ROW_SCHEMA NODE_COUNT NODE_SCHEMA "
+            "DUPLICATE_CONFLICT CURRENT_MISSING CURRENT_AMBIGUOUS OVERRIDE_INVALID "
+            "OVERRIDE_NOT_CURRENT DRIVER_NOT_DOCKER NODE_NOT_RUNNING "
+            "BUILDER_CONTEXT_MISMATCH NODE_NAME_MISMATCH ENDPOINT_CONTEXT_MISMATCH "
+            "PASS UNKNOWN".split()
+        ),
+        "NodeSchemaPredicate": tuple(
+            "NODE_NOT_MAPPING NAME_MISSING NAME_NULL NAME_NOT_STRING ENDPOINT_MISSING "
+            "ENDPOINT_NULL ENDPOINT_NOT_STRING STATUS_NULL STATUS_NOT_STRING PASS UNKNOWN".split()
+        ),
+        "DockerBuilderSelectionPlanPredicate": tuple(
+            "CURRENT_SELECTION_CONTRACT CURRENT_ALREADY_CANONICAL INVENTORY_DUPLICATE "
+            "CURRENT_COUNT PRIOR_DRIVER PRIOR_STATUS TARGET_MISSING TARGET_DRIVER "
+            "TARGET_STATUS TARGET_NODE_NAME TARGET_ENDPOINT TARGET_CURRENT PLAN_DRIFT "
+            "PASS UNKNOWN".split()
+        ),
+        "PriorDriverPredicate": tuple(
+            "EMPTY CLOUD KUBERNETES REMOTE UNRECOGNIZED PASS UNKNOWN".split()
+        ),
+        "BuilderErrorPredicate": ("ABSENT", "PRESENT", "INVALID", "UNKNOWN"),
+        "BuildxAuthorityPredicate": tuple(
+            "UPSTREAM_V0_35_0 UPSTREAM_OTHER OTHER_DISTRIBUTION OUTPUT_INVALID UNKNOWN".split()
+        ),
+        "BuildxDistributionPredicate": tuple(
+            "DOCUMENTED_DESKTOP_SUFFIX UPSTREAM_MODULE_NONRELEASE OTHER_MODULE "
+            "NOT_APPLICABLE UNKNOWN".split()
+        ),
+        "PriorTargetRelationPredicate": tuple(
+            "SAME DISTINCT TARGET_MISSING TARGET_MULTIPLE UNKNOWN".split()
+        ),
+        "PriorStatusPredicate": ("RUNNING", "STOPPED", "ERROR", "EMPTY", "OTHER", "UNKNOWN"),
+        "TargetContractPredicate": tuple(
+            "PASS MISSING MULTIPLE DRIVER STATUS NODE_NAME ENDPOINT UNKNOWN".split()
+        ),
+        "BuilderDriverKind": tuple(
+            "DOCKER DOCKER_CONTAINER EMPTY CLOUD KUBERNETES REMOTE OTHER".split()
+        ),
+    }
+    if any(prestate_enum(name) != members for name, members in expected_prestate_enums.items()):
+        raise AssertionError("the pure builder-prestate vocabulary has drifted")
+    forbidden_prestate_imports = {"subprocess", "pathlib", "os", "logging", "json"}
+    imported = {
+        alias.name.split(".", maxsplit=1)[0]
+        for node in prestate_syntax.body
+        if isinstance(node, (ast.Import, ast.ImportFrom))
+        for alias in node.names
+    }
+    if imported & forbidden_prestate_imports:
+        raise AssertionError("the pure builder-prestate module gained I/O authority")
+    if any(
+        isinstance(node, ast.ClassDef) and node.name.endswith("Recorder")
+        for node in prestate_syntax.body
     ):
-        raise AssertionError("the builder-selection plan predicate vocabulary has drifted")
-    official_driver_assignments = [
+        raise AssertionError("the pure builder-prestate module must not add mutable recorders")
+    snapshot_classes = [
         node
-        for node in capacity_syntax.body
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id == "_OFFICIAL_BUILDX_DRIVER_KINDS"
+        for node in prestate_syntax.body
+        if isinstance(node, ast.ClassDef) and node.name == "BuilderPrestateSnapshot"
     ]
-    if len(official_driver_assignments) != 1 or ast.literal_eval(
-        official_driver_assignments[0].value
-    ) != ("docker", "docker-container", "cloud", "kubernetes", "remote"):
-        raise AssertionError("the official Buildx driver vocabulary has drifted")
-    plan_recorder = capacity.split("class DockerBuilderSelectionPlanRecorder:", maxsplit=1)[
-        1
-    ].split("class PriorDriverPredicate", maxsplit=1)[0]
-    for fragment in (
-        "predicate: DockerBuilderSelectionPlanPredicate =",
-        "DockerBuilderSelectionPlanPredicate.UNKNOWN",
-        "return self.predicate is not DockerBuilderSelectionPlanPredicate.UNKNOWN",
-        "or self.known",
-        "self.predicate = predicate",
-        "def replace_pass_with_drift(self) -> None:",
-        "self.predicate = DockerBuilderSelectionPlanPredicate.PLAN_DRIFT",
+    if len(snapshot_classes) != 1:
+        raise AssertionError("the immutable builder-prestate snapshot must remain unique")
+    snapshot_decorators = [
+        decorator
+        for decorator in snapshot_classes[0].decorator_list
+        if isinstance(decorator, ast.Call)
+        and isinstance(decorator.func, ast.Name)
+        and decorator.func.id == "dataclass"
+    ]
+    if len(snapshot_decorators) != 1 or {
+        keyword.arg: ast.literal_eval(keyword.value) for keyword in snapshot_decorators[0].keywords
+    } != {"frozen": True, "slots": True}:
+        raise AssertionError("the builder-prestate snapshot must remain frozen and slotted")
+    snapshot_fields = tuple(
+        statement.target.id
+        for statement in snapshot_classes[0].body
+        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name)
+    )
+    if snapshot_fields != (
+        "buildx_authority",
+        "buildx_distribution",
+        "builder_selection",
+        "node_schema",
+        "prior_driver",
+        "builder_error",
+        "prior_target_relation",
+        "prior_status",
+        "prior_node_error",
+        "target_contract",
+        "first_defect",
     ):
-        if fragment not in plan_recorder:
-            raise AssertionError(f"the builder-selection plan recorder is missing: {fragment}")
-    expected_prior_driver_predicates = tuple(
-        (value, value)
-        for value in (
-            "EMPTY",
-            "CLOUD",
-            "KUBERNETES",
-            "REMOTE",
-            "UNRECOGNIZED",
-            "PASS",
-            "UNKNOWN",
+        raise AssertionError("the immutable builder-prestate snapshot fields have drifted")
+    version_functions = [
+        node
+        for node in prestate_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "observe_buildx_version"
+    ]
+    if len(version_functions) != 1:
+        raise AssertionError("the pure Buildx version observer must remain unique")
+    version_nodes = tuple(ast.walk(version_functions[0]))
+    version_constants = {node.value for node in version_nodes if isinstance(node, ast.Constant)}
+
+    def version_name_lines(identifier: str) -> list[int]:
+        return sorted(
+            node.lineno
+            for node in version_nodes
+            if isinstance(node, ast.Name) and node.id == identifier
         )
-    )
-    if capacity_enum_members("PriorDriverPredicate") != expected_prior_driver_predicates:
-        raise AssertionError("the prior-driver predicate vocabulary has drifted")
-    prior_driver_recorder = capacity.split("class PriorDriverRecorder:", maxsplit=1)[1].split(
-        "class BuilderErrorPredicate",
-        maxsplit=1,
-    )[0]
-    for fragment in (
-        "predicate: PriorDriverPredicate = PriorDriverPredicate.UNKNOWN",
-        "return self.predicate is not PriorDriverPredicate.UNKNOWN",
-        "not isinstance(predicate, PriorDriverPredicate)",
-        "predicate is PriorDriverPredicate.UNKNOWN",
-        "or self.known",
-        'raise DockerCapacityError("PRIOR_DRIVER_EVIDENCE_INVALID")',
-        "self.predicate = predicate",
+
+    desktop_lines = version_name_lines("_DESKTOP")
+    module_lines = version_name_lines("_UPSTREAM_MODULE")
+    if not {2, 3, "buildx"}.issubset(version_constants) or not (
+        len(desktop_lines) == 2 and module_lines and desktop_lines[0] < module_lines[0]
     ):
-        if fragment not in prior_driver_recorder:
-            raise AssertionError(f"the prior-driver recorder is missing: {fragment}")
-    expected_builder_error_predicates = tuple(
-        (value, value) for value in ("ABSENT", "PRESENT", "INVALID", "UNKNOWN")
-    )
-    if capacity_enum_members("BuilderErrorPredicate") != expected_builder_error_predicates:
-        raise AssertionError("the builder-error predicate vocabulary has drifted")
-    expected_buildx_authority_predicates = tuple(
-        (value, value)
-        for value in (
-            "UPSTREAM_V0_35_0",
-            "UPSTREAM_OTHER",
-            "OTHER_DISTRIBUTION",
-            "OUTPUT_INVALID",
-            "UNKNOWN",
-        )
-    )
-    if capacity_enum_members("BuildxAuthorityPredicate") != (expected_buildx_authority_predicates):
-        raise AssertionError("the Buildx authority predicate vocabulary has drifted")
-    builder_error_source = capacity.split("class BuilderErrorPredicate", maxsplit=1)[1].split(
-        "class BuildxAuthorityPredicate", maxsplit=1
-    )[0]
-    buildx_authority_source = capacity.split("class BuildxAuthorityPredicate", maxsplit=1)[1].split(
-        "class NodeSchemaRecorder", maxsplit=1
-    )[0]
-    for fragment in (
-        "predicate: BuilderErrorPredicate = BuilderErrorPredicate.UNKNOWN",
-        "return self.predicate is not BuilderErrorPredicate.UNKNOWN",
-        'raise DockerCapacityError("BUILDER_ERROR_EVIDENCE_INVALID")',
-    ):
-        if fragment not in builder_error_source:
-            raise AssertionError(f"the builder-error recorder is missing: {fragment}")
-    for fragment in (
-        "predicate: BuildxAuthorityPredicate = BuildxAuthorityPredicate.UNKNOWN",
-        "return self.predicate is not BuildxAuthorityPredicate.UNKNOWN",
-        'raise DockerCapacityError("BUILDX_AUTHORITY_EVIDENCE_INVALID")',
-        'len(raw.encode("utf-8")) <= _BUILDX_AUTHORITY_MAXIMUM_BYTES',
-        'module == _BUILDX_UPSTREAM_MODULE and version == "v0.35.0"',
-        "BuildxAuthorityPredicate.UPSTREAM_OTHER",
-        "BuildxAuthorityPredicate.OTHER_DISTRIBUTION",
-        "BuildxAuthorityPredicate.OUTPUT_INVALID",
-    ):
-        if fragment not in buildx_authority_source:
-            raise AssertionError(f"the Buildx authority classifier is missing: {fragment}")
-    builder_selection_recorder = capacity.split("class BuilderSelectionRecorder:", maxsplit=1)[
-        1
-    ].split("class NodeSchemaPredicate", maxsplit=1)[0]
-    for fragment in (
-        "predicate: BuilderSelectionPredicate = BuilderSelectionPredicate.UNKNOWN",
-        "return self.predicate is not BuilderSelectionPredicate.UNKNOWN",
-        "not isinstance(predicate, BuilderSelectionPredicate)",
-        "predicate is BuilderSelectionPredicate.UNKNOWN",
-        "or self.known",
-        'raise DockerCapacityError("BUILDER_SELECTION_EVIDENCE_INVALID")',
-        "self.predicate = predicate",
-    ):
-        if fragment not in builder_selection_recorder:
-            raise AssertionError(f"the builder-selection recorder is missing: {fragment}")
-    expected_node_schema_predicates = tuple(
-        (value, value)
-        for value in (
-            "NODE_NOT_MAPPING",
-            "NAME_MISSING",
-            "NAME_NULL",
-            "NAME_NOT_STRING",
-            "ENDPOINT_MISSING",
-            "ENDPOINT_NULL",
-            "ENDPOINT_NOT_STRING",
-            "STATUS_NULL",
-            "STATUS_NOT_STRING",
-            "PASS",
-            "UNKNOWN",
-        )
-    )
-    if capacity_enum_members("NodeSchemaPredicate") != expected_node_schema_predicates:
-        raise AssertionError("the node-schema predicate vocabulary has drifted")
-    node_schema_recorder = capacity.split("class NodeSchemaRecorder:", maxsplit=1)[1].split(
-        "class BuildCapacityPreflightPredicate",
-        maxsplit=1,
-    )[0]
-    for fragment in (
-        "predicate: NodeSchemaPredicate = NodeSchemaPredicate.UNKNOWN",
-        "return self.predicate is not NodeSchemaPredicate.UNKNOWN",
-        "not isinstance(predicate, NodeSchemaPredicate)",
-        "predicate is NodeSchemaPredicate.UNKNOWN",
-        "or self.known",
-        'raise DockerCapacityError("NODE_SCHEMA_EVIDENCE_INVALID")',
-        "self.predicate = predicate",
-    ):
-        if fragment not in node_schema_recorder:
-            raise AssertionError(f"the node-schema recorder is missing: {fragment}")
+        raise AssertionError("Desktop suffix evidence must precede module-origin classification")
     expected_capacity_predicates = tuple(
         (value, value)
         for value in (
@@ -2063,23 +2006,41 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ]
     if len(inventory_parser_functions) != 1:
         raise AssertionError("the shared immutable builder inventory parser must remain unique")
-    builder_failure_pairs: list[tuple[str, object]] = []
 
-    class BuilderFailureOrderVisitor(ast.NodeVisitor):
-        def visit_Call(self, node: ast.Call) -> None:
-            if (
-                isinstance(node.func, ast.Name)
+    def builder_failures(function: ast.FunctionDef) -> tuple[tuple[str, object], ...]:
+        calls = sorted(
+            (
+                node
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
                 and node.func.id == "_builder_selection_failure"
                 and len(node.args) >= 3
                 and isinstance(node.args[1], ast.Attribute)
                 and isinstance(node.args[1].value, ast.Name)
                 and node.args[1].value.id == "BuilderSelectionPredicate"
-            ):
-                builder_failure_pairs.append((node.args[1].attr, ast.literal_eval(node.args[2])))
-            self.generic_visit(node)
+            ),
+            key=lambda node: (node.lineno, node.col_offset),
+        )
+        return tuple((call.args[1].attr, ast.literal_eval(call.args[2])) for call in calls)
 
-    BuilderFailureOrderVisitor().visit(inventory_parser_functions[0])
-    BuilderFailureOrderVisitor().visit(selected_builder_functions[0])
+    row_parser = next(
+        node
+        for node in capacity_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_parse_builder_row"
+    )
+    node_parser = next(
+        node
+        for node in capacity_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_parse_builder_node"
+    )
+    parser_failures = builder_failures(inventory_parser_functions[0])
+    builder_failure_pairs = (
+        parser_failures[:2]
+        + builder_failures(row_parser)
+        + parser_failures[2:]
+        + builder_failures(selected_builder_functions[0])
+    )
     expected_builder_failure_pairs = (
         ("EXTERNAL_BUILDKIT_HOST", "EXTERNAL_BUILDKIT_HOST_UNSUPPORTED"),
         ("LIST_JSON", "Docker builder evidence is invalid."),
@@ -2098,7 +2059,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
         ("NODE_NAME_MISMATCH", "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER"),
         ("ENDPOINT_CONTEXT_MISMATCH", "DOCKER_BUILDER_NOT_LOCAL_RUNNING_DOCKER_DRIVER"),
     )
-    if tuple(builder_failure_pairs) != expected_builder_failure_pairs:
+    if builder_failure_pairs != expected_builder_failure_pairs:
         raise AssertionError("the exact builder-selection branches or legacy errors have drifted")
     selected_builder_source = ast.get_source_segment(capacity, selected_builder_functions[0])
     if selected_builder_source is None or not (
@@ -2125,15 +2086,17 @@ def verify_governed_docker_build_capacity_contract() -> None:
         if fragment not in node_schema_failure:
             raise AssertionError(f"the node-schema failure boundary is missing: {fragment}")
     node_schema_failures = tuple(
-        node.args[2].attr
-        for node in ast.walk(inventory_parser_functions[0])
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_node_schema_failure"
-        and len(node.args) == 3
-        and isinstance(node.args[2], ast.Attribute)
-        and isinstance(node.args[2].value, ast.Name)
-        and node.args[2].value.id == "NodeSchemaPredicate"
+        node.attr
+        for node in sorted(
+            (
+                item
+                for item in ast.walk(node_parser)
+                if isinstance(item, ast.Attribute)
+                and isinstance(item.value, ast.Name)
+                and item.value.id == "NodeSchemaPredicate"
+            ),
+            key=lambda item: (item.lineno, item.col_offset),
+        )
     )
     if node_schema_failures != (
         "NODE_NOT_MAPPING",
@@ -2149,7 +2112,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
         raise AssertionError("the exact node-schema branch order has drifted")
     status_assignments = [
         node
-        for node in ast.walk(inventory_parser_functions[0])
+        for node in ast.walk(node_parser)
         if isinstance(node, ast.Assign)
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
@@ -2173,7 +2136,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
     builder_name_fullmatch_calls = sorted(
         (
             call
-            for function in (inventory_parser_functions[0], selected_builder_functions[0])
+            for function in (row_parser, node_parser, selected_builder_functions[0])
             for call in ast.walk(function)
             if isinstance(call, ast.Call)
             and isinstance(call.func, ast.Attribute)
@@ -2194,24 +2157,6 @@ def verify_governed_docker_build_capacity_contract() -> None:
         raise AssertionError(
             "Buildx node and endpoint strings must not use the builder-name grammar"
         )
-    provider_shape_order = tuple(
-        inventory_parser_source.index(fragment)
-        for fragment in (
-            'if "Name" not in node:',
-            "if node_name is None:",
-            "if not isinstance(node_name, str):",
-            'if "Endpoint" not in node:',
-            "if endpoint is None:",
-            "if not isinstance(endpoint, str):",
-            'status = node.get("Status", "")',
-            "if status is None:",
-            "if not isinstance(status, str):",
-            "node_schema_recorder.record(NodeSchemaPredicate.PASS)",
-            "for name, evidence in parsed_builders:",
-        )
-    )
-    if provider_shape_order != tuple(sorted(provider_shape_order)):
-        raise AssertionError("Buildx node structural validation order has drifted")
     semantic_order = tuple(
         selected_builder_source.index(fragment)
         for fragment in (
@@ -2272,21 +2217,26 @@ def verify_governed_docker_build_capacity_contract() -> None:
             raise AssertionError(f"structured capacity phase evidence is missing: {fragment}")
     if "_BUILDER_NAME.fullmatch(node_name)" in inventory_parser_source:
         raise AssertionError("Buildx node names must reach the exact selected-name equality check")
-    builder_error_shape = tuple(
-        inventory_parser_source.index(fragment)
-        for fragment in (
-            'if "Err" not in row:',
-            "builder_error = BuilderErrorPredicate.ABSENT",
-            'elif not isinstance(row["Err"], str) or row["Err"] == "":',
-            "builder_error = BuilderErrorPredicate.INVALID",
-            "builder_error = BuilderErrorPredicate.PRESENT",
-            "builder_error=evidence[5]",
+    error_shape = next(
+        node
+        for node in capacity_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_error_shape"
+    )
+    error_predicates = tuple(
+        node.attr
+        for node in sorted(
+            (
+                item
+                for item in ast.walk(error_shape)
+                if isinstance(item, ast.Attribute)
+                and isinstance(item.value, ast.Name)
+                and item.value.id == "BuilderErrorPredicate"
+            ),
+            key=lambda item: (item.lineno, item.col_offset),
         )
     )
-    if builder_error_shape != tuple(sorted(builder_error_shape)):
+    if error_predicates != ("ABSENT", "INVALID", "PRESENT"):
         raise AssertionError("the optional builder Err shape classification order has drifted")
-    if "builder_error: BuilderErrorPredicate = field(compare=False, repr=False)" not in capacity:
-        raise AssertionError("raw builder Err must stay outside private inventory identity")
     private_policy = capacity.split('cache_action = "none"', maxsplit=1)[1].split(
         "help_output = _safe_output", maxsplit=1
     )[0]
@@ -2324,157 +2274,80 @@ def verify_governed_docker_build_capacity_contract() -> None:
     for forbidden in ("--default", "--global", "create", "remove", "stop", "bootstrap"):
         if forbidden in selection_plan:
             raise AssertionError(f"the builder-selection plan widened its authority: {forbidden}")
-    for fragment in (
-        "class DockerBuilderIdentity:",
-        "class DockerBuilderInventory:",
-        "class DockerBuilderSelectionPlan:",
-        "def parse_docker_builder_inventory(",
-        "def require_docker_builder_selection_plan(",
-        "def require_docker_builder_selection_poststate(",
-        "def docker_builder_selection_residual_count(",
-        "builder.name == current_context",
-        'target.driver != "docker"',
-        'target.status != "running"',
-        "target.node_name != current_context",
-        "target.endpoint != current_context",
-        "if target.current:",
-        'environ.get("BUILDKIT_HOST", "").strip()',
-        '"BUILDX_BUILDER", ""',
-        "inventory.row_count != len(inventory.builders)",
-        "inventory.stable_identity != plan.inventory.stable_identity",
+    capacity_names = {
+        node.name
+        for node in capacity_syntax.body
+        if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+    }
+    if not {
+        "DockerBuilderIdentity",
+        "DockerBuilderInventory",
+        "DockerBuilderSelectionPlan",
+        "parse_docker_builder_inventory",
+        "require_docker_builder_selection_plan",
+        "require_docker_builder_selection_poststate",
+        "docker_builder_selection_residual_count",
+    }.issubset(capacity_names):
+        raise AssertionError("the immutable builder-selection API has drifted")
+    observe_functions = [
+        node
+        for node in prestate_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "observe_builder_prestate"
+    ]
+    if len(observe_functions) != 1 or observe_functions[0].end_lineno is None:
+        raise AssertionError("the pure builder-prestate evaluator must remain unique")
+    if observe_functions[0].end_lineno - observe_functions[0].lineno + 1 > 80:
+        raise AssertionError("the pure builder-prestate evaluator exceeds its size boundary")
+    first_defect_order = tuple(
+        node.attr
+        for node in sorted(
+            (
+                item
+                for item in ast.walk(observe_functions[0])
+                if isinstance(item, ast.Attribute)
+                and isinstance(item.value, ast.Name)
+                and item.value.id == "DockerBuilderSelectionPlanPredicate"
+            ),
+            key=lambda item: (item.lineno, item.col_offset),
+        )
+    )
+    if first_defect_order != (
+        "CURRENT_SELECTION_CONTRACT",
+        "CURRENT_ALREADY_CANONICAL",
+        "INVENTORY_DUPLICATE",
+        "CURRENT_COUNT",
+        "CURRENT_SELECTION_CONTRACT",
+        "PRIOR_DRIVER",
+        "PRIOR_STATUS",
+        "PASS",
+        "TARGET_CURRENT",
     ):
-        if fragment not in capacity:
-            raise AssertionError(f"the immutable builder-selection contract is missing: {fragment}")
+        raise AssertionError("the pure builder-prestate first-defect order has drifted")
+    if not {"MISSING", "MULTIPLE", "TARGET_", "PASS"}.issubset(
+        {
+            node.value
+            for node in ast.walk(observe_functions[0])
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+    ):
+        raise AssertionError("the pure target-contract projection has drifted")
     plan_functions = [
         node
         for node in capacity_syntax.body
         if isinstance(node, ast.FunctionDef)
         and node.name == "require_docker_builder_selection_plan"
     ]
-    if len(plan_functions) != 1:
-        raise AssertionError("the builder-selection plan validator must remain unique")
-    plan_source = ast.get_source_segment(capacity, plan_functions[0])
-    if plan_source is None or "str(error)" in plan_source:
-        raise AssertionError("the builder-selection plan must use structural evidence only")
-    plan_failure_calls = sorted(
-        (
-            node
-            for node in ast.walk(plan_functions[0])
-            if isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "fail"
-            and node.args
-            and isinstance(node.args[0], ast.Attribute)
-            and isinstance(node.args[0].value, ast.Name)
-            and node.args[0].value.id == "DockerBuilderSelectionPlanPredicate"
-        ),
-        key=lambda node: (node.lineno, node.col_offset),
-    )
-    plan_failures = tuple(node.args[0].attr for node in plan_failure_calls)
-    if plan_failures != (
-        "CURRENT_SELECTION_CONTRACT",
-        "CURRENT_ALREADY_CANONICAL",
-        "CURRENT_SELECTION_CONTRACT",
-        "INVENTORY_DUPLICATE",
-        "CURRENT_COUNT",
-        "CURRENT_SELECTION_CONTRACT",
-        "PRIOR_DRIVER",
-        "PRIOR_STATUS",
-        "TARGET_MISSING",
-        "TARGET_DRIVER",
-        "TARGET_STATUS",
-        "TARGET_NODE_NAME",
-        "TARGET_ENDPOINT",
-        "TARGET_CURRENT",
-    ):
-        raise AssertionError("the builder-selection plan first-defect order has drifted")
-
-    def prior_driver_condition(node: ast.If, expected: str) -> bool:
-        test = node.test
-        return (
-            isinstance(test, ast.Compare)
-            and isinstance(test.left, ast.Attribute)
-            and isinstance(test.left.value, ast.Name)
-            and test.left.value.id == "prior"
-            and test.left.attr == "driver"
-            and len(test.ops) == 1
-            and isinstance(test.ops[0], ast.Eq)
-            and len(test.comparators) == 1
-            and isinstance(test.comparators[0], ast.Constant)
-            and test.comparators[0].value == expected
-        )
-
-    def prior_driver_records(statements: list[ast.stmt]) -> tuple[str, ...]:
-        return tuple(
-            call.args[0].attr
-            for statement in statements
-            for call in ast.walk(statement)
-            if isinstance(call, ast.Call)
-            and isinstance(call.func, ast.Attribute)
-            and isinstance(call.func.value, ast.Name)
-            and call.func.value.id == "prior_driver"
-            and call.func.attr == "record"
-            and len(call.args) == 1
-            and isinstance(call.args[0], ast.Attribute)
-            and isinstance(call.args[0].value, ast.Name)
-            and call.args[0].value.id == "PriorDriverPredicate"
-        )
-
-    prior_driver_roots = [
-        node
-        for node in ast.walk(plan_functions[0])
-        if isinstance(node, ast.If) and prior_driver_condition(node, "docker-container")
-    ]
-    if len(prior_driver_roots) != 1:
-        raise AssertionError("the exact docker-container prior-driver branch has drifted")
-    docker_container_branch = prior_driver_roots[0]
-    if (
-        prior_driver_records(docker_container_branch.body) != ("PASS",)
-        or len(docker_container_branch.orelse) != 1
-        or not isinstance(docker_container_branch.orelse[0], ast.If)
-    ):
-        raise AssertionError("exact docker-container must record prior-driver PASS")
-    empty_branch = docker_container_branch.orelse[0]
-    if (
-        not prior_driver_condition(empty_branch, "")
-        or prior_driver_records(empty_branch.body) != ("EMPTY",)
-        or len(empty_branch.orelse) != 1
-        or not isinstance(empty_branch.orelse[0], ast.If)
-    ):
-        raise AssertionError("an empty prior driver must record its closed subtype")
-    cloud_branch = empty_branch.orelse[0]
-    if (
-        not prior_driver_condition(cloud_branch, "cloud")
-        or prior_driver_records(cloud_branch.body) != ("CLOUD",)
-        or len(cloud_branch.orelse) != 1
-        or not isinstance(cloud_branch.orelse[0], ast.If)
-    ):
-        raise AssertionError("exact cloud must record its closed prior-driver subtype")
-    kubernetes_branch = cloud_branch.orelse[0]
-    if (
-        not prior_driver_condition(kubernetes_branch, "kubernetes")
-        or prior_driver_records(kubernetes_branch.body) != ("KUBERNETES",)
-        or len(kubernetes_branch.orelse) != 1
-        or not isinstance(kubernetes_branch.orelse[0], ast.If)
-    ):
-        raise AssertionError("exact kubernetes must record its closed prior-driver subtype")
-    remote_branch = kubernetes_branch.orelse[0]
-    if (
-        not prior_driver_condition(remote_branch, "remote")
-        or prior_driver_records(remote_branch.body) != ("REMOTE",)
-        or prior_driver_records(remote_branch.orelse) != ("UNRECOGNIZED",)
-    ):
-        raise AssertionError("remote and unrecognized prior-driver subtypes have drifted")
-    prior_driver_semantic_order = tuple(
-        plan_source.index(fragment)
-        for fragment in (
-            "if prior_driver.predicate is not PriorDriverPredicate.PASS:",
-            "DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER",
-            'if prior.status != "running":',
-        )
-    )
-    if prior_driver_semantic_order != tuple(sorted(prior_driver_semantic_order)):
-        raise AssertionError("prior-driver evidence must precede status and target validation")
+    plan_calls = {
+        node.func.id
+        for function in plan_functions
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    if len(plan_functions) != 1 or not {
+        "evaluate_docker_builder_selection_plan",
+        "legacy_plan_error",
+    }.issubset(plan_calls):
+        raise AssertionError("the legacy plan boundary must delegate to the pure snapshot")
 
     selection_operator_path = ROOT / "scripts" / "reconcile_docker_builder_selection.py"
     if not selection_operator_path.is_file() or not selection_operator_path.stat().st_mode & 0o111:
@@ -2484,6 +2357,83 @@ def verify_governed_docker_build_capacity_contract() -> None:
         selection_operator,
         filename=selection_operator_path.as_posix(),
     )
+    recorder_count = sum(
+        1
+        for tree in (capacity_syntax, selection_operator_syntax, prestate_syntax)
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name.endswith("Recorder")
+    )
+    if recorder_count > 7:
+        raise AssertionError("the builder-prestate extraction added mutable recorder debt")
+    bounded_functions = {
+        "parse_docker_builder_inventory",
+        "_parse_builder_row",
+        "_parse_builder_node",
+        "evaluate_docker_builder_selection_plan",
+        "require_docker_builder_selection_plan",
+        "builder_prestate_snapshot_is_consistent",
+        "_diagnostic_classification_is_consistent",
+        "format_builder_selection_prestate_diagnostic",
+        "_capture_diagnostic_prestate",
+        "_reprove_diagnostic_prestate",
+        "_diagnostic_evidence_from_runtime",
+        "_run_prestate_diagnostic_under_lock",
+    }
+    for tree in (capacity_syntax, selection_operator_syntax):
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.FunctionDef)
+                and node.name in bounded_functions
+                and (node.end_lineno is None or node.end_lineno - node.lineno + 1 > 100)
+            ):
+                raise AssertionError(f"the touched product function is too large: {node.name}")
+    snapshot_validators = [
+        node
+        for node in capacity_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "builder_prestate_snapshot_is_consistent"
+    ]
+    if len(snapshot_validators) != 1:
+        raise AssertionError("the builder-prestate consistency validator must remain unique")
+    validator_nodes = tuple(ast.walk(snapshot_validators[0]))
+    if any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"DockerBuilderSelectionPlanPredicate", "P"}
+        for node in validator_nodes
+    ):
+        raise AssertionError("snapshot validation must not dynamically construct a plan enum")
+    validator_attributes = {
+        (node.value.id, node.attr)
+        for node in validator_nodes
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+    }
+    required_plan_projection = {
+        ("P", value)
+        for value in (
+            "CURRENT_ALREADY_CANONICAL CURRENT_COUNT CURRENT_SELECTION_CONTRACT "
+            "INVENTORY_DUPLICATE PRIOR_DRIVER PRIOR_STATUS PASS TARGET_MISSING "
+            "TARGET_DRIVER TARGET_STATUS TARGET_NODE_NAME TARGET_ENDPOINT"
+        ).split()
+    }
+    if not required_plan_projection.issubset(validator_attributes):
+        raise AssertionError("the total snapshot first-defect table has drifted")
+    selection_slices = {
+        (ast.literal_eval(node.slice.lower), ast.literal_eval(node.slice.upper))
+        for node in validator_nodes
+        if isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "tuple"
+        and len(node.value.args) == 1
+        and isinstance(node.value.args[0], ast.Name)
+        and node.value.args[0].id == "S"
+        and isinstance(node.slice, ast.Slice)
+        and node.slice.lower is not None
+        and node.slice.upper is not None
+    }
+    if selection_slices != {(6, 8), (10, 16)}:
+        raise AssertionError("the observer-reachable builder-selection table has drifted")
 
     def operator_enum_members(class_name: str) -> tuple[tuple[str, object], ...]:
         matches = [
@@ -2522,58 +2472,73 @@ def verify_governed_docker_build_capacity_contract() -> None:
     )
     if operator_enum_members("BuilderSelectionReconcilePredicate") != expected_reconcile_predicates:
         raise AssertionError("the builder-selection operator predicate vocabulary has drifted")
-    nested_prestate_evidence = selection_operator.split(
-        "def _prestate_nested_evidence_is_consistent(",
-        maxsplit=1,
-    )[1].split("class BuilderSelectionReconcileEvidence:", maxsplit=1)[0]
-    reconcile_evidence_source = selection_operator.split(
-        "class BuilderSelectionReconcileEvidence:",
-        maxsplit=1,
-    )[1].split("def format_builder_selection_reconcile_evidence(", maxsplit=1)[0]
-    diagnostic_evidence_source = selection_operator.split(
-        "class BuilderSelectionPrestateDiagnosticEvidence:",
-        maxsplit=1,
-    )[1].split("def format_builder_selection_prestate_diagnostic(", maxsplit=1)[0]
-    for fragment in (
-        "plan is DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER",
-        "PriorDriverPredicate.EMPTY",
-        "PriorDriverPredicate.CLOUD",
-        "PriorDriverPredicate.KUBERNETES",
-        "PriorDriverPredicate.REMOTE",
-        "PriorDriverPredicate.UNRECOGNIZED",
-        "plan is DockerBuilderSelectionPlanPredicate.PRIOR_STATUS",
-        "prior_driver is PriorDriverPredicate.PASS",
+    diagnostic_classes = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "BuilderSelectionPrestateDiagnosticEvidence"
+    ]
+    if len(diagnostic_classes) != 1:
+        raise AssertionError("the immutable prestate diagnostic evidence must remain unique")
+    diagnostic_fields = tuple(
+        statement.target.id
+        for statement in diagnostic_classes[0].body
+        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name)
+    )
+    if diagnostic_fields != (
+        "classification",
+        "predicate",
+        "prestate_known",
+        "prestate_checkpoint",
+        "prestate_predicate",
+        "observation_known",
+        "observation",
+        "schema",
+        "phase",
+        "action_count",
+        "rollback_count",
+        "selection_mutation_count",
+        "cache_action_count",
+        "build_count",
+        "container_action_count",
+        "mutation_count",
+        "retry_count",
     ):
-        if fragment not in nested_prestate_evidence:
-            raise AssertionError(f"the prior-driver evidence relationship is missing: {fragment}")
-    for evidence_source in (reconcile_evidence_source, diagnostic_evidence_source):
-        for fragment in (
-            "prior_driver_known: bool = False",
-            "prior_driver_predicate: PriorDriverPredicate | None = None",
-            "self.prior_driver_known",
-            "self.prior_driver_known != (self.prior_driver_predicate is not None)",
-            "self.prior_driver_predicate is PriorDriverPredicate.UNKNOWN",
-            "_prestate_nested_evidence_is_consistent(",
-        ):
-            if fragment not in evidence_source:
-                raise AssertionError(f"the prior-driver evidence contract is missing: {fragment}")
-    for fragment in (
-        "builder_error_known: bool = False",
-        "builder_error_predicate: BuilderErrorPredicate | None = None",
-        "buildx_authority_known: bool = False",
-        "buildx_authority_predicate: BuildxAuthorityPredicate | None = None",
-        "self.builder_error_known != (self.builder_error_predicate is not None)",
-        "self.buildx_authority_known != (self.buildx_authority_predicate is not None)",
-        "self.builder_error_known != self.prior_driver_known",
-        "self.prestate_known and not self.buildx_authority_known",
-        "self.builder_error_predicate is BuilderErrorPredicate.UNKNOWN",
-        "self.buildx_authority_predicate is BuildxAuthorityPredicate.UNKNOWN",
-        "BuildxAuthorityPredicate.OUTPUT_INVALID",
+        raise AssertionError("the V2 builder-prestate evidence fields have drifted")
+    diagnostic_methods = {
+        node.name: node for node in diagnostic_classes[0].body if isinstance(node, ast.FunctionDef)
+    }
+    post_init = diagnostic_methods.get("__post_init__")
+    if (
+        post_init is None
+        or post_init.end_lineno is None
+        or (post_init.end_lineno - post_init.lineno + 1 > 80)
     ):
-        if fragment not in diagnostic_evidence_source:
-            raise AssertionError(
-                f"the builder error/version diagnostic evidence contract is missing: {fragment}"
-            )
+        raise AssertionError("the V2 evidence validator exceeds its size boundary")
+    if not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "builder_prestate_snapshot_is_consistent"
+        for node in ast.walk(post_init)
+    ):
+        raise AssertionError("V2 evidence must reject internally inconsistent snapshots")
+    runtime_classes = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.ClassDef) and node.name == "_RuntimeState"
+    ]
+    runtime_fields = {
+        statement.target.id
+        for runtime_class in runtime_classes
+        for statement in runtime_class.body
+        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name)
+    }
+    if (
+        len(runtime_classes) != 1
+        or not {"capture_snapshot", "buildx_version"}.issubset(runtime_fields)
+        or any(field.endswith("_recorder") for field in runtime_fields)
+    ):
+        raise AssertionError("the diagnostic runtime must retain one immutable snapshot")
     for fragment in (
         "with exclusive_docker_workflow_lock(root) as lock:",
         'platform.system() != "Darwin"',
@@ -2587,7 +2552,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
         'environ.get("BUILDKIT_HOST", "").strip()',
         '"BUILDX_BUILDER", ""',
         "require_local_unix_docker_context(executor, environ)",
-        "require_docker_builder_selection_plan(",
+        "evaluate_docker_builder_selection_plan(",
         "docker_builder_is_idle(",
         "runtime.action_attempted = True",
         "runtime.rollback_attempted = True",
@@ -2642,54 +2607,32 @@ def verify_governed_docker_build_capacity_contract() -> None:
         raise AssertionError("the bounded builder-selection process reap contract has drifted")
     if process_finalizer.count("except BaseException:") != 9:
         raise AssertionError("every bounded process cleanup step must absorb BaseException")
-    plan_reproof = selection_operator.split("def _reprove_plan_prestate(", maxsplit=1)[1].split(
-        "def _reprove_prestate(", maxsplit=1
-    )[0]
-    capture_plan = selection_operator.split("def _capture_plan_prestate(", maxsplit=1)[1].split(
-        "def _capture_prestate(", maxsplit=1
-    )[0]
-    runtime_state = selection_operator.split("class _RuntimeState:", maxsplit=1)[1].split(
-        "def _failure(", maxsplit=1
-    )[0]
-    for fragment in (
-        "builder_error_predicate: BuilderErrorPredicate",
-        "builder_error_predicate=runtime.builder_error_recorder.predicate",
-    ):
-        if fragment not in selection_operator:
-            raise AssertionError(f"the private builder Err capture is missing: {fragment}")
-    if not (
-        "if checkpoint is BuilderSelectionPrestateCheckpoint.CAPTURE:" in runtime_state
-        and "self.builder_error_recorder = BuilderErrorRecorder()" in runtime_state
-        and "if not runtime.builder_error_recorder.known:" in capture_plan
-    ):
-        raise AssertionError("builder Err capture evidence must survive the reproof reset")
-    builder_error_reproof_order = tuple(
-        plan_reproof.index(fragment)
-        for fragment in (
-            "reproof_builder_error = BuilderErrorRecorder()",
-            "builder_error_recorder=reproof_builder_error",
-            "reproof_builder_error.predicate is not prestate.builder_error_predicate",
-            "or plan != prestate.plan",
-            "runtime.plan_recorder.replace_pass_with_drift()",
-        )
-    )
-    if builder_error_reproof_order != tuple(sorted(builder_error_reproof_order)):
-        raise AssertionError("builder Err drift must be proven before reproof can pass")
+
+    def dotted_name(node: ast.expr) -> tuple[str, ...]:
+        if isinstance(node, ast.Name):
+            return (node.id,)
+        if isinstance(node, ast.Attribute):
+            return (*dotted_name(node.value), node.attr)
+        return ()
+
+    for function_name in ("_reprove_plan_prestate", "_reprove_diagnostic_prestate"):
+        functions = [
+            node
+            for node in selection_operator_syntax.body
+            if isinstance(node, ast.FunctionDef) and node.name == function_name
+        ]
+        if len(functions) != 1:
+            raise AssertionError("the snapshot reproof boundary must remain unique")
+        comparisons = {
+            (dotted_name(node.left), dotted_name(node.comparators[0]))
+            for node in ast.walk(functions[0])
+            if isinstance(node, ast.Compare) and len(node.comparators) == 1
+        }
+        if (("evaluation", "snapshot"), ("prestate", "snapshot")) not in comparisons:
+            raise AssertionError("capture and reproof must compare the whole immutable snapshot")
     reproof = selection_operator.split("def _reprove_prestate(", maxsplit=1)[1].split(
         "def _capture_poststate(", maxsplit=1
     )[0]
-    plan_reproof_order = (
-        "_source_identity(executor)",
-        "_host_identity(root)",
-        "docker_environment_identity = tuple(",
-        "require_local_unix_docker_context(executor, environ)",
-        "raw = _builder_listing(executor)",
-        "plan = require_docker_builder_selection_plan(",
-        "runtime.plan_recorder.replace_pass_with_drift()",
-    )
-    plan_reproof_positions = tuple(plan_reproof.index(fragment) for fragment in plan_reproof_order)
-    if plan_reproof_positions != tuple(sorted(plan_reproof_positions)):
-        raise AssertionError("the final builder-selection plan reproof order has drifted")
     reproof_order = (
         "_reprove_plan_prestate(",
         "_require_idle(prestate.plan.prior_builder",
@@ -2777,14 +2720,6 @@ def verify_governed_docker_build_capacity_contract() -> None:
     )
     if output_keys != expected_output_keys:
         raise AssertionError("the builder-selection value-free output keys have drifted")
-    reconcile_output_source = ast.get_source_segment(selection_operator, format_functions[0])
-    if reconcile_output_source is None or not (
-        '"prior_driver_known": evidence.prior_driver_known' in reconcile_output_source
-        and "if evidence.prior_driver_known:" in reconcile_output_source
-        and 'fields["prior_driver_predicate"] = evidence.prior_driver_predicate.value'
-        in reconcile_output_source
-    ):
-        raise AssertionError("the prior-driver operator output contract has drifted")
     diagnostic_functions = [
         node
         for node in selection_operator_syntax.body
@@ -2810,21 +2745,37 @@ def verify_governed_docker_build_capacity_contract() -> None:
         and isinstance(node.slice, ast.Constant)
         and isinstance(node.slice.value, str)
     )
+    projection_attributes = {
+        node.attr
+        for node in ast.walk(diagnostic_functions[0])
+        if isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "BuilderPrestateSnapshot"
+    }
+    if "__dataclass_fields__" not in projection_attributes:
+        raise AssertionError("the diagnostic must project the closed snapshot field allowlist")
+    diagnostic_output_keys.update(snapshot_fields)
     if diagnostic_output_keys != {
         "classification",
+        "schema",
         "phase",
         "predicate",
         "prestate_known",
+        "observation_known",
         "prestate_checkpoint",
         "prestate_predicate",
-        "builder_selection_predicate",
-        "node_schema_predicate",
-        "prior_driver_known",
-        "prior_driver_predicate",
-        "builder_error_known",
-        "builder_error_predicate",
-        "buildx_authority_known",
-        "buildx_authority_predicate",
+        "observation",
+        "buildx_authority",
+        "buildx_distribution",
+        "builder_selection",
+        "node_schema",
+        "prior_driver",
+        "builder_error",
+        "prior_target_relation",
+        "prior_status",
+        "prior_node_error",
+        "target_contract",
+        "first_defect",
         "action_count",
         "rollback_count",
         "selection_mutation_count",
@@ -2835,34 +2786,42 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "retry_count",
     }:
         raise AssertionError("the prestate diagnostic value-free output keys have drifted")
-    diagnostic_output_source = ast.get_source_segment(selection_operator, diagnostic_functions[0])
-    if diagnostic_output_source is None or not (
-        '"prior_driver_known": evidence.prior_driver_known' in diagnostic_output_source
-        and "if evidence.prior_driver_known:" in diagnostic_output_source
-        and 'fields["prior_driver_predicate"] = evidence.prior_driver_predicate.value'
-        in diagnostic_output_source
-        and '"builder_error_known": evidence.builder_error_known' in diagnostic_output_source
-        and "if evidence.builder_error_known:" in diagnostic_output_source
-        and 'fields["builder_error_predicate"] = evidence.builder_error_predicate.value'
-        in diagnostic_output_source
-        and '"buildx_authority_known": evidence.buildx_authority_known' in diagnostic_output_source
-        and "if evidence.buildx_authority_known:" in diagnostic_output_source
-        and 'fields["buildx_authority_predicate"] = evidence.buildx_authority_predicate.value'
-        in diagnostic_output_source
-    ):
-        raise AssertionError("the prestate diagnostic output contract has drifted")
-    diagnostic_under_lock = selection_operator.split(
-        "def _run_prestate_diagnostic_under_lock(", maxsplit=1
-    )[1].split("def _run_prestate_diagnostic(", maxsplit=1)[0]
-    if not (
-        diagnostic_under_lock.index("_record_buildx_authority(runtime, executor)")
-        < diagnostic_under_lock.index("_capture_plan_prestate(")
-        < diagnostic_under_lock.index("_reprove_plan_prestate(")
-        < diagnostic_under_lock.index("_diagnostic_evidence_from_runtime(")
+    diagnostic_runners = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_prestate_diagnostic_under_lock"
+    ]
+    if len(diagnostic_runners) != 1:
+        raise AssertionError("the read-only prestate diagnostic must remain unique")
+    diagnostic_calls = tuple(
+        node.func.id
+        for node in sorted(
+            (item for item in ast.walk(diagnostic_runners[0]) if isinstance(item, ast.Call)),
+            key=lambda item: (item.lineno, item.col_offset),
+        )
+        if isinstance(node.func, ast.Name)
+    )
+    diagnostic_prefix = tuple(
+        name
+        for name in diagnostic_calls
+        if name
+        in {
+            "_record_buildx_authority",
+            "_capture_diagnostic_prestate",
+            "_reprove_diagnostic_prestate",
+        }
+    )
+    if diagnostic_prefix != (
+        "_record_buildx_authority",
+        "_capture_diagnostic_prestate",
+        "_reprove_diagnostic_prestate",
+    ) or diagnostic_calls.index("_reprove_diagnostic_prestate") > diagnostic_calls.index(
+        "_diagnostic_evidence_from_runtime"
     ):
         raise AssertionError("the read-only prestate diagnostic order has drifted")
-    if diagnostic_under_lock.count("_record_buildx_authority(runtime, executor)") != 1:
+    if diagnostic_calls.count("_record_buildx_authority") != 1:
         raise AssertionError("the prestate diagnostic must query Buildx authority exactly once")
+    diagnostic_under_lock = ast.get_source_segment(selection_operator, diagnostic_runners[0]) or ""
     buildx_authority_probe = selection_operator.split("def _record_buildx_authority(", maxsplit=1)[
         1
     ].split("def _require_idle(", maxsplit=1)[0]
@@ -2871,7 +2830,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "classification=_BUILDX_VERSION_PROBE",
         "timeout_seconds=10",
         "except Exception:",
-        "record_buildx_authority(raw, runtime.buildx_authority_recorder)",
+        "runtime.buildx_version = observe_buildx_version(raw)",
     ):
         if fragment not in buildx_authority_probe:
             raise AssertionError(f"the bounded Buildx authority probe is missing: {fragment}")
@@ -2911,57 +2870,6 @@ def verify_governed_docker_build_capacity_contract() -> None:
                 f"the one-time builder-selection operator is too broad: {forbidden}"
             )
 
-    selection_test = (
-        ROOT / "backend" / "tests" / "unit" / "test_docker_builder_selection_reconcile.py"
-    ).read_text(encoding="utf-8")
-    for test_name in (
-        "test_success_runs_one_exact_selection_and_proves_both_builders_idle",
-        "test_response_loss_with_proven_target_is_accepted_without_retry",
-        "test_interrupt_after_action_preserves_proven_mutation_but_requires_review",
-        "test_failed_action_with_exact_prior_state_is_known_and_never_retried",
-        "test_target_active_poststate_rolls_back_once_only_after_prior_idle_proof",
-        "test_rollback_response_loss_is_accepted_only_after_exact_prior_reproof",
-        "test_ambiguous_rollback_stops_without_a_third_selection_mutation",
-        "test_inventory_drift_never_rolls_back_or_estimates_residual_state",
-        "test_post_proof_baseexception_preserves_action_and_never_rolls_back",
-        "test_prestate_active_builder_stops_before_selection_action",
-        "test_lock_exit_failure_preserves_completed_action_and_post_proof",
-        "test_builder_environment_override_stops_before_context_or_action",
-        "test_extra_arguments_are_rejected_before_lock_without_raw_output",
-        "test_read_only_prestate_diagnostic_reproves_plan_and_stops_before_active_or_action",
-        "test_read_only_prestate_diagnostic_classifies_capture_and_reproof",
-        "test_prestate_diagnostic_classifies_prior_driver_without_action",
-        "test_prestate_diagnostic_reports_only_builder_error_shape",
-        "test_prestate_diagnostic_fails_closed_on_every_builder_error_transition",
-        "test_builder_error_drift_survives_lock_exit_as_capture_evidence",
-        "test_normal_operator_builder_error_drift_stops_before_selection",
-        "test_prestate_diagnostic_classifies_one_bounded_buildx_version_query",
-        "test_prestate_diagnostic_version_failure_is_unknown_and_stops_before_listing",
-        "test_normal_operator_prestate_failure_retains_exact_capture_predicate",
-        "test_prestate_diagnostic_lock_exit_is_unknown_and_retains_observed_pass",
-        "test_read_only_prestate_diagnostic_interrupt_is_unknown_and_value_free",
-        "test_fixed_prestate_diagnostic_argv_outputs_one_bounded_line",
-        "test_malformed_prestate_diagnostic_arguments_stop_before_lock_without_raw",
-        "test_prestate_diagnostic_evidence_rejects_contradictory_shapes",
-        "test_bounded_process_output_overflow_terminates_and_reaps_without_raw_output",
-        "test_bounded_process_timeout_kills_terminate_ignoring_child",
-        "test_bounded_process_unreaped_failure_is_distinct_and_never_swallowed",
-        "test_cleanup_defects_never_mask_an_unreaped_process",
-        "test_reaped_process_close_only_defect_is_fixed_failure_not_unreaped",
-        "test_bounded_process_spawn_nonzero_and_invalid_utf8_never_emit_raw",
-        "test_unreaped_action_stops_without_post_proof_or_rollback",
-        "test_unreaped_read_only_prestate_process_is_review_required_action_zero",
-        "test_unreaped_rollback_stops_without_post_proof_or_third_action",
-        "test_residual_evidence_is_exact_at_bound_and_unknown_above_it",
-        "test_residual_over_bound_survives_lock_exit_fallback",
-        "test_main_fallback_formats_normalized_overbound_residual_without_traceback",
-        "test_final_prestate_reproof_rejects_every_drift_before_selection",
-        "test_final_prestate_reproof_interrupt_is_unknown_and_action_zero",
-        "test_final_reproof_and_active_checks_are_immediately_before_action",
-        "test_rollback_interrupt_preserves_observed_state_but_requires_review",
-    ):
-        if test_name not in selection_test:
-            raise AssertionError(f"the builder-selection operator test is missing: {test_name}")
     development_cycle = (ROOT / "scripts" / "development_cycle.py").read_text(encoding="utf-8")
     update_workflow = (ROOT / "scripts" / "workflow_update_restart.py").read_text(encoding="utf-8")
     if "reconcile_docker_builder_selection" in development_cycle or (
@@ -3078,11 +2986,8 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_selection_plan_preserves_complete_private_inventory_and_fixed_argv",
         "test_selection_plan_recorder_preserves_nested_expected_transition",
         "test_builder_error_and_buildx_authority_vocabularies_are_closed",
-        "test_buildx_authority_parser_is_bounded_and_value_free",
         "test_selection_plan_classifies_prior_driver_before_status_or_target",
         "test_selection_plan_classifies_builder_error_without_exposing_text",
-        "test_selection_plan_records_every_reachable_first_defect",
-        "test_selection_plan_predicate_priority_is_deterministic",
         "test_selection_plan_rejects_every_unreviewed_prestate",
         "test_selection_poststate_accepts_only_current_flag_delta",
         "test_builder_idle_state_is_shared_with_canonical_active_build_guard",
@@ -3144,8 +3049,6 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "Total selection mutations are therefore at most two",
         "`SEC-DOCKER-BUILDER-SELECT-001`",
         "does not make `docker-container` acceptable",
-        "Plan construction advances a separate closed, value-free prestate recorder",
-        "initial `CAPTURE` or immediate `REPROOF`",
         "`--diagnostic-phase BUILDER_SELECTION_PRESTATE`",
         "stops before active-build history",
         "`PASS` is diagnostic evidence only",
@@ -3187,20 +3090,22 @@ def verify_governed_docker_build_capacity_contract() -> None:
     if cloud_authority_positions != tuple(sorted(cloud_authority_positions)):
         raise AssertionError("ADR-0112 Docker Build Cloud authority order has drifted")
     for fragment in (
-        "optional builder-level `Err` field only as `ABSENT`, `PRESENT` or `INVALID`",
-        "an empty or non-string value is invalid",
-        "error text is never retained or reported",
+        "one frozen, value-free `BuilderPrestateSnapshot`",
+        "one capture snapshot and creates one local reproof snapshot",
+        "any whole-value difference becomes the existing `PLAN_DRIFT`/`PRESTATE` result",
+        (
+            "optional builder- and prior-node-level `Err` fields only as `ABSENT`, `PRESENT` "
+            "or `INVALID`"
+        ),
+        "error text is never retained or compared",
         "https://github.com/docker/buildx/blob/v0.35.0/builder/builder.go",
+        "https://github.com/docker/buildx/blob/v0.35.0/builder/node.go",
         "parser authority only, not a claim that the installed host binary is v0.35.0",
-        "capture predicate is retained privately while reproof uses a separate recorder",
-        "any exact `ABSENT`/`PRESENT`/`INVALID` transition becomes the existing",
-        "`PLAN_DRIFT`/`PRESTATE` failure before action",
-        "Raw error text remains outside inventory identity and comparison",
-        "retains the first observed capture predicate rather than relabeling it",
         "exactly one bounded `docker buildx version` query",
         "`UPSTREAM_V0_35_0`, `UPSTREAM_OTHER`, `OTHER_DISTRIBUTION` or `OUTPUT_INVALID`",
-        "module, version, revision and raw output are never emitted",
-        "Docker Desktop suffix is not equated to the upstream v0.35.0 authority",
+        "https://docs.docker.com/desktop/release-notes/",
+        "`BUILDER_PRESTATE_V2`, one `observation_known` flag",
+        "unequal reproof projects only the original capture snapshot with `PLAN_DRIFT`",
     ):
         if fragment not in compact_adr:
             raise AssertionError(f"ADR-0112 omits Buildx authority evidence: {fragment}")
@@ -3210,7 +3115,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
         or "cannot select a builder or authorize a host change" not in docs_index
         or "prior-driver evidence distinguishes an empty unresolved factory result"
         not in docs_index
-        or "one bounded Buildx version query to closed predicates" not in docs_index
+        or "one bounded Buildx version query" not in docs_index
     ):
         raise AssertionError("the controlled index omits the read-only builder prestate phase")
 

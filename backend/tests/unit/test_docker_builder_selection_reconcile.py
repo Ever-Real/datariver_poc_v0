@@ -4,6 +4,7 @@ import importlib.util
 import json
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, cast
@@ -30,6 +31,11 @@ def _load_operator() -> ModuleType:
     finally:
         sys.path.remove(scripts_path)
     return module
+
+
+def _diagnostic_observation(evidence: Any) -> Any:
+    assert evidence.observation is not None
+    return evidence.observation
 
 
 def _builder_rows(*, target_current: bool = False) -> str:
@@ -222,11 +228,13 @@ def test_fixed_builder_selection_operator_is_checked_in_and_no_argument() -> Non
 def test_builder_selection_plan_uses_only_fixed_context_target() -> None:
     operator = _load_operator()
 
-    plan = operator.require_docker_builder_selection_plan(
+    evaluation = operator.evaluate_docker_builder_selection_plan(
         _builder_rows(),
         {},
         current_context="desktop-linux",
     )
+    assert evaluation.plan is not None
+    plan = evaluation.plan
 
     assert plan.prior_builder == "managed-builder"
     assert plan.target_builder == "desktop-linux"
@@ -1102,14 +1110,12 @@ def test_read_only_prestate_diagnostic_reproves_plan_and_stops_before_active_or_
     assert evidence.prestate_known is True
     assert evidence.prestate_checkpoint.value == "REPROOF"
     assert evidence.prestate_predicate.value == "PASS"
-    assert evidence.builder_selection_predicate.value == "DRIVER_NOT_DOCKER"
-    assert evidence.node_schema_predicate.value == "PASS"
-    assert evidence.prior_driver_known is True
-    assert evidence.prior_driver_predicate.value == "PASS"
-    assert evidence.builder_error_known is True
-    assert evidence.builder_error_predicate.value == "ABSENT"
-    assert evidence.buildx_authority_known is True
-    assert evidence.buildx_authority_predicate.value == "UPSTREAM_V0_35_0"
+    observation = _diagnostic_observation(evidence)
+    assert observation.builder_selection.value == "DRIVER_NOT_DOCKER"
+    assert observation.node_schema.value == "PASS"
+    assert observation.prior_driver.value == "PASS"
+    assert observation.builder_error.value == "ABSENT"
+    assert observation.buildx_authority.value == "UPSTREAM_V0_35_0"
     assert evidence.action_count == 0
     assert evidence.rollback_count == 0
     assert evidence.selection_mutation_count == 0
@@ -1137,10 +1143,10 @@ def test_read_only_prestate_diagnostic_classifies_capture_and_reproof(
     assert capture.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
     assert capture.prestate_checkpoint.value == "CAPTURE"
     assert capture.prestate_predicate.value == "CURRENT_ALREADY_CANONICAL"
-    assert capture.builder_selection_predicate.value == "PASS"
-    assert capture.node_schema_predicate.value == "PASS"
-    assert capture.prior_driver_known is False
-    assert capture.prior_driver_predicate is None
+    capture_observation = _diagnostic_observation(capture)
+    assert capture_observation.builder_selection.value == "PASS"
+    assert capture_observation.node_schema.value == "PASS"
+    assert capture_observation.prior_driver is operator.PriorDriverPredicate.UNRECOGNIZED
     assert capture_executor.selection_calls == []
 
     class ReorderedExecutor(_Executor):
@@ -1160,12 +1166,11 @@ def test_read_only_prestate_diagnostic_classifies_capture_and_reproof(
         environ={},
     )
 
-    assert reproof.classification is operator.BuilderSelectionReconcileClassification.REJECTED
-    assert reproof.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
+    assert reproof.classification is operator.BuilderSelectionReconcileClassification.PASS
+    assert reproof.predicate is operator.BuilderSelectionReconcilePredicate.PASS
     assert reproof.prestate_checkpoint.value == "REPROOF"
-    assert reproof.prestate_predicate.value == "PLAN_DRIFT"
-    assert reproof.prior_driver_known is True
-    assert reproof.prior_driver_predicate.value == "PASS"
+    assert reproof.prestate_predicate.value == "PASS"
+    assert _diagnostic_observation(reproof).prior_driver.value == "PASS"
     assert reproof_executor.selection_calls == []
 
 
@@ -1214,12 +1219,14 @@ def test_prestate_diagnostic_classifies_prior_driver_without_action(
     assert (
         diagnostic.prestate_predicate is operator.DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER
     )
-    assert diagnostic.prior_driver_known is True
-    assert diagnostic.prior_driver_predicate.value == expected
-    assert diagnostic.builder_error_known is True
-    assert diagnostic.builder_error_predicate.value == "ABSENT"
-    assert diagnostic.buildx_authority_known is True
-    assert diagnostic.buildx_authority_predicate.value == "UPSTREAM_V0_35_0"
+    observation = _diagnostic_observation(diagnostic)
+    assert observation.prior_driver.value == expected
+    assert observation.builder_error.value == "ABSENT"
+    assert observation.buildx_authority.value == "UPSTREAM_V0_35_0"
+    assert observation.prior_target_relation.value == "DISTINCT"
+    assert observation.prior_status.value == "STOPPED"
+    assert observation.prior_node_error.value == "ABSENT"
+    assert observation.target_contract.value == "DRIVER"
     assert diagnostic.action_count == 0
     assert diagnostic_executor.selection_calls == []
     assert ordinary.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
@@ -1265,9 +1272,9 @@ def test_prestate_diagnostic_reports_only_builder_error_shape(
     )
 
     assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
-    assert evidence.prior_driver_predicate is operator.PriorDriverPredicate.UNRECOGNIZED
-    assert evidence.builder_error_known is True
-    assert evidence.builder_error_predicate.value == expected
+    observation = _diagnostic_observation(evidence)
+    assert observation.prior_driver is operator.PriorDriverPredicate.UNRECOGNIZED
+    assert observation.builder_error.value == expected
     assert executor.selection_calls == []
     line = operator.format_builder_selection_prestate_diagnostic(evidence)
     assert "raw-builder" not in line
@@ -1327,8 +1334,7 @@ def test_prestate_diagnostic_fails_closed_on_every_builder_error_transition(
     assert evidence.classification.value == expected_classification
     assert evidence.prestate_checkpoint.value == "REPROOF"
     assert evidence.prestate_predicate.value == expected_plan
-    assert evidence.builder_error_known is True
-    assert evidence.builder_error_predicate.value == capture_predicate
+    assert _diagnostic_observation(evidence).builder_error.value == capture_predicate
     assert executor.selection_calls == []
     line = operator.format_builder_selection_prestate_diagnostic(evidence)
     assert "raw-capture" not in line
@@ -1358,12 +1364,65 @@ def test_builder_error_drift_survives_lock_exit_as_capture_evidence(
     assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.UNKNOWN
     assert evidence.prestate_checkpoint is operator.BuilderSelectionPrestateCheckpoint.REPROOF
     assert evidence.prestate_predicate is operator.DockerBuilderSelectionPlanPredicate.PLAN_DRIFT
-    assert evidence.builder_error_known is True
-    assert evidence.builder_error_predicate is operator.BuilderErrorPredicate.PRESENT
+    assert _diagnostic_observation(evidence).builder_error is operator.BuilderErrorPredicate.PRESENT
     assert executor.selection_calls == []
     line = operator.format_builder_selection_prestate_diagnostic(evidence)
     assert "raw-" not in line
     assert "Traceback" not in line
+
+
+@pytest.mark.parametrize(
+    ("field", "changed"),
+    (
+        ("buildx_authority", "UPSTREAM_OTHER"),
+        ("buildx_distribution", "OTHER_MODULE"),
+        ("builder_selection", "NODE_NOT_RUNNING"),
+        ("node_schema", "NODE_NOT_MAPPING"),
+        ("prior_driver", "REMOTE"),
+        ("builder_error", "PRESENT"),
+        ("prior_target_relation", "SAME"),
+        ("prior_status", "STOPPED"),
+        ("prior_node_error", "PRESENT"),
+        ("target_contract", "STATUS"),
+        ("first_defect", "PLAN_DRIFT"),
+    ),
+)
+def test_every_snapshot_field_drift_maps_to_existing_plan_drift(
+    field: str,
+    changed: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    original = operator.evaluate_docker_builder_selection_plan
+    evaluations = 0
+
+    def evaluate(*args: object, **kwargs: object) -> Any:
+        nonlocal evaluations
+        evaluations += 1
+        result = original(*args, **kwargs)
+        if evaluations == 2:
+            enum_type = type(getattr(result.snapshot, field))
+            changed_snapshot = cast(Any, replace)(
+                result.snapshot,
+                **{field: enum_type[changed]},
+            )
+            return replace(result, snapshot=changed_snapshot)
+        return result
+
+    monkeypatch.setattr(operator, "evaluate_docker_builder_selection_plan", evaluate)
+    evidence = operator._run_prestate_diagnostic(
+        operator._RuntimeState(), executor=_Executor(), environ={}
+    )
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
+    assert evidence.prestate_checkpoint is operator.BuilderSelectionPrestateCheckpoint.REPROOF
+    assert evidence.prestate_predicate is operator.DockerBuilderSelectionPlanPredicate.PLAN_DRIFT
+    assert evidence.observation_known is True
+    assert _diagnostic_observation(evidence).first_defect is (
+        operator.DockerBuilderSelectionPlanPredicate.PASS
+    )
 
 
 def test_normal_operator_builder_error_drift_stops_before_selection(
@@ -1418,8 +1477,7 @@ def test_prestate_diagnostic_classifies_one_bounded_buildx_version_query(
         environ={},
     )
 
-    assert evidence.buildx_authority_known is True
-    assert evidence.buildx_authority_predicate.value == expected
+    assert _diagnostic_observation(evidence).buildx_authority.value == expected
     assert executor.calls.count(("docker", "buildx", "version")) == 1
     assert executor.selection_calls == []
     line = operator.format_builder_selection_prestate_diagnostic(evidence)
@@ -1453,8 +1511,8 @@ def test_prestate_diagnostic_version_failure_is_unknown_and_stops_before_listing
         operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
     )
     assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.UNKNOWN
-    assert evidence.buildx_authority_known is False
-    assert evidence.buildx_authority_predicate is None
+    assert evidence.observation_known is False
+    assert evidence.observation is None
     assert evidence.prestate_known is False
     assert executor.calls == [("docker", "buildx", "version")]
     line = operator.format_builder_selection_prestate_diagnostic(evidence)
@@ -1520,14 +1578,10 @@ def test_prestate_diagnostic_lock_exit_is_unknown_and_retains_observed_pass(
     assert evidence.prestate_known is True
     assert evidence.prestate_checkpoint is operator.BuilderSelectionPrestateCheckpoint.REPROOF
     assert evidence.prestate_predicate is operator.DockerBuilderSelectionPlanPredicate.PASS
-    assert evidence.prior_driver_known is True
-    assert evidence.prior_driver_predicate is operator.PriorDriverPredicate.PASS
-    assert evidence.builder_error_known is True
-    assert evidence.builder_error_predicate is operator.BuilderErrorPredicate.ABSENT
-    assert evidence.buildx_authority_known is True
-    assert evidence.buildx_authority_predicate is (
-        operator.BuildxAuthorityPredicate.UPSTREAM_V0_35_0
-    )
+    observation = _diagnostic_observation(evidence)
+    assert observation.prior_driver is operator.PriorDriverPredicate.PASS
+    assert observation.builder_error is operator.BuilderErrorPredicate.ABSENT
+    assert observation.buildx_authority is operator.BuildxAuthorityPredicate.UPSTREAM_V0_35_0
     assert executor.selection_calls == []
     line = operator.format_builder_selection_prestate_diagnostic(evidence)
     assert "raw-lock" not in line
@@ -1563,11 +1617,9 @@ def test_read_only_prestate_diagnostic_interrupt_is_unknown_and_value_free(
         operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
     )
     assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.UNKNOWN
-    assert evidence.prestate_known is False
-    assert evidence.prior_driver_known is False
-    assert evidence.prior_driver_predicate is None
-    assert evidence.builder_error_known is False
-    assert evidence.builder_error_predicate is None
+    assert evidence.prestate_known is True
+    assert evidence.observation_known is True
+    assert _diagnostic_observation(evidence).prior_driver is operator.PriorDriverPredicate.PASS
     assert evidence.action_count == 0
     assert evidence.selection_mutation_count == 0
     assert executor.selection_calls == []
@@ -1579,14 +1631,27 @@ def test_fixed_prestate_diagnostic_argv_outputs_one_bounded_line(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     operator = _load_operator()
-    fixed = operator.BuilderSelectionPrestateDiagnosticEvidence.pass_evidence(
-        checkpoint=operator.BuilderSelectionPrestateCheckpoint.REPROOF,
-        plan_predicate=operator.DockerBuilderSelectionPlanPredicate.PASS,
-        builder_predicate=operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
-        node_predicate=operator.NodeSchemaPredicate.PASS,
-        prior_driver_predicate=operator.PriorDriverPredicate.PASS,
-        builder_error_predicate=operator.BuilderErrorPredicate.ABSENT,
-        buildx_authority_predicate=operator.BuildxAuthorityPredicate.UPSTREAM_V0_35_0,
+    observation = operator.BuilderPrestateSnapshot(
+        buildx_authority=operator.BuildxAuthorityPredicate.UPSTREAM_V0_35_0,
+        buildx_distribution=operator.BuildxDistributionPredicate.NOT_APPLICABLE,
+        builder_selection=operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
+        node_schema=operator.NodeSchemaPredicate.PASS,
+        prior_driver=operator.PriorDriverPredicate.PASS,
+        builder_error=operator.BuilderErrorPredicate.ABSENT,
+        prior_target_relation=operator.PriorTargetRelationPredicate.DISTINCT,
+        prior_status=operator.PriorStatusPredicate.RUNNING,
+        prior_node_error=operator.BuilderErrorPredicate.ABSENT,
+        target_contract=operator.TargetContractPredicate.PASS,
+        first_defect=operator.DockerBuilderSelectionPlanPredicate.PASS,
+    )
+    fixed = operator.BuilderSelectionPrestateDiagnosticEvidence(
+        classification=operator.BuilderSelectionReconcileClassification.PASS,
+        predicate=operator.BuilderSelectionReconcilePredicate.PASS,
+        prestate_known=True,
+        prestate_checkpoint=operator.BuilderSelectionPrestateCheckpoint.REPROOF,
+        prestate_predicate=operator.DockerBuilderSelectionPlanPredicate.PASS,
+        observation_known=True,
+        observation=observation,
     )
     calls: list[str] = []
 
@@ -1614,12 +1679,11 @@ def test_fixed_prestate_diagnostic_argv_outputs_one_bounded_line(
     assert document["phase"] == "BUILDER_SELECTION_PRESTATE"
     assert document["prestate_checkpoint"] == "REPROOF"
     assert document["prestate_predicate"] == "PASS"
-    assert document["prior_driver_known"] is True
-    assert document["prior_driver_predicate"] == "PASS"
-    assert document["builder_error_known"] is True
-    assert document["builder_error_predicate"] == "ABSENT"
-    assert document["buildx_authority_known"] is True
-    assert document["buildx_authority_predicate"] == "UPSTREAM_V0_35_0"
+    assert document["schema"] == "BUILDER_PRESTATE_V2"
+    assert document["observation_known"] is True
+    assert document["observation"]["prior_driver"] == "PASS"
+    assert document["observation"]["builder_error"] == "ABSENT"
+    assert document["observation"]["buildx_authority"] == "UPSTREAM_V0_35_0"
     assert document["mutation_count"] == 0
     assert document["retry_count"] == 0
 
@@ -1663,18 +1727,33 @@ def test_malformed_prestate_diagnostic_arguments_stop_before_lock_without_raw(
         "pass-with-capture",
         "rejected-with-pass",
         "nested-contradiction",
-        "prior-driver-partial",
-        "prior-driver-contradiction",
-        "builder-error-partial",
-        "builder-error-without-prior",
-        "authority-partial",
-        "authority-unknown",
+        "observation-partial",
+        "observation-without-prestate",
+        "observation-mismatch",
+        "observation-internally-inconsistent",
+        "authority-distribution-pairs",
+        "selection-prior-contradiction",
+        "relation-target-contradiction",
+        "target-first-defect-contradiction",
         "pass-with-invalid-authority",
         "nonzero-action",
     ),
 )
 def test_prestate_diagnostic_evidence_rejects_contradictory_shapes(case: str) -> None:
     operator = _load_operator()
+    observation = operator.BuilderPrestateSnapshot(
+        buildx_authority=operator.BuildxAuthorityPredicate.UPSTREAM_V0_35_0,
+        buildx_distribution=operator.BuildxDistributionPredicate.NOT_APPLICABLE,
+        builder_selection=operator.BuilderSelectionPredicate.PASS,
+        node_schema=operator.NodeSchemaPredicate.PASS,
+        prior_driver=operator.PriorDriverPredicate.UNRECOGNIZED,
+        builder_error=operator.BuilderErrorPredicate.ABSENT,
+        prior_target_relation=operator.PriorTargetRelationPredicate.SAME,
+        prior_status=operator.PriorStatusPredicate.RUNNING,
+        prior_node_error=operator.BuilderErrorPredicate.ABSENT,
+        target_contract=operator.TargetContractPredicate.PASS,
+        first_defect=(operator.DockerBuilderSelectionPlanPredicate.CURRENT_ALREADY_CANONICAL),
+    )
     values: dict[str, Any] = {
         "classification": operator.BuilderSelectionReconcileClassification.REJECTED,
         "predicate": operator.BuilderSelectionReconcilePredicate.PRESTATE,
@@ -1683,11 +1762,8 @@ def test_prestate_diagnostic_evidence_rejects_contradictory_shapes(case: str) ->
         "prestate_predicate": (
             operator.DockerBuilderSelectionPlanPredicate.CURRENT_ALREADY_CANONICAL
         ),
-        "builder_selection_predicate": operator.BuilderSelectionPredicate.PASS,
-        "node_schema_predicate": operator.NodeSchemaPredicate.PASS,
-        "prior_driver_known": False,
-        "buildx_authority_known": True,
-        "buildx_authority_predicate": operator.BuildxAuthorityPredicate.UPSTREAM_V0_35_0,
+        "observation_known": True,
+        "observation": observation,
     }
     if case == "partial-known":
         values["prestate_predicate"] = None
@@ -1697,38 +1773,94 @@ def test_prestate_diagnostic_evidence_rejects_contradictory_shapes(case: str) ->
         values["classification"] = operator.BuilderSelectionReconcileClassification.PASS
         values["predicate"] = operator.BuilderSelectionReconcilePredicate.PASS
         values["prestate_predicate"] = operator.DockerBuilderSelectionPlanPredicate.PASS
-        values["builder_selection_predicate"] = operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
     elif case == "rejected-with-pass":
         values["prestate_predicate"] = operator.DockerBuilderSelectionPlanPredicate.PASS
-        values["builder_selection_predicate"] = operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
     elif case == "nested-contradiction":
-        values["builder_selection_predicate"] = operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
-    elif case == "prior-driver-partial":
-        values["prior_driver_known"] = True
-    elif case == "prior-driver-contradiction":
-        values["prior_driver_known"] = True
-        values["prior_driver_predicate"] = operator.PriorDriverPredicate.REMOTE
-    elif case == "builder-error-partial":
-        values["builder_error_known"] = True
-    elif case == "builder-error-without-prior":
-        values["builder_error_known"] = True
-        values["builder_error_predicate"] = operator.BuilderErrorPredicate.ABSENT
-    elif case == "authority-partial":
-        values["buildx_authority_predicate"] = None
-    elif case == "authority-unknown":
-        values["buildx_authority_predicate"] = operator.BuildxAuthorityPredicate.UNKNOWN
+        values["predicate"] = operator.BuilderSelectionReconcilePredicate.UNKNOWN
+    elif case == "observation-partial":
+        values["observation"] = None
+    elif case == "observation-without-prestate":
+        values["prestate_known"] = False
+        values["prestate_checkpoint"] = None
+        values["prestate_predicate"] = None
+    elif case == "observation-mismatch":
+        values["observation"] = replace(
+            observation,
+            first_defect=operator.DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER,
+        )
+    elif case == "observation-internally-inconsistent":
+        values["observation"] = replace(
+            observation,
+            buildx_distribution=(operator.BuildxDistributionPredicate.DOCUMENTED_DESKTOP_SUFFIX),
+        )
+    elif case == "authority-distribution-pairs":
+        allowed = {
+            operator.BuildxAuthorityPredicate.UPSTREAM_V0_35_0: {
+                operator.BuildxDistributionPredicate.NOT_APPLICABLE
+            },
+            operator.BuildxAuthorityPredicate.UPSTREAM_OTHER: {
+                operator.BuildxDistributionPredicate.NOT_APPLICABLE
+            },
+            operator.BuildxAuthorityPredicate.OTHER_DISTRIBUTION: {
+                operator.BuildxDistributionPredicate.DOCUMENTED_DESKTOP_SUFFIX,
+                operator.BuildxDistributionPredicate.UPSTREAM_MODULE_NONRELEASE,
+                operator.BuildxDistributionPredicate.OTHER_MODULE,
+            },
+            operator.BuildxAuthorityPredicate.OUTPUT_INVALID: {
+                operator.BuildxDistributionPredicate.NOT_APPLICABLE
+            },
+        }
+        for authority in operator.BuildxAuthorityPredicate:
+            for distribution in operator.BuildxDistributionPredicate:
+                if distribution in allowed.get(authority, set()):
+                    continue
+                with pytest.raises(
+                    ValueError,
+                    match="DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID",
+                ):
+                    operator.BuilderSelectionPrestateDiagnosticEvidence(
+                        **{
+                            **values,
+                            "observation": replace(
+                                observation,
+                                buildx_authority=authority,
+                                buildx_distribution=distribution,
+                            ),
+                        }
+                    )
+        return
+    elif case == "selection-prior-contradiction":
+        values["observation"] = replace(
+            observation,
+            prior_driver=operator.PriorDriverPredicate.PASS,
+        )
+    elif case == "relation-target-contradiction":
+        values["observation"] = replace(
+            observation,
+            prior_target_relation=operator.PriorTargetRelationPredicate.TARGET_MISSING,
+        )
+    elif case == "target-first-defect-contradiction":
+        values["prestate_predicate"] = operator.DockerBuilderSelectionPlanPredicate.TARGET_STATUS
+        values["observation"] = replace(
+            observation,
+            builder_selection=operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
+            prior_driver=operator.PriorDriverPredicate.PASS,
+            prior_target_relation=operator.PriorTargetRelationPredicate.DISTINCT,
+            first_defect=operator.DockerBuilderSelectionPlanPredicate.TARGET_STATUS,
+        )
     elif case == "pass-with-invalid-authority":
         values.update(
             classification=operator.BuilderSelectionReconcileClassification.PASS,
             predicate=operator.BuilderSelectionReconcilePredicate.PASS,
             prestate_checkpoint=operator.BuilderSelectionPrestateCheckpoint.REPROOF,
             prestate_predicate=operator.DockerBuilderSelectionPlanPredicate.PASS,
-            builder_selection_predicate=operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
-            prior_driver_known=True,
-            prior_driver_predicate=operator.PriorDriverPredicate.PASS,
-            builder_error_known=True,
-            builder_error_predicate=operator.BuilderErrorPredicate.ABSENT,
-            buildx_authority_predicate=operator.BuildxAuthorityPredicate.OUTPUT_INVALID,
+            observation=replace(
+                observation,
+                buildx_authority=operator.BuildxAuthorityPredicate.OUTPUT_INVALID,
+                builder_selection=operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
+                prior_driver=operator.PriorDriverPredicate.PASS,
+                first_defect=operator.DockerBuilderSelectionPlanPredicate.PASS,
+            ),
         )
     else:
         values["action_count"] = 1

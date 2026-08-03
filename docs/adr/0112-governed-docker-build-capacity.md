@@ -58,13 +58,12 @@ current running `docker-container` builder and exactly one non-current, running,
 Duplicate, conflicting or extra eligible evidence fails before mutation and none of those private
 values is reported.
 
-Plan construction advances a separate closed, value-free prestate recorder. It distinguishes the
-current-selector contract, an already-canonical selection, duplicate inventory, current-builder
-cardinality, prior driver or status, missing or invalid target fields, exact capture-to-reproof
-drift, and pass. The evidence retains the existing builder-selection and node-schema predicates
-only when those structural outcomes were actually observed. It records whether the finding came
-from the initial `CAPTURE` or immediate `REPROOF`; unknown results omit the predicate and checkpoint
-rather than reconstructing them from an outer error.
+Plan construction uses one frozen, value-free `BuilderPrestateSnapshot`, computed from one complete
+parsed inventory. It deterministically projects the existing current-selector, already-canonical,
+duplicate, cardinality, prior, target and pass first-defect order without changing the legacy error
+or acceptance contract. The runtime retains one capture snapshot and creates one local reproof
+snapshot; any whole-value difference becomes the existing `PLAN_DRIFT`/`PRESTATE` result. It does
+not maintain independent mutable recorders for the additional observations.
 
 The nested prior-driver recorder uses Docker's official core
 [`docker`, `docker-container`, `kubernetes`, and `remote` driver vocabulary](https://docs.docker.com/build/builders/drivers/)
@@ -77,27 +76,35 @@ provider string, accept a new driver, normalize a spelling or claim that the cur
 pinned to a particular Buildx version. Later plan findings retain the observed prior-driver `PASS`,
 while findings before that check omit it.
 
-The same diagnostic classifies the optional builder-level `Err` field only as `ABSENT`, `PRESENT`
-or `INVALID`: absence and a nonempty string are structurally observed, while an empty or non-string
-value is invalid, and the error text is never retained or reported. This follows the immutable
-Buildx v0.35.0 [`Builder.MarshalJSON`](https://github.com/docker/buildx/blob/v0.35.0/builder/builder.go)
-shape, where `Driver` is emitted verbatim and `Err` is optional. It is parser authority only, not a
-claim that the installed host binary is v0.35.0. The capture predicate is retained privately while
-reproof uses a separate recorder; any exact `ABSENT`/`PRESENT`/`INVALID` transition becomes the
-existing `PLAN_DRIFT`/`PRESTATE` failure before action. Raw error text remains outside inventory
-identity and comparison. An early reproof failure may omit error evidence, while a completed drift
-or later lock-exit result retains the first observed capture predicate rather than relabeling it.
+The snapshot classifies optional builder- and prior-node-level `Err` fields only as `ABSENT`,
+`PRESENT` or `INVALID`: absence and a nonempty string are structurally observed, while empty or
+non-string values are invalid, and error text is never retained or compared. This follows the
+immutable Buildx v0.35.0 [`Builder.MarshalJSON`](https://github.com/docker/buildx/blob/v0.35.0/builder/builder.go)
+and [`Node.MarshalJSON`](https://github.com/docker/buildx/blob/v0.35.0/builder/node.go) shapes.
+The same authority shows that `LoadNodes` resolves an empty default-context driver through its
+factory before assigning a concrete driver. This is parser authority only, not a claim that the
+installed host binary is v0.35.0.
 
 The fixed `--diagnostic-phase BUILDER_SELECTION_PRESTATE` mode is read-only. Under the same
 exclusive lock it performs the operator's canonical source, AppliedState/environment, Docker
 override and local-context checks, then makes exactly one bounded `docker buildx version` query and
-performs the complete-inventory capture followed by one exact plan reproof. The version line is
-reduced to `UPSTREAM_V0_35_0`, `UPSTREAM_OTHER`, `OTHER_DISTRIBUTION` or `OUTPUT_INVALID`; module,
-version, revision and raw output are never emitted. A Docker Desktop suffix is not equated to the
-upstream v0.35.0 authority and remains `OTHER_DISTRIBUTION` unless separately reviewed.
+performs the complete-inventory capture followed by one exact snapshot reproof. The version line is
+reduced to `UPSTREAM_V0_35_0`, `UPSTREAM_OTHER`, `OTHER_DISTRIBUTION` or `OUTPUT_INVALID`.
+`OTHER_DISTRIBUTION` is refined only as documented `-desktop.<positive-integer>` shape,
+upstream-module nonrelease shape, or other-module shape. The exact two-token Docker Docs form and
+an otherwise bounded three-field line with that suffix both classify the suffix independently of
+the module token. Docker's [Desktop release notes](https://docs.docker.com/desktop/release-notes/)
+establish that shape, not the installed distribution. Module, version, revision and raw output are
+never emitted.
+The snapshot also reduces the prior/target relation, prior status and node-error shape, and complete
+target contract even when the unchanged public first defect remains `PRIOR_DRIVER`.
 It stops before active-build history, `buildx use`, rollback, prune, build, container, database,
-identity, topology, AppliedState-write or push work. Its one bounded line contains only the closed
-classification, phase and predicates plus zero action/mutation/retry counts; it never contains a
+identity, topology, AppliedState-write or push work. Its one bounded line uses schema
+`BUILDER_PRESTATE_V2`, one `observation_known` flag and one optional literal-key `observation`
+object containing only closed predicates. Early failure omits the object; completed capture
+survives reproof or lock failure, and unequal reproof projects only the original capture snapshot
+with `PLAN_DRIFT`. The line otherwise contains only the closed classification, phase and zero
+action/mutation/retry counts; it never contains a
 builder/context/node/endpoint name, source SHA, path, environment value or provider output. A
 `PASS` is diagnostic evidence only and does not authorize the mutating operator or a host repair.
 
