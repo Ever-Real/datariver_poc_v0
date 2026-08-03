@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import stat
+import subprocess
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -91,6 +92,7 @@ def test_dev_runtime_update_command_keeps_normal_contract_and_exact_opt_in() -> 
     )
 
     assert normal == (
+        os.fspath(ROOT / ".venv" / "bin" / "python"),
         os.fspath(ROOT / "scripts" / "workflow_update_restart.py"),
         "--profile",
         "mac-development",
@@ -102,6 +104,46 @@ def test_dev_runtime_update_command_keeps_normal_contract_and_exact_opt_in() -> 
         "--reconcile-local-topology",
         "mac-development-graph-gateway-v1",
     )
+
+
+@pytest.mark.parametrize("failure", ("missing", "non-executable"))
+def test_dev_runtime_update_command_requires_executable_project_python(
+    failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_python = ROOT / ".venv" / "bin" / "python"
+    if failure == "missing":
+        monkeypatch.setattr(cycle, "ROOT", tmp_path)
+    else:
+        original_access = cycle.os.access
+        monkeypatch.setattr(
+            cycle.os,
+            "access",
+            lambda path, mode: False
+            if Path(path) == project_python and mode == os.X_OK
+            else original_access(path, mode),
+        )
+
+    with pytest.raises(cycle.DevelopmentCycleError, match="project Python"):
+        cycle.dev_runtime_update_command(None)
+
+
+def test_dev_runtime_update_operator_boundary_imports_with_project_python() -> None:
+    command = tuple(os.fspath(value) for value in cycle.dev_runtime_update_command(None))
+
+    completed = subprocess.run(  # noqa: S603 - exact repository-owned interpreter and script.
+        (*command[:2], "--help"),
+        cwd=ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+
+    assert completed.returncode == 0
+    assert "usage:" in completed.stdout
+    assert "ModuleNotFoundError" not in completed.stderr
 
 
 def test_dev_publish_keeps_runtime_reconciliation_before_push(
@@ -175,6 +217,35 @@ def test_dev_publish_never_pushes_after_reconciliation_failure(
             FakeRunner(),
             reconciliation="mac-development-graph-gateway-v1",
         )
+
+    assert all(command[:2] != ("git", "push") for command in commands)
+
+
+def test_dev_publish_propagates_runtime_child_interrupt_without_push(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    commands: list[tuple[str, ...]] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+        def run(self, arguments: object, **_kwargs: object) -> None:
+            assert isinstance(arguments, tuple)
+            command = tuple(os.fspath(value) for value in arguments)
+            commands.append(command)
+            if command[1] == os.fspath(ROOT / "scripts" / "workflow_update_restart.py"):
+                raise KeyboardInterrupt
+
+    monkeypatch.setattr(cycle, "require_platform", lambda **_kwargs: None)
+    monkeypatch.setattr(cycle, "require_command", lambda _name: None)
+    monkeypatch.setattr(cycle, "require_dev_checkout", lambda _runner: None)
+    monkeypatch.setattr(cycle, "require_expected_origin", lambda _runner: None)
+    monkeypatch.setattr(cycle, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(cycle, "verify_source", lambda _runner: None)
+
+    with pytest.raises(KeyboardInterrupt):
+        cycle.dev_publish(FakeRunner())
 
     assert all(command[:2] != ("git", "push") for command in commands)
 

@@ -310,7 +310,11 @@ def require_platform(*, expected_system: str, expected_machines: set[str]) -> No
 def dev_runtime_update_command(
     reconciliation: str | None,
 ) -> tuple[str | os.PathLike[str], ...]:
+    python_bin = ROOT / ".venv" / "bin" / "python"
+    if not python_bin.is_file() or not os.access(python_bin, os.X_OK):
+        raise DevelopmentCycleError("The project Python interpreter is absent or not executable.")
     command: list[str | os.PathLike[str]] = [
+        python_bin,
         ROOT / "scripts" / "workflow_update_restart.py",
         "--profile",
         "mac-development",

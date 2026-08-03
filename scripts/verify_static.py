@@ -1617,6 +1617,25 @@ def verify_amd64_source_readiness_contract() -> None:
         )
     if 'print(f"     {output}")' in workflow:
         raise AssertionError("raw source-host preflight output must never reach operator logs")
+    runtime_launcher = workflow.split("def dev_runtime_update_command(", maxsplit=1)[1].split(
+        "def dev_publish(", maxsplit=1
+    )[0]
+    for fragment in (
+        'python_bin = ROOT / ".venv" / "bin" / "python"',
+        "not python_bin.is_file() or not os.access(python_bin, os.X_OK)",
+        '"The project Python interpreter is absent or not executable."',
+        'ROOT / "scripts" / "workflow_update_restart.py"',
+        'command.extend(("--reconcile-local-topology", reconciliation))',
+    ):
+        if fragment not in runtime_launcher:
+            raise AssertionError(f"the Mac runtime project-Python launcher is missing: {fragment}")
+    if runtime_launcher.index("python_bin,") > runtime_launcher.index(
+        'ROOT / "scripts" / "workflow_update_restart.py"'
+    ):
+        raise AssertionError("the project Python must precede the exact runtime workflow script")
+    for forbidden in ("sys.executable", "os.environ", "shell=True"):
+        if forbidden in runtime_launcher:
+            raise AssertionError("the Mac runtime launcher cannot select an alternate interpreter")
     if workflow.index("runtime = prepare_source_host") > workflow.index(
         "write_readiness_manifest(evidence)"
     ):
@@ -1655,6 +1674,9 @@ def verify_amd64_source_readiness_contract() -> None:
         "test_failed_atomic_replace_preserves_last_successful_manifest",
         "test_missing_readiness_manifest_fails_closed",
         "test_prep_check_is_repeatable_and_read_only_after_successful_update",
+        "test_dev_runtime_update_command_requires_executable_project_python",
+        "test_dev_runtime_update_operator_boundary_imports_with_project_python",
+        "test_dev_publish_propagates_runtime_child_interrupt_without_push",
     ):
         if fragment not in test_source:
             raise AssertionError(f"the amd64 readiness direct test is missing: {fragment}")
