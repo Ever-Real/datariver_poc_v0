@@ -57,7 +57,7 @@ describe('KnowledgeChatPage', () => {
     expect(screen.getByRole('button', { name: /Chat Test/ })).toHaveAttribute('aria-current', 'page')
     await screen.findByRole('option', { name: /ETCH-01/ })
     const evidenceGraph = screen.getByRole('region', { name: 'GraphRAG 근거 그래프' })
-    expect(within(evidenceGraph).getByLabelText('ETCH-01, Tool · 근거 0')).toBeInTheDocument()
+    expect(await within(evidenceGraph).findByLabelText('ETCH-01, Tool · 근거 0')).toBeInTheDocument()
     expect(screen.getByText('1 nodes · 0 edges · 권한 내 bounded preview')).toBeInTheDocument()
     fireEvent.click(within(evidenceGraph).getByLabelText('ETCH-01, Tool · 근거 0'))
     expect(screen.getByLabelText('시작 노드')).toHaveValue('tool-1')
