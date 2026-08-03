@@ -30,6 +30,7 @@ from platform_workflow import (
     classify_environment_changes,
     compose_arguments,
     current_commit,
+    enforce_local_topology,
     environment_key_hashes,
     load_applied_state,
     merge_change_plans,
@@ -595,6 +596,11 @@ def main() -> int:
             trailing=("config", "--quiet"),
         )
         running = _running_services(runner, env_file=env_file, files=files)
+        enforce_local_topology(
+            runner,
+            state=state,
+            environment_values=environment_values,
+        )
         enabled_optional_services = _enabled_optional_runtime_services(environment_values)
         restart_services = select_restart_services(
             plan.services,

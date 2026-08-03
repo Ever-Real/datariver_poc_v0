@@ -112,6 +112,8 @@ The exact-source amd64 readiness evidence and stable preparation-PC daily interf
 by [ADR-0111](adr/0111-source-built-amd64-portability-layer.md). The development update workflow's
 exclusive build lock, Docker backing-filesystem capacity formula and bounded cache-only recovery
 are defined by [ADR-0112](adr/0112-governed-docker-build-capacity.md).
+The AppliedState-to-runtime comparison, bounded four-class drift evidence and explicit no-auto-stop
+boundary are defined by [ADR-0113](adr/0113-governed-local-topology-drift.md).
 
 Current low-resource client and preparation Chat decision: [bounded client state and preparation Chat provider](adr/0035-bounded-client-state-and-preparation-chat-provider.md).
 

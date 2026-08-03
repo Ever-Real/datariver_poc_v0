@@ -95,6 +95,7 @@ def _load_update_module() -> ModuleType:
     dynamic_module.exclusive_docker_workflow_lock = test_lock
     dynamic_module._preflight_build_capacity = lambda *_args, **_kwargs: "test-builder"
     dynamic_module._require_idle_builder = lambda *_args, **_kwargs: None
+    dynamic_module.enforce_local_topology = lambda *_args, **_kwargs: None
     return module
 
 
@@ -604,6 +605,162 @@ def test_update_starts_an_explicitly_enabled_proposal_worker() -> None:
     )
 
 
+def _topology_state(**overrides: object) -> Any:
+    values: dict[str, object] = {
+        "profile": "portable-development",
+        "applied_commit": "a" * 40,
+        "runtime_commit": "a" * 40,
+        "env_file": ".env.portable-development",
+        "deployment_mode": "build",
+        "release_dir": None,
+        "local_airflow": False,
+        "local_datahub": False,
+        "local_redis": False,
+        "local_storage": False,
+        "local_gateway": False,
+        "local_graph": False,
+        "environment_key_hashes": {},
+    }
+    values.update(overrides)
+    return workflow.AppliedState(**values)
+
+
+def _core_topology_observations() -> list[Any]:
+    return [
+        workflow.LocalServiceObservation(
+            project="datariver-next",
+            service=service,
+            state="running",
+            health="healthy" if service in {"postgres", "keycloak", "api", "web"} else "none",
+        )
+        for service in (
+            "postgres",
+            "keycloak",
+            "api",
+            "web",
+            "outbox-relay",
+            "upload-worker",
+            "upload-validation-worker",
+            "governance-apply-worker",
+        )
+    ]
+
+
+def test_local_topology_clean_fast_path_has_no_findings() -> None:
+    audit = workflow.build_local_topology_audit(
+        state=_topology_state(),
+        environment_values={"NEO4J_PROJECTION_ENABLED": "false"},
+        observations=_core_topology_observations(),
+    )
+
+    assert audit.has_findings is False
+    assert json.loads(audit.summary()) == {
+        "expected_missing": [],
+        "intent_mismatch": [],
+        "selected_unhealthy": [],
+        "unexpected_running": [],
+        "unexpected_unknown_count": 0,
+    }
+
+
+def test_local_topology_keeps_runtime_and_intent_drift_separate() -> None:
+    observations = _core_topology_observations()
+    observations.extend(
+        (
+            workflow.LocalServiceObservation(
+                project="datariver-next",
+                service="neo4j",
+                state="running",
+                health="healthy",
+            ),
+            workflow.LocalServiceObservation(
+                project="datariver-next",
+                service="apisix",
+                state="running",
+                health="healthy",
+            ),
+        )
+    )
+
+    audit = workflow.build_local_topology_audit(
+        state=_topology_state(),
+        environment_values={
+            "NEO4J_PROJECTION_ENABLED": "true",
+            "NEO4J_URI": "bolt://neo4j:7687",
+        },
+        observations=observations,
+    )
+
+    assert audit.expected_missing == ()
+    assert audit.unexpected_running == ("gateway.apisix", "graph.neo4j")
+    assert audit.selected_unhealthy == ()
+    assert audit.intent_mismatch == ("graph.neo4j",)
+
+
+def test_local_topology_reports_missing_and_selected_unhealthy_separately() -> None:
+    observations = [item for item in _core_topology_observations() if item.service != "api"]
+    for service in workflow.AIRFLOW_SERVICES:
+        observations.append(
+            workflow.LocalServiceObservation(
+                project="datariver-next",
+                service=service,
+                state="running",
+                health="starting" if service == "airflow-scheduler" else "none",
+            )
+        )
+
+    audit = workflow.build_local_topology_audit(
+        state=_topology_state(local_airflow=True),
+        environment_values={"NEO4J_PROJECTION_ENABLED": "false"},
+        observations=observations,
+    )
+
+    assert audit.expected_missing == ("core.api",)
+    assert audit.selected_unhealthy == (("airflow.scheduler", "starting"),)
+    assert audit.unexpected_running == ()
+
+
+def test_local_topology_unknown_service_is_counted_without_identifier_leak() -> None:
+    sentinel = "future-secret-service-path"
+    observations = workflow.parse_local_topology_output(
+        "datariver-next",
+        f"{sentinel}\trunning\tUp 2 hours\n",
+    )
+    audit = workflow.build_local_topology_audit(
+        state=_topology_state(),
+        environment_values={"NEO4J_PROJECTION_ENABLED": "false"},
+        observations=(*_core_topology_observations(), *observations),
+    )
+
+    assert audit.unexpected_unknown_count == 1
+    assert sentinel not in audit.summary()
+    assert observations[0].service == "__unknown__"
+
+
+def test_local_topology_reverse_intent_mismatch_does_not_adopt_env_silently() -> None:
+    observations = _core_topology_observations()
+    observations.append(
+        workflow.LocalServiceObservation(
+            project="datariver-next",
+            service="neo4j",
+            state="running",
+            health="healthy",
+        )
+    )
+
+    audit = workflow.build_local_topology_audit(
+        state=_topology_state(local_graph=True),
+        environment_values={
+            "NEO4J_PROJECTION_ENABLED": "false",
+            "NEO4J_URI": "bolt://neo4j:7687",
+        },
+        observations=observations,
+    )
+
+    assert audit.unexpected_running == ()
+    assert audit.intent_mismatch == ("graph.neo4j",)
+
+
 def _captured_workflow_failure(sentinel: str) -> Exception:
     cause = subprocess.CalledProcessError(
         1,
@@ -620,6 +777,7 @@ class _ScriptedOutputRunner:
     def __init__(self, outcomes: list[str | Exception]) -> None:
         self.outcomes = outcomes
         self.calls: list[tuple[str, ...]] = []
+        self.topology_projects: list[str] = []
         self.notes: list[str] = []
 
     def output(self, arguments: Any) -> str:
@@ -629,8 +787,141 @@ class _ScriptedOutputRunner:
             raise outcome
         return outcome
 
+    def local_topology_output(self, *, project: str) -> str:
+        self.topology_projects.append(project)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise workflow.WorkflowError("LOCAL_TOPOLOGY_QUERY_FAILED") from outcome
+        return outcome
+
     def note(self, message: str) -> None:
         self.notes.append(message)
+
+
+def test_local_topology_queries_only_exact_managed_projects() -> None:
+    runner = _ScriptedOutputRunner(["", ""])
+
+    assert workflow.capture_local_topology(runner) == ()
+    assert runner.topology_projects == [
+        "datariver-next",
+        "datariver-local-connectors",
+    ]
+    assert runner.calls == []
+
+
+def test_local_topology_query_failure_is_fixed_and_sanitized(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sentinel = "credential=/private/runtime.env"
+    runner = _ScriptedOutputRunner([_captured_workflow_failure(sentinel)])
+
+    with pytest.raises(workflow.WorkflowError, match=r"^LOCAL_TOPOLOGY_QUERY_FAILED$") as raised:
+        workflow.capture_local_topology(runner)
+
+    captured = capsys.readouterr()
+    observed = captured.out + captured.err + str(raised.value)
+    assert sentinel not in observed
+
+
+def test_local_topology_private_capture_never_prints_command_or_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    sentinel = "container-id=0123456789 credential=/private/runtime.env"
+
+    def fake_run(*args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args[0],
+            0,
+            f"{sentinel}\trunning\tUp 2 hours\n",
+            "future_secret=never-print",
+        )
+
+    monkeypatch.setattr(workflow.subprocess, "run", fake_run)
+    runner = workflow.Runner(root=tmp_path)
+
+    observations = workflow.capture_local_topology(runner)
+
+    assert len(observations) == 2
+    assert all(item.service == "__unknown__" for item in observations)
+    captured = capsys.readouterr()
+    observed = captured.out + captured.err
+    assert sentinel not in observed
+    assert "future_secret" not in observed
+    assert "com.docker.compose.project" not in observed
+    assert "datariver-next" not in observed
+
+
+def test_local_topology_private_capture_failure_is_fixed_and_sanitized(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    sentinel = "container-id=0123456789 credential=/private/runtime.env"
+
+    def fail_run(*args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        raise subprocess.CalledProcessError(
+            1,
+            args[0],
+            output=sentinel,
+            stderr="future_secret=never-print",
+        )
+
+    monkeypatch.setattr(workflow.subprocess, "run", fail_run)
+    runner = workflow.Runner(root=tmp_path)
+
+    with pytest.raises(workflow.WorkflowError, match=r"^LOCAL_TOPOLOGY_QUERY_FAILED$") as raised:
+        workflow.capture_local_topology(runner)
+
+    captured = capsys.readouterr()
+    observed = captured.out + captured.err + str(raised.value)
+    assert sentinel not in observed
+    assert "future_secret" not in observed
+    assert "com.docker.compose.project" not in observed
+    assert "datariver-next" not in observed
+
+
+def test_local_topology_private_capture_timeout_is_fixed_sanitized_and_not_retried(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    sentinel = "container-id=0123456789 credential=/private/runtime.env"
+    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+
+    def timeout_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append((args, kwargs))
+        raise subprocess.TimeoutExpired(
+            args[0],
+            kwargs["timeout"],
+            output=sentinel,
+            stderr="future_secret=never-print",
+        )
+
+    monkeypatch.setattr(workflow.subprocess, "run", timeout_run)
+    runner = workflow.Runner(root=tmp_path)
+
+    with pytest.raises(workflow.WorkflowError, match=r"^LOCAL_TOPOLOGY_QUERY_FAILED$") as raised:
+        workflow.capture_local_topology(runner)
+
+    assert len(calls) == 1
+    assert calls[0][1]["timeout"] == 20
+    captured = capsys.readouterr()
+    observed = captured.out + captured.err + str(raised.value)
+    assert sentinel not in observed
+    assert "future_secret" not in observed
+    assert "com.docker.compose.project" not in observed
+    assert "datariver-next" not in observed
+
+
+def test_local_topology_malformed_evidence_never_echoes_raw_value() -> None:
+    sentinel = "future_secret=/private/path"
+
+    with pytest.raises(workflow.WorkflowError, match="LOCAL_TOPOLOGY_EVIDENCE_INVALID") as raised:
+        workflow.parse_local_topology_output("datariver-next", sentinel)
+
+    assert sentinel not in str(raised.value)
 
 
 def test_running_services_preserves_first_success_behavior(tmp_path: Path) -> None:
@@ -847,6 +1138,94 @@ def test_workflow_reconciles_local_reranker_lifecycle(
         profile="portable-development",
     )
     assert calls[-1][-1] == "stop"
+
+
+def test_update_topology_drift_stops_before_lock_reranker_or_state_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.portable-development"
+    env_file.write_text("NEO4J_PROJECTION_ENABLED=false\n", encoding="utf-8")
+    state = _topology_state(
+        env_file=os.fspath(env_file),
+        environment_key_hashes=workflow.environment_key_hashes(
+            {"NEO4J_PROJECTION_ENABLED": "false"}
+        ),
+    )
+    events: list[str] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="portable-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=True,
+            assume_yes=True,
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FakeRunner)
+    monkeypatch.setattr(update, "require_command", lambda _command: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda _root, _profile: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda _runner, _old, _new: ())
+    monkeypatch.setattr(update, "_running_services", lambda *_args, **_kwargs: ("api", "web"))
+
+    def compose(_runner: object, **kwargs: object) -> None:
+        trailing = cast(tuple[str, ...], kwargs["trailing"])
+        events.append("config" if trailing == ("config", "--quiet") else "docker-mutation")
+
+    def drift(*_args: object, **_kwargs: object) -> None:
+        events.append("topology-audit")
+        raise workflow.WorkflowError("LOCAL_TOPOLOGY_DRIFT")
+
+    @contextmanager
+    def held_lock(_root: Path) -> Iterator[object]:
+        events.append("lock")
+        yield object()
+
+    monkeypatch.setattr(update, "_compose", compose)
+    monkeypatch.setattr(update, "enforce_local_topology", drift)
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", held_lock)
+    monkeypatch.setattr(
+        update,
+        "_reconcile_local_reranker",
+        lambda *_args, **_kwargs: events.append("reranker"),
+    )
+    monkeypatch.setattr(
+        update,
+        "write_applied_state",
+        lambda *_args, **_kwargs: events.append("state-write"),
+    )
+
+    assert update.main() == 2
+    assert events == ["config", "topology-audit"]
+    assert capsys.readouterr().err.splitlines() == ["ERROR: LOCAL_TOPOLOGY_DRIFT"]
+
+
+def test_update_topology_audit_precedes_confirmation_and_capacity_mutation() -> None:
+    source = UPDATE_MODULE_PATH.read_text(encoding="utf-8")
+    config = source.index('trailing=("config", "--quiet")')
+    running = source.index("running = _running_services", config)
+    audit = source.index("enforce_local_topology(", running)
+    plan = source.index("_print_plan(", audit)
+    confirm = source.index("if not args.assume_yes", plan)
+    capacity = source.index("exclusive_docker_workflow_lock", confirm)
+    reranker = source.index("_reconcile_local_reranker", capacity)
+
+    assert config < running < audit < plan < confirm < capacity < reranker
 
 
 def test_update_main_recreates_env_consumer_and_persists_state_only_after_success(

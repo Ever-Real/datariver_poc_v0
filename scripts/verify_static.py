@@ -1791,6 +1791,100 @@ def verify_governed_docker_build_capacity_contract() -> None:
             raise AssertionError(f"ADR-0112 omits governed capacity term: {fragment}")
 
 
+def verify_governed_local_topology_contract() -> None:
+    platform_path = ROOT / "scripts" / "platform_workflow.py"
+    platform = platform_path.read_text(encoding="utf-8")
+    for fragment in (
+        "class LocalTopologyAudit:",
+        '"expected_missing"',
+        '"unexpected_running"',
+        '"selected_unhealthy"',
+        '"intent_mismatch"',
+        '"unexpected_unknown_count"',
+        'raise WorkflowError("LOCAL_TOPOLOGY_QUERY_FAILED")',
+        'raise WorkflowError("LOCAL_TOPOLOGY_DRIFT")',
+        "state.local_graph != _local_graph_intent(environment_values)",
+        'else "__unknown__"',
+        "def local_topology_output(",
+    ):
+        if fragment not in platform:
+            raise AssertionError(f"the governed local-topology contract is missing: {fragment}")
+
+    private_query = platform.split("def local_topology_output(", maxsplit=1)[1].split(
+        "def _topology_health_class", maxsplit=1
+    )[0]
+    for fragment in (
+        '"docker",',
+        '"container",',
+        '"ls",',
+        '"--all",',
+        'f"label=com.docker.compose.project={project}"',
+        'raise WorkflowError("LOCAL_TOPOLOGY_QUERY_FAILED")',
+        "timeout=20,",
+        "subprocess.TimeoutExpired",
+    ):
+        if fragment not in private_query:
+            raise AssertionError("local-topology private query contract is incomplete")
+    if "print(" in private_query or "self.run(" in private_query or "self.output(" in private_query:
+        raise AssertionError("local-topology private query must not render argv or raw payload")
+
+    capture = platform.split("def capture_local_topology(", maxsplit=1)[1].split(
+        "def _enabled_optional_topology_services", maxsplit=1
+    )[0]
+    if "runner.local_topology_output(project=project)" not in capture:
+        raise AssertionError("local-topology capture must use the fixed private query")
+    for forbidden in ('"stop"', '"rm"', '"down"', '"restart"', '"inspect"'):
+        if forbidden in capture:
+            raise AssertionError(f"local-topology capture contains a mutation: {forbidden}")
+    if "runner.output(" in capture or "runner.run(" in capture:
+        raise AssertionError("local-topology capture must keep Docker argv and payload private")
+
+    workflow = (ROOT / "scripts" / "workflow_update_restart.py").read_text(encoding="utf-8")
+    main_source = workflow.split("def main() -> int:", maxsplit=1)[1]
+    config = main_source.index('trailing=("config", "--quiet")')
+    running = main_source.index("running = _running_services", config)
+    audit = main_source.index("enforce_local_topology(", running)
+    plan = main_source.index("_print_plan(", audit)
+    confirmation = main_source.index("if not args.assume_yes", plan)
+    lock = main_source.index("exclusive_docker_workflow_lock", confirmation)
+    reranker = main_source.index("_reconcile_local_reranker", lock)
+    if not config < running < audit < plan < confirmation < lock < reranker:
+        raise AssertionError("local-topology audit must precede every update mutation boundary")
+
+    test_source = (ROOT / "backend" / "tests" / "unit" / "test_platform_workflow.py").read_text(
+        encoding="utf-8"
+    )
+    for test_name in (
+        "test_local_topology_clean_fast_path_has_no_findings",
+        "test_local_topology_keeps_runtime_and_intent_drift_separate",
+        "test_local_topology_reports_missing_and_selected_unhealthy_separately",
+        "test_local_topology_unknown_service_is_counted_without_identifier_leak",
+        "test_local_topology_reverse_intent_mismatch_does_not_adopt_env_silently",
+        "test_local_topology_queries_only_exact_managed_projects",
+        "test_local_topology_query_failure_is_fixed_and_sanitized",
+        "test_local_topology_private_capture_never_prints_command_or_payload",
+        "test_local_topology_private_capture_failure_is_fixed_and_sanitized",
+        "test_local_topology_private_capture_timeout_is_fixed_sanitized_and_not_retried",
+        "test_update_topology_drift_stops_before_lock_reranker_or_state_mutation",
+    ):
+        if test_name not in test_source:
+            raise AssertionError(f"the local-topology direct test is missing: {test_name}")
+
+    adr = (ROOT / "docs" / "adr" / "0113-governed-local-topology-drift.md").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (
+        "LOCAL_TOPOLOGY_DRIFT",
+        "expected-missing",
+        "unexpected-running",
+        "selected-unhealthy",
+        "intent-mismatch",
+        "no auto-stop",
+    ):
+        if fragment not in adr:
+            raise AssertionError(f"ADR-0113 omits local-topology term: {fragment}")
+
+
 def verify_document_links() -> None:
     pattern = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
     for path in (ROOT / "docs").rglob("*.md"):
@@ -1823,6 +1917,7 @@ def main() -> None:
     verify_seed()
     verify_amd64_source_readiness_contract()
     verify_governed_docker_build_capacity_contract()
+    verify_governed_local_topology_contract()
     verify_document_links()
     print(
         "static verification passed: compose, build/release context, DataHub release contract, "

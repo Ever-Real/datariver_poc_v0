@@ -66,6 +66,92 @@ OPTIONAL_RELEASE_COMPOSE_FILES = {
 }
 LOCAL_CONNECTOR_SERVICES = ("redis-cache", "redis-delivery", "minio")
 
+_CORE_TOPOLOGY_SERVICES = (
+    "postgres",
+    "keycloak",
+    *DEFAULT_RUNTIME_SERVICES,
+)
+_OPTIONAL_TOPOLOGY_SERVICES = {
+    "CATALOG_EXPORT_WORKER_ENABLED": ("catalog-export-worker",),
+    "GOVERNANCE_DOCUMENT_WORKER_ENABLED": ("governance-document-worker",),
+    "KNOWLEDGE_SOURCE_WORKER_ENABLED": ("knowledge-source-worker",),
+    "KNOWLEDGE_STUDIO_INGESTION_WORKER_ENABLED": ("knowledge-studio-ingestion-worker",),
+    "KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED": ("knowledge-tbox-proposal-worker",),
+    "QUALITY_WORKER_ENABLED": ("quality-worker",),
+    "RETENTION_ARCHIVE_EXECUTION_ENABLED": (
+        "retention-scheduler",
+        "retention-archive-worker",
+    ),
+}
+_TOPOLOGY_PROJECTS = (
+    "datariver-next",
+    "datariver-local-connectors",
+)
+_TOPOLOGY_SERVICE_KEYS = {
+    ("datariver-next", "postgres"): "database.postgresql",
+    ("datariver-next", "keycloak"): "identity.keycloak",
+    ("datariver-next", "api"): "core.api",
+    ("datariver-next", "web"): "core.web",
+    ("datariver-next", "outbox-relay"): "core.outbox-relay",
+    ("datariver-next", "upload-worker"): "worker.upload",
+    ("datariver-next", "upload-validation-worker"): "worker.upload-validation",
+    ("datariver-next", "governance-apply-worker"): "worker.governance-apply",
+    ("datariver-next", "catalog-export-worker"): "worker.catalog-export",
+    ("datariver-next", "governance-document-worker"): "worker.governance-document",
+    ("datariver-next", "knowledge-source-worker"): "worker.knowledge-source",
+    (
+        "datariver-next",
+        "knowledge-studio-ingestion-worker",
+    ): "worker.knowledge-studio-ingestion",
+    (
+        "datariver-next",
+        "knowledge-tbox-proposal-worker",
+    ): "worker.knowledge-tbox-proposal",
+    ("datariver-next", "quality-worker"): "worker.quality",
+    ("datariver-next", "retention-scheduler"): "worker.retention-scheduler",
+    ("datariver-next", "retention-archive-worker"): "worker.retention-archive",
+    ("datariver-next", "airflow-api-server"): "airflow.api",
+    ("datariver-next", "airflow-scheduler"): "airflow.scheduler",
+    ("datariver-next", "airflow-dag-processor"): "airflow.dag-processor",
+    ("datariver-next", "airflow-triggerer"): "airflow.triggerer",
+    ("datariver-next", "apisix"): "gateway.apisix",
+    ("datariver-next", "neo4j"): "graph.neo4j",
+    ("datariver-next", "migrate"): "task.migrate",
+    ("datariver-next", "local-bootstrap"): "task.local-bootstrap",
+    ("datariver-next", "storage-init"): "task.storage-init",
+    ("datariver-next", "semiconductor-seed"): "task.semiconductor-seed",
+    ("datariver-next", "airflow-init"): "task.airflow-init",
+    ("datariver-next", "airflow-db-init"): "task.airflow-db-init",
+    ("datariver-next", "prometheus"): "observability.prometheus",
+    ("datariver-next", "grafana"): "observability.grafana",
+    ("datariver-next", "alertmanager"): "observability.alertmanager",
+    ("datariver-next", "otel-collector"): "observability.otel-collector",
+    ("datariver-next", "loki"): "observability.loki",
+    ("datariver-next", "tempo"): "observability.tempo",
+    ("datariver-local-connectors", "redis-cache"): "connector.redis-cache",
+    ("datariver-local-connectors", "redis-delivery"): "connector.redis-delivery",
+    ("datariver-local-connectors", "minio"): "connector.minio",
+    ("datariver-local-connectors", "neo4j"): "connector.legacy-graph",
+    (
+        "datariver-local-connectors",
+        "minio-knowledge-identity-init",
+    ): "task.minio-knowledge-identity-init",
+    (
+        "datariver-local-connectors",
+        "minio-governance-document-identity-init",
+    ): "task.minio-governance-document-identity-init",
+}
+_TOPOLOGY_DOCKER_STATES = {
+    "created",
+    "restarting",
+    "running",
+    "removing",
+    "paused",
+    "exited",
+    "dead",
+}
+_TOPOLOGY_STATUS_FORMAT = '{{.Label "com.docker.compose.service"}}\t{{.State}}\t{{.Status}}'
+
 _ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 OPERATOR_ONLY_SOURCE_PATHS = frozenset(
@@ -239,6 +325,50 @@ class AppliedState:
 
 
 @dataclass(frozen=True)
+class LocalServiceObservation:
+    """One private Docker observation reduced to a managed identity and status class."""
+
+    project: str
+    service: str
+    state: str
+    health: str
+
+
+@dataclass(frozen=True)
+class LocalTopologyAudit:
+    """Bounded non-secret evidence for one AppliedState/runtime comparison."""
+
+    expected_missing: tuple[str, ...]
+    unexpected_running: tuple[str, ...]
+    selected_unhealthy: tuple[tuple[str, str], ...]
+    intent_mismatch: tuple[str, ...]
+    unexpected_unknown_count: int = 0
+
+    @property
+    def has_findings(self) -> bool:
+        return bool(
+            self.expected_missing
+            or self.unexpected_running
+            or self.selected_unhealthy
+            or self.intent_mismatch
+            or self.unexpected_unknown_count
+        )
+
+    def summary(self) -> str:
+        document = {
+            "expected_missing": list(self.expected_missing),
+            "intent_mismatch": list(self.intent_mismatch),
+            "selected_unhealthy": [
+                {"service": service, "status": status}
+                for service, status in self.selected_unhealthy
+            ],
+            "unexpected_running": list(self.unexpected_running),
+            "unexpected_unknown_count": self.unexpected_unknown_count,
+        }
+        return json.dumps(document, sort_keys=True, separators=(",", ":"))
+
+
+@dataclass(frozen=True)
 class ChangePlan:
     services: tuple[str, ...]
     requires_migration: bool
@@ -308,6 +438,220 @@ class Runner:
             capture_output=True,
         )
         return result.stdout.strip()
+
+    def local_topology_output(self, *, project: str) -> str:
+        """Capture one fixed topology query without rendering its command or payload."""
+
+        if project not in _TOPOLOGY_PROJECTS:
+            raise WorkflowError("LOCAL_TOPOLOGY_QUERY_FAILED")
+        command = [
+            "docker",
+            "container",
+            "ls",
+            "--all",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+            "--format",
+            _TOPOLOGY_STATUS_FORMAT,
+        ]
+        if self.dry_run:
+            return ""
+        try:
+            result = subprocess.run(  # noqa: S603 - argv is never passed through a shell.
+                command,
+                cwd=self.root,
+                check=True,
+                text=True,
+                capture_output=True,
+                timeout=20,
+            )
+        except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+            raise WorkflowError("LOCAL_TOPOLOGY_QUERY_FAILED") from error
+        return result.stdout.strip()
+
+
+def _topology_health_class(status: str) -> str:
+    if "(health: starting)" in status:
+        return "starting"
+    if "(unhealthy)" in status:
+        return "unhealthy"
+    if "(healthy)" in status:
+        return "healthy"
+    if "(health:" in status:
+        raise WorkflowError("LOCAL_TOPOLOGY_EVIDENCE_INVALID")
+    return "none"
+
+
+def parse_local_topology_output(
+    project: str,
+    output: str,
+) -> tuple[LocalServiceObservation, ...]:
+    """Parse bounded Docker status without retaining unknown service identifiers."""
+
+    if project not in _TOPOLOGY_PROJECTS or len(output.encode("utf-8")) > 256 * 1024:
+        raise WorkflowError("LOCAL_TOPOLOGY_EVIDENCE_INVALID")
+    observations: list[LocalServiceObservation] = []
+    lines = output.splitlines()
+    if len(lines) > 256:
+        raise WorkflowError("LOCAL_TOPOLOGY_EVIDENCE_INVALID")
+    for line in lines:
+        if not line:
+            continue
+        parts = line.split("\t", maxsplit=2)
+        if len(parts) != 3:
+            raise WorkflowError("LOCAL_TOPOLOGY_EVIDENCE_INVALID")
+        raw_service, state, status = parts
+        if state not in _TOPOLOGY_DOCKER_STATES:
+            raise WorkflowError("LOCAL_TOPOLOGY_EVIDENCE_INVALID")
+        service = raw_service if (project, raw_service) in _TOPOLOGY_SERVICE_KEYS else "__unknown__"
+        observations.append(
+            LocalServiceObservation(
+                project=project,
+                service=service,
+                state=state,
+                health=_topology_health_class(status),
+            )
+        )
+    return tuple(observations)
+
+
+def capture_local_topology(
+    runner: Runner,
+) -> tuple[LocalServiceObservation, ...]:
+    """Read only the two repository-managed Compose projects."""
+
+    observations: list[LocalServiceObservation] = []
+    for project in _TOPOLOGY_PROJECTS:
+        try:
+            output = runner.local_topology_output(project=project)
+            observations.extend(parse_local_topology_output(project, output))
+        except WorkflowError as error:
+            raise WorkflowError("LOCAL_TOPOLOGY_QUERY_FAILED") from error
+    return tuple(observations)
+
+
+def _enabled_optional_topology_services(values: dict[str, str]) -> tuple[str, ...]:
+    enabled: list[str] = []
+    for key, services in _OPTIONAL_TOPOLOGY_SERVICES.items():
+        if values.get(key, "").strip().casefold() == "true":
+            enabled.extend(services)
+    return tuple(enabled)
+
+
+def _local_graph_intent(values: dict[str, str]) -> bool:
+    if values.get("NEO4J_PROJECTION_ENABLED", "").strip().casefold() != "true":
+        return False
+    parsed = urlsplit(values.get("NEO4J_URI", "").strip())
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme in {"bolt", "bolt+s", "neo4j", "neo4j+s"}
+        and parsed.hostname == "neo4j"
+        and port == 7687
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.path in {"", "/"}
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def build_local_topology_audit(
+    *,
+    state: AppliedState,
+    environment_values: dict[str, str],
+    observations: Sequence[LocalServiceObservation],
+) -> LocalTopologyAudit:
+    """Compare persisted selection, explicit intent and current managed runtime."""
+
+    expected = {("datariver-next", service) for service in _CORE_TOPOLOGY_SERVICES}
+    expected.update(
+        ("datariver-next", service)
+        for service in _enabled_optional_topology_services(environment_values)
+    )
+    if state.local_airflow:
+        expected.update(("datariver-next", service) for service in AIRFLOW_SERVICES)
+    if state.local_gateway:
+        expected.add(("datariver-next", "apisix"))
+    if state.local_graph:
+        expected.add(("datariver-next", "neo4j"))
+    if state.local_redis:
+        expected.update(
+            (
+                ("datariver-local-connectors", "redis-cache"),
+                ("datariver-local-connectors", "redis-delivery"),
+            )
+        )
+    if state.local_storage:
+        expected.add(("datariver-local-connectors", "minio"))
+
+    grouped: dict[tuple[str, str], list[LocalServiceObservation]] = {}
+    unexpected_unknown_count = 0
+    for observation in observations:
+        if observation.project not in _TOPOLOGY_PROJECTS:
+            raise WorkflowError("LOCAL_TOPOLOGY_EVIDENCE_INVALID")
+        if observation.service == "__unknown__":
+            if observation.state == "running":
+                unexpected_unknown_count += 1
+            continue
+        identity = (observation.project, observation.service)
+        if identity not in _TOPOLOGY_SERVICE_KEYS:
+            raise WorkflowError("LOCAL_TOPOLOGY_EVIDENCE_INVALID")
+        grouped.setdefault(identity, []).append(observation)
+
+    expected_missing: set[str] = set()
+    unexpected_running: set[str] = set()
+    selected_unhealthy: set[tuple[str, str]] = set()
+    for identity in expected:
+        logical_key = _TOPOLOGY_SERVICE_KEYS[identity]
+        running = [item for item in grouped.get(identity, ()) if item.state == "running"]
+        if not running:
+            expected_missing.add(logical_key)
+            continue
+        if len(running) > 1:
+            unexpected_running.add(f"duplicate.{logical_key}")
+        for observation in running:
+            if observation.health in {"starting", "unhealthy"}:
+                selected_unhealthy.add((logical_key, observation.health))
+
+    for identity, items in grouped.items():
+        if identity in expected:
+            continue
+        if any(item.state == "running" for item in items):
+            unexpected_running.add(_TOPOLOGY_SERVICE_KEYS[identity])
+
+    intent_mismatch: set[str] = set()
+    if state.local_graph != _local_graph_intent(environment_values):
+        intent_mismatch.add("graph.neo4j")
+
+    return LocalTopologyAudit(
+        expected_missing=tuple(sorted(expected_missing)),
+        unexpected_running=tuple(sorted(unexpected_running)),
+        selected_unhealthy=tuple(sorted(selected_unhealthy)),
+        intent_mismatch=tuple(sorted(intent_mismatch)),
+        unexpected_unknown_count=unexpected_unknown_count,
+    )
+
+
+def enforce_local_topology(
+    runner: Runner,
+    *,
+    state: AppliedState,
+    environment_values: dict[str, str],
+) -> LocalTopologyAudit:
+    """Report bounded drift and stop before any managed runtime mutation."""
+
+    audit = build_local_topology_audit(
+        state=state,
+        environment_values=environment_values,
+        observations=capture_local_topology(runner),
+    )
+    runner.note(f"Local topology audit {audit.summary()}")
+    if audit.has_findings:
+        raise WorkflowError("LOCAL_TOPOLOGY_DRIFT")
+    return audit
 
 
 def fail(message: str) -> NoReturn:
