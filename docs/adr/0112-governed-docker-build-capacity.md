@@ -58,6 +58,23 @@ current running `docker-container` builder and exactly one non-current, running,
 Duplicate, conflicting or extra eligible evidence fails before mutation and none of those private
 values is reported.
 
+Plan construction advances a separate closed, value-free prestate recorder. It distinguishes the
+current-selector contract, an already-canonical selection, duplicate inventory, current-builder
+cardinality, prior driver or status, missing or invalid target fields, exact capture-to-reproof
+drift, and pass. The evidence retains the existing builder-selection and node-schema predicates
+only when those structural outcomes were actually observed. It records whether the finding came
+from the initial `CAPTURE` or immediate `REPROOF`; unknown results omit the predicate and checkpoint
+rather than reconstructing them from an outer error.
+
+The fixed `--diagnostic-phase BUILDER_SELECTION_PRESTATE` mode is read-only. Under the same
+exclusive lock it performs the operator's canonical source, AppliedState/environment, Docker
+override, local-context and complete-inventory capture, then repeats that exact plan proof once.
+It stops before active-build history, `buildx use`, rollback, prune, build, container, database,
+identity, topology, AppliedState-write or push work. Its one bounded line contains only the closed
+classification, phase and predicates plus zero action/mutation/retry counts; it never contains a
+builder/context/node/endpoint name, source SHA, path, environment value or provider output. A
+`PASS` is diagnostic evidence only and does not authorize the mutating operator or a host repair.
+
 The operator may issue exactly one `docker buildx use <validated-current-context>` command, with
 neither `--default` nor `--global`; the Docker driver is automatically created by the Docker
 context and is never created by this workflow. Afterward, the complete inventory must differ only

@@ -1512,6 +1512,173 @@ def test_selection_plan_preserves_complete_private_inventory_and_fixed_argv() ->
     assert len(plan.inventory.stable_identity) == 2
 
 
+def test_selection_plan_recorder_preserves_nested_expected_transition() -> None:
+    prior = {
+        "Current": True,
+        "Driver": "docker-container",
+        "Name": "managed-builder",
+        "Nodes": [{"Endpoint": "desktop-linux", "Name": "managed-builder0", "Status": "running"}],
+    }
+    target = {
+        "Current": False,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [{"Endpoint": "desktop-linux", "Name": "desktop-linux", "Status": "running"}],
+    }
+    plan_recorder = capacity.DockerBuilderSelectionPlanRecorder()
+    builder_recorder = capacity.BuilderSelectionRecorder()
+    node_recorder = capacity.NodeSchemaRecorder()
+
+    capacity.require_docker_builder_selection_plan(
+        "\n".join((json.dumps(prior), json.dumps(target))),
+        {},
+        current_context="desktop-linux",
+        plan_recorder=plan_recorder,
+        builder_selection_recorder=builder_recorder,
+        node_schema_recorder=node_recorder,
+    )
+
+    assert tuple(capacity.DockerBuilderSelectionPlanPredicate) == (
+        capacity.DockerBuilderSelectionPlanPredicate.CURRENT_SELECTION_CONTRACT,
+        capacity.DockerBuilderSelectionPlanPredicate.CURRENT_ALREADY_CANONICAL,
+        capacity.DockerBuilderSelectionPlanPredicate.INVENTORY_DUPLICATE,
+        capacity.DockerBuilderSelectionPlanPredicate.CURRENT_COUNT,
+        capacity.DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER,
+        capacity.DockerBuilderSelectionPlanPredicate.PRIOR_STATUS,
+        capacity.DockerBuilderSelectionPlanPredicate.TARGET_MISSING,
+        capacity.DockerBuilderSelectionPlanPredicate.TARGET_DRIVER,
+        capacity.DockerBuilderSelectionPlanPredicate.TARGET_STATUS,
+        capacity.DockerBuilderSelectionPlanPredicate.TARGET_NODE_NAME,
+        capacity.DockerBuilderSelectionPlanPredicate.TARGET_ENDPOINT,
+        capacity.DockerBuilderSelectionPlanPredicate.TARGET_CURRENT,
+        capacity.DockerBuilderSelectionPlanPredicate.PLAN_DRIFT,
+        capacity.DockerBuilderSelectionPlanPredicate.PASS,
+        capacity.DockerBuilderSelectionPlanPredicate.UNKNOWN,
+    )
+    assert plan_recorder.predicate is capacity.DockerBuilderSelectionPlanPredicate.PASS
+    assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+    assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    (
+        ("malformed", "CURRENT_SELECTION_CONTRACT"),
+        ("canonical", "CURRENT_ALREADY_CANONICAL"),
+        ("duplicate", "INVENTORY_DUPLICATE"),
+        ("current-count", "CURRENT_COUNT"),
+        ("prior-driver", "PRIOR_DRIVER"),
+        ("prior-status", "PRIOR_STATUS"),
+        ("target-missing", "TARGET_MISSING"),
+        ("target-driver", "TARGET_DRIVER"),
+        ("target-status", "TARGET_STATUS"),
+        ("target-node", "TARGET_NODE_NAME"),
+        ("target-endpoint", "TARGET_ENDPOINT"),
+    ),
+)
+def test_selection_plan_records_every_reachable_first_defect(case: str, expected: str) -> None:
+    prior = {
+        "Current": True,
+        "Driver": "docker-container",
+        "Name": "managed-builder",
+        "Nodes": [{"Endpoint": "desktop-linux", "Name": "managed-builder0", "Status": "running"}],
+    }
+    target = {
+        "Current": False,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [{"Endpoint": "desktop-linux", "Name": "desktop-linux", "Status": "running"}],
+    }
+    rows = [prior, target]
+    if case == "malformed":
+        raw = "{raw-provider-sentinel"
+    elif case == "canonical":
+        prior["Current"] = False
+        target["Current"] = True
+        raw = "\n".join(json.dumps(row) for row in rows)
+    elif case == "duplicate":
+        rows.append(json.loads(json.dumps(target)))
+        raw = "\n".join(json.dumps(row) for row in rows)
+    elif case == "current-count":
+        target["Current"] = True
+        raw = "\n".join(json.dumps(row) for row in rows)
+    elif case == "prior-driver":
+        prior["Driver"] = "remote"
+        raw = "\n".join(json.dumps(row) for row in rows)
+    elif case == "prior-status":
+        cast(list[dict[str, object]], prior["Nodes"])[0]["Status"] = "stopped"
+        raw = "\n".join(json.dumps(row) for row in rows)
+    else:
+        if case == "target-missing":
+            rows.pop()
+        elif case == "target-driver":
+            target["Driver"] = "remote"
+        elif case == "target-status":
+            cast(list[dict[str, object]], target["Nodes"])[0]["Status"] = "stopped"
+        elif case == "target-node":
+            cast(list[dict[str, object]], target["Nodes"])[0]["Name"] = "other"
+        elif case == "target-endpoint":
+            cast(list[dict[str, object]], target["Nodes"])[0]["Endpoint"] = "other"
+        raw = "\n".join(json.dumps(row) for row in rows)
+    recorder = capacity.DockerBuilderSelectionPlanRecorder()
+    builder_recorder = capacity.BuilderSelectionRecorder()
+    node_recorder = capacity.NodeSchemaRecorder()
+
+    with pytest.raises(capacity.DockerCapacityError) as captured:
+        capacity.require_docker_builder_selection_plan(
+            raw,
+            {},
+            current_context="desktop-linux",
+            plan_recorder=recorder,
+            builder_selection_recorder=builder_recorder,
+            node_schema_recorder=node_recorder,
+        )
+
+    assert recorder.predicate.value == expected
+    if case == "malformed":
+        assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.LIST_JSON
+        assert node_recorder.predicate is capacity.NodeSchemaPredicate.UNKNOWN
+    elif case == "canonical":
+        assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.PASS
+        assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+    elif case == "current-count":
+        assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.CURRENT_AMBIGUOUS
+        assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+    elif case == "prior-status":
+        assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+        assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+    else:
+        assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+        assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
+    assert "raw-provider-sentinel" not in str(captured.value)
+
+
+def test_selection_plan_predicate_priority_is_deterministic() -> None:
+    prior = {
+        "Current": True,
+        "Driver": "docker-container",
+        "Name": "managed-builder",
+        "Nodes": [{"Endpoint": "desktop-linux", "Name": "managed-builder0", "Status": "running"}],
+    }
+    target = {
+        "Current": False,
+        "Driver": "remote",
+        "Name": "desktop-linux",
+        "Nodes": [{"Endpoint": "other", "Name": "other", "Status": "stopped"}],
+    }
+    recorder = capacity.DockerBuilderSelectionPlanRecorder()
+
+    with pytest.raises(capacity.DockerCapacityError):
+        capacity.require_docker_builder_selection_plan(
+            "\n".join((json.dumps(prior), json.dumps(target))),
+            {},
+            current_context="desktop-linux",
+            plan_recorder=recorder,
+        )
+
+    assert recorder.predicate is capacity.DockerBuilderSelectionPlanPredicate.TARGET_DRIVER
+
+
 @pytest.mark.parametrize(
     "case",
     (

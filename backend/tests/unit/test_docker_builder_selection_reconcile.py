@@ -234,6 +234,7 @@ def test_builder_selection_output_is_fixed_value_free_and_bounded() -> None:
         "action_attempted": True,
         "action_succeeded": True,
         "build_count": 0,
+        "builder_selection_predicate": "DRIVER_NOT_DOCKER",
         "cache_action_count": 0,
         "classification": "PASS",
         "container_action_count": 0,
@@ -241,6 +242,10 @@ def test_builder_selection_output_is_fixed_value_free_and_bounded() -> None:
         "poststate_known": True,
         "poststate_valid": True,
         "predicate": "PASS",
+        "prestate_checkpoint": "REPROOF",
+        "prestate_known": True,
+        "prestate_predicate": "PASS",
+        "node_schema_predicate": "PASS",
         "residual_count": 0,
         "residual_known": True,
         "retry_count": 0,
@@ -261,6 +266,52 @@ def test_unknown_residual_never_estimates_or_leaks() -> None:
 
     assert "residual_count" not in json.loads(line)
     assert "raw-builder-sentinel" not in line
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "known-without-fields",
+        "false-with-fields",
+        "known-with-null",
+        "known-with-unknown",
+    ),
+)
+def test_prestate_evidence_rejects_partial_null_unknown_and_untyped_shapes(
+    case: str,
+) -> None:
+    operator = _load_operator()
+    values: dict[str, Any] = {
+        "classification": operator.BuilderSelectionReconcileClassification.REJECTED,
+        "predicate": operator.BuilderSelectionReconcilePredicate.SOURCE,
+        "action_attempted": False,
+        "action_succeeded": False,
+        "mutation_outcome_known": False,
+        "poststate_known": False,
+        "poststate_valid": False,
+        "rollback_attempted": False,
+        "rollback_succeeded": False,
+        "rollback_outcome_known": True,
+        "selection_mutation_count": 0,
+        "residual_known": True,
+        "residual_count": 0,
+    }
+    if case == "known-without-fields":
+        values["prestate_known"] = True
+    elif case == "false-with-fields":
+        values["prestate_known"] = False
+        values["prestate_checkpoint"] = "CAPTURE"
+    elif case == "known-with-null":
+        values["prestate_known"] = True
+        values["prestate_checkpoint"] = None
+        values["prestate_predicate"] = None
+    else:
+        values["prestate_known"] = True
+        values["prestate_checkpoint"] = operator.BuilderSelectionPrestateCheckpoint.CAPTURE
+        values["prestate_predicate"] = operator.DockerBuilderSelectionPlanPredicate.UNKNOWN
+
+    with pytest.raises(ValueError, match="DOCKER_BUILDER_SELECTION_EVIDENCE_INVALID"):
+        operator.BuilderSelectionReconcileEvidence(**values)
 
 
 @pytest.mark.parametrize(
@@ -997,6 +1048,296 @@ def test_extra_arguments_are_rejected_before_lock_without_raw_output(
     assert output.err == ""
     assert "raw-argument-sentinel" not in output.out
     assert json.loads(output.out)["predicate"] == "ARGUMENTS"
+
+
+def test_read_only_prestate_diagnostic_reproves_plan_and_stops_before_active_or_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _Executor()
+    runtime = operator._RuntimeState()
+
+    evidence = operator._run_prestate_diagnostic(runtime, executor=executor, environ={})
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.PASS
+    assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.PASS
+    assert evidence.phase == "BUILDER_SELECTION_PRESTATE"
+    assert evidence.prestate_known is True
+    assert evidence.prestate_checkpoint.value == "REPROOF"
+    assert evidence.prestate_predicate.value == "PASS"
+    assert evidence.builder_selection_predicate.value == "DRIVER_NOT_DOCKER"
+    assert evidence.node_schema_predicate.value == "PASS"
+    assert evidence.action_count == 0
+    assert evidence.rollback_count == 0
+    assert evidence.selection_mutation_count == 0
+    assert evidence.retry_count == 0
+    assert not any(call[:4] == ("docker", "buildx", "history", "ls") for call in executor.calls)
+    assert executor.selection_calls == []
+
+
+def test_read_only_prestate_diagnostic_classifies_capture_and_reproof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    capture_executor = _Executor()
+    capture_executor.selected = "desktop-linux"
+
+    capture = operator._run_prestate_diagnostic(
+        operator._RuntimeState(),
+        executor=capture_executor,
+        environ={},
+    )
+
+    assert capture.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert capture.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
+    assert capture.prestate_checkpoint.value == "CAPTURE"
+    assert capture.prestate_predicate.value == "CURRENT_ALREADY_CANONICAL"
+    assert capture.builder_selection_predicate.value == "PASS"
+    assert capture.node_schema_predicate.value == "PASS"
+    assert capture_executor.selection_calls == []
+
+    class ReorderedExecutor(_Executor):
+        listing_count = 0
+
+        def _rows(self) -> str:
+            self.listing_count += 1
+            rows = super()._rows().splitlines()
+            if self.listing_count == 2:
+                rows.reverse()
+            return "\n".join(rows)
+
+    reproof_executor = ReorderedExecutor()
+    reproof = operator._run_prestate_diagnostic(
+        operator._RuntimeState(),
+        executor=reproof_executor,
+        environ={},
+    )
+
+    assert reproof.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert reproof.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
+    assert reproof.prestate_checkpoint.value == "REPROOF"
+    assert reproof.prestate_predicate.value == "PLAN_DRIFT"
+    assert reproof_executor.selection_calls == []
+
+
+def test_normal_operator_prestate_failure_retains_exact_capture_predicate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _Executor()
+    executor.selected = "desktop-linux"
+
+    evidence = operator._run_operator(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
+    assert evidence.prestate_known is True
+    assert evidence.prestate_checkpoint is operator.BuilderSelectionPrestateCheckpoint.CAPTURE
+    assert evidence.prestate_predicate is (
+        operator.DockerBuilderSelectionPlanPredicate.CURRENT_ALREADY_CANONICAL
+    )
+    assert evidence.builder_selection_predicate is operator.BuilderSelectionPredicate.PASS
+    assert evidence.node_schema_predicate is operator.NodeSchemaPredicate.PASS
+    assert evidence.action_attempted is False
+    assert executor.selection_calls == []
+
+
+@pytest.mark.parametrize(
+    "exit_failure",
+    (
+        RuntimeError("raw-lock-exit-sentinel"),
+        KeyboardInterrupt("raw-lock-interrupt-sentinel"),
+        BaseException("raw-lock-base-sentinel"),
+    ),
+)
+def test_prestate_diagnostic_lock_exit_is_unknown_and_retains_observed_pass(
+    exit_failure: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch, lock_exit_failure=exit_failure)
+    executor = _Executor()
+
+    evidence = operator._run_prestate_diagnostic(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.UNKNOWN
+    assert evidence.prestate_known is True
+    assert evidence.prestate_checkpoint is operator.BuilderSelectionPrestateCheckpoint.REPROOF
+    assert evidence.prestate_predicate is operator.DockerBuilderSelectionPlanPredicate.PASS
+    assert executor.selection_calls == []
+    line = operator.format_builder_selection_prestate_diagnostic(evidence)
+    assert "raw-lock" not in line
+    assert "Traceback" not in line
+
+
+@pytest.mark.parametrize("failure", (KeyboardInterrupt(), SystemExit(), BaseException()))
+def test_read_only_prestate_diagnostic_interrupt_is_unknown_and_value_free(
+    failure: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    source_calls = 0
+
+    def source(_executor: object) -> str:
+        nonlocal source_calls
+        source_calls += 1
+        if source_calls == 2:
+            raise failure
+        return "a" * 40
+
+    monkeypatch.setattr(operator, "_source_identity", source)
+    executor = _Executor()
+
+    evidence = operator._run_prestate_diagnostic(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.UNKNOWN
+    assert evidence.prestate_known is False
+    assert evidence.action_count == 0
+    assert evidence.selection_mutation_count == 0
+    assert executor.selection_calls == []
+    assert "raw-" not in operator.format_builder_selection_prestate_diagnostic(evidence)
+
+
+def test_fixed_prestate_diagnostic_argv_outputs_one_bounded_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    operator = _load_operator()
+    fixed = operator.BuilderSelectionPrestateDiagnosticEvidence.pass_evidence(
+        checkpoint=operator.BuilderSelectionPrestateCheckpoint.REPROOF,
+        plan_predicate=operator.DockerBuilderSelectionPlanPredicate.PASS,
+        builder_predicate=operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
+        node_predicate=operator.NodeSchemaPredicate.PASS,
+    )
+    calls: list[str] = []
+
+    def run_diagnostic(_runtime: object) -> Any:
+        calls.append("diagnostic")
+        return fixed
+
+    monkeypatch.setattr(
+        operator,
+        "_run_prestate_diagnostic",
+        run_diagnostic,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(OPERATOR), "--diagnostic-phase", "BUILDER_SELECTION_PRESTATE"],
+    )
+
+    assert operator.main() == 0
+
+    captured = capsys.readouterr()
+    document = json.loads(captured.out)
+    assert captured.err == ""
+    assert calls == ["diagnostic"]
+    assert document["phase"] == "BUILDER_SELECTION_PRESTATE"
+    assert document["prestate_checkpoint"] == "REPROOF"
+    assert document["prestate_predicate"] == "PASS"
+    assert document["mutation_count"] == 0
+    assert document["retry_count"] == 0
+
+
+def test_malformed_prestate_diagnostic_arguments_stop_before_lock_without_raw(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    operator = _load_operator()
+    entered: list[str] = []
+    monkeypatch.setattr(
+        operator,
+        "exclusive_docker_workflow_lock",
+        lambda _root: entered.append("lock"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(OPERATOR),
+            "--diagnostic-phase",
+            "BUILDER_SELECTION_PRESTATE",
+            "raw-argument-sentinel",
+        ],
+    )
+
+    assert operator.main() == 2
+
+    output = capsys.readouterr()
+    assert entered == []
+    assert output.err == ""
+    assert "raw-argument-sentinel" not in output.out
+    assert json.loads(output.out)["predicate"] == "ARGUMENTS"
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "partial-known",
+        "unknown-enum",
+        "pass-with-capture",
+        "rejected-with-pass",
+        "nested-contradiction",
+        "nonzero-action",
+    ),
+)
+def test_prestate_diagnostic_evidence_rejects_contradictory_shapes(case: str) -> None:
+    operator = _load_operator()
+    values: dict[str, Any] = {
+        "classification": operator.BuilderSelectionReconcileClassification.REJECTED,
+        "predicate": operator.BuilderSelectionReconcilePredicate.PRESTATE,
+        "prestate_known": True,
+        "prestate_checkpoint": operator.BuilderSelectionPrestateCheckpoint.CAPTURE,
+        "prestate_predicate": (
+            operator.DockerBuilderSelectionPlanPredicate.CURRENT_ALREADY_CANONICAL
+        ),
+        "builder_selection_predicate": operator.BuilderSelectionPredicate.PASS,
+        "node_schema_predicate": operator.NodeSchemaPredicate.PASS,
+    }
+    if case == "partial-known":
+        values["prestate_predicate"] = None
+    elif case == "unknown-enum":
+        values["prestate_predicate"] = operator.DockerBuilderSelectionPlanPredicate.UNKNOWN
+    elif case == "pass-with-capture":
+        values["classification"] = operator.BuilderSelectionReconcileClassification.PASS
+        values["predicate"] = operator.BuilderSelectionReconcilePredicate.PASS
+        values["prestate_predicate"] = operator.DockerBuilderSelectionPlanPredicate.PASS
+        values["builder_selection_predicate"] = operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+    elif case == "rejected-with-pass":
+        values["prestate_predicate"] = operator.DockerBuilderSelectionPlanPredicate.PASS
+        values["builder_selection_predicate"] = operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+    elif case == "nested-contradiction":
+        values["builder_selection_predicate"] = operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+    else:
+        values["action_count"] = 1
+
+    with pytest.raises(
+        ValueError,
+        match="DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID",
+    ):
+        operator.BuilderSelectionPrestateDiagnosticEvidence(**values)
 
 
 def test_source_identity_requires_clean_dev_and_exact_commit() -> None:

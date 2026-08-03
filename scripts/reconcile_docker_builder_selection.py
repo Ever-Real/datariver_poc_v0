@@ -12,17 +12,23 @@ import subprocess
 import sys
 import time
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
 from typing import NoReturn
 
 from docker_capacity import (
     DOCKER_BUILDER_LIST_PROBE,
+    BuilderSelectionPredicate,
+    BuilderSelectionRecorder,
     CapacityExecutor,
     DockerBuilderSelectionPlan,
+    DockerBuilderSelectionPlanPredicate,
+    DockerBuilderSelectionPlanRecorder,
     DockerCapacityError,
     DockerWorkflowLock,
+    NodeSchemaPredicate,
+    NodeSchemaRecorder,
     docker_builder_is_idle,
     docker_builder_selection_residual_count,
     exclusive_docker_workflow_lock,
@@ -75,6 +81,48 @@ class BuilderSelectionReconcilePredicate(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class BuilderSelectionPrestateCheckpoint(StrEnum):
+    CAPTURE = "CAPTURE"
+    REPROOF = "REPROOF"
+
+
+_PRESTATE_DIAGNOSTIC_PHASE = "BUILDER_SELECTION_PRESTATE"
+
+
+def _prestate_nested_evidence_is_consistent(
+    plan: DockerBuilderSelectionPlanPredicate | None,
+    builder: BuilderSelectionPredicate | None,
+    node: NodeSchemaPredicate | None,
+) -> bool:
+    if plan is None:
+        return builder is None and node is None
+    if node is not None and builder is None:
+        return False
+    if plan is DockerBuilderSelectionPlanPredicate.CURRENT_SELECTION_CONTRACT:
+        if builder is None:
+            return node is None
+        return builder is not BuilderSelectionPredicate.PASS
+    if plan is DockerBuilderSelectionPlanPredicate.CURRENT_ALREADY_CANONICAL:
+        return builder is BuilderSelectionPredicate.PASS and node is NodeSchemaPredicate.PASS
+    if plan is DockerBuilderSelectionPlanPredicate.CURRENT_COUNT:
+        return (
+            builder
+            in {
+                BuilderSelectionPredicate.CURRENT_MISSING,
+                BuilderSelectionPredicate.CURRENT_AMBIGUOUS,
+            }
+            and node is NodeSchemaPredicate.PASS
+        )
+    if plan is DockerBuilderSelectionPlanPredicate.PRIOR_STATUS:
+        return (
+            builder is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+            and node is NodeSchemaPredicate.PASS
+        )
+    return (
+        builder is BuilderSelectionPredicate.DRIVER_NOT_DOCKER and node is NodeSchemaPredicate.PASS
+    )
+
+
 @dataclass(frozen=True)
 class BuilderSelectionReconcileEvidence:
     classification: BuilderSelectionReconcileClassification
@@ -90,6 +138,11 @@ class BuilderSelectionReconcileEvidence:
     selection_mutation_count: int
     residual_known: bool
     residual_count: int | None
+    prestate_known: bool = False
+    prestate_checkpoint: BuilderSelectionPrestateCheckpoint | None = None
+    prestate_predicate: DockerBuilderSelectionPlanPredicate | None = None
+    builder_selection_predicate: BuilderSelectionPredicate | None = None
+    node_schema_predicate: NodeSchemaPredicate | None = None
     cache_action_count: int = 0
     build_count: int = 0
     container_action_count: int = 0
@@ -106,6 +159,7 @@ class BuilderSelectionReconcileEvidence:
             self.rollback_succeeded,
             self.rollback_outcome_known,
             self.residual_known,
+            self.prestate_known,
         )
         counts = (
             self.selection_mutation_count,
@@ -133,6 +187,50 @@ class BuilderSelectionReconcileEvidence:
             or self.selection_mutation_count
             != int(self.action_attempted) + int(self.rollback_attempted)
             or self.residual_known != (self.residual_count is not None)
+            or self.prestate_known
+            != (self.prestate_checkpoint is not None and self.prestate_predicate is not None)
+            or (
+                self.prestate_checkpoint is not None
+                and not isinstance(
+                    self.prestate_checkpoint,
+                    BuilderSelectionPrestateCheckpoint,
+                )
+            )
+            or (
+                self.prestate_predicate is not None
+                and not isinstance(
+                    self.prestate_predicate,
+                    DockerBuilderSelectionPlanPredicate,
+                )
+            )
+            or (
+                self.builder_selection_predicate is not None
+                and not isinstance(
+                    self.builder_selection_predicate,
+                    BuilderSelectionPredicate,
+                )
+            )
+            or (
+                self.node_schema_predicate is not None
+                and not isinstance(self.node_schema_predicate, NodeSchemaPredicate)
+            )
+            or (
+                not self.prestate_known
+                and (
+                    self.prestate_checkpoint is not None
+                    or self.prestate_predicate is not None
+                    or self.builder_selection_predicate is not None
+                    or self.node_schema_predicate is not None
+                )
+            )
+            or self.prestate_predicate is DockerBuilderSelectionPlanPredicate.UNKNOWN
+            or self.builder_selection_predicate is BuilderSelectionPredicate.UNKNOWN
+            or self.node_schema_predicate is NodeSchemaPredicate.UNKNOWN
+            or not _prestate_nested_evidence_is_consistent(
+                self.prestate_predicate,
+                self.builder_selection_predicate,
+                self.node_schema_predicate,
+            )
             or (
                 self.residual_count is not None
                 and (type(self.residual_count) is not int or not 0 <= self.residual_count <= 128)
@@ -155,6 +253,14 @@ class BuilderSelectionReconcileEvidence:
             self.classification is not BuilderSelectionReconcileClassification.PASS
         ):
             raise ValueError("DOCKER_BUILDER_SELECTION_EVIDENCE_INVALID")
+        plan_failed = self.prestate_predicate not in {
+            None,
+            DockerBuilderSelectionPlanPredicate.PASS,
+        }
+        if (self.predicate is BuilderSelectionReconcilePredicate.PRESTATE) != bool(
+            self.prestate_known and plan_failed
+        ):
+            raise ValueError("DOCKER_BUILDER_SELECTION_EVIDENCE_INVALID")
 
     @classmethod
     def pass_evidence(cls) -> BuilderSelectionReconcileEvidence:
@@ -172,6 +278,11 @@ class BuilderSelectionReconcileEvidence:
             selection_mutation_count=1,
             residual_known=True,
             residual_count=0,
+            prestate_known=True,
+            prestate_checkpoint=BuilderSelectionPrestateCheckpoint.REPROOF,
+            prestate_predicate=DockerBuilderSelectionPlanPredicate.PASS,
+            builder_selection_predicate=BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
+            node_schema_predicate=NodeSchemaPredicate.PASS,
         )
 
     @classmethod
@@ -190,6 +301,11 @@ class BuilderSelectionReconcileEvidence:
             selection_mutation_count=1,
             residual_known=False,
             residual_count=None,
+            prestate_known=True,
+            prestate_checkpoint=BuilderSelectionPrestateCheckpoint.REPROOF,
+            prestate_predicate=DockerBuilderSelectionPlanPredicate.PASS,
+            builder_selection_predicate=BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
+            node_schema_predicate=NodeSchemaPredicate.PASS,
         )
 
 
@@ -212,6 +328,7 @@ def format_builder_selection_reconcile_evidence(
         "rollback_count": int(evidence.rollback_attempted),
         "selection_mutation_count": evidence.selection_mutation_count,
         "residual_known": evidence.residual_known,
+        "prestate_known": evidence.prestate_known,
         "cache_action_count": evidence.cache_action_count,
         "build_count": evidence.build_count,
         "container_action_count": evidence.container_action_count,
@@ -220,9 +337,184 @@ def format_builder_selection_reconcile_evidence(
     if evidence.residual_known:
         assert evidence.residual_count is not None
         fields["residual_count"] = evidence.residual_count
+    if evidence.prestate_known:
+        assert evidence.prestate_checkpoint is not None
+        assert evidence.prestate_predicate is not None
+        fields["prestate_checkpoint"] = evidence.prestate_checkpoint.value
+        fields["prestate_predicate"] = evidence.prestate_predicate.value
+        if evidence.builder_selection_predicate is not None:
+            fields["builder_selection_predicate"] = evidence.builder_selection_predicate.value
+        if evidence.node_schema_predicate is not None:
+            fields["node_schema_predicate"] = evidence.node_schema_predicate.value
     line = json.dumps(fields, sort_keys=True, separators=(",", ":"))
     if len(line.encode("utf-8")) > MAXIMUM_EVIDENCE_BYTES:
         raise ValueError("DOCKER_BUILDER_SELECTION_EVIDENCE_INVALID")
+    return line
+
+
+@dataclass(frozen=True)
+class BuilderSelectionPrestateDiagnosticEvidence:
+    classification: BuilderSelectionReconcileClassification
+    predicate: BuilderSelectionReconcilePredicate
+    prestate_known: bool
+    prestate_checkpoint: BuilderSelectionPrestateCheckpoint | None = None
+    prestate_predicate: DockerBuilderSelectionPlanPredicate | None = None
+    builder_selection_predicate: BuilderSelectionPredicate | None = None
+    node_schema_predicate: NodeSchemaPredicate | None = None
+    phase: str = _PRESTATE_DIAGNOSTIC_PHASE
+    action_count: int = 0
+    rollback_count: int = 0
+    selection_mutation_count: int = 0
+    cache_action_count: int = 0
+    build_count: int = 0
+    container_action_count: int = 0
+    mutation_count: int = 0
+    retry_count: int = 0
+
+    def __post_init__(self) -> None:
+        counts = (
+            self.action_count,
+            self.rollback_count,
+            self.selection_mutation_count,
+            self.cache_action_count,
+            self.build_count,
+            self.container_action_count,
+            self.mutation_count,
+            self.retry_count,
+        )
+        structured = (
+            self.prestate_checkpoint,
+            self.prestate_predicate,
+            self.builder_selection_predicate,
+            self.node_schema_predicate,
+        )
+        if (
+            not isinstance(self.classification, BuilderSelectionReconcileClassification)
+            or not isinstance(self.predicate, BuilderSelectionReconcilePredicate)
+            or self.phase != _PRESTATE_DIAGNOSTIC_PHASE
+            or type(self.prestate_known) is not bool
+            or any(type(count) is not int or count != 0 for count in counts)
+            or self.prestate_known
+            != (self.prestate_checkpoint is not None and self.prestate_predicate is not None)
+            or (not self.prestate_known and any(value is not None for value in structured))
+            or (
+                self.prestate_checkpoint is not None
+                and not isinstance(
+                    self.prestate_checkpoint,
+                    BuilderSelectionPrestateCheckpoint,
+                )
+            )
+            or (
+                self.prestate_predicate is not None
+                and (
+                    not isinstance(
+                        self.prestate_predicate,
+                        DockerBuilderSelectionPlanPredicate,
+                    )
+                    or self.prestate_predicate is DockerBuilderSelectionPlanPredicate.UNKNOWN
+                )
+            )
+            or (
+                self.builder_selection_predicate is not None
+                and (
+                    not isinstance(
+                        self.builder_selection_predicate,
+                        BuilderSelectionPredicate,
+                    )
+                    or self.builder_selection_predicate is BuilderSelectionPredicate.UNKNOWN
+                )
+            )
+            or (
+                self.node_schema_predicate is not None
+                and (
+                    not isinstance(self.node_schema_predicate, NodeSchemaPredicate)
+                    or self.node_schema_predicate is NodeSchemaPredicate.UNKNOWN
+                )
+            )
+            or not _prestate_nested_evidence_is_consistent(
+                self.prestate_predicate,
+                self.builder_selection_predicate,
+                self.node_schema_predicate,
+            )
+        ):
+            raise ValueError("DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID")
+        plan_failed = self.prestate_predicate not in {
+            None,
+            DockerBuilderSelectionPlanPredicate.PASS,
+        }
+        if self.classification is BuilderSelectionReconcileClassification.PASS:
+            if not (
+                self.predicate is BuilderSelectionReconcilePredicate.PASS
+                and self.prestate_checkpoint is BuilderSelectionPrestateCheckpoint.REPROOF
+                and self.prestate_predicate is DockerBuilderSelectionPlanPredicate.PASS
+                and self.builder_selection_predicate is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+                and self.node_schema_predicate is NodeSchemaPredicate.PASS
+            ):
+                raise ValueError("DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID")
+        elif self.classification is BuilderSelectionReconcileClassification.REJECTED:
+            if not (
+                self.predicate is BuilderSelectionReconcilePredicate.PRESTATE
+                and self.prestate_known
+                and plan_failed
+            ):
+                raise ValueError("DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID")
+        elif not (
+            self.classification is BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+            and self.predicate is BuilderSelectionReconcilePredicate.UNKNOWN
+        ):
+            raise ValueError("DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID")
+
+    @classmethod
+    def pass_evidence(
+        cls,
+        *,
+        checkpoint: BuilderSelectionPrestateCheckpoint,
+        plan_predicate: DockerBuilderSelectionPlanPredicate,
+        builder_predicate: BuilderSelectionPredicate,
+        node_predicate: NodeSchemaPredicate,
+    ) -> BuilderSelectionPrestateDiagnosticEvidence:
+        return cls(
+            classification=BuilderSelectionReconcileClassification.PASS,
+            predicate=BuilderSelectionReconcilePredicate.PASS,
+            prestate_known=True,
+            prestate_checkpoint=checkpoint,
+            prestate_predicate=plan_predicate,
+            builder_selection_predicate=builder_predicate,
+            node_schema_predicate=node_predicate,
+        )
+
+
+def format_builder_selection_prestate_diagnostic(
+    evidence: BuilderSelectionPrestateDiagnosticEvidence,
+) -> str:
+    if not isinstance(evidence, BuilderSelectionPrestateDiagnosticEvidence):
+        raise ValueError("DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID")
+    fields: dict[str, str | bool | int] = {
+        "classification": evidence.classification.value,
+        "phase": evidence.phase,
+        "predicate": evidence.predicate.value,
+        "prestate_known": evidence.prestate_known,
+        "action_count": evidence.action_count,
+        "rollback_count": evidence.rollback_count,
+        "selection_mutation_count": evidence.selection_mutation_count,
+        "cache_action_count": evidence.cache_action_count,
+        "build_count": evidence.build_count,
+        "container_action_count": evidence.container_action_count,
+        "mutation_count": evidence.mutation_count,
+        "retry_count": evidence.retry_count,
+    }
+    if evidence.prestate_known:
+        assert evidence.prestate_checkpoint is not None
+        assert evidence.prestate_predicate is not None
+        fields["prestate_checkpoint"] = evidence.prestate_checkpoint.value
+        fields["prestate_predicate"] = evidence.prestate_predicate.value
+        if evidence.builder_selection_predicate is not None:
+            fields["builder_selection_predicate"] = evidence.builder_selection_predicate.value
+        if evidence.node_schema_predicate is not None:
+            fields["node_schema_predicate"] = evidence.node_schema_predicate.value
+    line = json.dumps(fields, sort_keys=True, separators=(",", ":"))
+    if len(line.encode("utf-8")) > MAXIMUM_EVIDENCE_BYTES:
+        raise ValueError("DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID")
     return line
 
 
@@ -406,10 +698,24 @@ class _RuntimeState:
     rollback_outcome_known: bool = True
     residual_known: bool = True
     residual_count: int | None = 0
+    prestate_checkpoint: BuilderSelectionPrestateCheckpoint | None = None
+    plan_recorder: DockerBuilderSelectionPlanRecorder = field(
+        default_factory=DockerBuilderSelectionPlanRecorder
+    )
+    builder_selection_recorder: BuilderSelectionRecorder = field(
+        default_factory=BuilderSelectionRecorder
+    )
+    node_schema_recorder: NodeSchemaRecorder = field(default_factory=NodeSchemaRecorder)
 
     @property
     def mutation_count(self) -> int:
         return int(self.action_attempted) + int(self.rollback_attempted)
+
+    def begin_prestate(self, checkpoint: BuilderSelectionPrestateCheckpoint) -> None:
+        self.prestate_checkpoint = checkpoint
+        self.plan_recorder = DockerBuilderSelectionPlanRecorder()
+        self.builder_selection_recorder = BuilderSelectionRecorder()
+        self.node_schema_recorder = NodeSchemaRecorder()
 
 
 def _failure(predicate: BuilderSelectionReconcilePredicate) -> NoReturn:
@@ -501,7 +807,8 @@ def _require_idle(
         _failure(BuilderSelectionReconcilePredicate.ACTIVE_BUILDS)
 
 
-def _capture_prestate(
+def _capture_plan_prestate(
+    runtime: _RuntimeState,
     *,
     root: Path,
     lock: DockerWorkflowLock,
@@ -517,20 +824,18 @@ def _capture_prestate(
     except Exception:
         _failure(BuilderSelectionReconcilePredicate.DOCKER_CONTEXT)
     raw = _builder_listing(executor)
+    runtime.begin_prestate(BuilderSelectionPrestateCheckpoint.CAPTURE)
     try:
         plan = require_docker_builder_selection_plan(
             raw,
             environ,
             current_context=current_context,
+            plan_recorder=runtime.plan_recorder,
+            builder_selection_recorder=runtime.builder_selection_recorder,
+            node_schema_recorder=runtime.node_schema_recorder,
         )
     except DockerCapacityError:
         _failure(BuilderSelectionReconcilePredicate.PRESTATE)
-    if not _require_idle(plan.prior_builder, lock=lock, executor=executor) or not _require_idle(
-        plan.target_builder,
-        lock=lock,
-        executor=executor,
-    ):
-        _failure(BuilderSelectionReconcilePredicate.ACTIVE_BUILDS)
     return _Prestate(
         source_commit=source_commit,
         host_identity=host_identity,
@@ -544,7 +849,36 @@ def _capture_prestate(
     )
 
 
-def _reprove_prestate(
+def _capture_prestate(
+    runtime: _RuntimeState,
+    *,
+    root: Path,
+    lock: DockerWorkflowLock,
+    executor: CapacityExecutor,
+    environ: Mapping[str, str],
+) -> _Prestate:
+    prestate = _capture_plan_prestate(
+        runtime,
+        root=root,
+        lock=lock,
+        executor=executor,
+        environ=environ,
+    )
+    if not _require_idle(
+        prestate.plan.prior_builder,
+        lock=lock,
+        executor=executor,
+    ) or not _require_idle(
+        prestate.plan.target_builder,
+        lock=lock,
+        executor=executor,
+    ):
+        _failure(BuilderSelectionReconcilePredicate.ACTIVE_BUILDS)
+    return prestate
+
+
+def _reprove_plan_prestate(
+    runtime: _RuntimeState,
     prestate: _Prestate,
     *,
     root: Path,
@@ -552,6 +886,7 @@ def _reprove_prestate(
     executor: CapacityExecutor,
     environ: Mapping[str, str],
 ) -> None:
+    runtime.begin_prestate(BuilderSelectionPrestateCheckpoint.REPROOF)
     if _source_identity(executor) != prestate.source_commit:
         _failure(BuilderSelectionReconcilePredicate.SOURCE)
     if _host_identity(root) != prestate.host_identity:
@@ -578,11 +913,34 @@ def _reprove_prestate(
             raw,
             environ,
             current_context=current_context,
+            plan_recorder=runtime.plan_recorder,
+            builder_selection_recorder=runtime.builder_selection_recorder,
+            node_schema_recorder=runtime.node_schema_recorder,
         )
     except DockerCapacityError:
         _failure(BuilderSelectionReconcilePredicate.PRESTATE)
     if plan != prestate.plan:
+        runtime.plan_recorder.replace_pass_with_drift()
         _failure(BuilderSelectionReconcilePredicate.PRESTATE)
+
+
+def _reprove_prestate(
+    runtime: _RuntimeState,
+    prestate: _Prestate,
+    *,
+    root: Path,
+    lock: DockerWorkflowLock,
+    executor: CapacityExecutor,
+    environ: Mapping[str, str],
+) -> None:
+    _reprove_plan_prestate(
+        runtime,
+        prestate,
+        root=root,
+        lock=lock,
+        executor=executor,
+        environ=environ,
+    )
     if not _require_idle(prestate.plan.prior_builder, lock=lock, executor=executor):
         _failure(BuilderSelectionReconcilePredicate.ACTIVE_BUILDS)
     if not _require_idle(prestate.plan.target_builder, lock=lock, executor=executor):
@@ -696,6 +1054,7 @@ def _evidence_from_runtime(
     classification: BuilderSelectionReconcileClassification,
     predicate: BuilderSelectionReconcilePredicate,
 ) -> BuilderSelectionReconcileEvidence:
+    prestate_known = runtime.plan_recorder.known
     return BuilderSelectionReconcileEvidence(
         classification=classification,
         predicate=predicate,
@@ -710,6 +1069,19 @@ def _evidence_from_runtime(
         selection_mutation_count=runtime.mutation_count,
         residual_known=runtime.residual_known,
         residual_count=runtime.residual_count,
+        prestate_known=prestate_known,
+        prestate_checkpoint=runtime.prestate_checkpoint if prestate_known else None,
+        prestate_predicate=runtime.plan_recorder.predicate if prestate_known else None,
+        builder_selection_predicate=(
+            runtime.builder_selection_recorder.predicate
+            if prestate_known and runtime.builder_selection_recorder.known
+            else None
+        ),
+        node_schema_predicate=(
+            runtime.node_schema_recorder.predicate
+            if prestate_known and runtime.node_schema_recorder.known
+            else None
+        ),
     )
 
 
@@ -742,6 +1114,7 @@ def _run_under_lock(
     environ: Mapping[str, str],
 ) -> BuilderSelectionReconcileEvidence:
     prestate = _capture_prestate(
+        runtime,
         root=root,
         lock=lock,
         executor=executor,
@@ -749,6 +1122,7 @@ def _run_under_lock(
     )
     action_interrupted = False
     _reprove_prestate(
+        runtime,
         prestate,
         root=root,
         lock=lock,
@@ -917,9 +1291,128 @@ def _run_operator(
                     environ=selected_environment,
                 )
             except _ReconcileFailure as error:
-                return _rejected_before_action(error.predicate)
+                runtime.predicate = error.predicate
+                return _evidence_from_runtime(
+                    runtime,
+                    classification=BuilderSelectionReconcileClassification.REJECTED,
+                    predicate=error.predicate,
+                )
     except BaseException:
+        predicate = (
+            BuilderSelectionReconcilePredicate.PRESTATE
+            if runtime.predicate is BuilderSelectionReconcilePredicate.PRESTATE
+            and runtime.plan_recorder.known
+            and runtime.plan_recorder.predicate is not DockerBuilderSelectionPlanPredicate.PASS
+            else BuilderSelectionReconcilePredicate.UNKNOWN
+        )
         return _evidence_from_runtime(
+            runtime,
+            classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
+            predicate=predicate,
+        )
+
+
+def _diagnostic_evidence_from_runtime(
+    runtime: _RuntimeState,
+    *,
+    classification: BuilderSelectionReconcileClassification,
+    predicate: BuilderSelectionReconcilePredicate,
+) -> BuilderSelectionPrestateDiagnosticEvidence:
+    prestate_known = runtime.plan_recorder.known
+    return BuilderSelectionPrestateDiagnosticEvidence(
+        classification=classification,
+        predicate=predicate,
+        prestate_known=prestate_known,
+        prestate_checkpoint=runtime.prestate_checkpoint if prestate_known else None,
+        prestate_predicate=runtime.plan_recorder.predicate if prestate_known else None,
+        builder_selection_predicate=(
+            runtime.builder_selection_recorder.predicate
+            if prestate_known and runtime.builder_selection_recorder.known
+            else None
+        ),
+        node_schema_predicate=(
+            runtime.node_schema_recorder.predicate
+            if prestate_known and runtime.node_schema_recorder.known
+            else None
+        ),
+    )
+
+
+def _run_prestate_diagnostic_under_lock(
+    runtime: _RuntimeState,
+    *,
+    root: Path,
+    lock: DockerWorkflowLock,
+    executor: CapacityExecutor,
+    environ: Mapping[str, str],
+) -> BuilderSelectionPrestateDiagnosticEvidence:
+    prestate = _capture_plan_prestate(
+        runtime,
+        root=root,
+        lock=lock,
+        executor=executor,
+        environ=environ,
+    )
+    _reprove_plan_prestate(
+        runtime,
+        prestate,
+        root=root,
+        lock=lock,
+        executor=executor,
+        environ=environ,
+    )
+    return _diagnostic_evidence_from_runtime(
+        runtime,
+        classification=BuilderSelectionReconcileClassification.PASS,
+        predicate=BuilderSelectionReconcilePredicate.PASS,
+    )
+
+
+def _run_prestate_diagnostic(
+    runtime: _RuntimeState,
+    *,
+    root: Path = ROOT,
+    executor: CapacityExecutor | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> BuilderSelectionPrestateDiagnosticEvidence:
+    command_executor = executor or _BoundedProcessExecutor()
+    selected_environment = os.environ if environ is None else environ
+    if platform.system() != "Darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
+        return BuilderSelectionPrestateDiagnosticEvidence(
+            classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
+            predicate=BuilderSelectionReconcilePredicate.UNKNOWN,
+            prestate_known=False,
+        )
+    try:
+        with exclusive_docker_workflow_lock(root) as lock:
+            try:
+                return _run_prestate_diagnostic_under_lock(
+                    runtime,
+                    root=root,
+                    lock=lock,
+                    executor=command_executor,
+                    environ=selected_environment,
+                )
+            except _ReconcileFailure as error:
+                runtime.predicate = error.predicate
+                if (
+                    error.predicate is BuilderSelectionReconcilePredicate.PRESTATE
+                    and runtime.plan_recorder.known
+                ):
+                    return _diagnostic_evidence_from_runtime(
+                        runtime,
+                        classification=BuilderSelectionReconcileClassification.REJECTED,
+                        predicate=error.predicate,
+                    )
+                return _diagnostic_evidence_from_runtime(
+                    runtime,
+                    classification=(
+                        BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+                    ),
+                    predicate=BuilderSelectionReconcilePredicate.UNKNOWN,
+                )
+    except BaseException:
+        return _diagnostic_evidence_from_runtime(
             runtime,
             classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
             predicate=BuilderSelectionReconcilePredicate.UNKNOWN,
@@ -928,7 +1421,19 @@ def _run_operator(
 
 def main() -> int:
     runtime = _RuntimeState()
-    if len(sys.argv) != 1:
+    arguments = tuple(sys.argv[1:])
+    if arguments == ("--diagnostic-phase", _PRESTATE_DIAGNOSTIC_PHASE):
+        try:
+            diagnostic = _run_prestate_diagnostic(runtime)
+        except BaseException:
+            diagnostic = _diagnostic_evidence_from_runtime(
+                runtime,
+                classification=(BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED),
+                predicate=BuilderSelectionReconcilePredicate.UNKNOWN,
+            )
+        print(format_builder_selection_prestate_diagnostic(diagnostic), flush=True)
+        return 0 if diagnostic.classification is BuilderSelectionReconcileClassification.PASS else 2
+    if arguments:
         evidence = _rejected_before_action(BuilderSelectionReconcilePredicate.ARGUMENTS)
     else:
         try:

@@ -131,6 +131,51 @@ class NodeSchemaPredicate(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class DockerBuilderSelectionPlanPredicate(StrEnum):
+    """Closed, value-free plan construction outcome."""
+
+    CURRENT_SELECTION_CONTRACT = "CURRENT_SELECTION_CONTRACT"
+    CURRENT_ALREADY_CANONICAL = "CURRENT_ALREADY_CANONICAL"
+    INVENTORY_DUPLICATE = "INVENTORY_DUPLICATE"
+    CURRENT_COUNT = "CURRENT_COUNT"
+    PRIOR_DRIVER = "PRIOR_DRIVER"
+    PRIOR_STATUS = "PRIOR_STATUS"
+    TARGET_MISSING = "TARGET_MISSING"
+    TARGET_DRIVER = "TARGET_DRIVER"
+    TARGET_STATUS = "TARGET_STATUS"
+    TARGET_NODE_NAME = "TARGET_NODE_NAME"
+    TARGET_ENDPOINT = "TARGET_ENDPOINT"
+    TARGET_CURRENT = "TARGET_CURRENT"
+    PLAN_DRIFT = "PLAN_DRIFT"
+    PASS = "PASS"  # noqa: S105 - fixed diagnostic predicate, not a secret.
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(slots=True)
+class DockerBuilderSelectionPlanRecorder:
+    """Retain one structurally observed plan outcome without provider values."""
+
+    predicate: DockerBuilderSelectionPlanPredicate = DockerBuilderSelectionPlanPredicate.UNKNOWN
+
+    @property
+    def known(self) -> bool:
+        return self.predicate is not DockerBuilderSelectionPlanPredicate.UNKNOWN
+
+    def record(self, predicate: DockerBuilderSelectionPlanPredicate) -> None:
+        if (
+            not isinstance(predicate, DockerBuilderSelectionPlanPredicate)
+            or predicate is DockerBuilderSelectionPlanPredicate.UNKNOWN
+            or self.known
+        ):
+            raise DockerCapacityError("DOCKER_BUILDER_SELECTION_PLAN_EVIDENCE_INVALID")
+        self.predicate = predicate
+
+    def replace_pass_with_drift(self) -> None:
+        if self.predicate is not DockerBuilderSelectionPlanPredicate.PASS:
+            raise DockerCapacityError("DOCKER_BUILDER_SELECTION_PLAN_EVIDENCE_INVALID")
+        self.predicate = DockerBuilderSelectionPlanPredicate.PLAN_DRIFT
+
+
 @dataclass(slots=True)
 class NodeSchemaRecorder:
     """Retain one structurally observed Buildx node-schema outcome."""
@@ -1002,13 +1047,27 @@ def require_docker_builder_selection_plan(
     environ: Mapping[str, str],
     *,
     current_context: str,
+    plan_recorder: DockerBuilderSelectionPlanRecorder | None = None,
+    builder_selection_recorder: BuilderSelectionRecorder | None = None,
+    node_schema_recorder: NodeSchemaRecorder | None = None,
 ) -> DockerBuilderSelectionPlan:
     """Resolve one exact docker-container to context-docker selection transition."""
 
+    def fail(
+        predicate: DockerBuilderSelectionPlanPredicate,
+        message: str,
+    ) -> NoReturn:
+        if plan_recorder is not None:
+            plan_recorder.record(predicate)
+        raise DockerCapacityError(message)
+
     if environ.get("BUILDKIT_HOST", "").strip() or environ.get("BUILDX_BUILDER", "").strip():
-        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_ENVIRONMENT_OVERRIDE")
-    builder_selection = BuilderSelectionRecorder()
-    node_schema = NodeSchemaRecorder()
+        fail(
+            DockerBuilderSelectionPlanPredicate.CURRENT_SELECTION_CONTRACT,
+            "DOCKER_BUILDER_SELECTION_ENVIRONMENT_OVERRIDE",
+        )
+    builder_selection = builder_selection_recorder or BuilderSelectionRecorder()
+    node_schema = node_schema_recorder or NodeSchemaRecorder()
     try:
         _selected_builder(
             raw,
@@ -1018,44 +1077,100 @@ def require_docker_builder_selection_plan(
             node_schema_recorder=node_schema,
         )
     except DockerCapacityError:
-        if not (
-            builder_selection.predicate is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
-            and node_schema.predicate is NodeSchemaPredicate.PASS
-        ):
-            raise DockerCapacityError("DOCKER_BUILDER_SELECTION_PRESTATE_INVALID") from None
+        pass
     else:
-        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_PRESTATE_INVALID")
+        fail(
+            DockerBuilderSelectionPlanPredicate.CURRENT_ALREADY_CANONICAL,
+            "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
+        )
 
-    inventory = parse_docker_builder_inventory(
-        raw,
-        environ,
-        current_context=current_context,
-    )
+    try:
+        inventory = parse_docker_builder_inventory(
+            raw,
+            environ,
+            current_context=current_context,
+        )
+    except DockerCapacityError:
+        fail(
+            DockerBuilderSelectionPlanPredicate.CURRENT_SELECTION_CONTRACT,
+            "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
+        )
     if inventory.row_count != len(inventory.builders):
-        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_INVENTORY_DUPLICATE")
+        fail(
+            DockerBuilderSelectionPlanPredicate.INVENTORY_DUPLICATE,
+            "DOCKER_BUILDER_SELECTION_INVENTORY_DUPLICATE",
+        )
     current_builders = tuple(builder for builder in inventory.builders if builder.current)
     if len(current_builders) != 1:
-        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_PRESTATE_INVALID")
+        fail(
+            DockerBuilderSelectionPlanPredicate.CURRENT_COUNT,
+            "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
+        )
     prior = current_builders[0]
-    if prior.driver != "docker-container" or prior.status != "running":
-        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_PRESTATE_INVALID")
-    candidates = tuple(
-        builder
-        for builder in inventory.builders
-        if builder.name == current_context
-        and builder.driver == "docker"
-        and builder.node_name == current_context
-        and builder.endpoint == current_context
-        and builder.status == "running"
-        and not builder.current
+    expected_driver_transition = (
+        builder_selection.predicate is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+        and node_schema.predicate is NodeSchemaPredicate.PASS
     )
-    if len(candidates) != 1:
-        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_TARGET_INVALID")
-    return DockerBuilderSelectionPlan(
+    expected_stopped_prior = (
+        builder_selection.predicate is BuilderSelectionPredicate.NODE_NOT_RUNNING
+        and node_schema.predicate is NodeSchemaPredicate.PASS
+        and prior.driver == "docker-container"
+    )
+    if not (expected_driver_transition or expected_stopped_prior):
+        fail(
+            DockerBuilderSelectionPlanPredicate.CURRENT_SELECTION_CONTRACT,
+            "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
+        )
+    if prior.driver != "docker-container":
+        fail(
+            DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER,
+            "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
+        )
+    if prior.status != "running":
+        fail(
+            DockerBuilderSelectionPlanPredicate.PRIOR_STATUS,
+            "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
+        )
+    targets = tuple(builder for builder in inventory.builders if builder.name == current_context)
+    if len(targets) != 1:
+        fail(
+            DockerBuilderSelectionPlanPredicate.TARGET_MISSING,
+            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
+        )
+    target = targets[0]
+    if target.driver != "docker":
+        fail(
+            DockerBuilderSelectionPlanPredicate.TARGET_DRIVER,
+            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
+        )
+    if target.status != "running":
+        fail(
+            DockerBuilderSelectionPlanPredicate.TARGET_STATUS,
+            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
+        )
+    if target.node_name != current_context:
+        fail(
+            DockerBuilderSelectionPlanPredicate.TARGET_NODE_NAME,
+            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
+        )
+    if target.endpoint != current_context:
+        fail(
+            DockerBuilderSelectionPlanPredicate.TARGET_ENDPOINT,
+            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
+        )
+    if target.current:
+        fail(
+            DockerBuilderSelectionPlanPredicate.TARGET_CURRENT,
+            "DOCKER_BUILDER_SELECTION_TARGET_INVALID",
+        )
+    plan = DockerBuilderSelectionPlan(
         inventory=inventory,
         prior_builder=prior.name,
-        target_builder=candidates[0].name,
+        target_builder=target.name,
     )
+    if plan_recorder is not None:
+        plan_recorder.record(DockerBuilderSelectionPlanPredicate.PASS)
+    return plan
 
 
 def docker_builder_selection_residual_count(

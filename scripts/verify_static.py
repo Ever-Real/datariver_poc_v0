@@ -1849,6 +1849,45 @@ def verify_governed_docker_build_capacity_contract() -> None:
     )
     if capacity_enum_members("BuilderSelectionPredicate") != expected_builder_selection_predicates:
         raise AssertionError("the builder-selection predicate vocabulary has drifted")
+    expected_selection_plan_predicates = tuple(
+        (value, value)
+        for value in (
+            "CURRENT_SELECTION_CONTRACT",
+            "CURRENT_ALREADY_CANONICAL",
+            "INVENTORY_DUPLICATE",
+            "CURRENT_COUNT",
+            "PRIOR_DRIVER",
+            "PRIOR_STATUS",
+            "TARGET_MISSING",
+            "TARGET_DRIVER",
+            "TARGET_STATUS",
+            "TARGET_NODE_NAME",
+            "TARGET_ENDPOINT",
+            "TARGET_CURRENT",
+            "PLAN_DRIFT",
+            "PASS",
+            "UNKNOWN",
+        )
+    )
+    if (
+        capacity_enum_members("DockerBuilderSelectionPlanPredicate")
+        != expected_selection_plan_predicates
+    ):
+        raise AssertionError("the builder-selection plan predicate vocabulary has drifted")
+    plan_recorder = capacity.split("class DockerBuilderSelectionPlanRecorder:", maxsplit=1)[
+        1
+    ].split("class NodeSchemaRecorder:", maxsplit=1)[0]
+    for fragment in (
+        "predicate: DockerBuilderSelectionPlanPredicate =",
+        "DockerBuilderSelectionPlanPredicate.UNKNOWN",
+        "return self.predicate is not DockerBuilderSelectionPlanPredicate.UNKNOWN",
+        "or self.known",
+        "self.predicate = predicate",
+        "def replace_pass_with_drift(self) -> None:",
+        "self.predicate = DockerBuilderSelectionPlanPredicate.PLAN_DRIFT",
+    ):
+        if fragment not in plan_recorder:
+            raise AssertionError(f"the builder-selection plan recorder is missing: {fragment}")
     builder_selection_recorder = capacity.split("class BuilderSelectionRecorder:", maxsplit=1)[
         1
     ].split("class NodeSchemaPredicate", maxsplit=1)[0]
@@ -2196,10 +2235,12 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "def require_docker_builder_selection_poststate(",
         "def docker_builder_selection_residual_count(",
         'prior.driver != "docker-container"',
-        'builder.driver == "docker"',
         "builder.name == current_context",
-        "builder.node_name == current_context",
-        "builder.endpoint == current_context",
+        'target.driver != "docker"',
+        'target.status != "running"',
+        "target.node_name != current_context",
+        "target.endpoint != current_context",
+        "if target.current:",
         'environ.get("BUILDKIT_HOST", "").strip()',
         '"BUILDX_BUILDER", ""',
         "inventory.row_count != len(inventory.builders)",
@@ -2207,6 +2248,49 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ):
         if fragment not in capacity:
             raise AssertionError(f"the immutable builder-selection contract is missing: {fragment}")
+    plan_functions = [
+        node
+        for node in capacity_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "require_docker_builder_selection_plan"
+    ]
+    if len(plan_functions) != 1:
+        raise AssertionError("the builder-selection plan validator must remain unique")
+    plan_source = ast.get_source_segment(capacity, plan_functions[0])
+    if plan_source is None or "str(error)" in plan_source:
+        raise AssertionError("the builder-selection plan must use structural evidence only")
+    plan_failure_calls = sorted(
+        (
+            node
+            for node in ast.walk(plan_functions[0])
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "fail"
+            and node.args
+            and isinstance(node.args[0], ast.Attribute)
+            and isinstance(node.args[0].value, ast.Name)
+            and node.args[0].value.id == "DockerBuilderSelectionPlanPredicate"
+        ),
+        key=lambda node: (node.lineno, node.col_offset),
+    )
+    plan_failures = tuple(node.args[0].attr for node in plan_failure_calls)
+    if plan_failures != (
+        "CURRENT_SELECTION_CONTRACT",
+        "CURRENT_ALREADY_CANONICAL",
+        "CURRENT_SELECTION_CONTRACT",
+        "INVENTORY_DUPLICATE",
+        "CURRENT_COUNT",
+        "CURRENT_SELECTION_CONTRACT",
+        "PRIOR_DRIVER",
+        "PRIOR_STATUS",
+        "TARGET_MISSING",
+        "TARGET_DRIVER",
+        "TARGET_STATUS",
+        "TARGET_NODE_NAME",
+        "TARGET_ENDPOINT",
+        "TARGET_CURRENT",
+    ):
+        raise AssertionError("the builder-selection plan first-defect order has drifted")
 
     selection_operator_path = ROOT / "scripts" / "reconcile_docker_builder_selection.py"
     if not selection_operator_path.is_file() or not selection_operator_path.stat().st_mode & 0o111:
@@ -2288,7 +2372,9 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "def _reprove_prestate(",
         "exact_residual_count if exact_residual_count <= 128 else None",
         "rollback_interrupted = not isinstance(error, Exception)",
-        "len(sys.argv) != 1",
+        "arguments = tuple(sys.argv[1:])",
+        '("--diagnostic-phase", _PRESTATE_DIAGNOSTIC_PHASE)',
+        "if arguments:",
     ):
         if fragment not in selection_operator:
             raise AssertionError(f"the governed builder-selection operator is missing: {fragment}")
@@ -2320,16 +2406,26 @@ def verify_governed_docker_build_capacity_contract() -> None:
         raise AssertionError("the bounded builder-selection process reap contract has drifted")
     if process_finalizer.count("except BaseException:") != 9:
         raise AssertionError("every bounded process cleanup step must absorb BaseException")
+    plan_reproof = selection_operator.split("def _reprove_plan_prestate(", maxsplit=1)[1].split(
+        "def _reprove_prestate(", maxsplit=1
+    )[0]
     reproof = selection_operator.split("def _reprove_prestate(", maxsplit=1)[1].split(
         "def _capture_poststate(", maxsplit=1
     )[0]
-    reproof_order = (
+    plan_reproof_order = (
         "_source_identity(executor)",
         "_host_identity(root)",
         "docker_environment_identity = tuple(",
         "require_local_unix_docker_context(executor, environ)",
         "raw = _builder_listing(executor)",
         "plan = require_docker_builder_selection_plan(",
+        "runtime.plan_recorder.replace_pass_with_drift()",
+    )
+    plan_reproof_positions = tuple(plan_reproof.index(fragment) for fragment in plan_reproof_order)
+    if plan_reproof_positions != tuple(sorted(plan_reproof_positions)):
+        raise AssertionError("the final builder-selection plan reproof order has drifted")
+    reproof_order = (
+        "_reprove_plan_prestate(",
         "_require_idle(prestate.plan.prior_builder",
         "_require_idle(prestate.plan.target_builder",
     )
@@ -2354,8 +2450,11 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ):
         raise AssertionError("the builder-selection attempt/proof/rollback order has drifted")
     operator_main = selection_operator.split("def main() -> int:", maxsplit=1)[1]
-    if not operator_main.index("if len(sys.argv) != 1:") < operator_main.index(
-        "evidence = _run_operator(runtime)"
+    if not (
+        operator_main.index("arguments = tuple(sys.argv[1:])")
+        < operator_main.index('if arguments == ("--diagnostic-phase",')
+        < operator_main.index("if arguments:")
+        < operator_main.index("evidence = _run_operator(runtime)")
     ):
         raise AssertionError("extra builder-selection arguments must stop before the lock")
     expected_output_keys = {
@@ -2373,6 +2472,11 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "selection_mutation_count",
         "residual_known",
         "residual_count",
+        "prestate_known",
+        "prestate_checkpoint",
+        "prestate_predicate",
+        "builder_selection_predicate",
+        "node_schema_predicate",
         "cache_action_count",
         "build_count",
         "container_action_count",
@@ -2405,6 +2509,68 @@ def verify_governed_docker_build_capacity_contract() -> None:
     )
     if output_keys != expected_output_keys:
         raise AssertionError("the builder-selection value-free output keys have drifted")
+    diagnostic_functions = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "format_builder_selection_prestate_diagnostic"
+    ]
+    if len(diagnostic_functions) != 1:
+        raise AssertionError("the builder-selection prestate formatter must remain unique")
+    diagnostic_output_keys = {
+        key.value
+        for node in ast.walk(diagnostic_functions[0])
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+    diagnostic_output_keys.update(
+        node.slice.value
+        for node in ast.walk(diagnostic_functions[0])
+        if isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "fields"
+        and isinstance(node.ctx, ast.Store)
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, str)
+    )
+    if diagnostic_output_keys != {
+        "classification",
+        "phase",
+        "predicate",
+        "prestate_known",
+        "prestate_checkpoint",
+        "prestate_predicate",
+        "builder_selection_predicate",
+        "node_schema_predicate",
+        "action_count",
+        "rollback_count",
+        "selection_mutation_count",
+        "cache_action_count",
+        "build_count",
+        "container_action_count",
+        "mutation_count",
+        "retry_count",
+    }:
+        raise AssertionError("the prestate diagnostic value-free output keys have drifted")
+    diagnostic_under_lock = selection_operator.split(
+        "def _run_prestate_diagnostic_under_lock(", maxsplit=1
+    )[1].split("def _run_prestate_diagnostic(", maxsplit=1)[0]
+    if not (
+        diagnostic_under_lock.index("_capture_plan_prestate(")
+        < diagnostic_under_lock.index("_reprove_plan_prestate(")
+        < diagnostic_under_lock.index("_diagnostic_evidence_from_runtime(")
+    ):
+        raise AssertionError("the read-only prestate diagnostic order has drifted")
+    for forbidden in (
+        "_require_idle(",
+        "docker_builder_is_idle(",
+        "selection_argv",
+        "rollback_argv",
+        "_capture_poststate(",
+    ):
+        if forbidden in diagnostic_under_lock:
+            raise AssertionError(f"the prestate diagnostic reached a later boundary: {forbidden}")
     for forbidden in (
         '"create"',
         '"remove"',
@@ -2441,6 +2607,14 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_lock_exit_failure_preserves_completed_action_and_post_proof",
         "test_builder_environment_override_stops_before_context_or_action",
         "test_extra_arguments_are_rejected_before_lock_without_raw_output",
+        "test_read_only_prestate_diagnostic_reproves_plan_and_stops_before_active_or_action",
+        "test_read_only_prestate_diagnostic_classifies_capture_and_reproof",
+        "test_normal_operator_prestate_failure_retains_exact_capture_predicate",
+        "test_prestate_diagnostic_lock_exit_is_unknown_and_retains_observed_pass",
+        "test_read_only_prestate_diagnostic_interrupt_is_unknown_and_value_free",
+        "test_fixed_prestate_diagnostic_argv_outputs_one_bounded_line",
+        "test_malformed_prestate_diagnostic_arguments_stop_before_lock_without_raw",
+        "test_prestate_diagnostic_evidence_rejects_contradictory_shapes",
         "test_bounded_process_output_overflow_terminates_and_reaps_without_raw_output",
         "test_bounded_process_timeout_kills_terminate_ignoring_child",
         "test_bounded_process_unreaped_failure_is_distinct_and_never_swallowed",
@@ -2574,6 +2748,9 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_official_node_shape_records_schema_pass_and_selection_pass",
         "test_node_schema_interrupt_before_structural_outcome_remains_unknown",
         "test_selection_plan_preserves_complete_private_inventory_and_fixed_argv",
+        "test_selection_plan_recorder_preserves_nested_expected_transition",
+        "test_selection_plan_records_every_reachable_first_defect",
+        "test_selection_plan_predicate_priority_is_deterministic",
         "test_selection_plan_rejects_every_unreviewed_prestate",
         "test_selection_poststate_accepts_only_current_flag_delta",
         "test_builder_idle_state_is_shared_with_canonical_active_build_guard",
@@ -2635,9 +2812,20 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "Total selection mutations are therefore at most two",
         "`SEC-DOCKER-BUILDER-SELECT-001`",
         "does not make `docker-container` acceptable",
+        "Plan construction advances a separate closed, value-free prestate recorder",
+        "initial `CAPTURE` or immediate `REPROOF`",
+        "`--diagnostic-phase BUILDER_SELECTION_PRESTATE`",
+        "stops before active-build history",
+        "`PASS` is diagnostic evidence only",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0112 omits governed capacity term: {fragment}")
+    docs_index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
+    if (
+        "fixed `BUILDER_SELECTION_PRESTATE` phase" not in docs_index
+        or "cannot select a builder or authorize a host change" not in docs_index
+    ):
+        raise AssertionError("the controlled index omits the read-only builder prestate phase")
 
 
 def verify_governed_local_topology_contract() -> None:
