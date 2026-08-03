@@ -1198,6 +1198,254 @@ def test_production_web_closed_predicate_table_covers_the_exact_enum() -> None:
     )
 
 
+def test_production_web_boolean_field_and_status_enums_are_exact_and_ordered() -> None:
+    assert tuple(item.value for item in probe.ProductionWebBooleanField) == (
+        "enabled",
+        "publicClient",
+        "bearerOnly",
+        "surrogateAuthRequired",
+        "consentRequired",
+        "standardFlowEnabled",
+        "directAccessGrantsEnabled",
+        "implicitFlowEnabled",
+        "serviceAccountsEnabled",
+        "authorizationServicesEnabled",
+        "fullScopeAllowed",
+        "frontchannelLogout",
+        "alwaysDisplayInConsole",
+    )
+    assert probe._PRODUCTION_WEB_BOOLEAN_FIELDS == tuple(
+        item.value for item in probe.ProductionWebBooleanField
+    )
+    assert tuple(item.value for item in probe.ProductionWebBooleanFieldStatus) == (
+        "PRESENT_BOOL",
+        "MISSING",
+        "NON_BOOL",
+    )
+
+
+@pytest.mark.parametrize("field", tuple(probe.ProductionWebBooleanField))
+def test_production_web_boolean_subpredicate_reports_each_missing_field_without_mapper_read(
+    field: object,
+) -> None:
+    client, mappers = _production_web_contract()
+    field_enum = cast(Any, field)
+    client.pop(field_enum.value)
+    mapper_reads: list[str] = []
+
+    def mapper_inventory(_uuid: str) -> httpx.Response:
+        mapper_reads.append("mapper")
+        return _production_response(mappers)
+
+    evidence = probe._classify_production_web_contract(
+        client_search=lambda: _production_response(
+            [{"id": client["id"], "clientId": "datariver-web"}]
+        ),
+        client_document=lambda _uuid: _production_response(client),
+        mapper_inventory=mapper_inventory,
+    )
+    rendered = probe.format_production_web_invariant_evidence(evidence)
+
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE
+    assert evidence.boolean_shape_known
+    assert evidence.boolean_missing_fields == (field_enum,)
+    assert evidence.boolean_non_bool_fields == ()
+    assert "boolean_shape_known=true" in rendered
+    assert "boolean_missing_count=1" in rendered
+    assert f"boolean_missing_fields=[{field_enum.name}]" in rendered
+    assert "boolean_non_bool_count=0 boolean_non_bool_fields=[]" in rendered
+    assert mapper_reads == []
+
+
+_NON_BOOLEAN_VALUES: tuple[object, ...] = (
+    None,
+    "provider-boolean-string-secret",
+    1,
+    ["provider-boolean-list-secret"],
+    {"provider-boolean-map-secret": True},
+)
+
+
+@pytest.mark.parametrize(
+    ("field", "invalid"),
+    tuple(
+        (field, _NON_BOOLEAN_VALUES[index % len(_NON_BOOLEAN_VALUES)])
+        for index, field in enumerate(probe.ProductionWebBooleanField)
+    ),
+)
+def test_production_web_boolean_subpredicate_reports_each_non_bool_exact_type_without_raw_value(
+    field: object,
+    invalid: object,
+) -> None:
+    client, mappers = _production_web_contract()
+    field_enum = cast(Any, field)
+    client[field_enum.value] = invalid
+
+    evidence = probe._classify_production_web_contract(
+        client_search=lambda: _production_response(
+            [{"id": client["id"], "clientId": "datariver-web"}]
+        ),
+        client_document=lambda _uuid: _production_response(client),
+        mapper_inventory=lambda _uuid: _production_response(mappers),
+    )
+    rendered = probe.format_production_web_invariant_evidence(evidence)
+
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE
+    assert evidence.boolean_shape_known
+    assert evidence.boolean_missing_fields == ()
+    assert evidence.boolean_non_bool_fields == (field_enum,)
+    assert "boolean_missing_count=0 boolean_missing_fields=[]" in rendered
+    assert "boolean_non_bool_count=1" in rendered
+    assert f"boolean_non_bool_fields=[{field_enum.name}]" in rendered
+    for forbidden in (
+        "provider-boolean-string",
+        "provider-boolean-list",
+        "provider-boolean-map",
+    ):
+        assert forbidden not in rendered
+
+
+def test_boolean_subpredicate_scans_all_fields_in_fixed_order_without_duplicates() -> None:
+    client, mappers = _production_web_contract()
+    client.pop("alwaysDisplayInConsole")
+    client.pop("bearerOnly")
+    client["frontchannelLogout"] = "provider-frontchannel-secret"
+    client["enabled"] = None
+    client["provider-extra-boolean-key"] = "provider-extra-secret"
+
+    evidence = probe._classify_production_web_contract(
+        client_search=lambda: _production_response(
+            [{"id": client["id"], "clientId": "datariver-web"}]
+        ),
+        client_document=lambda _uuid: _production_response(client),
+        mapper_inventory=lambda _uuid: _production_response(mappers),
+    )
+    rendered = probe.format_production_web_invariant_evidence(evidence)
+
+    assert evidence.boolean_missing_fields == (
+        probe.ProductionWebBooleanField.BEARER_ONLY,
+        probe.ProductionWebBooleanField.ALWAYS_DISPLAY_IN_CONSOLE,
+    )
+    assert evidence.boolean_non_bool_fields == (
+        probe.ProductionWebBooleanField.ENABLED,
+        probe.ProductionWebBooleanField.FRONTCHANNEL_LOGOUT,
+    )
+    assert rendered == (
+        "predicate=CLIENT_BOOLEAN_SHAPE client_match_count_known=true client_match_count=1 "
+        "mapper_count_known=false boolean_shape_known=true boolean_missing_count=2 "
+        "boolean_missing_fields=[BEARER_ONLY,ALWAYS_DISPLAY_IN_CONSOLE] "
+        "boolean_non_bool_count=2 "
+        "boolean_non_bool_fields=[ENABLED,FRONTCHANNEL_LOGOUT] "
+        "mutation_count=0 retry_count=0"
+    )
+    assert "provider-" not in rendered
+
+
+def test_production_web_boolean_subpredicate_all_valid_is_known_with_empty_defect_sets() -> None:
+    client, mappers = _production_web_contract()
+
+    evidence = probe._classify_production_web_contract(
+        client_search=lambda: _production_response(
+            [{"id": client["id"], "clientId": "datariver-web"}]
+        ),
+        client_document=lambda _uuid: _production_response(client),
+        mapper_inventory=lambda _uuid: _production_response(mappers),
+    )
+    rendered = probe.format_production_web_invariant_evidence(evidence)
+
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.PASS
+    assert evidence.boolean_shape_known
+    assert evidence.boolean_missing_fields == ()
+    assert evidence.boolean_non_bool_fields == ()
+    assert "boolean_shape_known=true" in rendered
+    assert "boolean_missing_count=0 boolean_missing_fields=[]" in rendered
+    assert "boolean_non_bool_count=0 boolean_non_bool_fields=[]" in rendered
+
+
+def test_production_web_boolean_subpredicate_unknown_omits_sets_and_counts() -> None:
+    evidence = probe._classify_production_web_contract(
+        client_search=lambda: (_ for _ in ()).throw(RuntimeError("provider-unknown-secret")),
+        client_document=lambda _uuid: _production_response({}),
+        mapper_inventory=lambda _uuid: _production_response([]),
+    )
+    rendered = probe.format_production_web_invariant_evidence(evidence)
+
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.UNKNOWN
+    assert not evidence.boolean_shape_known
+    assert evidence.boolean_missing_fields is None
+    assert evidence.boolean_non_bool_fields is None
+    assert "boolean_shape_known=false" in rendered
+    assert "boolean_missing_count=" not in rendered
+    assert "boolean_missing_fields=" not in rendered
+    assert "boolean_non_bool_count=" not in rendered
+    assert "boolean_non_bool_fields=" not in rendered
+    assert "provider-unknown-secret" not in rendered
+
+
+@pytest.mark.parametrize(
+    ("predicate", "fingerprint", "missing", "non_bool"),
+    (
+        (
+            probe.ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE,
+            None,
+            (),
+            (),
+        ),
+        (
+            probe.ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE,
+            None,
+            (
+                probe.ProductionWebBooleanField.PUBLIC_CLIENT,
+                probe.ProductionWebBooleanField.ENABLED,
+            ),
+            (),
+        ),
+        (
+            probe.ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE,
+            None,
+            (
+                probe.ProductionWebBooleanField.ENABLED,
+                probe.ProductionWebBooleanField.ENABLED,
+            ),
+            (),
+        ),
+        (
+            probe.ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE,
+            None,
+            (probe.ProductionWebBooleanField.ENABLED,),
+            (probe.ProductionWebBooleanField.ENABLED,),
+        ),
+        (
+            probe.ProductionWebInvariantPredicate.PASS,
+            "a" * 64,
+            (probe.ProductionWebBooleanField.ENABLED,),
+            (),
+        ),
+        (
+            probe.ProductionWebInvariantPredicate.UNKNOWN,
+            None,
+            (),
+            (),
+        ),
+    ),
+)
+def test_production_web_boolean_subpredicate_evidence_rejects_unknown_or_invalid_sets(
+    predicate: Any,
+    fingerprint: str | None,
+    missing: tuple[Any, ...],
+    non_bool: tuple[Any, ...],
+) -> None:
+    with pytest.raises(ValueError, match="GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID"):
+        probe._ProductionWebInvariantEvidence(
+            predicate=predicate,
+            fingerprint=fingerprint,
+            client_match_count=1,
+            mapper_count=None,
+            boolean_missing_fields=missing,
+            boolean_non_bool_fields=non_bool,
+        )
+
+
 @pytest.mark.parametrize(
     "predicate",
     tuple(
@@ -1241,6 +1489,10 @@ def test_normal_runtime_maps_every_internal_production_predicate_to_generic_fail
         fingerprint=None,
         client_match_count=None,
         mapper_count=None,
+        boolean_missing_fields=(probe.ProductionWebBooleanField.BEARER_ONLY,)
+        if predicate == "CLIENT_BOOLEAN_SHAPE"
+        else None,
+        boolean_non_bool_fields=() if predicate == "CLIENT_BOOLEAN_SHAPE" else None,
     )
     monkeypatch.setattr(identity, "classify_production_web_invariant", lambda: evidence)
 
@@ -1296,6 +1548,55 @@ def test_production_web_admin_reads_are_token_then_search_document_mapper_and_sh
             f"/admin/realms/datariver/clients/{web_document['id']}/protocol-mappers/models",
         ),
     ]
+    identity.release_without_mutation()
+
+
+def test_production_web_boolean_subpredicate_uses_one_full_document_and_no_mapper_read() -> None:
+    web_document, _mapper_documents = _production_web_contract()
+    web_document.pop("bearerOnly")
+    web_document["frontchannelLogout"] = "provider-non-bool-secret"
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.url.path.endswith("/protocol/openid-connect/token"):
+            return httpx.Response(200, json={"access_token": "admin-token-secret-sentinel"})
+        if request.url.path == "/admin/realms/datariver/clients":
+            return httpx.Response(
+                200,
+                json=[{"id": web_document["id"], "clientId": "datariver-web"}],
+            )
+        if request.url.path.endswith("/protocol-mappers/models"):
+            raise AssertionError("boolean-shape failure must not read mappers")
+        return httpx.Response(200, json=web_document)
+
+    identity = probe.KeycloakGatewayAuthParityIdentity(
+        base_url="http://127.0.0.1:8081",
+        admin_username="datariver-bootstrap",
+        admin_password="admin-secret-sentinel",
+    )
+    cast(Any, identity)._client.close()
+    cast(Any, identity)._client = httpx.Client(
+        base_url="http://127.0.0.1:8081",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+
+    evidence = identity.classify_production_web_invariant()
+    rendered = probe.format_production_web_invariant_evidence(evidence)
+
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE
+    assert evidence.boolean_missing_fields == (probe.ProductionWebBooleanField.BEARER_ONLY,)
+    assert evidence.boolean_non_bool_fields == (
+        probe.ProductionWebBooleanField.FRONTCHANNEL_LOGOUT,
+    )
+    assert requests == [
+        ("POST", "/realms/master/protocol/openid-connect/token"),
+        ("GET", "/admin/realms/datariver/clients"),
+        ("GET", f"/admin/realms/datariver/clients/{web_document['id']}"),
+    ]
+    assert "provider-" not in rendered
+    assert "admin-token" not in rendered
     identity.release_without_mutation()
 
 
@@ -1575,6 +1876,8 @@ def _install_classifier_runtime(
                 fingerprint="a" * 64,
                 client_match_count=1,
                 mapper_count=1,
+                boolean_missing_fields=(),
+                boolean_non_bool_fields=(),
             )
 
         def release_without_mutation(self) -> None:
@@ -1661,7 +1964,9 @@ def test_classifier_holds_lock_state_env_exact8_guard_and_releases_before_one_li
     assert output.err == ""
     assert output.out == (
         "predicate=PASS client_match_count_known=true client_match_count=1 "
-        "mapper_count_known=true mapper_count=1 mutation_count=0 retry_count=0\n"
+        "mapper_count_known=true mapper_count=1 boolean_shape_known=true "
+        "boolean_missing_count=0 boolean_missing_fields=[] boolean_non_bool_count=0 "
+        "boolean_non_bool_fields=[] mutation_count=0 retry_count=0\n"
     )
     assert "a" * 64 not in output.out
     assert "admin-secret-sentinel" not in output.out
@@ -1716,7 +2021,7 @@ def test_classifier_baseexception_closes_every_resource_and_emits_only_fixed_unk
     assert output.err == ""
     assert output.out == (
         "predicate=UNKNOWN client_match_count_known=false mapper_count_known=false "
-        "mutation_count=0 retry_count=0\n"
+        "boolean_shape_known=false mutation_count=0 retry_count=0\n"
     )
     assert "raw-runtime-sentinel" not in output.out
 
@@ -1741,7 +2046,7 @@ def test_classifier_rejects_all_arguments_before_lock_or_admin_boundary(
     assert output.err == ""
     assert output.out == (
         "predicate=UNKNOWN client_match_count_known=false mapper_count_known=false "
-        "mutation_count=0 retry_count=0\n"
+        "boolean_shape_known=false mutation_count=0 retry_count=0\n"
     )
     assert "provider-url-secret" not in output.out
 

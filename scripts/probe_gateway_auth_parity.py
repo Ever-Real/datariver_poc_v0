@@ -53,21 +53,6 @@ _PRODUCTION_WEB_STRING_FIELDS = (
     "protocol",
     "clientAuthenticatorType",
 )
-_PRODUCTION_WEB_BOOLEAN_FIELDS = (
-    "enabled",
-    "publicClient",
-    "bearerOnly",
-    "surrogateAuthRequired",
-    "consentRequired",
-    "standardFlowEnabled",
-    "directAccessGrantsEnabled",
-    "implicitFlowEnabled",
-    "serviceAccountsEnabled",
-    "authorizationServicesEnabled",
-    "fullScopeAllowed",
-    "frontchannelLogout",
-    "alwaysDisplayInConsole",
-)
 _PRODUCTION_WEB_OPTIONAL_URL_FIELDS = ("rootUrl", "baseUrl", "adminUrl")
 _PRODUCTION_WEB_LIST_FIELDS = (
     "redirectUris",
@@ -80,6 +65,35 @@ _MAXIMUM_PRODUCTION_MAPPERS = 64
 
 class GatewayAuthParityError(RuntimeError):
     """Fixed operator-safe failure with no credential or provider payload."""
+
+
+class ProductionWebBooleanField(str, Enum):
+    """Closed ordered field vocabulary for the production Web boolean surface."""
+
+    ENABLED = "enabled"
+    PUBLIC_CLIENT = "publicClient"
+    BEARER_ONLY = "bearerOnly"
+    SURROGATE_AUTH_REQUIRED = "surrogateAuthRequired"
+    CONSENT_REQUIRED = "consentRequired"
+    STANDARD_FLOW_ENABLED = "standardFlowEnabled"
+    DIRECT_ACCESS_GRANTS_ENABLED = "directAccessGrantsEnabled"
+    IMPLICIT_FLOW_ENABLED = "implicitFlowEnabled"
+    SERVICE_ACCOUNTS_ENABLED = "serviceAccountsEnabled"
+    AUTHORIZATION_SERVICES_ENABLED = "authorizationServicesEnabled"
+    FULL_SCOPE_ALLOWED = "fullScopeAllowed"
+    FRONTCHANNEL_LOGOUT = "frontchannelLogout"
+    ALWAYS_DISPLAY_IN_CONSOLE = "alwaysDisplayInConsole"
+
+
+class ProductionWebBooleanFieldStatus(str, Enum):
+    """Value-free status of one reviewed boolean field in one Admin document."""
+
+    PRESENT_BOOL = "PRESENT_BOOL"
+    MISSING = "MISSING"
+    NON_BOOL = "NON_BOOL"
+
+
+_PRODUCTION_WEB_BOOLEAN_FIELDS = tuple(field.value for field in ProductionWebBooleanField)
 
 
 class ProductionWebInvariantPredicate(str, Enum):
@@ -115,6 +129,12 @@ class _ProductionWebInvariantEvidence:
     fingerprint: str | None
     client_match_count: int | None
     mapper_count: int | None
+    boolean_missing_fields: tuple[ProductionWebBooleanField, ...] | None = None
+    boolean_non_bool_fields: tuple[ProductionWebBooleanField, ...] | None = None
+
+    @property
+    def boolean_shape_known(self) -> bool:
+        return self.boolean_missing_fields is not None and self.boolean_non_bool_fields is not None
 
     def __post_init__(self) -> None:
         if (self.client_match_count is not None and not 0 <= self.client_match_count <= 2) or (
@@ -127,6 +147,36 @@ class _ProductionWebInvariantEvidence:
         )
         if (self.predicate is ProductionWebInvariantPredicate.PASS) != fingerprint_valid:
             raise ValueError("GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID")
+        if (self.boolean_missing_fields is None) != (self.boolean_non_bool_fields is None):
+            raise ValueError("GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID")
+        if self.boolean_shape_known:
+            assert self.boolean_missing_fields is not None
+            assert self.boolean_non_bool_fields is not None
+            ordered_fields = tuple(ProductionWebBooleanField)
+            selected_fields = (*self.boolean_missing_fields, *self.boolean_non_bool_fields)
+            if (
+                len(selected_fields) > len(ordered_fields)
+                or len(set(selected_fields)) != len(selected_fields)
+                or self.boolean_missing_fields
+                != tuple(field for field in ordered_fields if field in self.boolean_missing_fields)
+                or self.boolean_non_bool_fields
+                != tuple(field for field in ordered_fields if field in self.boolean_non_bool_fields)
+            ):
+                raise ValueError("GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID")
+        if self.predicate is ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE:
+            if not self.boolean_shape_known or not (
+                self.boolean_missing_fields or self.boolean_non_bool_fields
+            ):
+                raise ValueError("GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID")
+        elif self.predicate is ProductionWebInvariantPredicate.PASS:
+            if (
+                not self.boolean_shape_known
+                or self.boolean_missing_fields
+                or self.boolean_non_bool_fields
+            ):
+                raise ValueError("GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID")
+        elif self.boolean_shape_known:
+            raise ValueError("GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID")
 
 
 class _ProductionWebInvariantFailure(Exception):
@@ -136,10 +186,14 @@ class _ProductionWebInvariantFailure(Exception):
         *,
         client_match_count: int | None = None,
         mapper_count: int | None = None,
+        boolean_missing_fields: tuple[ProductionWebBooleanField, ...] | None = None,
+        boolean_non_bool_fields: tuple[ProductionWebBooleanField, ...] | None = None,
     ) -> None:
         self.predicate = predicate
         self.client_match_count = client_match_count
         self.mapper_count = mapper_count
+        self.boolean_missing_fields = boolean_missing_fields
+        self.boolean_non_bool_fields = boolean_non_bool_fields
         super().__init__(predicate.value)
 
 
@@ -157,6 +211,20 @@ def format_production_web_invariant_evidence(
     fields.append(f"mapper_count_known={str(evidence.mapper_count is not None).lower()}")
     if evidence.mapper_count is not None:
         fields.append(f"mapper_count={evidence.mapper_count}")
+    fields.append(f"boolean_shape_known={str(evidence.boolean_shape_known).lower()}")
+    if evidence.boolean_shape_known:
+        assert evidence.boolean_missing_fields is not None
+        assert evidence.boolean_non_bool_fields is not None
+        missing = ",".join(field.name for field in evidence.boolean_missing_fields)
+        non_bool = ",".join(field.name for field in evidence.boolean_non_bool_fields)
+        fields.extend(
+            (
+                f"boolean_missing_count={len(evidence.boolean_missing_fields)}",
+                f"boolean_missing_fields=[{missing}]",
+                f"boolean_non_bool_count={len(evidence.boolean_non_bool_fields)}",
+                f"boolean_non_bool_fields=[{non_bool}]",
+            )
+        )
     fields.extend(("mutation_count=0", "retry_count=0"))
     return " ".join(fields)
 
@@ -477,12 +545,31 @@ def _production_failure(
     *,
     client_match_count: int | None,
     mapper_count: int | None = None,
+    boolean_missing_fields: tuple[ProductionWebBooleanField, ...] | None = None,
+    boolean_non_bool_fields: tuple[ProductionWebBooleanField, ...] | None = None,
 ) -> NoReturn:
     raise _ProductionWebInvariantFailure(
         predicate,
         client_match_count=client_match_count,
         mapper_count=mapper_count,
+        boolean_missing_fields=boolean_missing_fields,
+        boolean_non_bool_fields=boolean_non_bool_fields,
     )
+
+
+def _production_web_boolean_field_statuses(
+    document: dict[str, Any],
+) -> tuple[tuple[ProductionWebBooleanField, ProductionWebBooleanFieldStatus], ...]:
+    statuses: list[tuple[ProductionWebBooleanField, ProductionWebBooleanFieldStatus]] = []
+    for field in ProductionWebBooleanField:
+        if field.value not in document:
+            status = ProductionWebBooleanFieldStatus.MISSING
+        elif type(document[field.value]) is bool:
+            status = ProductionWebBooleanFieldStatus.PRESENT_BOOL
+        else:
+            status = ProductionWebBooleanFieldStatus.NON_BOOL
+        statuses.append((field, status))
+    return tuple(statuses)
 
 
 def _normalized_unique_strings(
@@ -608,10 +695,23 @@ def _normalize_production_web_contract(
             ProductionWebInvariantPredicate.CLIENT_STRING_SHAPE,
             client_match_count=client_match_count,
         )
-    if any(type(selected.get(field)) is not bool for field in _PRODUCTION_WEB_BOOLEAN_FIELDS):
+    boolean_statuses = _production_web_boolean_field_statuses(selected)
+    boolean_missing_fields = tuple(
+        field
+        for field, status in boolean_statuses
+        if status is ProductionWebBooleanFieldStatus.MISSING
+    )
+    boolean_non_bool_fields = tuple(
+        field
+        for field, status in boolean_statuses
+        if status is ProductionWebBooleanFieldStatus.NON_BOOL
+    )
+    if boolean_missing_fields or boolean_non_bool_fields:
         _production_failure(
             ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE,
             client_match_count=client_match_count,
+            boolean_missing_fields=boolean_missing_fields,
+            boolean_non_bool_fields=boolean_non_bool_fields,
         )
     if any(
         selected.get(field) is not None and not isinstance(selected[field], str)
@@ -747,6 +847,8 @@ def _normalize_production_web_contract(
         fingerprint=hashlib.sha256(encoded).hexdigest(),
         client_match_count=client_match_count,
         mapper_count=mapper_count,
+        boolean_missing_fields=(),
+        boolean_non_bool_fields=(),
     )
 
 
@@ -768,6 +870,8 @@ def _classify_production_web_contract(
             fingerprint=None,
             client_match_count=error.client_match_count,
             mapper_count=error.mapper_count,
+            boolean_missing_fields=error.boolean_missing_fields,
+            boolean_non_bool_fields=error.boolean_non_bool_fields,
         )
     except Exception:
         return _ProductionWebInvariantEvidence(

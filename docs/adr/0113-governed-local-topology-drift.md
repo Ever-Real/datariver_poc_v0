@@ -136,6 +136,18 @@ no fixture absence check, create, update, delete, logout, PKCE flow, topology/ca
 Docker/service operation, state write or push. Source acceptance does not authorize this Admin read;
 runtime remains a separate reviewed exact-one operation.
 
+The `CLIENT_BOOLEAN_SHAPE` diagnostic refines only its value-free evidence. The checked-in realm
+template explicitly materializes six of the thirteen reviewed client booleans and leaves seven to
+the pinned provider representation; the host-development updater changes no client boolean. The
+shared normalizer therefore scans the complete fixed ordered field enum once and classifies each
+entry only as `PRESENT_BOOL`, `MISSING` or `NON_BOOL`. Its one line can expose fixed-order unique
+closed-enum sets and bounded counts for `MISSING` and `NON_BOOL`, never the corresponding value or
+an unreviewed provider key. When the client document is unavailable, those sets and counts are
+omitted rather than estimated. Normal reconciliation still maps any missing or non-boolean field to
+the existing generic production-invariant failure. In particular, absence is never coerced to
+`false`, and this diagnostic does not authorize a provider default, realm-template or provisioning
+change.
+
 The operation then executes real HTTP requests for Knowledge Registry and Change Request through
 the direct loopback API, loopback APISIX and Web proxy. It requires identical bounded status,
 response-header and body-digest evidence for authorized `200`, explicitly denied `403`, malformed

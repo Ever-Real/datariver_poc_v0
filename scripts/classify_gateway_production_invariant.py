@@ -35,6 +35,8 @@ def _unknown_evidence() -> _ProductionWebInvariantEvidence:
         fingerprint=None,
         client_match_count=None,
         mapper_count=None,
+        boolean_missing_fields=None,
+        boolean_non_bool_fields=None,
     )
 
 

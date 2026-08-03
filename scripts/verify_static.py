@@ -2699,6 +2699,84 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     )
     if predicate_members != tuple((value, value) for value in exact_predicates):
         raise AssertionError("production Web diagnostic predicate enum has drifted")
+    boolean_field_classes = [
+        node
+        for node in probe_syntax.body
+        if isinstance(node, ast.ClassDef) and node.name == "ProductionWebBooleanField"
+    ]
+    boolean_status_classes = [
+        node
+        for node in probe_syntax.body
+        if isinstance(node, ast.ClassDef) and node.name == "ProductionWebBooleanFieldStatus"
+    ]
+    if len(boolean_field_classes) != 1 or len(boolean_status_classes) != 1:
+        raise AssertionError("production Web boolean field enums are missing or duplicated")
+    boolean_field_members = tuple(
+        (statement.targets[0].id, ast.literal_eval(statement.value))
+        for statement in boolean_field_classes[0].body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    )
+    exact_boolean_fields = (
+        ("ENABLED", "enabled"),
+        ("PUBLIC_CLIENT", "publicClient"),
+        ("BEARER_ONLY", "bearerOnly"),
+        ("SURROGATE_AUTH_REQUIRED", "surrogateAuthRequired"),
+        ("CONSENT_REQUIRED", "consentRequired"),
+        ("STANDARD_FLOW_ENABLED", "standardFlowEnabled"),
+        ("DIRECT_ACCESS_GRANTS_ENABLED", "directAccessGrantsEnabled"),
+        ("IMPLICIT_FLOW_ENABLED", "implicitFlowEnabled"),
+        ("SERVICE_ACCOUNTS_ENABLED", "serviceAccountsEnabled"),
+        ("AUTHORIZATION_SERVICES_ENABLED", "authorizationServicesEnabled"),
+        ("FULL_SCOPE_ALLOWED", "fullScopeAllowed"),
+        ("FRONTCHANNEL_LOGOUT", "frontchannelLogout"),
+        ("ALWAYS_DISPLAY_IN_CONSOLE", "alwaysDisplayInConsole"),
+    )
+    if boolean_field_members != exact_boolean_fields:
+        raise AssertionError("production Web boolean field enum order has drifted")
+    boolean_status_members = tuple(
+        (statement.targets[0].id, ast.literal_eval(statement.value))
+        for statement in boolean_status_classes[0].body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    )
+    if boolean_status_members != (
+        ("PRESENT_BOOL", "PRESENT_BOOL"),
+        ("MISSING", "MISSING"),
+        ("NON_BOOL", "NON_BOOL"),
+    ):
+        raise AssertionError("production Web boolean status enum has drifted")
+    boolean_field_assignments = [
+        node
+        for node in probe_syntax.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_PRODUCTION_WEB_BOOLEAN_FIELDS"
+            for target in node.targets
+        )
+    ]
+    if (
+        len(boolean_field_assignments) != 1
+        or ast.unparse(boolean_field_assignments[0].value)
+        != "tuple((field.value for field in ProductionWebBooleanField))"
+    ):
+        raise AssertionError("production Web boolean tuple must derive from the exact enum")
+    boolean_scanner = probe.split("def _production_web_boolean_field_statuses(", maxsplit=1)[
+        1
+    ].split("def _normalized_unique_strings(", maxsplit=1)[0]
+    for fragment in (
+        "for field in ProductionWebBooleanField:",
+        "if field.value not in document:",
+        "status = ProductionWebBooleanFieldStatus.MISSING",
+        "elif type(document[field.value]) is bool:",
+        "status = ProductionWebBooleanFieldStatus.PRESENT_BOOL",
+        "status = ProductionWebBooleanFieldStatus.NON_BOOL",
+        "return tuple(statuses)",
+    ):
+        if fragment not in boolean_scanner:
+            raise AssertionError(f"production Web boolean full scan is missing: {fragment}")
     normalizer = probe.split("def _normalize_production_web_contract(", maxsplit=1)[1].split(
         "def _classify_production_web_contract(", maxsplit=1
     )[0]
@@ -2719,16 +2797,24 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         or 'f"/admin/realms/datariver/clients/{client_uuid}/protocol-mappers/models"'
         not in production_diagnostic
         or "ProductionWebInvariantPredicate.CLIENT_MATCH_COUNT" not in normalizer
+        or normalizer.count("_production_web_boolean_field_statuses(selected)") != 1
+        or "if boolean_missing_fields or boolean_non_bool_fields:" not in normalizer
         or "ProductionWebInvariantPredicate.MAPPER_CONFIG_SHAPE" not in normalizer
     ):
         raise AssertionError("production Web fingerprint and diagnostic must share one normalizer")
     for fragment in (
         "client_match_count_known=",
         "mapper_count_known=",
+        "boolean_shape_known=",
+        "boolean_missing_count=",
+        "boolean_missing_fields=[",
+        "boolean_non_bool_count=",
+        "boolean_non_bool_fields=[",
         "mutation_count=0",
         "retry_count=0",
         "if evidence.client_match_count is not None:",
         "if evidence.mapper_count is not None:",
+        "if evidence.boolean_shape_known:",
     ):
         if fragment not in probe:
             raise AssertionError(f"production Web sanitized evidence is missing: {fragment}")
@@ -2754,6 +2840,11 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "client_match_count=",
         "mapper_count_known=",
         "mapper_count=",
+        "boolean_shape_known=",
+        "boolean_missing_count=",
+        "boolean_missing_fields=[",
+        "boolean_non_bool_count=",
+        "boolean_non_bool_fields=[",
     }:
         raise AssertionError("production Web evidence dynamic output keys have drifted")
     for forbidden in (
@@ -2762,6 +2853,8 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "redirectUris={",
         "webOrigins={",
         "protocolMappers={",
+        "provider_field={",
+        "provider_value={",
     ):
         if forbidden in probe:
             raise AssertionError("production Web diagnostic cannot format provider values")
@@ -2818,6 +2911,8 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "identity.release_without_mutation()",
         "print(format_production_web_invariant_evidence(evidence), flush=True)",
         "len(sys.argv) == 1",
+        "boolean_missing_fields=None",
+        "boolean_non_bool_fields=None",
     ):
         if fragment not in classifier:
             raise AssertionError(f"production Web classifier contract is missing: {fragment}")
@@ -2835,6 +2930,17 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     )
     if classifier_order != tuple(sorted(classifier_order)):
         raise AssertionError("production Web classifier lock/read/release order has drifted")
+    admin_authentication = production_identity.split(
+        "def _authenticate_admin(self) -> None:", maxsplit=1
+    )[1].split("def _find(", maxsplit=1)[0]
+    if (
+        admin_authentication.count("self._request(") != 1
+        or admin_authentication.count('"POST"') != 1
+        or admin_authentication.count('"/realms/master/protocol/openid-connect/token"') != 1
+        or production_diagnostic.count("self._request(") != 3
+        or production_diagnostic.count('"GET"') != 3
+    ):
+        raise AssertionError("production Web diagnostic Admin request count has drifted")
     for forbidden in (
         "argparse",
         "subprocess",
@@ -2861,6 +2967,14 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "test_production_web_admin_reads_are_token_then_search_document_mapper_and_short_circuit",
         "test_production_web_admin_boundary_and_response_failures_are_fixed_and_nonleaking",
         "test_production_web_provider_container_shapes_fail_at_the_first_exact_stage",
+        "test_production_web_boolean_field_and_status_enums_are_exact_and_ordered",
+        "test_production_web_boolean_subpredicate_reports_each_missing_field_without_mapper_read",
+        "test_production_web_boolean_subpredicate_reports_each_non_bool_exact_type_without_raw_value",
+        "test_boolean_subpredicate_scans_all_fields_in_fixed_order_without_duplicates",
+        "test_production_web_boolean_subpredicate_all_valid_is_known_with_empty_defect_sets",
+        "test_production_web_boolean_subpredicate_unknown_omits_sets_and_counts",
+        "test_production_web_boolean_subpredicate_evidence_rejects_unknown_or_invalid_sets",
+        "test_production_web_boolean_subpredicate_uses_one_full_document_and_no_mapper_read",
         "test_classifier_mac_state_and_environment_drift_is_fixed_before_secret_or_admin_read",
         "test_classifier_holds_lock_state_env_exact8_guard_and_releases_before_one_line_output",
         "test_classifier_rejects_exact8_guard_key_drift_before_admin_boundary",
