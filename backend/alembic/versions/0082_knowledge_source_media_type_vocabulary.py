@@ -5,8 +5,6 @@ Revises: 0081
 Create Date: 2026-07-31
 """
 
-from __future__ import annotations
-
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass

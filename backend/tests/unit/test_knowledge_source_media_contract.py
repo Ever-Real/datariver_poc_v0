@@ -5,11 +5,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from alembic.script import ScriptDirectory
+from alembic.util.pyfiles import load_module_py
 from sqlalchemy import CheckConstraint
 
 from datariver.domain.knowledge_pipeline import KNOWLEDGE_SOURCE_MEDIA_TYPES
 from datariver.infrastructure.db import models  # noqa: F401
 from datariver.infrastructure.db.base import Base
+from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
 
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION = ROOT / "backend/alembic/versions/0082_knowledge_source_media_type_vocabulary.py"
@@ -57,6 +60,14 @@ def test_0082_migration_snapshots_the_domain_vocabulary_and_safe_downgrade() -> 
     assert "ck_source_snapshots_media_type_vocabulary" in source
     assert "WHERE media_type <> 'application/pdf'" in source
     assert "explicit reconciliation of non-PDF source snapshots" in source
+
+
+def test_0082_migration_loads_through_alembic_dynamic_loader_and_preserves_head() -> None:
+    module = load_module_py("0082_knowledge_source_media_type_vocabulary", str(MIGRATION))
+    script = ScriptDirectory(dir=str(ROOT / "backend" / "alembic"))
+
+    assert module.revision == "0082"
+    assert script.get_current_head() == REQUIRED_DATABASE_REVISION
 
 
 def _load_migration() -> dict[str, Any]:
