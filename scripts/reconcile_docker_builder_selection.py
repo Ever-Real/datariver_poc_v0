@@ -19,8 +19,12 @@ from typing import NoReturn
 
 from docker_capacity import (
     DOCKER_BUILDER_LIST_PROBE,
+    BuilderErrorPredicate,
+    BuilderErrorRecorder,
     BuilderSelectionPredicate,
     BuilderSelectionRecorder,
+    BuildxAuthorityPredicate,
+    BuildxAuthorityRecorder,
     CapacityExecutor,
     DockerBuilderSelectionPlan,
     DockerBuilderSelectionPlanPredicate,
@@ -35,6 +39,7 @@ from docker_capacity import (
     docker_builder_selection_residual_count,
     exclusive_docker_workflow_lock,
     parse_docker_builder_inventory,
+    record_buildx_authority,
     require_docker_builder_selection_plan,
     require_docker_builder_selection_poststate,
     require_local_unix_docker_context,
@@ -58,6 +63,7 @@ _GIT_STATUS = "DOCKER_BUILDER_SELECTION_GIT_STATUS"
 _GIT_COMMIT = "DOCKER_BUILDER_SELECTION_GIT_COMMIT"
 _GIT_BRANCH = "DOCKER_BUILDER_SELECTION_GIT_BRANCH"
 _SELECTION_ACTION = "DOCKER_BUILDER_SELECTION_ACTION"
+_BUILDX_VERSION_PROBE = "DOCKER_BUILDX_VERSION_PROBE"
 
 
 class BuilderSelectionReconcileClassification(StrEnum):
@@ -133,6 +139,7 @@ def _prestate_nested_evidence_is_consistent(
             and node is NodeSchemaPredicate.PASS
             and prior_driver
             in {
+                PriorDriverPredicate.EMPTY,
                 PriorDriverPredicate.CLOUD,
                 PriorDriverPredicate.KUBERNETES,
                 PriorDriverPredicate.REMOTE,
@@ -412,6 +419,10 @@ class BuilderSelectionPrestateDiagnosticEvidence:
     node_schema_predicate: NodeSchemaPredicate | None = None
     prior_driver_known: bool = False
     prior_driver_predicate: PriorDriverPredicate | None = None
+    builder_error_known: bool = False
+    builder_error_predicate: BuilderErrorPredicate | None = None
+    buildx_authority_known: bool = False
+    buildx_authority_predicate: BuildxAuthorityPredicate | None = None
     phase: str = _PRESTATE_DIAGNOSTIC_PHASE
     action_count: int = 0
     rollback_count: int = 0
@@ -439,6 +450,7 @@ class BuilderSelectionPrestateDiagnosticEvidence:
             self.builder_selection_predicate,
             self.node_schema_predicate,
             self.prior_driver_predicate,
+            self.builder_error_predicate,
         )
         if (
             not isinstance(self.classification, BuilderSelectionReconcileClassification)
@@ -446,13 +458,23 @@ class BuilderSelectionPrestateDiagnosticEvidence:
             or self.phase != _PRESTATE_DIAGNOSTIC_PHASE
             or type(self.prestate_known) is not bool
             or type(self.prior_driver_known) is not bool
+            or type(self.builder_error_known) is not bool
+            or type(self.buildx_authority_known) is not bool
             or any(type(count) is not int or count != 0 for count in counts)
             or self.prestate_known
             != (self.prestate_checkpoint is not None and self.prestate_predicate is not None)
             or self.prior_driver_known != (self.prior_driver_predicate is not None)
+            or self.builder_error_known != (self.builder_error_predicate is not None)
+            or self.buildx_authority_known != (self.buildx_authority_predicate is not None)
+            or self.builder_error_known != self.prior_driver_known
+            or (self.prestate_known and not self.buildx_authority_known)
             or (
                 not self.prestate_known
-                and (any(value is not None for value in structured) or self.prior_driver_known)
+                and (
+                    any(value is not None for value in structured)
+                    or self.prior_driver_known
+                    or self.builder_error_known
+                )
             )
             or (
                 self.prestate_checkpoint is not None
@@ -495,6 +517,20 @@ class BuilderSelectionPrestateDiagnosticEvidence:
                     or self.prior_driver_predicate is PriorDriverPredicate.UNKNOWN
                 )
             )
+            or (
+                self.builder_error_predicate is not None
+                and (
+                    not isinstance(self.builder_error_predicate, BuilderErrorPredicate)
+                    or self.builder_error_predicate is BuilderErrorPredicate.UNKNOWN
+                )
+            )
+            or (
+                self.buildx_authority_predicate is not None
+                and (
+                    not isinstance(self.buildx_authority_predicate, BuildxAuthorityPredicate)
+                    or self.buildx_authority_predicate is BuildxAuthorityPredicate.UNKNOWN
+                )
+            )
             or not _prestate_nested_evidence_is_consistent(
                 self.prestate_predicate,
                 self.builder_selection_predicate,
@@ -515,6 +551,8 @@ class BuilderSelectionPrestateDiagnosticEvidence:
                 and self.builder_selection_predicate is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
                 and self.node_schema_predicate is NodeSchemaPredicate.PASS
                 and self.prior_driver_predicate is PriorDriverPredicate.PASS
+                and self.builder_error_predicate is not None
+                and self.buildx_authority_predicate is not BuildxAuthorityPredicate.OUTPUT_INVALID
             ):
                 raise ValueError("DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID")
         elif self.classification is BuilderSelectionReconcileClassification.REJECTED:
@@ -539,6 +577,8 @@ class BuilderSelectionPrestateDiagnosticEvidence:
         builder_predicate: BuilderSelectionPredicate,
         node_predicate: NodeSchemaPredicate,
         prior_driver_predicate: PriorDriverPredicate,
+        builder_error_predicate: BuilderErrorPredicate,
+        buildx_authority_predicate: BuildxAuthorityPredicate,
     ) -> BuilderSelectionPrestateDiagnosticEvidence:
         return cls(
             classification=BuilderSelectionReconcileClassification.PASS,
@@ -550,6 +590,10 @@ class BuilderSelectionPrestateDiagnosticEvidence:
             node_schema_predicate=node_predicate,
             prior_driver_known=True,
             prior_driver_predicate=prior_driver_predicate,
+            builder_error_known=True,
+            builder_error_predicate=builder_error_predicate,
+            buildx_authority_known=True,
+            buildx_authority_predicate=buildx_authority_predicate,
         )
 
 
@@ -564,6 +608,8 @@ def format_builder_selection_prestate_diagnostic(
         "predicate": evidence.predicate.value,
         "prestate_known": evidence.prestate_known,
         "prior_driver_known": evidence.prior_driver_known,
+        "builder_error_known": evidence.builder_error_known,
+        "buildx_authority_known": evidence.buildx_authority_known,
         "action_count": evidence.action_count,
         "rollback_count": evidence.rollback_count,
         "selection_mutation_count": evidence.selection_mutation_count,
@@ -585,6 +631,12 @@ def format_builder_selection_prestate_diagnostic(
     if evidence.prior_driver_known:
         assert evidence.prior_driver_predicate is not None
         fields["prior_driver_predicate"] = evidence.prior_driver_predicate.value
+    if evidence.builder_error_known:
+        assert evidence.builder_error_predicate is not None
+        fields["builder_error_predicate"] = evidence.builder_error_predicate.value
+    if evidence.buildx_authority_known:
+        assert evidence.buildx_authority_predicate is not None
+        fields["buildx_authority_predicate"] = evidence.buildx_authority_predicate.value
     line = json.dumps(fields, sort_keys=True, separators=(",", ":"))
     if len(line.encode("utf-8")) > MAXIMUM_EVIDENCE_BYTES:
         raise ValueError("DOCKER_BUILDER_SELECTION_PRESTATE_EVIDENCE_INVALID")
@@ -746,6 +798,7 @@ class _Prestate:
     host_identity: _HostIdentity
     docker_environment_identity: tuple[str, str, str, str]
     plan: DockerBuilderSelectionPlan
+    builder_error_predicate: BuilderErrorPredicate
 
 
 @dataclass(frozen=True)
@@ -780,6 +833,10 @@ class _RuntimeState:
     )
     node_schema_recorder: NodeSchemaRecorder = field(default_factory=NodeSchemaRecorder)
     prior_driver_recorder: PriorDriverRecorder = field(default_factory=PriorDriverRecorder)
+    builder_error_recorder: BuilderErrorRecorder = field(default_factory=BuilderErrorRecorder)
+    buildx_authority_recorder: BuildxAuthorityRecorder = field(
+        default_factory=BuildxAuthorityRecorder
+    )
 
     @property
     def mutation_count(self) -> int:
@@ -791,6 +848,8 @@ class _RuntimeState:
         self.builder_selection_recorder = BuilderSelectionRecorder()
         self.node_schema_recorder = NodeSchemaRecorder()
         self.prior_driver_recorder = PriorDriverRecorder()
+        if checkpoint is BuilderSelectionPrestateCheckpoint.CAPTURE:
+            self.builder_error_recorder = BuilderErrorRecorder()
 
 
 def _failure(predicate: BuilderSelectionReconcilePredicate) -> NoReturn:
@@ -870,6 +929,18 @@ def _builder_listing(executor: CapacityExecutor) -> str:
         _failure(BuilderSelectionReconcilePredicate.BUILDER_INVENTORY)
 
 
+def _record_buildx_authority(runtime: _RuntimeState, executor: CapacityExecutor) -> None:
+    try:
+        raw = executor.output(
+            ("docker", "buildx", "version"),
+            classification=_BUILDX_VERSION_PROBE,
+            timeout_seconds=10,
+        )
+    except Exception:
+        _failure(BuilderSelectionReconcilePredicate.BUILDER_INVENTORY)
+    record_buildx_authority(raw, runtime.buildx_authority_recorder)
+
+
 def _require_idle(
     builder: str,
     *,
@@ -909,8 +980,11 @@ def _capture_plan_prestate(
             builder_selection_recorder=runtime.builder_selection_recorder,
             node_schema_recorder=runtime.node_schema_recorder,
             prior_driver_recorder=runtime.prior_driver_recorder,
+            builder_error_recorder=runtime.builder_error_recorder,
         )
     except DockerCapacityError:
+        _failure(BuilderSelectionReconcilePredicate.PRESTATE)
+    if not runtime.builder_error_recorder.known:
         _failure(BuilderSelectionReconcilePredicate.PRESTATE)
     return _Prestate(
         source_commit=source_commit,
@@ -922,6 +996,7 @@ def _capture_plan_prestate(
             environ.get("DOCKER_CONTEXT", ""),
         ),
         plan=plan,
+        builder_error_predicate=runtime.builder_error_recorder.predicate,
     )
 
 
@@ -984,6 +1059,7 @@ def _reprove_plan_prestate(
     if current_context != prestate.plan.inventory.current_context:
         _failure(BuilderSelectionReconcilePredicate.DOCKER_CONTEXT)
     raw = _builder_listing(executor)
+    reproof_builder_error = BuilderErrorRecorder()
     try:
         plan = require_docker_builder_selection_plan(
             raw,
@@ -993,10 +1069,15 @@ def _reprove_plan_prestate(
             builder_selection_recorder=runtime.builder_selection_recorder,
             node_schema_recorder=runtime.node_schema_recorder,
             prior_driver_recorder=runtime.prior_driver_recorder,
+            builder_error_recorder=reproof_builder_error,
         )
     except DockerCapacityError:
         _failure(BuilderSelectionReconcilePredicate.PRESTATE)
-    if plan != prestate.plan:
+    if (
+        not reproof_builder_error.known
+        or reproof_builder_error.predicate is not prestate.builder_error_predicate
+        or plan != prestate.plan
+    ):
         runtime.plan_recorder.replace_pass_with_drift()
         _failure(BuilderSelectionReconcilePredicate.PRESTATE)
 
@@ -1402,6 +1483,11 @@ def _diagnostic_evidence_from_runtime(
     predicate: BuilderSelectionReconcilePredicate,
 ) -> BuilderSelectionPrestateDiagnosticEvidence:
     prestate_known = runtime.plan_recorder.known
+    builder_error_known = (
+        prestate_known
+        and runtime.prior_driver_recorder.known
+        and runtime.builder_error_recorder.known
+    )
     return BuilderSelectionPrestateDiagnosticEvidence(
         classification=classification,
         predicate=predicate,
@@ -1424,6 +1510,16 @@ def _diagnostic_evidence_from_runtime(
             if prestate_known and runtime.prior_driver_recorder.known
             else None
         ),
+        builder_error_known=builder_error_known,
+        builder_error_predicate=(
+            runtime.builder_error_recorder.predicate if builder_error_known else None
+        ),
+        buildx_authority_known=runtime.buildx_authority_recorder.known,
+        buildx_authority_predicate=(
+            runtime.buildx_authority_recorder.predicate
+            if runtime.buildx_authority_recorder.known
+            else None
+        ),
     )
 
 
@@ -1435,6 +1531,7 @@ def _run_prestate_diagnostic_under_lock(
     executor: CapacityExecutor,
     environ: Mapping[str, str],
 ) -> BuilderSelectionPrestateDiagnosticEvidence:
+    _record_buildx_authority(runtime, executor)
     prestate = _capture_plan_prestate(
         runtime,
         root=root,
@@ -1450,6 +1547,12 @@ def _run_prestate_diagnostic_under_lock(
         executor=executor,
         environ=environ,
     )
+    if runtime.buildx_authority_recorder.predicate is BuildxAuthorityPredicate.OUTPUT_INVALID:
+        return _diagnostic_evidence_from_runtime(
+            runtime,
+            classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
+            predicate=BuilderSelectionReconcilePredicate.UNKNOWN,
+        )
     return _diagnostic_evidence_from_runtime(
         runtime,
         classification=BuilderSelectionReconcileClassification.PASS,

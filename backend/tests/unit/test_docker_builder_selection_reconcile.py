@@ -87,6 +87,8 @@ class _Executor:
         inventory_drift_count: int = 0,
         rollback_error: BaseException | None = None,
         apply_rollback: bool = True,
+        version_output: str | None = None,
+        version_error: BaseException | None = None,
     ) -> None:
         self.action_error = action_error
         self.apply_action = apply_action
@@ -94,6 +96,12 @@ class _Executor:
         self.inventory_drift_count = inventory_drift_count
         self.rollback_error = rollback_error
         self.apply_rollback = apply_rollback
+        self.version_output = (
+            "github.com/docker/buildx v0.35.0 " + "a" * 40 + "\n"
+            if version_output is None
+            else version_output
+        )
+        self.version_error = version_error
         self.selected = "managed-builder"
         self.calls: list[tuple[str, ...]] = []
         self.selection_calls: list[tuple[str, ...]] = []
@@ -130,6 +138,10 @@ class _Executor:
     ) -> str:
         del classification, timeout_seconds
         self.calls.append(arguments)
+        if arguments == ("docker", "buildx", "version"):
+            if self.version_error is not None:
+                raise self.version_error
+            return self.version_output
         if arguments == ("docker", "buildx", "ls", "--format", "{{json .}}"):
             return self._rows()
         if arguments[:4] == ("docker", "buildx", "history", "ls"):
@@ -1094,12 +1106,17 @@ def test_read_only_prestate_diagnostic_reproves_plan_and_stops_before_active_or_
     assert evidence.node_schema_predicate.value == "PASS"
     assert evidence.prior_driver_known is True
     assert evidence.prior_driver_predicate.value == "PASS"
+    assert evidence.builder_error_known is True
+    assert evidence.builder_error_predicate.value == "ABSENT"
+    assert evidence.buildx_authority_known is True
+    assert evidence.buildx_authority_predicate.value == "UPSTREAM_V0_35_0"
     assert evidence.action_count == 0
     assert evidence.rollback_count == 0
     assert evidence.selection_mutation_count == 0
     assert evidence.retry_count == 0
     assert not any(call[:4] == ("docker", "buildx", "history", "ls") for call in executor.calls)
     assert executor.selection_calls == []
+    assert executor.calls.count(("docker", "buildx", "version")) == 1
 
 
 def test_read_only_prestate_diagnostic_classifies_capture_and_reproof(
@@ -1155,6 +1172,7 @@ def test_read_only_prestate_diagnostic_classifies_capture_and_reproof(
 @pytest.mark.parametrize(
     ("driver", "expected"),
     (
+        ("", "EMPTY"),
         ("cloud", "CLOUD"),
         ("kubernetes", "KUBERNETES"),
         ("remote", "REMOTE"),
@@ -1198,13 +1216,250 @@ def test_prestate_diagnostic_classifies_prior_driver_without_action(
     )
     assert diagnostic.prior_driver_known is True
     assert diagnostic.prior_driver_predicate.value == expected
+    assert diagnostic.builder_error_known is True
+    assert diagnostic.builder_error_predicate.value == "ABSENT"
+    assert diagnostic.buildx_authority_known is True
+    assert diagnostic.buildx_authority_predicate.value == "UPSTREAM_V0_35_0"
     assert diagnostic.action_count == 0
     assert diagnostic_executor.selection_calls == []
     assert ordinary.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
     assert ordinary.prior_driver_predicate.value == expected
     assert ordinary.action_attempted is False
     assert operator_executor.selection_calls == []
+    assert ("docker", "buildx", "version") not in operator_executor.calls
     assert "raw-sentinel" not in operator.format_builder_selection_prestate_diagnostic(diagnostic)
+
+
+@pytest.mark.parametrize(
+    ("err_present", "err_value", "expected"),
+    (
+        (False, None, "ABSENT"),
+        (True, "raw-builder-error-sentinel", "PRESENT"),
+        (True, "", "INVALID"),
+        (True, None, "INVALID"),
+        (True, ["raw-builder-error-sentinel"], "INVALID"),
+    ),
+)
+def test_prestate_diagnostic_reports_only_builder_error_shape(
+    err_present: bool,
+    err_value: object,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+
+    class BuilderErrorExecutor(_Executor):
+        def _rows(self) -> str:
+            rows = [json.loads(row) for row in super()._rows().splitlines()]
+            rows[0]["Driver"] = "raw-unrecognized-driver-sentinel"
+            if err_present:
+                rows[0]["Err"] = err_value
+            return "\n".join(json.dumps(row) for row in rows)
+
+    executor = BuilderErrorExecutor()
+    evidence = operator._run_prestate_diagnostic(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
+    assert evidence.prior_driver_predicate is operator.PriorDriverPredicate.UNRECOGNIZED
+    assert evidence.builder_error_known is True
+    assert evidence.builder_error_predicate.value == expected
+    assert executor.selection_calls == []
+    line = operator.format_builder_selection_prestate_diagnostic(evidence)
+    assert "raw-builder" not in line
+    assert "raw-unrecognized" not in line
+
+
+_BUILDER_ERROR_ABSENT = object()
+
+
+class _BuilderErrorTransitionExecutor(_Executor):
+    def __init__(self, capture: object, reproof: object) -> None:
+        super().__init__()
+        self._builder_error_states = (capture, reproof)
+        self._listing_count = 0
+
+    def _rows(self) -> str:
+        rows = [json.loads(row) for row in super()._rows().splitlines()]
+        state = self._builder_error_states[min(self._listing_count, 1)]
+        self._listing_count += 1
+        if state is not _BUILDER_ERROR_ABSENT:
+            rows[0]["Err"] = state
+        return "\n".join(json.dumps(row) for row in rows)
+
+
+@pytest.mark.parametrize(
+    ("capture", "reproof", "capture_predicate", "expected_plan"),
+    (
+        (_BUILDER_ERROR_ABSENT, _BUILDER_ERROR_ABSENT, "ABSENT", "PASS"),
+        ("raw-capture-error", "raw-reproof-error", "PRESENT", "PASS"),
+        (None, None, "INVALID", "PASS"),
+        (_BUILDER_ERROR_ABSENT, "raw-reproof-error", "ABSENT", "PLAN_DRIFT"),
+        (_BUILDER_ERROR_ABSENT, None, "ABSENT", "PLAN_DRIFT"),
+        ("raw-capture-error", _BUILDER_ERROR_ABSENT, "PRESENT", "PLAN_DRIFT"),
+        ("raw-capture-error", None, "PRESENT", "PLAN_DRIFT"),
+        (None, _BUILDER_ERROR_ABSENT, "INVALID", "PLAN_DRIFT"),
+        (None, "raw-reproof-error", "INVALID", "PLAN_DRIFT"),
+    ),
+)
+def test_prestate_diagnostic_fails_closed_on_every_builder_error_transition(
+    capture: object,
+    reproof: object,
+    capture_predicate: str,
+    expected_plan: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _BuilderErrorTransitionExecutor(capture, reproof)
+
+    evidence = operator._run_prestate_diagnostic(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    expected_classification = "PASS" if expected_plan == "PASS" else "REJECTED"
+    assert evidence.classification.value == expected_classification
+    assert evidence.prestate_checkpoint.value == "REPROOF"
+    assert evidence.prestate_predicate.value == expected_plan
+    assert evidence.builder_error_known is True
+    assert evidence.builder_error_predicate.value == capture_predicate
+    assert executor.selection_calls == []
+    line = operator.format_builder_selection_prestate_diagnostic(evidence)
+    assert "raw-capture" not in line
+    assert "raw-reproof" not in line
+
+
+def test_builder_error_drift_survives_lock_exit_as_capture_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(
+        operator,
+        monkeypatch,
+        lock_exit_failure=KeyboardInterrupt("raw-lock-exit-sentinel"),
+    )
+    executor = _BuilderErrorTransitionExecutor("raw-capture-error", _BUILDER_ERROR_ABSENT)
+
+    evidence = operator._run_prestate_diagnostic(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.UNKNOWN
+    assert evidence.prestate_checkpoint is operator.BuilderSelectionPrestateCheckpoint.REPROOF
+    assert evidence.prestate_predicate is operator.DockerBuilderSelectionPlanPredicate.PLAN_DRIFT
+    assert evidence.builder_error_known is True
+    assert evidence.builder_error_predicate is operator.BuilderErrorPredicate.PRESENT
+    assert executor.selection_calls == []
+    line = operator.format_builder_selection_prestate_diagnostic(evidence)
+    assert "raw-" not in line
+    assert "Traceback" not in line
+
+
+def test_normal_operator_builder_error_drift_stops_before_selection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _BuilderErrorTransitionExecutor("raw-capture-error", _BUILDER_ERROR_ABSENT)
+
+    evidence = operator._run_operator(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.PRESTATE
+    assert evidence.prestate_checkpoint is operator.BuilderSelectionPrestateCheckpoint.REPROOF
+    assert evidence.prestate_predicate is operator.DockerBuilderSelectionPlanPredicate.PLAN_DRIFT
+    assert evidence.action_attempted is False
+    assert executor.selection_calls == []
+    assert "raw-" not in operator.format_builder_selection_reconcile_evidence(evidence)
+
+
+@pytest.mark.parametrize(
+    ("version_output", "expected"),
+    (
+        ("github.com/docker/buildx v0.35.0 " + "a" * 40 + "\n", "UPSTREAM_V0_35_0"),
+        ("github.com/docker/buildx v0.34.1 " + "b" * 40 + "\n", "UPSTREAM_OTHER"),
+        (
+            "github.com/docker/buildx v0.35.0-desktop.1 " + "c" * 40 + "\n",
+            "OTHER_DISTRIBUTION",
+        ),
+        ("raw-malformed-version-sentinel", "OUTPUT_INVALID"),
+        ("github.com/docker/buildx v0.35.0 " + "d" * 40 + "\nraw-extra\n", "OUTPUT_INVALID"),
+        ("x" * 257, "OUTPUT_INVALID"),
+    ),
+)
+def test_prestate_diagnostic_classifies_one_bounded_buildx_version_query(
+    version_output: str,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _Executor(version_output=version_output)
+    executor.selected = "desktop-linux"
+
+    evidence = operator._run_prestate_diagnostic(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.buildx_authority_known is True
+    assert evidence.buildx_authority_predicate.value == expected
+    assert executor.calls.count(("docker", "buildx", "version")) == 1
+    assert executor.selection_calls == []
+    line = operator.format_builder_selection_prestate_diagnostic(evidence)
+    assert "raw-" not in line
+    assert "github.com" not in line
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        RuntimeError("raw-version-nonzero-sentinel"),
+        subprocess.TimeoutExpired(("docker", "buildx", "version"), 1),
+        KeyboardInterrupt("raw-version-interrupt-sentinel"),
+    ),
+)
+def test_prestate_diagnostic_version_failure_is_unknown_and_stops_before_listing(
+    failure: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _Executor(version_error=failure)
+
+    evidence = operator._run_prestate_diagnostic(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.BuilderSelectionReconcilePredicate.UNKNOWN
+    assert evidence.buildx_authority_known is False
+    assert evidence.buildx_authority_predicate is None
+    assert evidence.prestate_known is False
+    assert executor.calls == [("docker", "buildx", "version")]
+    line = operator.format_builder_selection_prestate_diagnostic(evidence)
+    assert "raw-version" not in line
+    assert "Traceback" not in line
 
 
 def test_normal_operator_prestate_failure_retains_exact_capture_predicate(
@@ -1267,6 +1522,12 @@ def test_prestate_diagnostic_lock_exit_is_unknown_and_retains_observed_pass(
     assert evidence.prestate_predicate is operator.DockerBuilderSelectionPlanPredicate.PASS
     assert evidence.prior_driver_known is True
     assert evidence.prior_driver_predicate is operator.PriorDriverPredicate.PASS
+    assert evidence.builder_error_known is True
+    assert evidence.builder_error_predicate is operator.BuilderErrorPredicate.ABSENT
+    assert evidence.buildx_authority_known is True
+    assert evidence.buildx_authority_predicate is (
+        operator.BuildxAuthorityPredicate.UPSTREAM_V0_35_0
+    )
     assert executor.selection_calls == []
     line = operator.format_builder_selection_prestate_diagnostic(evidence)
     assert "raw-lock" not in line
@@ -1305,6 +1566,8 @@ def test_read_only_prestate_diagnostic_interrupt_is_unknown_and_value_free(
     assert evidence.prestate_known is False
     assert evidence.prior_driver_known is False
     assert evidence.prior_driver_predicate is None
+    assert evidence.builder_error_known is False
+    assert evidence.builder_error_predicate is None
     assert evidence.action_count == 0
     assert evidence.selection_mutation_count == 0
     assert executor.selection_calls == []
@@ -1322,6 +1585,8 @@ def test_fixed_prestate_diagnostic_argv_outputs_one_bounded_line(
         builder_predicate=operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
         node_predicate=operator.NodeSchemaPredicate.PASS,
         prior_driver_predicate=operator.PriorDriverPredicate.PASS,
+        builder_error_predicate=operator.BuilderErrorPredicate.ABSENT,
+        buildx_authority_predicate=operator.BuildxAuthorityPredicate.UPSTREAM_V0_35_0,
     )
     calls: list[str] = []
 
@@ -1351,6 +1616,10 @@ def test_fixed_prestate_diagnostic_argv_outputs_one_bounded_line(
     assert document["prestate_predicate"] == "PASS"
     assert document["prior_driver_known"] is True
     assert document["prior_driver_predicate"] == "PASS"
+    assert document["builder_error_known"] is True
+    assert document["builder_error_predicate"] == "ABSENT"
+    assert document["buildx_authority_known"] is True
+    assert document["buildx_authority_predicate"] == "UPSTREAM_V0_35_0"
     assert document["mutation_count"] == 0
     assert document["retry_count"] == 0
 
@@ -1396,6 +1665,11 @@ def test_malformed_prestate_diagnostic_arguments_stop_before_lock_without_raw(
         "nested-contradiction",
         "prior-driver-partial",
         "prior-driver-contradiction",
+        "builder-error-partial",
+        "builder-error-without-prior",
+        "authority-partial",
+        "authority-unknown",
+        "pass-with-invalid-authority",
         "nonzero-action",
     ),
 )
@@ -1412,6 +1686,8 @@ def test_prestate_diagnostic_evidence_rejects_contradictory_shapes(case: str) ->
         "builder_selection_predicate": operator.BuilderSelectionPredicate.PASS,
         "node_schema_predicate": operator.NodeSchemaPredicate.PASS,
         "prior_driver_known": False,
+        "buildx_authority_known": True,
+        "buildx_authority_predicate": operator.BuildxAuthorityPredicate.UPSTREAM_V0_35_0,
     }
     if case == "partial-known":
         values["prestate_predicate"] = None
@@ -1432,6 +1708,28 @@ def test_prestate_diagnostic_evidence_rejects_contradictory_shapes(case: str) ->
     elif case == "prior-driver-contradiction":
         values["prior_driver_known"] = True
         values["prior_driver_predicate"] = operator.PriorDriverPredicate.REMOTE
+    elif case == "builder-error-partial":
+        values["builder_error_known"] = True
+    elif case == "builder-error-without-prior":
+        values["builder_error_known"] = True
+        values["builder_error_predicate"] = operator.BuilderErrorPredicate.ABSENT
+    elif case == "authority-partial":
+        values["buildx_authority_predicate"] = None
+    elif case == "authority-unknown":
+        values["buildx_authority_predicate"] = operator.BuildxAuthorityPredicate.UNKNOWN
+    elif case == "pass-with-invalid-authority":
+        values.update(
+            classification=operator.BuilderSelectionReconcileClassification.PASS,
+            predicate=operator.BuilderSelectionReconcilePredicate.PASS,
+            prestate_checkpoint=operator.BuilderSelectionPrestateCheckpoint.REPROOF,
+            prestate_predicate=operator.DockerBuilderSelectionPlanPredicate.PASS,
+            builder_selection_predicate=operator.BuilderSelectionPredicate.DRIVER_NOT_DOCKER,
+            prior_driver_known=True,
+            prior_driver_predicate=operator.PriorDriverPredicate.PASS,
+            builder_error_known=True,
+            builder_error_predicate=operator.BuilderErrorPredicate.ABSENT,
+            buildx_authority_predicate=operator.BuildxAuthorityPredicate.OUTPUT_INVALID,
+        )
     else:
         values["action_count"] = 1
 

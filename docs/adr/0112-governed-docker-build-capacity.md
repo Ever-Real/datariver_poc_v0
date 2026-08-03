@@ -70,15 +70,31 @@ The nested prior-driver recorder uses Docker's official core
 [`docker`, `docker-container`, `kubernetes`, and `remote` driver vocabulary](https://docs.docker.com/build/builders/drivers/)
 plus the exact [`cloud` driver documented by Docker Build Cloud](https://docs.docker.com/build-cloud/setup/)
 and its [multi-platform example](https://docs.docker.com/build/building/multi-platform/). It reports
-`CLOUD`, `KUBERNETES`, `REMOTE`, or `UNRECOGNIZED` when the exact current driver is not the required
-`docker-container`; only exact `docker-container` records `PASS`. It does not expose the provider
-string, accept a new driver, normalize a spelling or claim that the current host binary is pinned
-to a particular Buildx version. Later plan findings retain the observed prior-driver `PASS`, while
-findings before that check omit it.
+`EMPTY`, `CLOUD`, `KUBERNETES`, `REMOTE`, or `UNRECOGNIZED` when the exact current driver is not the
+required `docker-container`; `EMPTY` is reserved for the unresolved empty factory result and
+`UNRECOGNIZED` is nonempty. Only exact `docker-container` records `PASS`. It does not expose the
+provider string, accept a new driver, normalize a spelling or claim that the current host binary is
+pinned to a particular Buildx version. Later plan findings retain the observed prior-driver `PASS`,
+while findings before that check omit it.
+
+The same diagnostic classifies the optional builder-level `Err` field only as `ABSENT`, `PRESENT`
+or `INVALID`: absence and a nonempty string are structurally observed, while an empty or non-string
+value is invalid, and the error text is never retained or reported. This follows the immutable
+Buildx v0.35.0 [`Builder.MarshalJSON`](https://github.com/docker/buildx/blob/v0.35.0/builder/builder.go)
+shape, where `Driver` is emitted verbatim and `Err` is optional. It is parser authority only, not a
+claim that the installed host binary is v0.35.0. The capture predicate is retained privately while
+reproof uses a separate recorder; any exact `ABSENT`/`PRESENT`/`INVALID` transition becomes the
+existing `PLAN_DRIFT`/`PRESTATE` failure before action. Raw error text remains outside inventory
+identity and comparison. An early reproof failure may omit error evidence, while a completed drift
+or later lock-exit result retains the first observed capture predicate rather than relabeling it.
 
 The fixed `--diagnostic-phase BUILDER_SELECTION_PRESTATE` mode is read-only. Under the same
 exclusive lock it performs the operator's canonical source, AppliedState/environment, Docker
-override, local-context and complete-inventory capture, then repeats that exact plan proof once.
+override and local-context checks, then makes exactly one bounded `docker buildx version` query and
+performs the complete-inventory capture followed by one exact plan reproof. The version line is
+reduced to `UPSTREAM_V0_35_0`, `UPSTREAM_OTHER`, `OTHER_DISTRIBUTION` or `OUTPUT_INVALID`; module,
+version, revision and raw output are never emitted. A Docker Desktop suffix is not equated to the
+upstream v0.35.0 authority and remains `OTHER_DISTRIBUTION` unless separately reviewed.
 It stops before active-build history, `buildx use`, rollback, prune, build, container, database,
 identity, topology, AppliedState-write or push work. Its one bounded line contains only the closed
 classification, phase and predicates plus zero action/mutation/retry counts; it never contains a

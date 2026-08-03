@@ -1561,6 +1561,7 @@ def test_selection_plan_recorder_preserves_nested_expected_transition() -> None:
     assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
     assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
     assert tuple(capacity.PriorDriverPredicate) == (
+        capacity.PriorDriverPredicate.EMPTY,
         capacity.PriorDriverPredicate.CLOUD,
         capacity.PriorDriverPredicate.KUBERNETES,
         capacity.PriorDriverPredicate.REMOTE,
@@ -1578,9 +1579,59 @@ def test_selection_plan_recorder_preserves_nested_expected_transition() -> None:
     assert prior_driver_recorder.predicate is capacity.PriorDriverPredicate.PASS
 
 
+def test_builder_error_and_buildx_authority_vocabularies_are_closed() -> None:
+    assert tuple(capacity.BuilderErrorPredicate) == (
+        capacity.BuilderErrorPredicate.ABSENT,
+        capacity.BuilderErrorPredicate.PRESENT,
+        capacity.BuilderErrorPredicate.INVALID,
+        capacity.BuilderErrorPredicate.UNKNOWN,
+    )
+    assert tuple(capacity.BuildxAuthorityPredicate) == (
+        capacity.BuildxAuthorityPredicate.UPSTREAM_V0_35_0,
+        capacity.BuildxAuthorityPredicate.UPSTREAM_OTHER,
+        capacity.BuildxAuthorityPredicate.OTHER_DISTRIBUTION,
+        capacity.BuildxAuthorityPredicate.OUTPUT_INVALID,
+        capacity.BuildxAuthorityPredicate.UNKNOWN,
+    )
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    (
+        (
+            "github.com/docker/buildx v0.35.0 " + "a" * 40 + "\n",
+            "UPSTREAM_V0_35_0",
+        ),
+        (
+            "github.com/docker/buildx v0.34.1 " + "b" * 40 + "\n",
+            "UPSTREAM_OTHER",
+        ),
+        (
+            "github.com/docker/buildx v0.35.0-desktop.1 " + "c" * 40 + "\n",
+            "OTHER_DISTRIBUTION",
+        ),
+        (
+            "example.invalid/buildx v0.35.0 " + "d" * 40 + "\n",
+            "OTHER_DISTRIBUTION",
+        ),
+        ("malformed raw-version-sentinel", "OUTPUT_INVALID"),
+        ("github.com/docker/buildx v0.35.0 " + "e" * 40 + "\nextra\n", "OUTPUT_INVALID"),
+        ("x" * 257, "OUTPUT_INVALID"),
+    ),
+)
+def test_buildx_authority_parser_is_bounded_and_value_free(raw: str, expected: str) -> None:
+    recorder = capacity.BuildxAuthorityRecorder()
+
+    capacity.record_buildx_authority(raw, recorder)
+
+    assert recorder.predicate.value == expected
+    assert "raw-version-sentinel" not in recorder.predicate.value
+
+
 @pytest.mark.parametrize(
     ("driver", "expected"),
     (
+        ("", "EMPTY"),
         ("cloud", "CLOUD"),
         ("kubernetes", "KUBERNETES"),
         ("remote", "REMOTE"),
@@ -1627,6 +1678,49 @@ def test_selection_plan_classifies_prior_driver_before_status_or_target(
     assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
     assert prior_driver_recorder.predicate.value == expected
     assert "raw-sentinel" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    ("present", "value", "expected"),
+    (
+        (False, None, "ABSENT"),
+        (True, "raw-builder-error-sentinel", "PRESENT"),
+        (True, "", "INVALID"),
+        (True, None, "INVALID"),
+        (True, {"raw": "builder-error-sentinel"}, "INVALID"),
+    ),
+)
+def test_selection_plan_classifies_builder_error_without_exposing_text(
+    present: bool,
+    value: object,
+    expected: str,
+) -> None:
+    prior: dict[str, object] = {
+        "Current": True,
+        "Driver": "unrecognized-driver",
+        "Name": "managed-builder",
+        "Nodes": [{"Endpoint": "desktop-linux", "Name": "managed-builder0", "Status": "running"}],
+    }
+    if present:
+        prior["Err"] = value
+    target = {
+        "Current": False,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [{"Endpoint": "desktop-linux", "Name": "desktop-linux", "Status": "running"}],
+    }
+    builder_error_recorder = capacity.BuilderErrorRecorder()
+
+    with pytest.raises(capacity.DockerCapacityError) as captured:
+        capacity.require_docker_builder_selection_plan(
+            "\n".join((json.dumps(prior), json.dumps(target))),
+            {},
+            current_context="desktop-linux",
+            builder_error_recorder=builder_error_recorder,
+        )
+
+    assert builder_error_recorder.predicate.value == expected
+    assert "raw-builder-error-sentinel" not in str(captured.value)
 
 
 @pytest.mark.parametrize(

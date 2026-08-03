@@ -10,7 +10,7 @@ import stat
 import subprocess
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
@@ -41,6 +41,14 @@ GIT_BUILD_CONTEXT_PROBE = "GIT_BUILD_CONTEXT_PROBE_FAILED"
 DOCKER_WORKFLOW_LOCK_UNAVAILABLE = "DOCKER_WORKFLOW_LOCK_UNAVAILABLE"
 
 _BUILDER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+_BUILDX_AUTHORITY_MAXIMUM_BYTES = 256
+_BUILDX_AUTHORITY_TOKEN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/+:-]{0,127}$")
+_BUILDX_REVISION = re.compile(r"^[0-9a-f]{7,64}$")
+_BUILDX_UPSTREAM_RELEASE = re.compile(
+    r"^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
+    r"(?:-(?:alpha|beta|rc)[0-9]+)?$"
+)
+_BUILDX_UPSTREAM_MODULE = "github.com/docker/buildx"
 _OFFICIAL_BUILDX_DRIVER_KINDS = (
     "docker",
     "docker-container",
@@ -186,6 +194,7 @@ class DockerBuilderSelectionPlanRecorder:
 class PriorDriverPredicate(StrEnum):
     """Closed, value-free classification of the plan's current prior driver."""
 
+    EMPTY = "EMPTY"
     CLOUD = "CLOUD"
     KUBERNETES = "KUBERNETES"
     REMOTE = "REMOTE"
@@ -212,6 +221,92 @@ class PriorDriverRecorder:
         ):
             raise DockerCapacityError("PRIOR_DRIVER_EVIDENCE_INVALID")
         self.predicate = predicate
+
+
+class BuilderErrorPredicate(StrEnum):
+    """Closed shape of the optional Buildx builder-level Err field."""
+
+    ABSENT = "ABSENT"
+    PRESENT = "PRESENT"
+    INVALID = "INVALID"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(slots=True)
+class BuilderErrorRecorder:
+    """Retain only whether an observed builder error is absent, present, or invalid."""
+
+    predicate: BuilderErrorPredicate = BuilderErrorPredicate.UNKNOWN
+
+    @property
+    def known(self) -> bool:
+        return self.predicate is not BuilderErrorPredicate.UNKNOWN
+
+    def record(self, predicate: BuilderErrorPredicate) -> None:
+        if (
+            not isinstance(predicate, BuilderErrorPredicate)
+            or predicate is BuilderErrorPredicate.UNKNOWN
+            or self.known
+        ):
+            raise DockerCapacityError("BUILDER_ERROR_EVIDENCE_INVALID")
+        self.predicate = predicate
+
+
+class BuildxAuthorityPredicate(StrEnum):
+    """Closed provenance class for one bounded official Buildx version line."""
+
+    UPSTREAM_V0_35_0 = "UPSTREAM_V0_35_0"
+    UPSTREAM_OTHER = "UPSTREAM_OTHER"
+    OTHER_DISTRIBUTION = "OTHER_DISTRIBUTION"
+    OUTPUT_INVALID = "OUTPUT_INVALID"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(slots=True)
+class BuildxAuthorityRecorder:
+    """Retain one value-free Buildx version authority classification."""
+
+    predicate: BuildxAuthorityPredicate = BuildxAuthorityPredicate.UNKNOWN
+
+    @property
+    def known(self) -> bool:
+        return self.predicate is not BuildxAuthorityPredicate.UNKNOWN
+
+    def record(self, predicate: BuildxAuthorityPredicate) -> None:
+        if (
+            not isinstance(predicate, BuildxAuthorityPredicate)
+            or predicate is BuildxAuthorityPredicate.UNKNOWN
+            or self.known
+        ):
+            raise DockerCapacityError("BUILDX_AUTHORITY_EVIDENCE_INVALID")
+        self.predicate = predicate
+
+
+def record_buildx_authority(raw: str, recorder: BuildxAuthorityRecorder) -> None:
+    """Classify one official-format version line without retaining any source value."""
+
+    predicate = BuildxAuthorityPredicate.OUTPUT_INVALID
+    if len(raw.encode("utf-8")) <= _BUILDX_AUTHORITY_MAXIMUM_BYTES:
+        line = raw[:-1] if raw.endswith("\n") else raw
+        fields = line.split(" ")
+        if (
+            "\n" not in line
+            and "\r" not in line
+            and len(fields) == 3
+            and all(_BUILDX_AUTHORITY_TOKEN.fullmatch(value) is not None for value in fields[:2])
+            and _BUILDX_REVISION.fullmatch(fields[2]) is not None
+        ):
+            module, version, _revision = fields
+            if module == _BUILDX_UPSTREAM_MODULE and version == "v0.35.0":
+                predicate = BuildxAuthorityPredicate.UPSTREAM_V0_35_0
+            elif (
+                module == _BUILDX_UPSTREAM_MODULE
+                and _BUILDX_UPSTREAM_RELEASE.fullmatch(version) is not None
+            ):
+                predicate = BuildxAuthorityPredicate.UPSTREAM_OTHER
+            else:
+                predicate = BuildxAuthorityPredicate.OTHER_DISTRIBUTION
+    recorder.record(predicate)
 
 
 @dataclass(slots=True)
@@ -244,6 +339,7 @@ class DockerBuilderIdentity:
     node_name: str
     endpoint: str
     status: str
+    builder_error: BuilderErrorPredicate = field(compare=False, repr=False)
 
     @property
     def stable_identity(self) -> tuple[str, str, str, str, str]:
@@ -856,7 +952,7 @@ def parse_docker_builder_inventory(
             BuilderSelectionPredicate.EXTERNAL_BUILDKIT_HOST,
             "EXTERNAL_BUILDKIT_HOST_UNSUPPORTED",
         )
-    parsed_builders: list[tuple[str, tuple[bool, str, str, str, str]]] = []
+    parsed_builders: list[tuple[str, tuple[bool, str, str, str, str, BuilderErrorPredicate]]] = []
     try:
         rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
     except json.JSONDecodeError as error:
@@ -877,6 +973,12 @@ def parse_docker_builder_inventory(
         current = row.get("Current")
         driver = row.get("Driver")
         nodes = row.get("Nodes")
+        if "Err" not in row:
+            builder_error = BuilderErrorPredicate.ABSENT
+        elif not isinstance(row["Err"], str) or row["Err"] == "":
+            builder_error = BuilderErrorPredicate.INVALID
+        else:
+            builder_error = BuilderErrorPredicate.PRESENT
         if (
             not isinstance(name, str)
             or _BUILDER_NAME.fullmatch(name) is None
@@ -959,7 +1061,14 @@ def parse_docker_builder_inventory(
             node_names.append(node_name)
             endpoints.append(endpoint)
             status_values.append(status)
-        evidence = (current, driver, node_names[0], endpoints[0], status_values[0])
+        evidence = (
+            current,
+            driver,
+            node_names[0],
+            endpoints[0],
+            status_values[0],
+            builder_error,
+        )
         parsed_builders.append((name, evidence))
 
     if node_schema_recorder is not None:
@@ -973,6 +1082,7 @@ def parse_docker_builder_inventory(
             node_name=evidence[2],
             endpoint=evidence[3],
             status=evidence[4],
+            builder_error=evidence[5],
         )
         if name in builders and builders[name] != identity:
             _builder_selection_failure(
@@ -1089,6 +1199,7 @@ def require_docker_builder_selection_plan(
     builder_selection_recorder: BuilderSelectionRecorder | None = None,
     node_schema_recorder: NodeSchemaRecorder | None = None,
     prior_driver_recorder: PriorDriverRecorder | None = None,
+    builder_error_recorder: BuilderErrorRecorder | None = None,
 ) -> DockerBuilderSelectionPlan:
     """Resolve one exact docker-container to context-docker selection transition."""
 
@@ -1161,8 +1272,12 @@ def require_docker_builder_selection_plan(
             DockerBuilderSelectionPlanPredicate.CURRENT_SELECTION_CONTRACT,
             "DOCKER_BUILDER_SELECTION_PRESTATE_INVALID",
         )
+    if builder_error_recorder is not None:
+        builder_error_recorder.record(prior.builder_error)
     if prior.driver == "docker-container":
         prior_driver.record(PriorDriverPredicate.PASS)
+    elif prior.driver == "":
+        prior_driver.record(PriorDriverPredicate.EMPTY)
     elif prior.driver == "cloud":
         prior_driver.record(PriorDriverPredicate.CLOUD)
     elif prior.driver == "kubernetes":

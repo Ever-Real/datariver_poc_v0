@@ -1903,6 +1903,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
     expected_prior_driver_predicates = tuple(
         (value, value)
         for value in (
+            "EMPTY",
             "CLOUD",
             "KUBERNETES",
             "REMOTE",
@@ -1914,7 +1915,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
     if capacity_enum_members("PriorDriverPredicate") != expected_prior_driver_predicates:
         raise AssertionError("the prior-driver predicate vocabulary has drifted")
     prior_driver_recorder = capacity.split("class PriorDriverRecorder:", maxsplit=1)[1].split(
-        "class NodeSchemaRecorder:",
+        "class BuilderErrorPredicate",
         maxsplit=1,
     )[0]
     for fragment in (
@@ -1928,6 +1929,48 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ):
         if fragment not in prior_driver_recorder:
             raise AssertionError(f"the prior-driver recorder is missing: {fragment}")
+    expected_builder_error_predicates = tuple(
+        (value, value) for value in ("ABSENT", "PRESENT", "INVALID", "UNKNOWN")
+    )
+    if capacity_enum_members("BuilderErrorPredicate") != expected_builder_error_predicates:
+        raise AssertionError("the builder-error predicate vocabulary has drifted")
+    expected_buildx_authority_predicates = tuple(
+        (value, value)
+        for value in (
+            "UPSTREAM_V0_35_0",
+            "UPSTREAM_OTHER",
+            "OTHER_DISTRIBUTION",
+            "OUTPUT_INVALID",
+            "UNKNOWN",
+        )
+    )
+    if capacity_enum_members("BuildxAuthorityPredicate") != (expected_buildx_authority_predicates):
+        raise AssertionError("the Buildx authority predicate vocabulary has drifted")
+    builder_error_source = capacity.split("class BuilderErrorPredicate", maxsplit=1)[1].split(
+        "class BuildxAuthorityPredicate", maxsplit=1
+    )[0]
+    buildx_authority_source = capacity.split("class BuildxAuthorityPredicate", maxsplit=1)[1].split(
+        "class NodeSchemaRecorder", maxsplit=1
+    )[0]
+    for fragment in (
+        "predicate: BuilderErrorPredicate = BuilderErrorPredicate.UNKNOWN",
+        "return self.predicate is not BuilderErrorPredicate.UNKNOWN",
+        'raise DockerCapacityError("BUILDER_ERROR_EVIDENCE_INVALID")',
+    ):
+        if fragment not in builder_error_source:
+            raise AssertionError(f"the builder-error recorder is missing: {fragment}")
+    for fragment in (
+        "predicate: BuildxAuthorityPredicate = BuildxAuthorityPredicate.UNKNOWN",
+        "return self.predicate is not BuildxAuthorityPredicate.UNKNOWN",
+        'raise DockerCapacityError("BUILDX_AUTHORITY_EVIDENCE_INVALID")',
+        'len(raw.encode("utf-8")) <= _BUILDX_AUTHORITY_MAXIMUM_BYTES',
+        'module == _BUILDX_UPSTREAM_MODULE and version == "v0.35.0"',
+        "BuildxAuthorityPredicate.UPSTREAM_OTHER",
+        "BuildxAuthorityPredicate.OTHER_DISTRIBUTION",
+        "BuildxAuthorityPredicate.OUTPUT_INVALID",
+    ):
+        if fragment not in buildx_authority_source:
+            raise AssertionError(f"the Buildx authority classifier is missing: {fragment}")
     builder_selection_recorder = capacity.split("class BuilderSelectionRecorder:", maxsplit=1)[
         1
     ].split("class NodeSchemaPredicate", maxsplit=1)[0]
@@ -2229,6 +2272,21 @@ def verify_governed_docker_build_capacity_contract() -> None:
             raise AssertionError(f"structured capacity phase evidence is missing: {fragment}")
     if "_BUILDER_NAME.fullmatch(node_name)" in inventory_parser_source:
         raise AssertionError("Buildx node names must reach the exact selected-name equality check")
+    builder_error_shape = tuple(
+        inventory_parser_source.index(fragment)
+        for fragment in (
+            'if "Err" not in row:',
+            "builder_error = BuilderErrorPredicate.ABSENT",
+            'elif not isinstance(row["Err"], str) or row["Err"] == "":',
+            "builder_error = BuilderErrorPredicate.INVALID",
+            "builder_error = BuilderErrorPredicate.PRESENT",
+            "builder_error=evidence[5]",
+        )
+    )
+    if builder_error_shape != tuple(sorted(builder_error_shape)):
+        raise AssertionError("the optional builder Err shape classification order has drifted")
+    if "builder_error: BuilderErrorPredicate = field(compare=False, repr=False)" not in capacity:
+        raise AssertionError("raw builder Err must stay outside private inventory identity")
     private_policy = capacity.split('cache_action = "none"', maxsplit=1)[1].split(
         "help_output = _safe_output", maxsplit=1
     )[0]
@@ -2376,7 +2434,15 @@ def verify_governed_docker_build_capacity_contract() -> None:
         or not isinstance(docker_container_branch.orelse[0], ast.If)
     ):
         raise AssertionError("exact docker-container must record prior-driver PASS")
-    cloud_branch = docker_container_branch.orelse[0]
+    empty_branch = docker_container_branch.orelse[0]
+    if (
+        not prior_driver_condition(empty_branch, "")
+        or prior_driver_records(empty_branch.body) != ("EMPTY",)
+        or len(empty_branch.orelse) != 1
+        or not isinstance(empty_branch.orelse[0], ast.If)
+    ):
+        raise AssertionError("an empty prior driver must record its closed subtype")
+    cloud_branch = empty_branch.orelse[0]
     if (
         not prior_driver_condition(cloud_branch, "cloud")
         or prior_driver_records(cloud_branch.body) != ("CLOUD",)
@@ -2470,6 +2536,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
     )[1].split("def format_builder_selection_prestate_diagnostic(", maxsplit=1)[0]
     for fragment in (
         "plan is DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER",
+        "PriorDriverPredicate.EMPTY",
         "PriorDriverPredicate.CLOUD",
         "PriorDriverPredicate.KUBERNETES",
         "PriorDriverPredicate.REMOTE",
@@ -2490,6 +2557,23 @@ def verify_governed_docker_build_capacity_contract() -> None:
         ):
             if fragment not in evidence_source:
                 raise AssertionError(f"the prior-driver evidence contract is missing: {fragment}")
+    for fragment in (
+        "builder_error_known: bool = False",
+        "builder_error_predicate: BuilderErrorPredicate | None = None",
+        "buildx_authority_known: bool = False",
+        "buildx_authority_predicate: BuildxAuthorityPredicate | None = None",
+        "self.builder_error_known != (self.builder_error_predicate is not None)",
+        "self.buildx_authority_known != (self.buildx_authority_predicate is not None)",
+        "self.builder_error_known != self.prior_driver_known",
+        "self.prestate_known and not self.buildx_authority_known",
+        "self.builder_error_predicate is BuilderErrorPredicate.UNKNOWN",
+        "self.buildx_authority_predicate is BuildxAuthorityPredicate.UNKNOWN",
+        "BuildxAuthorityPredicate.OUTPUT_INVALID",
+    ):
+        if fragment not in diagnostic_evidence_source:
+            raise AssertionError(
+                f"the builder error/version diagnostic evidence contract is missing: {fragment}"
+            )
     for fragment in (
         "with exclusive_docker_workflow_lock(root) as lock:",
         'platform.system() != "Darwin"',
@@ -2561,6 +2645,36 @@ def verify_governed_docker_build_capacity_contract() -> None:
     plan_reproof = selection_operator.split("def _reprove_plan_prestate(", maxsplit=1)[1].split(
         "def _reprove_prestate(", maxsplit=1
     )[0]
+    capture_plan = selection_operator.split("def _capture_plan_prestate(", maxsplit=1)[1].split(
+        "def _capture_prestate(", maxsplit=1
+    )[0]
+    runtime_state = selection_operator.split("class _RuntimeState:", maxsplit=1)[1].split(
+        "def _failure(", maxsplit=1
+    )[0]
+    for fragment in (
+        "builder_error_predicate: BuilderErrorPredicate",
+        "builder_error_predicate=runtime.builder_error_recorder.predicate",
+    ):
+        if fragment not in selection_operator:
+            raise AssertionError(f"the private builder Err capture is missing: {fragment}")
+    if not (
+        "if checkpoint is BuilderSelectionPrestateCheckpoint.CAPTURE:" in runtime_state
+        and "self.builder_error_recorder = BuilderErrorRecorder()" in runtime_state
+        and "if not runtime.builder_error_recorder.known:" in capture_plan
+    ):
+        raise AssertionError("builder Err capture evidence must survive the reproof reset")
+    builder_error_reproof_order = tuple(
+        plan_reproof.index(fragment)
+        for fragment in (
+            "reproof_builder_error = BuilderErrorRecorder()",
+            "builder_error_recorder=reproof_builder_error",
+            "reproof_builder_error.predicate is not prestate.builder_error_predicate",
+            "or plan != prestate.plan",
+            "runtime.plan_recorder.replace_pass_with_drift()",
+        )
+    )
+    if builder_error_reproof_order != tuple(sorted(builder_error_reproof_order)):
+        raise AssertionError("builder Err drift must be proven before reproof can pass")
     reproof = selection_operator.split("def _reprove_prestate(", maxsplit=1)[1].split(
         "def _capture_poststate(", maxsplit=1
     )[0]
@@ -2707,6 +2821,10 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "node_schema_predicate",
         "prior_driver_known",
         "prior_driver_predicate",
+        "builder_error_known",
+        "builder_error_predicate",
+        "buildx_authority_known",
+        "buildx_authority_predicate",
         "action_count",
         "rollback_count",
         "selection_mutation_count",
@@ -2723,17 +2841,48 @@ def verify_governed_docker_build_capacity_contract() -> None:
         and "if evidence.prior_driver_known:" in diagnostic_output_source
         and 'fields["prior_driver_predicate"] = evidence.prior_driver_predicate.value'
         in diagnostic_output_source
+        and '"builder_error_known": evidence.builder_error_known' in diagnostic_output_source
+        and "if evidence.builder_error_known:" in diagnostic_output_source
+        and 'fields["builder_error_predicate"] = evidence.builder_error_predicate.value'
+        in diagnostic_output_source
+        and '"buildx_authority_known": evidence.buildx_authority_known' in diagnostic_output_source
+        and "if evidence.buildx_authority_known:" in diagnostic_output_source
+        and 'fields["buildx_authority_predicate"] = evidence.buildx_authority_predicate.value'
+        in diagnostic_output_source
     ):
-        raise AssertionError("the prior-driver diagnostic output contract has drifted")
+        raise AssertionError("the prestate diagnostic output contract has drifted")
     diagnostic_under_lock = selection_operator.split(
         "def _run_prestate_diagnostic_under_lock(", maxsplit=1
     )[1].split("def _run_prestate_diagnostic(", maxsplit=1)[0]
     if not (
-        diagnostic_under_lock.index("_capture_plan_prestate(")
+        diagnostic_under_lock.index("_record_buildx_authority(runtime, executor)")
+        < diagnostic_under_lock.index("_capture_plan_prestate(")
         < diagnostic_under_lock.index("_reprove_plan_prestate(")
         < diagnostic_under_lock.index("_diagnostic_evidence_from_runtime(")
     ):
         raise AssertionError("the read-only prestate diagnostic order has drifted")
+    if diagnostic_under_lock.count("_record_buildx_authority(runtime, executor)") != 1:
+        raise AssertionError("the prestate diagnostic must query Buildx authority exactly once")
+    buildx_authority_probe = selection_operator.split("def _record_buildx_authority(", maxsplit=1)[
+        1
+    ].split("def _require_idle(", maxsplit=1)[0]
+    for fragment in (
+        '("docker", "buildx", "version")',
+        "classification=_BUILDX_VERSION_PROBE",
+        "timeout_seconds=10",
+        "except Exception:",
+        "record_buildx_authority(raw, runtime.buildx_authority_recorder)",
+    ):
+        if fragment not in buildx_authority_probe:
+            raise AssertionError(f"the bounded Buildx authority probe is missing: {fragment}")
+    ordinary_under_lock = selection_operator.split("def _run_under_lock(", maxsplit=1)[1].split(
+        "def _run_operator(", maxsplit=1
+    )[0]
+    if (
+        '("docker", "buildx", "version")' in ordinary_under_lock
+        or "_record_buildx_authority" in ordinary_under_lock
+    ):
+        raise AssertionError("the Buildx authority query must remain diagnostic-only")
     for forbidden in (
         "_require_idle(",
         "docker_builder_is_idle(",
@@ -2782,6 +2931,12 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_read_only_prestate_diagnostic_reproves_plan_and_stops_before_active_or_action",
         "test_read_only_prestate_diagnostic_classifies_capture_and_reproof",
         "test_prestate_diagnostic_classifies_prior_driver_without_action",
+        "test_prestate_diagnostic_reports_only_builder_error_shape",
+        "test_prestate_diagnostic_fails_closed_on_every_builder_error_transition",
+        "test_builder_error_drift_survives_lock_exit_as_capture_evidence",
+        "test_normal_operator_builder_error_drift_stops_before_selection",
+        "test_prestate_diagnostic_classifies_one_bounded_buildx_version_query",
+        "test_prestate_diagnostic_version_failure_is_unknown_and_stops_before_listing",
         "test_normal_operator_prestate_failure_retains_exact_capture_predicate",
         "test_prestate_diagnostic_lock_exit_is_unknown_and_retains_observed_pass",
         "test_read_only_prestate_diagnostic_interrupt_is_unknown_and_value_free",
@@ -2922,7 +3077,10 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_node_schema_interrupt_before_structural_outcome_remains_unknown",
         "test_selection_plan_preserves_complete_private_inventory_and_fixed_argv",
         "test_selection_plan_recorder_preserves_nested_expected_transition",
+        "test_builder_error_and_buildx_authority_vocabularies_are_closed",
+        "test_buildx_authority_parser_is_bounded_and_value_free",
         "test_selection_plan_classifies_prior_driver_before_status_or_target",
+        "test_selection_plan_classifies_builder_error_without_exposing_text",
         "test_selection_plan_records_every_reachable_first_defect",
         "test_selection_plan_predicate_priority_is_deterministic",
         "test_selection_plan_rejects_every_unreviewed_prestate",
@@ -2995,6 +3153,10 @@ def verify_governed_docker_build_capacity_contract() -> None:
         if fragment not in adr:
             raise AssertionError(f"ADR-0112 omits governed capacity term: {fragment}")
     compact_adr = " ".join(adr.split())
+    compact_adr_for_prior_pass = compact_adr.replace(
+        "Only exact `docker-container` records `PASS`",
+        "only exact `docker-container` records `PASS`",
+    )
     cloud_authority_chain = (
         (
             "official core [`docker`, `docker-container`, `kubernetes`, and `remote` driver "
@@ -3008,26 +3170,47 @@ def verify_governed_docker_build_capacity_contract() -> None:
             "and its [multi-platform example]"
             "(https://docs.docker.com/build/building/multi-platform/)"
         ),
-        "`CLOUD`, `KUBERNETES`, `REMOTE`, or `UNRECOGNIZED`",
+        "`EMPTY`, `CLOUD`, `KUBERNETES`, `REMOTE`, or `UNRECOGNIZED`",
+        "`EMPTY` is reserved for the unresolved empty factory result",
+        "`UNRECOGNIZED` is nonempty",
         "only exact `docker-container` records `PASS`",
         (
             "does not expose the provider string, accept a new driver, normalize a spelling or "
             "claim that the current host binary is pinned to a particular Buildx version"
         ),
     )
-    if any(fragment not in compact_adr for fragment in cloud_authority_chain):
+    if any(fragment not in compact_adr_for_prior_pass for fragment in cloud_authority_chain):
         raise AssertionError("ADR-0112 omits exact Docker Build Cloud authority or guardrails")
     cloud_authority_positions = tuple(
-        compact_adr.index(fragment) for fragment in cloud_authority_chain
+        compact_adr_for_prior_pass.index(fragment) for fragment in cloud_authority_chain
     )
     if cloud_authority_positions != tuple(sorted(cloud_authority_positions)):
         raise AssertionError("ADR-0112 Docker Build Cloud authority order has drifted")
+    for fragment in (
+        "optional builder-level `Err` field only as `ABSENT`, `PRESENT` or `INVALID`",
+        "an empty or non-string value is invalid",
+        "error text is never retained or reported",
+        "https://github.com/docker/buildx/blob/v0.35.0/builder/builder.go",
+        "parser authority only, not a claim that the installed host binary is v0.35.0",
+        "capture predicate is retained privately while reproof uses a separate recorder",
+        "any exact `ABSENT`/`PRESENT`/`INVALID` transition becomes the existing",
+        "`PLAN_DRIFT`/`PRESTATE` failure before action",
+        "Raw error text remains outside inventory identity and comparison",
+        "retains the first observed capture predicate rather than relabeling it",
+        "exactly one bounded `docker buildx version` query",
+        "`UPSTREAM_V0_35_0`, `UPSTREAM_OTHER`, `OTHER_DISTRIBUTION` or `OUTPUT_INVALID`",
+        "module, version, revision and raw output are never emitted",
+        "Docker Desktop suffix is not equated to the upstream v0.35.0 authority",
+    ):
+        if fragment not in compact_adr:
+            raise AssertionError(f"ADR-0112 omits Buildx authority evidence: {fragment}")
     docs_index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     if (
         "fixed `BUILDER_SELECTION_PRESTATE` phase" not in docs_index
         or "cannot select a builder or authorize a host change" not in docs_index
-        or "closed\nprior-driver evidence distinguishes Docker Build Cloud, Kubernetes, remote"
+        or "prior-driver evidence distinguishes an empty unresolved factory result"
         not in docs_index
+        or "one bounded Buildx version query to closed predicates" not in docs_index
     ):
         raise AssertionError("the controlled index omits the read-only builder prestate phase")
 
