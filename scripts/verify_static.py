@@ -1888,6 +1888,32 @@ def verify_governed_docker_build_capacity_contract() -> None:
 def verify_governed_local_topology_contract() -> None:
     platform_path = ROOT / "scripts" / "platform_workflow.py"
     platform = platform_path.read_text(encoding="utf-8")
+    expected_topology_secrets = (
+        "postgres_governance_document_password",
+        "redis_delivery_password",
+        "s3_governance_document_access_key",
+        "s3_governance_document_secret_key",
+        "intranet_llm_chat_api_key",
+        "intranet_llm_embedding_api_key",
+        "neo4j_auth",
+        "keycloak_admin_password",
+    )
+    assignments = (
+        node
+        for node in ast.walk(ast.parse(platform))
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "TOPOLOGY_RECONCILIATION_SECRET_NAMES"
+            for target in node.targets
+        )
+    )
+    secret_assignments = tuple(assignments)
+    if len(secret_assignments) != 1:
+        raise AssertionError("the topology secret allowlist assignment is ambiguous")
+    if ast.literal_eval(secret_assignments[0].value) != expected_topology_secrets:
+        raise AssertionError("the exact topology secret allowlist has drifted")
+    if platform.count("len(TOPOLOGY_RECONCILIATION_SECRET_NAMES) != 8") != 2:
+        raise AssertionError("both topology secret count guards must pin the exact eight names")
     for fragment in (
         "class LocalTopologyAudit:",
         "class TopologyReconciliationPlan:",
@@ -1897,8 +1923,13 @@ def verify_governed_local_topology_contract() -> None:
         "target_state=replace(state, local_gateway=True, local_graph=True)",
         "class TopologyReconciliationSecretGuard:",
         "TOPOLOGY_RECONCILIATION_SECRET_NAMES",
-        "len(TOPOLOGY_RECONCILIATION_SECRET_NAMES) != 7",
+        '"keycloak_admin_password",',
+        "len(TOPOLOGY_RECONCILIATION_SECRET_NAMES) != 8",
         "def revalidate(self) -> None:",
+        "set(self.file_descriptors) != expected_names",
+        "set(self.file_identities) != expected_names",
+        "set(file_descriptors) != expected_names",
+        "set(file_identities) != expected_names",
         "_secret_guard_identity(opened) != self.file_identities[name]",
         'traversed == Path("/Volumes/SSD_Mac") and mode == 0o775',
         "opened_secret_dir.st_dev != opened_root.st_dev",
@@ -1919,6 +1950,41 @@ def verify_governed_local_topology_contract() -> None:
             raise AssertionError(f"the governed local-topology contract is missing: {fragment}")
     if "set(os.listdir(secret_descriptor))" in platform:
         raise AssertionError("unrelated canonical secrets cannot influence topology selection")
+
+    update_source = (ROOT / "scripts" / "workflow_update_restart.py").read_text(encoding="utf-8")
+    admin_reader = update_source.split("def _read_gateway_admin_password(", maxsplit=1)[1].split(
+        "def _gateway_auth_parity_session(", maxsplit=1
+    )[0]
+    first_revalidate = admin_reader.index("secret_guard.revalidate()")
+    descriptor_lookup = admin_reader.index(
+        'secret_guard.file_descriptors["keycloak_admin_password"]'
+    )
+    held_fd_read = admin_reader.index("raw = os.pread(descriptor, 4_097, 0)")
+    fixed_shape = admin_reader.index('if not raw or len(raw) > 4_096 or b"\\x00" in raw:')
+    decode = admin_reader.index('value = raw.decode("utf-8").strip()')
+    last_revalidate = admin_reader.rindex("secret_guard.revalidate()")
+    if admin_reader.count("secret_guard.revalidate()") != 2 or not (
+        first_revalidate < descriptor_lookup < held_fd_read < fixed_shape < decode < last_revalidate
+    ):
+        raise AssertionError("the held gateway admin secret reader ordering has drifted")
+    for forbidden in ("print(", "write_text(", "write_bytes(", "hashlib"):
+        if forbidden in admin_reader:
+            raise AssertionError("the gateway admin reader cannot expose or persist credentials")
+
+    platform_test_source = (
+        ROOT / "backend" / "tests" / "unit" / "test_platform_workflow.py"
+    ).read_text(encoding="utf-8")
+    for test_name in (
+        "test_topology_secret_guard_selects_exact_gateway_admin_credential",
+        "test_gateway_admin_reader_uses_retained_selected_secret_descriptor",
+        "test_gateway_admin_secret_replacement_is_detected_by_retained_guard",
+        "test_gateway_admin_secret_metadata_failure_is_fixed_and_nonleaking",
+        "test_gateway_admin_reader_rejects_invalid_shape_without_payload_leak",
+        "test_gateway_admin_reader_postcheck_detects_path_replacement_during_read",
+        "test_topology_secret_guard_closes_all_descriptors_after_base_exception",
+    ):
+        if test_name not in platform_test_source:
+            raise AssertionError(f"the topology secret-guard direct test is missing: {test_name}")
 
     private_query = platform.split("def local_topology_output(", maxsplit=1)[1].split(
         "def _topology_health_class", maxsplit=1

@@ -980,6 +980,233 @@ def _write_topology_secret_fixture(root: Path) -> Path:
     return secret_dir
 
 
+def _assert_topology_secret_guard_descriptors_closed(
+    guard: Any,
+) -> None:
+    descriptors = (
+        guard.root_descriptor,
+        guard.secret_descriptor,
+        *guard.file_descriptors.values(),
+    )
+    assert guard.closed is True
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+def test_topology_secret_guard_selects_exact_gateway_admin_credential() -> None:
+    assert workflow.TOPOLOGY_RECONCILIATION_SECRET_NAMES == (
+        "postgres_governance_document_password",
+        "redis_delivery_password",
+        "s3_governance_document_access_key",
+        "s3_governance_document_secret_key",
+        "intranet_llm_chat_api_key",
+        "intranet_llm_embedding_api_key",
+        "neo4j_auth",
+        "keycloak_admin_password",
+    )
+
+
+def test_gateway_admin_reader_uses_retained_selected_secret_descriptor(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    secret_dir = _write_topology_secret_fixture(tmp_path)
+    target = secret_dir / "keycloak_admin_password"
+    sentinel = "gateway-admin-secret-must-not-leak"
+    target.chmod(0o600)
+    target.write_text(sentinel + "\n", encoding="utf-8")
+    target.chmod(0o444)
+
+    with workflow.require_topology_reconciliation_secrets(tmp_path) as guard:
+        assert set(guard.file_descriptors) == set(workflow.TOPOLOGY_RECONCILIATION_SECRET_NAMES)
+        assert set(guard.file_identities) == set(workflow.TOPOLOGY_RECONCILIATION_SECRET_NAMES)
+        assert update._read_gateway_admin_password(guard) == sentinel
+
+    captured = capsys.readouterr()
+    assert sentinel not in captured.out
+    assert sentinel not in captured.err
+    _assert_topology_secret_guard_descriptors_closed(guard)
+
+
+def test_gateway_admin_secret_replacement_is_detected_by_retained_guard(
+    tmp_path: Path,
+) -> None:
+    secret_dir = _write_topology_secret_fixture(tmp_path)
+    target = secret_dir / "keycloak_admin_password"
+
+    with workflow.require_topology_reconciliation_secrets(tmp_path) as guard:
+        replacement = tmp_path / "gateway-admin-replacement"
+        replacement.write_text("replacement\n", encoding="utf-8")
+        replacement.chmod(0o444)
+        target.rename(tmp_path / "gateway-admin-original")
+        replacement.rename(target)
+        with pytest.raises(workflow.WorkflowError, match="TOPOLOGY_SECRET_PREFLIGHT_FAILED"):
+            guard.revalidate()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "missing",
+        "symlink",
+        "nonregular",
+        "mode",
+        "owner",
+        "hardlink",
+        "empty",
+        "device",
+        "fd-replacement",
+    ),
+)
+def test_gateway_admin_secret_metadata_failure_is_fixed_and_nonleaking(
+    tmp_path: Path,
+    failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret_dir = _write_topology_secret_fixture(tmp_path)
+    target = secret_dir / "keycloak_admin_password"
+    sentinel = "gateway-admin-metadata-secret-must-not-leak"
+    target.chmod(0o600)
+    target.write_text(sentinel + "\n", encoding="utf-8")
+    target.chmod(0o444)
+    if failure == "missing":
+        target.unlink()
+    elif failure == "symlink":
+        target.unlink()
+        target.symlink_to(secret_dir / workflow.TOPOLOGY_RECONCILIATION_SECRET_NAMES[0])
+    elif failure == "nonregular":
+        target.unlink()
+        target.mkdir()
+    elif failure == "mode":
+        target.chmod(0o400)
+    elif failure == "hardlink":
+        os.link(target, tmp_path / "gateway-admin-hardlink")
+    elif failure == "empty":
+        target.chmod(0o600)
+        target.write_bytes(b"")
+        target.chmod(0o444)
+    elif failure in {"owner", "device"}:
+        identity = target.stat()
+        original_fstat = workflow.os.fstat
+
+        def drifted_fstat(descriptor: int) -> os.stat_result:
+            evidence = cast(os.stat_result, original_fstat(descriptor))
+            if evidence.st_ino != identity.st_ino:
+                return evidence
+            fields = list(evidence)
+            fields[4 if failure == "owner" else 2] += 1
+            return os.stat_result(fields)
+
+        monkeypatch.setattr(workflow.os, "fstat", drifted_fstat)
+    else:
+        alternate = tmp_path / "gateway-admin-alternate"
+        alternate.write_text("alternate\n", encoding="utf-8")
+        alternate.chmod(0o444)
+        original_open = workflow.os.open
+
+        def replaced_open(path: object, flags: int, *args: object, **kwargs: object) -> int:
+            if path == "keycloak_admin_password":
+                return cast(int, original_open(alternate, flags))
+            return cast(int, original_open(path, flags, *args, **kwargs))
+
+        monkeypatch.setattr(workflow.os, "open", replaced_open)
+
+    with pytest.raises(workflow.WorkflowError, match="TOPOLOGY_SECRET_PREFLIGHT_FAILED") as error:
+        with workflow.require_topology_reconciliation_secrets(tmp_path):
+            pass
+
+    captured = capsys.readouterr()
+    exposed = captured.out + captured.err + str(error.value)
+    assert sentinel not in exposed
+
+
+@pytest.mark.parametrize(
+    "payload",
+    (
+        b"",
+        b"x" * 4_097,
+        b"gateway-admin-secret\x00suffix",
+        b"gateway-admin-secret-\xff",
+        b"gateway-admin-secret\nembedded",
+        b"gateway-admin-secret\rembedded",
+    ),
+)
+def test_gateway_admin_reader_rejects_invalid_shape_without_payload_leak(
+    tmp_path: Path,
+    payload: bytes,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    target = tmp_path / "synthetic-admin-secret"
+    target.write_bytes(payload)
+    descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW)
+    guard = SimpleNamespace(
+        file_descriptors={"keycloak_admin_password": descriptor},
+        revalidate=lambda: None,
+    )
+    try:
+        with pytest.raises(
+            update.GatewayAuthParityError,
+            match="GATEWAY_AUTH_PARITY_ADMIN_CREDENTIAL_INVALID",
+        ) as error:
+            update._read_gateway_admin_password(guard)
+    finally:
+        os.close(descriptor)
+
+    captured = capsys.readouterr()
+    exposed = captured.out + captured.err + str(error.value)
+    assert "gateway-admin-secret" not in exposed
+
+
+def test_gateway_admin_reader_postcheck_detects_path_replacement_during_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    secret_dir = _write_topology_secret_fixture(tmp_path)
+    target = secret_dir / "keycloak_admin_password"
+    sentinel = "gateway-admin-read-secret-must-not-leak"
+    target.chmod(0o600)
+    target.write_text(sentinel + "\n", encoding="utf-8")
+    target.chmod(0o444)
+    original_pread = update.os.pread
+
+    with workflow.require_topology_reconciliation_secrets(tmp_path) as guard:
+
+        def replaced_pread(descriptor: int, size: int, offset: int) -> bytes:
+            replacement = tmp_path / "gateway-admin-during-read"
+            replacement.write_text("replacement\n", encoding="utf-8")
+            replacement.chmod(0o444)
+            target.rename(tmp_path / "gateway-admin-before-read")
+            replacement.rename(target)
+            return cast(bytes, original_pread(descriptor, size, offset))
+
+        monkeypatch.setattr(update.os, "pread", replaced_pread)
+        with pytest.raises(workflow.WorkflowError, match="TOPOLOGY_SECRET_PREFLIGHT_FAILED"):
+            update._read_gateway_admin_password(guard)
+
+    captured = capsys.readouterr()
+    assert sentinel not in captured.out
+    assert sentinel not in captured.err
+
+
+def test_topology_secret_guard_closes_all_descriptors_after_base_exception(
+    tmp_path: Path,
+) -> None:
+    _write_topology_secret_fixture(tmp_path)
+    guard = workflow.require_topology_reconciliation_secrets(tmp_path)
+
+    with pytest.raises(KeyboardInterrupt):
+        with guard:
+            raise KeyboardInterrupt
+
+    _assert_topology_secret_guard_descriptors_closed(guard)
+
+
 def test_topology_secret_preflight_accepts_selected_subset_of_canonical_metadata(
     tmp_path: Path,
 ) -> None:

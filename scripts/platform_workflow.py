@@ -74,6 +74,7 @@ TOPOLOGY_RECONCILIATION_SECRET_NAMES = (
     "intranet_llm_chat_api_key",
     "intranet_llm_embedding_api_key",
     "neo4j_auth",
+    "keycloak_admin_password",
 )
 
 _CORE_TOPOLOGY_SERVICES = (
@@ -808,7 +809,13 @@ class TopologyReconciliationSecretGuard:
     def revalidate(self) -> None:
         reopened_root: int | None = None
         try:
-            if self.closed or len(TOPOLOGY_RECONCILIATION_SECRET_NAMES) != 7:
+            expected_names = set(TOPOLOGY_RECONCILIATION_SECRET_NAMES)
+            if (
+                self.closed
+                or len(TOPOLOGY_RECONCILIATION_SECRET_NAMES) != 8
+                or set(self.file_descriptors) != expected_names
+                or set(self.file_identities) != expected_names
+            ):
                 raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
             reopened_root = _open_trusted_directory_chain(self.root)
             reopened_root_evidence = os.fstat(reopened_root)
@@ -883,7 +890,7 @@ def require_topology_reconciliation_secrets(
             or opened_secret_dir.st_dev != opened_root.st_dev
             or stat.S_IMODE(opened_secret_dir.st_mode) != 0o700
             or opened_secret_dir.st_uid != os.getuid()
-            or len(TOPOLOGY_RECONCILIATION_SECRET_NAMES) != 7
+            or len(TOPOLOGY_RECONCILIATION_SECRET_NAMES) != 8
         ):
             raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
         file_identities: dict[str, tuple[int, int, int, int, int, int, int]] = {}
@@ -903,6 +910,9 @@ def require_topology_reconciliation_secrets(
             ):
                 raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
             file_identities[name] = _secret_guard_identity(opened)
+        expected_names = set(TOPOLOGY_RECONCILIATION_SECRET_NAMES)
+        if set(file_descriptors) != expected_names or set(file_identities) != expected_names:
+            raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
         guard = TopologyReconciliationSecretGuard(
             root=Path(os.path.abspath(root)),
             root_descriptor=root_descriptor,
