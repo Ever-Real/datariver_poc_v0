@@ -2458,6 +2458,9 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     fixture_test_path = ROOT / "backend" / "tests" / "unit" / "test_gateway_auth_parity_fixture.py"
     platform_test_path = ROOT / "backend" / "tests" / "unit" / "test_platform_workflow.py"
     workflow_path = ROOT / "scripts" / "workflow_update_restart.py"
+    keycloak_dockerfile_path = ROOT / "infra" / "keycloak" / "Dockerfile"
+    keycloak_realm_path = ROOT / "infra" / "keycloak" / "datariver-realm.template.json"
+    keycloak_host_dev_path = ROOT / "scripts" / "configure_keycloak_host_dev.sh"
     for path in (
         probe_path,
         classifier_path,
@@ -2477,6 +2480,30 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     fixture_tests = fixture_test_path.read_text(encoding="utf-8")
     platform_tests = platform_test_path.read_text(encoding="utf-8")
     workflow = workflow_path.read_text(encoding="utf-8")
+    keycloak_dockerfile = keycloak_dockerfile_path.read_text(encoding="utf-8")
+    keycloak_realm = json.loads(keycloak_realm_path.read_text(encoding="utf-8"))
+    keycloak_host_dev = keycloak_host_dev_path.read_text(encoding="utf-8")
+    pinned_keycloak = (
+        "quay.io/keycloak/keycloak:26.7.0@sha256:"
+        "2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0"
+    )
+    if keycloak_dockerfile.count(pinned_keycloak) != 2:
+        raise AssertionError("gateway invariant must stay pinned to exact Keycloak 26.7 image")
+    web_clients = [
+        client
+        for client in keycloak_realm.get("clients", [])
+        if isinstance(client, dict) and client.get("clientId") == "datariver-web"
+    ]
+    if len(web_clients) != 1 or web_clients[0].get("authorizationServicesEnabled") is not False:
+        raise AssertionError("the exact Web client must disable Keycloak Authorization Services")
+    web_update = keycloak_host_dev.split("clientId=datariver-web", maxsplit=1)[1].split(
+        "update realms/datariver", maxsplit=1
+    )[0]
+    if (
+        web_update.count("-s authorizationServicesEnabled=false") != 1
+        or "authorizationServicesEnabled=true" in keycloak_host_dev
+    ):
+        raise AssertionError("the exact Web updater must explicitly disable Authorization Services")
     for fragment in (
         'FIXTURE_CONTRACT = "SEC-GATEWAY-AUTH-PARITY-001-A-V1"',
         'FIXTURE_CLIENT_ID = "datariver-gateway-auth-parity-v1"',
@@ -2680,6 +2707,7 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "CLIENT_DOCUMENT_IDENTITY",
         "CLIENT_STRING_SHAPE",
         "CLIENT_BOOLEAN_SHAPE",
+        "CLIENT_AUTHORIZATION_SERVICES_POLICY",
         "CLIENT_OPTIONAL_URL_SHAPE",
         "CLIENT_LIST_SHAPE",
         "CLIENT_MAPPING_SHAPE",
@@ -2763,6 +2791,22 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         != "tuple((field.value for field in ProductionWebBooleanField))"
     ):
         raise AssertionError("production Web boolean tuple must derive from the exact enum")
+    omission_allowlist_assignments = [
+        node
+        for node in probe_syntax.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "_KEYCLOAK_26_7_OMITTED_FALSE_BOOLEAN_FIELDS"
+            for target in node.targets
+        )
+    ]
+    if (
+        len(omission_allowlist_assignments) != 1
+        or ast.unparse(omission_allowlist_assignments[0].value)
+        != "(ProductionWebBooleanField.AUTHORIZATION_SERVICES_ENABLED,)"
+    ):
+        raise AssertionError("Keycloak 26.7 may omit only the exact Authorization Services field")
     boolean_scanner = probe.split("def _production_web_boolean_field_statuses(", maxsplit=1)[
         1
     ].split("def _normalized_unique_strings(", maxsplit=1)[0]
@@ -2797,11 +2841,29 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         or 'f"/admin/realms/datariver/clients/{client_uuid}/protocol-mappers/models"'
         not in production_diagnostic
         or "ProductionWebInvariantPredicate.CLIENT_MATCH_COUNT" not in normalizer
-        or normalizer.count("_production_web_boolean_field_statuses(selected)") != 1
+        or normalizer.count("_production_web_boolean_field_statuses(normalized_selected)") != 1
         or "if boolean_missing_fields or boolean_non_bool_fields:" not in normalizer
+        or "normalized_selected = dict(selected)" not in normalizer
+        or "field not in _KEYCLOAK_26_7_OMITTED_FALSE_BOOLEAN_FIELDS" not in normalizer
+        or "ProductionWebInvariantPredicate.CLIENT_AUTHORIZATION_SERVICES_POLICY" not in normalizer
+        or "normalized_selected[authorization_services_field.value] = False" not in normalizer
         or "ProductionWebInvariantPredicate.MAPPER_CONFIG_SHAPE" not in normalizer
     ):
         raise AssertionError("production Web fingerprint and diagnostic must share one normalizer")
+    boolean_scan = normalizer.index("_production_web_boolean_field_statuses(normalized_selected)")
+    policy_guard = normalizer.index(
+        "ProductionWebInvariantPredicate.CLIENT_AUTHORIZATION_SERVICES_POLICY"
+    )
+    mapper_read = normalizer.index("mapper_document = _production_response_document(")
+    if not boolean_scan < policy_guard < mapper_read:
+        raise AssertionError("Authorization Services policy must fail before mapper reads")
+    for forbidden in (
+        "normalized_selected.setdefault(",
+        '.get("authorizationServicesEnabled", False)',
+        ".get(authorization_services_field.value, False)",
+    ):
+        if forbidden in normalizer:
+            raise AssertionError("provider boolean omission cannot use a wildcard default")
     for fragment in (
         "client_match_count_known=",
         "mapper_count_known=",
@@ -2970,6 +3032,9 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "test_production_web_boolean_field_and_status_enums_are_exact_and_ordered",
         "test_production_web_boolean_subpredicate_reports_each_missing_field_without_mapper_read",
         "test_production_web_boolean_subpredicate_reports_each_non_bool_exact_type_without_raw_value",
+        "test_missing_authorization_services_and_explicit_false_have_identical_fingerprints",
+        "test_authorization_services_true_is_a_policy_failure_before_mapper_read",
+        "test_missing_authorization_services_does_not_hide_another_boolean_defect",
         "test_boolean_subpredicate_scans_all_fields_in_fixed_order_without_duplicates",
         "test_production_web_boolean_subpredicate_all_valid_is_known_with_empty_defect_sets",
         "test_production_web_boolean_subpredicate_unknown_omits_sets_and_counts",
@@ -3117,6 +3182,11 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "admin_token_grant=1",
         "mutation_count=0",
         "runtime remains a separate reviewed exact-one operation",
+        "authorizationServicesEnabled=false",
+        "never serializes `false`",
+        "CLIENT_AUTHORIZATION_SERVICES_POLICY",
+        "Keycloak remains the identity provider",
+        "PostgreSQL RLS remain the authorization authorities",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0113 omits gateway parity term: {fragment}")

@@ -14,6 +14,7 @@ WEB_TEMPLATE = ROOT / "frontend" / "nginx.conf.template"
 WEB_OVERLAY = ROOT / "compose.gateway-routing.yaml"
 CORE_COMPOSE = ROOT / "compose.yaml"
 KEYCLOAK_SYNC = ROOT / "scripts" / "configure_keycloak_host_dev.sh"
+KEYCLOAK_REALM_TEMPLATE = ROOT / "infra" / "keycloak" / "datariver-realm.template.json"
 AIRFLOW = ROOT / "compose.airflow.yaml"
 AIRFLOW_OVERLAY = ROOT / "compose.airflow.host-dev.yaml"
 
@@ -161,6 +162,20 @@ def test_gateway_overlay_does_not_change_browser_oidc_or_public_origin_contract(
         "post.logout.redirect.uris",
     ):
         assert fragment in keycloak_sync
+
+
+def test_web_client_explicitly_disables_keycloak_authorization_services() -> None:
+    realm = _document(KEYCLOAK_REALM_TEMPLATE)
+    web_client = next(
+        client
+        for client in realm["clients"]
+        if isinstance(client, dict) and client.get("clientId") == "datariver-web"
+    )
+    keycloak_sync = KEYCLOAK_SYNC.read_text(encoding="utf-8")
+
+    assert web_client["authorizationServicesEnabled"] is False
+    assert keycloak_sync.count("-s authorizationServicesEnabled=false") == 1
+    assert "authorizationServicesEnabled=true" not in keycloak_sync
 
 
 def test_selected_airflow_uses_gateway_but_acquires_tokens_directly_from_keycloak() -> None:

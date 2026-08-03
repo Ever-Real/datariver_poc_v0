@@ -113,6 +113,7 @@ docker exec "$container" bash -ec '
     -s "attributes.\"pkce.code.challenge.method\"=\"S256\"" \
     -s "attributes.\"post.logout.redirect.uris\"=\"$web_origin/*\"" \
     -s "attributes.\"default.acr.values\"=\"1\"" \
+    -s authorizationServicesEnabled=false \
     >/dev/null
   /opt/keycloak/bin/kcadm.sh update realms/datariver \
     --config "$config" \

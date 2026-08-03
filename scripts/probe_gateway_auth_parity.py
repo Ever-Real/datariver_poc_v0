@@ -94,6 +94,9 @@ class ProductionWebBooleanFieldStatus(str, Enum):
 
 
 _PRODUCTION_WEB_BOOLEAN_FIELDS = tuple(field.value for field in ProductionWebBooleanField)
+_KEYCLOAK_26_7_OMITTED_FALSE_BOOLEAN_FIELDS = (
+    ProductionWebBooleanField.AUTHORIZATION_SERVICES_ENABLED,
+)
 
 
 class ProductionWebInvariantPredicate(str, Enum):
@@ -105,6 +108,7 @@ class ProductionWebInvariantPredicate(str, Enum):
     CLIENT_DOCUMENT_IDENTITY = "CLIENT_DOCUMENT_IDENTITY"
     CLIENT_STRING_SHAPE = "CLIENT_STRING_SHAPE"
     CLIENT_BOOLEAN_SHAPE = "CLIENT_BOOLEAN_SHAPE"
+    CLIENT_AUTHORIZATION_SERVICES_POLICY = "CLIENT_AUTHORIZATION_SERVICES_POLICY"
     CLIENT_OPTIONAL_URL_SHAPE = "CLIENT_OPTIONAL_URL_SHAPE"
     CLIENT_LIST_SHAPE = "CLIENT_LIST_SHAPE"
     CLIENT_MAPPING_SHAPE = "CLIENT_MAPPING_SHAPE"
@@ -687,19 +691,21 @@ def _normalize_production_web_contract(
             ProductionWebInvariantPredicate.CLIENT_DOCUMENT_IDENTITY,
             client_match_count=client_match_count,
         )
+    normalized_selected = dict(selected)
     if any(
-        not isinstance(selected.get(field), str) or not selected[field]
+        not isinstance(normalized_selected.get(field), str) or not normalized_selected[field]
         for field in _PRODUCTION_WEB_STRING_FIELDS
     ):
         _production_failure(
             ProductionWebInvariantPredicate.CLIENT_STRING_SHAPE,
             client_match_count=client_match_count,
         )
-    boolean_statuses = _production_web_boolean_field_statuses(selected)
+    boolean_statuses = _production_web_boolean_field_statuses(normalized_selected)
     boolean_missing_fields = tuple(
         field
         for field, status in boolean_statuses
         if status is ProductionWebBooleanFieldStatus.MISSING
+        and field not in _KEYCLOAK_26_7_OMITTED_FALSE_BOOLEAN_FIELDS
     )
     boolean_non_bool_fields = tuple(
         field
@@ -713,8 +719,19 @@ def _normalize_production_web_contract(
             boolean_missing_fields=boolean_missing_fields,
             boolean_non_bool_fields=boolean_non_bool_fields,
         )
+    authorization_services_field = ProductionWebBooleanField.AUTHORIZATION_SERVICES_ENABLED
+    if (
+        authorization_services_field.value in normalized_selected
+        and normalized_selected[authorization_services_field.value] is not False
+    ):
+        _production_failure(
+            ProductionWebInvariantPredicate.CLIENT_AUTHORIZATION_SERVICES_POLICY,
+            client_match_count=client_match_count,
+        )
+    normalized_selected[authorization_services_field.value] = False
     if any(
-        selected.get(field) is not None and not isinstance(selected[field], str)
+        normalized_selected.get(field) is not None
+        and not isinstance(normalized_selected[field], str)
         for field in _PRODUCTION_WEB_OPTIONAL_URL_FIELDS
     ):
         _production_failure(
@@ -724,19 +741,19 @@ def _normalize_production_web_contract(
 
     normalized_lists = {
         field: _normalized_unique_strings(
-            selected.get(field),
+            normalized_selected.get(field),
             predicate=ProductionWebInvariantPredicate.CLIENT_LIST_SHAPE,
             client_match_count=client_match_count,
         )
         for field in _PRODUCTION_WEB_LIST_FIELDS
     }
     flow_overrides = _normalized_string_mapping(
-        selected.get("authenticationFlowBindingOverrides"),
+        normalized_selected.get("authenticationFlowBindingOverrides"),
         predicate=ProductionWebInvariantPredicate.CLIENT_MAPPING_SHAPE,
         client_match_count=client_match_count,
     )
     attributes = _normalized_string_mapping(
-        selected.get("attributes"),
+        normalized_selected.get("attributes"),
         predicate=ProductionWebInvariantPredicate.CLIENT_MAPPING_SHAPE,
         client_match_count=client_match_count,
     )
@@ -830,10 +847,10 @@ def _normalize_production_web_contract(
         )
     bounded = {
         "id": client_uuid,
-        **{field: selected[field] for field in _PRODUCTION_WEB_STRING_FIELDS},
-        **{field: selected[field] for field in _PRODUCTION_WEB_BOOLEAN_FIELDS},
-        "notBefore": selected["notBefore"],
-        **{field: selected.get(field) for field in _PRODUCTION_WEB_OPTIONAL_URL_FIELDS},
+        **{field: normalized_selected[field] for field in _PRODUCTION_WEB_STRING_FIELDS},
+        **{field: normalized_selected[field] for field in _PRODUCTION_WEB_BOOLEAN_FIELDS},
+        "notBefore": normalized_selected["notBefore"],
+        **{field: normalized_selected.get(field) for field in _PRODUCTION_WEB_OPTIONAL_URL_FIELDS},
         **normalized_lists,
         "authenticationFlowBindingOverrides": flow_overrides,
         "attributes": attributes,

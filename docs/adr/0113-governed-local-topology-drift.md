@@ -137,16 +137,20 @@ Docker/service operation, state write or push. Source acceptance does not author
 runtime remains a separate reviewed exact-one operation.
 
 The `CLIENT_BOOLEAN_SHAPE` diagnostic refines only its value-free evidence. The checked-in realm
-template explicitly materializes six of the thirteen reviewed client booleans and leaves seven to
-the pinned provider representation; the host-development updater changes no client boolean. The
-shared normalizer therefore scans the complete fixed ordered field enum once and classifies each
-entry only as `PRESENT_BOOL`, `MISSING` or `NON_BOOL`. Its one line can expose fixed-order unique
-closed-enum sets and bounded counts for `MISSING` and `NON_BOOL`, never the corresponding value or
-an unreviewed provider key. When the client document is unavailable, those sets and counts are
-omitted rather than estimated. Normal reconciliation still maps any missing or non-boolean field to
-the existing generic production-invariant failure. In particular, absence is never coerced to
-`false`, and this diagnostic does not authorize a provider default, realm-template or provisioning
-change.
+template and exact host-development updater explicitly set
+`authorizationServicesEnabled=false`. In pinned Keycloak 26.7, however, the Admin GET
+representation emits this field only as `true` when an Authorization ResourceServer exists and
+omits it when Authorization Services are disabled; it never serializes `false`. The shared
+normalizer therefore scans the complete fixed ordered field enum once and classifies each entry
+only as `PRESENT_BOOL`, `MISSING` or `NON_BOOL`, then normalizes omission to `false` only for the
+exact `AUTHORIZATION_SERVICES_ENABLED` field on a private document copy. Omission and explicit
+`false` have the same fingerprint. Present `true` fails the closed
+`CLIENT_AUTHORIZATION_SERVICES_POLICY` predicate before mapper reads. Missing any other boolean or
+any non-boolean value still fails the existing shape boundary. Normal reconciliation continues to
+map every internal predicate to the existing generic production-invariant failure. This exact
+version-bound rule does not authorize a wildcard provider default or Keycloak Authorization
+Services: Keycloak remains the identity provider, while API membership/session checks and ABAC plus
+PostgreSQL RLS remain the authorization authorities.
 
 The operation then executes real HTTP requests for Knowledge Registry and Change Request through
 the direct loopback API, loopback APISIX and Web proxy. It requires identical bounded status,

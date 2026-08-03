@@ -30,6 +30,7 @@
       "directAccessGrantsEnabled": false,
       "implicitFlowEnabled": false,
       "serviceAccountsEnabled": false,
+      "authorizationServicesEnabled": false,
       "redirectUris": ["__WEB_PUBLIC_ORIGIN__/*"],
       "webOrigins": ["__WEB_PUBLIC_ORIGIN__"],
       "attributes": {

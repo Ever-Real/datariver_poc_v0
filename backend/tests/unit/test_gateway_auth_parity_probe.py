@@ -1067,6 +1067,8 @@ def _production_invariant_case(
         client["name"] = ""
     elif case == "CLIENT_BOOLEAN_SHAPE":
         client["enabled"] = "provider-boolean-secret"
+    elif case == "CLIENT_AUTHORIZATION_SERVICES_POLICY":
+        client["authorizationServicesEnabled"] = True
     elif case == "CLIENT_OPTIONAL_URL_SHAPE":
         client["rootUrl"] = 9
     elif case == "CLIENT_LIST_SHAPE":
@@ -1126,6 +1128,7 @@ def _production_response(value: object) -> httpx.Response:
         "CLIENT_DOCUMENT_IDENTITY",
         "CLIENT_STRING_SHAPE",
         "CLIENT_BOOLEAN_SHAPE",
+        "CLIENT_AUTHORIZATION_SERVICES_POLICY",
         "CLIENT_OPTIONAL_URL_SHAPE",
         "CLIENT_LIST_SHAPE",
         "CLIENT_MAPPING_SHAPE",
@@ -1179,6 +1182,7 @@ def test_production_web_closed_predicate_table_covers_the_exact_enum() -> None:
         "CLIENT_DOCUMENT_IDENTITY",
         "CLIENT_STRING_SHAPE",
         "CLIENT_BOOLEAN_SHAPE",
+        "CLIENT_AUTHORIZATION_SERVICES_POLICY",
         "CLIENT_OPTIONAL_URL_SHAPE",
         "CLIENT_LIST_SHAPE",
         "CLIENT_MAPPING_SHAPE",
@@ -1224,7 +1228,14 @@ def test_production_web_boolean_field_and_status_enums_are_exact_and_ordered() -
     )
 
 
-@pytest.mark.parametrize("field", tuple(probe.ProductionWebBooleanField))
+@pytest.mark.parametrize(
+    "field",
+    tuple(
+        field
+        for field in probe.ProductionWebBooleanField
+        if field is not probe.ProductionWebBooleanField.AUTHORIZATION_SERVICES_ENABLED
+    ),
+)
 def test_production_web_boolean_subpredicate_reports_each_missing_field_without_mapper_read(
     field: object,
 ) -> None:
@@ -1255,6 +1266,82 @@ def test_production_web_boolean_subpredicate_reports_each_missing_field_without_
     assert f"boolean_missing_fields=[{field_enum.name}]" in rendered
     assert "boolean_non_bool_count=0 boolean_non_bool_fields=[]" in rendered
     assert mapper_reads == []
+
+
+def test_missing_authorization_services_and_explicit_false_have_identical_fingerprints() -> None:
+    explicit, mappers = _production_web_contract()
+    omitted = dict(explicit)
+    omitted.pop("authorizationServicesEnabled")
+
+    def fingerprint(client: dict[str, object]) -> str:
+        evidence = probe._normalize_production_web_contract(
+            client_search=lambda: _production_response(
+                [{"id": client["id"], "clientId": "datariver-web"}]
+            ),
+            client_document=lambda _uuid: _production_response(client),
+            mapper_inventory=lambda _uuid: _production_response(mappers),
+        )
+        assert evidence.predicate is probe.ProductionWebInvariantPredicate.PASS
+        assert evidence.fingerprint is not None
+        return cast(str, evidence.fingerprint)
+
+    assert fingerprint(omitted) == fingerprint(explicit)
+    assert "authorizationServicesEnabled" not in omitted
+    assert explicit["authorizationServicesEnabled"] is False
+
+
+def test_authorization_services_true_is_a_policy_failure_before_mapper_read() -> None:
+    client, mappers = _production_web_contract()
+    client["authorizationServicesEnabled"] = True
+    mapper_reads: list[str] = []
+
+    def mapper_inventory(_uuid: str) -> httpx.Response:
+        mapper_reads.append("mapper")
+        return _production_response(mappers)
+
+    evidence = probe._classify_production_web_contract(
+        client_search=lambda: _production_response(
+            [{"id": client["id"], "clientId": "datariver-web"}]
+        ),
+        client_document=lambda _uuid: _production_response(client),
+        mapper_inventory=mapper_inventory,
+    )
+    rendered = probe.format_production_web_invariant_evidence(evidence)
+
+    assert evidence.predicate is (
+        probe.ProductionWebInvariantPredicate.CLIENT_AUTHORIZATION_SERVICES_POLICY
+    )
+    assert evidence.boolean_shape_known is False
+    assert mapper_reads == []
+    assert rendered == (
+        "predicate=CLIENT_AUTHORIZATION_SERVICES_POLICY "
+        "client_match_count_known=true client_match_count=1 mapper_count_known=false "
+        "boolean_shape_known=false mutation_count=0 retry_count=0"
+    )
+
+
+def test_missing_authorization_services_does_not_hide_another_boolean_defect() -> None:
+    client, mappers = _production_web_contract()
+    client.pop("authorizationServicesEnabled")
+    client.pop("bearerOnly")
+    client["frontchannelLogout"] = "provider-non-bool-secret"
+
+    evidence = probe._classify_production_web_contract(
+        client_search=lambda: _production_response(
+            [{"id": client["id"], "clientId": "datariver-web"}]
+        ),
+        client_document=lambda _uuid: _production_response(client),
+        mapper_inventory=lambda _uuid: _production_response(mappers),
+    )
+    rendered = probe.format_production_web_invariant_evidence(evidence)
+
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE
+    assert evidence.boolean_missing_fields == (probe.ProductionWebBooleanField.BEARER_ONLY,)
+    assert evidence.boolean_non_bool_fields == (
+        probe.ProductionWebBooleanField.FRONTCHANNEL_LOGOUT,
+    )
+    assert "AUTHORIZATION_SERVICES_ENABLED" not in rendered
+    assert "provider-" not in rendered
 
 
 _NON_BOOLEAN_VALUES: tuple[object, ...] = (
@@ -1457,6 +1544,7 @@ def test_production_web_boolean_subpredicate_evidence_rejects_unknown_or_invalid
             "CLIENT_DOCUMENT_IDENTITY",
             "CLIENT_STRING_SHAPE",
             "CLIENT_BOOLEAN_SHAPE",
+            "CLIENT_AUTHORIZATION_SERVICES_POLICY",
             "CLIENT_OPTIONAL_URL_SHAPE",
             "CLIENT_LIST_SHAPE",
             "CLIENT_MAPPING_SHAPE",
