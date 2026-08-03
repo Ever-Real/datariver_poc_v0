@@ -1472,6 +1472,204 @@ def test_builder_selection_recorder_records_pass_once_and_never_serializes_unkno
         recorder.record(capacity.BuilderSelectionPredicate.UNKNOWN)
 
 
+def test_selection_plan_preserves_complete_private_inventory_and_fixed_argv() -> None:
+    prior = {
+        "Current": True,
+        "Driver": "docker-container",
+        "Name": "managed-builder",
+        "Nodes": [
+            {
+                "Endpoint": "desktop-linux",
+                "Name": "managed-builder0",
+                "Status": "running",
+            }
+        ],
+    }
+    target = {
+        "Current": False,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [
+            {
+                "Endpoint": "desktop-linux",
+                "Name": "desktop-linux",
+                "Status": "running",
+            }
+        ],
+    }
+
+    plan = capacity.require_docker_builder_selection_plan(
+        "\n".join((json.dumps(prior), json.dumps(target))),
+        {},
+        current_context="desktop-linux",
+    )
+
+    assert plan.prior_builder == "managed-builder"
+    assert plan.target_builder == "desktop-linux"
+    assert plan.selection_argv == ("docker", "buildx", "use", "desktop-linux")
+    assert plan.rollback_argv == ("docker", "buildx", "use", "managed-builder")
+    assert plan.inventory.row_count == 2
+    assert len(plan.inventory.stable_identity) == 2
+
+
+@pytest.mark.parametrize(
+    "case",
+    (
+        "buildkit-host",
+        "buildx-builder",
+        "identical-duplicate",
+        "wrong-prior-driver",
+        "stopped-prior",
+        "missing-target",
+        "target-current",
+        "target-endpoint",
+    ),
+)
+def test_selection_plan_rejects_every_unreviewed_prestate(case: str) -> None:
+    environment: dict[str, str] = {}
+    prior = {
+        "Current": True,
+        "Driver": "docker-container",
+        "Name": "managed-builder",
+        "Nodes": [
+            {
+                "Endpoint": "desktop-linux",
+                "Name": "managed-builder0",
+                "Status": "running",
+            }
+        ],
+    }
+    target = {
+        "Current": False,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [
+            {
+                "Endpoint": "desktop-linux",
+                "Name": "desktop-linux",
+                "Status": "running",
+            }
+        ],
+    }
+    rows = [prior, target]
+    if case == "buildkit-host":
+        environment["BUILDKIT_HOST"] = "raw-host-sentinel"
+    elif case == "buildx-builder":
+        environment["BUILDX_BUILDER"] = "managed-builder"
+    elif case == "identical-duplicate":
+        rows.append(json.loads(json.dumps(target)))
+    elif case == "wrong-prior-driver":
+        prior["Driver"] = "remote"
+    elif case == "stopped-prior":
+        cast(list[dict[str, object]], prior["Nodes"])[0]["Status"] = "stopped"
+    elif case == "missing-target":
+        rows.pop()
+    elif case == "target-current":
+        target["Current"] = True
+    elif case == "target-endpoint":
+        cast(list[dict[str, object]], target["Nodes"])[0]["Endpoint"] = "other"
+
+    with pytest.raises(capacity.DockerCapacityError) as captured:
+        capacity.require_docker_builder_selection_plan(
+            "\n".join(json.dumps(row) for row in rows),
+            environment,
+            current_context="desktop-linux",
+        )
+
+    assert "raw-" not in str(captured.value)
+
+
+def test_selection_poststate_accepts_only_current_flag_delta() -> None:
+    pre = (
+        '{"Current":true,"Driver":"docker-container","Name":"managed-builder",'
+        '"Nodes":[{"Endpoint":"desktop-linux","Name":"managed-builder0",'
+        '"Status":"running"}]}'
+        "\n"
+        '{"Current":false,"Driver":"docker","Name":"desktop-linux",'
+        '"Nodes":[{"Endpoint":"desktop-linux","Name":"desktop-linux",'
+        '"Status":"running"}]}'
+    )
+    post_rows = [json.loads(row) for row in pre.splitlines()]
+    post_rows[0]["Current"] = False
+    post_rows[1]["Current"] = True
+    post = "\n".join(json.dumps(row) for row in post_rows)
+    plan = capacity.require_docker_builder_selection_plan(
+        pre,
+        {},
+        current_context="desktop-linux",
+    )
+
+    observed = capacity.require_docker_builder_selection_poststate(
+        plan,
+        post,
+        {},
+        selected_builder="desktop-linux",
+    )
+
+    assert (
+        capacity.docker_builder_selection_residual_count(
+            plan.inventory,
+            observed,
+            selected_builder="desktop-linux",
+        )
+        == 0
+    )
+    cast(list[dict[str, object]], post_rows[0]["Nodes"])[0]["Status"] = "stopped"
+    drifted = "\n".join(json.dumps(row) for row in post_rows)
+    with pytest.raises(
+        capacity.DockerCapacityError,
+        match="DOCKER_BUILDER_SELECTION_POSTSTATE_INVALID",
+    ):
+        capacity.require_docker_builder_selection_poststate(
+            plan,
+            drifted,
+            {},
+            selected_builder="desktop-linux",
+        )
+
+
+def test_builder_idle_state_is_shared_with_canonical_active_build_guard(tmp_path: Path) -> None:
+    idle_executor = FakeExecutor({capacity.DOCKER_ACTIVE_BUILD_PROBE: ["", ""]})
+    active_executor = FakeExecutor({capacity.DOCKER_ACTIVE_BUILD_PROBE: ["running\n"]})
+    with capacity.exclusive_docker_workflow_lock(tmp_path) as lock:
+        assert (
+            capacity.docker_builder_is_idle(
+                builder="desktop-linux",
+                lock=lock,
+                executor=idle_executor,
+            )
+            is True
+        )
+        capacity.require_no_active_builds(
+            builder="desktop-linux",
+            lock=lock,
+            executor=idle_executor,
+        )
+        assert (
+            capacity.docker_builder_is_idle(
+                builder="desktop-linux",
+                lock=lock,
+                executor=active_executor,
+            )
+            is False
+        )
+
+    expected = (
+        "docker",
+        "buildx",
+        "history",
+        "ls",
+        "--builder",
+        "desktop-linux",
+        "--filter",
+        "status=running",
+        "--format",
+        "{{.Status}}",
+    )
+    assert [call[1] for call in idle_executor.calls] == [expected, expected]
+    assert [call[1] for call in active_executor.calls] == [expected]
+
+
 @pytest.mark.parametrize(
     ("case", "expected"),
     (

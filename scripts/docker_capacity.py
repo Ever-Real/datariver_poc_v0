@@ -151,6 +151,58 @@ class NodeSchemaRecorder:
         self.predicate = predicate
 
 
+@dataclass(frozen=True)
+class DockerBuilderIdentity:
+    """One validated Buildx row kept private by governed operator code."""
+
+    name: str
+    current: bool
+    driver: str
+    node_name: str
+    endpoint: str
+    status: str
+
+    @property
+    def stable_identity(self) -> tuple[str, str, str, str, str]:
+        """Return every identity field except the mutable current-selection flag."""
+
+        return (self.name, self.driver, self.node_name, self.endpoint, self.status)
+
+
+@dataclass(frozen=True)
+class DockerBuilderInventory:
+    """A complete validated Buildx inventory whose values must never be rendered."""
+
+    current_context: str
+    builders: tuple[DockerBuilderIdentity, ...]
+    row_count: int
+
+    @property
+    def stable_identity(self) -> tuple[tuple[str, str, str, str, str], ...]:
+        return tuple(sorted(builder.stable_identity for builder in self.builders))
+
+    @property
+    def selection_identity(self) -> tuple[tuple[str, bool], ...]:
+        return tuple(sorted((builder.name, builder.current) for builder in self.builders))
+
+
+@dataclass(frozen=True)
+class DockerBuilderSelectionPlan:
+    """One exact existing-builder selection transition held only in memory."""
+
+    inventory: DockerBuilderInventory
+    prior_builder: str
+    target_builder: str
+
+    @property
+    def selection_argv(self) -> tuple[str, ...]:
+        return ("docker", "buildx", "use", self.target_builder)
+
+    @property
+    def rollback_argv(self) -> tuple[str, ...]:
+        return ("docker", "buildx", "use", self.prior_builder)
+
+
 class BuildCapacityPreflightPredicate(StrEnum):
     """Closed, value-free first-failure phases for the read-only diagnostic."""
 
@@ -705,14 +757,16 @@ def _node_schema_failure(
     )
 
 
-def _selected_builder(
+def parse_docker_builder_inventory(
     raw: str,
     environ: Mapping[str, str],
     *,
     current_context: str,
     builder_selection_recorder: BuilderSelectionRecorder | None = None,
     node_schema_recorder: NodeSchemaRecorder | None = None,
-) -> str:
+) -> DockerBuilderInventory:
+    """Parse the canonical bounded Buildx listing without exposing provider values."""
+
     if environ.get("BUILDKIT_HOST", "").strip():
         _builder_selection_failure(
             builder_selection_recorder,
@@ -827,17 +881,48 @@ def _selected_builder(
 
     if node_schema_recorder is not None:
         node_schema_recorder.record(NodeSchemaPredicate.PASS)
-    builders: dict[str, tuple[bool, str, str, str, str]] = {}
+    builders: dict[str, DockerBuilderIdentity] = {}
     for name, evidence in parsed_builders:
-        if name in builders and builders[name] != evidence:
+        identity = DockerBuilderIdentity(
+            name=name,
+            current=evidence[0],
+            driver=evidence[1],
+            node_name=evidence[2],
+            endpoint=evidence[3],
+            status=evidence[4],
+        )
+        if name in builders and builders[name] != identity:
             _builder_selection_failure(
                 builder_selection_recorder,
                 BuilderSelectionPredicate.DUPLICATE_CONFLICT,
                 "Docker builder duplicate evidence conflicts.",
             )
-        builders[name] = evidence
+        builders[name] = identity
+    return DockerBuilderInventory(
+        current_context=current_context,
+        builders=tuple(builders.values()),
+        row_count=len(parsed_builders),
+    )
 
-    current_names = sorted(name for name, evidence in builders.items() if evidence[0])
+
+def _selected_builder(
+    raw: str,
+    environ: Mapping[str, str],
+    *,
+    current_context: str,
+    builder_selection_recorder: BuilderSelectionRecorder | None = None,
+    node_schema_recorder: NodeSchemaRecorder | None = None,
+) -> str:
+    inventory = parse_docker_builder_inventory(
+        raw,
+        environ,
+        current_context=current_context,
+        builder_selection_recorder=builder_selection_recorder,
+        node_schema_recorder=node_schema_recorder,
+    )
+    builders = {builder.name: builder for builder in inventory.builders}
+
+    current_names = sorted(name for name, evidence in builders.items() if evidence.current)
     if not current_names:
         _builder_selection_failure(
             builder_selection_recorder,
@@ -865,7 +950,12 @@ def _selected_builder(
                 BuilderSelectionPredicate.OVERRIDE_NOT_CURRENT,
                 "DOCKER_BUILDER_OVERRIDE_NOT_CURRENT",
             )
-    current, driver, node_name, endpoint, status = builders[selected]
+    selected_builder = builders[selected]
+    current = selected_builder.current
+    driver = selected_builder.driver
+    node_name = selected_builder.node_name
+    endpoint = selected_builder.endpoint
+    status = selected_builder.status
     if not current:
         _builder_selection_failure(
             builder_selection_recorder,
@@ -905,6 +995,131 @@ def _selected_builder(
     if builder_selection_recorder is not None:
         builder_selection_recorder.record(BuilderSelectionPredicate.PASS)
     return selected
+
+
+def require_docker_builder_selection_plan(
+    raw: str,
+    environ: Mapping[str, str],
+    *,
+    current_context: str,
+) -> DockerBuilderSelectionPlan:
+    """Resolve one exact docker-container to context-docker selection transition."""
+
+    if environ.get("BUILDKIT_HOST", "").strip() or environ.get("BUILDX_BUILDER", "").strip():
+        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_ENVIRONMENT_OVERRIDE")
+    builder_selection = BuilderSelectionRecorder()
+    node_schema = NodeSchemaRecorder()
+    try:
+        _selected_builder(
+            raw,
+            environ,
+            current_context=current_context,
+            builder_selection_recorder=builder_selection,
+            node_schema_recorder=node_schema,
+        )
+    except DockerCapacityError:
+        if not (
+            builder_selection.predicate is BuilderSelectionPredicate.DRIVER_NOT_DOCKER
+            and node_schema.predicate is NodeSchemaPredicate.PASS
+        ):
+            raise DockerCapacityError("DOCKER_BUILDER_SELECTION_PRESTATE_INVALID") from None
+    else:
+        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_PRESTATE_INVALID")
+
+    inventory = parse_docker_builder_inventory(
+        raw,
+        environ,
+        current_context=current_context,
+    )
+    if inventory.row_count != len(inventory.builders):
+        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_INVENTORY_DUPLICATE")
+    current_builders = tuple(builder for builder in inventory.builders if builder.current)
+    if len(current_builders) != 1:
+        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_PRESTATE_INVALID")
+    prior = current_builders[0]
+    if prior.driver != "docker-container" or prior.status != "running":
+        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_PRESTATE_INVALID")
+    candidates = tuple(
+        builder
+        for builder in inventory.builders
+        if builder.name == current_context
+        and builder.driver == "docker"
+        and builder.node_name == current_context
+        and builder.endpoint == current_context
+        and builder.status == "running"
+        and not builder.current
+    )
+    if len(candidates) != 1:
+        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_TARGET_INVALID")
+    return DockerBuilderSelectionPlan(
+        inventory=inventory,
+        prior_builder=prior.name,
+        target_builder=candidates[0].name,
+    )
+
+
+def docker_builder_selection_residual_count(
+    expected: DockerBuilderInventory,
+    observed: DockerBuilderInventory,
+    *,
+    selected_builder: str,
+) -> int:
+    """Count bounded inventory differences from one exact approved selection state."""
+
+    if _BUILDER_NAME.fullmatch(selected_builder) is None:
+        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_POSTSTATE_INVALID")
+    expected_rows = {
+        (*builder.stable_identity, builder.name == selected_builder)
+        for builder in expected.builders
+    }
+    observed_rows = {(*builder.stable_identity, builder.current) for builder in observed.builders}
+    return len(expected_rows.symmetric_difference(observed_rows))
+
+
+def require_docker_builder_selection_poststate(
+    plan: DockerBuilderSelectionPlan,
+    raw: str,
+    environ: Mapping[str, str],
+    *,
+    selected_builder: str,
+) -> DockerBuilderInventory:
+    """Require the complete inventory to differ only by exact Current flags."""
+
+    if selected_builder not in {plan.prior_builder, plan.target_builder}:
+        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_POSTSTATE_INVALID")
+    inventory = parse_docker_builder_inventory(
+        raw,
+        environ,
+        current_context=plan.inventory.current_context,
+    )
+    if (
+        inventory.row_count != len(inventory.builders)
+        or inventory.stable_identity != plan.inventory.stable_identity
+        or docker_builder_selection_residual_count(
+            plan.inventory,
+            inventory,
+            selected_builder=selected_builder,
+        )
+        != 0
+    ):
+        raise DockerCapacityError("DOCKER_BUILDER_SELECTION_POSTSTATE_INVALID")
+    if selected_builder == plan.target_builder:
+        recorder = BuilderSelectionRecorder()
+        node_recorder = NodeSchemaRecorder()
+        selected = _selected_builder(
+            raw,
+            environ,
+            current_context=plan.inventory.current_context,
+            builder_selection_recorder=recorder,
+            node_schema_recorder=node_recorder,
+        )
+        if not (
+            selected == plan.target_builder
+            and recorder.predicate is BuilderSelectionPredicate.PASS
+            and node_recorder.predicate is NodeSchemaPredicate.PASS
+        ):
+            raise DockerCapacityError("DOCKER_BUILDER_SELECTION_POSTSTATE_INVALID")
+    return inventory
 
 
 def _parse_size(value: object) -> int:
@@ -1133,6 +1348,15 @@ def _require_local_unix_docker_context(
     return context_name
 
 
+def require_local_unix_docker_context(
+    executor: CapacityExecutor,
+    environ: Mapping[str, str],
+) -> str:
+    """Expose the canonical local-context proof to fixed governed operators."""
+
+    return _require_local_unix_docker_context(executor, environ)
+
+
 def _docker_platform(executor: CapacityExecutor) -> tuple[str, str]:
     raw = _safe_output(
         executor,
@@ -1144,6 +1368,41 @@ def _docker_platform(executor: CapacityExecutor) -> tuple[str, str]:
     if len(fields) != 2 or fields[0] != "linux" or fields[1] not in {"amd64", "arm64"}:
         raise DockerCapacityError("DOCKER_PLATFORM_EVIDENCE_INVALID")
     return fields[0], fields[1]
+
+
+def docker_builder_is_idle(
+    *,
+    builder: str,
+    lock: DockerWorkflowLock,
+    executor: CapacityExecutor | None = None,
+) -> bool:
+    """Return one validated active-build state without exposing history rows."""
+
+    lock.require_held()
+    if _BUILDER_NAME.fullmatch(builder) is None:
+        raise DockerCapacityError("DOCKER_BUILDER_IDENTITY_INVALID")
+    command_executor = executor or SubprocessCapacityExecutor()
+    raw = _safe_output(
+        command_executor,
+        (
+            "docker",
+            "buildx",
+            "history",
+            "ls",
+            "--builder",
+            builder,
+            "--filter",
+            "status=running",
+            "--format",
+            "{{.Status}}",
+        ),
+        classification=DOCKER_ACTIVE_BUILD_PROBE,
+        timeout_seconds=20,
+    )
+    statuses = tuple(line.strip().lower() for line in raw.splitlines() if line.strip())
+    if any(status != "running" for status in statuses):
+        raise DockerCapacityError("DOCKER_ACTIVE_BUILD_EVIDENCE_INVALID")
+    return not statuses
 
 
 def require_no_active_builds(
@@ -1162,31 +1421,12 @@ def require_no_active_builds(
     """Fail closed unless the selected builder has no running build records."""
 
     with _capacity_phase(phase_recorder, probe_predicate):
-        lock.require_held()
-        if _BUILDER_NAME.fullmatch(builder) is None:
-            raise DockerCapacityError("DOCKER_BUILDER_IDENTITY_INVALID")
-        command_executor = executor or SubprocessCapacityExecutor()
-        raw = _safe_output(
-            command_executor,
-            (
-                "docker",
-                "buildx",
-                "history",
-                "ls",
-                "--builder",
-                builder,
-                "--filter",
-                "status=running",
-                "--format",
-                "{{.Status}}",
-            ),
-            classification=DOCKER_ACTIVE_BUILD_PROBE,
-            timeout_seconds=20,
+        idle = docker_builder_is_idle(
+            builder=builder,
+            lock=lock,
+            executor=executor,
         )
-        statuses = tuple(line.strip().lower() for line in raw.splitlines() if line.strip())
-        if any(status != "running" for status in statuses):
-            raise DockerCapacityError("DOCKER_ACTIVE_BUILD_EVIDENCE_INVALID")
-    if statuses:
+    if not idle:
         with _capacity_phase(phase_recorder, active_predicate):
             raise DockerCapacityError("DOCKER_ACTIVE_BUILD_PRESENT")
 

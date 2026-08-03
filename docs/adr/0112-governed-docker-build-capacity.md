@@ -47,6 +47,64 @@ multi-node builders and a `BUILDX_BUILDER` override to any non-current builder a
 Immediately before an optional prune and before each online Compose build, Buildx history must
 report zero running builds for that builder.
 
+The fixed no-argument Mac-only `reconcile_docker_builder_selection.py` operator is the sole
+governed recovery for an already observed `DRIVER_NOT_DOCKER` prerequisite. It is deliberately
+not part of `dev-publish`. Under the same exclusive lock it requires a clean, stable `dev` source
+identity, the exact Mac development AppliedState and environment fingerprint, an unchanged local
+Unix Docker context, empty `BUILDKIT_HOST` and `BUILDX_BUILDER`, and zero active builds for both
+the selected and target builders. Its complete private Buildx inventory must contain exactly one
+current running `docker-container` builder and exactly one non-current, running, context-default
+`docker` builder whose builder name, node name and endpoint equal the validated current context.
+Duplicate, conflicting or extra eligible evidence fails before mutation and none of those private
+values is reported.
+
+The operator may issue exactly one `docker buildx use <validated-current-context>` command, with
+neither `--default` nor `--global`; the Docker driver is automatically created by the Docker
+context and is never created by this workflow. Afterward, the complete inventory must differ only
+in the two `Current` flags, the context/source/state/environment identities must be unchanged, the
+target must pass the canonical selector, and both builders must again have zero active builds.
+The existing `docker-container` builder, its container and its cache are retained. The operator
+contains no builder create/remove/stop/bootstrap, context or environment change, Docker Desktop
+setting or restart, cache prune, image build, or container/volume/data action.
+
+A nonzero, timeout or response-loss result permits one read-only post-state proof and never a
+retry. If the target state is completely proven, the selection succeeds despite the lost CLI
+response. If the prior exact state is proven, the attempt stops without rollback. A rollback is
+allowed at most once only when the target became current, another postcondition failed, and the
+privately retained prior identity plus its active-build-zero state are re-proven; ambiguous or
+drifted identity performs no rollback. Total selection mutations are therefore at most two and
+all output remains one bounded, value-free evidence object. Source acceptance does not authorize
+this host mutation: `SEC-DOCKER-BUILDER-SELECT-001` requires explicit user approval after staged
+Security review.
+
+Immediately before the first selection, the operator privately reproves the exact clean source
+commit and branch, AppliedState and environment fingerprint, process Docker overrides, local
+context, complete builder inventory and selection identity. Active-build-zero for the prior and
+target builders are the final two probes before the monotonic action marker and fixed `buildx use`
+call. Any drift stops with action zero. Exact post-state residual evidence is reported only through
+the bounded range 0..128; a larger exact residual remains invalid but is reported as unknown and
+never clamped or estimated.
+
+Every bounded subprocess must be proven reaped. If terminate, kill and bounded waits cannot prove
+that a selection or rollback process exited, the operator performs no post query or further
+selection, reports the attempted mutation and unknown outcome, and requires operator review. A
+read-only subprocess with the same unreaped condition also stops before mutation. An ordinary
+reaped response loss may use the single post proof, but `KeyboardInterrupt`, `SystemExit` or any
+other non-`Exception` interruption during rollback always remains operator-review-required even
+when the one post proof establishes whether rollback applied. Such proof preserves the observed
+rollback facts and never permits a third action.
+
+This recovery does not make `docker-container` acceptable to the canonical capacity policy. The
+official [`docker` driver](https://docs.docker.com/build/builders/drivers/docker/) uses Docker
+Engine's integrated BuildKit and automatically loads results into the Engine image store. The
+official [`docker-container` driver](https://docs.docker.com/build/builders/drivers/docker-container/)
+owns a dedicated BuildKit container and volume, has a separate cache lifecycle, and does not load
+results by default. Docker's [`buildx use`](https://docs.docker.com/reference/cli/docker/buildx/use/)
+contract permits the already validated context name to select its automatically created default
+builder. Supporting `docker-container` would require a separate T3 decision covering image
+loading, builder lifecycle, cache and backing-filesystem ownership, capacity evidence and
+rollback; it cannot be introduced by relaxing `DRIVER_NOT_DOCKER`.
+
 Builder selection also advances one closed, value-free structural recorder. It distinguishes an
 external BuildKit host; invalid list, row, node-count or node shapes; conflicting duplicates;
 missing or ambiguous current selection; invalid or non-current overrides; non-`docker` driver;

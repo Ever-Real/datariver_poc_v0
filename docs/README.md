@@ -112,6 +112,9 @@ The exact-source amd64 readiness evidence and stable preparation-PC daily interf
 by [ADR-0111](adr/0111-source-built-amd64-portability-layer.md). The development update workflow's
 exclusive build lock, Docker backing-filesystem capacity formula and bounded cache-only recovery
 are defined by [ADR-0112](adr/0112-governed-docker-build-capacity.md).
+That ADR also defines the separately approved, one-time Mac builder-selection operator; it can
+select only the existing context-owned `docker` builder, never runs inside `dev-publish`, and
+requires `SEC-DOCKER-BUILDER-SELECT-001` user approval before any host mutation.
 The AppliedState-to-runtime comparison, bounded four-class drift evidence and explicit no-auto-stop
 boundary are defined by [ADR-0113](adr/0113-governed-local-topology-drift.md). Its sole optional
 Mac reconciliation prepares the already-selected Neo4j/APISIX topology through canonical

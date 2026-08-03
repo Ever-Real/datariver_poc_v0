@@ -1747,10 +1747,10 @@ def verify_governed_docker_build_capacity_contract() -> None:
     active_build_functions = [
         node
         for node in capacity_syntax.body
-        if isinstance(node, ast.FunctionDef) and node.name == "require_no_active_builds"
+        if isinstance(node, ast.FunctionDef) and node.name == "docker_builder_is_idle"
     ]
     if len(active_build_functions) != 1:
-        raise AssertionError("the active-build guard must be defined exactly once")
+        raise AssertionError("the shared active-build probe must be defined exactly once")
     active_build_calls = [
         node
         for node in ast.walk(active_build_functions[0])
@@ -1761,7 +1761,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
         and isinstance(node.args[1], ast.Tuple)
     ]
     if len(active_build_calls) != 1:
-        raise AssertionError("the active-build guard must issue one bounded history probe")
+        raise AssertionError("the shared active-build probe must issue one bounded history probe")
 
     def fixed_or_name(node: ast.expr) -> str | None:
         if isinstance(node, ast.Constant) and isinstance(node.value, str):
@@ -1770,9 +1770,10 @@ def verify_governed_docker_build_capacity_contract() -> None:
             return f"${node.id}"
         return None
 
-    active_build_argv = tuple(
-        fixed_or_name(element) for element in active_build_calls[0].args[1].elts
-    )
+    active_build_tuple = active_build_calls[0].args[1]
+    if not isinstance(active_build_tuple, ast.Tuple):
+        raise AssertionError("the shared active-build argv must be a literal tuple")
+    active_build_argv = tuple(fixed_or_name(element) for element in active_build_tuple.elts)
     if active_build_argv != (
         "docker",
         "buildx",
@@ -1786,6 +1787,22 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "{{.Status}}",
     ):
         raise AssertionError("the exact selected-builder history argv has drifted")
+    require_idle_functions = [
+        node
+        for node in capacity_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "require_no_active_builds"
+    ]
+    if len(require_idle_functions) != 1:
+        raise AssertionError("the canonical active-build guard must remain unique")
+    shared_idle_calls = [
+        node
+        for node in ast.walk(require_idle_functions[0])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "docker_builder_is_idle"
+    ]
+    if len(shared_idle_calls) != 1:
+        raise AssertionError("the canonical guard must reuse the shared active-build probe")
 
     def capacity_enum_members(class_name: str) -> tuple[tuple[str, object], ...]:
         matches = [
@@ -1917,6 +1934,13 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ]
     if len(selected_builder_functions) != 1:
         raise AssertionError("the canonical builder selector must remain unique")
+    inventory_parser_functions = [
+        node
+        for node in capacity_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "parse_docker_builder_inventory"
+    ]
+    if len(inventory_parser_functions) != 1:
+        raise AssertionError("the shared immutable builder inventory parser must remain unique")
     builder_failure_pairs: list[tuple[str, object]] = []
 
     class BuilderFailureOrderVisitor(ast.NodeVisitor):
@@ -1932,6 +1956,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
                 builder_failure_pairs.append((node.args[1].attr, ast.literal_eval(node.args[2])))
             self.generic_visit(node)
 
+    BuilderFailureOrderVisitor().visit(inventory_parser_functions[0])
     BuilderFailureOrderVisitor().visit(selected_builder_functions[0])
     expected_builder_failure_pairs = (
         ("EXTERNAL_BUILDKIT_HOST", "EXTERNAL_BUILDKIT_HOST_UNSUPPORTED"),
@@ -1959,9 +1984,13 @@ def verify_governed_docker_build_capacity_contract() -> None:
         in selected_builder_source
         and "builder_selection_recorder.record(BuilderSelectionPredicate.PASS)"
         in selected_builder_source
+        and "parse_docker_builder_inventory(" in selected_builder_source
         and "str(error)" not in selected_builder_source
     ):
         raise AssertionError("builder selection is not structurally recorded without text parsing")
+    inventory_parser_source = ast.get_source_segment(capacity, inventory_parser_functions[0])
+    if inventory_parser_source is None:
+        raise AssertionError("the immutable builder inventory parser source is unavailable")
     node_schema_failure = capacity.split("def _node_schema_failure(", maxsplit=1)[1].split(
         "def _selected_builder(",
         maxsplit=1,
@@ -1975,7 +2004,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
             raise AssertionError(f"the node-schema failure boundary is missing: {fragment}")
     node_schema_failures = tuple(
         node.args[2].attr
-        for node in ast.walk(selected_builder_functions[0])
+        for node in ast.walk(inventory_parser_functions[0])
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "_node_schema_failure"
@@ -1998,7 +2027,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
         raise AssertionError("the exact node-schema branch order has drifted")
     status_assignments = [
         node
-        for node in ast.walk(selected_builder_functions[0])
+        for node in ast.walk(inventory_parser_functions[0])
         if isinstance(node, ast.Assign)
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
@@ -2022,7 +2051,8 @@ def verify_governed_docker_build_capacity_contract() -> None:
     builder_name_fullmatch_calls = sorted(
         (
             call
-            for call in ast.walk(selected_builder_functions[0])
+            for function in (inventory_parser_functions[0], selected_builder_functions[0])
+            for call in ast.walk(function)
             if isinstance(call, ast.Call)
             and isinstance(call.func, ast.Attribute)
             and call.func.attr == "fullmatch"
@@ -2043,7 +2073,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
             "Buildx node and endpoint strings must not use the builder-name grammar"
         )
     provider_shape_order = tuple(
-        selected_builder_source.index(fragment)
+        inventory_parser_source.index(fragment)
         for fragment in (
             'if "Name" not in node:',
             "if node_name is None:",
@@ -2056,6 +2086,13 @@ def verify_governed_docker_build_capacity_contract() -> None:
             "if not isinstance(status, str):",
             "node_schema_recorder.record(NodeSchemaPredicate.PASS)",
             "for name, evidence in parsed_builders:",
+        )
+    )
+    if provider_shape_order != tuple(sorted(provider_shape_order)):
+        raise AssertionError("Buildx node structural validation order has drifted")
+    semantic_order = tuple(
+        selected_builder_source.index(fragment)
+        for fragment in (
             'if driver != "docker":',
             'if status != "running":',
             "if selected != current_context:",
@@ -2063,10 +2100,10 @@ def verify_governed_docker_build_capacity_contract() -> None:
             "if endpoint != current_context:",
         )
     )
-    if provider_shape_order != tuple(sorted(provider_shape_order)):
-        raise AssertionError("Buildx node structural and semantic validation order has drifted")
+    if semantic_order != tuple(sorted(semantic_order)):
+        raise AssertionError("Buildx node semantic validation order has drifted")
     for forbidden in ("endpoint.strip", "status.strip", "urlparse"):
-        if forbidden in selected_builder_source:
+        if forbidden in inventory_parser_source or forbidden in selected_builder_source:
             raise AssertionError(f"Buildx node evidence cannot be normalized: {forbidden}")
     governed_capacity = capacity.split("def governed_compose_build_capacity(", maxsplit=1)[1]
     capacity_phase_order = tuple(
@@ -2111,7 +2148,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ):
         if fragment not in capacity:
             raise AssertionError(f"structured capacity phase evidence is missing: {fragment}")
-    if "_BUILDER_NAME.fullmatch(node_name)" in selected_builder_source:
+    if "_BUILDER_NAME.fullmatch(node_name)" in inventory_parser_source:
         raise AssertionError("Buildx node names must reach the exact selected-name equality check")
     private_policy = capacity.split('cache_action = "none"', maxsplit=1)[1].split(
         "help_output = _safe_output", maxsplit=1
@@ -2136,6 +2173,299 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ):
         if forbidden in capacity:
             raise AssertionError(f"the capacity gate contains a forbidden cleanup: {forbidden}")
+
+    selection_plan = capacity.split("class DockerBuilderSelectionPlan:", maxsplit=1)[1].split(
+        "class BuildCapacityPreflightPredicate",
+        maxsplit=1,
+    )[0]
+    for fragment in (
+        'return ("docker", "buildx", "use", self.target_builder)',
+        'return ("docker", "buildx", "use", self.prior_builder)',
+    ):
+        if fragment not in selection_plan:
+            raise AssertionError(f"the fixed builder-selection argv has drifted: {fragment}")
+    for forbidden in ("--default", "--global", "create", "remove", "stop", "bootstrap"):
+        if forbidden in selection_plan:
+            raise AssertionError(f"the builder-selection plan widened its authority: {forbidden}")
+    for fragment in (
+        "class DockerBuilderIdentity:",
+        "class DockerBuilderInventory:",
+        "class DockerBuilderSelectionPlan:",
+        "def parse_docker_builder_inventory(",
+        "def require_docker_builder_selection_plan(",
+        "def require_docker_builder_selection_poststate(",
+        "def docker_builder_selection_residual_count(",
+        'prior.driver != "docker-container"',
+        'builder.driver == "docker"',
+        "builder.name == current_context",
+        "builder.node_name == current_context",
+        "builder.endpoint == current_context",
+        'environ.get("BUILDKIT_HOST", "").strip()',
+        '"BUILDX_BUILDER", ""',
+        "inventory.row_count != len(inventory.builders)",
+        "inventory.stable_identity != plan.inventory.stable_identity",
+    ):
+        if fragment not in capacity:
+            raise AssertionError(f"the immutable builder-selection contract is missing: {fragment}")
+
+    selection_operator_path = ROOT / "scripts" / "reconcile_docker_builder_selection.py"
+    if not selection_operator_path.is_file() or not selection_operator_path.stat().st_mode & 0o111:
+        raise AssertionError("the fixed builder-selection operator must be executable")
+    selection_operator = selection_operator_path.read_text(encoding="utf-8")
+    selection_operator_syntax = ast.parse(
+        selection_operator,
+        filename=selection_operator_path.as_posix(),
+    )
+
+    def operator_enum_members(class_name: str) -> tuple[tuple[str, object], ...]:
+        matches = [
+            node
+            for node in selection_operator_syntax.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        ]
+        if len(matches) != 1:
+            raise AssertionError("the builder-selection operator enum must remain unique")
+        return tuple(
+            (statement.targets[0].id, ast.literal_eval(statement.value))
+            for statement in matches[0].body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        )
+
+    expected_reconcile_predicates = tuple(
+        (value, value)
+        for value in (
+            "ARGUMENTS",
+            "PLATFORM",
+            "SOURCE",
+            "HOST_ENVIRONMENT",
+            "ENVIRONMENT_OVERRIDE",
+            "DOCKER_CONTEXT",
+            "BUILDER_INVENTORY",
+            "PRESTATE",
+            "ACTIVE_BUILDS",
+            "ACTION",
+            "POSTSTATE",
+            "ROLLBACK",
+            "PASS",
+            "UNKNOWN",
+        )
+    )
+    if operator_enum_members("BuilderSelectionReconcilePredicate") != expected_reconcile_predicates:
+        raise AssertionError("the builder-selection operator predicate vocabulary has drifted")
+    for fragment in (
+        "with exclusive_docker_workflow_lock(root) as lock:",
+        'platform.system() != "Darwin"',
+        'platform.machine().lower() not in {"arm64", "aarch64"}',
+        '("git", "status", "--porcelain", "--untracked-files=normal")',
+        '("git", "rev-parse", "--verify", "HEAD")',
+        '("git", "branch", "--show-current")',
+        'branch != "dev"',
+        "state.applied_commit != state.runtime_commit",
+        "fingerprints != state.environment_key_hashes",
+        'environ.get("BUILDKIT_HOST", "").strip()',
+        '"BUILDX_BUILDER", ""',
+        "require_local_unix_docker_context(executor, environ)",
+        "require_docker_builder_selection_plan(",
+        "docker_builder_is_idle(",
+        "runtime.action_attempted = True",
+        "runtime.rollback_attempted = True",
+        "prestate.plan.selection_argv",
+        "prestate.plan.rollback_argv",
+        "_capture_poststate(",
+        "selection_mutation_count=runtime.mutation_count",
+        "cache_action_count: int = 0",
+        "build_count: int = 0",
+        "container_action_count: int = 0",
+        "retry_count: int = 0",
+        "stderr=subprocess.STDOUT",
+        "_MAXIMUM_PROCESS_OUTPUT_BYTES - len(output) + 1",
+        "class _ProcessUnreaped(BaseException):",
+        "process.terminate()",
+        "process.kill()",
+        "raise _ProcessUnreaped() from None",
+        "def _reprove_prestate(",
+        "exact_residual_count if exact_residual_count <= 128 else None",
+        "rollback_interrupted = not isinstance(error, Exception)",
+        "len(sys.argv) != 1",
+    ):
+        if fragment not in selection_operator:
+            raise AssertionError(f"the governed builder-selection operator is missing: {fragment}")
+    process_finalizer = selection_operator.split("def _finalize_bounded_process(", maxsplit=1)[
+        1
+    ].split("class _BoundedProcessExecutor:", maxsplit=1)[0]
+    selector_close = process_finalizer.index("selector.close()")
+    terminate = process_finalizer.index("process.terminate()")
+    first_wait = process_finalizer.index("process.wait(timeout=_PROCESS_REAP_SECONDS)")
+    kill = process_finalizer.index("process.kill()")
+    second_wait = process_finalizer.rindex("process.wait(timeout=_PROCESS_REAP_SECONDS)")
+    final_poll = process_finalizer.rindex("child_reaped = process.poll() is not None")
+    stdout_close = process_finalizer.index("process_output.close()", final_poll)
+    unreaped_guard = process_finalizer.rindex("if not child_reaped:")
+    unreaped_raise = process_finalizer.index("raise _ProcessUnreaped() from None", unreaped_guard)
+    close_failure_guard = process_finalizer.index("if cleanup_failed:", unreaped_raise)
+    if not (
+        selector_close
+        < terminate
+        < first_wait
+        < kill
+        < second_wait
+        < final_poll
+        < stdout_close
+        < unreaped_guard
+        < unreaped_raise
+        < close_failure_guard
+    ):
+        raise AssertionError("the bounded builder-selection process reap contract has drifted")
+    if process_finalizer.count("except BaseException:") != 9:
+        raise AssertionError("every bounded process cleanup step must absorb BaseException")
+    reproof = selection_operator.split("def _reprove_prestate(", maxsplit=1)[1].split(
+        "def _capture_poststate(", maxsplit=1
+    )[0]
+    reproof_order = (
+        "_source_identity(executor)",
+        "_host_identity(root)",
+        "docker_environment_identity = tuple(",
+        "require_local_unix_docker_context(executor, environ)",
+        "raw = _builder_listing(executor)",
+        "plan = require_docker_builder_selection_plan(",
+        "_require_idle(prestate.plan.prior_builder",
+        "_require_idle(prestate.plan.target_builder",
+    )
+    reproof_positions = tuple(reproof.index(fragment) for fragment in reproof_order)
+    if reproof_positions != tuple(sorted(reproof_positions)):
+        raise AssertionError("the final builder-selection authority reproof order has drifted")
+    action_marker = selection_operator.index("runtime.action_attempted = True")
+    final_reproof = selection_operator.index("_reprove_prestate(", action_marker - 500)
+    action_call = selection_operator.index("prestate.plan.selection_argv", action_marker)
+    post_proof = selection_operator.index("post = _capture_poststate(", action_call)
+    rollback_marker = selection_operator.index("runtime.rollback_attempted = True", post_proof)
+    rollback_call = selection_operator.index("prestate.plan.rollback_argv", rollback_marker)
+    rollback_proof = selection_operator.index("rollback_post = _capture_poststate(", rollback_call)
+    if (
+        not final_reproof
+        < action_marker
+        < action_call
+        < post_proof
+        < rollback_marker
+        < rollback_call
+        < rollback_proof
+    ):
+        raise AssertionError("the builder-selection attempt/proof/rollback order has drifted")
+    operator_main = selection_operator.split("def main() -> int:", maxsplit=1)[1]
+    if not operator_main.index("if len(sys.argv) != 1:") < operator_main.index(
+        "evidence = _run_operator(runtime)"
+    ):
+        raise AssertionError("extra builder-selection arguments must stop before the lock")
+    expected_output_keys = {
+        "classification",
+        "predicate",
+        "action_attempted",
+        "action_succeeded",
+        "mutation_outcome_known",
+        "poststate_known",
+        "poststate_valid",
+        "rollback_attempted",
+        "rollback_succeeded",
+        "rollback_outcome_known",
+        "rollback_count",
+        "selection_mutation_count",
+        "residual_known",
+        "residual_count",
+        "cache_action_count",
+        "build_count",
+        "container_action_count",
+        "retry_count",
+    }
+    format_functions = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "format_builder_selection_reconcile_evidence"
+    ]
+    if len(format_functions) != 1:
+        raise AssertionError("the builder-selection formatter must remain unique")
+    output_keys = {
+        key.value
+        for node in ast.walk(format_functions[0])
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+    output_keys.update(
+        node.slice.value
+        for node in ast.walk(format_functions[0])
+        if isinstance(node, ast.Subscript)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "fields"
+        and isinstance(node.ctx, ast.Store)
+        and isinstance(node.slice, ast.Constant)
+        and isinstance(node.slice.value, str)
+    )
+    if output_keys != expected_output_keys:
+        raise AssertionError("the builder-selection value-free output keys have drifted")
+    for forbidden in (
+        '"create"',
+        '"remove"',
+        '"stop"',
+        '"bootstrap"',
+        '"prune"',
+        '"volume"',
+        '"context", "use"',
+        '"--default"',
+        '"--global"',
+        "write_applied_state",
+        "development_cycle",
+        "workflow_update_restart",
+    ):
+        if forbidden in selection_operator:
+            raise AssertionError(
+                f"the one-time builder-selection operator is too broad: {forbidden}"
+            )
+
+    selection_test = (
+        ROOT / "backend" / "tests" / "unit" / "test_docker_builder_selection_reconcile.py"
+    ).read_text(encoding="utf-8")
+    for test_name in (
+        "test_success_runs_one_exact_selection_and_proves_both_builders_idle",
+        "test_response_loss_with_proven_target_is_accepted_without_retry",
+        "test_interrupt_after_action_preserves_proven_mutation_but_requires_review",
+        "test_failed_action_with_exact_prior_state_is_known_and_never_retried",
+        "test_target_active_poststate_rolls_back_once_only_after_prior_idle_proof",
+        "test_rollback_response_loss_is_accepted_only_after_exact_prior_reproof",
+        "test_ambiguous_rollback_stops_without_a_third_selection_mutation",
+        "test_inventory_drift_never_rolls_back_or_estimates_residual_state",
+        "test_post_proof_baseexception_preserves_action_and_never_rolls_back",
+        "test_prestate_active_builder_stops_before_selection_action",
+        "test_lock_exit_failure_preserves_completed_action_and_post_proof",
+        "test_builder_environment_override_stops_before_context_or_action",
+        "test_extra_arguments_are_rejected_before_lock_without_raw_output",
+        "test_bounded_process_output_overflow_terminates_and_reaps_without_raw_output",
+        "test_bounded_process_timeout_kills_terminate_ignoring_child",
+        "test_bounded_process_unreaped_failure_is_distinct_and_never_swallowed",
+        "test_cleanup_defects_never_mask_an_unreaped_process",
+        "test_reaped_process_close_only_defect_is_fixed_failure_not_unreaped",
+        "test_bounded_process_spawn_nonzero_and_invalid_utf8_never_emit_raw",
+        "test_unreaped_action_stops_without_post_proof_or_rollback",
+        "test_unreaped_read_only_prestate_process_is_review_required_action_zero",
+        "test_unreaped_rollback_stops_without_post_proof_or_third_action",
+        "test_residual_evidence_is_exact_at_bound_and_unknown_above_it",
+        "test_residual_over_bound_survives_lock_exit_fallback",
+        "test_main_fallback_formats_normalized_overbound_residual_without_traceback",
+        "test_final_prestate_reproof_rejects_every_drift_before_selection",
+        "test_final_prestate_reproof_interrupt_is_unknown_and_action_zero",
+        "test_final_reproof_and_active_checks_are_immediately_before_action",
+        "test_rollback_interrupt_preserves_observed_state_but_requires_review",
+    ):
+        if test_name not in selection_test:
+            raise AssertionError(f"the builder-selection operator test is missing: {test_name}")
+    development_cycle = (ROOT / "scripts" / "development_cycle.py").read_text(encoding="utf-8")
+    update_workflow = (ROOT / "scripts" / "workflow_update_restart.py").read_text(encoding="utf-8")
+    if "reconcile_docker_builder_selection" in development_cycle or (
+        "reconcile_docker_builder_selection" in update_workflow
+    ):
+        raise AssertionError("builder selection must not become part of normal dev-publish")
 
     workflow = (ROOT / "scripts" / "workflow_update_restart.py").read_text(encoding="utf-8")
     main_source = workflow.split("def main() -> int:", maxsplit=1)[1]
@@ -2243,6 +2573,10 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_incomplete_multirow_node_scan_precedes_duplicate_conflict",
         "test_official_node_shape_records_schema_pass_and_selection_pass",
         "test_node_schema_interrupt_before_structural_outcome_remains_unknown",
+        "test_selection_plan_preserves_complete_private_inventory_and_fixed_argv",
+        "test_selection_plan_rejects_every_unreviewed_prestate",
+        "test_selection_poststate_accepts_only_current_flag_delta",
+        "test_builder_idle_state_is_shared_with_canonical_active_build_guard",
     ):
         if test_name not in test_source:
             raise AssertionError(f"the Docker capacity direct test is missing: {test_name}")
@@ -2294,6 +2628,13 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "node name is not separately matched\nagainst that grammar",
         "closed node-schema subpredicate",
         "`PASS` is recorded only after the complete row/node structural scan",
+        "`reconcile_docker_builder_selection.py`",
+        "`docker buildx use <validated-current-context>`",
+        "neither `--default` nor `--global`",
+        "existing `docker-container` builder, its container and its cache are retained",
+        "Total selection mutations are therefore at most two",
+        "`SEC-DOCKER-BUILDER-SELECT-001`",
+        "does not make `docker-container` acceptable",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0112 omits governed capacity term: {fragment}")
