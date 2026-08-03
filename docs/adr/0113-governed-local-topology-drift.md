@@ -176,6 +176,46 @@ broader and less safe mutation and cannot recreate a distinct omitted-false wire
 The general `configure_keycloak_host_dev.sh` bootstrap remains valid for its canonical authorized
 workflow, but its multi-client/realm/identity envelope is not this narrow operator contract.
 
+The fixed no-argument `workflow_update_restart.py` fixture diagnostic is the sole checked-in
+operator boundary for a failed pre-mutation fixture absence proof. It holds the existing exclusive
+Docker workflow lock, requires a clean exact Mac-development build AppliedState and environment
+fingerprint, applies the governed capacity and active-builder-idle gates, and builds only the
+`local-bootstrap` image once. The host fingerprints the identity-pinned current fixture module;
+after the build it reproves clean source, the same source fingerprint and builder idle. The one
+ephemeral `local-bootstrap` run then compares its baked module with that private fingerprint before
+any database query. A stale, missing or ambiguous module therefore yields fixed image-provenance
+evidence and query zero. This boundary honestly has Docker image-build action at most one and
+ephemeral-container action at most one, with retry zero; it is read-only only with respect to
+application, identity and database state. Its outer evidence separately records the governed cache
+action count and known outcome, build attempted/succeeded/known outcome, final selected-builder
+idle proof, exact ephemeral-container attempt, bounded stop/remove attempts, cleanup-required and
+known/unknown residual state. Business, data, identity, topology, AppliedState and push mutation
+counts remain zero.
+
+The local-bootstrap build is followed by a selected-builder idle proof in an unconditional
+finalization boundary, including nonzero, timeout, kill or reap ambiguity; failure to prove idle is
+operator-review-required evidence while the exclusive lock is still held. The ephemeral run uses
+one fixed task-owned name plus exact contract/operation labels and requires that name absent before
+the attempt. After every attempt, including client response loss, timeout, overflow or interrupt,
+only that exact labeled one-off may be stopped and removed, each at most once. A foreign, ambiguous
+or retained exact-name observation is never touched and remains cleanup-required or unknown
+evidence. Docker CLI termination is not treated as proof that the daemon-side container is absent.
+A child `PASS` is accepted by both the standalone diagnostic and canonical parity session only
+after cleanup is known, no cleanup is required, residual state is known and its count is zero. A
+non-PASS child predicate remains the first defect when cleanup also fails; a child PASS with an
+unknown or retained container becomes the fixed unknown predicate before any identity creation.
+
+The child and parent share one closed `REQUIRE_ABSENT` envelope whose value-free predicate is
+exactly one of PASS, fixed-input/protocol, environment/dependency, repository-not-absent,
+repository-query/dependency, image-provenance, process-spawn, process-timeout, process-nonzero,
+output-size, output-line, output-JSON, output-shape, output-tuple or unknown. The child emits one
+bounded fixed line. The parent captures stdout and stderr under one hard in-flight byte cap, with a
+fixed timeout and terminate, bounded wait, kill and bounded reap sequence, then accepts only the
+exact grammar; SQL/provider output, identifiers, statements, counts and exception payloads are
+never forwarded or persisted. This diagnostic performs SELECT-only absence checks and stops before
+fixture or Keycloak identity creation, prepare/enable, topology mutation, AppliedState write or
+push. It is not a general fixture runner and does not authorize a canonical reconciliation retry.
+
 The operation then executes real HTTP requests for Knowledge Registry and Change Request through
 the direct loopback API, loopback APISIX and Web proxy. It requires identical bounded status,
 response-header and body-digest evidence for authorized `200`, explicitly denied `403`, malformed

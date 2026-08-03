@@ -2662,7 +2662,536 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     ):
         if fragment not in fixture:
             raise AssertionError(f"the least-scope gateway parity fixture is missing: {fragment}")
+    fixture_syntax = ast.parse(fixture, filename=fixture_path.as_posix())
+
+    def fixture_enum_members(class_name: str) -> tuple[tuple[str, object], ...]:
+        matches = [
+            node
+            for node in fixture_syntax.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        ]
+        if len(matches) != 1:
+            raise AssertionError("the fixture diagnostic enum must be defined exactly once")
+        return tuple(
+            (statement.targets[0].id, ast.literal_eval(statement.value))
+            for statement in matches[0].body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        )
+
+    if fixture_enum_members("FixtureDiagnosticOperation") != (
+        ("REQUIRE_ABSENT", "REQUIRE_ABSENT"),
+    ):
+        raise AssertionError("the fixture diagnostic operation must remain exact and read-only")
+    expected_diagnostic_predicates = (
+        ("PASS", "PASS"),
+        ("FIXED_INPUT_PROTOCOL", "FIXED_INPUT_PROTOCOL"),
+        ("ENVIRONMENT_DEPENDENCY", "ENVIRONMENT_DEPENDENCY"),
+        ("REPOSITORY_NOT_ABSENT", "REPOSITORY_NOT_ABSENT"),
+        ("REPOSITORY_QUERY_DEPENDENCY", "REPOSITORY_QUERY_DEPENDENCY"),
+        ("IMAGE_PROVENANCE", "IMAGE_PROVENANCE"),
+        ("PROCESS_SPAWN", "PROCESS_SPAWN"),
+        ("PROCESS_TIMEOUT", "PROCESS_TIMEOUT"),
+        ("PROCESS_NONZERO", "PROCESS_NONZERO"),
+        ("OUTPUT_SIZE", "OUTPUT_SIZE"),
+        ("OUTPUT_LINE", "OUTPUT_LINE"),
+        ("OUTPUT_JSON", "OUTPUT_JSON"),
+        ("OUTPUT_SHAPE", "OUTPUT_SHAPE"),
+        ("OUTPUT_TUPLE", "OUTPUT_TUPLE"),
+        ("UNKNOWN", "UNKNOWN"),
+    )
+    if fixture_enum_members("FixtureDiagnosticPredicate") != expected_diagnostic_predicates:
+        raise AssertionError("the fixture diagnostic predicate vocabulary has drifted")
+    workflow_syntax = ast.parse(workflow, filename=workflow_path.as_posix())
+
+    def workflow_enum_members(class_name: str) -> tuple[tuple[str, object], ...]:
+        matches = [
+            node
+            for node in workflow_syntax.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        ]
+        if len(matches) != 1:
+            raise AssertionError("the outer fixture diagnostic enum must be defined exactly once")
+        return tuple(
+            (statement.targets[0].id, ast.literal_eval(statement.value))
+            for statement in matches[0].body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        )
+
+    if workflow_enum_members("FixtureDiagnosticExecutionClassification") != (
+        ("PASS", "PASS"),
+        ("REJECTED", "REJECTED"),
+        ("OPERATOR_REVIEW_REQUIRED", "OPERATOR_REVIEW_REQUIRED"),
+    ):
+        raise AssertionError("the outer fixture classification vocabulary has drifted")
+    if workflow_enum_members("_FixtureContainerState") != (
+        ("ABSENT", "ABSENT"),
+        ("OWNED_RUNNING", "OWNED_RUNNING"),
+        ("OWNED_STOPPED", "OWNED_STOPPED"),
+        ("FOREIGN", "FOREIGN"),
+        ("UNKNOWN", "UNKNOWN"),
+    ):
+        raise AssertionError("the exact fixture-container state vocabulary has drifted")
+    for fragment in (
+        "MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES = 256",
+        "object_pairs_hook=_capture_fixture_diagnostic_object",
+        "if len(keys) != len(set(keys)):",
+        'set(document) != {"operation", "predicate"}',
+        'operation_value = document["operation"]',
+        'predicate_value = document["predicate"]',
+        "FixtureDiagnosticOperation(operation_value)",
+        "FixtureDiagnosticPredicate(predicate_value)",
+        'return f"GATEWAY_AUTH_PARITY_FIXTURE_REQUIRE_ABSENT_{predicate.value}"',
+        "diagnostic_predicate=FixtureDiagnosticPredicate.FIXED_INPUT_PROTOCOL",
+        "diagnostic_predicate=FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY",
+        "diagnostic_predicate=FixtureDiagnosticPredicate.REPOSITORY_NOT_ABSENT",
+        "diagnostic_predicate=FixtureDiagnosticPredicate.REPOSITORY_QUERY_DEPENDENCY",
+        "diagnostic_predicate=FixtureDiagnosticPredicate.IMAGE_PROVENANCE",
+        '"source_sha256",',
+        "descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)",
+        "opened = os.fstat(descriptor)",
+        "chunk = os.read(",
+        "return hashlib.sha256(content).hexdigest()",
+        "hmac.compare_digest(current_fixture_source_sha256(), expected_sha256)",
+        "if request.operation is FixtureOperation.REQUIRE_ABSENT:",
+        "format_fixture_diagnostic_line(",
+    ):
+        if fragment not in fixture:
+            raise AssertionError(f"the fixture diagnostic envelope is missing: {fragment}")
+    fixture_main = fixture.split("def main() -> int:", maxsplit=1)[1]
+    if not fixture_main.index(
+        "require_current_fixture_source(request.source_sha256)"
+    ) < fixture_main.index("execute_fixture_request(request)"):
+        raise AssertionError("the baked fixture provenance must fail before any repository query")
     sql_repository = fixture.split("class SqlGatewayAuthParityFixtureRepository:", maxsplit=1)[1]
+    absence_source = sql_repository.split("async def require_absent(", maxsplit=1)[1].split(
+        "async def prepare(", maxsplit=1
+    )[0]
+    if any(
+        forbidden in absence_source for forbidden in ("delete(", ".execute(", ".add(", ".flush(")
+    ):
+        raise AssertionError("the require-absent diagnostic repository must remain SELECT-only")
+    workflow_fixture = workflow.split("class _ComposeGatewayAuthParityFixture:", maxsplit=1)[
+        1
+    ].split("def _read_gateway_admin_password(", maxsplit=1)[0]
+    for fragment in (
+        "diagnostic_container_arguments = (",
+        'if operation == "require-absent"',
+        "*diagnostic_container_arguments,",
+        "_bounded_fixture_diagnostic_process(tuple(command), request_document)",
+        "parse_fixture_diagnostic_line(stdout)",
+        "parse_fixture_diagnostic_line(stderr)",
+        "if stdout and stderr:",
+        "def diagnose_require_absent(self) -> FixtureDiagnosticEnvelope:",
+        "fixture_diagnostic_failure_classification(evidence.predicate)",
+    ):
+        if fragment not in workflow_fixture:
+            raise AssertionError(f"the fixture diagnostic parent is missing: {fragment}")
+    if "print(result.stdout" in workflow_fixture or "print(result.stderr" in workflow_fixture:
+        raise AssertionError("the fixture diagnostic must never forward child output")
+    if workflow_fixture.count("*diagnostic_container_arguments,") != 1:
+        raise AssertionError("the exact task container options must be diagnostic-only")
+    require_absent_branch = workflow_fixture.split('if operation == "require-absent":', maxsplit=1)[
+        1
+    ].split("\n\n        try:\n            result = subprocess.run", maxsplit=1)[0]
+    if any(
+        forbidden in require_absent_branch
+        for forbidden in ("capture_output=True", "subprocess.run(", ".communicate(")
+    ):
+        raise AssertionError("the require-absent process must use only bounded in-flight capture")
+    bounded_capture = workflow.split("def _bounded_fixture_diagnostic_process(", maxsplit=1)[
+        1
+    ].split("def _bounded_suppressed_fixture_build(", maxsplit=1)[0]
+    for fragment in (
+        "subprocess.Popen(",
+        "selectors.DefaultSelector()",
+        "selector.register(process.stdout, selectors.EVENT_READ, stdout)",
+        "selector.register(process.stderr, selectors.EVENT_READ, stderr)",
+        "combined_size = len(stdout) + len(stderr)",
+        "MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES + 1 - combined_size",
+        "if len(stdout) + len(stderr) > MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES:",
+        "process.terminate()",
+        "process.kill()",
+        "process.wait(timeout=_FIXTURE_DIAGNOSTIC_REAP_SECONDS)",
+        "FixtureDiagnosticPredicate.PROCESS_SPAWN",
+        "FixtureDiagnosticPredicate.PROCESS_TIMEOUT",
+        "FixtureDiagnosticPredicate.OUTPUT_SIZE",
+        "FixtureDiagnosticPredicate.UNKNOWN",
+    ):
+        if fragment not in bounded_capture:
+            raise AssertionError(f"the bounded fixture capture is missing: {fragment}")
+    if any(forbidden in bounded_capture for forbidden in ("capture_output=True", ".communicate(")):
+        raise AssertionError("fixture diagnostic capture must remain hard-bounded in flight")
+    if not (
+        bounded_capture.index("process.terminate()")
+        < bounded_capture.index("process.kill()")
+        < bounded_capture.rindex("process.wait(timeout=_FIXTURE_DIAGNOSTIC_REAP_SECONDS)")
+    ):
+        raise AssertionError("fixture diagnostic terminate/kill/reap ordering has drifted")
+    bounded_fixture_build = workflow.split("def _bounded_suppressed_fixture_build(", maxsplit=1)[
+        1
+    ].split("def _build_current_fixture_image(", maxsplit=1)[0]
+    fixture_build = workflow.split("def _build_current_fixture_image(", maxsplit=1)[1].split(
+        "class _FixtureDiagnosticRunner", maxsplit=1
+    )[0]
+    for fragment in (
+        'profiles=("tools",)',
+        'trailing=("build", "local-bootstrap")',
+        "return _bounded_suppressed_fixture_build(command)",
+    ):
+        if fragment not in fixture_build:
+            raise AssertionError(f"the exact local-bootstrap fixture build is missing: {fragment}")
+    for fragment in (
+        "except subprocess.TimeoutExpired:",
+        "except BaseException:",
+        "process.terminate()",
+        "process.kill()",
+        "process.wait(timeout=_FIXTURE_DIAGNOSTIC_REAP_SECONDS)",
+        "outcome_known = process is None",
+        "return _FixtureBuildOutcome(",
+    ):
+        if fragment not in bounded_fixture_build:
+            raise AssertionError(f"the bounded fixture build evidence is missing: {fragment}")
+    if any(
+        forbidden in bounded_fixture_build for forbidden in ("capture_output=True", ".communicate(")
+    ):
+        raise AssertionError("the fixture build must suppress output without buffering it")
+    fixture_container = workflow.split("def _fixture_container_snapshot(", maxsplit=1)[1].split(
+        "class _FixtureDiagnosticRunner", maxsplit=1
+    )[0]
+    for fragment in (
+        '_FIXTURE_DIAGNOSTIC_CONTAINER_NAME = "datariver-gateway-auth-parity-require-absent"',
+        '"name=^/{_FIXTURE_DIAGNOSTIC_CONTAINER_NAME}$"',
+        '"datariver.fixture.contract"',
+        '"datariver.fixture.operation"',
+        'if contract != FIXTURE_CONTRACT or operation != "REQUIRE_ABSENT":',
+        '"docker",\n            "container",\n            "stop",',
+        '"docker", "container", "rm", _FIXTURE_DIAGNOSTIC_CONTAINER_NAME',
+        "if snapshot in {_FixtureContainerState.FOREIGN, _FixtureContainerState.UNKNOWN}:",
+        "execution.container_stop_attempts += 1",
+        "execution.container_remove_attempts += 1",
+        "_record_fixture_container_residual(execution, _fixture_container_snapshot())",
+    ):
+        if fragment not in workflow and fragment not in fixture_container:
+            raise AssertionError(f"the exact fixture-container lifecycle is missing: {fragment}")
+    if any(
+        forbidden in fixture_container
+        for forbidden in ("--force", "container prune", "system prune", '"docker", "rm"')
+    ):
+        raise AssertionError("fixture cleanup must target only the exact reviewed one-off")
+    execution_evidence = workflow.split("class FixtureDiagnosticExecutionEvidence:", maxsplit=1)[
+        1
+    ].split("class _FixtureDiagnosticCapacityExecutor:", maxsplit=1)[0]
+    for fragment in (
+        "cache_action_count_known: bool",
+        "cache_action_count: int | None",
+        "cache_action_succeeded: bool",
+        "cache_action_outcome_known: bool",
+        "build_attempted: bool",
+        "build_succeeded: bool",
+        "build_outcome_known: bool",
+        "builder_idle_known: bool",
+        "builder_idle: bool",
+        "container_attempted: bool",
+        "container_stop_attempts: int",
+        "container_remove_attempts: int",
+        "container_cleanup_known: bool",
+        "container_cleanup_required: bool",
+        "container_residual_known: bool",
+        "container_residual_count: int | None",
+        "def container_cleanup_proven(self) -> bool:",
+        "self.container_attempted",
+        "self.container_cleanup_known",
+        "not self.container_cleanup_required",
+        "self.container_residual_known",
+        "self.container_residual_count == 0",
+        "business_mutation_count: int = 0",
+        "data_mutation_count: int = 0",
+        "identity_mutation_count: int = 0",
+        "topology_mutation_count: int = 0",
+        "state_mutation_count: int = 0",
+        "push_count: int = 0",
+        "retry_count: int = 0",
+        "value != 0",
+        "FixtureDiagnosticExecutionClassification.OPERATOR_REVIEW_REQUIRED",
+    ):
+        if fragment not in execution_evidence:
+            raise AssertionError(f"the outer fixture execution evidence is missing: {fragment}")
+    execution_output = workflow.split("def format_fixture_diagnostic_execution_line(", maxsplit=1)[
+        1
+    ].split("class _FixtureDiagnosticCapacityExecutor:", maxsplit=1)[0]
+    exact_execution_output_keys = (
+        "build_attempted",
+        "build_outcome_known",
+        "build_succeeded",
+        "builder_idle",
+        "builder_idle_known",
+        "business_mutation_count",
+        "cache_action_count",
+        "cache_action_count_known",
+        "cache_action_outcome_known",
+        "cache_action_succeeded",
+        "classification",
+        "container_attempted",
+        "container_cleanup_known",
+        "container_cleanup_required",
+        "container_remove_attempts",
+        "container_residual_count",
+        "container_residual_known",
+        "container_stop_attempts",
+        "data_mutation_count",
+        "identity_mutation_count",
+        "operation",
+        "predicate",
+        "push_count",
+        "retry_count",
+        "state_mutation_count",
+        "topology_mutation_count",
+    )
+    output_key_matches = tuple(
+        sorted(
+            set(
+                re.findall(
+                    r'^\s+"([a-z_]+)": evidence\.',
+                    execution_output,
+                    flags=re.MULTILINE,
+                )
+            )
+        )
+    )
+    if output_key_matches != tuple(sorted(exact_execution_output_keys)):
+        raise AssertionError("the outer fixture execution output allowlist has drifted")
+    capacity_recorder = workflow.split("class _FixtureDiagnosticCapacityExecutor:", maxsplit=1)[
+        1
+    ].split("def _bounded_fixture_diagnostic_process(", maxsplit=1)[0]
+    for fragment in (
+        'arguments[:3] == ("docker", "buildx", "prune")',
+        "self.action_count = 1",
+        "self.action_succeeded = False",
+        "self.action_outcome_known = False",
+        "self.action_succeeded = True",
+        "self.action_outcome_known = True",
+    ):
+        if fragment not in capacity_recorder:
+            raise AssertionError(f"the cache action recorder is missing: {fragment}")
+    operator_diagnostic = workflow.split(
+        "def _fixture_require_absent_diagnostic() -> FixtureDiagnosticExecutionEvidence:",
+        maxsplit=1,
+    )[1].split("def main() -> int:", maxsplit=1)[0]
+    diagnostic_order = tuple(
+        operator_diagnostic.index(fragment)
+        for fragment in (
+            "with exclusive_docker_workflow_lock(ROOT) as capacity_lock:",
+            'load_applied_state(state_path(ROOT, "mac-development"))',
+            "read_env_values(env_file)",
+            "if not _fixture_diagnostic_source_is_clean():",
+            "source_sha256 = current_fixture_source_sha256()",
+            "selected_builder = _preflight_build_capacity(",
+            "_require_idle_builder(selected_builder, capacity_lock)",
+            "build_outcome = _build_current_fixture_image(",
+            "_ComposeGatewayAuthParityFixture(",
+            "fixture.diagnose_require_absent()",
+        )
+    )
+    if diagnostic_order != tuple(sorted(diagnostic_order)):
+        raise AssertionError("the fixture diagnostic lock/provenance/build/query order has drifted")
+    if operator_diagnostic.count("_require_idle_builder(selected_builder, capacity_lock)") != 2:
+        raise AssertionError(
+            "the fixture diagnostic must prove builder idle before and after build"
+        )
+    if operator_diagnostic.count("_fixture_diagnostic_source_is_clean()") != 2:
+        raise AssertionError(
+            "the fixture diagnostic must prove clean source before and after build"
+        )
+    if operator_diagnostic.count("current_fixture_source_sha256()") != 2:
+        raise AssertionError("the fixture source fingerprint must be stable around the exact build")
+    post_build = operator_diagnostic.split("build_outcome = _FixtureBuildOutcome(", maxsplit=1)[
+        1
+    ].split("if (", maxsplit=1)[0]
+    if not (
+        post_build.index("try:")
+        < post_build.index("_build_current_fixture_image(")
+        < post_build.index("finally:")
+        < post_build.index("_require_idle_builder(selected_builder, capacity_lock)")
+    ):
+        raise AssertionError("post-build idle proof must remain unconditional under the lock")
+    require_absent_execution = workflow_fixture.split(
+        'if operation == "require-absent":', maxsplit=1
+    )[1].split("\n\n        try:\n            result = subprocess.run", maxsplit=1)[0]
+    for fragment in (
+        "prestate = _fixture_container_snapshot()",
+        "if prestate is not _FixtureContainerState.ABSENT:",
+        "self._execution_state.container_attempted = True",
+        "_bounded_fixture_diagnostic_process(",
+        "finally:",
+        "_cleanup_fixture_container(self._execution_state)",
+        "evidence.predicate is FixtureDiagnosticPredicate.PASS",
+        "and not self._execution_state.container_cleanup_proven",
+        "return self._diagnostic_envelope(FixtureDiagnosticPredicate.UNKNOWN)",
+    ):
+        if fragment not in require_absent_execution:
+            raise AssertionError(f"the exact one-off execution guard is missing: {fragment}")
+    if not (
+        require_absent_execution.index("prestate = _fixture_container_snapshot()")
+        < require_absent_execution.index("self._execution_state.container_attempted = True")
+        < require_absent_execution.index("_bounded_fixture_diagnostic_process(")
+        < require_absent_execution.index("finally:")
+        < require_absent_execution.index("_cleanup_fixture_container(self._execution_state)")
+        < require_absent_execution.index("evidence.predicate is FixtureDiagnosticPredicate.PASS")
+        < require_absent_execution.index("and not self._execution_state.container_cleanup_proven")
+        < require_absent_execution.rindex("return evidence")
+    ):
+        raise AssertionError("the one-off preabsence, attempt and cleanup order has drifted")
+    parity_session_prepare = (
+        probe.split("class GatewayAuthParitySession:", maxsplit=1)[1]
+        .split("    def enable(self) -> None:", maxsplit=1)[0]
+        .split("    def prepare(self) -> None:", maxsplit=1)[1]
+    )
+    if not (
+        parity_session_prepare.index("self._fixture.require_absent()")
+        < parity_session_prepare.index("self._mutated = True")
+        < parity_session_prepare.index("self._identity.create_disabled_fixture()")
+        < parity_session_prepare.index("self._fixture.prepare(")
+    ):
+        raise AssertionError("fixture cleanup proof must precede every parity mutation")
+    for forbidden in (
+        "_gateway_auth_parity_session(",
+        "_apply_topology_reconciliation(",
+        "write_applied_state(",
+        ".prepare(",
+        ".enable(",
+        "git push",
+    ):
+        if forbidden in operator_diagnostic:
+            raise AssertionError("the fixture diagnostic must stop before mutation")
+    workflow_main = workflow.split("def main() -> int:", maxsplit=1)[1]
+    if not workflow_main.index("if len(sys.argv) == 1:") < workflow_main.index(
+        "args = parse_args()"
+    ):
+        raise AssertionError(
+            "the fixed no-argument diagnostic must precede normal argument parsing"
+        )
+    for test_name, source in (
+        (
+            "test_require_absent_diagnostic_envelope_is_closed_bounded_and_value_free",
+            fixture_tests,
+        ),
+        (
+            "test_require_absent_diagnostic_parser_classifies_protocol_defects_without_raw",
+            fixture_tests,
+        ),
+        ("test_sql_absence_query_failure_is_fixed_select_only_and_nonleaking", fixture_tests),
+        ("test_require_absent_child_emits_one_fixed_line_and_never_raw_failure", fixture_tests),
+        (
+            "test_require_absent_child_rejects_invalid_private_request_as_fixed_input_protocol",
+            fixture_tests,
+        ),
+        ("test_stale_fixture_source_provenance_stops_before_repository_query", fixture_tests),
+        (
+            "test_gateway_fixture_require_absent_propagates_each_fixed_child_predicate",
+            platform_tests,
+        ),
+        (
+            "test_gateway_fixture_require_absent_process_failures_are_fixed_and_not_retried",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_dual_stream_capture_is_capped_while_child_runs",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_timeout_kills_child_that_ignores_terminate",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_spawn_and_reap_failures_are_fixed_and_nonleaking",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_provenance_failure_stops_before_ephemeral_query",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_build_is_exact_local_bootstrap_action_once",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_capacity_failure_retains_cache_action_evidence",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_build_process_outcome_and_reap_are_bounded",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_container_snapshot_requires_exact_name_and_labels",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_ambiguous_create_cleans_only_exact_owned_container",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_ambiguous_create_never_touches_unowned_or_unknown_container",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_lock_exit_failure_preserves_all_attempted_actions",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_child_pass_requires_proven_container_cleanup",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_child_pass_cleanup_baseexception_fails_closed",
+            platform_tests,
+        ),
+        (
+            "test_fixture_diagnostic_nonpass_first_defect_survives_cleanup_failure",
+            platform_tests,
+        ),
+        (
+            "test_require_absent_cleanup_unknown_stops_before_identity_or_fixture_mutation",
+            probe_tests,
+        ),
+        (
+            "test_no_argument_fixture_diagnostic_holds_lock_and_stops_after_require_absent",
+            platform_tests,
+        ),
+        (
+            "test_require_absent_diagnostic_failure_is_preserved_before_fixture_mutation",
+            probe_tests,
+        ),
+    ):
+        if test_name not in source:
+            raise AssertionError(f"the fixture diagnostic negative is missing: {test_name}")
+    probe_diagnostic_syntax = ast.parse(probe, filename=probe_path.as_posix())
+    probe_assignments = {
+        statement.targets[0].id: statement.value
+        for statement in probe_diagnostic_syntax.body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    }
+    fixture_failure_values = probe_assignments.get(
+        "_FIXTURE_REQUIRE_ABSENT_FAILURE_CLASSIFICATIONS"
+    )
+    first_failure_values = probe_assignments.get("_FIRST_FAILURE_CLASSIFICATIONS")
+    if (
+        not isinstance(fixture_failure_values, ast.Call)
+        or not isinstance(fixture_failure_values.func, ast.Name)
+        or fixture_failure_values.func.id != "frozenset"
+        or not isinstance(first_failure_values, ast.BinOp)
+        or not isinstance(first_failure_values.op, ast.BitOr)
+        or not isinstance(first_failure_values.right, ast.Name)
+        or first_failure_values.right.id != "_FIXTURE_REQUIRE_ABSENT_FAILURE_CLASSIFICATIONS"
+        or "fixture_diagnostic_failure_classification(predicate)" not in probe
+    ):
+        raise AssertionError("fixture diagnostic failures must remain allowlisted first defects")
     cleanup_source = sql_repository.split("async def cleanup(", maxsplit=1)[1].split(
         "async def require_zero_residual(", maxsplit=1
     )[0]
@@ -3635,6 +4164,16 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "still attempts every independent final guard",
         "There is no automatic rollback",
         "multi-client/realm/identity envelope is not this narrow operator contract",
+        "governed cache\naction count and known outcome",
+        "final selected-builder\nidle proof",
+        "Business, data, identity, topology, AppliedState and push mutation\ncounts remain zero",
+        "selected-builder idle proof in an unconditional\nfinalization boundary",
+        "one fixed task-owned name plus exact contract/operation labels",
+        "foreign, ambiguous\nor retained exact-name observation is never touched",
+        "Docker CLI termination is not treated as proof",
+        "A child `PASS` is accepted by both the standalone diagnostic and canonical parity session",
+        "A\nnon-PASS child predicate remains the first defect when cleanup also fails",
+        "before any identity creation",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0113 omits gateway parity term: {fragment}")

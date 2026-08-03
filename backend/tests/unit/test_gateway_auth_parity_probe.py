@@ -14,6 +14,11 @@ from typing import Any, cast
 import httpx
 import pytest
 
+from datariver.gateway_auth_parity_fixture import (
+    FixtureDiagnosticPredicate,
+    fixture_diagnostic_failure_classification,
+)
+
 ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = ROOT / "scripts" / "probe_gateway_auth_parity.py"
 CLASSIFIER_MODULE_PATH = ROOT / "scripts" / "classify_gateway_production_invariant.py"
@@ -2580,6 +2585,59 @@ def test_pre_mutation_absence_failure_releases_private_identity_state_without_cl
 
     assert captured.value.first_failure == "GATEWAY_AUTH_PARITY_FIXTURE_NOT_ABSENT"
     assert events == ["identity-absent", "identity-release"]
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    tuple(
+        predicate
+        for predicate in FixtureDiagnosticPredicate
+        if predicate is not FixtureDiagnosticPredicate.PASS
+    ),
+)
+def test_require_absent_diagnostic_failure_is_preserved_before_fixture_mutation(
+    predicate: FixtureDiagnosticPredicate,
+) -> None:
+    events: list[str] = []
+    session = _session(events)
+    classification = fixture_diagnostic_failure_classification(predicate)
+
+    def fail_absence() -> None:
+        events.append("db-absent")
+        raise probe.GatewayAuthParityError(classification)
+
+    cast(Any, session)._fixture.require_absent = fail_absence
+
+    with pytest.raises(probe.GatewayAuthParityExecutionError) as captured:
+        with session:
+            session.prepare()
+
+    assert captured.value.first_failure == classification
+    assert captured.value.cleanup_required is False
+    assert events == ["identity-absent", "db-absent", "identity-release"]
+
+
+def test_require_absent_cleanup_unknown_stops_before_identity_or_fixture_mutation() -> None:
+    events: list[str] = []
+    session = _session(events)
+
+    def fail_cleanup_proof() -> None:
+        events.append("db-cleanup-unknown")
+        raise probe.GatewayAuthParityError(
+            fixture_diagnostic_failure_classification(FixtureDiagnosticPredicate.UNKNOWN)
+        )
+
+    cast(Any, session)._fixture.require_absent = fail_cleanup_proof
+
+    with pytest.raises(probe.GatewayAuthParityExecutionError) as captured:
+        with session:
+            session.prepare()
+
+    assert captured.value.first_failure == ("GATEWAY_AUTH_PARITY_FIXTURE_REQUIRE_ABSENT_UNKNOWN")
+    assert cast(Any, session)._mutated is False
+    assert events == ["identity-absent", "db-cleanup-unknown", "identity-release"]
+    assert "identity-create-disabled" not in events
+    assert "db-prepare" not in events
 
 
 @pytest.mark.parametrize(

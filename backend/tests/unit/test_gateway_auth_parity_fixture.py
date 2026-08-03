@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import io
+import json
+import os
+import sys
 from dataclasses import replace
 from datetime import timedelta
+from pathlib import Path
 from typing import Any, cast
 from uuid import UUID
 
@@ -183,6 +188,7 @@ def _request(operation: fixture.FixtureOperation) -> fixture.FixtureRequest:
         operation=operation,
         allow_external_subject="10000000-0000-4000-8000-000000000001",
         deny_external_subject="10000000-0000-4000-8000-000000000002",
+        source_sha256=fixture.current_fixture_source_sha256(),
     )
 
 
@@ -199,6 +205,165 @@ def test_fixture_contract_is_exact_human_least_scope_and_not_a_service_identity(
     assert "service-accounts" not in allow.groups
     assert "admin.manage" not in (*allow.allowed_actions, *deny.allowed_actions)
     assert allow.subject_id != deny.subject_id
+
+
+def test_require_absent_diagnostic_envelope_is_closed_bounded_and_value_free() -> None:
+    assert tuple(fixture.FixtureDiagnosticOperation) == (
+        fixture.FixtureDiagnosticOperation.REQUIRE_ABSENT,
+    )
+    assert tuple(fixture.FixtureDiagnosticPredicate) == (
+        fixture.FixtureDiagnosticPredicate.PASS,
+        fixture.FixtureDiagnosticPredicate.FIXED_INPUT_PROTOCOL,
+        fixture.FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY,
+        fixture.FixtureDiagnosticPredicate.REPOSITORY_NOT_ABSENT,
+        fixture.FixtureDiagnosticPredicate.REPOSITORY_QUERY_DEPENDENCY,
+        fixture.FixtureDiagnosticPredicate.IMAGE_PROVENANCE,
+        fixture.FixtureDiagnosticPredicate.PROCESS_SPAWN,
+        fixture.FixtureDiagnosticPredicate.PROCESS_TIMEOUT,
+        fixture.FixtureDiagnosticPredicate.PROCESS_NONZERO,
+        fixture.FixtureDiagnosticPredicate.OUTPUT_SIZE,
+        fixture.FixtureDiagnosticPredicate.OUTPUT_LINE,
+        fixture.FixtureDiagnosticPredicate.OUTPUT_JSON,
+        fixture.FixtureDiagnosticPredicate.OUTPUT_SHAPE,
+        fixture.FixtureDiagnosticPredicate.OUTPUT_TUPLE,
+        fixture.FixtureDiagnosticPredicate.UNKNOWN,
+    )
+    for predicate in fixture.FixtureDiagnosticPredicate:
+        evidence = fixture.FixtureDiagnosticEnvelope(
+            operation=fixture.FixtureDiagnosticOperation.REQUIRE_ABSENT,
+            predicate=predicate,
+        )
+        line = fixture.format_fixture_diagnostic_line(evidence)
+        assert fixture.parse_fixture_diagnostic_line(line) == evidence
+        assert len(line.encode("utf-8")) <= fixture.MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES
+        for forbidden in ("provider-secret-sentinel", "sql", "count", "identifier"):
+            assert forbidden not in line.casefold()
+
+
+@pytest.mark.parametrize(
+    ("raw", "predicate"),
+    (
+        ("", "OUTPUT_LINE"),
+        ("{}\n{}", "OUTPUT_LINE"),
+        ("not-json", "OUTPUT_JSON"),
+        ("[]", "OUTPUT_SHAPE"),
+        ('{"operation":"REQUIRE_ABSENT"}', "OUTPUT_SHAPE"),
+        (
+            '{"operation":"REQUIRE_ABSENT","predicate":"NOT_REVIEWED"}',
+            "OUTPUT_TUPLE",
+        ),
+        (
+            '{"operation":"REQUIRE_ABSENT","predicate":null}',
+            "OUTPUT_TUPLE",
+        ),
+        (
+            '{"operation":"PREPARE","predicate":"PASS"}',
+            "OUTPUT_TUPLE",
+        ),
+        (
+            '{"operation":"REQUIRE_ABSENT","operation":"REQUIRE_ABSENT","predicate":"PASS"}',
+            "OUTPUT_TUPLE",
+        ),
+    ),
+)
+def test_require_absent_diagnostic_parser_classifies_protocol_defects_without_raw(
+    raw: str,
+    predicate: str,
+) -> None:
+    with pytest.raises(fixture.FixtureDiagnosticProtocolError) as captured:
+        fixture.parse_fixture_diagnostic_line(raw)
+
+    assert captured.value.predicate.value == predicate
+    if raw:
+        assert raw not in str(captured.value)
+
+
+def test_require_absent_diagnostic_parser_rejects_oversized_output_before_json() -> None:
+    raw = "provider-secret-sentinel" * fixture.MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES
+
+    with pytest.raises(fixture.FixtureDiagnosticProtocolError) as captured:
+        fixture.parse_fixture_diagnostic_line(raw)
+
+    assert captured.value.predicate is fixture.FixtureDiagnosticPredicate.OUTPUT_SIZE
+    assert "provider" not in str(captured.value)
+
+
+@pytest.mark.parametrize("failure", ("missing", "symlink", "hardlink"))
+def test_fixture_source_provenance_rejects_missing_or_ambiguous_identity_before_query(
+    failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = tmp_path / "fixture.py"
+    original.write_bytes(b"current-fixture-source")
+    selected = original
+    if failure == "missing":
+        selected = tmp_path / "missing.py"
+    elif failure == "symlink":
+        selected = tmp_path / "symlink.py"
+        selected.symlink_to(original)
+    else:
+        selected = tmp_path / "hardlink.py"
+        os.link(original, selected)
+    monkeypatch.setattr(fixture, "__file__", os.fspath(selected))
+
+    with pytest.raises(fixture.GatewayAuthParityFixtureError) as captured:
+        fixture.current_fixture_source_sha256()
+
+    assert captured.value.diagnostic_predicate is (
+        fixture.FixtureDiagnosticPredicate.IMAGE_PROVENANCE
+    )
+
+
+def test_fixture_source_provenance_matches_exact_current_bytes_and_rejects_stale_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = tmp_path / "fixture.py"
+    selected.write_bytes(b"current-fixture-source")
+    monkeypatch.setattr(fixture, "__file__", os.fspath(selected))
+    digest = fixture.current_fixture_source_sha256()
+
+    fixture.require_current_fixture_source(digest)
+    with pytest.raises(fixture.GatewayAuthParityFixtureError) as captured:
+        fixture.require_current_fixture_source("0" * 64)
+
+    assert captured.value.diagnostic_predicate is (
+        fixture.FixtureDiagnosticPredicate.IMAGE_PROVENANCE
+    )
+
+
+def test_stale_fixture_source_provenance_stops_before_repository_query(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = _request(fixture.FixtureOperation.REQUIRE_ABSENT)
+    raw = json.dumps(
+        {
+            "contract": request.contract,
+            "operation": request.operation.value,
+            "allow_external_subject": request.allow_external_subject,
+            "deny_external_subject": request.deny_external_subject,
+            "source_sha256": "0" * 64,
+        }
+    ).encode()
+    queries: list[str] = []
+
+    async def query(_request: fixture.FixtureRequest) -> fixture.FixtureEvidence:
+        queries.append("query")
+        return fixture.FixtureEvidence("absent", 0, 0, 0)
+
+    monkeypatch.setattr(fixture, "execute_fixture_request", query)
+    monkeypatch.setattr(sys, "argv", ["fixture", "require-absent"])
+    monkeypatch.setattr(sys, "stdin", type("Input", (), {"buffer": io.BytesIO(raw)})())
+
+    assert fixture.main() == 2
+
+    output = capsys.readouterr()
+    evidence = fixture.parse_fixture_diagnostic_line(output.err.rstrip("\n"))
+    assert evidence.predicate is fixture.FixtureDiagnosticPredicate.IMAGE_PROVENANCE
+    assert output.out == ""
+    assert queries == []
 
 
 @pytest.mark.asyncio
@@ -286,6 +451,7 @@ def test_fixture_request_never_retains_raw_provider_or_secret_values() -> None:
             "operation": request.operation.value,
             "allow_external_subject": request.allow_external_subject,
             "deny_external_subject": request.deny_external_subject,
+            "source_sha256": request.source_sha256,
         }
     )
 
@@ -452,10 +618,127 @@ async def test_sql_absence_rejects_orphaned_privilege_residual_before_prepare() 
     with pytest.raises(
         fixture.GatewayAuthParityFixtureError,
         match="GATEWAY_AUTH_PARITY_FIXTURE_NOT_ABSENT",
-    ):
+    ) as captured:
         await repository.require_absent(identities)
 
+    assert (
+        captured.value.diagnostic_predicate
+        is fixture.FixtureDiagnosticPredicate.REPOSITORY_NOT_ABSENT
+    )
     assert session.execute_calls == []
+
+
+@pytest.mark.asyncio
+async def test_sql_absence_query_failure_is_fixed_select_only_and_nonleaking() -> None:
+    identities = fixture.fixture_identities(_request(fixture.FixtureOperation.REQUIRE_ABSENT))
+    session = RecordingSqlSession(subjects={}, memberships={})
+
+    async def fail_query(_statement: object) -> _ScalarRows:
+        raise RuntimeError("sql-provider-secret-sentinel")
+
+    cast(Any, session).scalars = fail_query
+    repository = fixture.SqlGatewayAuthParityFixtureRepository(
+        cast(Any, session),
+        issuer="http://keycloak:8080/realms/datariver",
+    )
+
+    with pytest.raises(fixture.GatewayAuthParityFixtureError) as captured:
+        await repository.require_absent(identities)
+
+    assert captured.value.diagnostic_predicate is (
+        fixture.FixtureDiagnosticPredicate.REPOSITORY_QUERY_DEPENDENCY
+    )
+    assert "sql-provider" not in str(captured.value)
+    assert session.execute_calls == []
+
+
+def test_require_absent_child_emits_one_fixed_line_and_never_raw_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = _request(fixture.FixtureOperation.REQUIRE_ABSENT)
+    raw = json.dumps(
+        {
+            "contract": request.contract,
+            "operation": request.operation.value,
+            "allow_external_subject": request.allow_external_subject,
+            "deny_external_subject": request.deny_external_subject,
+            "source_sha256": request.source_sha256,
+        }
+    ).encode()
+
+    async def fail(_request: fixture.FixtureRequest) -> fixture.FixtureEvidence:
+        raise fixture.GatewayAuthParityFixtureError(
+            "raw-provider-secret-sentinel",
+            diagnostic_predicate=fixture.FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY,
+        )
+
+    monkeypatch.setattr(fixture, "execute_fixture_request", fail)
+    monkeypatch.setattr(sys, "argv", ["fixture", "require-absent"])
+    monkeypatch.setattr(sys, "stdin", type("Input", (), {"buffer": io.BytesIO(raw)})())
+
+    assert fixture.main() == 2
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert output.err.count("\n") == 1
+    evidence = fixture.parse_fixture_diagnostic_line(output.err.rstrip("\n"))
+    assert evidence.predicate is fixture.FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY
+    assert "provider" not in output.err
+
+
+def test_require_absent_child_success_emits_only_the_pass_envelope(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    request = _request(fixture.FixtureOperation.REQUIRE_ABSENT)
+    raw = json.dumps(
+        {
+            "contract": request.contract,
+            "operation": request.operation.value,
+            "allow_external_subject": request.allow_external_subject,
+            "deny_external_subject": request.deny_external_subject,
+            "source_sha256": request.source_sha256,
+        }
+    ).encode()
+
+    async def succeed(_request: fixture.FixtureRequest) -> fixture.FixtureEvidence:
+        return fixture.FixtureEvidence("absent", 0, 0, 0)
+
+    monkeypatch.setattr(fixture, "execute_fixture_request", succeed)
+    monkeypatch.setattr(sys, "argv", ["fixture", "require-absent"])
+    monkeypatch.setattr(sys, "stdin", type("Input", (), {"buffer": io.BytesIO(raw)})())
+
+    assert fixture.main() == 0
+
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert output.out.count("\n") == 1
+    evidence = fixture.parse_fixture_diagnostic_line(output.out.rstrip("\n"))
+    assert evidence == fixture.FixtureDiagnosticEnvelope(
+        fixture.FixtureDiagnosticOperation.REQUIRE_ABSENT,
+        fixture.FixtureDiagnosticPredicate.PASS,
+    )
+
+
+def test_require_absent_child_rejects_invalid_private_request_as_fixed_input_protocol(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(sys, "argv", ["fixture", "require-absent"])
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        type("Input", (), {"buffer": io.BytesIO(b"provider-secret-sentinel")})(),
+    )
+
+    assert fixture.main() == 2
+
+    output = capsys.readouterr()
+    assert output.out == ""
+    evidence = fixture.parse_fixture_diagnostic_line(output.err.rstrip("\n"))
+    assert evidence.predicate is fixture.FixtureDiagnosticPredicate.FIXED_INPUT_PROTOCOL
+    assert "provider" not in output.err
 
 
 @pytest.mark.asyncio

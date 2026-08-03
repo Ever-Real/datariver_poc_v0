@@ -7,6 +7,7 @@ import subprocess
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any, Self, cast
@@ -14,6 +15,13 @@ from typing import Any, Self, cast
 import pytest
 
 from datariver.config import Settings
+from datariver.gateway_auth_parity_fixture import (
+    FixtureDiagnosticEnvelope,
+    FixtureDiagnosticOperation,
+    FixtureDiagnosticPredicate,
+    fixture_diagnostic_failure_classification,
+    format_fixture_diagnostic_line,
+)
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = ROOT / "scripts" / "platform_workflow.py"
@@ -64,6 +72,7 @@ def _load_update_module() -> ModuleType:
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    previous_update_module = sys.modules.get(spec.name)
     previous_platform_module = sys.modules.get("platform_workflow")
     previous_capacity_module = sys.modules.get("docker_capacity")
     previous_gateway_parity_module = sys.modules.get("probe_gateway_auth_parity")
@@ -84,6 +93,7 @@ def _load_update_module() -> ModuleType:
     sys.modules["platform_workflow"] = workflow
     sys.modules["docker_capacity"] = capacity_module
     sys.modules["probe_gateway_auth_parity"] = gateway_parity_module
+    sys.modules[spec.name] = module
     try:
         capacity_spec.loader.exec_module(capacity_module)
         gateway_parity_spec.loader.exec_module(gateway_parity_module)
@@ -101,6 +111,10 @@ def _load_update_module() -> ModuleType:
             sys.modules.pop("probe_gateway_auth_parity", None)
         else:
             sys.modules["probe_gateway_auth_parity"] = previous_gateway_parity_module
+        if previous_update_module is None:
+            sys.modules.pop(spec.name, None)
+        else:
+            sys.modules[spec.name] = previous_update_module
 
     @contextmanager
     def test_lock(_root: Path) -> Iterator[Any]:
@@ -1944,11 +1958,14 @@ def test_gateway_fixture_compose_boundary_uses_fixed_private_stdin_and_exact_evi
         "datariver.gateway_auth_parity_fixture",
         "prepare",
     )
+    assert "--name" not in command
+    assert "--label" not in command
     assert set(request) == {
         "allow_external_subject",
         "contract",
         "deny_external_subject",
         "operation",
+        "source_sha256",
     }
     assert request["operation"] == "prepare"
     assert capsys.readouterr().out == ""
@@ -2032,6 +2049,1383 @@ def test_gateway_fixture_compose_timeout_is_fixed_not_retried_and_never_exposes_
     operator = capsys.readouterr().out + capsys.readouterr().err + str(captured.value)
     for forbidden in ("provider-path", "token-secret", "stderr-secret"):
         assert forbidden not in operator
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    tuple(
+        predicate
+        for predicate in FixtureDiagnosticPredicate
+        if predicate is not FixtureDiagnosticPredicate.PASS
+    ),
+)
+def test_gateway_fixture_require_absent_propagates_each_fixed_child_predicate(
+    predicate: FixtureDiagnosticPredicate,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    line = format_fixture_diagnostic_line(
+        FixtureDiagnosticEnvelope(
+            FixtureDiagnosticOperation.REQUIRE_ABSENT,
+            predicate,
+        )
+    )
+    monkeypatch.setattr(
+        update,
+        "_bounded_fixture_diagnostic_process",
+        lambda command, _input_text: subprocess.CompletedProcess(command, 2, "", line),
+    )
+    monkeypatch.setattr(
+        update,
+        "_fixture_container_snapshot",
+        lambda: update._FixtureContainerState.ABSENT,
+    )
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+    )
+
+    with pytest.raises(
+        update.GatewayAuthParityError,
+        match=fixture_diagnostic_failure_classification(predicate),
+    ):
+        controller.require_absent()
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "returncode", "predicate"),
+    (
+        ("", "", 2, FixtureDiagnosticPredicate.PROCESS_NONZERO),
+        ("x" * 258, "", 0, FixtureDiagnosticPredicate.OUTPUT_SIZE),
+        ("not-json", "", 0, FixtureDiagnosticPredicate.OUTPUT_JSON),
+        ("{}\n{}", "", 0, FixtureDiagnosticPredicate.OUTPUT_LINE),
+        (
+            format_fixture_diagnostic_line(
+                FixtureDiagnosticEnvelope(
+                    FixtureDiagnosticOperation.REQUIRE_ABSENT,
+                    FixtureDiagnosticPredicate.PASS,
+                )
+            ),
+            "conflicting-secret-sentinel",
+            0,
+            FixtureDiagnosticPredicate.OUTPUT_TUPLE,
+        ),
+    ),
+)
+def test_gateway_fixture_require_absent_classifies_parent_process_and_output_defects(
+    stdout: str,
+    stderr: str,
+    returncode: int,
+    predicate: FixtureDiagnosticPredicate,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    monkeypatch.setattr(
+        update,
+        "_bounded_fixture_diagnostic_process",
+        lambda command, _input_text: subprocess.CompletedProcess(
+            command,
+            returncode,
+            stdout,
+            stderr,
+        ),
+    )
+    monkeypatch.setattr(
+        update,
+        "_fixture_container_snapshot",
+        lambda: update._FixtureContainerState.ABSENT,
+    )
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+    )
+
+    evidence = controller.diagnose_require_absent()
+
+    assert evidence.predicate is predicate
+    operator = capsys.readouterr().out + capsys.readouterr().err
+    assert "secret-sentinel" not in operator
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    (
+        FixtureDiagnosticPredicate.PROCESS_SPAWN,
+        FixtureDiagnosticPredicate.PROCESS_TIMEOUT,
+        FixtureDiagnosticPredicate.UNKNOWN,
+    ),
+)
+def test_gateway_fixture_require_absent_process_failures_are_fixed_and_not_retried(
+    predicate: FixtureDiagnosticPredicate,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    calls = 0
+
+    def fail(*_args: object, **_kwargs: object) -> FixtureDiagnosticPredicate:
+        nonlocal calls
+        calls += 1
+        return predicate
+
+    monkeypatch.setattr(update, "_bounded_fixture_diagnostic_process", fail)
+    monkeypatch.setattr(
+        update,
+        "_fixture_container_snapshot",
+        lambda: update._FixtureContainerState.ABSENT,
+    )
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+    )
+
+    evidence = controller.diagnose_require_absent()
+
+    assert evidence.predicate is predicate
+    assert calls == 1
+    operator = capsys.readouterr().out + capsys.readouterr().err
+    assert "secret" not in operator.casefold()
+
+
+def test_no_argument_fixture_diagnostic_holds_lock_and_stops_after_require_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    env_file.write_text("APP_ENV=development\n", encoding="utf-8")
+    environment = {"APP_ENV": "development"}
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        environment_key_hashes=update.environment_key_hashes(environment),
+    )
+    events: list[str] = []
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        events.append("lock-enter")
+        try:
+            yield object()
+        finally:
+            events.append("lock-exit")
+
+    class Fixture:
+        def __init__(self, **kwargs: object) -> None:
+            assert kwargs["source_sha256"] == "a" * 64
+            self.execution = cast(Any, kwargs["execution_state"])
+            events.append("fixture-init")
+
+        def diagnose_require_absent(self) -> FixtureDiagnosticEnvelope:
+            events.append("require-absent")
+            self.execution.container_attempted = True
+            self.execution.container_cleanup_known = True
+            self.execution.container_cleanup_required = False
+            self.execution.container_residual_known = True
+            self.execution.container_residual_count = 0
+            return FixtureDiagnosticEnvelope(
+                FixtureDiagnosticOperation.REQUIRE_ABSENT,
+                FixtureDiagnosticPredicate.PASS,
+            )
+
+    def source_digest() -> str:
+        events.append("source")
+        return "a" * 64
+
+    def source_is_clean() -> bool:
+        events.append("clean")
+        return True
+
+    def capacity(*_args: object, **_kwargs: object) -> str:
+        events.append("capacity")
+        return "builder"
+
+    def build(**_kwargs: object) -> object:
+        events.append("build")
+        return update._FixtureBuildOutcome(True, True, True)
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "read_env_values", lambda _path: environment)
+    monkeypatch.setattr(
+        update,
+        "current_fixture_source_sha256",
+        source_digest,
+    )
+    monkeypatch.setattr(
+        update,
+        "_fixture_diagnostic_source_is_clean",
+        source_is_clean,
+    )
+    monkeypatch.setattr(
+        update,
+        "_preflight_build_capacity",
+        capacity,
+    )
+    monkeypatch.setattr(
+        update,
+        "_require_idle_builder",
+        lambda *_args, **_kwargs: events.append("idle"),
+    )
+    monkeypatch.setattr(
+        update,
+        "_build_current_fixture_image",
+        build,
+    )
+    monkeypatch.setattr(update, "_ComposeGatewayAuthParityFixture", Fixture)
+    for forbidden in (
+        "_gateway_auth_parity_session",
+        "_apply_topology_reconciliation",
+        "write_applied_state",
+    ):
+        monkeypatch.setattr(
+            update,
+            forbidden,
+            lambda *_args, name=forbidden, **_kwargs: events.append(name),
+        )
+    monkeypatch.setattr(sys, "argv", [os.fspath(UPDATE_MODULE_PATH)])
+
+    assert update.main() == 0
+
+    assert events == [
+        "lock-enter",
+        "clean",
+        "source",
+        "capacity",
+        "idle",
+        "build",
+        "idle",
+        "clean",
+        "source",
+        "fixture-init",
+        "require-absent",
+        "lock-exit",
+    ]
+    output = json.loads(capsys.readouterr().out)
+    assert output["classification"] == "PASS"
+    assert output["predicate"] == "PASS"
+    assert output["cache_action_count"] == 0
+    assert output["cache_action_succeeded"] is False
+    assert output["build_attempted"] is True
+    assert output["build_succeeded"] is True
+    assert output["container_attempted"] is True
+    assert output["container_residual_count"] == 0
+    assert output["business_mutation_count"] == 0
+    assert output["retry_count"] == 0
+
+
+@pytest.mark.parametrize("outcome_known", (True, False))
+def test_fixture_diagnostic_provenance_failure_stops_before_ephemeral_query(
+    outcome_known: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    environment = {"APP_ENV": "development"}
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(tmp_path / ".env.mac-development"),
+        environment_key_hashes=update.environment_key_hashes(environment),
+    )
+    (tmp_path / ".env.mac-development").write_text("APP_ENV=development\n", encoding="utf-8")
+    events: list[str] = []
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "read_env_values", lambda _path: environment)
+    monkeypatch.setattr(update, "current_fixture_source_sha256", lambda: "a" * 64)
+    monkeypatch.setattr(update, "_fixture_diagnostic_source_is_clean", lambda: True)
+    monkeypatch.setattr(update, "_preflight_build_capacity", lambda *_args, **_kwargs: "builder")
+    monkeypatch.setattr(update, "_require_idle_builder", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        update,
+        "_build_current_fixture_image",
+        lambda **_kwargs: update._FixtureBuildOutcome(
+            attempted=True,
+            succeeded=False,
+            outcome_known=outcome_known,
+        ),
+    )
+    fixture_type = update._ComposeGatewayAuthParityFixture
+    original_init = fixture_type.__init__
+
+    def record_init(self: Any, **kwargs: object) -> None:
+        events.append("query")
+        original_init(self, **kwargs)
+
+    monkeypatch.setattr(fixture_type, "__init__", record_init)
+
+    evidence = update._fixture_require_absent_diagnostic()
+
+    assert evidence.predicate is FixtureDiagnosticPredicate.IMAGE_PROVENANCE
+    assert events == []
+
+
+def test_fixture_diagnostic_dirty_source_stops_before_capacity_build_and_query(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    env_file.write_text("APP_ENV=development\n", encoding="utf-8")
+    environment = {"APP_ENV": "development"}
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        environment_key_hashes=update.environment_key_hashes(environment),
+    )
+    events: list[str] = []
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "read_env_values", lambda _path: environment)
+    monkeypatch.setattr(update, "_fixture_diagnostic_source_is_clean", lambda: False)
+    monkeypatch.setattr(
+        update,
+        "_preflight_build_capacity",
+        lambda *_args, **_kwargs: events.append("capacity"),
+    )
+    monkeypatch.setattr(
+        update,
+        "_build_current_fixture_image",
+        lambda **_kwargs: events.append("build"),
+    )
+    fixture_type = update._ComposeGatewayAuthParityFixture
+    original_init = fixture_type.__init__
+
+    def record_init(self: Any, **kwargs: object) -> None:
+        events.append("query")
+        original_init(self, **kwargs)
+
+    monkeypatch.setattr(fixture_type, "__init__", record_init)
+
+    evidence = update._fixture_require_absent_diagnostic()
+
+    assert evidence.predicate is FixtureDiagnosticPredicate.IMAGE_PROVENANCE
+    assert events == []
+
+
+def test_fixture_diagnostic_build_is_exact_local_bootstrap_action_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    commands: list[tuple[str, ...]] = []
+
+    def build(command: tuple[str, ...]) -> object:
+        commands.append(command)
+        return update._FixtureBuildOutcome(True, True, True)
+
+    monkeypatch.setattr(update, "_bounded_suppressed_fixture_build", build)
+
+    outcome = update._build_current_fixture_image(
+        env_file=tmp_path / ".env.mac-development",
+        files=(ROOT / "compose.yaml",),
+    )
+    assert outcome == update._FixtureBuildOutcome(True, True, True)
+    assert len(commands) == 1
+    assert commands[0][-2:] == ("build", "local-bootstrap")
+    profile_index = commands[0].index("--profile")
+    assert commands[0][profile_index + 1] == "tools"
+    assert "--no-build" not in commands[0]
+
+
+@pytest.mark.parametrize(
+    ("result", "expected"),
+    (
+        (subprocess.CompletedProcess(("git",), 0, "", ""), True),
+        (subprocess.CompletedProcess(("git",), 0, " M fixed.py", ""), False),
+        (subprocess.CompletedProcess(("git",), 2, "", ""), False),
+        (FixtureDiagnosticPredicate.OUTPUT_SIZE, False),
+    ),
+)
+def test_fixture_diagnostic_clean_source_proof_is_fail_closed(
+    result: subprocess.CompletedProcess[str] | FixtureDiagnosticPredicate,
+    expected: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    calls: list[tuple[tuple[str, ...], str]] = []
+
+    def run(command: tuple[str, ...], input_text: str) -> object:
+        calls.append((command, input_text))
+        return result
+
+    monkeypatch.setattr(update, "_bounded_fixture_diagnostic_process", run)
+
+    assert update._fixture_diagnostic_source_is_clean() is expected
+    assert calls == [(("git", "status", "--porcelain", "--untracked-files=normal"), "{}")]
+
+
+def test_fixture_diagnostic_dual_stream_capture_is_capped_while_child_runs(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+
+    outcome = update._bounded_fixture_diagnostic_process(
+        (
+            sys.executable,
+            "-c",
+            (
+                "import os,time;"
+                f"os.write(1,b'raw-secret-sentinel'+b'x'*{update.MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES});"
+                "time.sleep(5)"
+            ),
+        ),
+        "{}",
+    )
+
+    assert outcome is FixtureDiagnosticPredicate.OUTPUT_SIZE
+    exposed = capsys.readouterr().out + capsys.readouterr().err
+    assert "raw-secret-sentinel" not in exposed
+
+
+def test_fixture_diagnostic_dual_stream_conflict_and_nonzero_remain_fixed() -> None:
+    update = _load_update_module()
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=ROOT / ".env.mac-development",
+        files=(ROOT / "compose.yaml",),
+    )
+    conflict = update._bounded_fixture_diagnostic_process(
+        (sys.executable, "-c", "import sys;print('{}');print('{}',file=sys.stderr)"),
+        "{}",
+    )
+    nonzero = update._bounded_fixture_diagnostic_process(
+        (sys.executable, "-c", "import sys;sys.exit(7)"),
+        "{}",
+    )
+
+    assert not isinstance(conflict, FixtureDiagnosticPredicate)
+    assert controller._parse_require_absent_result(conflict).predicate is (
+        FixtureDiagnosticPredicate.OUTPUT_TUPLE
+    )
+    assert not isinstance(nonzero, FixtureDiagnosticPredicate)
+    assert controller._parse_require_absent_result(nonzero).predicate is (
+        FixtureDiagnosticPredicate.PROCESS_NONZERO
+    )
+
+
+def test_fixture_diagnostic_timeout_terminates_and_reaps_child_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    original_popen = subprocess.Popen
+    processes: list[subprocess.Popen[bytes]] = []
+
+    def popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        process: subprocess.Popen[bytes] = cast(Any, original_popen)(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(update.subprocess, "Popen", popen)
+    monkeypatch.setattr(update, "_FIXTURE_DIAGNOSTIC_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(update, "_FIXTURE_DIAGNOSTIC_REAP_SECONDS", 1)
+
+    outcome = update._bounded_fixture_diagnostic_process(
+        (sys.executable, "-c", "import time;time.sleep(5)"),
+        "{}",
+    )
+
+    assert outcome is FixtureDiagnosticPredicate.PROCESS_TIMEOUT
+    assert len(processes) == 1
+    assert processes[0].poll() is not None
+
+
+def test_fixture_diagnostic_timeout_kills_child_that_ignores_terminate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    original_popen = subprocess.Popen
+    processes: list[subprocess.Popen[bytes]] = []
+
+    def popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        process: subprocess.Popen[bytes] = cast(Any, original_popen)(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(update.subprocess, "Popen", popen)
+    monkeypatch.setattr(update, "_FIXTURE_DIAGNOSTIC_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(update, "_FIXTURE_DIAGNOSTIC_REAP_SECONDS", 0.05)
+
+    outcome = update._bounded_fixture_diagnostic_process(
+        (
+            sys.executable,
+            "-c",
+            "import signal,time;signal.signal(signal.SIGTERM,signal.SIG_IGN);time.sleep(5)",
+        ),
+        "{}",
+    )
+
+    assert outcome is FixtureDiagnosticPredicate.PROCESS_TIMEOUT
+    assert len(processes) == 1
+    assert processes[0].poll() is not None
+
+
+def test_fixture_diagnostic_spawn_and_reap_failures_are_fixed_and_nonleaking(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    original_popen = subprocess.Popen
+
+    def spawn_failure(*_args: object, **_kwargs: object) -> object:
+        raise OSError("raw-provider-secret-sentinel")
+
+    monkeypatch.setattr(update.subprocess, "Popen", spawn_failure)
+    assert update._bounded_fixture_diagnostic_process(("fixed",), "{}") is (
+        FixtureDiagnosticPredicate.PROCESS_SPAWN
+    )
+
+    monkeypatch.setattr(update.subprocess, "Popen", original_popen)
+    inner = original_popen(
+        (sys.executable, "-c", "import time;time.sleep(5)"),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+
+    class UnreapableProcess:
+        stdin = inner.stdin
+        stdout = inner.stdout
+        stderr = inner.stderr
+
+        def poll(self) -> None:
+            return None
+
+        def wait(self, *, timeout: float) -> int:
+            raise subprocess.TimeoutExpired(("fixed",), timeout)
+
+        def terminate(self) -> None:
+            inner.terminate()
+
+        def kill(self) -> None:
+            inner.kill()
+
+    monkeypatch.setattr(update.subprocess, "Popen", lambda *_args, **_kwargs: UnreapableProcess())
+    monkeypatch.setattr(update, "_FIXTURE_DIAGNOSTIC_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(update, "_FIXTURE_DIAGNOSTIC_REAP_SECONDS", 0.01)
+    try:
+        outcome = update._bounded_fixture_diagnostic_process(("fixed",), "{}")
+    finally:
+        inner.kill()
+        inner.wait(timeout=1)
+
+    assert outcome is FixtureDiagnosticPredicate.UNKNOWN
+    assert "raw-provider" not in (capsys.readouterr().out + capsys.readouterr().err)
+
+
+def test_fixture_diagnostic_capacity_recorder_preserves_ambiguous_action() -> None:
+    update = _load_update_module()
+    calls: list[tuple[str, ...]] = []
+
+    class Executor:
+        def output(
+            self,
+            arguments: tuple[str, ...],
+            *,
+            classification: str,
+            timeout_seconds: int,
+        ) -> str:
+            del classification, timeout_seconds
+            calls.append(arguments)
+            if arguments[:3] == ("docker", "buildx", "prune"):
+                raise KeyboardInterrupt("raw-provider-secret-sentinel")
+            return "fixed"
+
+    recorder = update._FixtureDiagnosticCapacityExecutor(Executor())
+
+    with pytest.raises(KeyboardInterrupt):
+        recorder.output(
+            ("docker", "buildx", "prune", "--force"),
+            classification="fixed",
+            timeout_seconds=1,
+        )
+
+    assert calls == [("docker", "buildx", "prune", "--force")]
+    assert recorder.action_count_known is True
+    assert recorder.action_count == 1
+    assert recorder.action_succeeded is False
+    assert recorder.action_outcome_known is False
+
+
+def test_fixture_diagnostic_capacity_failure_retains_cache_action_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    env_file.write_text("APP_ENV=development\n", encoding="utf-8")
+    environment = {"APP_ENV": "development"}
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        environment_key_hashes=update.environment_key_hashes(environment),
+    )
+    recorder = SimpleNamespace(
+        action_count_known=True,
+        action_count=0,
+        action_succeeded=False,
+        action_outcome_known=True,
+    )
+    later_actions: list[str] = []
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    def capacity(*_args: object, **kwargs: object) -> str:
+        assert kwargs["executor"] is recorder
+        recorder.action_count = 1
+        recorder.action_outcome_known = False
+        raise KeyboardInterrupt("raw-provider-secret-sentinel")
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "read_env_values", lambda _path: environment)
+    monkeypatch.setattr(update, "_fixture_diagnostic_source_is_clean", lambda: True)
+    monkeypatch.setattr(update, "current_fixture_source_sha256", lambda: "a" * 64)
+    monkeypatch.setattr(update, "_FixtureDiagnosticCapacityExecutor", lambda: recorder)
+    monkeypatch.setattr(update, "_preflight_build_capacity", capacity)
+    monkeypatch.setattr(
+        update,
+        "_build_current_fixture_image",
+        lambda **_kwargs: later_actions.append("build"),
+    )
+    monkeypatch.setattr(
+        update,
+        "_ComposeGatewayAuthParityFixture",
+        lambda **_kwargs: later_actions.append("container"),
+    )
+
+    evidence = update._fixture_require_absent_diagnostic()
+
+    assert evidence.classification is (
+        update.FixtureDiagnosticExecutionClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY
+    assert evidence.cache_action_count_known is True
+    assert evidence.cache_action_count == 1
+    assert evidence.cache_action_outcome_known is False
+    assert evidence.build_attempted is False
+    assert evidence.container_attempted is False
+    assert evidence.retry_count == 0
+    assert later_actions == []
+
+
+def test_fixture_diagnostic_outer_evidence_is_bounded_honest_and_value_free() -> None:
+    update = _load_update_module()
+    execution = update._FixtureDiagnosticExecutionState(
+        cache_action_count_known=True,
+        cache_action_count=1,
+        cache_action_succeeded=False,
+        cache_action_outcome_known=False,
+        build_attempted=True,
+        build_succeeded=False,
+        build_outcome_known=False,
+        builder_idle_known=False,
+        container_attempted=True,
+        container_cleanup_known=False,
+        container_cleanup_required=True,
+        container_residual_known=False,
+        container_residual_count=None,
+    )
+    evidence = execution.to_evidence(FixtureDiagnosticPredicate.PROCESS_TIMEOUT)
+    line = update.format_fixture_diagnostic_execution_line(evidence)
+    document = json.loads(line)
+
+    assert evidence.classification is (
+        update.FixtureDiagnosticExecutionClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert document == {
+        "build_attempted": True,
+        "build_outcome_known": False,
+        "build_succeeded": False,
+        "builder_idle": False,
+        "builder_idle_known": False,
+        "business_mutation_count": 0,
+        "cache_action_count": 1,
+        "cache_action_count_known": True,
+        "cache_action_outcome_known": False,
+        "cache_action_succeeded": False,
+        "classification": "OPERATOR_REVIEW_REQUIRED",
+        "container_attempted": True,
+        "container_cleanup_known": False,
+        "container_cleanup_required": True,
+        "container_remove_attempts": 0,
+        "container_residual_count": None,
+        "container_residual_known": False,
+        "container_stop_attempts": 0,
+        "data_mutation_count": 0,
+        "identity_mutation_count": 0,
+        "operation": "REQUIRE_ABSENT",
+        "predicate": "PROCESS_TIMEOUT",
+        "push_count": 0,
+        "retry_count": 0,
+        "state_mutation_count": 0,
+        "topology_mutation_count": 0,
+    }
+    assert "provider-secret-sentinel" not in line
+    assert len(line.encode("utf-8")) <= update.MAXIMUM_FIXTURE_EXECUTION_EVIDENCE_BYTES
+
+    with pytest.raises(update.WorkflowError):
+        replace(evidence, retry_count=1)
+    with pytest.raises(update.WorkflowError):
+        replace(evidence, cache_action_count_known=1)
+
+
+def test_fixture_diagnostic_build_failure_always_attempts_post_idle_proof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    env_file.write_text("APP_ENV=development\n", encoding="utf-8")
+    environment = {"APP_ENV": "development"}
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        environment_key_hashes=update.environment_key_hashes(environment),
+    )
+    idle_calls: list[str] = []
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    def idle(*_args: object, **_kwargs: object) -> None:
+        idle_calls.append("idle")
+        if len(idle_calls) == 2:
+            raise RuntimeError("raw-provider-secret-sentinel")
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "read_env_values", lambda _path: environment)
+    monkeypatch.setattr(update, "_fixture_diagnostic_source_is_clean", lambda: True)
+    monkeypatch.setattr(update, "current_fixture_source_sha256", lambda: "a" * 64)
+    monkeypatch.setattr(update, "_preflight_build_capacity", lambda *_args, **_kwargs: "builder")
+    monkeypatch.setattr(update, "_require_idle_builder", idle)
+    monkeypatch.setattr(
+        update,
+        "_build_current_fixture_image",
+        lambda **_kwargs: update._FixtureBuildOutcome(
+            attempted=True,
+            succeeded=False,
+            outcome_known=False,
+        ),
+    )
+
+    evidence = update._fixture_require_absent_diagnostic()
+
+    assert idle_calls == ["idle", "idle"]
+    assert (
+        evidence.classification
+        is update.FixtureDiagnosticExecutionClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.build_attempted is True
+    assert evidence.build_succeeded is False
+    assert evidence.build_outcome_known is False
+    assert evidence.builder_idle_known is False
+    assert evidence.retry_count == 0
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_events", "expected_succeeded", "expected_known"),
+    (
+        ("nonzero", ("wait",), False, True),
+        ("terminate", ("wait", "terminate", "wait"), False, False),
+        (
+            "kill",
+            ("wait", "terminate", "wait", "kill", "wait"),
+            False,
+            False,
+        ),
+        (
+            "unreaped",
+            ("wait", "terminate", "wait", "kill", "wait"),
+            False,
+            False,
+        ),
+    ),
+)
+def test_fixture_diagnostic_build_process_outcome_and_reap_are_bounded(
+    mode: str,
+    expected_events: tuple[str, ...],
+    expected_succeeded: bool,
+    expected_known: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    events: list[str] = []
+
+    class Process:
+        def __init__(self) -> None:
+            self.wait_calls = 0
+
+        def wait(self, *, timeout: float) -> int:
+            events.append("wait")
+            self.wait_calls += 1
+            if mode == "nonzero":
+                return 7
+            if mode == "terminate" and self.wait_calls == 2:
+                return 0
+            if mode == "kill" and self.wait_calls == 3:
+                return 0
+            raise subprocess.TimeoutExpired(("fixed",), timeout)
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            events.append("terminate")
+
+        def kill(self) -> None:
+            events.append("kill")
+
+    monkeypatch.setattr(update.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+
+    outcome = update._bounded_suppressed_fixture_build(
+        ("docker", "compose", "build", "local-bootstrap")
+    )
+
+    assert tuple(events) == expected_events
+    assert outcome.attempted is True
+    assert outcome.succeeded is expected_succeeded
+    assert outcome.outcome_known is expected_known
+
+
+@pytest.mark.parametrize(
+    ("status", "contract", "operation", "expected"),
+    (
+        ("running", "SEC-GATEWAY-AUTH-PARITY-001-A-V1", "REQUIRE_ABSENT", "OWNED_RUNNING"),
+        ("exited", "SEC-GATEWAY-AUTH-PARITY-001-A-V1", "REQUIRE_ABSENT", "OWNED_STOPPED"),
+        ("running", "foreign-contract", "REQUIRE_ABSENT", "FOREIGN"),
+        ("running", "SEC-GATEWAY-AUTH-PARITY-001-A-V1", "OTHER", "FOREIGN"),
+        ("unknown", "SEC-GATEWAY-AUTH-PARITY-001-A-V1", "REQUIRE_ABSENT", "UNKNOWN"),
+    ),
+)
+def test_fixture_diagnostic_container_snapshot_requires_exact_name_and_labels(
+    status: str,
+    contract: str,
+    operation: str,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    commands: list[tuple[str, ...]] = []
+    results = iter(
+        (
+            subprocess.CompletedProcess(
+                ("docker",),
+                0,
+                f"{update._FIXTURE_DIAGNOSTIC_CONTAINER_NAME}\n",
+                "",
+            ),
+            subprocess.CompletedProcess(
+                ("docker",),
+                0,
+                f"{json.dumps(status)}|{json.dumps(contract)}|{json.dumps(operation)}\n",
+                "",
+            ),
+        )
+    )
+
+    def execute(command: tuple[str, ...], _input: str) -> object:
+        commands.append(command)
+        return next(results)
+
+    monkeypatch.setattr(update, "_bounded_fixture_diagnostic_process", execute)
+
+    snapshot = update._fixture_container_snapshot()
+
+    assert snapshot is update._FixtureContainerState[expected]
+    assert commands[0] == (
+        "docker",
+        "container",
+        "ls",
+        "--all",
+        "--filter",
+        f"name=^/{update._FIXTURE_DIAGNOSTIC_CONTAINER_NAME}$",
+        "--format",
+        "{{.Names}}",
+    )
+    assert commands[1][-1] == update._FIXTURE_DIAGNOSTIC_CONTAINER_NAME
+    assert "raw-container-id-sentinel" not in (capsys.readouterr().out + capsys.readouterr().err)
+
+
+@pytest.mark.parametrize(
+    "prestate",
+    (
+        "OWNED_RUNNING",
+        "OWNED_STOPPED",
+        "FOREIGN",
+        "UNKNOWN",
+    ),
+)
+def test_fixture_diagnostic_preexisting_exact_name_stops_before_child(
+    prestate: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    execution = update._FixtureDiagnosticExecutionState()
+    child_calls: list[str] = []
+    monkeypatch.setattr(
+        update,
+        "_fixture_container_snapshot",
+        lambda: update._FixtureContainerState[prestate],
+    )
+    monkeypatch.setattr(
+        update,
+        "_bounded_fixture_diagnostic_process",
+        lambda *_args, **_kwargs: child_calls.append("child"),
+    )
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+        source_sha256="a" * 64,
+        execution_state=execution,
+    )
+
+    evidence = controller.diagnose_require_absent()
+
+    assert evidence.predicate is FixtureDiagnosticPredicate.UNKNOWN
+    assert child_calls == []
+    assert execution.container_attempted is False
+    assert execution.container_cleanup_required is True
+
+
+def test_fixture_diagnostic_ambiguous_create_cleans_only_exact_owned_container(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    execution = update._FixtureDiagnosticExecutionState()
+    snapshots = iter(
+        (
+            update._FixtureContainerState.ABSENT,
+            update._FixtureContainerState.OWNED_RUNNING,
+            update._FixtureContainerState.OWNED_STOPPED,
+            update._FixtureContainerState.ABSENT,
+        )
+    )
+    controls: list[str] = []
+    commands: list[tuple[str, ...]] = []
+
+    def run_child(
+        command: tuple[str, ...],
+        _input: str,
+    ) -> FixtureDiagnosticPredicate:
+        commands.append(command)
+        return FixtureDiagnosticPredicate.PROCESS_TIMEOUT
+
+    def stop() -> Any:
+        controls.append("stop")
+        return update._DockerActionOutcome(True, True)
+
+    def remove() -> Any:
+        controls.append("remove")
+        return update._DockerActionOutcome(True, True)
+
+    monkeypatch.setattr(update, "_fixture_container_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(update, "_bounded_fixture_diagnostic_process", run_child)
+    monkeypatch.setattr(update, "_stop_fixture_container", stop)
+    monkeypatch.setattr(update, "_remove_fixture_container", remove)
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+        source_sha256="a" * 64,
+        execution_state=execution,
+    )
+
+    evidence = controller.diagnose_require_absent()
+
+    assert evidence.predicate is FixtureDiagnosticPredicate.PROCESS_TIMEOUT
+    assert len(commands) == 1
+    assert ("--name", update._FIXTURE_DIAGNOSTIC_CONTAINER_NAME) == (
+        commands[0][commands[0].index("--name")],
+        commands[0][commands[0].index("--name") + 1],
+    )
+    assert (
+        "--label",
+        update._FIXTURE_DIAGNOSTIC_CONTAINER_CONTRACT_LABEL,
+    ) == (
+        commands[0][commands[0].index("--label")],
+        commands[0][commands[0].index("--label") + 1],
+    )
+    second_label = commands[0].index("--label", commands[0].index("--label") + 1)
+    assert commands[0][second_label : second_label + 2] == (
+        "--label",
+        update._FIXTURE_DIAGNOSTIC_CONTAINER_OPERATION_LABEL,
+    )
+    assert controls == ["stop", "remove"]
+    assert execution.container_attempted is True
+    assert execution.container_stop_attempts == 1
+    assert execution.container_remove_attempts == 1
+    assert execution.container_cleanup_known is True
+    assert execution.container_cleanup_required is False
+    assert execution.container_residual_known is True
+    assert execution.container_residual_count == 0
+
+
+@pytest.mark.parametrize("failure_type", (RuntimeError, KeyboardInterrupt))
+def test_fixture_diagnostic_create_baseexception_still_proves_zero_residual(
+    failure_type: type[BaseException],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    execution = update._FixtureDiagnosticExecutionState()
+    snapshots = iter(
+        (
+            update._FixtureContainerState.ABSENT,
+            update._FixtureContainerState.ABSENT,
+        )
+    )
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise failure_type("raw-provider-secret-sentinel")
+
+    monkeypatch.setattr(update, "_fixture_container_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(update, "_bounded_fixture_diagnostic_process", fail)
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+        source_sha256="a" * 64,
+        execution_state=execution,
+    )
+
+    evidence = controller.diagnose_require_absent()
+
+    assert evidence.predicate is FixtureDiagnosticPredicate.UNKNOWN
+    assert execution.container_attempted is True
+    assert execution.container_stop_attempts == 0
+    assert execution.container_remove_attempts == 0
+    assert execution.container_cleanup_known is True
+    assert execution.container_cleanup_required is False
+    assert execution.container_residual_known is True
+    assert execution.container_residual_count == 0
+    assert "raw-provider-secret-sentinel" not in (capsys.readouterr().out + capsys.readouterr().err)
+
+
+def test_fixture_diagnostic_cleanup_failure_retains_exact_residual_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    execution = update._FixtureDiagnosticExecutionState()
+    snapshots = iter(
+        (
+            update._FixtureContainerState.ABSENT,
+            update._FixtureContainerState.OWNED_STOPPED,
+            update._FixtureContainerState.OWNED_STOPPED,
+        )
+    )
+    monkeypatch.setattr(update, "_fixture_container_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(
+        update,
+        "_bounded_fixture_diagnostic_process",
+        lambda *_args, **_kwargs: FixtureDiagnosticPredicate.PROCESS_TIMEOUT,
+    )
+    monkeypatch.setattr(
+        update,
+        "_remove_fixture_container",
+        lambda: update._DockerActionOutcome(False, False),
+    )
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+        source_sha256="a" * 64,
+        execution_state=execution,
+    )
+
+    controller.diagnose_require_absent()
+
+    assert execution.container_attempted is True
+    assert execution.container_remove_attempts == 1
+    assert execution.container_cleanup_known is True
+    assert execution.container_cleanup_required is True
+    assert execution.container_residual_known is True
+    assert execution.container_residual_count == 1
+
+
+@pytest.mark.parametrize(
+    ("cleanup_states", "failed_action"),
+    (
+        (("ABSENT", "UNKNOWN"), None),
+        (("ABSENT", "OWNED_STOPPED", "OWNED_STOPPED"), "remove"),
+        (("ABSENT", "OWNED_RUNNING", "OWNED_RUNNING"), "stop"),
+    ),
+)
+def test_fixture_diagnostic_child_pass_requires_proven_container_cleanup(
+    cleanup_states: tuple[str, ...],
+    failed_action: str | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    execution = update._FixtureDiagnosticExecutionState()
+    snapshots = iter(tuple(update._FixtureContainerState[state] for state in cleanup_states))
+    child_line = format_fixture_diagnostic_line(
+        FixtureDiagnosticEnvelope(
+            FixtureDiagnosticOperation.REQUIRE_ABSENT,
+            FixtureDiagnosticPredicate.PASS,
+        )
+    )
+    monkeypatch.setattr(update, "_fixture_container_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(
+        update,
+        "_bounded_fixture_diagnostic_process",
+        lambda command, _input: subprocess.CompletedProcess(command, 0, child_line, ""),
+    )
+    monkeypatch.setattr(
+        update,
+        "_stop_fixture_container",
+        lambda: update._DockerActionOutcome(failed_action != "stop", True),
+    )
+    monkeypatch.setattr(
+        update,
+        "_remove_fixture_container",
+        lambda: update._DockerActionOutcome(failed_action != "remove", True),
+    )
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+        source_sha256="a" * 64,
+        execution_state=execution,
+    )
+
+    evidence = controller.diagnose_require_absent()
+    outer = execution.to_evidence(evidence.predicate)
+
+    assert evidence.predicate is FixtureDiagnosticPredicate.UNKNOWN
+    assert outer.classification is (
+        update.FixtureDiagnosticExecutionClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert execution.container_cleanup_required is True
+
+
+def test_fixture_diagnostic_child_pass_cleanup_baseexception_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    execution = update._FixtureDiagnosticExecutionState()
+    snapshot_calls = 0
+    child_line = format_fixture_diagnostic_line(
+        FixtureDiagnosticEnvelope(
+            FixtureDiagnosticOperation.REQUIRE_ABSENT,
+            FixtureDiagnosticPredicate.PASS,
+        )
+    )
+
+    def snapshot() -> Any:
+        nonlocal snapshot_calls
+        snapshot_calls += 1
+        if snapshot_calls == 1:
+            return update._FixtureContainerState.ABSENT
+        raise KeyboardInterrupt("raw-cleanup-secret-sentinel")
+
+    monkeypatch.setattr(update, "_fixture_container_snapshot", snapshot)
+    monkeypatch.setattr(
+        update,
+        "_bounded_fixture_diagnostic_process",
+        lambda command, _input: subprocess.CompletedProcess(command, 0, child_line, ""),
+    )
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+        source_sha256="a" * 64,
+        execution_state=execution,
+    )
+
+    evidence = controller.diagnose_require_absent()
+
+    assert evidence.predicate is FixtureDiagnosticPredicate.UNKNOWN
+    assert execution.container_cleanup_known is False
+    assert execution.container_cleanup_required is True
+    assert execution.container_residual_known is False
+    assert "raw-cleanup-secret-sentinel" not in (capsys.readouterr().out + capsys.readouterr().err)
+
+
+def test_fixture_diagnostic_nonpass_first_defect_survives_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    execution = update._FixtureDiagnosticExecutionState()
+    snapshots = iter(
+        (
+            update._FixtureContainerState.ABSENT,
+            update._FixtureContainerState.UNKNOWN,
+        )
+    )
+    child_line = format_fixture_diagnostic_line(
+        FixtureDiagnosticEnvelope(
+            FixtureDiagnosticOperation.REQUIRE_ABSENT,
+            FixtureDiagnosticPredicate.REPOSITORY_NOT_ABSENT,
+        )
+    )
+    monkeypatch.setattr(update, "_fixture_container_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(
+        update,
+        "_bounded_fixture_diagnostic_process",
+        lambda command, _input: subprocess.CompletedProcess(command, 2, "", child_line),
+    )
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+        source_sha256="a" * 64,
+        execution_state=execution,
+    )
+
+    evidence = controller.diagnose_require_absent()
+    outer = execution.to_evidence(evidence.predicate)
+
+    assert evidence.predicate is FixtureDiagnosticPredicate.REPOSITORY_NOT_ABSENT
+    assert outer.classification is (
+        update.FixtureDiagnosticExecutionClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert outer.container_cleanup_required is True
+
+
+@pytest.mark.parametrize(
+    "poststate",
+    ("FOREIGN", "UNKNOWN"),
+)
+def test_fixture_diagnostic_ambiguous_create_never_touches_unowned_or_unknown_container(
+    poststate: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    execution = update._FixtureDiagnosticExecutionState()
+    snapshots = iter(
+        (
+            update._FixtureContainerState.ABSENT,
+            update._FixtureContainerState[poststate],
+        )
+    )
+    controls: list[str] = []
+    monkeypatch.setattr(update, "_fixture_container_snapshot", lambda: next(snapshots))
+    monkeypatch.setattr(
+        update,
+        "_bounded_fixture_diagnostic_process",
+        lambda *_args, **_kwargs: FixtureDiagnosticPredicate.PROCESS_TIMEOUT,
+    )
+    monkeypatch.setattr(
+        update,
+        "_stop_fixture_container",
+        lambda: controls.append("stop"),
+    )
+    monkeypatch.setattr(
+        update,
+        "_remove_fixture_container",
+        lambda: controls.append("remove"),
+    )
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+        source_sha256="a" * 64,
+        execution_state=execution,
+    )
+
+    evidence = controller.diagnose_require_absent()
+
+    assert evidence.predicate is FixtureDiagnosticPredicate.PROCESS_TIMEOUT
+    assert controls == []
+    assert execution.container_attempted is True
+    assert execution.container_cleanup_required is True
+    if poststate == "FOREIGN":
+        assert execution.container_cleanup_known is True
+        assert execution.container_residual_known is True
+        assert execution.container_residual_count == 1
+    else:
+        assert execution.container_cleanup_known is False
+        assert execution.container_residual_known is False
+        assert execution.container_residual_count is None
+
+
+def test_fixture_diagnostic_lock_exit_failure_preserves_all_attempted_actions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    env_file.write_text("APP_ENV=development\n", encoding="utf-8")
+    environment = {"APP_ENV": "development"}
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        environment_key_hashes=update.environment_key_hashes(environment),
+    )
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        try:
+            yield object()
+        finally:
+            raise KeyboardInterrupt("raw-lock-secret-sentinel")
+
+    class Fixture:
+        def __init__(self, **kwargs: object) -> None:
+            self.execution = cast(Any, kwargs["execution_state"])
+
+        def diagnose_require_absent(self) -> FixtureDiagnosticEnvelope:
+            self.execution.container_attempted = True
+            self.execution.container_cleanup_known = True
+            self.execution.container_cleanup_required = False
+            self.execution.container_residual_known = True
+            self.execution.container_residual_count = 0
+            return FixtureDiagnosticEnvelope(
+                FixtureDiagnosticOperation.REQUIRE_ABSENT,
+                FixtureDiagnosticPredicate.PASS,
+            )
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "read_env_values", lambda _path: environment)
+    monkeypatch.setattr(update, "_fixture_diagnostic_source_is_clean", lambda: True)
+    monkeypatch.setattr(update, "current_fixture_source_sha256", lambda: "a" * 64)
+    monkeypatch.setattr(update, "_preflight_build_capacity", lambda *_args, **_kwargs: "builder")
+    monkeypatch.setattr(update, "_require_idle_builder", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        update,
+        "_build_current_fixture_image",
+        lambda **_kwargs: update._FixtureBuildOutcome(True, True, True),
+    )
+    monkeypatch.setattr(update, "_ComposeGatewayAuthParityFixture", Fixture)
+
+    evidence = update._fixture_require_absent_diagnostic()
+
+    assert evidence.classification is (
+        update.FixtureDiagnosticExecutionClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is FixtureDiagnosticPredicate.UNKNOWN
+    assert evidence.build_attempted is True
+    assert evidence.build_succeeded is True
+    assert evidence.builder_idle_known is True
+    assert evidence.container_attempted is True
+    assert evidence.container_cleanup_known is True
+    assert evidence.container_residual_count == 0
+    assert evidence.retry_count == 0
+    assert "raw-lock-secret-sentinel" not in (capsys.readouterr().out + capsys.readouterr().err)
 
 
 def test_gateway_parity_session_validates_all_targets_before_reading_admin_secret(

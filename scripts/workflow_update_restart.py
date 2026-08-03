@@ -11,15 +11,18 @@ import subprocess
 import sys
 import time
 from contextlib import ExitStack
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
 from uuid import UUID
 
 from docker_capacity import (
+    CapacityExecutor,
     DockerCapacityError,
     DockerWorkflowLock,
+    SubprocessCapacityExecutor,
     exclusive_docker_workflow_lock,
     governed_compose_build_capacity,
     require_no_active_builds,
@@ -72,6 +75,17 @@ from probe_gateway_auth_parity import (
     GatewayAuthParityTraffic,
     GatewayCredentialLogEvidenceError,
     KeycloakGatewayAuthParityIdentity,
+)
+
+from datariver.gateway_auth_parity_fixture import (
+    MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES,
+    FixtureDiagnosticEnvelope,
+    FixtureDiagnosticOperation,
+    FixtureDiagnosticPredicate,
+    FixtureDiagnosticProtocolError,
+    current_fixture_source_sha256,
+    fixture_diagnostic_failure_classification,
+    parse_fixture_diagnostic_line,
 )
 
 DATAHUB_PROBE_PROGRAM = """\
@@ -537,6 +551,679 @@ def _require_gateway_auth_parity_evidence_available(reconciliation_name: str | N
         raise WorkflowError(_GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE)
 
 
+_FIXTURE_DIAGNOSTIC_TIMEOUT_SECONDS = 30
+_FIXTURE_DIAGNOSTIC_REAP_SECONDS = 5
+_FIXTURE_DIAGNOSTIC_BUILD_TIMEOUT_SECONDS = 20 * 60
+MAXIMUM_FIXTURE_EXECUTION_EVIDENCE_BYTES = 2_048
+_FIXTURE_DIAGNOSTIC_CONTAINER_NAME = "datariver-gateway-auth-parity-require-absent"
+_FIXTURE_DIAGNOSTIC_CONTAINER_CONTRACT_LABEL = f"datariver.fixture.contract={FIXTURE_CONTRACT}"
+_FIXTURE_DIAGNOSTIC_CONTAINER_OPERATION_LABEL = "datariver.fixture.operation=REQUIRE_ABSENT"
+
+
+class FixtureDiagnosticExecutionClassification(StrEnum):
+    PASS = "PASS"  # noqa: S105 - fixed diagnostic classification, not a secret.
+    REJECTED = "REJECTED"
+    OPERATOR_REVIEW_REQUIRED = "OPERATOR_REVIEW_REQUIRED"
+
+
+class _FixtureContainerState(StrEnum):
+    ABSENT = "ABSENT"
+    OWNED_RUNNING = "OWNED_RUNNING"
+    OWNED_STOPPED = "OWNED_STOPPED"
+    FOREIGN = "FOREIGN"
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(frozen=True, slots=True)
+class _DockerActionOutcome:
+    succeeded: bool
+    outcome_known: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _FixtureBuildOutcome:
+    attempted: bool
+    succeeded: bool
+    outcome_known: bool
+
+
+@dataclass(frozen=True, slots=True)
+class FixtureDiagnosticExecutionEvidence:
+    classification: FixtureDiagnosticExecutionClassification
+    operation: FixtureDiagnosticOperation
+    predicate: FixtureDiagnosticPredicate
+    cache_action_count_known: bool
+    cache_action_count: int | None
+    cache_action_succeeded: bool
+    cache_action_outcome_known: bool
+    build_attempted: bool
+    build_succeeded: bool
+    build_outcome_known: bool
+    builder_idle_known: bool
+    builder_idle: bool
+    container_attempted: bool
+    container_stop_attempts: int
+    container_remove_attempts: int
+    container_cleanup_known: bool
+    container_cleanup_required: bool
+    container_residual_known: bool
+    container_residual_count: int | None
+    business_mutation_count: int = 0
+    data_mutation_count: int = 0
+    identity_mutation_count: int = 0
+    topology_mutation_count: int = 0
+    state_mutation_count: int = 0
+    push_count: int = 0
+    retry_count: int = 0
+
+    def __post_init__(self) -> None:
+        boolean_fields = (
+            self.cache_action_count_known,
+            self.cache_action_succeeded,
+            self.cache_action_outcome_known,
+            self.build_attempted,
+            self.build_succeeded,
+            self.build_outcome_known,
+            self.builder_idle_known,
+            self.builder_idle,
+            self.container_attempted,
+            self.container_cleanup_known,
+            self.container_cleanup_required,
+            self.container_residual_known,
+        )
+        bounded_counts = (
+            self.container_stop_attempts,
+            self.container_remove_attempts,
+            self.business_mutation_count,
+            self.data_mutation_count,
+            self.identity_mutation_count,
+            self.topology_mutation_count,
+            self.state_mutation_count,
+            self.push_count,
+            self.retry_count,
+        )
+        if (
+            any(type(value) is not bool for value in boolean_fields)
+            or any(type(value) is not int or value < 0 or value > 1 for value in bounded_counts)
+            or self.operation is not FixtureDiagnosticOperation.REQUIRE_ABSENT
+            or (self.cache_action_count_known and self.cache_action_count not in {0, 1})
+            or (not self.cache_action_count_known and self.cache_action_count is not None)
+            or (
+                self.cache_action_succeeded
+                and (
+                    not self.cache_action_count_known
+                    or self.cache_action_count != 1
+                    or not self.cache_action_outcome_known
+                )
+            )
+            or (not self.cache_action_count_known and self.cache_action_outcome_known)
+            or (self.build_succeeded and (not self.build_attempted or not self.build_outcome_known))
+            or (self.builder_idle and not self.builder_idle_known)
+            or (
+                not self.container_attempted
+                and (self.container_stop_attempts != 0 or self.container_remove_attempts != 0)
+            )
+            or (not self.container_cleanup_known and not self.container_cleanup_required)
+            or (self.container_residual_known and self.container_residual_count not in {0, 1})
+            or (not self.container_residual_known and self.container_residual_count is not None)
+            or any(
+                value != 0
+                for value in (
+                    self.business_mutation_count,
+                    self.data_mutation_count,
+                    self.identity_mutation_count,
+                    self.topology_mutation_count,
+                    self.state_mutation_count,
+                    self.push_count,
+                    self.retry_count,
+                )
+            )
+        ):
+            raise WorkflowError("GATEWAY_AUTH_PARITY_FIXTURE_DIAGNOSTIC_INVALID")
+
+
+@dataclass(slots=True)
+class _FixtureDiagnosticExecutionState:
+    cache_action_count_known: bool = True
+    cache_action_count: int | None = 0
+    cache_action_succeeded: bool = False
+    cache_action_outcome_known: bool = True
+    build_attempted: bool = False
+    build_succeeded: bool = False
+    build_outcome_known: bool = True
+    builder_idle_known: bool = False
+    builder_idle: bool = False
+    container_attempted: bool = False
+    container_stop_attempts: int = 0
+    container_remove_attempts: int = 0
+    container_cleanup_known: bool = True
+    container_cleanup_required: bool = False
+    container_residual_known: bool = True
+    container_residual_count: int | None = 0
+    operator_review_required: bool = False
+
+    @property
+    def container_cleanup_proven(self) -> bool:
+        return (
+            self.container_attempted
+            and self.container_cleanup_known
+            and not self.container_cleanup_required
+            and self.container_residual_known
+            and self.container_residual_count == 0
+        )
+
+    def to_evidence(
+        self,
+        predicate: FixtureDiagnosticPredicate,
+    ) -> FixtureDiagnosticExecutionEvidence:
+        review_required = (
+            self.operator_review_required
+            or not self.cache_action_count_known
+            or (self.cache_action_count == 1 and not self.cache_action_outcome_known)
+        )
+        if self.build_attempted and (
+            not self.build_outcome_known or not self.builder_idle_known or not self.builder_idle
+        ):
+            review_required = True
+        if self.container_attempted and not self.container_cleanup_proven:
+            review_required = True
+        if not self.container_attempted and self.container_cleanup_required:
+            review_required = True
+        if predicate is FixtureDiagnosticPredicate.PASS and (
+            not self.build_attempted
+            or not self.build_succeeded
+            or not self.build_outcome_known
+            or not self.builder_idle_known
+            or not self.builder_idle
+            or not self.container_cleanup_proven
+        ):
+            review_required = True
+        classification = (
+            FixtureDiagnosticExecutionClassification.OPERATOR_REVIEW_REQUIRED
+            if review_required
+            else (
+                FixtureDiagnosticExecutionClassification.PASS
+                if predicate is FixtureDiagnosticPredicate.PASS
+                else FixtureDiagnosticExecutionClassification.REJECTED
+            )
+        )
+        return FixtureDiagnosticExecutionEvidence(
+            classification=classification,
+            operation=FixtureDiagnosticOperation.REQUIRE_ABSENT,
+            predicate=predicate,
+            cache_action_count_known=self.cache_action_count_known,
+            cache_action_count=self.cache_action_count,
+            cache_action_succeeded=self.cache_action_succeeded,
+            cache_action_outcome_known=self.cache_action_outcome_known,
+            build_attempted=self.build_attempted,
+            build_succeeded=self.build_succeeded,
+            build_outcome_known=self.build_outcome_known,
+            builder_idle_known=self.builder_idle_known,
+            builder_idle=self.builder_idle,
+            container_attempted=self.container_attempted,
+            container_stop_attempts=self.container_stop_attempts,
+            container_remove_attempts=self.container_remove_attempts,
+            container_cleanup_known=self.container_cleanup_known,
+            container_cleanup_required=self.container_cleanup_required,
+            container_residual_known=self.container_residual_known,
+            container_residual_count=self.container_residual_count,
+        )
+
+
+def format_fixture_diagnostic_execution_line(
+    evidence: FixtureDiagnosticExecutionEvidence,
+) -> str:
+    line = json.dumps(
+        {
+            "build_attempted": evidence.build_attempted,
+            "build_outcome_known": evidence.build_outcome_known,
+            "build_succeeded": evidence.build_succeeded,
+            "builder_idle": evidence.builder_idle,
+            "builder_idle_known": evidence.builder_idle_known,
+            "business_mutation_count": evidence.business_mutation_count,
+            "cache_action_count": evidence.cache_action_count,
+            "cache_action_count_known": evidence.cache_action_count_known,
+            "cache_action_succeeded": evidence.cache_action_succeeded,
+            "cache_action_outcome_known": evidence.cache_action_outcome_known,
+            "classification": evidence.classification.value,
+            "container_attempted": evidence.container_attempted,
+            "container_cleanup_known": evidence.container_cleanup_known,
+            "container_cleanup_required": evidence.container_cleanup_required,
+            "container_remove_attempts": evidence.container_remove_attempts,
+            "container_residual_count": evidence.container_residual_count,
+            "container_residual_known": evidence.container_residual_known,
+            "container_stop_attempts": evidence.container_stop_attempts,
+            "data_mutation_count": evidence.data_mutation_count,
+            "identity_mutation_count": evidence.identity_mutation_count,
+            "operation": evidence.operation.value,
+            "predicate": evidence.predicate.value,
+            "push_count": evidence.push_count,
+            "retry_count": evidence.retry_count,
+            "state_mutation_count": evidence.state_mutation_count,
+            "topology_mutation_count": evidence.topology_mutation_count,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(line.encode("utf-8")) > MAXIMUM_FIXTURE_EXECUTION_EVIDENCE_BYTES:
+        raise WorkflowError("GATEWAY_AUTH_PARITY_FIXTURE_DIAGNOSTIC_INVALID")
+    return line
+
+
+class _FixtureDiagnosticCapacityExecutor:
+    def __init__(self, delegate: CapacityExecutor | None = None) -> None:
+        self._delegate = delegate or SubprocessCapacityExecutor()
+        self.action_count_known = True
+        self.action_count = 0
+        self.action_succeeded = False
+        self.action_outcome_known = True
+
+    def output(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        classification: str,
+        timeout_seconds: int,
+    ) -> str:
+        is_cache_action = arguments[:3] == ("docker", "buildx", "prune")
+        if is_cache_action:
+            if self.action_count != 0:
+                self.action_count_known = False
+                self.action_outcome_known = False
+                raise DockerCapacityError("DOCKER_BUILD_CACHE_ACTION_COUNT_INVALID")
+            self.action_count = 1
+            self.action_succeeded = False
+        try:
+            result = self._delegate.output(
+                arguments,
+                classification=classification,
+                timeout_seconds=timeout_seconds,
+            )
+        except BaseException:
+            if is_cache_action:
+                self.action_outcome_known = False
+            raise
+        if is_cache_action:
+            self.action_succeeded = True
+            self.action_outcome_known = True
+        return result
+
+
+def _bounded_fixture_diagnostic_process(
+    command: tuple[str, ...],
+    input_text: str,
+) -> subprocess.CompletedProcess[str] | FixtureDiagnosticPredicate:
+    """Capture both diagnostic streams under hard in-flight caps and fixed reaping."""
+
+    process: subprocess.Popen[bytes] | None = None
+    selector: selectors.BaseSelector | None = None
+    completed = False
+    failure: FixtureDiagnosticPredicate | None = None
+    result: subprocess.CompletedProcess[str] | None = None
+    stdout = bytearray()
+    stderr = bytearray()
+    try:
+        encoded_input = input_text.encode("utf-8")
+        if not encoded_input or len(encoded_input) > 4_096:
+            return FixtureDiagnosticPredicate.FIXED_INPUT_PROTOCOL
+        process = subprocess.Popen(  # noqa: S603 - fixed repository-owned Compose argv.
+            command,
+            cwd=ROOT,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if process.stdin is None or process.stdout is None or process.stderr is None:
+            raise OSError
+        try:
+            process.stdin.write(encoded_input)
+            process.stdin.flush()
+        except BrokenPipeError:
+            pass
+        finally:
+            process.stdin.close()
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ, stdout)
+        selector.register(process.stderr, selectors.EVENT_READ, stderr)
+        deadline = time.monotonic() + _FIXTURE_DIAGNOSTIC_TIMEOUT_SECONDS
+        while selector.get_map():
+            remaining_time = deadline - time.monotonic()
+            if remaining_time <= 0:
+                failure = FixtureDiagnosticPredicate.PROCESS_TIMEOUT
+                break
+            events = selector.select(remaining_time)
+            if not events:
+                failure = FixtureDiagnosticPredicate.PROCESS_TIMEOUT
+                break
+            for key, _mask in events:
+                target = key.data
+                assert isinstance(target, bytearray)
+                combined_size = len(stdout) + len(stderr)
+                chunk = os.read(
+                    key.fd,
+                    min(
+                        64 * 1024,
+                        MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES + 1 - combined_size,
+                    ),
+                )
+                if not chunk:
+                    selector.unregister(key.fileobj)
+                    continue
+                target.extend(chunk)
+                if len(stdout) + len(stderr) > MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES:
+                    failure = FixtureDiagnosticPredicate.OUTPUT_SIZE
+                    break
+            if failure is not None:
+                break
+        if failure is None:
+            return_code = process.wait(timeout=_FIXTURE_DIAGNOSTIC_REAP_SECONDS)
+            completed = True
+            try:
+                decoded_stdout = stdout.decode("utf-8")
+                decoded_stderr = stderr.decode("utf-8")
+            except UnicodeDecodeError:
+                failure = FixtureDiagnosticPredicate.OUTPUT_JSON
+            else:
+                result = subprocess.CompletedProcess(
+                    command,
+                    return_code,
+                    decoded_stdout,
+                    decoded_stderr,
+                )
+    except OSError:
+        failure = (
+            FixtureDiagnosticPredicate.PROCESS_SPAWN
+            if process is None
+            else FixtureDiagnosticPredicate.UNKNOWN
+        )
+    except subprocess.TimeoutExpired:
+        failure = FixtureDiagnosticPredicate.PROCESS_TIMEOUT
+    except BaseException:
+        failure = FixtureDiagnosticPredicate.UNKNOWN
+    finally:
+        if selector is not None:
+            try:
+                selector.close()
+            except BaseException:
+                failure = FixtureDiagnosticPredicate.UNKNOWN
+        if process is not None and not completed and process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=_FIXTURE_DIAGNOSTIC_REAP_SECONDS)
+                completed = True
+            except (OSError, subprocess.SubprocessError):
+                try:
+                    process.kill()
+                    process.wait(timeout=_FIXTURE_DIAGNOSTIC_REAP_SECONDS)
+                    completed = True
+                except (OSError, subprocess.SubprocessError):
+                    failure = FixtureDiagnosticPredicate.UNKNOWN
+        if process is not None:
+            for child_stream in (process.stdin, process.stdout, process.stderr):
+                if child_stream is not None and not child_stream.closed:
+                    try:
+                        child_stream.close()
+                    except BaseException:
+                        failure = FixtureDiagnosticPredicate.UNKNOWN
+    if failure is not None:
+        return failure
+    assert result is not None
+    return result
+
+
+def _bounded_suppressed_fixture_build(command: tuple[str, ...]) -> _FixtureBuildOutcome:
+    """Run one fixed build without retaining output or erasing ambiguous delivery."""
+
+    process: subprocess.Popen[bytes] | None = None
+    completed = False
+    succeeded = False
+    outcome_known = True
+    try:
+        process = subprocess.Popen(  # noqa: S603 - fixed repository-owned Compose argv.
+            command,
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        succeeded = process.wait(timeout=_FIXTURE_DIAGNOSTIC_BUILD_TIMEOUT_SECONDS) == 0
+        completed = True
+    except OSError:
+        succeeded = False
+        outcome_known = process is None
+    except subprocess.TimeoutExpired:
+        outcome_known = False
+    except BaseException:
+        outcome_known = False
+    finally:
+        if process is not None and not completed and process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=_FIXTURE_DIAGNOSTIC_REAP_SECONDS)
+                completed = True
+            except (OSError, subprocess.SubprocessError):
+                try:
+                    process.kill()
+                    process.wait(timeout=_FIXTURE_DIAGNOSTIC_REAP_SECONDS)
+                    completed = True
+                except (OSError, subprocess.SubprocessError):
+                    outcome_known = False
+    return _FixtureBuildOutcome(
+        attempted=True,
+        succeeded=succeeded,
+        outcome_known=outcome_known,
+    )
+
+
+def _build_current_fixture_image(
+    *,
+    env_file: Path,
+    files: tuple[Path, ...],
+) -> _FixtureBuildOutcome:
+    command = tuple(
+        os.fspath(argument)
+        for argument in compose_arguments(
+            env_file=env_file,
+            compose_files=files,
+            profiles=("tools",),
+            trailing=("build", "local-bootstrap"),
+        )
+    )
+    return _bounded_suppressed_fixture_build(command)
+
+
+def _fixture_diagnostic_source_is_clean() -> bool:
+    result = _bounded_fixture_diagnostic_process(
+        ("git", "status", "--porcelain", "--untracked-files=normal"),
+        "{}",
+    )
+    return (
+        isinstance(result, subprocess.CompletedProcess)
+        and result.returncode == 0
+        and result.stdout == ""
+        and result.stderr == ""
+    )
+
+
+def _fixed_diagnostic_stream(raw: str) -> str | None:
+    if not raw:
+        return ""
+    if raw.endswith("\n"):
+        raw = raw[:-1]
+    if not raw or "\n" in raw or "\r" in raw:
+        return None
+    return raw
+
+
+def _fixture_container_snapshot() -> _FixtureContainerState:
+    listing = _bounded_fixture_diagnostic_process(
+        (
+            "docker",
+            "container",
+            "ls",
+            "--all",
+            "--filter",
+            f"name=^/{_FIXTURE_DIAGNOSTIC_CONTAINER_NAME}$",
+            "--format",
+            "{{.Names}}",
+        ),
+        "{}",
+    )
+    if (
+        not isinstance(listing, subprocess.CompletedProcess)
+        or listing.returncode != 0
+        or listing.stderr
+    ):
+        return _FixtureContainerState.UNKNOWN
+    listed_name = _fixed_diagnostic_stream(listing.stdout)
+    if listed_name == "":
+        return _FixtureContainerState.ABSENT
+    if listed_name != _FIXTURE_DIAGNOSTIC_CONTAINER_NAME:
+        return _FixtureContainerState.UNKNOWN
+    inspected = _bounded_fixture_diagnostic_process(
+        (
+            "docker",
+            "container",
+            "inspect",
+            "--format",
+            (
+                "{{json .State.Status}}|{{json (index .Config.Labels "
+                '"datariver.fixture.contract")}}|{{json (index .Config.Labels '
+                '"datariver.fixture.operation")}}'
+            ),
+            _FIXTURE_DIAGNOSTIC_CONTAINER_NAME,
+        ),
+        "{}",
+    )
+    if (
+        not isinstance(inspected, subprocess.CompletedProcess)
+        or inspected.returncode != 0
+        or inspected.stderr
+    ):
+        return _FixtureContainerState.UNKNOWN
+    inspected_line = _fixed_diagnostic_stream(inspected.stdout)
+    if inspected_line is None:
+        return _FixtureContainerState.UNKNOWN
+    parts = inspected_line.split("|")
+    if len(parts) != 3:
+        return _FixtureContainerState.UNKNOWN
+    try:
+        status, contract, operation = tuple(json.loads(part) for part in parts)
+    except (json.JSONDecodeError, TypeError):
+        return _FixtureContainerState.UNKNOWN
+    if not all(isinstance(value, str) for value in (status, contract, operation)):
+        return _FixtureContainerState.UNKNOWN
+    if contract != FIXTURE_CONTRACT or operation != "REQUIRE_ABSENT":
+        return _FixtureContainerState.FOREIGN
+    if status in {"running", "restarting", "paused"}:
+        return _FixtureContainerState.OWNED_RUNNING
+    if status in {"created", "exited", "dead"}:
+        return _FixtureContainerState.OWNED_STOPPED
+    return _FixtureContainerState.UNKNOWN
+
+
+def _fixed_docker_action(command: tuple[str, ...]) -> _DockerActionOutcome:
+    result = _bounded_fixture_diagnostic_process(command, "{}")
+    if isinstance(result, subprocess.CompletedProcess):
+        return _DockerActionOutcome(
+            succeeded=result.returncode == 0,
+            outcome_known=True,
+        )
+    return _DockerActionOutcome(
+        succeeded=False,
+        outcome_known=result
+        in {
+            FixtureDiagnosticPredicate.FIXED_INPUT_PROTOCOL,
+            FixtureDiagnosticPredicate.PROCESS_SPAWN,
+        },
+    )
+
+
+def _stop_fixture_container() -> _DockerActionOutcome:
+    return _fixed_docker_action(
+        (
+            "docker",
+            "container",
+            "stop",
+            "--time",
+            "10",
+            _FIXTURE_DIAGNOSTIC_CONTAINER_NAME,
+        )
+    )
+
+
+def _remove_fixture_container() -> _DockerActionOutcome:
+    return _fixed_docker_action(("docker", "container", "rm", _FIXTURE_DIAGNOSTIC_CONTAINER_NAME))
+
+
+def _record_fixture_container_residual(
+    execution: _FixtureDiagnosticExecutionState,
+    snapshot: _FixtureContainerState,
+) -> None:
+    if snapshot is _FixtureContainerState.ABSENT:
+        execution.container_cleanup_known = True
+        execution.container_cleanup_required = False
+        execution.container_residual_known = True
+        execution.container_residual_count = 0
+    elif snapshot in {
+        _FixtureContainerState.OWNED_RUNNING,
+        _FixtureContainerState.OWNED_STOPPED,
+        _FixtureContainerState.FOREIGN,
+    }:
+        execution.container_cleanup_known = True
+        execution.container_cleanup_required = True
+        execution.container_residual_known = True
+        execution.container_residual_count = 1
+    else:
+        execution.container_cleanup_known = False
+        execution.container_cleanup_required = True
+        execution.container_residual_known = False
+        execution.container_residual_count = None
+
+
+def _cleanup_fixture_container(execution: _FixtureDiagnosticExecutionState) -> None:
+    try:
+        snapshot = _fixture_container_snapshot()
+        if snapshot is _FixtureContainerState.ABSENT:
+            _record_fixture_container_residual(execution, snapshot)
+            return
+        if snapshot in {_FixtureContainerState.FOREIGN, _FixtureContainerState.UNKNOWN}:
+            _record_fixture_container_residual(execution, snapshot)
+            return
+        if snapshot is _FixtureContainerState.OWNED_RUNNING:
+            execution.container_stop_attempts += 1
+            if execution.container_stop_attempts > 1:
+                execution.operator_review_required = True
+                _record_fixture_container_residual(execution, snapshot)
+                return
+            _stop_fixture_container()
+            snapshot = _fixture_container_snapshot()
+            if snapshot is _FixtureContainerState.ABSENT:
+                _record_fixture_container_residual(execution, snapshot)
+                return
+            if snapshot is not _FixtureContainerState.OWNED_STOPPED:
+                _record_fixture_container_residual(execution, snapshot)
+                return
+        execution.container_remove_attempts += 1
+        if execution.container_remove_attempts > 1:
+            execution.operator_review_required = True
+            _record_fixture_container_residual(execution, snapshot)
+            return
+        _remove_fixture_container()
+        _record_fixture_container_residual(execution, _fixture_container_snapshot())
+    except BaseException:
+        execution.operator_review_required = True
+        execution.container_cleanup_known = False
+        execution.container_cleanup_required = True
+        execution.container_residual_known = False
+        execution.container_residual_count = None
+
+
+class _FixtureDiagnosticRunner(Runner):
+    def note(self, _message: str) -> None:
+        return None
+
+
 class _ComposeGatewayAuthParityFixture:
     """Private fixed-operation adapter to the canonical local-bootstrap image."""
 
@@ -551,11 +1238,28 @@ class _ComposeGatewayAuthParityFixture:
         "require-zero-residual": ("zero-residual", 0, 0, 0),
     }
 
-    def __init__(self, *, env_file: Path, files: tuple[Path, ...]) -> None:
+    def __init__(
+        self,
+        *,
+        env_file: Path,
+        files: tuple[Path, ...],
+        source_sha256: str | None = None,
+        execution_state: _FixtureDiagnosticExecutionState | None = None,
+    ) -> None:
         self._env_file = env_file
         self._files = files
+        self._source_sha256 = source_sha256 or current_fixture_source_sha256()
+        if len(self._source_sha256) != 64 or any(
+            character not in "0123456789abcdef" for character in self._source_sha256
+        ):
+            raise GatewayAuthParityError(
+                fixture_diagnostic_failure_classification(
+                    FixtureDiagnosticPredicate.IMAGE_PROVENANCE
+                )
+            )
         self._allow_subject: str | None = None
         self._deny_subject: str | None = None
+        self._execution_state = execution_state or _FixtureDiagnosticExecutionState()
 
     def _execute(
         self,
@@ -563,7 +1267,7 @@ class _ComposeGatewayAuthParityFixture:
         *,
         allow_subject: str | None = None,
         deny_subject: str | None = None,
-    ) -> None:
+    ) -> FixtureDiagnosticEnvelope | None:
         if operation not in self._EXPECTED:
             raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_FIXTURE_FAILED")
         allow = allow_subject or self._allow_subject or self._PLACEHOLDER_ALLOW
@@ -579,9 +1283,22 @@ class _ComposeGatewayAuthParityFixture:
                 "operation": operation,
                 "allow_external_subject": allow,
                 "deny_external_subject": deny,
+                "source_sha256": self._source_sha256,
             },
             sort_keys=True,
             separators=(",", ":"),
+        )
+        diagnostic_container_arguments = (
+            (
+                "--name",
+                _FIXTURE_DIAGNOSTIC_CONTAINER_NAME,
+                "--label",
+                _FIXTURE_DIAGNOSTIC_CONTAINER_CONTRACT_LABEL,
+                "--label",
+                _FIXTURE_DIAGNOSTIC_CONTAINER_OPERATION_LABEL,
+            )
+            if operation == "require-absent"
+            else ()
         )
         command = [
             os.fspath(argument)
@@ -592,6 +1309,7 @@ class _ComposeGatewayAuthParityFixture:
                 trailing=(
                     "run",
                     "--rm",
+                    *diagnostic_container_arguments,
                     "--no-deps",
                     "--no-build",
                     "-T",
@@ -603,6 +1321,37 @@ class _ComposeGatewayAuthParityFixture:
                 ),
             )
         ]
+        if operation == "require-absent":
+            try:
+                prestate = _fixture_container_snapshot()
+            except BaseException:
+                prestate = _FixtureContainerState.UNKNOWN
+            if prestate is not _FixtureContainerState.ABSENT:
+                self._execution_state.operator_review_required = True
+                _record_fixture_container_residual(self._execution_state, prestate)
+                return self._diagnostic_envelope(FixtureDiagnosticPredicate.UNKNOWN)
+            self._execution_state.container_attempted = True
+            self._execution_state.container_cleanup_known = False
+            self._execution_state.container_residual_known = False
+            self._execution_state.container_residual_count = None
+            evidence = self._diagnostic_envelope(FixtureDiagnosticPredicate.UNKNOWN)
+            try:
+                outcome = _bounded_fixture_diagnostic_process(tuple(command), request_document)
+                if isinstance(outcome, FixtureDiagnosticPredicate):
+                    evidence = self._diagnostic_envelope(outcome)
+                else:
+                    evidence = self._parse_require_absent_result(outcome)
+            except BaseException:
+                evidence = self._diagnostic_envelope(FixtureDiagnosticPredicate.UNKNOWN)
+            finally:
+                _cleanup_fixture_container(self._execution_state)
+            if (
+                evidence.predicate is FixtureDiagnosticPredicate.PASS
+                and not self._execution_state.container_cleanup_proven
+            ):
+                return self._diagnostic_envelope(FixtureDiagnosticPredicate.UNKNOWN)
+            return evidence
+
         try:
             result = subprocess.run(  # noqa: S603 - fixed Compose and module argv.
                 command,
@@ -613,16 +1362,20 @@ class _ComposeGatewayAuthParityFixture:
                 capture_output=True,
                 timeout=30,
             )
+        except (
+            OSError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ):
+            raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_FIXTURE_FAILED") from None
+        try:
             raw = result.stdout.strip()
             if len(raw.encode("utf-8")) > 256 or "\n" in raw or "\r" in raw:
                 raise ValueError
             document = json.loads(raw)
         except (
-            OSError,
             ValueError,
             json.JSONDecodeError,
-            subprocess.CalledProcessError,
-            subprocess.TimeoutExpired,
         ):
             raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_FIXTURE_FAILED") from None
         if (
@@ -641,9 +1394,61 @@ class _ComposeGatewayAuthParityFixture:
         if allow_subject is not None and deny_subject is not None:
             self._allow_subject = allow
             self._deny_subject = deny
+        return None
+
+    @staticmethod
+    def _diagnostic_envelope(
+        predicate: FixtureDiagnosticPredicate,
+    ) -> FixtureDiagnosticEnvelope:
+        return FixtureDiagnosticEnvelope(
+            operation=FixtureDiagnosticOperation.REQUIRE_ABSENT,
+            predicate=predicate,
+        )
+
+    @staticmethod
+    def _diagnostic_stream(raw: str) -> str:
+        if len(raw.encode("utf-8")) > MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES + 1:
+            raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_SIZE)
+        return raw[:-1] if raw.endswith("\n") else raw
+
+    def _parse_require_absent_result(
+        self,
+        result: subprocess.CompletedProcess[str],
+    ) -> FixtureDiagnosticEnvelope:
+        try:
+            stdout = self._diagnostic_stream(result.stdout)
+            stderr = self._diagnostic_stream(result.stderr)
+            if stdout and stderr:
+                raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_TUPLE)
+            if result.returncode == 0:
+                if stderr:
+                    raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_TUPLE)
+                evidence = parse_fixture_diagnostic_line(stdout)
+                if evidence.predicate is not FixtureDiagnosticPredicate.PASS:
+                    raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_TUPLE)
+                return evidence
+            if stdout:
+                raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_TUPLE)
+            if not stderr:
+                return self._diagnostic_envelope(FixtureDiagnosticPredicate.PROCESS_NONZERO)
+            evidence = parse_fixture_diagnostic_line(stderr)
+            if evidence.predicate is FixtureDiagnosticPredicate.PASS:
+                raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_TUPLE)
+            return evidence
+        except FixtureDiagnosticProtocolError as error:
+            return self._diagnostic_envelope(error.predicate)
+
+    def diagnose_require_absent(self) -> FixtureDiagnosticEnvelope:
+        evidence = self._execute("require-absent")
+        assert evidence is not None
+        return evidence
 
     def require_absent(self) -> None:
-        self._execute("require-absent")
+        evidence = self.diagnose_require_absent()
+        if evidence.predicate is not FixtureDiagnosticPredicate.PASS:
+            raise GatewayAuthParityError(
+                fixture_diagnostic_failure_classification(evidence.predicate)
+            )
 
     def prepare(self, allow_subject: str, deny_subject: str) -> None:
         self._execute("prepare", allow_subject=allow_subject, deny_subject=deny_subject)
@@ -897,6 +1702,7 @@ def _preflight_build_capacity(
     files: tuple[Path, ...],
     selected_build_services: tuple[str, ...],
     lock: DockerWorkflowLock,
+    executor: CapacityExecutor | None = None,
 ) -> str:
     evidence = governed_compose_build_capacity(
         root=ROOT,
@@ -914,6 +1720,7 @@ def _preflight_build_capacity(
         selected_build_services=selected_build_services,
         environ=os.environ,
         lock=lock,
+        executor=executor,
     )
     runner.note(evidence.summary())
     return evidence.builder
@@ -1192,7 +1999,130 @@ def _print_plan(
     print(f"  Neo4j: {'restart' if plan.restart_graph else 'unchanged'}", flush=True)
 
 
+def _fixture_require_absent_diagnostic() -> FixtureDiagnosticExecutionEvidence:
+    """Run the sole locked fixture absence diagnostic with honest Docker evidence."""
+
+    execution = _FixtureDiagnosticExecutionState()
+    capacity_executor = _FixtureDiagnosticCapacityExecutor()
+    try:
+        with exclusive_docker_workflow_lock(ROOT) as capacity_lock:
+            try:
+                state = load_applied_state(state_path(ROOT, "mac-development"))
+                if (
+                    state.profile != "mac-development"
+                    or state.deployment_mode != "build"
+                    or state.local_gateway
+                    or state.local_graph
+                ):
+                    raise WorkflowError("GATEWAY_AUTH_PARITY_FIXTURE_DIAGNOSTIC_INVALID")
+                env_file = _resolve_repo_path(state.env_file)
+                require_regular_file(env_file, label="Environment file")
+                environment_values = read_env_values(env_file)
+                if environment_key_hashes(environment_values) != state.environment_key_hashes:
+                    raise WorkflowError("GATEWAY_AUTH_PARITY_FIXTURE_DIAGNOSTIC_INVALID")
+                files = _compose_files(state, release_override=None)
+            except BaseException:
+                return execution.to_evidence(FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY)
+            try:
+                if not _fixture_diagnostic_source_is_clean():
+                    raise WorkflowError("GATEWAY_AUTH_PARITY_FIXTURE_IMAGE_PROVENANCE_INVALID")
+                source_sha256 = current_fixture_source_sha256()
+            except BaseException:
+                return execution.to_evidence(FixtureDiagnosticPredicate.IMAGE_PROVENANCE)
+            selected_builder: str | None = None
+            try:
+                selected_builder = _preflight_build_capacity(
+                    _FixtureDiagnosticRunner(),
+                    env_file=env_file,
+                    files=files,
+                    selected_build_services=("local-bootstrap",),
+                    lock=capacity_lock,
+                    executor=capacity_executor,
+                )
+                _require_idle_builder(selected_builder, capacity_lock)
+                execution.builder_idle_known = True
+                execution.builder_idle = True
+            except BaseException:
+                execution.cache_action_count_known = capacity_executor.action_count_known
+                execution.cache_action_count = (
+                    capacity_executor.action_count if capacity_executor.action_count_known else None
+                )
+                execution.cache_action_outcome_known = capacity_executor.action_outcome_known
+                execution.cache_action_succeeded = capacity_executor.action_succeeded
+                if not capacity_executor.action_outcome_known:
+                    execution.operator_review_required = True
+                return execution.to_evidence(FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY)
+            execution.cache_action_count_known = capacity_executor.action_count_known
+            execution.cache_action_count = (
+                capacity_executor.action_count if capacity_executor.action_count_known else None
+            )
+            execution.cache_action_outcome_known = capacity_executor.action_outcome_known
+            execution.cache_action_succeeded = capacity_executor.action_succeeded
+            build_outcome = _FixtureBuildOutcome(
+                attempted=False,
+                succeeded=False,
+                outcome_known=False,
+            )
+            try:
+                build_outcome = _build_current_fixture_image(
+                    env_file=env_file,
+                    files=files,
+                )
+            except BaseException:
+                build_outcome = _FixtureBuildOutcome(
+                    attempted=True,
+                    succeeded=False,
+                    outcome_known=False,
+                )
+            finally:
+                execution.build_attempted = build_outcome.attempted
+                execution.build_succeeded = build_outcome.succeeded
+                execution.build_outcome_known = build_outcome.outcome_known
+                execution.builder_idle_known = False
+                execution.builder_idle = False
+                try:
+                    _require_idle_builder(selected_builder, capacity_lock)
+                    execution.builder_idle_known = True
+                    execution.builder_idle = True
+                except BaseException:
+                    execution.operator_review_required = True
+            if (
+                not build_outcome.succeeded
+                or not build_outcome.outcome_known
+                or not execution.builder_idle_known
+                or not execution.builder_idle
+            ):
+                return execution.to_evidence(FixtureDiagnosticPredicate.IMAGE_PROVENANCE)
+            try:
+                if (
+                    not _fixture_diagnostic_source_is_clean()
+                    or current_fixture_source_sha256() != source_sha256
+                ):
+                    raise WorkflowError("GATEWAY_AUTH_PARITY_FIXTURE_IMAGE_PROVENANCE_INVALID")
+            except BaseException:
+                return execution.to_evidence(FixtureDiagnosticPredicate.IMAGE_PROVENANCE)
+            fixture = _ComposeGatewayAuthParityFixture(
+                env_file=env_file,
+                files=files,
+                source_sha256=source_sha256,
+                execution_state=execution,
+            )
+            return execution.to_evidence(fixture.diagnose_require_absent().predicate)
+    except BaseException:
+        if (
+            execution.cache_action_count == 1
+            or execution.build_attempted
+            or execution.container_attempted
+        ):
+            execution.operator_review_required = True
+        return execution.to_evidence(FixtureDiagnosticPredicate.UNKNOWN)
+
+
 def main() -> int:
+    if len(sys.argv) == 1:
+        evidence = _fixture_require_absent_diagnostic()
+        print(format_fixture_diagnostic_execution_line(evidence))
+        return 0 if evidence.classification is FixtureDiagnosticExecutionClassification.PASS else 2
     args = parse_args()
     reconciliation_name = getattr(args, "reconcile_local_topology", None)
     runner = Runner()

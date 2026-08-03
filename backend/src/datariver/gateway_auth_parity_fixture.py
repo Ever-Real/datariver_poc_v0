@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
+import os
+import stat
 import sys
 from dataclasses import asdict, dataclass
 from datetime import timedelta
 from enum import StrEnum
+from pathlib import Path
 from typing import NoReturn, Protocol
 from uuid import UUID
 
@@ -27,6 +32,8 @@ from datariver.infrastructure.db.session import Database
 from datariver.infrastructure.secrets import SecretResolver
 
 FIXTURE_CONTRACT = "SEC-GATEWAY-AUTH-PARITY-001-A-V1"
+MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES = 256
+MAXIMUM_FIXTURE_SOURCE_BYTES = 512 * 1024
 LOCAL_WORKSPACE_ID = UUID("00000000-0000-4000-8000-000000000100")
 ALLOW_SUBJECT_ID = UUID("00000000-0000-4000-8000-00000000010a")
 DENY_SUBJECT_ID = UUID("00000000-0000-4000-8000-00000000010b")
@@ -36,12 +43,59 @@ _EXACT_REQUEST_KEYS = frozenset(
         "operation",
         "allow_external_subject",
         "deny_external_subject",
+        "source_sha256",
     }
 )
 
 
+class FixtureDiagnosticOperation(StrEnum):
+    """Closed read-only operation vocabulary for the fixture diagnostic."""
+
+    REQUIRE_ABSENT = "REQUIRE_ABSENT"
+
+
+class FixtureDiagnosticPredicate(StrEnum):
+    """Value-free first-predicate evidence from the require-absent boundary."""
+
+    PASS = "PASS"  # noqa: S105 - fixed diagnostic predicate, not a password.
+    FIXED_INPUT_PROTOCOL = "FIXED_INPUT_PROTOCOL"
+    ENVIRONMENT_DEPENDENCY = "ENVIRONMENT_DEPENDENCY"
+    REPOSITORY_NOT_ABSENT = "REPOSITORY_NOT_ABSENT"
+    REPOSITORY_QUERY_DEPENDENCY = "REPOSITORY_QUERY_DEPENDENCY"
+    IMAGE_PROVENANCE = "IMAGE_PROVENANCE"
+    PROCESS_SPAWN = "PROCESS_SPAWN"
+    PROCESS_TIMEOUT = "PROCESS_TIMEOUT"
+    PROCESS_NONZERO = "PROCESS_NONZERO"
+    OUTPUT_SIZE = "OUTPUT_SIZE"
+    OUTPUT_LINE = "OUTPUT_LINE"
+    OUTPUT_JSON = "OUTPUT_JSON"
+    OUTPUT_SHAPE = "OUTPUT_SHAPE"
+    OUTPUT_TUPLE = "OUTPUT_TUPLE"
+    UNKNOWN = "UNKNOWN"
+
+
 class GatewayAuthParityFixtureError(RuntimeError):
     """Sanitized fixed failure from the development-only parity fixture."""
+
+    def __init__(
+        self,
+        classification: str,
+        *,
+        diagnostic_predicate: FixtureDiagnosticPredicate | None = None,
+    ) -> None:
+        self.diagnostic_predicate = diagnostic_predicate
+        super().__init__(classification)
+
+
+class FixtureDiagnosticProtocolError(GatewayAuthParityFixtureError):
+    """Fixed parser failure carrying only a closed predicate."""
+
+    def __init__(self, predicate: FixtureDiagnosticPredicate) -> None:
+        self.predicate = predicate
+        super().__init__(
+            "GATEWAY_AUTH_PARITY_FIXTURE_DIAGNOSTIC_INVALID",
+            diagnostic_predicate=predicate,
+        )
 
 
 class FixtureOperation(StrEnum):
@@ -64,6 +118,7 @@ class FixtureRequest:
     operation: FixtureOperation
     allow_external_subject: str
     deny_external_subject: str
+    source_sha256: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +141,155 @@ class FixtureEvidence:
     privilege_residual_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class FixtureDiagnosticEnvelope:
+    operation: FixtureDiagnosticOperation
+    predicate: FixtureDiagnosticPredicate
+
+
+@dataclass(frozen=True, slots=True)
+class _FixtureDiagnosticJsonObject:
+    pairs: tuple[tuple[str, object], ...]
+
+
+def _capture_fixture_diagnostic_object(
+    pairs: list[tuple[str, object]],
+) -> _FixtureDiagnosticJsonObject:
+    return _FixtureDiagnosticJsonObject(tuple(pairs))
+
+
+def format_fixture_diagnostic_line(evidence: FixtureDiagnosticEnvelope) -> str:
+    """Render the exact bounded value-free child/parent protocol line."""
+
+    line = json.dumps(
+        {
+            "operation": evidence.operation.value,
+            "predicate": evidence.predicate.value,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(line.encode("utf-8")) > MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES:
+        raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_SIZE)
+    return line
+
+
+def parse_fixture_diagnostic_line(raw: str) -> FixtureDiagnosticEnvelope:
+    """Accept only one exact closed line and never retain its rejected input."""
+
+    if len(raw.encode("utf-8")) > MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES:
+        raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_SIZE)
+    if not raw or "\n" in raw or "\r" in raw:
+        raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_LINE)
+    try:
+        parsed = json.loads(raw, object_pairs_hook=_capture_fixture_diagnostic_object)
+    except (json.JSONDecodeError, UnicodeError):
+        raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_JSON) from None
+    if not isinstance(parsed, _FixtureDiagnosticJsonObject):
+        raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_SHAPE)
+    keys = tuple(key for key, _value in parsed.pairs)
+    if len(keys) != len(set(keys)):
+        raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_TUPLE)
+    document = dict(parsed.pairs)
+    if set(document) != {"operation", "predicate"}:
+        raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_SHAPE)
+    try:
+        operation_value = document["operation"]
+        predicate_value = document["predicate"]
+        if not isinstance(operation_value, str) or not isinstance(predicate_value, str):
+            raise ValueError
+        operation = FixtureDiagnosticOperation(operation_value)
+        predicate = FixtureDiagnosticPredicate(predicate_value)
+    except (TypeError, ValueError):
+        raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_TUPLE) from None
+    if operation is not FixtureDiagnosticOperation.REQUIRE_ABSENT:
+        raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_TUPLE)
+    return FixtureDiagnosticEnvelope(operation=operation, predicate=predicate)
+
+
+def fixture_diagnostic_failure_classification(
+    predicate: FixtureDiagnosticPredicate,
+) -> str:
+    """Map one non-PASS predicate to an allowlisted outer failure."""
+
+    if predicate is FixtureDiagnosticPredicate.PASS:
+        raise FixtureDiagnosticProtocolError(FixtureDiagnosticPredicate.OUTPUT_TUPLE)
+    return f"GATEWAY_AUTH_PARITY_FIXTURE_REQUIRE_ABSENT_{predicate.value}"
+
+
+def _fixture_source_invalid() -> NoReturn:
+    raise GatewayAuthParityFixtureError(
+        "GATEWAY_AUTH_PARITY_FIXTURE_IMAGE_PROVENANCE_INVALID",
+        diagnostic_predicate=FixtureDiagnosticPredicate.IMAGE_PROVENANCE,
+    )
+
+
+def current_fixture_source_sha256() -> str:
+    """Fingerprint only this exact regular linked source file without following links."""
+
+    path = Path(__file__)
+    descriptor = -1
+    content = bytearray()
+    try:
+        linked = path.lstat()
+        if (
+            not stat.S_ISREG(linked.st_mode)
+            or linked.st_nlink != 1
+            or linked.st_size <= 0
+            or linked.st_size > MAXIMUM_FIXTURE_SOURCE_BYTES
+        ):
+            _fixture_source_invalid()
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino, opened.st_mode, opened.st_nlink, opened.st_size) != (
+            linked.st_dev,
+            linked.st_ino,
+            linked.st_mode,
+            linked.st_nlink,
+            linked.st_size,
+        ):
+            _fixture_source_invalid()
+        while True:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, MAXIMUM_FIXTURE_SOURCE_BYTES - len(content) + 1),
+            )
+            if not chunk:
+                break
+            content.extend(chunk)
+            if len(content) > MAXIMUM_FIXTURE_SOURCE_BYTES:
+                _fixture_source_invalid()
+        rechecked = os.fstat(descriptor)
+        if (
+            rechecked.st_dev,
+            rechecked.st_ino,
+            rechecked.st_mode,
+            rechecked.st_nlink,
+            rechecked.st_size,
+        ) != (opened.st_dev, opened.st_ino, opened.st_mode, opened.st_nlink, opened.st_size):
+            _fixture_source_invalid()
+    except GatewayAuthParityFixtureError:
+        raise
+    except BaseException:
+        _fixture_source_invalid()
+    finally:
+        if descriptor >= 0:
+            try:
+                os.close(descriptor)
+            except OSError:
+                _fixture_source_invalid()
+    return hashlib.sha256(content).hexdigest()
+
+
+def require_current_fixture_source(expected_sha256: str) -> None:
+    if (
+        len(expected_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in expected_sha256)
+        or not hmac.compare_digest(current_fixture_source_sha256(), expected_sha256)
+    ):
+        _fixture_source_invalid()
+
+
 class GatewayAuthParityFixtureRepository(Protocol):
     async def require_absent(self, identities: tuple[FixtureIdentity, ...]) -> None: ...
 
@@ -101,7 +305,10 @@ class GatewayAuthParityFixtureRepository(Protocol):
 
 
 def _invalid() -> NoReturn:
-    raise GatewayAuthParityFixtureError("GATEWAY_AUTH_PARITY_FIXTURE_INPUT_INVALID")
+    raise GatewayAuthParityFixtureError(
+        "GATEWAY_AUTH_PARITY_FIXTURE_INPUT_INVALID",
+        diagnostic_predicate=FixtureDiagnosticPredicate.FIXED_INPUT_PROTOCOL,
+    )
 
 
 def parse_fixture_request(document: object) -> FixtureRequest:
@@ -112,6 +319,7 @@ def parse_fixture_request(document: object) -> FixtureRequest:
         operation = FixtureOperation(document["operation"])
         allow_external_subject = str(UUID(document["allow_external_subject"]))
         deny_external_subject = str(UUID(document["deny_external_subject"]))
+        source_sha256 = document["source_sha256"]
     except (KeyError, TypeError, ValueError):
         _invalid()
     if (
@@ -119,6 +327,9 @@ def parse_fixture_request(document: object) -> FixtureRequest:
         or allow_external_subject == deny_external_subject
         or len(allow_external_subject) != 36
         or len(deny_external_subject) != 36
+        or not isinstance(source_sha256, str)
+        or len(source_sha256) != 64
+        or any(character not in "0123456789abcdef" for character in source_sha256)
     ):
         _invalid()
     return FixtureRequest(
@@ -126,6 +337,7 @@ def parse_fixture_request(document: object) -> FixtureRequest:
         operation=operation,
         allow_external_subject=allow_external_subject,
         deny_external_subject=deny_external_subject,
+        source_sha256=source_sha256,
     )
 
 
@@ -250,19 +462,30 @@ class SqlGatewayAuthParityFixtureRepository:
         )
 
     async def require_absent(self, identities: tuple[FixtureIdentity, ...]) -> None:
-        subject_ids = tuple(identity.subject_id for identity in identities)
-        subjects = await self._subjects(identities)
-        membership_count = await self._session.scalar(
-            select(func.count())
-            .select_from(WorkspaceMembershipModel)
-            .where(
-                WorkspaceMembershipModel.workspace_id == LOCAL_WORKSPACE_ID,
-                WorkspaceMembershipModel.subject_id.in_(subject_ids),
+        try:
+            subject_ids = tuple(identity.subject_id for identity in identities)
+            subjects = await self._subjects(identities)
+            membership_count = await self._session.scalar(
+                select(func.count())
+                .select_from(WorkspaceMembershipModel)
+                .where(
+                    WorkspaceMembershipModel.workspace_id == LOCAL_WORKSPACE_ID,
+                    WorkspaceMembershipModel.subject_id.in_(subject_ids),
+                )
             )
-        )
-        privilege_residual_counts = await self._privilege_residual_counts(subject_ids)
+            privilege_residual_counts = await self._privilege_residual_counts(subject_ids)
+        except GatewayAuthParityFixtureError:
+            raise
+        except BaseException:
+            raise GatewayAuthParityFixtureError(
+                "GATEWAY_AUTH_PARITY_FIXTURE_QUERY_FAILED",
+                diagnostic_predicate=FixtureDiagnosticPredicate.REPOSITORY_QUERY_DEPENDENCY,
+            ) from None
         if subjects or membership_count != 0 or any(privilege_residual_counts):
-            raise GatewayAuthParityFixtureError("GATEWAY_AUTH_PARITY_FIXTURE_NOT_ABSENT")
+            raise GatewayAuthParityFixtureError(
+                "GATEWAY_AUTH_PARITY_FIXTURE_NOT_ABSENT",
+                diagnostic_predicate=FixtureDiagnosticPredicate.REPOSITORY_NOT_ABSENT,
+            )
 
     async def prepare(self, identities: tuple[FixtureIdentity, ...]) -> None:
         workspace = await self._session.get(WorkspaceModel, LOCAL_WORKSPACE_ID)
@@ -477,40 +700,105 @@ class SqlGatewayAuthParityFixtureRepository:
 
 
 async def execute_fixture_request(request: FixtureRequest) -> FixtureEvidence:
-    settings = get_settings()
-    if settings.app_env != "development":
-        raise GatewayAuthParityFixtureError("GATEWAY_AUTH_PARITY_FIXTURE_ENVIRONMENT_INVALID")
-    resolver = SecretResolver()
-    database = Database(
-        settings.bootstrap_database_url,
-        password=resolver.resolve(settings.bootstrap_database_secret_ref),
-        pool_size=1,
-        max_overflow=0,
-        application_name="datariver-gateway-auth-parity-fixture",
-    )
+    try:
+        settings = get_settings()
+        if settings.app_env != "development":
+            raise GatewayAuthParityFixtureError(
+                "GATEWAY_AUTH_PARITY_FIXTURE_ENVIRONMENT_INVALID",
+                diagnostic_predicate=FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY,
+            )
+        resolver = SecretResolver()
+        database = Database(
+            settings.bootstrap_database_url,
+            password=resolver.resolve(settings.bootstrap_database_secret_ref),
+            pool_size=1,
+            max_overflow=0,
+            application_name="datariver-gateway-auth-parity-fixture",
+        )
+    except GatewayAuthParityFixtureError:
+        raise
+    except BaseException:
+        raise GatewayAuthParityFixtureError(
+            "GATEWAY_AUTH_PARITY_FIXTURE_ENVIRONMENT_INVALID",
+            diagnostic_predicate=FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY,
+        ) from None
+
+    evidence: FixtureEvidence | None = None
+    failure: GatewayAuthParityFixtureError | None = None
     try:
         async with database.session_factory() as session, session.begin():
             repository = SqlGatewayAuthParityFixtureRepository(session, issuer=settings.oidc_issuer)
-            return await GatewayAuthParityFixtureService(repository).execute(request)
-    finally:
+            evidence = await GatewayAuthParityFixtureService(repository).execute(request)
+    except GatewayAuthParityFixtureError as error:
+        failure = error
+    except BaseException:
+        failure = GatewayAuthParityFixtureError(
+            "GATEWAY_AUTH_PARITY_FIXTURE_ENVIRONMENT_INVALID",
+            diagnostic_predicate=FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY,
+        )
+    try:
         await database.close()
+    except BaseException:
+        if failure is None:
+            failure = GatewayAuthParityFixtureError(
+                "GATEWAY_AUTH_PARITY_FIXTURE_ENVIRONMENT_INVALID",
+                diagnostic_predicate=FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY,
+            )
+    if failure is not None:
+        raise failure from None
+    assert evidence is not None
+    return evidence
 
 
 def main() -> int:
+    diagnostic_requested = (
+        len(sys.argv) == 2 and sys.argv[1] == FixtureOperation.REQUIRE_ABSENT.value
+    )
     try:
         if len(sys.argv) != 2 or sys.argv[1] not in {value.value for value in FixtureOperation}:
             _invalid()
         raw = sys.stdin.buffer.read(4_097)
         if not raw or len(raw) > 4_096:
             _invalid()
-        document = json.loads(raw)
+        try:
+            document = json.loads(raw)
+        except (json.JSONDecodeError, UnicodeError):
+            _invalid()
         request = parse_fixture_request(document)
         if request.operation.value != sys.argv[1]:
             _invalid()
+        require_current_fixture_source(request.source_sha256)
         evidence = asyncio.run(execute_fixture_request(request))
-    except BaseException:
+    except BaseException as error:
+        if diagnostic_requested:
+            predicate = (
+                error.diagnostic_predicate
+                if isinstance(error, GatewayAuthParityFixtureError)
+                and error.diagnostic_predicate is not None
+                else FixtureDiagnosticPredicate.UNKNOWN
+            )
+            print(
+                format_fixture_diagnostic_line(
+                    FixtureDiagnosticEnvelope(
+                        operation=FixtureDiagnosticOperation.REQUIRE_ABSENT,
+                        predicate=predicate,
+                    )
+                ),
+                file=sys.stderr,
+            )
+            return 2
         print("GATEWAY_AUTH_PARITY_FIXTURE_FAILED", file=sys.stderr)
         return 2
+    if request.operation is FixtureOperation.REQUIRE_ABSENT:
+        print(
+            format_fixture_diagnostic_line(
+                FixtureDiagnosticEnvelope(
+                    operation=FixtureDiagnosticOperation.REQUIRE_ABSENT,
+                    predicate=FixtureDiagnosticPredicate.PASS,
+                )
+            )
+        )
+        return 0
     print(json.dumps(asdict(evidence), sort_keys=True, separators=(",", ":")))
     return 0
 
