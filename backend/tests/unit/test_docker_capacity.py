@@ -73,12 +73,13 @@ def _cache_line(
     *,
     identifier: str = "cache-1",
     reclaimable: bool = True,
+    shared: bool = False,
 ) -> str:
     return json.dumps(
         {
             "ID": identifier,
             "Reclaimable": reclaimable,
-            "Shared": False,
+            "Shared": shared,
             "Size": size,
         }
     )
@@ -191,6 +192,26 @@ def _error_fields(error: Exception) -> dict[str, str]:
     return fields
 
 
+def _assert_private_only_cache_fields(
+    fields: dict[str, str],
+    *,
+    suffix: str,
+    size: int,
+) -> None:
+    assert fields[f"logical_cache_records_{suffix}"] == "1"
+    assert fields[f"logical_cache_bytes_{suffix}"] == str(size)
+    assert fields[f"reclaimable_logical_cache_records_{suffix}"] == "1"
+    assert fields[f"reclaimable_logical_cache_bytes_{suffix}"] == str(size)
+    assert fields[f"private_cache_records_{suffix}"] == "1"
+    assert fields[f"private_cache_bytes_{suffix}"] == str(size)
+    assert fields[f"reclaimable_private_cache_records_{suffix}"] == "1"
+    assert fields[f"reclaimable_private_cache_bytes_{suffix}"] == str(size)
+    assert fields[f"shared_cache_records_{suffix}"] == "0"
+    assert fields[f"shared_cache_bytes_{suffix}"] == "0"
+    assert fields[f"reclaimable_shared_cache_records_{suffix}"] == "0"
+    assert fields[f"reclaimable_shared_cache_bytes_{suffix}"] == "0"
+
+
 def test_selected_services_are_deduplicated_by_build_fingerprint(tmp_path: Path) -> None:
     context_bytes = _prepare_context(tmp_path)
     executor = FakeExecutor(_base_outputs(tmp_path))
@@ -291,8 +312,8 @@ def test_cache_over_budget_runs_one_bounded_action_and_remeasures(tmp_path: Path
         "123mb",
     )
     assert evidence.cache_action == "bounded-prune-all"
-    assert evidence.cache_bytes_before == 140_000_000
-    assert evidence.cache_bytes_after == 20_000_000
+    assert evidence.cache_before.private_bytes == 140_000_000
+    assert evidence.cache_after.private_bytes == 20_000_000
     assert evidence.free_bytes_before == 200_000 * 1024
     assert evidence.free_bytes_after == 350_000 * 1024
     assert (
@@ -304,6 +325,196 @@ def test_cache_over_budget_runs_one_bounded_action_and_remeasures(tmp_path: Path
         if call[0] == capacity.DOCKER_BUILD_CACHE_ACTION
     )
     assert executor.calls[action_index - 1][0] == capacity.DOCKER_ACTIVE_BUILD_PROBE
+
+
+def test_shared_heavy_logical_cache_below_private_budget_skips_action(
+    tmp_path: Path,
+) -> None:
+    _prepare_context(tmp_path)
+    outputs = _base_outputs(tmp_path)
+    outputs[capacity.DOCKER_BUILD_CACHE_PROBE] = [
+        "\n".join(
+            (
+                _cache_line(
+                    "140MB",
+                    identifier="shared-record-must-not-leak",
+                    shared=True,
+                ),
+                _cache_line("10MB", identifier="private-record-must-not-leak"),
+            )
+        )
+    ]
+    executor = FakeExecutor(outputs)
+
+    evidence = _run(tmp_path, executor)
+
+    assert evidence.cache_before.logical_bytes == 150_000_000
+    assert evidence.cache_before.shared_bytes == 140_000_000
+    assert evidence.cache_before.private_bytes == 10_000_000
+    assert evidence.cache_before.reclaimable_logical_bytes == 150_000_000
+    assert evidence.cache_before.reclaimable_shared_bytes == 140_000_000
+    assert evidence.cache_before.reclaimable_private_bytes == 10_000_000
+    assert evidence.cache_before.record_count == 2
+    assert evidence.cache_before.shared_record_count == 1
+    assert evidence.cache_before.private_record_count == 1
+    assert evidence.cache_action == "none"
+    summary = evidence.summary()
+    assert "logical_cache_records_before=2" in summary
+    assert "logical_cache_bytes_before=150000000" in summary
+    assert "private_cache_bytes_before=10000000" in summary
+    assert "shared_cache_bytes_before=140000000" in summary
+    assert "reclaimable_private_cache_bytes_before=10000000" in summary
+    assert "reclaimable_shared_cache_bytes_before=140000000" in summary
+    assert "logical_cache_records_after=2" in summary
+    assert "private_cache_bytes_after=10000000" in summary
+    assert "shared_cache_bytes_after=140000000" in summary
+    assert "shared-record-must-not-leak" not in summary
+    assert "private-record-must-not-leak" not in summary
+    assert not any(call[0] == capacity.DOCKER_BUILD_CACHE_ACTION for call in executor.calls)
+
+
+def test_private_over_budget_action_ignores_shared_logical_post_total(tmp_path: Path) -> None:
+    _prepare_context(tmp_path)
+    outputs = _base_outputs(tmp_path)
+    outputs[capacity.DOCKER_BUILD_CACHE_PROBE] = [
+        "\n".join(
+            (
+                _cache_line("500MB", identifier="shared", shared=True),
+                _cache_line("140MB", identifier="private"),
+            )
+        ),
+        "\n".join(
+            (
+                _cache_line("500MB", identifier="shared", shared=True),
+                _cache_line("20MB", identifier="private"),
+            )
+        ),
+    ]
+    outputs[capacity.DOCKER_BACKING_FILESYSTEM_PROBE] = [
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        "overlay 1000000 800000 200000 80% /\n",
+        "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+        "overlay 1000000 650000 350000 65% /\n",
+    ]
+    outputs[capacity.DOCKER_BUILD_CACHE_HELP_PROBE] = [_cache_help()]
+    outputs[capacity.DOCKER_BUILD_CACHE_ACTION] = [""]
+    executor = FakeExecutor(outputs)
+
+    evidence = _run(tmp_path, executor)
+
+    assert evidence.cache_action == "bounded-prune-all"
+    assert evidence.cache_before.private_bytes == 140_000_000
+    assert evidence.cache_after.private_bytes == 20_000_000
+    assert evidence.cache_before.shared_bytes == 500_000_000
+    assert evidence.cache_after.shared_bytes == 500_000_000
+    assert evidence.cache_after.logical_bytes == 520_000_000
+    assert evidence.cache_after.logical_bytes > evidence.cache_budget_bytes
+    assert (
+        len([call for call in executor.calls if call[0] == capacity.DOCKER_BUILD_CACHE_ACTION]) == 1
+    )
+
+
+def test_shared_cache_cannot_satisfy_private_recovery_requirement(tmp_path: Path) -> None:
+    _prepare_context(tmp_path)
+    outputs = _base_outputs(tmp_path)
+    outputs[capacity.DOCKER_BUILD_CACHE_PROBE] = [
+        "\n".join(
+            (
+                _cache_line("135MB", identifier="fixed", reclaimable=False),
+                _cache_line("5MB", identifier="private-reclaimable"),
+                _cache_line("500MB", identifier="shared", shared=True),
+            )
+        )
+    ]
+    executor = FakeExecutor(outputs)
+
+    with pytest.raises(
+        capacity.DockerCapacityError,
+        match="BUILDKIT_CACHE_RECLAIMABLE_INSUFFICIENT",
+    ):
+        _run(tmp_path, executor)
+
+    assert not any(call[0] == capacity.DOCKER_BUILD_CACHE_ACTION for call in executor.calls)
+
+
+@pytest.mark.parametrize("shared", (None, "false", 0, 1))
+def test_cache_shared_evidence_must_be_boolean(tmp_path: Path, shared: object) -> None:
+    _prepare_context(tmp_path)
+    outputs = _base_outputs(tmp_path)
+    row = {
+        "ID": "cache-1",
+        "Reclaimable": True,
+        "Size": "10MB",
+    }
+    if shared is not None:
+        row["Shared"] = shared
+    outputs[capacity.DOCKER_BUILD_CACHE_PROBE] = [json.dumps(row)]
+
+    with pytest.raises(capacity.DockerCapacityError, match="build-cache evidence is invalid"):
+        _run(tmp_path, FakeExecutor(outputs))
+
+
+def test_duplicate_cache_shared_conflict_fails_closed(tmp_path: Path) -> None:
+    _prepare_context(tmp_path)
+    outputs = _base_outputs(tmp_path)
+    outputs[capacity.DOCKER_BUILD_CACHE_PROBE] = [
+        "\n".join(
+            (
+                _cache_line("10MB", shared=False),
+                _cache_line("10MB", shared=True),
+            )
+        )
+    ]
+
+    with pytest.raises(
+        capacity.DockerCapacityError,
+        match="duplicate evidence conflicts",
+    ):
+        _run(tmp_path, FakeExecutor(outputs))
+
+
+def test_identical_cache_duplicates_collapse_into_exact_partitions(tmp_path: Path) -> None:
+    _prepare_context(tmp_path)
+    outputs = _base_outputs(tmp_path)
+    private = _cache_line("10MB", identifier="private")
+    shared = _cache_line("20MB", identifier="shared", shared=True)
+    outputs[capacity.DOCKER_BUILD_CACHE_PROBE] = ["\n".join((private, private, shared, shared))]
+
+    evidence = _run(tmp_path, FakeExecutor(outputs))
+
+    assert evidence.cache_before.record_count == 2
+    assert evidence.cache_before.logical_bytes == 30_000_000
+    assert evidence.cache_before.private_record_count == 1
+    assert evidence.cache_before.private_bytes == 10_000_000
+    assert evidence.cache_before.shared_record_count == 1
+    assert evidence.cache_before.shared_bytes == 20_000_000
+    assert evidence.cache_before.reclaimable_record_count == 2
+    assert evidence.cache_before.reclaimable_logical_bytes == 30_000_000
+    assert evidence.cache_before.reclaimable_private_record_count == 1
+    assert evidence.cache_before.reclaimable_private_bytes == 10_000_000
+    assert evidence.cache_before.reclaimable_shared_record_count == 1
+    assert evidence.cache_before.reclaimable_shared_bytes == 20_000_000
+
+
+def test_inconsistent_cache_partition_evidence_fails_closed() -> None:
+    with pytest.raises(
+        capacity.DockerCapacityError,
+        match="partition evidence is invalid",
+    ):
+        capacity.BuildCacheUsage(
+            record_count=2,
+            logical_bytes=30,
+            reclaimable_record_count=2,
+            reclaimable_logical_bytes=30,
+            private_record_count=1,
+            private_bytes=10,
+            reclaimable_private_record_count=1,
+            reclaimable_private_bytes=10,
+            shared_record_count=1,
+            shared_bytes=19,
+            reclaimable_shared_record_count=1,
+            reclaimable_shared_bytes=20,
+        )
 
 
 def test_cache_action_failure_is_sanitized_and_not_retried(
@@ -332,21 +543,22 @@ def test_cache_action_failure_is_sanitized_and_not_retried(
         _run(tmp_path, executor)
 
     fields = _error_fields(captured.value)
-    assert fields == {
+    _assert_private_only_cache_fields(fields, suffix="before", size=140_000_000)
+    _assert_private_only_cache_fields(fields, suffix="after", size=20_000_000)
+    assert fields["logical_cache_delta_signed"] == "-120000000"
+    assert fields["private_cache_delta_signed"] == "-120000000"
+    assert fields["shared_cache_delta_signed"] == "0"
+    assert fields["cache_probe_ok"] == "true"
+    non_cache_fields = {key: value for key, value in fields.items() if "cache" not in key}
+    assert non_cache_fields == {
         "classification": capacity.DOCKER_BUILD_CACHE_ACTION_FAILED_POST_MEASUREMENT_OK,
         "builder": "desktop-linux",
         "action_succeeded": "false",
         "filesystem_total_before": "1024000000",
-        "cache_before": "140000000",
-        "reclaimable_before": "140000000",
         "free_before": "204800000",
         "action_attempts": "1",
         "retry_count": "0",
-        "cache_probe_ok": "true",
         "filesystem_probe_ok": "true",
-        "cache_after": "20000000",
-        "reclaimable_after": "20000000",
-        "cache_delta_signed": "-120000000",
         "filesystem_total_after": "1024000000",
         "free_after": "358400000",
         "free_delta_signed": "153600000",
@@ -402,9 +614,11 @@ def test_failed_cache_action_and_failed_post_probe_report_composite_failure(
     assert fields["retry_count"] == "0"
     assert fields["cache_probe_ok"] == "false"
     assert fields["filesystem_probe_ok"] == "true"
-    assert "cache_after" not in fields
-    assert "reclaimable_after" not in fields
-    assert "cache_delta_signed" not in fields
+    _assert_private_only_cache_fields(fields, suffix="before", size=140_000_000)
+    assert not any(key.endswith("_after") and "cache" in key for key in fields)
+    assert "logical_cache_delta_signed" not in fields
+    assert "private_cache_delta_signed" not in fields
+    assert "shared_cache_delta_signed" not in fields
     assert fields["filesystem_total_after"] == "1024000000"
     assert fields["free_after"] == "358400000"
     assert fields["free_delta_signed"] == "153600000"
@@ -455,9 +669,11 @@ def test_successful_cache_action_and_failed_post_probe_fail_closed(
     assert fields["retry_count"] == "0"
     assert fields["cache_probe_ok"] == "true"
     assert fields["filesystem_probe_ok"] == "false"
-    assert fields["cache_after"] == "20000000"
-    assert fields["reclaimable_after"] == "20000000"
-    assert fields["cache_delta_signed"] == "-120000000"
+    _assert_private_only_cache_fields(fields, suffix="before", size=140_000_000)
+    _assert_private_only_cache_fields(fields, suffix="after", size=20_000_000)
+    assert fields["logical_cache_delta_signed"] == "-120000000"
+    assert fields["private_cache_delta_signed"] == "-120000000"
+    assert fields["shared_cache_delta_signed"] == "0"
     assert "filesystem_total_after" not in fields
     assert "free_after" not in fields
     assert "free_delta_signed" not in fields
@@ -528,9 +744,12 @@ def test_post_action_policy_failures_preserve_full_numeric_evidence(
     assert fields["retry_count"] == "0"
     assert fields["cache_probe_ok"] == "true"
     assert fields["filesystem_probe_ok"] == "true"
-    assert fields["cache_before"] == "140000000"
-    assert fields["cache_after"] == str(capacity._parse_size(cache_after))
-    assert fields["cache_delta_signed"] == str(capacity._parse_size(cache_after) - 140_000_000)
+    parsed_after = capacity._parse_size(cache_after)
+    _assert_private_only_cache_fields(fields, suffix="before", size=140_000_000)
+    _assert_private_only_cache_fields(fields, suffix="after", size=parsed_after)
+    assert fields["logical_cache_delta_signed"] == str(parsed_after - 140_000_000)
+    assert fields["private_cache_delta_signed"] == str(parsed_after - 140_000_000)
+    assert fields["shared_cache_delta_signed"] == "0"
     assert "filesystem_total_after" in fields
     assert "free_after" in fields
     assert "free_delta_signed" in fields

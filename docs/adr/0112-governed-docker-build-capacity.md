@@ -12,6 +12,14 @@ and the next source build even though the external host filesystem had ample fre
 one-time non-`--all` Buildx prune returned success but reclaimed zero bytes from cache reported as
 reclaimable, so that command is not a valid persistent capacity policy.
 
+A later governed action exposed a separate accounting defect: Buildx disk usage reported
+`Shared` records whose storage was also owned by another resource, normally a local image. The
+logical total was incorrectly treated as independently recoverable private cache. That double
+count triggered a cache action even though private cache was already below its budget; the action
+correctly reclaimed zero physical bytes, and the same incorrect logical total then failed the
+postcondition. Shared storage remains fully represented by actual Docker-filesystem free space,
+but it is not independently available to this cache-only deletion policy.
+
 The stable `workflow_update_restart.py` command must continue to select and build only affected
 services. It must not expose resolved Compose values or build arguments, silently operate on a
 remote daemon, overlap another managed build, or turn capacity recovery into a broad Docker
@@ -80,9 +88,19 @@ review proves every selected image already exists locally. A missing or changed 
 covered by this build-peak proof and must stop authorization of the reviewed run until a separate
 pull-capacity plan exists; it cannot be treated as zero-byte evidence.
 
-When cache use is at or below `B`, the workflow performs no cache action. When it exceeds `B`, let
-`K` be current cache bytes, `Q` be bytes reported reclaimable, and `A` be the maximum safe recovery
-while retaining the floor: `A = min(Q, max(0, K - R))`. Before any partial mutation, both
+Every Buildx disk-usage record must contain a boolean `Shared` classification. Identical duplicate
+records collapse only when size, reclaimable status and shared status all agree; any conflict
+fails closed. The bounded evidence partitions record counts and bytes into logical total, private
+and shared, and separately partitions the reclaimable counts and bytes. It proves both identities:
+logical = private + shared and logical reclaimable = private reclaimable + shared reclaimable.
+Cache IDs, descriptions and references are never reported.
+
+Let `K` be current private (`Shared=false`) cache bytes and `Q` be private bytes reported
+reclaimable. Shared logical bytes and shared reclaimable bytes are diagnosis-only: they never
+satisfy a recovery requirement and the workflow never claims that pruning them frees physical
+bytes. When private cache use is at or below `B`, the workflow performs no cache action. When it
+exceeds `B`, let `A` be the maximum safe private recovery while retaining the floor:
+`A = min(Q, max(0, K - R))`. Before any partial mutation, both
 `Q >= K - B` and `free + A >= F` must hold. Under the exclusive lock and with zero active builds,
 the workflow may then execute exactly once:
 
@@ -98,13 +116,14 @@ provider output is not retained or printed. Every failing post-action path emits
 operator error line containing only its fixed classification, validated builder name, before-byte
 values, probe-success booleans, `action_attempts=1` and `retry_count=0`. Values and signed deltas
 from a post-probe appear only when that probe passed; unavailable values are omitted rather than
-estimated. This records partial cache mutation without exposing cache IDs, paths, image references,
-configuration or arguments. A post-probe failure, changed backing filesystem, cache still above
-`B`, or free space below `F` stops the update without retry. A failed action may already have
-deleted part of the cache: there is no rollback, and later cache recovery occurs only through an
-independently governed source rebuild. This authorization never permits `docker system prune`,
-image/container/volume prune or removal, and it does not change Docker daemon JSON or Docker
-Desktop settings.
+estimated. Successful and failing evidence uses unambiguous logical/private/shared count and byte
+field names before and, only when the post-probe succeeds, after the action. This records partial
+cache mutation without exposing cache IDs, paths, image references, configuration or arguments. A
+post-probe failure, changed backing filesystem, private cache still above `B`, or free space below
+`F` stops the update without retry. A failed action may already have deleted part of the private
+cache: there is no rollback, and later cache recovery occurs only through an independently governed
+source rebuild. This authorization never permits `docker system prune`, image/container/volume
+prune or removal, and it does not change Docker daemon JSON or Docker Desktop settings.
 
 ## Compatibility and deferred scope
 

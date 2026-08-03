@@ -1710,8 +1710,16 @@ def verify_governed_docker_build_capacity_contract() -> None:
         '"--min-free-space"',
         "reserve = (filesystem_total + 9) // 10",
         "cache_budget = (filesystem_total + 7) // 8",
-        "reclaimable_before < required_cache_recovery",
+        'shared = row.get("Shared")',
+        "records: dict[str, tuple[int, bool, bool]]",
+        'evidence = (_parse_size(row.get("Size")), reclaimable, shared)',
+        "self.logical_bytes != self.private_bytes + self.shared_bytes",
+        "self.reclaimable_logical_bytes",
+        "!= self.reclaimable_private_bytes + self.reclaimable_shared_bytes",
+        "cache_before.reclaimable_private_bytes < required_cache_recovery",
         "free_before + recoverable_while_retaining_floor < required",
+        "if cache_before.private_bytes > cache_budget:",
+        "if cache_after.private_bytes > cache_budget:",
         "DOCKER_BUILD_CACHE_ACTION_FAILED_POST_MEASUREMENT_OK",
         "DOCKER_BUILD_CACHE_ACTION_FAILED_POST_MEASUREMENT_FAILED",
         "DOCKER_BUILD_CACHE_ACTION_SUCCEEDED_POST_MEASUREMENT_FAILED",
@@ -1719,7 +1727,9 @@ def verify_governed_docker_build_capacity_contract() -> None:
         '"retry_count=0"',
         'f"cache_probe_ok={',
         'f"filesystem_probe_ok={',
-        'f"cache_delta_signed={',
+        'f"logical_cache_delta_signed={',
+        'f"private_cache_delta_signed={',
+        'f"shared_cache_delta_signed={',
         'f"free_delta_signed={',
         'raise DockerCapacityError("DOCKER_BUILDER_MUST_HAVE_EXACTLY_ONE_NODE")',
         'raise DockerCapacityError("DOCKER_BUILDER_OVERRIDE_NOT_CURRENT")',
@@ -1733,6 +1743,20 @@ def verify_governed_docker_build_capacity_contract() -> None:
         raise AssertionError(
             f"the governed Docker build-capacity contract has drifted: {sorted(missing)}"
         )
+    private_policy = capacity.split('cache_action = "none"', maxsplit=1)[1].split(
+        "help_output = _safe_output", maxsplit=1
+    )[0]
+    for fragment in (
+        "cache_before.private_bytes > cache_budget",
+        "cache_before.private_bytes - cache_budget",
+        "cache_before.reclaimable_private_bytes < required_cache_recovery",
+        "cache_before.reclaimable_private_bytes",
+        "cache_before.private_bytes - cache_reserved",
+    ):
+        if fragment not in private_policy:
+            raise AssertionError(f"private BuildKit budget policy has drifted: {fragment}")
+    if ".logical_bytes" in private_policy or ".shared_bytes" in private_policy:
+        raise AssertionError("shared or logical BuildKit bytes cannot authorize cache deletion")
     for forbidden in (
         "docker system prune",
         "docker image prune",
@@ -1823,6 +1847,13 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_multi_node_current_builder_is_rejected",
         "test_current_builder_must_match_current_local_context",
         "test_post_action_policy_failures_preserve_full_numeric_evidence",
+        "test_shared_heavy_logical_cache_below_private_budget_skips_action",
+        "test_private_over_budget_action_ignores_shared_logical_post_total",
+        "test_shared_cache_cannot_satisfy_private_recovery_requirement",
+        "test_cache_shared_evidence_must_be_boolean",
+        "test_duplicate_cache_shared_conflict_fails_closed",
+        "test_identical_cache_duplicates_collapse_into_exact_partitions",
+        "test_inconsistent_cache_partition_evidence_fails_closed",
     ):
         if test_name not in test_source:
             raise AssertionError(f"the Docker capacity direct test is missing: {test_name}")
@@ -1845,6 +1876,10 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "B = ceil(T / 8)",
         "R = floor(B / 2)",
         "runtime/operator-locks/update-build.lock",
+        "boolean `Shared` classification",
+        "logical = private + shared",
+        "Shared=false",
+        "diagnosis-only",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0112 omits governed capacity term: {fragment}")

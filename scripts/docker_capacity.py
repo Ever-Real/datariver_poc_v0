@@ -180,6 +180,76 @@ def exclusive_docker_workflow_lock(root: Path) -> Iterator[DockerWorkflowLock]:
 
 
 @dataclass(frozen=True)
+class BuildCacheUsage:
+    """Bounded Buildx disk-usage partitions without cache identities."""
+
+    record_count: int
+    logical_bytes: int
+    reclaimable_record_count: int
+    reclaimable_logical_bytes: int
+    private_record_count: int
+    private_bytes: int
+    reclaimable_private_record_count: int
+    reclaimable_private_bytes: int
+    shared_record_count: int
+    shared_bytes: int
+    reclaimable_shared_record_count: int
+    reclaimable_shared_bytes: int
+
+    def __post_init__(self) -> None:
+        values = (
+            self.record_count,
+            self.logical_bytes,
+            self.reclaimable_record_count,
+            self.reclaimable_logical_bytes,
+            self.private_record_count,
+            self.private_bytes,
+            self.reclaimable_private_record_count,
+            self.reclaimable_private_bytes,
+            self.shared_record_count,
+            self.shared_bytes,
+            self.reclaimable_shared_record_count,
+            self.reclaimable_shared_bytes,
+        )
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in values
+        ):
+            raise DockerCapacityError("Docker build-cache partition evidence is invalid.")
+        if (
+            self.record_count != self.private_record_count + self.shared_record_count
+            or self.logical_bytes != self.private_bytes + self.shared_bytes
+            or self.reclaimable_record_count
+            != self.reclaimable_private_record_count + self.reclaimable_shared_record_count
+            or self.reclaimable_logical_bytes
+            != self.reclaimable_private_bytes + self.reclaimable_shared_bytes
+            or self.reclaimable_private_record_count > self.private_record_count
+            or self.reclaimable_shared_record_count > self.shared_record_count
+            or self.reclaimable_private_bytes > self.private_bytes
+            or self.reclaimable_shared_bytes > self.shared_bytes
+        ):
+            raise DockerCapacityError("Docker build-cache partition evidence is invalid.")
+
+
+def _cache_usage_fields(usage: BuildCacheUsage, *, suffix: str) -> tuple[str, ...]:
+    if suffix not in {"before", "after"}:
+        raise DockerCapacityError("Docker build-cache evidence suffix is invalid.")
+    return (
+        f"logical_cache_records_{suffix}={usage.record_count}",
+        f"logical_cache_bytes_{suffix}={usage.logical_bytes}",
+        f"reclaimable_logical_cache_records_{suffix}={usage.reclaimable_record_count}",
+        f"reclaimable_logical_cache_bytes_{suffix}={usage.reclaimable_logical_bytes}",
+        f"private_cache_records_{suffix}={usage.private_record_count}",
+        f"private_cache_bytes_{suffix}={usage.private_bytes}",
+        f"reclaimable_private_cache_records_{suffix}={usage.reclaimable_private_record_count}",
+        f"reclaimable_private_cache_bytes_{suffix}={usage.reclaimable_private_bytes}",
+        f"shared_cache_records_{suffix}={usage.shared_record_count}",
+        f"shared_cache_bytes_{suffix}={usage.shared_bytes}",
+        f"reclaimable_shared_cache_records_{suffix}={usage.reclaimable_shared_record_count}",
+        f"reclaimable_shared_cache_bytes_{suffix}={usage.reclaimable_shared_bytes}",
+    )
+
+
+@dataclass(frozen=True)
 class DockerCapacityEvidence:
     builder: str
     selected_services: int
@@ -195,35 +265,32 @@ class DockerCapacityEvidence:
     free_bytes_after: int
     cache_budget_bytes: int
     cache_reserved_bytes: int
-    cache_bytes_before: int
-    reclaimable_cache_bytes_before: int
-    cache_bytes_after: int
-    reclaimable_cache_bytes_after: int
+    cache_before: BuildCacheUsage
+    cache_after: BuildCacheUsage
     cache_action: str
 
     def summary(self) -> str:
-        return (
-            "DOCKER_BUILD_CAPACITY_OK "
-            f"builder={self.builder} "
-            f"selected_services={self.selected_services} "
-            f"selected_image_tags={self.selected_image_tags} "
-            f"unique_builds={self.unique_builds} "
-            f"context_bytes={self.context_bytes} "
-            f"image_bytes={self.image_bytes} "
-            f"build_peak_bytes={self.build_peak_bytes} "
-            f"reserve_bytes={self.reserve_bytes} "
-            f"required_free_bytes={self.required_free_bytes} "
-            f"filesystem_total_bytes={self.filesystem_total_bytes} "
-            f"free_bytes_before={self.free_bytes_before} "
-            f"free_bytes_after={self.free_bytes_after} "
-            f"cache_budget_bytes={self.cache_budget_bytes} "
-            f"cache_reserved_bytes={self.cache_reserved_bytes} "
-            f"cache_bytes_before={self.cache_bytes_before} "
-            f"reclaimable_cache_bytes_before={self.reclaimable_cache_bytes_before} "
-            f"cache_bytes_after={self.cache_bytes_after} "
-            f"reclaimable_cache_bytes_after={self.reclaimable_cache_bytes_after} "
-            f"cache_action={self.cache_action}"
+        fields = (
+            "DOCKER_BUILD_CAPACITY_OK",
+            f"builder={self.builder}",
+            f"selected_services={self.selected_services}",
+            f"selected_image_tags={self.selected_image_tags}",
+            f"unique_builds={self.unique_builds}",
+            f"context_bytes={self.context_bytes}",
+            f"image_bytes={self.image_bytes}",
+            f"build_peak_bytes={self.build_peak_bytes}",
+            f"reserve_bytes={self.reserve_bytes}",
+            f"required_free_bytes={self.required_free_bytes}",
+            f"filesystem_total_bytes={self.filesystem_total_bytes}",
+            f"free_bytes_before={self.free_bytes_before}",
+            f"free_bytes_after={self.free_bytes_after}",
+            f"cache_budget_bytes={self.cache_budget_bytes}",
+            f"cache_reserved_bytes={self.cache_reserved_bytes}",
+            *_cache_usage_fields(self.cache_before, suffix="before"),
+            *_cache_usage_fields(self.cache_after, suffix="after"),
+            f"cache_action={self.cache_action}",
         )
+        return " ".join(fields)
 
 
 @dataclass(frozen=True)
@@ -545,8 +612,8 @@ def _parse_size(value: object) -> int:
     return result
 
 
-def _cache_bytes(raw: str) -> tuple[int, int]:
-    records: dict[str, tuple[int, bool]] = {}
+def _cache_bytes(raw: str) -> BuildCacheUsage:
+    records: dict[str, tuple[int, bool, bool]] = {}
     try:
         rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
     except json.JSONDecodeError as error:
@@ -556,15 +623,49 @@ def _cache_bytes(raw: str) -> tuple[int, int]:
             raise DockerCapacityError("Docker build-cache evidence is invalid.")
         identifier = row.get("ID")
         reclaimable = row.get("Reclaimable")
-        if not isinstance(identifier, str) or not identifier or not isinstance(reclaimable, bool):
+        shared = row.get("Shared")
+        if (
+            not isinstance(identifier, str)
+            or not identifier
+            or not isinstance(reclaimable, bool)
+            or not isinstance(shared, bool)
+        ):
             raise DockerCapacityError("Docker build-cache evidence is invalid.")
-        evidence = (_parse_size(row.get("Size")), reclaimable)
+        evidence = (_parse_size(row.get("Size")), reclaimable, shared)
         if identifier in records and records[identifier] != evidence:
             raise DockerCapacityError("Docker build-cache duplicate evidence conflicts.")
         records[identifier] = evidence
-    total = sum(size for size, _reclaimable in records.values())
-    reclaimable_total = sum(size for size, reclaimable in records.values() if reclaimable)
-    return total, reclaimable_total
+    logical_bytes = sum(size for size, _reclaimable, _shared in records.values())
+    reclaimable_logical_bytes = sum(
+        size for size, reclaimable, _shared in records.values() if reclaimable
+    )
+    private = tuple(evidence for evidence in records.values() if not evidence[2])
+    shared_records = tuple(evidence for evidence in records.values() if evidence[2])
+    usage = BuildCacheUsage(
+        record_count=len(records),
+        logical_bytes=logical_bytes,
+        reclaimable_record_count=sum(
+            1 for _size, reclaimable, _shared in records.values() if reclaimable
+        ),
+        reclaimable_logical_bytes=reclaimable_logical_bytes,
+        private_record_count=len(private),
+        private_bytes=sum(size for size, _reclaimable, _shared in private),
+        reclaimable_private_record_count=sum(
+            1 for _size, reclaimable, _shared in private if reclaimable
+        ),
+        reclaimable_private_bytes=sum(
+            size for size, reclaimable, _shared in private if reclaimable
+        ),
+        shared_record_count=len(shared_records),
+        shared_bytes=sum(size for size, _reclaimable, _shared in shared_records),
+        reclaimable_shared_record_count=sum(
+            1 for _size, reclaimable, _shared in shared_records if reclaimable
+        ),
+        reclaimable_shared_bytes=sum(
+            size for size, reclaimable, _shared in shared_records if reclaimable
+        ),
+    )
+    return usage
 
 
 def _filesystem_bytes(raw: str) -> tuple[int, int]:
@@ -629,7 +730,7 @@ def _image_bytes(
 def _probe_cache(
     executor: CapacityExecutor,
     builder: str,
-) -> tuple[int, int]:
+) -> BuildCacheUsage:
     raw = _safe_output(
         executor,
         (
@@ -766,11 +867,10 @@ def _post_action_error(
     classification: str,
     builder: str,
     action_succeeded: bool,
-    cache_bytes_before: int,
-    reclaimable_cache_bytes_before: int,
+    cache_before: BuildCacheUsage,
     free_bytes_before: int,
     filesystem_total_bytes_before: int,
-    cache_after: tuple[int, int] | None,
+    cache_after: BuildCacheUsage | None,
     filesystem_after: tuple[int, int] | None,
 ) -> DockerCapacityError:
     allowed_classifications = {
@@ -785,12 +885,7 @@ def _post_action_error(
         return DockerCapacityError("DOCKER_BUILD_CACHE_POST_ACTION_EVIDENCE_INVALID")
     if _BUILDER_NAME.fullmatch(builder) is None:
         return DockerCapacityError("DOCKER_BUILD_CACHE_POST_ACTION_EVIDENCE_INVALID")
-    before_values = (
-        cache_bytes_before,
-        reclaimable_cache_bytes_before,
-        free_bytes_before,
-        filesystem_total_bytes_before,
-    )
+    before_values = (free_bytes_before, filesystem_total_bytes_before)
     if any(value < 0 for value in before_values) or filesystem_total_bytes_before <= 0:
         return DockerCapacityError("DOCKER_BUILD_CACHE_POST_ACTION_EVIDENCE_INVALID")
     fields = [
@@ -798,8 +893,7 @@ def _post_action_error(
         f"builder={builder}",
         f"action_succeeded={'true' if action_succeeded else 'false'}",
         f"filesystem_total_before={filesystem_total_bytes_before}",
-        f"cache_before={cache_bytes_before}",
-        f"reclaimable_before={reclaimable_cache_bytes_before}",
+        *_cache_usage_fields(cache_before, suffix="before"),
         f"free_before={free_bytes_before}",
         "action_attempts=1",
         "retry_count=0",
@@ -807,14 +901,15 @@ def _post_action_error(
         f"filesystem_probe_ok={'true' if filesystem_after is not None else 'false'}",
     ]
     if cache_after is not None:
-        cache_bytes_after, reclaimable_cache_bytes_after = cache_after
-        if cache_bytes_after < 0 or reclaimable_cache_bytes_after < 0:
-            return DockerCapacityError("DOCKER_BUILD_CACHE_POST_ACTION_EVIDENCE_INVALID")
+        logical_delta = cache_after.logical_bytes - cache_before.logical_bytes
+        private_delta = cache_after.private_bytes - cache_before.private_bytes
+        shared_delta = cache_after.shared_bytes - cache_before.shared_bytes
         fields.extend(
             (
-                f"cache_after={cache_bytes_after}",
-                f"reclaimable_after={reclaimable_cache_bytes_after}",
-                f"cache_delta_signed={cache_bytes_after - cache_bytes_before}",
+                *_cache_usage_fields(cache_after, suffix="after"),
+                f"logical_cache_delta_signed={logical_delta}",
+                f"private_cache_delta_signed={private_delta}",
+                f"shared_cache_delta_signed={shared_delta}",
             )
         )
     if filesystem_after is not None:
@@ -885,7 +980,7 @@ def governed_compose_build_capacity(
         targets,
         expected_platform=platform,
     )
-    cache_before, reclaimable_before = _probe_cache(command_executor, builder)
+    cache_before = _probe_cache(command_executor, builder)
     filesystem_total, free_before = _probe_filesystem(
         command_executor,
         docker_filesystem_probe_command,
@@ -911,16 +1006,15 @@ def governed_compose_build_capacity(
         raise DockerCapacityError("DOCKER_BUILD_CAPACITY_POLICY_INFEASIBLE")
     cache_action = "none"
     cache_after = cache_before
-    reclaimable_after = reclaimable_before
     free_after = free_before
 
-    if cache_before > cache_budget:
-        required_cache_recovery = cache_before - cache_budget
-        if reclaimable_before < required_cache_recovery:
+    if cache_before.private_bytes > cache_budget:
+        required_cache_recovery = cache_before.private_bytes - cache_budget
+        if cache_before.reclaimable_private_bytes < required_cache_recovery:
             raise DockerCapacityError("BUILDKIT_CACHE_RECLAIMABLE_INSUFFICIENT")
         recoverable_while_retaining_floor = min(
-            reclaimable_before,
-            max(0, cache_before - cache_reserved),
+            cache_before.reclaimable_private_bytes,
+            max(0, cache_before.private_bytes - cache_reserved),
         )
         if free_before + recoverable_while_retaining_floor < required:
             raise DockerCapacityError("DOCKER_CAPACITY_INSUFFICIENT_FOR_CACHE_ACTION")
@@ -970,7 +1064,7 @@ def governed_compose_build_capacity(
         except DockerCapacityError:
             action_succeeded = False
 
-        cache_measurement_after: tuple[int, int] | None = None
+        cache_measurement_after: BuildCacheUsage | None = None
         filesystem_measurement_after: tuple[int, int] | None = None
         try:
             cache_measurement_after = _probe_cache(command_executor, builder)
@@ -993,22 +1087,20 @@ def governed_compose_build_capacity(
                 classification=classification,
                 builder=builder,
                 action_succeeded=action_succeeded,
-                cache_bytes_before=cache_before,
-                reclaimable_cache_bytes_before=reclaimable_before,
+                cache_before=cache_before,
                 free_bytes_before=free_before,
                 filesystem_total_bytes_before=filesystem_total,
                 cache_after=cache_measurement_after,
                 filesystem_after=filesystem_measurement_after,
             )
-        cache_after, reclaimable_after = cache_measurement_after
+        cache_after = cache_measurement_after
         filesystem_total_after, free_after = filesystem_measurement_after
         if not action_succeeded:
             raise _post_action_error(
                 classification=DOCKER_BUILD_CACHE_ACTION_FAILED_POST_MEASUREMENT_OK,
                 builder=builder,
                 action_succeeded=False,
-                cache_bytes_before=cache_before,
-                reclaimable_cache_bytes_before=reclaimable_before,
+                cache_before=cache_before,
                 free_bytes_before=free_before,
                 filesystem_total_bytes_before=filesystem_total,
                 cache_after=cache_measurement_after,
@@ -1019,20 +1111,18 @@ def governed_compose_build_capacity(
                 classification="DOCKER_BACKING_FILESYSTEM_CHANGED_DURING_PREFLIGHT",
                 builder=builder,
                 action_succeeded=True,
-                cache_bytes_before=cache_before,
-                reclaimable_cache_bytes_before=reclaimable_before,
+                cache_before=cache_before,
                 free_bytes_before=free_before,
                 filesystem_total_bytes_before=filesystem_total,
                 cache_after=cache_measurement_after,
                 filesystem_after=filesystem_measurement_after,
             )
-        if cache_after > cache_budget:
+        if cache_after.private_bytes > cache_budget:
             raise _post_action_error(
                 classification="BUILDKIT_CACHE_BUDGET_NOT_RESTORED",
                 builder=builder,
                 action_succeeded=True,
-                cache_bytes_before=cache_before,
-                reclaimable_cache_bytes_before=reclaimable_before,
+                cache_before=cache_before,
                 free_bytes_before=free_before,
                 filesystem_total_bytes_before=filesystem_total,
                 cache_after=cache_measurement_after,
@@ -1043,8 +1133,7 @@ def governed_compose_build_capacity(
                 classification="DOCKER_CAPACITY_INSUFFICIENT_AFTER_CACHE_ACTION",
                 builder=builder,
                 action_succeeded=True,
-                cache_bytes_before=cache_before,
-                reclaimable_cache_bytes_before=reclaimable_before,
+                cache_before=cache_before,
                 free_bytes_before=free_before,
                 filesystem_total_bytes_before=filesystem_total,
                 cache_after=cache_measurement_after,
@@ -1069,9 +1158,7 @@ def governed_compose_build_capacity(
         free_bytes_after=free_after,
         cache_budget_bytes=cache_budget,
         cache_reserved_bytes=cache_reserved,
-        cache_bytes_before=cache_before,
-        reclaimable_cache_bytes_before=reclaimable_before,
-        cache_bytes_after=cache_after,
-        reclaimable_cache_bytes_after=reclaimable_after,
+        cache_before=cache_before,
+        cache_after=cache_after,
         cache_action=cache_action,
     )
