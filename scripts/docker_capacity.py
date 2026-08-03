@@ -12,6 +12,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 from fcntl import LOCK_EX, LOCK_NB, LOCK_UN, flock
 from pathlib import Path, PurePosixPath
 from typing import Protocol
@@ -63,6 +64,89 @@ _REQUIRED_DOCKERIGNORE_RULES = frozenset(
 
 class DockerCapacityError(RuntimeError):
     """A sanitized, operator-correctable Docker capacity failure."""
+
+
+class DockerCapacityMode(StrEnum):
+    """Fixed mutation policy for one canonical capacity evaluation."""
+
+    ACTION_ENABLED = "ACTION_ENABLED"
+    MEASURE_ONLY = "MEASURE_ONLY"
+
+
+class BuildCapacityPreflightPredicate(StrEnum):
+    """Closed, value-free first-failure phases for the read-only diagnostic."""
+
+    HOST_ENVIRONMENT_PREFLIGHT = "HOST_ENVIRONMENT_PREFLIGHT"
+    SOURCE_PROVENANCE = "SOURCE_PROVENANCE"
+    COMPOSE_ARGUMENTS = "COMPOSE_ARGUMENTS"
+    LOCK_CONTRACT = "LOCK_CONTRACT"
+    CLEAN_CHECKOUT = "CLEAN_CHECKOUT"
+    DOCKERIGNORE_CONTRACT = "DOCKERIGNORE_CONTRACT"
+    COMPOSE_CONFIG = "COMPOSE_CONFIG"
+    BUILD_TARGET_CONTRACT = "BUILD_TARGET_CONTRACT"
+    TRACKED_CONTEXT = "TRACKED_CONTEXT"
+    DOCKER_CONTEXT = "DOCKER_CONTEXT"
+    BUILDER_LIST_PROBE = "BUILDER_LIST_PROBE"
+    BUILDER_SELECTION = "BUILDER_SELECTION"
+    DOCKER_PLATFORM = "DOCKER_PLATFORM"
+    IMAGE_EVIDENCE = "IMAGE_EVIDENCE"
+    CACHE_EVIDENCE = "CACHE_EVIDENCE"
+    FILESYSTEM_EVIDENCE = "FILESYSTEM_EVIDENCE"
+    CAPACITY_POLICY = "CAPACITY_POLICY"
+    CAPACITY_CACHE_POLICY_SUPPORT = "CAPACITY_CACHE_POLICY_SUPPORT"
+    CAPACITY_CACHE_ACTIVE_BUILD = "CAPACITY_CACHE_ACTIVE_BUILD"
+    CACHE_ACTION_REQUIRED = "CACHE_ACTION_REQUIRED"
+    INITIAL_BUILDER_IDLE_PROBE = "INITIAL_BUILDER_IDLE_PROBE"
+    INITIAL_BUILDER_ACTIVE = "INITIAL_BUILDER_ACTIVE"
+    PASS = "PASS"  # noqa: S105 - fixed diagnostic predicate, not a secret.
+    UNKNOWN = "UNKNOWN"
+
+
+@dataclass(slots=True)
+class DockerCapacityPhaseRecorder:
+    """Retain only the current closed capacity phase, never provider details."""
+
+    predicate: BuildCapacityPreflightPredicate = BuildCapacityPreflightPredicate.UNKNOWN
+
+    def mark(self, predicate: BuildCapacityPreflightPredicate) -> None:
+        if not isinstance(predicate, BuildCapacityPreflightPredicate):
+            raise DockerCapacityError("DOCKER_BUILD_CAPACITY_PHASE_INVALID")
+        self.predicate = predicate
+
+
+class DockerCapacityPhaseError(DockerCapacityError):
+    """Preserve an existing sanitized error plus its structural phase."""
+
+    def __init__(self, message: str, predicate: BuildCapacityPreflightPredicate) -> None:
+        super().__init__(message)
+        self.predicate = predicate
+
+
+class DockerCapacityMeasureOnlyStop(DockerCapacityPhaseError):
+    """Stop a read-only evaluation immediately before its cache action."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "DOCKER_BUILD_CACHE_ACTION_REQUIRED",
+            BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED,
+        )
+
+
+@contextmanager
+def _capacity_phase(
+    recorder: DockerCapacityPhaseRecorder | None,
+    predicate: BuildCapacityPreflightPredicate,
+) -> Iterator[None]:
+    if recorder is not None:
+        recorder.mark(predicate)
+    try:
+        yield
+    except DockerCapacityPhaseError:
+        raise
+    except DockerCapacityError as error:
+        if recorder is not None:
+            raise DockerCapacityPhaseError(str(error), predicate) from None
+        raise
 
 
 class CapacityExecutor(Protocol):
@@ -462,45 +546,56 @@ def _tracked_context_bytes(
     *,
     root: Path,
     contexts: Sequence[Path],
+    phase_recorder: DockerCapacityPhaseRecorder | None = None,
 ) -> dict[Path, int]:
-    clean = _safe_output(
-        executor,
-        ("git", "-C", root, "status", "--porcelain", "--untracked-files=normal"),
-        classification=GIT_CLEAN_CHECKOUT_PROBE,
-        timeout_seconds=10,
-    )
-    if clean:
-        raise DockerCapacityError("BUILD_CAPACITY_REQUIRES_CLEAN_CHECKOUT")
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.CLEAN_CHECKOUT,
+    ):
+        clean = _safe_output(
+            executor,
+            ("git", "-C", root, "status", "--porcelain", "--untracked-files=normal"),
+            classification=GIT_CLEAN_CHECKOUT_PROBE,
+            timeout_seconds=10,
+        )
+        if clean:
+            raise DockerCapacityError("BUILD_CAPACITY_REQUIRES_CLEAN_CHECKOUT")
 
     sizes: dict[Path, int] = {}
-    for context in sorted(set(contexts)):
-        relative_context = context.relative_to(root)
-        output = _safe_output(
-            executor,
-            ("git", "-C", root, "ls-files", "-z", "--", relative_context or Path(".")),
-            classification=GIT_BUILD_CONTEXT_PROBE,
-            timeout_seconds=20,
-        )
-        total = 0
-        files = [name for name in output.split("\0") if name]
-        if not files:
-            raise DockerCapacityError("Tracked build context is empty.")
-        for name in files:
-            pure = PurePosixPath(name)
-            if pure.is_absolute() or ".." in pure.parts:
-                raise DockerCapacityError("Tracked build context entry is invalid.")
-            path = (root / Path(*pure.parts)).resolve(strict=False)
-            if not _inside(path, root) or not _inside(path, context):
-                raise DockerCapacityError("Tracked build context entry escaped its context.")
-            try:
-                metadata = path.lstat()
-            except OSError as error:
-                raise DockerCapacityError("Tracked build context entry cannot be read.") from error
-            if stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-                total += metadata.st_size
-        if total <= 0:
-            raise DockerCapacityError("Tracked build context has no byte evidence.")
-        sizes[context] = total
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.TRACKED_CONTEXT,
+    ):
+        for context in sorted(set(contexts)):
+            relative_context = context.relative_to(root)
+            output = _safe_output(
+                executor,
+                ("git", "-C", root, "ls-files", "-z", "--", relative_context or Path(".")),
+                classification=GIT_BUILD_CONTEXT_PROBE,
+                timeout_seconds=20,
+            )
+            total = 0
+            files = [name for name in output.split("\0") if name]
+            if not files:
+                raise DockerCapacityError("Tracked build context is empty.")
+            for name in files:
+                pure = PurePosixPath(name)
+                if pure.is_absolute() or ".." in pure.parts:
+                    raise DockerCapacityError("Tracked build context entry is invalid.")
+                path = (root / Path(*pure.parts)).resolve(strict=False)
+                if not _inside(path, root) or not _inside(path, context):
+                    raise DockerCapacityError("Tracked build context entry escaped its context.")
+                try:
+                    metadata = path.lstat()
+                except OSError as error:
+                    raise DockerCapacityError(
+                        "Tracked build context entry cannot be read."
+                    ) from error
+                if stat.S_ISREG(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    total += metadata.st_size
+            if total <= 0:
+                raise DockerCapacityError("Tracked build context has no byte evidence.")
+            sizes[context] = total
     return sizes
 
 
@@ -827,35 +922,44 @@ def require_no_active_builds(
     builder: str,
     lock: DockerWorkflowLock,
     executor: CapacityExecutor | None = None,
+    phase_recorder: DockerCapacityPhaseRecorder | None = None,
+    probe_predicate: BuildCapacityPreflightPredicate = (
+        BuildCapacityPreflightPredicate.CAPACITY_CACHE_ACTIVE_BUILD
+    ),
+    active_predicate: BuildCapacityPreflightPredicate = (
+        BuildCapacityPreflightPredicate.CAPACITY_CACHE_ACTIVE_BUILD
+    ),
 ) -> None:
     """Fail closed unless the selected builder has no running build records."""
 
-    lock.require_held()
-    if _BUILDER_NAME.fullmatch(builder) is None:
-        raise DockerCapacityError("DOCKER_BUILDER_IDENTITY_INVALID")
-    command_executor = executor or SubprocessCapacityExecutor()
-    raw = _safe_output(
-        command_executor,
-        (
-            "docker",
-            "buildx",
-            "history",
-            "ls",
-            "--builder",
-            builder,
-            "--filter",
-            "status=running",
-            "--format",
-            "{{.Status}}",
-        ),
-        classification=DOCKER_ACTIVE_BUILD_PROBE,
-        timeout_seconds=20,
-    )
-    statuses = tuple(line.strip().lower() for line in raw.splitlines() if line.strip())
-    if any(status != "running" for status in statuses):
-        raise DockerCapacityError("DOCKER_ACTIVE_BUILD_EVIDENCE_INVALID")
+    with _capacity_phase(phase_recorder, probe_predicate):
+        lock.require_held()
+        if _BUILDER_NAME.fullmatch(builder) is None:
+            raise DockerCapacityError("DOCKER_BUILDER_IDENTITY_INVALID")
+        command_executor = executor or SubprocessCapacityExecutor()
+        raw = _safe_output(
+            command_executor,
+            (
+                "docker",
+                "buildx",
+                "history",
+                "ls",
+                "--builder",
+                builder,
+                "--filter",
+                "status=running",
+                "--format",
+                "{{.Status}}",
+            ),
+            classification=DOCKER_ACTIVE_BUILD_PROBE,
+            timeout_seconds=20,
+        )
+        statuses = tuple(line.strip().lower() for line in raw.splitlines() if line.strip())
+        if any(status != "running" for status in statuses):
+            raise DockerCapacityError("DOCKER_ACTIVE_BUILD_EVIDENCE_INVALID")
     if statuses:
-        raise DockerCapacityError("DOCKER_ACTIVE_BUILD_PRESENT")
+        with _capacity_phase(phase_recorder, active_predicate):
+            raise DockerCapacityError("DOCKER_ACTIVE_BUILD_PRESENT")
 
 
 def _cli_megabytes(value: int) -> str:
@@ -939,106 +1043,183 @@ def governed_compose_build_capacity(
     environ: Mapping[str, str],
     lock: DockerWorkflowLock,
     executor: CapacityExecutor | None = None,
+    mode: DockerCapacityMode = DockerCapacityMode.ACTION_ENABLED,
+    phase_recorder: DockerCapacityPhaseRecorder | None = None,
 ) -> DockerCapacityEvidence:
     """Prove selected builds fit before any Docker runtime mutation."""
 
-    selected = tuple(dict.fromkeys(selected_build_services))
-    if not selected:
-        raise DockerCapacityError("No selected build services were supplied.")
-    lock.require_held()
+    if not isinstance(mode, DockerCapacityMode):
+        raise DockerCapacityError("DOCKER_BUILD_CAPACITY_MODE_INVALID")
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.COMPOSE_ARGUMENTS,
+    ):
+        selected = tuple(dict.fromkeys(selected_build_services))
+        if not selected:
+            raise DockerCapacityError("No selected build services were supplied.")
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.LOCK_CONTRACT,
+    ):
+        lock.require_held()
     resolved_root = root.resolve()
-    _require_dockerignore_contract(resolved_root)
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.DOCKERIGNORE_CONTRACT,
+    ):
+        _require_dockerignore_contract(resolved_root)
     command_executor = executor or SubprocessCapacityExecutor()
-    raw_config = _safe_output(
-        command_executor,
-        compose_config_command,
-        classification=COMPOSE_BUILD_CONFIG_PROBE,
-        timeout_seconds=30,
-    )
-    targets = _resolve_build_targets(raw_config, root=resolved_root, selected_services=selected)
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.COMPOSE_CONFIG,
+    ):
+        raw_config = _safe_output(
+            command_executor,
+            compose_config_command,
+            classification=COMPOSE_BUILD_CONFIG_PROBE,
+            timeout_seconds=30,
+        )
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.BUILD_TARGET_CONTRACT,
+    ):
+        targets = _resolve_build_targets(
+            raw_config,
+            root=resolved_root,
+            selected_services=selected,
+        )
     context_sizes = _tracked_context_bytes(
         command_executor,
         root=resolved_root,
         contexts=tuple(target.context for target in targets.values()),
+        phase_recorder=phase_recorder,
     )
     total_context_bytes = sum(context_sizes[target.context] for target in targets.values())
 
-    current_context = _require_local_unix_docker_context(command_executor, environ)
-    builder = _selected_builder(
-        _safe_output(
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.DOCKER_CONTEXT,
+    ):
+        current_context = _require_local_unix_docker_context(command_executor, environ)
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.BUILDER_LIST_PROBE,
+    ):
+        raw_builder_list = _safe_output(
             command_executor,
             ("docker", "buildx", "ls", "--format", "{{json .}}"),
             classification=DOCKER_BUILDER_LIST_PROBE,
             timeout_seconds=20,
-        ),
-        environ,
-        current_context=current_context,
-    )
-    platform = _docker_platform(command_executor)
-    total_image_bytes, image_sizes = _image_bytes(
-        command_executor,
-        targets,
-        expected_platform=platform,
-    )
-    cache_before = _probe_cache(command_executor, builder)
-    filesystem_total, free_before = _probe_filesystem(
-        command_executor,
-        docker_filesystem_probe_command,
-    )
-
-    build_peak = sum(
-        (2 * image_sizes[fingerprint]) + context_sizes[target.context]
-        for fingerprint, target in targets.items()
-    )
-    reserve = (filesystem_total + 9) // 10
-    required = build_peak + reserve
-    cache_budget = (filesystem_total + 7) // 8
-    cache_reserved = cache_budget // 2
-    if (
-        build_peak <= 0
-        or reserve <= 0
-        or required <= 0
-        or required > filesystem_total
-        or cache_reserved <= 0
-        or cache_reserved > cache_budget
-        or cache_budget >= filesystem_total
+        )
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.BUILDER_SELECTION,
     ):
-        raise DockerCapacityError("DOCKER_BUILD_CAPACITY_POLICY_INFEASIBLE")
+        builder = _selected_builder(
+            raw_builder_list,
+            environ,
+            current_context=current_context,
+        )
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.DOCKER_PLATFORM,
+    ):
+        platform = _docker_platform(command_executor)
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.IMAGE_EVIDENCE,
+    ):
+        total_image_bytes, image_sizes = _image_bytes(
+            command_executor,
+            targets,
+            expected_platform=platform,
+        )
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.CACHE_EVIDENCE,
+    ):
+        cache_before = _probe_cache(command_executor, builder)
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.FILESYSTEM_EVIDENCE,
+    ):
+        filesystem_total, free_before = _probe_filesystem(
+            command_executor,
+            docker_filesystem_probe_command,
+        )
+
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.CAPACITY_POLICY,
+    ):
+        build_peak = sum(
+            (2 * image_sizes[fingerprint]) + context_sizes[target.context]
+            for fingerprint, target in targets.items()
+        )
+        reserve = (filesystem_total + 9) // 10
+        required = build_peak + reserve
+        cache_budget = (filesystem_total + 7) // 8
+        cache_reserved = cache_budget // 2
+        if (
+            build_peak <= 0
+            or reserve <= 0
+            or required <= 0
+            or required > filesystem_total
+            or cache_reserved <= 0
+            or cache_reserved > cache_budget
+            or cache_budget >= filesystem_total
+        ):
+            raise DockerCapacityError("DOCKER_BUILD_CAPACITY_POLICY_INFEASIBLE")
     cache_action = "none"
     cache_after = cache_before
     free_after = free_before
 
     if cache_before.private_bytes > cache_budget:
-        required_cache_recovery = cache_before.private_bytes - cache_budget
-        if cache_before.reclaimable_private_bytes < required_cache_recovery:
-            raise DockerCapacityError("BUILDKIT_CACHE_RECLAIMABLE_INSUFFICIENT")
-        recoverable_while_retaining_floor = min(
-            cache_before.reclaimable_private_bytes,
-            max(0, cache_before.private_bytes - cache_reserved),
-        )
-        if free_before + recoverable_while_retaining_floor < required:
-            raise DockerCapacityError("DOCKER_CAPACITY_INSUFFICIENT_FOR_CACHE_ACTION")
-        help_output = _safe_output(
-            command_executor,
-            ("docker", "buildx", "prune", "--help"),
-            classification=DOCKER_BUILD_CACHE_HELP_PROBE,
-            timeout_seconds=10,
-        )
-        required_flags = {
-            "--all",
-            "--builder",
-            "--force",
-            "--max-used-space",
-            "--min-free-space",
-            "--reserved-space",
-        }
-        if any(flag not in help_output for flag in required_flags):
-            raise DockerCapacityError("BUILDKIT_CACHE_POLICY_UNSUPPORTED")
+        with _capacity_phase(
+            phase_recorder,
+            BuildCapacityPreflightPredicate.CAPACITY_POLICY,
+        ):
+            required_cache_recovery = cache_before.private_bytes - cache_budget
+            if cache_before.reclaimable_private_bytes < required_cache_recovery:
+                raise DockerCapacityError("BUILDKIT_CACHE_RECLAIMABLE_INSUFFICIENT")
+            recoverable_while_retaining_floor = min(
+                cache_before.reclaimable_private_bytes,
+                max(0, cache_before.private_bytes - cache_reserved),
+            )
+            if free_before + recoverable_while_retaining_floor < required:
+                raise DockerCapacityError("DOCKER_CAPACITY_INSUFFICIENT_FOR_CACHE_ACTION")
+        with _capacity_phase(
+            phase_recorder,
+            BuildCapacityPreflightPredicate.CAPACITY_CACHE_POLICY_SUPPORT,
+        ):
+            help_output = _safe_output(
+                command_executor,
+                ("docker", "buildx", "prune", "--help"),
+                classification=DOCKER_BUILD_CACHE_HELP_PROBE,
+                timeout_seconds=10,
+            )
+            required_flags = {
+                "--all",
+                "--builder",
+                "--force",
+                "--max-used-space",
+                "--min-free-space",
+                "--reserved-space",
+            }
+            if any(flag not in help_output for flag in required_flags):
+                raise DockerCapacityError("BUILDKIT_CACHE_POLICY_UNSUPPORTED")
         require_no_active_builds(
             builder=builder,
             lock=lock,
             executor=command_executor,
+            phase_recorder=phase_recorder,
+            probe_predicate=BuildCapacityPreflightPredicate.CAPACITY_CACHE_ACTIVE_BUILD,
+            active_predicate=BuildCapacityPreflightPredicate.CAPACITY_CACHE_ACTIVE_BUILD,
         )
+        if mode is DockerCapacityMode.MEASURE_ONLY:
+            if phase_recorder is not None:
+                phase_recorder.mark(BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED)
+            raise DockerCapacityMeasureOnlyStop()
         action_succeeded = True
         try:
             _safe_output(
@@ -1141,8 +1322,12 @@ def governed_compose_build_capacity(
             )
         cache_action = "bounded-prune-all"
 
-    if free_after < required:
-        raise DockerCapacityError("DOCKER_CAPACITY_INSUFFICIENT")
+    with _capacity_phase(
+        phase_recorder,
+        BuildCapacityPreflightPredicate.CAPACITY_POLICY,
+    ):
+        if free_after < required:
+            raise DockerCapacityError("DOCKER_CAPACITY_INSUFFICIENT")
     return DockerCapacityEvidence(
         builder=builder,
         selected_services=len(selected),

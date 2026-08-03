@@ -222,6 +222,31 @@ operator-review-required `UNKNOWN` rather than a false pass. An interrupt or oth
 at any canonical preflight step follows that same unknown review boundary; it is never reported as
 proof that a specific environment predicate failed.
 
+The fixed `--diagnostic-phase BUILD_CAPACITY_PREFLIGHT` operation is the next disjoint read-only
+classifier after that host phase passes. Under the same exclusive lock it repeats the canonical
+host preflight and clean current-source proof, then calls the governed capacity evaluator only in
+its immutable `MEASURE_ONLY` mode for `local-bootstrap`. One shared structural recorder distinguishes
+the lock, clean checkout, Dockerignore, Compose config, selected build contract, tracked context,
+local Docker context, builder-list probe, builder selection, platform, image, cache, backing
+filesystem, capacity policy, cache-policy support and cache active-build boundaries without parsing
+exception text. `CACHE_ACTION_REQUIRED` stops immediately before a prune. A following initial
+builder-idle probe distinguishes an unavailable/invalid probe from an observed active build.
+The source-clean boundary preserves the closed states `CLEAN`, `DIRTY`, `INVALID` and `UNKNOWN`
+without reducing an interrupted Git or file-identity proof to an environment defect. The initial
+source fingerprint remains private and is revalidated after capacity evaluation, before an action-
+required result, and after the idle probe before `PASS`. Every argument beginning with the
+`--diagnostic-phase=` prefix is intercepted before normal argument parsing. A malformed known prefix
+returns its corresponding fixed phase with `UNKNOWN`; an unknown or duplicate equals selector
+returns one fixed `INVALID_DIAGNOSTIC/UNKNOWN` result. No noncanonical form echoes operator input.
+
+Its single line contains only a closed classification, the fixed phase and predicate, and zero
+mutation, cache-action, build, container and retry counts. Builder names, paths, resolved Compose,
+service/image/cache identities, byte values, environment material, commands and provider output are
+not evidence. `KeyboardInterrupt`, `SystemExit`, another `BaseException`, or lock finalization drift
+is `OPERATOR_REVIEW_REQUIRED/UNKNOWN`. The phase stops before prune, build, ephemeral container,
+database, network login, fixture identity, topology, AppliedState write or push. A pass is only
+diagnostic evidence and does not authorize the no-argument fixture operation or canonical publish.
+
 The child and parent share one closed `REQUIRE_ABSENT` envelope whose value-free predicate is
 exactly one of PASS, fixed-input/protocol, environment/dependency, repository-not-absent,
 repository-query/dependency, image-provenance, process-spawn, process-timeout, process-nonzero,

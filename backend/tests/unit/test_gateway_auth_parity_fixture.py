@@ -333,6 +333,27 @@ def test_fixture_source_provenance_matches_exact_current_bytes_and_rejects_stale
     )
 
 
+@pytest.mark.parametrize("boundary", ("open", "fstat", "read"))
+@pytest.mark.parametrize("failure", (KeyboardInterrupt, SystemExit, BaseException))
+def test_fixture_source_provenance_does_not_absorb_file_boundary_interrupts(
+    boundary: str,
+    failure: type[BaseException],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected = tmp_path / "fixture.py"
+    selected.write_bytes(b"current-fixture-source")
+    monkeypatch.setattr(fixture, "__file__", os.fspath(selected))
+
+    def interrupted(*_args: object, **_kwargs: object) -> Any:
+        raise failure("raw-source-boundary-sentinel")
+
+    monkeypatch.setattr(cast(Any, fixture).os, boundary, interrupted)
+
+    with pytest.raises(failure, match="raw-source-boundary-sentinel"):
+        fixture.current_fixture_source_sha256()
+
+
 def test_stale_fixture_source_provenance_stops_before_repository_query(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

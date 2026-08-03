@@ -125,6 +125,28 @@ cache: there is no rollback, and later cache recovery occurs only through an ind
 source rebuild. This authorization never permits `docker system prune`, image/container/volume
 prune or removal, and it does not change Docker daemon JSON or Docker Desktop settings.
 
+The fixed `BUILD_CAPACITY_PREFLIGHT` diagnostic reuses this canonical evaluator with the immutable
+`MEASURE_ONLY` mode. The normal default remains action-enabled. Measure-only evaluation performs
+the same lock, clean-checkout, Dockerignore, resolved Compose/build-target, tracked-context, local
+Docker context, current builder, platform, image, private/shared cache, backing-filesystem,
+capacity-policy and pre-action cache-support/active-build proofs. If the private cache is over
+budget and every existing feasibility gate would permit the bounded prune, it returns the closed
+`CACHE_ACTION_REQUIRED` predicate immediately before the prune argv; it never executes that argv.
+The diagnostic permits only the exact read-only `docker buildx prune --help` capability probe and
+structurally rejects every other prune-prefixed command. It retains the initial fixture-source
+fingerprint and reproves a clean, identical source after capacity evaluation, before reporting an
+action requirement, and again after the selected-builder idle proof before reporting `PASS`.
+Source drift or an interrupted source proof yields only operator-review-required `UNKNOWN`.
+The following initial selected-builder idle proof is separately classified as probe failure or an
+observed active build.
+
+Every boundary advances one shared typed, value-free phase recorder. Existing
+`DockerCapacityError` text and action-enabled behavior are unchanged when the recorder is absent;
+the diagnostic receives a structured phase rather than matching exception text. Its evidence
+contains no builder name, Compose configuration, service/image/cache identity, byte count, path,
+environment or provider output. The operation performs cache action, build and container action
+zero and stops before database, login, identity, topology, AppliedState or push work.
+
 ## Compatibility and deferred scope
 
 - Existing workflow names, arguments, confirmation, source selection and service restart meaning
@@ -140,7 +162,8 @@ prune or removal, and it does not change Docker daemon JSON or Docker Desktop se
 ## Evidence boundary
 
 Unit and static gates prove formulas, path confinement, lock lifecycle, fixed cache-only argv,
-active-build negatives, output sanitization and workflow ordering. No Buildx prune, image build,
+active-build negatives, measure-only pre-action classification, output sanitization and workflow
+ordering. No Buildx prune, image build,
 container restart or service mutation is executed as part of this source slice. Actual Mac and
 Linux/WSL runtime capacity behavior remains open until the staged byte values and exact command
 are reviewed and a separately bounded operator run is authorized.

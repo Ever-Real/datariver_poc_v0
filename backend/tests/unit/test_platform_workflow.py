@@ -2803,6 +2803,806 @@ def test_host_environment_preflight_main_accepts_only_exact_phase_argv(
     assert "raw-secret-extra" not in json.dumps(rejected)
 
 
+def _passed_host_preflight(
+    update: Any,
+    *,
+    env_file: Path,
+) -> Any:
+    environment = {"APP_ENV": "development"}
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        environment_key_hashes=update.environment_key_hashes(environment),
+    )
+    return update._HostEnvironmentPreflightResult(
+        update.HostEnvironmentPreflightEvidence(
+            classification=update.HostEnvironmentPreflightClassification.PASS,
+            phase=update.HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT,
+            predicate=update.HostEnvironmentPreflightPredicate.PASS,
+        ),
+        state=state,
+        env_file=env_file,
+        files=(ROOT / "compose.yaml", ROOT / "compose.identity.yaml"),
+    )
+
+
+def _stub_clean_capacity_source(
+    update: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        update,
+        "_fixture_diagnostic_source_state",
+        lambda: update._FixtureSourceCleanState.CLEAN,
+    )
+    monkeypatch.setattr(update, "current_fixture_source_sha256", lambda: "a" * 64)
+
+    def require_same(expected_sha256: str) -> None:
+        assert expected_sha256 == "a" * 64
+
+    monkeypatch.setattr(update, "require_current_fixture_source", require_same)
+
+
+def test_build_capacity_preflight_is_locked_ordered_read_only_and_value_free(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    preflight = _passed_host_preflight(update, env_file=env_file)
+    events: list[str] = []
+    lock_token = object()
+    executor_token = object()
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        events.append("lock-enter")
+        try:
+            yield lock_token
+        finally:
+            events.append("lock-exit")
+
+    def capacity(*_args: object, **kwargs: object) -> str:
+        events.append("capacity")
+        assert kwargs["lock"] is lock_token
+        assert kwargs["executor"] is executor_token
+        assert kwargs["mode"] is update.DockerCapacityMode.MEASURE_ONLY
+        recorder = cast(Any, kwargs["phase_recorder"])
+        recorder.mark(update.BuildCapacityPreflightPredicate.CAPACITY_POLICY)
+        return "desktop-linux"
+
+    def idle(_builder: object, _lock: object, **kwargs: object) -> None:
+        events.append("initial-idle")
+        assert kwargs["executor"] is executor_token
+        recorder = cast(Any, kwargs["phase_recorder"])
+        recorder.mark(update.BuildCapacityPreflightPredicate.INITIAL_BUILDER_IDLE_PROBE)
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("A read-only capacity diagnostic reached a later mutation boundary.")
+
+    def host_preflight() -> object:
+        events.append("host-preflight")
+        return preflight
+
+    def clean_source() -> object:
+        events.append("clean-source")
+        return update._FixtureSourceCleanState.CLEAN
+
+    def source_proof() -> str:
+        events.append("source-proof")
+        return "a" * 64
+
+    def require_same(expected_sha256: str) -> None:
+        events.append("source-hash-check")
+        assert expected_sha256 == "a" * 64
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_host_environment_preflight_under_lock", host_preflight)
+    monkeypatch.setattr(update, "_fixture_diagnostic_source_state", clean_source)
+    monkeypatch.setattr(update, "current_fixture_source_sha256", source_proof)
+    monkeypatch.setattr(update, "require_current_fixture_source", require_same)
+    monkeypatch.setattr(update, "_BuildCapacityPreflightExecutor", lambda: executor_token)
+    monkeypatch.setattr(update, "_preflight_build_capacity", capacity)
+    monkeypatch.setattr(update, "_require_idle_builder", idle)
+    for name in (
+        "_build_current_fixture_image",
+        "_ComposeGatewayAuthParityFixture",
+        "_gateway_auth_parity_session",
+        "_apply_topology_reconciliation",
+        "write_applied_state",
+    ):
+        monkeypatch.setattr(update, name, forbidden)
+
+    evidence = update._build_capacity_preflight_diagnostic()
+    line = update.format_build_capacity_preflight_line(evidence)
+
+    assert evidence.classification is update.BuildCapacityPreflightClassification.PASS
+    assert evidence.phase is update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT
+    assert evidence.predicate is update.BuildCapacityPreflightPredicate.PASS
+    assert json.loads(line) == {
+        "build_count": 0,
+        "cache_action_count": 0,
+        "classification": "PASS",
+        "container_count": 0,
+        "mutation_count": 0,
+        "phase": "BUILD_CAPACITY_PREFLIGHT",
+        "predicate": "PASS",
+        "retry_count": 0,
+    }
+    assert events == [
+        "lock-enter",
+        "host-preflight",
+        "clean-source",
+        "source-proof",
+        "capacity",
+        "clean-source",
+        "source-hash-check",
+        "initial-idle",
+        "clean-source",
+        "source-hash-check",
+        "lock-exit",
+    ]
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    (
+        "COMPOSE_CONFIG",
+        "BUILDER_SELECTION",
+        "CACHE_EVIDENCE",
+        "CAPACITY_POLICY",
+        "INITIAL_BUILDER_IDLE_PROBE",
+        "INITIAL_BUILDER_ACTIVE",
+    ),
+)
+def test_build_capacity_preflight_preserves_structured_first_failure(
+    predicate: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    preflight = _passed_host_preflight(update, env_file=tmp_path / ".env.mac-development")
+    closed = update.BuildCapacityPreflightPredicate(predicate)
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    def capacity(*_args: object, **_kwargs: object) -> str:
+        if predicate.startswith("INITIAL_"):
+            return "desktop-linux"
+        raise update.DockerCapacityPhaseError("fixed-safe-error", closed)
+
+    def idle(*_args: object, **_kwargs: object) -> None:
+        raise update.DockerCapacityPhaseError("fixed-safe-error", closed)
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_host_environment_preflight_under_lock", lambda: preflight)
+    _stub_clean_capacity_source(update, monkeypatch)
+    monkeypatch.setattr(update, "_preflight_build_capacity", capacity)
+    monkeypatch.setattr(update, "_require_idle_builder", idle)
+
+    evidence = update._build_capacity_preflight_diagnostic()
+    line = update.format_build_capacity_preflight_line(evidence)
+
+    assert evidence.classification is update.BuildCapacityPreflightClassification.REJECTED
+    assert evidence.predicate is closed
+    assert "fixed-safe-error" not in line
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    (
+        ("host", "HOST_ENVIRONMENT_PREFLIGHT"),
+        ("clean", "CLEAN_CHECKOUT"),
+        ("source", "SOURCE_PROVENANCE"),
+        ("compose-arguments", "COMPOSE_ARGUMENTS"),
+    ),
+)
+def test_build_capacity_preflight_classifies_host_source_and_argument_boundaries(
+    case: str,
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    preflight = _passed_host_preflight(update, env_file=tmp_path / ".env.mac-development")
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    if case == "host":
+        preflight = update._HostEnvironmentPreflightResult(
+            update.HostEnvironmentPreflightEvidence(
+                classification=update.HostEnvironmentPreflightClassification.REJECTED,
+                phase=update.HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT,
+                predicate=update.HostEnvironmentPreflightPredicate.ENV_READ,
+            )
+        )
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_host_environment_preflight_under_lock", lambda: preflight)
+    _stub_clean_capacity_source(update, monkeypatch)
+    if case == "clean":
+        monkeypatch.setattr(
+            update,
+            "_fixture_diagnostic_source_state",
+            lambda: update._FixtureSourceCleanState.DIRTY,
+        )
+
+    def source() -> str:
+        if case == "source":
+            raise RuntimeError("raw-source-proof-sentinel")
+        return "a" * 64
+
+    monkeypatch.setattr(update, "current_fixture_source_sha256", source)
+    if case == "compose-arguments":
+
+        def compose_arguments_failure(*_args: object, **kwargs: object) -> str:
+            recorder = cast(Any, kwargs["phase_recorder"])
+            recorder.mark(update.BuildCapacityPreflightPredicate.COMPOSE_ARGUMENTS)
+            raise RuntimeError("raw-compose-argument-sentinel")
+
+        monkeypatch.setattr(update, "_preflight_build_capacity", compose_arguments_failure)
+
+    evidence = update._build_capacity_preflight_diagnostic()
+    line = update.format_build_capacity_preflight_line(evidence)
+
+    assert evidence.classification is update.BuildCapacityPreflightClassification.REJECTED
+    assert evidence.predicate.value == expected
+    assert "raw-source-proof-sentinel" not in line
+    assert "raw-compose-argument-sentinel" not in line
+
+
+def test_build_capacity_preflight_evidence_rejects_nonzero_actions() -> None:
+    update = _load_update_module()
+
+    for field in ("mutation_count", "cache_action_count", "build_count", "container_count"):
+        with pytest.raises(update.WorkflowError, match="BUILD_CAPACITY_PREFLIGHT_EVIDENCE_INVALID"):
+            update.BuildCapacityPreflightEvidence(
+                classification=update.BuildCapacityPreflightClassification.REJECTED,
+                phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+                predicate=update.BuildCapacityPreflightPredicate.CAPACITY_POLICY,
+                **{field: 1},
+            )
+
+
+def test_build_capacity_measure_only_action_required_never_runs_prune_or_later_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    preflight = _passed_host_preflight(update, env_file=tmp_path / ".env.mac-development")
+    later: list[str] = []
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    def action_required(*_args: object, **_kwargs: object) -> str:
+        raise update.DockerCapacityMeasureOnlyStop()
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_host_environment_preflight_under_lock", lambda: preflight)
+    _stub_clean_capacity_source(update, monkeypatch)
+    monkeypatch.setattr(update, "_preflight_build_capacity", action_required)
+    monkeypatch.setattr(
+        update,
+        "_require_idle_builder",
+        lambda *_args, **_kwargs: later.append("idle"),
+    )
+    monkeypatch.setattr(
+        update,
+        "_build_current_fixture_image",
+        lambda **_kwargs: later.append("build"),
+    )
+
+    evidence = update._build_capacity_preflight_diagnostic()
+
+    assert evidence.classification is update.BuildCapacityPreflightClassification.REJECTED
+    assert evidence.predicate is update.BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED
+    assert evidence.cache_action_count == 0
+    assert evidence.build_count == 0
+    assert evidence.container_count == 0
+    assert later == []
+
+
+def test_build_capacity_executor_forwards_only_exact_help_before_action_required(
+    tmp_path: Path,
+) -> None:
+    update = _load_update_module()
+    dockerfile = tmp_path / "backend" / "Dockerfile"
+    source = tmp_path / "backend" / "app.py"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text("FROM scratch\n", encoding="utf-8")
+    source.write_text("x" * 1_000, encoding="utf-8")
+    (tmp_path / ".dockerignore").write_text(
+        "\n".join(
+            (
+                ".git",
+                ".env",
+                ".env.*",
+                "secrets",
+                "runtime",
+                "docker_imgs",
+                ".venv",
+                ".venv-wsl",
+                "frontend/node_modules",
+                "frontend/dist",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    builder = {
+        "Current": True,
+        "Driver": "docker",
+        "Name": "desktop-linux",
+        "Nodes": [
+            {
+                "Endpoint": "desktop-linux",
+                "Name": "desktop-linux",
+                "Status": "running",
+            }
+        ],
+    }
+    outputs = {
+        "COMPOSE_BUILD_CONFIG_PROBE_FAILED": json.dumps(
+            {
+                "name": "datariver-next",
+                "services": {
+                    "local-bootstrap": {
+                        "build": {
+                            "context": os.fspath(tmp_path),
+                            "dockerfile": "backend/Dockerfile",
+                        }
+                    }
+                },
+            }
+        ),
+        "GIT_CLEAN_CHECKOUT_PROBE_FAILED": "",
+        "GIT_BUILD_CONTEXT_PROBE_FAILED": "backend/Dockerfile\0backend/app.py\0",
+        "DOCKER_CONTEXT_PROBE_FAILED": (
+            json.dumps("desktop-linux") + "|" + json.dumps("unix:///private/docker.sock")
+        ),
+        "DOCKER_BUILDER_LIST_PROBE_FAILED": "\n".join((json.dumps(builder), json.dumps(builder))),
+        "DOCKER_PLATFORM_PROBE_FAILED": "linux/arm64\n",
+        "DOCKER_IMAGE_SIZE_PROBE_FAILED": ("sha256:" + ("a" * 64) + "\t10000000\tlinux\tarm64\n"),
+        "DOCKER_BUILD_CACHE_PROBE_FAILED": json.dumps(
+            {
+                "ID": "cache-1",
+                "Reclaimable": True,
+                "Shared": False,
+                "Size": "140MB",
+            }
+        ),
+        "DOCKER_BACKING_FILESYSTEM_PROBE_FAILED": (
+            "Filesystem 1024-blocks Used Available Capacity Mounted on\n"
+            "overlay 1000000 400000 600000 40% /\n"
+        ),
+        "DOCKER_BUILD_CACHE_HELP_PROBE_FAILED": (
+            "--all --builder --force --max-used-space --min-free-space --reserved-space"
+        ),
+        "DOCKER_ACTIVE_BUILD_PROBE_FAILED": "",
+    }
+
+    class Delegate:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, tuple[str, ...]]] = []
+
+        def output(
+            self,
+            arguments: tuple[str, ...],
+            *,
+            classification: str,
+            timeout_seconds: int,
+        ) -> str:
+            del timeout_seconds
+            self.calls.append((classification, arguments))
+            return outputs[classification]
+
+    delegate = Delegate()
+    executor = update._BuildCapacityPreflightExecutor(delegate)
+    recorder = update.DockerCapacityPhaseRecorder()
+    lock = SimpleNamespace(require_held=lambda: None)
+    with pytest.raises(update.DockerCapacityMeasureOnlyStop):
+        update.governed_compose_build_capacity(
+            root=tmp_path,
+            compose_config_command=("compose", "config", "--format", "json"),
+            docker_filesystem_probe_command=("compose", "exec", "postgres", "df"),
+            selected_build_services=("local-bootstrap",),
+            environ={},
+            lock=lock,
+            executor=executor,
+            mode=update.DockerCapacityMode.MEASURE_ONLY,
+            phase_recorder=recorder,
+        )
+
+    prune_calls = [
+        arguments
+        for _classification, arguments in delegate.calls
+        if arguments[:3] == ("docker", "buildx", "prune")
+    ]
+    assert prune_calls == [("docker", "buildx", "prune", "--help")]
+    assert recorder.predicate is update.BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        ("docker", "buildx", "prune"),
+        ("docker", "buildx", "prune", "--help", "--force"),
+        ("docker", "buildx", "prune", "--force"),
+        ("docker", "buildx", "prune", "--builder", "desktop-linux"),
+    ),
+)
+def test_build_capacity_executor_rejects_every_nonhelp_prune_tuple(
+    arguments: tuple[str, ...],
+) -> None:
+    update = _load_update_module()
+    delegated: list[tuple[str, ...]] = []
+
+    class Delegate:
+        def output(
+            self,
+            command: tuple[str, ...],
+            *,
+            classification: str,
+            timeout_seconds: int,
+        ) -> str:
+            del classification, timeout_seconds
+            delegated.append(command)
+            return "unexpected"
+
+    executor = update._BuildCapacityPreflightExecutor(Delegate())
+
+    with pytest.raises(
+        update.DockerCapacityError,
+        match="BUILD_CAPACITY_PREFLIGHT_MUTATION_FORBIDDEN",
+    ):
+        executor.output(arguments, classification="FIXED", timeout_seconds=1)
+    assert delegated == []
+
+
+@pytest.mark.parametrize(
+    ("checkpoint", "post_state", "hash_drift"),
+    (
+        ("capacity", "DIRTY", False),
+        ("capacity", "INVALID", False),
+        ("capacity", "UNKNOWN", False),
+        ("action-required", "DIRTY", False),
+        ("idle", "CLEAN", True),
+    ),
+)
+def test_build_capacity_source_drift_is_review_required_before_trusted_result(
+    checkpoint: str,
+    post_state: str,
+    hash_drift: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    preflight = _passed_host_preflight(update, env_file=tmp_path / ".env.mac-development")
+    events: list[str] = []
+    clean_states = iter(("CLEAN", post_state, "CLEAN"))
+    hash_checks = 0
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    def source_state() -> object:
+        value = next(clean_states)
+        events.append(f"source-{value}")
+        return update._FixtureSourceCleanState(value)
+
+    def require_same(_expected: str) -> None:
+        nonlocal hash_checks
+        hash_checks += 1
+        events.append("source-hash-check")
+        if hash_drift and hash_checks == 2:
+            raise RuntimeError("raw-source-drift-sentinel")
+
+    def capacity(*_args: object, **_kwargs: object) -> str:
+        events.append("capacity")
+        if checkpoint == "action-required":
+            raise update.DockerCapacityMeasureOnlyStop()
+        return "desktop-linux"
+
+    def idle(*_args: object, **_kwargs: object) -> None:
+        events.append("idle")
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_host_environment_preflight_under_lock", lambda: preflight)
+    monkeypatch.setattr(update, "_fixture_diagnostic_source_state", source_state)
+    monkeypatch.setattr(update, "current_fixture_source_sha256", lambda: "a" * 64)
+    monkeypatch.setattr(update, "require_current_fixture_source", require_same)
+    monkeypatch.setattr(update, "_preflight_build_capacity", capacity)
+    monkeypatch.setattr(update, "_require_idle_builder", idle)
+
+    evidence = update._build_capacity_preflight_diagnostic()
+    rendered = update.format_build_capacity_preflight_line(evidence)
+
+    assert evidence.classification is (
+        update.BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is update.BuildCapacityPreflightPredicate.UNKNOWN
+    assert evidence.mutation_count == 0
+    assert evidence.retry_count == 0
+    assert "raw-source-drift-sentinel" not in rendered
+    if checkpoint != "idle":
+        assert "idle" not in events
+
+
+@pytest.mark.parametrize("failure", (KeyboardInterrupt, SystemExit, BaseException))
+def test_build_capacity_nested_git_interrupt_is_unknown_before_capacity(
+    failure: type[BaseException],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    preflight = _passed_host_preflight(update, env_file=tmp_path / ".env.mac-development")
+    later: list[str] = []
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    def interrupted(*_args: object, **_kwargs: object) -> Any:
+        raise failure("raw-git-source-interrupt")
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_host_environment_preflight_under_lock", lambda: preflight)
+    monkeypatch.setattr(update.subprocess, "Popen", interrupted)
+    monkeypatch.setattr(
+        update,
+        "_preflight_build_capacity",
+        lambda *_args, **_kwargs: later.append("capacity"),
+    )
+
+    evidence = update._build_capacity_preflight_diagnostic()
+    rendered = update.format_build_capacity_preflight_line(evidence)
+
+    assert evidence.classification is (
+        update.BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is update.BuildCapacityPreflightPredicate.UNKNOWN
+    assert later == []
+    assert "raw-git-source-interrupt" not in rendered
+
+
+@pytest.mark.parametrize("step", ("host", "source", "capacity", "idle"))
+@pytest.mark.parametrize("failure", (KeyboardInterrupt, SystemExit, BaseException))
+def test_build_capacity_preflight_interrupt_is_unknown_and_stops_later_calls(
+    step: str,
+    failure: type[BaseException],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    preflight = _passed_host_preflight(update, env_file=tmp_path / ".env.mac-development")
+    later: list[str] = []
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    def stop_if(name: str) -> None:
+        if step == name:
+            raise failure("raw-capacity-interrupt-sentinel")
+
+    def host() -> object:
+        stop_if("host")
+        return preflight
+
+    def source_clean() -> object:
+        stop_if("source")
+        return update._FixtureSourceCleanState.CLEAN
+
+    def capacity(*_args: object, **_kwargs: object) -> str:
+        stop_if("capacity")
+        return "desktop-linux"
+
+    def idle(*_args: object, **_kwargs: object) -> None:
+        stop_if("idle")
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_host_environment_preflight_under_lock", host)
+    monkeypatch.setattr(update, "_fixture_diagnostic_source_state", source_clean)
+    monkeypatch.setattr(update, "current_fixture_source_sha256", lambda: "a" * 64)
+
+    def require_same(expected_sha256: str) -> None:
+        assert expected_sha256 == "a" * 64
+
+    monkeypatch.setattr(update, "require_current_fixture_source", require_same)
+    monkeypatch.setattr(update, "_preflight_build_capacity", capacity)
+    monkeypatch.setattr(update, "_require_idle_builder", idle)
+    monkeypatch.setattr(
+        update,
+        "_build_current_fixture_image",
+        lambda **_kwargs: later.append("build"),
+    )
+
+    evidence = update._build_capacity_preflight_diagnostic()
+    line = update.format_build_capacity_preflight_line(evidence)
+
+    assert evidence.classification is (
+        update.BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is update.BuildCapacityPreflightPredicate.UNKNOWN
+    assert evidence.mutation_count == 0
+    assert evidence.retry_count == 0
+    assert later == []
+    assert "raw-capacity-interrupt-sentinel" not in line
+
+
+def test_build_capacity_preflight_main_accepts_only_exact_phase_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    accepted = update.BuildCapacityPreflightEvidence(
+        classification=update.BuildCapacityPreflightClassification.PASS,
+        phase=update.BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+        predicate=update.BuildCapacityPreflightPredicate.PASS,
+    )
+    calls: list[str] = []
+
+    def diagnose() -> object:
+        calls.append("diagnose")
+        return accepted
+
+    monkeypatch.setattr(
+        update,
+        "_build_capacity_preflight_diagnostic",
+        diagnose,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            os.fspath(UPDATE_MODULE_PATH),
+            "--diagnostic-phase",
+            "BUILD_CAPACITY_PREFLIGHT",
+        ],
+    )
+
+    assert update.main() == 0
+    assert calls == ["diagnose"]
+    assert json.loads(capsys.readouterr().out)["predicate"] == "PASS"
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            os.fspath(UPDATE_MODULE_PATH),
+            "--diagnostic-phase",
+            "BUILD_CAPACITY_PREFLIGHT",
+            os.fspath(tmp_path / "raw-secret-extra"),
+        ],
+    )
+    assert update.main() == 2
+    assert calls == ["diagnose"]
+    rejected = json.loads(capsys.readouterr().out)
+    assert rejected["phase"] == "BUILD_CAPACITY_PREFLIGHT"
+    assert rejected["predicate"] == "UNKNOWN"
+    assert "raw-secret-extra" not in json.dumps(rejected)
+
+
+@pytest.mark.parametrize(
+    ("phase", "expected_phase"),
+    (
+        ("BUILD_CAPACITY_PREFLIGHT", "BUILD_CAPACITY_PREFLIGHT"),
+        ("HOST_ENVIRONMENT_PREFLIGHT", "HOST_ENVIRONMENT_PREFLIGHT"),
+    ),
+)
+def test_diagnostic_phase_equals_form_is_fixed_before_argparse_and_lock(
+    phase: str,
+    expected_phase: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    locks: list[str] = []
+    monkeypatch.setattr(
+        update,
+        "exclusive_docker_workflow_lock",
+        lambda *_args, **_kwargs: locks.append("lock"),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            os.fspath(UPDATE_MODULE_PATH),
+            f"--diagnostic-phase={phase}",
+            os.fspath(tmp_path / "raw-equals-secret"),
+        ],
+    )
+
+    assert update.main() == 2
+    output = capsys.readouterr()
+    assert output.err == ""
+    evidence = json.loads(output.out)
+    assert evidence["classification"] == "REJECTED"
+    assert evidence["phase"] == expected_phase
+    assert evidence["predicate"] == "UNKNOWN"
+    assert "raw-equals-secret" not in json.dumps(evidence)
+    assert locks == []
+
+
+@pytest.mark.parametrize(
+    ("arguments", "expected_phase"),
+    (
+        (("--diagnostic-phase=BUILD_CAPACITY_PREFLIGHT/raw-sentinel",), "BUILD_CAPACITY_PREFLIGHT"),
+        (
+            ("--diagnostic-phase=HOST_ENVIRONMENT_PREFLIGHT/raw-sentinel",),
+            "HOST_ENVIRONMENT_PREFLIGHT",
+        ),
+        (("--diagnostic-phase=UNREVIEWED/raw-sentinel",), "INVALID_DIAGNOSTIC"),
+        (
+            (
+                "--diagnostic-phase=BUILD_CAPACITY_PREFLIGHT",
+                "--diagnostic-phase=HOST_ENVIRONMENT_PREFLIGHT",
+            ),
+            "INVALID_DIAGNOSTIC",
+        ),
+    ),
+)
+def test_diagnostic_phase_every_equals_prefix_is_fixed_without_raw_or_calls(
+    arguments: tuple[str, ...],
+    expected_phase: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    calls: list[str] = []
+
+    def forbidden(name: str) -> Any:
+        calls.append(name)
+        pytest.fail(f"The malformed diagnostic reached {name}.")
+
+    monkeypatch.setattr(
+        update,
+        "exclusive_docker_workflow_lock",
+        lambda *_args, **_kwargs: forbidden("lock"),
+    )
+    monkeypatch.setattr(
+        update,
+        "_build_capacity_preflight_diagnostic",
+        lambda: forbidden("capacity-diagnostic"),
+    )
+    monkeypatch.setattr(
+        update,
+        "_host_environment_preflight_diagnostic",
+        lambda: forbidden("host-diagnostic"),
+    )
+    monkeypatch.setattr(update, "parse_args", lambda: forbidden("argparse"))
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            os.fspath(UPDATE_MODULE_PATH),
+            *arguments,
+            os.fspath(tmp_path / "raw-extra-secret"),
+        ],
+    )
+
+    assert update.main() == 2
+    output = capsys.readouterr()
+    assert output.err == ""
+    evidence = json.loads(output.out)
+    assert evidence["classification"] == "REJECTED"
+    assert evidence["phase"] == expected_phase
+    assert evidence["predicate"] == "UNKNOWN"
+    assert evidence["mutation_count"] == 0
+    assert evidence["retry_count"] == 0
+    assert "raw" not in json.dumps(evidence)
+    assert calls == []
+
+
 @pytest.mark.parametrize("outcome_known", (True, False))
 def test_fixture_diagnostic_provenance_failure_stops_before_ephemeral_query(
     outcome_known: bool,
@@ -2928,17 +3728,19 @@ def test_fixture_diagnostic_build_is_exact_local_bootstrap_action_once(
 
 
 @pytest.mark.parametrize(
-    ("result", "expected"),
+    ("result", "expected_state", "expected_clean"),
     (
-        (subprocess.CompletedProcess(("git",), 0, "", ""), True),
-        (subprocess.CompletedProcess(("git",), 0, " M fixed.py", ""), False),
-        (subprocess.CompletedProcess(("git",), 2, "", ""), False),
-        (FixtureDiagnosticPredicate.OUTPUT_SIZE, False),
+        (subprocess.CompletedProcess(("git",), 0, "", ""), "CLEAN", True),
+        (subprocess.CompletedProcess(("git",), 0, " M fixed.py", ""), "DIRTY", False),
+        (subprocess.CompletedProcess(("git",), 2, "", ""), "INVALID", False),
+        (FixtureDiagnosticPredicate.OUTPUT_SIZE, "INVALID", False),
+        (FixtureDiagnosticPredicate.UNKNOWN, "UNKNOWN", False),
     ),
 )
 def test_fixture_diagnostic_clean_source_proof_is_fail_closed(
     result: subprocess.CompletedProcess[str] | FixtureDiagnosticPredicate,
-    expected: bool,
+    expected_state: str,
+    expected_clean: bool,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     update = _load_update_module()
@@ -2950,8 +3752,12 @@ def test_fixture_diagnostic_clean_source_proof_is_fail_closed(
 
     monkeypatch.setattr(update, "_bounded_fixture_diagnostic_process", run)
 
-    assert update._fixture_diagnostic_source_is_clean() is expected
-    assert calls == [(("git", "status", "--porcelain", "--untracked-files=normal"), "{}")]
+    assert update._fixture_diagnostic_source_state().value == expected_state
+    assert update._fixture_diagnostic_source_is_clean() is expected_clean
+    assert calls == [
+        (("git", "status", "--porcelain", "--untracked-files=normal"), "{}"),
+        (("git", "status", "--porcelain", "--untracked-files=normal"), "{}"),
+    ]
 
 
 def test_fixture_diagnostic_dual_stream_capture_is_capped_while_child_runs(

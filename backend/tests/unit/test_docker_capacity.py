@@ -30,7 +30,7 @@ capacity = _load_module()
 
 
 class FakeExecutor:
-    def __init__(self, outputs: dict[str, list[str | Exception]]) -> None:
+    def __init__(self, outputs: dict[str, list[str | BaseException]]) -> None:
         self.outputs = outputs
         self.calls: list[tuple[str, tuple[str, ...]]] = []
 
@@ -47,7 +47,7 @@ class FakeExecutor:
         if not responses:
             raise AssertionError(f"Unexpected command classification: {classification}")
         response = responses.pop(0)
-        if isinstance(response, Exception):
+        if isinstance(response, BaseException):
             raise response
         return response
 
@@ -140,7 +140,7 @@ def _prepare_context(root: Path) -> int:
     return dockerfile.stat().st_size + source.stat().st_size
 
 
-def _base_outputs(root: Path) -> dict[str, list[str | Exception]]:
+def _base_outputs(root: Path) -> dict[str, list[str | BaseException]]:
     return {
         capacity.COMPOSE_BUILD_CONFIG_PROBE: [_compose_config(root)],
         capacity.GIT_CLEAN_CHECKOUT_PROBE: [""],
@@ -167,8 +167,15 @@ def _run(
     executor: FakeExecutor,
     *,
     environ: dict[str, str] | None = None,
+    mode: Any = None,
+    phase_recorder: Any = None,
 ) -> Any:
     with capacity.exclusive_docker_workflow_lock(root) as lock:
+        kwargs: dict[str, Any] = {}
+        if mode is not None:
+            kwargs["mode"] = mode
+        if phase_recorder is not None:
+            kwargs["phase_recorder"] = phase_recorder
         return capacity.governed_compose_build_capacity(
             root=root,
             compose_config_command=("compose", "config", "--format", "json"),
@@ -177,6 +184,7 @@ def _run(
             environ=environ or {},
             executor=executor,
             lock=lock,
+            **kwargs,
         )
 
 
@@ -231,6 +239,253 @@ def test_selected_services_are_deduplicated_by_build_fingerprint(tmp_path: Path)
     assert evidence.cache_action == "none"
     assert evidence.free_bytes_before == evidence.free_bytes_after
     assert not any(call[0] == capacity.DOCKER_BUILD_CACHE_ACTION for call in executor.calls)
+
+
+def test_build_capacity_preflight_predicates_are_closed_and_ordered() -> None:
+    assert tuple(member.value for member in capacity.BuildCapacityPreflightPredicate) == (
+        "HOST_ENVIRONMENT_PREFLIGHT",
+        "SOURCE_PROVENANCE",
+        "COMPOSE_ARGUMENTS",
+        "LOCK_CONTRACT",
+        "CLEAN_CHECKOUT",
+        "DOCKERIGNORE_CONTRACT",
+        "COMPOSE_CONFIG",
+        "BUILD_TARGET_CONTRACT",
+        "TRACKED_CONTEXT",
+        "DOCKER_CONTEXT",
+        "BUILDER_LIST_PROBE",
+        "BUILDER_SELECTION",
+        "DOCKER_PLATFORM",
+        "IMAGE_EVIDENCE",
+        "CACHE_EVIDENCE",
+        "FILESYSTEM_EVIDENCE",
+        "CAPACITY_POLICY",
+        "CAPACITY_CACHE_POLICY_SUPPORT",
+        "CAPACITY_CACHE_ACTIVE_BUILD",
+        "CACHE_ACTION_REQUIRED",
+        "INITIAL_BUILDER_IDLE_PROBE",
+        "INITIAL_BUILDER_ACTIVE",
+        "PASS",
+        "UNKNOWN",
+    )
+
+
+def test_measure_only_over_budget_reports_action_required_without_prune(
+    tmp_path: Path,
+) -> None:
+    _prepare_context(tmp_path)
+    outputs = _base_outputs(tmp_path)
+    outputs[capacity.DOCKER_BUILD_CACHE_PROBE] = [_cache_line("140MB")]
+    outputs[capacity.DOCKER_BUILD_CACHE_HELP_PROBE] = [_cache_help()]
+    outputs[capacity.DOCKER_ACTIVE_BUILD_PROBE] = [""]
+    executor = FakeExecutor(outputs)
+    recorder = capacity.DockerCapacityPhaseRecorder()
+
+    with pytest.raises(capacity.DockerCapacityMeasureOnlyStop) as captured:
+        _run(
+            tmp_path,
+            executor,
+            mode=capacity.DockerCapacityMode.MEASURE_ONLY,
+            phase_recorder=recorder,
+        )
+
+    assert (
+        captured.value.predicate is capacity.BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED
+    )
+    assert recorder.predicate is capacity.BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED
+    assert not any(call[0] == capacity.DOCKER_BUILD_CACHE_ACTION for call in executor.calls)
+
+
+@pytest.mark.parametrize(
+    ("failed_classification", "expected_predicate"),
+    (
+        (capacity.COMPOSE_BUILD_CONFIG_PROBE, "COMPOSE_CONFIG"),
+        (capacity.GIT_CLEAN_CHECKOUT_PROBE, "CLEAN_CHECKOUT"),
+        (capacity.DOCKER_CONTEXT_PROBE, "DOCKER_CONTEXT"),
+        (capacity.DOCKER_BUILDER_LIST_PROBE, "BUILDER_LIST_PROBE"),
+        (capacity.DOCKER_PLATFORM_PROBE, "DOCKER_PLATFORM"),
+        (capacity.DOCKER_IMAGE_SIZE_PROBE, "IMAGE_EVIDENCE"),
+        (capacity.DOCKER_BUILD_CACHE_PROBE, "CACHE_EVIDENCE"),
+        (capacity.DOCKER_BACKING_FILESYSTEM_PROBE, "FILESYSTEM_EVIDENCE"),
+    ),
+)
+def test_capacity_probe_failures_carry_structural_phase_without_raw_payload(
+    failed_classification: str,
+    expected_predicate: str,
+    tmp_path: Path,
+) -> None:
+    _prepare_context(tmp_path)
+    outputs = _base_outputs(tmp_path)
+    outputs[failed_classification] = [RuntimeError("raw-capacity-secret-sentinel")]
+    recorder = capacity.DockerCapacityPhaseRecorder()
+
+    with pytest.raises(capacity.DockerCapacityPhaseError) as captured:
+        _run(tmp_path, FakeExecutor(outputs), phase_recorder=recorder)
+
+    predicate = capacity.BuildCapacityPreflightPredicate(expected_predicate)
+    assert captured.value.predicate is predicate
+    assert recorder.predicate is predicate
+    assert "raw-capacity-secret-sentinel" not in str(captured.value)
+
+
+def test_measure_only_under_budget_preserves_normal_no_action_evidence(
+    tmp_path: Path,
+) -> None:
+    _prepare_context(tmp_path)
+    executor = FakeExecutor(_base_outputs(tmp_path))
+    recorder = capacity.DockerCapacityPhaseRecorder()
+
+    evidence = _run(
+        tmp_path,
+        executor,
+        mode=capacity.DockerCapacityMode.MEASURE_ONLY,
+        phase_recorder=recorder,
+    )
+
+    assert evidence.cache_action == "none"
+    assert recorder.predicate is capacity.BuildCapacityPreflightPredicate.CAPACITY_POLICY
+    assert not any(call[0] == capacity.DOCKER_BUILD_CACHE_ACTION for call in executor.calls)
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    (
+        ("dockerignore", "DOCKERIGNORE_CONTRACT"),
+        ("target", "BUILD_TARGET_CONTRACT"),
+        ("tracked", "TRACKED_CONTEXT"),
+        ("builder", "BUILDER_SELECTION"),
+        ("policy", "CAPACITY_POLICY"),
+    ),
+)
+def test_structural_phases_cover_local_contract_and_policy_failures(
+    case: str,
+    expected: str,
+    tmp_path: Path,
+) -> None:
+    outputs = _base_outputs(tmp_path)
+    if case != "dockerignore":
+        _prepare_context(tmp_path)
+    if case == "target":
+        outputs[capacity.COMPOSE_BUILD_CONFIG_PROBE] = ["{}"]
+    elif case == "tracked":
+        outputs[capacity.GIT_BUILD_CONTEXT_PROBE] = [""]
+    elif case == "builder":
+        outputs[capacity.DOCKER_BUILDER_LIST_PROBE] = ["{}"]
+    elif case == "policy":
+        outputs[capacity.DOCKER_IMAGE_SIZE_PROBE] = [
+            ("sha256:" + ("a" * 64) + "\t600000000\tlinux\tarm64\n") * 2
+        ]
+    recorder = capacity.DockerCapacityPhaseRecorder()
+
+    with pytest.raises(capacity.DockerCapacityPhaseError) as captured:
+        _run(tmp_path, FakeExecutor(outputs), phase_recorder=recorder)
+
+    predicate = capacity.BuildCapacityPreflightPredicate(expected)
+    assert captured.value.predicate is predicate
+    assert recorder.predicate is predicate
+
+
+@pytest.mark.parametrize(
+    ("help_output", "active_output", "expected"),
+    (
+        (
+            "--all --builder --force",
+            "",
+            "CAPACITY_CACHE_POLICY_SUPPORT",
+        ),
+        (
+            _cache_help(),
+            "running\n",
+            "CAPACITY_CACHE_ACTIVE_BUILD",
+        ),
+    ),
+)
+def test_measure_only_cache_policy_and_active_build_fail_before_action(
+    help_output: str,
+    active_output: str,
+    expected: str,
+    tmp_path: Path,
+) -> None:
+    _prepare_context(tmp_path)
+    outputs = _base_outputs(tmp_path)
+    outputs[capacity.DOCKER_BUILD_CACHE_PROBE] = [_cache_line("140MB")]
+    outputs[capacity.DOCKER_BUILD_CACHE_HELP_PROBE] = [help_output]
+    outputs[capacity.DOCKER_ACTIVE_BUILD_PROBE] = [active_output]
+    executor = FakeExecutor(outputs)
+    recorder = capacity.DockerCapacityPhaseRecorder()
+
+    with pytest.raises(capacity.DockerCapacityPhaseError) as captured:
+        _run(
+            tmp_path,
+            executor,
+            mode=capacity.DockerCapacityMode.MEASURE_ONLY,
+            phase_recorder=recorder,
+        )
+
+    predicate = capacity.BuildCapacityPreflightPredicate(expected)
+    assert captured.value.predicate is predicate
+    assert recorder.predicate is predicate
+    assert not any(call[0] == capacity.DOCKER_BUILD_CACHE_ACTION for call in executor.calls)
+
+
+@pytest.mark.parametrize(
+    ("active_output", "expected"),
+    (
+        (RuntimeError("raw-idle-probe-sentinel"), "INITIAL_BUILDER_IDLE_PROBE"),
+        ("running\n", "INITIAL_BUILDER_ACTIVE"),
+    ),
+)
+def test_initial_builder_idle_uses_distinct_structured_predicates(
+    active_output: str | BaseException,
+    expected: str,
+    tmp_path: Path,
+) -> None:
+    with capacity.exclusive_docker_workflow_lock(tmp_path) as lock:
+        recorder = capacity.DockerCapacityPhaseRecorder()
+        executor = FakeExecutor({capacity.DOCKER_ACTIVE_BUILD_PROBE: [active_output]})
+        with pytest.raises(capacity.DockerCapacityPhaseError) as captured:
+            capacity.require_no_active_builds(
+                builder="desktop-linux",
+                lock=lock,
+                executor=executor,
+                phase_recorder=recorder,
+                probe_predicate=(
+                    capacity.BuildCapacityPreflightPredicate.INITIAL_BUILDER_IDLE_PROBE
+                ),
+                active_predicate=capacity.BuildCapacityPreflightPredicate.INITIAL_BUILDER_ACTIVE,
+            )
+
+    predicate = capacity.BuildCapacityPreflightPredicate(expected)
+    assert captured.value.predicate is predicate
+    assert recorder.predicate is predicate
+    assert "raw-idle-probe-sentinel" not in str(captured.value)
+
+
+@pytest.mark.parametrize(
+    "failed_classification",
+    (
+        capacity.COMPOSE_BUILD_CONFIG_PROBE,
+        capacity.GIT_CLEAN_CHECKOUT_PROBE,
+        capacity.GIT_BUILD_CONTEXT_PROBE,
+        capacity.DOCKER_CONTEXT_PROBE,
+        capacity.DOCKER_BUILDER_LIST_PROBE,
+        capacity.DOCKER_PLATFORM_PROBE,
+        capacity.DOCKER_IMAGE_SIZE_PROBE,
+        capacity.DOCKER_BUILD_CACHE_PROBE,
+        capacity.DOCKER_BACKING_FILESYSTEM_PROBE,
+    ),
+)
+def test_capacity_interrupts_are_not_falsely_classified_as_provider_failures(
+    failed_classification: str,
+    tmp_path: Path,
+) -> None:
+    _prepare_context(tmp_path)
+    outputs = _base_outputs(tmp_path)
+    outputs[failed_classification] = [KeyboardInterrupt("raw-capacity-interrupt-sentinel")]
+    recorder = capacity.DockerCapacityPhaseRecorder()
+
+    with pytest.raises(KeyboardInterrupt, match="raw-capacity-interrupt-sentinel"):
+        _run(tmp_path, FakeExecutor(outputs), phase_recorder=recorder)
 
 
 def test_insufficient_backing_filesystem_fails_without_cache_action(tmp_path: Path) -> None:

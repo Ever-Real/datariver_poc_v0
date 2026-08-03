@@ -1701,7 +1701,6 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "LOCK_EX | LOCK_NB",
         '"docker",\n            "context",\n            "inspect"',
         '"docker", "version", "--format", "{{.Server.Os}}/{{.Server.Arch}}"',
-        '"docker",\n            "buildx",\n            "history",\n            "ls"',
         '"status=running"',
         '"docker",\n                    "buildx",\n                    "prune"',
         '"--all"',
@@ -1743,6 +1742,142 @@ def verify_governed_docker_build_capacity_contract() -> None:
         raise AssertionError(
             f"the governed Docker build-capacity contract has drifted: {sorted(missing)}"
         )
+    capacity_syntax = ast.parse(capacity, filename=capacity_path.as_posix())
+
+    active_build_functions = [
+        node
+        for node in capacity_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "require_no_active_builds"
+    ]
+    if len(active_build_functions) != 1:
+        raise AssertionError("the active-build guard must be defined exactly once")
+    active_build_calls = [
+        node
+        for node in ast.walk(active_build_functions[0])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_safe_output"
+        and len(node.args) == 2
+        and isinstance(node.args[1], ast.Tuple)
+    ]
+    if len(active_build_calls) != 1:
+        raise AssertionError("the active-build guard must issue one bounded history probe")
+
+    def fixed_or_name(node: ast.expr) -> str | None:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return node.value
+        if isinstance(node, ast.Name):
+            return f"${node.id}"
+        return None
+
+    active_build_argv = tuple(
+        fixed_or_name(element) for element in active_build_calls[0].args[1].elts
+    )
+    if active_build_argv != (
+        "docker",
+        "buildx",
+        "history",
+        "ls",
+        "--builder",
+        "$builder",
+        "--filter",
+        "status=running",
+        "--format",
+        "{{.Status}}",
+    ):
+        raise AssertionError("the exact selected-builder history argv has drifted")
+
+    def capacity_enum_members(class_name: str) -> tuple[tuple[str, object], ...]:
+        matches = [
+            node
+            for node in capacity_syntax.body
+            if isinstance(node, ast.ClassDef) and node.name == class_name
+        ]
+        if len(matches) != 1:
+            raise AssertionError("the capacity diagnostic enum must be defined exactly once")
+        return tuple(
+            (statement.targets[0].id, ast.literal_eval(statement.value))
+            for statement in matches[0].body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        )
+
+    if capacity_enum_members("DockerCapacityMode") != (
+        ("ACTION_ENABLED", "ACTION_ENABLED"),
+        ("MEASURE_ONLY", "MEASURE_ONLY"),
+    ):
+        raise AssertionError("the default-preserving capacity mode has drifted")
+    expected_capacity_predicates = tuple(
+        (value, value)
+        for value in (
+            "HOST_ENVIRONMENT_PREFLIGHT",
+            "SOURCE_PROVENANCE",
+            "COMPOSE_ARGUMENTS",
+            "LOCK_CONTRACT",
+            "CLEAN_CHECKOUT",
+            "DOCKERIGNORE_CONTRACT",
+            "COMPOSE_CONFIG",
+            "BUILD_TARGET_CONTRACT",
+            "TRACKED_CONTEXT",
+            "DOCKER_CONTEXT",
+            "BUILDER_LIST_PROBE",
+            "BUILDER_SELECTION",
+            "DOCKER_PLATFORM",
+            "IMAGE_EVIDENCE",
+            "CACHE_EVIDENCE",
+            "FILESYSTEM_EVIDENCE",
+            "CAPACITY_POLICY",
+            "CAPACITY_CACHE_POLICY_SUPPORT",
+            "CAPACITY_CACHE_ACTIVE_BUILD",
+            "CACHE_ACTION_REQUIRED",
+            "INITIAL_BUILDER_IDLE_PROBE",
+            "INITIAL_BUILDER_ACTIVE",
+            "PASS",
+            "UNKNOWN",
+        )
+    )
+    if capacity_enum_members("BuildCapacityPreflightPredicate") != expected_capacity_predicates:
+        raise AssertionError("the build-capacity predicate vocabulary has drifted")
+    governed_capacity = capacity.split("def governed_compose_build_capacity(", maxsplit=1)[1]
+    capacity_phase_order = tuple(
+        governed_capacity.index(fragment)
+        for fragment in (
+            "BuildCapacityPreflightPredicate.LOCK_CONTRACT",
+            "BuildCapacityPreflightPredicate.DOCKERIGNORE_CONTRACT",
+            "BuildCapacityPreflightPredicate.COMPOSE_CONFIG",
+            "BuildCapacityPreflightPredicate.BUILD_TARGET_CONTRACT",
+            "phase_recorder=phase_recorder",
+            "BuildCapacityPreflightPredicate.DOCKER_CONTEXT",
+            "BuildCapacityPreflightPredicate.BUILDER_LIST_PROBE",
+            "BuildCapacityPreflightPredicate.BUILDER_SELECTION",
+            "BuildCapacityPreflightPredicate.DOCKER_PLATFORM",
+            "BuildCapacityPreflightPredicate.IMAGE_EVIDENCE",
+            "BuildCapacityPreflightPredicate.CACHE_EVIDENCE",
+            "BuildCapacityPreflightPredicate.FILESYSTEM_EVIDENCE",
+            "BuildCapacityPreflightPredicate.CAPACITY_POLICY",
+        )
+    )
+    if capacity_phase_order != tuple(sorted(capacity_phase_order)):
+        raise AssertionError("the canonical capacity phase order has drifted")
+    measure_only = governed_capacity.split(
+        "if mode is DockerCapacityMode.MEASURE_ONLY:", maxsplit=1
+    )[1]
+    if not (
+        measure_only.index("BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED")
+        < measure_only.index("raise DockerCapacityMeasureOnlyStop()")
+        < measure_only.index("action_succeeded = True")
+        < measure_only.index('"prune",')
+    ):
+        raise AssertionError("measure-only capacity must stop before the prune argv")
+    for fragment in (
+        "mode: DockerCapacityMode = DockerCapacityMode.ACTION_ENABLED",
+        "phase_recorder: DockerCapacityPhaseRecorder | None = None",
+        "except DockerCapacityPhaseError:",
+        "raise DockerCapacityPhaseError(str(error), predicate) from None",
+    ):
+        if fragment not in capacity:
+            raise AssertionError(f"structured capacity phase evidence is missing: {fragment}")
     private_policy = capacity.split('cache_action = "none"', maxsplit=1)[1].split(
         "help_output = _safe_output", maxsplit=1
     )[0]
@@ -1854,6 +1989,13 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "test_duplicate_cache_shared_conflict_fails_closed",
         "test_identical_cache_duplicates_collapse_into_exact_partitions",
         "test_inconsistent_cache_partition_evidence_fails_closed",
+        "test_build_capacity_preflight_predicates_are_closed_and_ordered",
+        "test_measure_only_over_budget_reports_action_required_without_prune",
+        "test_measure_only_under_budget_preserves_normal_no_action_evidence",
+        "test_structural_phases_cover_local_contract_and_policy_failures",
+        "test_measure_only_cache_policy_and_active_build_fail_before_action",
+        "test_initial_builder_idle_uses_distinct_structured_predicates",
+        "test_capacity_interrupts_are_not_falsely_classified_as_provider_failures",
     ):
         if test_name not in test_source:
             raise AssertionError(f"the Docker capacity direct test is missing: {test_name}")
@@ -2733,10 +2875,20 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         ("OPERATOR_REVIEW_REQUIRED", "OPERATOR_REVIEW_REQUIRED"),
     ):
         raise AssertionError("the host-environment classification vocabulary has drifted")
+    if workflow_enum_members("BuildCapacityPreflightClassification") != (
+        ("PASS", "PASS"),
+        ("REJECTED", "REJECTED"),
+        ("OPERATOR_REVIEW_REQUIRED", "OPERATOR_REVIEW_REQUIRED"),
+    ):
+        raise AssertionError("the build-capacity classification vocabulary has drifted")
     if workflow_enum_members("HostEnvironmentPreflightPhase") != (
         ("HOST_ENVIRONMENT_PREFLIGHT", "HOST_ENVIRONMENT_PREFLIGHT"),
     ):
         raise AssertionError("the host-environment diagnostic phase has drifted")
+    if workflow_enum_members("BuildCapacityPreflightPhase") != (
+        ("BUILD_CAPACITY_PREFLIGHT", "BUILD_CAPACITY_PREFLIGHT"),
+    ):
+        raise AssertionError("the build-capacity diagnostic phase has drifted")
     if workflow_enum_members("HostEnvironmentPreflightPredicate") != (
         ("APPLIED_STATE_CONTRACT", "APPLIED_STATE_CONTRACT"),
         ("PROFILE_SELECTION", "PROFILE_SELECTION"),
@@ -2760,6 +2912,13 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         ("UNKNOWN", "UNKNOWN"),
     ):
         raise AssertionError("the exact fixture-container state vocabulary has drifted")
+    if workflow_enum_members("_FixtureSourceCleanState") != (
+        ("CLEAN", "CLEAN"),
+        ("DIRTY", "DIRTY"),
+        ("INVALID", "INVALID"),
+        ("UNKNOWN", "UNKNOWN"),
+    ):
+        raise AssertionError("the fixture source-clean state vocabulary has drifted")
     for fragment in (
         "MAXIMUM_FIXTURE_DIAGNOSTIC_BYTES = 256",
         "object_pairs_hook=_capture_fixture_diagnostic_object",
@@ -2791,6 +2950,13 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "require_current_fixture_source(request.source_sha256)"
     ) < fixture_main.index("execute_fixture_request(request)"):
         raise AssertionError("the baked fixture provenance must fail before any repository query")
+    fixture_source_proof = fixture.split("def current_fixture_source_sha256() -> str:", maxsplit=1)[
+        1
+    ].split("def require_current_fixture_source(", maxsplit=1)[0]
+    if "except BaseException:" in fixture_source_proof or "except Exception:" not in (
+        fixture_source_proof
+    ):
+        raise AssertionError("the fixture source proof must not absorb process interrupts")
     sql_repository = fixture.split("class SqlGatewayAuthParityFixtureRepository:", maxsplit=1)[1]
     absence_source = sql_repository.split("async def require_absent(", maxsplit=1)[1].split(
         "async def prepare(", maxsplit=1
@@ -2991,7 +3157,7 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         raise AssertionError("the outer fixture execution output allowlist has drifted")
     host_output = workflow.split("def format_host_environment_preflight_line(", maxsplit=1)[
         1
-    ].split("def _host_environment_preflight_failure(", maxsplit=1)[0]
+    ].split("def format_build_capacity_preflight_line(", maxsplit=1)[0]
     host_output_keys = tuple(
         re.findall(
             r'^\s{12}"([a-z_]+)": evidence\.',
@@ -3007,6 +3173,27 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "retry_count",
     ):
         raise AssertionError("the host-environment output allowlist has drifted")
+    capacity_output = workflow.split("def format_build_capacity_preflight_line(", maxsplit=1)[
+        1
+    ].split("def _host_environment_preflight_failure(", maxsplit=1)[0]
+    capacity_output_keys = tuple(
+        re.findall(
+            r'^\s{12}"([a-z_]+)": evidence\.',
+            capacity_output,
+            flags=re.MULTILINE,
+        )
+    )
+    if capacity_output_keys != (
+        "build_count",
+        "cache_action_count",
+        "classification",
+        "container_count",
+        "mutation_count",
+        "phase",
+        "predicate",
+        "retry_count",
+    ):
+        raise AssertionError("the build-capacity output allowlist has drifted")
     host_functions = [
         node
         for node in workflow_syntax.body
@@ -3069,7 +3256,7 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     host_operator = workflow.split(
         "def _host_environment_preflight_diagnostic() -> HostEnvironmentPreflightEvidence:",
         maxsplit=1,
-    )[1].split("def _fixture_require_absent_diagnostic()", maxsplit=1)[0]
+    )[1].split("def _build_capacity_preflight_failure(", maxsplit=1)[0]
     if host_operator.count("except BaseException:") != 1 or not (
         host_operator.index("with exclusive_docker_workflow_lock(ROOT):")
         < host_operator.index("result = _host_environment_preflight_under_lock()")
@@ -3080,6 +3267,89 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         < host_operator.index("predicate=HostEnvironmentPreflightPredicate.UNKNOWN")
     ):
         raise AssertionError("the host-environment lock/finalization boundary has drifted")
+    capacity_operator = workflow.split("def _build_capacity_preflight_under_lock(", maxsplit=1)[
+        1
+    ].split("def _fixture_require_absent_diagnostic()", maxsplit=1)[0]
+    capacity_operator_order = tuple(
+        capacity_operator.index(fragment)
+        for fragment in (
+            "preflight = _host_environment_preflight_under_lock()",
+            "source_state = _fixture_diagnostic_source_state()",
+            "source_sha256 = current_fixture_source_sha256()",
+            "phase_recorder = DockerCapacityPhaseRecorder()",
+            "command_executor = _BuildCapacityPreflightExecutor()",
+            "selected_builder = _preflight_build_capacity(",
+            "mode=DockerCapacityMode.MEASURE_ONLY",
+            "if not _fixture_diagnostic_source_is_stable(source_sha256):",
+            "_require_idle_builder(",
+            "phase_recorder.mark(BuildCapacityPreflightPredicate.PASS)",
+        )
+    )
+    if capacity_operator_order != tuple(sorted(capacity_operator_order)):
+        raise AssertionError("the build-capacity diagnostic phase order has drifted")
+    for fragment in (
+        'selected_build_services=("local-bootstrap",)',
+        "executor=command_executor",
+        "phase_recorder=phase_recorder",
+        "except DockerCapacityMeasureOnlyStop:",
+        "except DockerCapacityPhaseError as error:",
+        "return _build_capacity_preflight_review_required()",
+    ):
+        if fragment not in capacity_operator:
+            raise AssertionError(f"the build-capacity diagnostic guard is missing: {fragment}")
+    if (
+        "del source_sha256" in capacity_operator
+        or capacity_operator.count("_fixture_diagnostic_source_is_stable(source_sha256)") != 3
+    ):
+        raise AssertionError("the build-capacity source identity is not retained and rechecked")
+    action_required = capacity_operator.split("except DockerCapacityMeasureOnlyStop:", maxsplit=1)[
+        1
+    ].split("except DockerCapacityPhaseError as error:", maxsplit=1)[0]
+    if not (
+        action_required.index("_fixture_diagnostic_source_is_stable(source_sha256)")
+        < action_required.index("BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED")
+    ):
+        raise AssertionError("cache-action-required evidence precedes the source-stability proof")
+    for forbidden in (
+        "_build_current_fixture_image",
+        "_ComposeGatewayAuthParityFixture",
+        "_bounded_fixture_diagnostic_process",
+        "_gateway_auth_parity_session",
+        "_read_gateway_admin_password",
+        "KeycloakGatewayAuthParityIdentity",
+        "_apply_topology_reconciliation",
+        "write_applied_state",
+        "DockerCapacityError" + "(" + "str(",
+    ):
+        if forbidden in capacity_operator:
+            raise AssertionError(
+                f"the build-capacity phase crossed a forbidden boundary: {forbidden}"
+            )
+    preflight_executor = workflow.split("class _BuildCapacityPreflightExecutor:", maxsplit=1)[
+        1
+    ].split("def _bounded_fixture_diagnostic_process(", maxsplit=1)[0]
+    exact_help = 'arguments == ("docker", "buildx", "prune", "--help")'
+    prune_prefix = 'arguments[:3] == ("docker", "buildx", "prune")'
+    if not (
+        exact_help in preflight_executor
+        and prune_prefix in preflight_executor
+        and preflight_executor.index(exact_help) < preflight_executor.index(prune_prefix)
+        and "BUILD_CAPACITY_PREFLIGHT_MUTATION_FORBIDDEN" in preflight_executor
+    ):
+        raise AssertionError("the build-capacity executor must allow help and refuse every prune")
+    source_state = workflow.split("def _fixture_diagnostic_source_state(", maxsplit=1)[1].split(
+        "def _fixed_diagnostic_stream(", maxsplit=1
+    )[0]
+    for fragment in (
+        "result is FixtureDiagnosticPredicate.UNKNOWN",
+        "return _FixtureSourceCleanState.UNKNOWN",
+        "return _FixtureSourceCleanState.INVALID",
+        "return _FixtureSourceCleanState.DIRTY",
+        "return _FixtureSourceCleanState.CLEAN",
+        "return _fixture_diagnostic_source_state() is _FixtureSourceCleanState.CLEAN",
+    ):
+        if fragment not in source_state:
+            raise AssertionError(f"the structured source-clean proof is missing: {fragment}")
     capacity_recorder = workflow.split("class _FixtureDiagnosticCapacityExecutor:", maxsplit=1)[
         1
     ].split("def _bounded_fixture_diagnostic_process(", maxsplit=1)[0]
@@ -3184,13 +3454,45 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
             raise AssertionError("the fixture diagnostic must stop before mutation")
     workflow_main = workflow.split("def main() -> int:", maxsplit=1)[1]
     if not (
-        workflow_main.index("if diagnostic_arguments == _HOST_ENVIRONMENT_PREFLIGHT_ARGUMENTS:")
-        < workflow_main.index('if "--diagnostic-phase" in diagnostic_arguments:')
+        workflow_main.index("diagnostic_equals_arguments = tuple(")
+        < workflow_main.index("argument.startswith(_DIAGNOSTIC_PHASE_EQUALS_PREFIX)")
+        < workflow_main.index("if len(diagnostic_equals_arguments) > 1")
+        < workflow_main.index("print(_fixed_invalid_diagnostic_line())")
+        < workflow_main.index("if diagnostic_arguments == _BUILD_CAPACITY_PREFLIGHT_ARGUMENTS:")
+        < workflow_main.index(
+            "diagnostic_equals_argument.startswith(_BUILD_CAPACITY_PREFLIGHT_EQUALS_PREFIX)"
+        )
+        < workflow_main.index(
+            "diagnostic_equals_argument.startswith(_HOST_ENVIRONMENT_PREFLIGHT_EQUALS_PREFIX)"
+        )
+        < workflow_main.index("if diagnostic_arguments == _HOST_ENVIRONMENT_PREFLIGHT_ARGUMENTS:")
         < workflow_main.index("if len(sys.argv) == 1:")
         < workflow_main.index("args = parse_args()")
     ):
         raise AssertionError("the fixed diagnostics must precede normal argument parsing")
+    for forbidden in (
+        '"--diagnostic-phase=BUILD_CAPACITY_PREFLIGHT" in diagnostic_arguments',
+        '"--diagnostic-phase=HOST_ENVIRONMENT_PREFLIGHT" in diagnostic_arguments',
+    ):
+        if forbidden in workflow_main:
+            raise AssertionError("diagnostic equals-form handling regressed to exact-only matching")
+    invalid_diagnostic = workflow.split("def _fixed_invalid_diagnostic_line() -> str:", maxsplit=1)[
+        1
+    ].split("def _host_environment_preflight_failure(", maxsplit=1)[0]
     for fragment in (
+        '"classification": "REJECTED"',
+        '"phase": "INVALID_DIAGNOSTIC"',
+        '"predicate": "UNKNOWN"',
+        '"mutation_count": 0',
+        '"retry_count": 0',
+    ):
+        if fragment not in invalid_diagnostic:
+            raise AssertionError(f"the invalid-diagnostic evidence is missing: {fragment}")
+    for fragment in (
+        '_BUILD_CAPACITY_PREFLIGHT_ARGUMENTS = (\n    "--diagnostic-phase",\n'
+        '    "BUILD_CAPACITY_PREFLIGHT",\n)',
+        "capacity_evidence = _build_capacity_preflight_diagnostic()",
+        "print(format_build_capacity_preflight_line(capacity_evidence))",
         '_HOST_ENVIRONMENT_PREFLIGHT_ARGUMENTS = (\n    "--diagnostic-phase",\n'
         '    "HOST_ENVIRONMENT_PREFLIGHT",\n)',
         "environment_evidence = _host_environment_preflight_diagnostic()",
@@ -3206,6 +3508,18 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "test_fixture_diagnostic_preflight_interrupt_is_unknown_before_later_actions",
         "test_host_environment_preflight_lock_exit_failure_downgrades_pass",
         "test_host_environment_preflight_main_accepts_only_exact_phase_argv",
+        "test_build_capacity_preflight_is_locked_ordered_read_only_and_value_free",
+        "test_build_capacity_preflight_preserves_structured_first_failure",
+        "test_build_capacity_preflight_classifies_host_source_and_argument_boundaries",
+        "test_build_capacity_measure_only_action_required_never_runs_prune_or_later_paths",
+        "test_build_capacity_executor_forwards_only_exact_help_before_action_required",
+        "test_build_capacity_executor_rejects_every_nonhelp_prune_tuple",
+        "test_build_capacity_source_drift_is_review_required_before_trusted_result",
+        "test_build_capacity_nested_git_interrupt_is_unknown_before_capacity",
+        "test_build_capacity_preflight_interrupt_is_unknown_and_stops_later_calls",
+        "test_build_capacity_preflight_main_accepts_only_exact_phase_argv",
+        "test_diagnostic_phase_equals_form_is_fixed_before_argparse_and_lock",
+        "test_diagnostic_phase_every_equals_prefix_is_fixed_without_raw_or_calls",
     ):
         if f"def {test_name}(" not in platform_tests:
             raise AssertionError(f"the host-environment negative is missing: {test_name}")
@@ -3225,6 +3539,10 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
             fixture_tests,
         ),
         ("test_stale_fixture_source_provenance_stops_before_repository_query", fixture_tests),
+        (
+            "test_fixture_source_provenance_does_not_absorb_file_boundary_interrupts",
+            fixture_tests,
+        ),
         (
             "test_gateway_fixture_require_absent_propagates_each_fixed_child_predicate",
             platform_tests,

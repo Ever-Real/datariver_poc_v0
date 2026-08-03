@@ -270,7 +270,7 @@ def current_fixture_source_sha256() -> str:
             _fixture_source_invalid()
     except GatewayAuthParityFixtureError:
         raise
-    except BaseException:
+    except Exception:
         _fixture_source_invalid()
     finally:
         if descriptor >= 0:

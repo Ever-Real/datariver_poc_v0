@@ -19,8 +19,13 @@ from typing import ClassVar
 from uuid import UUID
 
 from docker_capacity import (
+    BuildCapacityPreflightPredicate,
     CapacityExecutor,
     DockerCapacityError,
+    DockerCapacityMeasureOnlyStop,
+    DockerCapacityMode,
+    DockerCapacityPhaseError,
+    DockerCapacityPhaseRecorder,
     DockerWorkflowLock,
     SubprocessCapacityExecutor,
     exclusive_docker_workflow_lock,
@@ -86,6 +91,7 @@ from datariver.gateway_auth_parity_fixture import (
     current_fixture_source_sha256,
     fixture_diagnostic_failure_classification,
     parse_fixture_diagnostic_line,
+    require_current_fixture_source,
 )
 
 DATAHUB_PROBE_PROGRAM = """\
@@ -562,7 +568,19 @@ _HOST_ENVIRONMENT_PREFLIGHT_ARGUMENTS = (
     "--diagnostic-phase",
     "HOST_ENVIRONMENT_PREFLIGHT",
 )
+_BUILD_CAPACITY_PREFLIGHT_ARGUMENTS = (
+    "--diagnostic-phase",
+    "BUILD_CAPACITY_PREFLIGHT",
+)
+_DIAGNOSTIC_PHASE_EQUALS_PREFIX = "--diagnostic-phase="
+_BUILD_CAPACITY_PREFLIGHT_EQUALS_PREFIX = (
+    _DIAGNOSTIC_PHASE_EQUALS_PREFIX + "BUILD_CAPACITY_PREFLIGHT"
+)
+_HOST_ENVIRONMENT_PREFLIGHT_EQUALS_PREFIX = (
+    _DIAGNOSTIC_PHASE_EQUALS_PREFIX + "HOST_ENVIRONMENT_PREFLIGHT"
+)
 MAXIMUM_HOST_ENVIRONMENT_PREFLIGHT_EVIDENCE_BYTES = 256
+MAXIMUM_BUILD_CAPACITY_PREFLIGHT_EVIDENCE_BYTES = 384
 
 
 class FixtureDiagnosticExecutionClassification(StrEnum):
@@ -577,8 +595,18 @@ class HostEnvironmentPreflightClassification(StrEnum):
     OPERATOR_REVIEW_REQUIRED = "OPERATOR_REVIEW_REQUIRED"
 
 
+class BuildCapacityPreflightClassification(StrEnum):
+    PASS = "PASS"  # noqa: S105 - fixed diagnostic classification, not a secret.
+    REJECTED = "REJECTED"
+    OPERATOR_REVIEW_REQUIRED = "OPERATOR_REVIEW_REQUIRED"
+
+
 class HostEnvironmentPreflightPhase(StrEnum):
     HOST_ENVIRONMENT_PREFLIGHT = "HOST_ENVIRONMENT_PREFLIGHT"
+
+
+class BuildCapacityPreflightPhase(StrEnum):
+    BUILD_CAPACITY_PREFLIGHT = "BUILD_CAPACITY_PREFLIGHT"
 
 
 class HostEnvironmentPreflightPredicate(StrEnum):
@@ -601,6 +629,13 @@ class _FixtureContainerState(StrEnum):
     OWNED_RUNNING = "OWNED_RUNNING"
     OWNED_STOPPED = "OWNED_STOPPED"
     FOREIGN = "FOREIGN"
+    UNKNOWN = "UNKNOWN"
+
+
+class _FixtureSourceCleanState(StrEnum):
+    CLEAN = "CLEAN"
+    DIRTY = "DIRTY"
+    INVALID = "INVALID"
     UNKNOWN = "UNKNOWN"
 
 
@@ -647,6 +682,44 @@ class HostEnvironmentPreflightEvidence:
             )
         ):
             raise WorkflowError("HOST_ENVIRONMENT_PREFLIGHT_EVIDENCE_INVALID")
+
+
+@dataclass(frozen=True, slots=True)
+class BuildCapacityPreflightEvidence:
+    classification: BuildCapacityPreflightClassification
+    phase: BuildCapacityPreflightPhase
+    predicate: BuildCapacityPreflightPredicate
+    mutation_count: int = 0
+    cache_action_count: int = 0
+    build_count: int = 0
+    container_count: int = 0
+    retry_count: int = 0
+
+    def __post_init__(self) -> None:
+        counts = (
+            self.mutation_count,
+            self.cache_action_count,
+            self.build_count,
+            self.container_count,
+            self.retry_count,
+        )
+        if (
+            self.phase is not BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT
+            or any(type(value) is not int or value != 0 for value in counts)
+            or (
+                self.classification is BuildCapacityPreflightClassification.PASS
+                and self.predicate is not BuildCapacityPreflightPredicate.PASS
+            )
+            or (
+                self.classification is BuildCapacityPreflightClassification.REJECTED
+                and self.predicate is BuildCapacityPreflightPredicate.PASS
+            )
+            or (
+                self.classification is BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED
+                and self.predicate is not BuildCapacityPreflightPredicate.UNKNOWN
+            )
+        ):
+            raise WorkflowError("BUILD_CAPACITY_PREFLIGHT_EVIDENCE_INVALID")
 
 
 @dataclass(frozen=True, slots=True)
@@ -924,6 +997,34 @@ class _FixtureDiagnosticCapacityExecutor:
         return result
 
 
+class _BuildCapacityPreflightExecutor:
+    """Permit canonical read-only probes while structurally refusing cache mutation."""
+
+    def __init__(self, delegate: CapacityExecutor | None = None) -> None:
+        self._delegate = delegate or SubprocessCapacityExecutor()
+
+    def output(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        classification: str,
+        timeout_seconds: int,
+    ) -> str:
+        if arguments == ("docker", "buildx", "prune", "--help"):
+            return self._delegate.output(
+                arguments,
+                classification=classification,
+                timeout_seconds=timeout_seconds,
+            )
+        if arguments[:3] == ("docker", "buildx", "prune"):
+            raise DockerCapacityError("BUILD_CAPACITY_PREFLIGHT_MUTATION_FORBIDDEN")
+        return self._delegate.output(
+            arguments,
+            classification=classification,
+            timeout_seconds=timeout_seconds,
+        )
+
+
 def _bounded_fixture_diagnostic_process(
     command: tuple[str, ...],
     input_text: str,
@@ -1107,17 +1208,24 @@ def _build_current_fixture_image(
     return _bounded_suppressed_fixture_build(command)
 
 
-def _fixture_diagnostic_source_is_clean() -> bool:
+def _fixture_diagnostic_source_state() -> _FixtureSourceCleanState:
     result = _bounded_fixture_diagnostic_process(
         ("git", "status", "--porcelain", "--untracked-files=normal"),
         "{}",
     )
-    return (
-        isinstance(result, subprocess.CompletedProcess)
-        and result.returncode == 0
-        and result.stdout == ""
-        and result.stderr == ""
-    )
+    if result is FixtureDiagnosticPredicate.UNKNOWN:
+        return _FixtureSourceCleanState.UNKNOWN
+    if not isinstance(result, subprocess.CompletedProcess):
+        return _FixtureSourceCleanState.INVALID
+    if result.returncode != 0 or result.stderr != "":
+        return _FixtureSourceCleanState.INVALID
+    if result.stdout != "":
+        return _FixtureSourceCleanState.DIRTY
+    return _FixtureSourceCleanState.CLEAN
+
+
+def _fixture_diagnostic_source_is_clean() -> bool:
+    return _fixture_diagnostic_source_state() is _FixtureSourceCleanState.CLEAN
 
 
 def _fixed_diagnostic_stream(raw: str) -> str | None:
@@ -1778,7 +1886,11 @@ def _preflight_build_capacity(
     selected_build_services: tuple[str, ...],
     lock: DockerWorkflowLock,
     executor: CapacityExecutor | None = None,
+    mode: DockerCapacityMode = DockerCapacityMode.ACTION_ENABLED,
+    phase_recorder: DockerCapacityPhaseRecorder | None = None,
 ) -> str:
+    if phase_recorder is not None:
+        phase_recorder.mark(BuildCapacityPreflightPredicate.COMPOSE_ARGUMENTS)
     evidence = governed_compose_build_capacity(
         root=ROOT,
         compose_config_command=compose_arguments(
@@ -1796,6 +1908,8 @@ def _preflight_build_capacity(
         environ=os.environ,
         lock=lock,
         executor=executor,
+        mode=mode,
+        phase_recorder=phase_recorder,
     )
     runner.note(evidence.summary())
     return evidence.builder
@@ -1804,10 +1918,29 @@ def _preflight_build_capacity(
 def _require_idle_builder(
     builder: str | None,
     lock: DockerWorkflowLock | None,
+    *,
+    executor: CapacityExecutor | None = None,
+    phase_recorder: DockerCapacityPhaseRecorder | None = None,
 ) -> None:
-    if builder is None or lock is None:
-        raise DockerCapacityError("DOCKER_BUILD_CAPACITY_EVIDENCE_MISSING")
-    require_no_active_builds(builder=builder, lock=lock)
+    if phase_recorder is not None:
+        phase_recorder.mark(BuildCapacityPreflightPredicate.INITIAL_BUILDER_IDLE_PROBE)
+    try:
+        if builder is None or lock is None:
+            raise DockerCapacityError("DOCKER_BUILD_CAPACITY_EVIDENCE_MISSING")
+        require_no_active_builds(
+            builder=builder,
+            lock=lock,
+            executor=executor,
+            phase_recorder=phase_recorder,
+            probe_predicate=BuildCapacityPreflightPredicate.INITIAL_BUILDER_IDLE_PROBE,
+            active_predicate=BuildCapacityPreflightPredicate.INITIAL_BUILDER_ACTIVE,
+        )
+    except DockerCapacityPhaseError:
+        raise
+    except DockerCapacityError as error:
+        if phase_recorder is not None:
+            raise DockerCapacityPhaseError(str(error), phase_recorder.predicate) from None
+        raise
 
 
 def _git_paths(runner: Runner, older: str, newer: str) -> tuple[str, ...]:
@@ -2093,6 +2226,45 @@ def format_host_environment_preflight_line(
     return line
 
 
+def format_build_capacity_preflight_line(
+    evidence: BuildCapacityPreflightEvidence,
+) -> str:
+    line = json.dumps(
+        {
+            "build_count": evidence.build_count,
+            "cache_action_count": evidence.cache_action_count,
+            "classification": evidence.classification.value,
+            "container_count": evidence.container_count,
+            "mutation_count": evidence.mutation_count,
+            "phase": evidence.phase.value,
+            "predicate": evidence.predicate.value,
+            "retry_count": evidence.retry_count,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(line.encode("utf-8")) > MAXIMUM_BUILD_CAPACITY_PREFLIGHT_EVIDENCE_BYTES:
+        raise WorkflowError("BUILD_CAPACITY_PREFLIGHT_EVIDENCE_INVALID")
+    return line
+
+
+def _fixed_invalid_diagnostic_line() -> str:
+    line = json.dumps(
+        {
+            "classification": "REJECTED",
+            "mutation_count": 0,
+            "phase": "INVALID_DIAGNOSTIC",
+            "predicate": "UNKNOWN",
+            "retry_count": 0,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(line.encode("utf-8")) > MAXIMUM_HOST_ENVIRONMENT_PREFLIGHT_EVIDENCE_BYTES:
+        raise WorkflowError("INVALID_DIAGNOSTIC_EVIDENCE_INVALID")
+    return line
+
+
 def _host_environment_preflight_failure(
     predicate: HostEnvironmentPreflightPredicate,
 ) -> _HostEnvironmentPreflightResult:
@@ -2187,6 +2359,131 @@ def _host_environment_preflight_diagnostic() -> HostEnvironmentPreflightEvidence
             predicate=HostEnvironmentPreflightPredicate.UNKNOWN,
         )
     return result.evidence
+
+
+def _build_capacity_preflight_failure(
+    predicate: BuildCapacityPreflightPredicate,
+) -> BuildCapacityPreflightEvidence:
+    if predicate in {
+        BuildCapacityPreflightPredicate.PASS,
+        BuildCapacityPreflightPredicate.UNKNOWN,
+    }:
+        raise WorkflowError("BUILD_CAPACITY_PREFLIGHT_EVIDENCE_INVALID")
+    return BuildCapacityPreflightEvidence(
+        classification=BuildCapacityPreflightClassification.REJECTED,
+        phase=BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+        predicate=predicate,
+    )
+
+
+def _build_capacity_preflight_review_required() -> BuildCapacityPreflightEvidence:
+    return BuildCapacityPreflightEvidence(
+        classification=BuildCapacityPreflightClassification.OPERATOR_REVIEW_REQUIRED,
+        phase=BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+        predicate=BuildCapacityPreflightPredicate.UNKNOWN,
+    )
+
+
+def _fixture_diagnostic_source_is_stable(expected_sha256: str) -> bool:
+    if _fixture_diagnostic_source_state() is not _FixtureSourceCleanState.CLEAN:
+        return False
+    try:
+        require_current_fixture_source(expected_sha256)
+    except Exception:
+        return False
+    return True
+
+
+def _build_capacity_preflight_under_lock(
+    capacity_lock: DockerWorkflowLock,
+) -> BuildCapacityPreflightEvidence:
+    preflight = _host_environment_preflight_under_lock()
+    if preflight.evidence.predicate is not HostEnvironmentPreflightPredicate.PASS:
+        return _build_capacity_preflight_failure(
+            BuildCapacityPreflightPredicate.HOST_ENVIRONMENT_PREFLIGHT
+        )
+    assert preflight.env_file is not None
+    env_file = preflight.env_file
+    files = preflight.files
+    source_state = _fixture_diagnostic_source_state()
+    if source_state is _FixtureSourceCleanState.UNKNOWN:
+        return _build_capacity_preflight_review_required()
+    if source_state is not _FixtureSourceCleanState.CLEAN:
+        return _build_capacity_preflight_failure(BuildCapacityPreflightPredicate.CLEAN_CHECKOUT)
+    try:
+        source_sha256 = current_fixture_source_sha256()
+    except Exception:
+        return _build_capacity_preflight_failure(BuildCapacityPreflightPredicate.SOURCE_PROVENANCE)
+
+    phase_recorder = DockerCapacityPhaseRecorder()
+    command_executor = _BuildCapacityPreflightExecutor()
+    try:
+        selected_builder = _preflight_build_capacity(
+            _FixtureDiagnosticRunner(),
+            env_file=env_file,
+            files=files,
+            selected_build_services=("local-bootstrap",),
+            lock=capacity_lock,
+            executor=command_executor,
+            mode=DockerCapacityMode.MEASURE_ONLY,
+            phase_recorder=phase_recorder,
+        )
+    except DockerCapacityMeasureOnlyStop:
+        if not _fixture_diagnostic_source_is_stable(source_sha256):
+            return _build_capacity_preflight_review_required()
+        return _build_capacity_preflight_failure(
+            BuildCapacityPreflightPredicate.CACHE_ACTION_REQUIRED
+        )
+    except DockerCapacityPhaseError as error:
+        return _build_capacity_preflight_failure(error.predicate)
+    except Exception:
+        predicate = phase_recorder.predicate
+        if predicate in {
+            BuildCapacityPreflightPredicate.PASS,
+            BuildCapacityPreflightPredicate.UNKNOWN,
+        }:
+            predicate = BuildCapacityPreflightPredicate.UNKNOWN
+        if predicate is BuildCapacityPreflightPredicate.UNKNOWN:
+            raise
+        return _build_capacity_preflight_failure(predicate)
+    if not _fixture_diagnostic_source_is_stable(source_sha256):
+        return _build_capacity_preflight_review_required()
+
+    try:
+        _require_idle_builder(
+            selected_builder,
+            capacity_lock,
+            executor=command_executor,
+            phase_recorder=phase_recorder,
+        )
+    except DockerCapacityPhaseError as error:
+        return _build_capacity_preflight_failure(error.predicate)
+    except Exception:
+        predicate = phase_recorder.predicate
+        if predicate not in {
+            BuildCapacityPreflightPredicate.INITIAL_BUILDER_IDLE_PROBE,
+            BuildCapacityPreflightPredicate.INITIAL_BUILDER_ACTIVE,
+        }:
+            raise
+        return _build_capacity_preflight_failure(predicate)
+    if not _fixture_diagnostic_source_is_stable(source_sha256):
+        return _build_capacity_preflight_review_required()
+
+    phase_recorder.mark(BuildCapacityPreflightPredicate.PASS)
+    return BuildCapacityPreflightEvidence(
+        classification=BuildCapacityPreflightClassification.PASS,
+        phase=BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+        predicate=phase_recorder.predicate,
+    )
+
+
+def _build_capacity_preflight_diagnostic() -> BuildCapacityPreflightEvidence:
+    try:
+        with exclusive_docker_workflow_lock(ROOT) as capacity_lock:
+            evidence = _build_capacity_preflight_under_lock(capacity_lock)
+    except BaseException:
+        return _build_capacity_preflight_review_required()
+    return evidence
 
 
 def _fixture_require_absent_diagnostic() -> FixtureDiagnosticExecutionEvidence:
@@ -2300,6 +2597,52 @@ def _fixture_require_absent_diagnostic() -> FixtureDiagnosticExecutionEvidence:
 
 def main() -> int:
     diagnostic_arguments = tuple(sys.argv[1:])
+    diagnostic_equals_arguments = tuple(
+        argument
+        for argument in diagnostic_arguments
+        if argument.startswith(_DIAGNOSTIC_PHASE_EQUALS_PREFIX)
+    )
+    if len(diagnostic_equals_arguments) > 1 or (
+        diagnostic_equals_arguments and "--diagnostic-phase" in diagnostic_arguments
+    ):
+        print(_fixed_invalid_diagnostic_line())
+        return 2
+    if diagnostic_arguments == _BUILD_CAPACITY_PREFLIGHT_ARGUMENTS:
+        capacity_evidence = _build_capacity_preflight_diagnostic()
+        print(format_build_capacity_preflight_line(capacity_evidence))
+        return (
+            0
+            if capacity_evidence.classification is BuildCapacityPreflightClassification.PASS
+            else 2
+        )
+    if diagnostic_equals_arguments:
+        diagnostic_equals_argument = diagnostic_equals_arguments[0]
+        if diagnostic_equals_argument.startswith(_BUILD_CAPACITY_PREFLIGHT_EQUALS_PREFIX):
+            capacity_evidence = BuildCapacityPreflightEvidence(
+                classification=BuildCapacityPreflightClassification.REJECTED,
+                phase=BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+                predicate=BuildCapacityPreflightPredicate.UNKNOWN,
+            )
+            print(format_build_capacity_preflight_line(capacity_evidence))
+            return 2
+        if diagnostic_equals_argument.startswith(_HOST_ENVIRONMENT_PREFLIGHT_EQUALS_PREFIX):
+            environment_evidence = HostEnvironmentPreflightEvidence(
+                classification=HostEnvironmentPreflightClassification.REJECTED,
+                phase=HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT,
+                predicate=HostEnvironmentPreflightPredicate.UNKNOWN,
+            )
+            print(format_host_environment_preflight_line(environment_evidence))
+            return 2
+        print(_fixed_invalid_diagnostic_line())
+        return 2
+    if "BUILD_CAPACITY_PREFLIGHT" in diagnostic_arguments:
+        capacity_evidence = BuildCapacityPreflightEvidence(
+            classification=BuildCapacityPreflightClassification.REJECTED,
+            phase=BuildCapacityPreflightPhase.BUILD_CAPACITY_PREFLIGHT,
+            predicate=BuildCapacityPreflightPredicate.UNKNOWN,
+        )
+        print(format_build_capacity_preflight_line(capacity_evidence))
+        return 2
     if diagnostic_arguments == _HOST_ENVIRONMENT_PREFLIGHT_ARGUMENTS:
         environment_evidence = _host_environment_preflight_diagnostic()
         print(format_host_environment_preflight_line(environment_evidence))
