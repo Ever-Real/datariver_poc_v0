@@ -84,16 +84,69 @@ only token/session-epoch verifier and the authority for Workspace, Action, Domai
 classification ABAC; PostgreSQL RLS remains the database lower bound. APISIX never reports an
 authenticated or authorized state.
 
-The source currently has no approved, non-mutating automated credential source that can exercise
-the complete authorized, denied, expired, membership-revoked and session-revoked matrix for both
-Knowledge and Change Request. Existing service accounts do not hold those human read permissions,
-and the human development client deliberately disables direct grants. Therefore the live
-unauthenticated/CORS/header/log probe is not treated as authentication-parity evidence. Under the
-exclusive Docker workflow lock, the reconciliation fails closed with
-`GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE` before refresh-bootstrap, capacity/cache action, reranker,
-build, worker, APISIX, Web, Airflow, target audit, AppliedState write or origin push. The later live
-routing probe is unreachable until a separately reviewed full parity plan exists. Gateway adoption
-remains open; static status integers are never accepted.
+The user-approved Mac-development parity operation, `SEC-GATEWAY-AUTH-PARITY-001-A-V1`, is an
+exact, one-attempt fixture inside the exclusive Docker workflow lock. It creates one task-named
+public PKCE `S256` client and two
+task-named disabled human users. Direct grants, implicit flow, service accounts, WebAuthn,
+real-user credentials and reusable client secrets remain disabled or absent. The canonical
+local-bootstrap module creates only two fixed inactive Subjects and Workspace Memberships in the
+existing local development Workspace: one allows exactly `kg.read` and `change.read`, while the
+other explicitly denies exactly those actions. It assigns no administrator, service or profile
+role. The Keycloak users and database rows are enabled only after both disabled sides exist.
+Before any fixture client deletion, the cleanup path rediscovers only the fixed task name and
+requires the full public-client marker, exact default/optional scopes, client-authenticator and
+authentication-flow defaults, disabled auth surfaces, PKCE attributes and either the exact
+audience mapper or the valid pre-mapper partial-create state. Cleanup deliberately invalidates any
+earlier Admin API token once at its boundary before rediscovery.
+Ambiguous, multiple, UUID-mismatched or drifted clients are retained and reported as cleanup
+required; no real or general client is a deletion target.
+The production `datariver-web` invariant is captured from its exact Admin API client document and
+complete bounded protocol-mapper inventory, not from a search summary. The fingerprint covers the
+client UUID and name, protocol and authenticator, every reviewed authentication-flow flag,
+redirect/origin lists, PKCE and other authentication attributes, default/optional scopes and the
+normalized mapper configuration. Missing, duplicate, extra or drifted authentication surfaces fail
+closed without exposing their values.
+
+The operation then executes real HTTP requests for Knowledge Registry and Change Request through
+the direct loopback API, loopback APISIX and Web proxy. It requires identical bounded status,
+response-header and body-digest evidence for authorized `200`, explicitly denied `403`, malformed
+`401` and genuinely expired `401` requests. It obtains a fresh still-valid access token, sets the
+allow Membership to `active=false` and advances its version through the fixed local-bootstrap
+operation, proves that the token is still unexpired on both sides of that update and requires the
+same `403` through all three hops. Authorization, Cookie, Origin, CORS and selected response headers
+must remain identical; token, password, verifier, code, cookie and provider responses stay in
+private process memory and must not occur in APISIX, Web or operator output. Static status integers
+are never evidence.
+Immediately before the first credential-bearing direct/API gateway/Web request, the traffic probe
+records one UTC operation timestamp. Cleanup scans the complete interval for `api`, `apisix` and `web`
+without a relative-time or tail-line truncation. The combined log stream is capped in flight;
+overflow, timeout, child failure or reap failure produces only a fixed classification and retry
+count zero.
+The genuine-expiry boundary shares the API verifier's exact 30-second leeway: `exp + 30` is not
+expiry evidence, while `exp + 30 + 1` is, and the single wait is bounded by the fixture token TTL
+plus that leeway. On the reviewed loopback HTTP target, Secure cookies from the initial Keycloak
+authorization response are normalized for loopback before the credential POST and before every
+following same-origin request. Cookie values remain private.
+
+Immediate logout/session-epoch invalidation is recorded honestly as `OPEN_UNSUPPORTED`; the
+membership result is never substituted for it. Any mutation enters one BaseException-safe,
+exactly-once best-effort cleanup: revoke fixture sessions and delete the two users, delete the exact
+database memberships/subjects only after proving that role and canonical-admin assignments are
+already absent, delete the task client,
+then prove both Keycloak production-client invariants and zero fixture privilege residual. Cleanup
+first locks and validates each fixed Subject and local Membership. While those locks remain held it
+re-reads the exact issuer/external-subject alias set, all-Workspace Membership count and every
+privilege residual immediately before destructive SQL. It validates the complete human Membership
+envelope, including the exact prepare/enable/revoke version;
+swapped, aliased, drifted, privilege-bearing or invalid-lifecycle rows are
+retained rather than normalized by cleanup. A first
+topology/parity failure is preserved independently. An independent cleanup-required outcome and a
+log-evidence failed/known outcome are reported as separate bounded fields, never by raw exception
+chaining. A credential log defect never
+masquerades as residual cleanup, and KeyboardInterrupt follows the same cleanup boundary.
+The probe has retry count zero and no standalone mutation entry point. Only after the parity matrix
+and the target topology audit pass may the normal state writer persist graph/gateway adoption; the
+canonical `dev-publish` push remains last.
 
 The selected Web overlay has one fixed upstream, `apisix:9080`, depends on healthy APISIX and has
 no direct API fallback. Ordinary workers keep their existing database/provider/API paths. Selected
@@ -123,11 +176,11 @@ only; it cannot fall back to a public/direct API path or bypass API ABAC/RLS.
 ## Runtime and evidence boundary
 
 Source tests prove allowlisting, the four classifications, project exclusion, output sanitization,
-transparent gateway configuration and state-last/push-last ordering. They do not claim that the
-current Mac runtime has completed the transition. The canonical command must still prove direct
-API versus Web-to-APISIX status/header parity for Knowledge and Change Request flows, target
-topology health, unchanged OIDC redirect registration and credential-free logs before state write.
-There is no auto-stop architecture.
+the fixed least-scope PKCE fixture, transparent gateway configuration, real executor invocation,
+exact cleanup and state-last/push-last ordering. They do not claim that the current Mac runtime has
+completed the transition. The canonical command must still execute the exact one-attempt parity
+matrix, prove target topology health, unchanged OIDC redirect registration, credential-free logs
+and zero fixture residual before state write. There is no auto-stop architecture.
 
 Production and Ops remain `OPEN_TARGET_GATE`. Trusted TLS termination, authoritative HTTPS scheme,
 trusted-proxy client-IP derivation, shared-NAT rate sizing, DNS, listener exposure, target OIDC

@@ -4,12 +4,18 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import selectors
 import subprocess
 import sys
+import time
 from contextlib import ExitStack
 from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import ClassVar
+from uuid import UUID
 
 from docker_capacity import (
     DockerCapacityError,
@@ -56,6 +62,16 @@ from platform_workflow import (
     update_env_values,
     workflow_profile,
     write_applied_state,
+)
+from probe_gateway_auth_parity import (
+    FIXTURE_CONTRACT,
+    GATEWAY_LOG_TIMESTAMP_FORMAT,
+    GatewayAuthParityError,
+    GatewayAuthParityEvidence,
+    GatewayAuthParitySession,
+    GatewayAuthParityTraffic,
+    GatewayCredentialLogEvidenceError,
+    KeycloakGatewayAuthParityIdentity,
 )
 
 DATAHUB_PROBE_PROGRAM = """\
@@ -373,12 +389,94 @@ def _verify_governance_document_worker_database(
     runner.note(f"Governance document worker database role/backlog verified count={backlog}")
 
 
+_GATEWAY_LOG_MAXIMUM_BYTES = 256 * 1024
+_GATEWAY_LOG_TIMEOUT_SECONDS = 20
+_GATEWAY_LOG_REAP_SECONDS = 5
+
+
+def _bounded_gateway_log_output(command: tuple[str, ...]) -> bytes:
+    process: subprocess.Popen[bytes] | None = None
+    selector: selectors.BaseSelector | None = None
+    completed = False
+    try:
+        process = subprocess.Popen(  # noqa: S603 - repository-owned Compose argv only.
+            command,
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+        if process.stdout is None:
+            raise GatewayCredentialLogEvidenceError(evidence_known=False)
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ)
+        deadline = time.monotonic() + _GATEWAY_LOG_TIMEOUT_SECONDS
+        output = bytearray()
+        while True:
+            remaining_time = deadline - time.monotonic()
+            if remaining_time <= 0:
+                raise GatewayCredentialLogEvidenceError(evidence_known=False)
+            events = selector.select(remaining_time)
+            if not events:
+                raise GatewayCredentialLogEvidenceError(evidence_known=False)
+            chunk = os.read(
+                process.stdout.fileno(),
+                min(64 * 1024, _GATEWAY_LOG_MAXIMUM_BYTES - len(output) + 1),
+            )
+            if not chunk:
+                break
+            output.extend(chunk)
+            if len(output) > _GATEWAY_LOG_MAXIMUM_BYTES:
+                raise GatewayCredentialLogEvidenceError(evidence_known=False)
+        return_code = process.wait(timeout=_GATEWAY_LOG_REAP_SECONDS)
+        completed = True
+        if return_code != 0:
+            raise GatewayCredentialLogEvidenceError(evidence_known=False)
+        return bytes(output)
+    except GatewayCredentialLogEvidenceError:
+        raise
+    except (OSError, subprocess.SubprocessError):
+        raise GatewayCredentialLogEvidenceError(evidence_known=False) from None
+    finally:
+        if selector is not None:
+            selector.close()
+        if process is not None and not completed and process.poll() is None:
+            try:
+                process.terminate()
+                process.wait(timeout=_GATEWAY_LOG_REAP_SECONDS)
+            except (OSError, subprocess.SubprocessError):
+                try:
+                    process.kill()
+                    process.wait(timeout=_GATEWAY_LOG_REAP_SECONDS)
+                except (OSError, subprocess.SubprocessError):
+                    pass
+        if process is not None and process.stdout is not None:
+            process.stdout.close()
+
+
 def _verify_gateway_logs_do_not_persist_probe_credentials(
     *,
     env_file: Path,
     files: tuple[Path, ...],
+    started_at: str,
+    sentinels: tuple[str, ...] = (
+        "gateway-invalid-token-sentinel",
+        "gateway-cookie-sentinel",
+        "gateway-code-sentinel",
+        "gateway-secret-sentinel",
+        "gateway-body-secret-sentinel",
+    ),
 ) -> None:
-    command = [
+    try:
+        parsed_started_at = datetime.strptime(started_at, GATEWAY_LOG_TIMESTAMP_FORMAT)
+    except ValueError:
+        raise GatewayCredentialLogEvidenceError(evidence_known=False) from None
+    if parsed_started_at.strftime(GATEWAY_LOG_TIMESTAMP_FORMAT) != started_at:
+        raise GatewayCredentialLogEvidenceError(evidence_known=False)
+    if len(sentinels) > 16 or any(
+        not value or len(value.encode("utf-8")) > 16_384 for value in sentinels
+    ):
+        raise GatewayCredentialLogEvidenceError(evidence_known=False)
+    command = tuple(
         os.fspath(argument)
         for argument in compose_arguments(
             env_file=env_file,
@@ -387,36 +485,17 @@ def _verify_gateway_logs_do_not_persist_probe_credentials(
                 "logs",
                 "--no-color",
                 "--since",
-                "2m",
-                "--tail",
-                "200",
+                started_at,
+                "api",
                 "apisix",
                 "web",
             ),
         )
-    ]
-    try:
-        result = subprocess.run(  # noqa: S603 - fixed argv, never a shell on the host.
-            command,
-            cwd=ROOT,
-            check=True,
-            capture_output=True,
-            timeout=20,
-        )
-    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        raise WorkflowError("GATEWAY_CREDENTIAL_LOG_PROBE_FAILED") from None
-    combined = result.stdout + result.stderr
-    if len(combined) > 256 * 1024:
-        raise WorkflowError("GATEWAY_CREDENTIAL_LOG_PROBE_FAILED")
-    for sentinel in (
-        b"gateway-invalid-token-sentinel",
-        b"gateway-cookie-sentinel",
-        b"gateway-code-sentinel",
-        b"gateway-secret-sentinel",
-        b"gateway-body-secret-sentinel",
-    ):
-        if sentinel in combined:
-            raise WorkflowError("GATEWAY_CREDENTIAL_LOG_PROBE_FAILED")
+    )
+    combined = _bounded_gateway_log_output(command)
+    for sentinel in sentinels:
+        if sentinel.encode("utf-8") in combined:
+            raise GatewayCredentialLogEvidenceError(evidence_known=True)
 
 
 def _verify_gateway_transparency(
@@ -430,6 +509,7 @@ def _verify_gateway_transparency(
     gateway_port = values.get("APISIX_PORT", "9080")
     web_port = values.get("WEB_PORT", "8080")
     origin = values.get("APP_PUBLIC_ORIGIN", f"http://127.0.0.1:{web_port}")
+    started_at = datetime.now(UTC).strftime(GATEWAY_LOG_TIMESTAMP_FORMAT)
     runner.run(
         (
             sys.executable,
@@ -444,18 +524,231 @@ def _verify_gateway_transparency(
     _verify_gateway_logs_do_not_persist_probe_credentials(
         env_file=env_file,
         files=files,
+        started_at=started_at,
     )
-    # The checked-in development identities cannot currently provide the full live
-    # authorized/denied/expired/revoked matrix without provisioning credentials or
-    # mutating policy/session state. A static status echo is not adoption evidence.
-    raise WorkflowError(_GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE)
+    # This remains a routing/header negative. The ephemeral PKCE session is the only
+    # accepted positive human authentication and revocation evidence.
 
 
 def _require_gateway_auth_parity_evidence_available(reconciliation_name: str | None) -> None:
-    """Stop the optional topology transaction before mutation until its live plan exists."""
+    """Accept only the reviewed exact fixture-backed reconciliation source contract."""
 
-    if reconciliation_name is not None:
+    if reconciliation_name is not None and reconciliation_name != _TOPOLOGY_RECONCILIATION:
         raise WorkflowError(_GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE)
+
+
+class _ComposeGatewayAuthParityFixture:
+    """Private fixed-operation adapter to the canonical local-bootstrap image."""
+
+    _PLACEHOLDER_ALLOW = "00000000-0000-4000-8000-00000000010a"
+    _PLACEHOLDER_DENY = "00000000-0000-4000-8000-00000000010b"
+    _EXPECTED: ClassVar[dict[str, tuple[str, int, int, int]]] = {
+        "require-absent": ("absent", 0, 0, 0),
+        "prepare": ("prepared", 2, 2, 0),
+        "enable": ("enabled", 2, 2, 0),
+        "revoke-allow-membership": ("membership-revoked", 2, 2, 0),
+        "cleanup": ("clean", 0, 0, 0),
+        "require-zero-residual": ("zero-residual", 0, 0, 0),
+    }
+
+    def __init__(self, *, env_file: Path, files: tuple[Path, ...]) -> None:
+        self._env_file = env_file
+        self._files = files
+        self._allow_subject: str | None = None
+        self._deny_subject: str | None = None
+
+    def _execute(
+        self,
+        operation: str,
+        *,
+        allow_subject: str | None = None,
+        deny_subject: str | None = None,
+    ) -> None:
+        if operation not in self._EXPECTED:
+            raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_FIXTURE_FAILED")
+        allow = allow_subject or self._allow_subject or self._PLACEHOLDER_ALLOW
+        deny = deny_subject or self._deny_subject or self._PLACEHOLDER_DENY
+        try:
+            allow = str(UUID(allow))
+            deny = str(UUID(deny))
+        except ValueError:
+            raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_FIXTURE_FAILED") from None
+        request_document = json.dumps(
+            {
+                "contract": FIXTURE_CONTRACT,
+                "operation": operation,
+                "allow_external_subject": allow,
+                "deny_external_subject": deny,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        command = [
+            os.fspath(argument)
+            for argument in compose_arguments(
+                env_file=self._env_file,
+                compose_files=self._files,
+                profiles=("tools",),
+                trailing=(
+                    "run",
+                    "--rm",
+                    "--no-deps",
+                    "--no-build",
+                    "-T",
+                    "local-bootstrap",
+                    "/app/.venv/bin/python",
+                    "-m",
+                    "datariver.gateway_auth_parity_fixture",
+                    operation,
+                ),
+            )
+        ]
+        try:
+            result = subprocess.run(  # noqa: S603 - fixed Compose and module argv.
+                command,
+                cwd=ROOT,
+                check=True,
+                text=True,
+                input=request_document,
+                capture_output=True,
+                timeout=30,
+            )
+            raw = result.stdout.strip()
+            if len(raw.encode("utf-8")) > 256 or "\n" in raw or "\r" in raw:
+                raise ValueError
+            document = json.loads(raw)
+        except (
+            OSError,
+            ValueError,
+            json.JSONDecodeError,
+            subprocess.CalledProcessError,
+            subprocess.TimeoutExpired,
+        ):
+            raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_FIXTURE_FAILED") from None
+        if (
+            not isinstance(document, dict)
+            or set(document)
+            != {"state", "subject_count", "membership_count", "privilege_residual_count"}
+            or (
+                document["state"],
+                document["subject_count"],
+                document["membership_count"],
+                document["privilege_residual_count"],
+            )
+            != self._EXPECTED[operation]
+        ):
+            raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_FIXTURE_FAILED")
+        if allow_subject is not None and deny_subject is not None:
+            self._allow_subject = allow
+            self._deny_subject = deny
+
+    def require_absent(self) -> None:
+        self._execute("require-absent")
+
+    def prepare(self, allow_subject: str, deny_subject: str) -> None:
+        self._execute("prepare", allow_subject=allow_subject, deny_subject=deny_subject)
+
+    def enable(self, allow_subject: str, deny_subject: str) -> None:
+        self._execute("enable", allow_subject=allow_subject, deny_subject=deny_subject)
+
+    def revoke_allow_membership(self, allow_subject: str, deny_subject: str) -> None:
+        self._execute(
+            "revoke-allow-membership",
+            allow_subject=allow_subject,
+            deny_subject=deny_subject,
+        )
+
+    def cleanup(self, allow_subject: str, deny_subject: str) -> None:
+        self._execute("cleanup", allow_subject=allow_subject, deny_subject=deny_subject)
+
+    def require_zero_residual(self) -> None:
+        self._execute("require-zero-residual")
+
+
+def _read_gateway_admin_password(secret_guard: TopologyReconciliationSecretGuard) -> str:
+    secret_guard.revalidate()
+    try:
+        descriptor = secret_guard.file_descriptors["keycloak_admin_password"]
+        raw = os.pread(descriptor, 4_097, 0)
+        if not raw or len(raw) > 4_096 or b"\x00" in raw:
+            raise ValueError
+        value = raw.decode("utf-8").strip()
+    except (KeyError, OSError, UnicodeDecodeError, ValueError):
+        raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_ADMIN_CREDENTIAL_INVALID") from None
+    secret_guard.revalidate()
+    if not value or "\n" in value or "\r" in value:
+        raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_ADMIN_CREDENTIAL_INVALID")
+    return value
+
+
+def _gateway_auth_parity_session(
+    *,
+    env_file: Path,
+    files: tuple[Path, ...],
+    secret_guard: TopologyReconciliationSecretGuard,
+) -> GatewayAuthParitySession:
+    values = read_env_values(env_file)
+    api_port = values.get("API_PORT", "8000")
+    gateway_port = values.get("APISIX_PORT", "9080")
+    web_port = values.get("WEB_PORT", "8080")
+    keycloak_port = values.get("KEYCLOAK_PORT", "8081")
+    origin = values.get("APP_PUBLIC_ORIGIN", f"http://127.0.0.1:{web_port}")
+
+    def check_logs(started_at: str, sentinels: tuple[str, ...]) -> None:
+        _verify_gateway_logs_do_not_persist_probe_credentials(
+            env_file=env_file,
+            files=files,
+            started_at=started_at,
+            sentinels=sentinels,
+        )
+
+    traffic = GatewayAuthParityTraffic(
+        direct_url=f"http://127.0.0.1:{api_port}",
+        gateway_url=f"http://127.0.0.1:{gateway_port}",
+        web_url=f"http://127.0.0.1:{web_port}",
+        origin=origin,
+        log_checker=check_logs,
+    )
+    password = _read_gateway_admin_password(secret_guard)
+    return GatewayAuthParitySession(
+        identity=KeycloakGatewayAuthParityIdentity(
+            base_url=f"http://127.0.0.1:{keycloak_port}",
+            admin_username="datariver-bootstrap",
+            admin_password=password,
+        ),
+        fixture=_ComposeGatewayAuthParityFixture(env_file=env_file, files=files),
+        traffic=traffic,
+    )
+
+
+def _reconcile_topology_with_gateway_parity(
+    *,
+    session: GatewayAuthParitySession,
+    runner: Runner,
+    env_file: Path,
+    files: tuple[Path, ...],
+    plan: TopologyReconciliationPlan,
+    selected_builder: str | None,
+    capacity_lock: DockerWorkflowLock | None,
+    secret_guard: TopologyReconciliationSecretGuard,
+) -> GatewayAuthParityEvidence:
+    with session:
+        session.prepare()
+        session.enable()
+        _apply_topology_reconciliation(
+            runner,
+            env_file=env_file,
+            files=files,
+            plan=plan,
+            selected_builder=selected_builder,
+            capacity_lock=capacity_lock,
+            secret_guard=secret_guard,
+        )
+        evidence = session.verify_after_topology()
+    if evidence.immediate_logout != "OPEN_UNSUPPORTED" or evidence.retry_count != 0:
+        raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_EVIDENCE_INVALID")
+    runner.note("Gateway human auth parity verified; immediate logout remains OPEN_UNSUPPORTED")
+    return evidence
 
 
 def _prepare_topology_reconciliation(
@@ -960,7 +1253,7 @@ def main() -> int:
                 required=state.local_storage,
             )
             require_release_compatible_checkout(
-                runner,
+                runner=runner,
                 release_commit=layout.source_commit,
                 checkout_commit=current_source_commit,
             )
@@ -1013,7 +1306,7 @@ def main() -> int:
         reconciliation_plan: TopologyReconciliationPlan | None = None
         if reconciliation_name is None:
             enforce_local_topology(
-                runner,
+                runner=runner,
                 state=state,
                 environment_values=environment_values,
             )
@@ -1061,6 +1354,8 @@ def main() -> int:
                 core_build_services.extend(("migrate",) if plan.requires_migration else ())
                 selected_build_services.extend(core_build_services)
             if reapply_local_identity:
+                selected_build_services.append("local-bootstrap")
+            if reconciliation_plan is not None:
                 selected_build_services.append("local-bootstrap")
             if (
                 plan.restart_airflow
@@ -1110,6 +1405,17 @@ def main() -> int:
                     selected_build_services=tuple(selected_build_services),
                     lock=capacity_lock,
                 )
+
+        if reconciliation_plan is not None:
+            _require_idle_builder(selected_builder, capacity_lock)
+            runner.note("Gateway parity의 고정 local-bootstrap 모듈을 현재 source로 빌드합니다.")
+            _compose(
+                runner,
+                env_file=env_file,
+                files=files,
+                profiles=("tools",),
+                trailing=("build", "local-bootstrap"),
+            )
 
         _reconcile_local_reranker(runner, env_file=env_file, profile=state.profile)
 
@@ -1426,8 +1732,13 @@ def main() -> int:
         if reconciliation_plan is not None:
             if topology_secret_guard is None:
                 raise WorkflowError("TOPOLOGY_SECRET_PREFLIGHT_FAILED")
-            _apply_topology_reconciliation(
-                runner,
+            _reconcile_topology_with_gateway_parity(
+                session=_gateway_auth_parity_session(
+                    env_file=env_file,
+                    files=files,
+                    secret_guard=topology_secret_guard,
+                ),
+                runner=runner,
                 env_file=env_file,
                 files=files,
                 plan=reconciliation_plan,
@@ -1516,7 +1827,14 @@ def main() -> int:
         else:
             runner.note("업데이트 적용과 선택적 재시작을 완료했습니다.")
         return 0
-    except (DockerCapacityError, WorkflowError, KeyError, OSError, ValueError) as error:
+    except (
+        DockerCapacityError,
+        GatewayAuthParityError,
+        WorkflowError,
+        KeyError,
+        OSError,
+        ValueError,
+    ) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 2
     finally:

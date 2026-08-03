@@ -1728,8 +1728,21 @@ def verify_governed_docker_build_capacity_contract() -> None:
     reranker = main_source.index("_reconcile_local_reranker")
     if not lock_start < preflight < reranker:
         raise AssertionError("capacity lock/preflight must precede local reranker mutation")
-    if main_source.count("_require_idle_builder(selected_builder, capacity_lock)") != 4:
+    if main_source.count("_require_idle_builder(selected_builder, capacity_lock)") != 5:
         raise AssertionError("every update-workflow Compose build must recheck active builds")
+    parity_note = main_source.index(
+        'runner.note("Gateway parity의 고정 local-bootstrap 모듈을 현재 source로 빌드합니다.")'
+    )
+    parity_idle = main_source.rfind(
+        "_require_idle_builder(selected_builder, capacity_lock)",
+        preflight,
+        parity_note,
+    )
+    parity_build = main_source.index('trailing=("build", "local-bootstrap")', parity_note)
+    if not preflight < parity_idle < parity_note < parity_build < reranker:
+        raise AssertionError(
+            "gateway parity local-bootstrap build must recheck the selected builder under lock"
+        )
     for fragment in (
         "selected_build_services=tuple(selected_build_services)",
         'trailing=("build", *core_build_services)',
@@ -1969,8 +1982,8 @@ def verify_governed_local_topology_contract() -> None:
         "test_worker_create_stops_before_mutation_when_retained_secret_guard_drifted",
         "test_governance_document_role_and_backlog_are_separate_sanitized_queries",
         "test_topology_reconciliation_failure_stops_before_later_mutations",
-        "test_gateway_live_auth_parity_unavailable_is_state_write_precondition",
-        "test_unavailable_gateway_auth_parity_stops_under_lock_before_runtime_mutation",
+        "test_gateway_transparency_is_only_a_routing_negative_not_positive_auth_evidence",
+        "test_unreviewed_gateway_reconciliation_stops_under_lock_before_runtime_mutation",
         "test_gateway_log_probe_rejects_credential_persistence_without_raw_output",
     ):
         if test_name not in test_source:
@@ -1989,7 +2002,7 @@ def verify_governed_local_topology_contract() -> None:
         "mac-development-graph-gateway-v1",
         "governance-document-worker",
         "required subset",
-        "GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE",
+        "SEC-GATEWAY-AUTH-PARITY-001-A-V1",
         "Keycloak remains the sole identity provider",
         "do not claim that",
         "remote_addr",
@@ -2128,9 +2141,7 @@ def verify_transparent_gateway_contract() -> None:
     if "response.read" in probe or "print(response" in probe:
         raise AssertionError("transparent gateway evidence cannot retain response bodies")
     if "GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE" not in update:
-        raise AssertionError(
-            "gateway adoption must fail closed without governed live auth evidence"
-        )
+        raise AssertionError("unreviewed gateway reconciliation names must fail closed")
     update_main = update.split("def main() -> int:", maxsplit=1)[1]
     availability_gate = update_main.index(
         "_require_gateway_auth_parity_evidence_available(reconciliation_name)"
@@ -2148,6 +2159,339 @@ def verify_transparent_gateway_contract() -> None:
     state_write = main_source.index("write_applied_state(", target_audit)
     if not transparency < target_audit < state_write:
         raise AssertionError("transparent gateway evidence must precede audit and state write")
+
+
+def verify_gateway_auth_parity_fixture_contract() -> None:
+    probe_path = ROOT / "scripts" / "probe_gateway_auth_parity.py"
+    fixture_path = ROOT / "backend" / "src" / "datariver" / "gateway_auth_parity_fixture.py"
+    probe_test_path = ROOT / "backend" / "tests" / "unit" / "test_gateway_auth_parity_probe.py"
+    fixture_test_path = ROOT / "backend" / "tests" / "unit" / "test_gateway_auth_parity_fixture.py"
+    platform_test_path = ROOT / "backend" / "tests" / "unit" / "test_platform_workflow.py"
+    workflow_path = ROOT / "scripts" / "workflow_update_restart.py"
+    for path in (
+        probe_path,
+        fixture_path,
+        probe_test_path,
+        fixture_test_path,
+        platform_test_path,
+        workflow_path,
+    ):
+        if not path.is_file():
+            raise AssertionError("the governed gateway parity fixture path is missing")
+
+    probe = probe_path.read_text(encoding="utf-8")
+    fixture = fixture_path.read_text(encoding="utf-8")
+    probe_tests = probe_test_path.read_text(encoding="utf-8")
+    fixture_tests = fixture_test_path.read_text(encoding="utf-8")
+    platform_tests = platform_test_path.read_text(encoding="utf-8")
+    workflow = workflow_path.read_text(encoding="utf-8")
+    for fragment in (
+        'FIXTURE_CONTRACT = "SEC-GATEWAY-AUTH-PARITY-001-A-V1"',
+        'FIXTURE_CLIENT_ID = "datariver-gateway-auth-parity-v1"',
+        "OIDC_VERIFIER_LEEWAY_SECONDS = 30",
+        'GATEWAY_LOG_TIMESTAMP_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"',
+        '"publicClient": True',
+        '"clientAuthenticatorType": "client-secret"',
+        '"name": "DataRiver Gateway Auth Parity"',
+        '"bearerOnly": False',
+        '"surrogateAuthRequired": False',
+        '"consentRequired": False',
+        '"standardFlowEnabled": True',
+        '"directAccessGrantsEnabled": False',
+        '"implicitFlowEnabled": False',
+        '"serviceAccountsEnabled": False',
+        '"authorizationServicesEnabled": False',
+        '"fullScopeAllowed": False',
+        '"frontchannelLogout": False',
+        '"authenticationFlowBindingOverrides": {}',
+        '"optionalClientScopes": []',
+        '"defaultClientScopes": ["basic", "acr", "profile", "email", "roles"]',
+        '"pkce.code.challenge.method": "S256"',
+        '("knowledge-registry", "/api/v1/knowledge/registry/assets")',
+        '("change-request", "/api/v1/change-requests")',
+        'PARITY_HOPS = ("direct", "gateway", "web")',
+        'self._traffic.verify_status_matrix("allow", allow.value, 200)',
+        'self._traffic.verify_status_matrix("deny", deny.value, 403)',
+        'self._traffic.verify_status_matrix("malformed", malformed, 401)',
+        'self._traffic.verify_status_matrix("expired", allow.value, 401)',
+        "self._traffic.require_not_expired(current_allow.expires_at)",
+        'self._traffic.verify_status_matrix("membership-revoked", current_allow.value, 403)',
+        'immediate_logout="OPEN_UNSUPPORTED"',
+        'print("GATEWAY_AUTH_PARITY_CANONICAL_WORKFLOW_REQUIRED", file=sys.stderr)',
+        "self._validated_user_uuid(",
+        "allow_partial_mapper=True",
+        "def audience_mapper_document()",
+        "def _exact_pkce_callback(value: str) -> bool:",
+        "response.iter_bytes(chunk_size=64 * 1024)",
+        "allowed_mapper_counts = {0, 1} if allow_partial_mapper else {1}",
+        'attributes != expected["attributes"]',
+        "class GatewayAuthParityExecutionError",
+        "class GatewayCredentialLogEvidenceError",
+        "log_evidence_failed=outcome.log_evidence_failed",
+        "log_evidence_known=outcome.log_evidence_known",
+        "cleanup_required=cleanup_required",
+        "GATEWAY_AUTH_PARITY_INTERRUPTED",
+        '"GATEWAY_AUTH_PARITY_FIXTURE_FAILED",',
+        "raise GatewayAuthParityExecutionError(",
+        "self._admin_token = None",
+        "def release_without_mutation(self) -> None:",
+        "def _get_production_mapper_inventory(",
+        "if len(mapper_inventory) > _MAXIMUM_PRODUCTION_MAPPERS:",
+        '"authenticationFlowBindingOverrides": _normalized_string_mapping(',
+        '"protocolMappers": tuple(',
+    ):
+        if fragment not in probe:
+            raise AssertionError(f"the governed gateway parity probe is missing: {fragment}")
+    oidc_verifier = (
+        ROOT / "backend" / "src" / "datariver" / "infrastructure" / "security" / "oidc.py"
+    ).read_text(encoding="utf-8")
+    if "leeway=30" not in oidc_verifier:
+        raise AssertionError("gateway parity expiry evidence must match the API verifier leeway")
+    concrete_traffic = probe.split("class GatewayAuthParityTraffic:", maxsplit=1)[1]
+    expiry = concrete_traffic.split("def wait_until_expired(", maxsplit=1)[1].split(
+        "def require_not_expired(", maxsplit=1
+    )[0]
+    for fragment in (
+        "expires_at + OIDC_VERIFIER_LEEWAY_SECONDS",
+        "ACCESS_TOKEN_LIFESPAN_SECONDS + OIDC_VERIFIER_LEEWAY_SECONDS + 2",
+        "_genuine_expiry_reached(",
+    ):
+        if fragment not in expiry:
+            raise AssertionError("gateway parity genuine-expiry timing has drifted")
+    authenticate = probe.split("def _authenticate(", maxsplit=1)[1].split(
+        "def authenticate_allow(", maxsplit=1
+    )[0]
+    initial_get = authenticate.index("response = _bounded_response(browser, request)")
+    first_cookie_normalization = authenticate.index(
+        "self._normalize_loopback_cookies(browser)", initial_get
+    )
+    credential_post = authenticate.index('browser.build_request("POST", action, data=form)')
+    if not initial_get < first_cookie_normalization < credential_post:
+        raise AssertionError("loopback Secure cookies must be normalized before credential POST")
+    if authenticate.count("self._normalize_loopback_cookies(browser)") < 5:
+        raise AssertionError("every loopback PKCE same-origin transition must normalize cookies")
+    traffic_request = concrete_traffic.split("def _request(", maxsplit=1)[1].split(
+        "def verify_status_matrix(", maxsplit=1
+    )[0]
+    if not traffic_request.index("self._log_started_at = datetime.now(") < traffic_request.index(
+        'selected["Authorization"] = f"Bearer {token}"'
+    ):
+        raise AssertionError("gateway log interval must start before the first credential request")
+    revoke = probe.index("self._fixture.revoke_allow_membership(")
+    first_valid = probe.rfind("self._traffic.require_not_expired(", 0, revoke)
+    second_valid = probe.index("self._traffic.require_not_expired(", revoke)
+    if not first_valid < revoke < second_valid:
+        raise AssertionError(
+            "membership parity must keep a valid token around the exact revocation"
+        )
+    close = probe.split("def _close(self) -> _GatewayAuthParityCloseOutcome:", maxsplit=1)[1].split(
+        "def close(self) -> None:", maxsplit=1
+    )[0]
+    public_close = probe.split("def close(self) -> None:", maxsplit=1)[1].split(
+        "def run_with_topology(", maxsplit=1
+    )[0]
+    cleanup_order = tuple(
+        close.index(fragment)
+        for fragment in (
+            "self._traffic.assert_logs_clean(())",
+            "cleanup_sessions_and_users()",
+            "self._fixture.cleanup(",
+            "cleanup_client()",
+            "require_invariants_and_zero_residual()",
+            "self._fixture.require_zero_residual()",
+        )
+    )
+    if (
+        cleanup_order != tuple(sorted(cleanup_order))
+        or "except BaseException:" not in close
+        or "log_evidence_failed = True" not in close
+        or "cleanup_required = True" not in close
+        or "GATEWAY_CREDENTIAL_LOG_PROBE_FAILED" not in public_close
+    ):
+        raise AssertionError("gateway parity cleanup order or BaseException boundary has drifted")
+
+    for fragment in (
+        'actions = ("change.read", "kg.read")',
+        'job_function="GATEWAY_AUTH_PARITY_PROBE"',
+        "active=False",
+        "membership.active = False",
+        "membership.version += 1",
+        "rows = await self._exact_rows(identities, cleanup=True, allow_absent=True)",
+        "with_for_update=True",
+        "membership.version != expected_version",
+        "privilege_residual_counts = await self._privilege_residual_counts(subject_ids)",
+        "if not rows or any(privilege_residual_counts):",
+        "external_subjects = tuple(identity.external_subject for identity in identities)",
+        "residual_subject_ids = tuple(dict.fromkeys((*subject_ids, *residual_subject_rows)))",
+        "privilege_residual_counts = await self._privilege_residual_counts(residual_subject_ids)",
+        "except BaseException:",
+        'print("GATEWAY_AUTH_PARITY_FIXTURE_FAILED", file=sys.stderr)',
+    ):
+        if fragment not in fixture:
+            raise AssertionError(f"the least-scope gateway parity fixture is missing: {fragment}")
+    sql_repository = fixture.split("class SqlGatewayAuthParityFixtureRepository:", maxsplit=1)[1]
+    cleanup_source = sql_repository.split("async def cleanup(", maxsplit=1)[1].split(
+        "async def require_zero_residual(", maxsplit=1
+    )[0]
+    exact_rows = cleanup_source.index(
+        "rows = await self._exact_rows(identities, cleanup=True, allow_absent=True)"
+    )
+    alias_proof = cleanup_source.index("existing = await self._subjects(identities)")
+    membership_proof = cleanup_source.index("membership_count = await self._session.scalar(")
+    privilege_proof = cleanup_source.index(
+        "privilege_residual_counts = await self._privilege_residual_counts(subject_ids)"
+    )
+    first_delete = cleanup_source.index("delete(WorkspaceMembershipModel)")
+    if not exact_rows < alias_proof < membership_proof < privilege_proof < first_delete:
+        raise AssertionError("gateway parity SQL cleanup must lock then re-prove before deletion")
+    production_identity = probe.split("class KeycloakGatewayAuthParityIdentity:", maxsplit=1)[
+        1
+    ].split("class GatewayAuthParityTraffic:", maxsplit=1)[0]
+    production_cleanup = production_identity.split(
+        "def require_invariants_and_zero_residual(self) -> None:", maxsplit=1
+    )[1].split("def release_without_mutation(self) -> None:", maxsplit=1)[0]
+    for fragment in (
+        "self._production_contract_fingerprint() != self._production_fingerprint",
+        "except BaseException:",
+        'raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_CLEANUP_REQUIRED") from None',
+    ):
+        if fragment not in production_cleanup:
+            raise AssertionError(
+                "production Web cleanup invariant failure must remain fixed and nonleaking"
+            )
+    for forbidden_delete in (
+        "delete(CanonicalAdminBindingModel)",
+        "delete(ProfileRoleAssignmentModel)",
+        "delete(AccessRoleAssignmentModel)",
+    ):
+        if forbidden_delete in cleanup_source:
+            raise AssertionError("gateway parity cleanup cannot normalize privilege drift")
+    for forbidden in ('"directAccessGrantsEnabled": True', '"serviceAccountsEnabled": True'):
+        if forbidden in probe:
+            raise AssertionError("the gateway parity fixture cannot enable a credential shortcut")
+
+    for fragment in (
+        'selected_build_services.append("local-bootstrap")',
+        'trailing=("build", "local-bootstrap")',
+        "class _ComposeGatewayAuthParityFixture:",
+        '"--no-build",',
+        '"-T",',
+        '"datariver.gateway_auth_parity_fixture",',
+        "timeout=30,",
+        "subprocess.TimeoutExpired",
+        "_reconcile_topology_with_gateway_parity(",
+        "def _bounded_gateway_log_output(",
+    ):
+        if fragment not in workflow:
+            raise AssertionError(f"the canonical gateway parity workflow is missing: {fragment}")
+    reconciliation_session = workflow.split(
+        "def _reconcile_topology_with_gateway_parity(", maxsplit=1
+    )[1].split("def _prepare_topology_reconciliation(", maxsplit=1)[0]
+    if "session.close()" in reconciliation_session:
+        raise AssertionError("the parity context must own exactly-once cleanup")
+    bounded_logs = workflow.split("def _bounded_gateway_log_output(", maxsplit=1)[1].split(
+        "def _verify_gateway_logs_do_not_persist_probe_credentials(", maxsplit=1
+    )[0]
+    for fragment in (
+        "subprocess.Popen(",
+        "selectors.DefaultSelector()",
+        "_GATEWAY_LOG_MAXIMUM_BYTES - len(output) + 1",
+        "process.terminate()",
+        "process.kill()",
+        "process.wait(timeout=_GATEWAY_LOG_REAP_SECONDS)",
+    ):
+        if fragment not in bounded_logs:
+            raise AssertionError(f"gateway log bounded capture is missing: {fragment}")
+    if "capture_output=True" in bounded_logs:
+        raise AssertionError("gateway log capture cannot buffer unbounded subprocess output")
+    log_verification = workflow.split(
+        "def _verify_gateway_logs_do_not_persist_probe_credentials(", maxsplit=1
+    )[1].split("def _verify_gateway_transparency(", maxsplit=1)[0]
+    for fragment in ('"--since",', "started_at,", '"api",', '"apisix",', '"web",'):
+        if fragment not in log_verification:
+            raise AssertionError(f"gateway log complete interval is missing: {fragment}")
+    if '"--tail"' in log_verification or '"2m"' in log_verification:
+        raise AssertionError("gateway log evidence cannot use a relative or tail-truncated window")
+
+    for test_name in (
+        "test_fixture_contract_is_exact_human_least_scope_and_not_a_service_identity",
+        "test_fixture_operations_are_fixed_and_membership_revocation_advances_version",
+        "test_sql_membership_revocation_advances_only_the_allow_version",
+        "test_fixture_request_rejects_missing_extra_colliding_or_provider_passthrough",
+        "test_sql_cleanup_rejects_swapped_external_subjects_before_any_delete",
+        "test_sql_cleanup_rejects_membership_envelope_drift_before_any_delete",
+        "test_sql_cleanup_rejects_any_privilege_assignment_before_any_delete",
+        "test_sql_absence_rejects_orphaned_privilege_residual_before_prepare",
+        "test_sql_cleanup_deletes_only_exact_rows_after_zero_privilege_proof",
+        "test_sql_cleanup_rechecks_concurrent_cross_workspace_membership_under_subject_locks",
+        "test_zero_residual_rejects_external_subject_alias_under_another_id",
+        "test_pkce_client_contract_disables_direct_grants_service_accounts_and_implicit_flow",
+        "test_keycloak_fixture_create_order_is_client_mapper_then_two_disabled_humans",
+        "test_genuine_expiry_requires_the_exact_backend_verifier_leeway_boundary",
+        "test_expiry_wait_is_bounded_to_token_ttl_plus_verifier_leeway",
+        "test_loopback_secure_cookie_is_sent_on_login_post_without_value_output",
+        "test_pkce_rejects_unreviewed_redirect_state_or_code_without_raw_output",
+        "test_pkce_token_rejects_unbounded_or_nonpositive_lifetime",
+        "test_fixture_prepare_enable_topology_then_exact_matrix_and_cleanup_order",
+        "test_pre_mutation_absence_failure_releases_private_identity_state_without_cleanup",
+        "test_any_baseexception_preserves_sanitized_first_failure_and_cleans_exactly_once",
+        "test_first_failure_and_cleanup_failure_are_reported_independently_without_raw_payload",
+        "test_cleanup_failure_is_sanitized_and_continues_all_exact_cleanup_steps",
+        "test_failed_parity_still_checks_logs_and_preserves_the_first_failure",
+        "test_successful_parity_with_known_log_defect_reports_log_outcome_not_cleanup",
+        "test_successful_parity_with_unknown_log_probe_failure_is_not_cleanup",
+        "test_log_evidence_and_cleanup_failures_remain_independent",
+        "test_first_defect_and_unknown_log_probe_failure_are_reported_independently",
+        "test_cleanup_rediscovers_only_exact_task_resources_after_ambiguous_create_response",
+        "test_cleanup_accepts_exact_client_before_optional_audience_mapper_was_created",
+        "test_cleanup_rejects_client_auth_surface_mapper_scope_or_identity_drift",
+        "test_cleanup_refreshes_the_admin_token_only_at_the_cleanup_boundary",
+        "test_cleanup_rejects_user_identity_or_auth_surface_drift_without_deleting",
+        "test_cleanup_rejects_recorded_uuid_that_was_renamed_instead_of_treating_it_absent",
+        "test_production_web_fingerprint_reads_exact_client_and_mapper_inventory",
+        "test_cleanup_detects_full_production_web_auth_surface_drift_without_raw_output",
+        "test_production_web_invariant_rejects_incomplete_or_duplicate_baseline_before_fixture",
+        "test_pkce_token_requires_the_fixed_api_audience",
+        "test_cleanup_retains_multiple_or_nonexact_task_resources_without_deleting",
+        "test_live_status_matrix_invokes_both_resources_and_all_hops",
+        "test_log_interval_starts_once_immediately_before_first_credential_request",
+        "test_live_status_matrix_rejects_any_three_hop_semantic_drift",
+        "test_cors_preflight_uses_browser_headers_without_fixture_cookie_or_token",
+        "test_cors_preflight_rejects_gateway_header_drift",
+        "test_live_http_timeout_is_fixed_and_never_exposes_request_credentials",
+        "test_gateway_fixture_compose_timeout_is_fixed_not_retried_and_never_exposes_input",
+        "test_gateway_parity_session_validates_all_targets_before_reading_admin_secret",
+        "test_gateway_log_probe_uses_complete_exact_interval_and_all_three_services",
+        "test_gateway_log_capture_accepts_exact_cap_and_rejects_overflow_without_raw_output",
+        "test_gateway_log_capture_timeout_terminates_and_reaps_child_once",
+        "test_gateway_log_capture_nonzero_child_is_fixed_and_never_exposes_output",
+    ):
+        if not any(test_name in source for source in (probe_tests, fixture_tests, platform_tests)):
+            raise AssertionError(f"the governed gateway parity direct test is missing: {test_name}")
+
+    adr = (ROOT / "docs" / "adr" / "0113-governed-local-topology-drift.md").read_text(
+        encoding="utf-8"
+    )
+    for fragment in (
+        "public PKCE `S256` client",
+        "Direct grants",
+        "genuinely expired `401`",
+        "`active=false`",
+        "private process memory",
+        "`OPEN_UNSUPPORTED`",
+        "exactly-once best-effort cleanup",
+        "retry count zero",
+        "exact 30-second leeway",
+        "before the credential POST",
+        "swapped, aliased, drifted",
+        "independent cleanup-required outcome",
+        "log-evidence failed/known outcome",
+        "complete interval for `api`, `apisix` and `web`",
+        "all-Workspace Membership count",
+        "complete bounded protocol-mapper inventory",
+    ):
+        if fragment not in adr:
+            raise AssertionError(f"ADR-0113 omits gateway parity term: {fragment}")
 
 
 def verify_governed_persistent_data_bind_probe_contract() -> None:
@@ -2734,6 +3078,7 @@ def main() -> None:
     verify_governed_docker_build_capacity_contract()
     verify_governed_local_topology_contract()
     verify_transparent_gateway_contract()
+    verify_gateway_auth_parity_fixture_contract()
     verify_governed_persistent_data_bind_probe_contract()
     verify_document_links()
     print(

@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any, cast
+from typing import Any, Self, cast
 
 import pytest
 
@@ -20,6 +20,7 @@ MODULE_PATH = ROOT / "scripts" / "platform_workflow.py"
 FRESH_SETUP_MODULE_PATH = ROOT / "scripts" / "workflow_fresh_setup.py"
 UPDATE_MODULE_PATH = ROOT / "scripts" / "workflow_update_restart.py"
 CAPACITY_MODULE_PATH = ROOT / "scripts" / "docker_capacity.py"
+GATEWAY_PARITY_MODULE_PATH = ROOT / "scripts" / "probe_gateway_auth_parity.py"
 
 
 def _load_module() -> ModuleType:
@@ -65,6 +66,7 @@ def _load_update_module() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     previous_platform_module = sys.modules.get("platform_workflow")
     previous_capacity_module = sys.modules.get("docker_capacity")
+    previous_gateway_parity_module = sys.modules.get("probe_gateway_auth_parity")
     capacity_spec = importlib.util.spec_from_file_location(
         "docker_capacity",
         CAPACITY_MODULE_PATH,
@@ -72,10 +74,19 @@ def _load_update_module() -> ModuleType:
     assert capacity_spec is not None
     assert capacity_spec.loader is not None
     capacity_module = importlib.util.module_from_spec(capacity_spec)
+    gateway_parity_spec = importlib.util.spec_from_file_location(
+        "probe_gateway_auth_parity",
+        GATEWAY_PARITY_MODULE_PATH,
+    )
+    assert gateway_parity_spec is not None
+    assert gateway_parity_spec.loader is not None
+    gateway_parity_module = importlib.util.module_from_spec(gateway_parity_spec)
     sys.modules["platform_workflow"] = workflow
     sys.modules["docker_capacity"] = capacity_module
+    sys.modules["probe_gateway_auth_parity"] = gateway_parity_module
     try:
         capacity_spec.loader.exec_module(capacity_module)
+        gateway_parity_spec.loader.exec_module(gateway_parity_module)
         spec.loader.exec_module(module)
     finally:
         if previous_platform_module is None:
@@ -86,6 +97,10 @@ def _load_update_module() -> ModuleType:
             sys.modules.pop("docker_capacity", None)
         else:
             sys.modules["docker_capacity"] = previous_capacity_module
+        if previous_gateway_parity_module is None:
+            sys.modules.pop("probe_gateway_auth_parity", None)
+        else:
+            sys.modules["probe_gateway_auth_parity"] = previous_gateway_parity_module
 
     @contextmanager
     def test_lock(_root: Path) -> Iterator[Any]:
@@ -1044,7 +1059,7 @@ def test_worker_create_is_bracketed_by_retained_secret_guard_on_ambiguous_failur
     assert events == ["guard", "create", "guard"]
 
 
-def test_gateway_live_auth_parity_unavailable_is_state_write_precondition(
+def test_gateway_transparency_is_only_a_routing_negative_not_positive_auth_evidence(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1085,15 +1100,11 @@ def test_gateway_live_auth_parity_unavailable_is_state_write_precondition(
         lambda **kwargs: log_checks.append(cast(tuple[Path, ...], kwargs["files"])),
     )
 
-    with pytest.raises(
-        workflow.WorkflowError,
-        match="GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE",
-    ):
-        update._verify_gateway_transparency(
-            ProbeRunner(),
-            env_file=env_file,
-            files=(ROOT / "compose.yaml", ROOT / "compose.gateway-routing.yaml"),
-        )
+    update._verify_gateway_transparency(
+        ProbeRunner(),
+        env_file=env_file,
+        files=(ROOT / "compose.yaml", ROOT / "compose.gateway-routing.yaml"),
+    )
 
     assert len(calls) == 1
     assert calls[0][-4:] == (
@@ -1106,7 +1117,233 @@ def test_gateway_live_auth_parity_unavailable_is_state_write_precondition(
     assert notes == []
 
 
-def test_unavailable_gateway_auth_parity_stops_under_lock_before_runtime_mutation(
+def test_gateway_fixture_compose_boundary_uses_fixed_private_stdin_and_exact_evidence(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env"
+    env_file.write_text("APP_ENV=development\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured["command"] = tuple(command)
+        captured["input"] = kwargs["input"]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            '{"membership_count":2,"privilege_residual_count":0,'
+            '"state":"prepared","subject_count":2}',
+            "",
+        )
+
+    monkeypatch.setattr(update.subprocess, "run", run)
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=env_file,
+        files=(ROOT / "compose.yaml", ROOT / "compose.identity.yaml"),
+    )
+    controller.prepare(
+        "10000000-0000-4000-8000-000000000001",
+        "10000000-0000-4000-8000-000000000002",
+    )
+
+    command = cast(tuple[str, ...], captured["command"])
+    request = json.loads(cast(str, captured["input"]))
+    assert command[-7:] == (
+        "--no-build",
+        "-T",
+        "local-bootstrap",
+        "/app/.venv/bin/python",
+        "-m",
+        "datariver.gateway_auth_parity_fixture",
+        "prepare",
+    )
+    assert set(request) == {
+        "allow_external_subject",
+        "contract",
+        "deny_external_subject",
+        "operation",
+    }
+    assert request["operation"] == "prepare"
+    assert capsys.readouterr().out == ""
+
+
+def test_gateway_fixture_compose_failure_never_exposes_private_input_or_provider_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env"
+    env_file.write_text("APP_ENV=development\n", encoding="utf-8")
+    monkeypatch.setattr(
+        update.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.CalledProcessError(
+                2,
+                ["docker", "compose"],
+                output="provider-id-secret-sentinel",
+                stderr="token-path-secret-sentinel",
+            )
+        ),
+    )
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=env_file,
+        files=(ROOT / "compose.yaml",),
+    )
+
+    with pytest.raises(
+        update.GatewayAuthParityError,
+        match="GATEWAY_AUTH_PARITY_FIXTURE_FAILED",
+    ) as captured:
+        controller.prepare(
+            "10000000-0000-4000-8000-000000000001",
+            "10000000-0000-4000-8000-000000000002",
+        )
+
+    operator = capsys.readouterr().out + capsys.readouterr().err + str(captured.value)
+    assert "provider-id" not in operator
+    assert "token-path" not in operator
+
+
+def test_gateway_fixture_compose_timeout_is_fixed_not_retried_and_never_exposes_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env"
+    env_file.write_text("APP_ENV=development\n", encoding="utf-8")
+    calls = 0
+
+    def timeout(*_args: object, **_kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
+        raise subprocess.TimeoutExpired(
+            ["docker", "compose", "provider-path-secret-sentinel"],
+            30,
+            output="token-secret-sentinel",
+            stderr="stderr-secret-sentinel",
+        )
+
+    monkeypatch.setattr(update.subprocess, "run", timeout)
+    controller = update._ComposeGatewayAuthParityFixture(
+        env_file=env_file,
+        files=(ROOT / "compose.yaml",),
+    )
+
+    with pytest.raises(
+        update.GatewayAuthParityError,
+        match="GATEWAY_AUTH_PARITY_FIXTURE_FAILED",
+    ) as captured:
+        controller.prepare(
+            "10000000-0000-4000-8000-000000000001",
+            "10000000-0000-4000-8000-000000000002",
+        )
+
+    assert calls == 1
+    operator = capsys.readouterr().out + capsys.readouterr().err + str(captured.value)
+    for forbidden in ("provider-path", "token-secret", "stderr-secret"):
+        assert forbidden not in operator
+
+
+def test_gateway_parity_session_validates_all_targets_before_reading_admin_secret(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "APP_PUBLIC_ORIGIN=https://unreviewed.example.invalid\n",
+        encoding="utf-8",
+    )
+    secret_reads: list[str] = []
+
+    def read_gateway_admin_password(_guard: object) -> str:
+        secret_reads.append("read")
+        return "admin-secret-sentinel"
+
+    monkeypatch.setattr(
+        update,
+        "_read_gateway_admin_password",
+        read_gateway_admin_password,
+    )
+
+    with pytest.raises(
+        update.GatewayAuthParityError,
+        match="GATEWAY_AUTH_PARITY_TARGET_INVALID",
+    ):
+        update._gateway_auth_parity_session(
+            env_file=env_file,
+            files=(ROOT / "compose.yaml",),
+            secret_guard=SimpleNamespace(revalidate=lambda: None),
+        )
+
+    assert secret_reads == []
+
+
+def test_topology_apply_is_bracketed_by_one_gateway_parity_session_and_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    events: list[str] = []
+
+    class Session:
+        def __enter__(self) -> Self:
+            events.append("session-enter")
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            self.close()
+            events.append("session-exit")
+
+        def prepare(self) -> None:
+            events.append("fixture-prepare")
+
+        def enable(self) -> None:
+            events.append("fixture-enable")
+
+        def verify_after_topology(self) -> object:
+            events.append("live-parity")
+            return SimpleNamespace(immediate_logout="OPEN_UNSUPPORTED", retry_count=0)
+
+        def close(self) -> None:
+            if "fixture-clean" not in events:
+                events.append("fixture-clean")
+
+    monkeypatch.setattr(
+        update,
+        "_apply_topology_reconciliation",
+        lambda *_args, **_kwargs: events.append("topology-apply"),
+    )
+
+    evidence = update._reconcile_topology_with_gateway_parity(
+        session=Session(),
+        runner=SimpleNamespace(note=lambda message: events.append(f"note:{message}")),
+        env_file=tmp_path / ".env",
+        files=(ROOT / "compose.yaml",),
+        plan=_topology_reconciliation_plan(),
+        selected_builder="builder",
+        capacity_lock=object(),
+        secret_guard=SimpleNamespace(revalidate=lambda: None),
+    )
+
+    assert evidence.immediate_logout == "OPEN_UNSUPPORTED"
+    assert events[:5] == [
+        "session-enter",
+        "fixture-prepare",
+        "fixture-enable",
+        "topology-apply",
+        "live-parity",
+    ]
+    assert events.count("fixture-clean") == 1
+    assert events.index("fixture-clean") < events.index("session-exit")
+
+
+def test_unreviewed_gateway_reconciliation_stops_under_lock_before_runtime_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1148,7 +1385,7 @@ def test_unavailable_gateway_auth_parity_stops_under_lock_before_runtime_mutatio
             refresh_bootstrap=True,
             skip_catalog_sync=True,
             assume_yes=True,
-            reconcile_local_topology="mac-development-graph-gateway-v1",
+            reconcile_local_topology="unreviewed-topology",
         ),
     )
     monkeypatch.setattr(update, "Runner", FakeRunner)
@@ -1222,22 +1459,137 @@ def test_gateway_log_probe_rejects_credential_persistence_without_raw_output(
     sentinel = b"gateway-invalid-token-sentinel"
 
     monkeypatch.setattr(
-        update.subprocess,
-        "run",
-        lambda *_args, **_kwargs: SimpleNamespace(stdout=sentinel, stderr=b""),
+        update,
+        "_bounded_gateway_log_output",
+        lambda _command: sentinel,
     )
 
     with pytest.raises(
-        workflow.WorkflowError, match="GATEWAY_CREDENTIAL_LOG_PROBE_FAILED"
+        update.GatewayCredentialLogEvidenceError,
+        match="GATEWAY_CREDENTIAL_LOG_PROBE_FAILED",
     ) as error:
         update._verify_gateway_logs_do_not_persist_probe_credentials(
             env_file=tmp_path / ".env",
             files=(ROOT / "compose.yaml",),
+            started_at="2026-08-03T00:00:00.000000Z",
         )
 
+    assert error.value.evidence_known is True
     captured = capsys.readouterr()
     exposed = captured.out + captured.err + str(error.value)
     assert sentinel.decode() not in exposed
+
+
+def test_gateway_log_probe_uses_complete_exact_interval_and_all_three_services(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    commands: list[tuple[str, ...]] = []
+    sentinel = "api-only-dynamic-token-secret-sentinel"
+
+    def output(command: tuple[str, ...]) -> bytes:
+        commands.append(command)
+        return (("safe-line\n" * 250) + sentinel).encode()
+
+    monkeypatch.setattr(update, "_bounded_gateway_log_output", output)
+    with pytest.raises(
+        update.GatewayCredentialLogEvidenceError,
+        match="GATEWAY_CREDENTIAL_LOG_PROBE_FAILED",
+    ):
+        update._verify_gateway_logs_do_not_persist_probe_credentials(
+            env_file=tmp_path / ".env",
+            files=(ROOT / "compose.yaml",),
+            started_at="2026-08-03T00:00:00.000000Z",
+            sentinels=(sentinel,),
+        )
+
+    assert len(commands) == 1
+    command = commands[0]
+    since = command.index("--since")
+    assert command[since + 1] == "2026-08-03T00:00:00.000000Z"
+    assert command[-3:] == ("api", "apisix", "web")
+    assert "--tail" not in command
+    assert "2m" not in command
+
+
+def test_gateway_log_capture_accepts_exact_cap_and_rejects_overflow_without_raw_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    exact = update._bounded_gateway_log_output(
+        (
+            sys.executable,
+            "-c",
+            f"import os;os.write(1,b'x'*{update._GATEWAY_LOG_MAXIMUM_BYTES})",
+        )
+    )
+    assert len(exact) == update._GATEWAY_LOG_MAXIMUM_BYTES
+
+    with pytest.raises(
+        update.GatewayCredentialLogEvidenceError,
+        match="GATEWAY_CREDENTIAL_LOG_PROBE_FAILED",
+    ) as captured:
+        update._bounded_gateway_log_output(
+            (
+                sys.executable,
+                "-c",
+                (
+                    "import os;os.write(1,b'provider-secret-sentinel'"
+                    f"+b'x'*{update._GATEWAY_LOG_MAXIMUM_BYTES})"
+                ),
+            )
+        )
+
+    exposed = capsys.readouterr().out + capsys.readouterr().err + str(captured.value)
+    assert "provider-secret-sentinel" not in exposed
+
+
+def test_gateway_log_capture_timeout_terminates_and_reaps_child_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    original_popen = subprocess.Popen
+    processes: list[subprocess.Popen[bytes]] = []
+
+    def popen(*args: object, **kwargs: object) -> subprocess.Popen[bytes]:
+        process: subprocess.Popen[bytes] = cast(Any, original_popen)(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(update.subprocess, "Popen", popen)
+    monkeypatch.setattr(update, "_GATEWAY_LOG_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(update, "_GATEWAY_LOG_REAP_SECONDS", 1)
+
+    with pytest.raises(
+        update.GatewayCredentialLogEvidenceError,
+        match="GATEWAY_CREDENTIAL_LOG_PROBE_FAILED",
+    ):
+        update._bounded_gateway_log_output((sys.executable, "-c", "import time;time.sleep(5)"))
+
+    assert len(processes) == 1
+    assert processes[0].poll() is not None
+
+
+def test_gateway_log_capture_nonzero_child_is_fixed_and_never_exposes_output(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+
+    with pytest.raises(
+        update.GatewayCredentialLogEvidenceError,
+        match="GATEWAY_CREDENTIAL_LOG_PROBE_FAILED",
+    ) as captured:
+        update._bounded_gateway_log_output(
+            (
+                sys.executable,
+                "-c",
+                "import sys;sys.stderr.write('provider-token-secret-sentinel');sys.exit(7)",
+            )
+        )
+
+    exposed = capsys.readouterr().out + capsys.readouterr().err + str(captured.value)
+    assert "provider-token-secret-sentinel" not in exposed
 
 
 @pytest.mark.parametrize(

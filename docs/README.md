@@ -116,11 +116,13 @@ The AppliedState-to-runtime comparison, bounded four-class drift evidence and ex
 boundary are defined by [ADR-0113](adr/0113-governed-local-topology-drift.md). Its sole optional
 Mac reconciliation prepares the already-selected Neo4j/APISIX topology through canonical
 `dev-publish`, transparently preserves Keycloak/API/ABAC/RLS authority and can recover the
-explicitly enabled Governance Document worker. State adoption remains fail-closed until a governed,
-credential-safe live authorization-parity matrix exists; the known-unavailable gate runs under the
-exclusive workflow lock before refresh-bootstrap or any Docker/runtime/state mutation.
-Unauthenticated routing and static status evidence are insufficient. It does not establish Ops TLS,
-trusted-client-IP or production OIDC readiness.
+explicitly enabled Governance Document worker. Its Mac-only, exact-attempt ephemeral PKCE fixture
+uses two disabled-first least-scope human identities and fixed local-bootstrap operations to prove
+real Knowledge/Change Request allow, deny, expiry and membership-revocation parity across the direct
+API, APISIX and Web hops. Secrets remain memory-only, cleanup proves zero privilege residual and
+immediate logout remains honestly `OPEN_UNSUPPORTED`. Unauthenticated routing and static status
+evidence are insufficient. It does not establish Ops TLS, trusted-client-IP or production OIDC
+readiness.
 The isolated PostgreSQL/MinIO host-bind feasibility probe, exact secret transport, rollback anchors
 and noowners evidence boundary are defined by
 [ADR-0114](adr/0114-governed-persistent-data-bind-migration.md). Source acceptance does not
