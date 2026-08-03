@@ -93,6 +93,26 @@ class ProductionWebBooleanFieldStatus(str, Enum):
     NON_BOOL = "NON_BOOL"
 
 
+class GatewayWebAuthorizationServicesStatus(str, Enum):
+    """Value-free wire status of the one governed Web-client policy field."""
+
+    MISSING = "MISSING"
+    FALSE = "FALSE"
+    TRUE = "TRUE"
+    NON_BOOL = "NON_BOOL"
+    UNKNOWN = "UNKNOWN"
+
+
+class GatewayWebAuthorizationServicesClassification(str, Enum):
+    """Closed operator result for the one false-only convergence action."""
+
+    PASS = "PASS"  # noqa: S105 - closed result classification, not a credential.
+    PRECONDITION_FAILED = "PRECONDITION_FAILED"
+    POSTCONDITION_FAILED = "POSTCONDITION_FAILED"
+    OPERATOR_REVIEW_REQUIRED = "OPERATOR_REVIEW_REQUIRED"
+    UNKNOWN = "UNKNOWN"
+
+
 _PRODUCTION_WEB_BOOLEAN_FIELDS = tuple(field.value for field in ProductionWebBooleanField)
 _KEYCLOAK_26_7_OMITTED_FALSE_BOOLEAN_FIELDS = (
     ProductionWebBooleanField.AUTHORIZATION_SERVICES_ENABLED,
@@ -181,6 +201,89 @@ class _ProductionWebInvariantEvidence:
                 raise ValueError("GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID")
         elif self.boolean_shape_known:
             raise ValueError("GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID")
+
+
+@dataclass(frozen=True, slots=True)
+class GatewayWebAuthorizationServicesConvergenceEvidence:
+    """Bounded non-secret evidence for one exact false-only Admin PUT."""
+
+    classification: GatewayWebAuthorizationServicesClassification
+    predicate: ProductionWebInvariantPredicate
+    pre_status: GatewayWebAuthorizationServicesStatus
+    action_attempted: bool
+    action_succeeded: bool
+    mutation_outcome_known: bool
+    post_status_known: bool
+    post_status: GatewayWebAuthorizationServicesStatus | None
+    fingerprint_equal_known: bool
+    fingerprint_equal: bool | None
+    admin_token_grant_attempts: int
+    admin_request_attempts: int
+    mutation_count: int
+    retry_count: Literal[0] = 0
+
+    def __post_init__(self) -> None:
+        if (
+            not 0 <= self.admin_token_grant_attempts <= 1
+            or not 0 <= self.admin_request_attempts <= 7
+            or self.mutation_count not in {0, 1}
+            or self.retry_count != 0
+            or self.action_attempted != (self.mutation_count == 1)
+            or (self.action_succeeded and not self.action_attempted)
+            or (self.post_status_known != (self.post_status is not None))
+            or (self.fingerprint_equal_known != (self.fingerprint_equal is not None))
+        ):
+            raise ValueError("GATEWAY_WEB_AUTHORIZATION_SERVICES_EVIDENCE_INVALID")
+        if self.classification is GatewayWebAuthorizationServicesClassification.PASS:
+            if (
+                not self.action_succeeded
+                or not self.mutation_outcome_known
+                or self.post_status
+                not in {
+                    GatewayWebAuthorizationServicesStatus.MISSING,
+                    GatewayWebAuthorizationServicesStatus.FALSE,
+                }
+                or self.fingerprint_equal is not True
+                or self.predicate is not ProductionWebInvariantPredicate.PASS
+            ):
+                raise ValueError("GATEWAY_WEB_AUTHORIZATION_SERVICES_EVIDENCE_INVALID")
+
+
+@dataclass(frozen=True, slots=True)
+class _ProductionWebContractSnapshot:
+    evidence: _ProductionWebInvariantEvidence
+    client_uuid: str | None
+    authorization_services_status: GatewayWebAuthorizationServicesStatus
+
+
+def format_gateway_web_authorization_services_evidence(
+    evidence: GatewayWebAuthorizationServicesConvergenceEvidence,
+) -> str:
+    """Render one allowlisted newline-free line without accepting provider values."""
+
+    fields = [
+        f"classification={evidence.classification.value}",
+        f"predicate={evidence.predicate.value}",
+        f"pre_status={evidence.pre_status.value}",
+        f"action_attempted={str(evidence.action_attempted).lower()}",
+        f"action_succeeded={str(evidence.action_succeeded).lower()}",
+        f"mutation_outcome_known={str(evidence.mutation_outcome_known).lower()}",
+        f"post_status_known={str(evidence.post_status_known).lower()}",
+    ]
+    if evidence.post_status is not None:
+        fields.append(f"post_status={evidence.post_status.value}")
+    fields.append(f"fingerprint_equal_known={str(evidence.fingerprint_equal_known).lower()}")
+    if evidence.fingerprint_equal is not None:
+        fields.append(f"fingerprint_equal={str(evidence.fingerprint_equal).lower()}")
+    fields.extend(
+        (
+            f"admin_token_grant_attempts={evidence.admin_token_grant_attempts}",
+            f"admin_request_attempts={evidence.admin_request_attempts}",
+            f"mutation_count={evidence.mutation_count}",
+            "retry_count=0",
+        )
+    )
+    return " ".join(fields)
 
 
 class _ProductionWebInvariantFailure(Exception):
@@ -576,6 +679,22 @@ def _production_web_boolean_field_statuses(
     return tuple(statuses)
 
 
+def _gateway_web_authorization_services_status(
+    document: object,
+) -> GatewayWebAuthorizationServicesStatus:
+    if not isinstance(document, dict):
+        return GatewayWebAuthorizationServicesStatus.UNKNOWN
+    field = ProductionWebBooleanField.AUTHORIZATION_SERVICES_ENABLED.value
+    if field not in document:
+        return GatewayWebAuthorizationServicesStatus.MISSING
+    value = document[field]
+    if value is False:
+        return GatewayWebAuthorizationServicesStatus.FALSE
+    if value is True:
+        return GatewayWebAuthorizationServicesStatus.TRUE
+    return GatewayWebAuthorizationServicesStatus.NON_BOOL
+
+
 def _normalized_unique_strings(
     value: object,
     *,
@@ -948,6 +1067,26 @@ class KeycloakGatewayAuthParityIdentity:
         self._allow_password: str | None = None
         self._deny_password: str | None = None
         self._production_fingerprint: str | None = None
+        self._admin_token_grant_attempts = 0
+        self._admin_request_attempts = 0
+        self._web_authorization_services_action_attempted = False
+        self._web_authorization_services_action_succeeded = False
+
+    @property
+    def admin_token_grant_attempts(self) -> int:
+        return self._admin_token_grant_attempts
+
+    @property
+    def admin_request_attempts(self) -> int:
+        return self._admin_request_attempts
+
+    @property
+    def web_authorization_services_action_attempted(self) -> bool:
+        return self._web_authorization_services_action_attempted
+
+    @property
+    def web_authorization_services_action_succeeded(self) -> bool:
+        return self._web_authorization_services_action_succeeded
 
     def _request(
         self,
@@ -963,6 +1102,7 @@ class KeycloakGatewayAuthParityIdentity:
             if self._admin_token is None:
                 self._authenticate_admin()
             headers["Authorization"] = f"Bearer {self._admin_token}"
+            self._admin_request_attempts += 1
         request = self._client.build_request(method, path, headers=headers, **kwargs)
         response = _bounded_response(self._client, request)
         if response.status_code not in expected:
@@ -970,6 +1110,7 @@ class KeycloakGatewayAuthParityIdentity:
         return response
 
     def _authenticate_admin(self) -> None:
+        self._admin_token_grant_attempts += 1
         response = self._request(
             "POST",
             "/realms/master/protocol/openid-connect/token",
@@ -1008,6 +1149,50 @@ class KeycloakGatewayAuthParityIdentity:
             raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_IDENTITY_OPERATION_FAILED")
         return [item for item in document if isinstance(item, dict) and item.get(key) == value]
 
+    def _production_contract_snapshot(self) -> _ProductionWebContractSnapshot:
+        selected_uuid: str | None = None
+        selected_status = GatewayWebAuthorizationServicesStatus.UNKNOWN
+
+        def read_client_document(client_uuid: str) -> httpx.Response:
+            nonlocal selected_uuid, selected_status
+            response = self._request(
+                "GET",
+                f"/admin/realms/datariver/clients/{client_uuid}",
+                expected=frozenset({200}),
+            )
+            try:
+                document = response.json()
+            except ValueError:
+                return response
+            if (
+                isinstance(document, dict)
+                and document.get("id") == client_uuid
+                and document.get("clientId") == "datariver-web"
+            ):
+                selected_uuid = client_uuid
+                selected_status = _gateway_web_authorization_services_status(document)
+            return response
+
+        evidence = _classify_production_web_contract(
+            client_search=lambda: self._request(
+                "GET",
+                "/admin/realms/datariver/clients",
+                expected=frozenset({200}),
+                params={"clientId": "datariver-web"},
+            ),
+            client_document=read_client_document,
+            mapper_inventory=lambda client_uuid: self._request(
+                "GET",
+                f"/admin/realms/datariver/clients/{client_uuid}/protocol-mappers/models",
+                expected=frozenset({200}),
+            ),
+        )
+        return _ProductionWebContractSnapshot(
+            evidence=evidence,
+            client_uuid=selected_uuid,
+            authorization_services_status=selected_status,
+        )
+
     def _production_contract_fingerprint(self) -> str:
         evidence = self.classify_production_web_invariant()
         if (
@@ -1020,23 +1205,136 @@ class KeycloakGatewayAuthParityIdentity:
     def classify_production_web_invariant(self) -> _ProductionWebInvariantEvidence:
         """Read only the fixed production Web client through the shared normalizer."""
 
-        return _classify_production_web_contract(
-            client_search=lambda: self._request(
-                "GET",
-                "/admin/realms/datariver/clients",
-                expected=frozenset({200}),
-                params={"clientId": "datariver-web"},
-            ),
-            client_document=lambda client_uuid: self._request(
-                "GET",
-                f"/admin/realms/datariver/clients/{client_uuid}",
-                expected=frozenset({200}),
-            ),
-            mapper_inventory=lambda client_uuid: self._request(
-                "GET",
-                f"/admin/realms/datariver/clients/{client_uuid}/protocol-mappers/models",
-                expected=frozenset({200}),
-            ),
+        return self._production_contract_snapshot().evidence
+
+    def converge_web_authorization_services_disabled(
+        self,
+    ) -> GatewayWebAuthorizationServicesConvergenceEvidence:
+        """Issue at most one exact false-only PUT after the full fixed invariant passes."""
+
+        before = self._production_contract_snapshot()
+        pre_status = before.authorization_services_status
+        if (
+            before.evidence.predicate is not ProductionWebInvariantPredicate.PASS
+            or before.evidence.fingerprint is None
+            or before.client_uuid is None
+            or pre_status
+            not in {
+                GatewayWebAuthorizationServicesStatus.MISSING,
+                GatewayWebAuthorizationServicesStatus.FALSE,
+            }
+        ):
+            return GatewayWebAuthorizationServicesConvergenceEvidence(
+                classification=GatewayWebAuthorizationServicesClassification.PRECONDITION_FAILED,
+                predicate=before.evidence.predicate,
+                pre_status=pre_status,
+                action_attempted=False,
+                action_succeeded=False,
+                mutation_outcome_known=True,
+                post_status_known=False,
+                post_status=None,
+                fingerprint_equal_known=False,
+                fingerprint_equal=None,
+                admin_token_grant_attempts=self.admin_token_grant_attempts,
+                admin_request_attempts=self.admin_request_attempts,
+                mutation_count=0,
+            )
+
+        action_error = False
+        self._web_authorization_services_action_attempted = True
+        try:
+            self._request(
+                "PUT",
+                f"/admin/realms/datariver/clients/{before.client_uuid}",
+                expected=frozenset({204}),
+                json={"authorizationServicesEnabled": False},
+            )
+            self._web_authorization_services_action_succeeded = True
+        except BaseException:
+            action_error = True
+
+        try:
+            after = self._production_contract_snapshot()
+        except BaseException:
+            return GatewayWebAuthorizationServicesConvergenceEvidence(
+                classification=(
+                    GatewayWebAuthorizationServicesClassification.OPERATOR_REVIEW_REQUIRED
+                ),
+                predicate=ProductionWebInvariantPredicate.UNKNOWN,
+                pre_status=pre_status,
+                action_attempted=True,
+                action_succeeded=self._web_authorization_services_action_succeeded,
+                mutation_outcome_known=self._web_authorization_services_action_succeeded,
+                post_status_known=False,
+                post_status=None,
+                fingerprint_equal_known=False,
+                fingerprint_equal=None,
+                admin_token_grant_attempts=self.admin_token_grant_attempts,
+                admin_request_attempts=self.admin_request_attempts,
+                mutation_count=1,
+            )
+        post_status = after.authorization_services_status
+        post_status_known = post_status is not GatewayWebAuthorizationServicesStatus.UNKNOWN
+        fingerprint_equal_known = (
+            after.evidence.fingerprint is not None and before.evidence.fingerprint is not None
+        )
+        fingerprint_equal = (
+            after.evidence.fingerprint == before.evidence.fingerprint
+            if fingerprint_equal_known
+            else None
+        )
+        post_valid = (
+            after.evidence.predicate is ProductionWebInvariantPredicate.PASS
+            and after.client_uuid == before.client_uuid
+            and post_status
+            in {
+                GatewayWebAuthorizationServicesStatus.MISSING,
+                GatewayWebAuthorizationServicesStatus.FALSE,
+            }
+            and fingerprint_equal is True
+        )
+        predicate: ProductionWebInvariantPredicate
+        if action_error:
+            classification = GatewayWebAuthorizationServicesClassification.OPERATOR_REVIEW_REQUIRED
+            predicate = (
+                after.evidence.predicate
+                if after.evidence.predicate is not ProductionWebInvariantPredicate.PASS
+                else ProductionWebInvariantPredicate.UNKNOWN
+            )
+        elif post_valid:
+            classification = GatewayWebAuthorizationServicesClassification.PASS
+            predicate = ProductionWebInvariantPredicate.PASS
+        elif (
+            after.evidence.predicate
+            in {
+                ProductionWebInvariantPredicate.ADMIN_BOUNDARY_UNAVAILABLE,
+                ProductionWebInvariantPredicate.UNKNOWN,
+            }
+            or not post_status_known
+        ):
+            classification = GatewayWebAuthorizationServicesClassification.OPERATOR_REVIEW_REQUIRED
+            predicate = after.evidence.predicate
+        else:
+            classification = GatewayWebAuthorizationServicesClassification.POSTCONDITION_FAILED
+            predicate = (
+                ProductionWebInvariantPredicate.CLIENT_DOCUMENT_IDENTITY
+                if after.client_uuid != before.client_uuid
+                else after.evidence.predicate
+            )
+        return GatewayWebAuthorizationServicesConvergenceEvidence(
+            classification=classification,
+            predicate=predicate,
+            pre_status=pre_status,
+            action_attempted=True,
+            action_succeeded=self._web_authorization_services_action_succeeded,
+            mutation_outcome_known=not action_error,
+            post_status_known=post_status_known,
+            post_status=post_status if post_status_known else None,
+            fingerprint_equal_known=fingerprint_equal_known,
+            fingerprint_equal=fingerprint_equal,
+            admin_token_grant_attempts=self.admin_token_grant_attempts,
+            admin_request_attempts=self.admin_request_attempts,
+            mutation_count=1,
         )
 
     def _get_admin_document(self, path: str) -> dict[str, Any]:

@@ -2453,8 +2453,12 @@ def verify_transparent_gateway_contract() -> None:
 def verify_gateway_auth_parity_fixture_contract() -> None:
     probe_path = ROOT / "scripts" / "probe_gateway_auth_parity.py"
     classifier_path = ROOT / "scripts" / "classify_gateway_production_invariant.py"
+    convergence_path = ROOT / "scripts" / "converge_gateway_web_authorization_services.py"
     fixture_path = ROOT / "backend" / "src" / "datariver" / "gateway_auth_parity_fixture.py"
     probe_test_path = ROOT / "backend" / "tests" / "unit" / "test_gateway_auth_parity_probe.py"
+    convergence_test_path = (
+        ROOT / "backend" / "tests" / "unit" / "test_gateway_web_authorization_services.py"
+    )
     fixture_test_path = ROOT / "backend" / "tests" / "unit" / "test_gateway_auth_parity_fixture.py"
     platform_test_path = ROOT / "backend" / "tests" / "unit" / "test_platform_workflow.py"
     workflow_path = ROOT / "scripts" / "workflow_update_restart.py"
@@ -2464,8 +2468,10 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     for path in (
         probe_path,
         classifier_path,
+        convergence_path,
         fixture_path,
         probe_test_path,
+        convergence_test_path,
         fixture_test_path,
         platform_test_path,
         workflow_path,
@@ -2475,8 +2481,10 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
 
     probe = probe_path.read_text(encoding="utf-8")
     classifier = classifier_path.read_text(encoding="utf-8")
+    convergence = convergence_path.read_text(encoding="utf-8")
     fixture = fixture_path.read_text(encoding="utf-8")
     probe_tests = probe_test_path.read_text(encoding="utf-8")
+    convergence_tests = convergence_test_path.read_text(encoding="utf-8")
     fixture_tests = fixture_test_path.read_text(encoding="utf-8")
     platform_tests = platform_test_path.read_text(encoding="utf-8")
     workflow = workflow_path.read_text(encoding="utf-8")
@@ -2830,16 +2838,20 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     production_fingerprint = production_identity.split(
         "def _production_contract_fingerprint(self) -> str:", maxsplit=1
     )[1].split("def classify_production_web_invariant(", maxsplit=1)[0]
+    production_snapshot = production_identity.split(
+        "def _production_contract_snapshot(self) -> _ProductionWebContractSnapshot:", maxsplit=1
+    )[1].split("def _production_contract_fingerprint(", maxsplit=1)[0]
     production_diagnostic = production_identity.split(
         "def classify_production_web_invariant(", maxsplit=1
-    )[1].split("def _get_admin_document(", maxsplit=1)[0]
+    )[1].split("def converge_web_authorization_services_disabled(", maxsplit=1)[0]
     if (
         "return _normalize_production_web_contract(" not in classifier_wrapper
         or "self.classify_production_web_invariant()" not in production_fingerprint
-        or "return _classify_production_web_contract(" not in production_diagnostic
-        or '"/admin/realms/datariver/clients"' not in production_diagnostic
+        or "evidence = _classify_production_web_contract(" not in production_snapshot
+        or "return self._production_contract_snapshot().evidence" not in production_diagnostic
+        or '"/admin/realms/datariver/clients"' not in production_snapshot
         or 'f"/admin/realms/datariver/clients/{client_uuid}/protocol-mappers/models"'
-        not in production_diagnostic
+        not in production_snapshot
         or "ProductionWebInvariantPredicate.CLIENT_MATCH_COUNT" not in normalizer
         or normalizer.count("_production_web_boolean_field_statuses(normalized_selected)") != 1
         or "if boolean_missing_fields or boolean_non_bool_fields:" not in normalizer
@@ -2999,8 +3011,8 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         admin_authentication.count("self._request(") != 1
         or admin_authentication.count('"POST"') != 1
         or admin_authentication.count('"/realms/master/protocol/openid-connect/token"') != 1
-        or production_diagnostic.count("self._request(") != 3
-        or production_diagnostic.count('"GET"') != 3
+        or production_snapshot.count("self._request(") != 3
+        or production_snapshot.count('"GET"') != 3
     ):
         raise AssertionError("production Web diagnostic Admin request count has drifted")
     for forbidden in (
@@ -3022,6 +3034,434 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         if forbidden in classifier:
             raise AssertionError(
                 f"production Web classifier mutation boundary drifted: {forbidden}"
+            )
+
+    if convergence_path.stat().st_mode & 0o111 == 0:
+        raise AssertionError("the Web Authorization Services operator must remain executable")
+    convergence_syntax = ast.parse(convergence, filename=convergence_path.as_posix())
+    identity_classes = [
+        node
+        for node in probe_syntax.body
+        if isinstance(node, ast.ClassDef) and node.name == "KeycloakGatewayAuthParityIdentity"
+    ]
+    if len(identity_classes) != 1:
+        raise AssertionError("the fixed Keycloak identity class is missing or duplicated")
+    convergence_status_classes = [
+        node
+        for node in probe_syntax.body
+        if isinstance(node, ast.ClassDef) and node.name == "GatewayWebAuthorizationServicesStatus"
+    ]
+    convergence_classification_classes = [
+        node
+        for node in probe_syntax.body
+        if isinstance(node, ast.ClassDef)
+        and node.name == "GatewayWebAuthorizationServicesClassification"
+    ]
+    if len(convergence_status_classes) != 1 or len(convergence_classification_classes) != 1:
+        raise AssertionError("the Web convergence evidence enums are missing or duplicated")
+
+    def exact_enum_members(node: ast.ClassDef) -> tuple[tuple[str, object], ...]:
+        return tuple(
+            (statement.targets[0].id, ast.literal_eval(statement.value))
+            for statement in node.body
+            if isinstance(statement, ast.Assign)
+            and len(statement.targets) == 1
+            and isinstance(statement.targets[0], ast.Name)
+        )
+
+    if exact_enum_members(convergence_status_classes[0]) != (
+        ("MISSING", "MISSING"),
+        ("FALSE", "FALSE"),
+        ("TRUE", "TRUE"),
+        ("NON_BOOL", "NON_BOOL"),
+        ("UNKNOWN", "UNKNOWN"),
+    ) or exact_enum_members(convergence_classification_classes[0]) != (
+        ("PASS", "PASS"),
+        ("PRECONDITION_FAILED", "PRECONDITION_FAILED"),
+        ("POSTCONDITION_FAILED", "POSTCONDITION_FAILED"),
+        ("OPERATOR_REVIEW_REQUIRED", "OPERATOR_REVIEW_REQUIRED"),
+        ("UNKNOWN", "UNKNOWN"),
+    ):
+        raise AssertionError("the Web convergence evidence enums have drifted")
+    convergence_formatters = [
+        node
+        for node in probe_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "format_gateway_web_authorization_services_evidence"
+    ]
+    if len(convergence_formatters) != 1:
+        raise AssertionError("the Web convergence evidence formatter is missing or duplicated")
+    formatter_prefixes = {
+        node.values[0].value
+        for node in ast.walk(convergence_formatters[0])
+        if isinstance(node, ast.JoinedStr)
+        and node.values
+        and isinstance(node.values[0], ast.Constant)
+        and isinstance(node.values[0].value, str)
+    }
+    if formatter_prefixes != {
+        "classification=",
+        "predicate=",
+        "pre_status=",
+        "action_attempted=",
+        "action_succeeded=",
+        "mutation_outcome_known=",
+        "post_status_known=",
+        "post_status=",
+        "fingerprint_equal_known=",
+        "fingerprint_equal=",
+        "admin_token_grant_attempts=",
+        "admin_request_attempts=",
+        "mutation_count=",
+    } or "retry_count=0" not in {
+        node.value
+        for node in ast.walk(convergence_formatters[0])
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }:
+        raise AssertionError("the Web convergence evidence output allowlist has drifted")
+    convergence_methods = [
+        node
+        for node in identity_classes[0].body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "converge_web_authorization_services_disabled"
+    ]
+    if len(convergence_methods) != 1 or len(convergence_methods[0].args.args) != 1:
+        raise AssertionError("the exact Web convergence method cannot accept operator input")
+    update_calls = [
+        node
+        for node in ast.walk(convergence_methods[0])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "self"
+        and node.func.attr == "_request"
+    ]
+    if len(update_calls) != 1:
+        raise AssertionError("the exact Web convergence method must issue one Admin mutation")
+    update_call = update_calls[0]
+    update_keywords = {keyword.arg: keyword.value for keyword in update_call.keywords}
+    expected_call = update_keywords.get("expected")
+    update_body = update_keywords.get("json")
+    if (
+        len(update_call.args) != 2
+        or ast.literal_eval(update_call.args[0]) != "PUT"
+        or ast.unparse(update_call.args[1])
+        != "f'/admin/realms/datariver/clients/{before.client_uuid}'"
+        or not isinstance(expected_call, ast.Call)
+        or ast.unparse(expected_call) != "frozenset({204})"
+        or not isinstance(update_body, ast.Dict)
+        or len(update_body.keys) != 1
+        or ast.literal_eval(update_body.keys[0]) != "authorizationServicesEnabled"
+        or ast.literal_eval(update_body.values[0]) is not False
+        or set(update_keywords) != {"expected", "json"}
+    ):
+        raise AssertionError("the Web convergence PUT method/path/body/status has drifted")
+    method_source = ast.get_source_segment(probe, convergence_methods[0]) or ""
+    for fragment in (
+        "before = self._production_contract_snapshot()",
+        "before.evidence.predicate is not ProductionWebInvariantPredicate.PASS",
+        "GatewayWebAuthorizationServicesStatus.MISSING",
+        "GatewayWebAuthorizationServicesStatus.FALSE",
+        "self._web_authorization_services_action_attempted = True",
+        "self._web_authorization_services_action_succeeded = True",
+        "except BaseException:",
+        "after = self._production_contract_snapshot()",
+        "after.client_uuid == before.client_uuid",
+        "after.evidence.fingerprint == before.evidence.fingerprint",
+        "action_succeeded=False",
+        "mutation_outcome_known=not action_error",
+        "mutation_count=1",
+    ):
+        if fragment not in method_source:
+            raise AssertionError(f"the exact Web convergence guard is missing: {fragment}")
+    action_marker = method_source.index("self._web_authorization_services_action_attempted = True")
+    action_request = method_source.index("self._request(", action_marker)
+    action_success = method_source.index("self._web_authorization_services_action_succeeded = True")
+    post_proof = method_source.index("after = self._production_contract_snapshot()")
+    if not action_marker < action_request < action_success < post_proof:
+        raise AssertionError("the Web convergence monotonic action-state order has drifted")
+    if method_source.count("after = self._production_contract_snapshot()") != 1:
+        raise AssertionError("the Web convergence may perform only one post-action proof")
+
+    convergence_imports = {
+        node.module
+        for node in convergence_syntax.body
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    if convergence_imports != {
+        "__future__",
+        "docker_capacity",
+        "pathlib",
+        "platform_workflow",
+        "probe_gateway_auth_parity",
+        "workflow_update_restart",
+    }:
+        raise AssertionError("the exact Web convergence operator imports have drifted")
+    convergence_assignments: dict[str, list[ast.expr]] = {}
+    for statement in convergence_syntax.body:
+        if not isinstance(statement, ast.Assign) or len(statement.targets) != 1:
+            continue
+        target = statement.targets[0]
+        if isinstance(target, ast.Name):
+            convergence_assignments.setdefault(target.id, []).append(statement.value)
+    for name, expected in (
+        ("PROFILE", "mac-development"),
+        ("ENVIRONMENT_FILE", ".env.mac-development"),
+        ("KEYCLOAK_CONTAINER", "datariver-next-keycloak-1"),
+        ("KEYCLOAK_IMAGE", "datariver-keycloak:26.7.0"),
+        ("KEYCLOAK_BASE_IMAGE", pinned_keycloak),
+    ):
+        values = convergence_assignments.get(name, [])
+        if len(values) != 1 or ast.literal_eval(values[0]) != expected:
+            raise AssertionError(f"the exact Web convergence {name} literal has drifted")
+    runtime_checks = [
+        node
+        for node in convergence_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_require_pinned_keycloak_runtime"
+    ]
+    if len(runtime_checks) != 1:
+        raise AssertionError("the fixed Web convergence runtime check is missing or duplicated")
+    inspect_arguments = tuple(
+        ast.unparse(call.args[0])
+        for call in ast.walk(runtime_checks[0])
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id == "_inspect_one"
+        and len(call.args) == 1
+        and not call.keywords
+    )
+    if (
+        set(inspect_arguments)
+        != {
+            "('docker', '--context', 'default', 'container', 'inspect', KEYCLOAK_CONTAINER)",
+            "('docker', '--context', 'default', 'image', 'inspect', KEYCLOAK_IMAGE)",
+        }
+        or len(inspect_arguments) != 2
+    ):
+        raise AssertionError("the exact Web convergence Docker inspect argv has drifted")
+    runtime_check_source = ast.get_source_segment(convergence, runtime_checks[0]) or ""
+    if "dockerfile.count(KEYCLOAK_BASE_IMAGE) != 2" not in runtime_check_source:
+        raise AssertionError("the pinned Keycloak source-image check has drifted")
+    for fragment in (
+        "with exclusive_docker_workflow_lock(ROOT):",
+        "_environment_file, keycloak_port = _mac_environment()",
+        "_require_pinned_keycloak_runtime()",
+        "with require_topology_reconciliation_secrets(ROOT) as guard:",
+        "password = _read_gateway_admin_password(guard)",
+        "runtime.identity.converge_web_authorization_services_disabled()",
+        "runtime.identity.release_without_mutation()",
+        "format_gateway_web_authorization_services_evidence(evidence)",
+        "process.terminate()",
+        "process.kill()",
+        "_DOCKER_OUTPUT_MAXIMUM_BYTES - len(output) + 1",
+        "len(sys.argv) == 1",
+        "_FORBIDDEN_OVERRIDE_ENVIRONMENT",
+    ):
+        if fragment not in convergence:
+            raise AssertionError(f"the exact Web convergence operator is missing: {fragment}")
+    run_convergence_functions = [
+        node
+        for node in convergence_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_run_convergence"
+    ]
+    if len(run_convergence_functions) != 1:
+        raise AssertionError("the fixed Web convergence runner is missing or duplicated")
+    run_convergence_source = ast.get_source_segment(convergence, run_convergence_functions[0]) or ""
+    if run_convergence_source.count("guard.revalidate()") != 3:
+        raise AssertionError("the exact8 guard revalidation count has drifted")
+    first_guard_revalidation = run_convergence_source.index("guard.revalidate()")
+    password_read = run_convergence_source.index("password = _read_gateway_admin_password(guard)")
+    second_guard_revalidation = run_convergence_source.index(
+        "guard.revalidate()", first_guard_revalidation + 1
+    )
+    identity_construction = run_convergence_source.index(
+        "runtime.identity = KeycloakGatewayAuthParityIdentity("
+    )
+    convergence_action = run_convergence_source.index(
+        "runtime.identity.converge_web_authorization_services_disabled()"
+    )
+    identity_release = run_convergence_source.index("runtime.identity.release_without_mutation()")
+    final_guard_revalidation = run_convergence_source.rindex("guard.revalidate()")
+    convergence_order = (
+        run_convergence_source.index("with exclusive_docker_workflow_lock(ROOT):"),
+        run_convergence_source.index("_environment_file, keycloak_port = _mac_environment()"),
+        run_convergence_source.index("_require_pinned_keycloak_runtime()"),
+        run_convergence_source.index(
+            "with require_topology_reconciliation_secrets(ROOT) as guard:"
+        ),
+        first_guard_revalidation,
+        password_read,
+        second_guard_revalidation,
+        identity_construction,
+        convergence_action,
+        identity_release,
+        final_guard_revalidation,
+    )
+    if convergence_order != tuple(sorted(convergence_order)):
+        raise AssertionError("the exact Web convergence lock/read/action/release order has drifted")
+    review_functions = [
+        node
+        for node in convergence_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_operator_review_evidence"
+    ]
+    main_functions = [
+        node
+        for node in convergence_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    ]
+    if len(review_functions) != 1 or len(main_functions) != 1:
+        raise AssertionError("the Web convergence fallback functions are missing or duplicated")
+    review_source = ast.get_source_segment(convergence, review_functions[0]) or ""
+    for fragment in (
+        'getattr(identity, "web_authorization_services_action_attempted", False)',
+        'getattr(identity, "web_authorization_services_action_succeeded", False)',
+        "action_attempted = evidence.action_attempted or identity_attempted",
+        "action_succeeded = evidence.action_succeeded or identity_succeeded",
+    ):
+        if fragment not in review_source:
+            raise AssertionError(
+                f"the Web convergence action-preserving fallback is missing: {fragment}"
+            )
+    review_evidence_calls = [
+        node
+        for node in ast.walk(review_functions[0])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "GatewayWebAuthorizationServicesConvergenceEvidence"
+    ]
+    if len(review_evidence_calls) != 1:
+        raise AssertionError("the Web convergence review evidence constructor has drifted")
+    review_keywords = {
+        keyword.arg: ast.unparse(keyword.value) for keyword in review_evidence_calls[0].keywords
+    }
+    if (
+        review_keywords.get("classification")
+        != "GatewayWebAuthorizationServicesClassification.OPERATOR_REVIEW_REQUIRED"
+        or review_keywords.get("predicate") != "ProductionWebInvariantPredicate.UNKNOWN"
+        or review_keywords.get("action_attempted") != "True"
+        or review_keywords.get("action_succeeded") != "action_succeeded"
+        or review_keywords.get("mutation_outcome_known") != "action_succeeded"
+        or review_keywords.get("mutation_count") != "1"
+    ):
+        raise AssertionError("the Web convergence review evidence can erase action state")
+    main_call_names = tuple(
+        call.func.id
+        for call in ast.walk(main_functions[0])
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Name)
+        and call.func.id
+        in {
+            "_ConvergenceRuntimeState",
+            "_run_convergence",
+            "_operator_review_evidence",
+        }
+    )
+    if any(
+        main_call_names.count(name) != 1
+        for name in (
+            "_ConvergenceRuntimeState",
+            "_run_convergence",
+            "_operator_review_evidence",
+        )
+    ):
+        raise AssertionError("the Web convergence outer fallback can erase action evidence")
+    release_finalizers: list[ast.Try] = []
+    for candidate in ast.walk(run_convergence_functions[0]):
+        if not isinstance(candidate, ast.Try):
+            continue
+        body_calls = [call for statement in candidate.body for call in ast.walk(statement)]
+        final_calls = [call for statement in candidate.finalbody for call in ast.walk(statement)]
+        releases_identity = any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "release_without_mutation"
+            for call in body_calls
+        )
+        finally_revalidates = any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "revalidate"
+            for call in final_calls
+        )
+        if releases_identity and finally_revalidates:
+            release_finalizers.append(candidate)
+    if len(release_finalizers) != 1:
+        raise AssertionError(
+            "identity release must unconditionally attempt the final exact8 guard proof"
+        )
+    if not any(
+        isinstance(handler.type, ast.Name) and handler.type.id == "BaseException"
+        for handler in release_finalizers[0].handlers
+    ):
+        raise AssertionError("identity release failure must remain bounded before guard proof")
+    convergence_calls = [
+        node for node in ast.walk(convergence_syntax) if isinstance(node, ast.Call)
+    ]
+    forbidden_convergence_calls = {
+        "write_applied_state",
+        "capture_local_topology",
+        "create_disabled_fixture",
+        "cleanup_client",
+        "cleanup_sessions_and_users",
+    }
+    forbidden_convergence_attributes = {
+        "mkdir",
+        "rmdir",
+        "unlink",
+        "write",
+        "write_bytes",
+        "write_text",
+    }
+    if any(
+        (isinstance(call.func, ast.Name) and call.func.id in forbidden_convergence_calls)
+        or (
+            isinstance(call.func, ast.Attribute)
+            and call.func.attr in forbidden_convergence_attributes
+        )
+        for call in convergence_calls
+    ):
+        raise AssertionError("the exact Web convergence operator cannot mutate local state")
+    for forbidden in (
+        "configure_keycloak_host_dev",
+        "kcadm",
+        '"DELETE"',
+        '"POST"',
+        "create_disabled_fixture",
+        "cleanup_client",
+        "write_applied_state",
+    ):
+        if forbidden in convergence:
+            raise AssertionError(f"the exact Web convergence operator is too broad: {forbidden}")
+    for test_name in (
+        "test_fixed_gateway_web_authorization_services_operator_is_checked_in",
+        "test_operator_holds_lock_context_image_exact8_guard_and_releases_before_output",
+        "test_operator_rejects_exact8_guard_key_drift_before_admin_or_action",
+        "test_operator_rejects_args_and_target_environment_overrides_before_lock_or_admin",
+        "test_operator_context_drift_fails_before_image_secret_or_admin",
+        "test_operator_pins_fixed_keycloak_container_image_and_source_digest",
+        "test_operator_rejects_keycloak_container_or_image_identity_drift",
+        "test_operator_baseexception_releases_identity_guard_and_lock_with_raw0",
+        "test_operator_release_failure_still_revalidates_guard_and_preserves_action",
+        "test_operator_final_guard_revalidation_failure_preserves_action",
+        "test_operator_context_exit_failure_after_action_preserves_evidence",
+        "test_operator_outer_fallback_preserves_monotonic_action_state",
+        "test_operator_source_forbids_broad_keycloak_mutation_and_full_updater",
+    ):
+        if f"def {test_name}(" not in convergence_tests:
+            raise AssertionError(f"the exact Web convergence operator test is missing: {test_name}")
+    for test_name in (
+        "test_exact_web_authorization_services_convergence_uses_one_literal_put",
+        "test_exact_web_authorization_services_convergence_rejects_bad_prestate_before_put",
+        "test_web_authz_convergence_requires_full_pre_fingerprint_before_put",
+        "test_web_authz_convergence_reports_ambiguous_put_and_reads_post_once",
+        "test_web_authz_convergence_preserves_attempt_on_put_baseexception",
+        "test_web_authz_convergence_preserves_attempt_when_post_proof_raises",
+        "test_exact_web_authorization_services_convergence_rejects_postcondition_drift",
+        "test_exact_web_authorization_services_convergence_reports_unavailable_post_proof",
+    ):
+        if f"def {test_name}(" not in probe_tests:
+            raise AssertionError(
+                f"the exact Web convergence transport test is missing: {test_name}"
             )
     for test_name in (
         "test_production_web_normalizer_returns_every_closed_predicate_without_raw_values",
@@ -3187,6 +3627,14 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "CLIENT_AUTHORIZATION_SERVICES_POLICY",
         "Keycloak remains the identity provider",
         "PostgreSQL RLS remain the authorization authorities",
+        "converge_gateway_web_authorization_services.py",
+        "sole\nnarrow existing-client convergence boundary",
+        '`{"authorizationServicesEnabled": false}`',
+        "An unavailable or non-204 action response is ambiguous",
+        "A monotonic action-attempt marker is set before the request",
+        "still attempts every independent final guard",
+        "There is no automatic rollback",
+        "multi-client/realm/identity envelope is not this narrow operator contract",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0113 omits gateway parity term: {fragment}")

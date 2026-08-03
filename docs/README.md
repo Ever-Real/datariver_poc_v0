@@ -122,7 +122,10 @@ real Knowledge/Change Request allow, deny, expiry and membership-revocation pari
 API, APISIX and Web hops. Secrets remain memory-only, cleanup proves zero privilege residual and
 immediate logout remains honestly `OPEN_UNSUPPORTED`. Unauthenticated routing and static status
 evidence are insufficient. It does not establish Ops TLS, trusted-client-IP or production OIDC
-readiness.
+readiness. Its no-argument Mac-only Authorization Services convergence operator can update only the
+already matched `datariver-web` client with one literal false-only field after full pre-invariant
+proof, and requires the same identity and fingerprint after the action; ambiguous outcomes stop
+without retry or broad rollback.
 The isolated PostgreSQL/MinIO host-bind feasibility probe, exact secret transport, rollback anchors
 and noowners evidence boundary are defined by
 [ADR-0114](adr/0114-governed-persistent-data-bind-migration.md). Source acceptance does not

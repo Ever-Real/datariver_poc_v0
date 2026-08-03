@@ -152,6 +152,30 @@ version-bound rule does not authorize a wildcard provider default or Keycloak Au
 Services: Keycloak remains the identity provider, while API membership/session checks and ABAC plus
 PostgreSQL RLS remain the authorization authorities.
 
+The checked-in Mac-only `converge_gateway_web_authorization_services.py` operator is the sole
+narrow existing-client convergence boundary. It accepts no arguments or target overrides, holds
+the exclusive Docker workflow lock, proves the exact AppliedState/environment/eight-secret guard
+and pinned Keycloak 26.7 container/image identity, and uses the held administrator-password
+descriptor. The shared full client-and-mapper normalizer must pass before mutation with the raw
+wire status exactly `MISSING` or `FALSE`. The sole permitted mutation attempt is one Admin `PUT` to
+the already resolved exact `datariver-web` UUID with the complete literal body
+`{"authorizationServicesEnabled": false}`; create, delete, realm, mapper, redirect, origin, theme,
+session, secret and other-client writes remain forbidden. A second full read must prove the same
+UUID/client, `MISSING` or `FALSE`, and an unchanged private fingerprint. The operator emits only a
+closed bounded result, action/request counts and known/unknown booleans; passwords, tokens, UUIDs,
+fingerprints, URLs, bodies and provider values remain private.
+
+An unavailable or non-204 action response is ambiguous even when the bounded read-only postcheck
+still sees the desired invariant. It is reported as operator review required, never retried or
+inferred successful. A monotonic action-attempt marker is set before the request; any later request,
+postcheck, identity-release, secret-guard or lock-finalization defect preserves that action evidence,
+downgrades the result to operator review required and still attempts every independent final guard.
+There is no automatic rollback: the accepted prestate and desired state are
+both semantically false in pinned Keycloak 26.7, while a compensating full-client write would be a
+broader and less safe mutation and cannot recreate a distinct omitted-false wire representation.
+The general `configure_keycloak_host_dev.sh` bootstrap remains valid for its canonical authorized
+workflow, but its multi-client/realm/identity envelope is not this narrow operator contract.
+
 The operation then executes real HTTP requests for Knowledge Registry and Change Request through
 the direct loopback API, loopback APISIX and Web proxy. It requires identical bounded status,
 response-header and body-digest evidence for authorized `200`, explicitly denied `403`, malformed

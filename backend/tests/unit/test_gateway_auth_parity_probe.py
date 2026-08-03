@@ -1639,6 +1639,350 @@ def test_production_web_admin_reads_are_token_then_search_document_mapper_and_sh
     identity.release_without_mutation()
 
 
+def _authorization_services_convergence_identity(
+    *,
+    pre_status: str,
+    post_status: str,
+    action_error: bool = False,
+    action_failure: BaseException | None = None,
+    post_drift: bool = False,
+    pre_other_missing: bool = False,
+    post_identity_drift: bool = False,
+    post_failure: BaseException | None = None,
+    post_unavailable: bool = False,
+) -> tuple[Any, list[tuple[str, str]], list[dict[str, object]]]:
+    web_document, mapper_documents = _production_web_contract()
+    requested: list[tuple[str, str]] = []
+    request_bodies: list[dict[str, object]] = []
+    action_seen = False
+
+    def selected_document(status: str) -> dict[str, object]:
+        document = dict(web_document)
+        if status == "MISSING":
+            document.pop("authorizationServicesEnabled")
+        elif status == "FALSE":
+            document["authorizationServicesEnabled"] = False
+        elif status == "TRUE":
+            document["authorizationServicesEnabled"] = True
+        elif status == "NON_BOOL":
+            document["authorizationServicesEnabled"] = "provider-raw-secret"
+        else:
+            raise AssertionError("unhandled test status")
+        if action_seen and post_drift:
+            document["name"] = "provider-post-drift-secret"
+        if not action_seen and pre_other_missing:
+            document.pop("bearerOnly")
+        if action_seen and post_identity_drift:
+            document["id"] = "10000000-0000-4000-8000-000000000090"
+        return document
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal action_seen
+        requested.append((request.method, request.url.path))
+        if request.url.path.endswith("/protocol/openid-connect/token"):
+            return httpx.Response(200, json={"access_token": "admin-token-secret-sentinel"})
+        if request.method == "PUT":
+            request_bodies.append(cast(dict[str, object], json.loads(request.content)))
+            action_seen = True
+            if action_failure is not None:
+                raise action_failure
+            if action_error:
+                raise httpx.ReadTimeout("provider-timeout-secret", request=request)
+            return httpx.Response(204)
+        if request.url.path == "/admin/realms/datariver/clients":
+            if action_seen and post_failure is not None:
+                raise post_failure
+            if action_seen and post_unavailable:
+                raise httpx.ReadTimeout("provider-post-read-secret", request=request)
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "id": (
+                            "10000000-0000-4000-8000-000000000090"
+                            if action_seen and post_identity_drift
+                            else web_document["id"]
+                        ),
+                        "clientId": "datariver-web",
+                    }
+                ],
+            )
+        if request.url.path.endswith("/protocol-mappers/models"):
+            return httpx.Response(200, json=mapper_documents)
+        return httpx.Response(
+            200,
+            json=selected_document(post_status if action_seen else pre_status),
+        )
+
+    identity = probe.KeycloakGatewayAuthParityIdentity(
+        base_url="http://127.0.0.1:8081",
+        admin_username="datariver-bootstrap",
+        admin_password="admin-secret-sentinel",
+    )
+    cast(Any, identity)._client.close()
+    cast(Any, identity)._client = httpx.Client(
+        base_url="http://127.0.0.1:8081",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+    return identity, requested, request_bodies
+
+
+@pytest.mark.parametrize("pre_status", ("MISSING", "FALSE"))
+@pytest.mark.parametrize("post_status", ("MISSING", "FALSE"))
+def test_exact_web_authorization_services_convergence_uses_one_literal_put(
+    pre_status: str,
+    post_status: str,
+) -> None:
+    identity, requested, request_bodies = _authorization_services_convergence_identity(
+        pre_status=pre_status,
+        post_status=post_status,
+    )
+
+    evidence = cast(Any, identity).converge_web_authorization_services_disabled()
+    rendered = probe.format_gateway_web_authorization_services_evidence(evidence)
+
+    client_uuid = "10000000-0000-4000-8000-000000000080"
+    assert evidence.classification is probe.GatewayWebAuthorizationServicesClassification.PASS
+    assert evidence.pre_status.name == pre_status
+    assert evidence.post_status is not None and evidence.post_status.name == post_status
+    assert evidence.action_attempted is True
+    assert evidence.action_succeeded is True
+    assert evidence.mutation_outcome_known is True
+    assert evidence.fingerprint_equal is True
+    assert evidence.admin_token_grant_attempts == 1
+    assert evidence.admin_request_attempts == 7
+    assert evidence.mutation_count == 1
+    assert evidence.retry_count == 0
+    assert requested == [
+        ("POST", "/realms/master/protocol/openid-connect/token"),
+        ("GET", "/admin/realms/datariver/clients"),
+        ("GET", f"/admin/realms/datariver/clients/{client_uuid}"),
+        ("GET", f"/admin/realms/datariver/clients/{client_uuid}/protocol-mappers/models"),
+        ("PUT", f"/admin/realms/datariver/clients/{client_uuid}"),
+        ("GET", "/admin/realms/datariver/clients"),
+        ("GET", f"/admin/realms/datariver/clients/{client_uuid}"),
+        ("GET", f"/admin/realms/datariver/clients/{client_uuid}/protocol-mappers/models"),
+    ]
+    assert request_bodies == [{"authorizationServicesEnabled": False}]
+    for forbidden in (
+        client_uuid,
+        "admin-token-secret-sentinel",
+        "admin-secret-sentinel",
+        "authorizationServicesEnabled",
+        "http://",
+        "sha256:",
+    ):
+        assert forbidden not in rendered
+    identity.release_without_mutation()
+
+
+@pytest.mark.parametrize("pre_status", ("TRUE", "NON_BOOL"))
+def test_exact_web_authorization_services_convergence_rejects_bad_prestate_before_put(
+    pre_status: str,
+) -> None:
+    identity, requested, request_bodies = _authorization_services_convergence_identity(
+        pre_status=pre_status,
+        post_status="FALSE",
+    )
+
+    evidence = cast(Any, identity).converge_web_authorization_services_disabled()
+
+    assert (
+        evidence.classification
+        is probe.GatewayWebAuthorizationServicesClassification.PRECONDITION_FAILED
+    )
+    assert evidence.pre_status.name == pre_status
+    assert evidence.action_attempted is False
+    assert evidence.mutation_count == 0
+    assert request_bodies == []
+    assert all(method != "PUT" for method, _path in requested)
+    identity.release_without_mutation()
+
+
+def test_web_authz_convergence_requires_full_pre_fingerprint_before_put() -> None:
+    identity, requested, request_bodies = _authorization_services_convergence_identity(
+        pre_status="MISSING",
+        post_status="FALSE",
+        pre_other_missing=True,
+    )
+
+    evidence = cast(Any, identity).converge_web_authorization_services_disabled()
+
+    assert (
+        evidence.classification
+        is probe.GatewayWebAuthorizationServicesClassification.PRECONDITION_FAILED
+    )
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE
+    assert evidence.pre_status is probe.GatewayWebAuthorizationServicesStatus.MISSING
+    assert evidence.action_attempted is False
+    assert request_bodies == []
+    assert all(method != "PUT" for method, _path in requested)
+    identity.release_without_mutation()
+
+
+def test_web_authz_convergence_reports_ambiguous_put_and_reads_post_once() -> None:
+    identity, requested, request_bodies = _authorization_services_convergence_identity(
+        pre_status="MISSING",
+        post_status="MISSING",
+        action_error=True,
+    )
+
+    evidence = cast(Any, identity).converge_web_authorization_services_disabled()
+    rendered = probe.format_gateway_web_authorization_services_evidence(evidence)
+
+    assert (
+        evidence.classification
+        is probe.GatewayWebAuthorizationServicesClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.action_attempted is True
+    assert evidence.action_succeeded is False
+    assert evidence.mutation_outcome_known is False
+    assert evidence.post_status is probe.GatewayWebAuthorizationServicesStatus.MISSING
+    assert evidence.fingerprint_equal is True
+    assert evidence.admin_request_attempts == 7
+    assert evidence.mutation_count == 1
+    assert request_bodies == [{"authorizationServicesEnabled": False}]
+    assert sum(method == "PUT" for method, _path in requested) == 1
+    assert requested[-3:][0] == ("GET", "/admin/realms/datariver/clients")
+    assert "provider-timeout-secret" not in rendered
+    identity.release_without_mutation()
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (RuntimeError("raw-put-runtime-sentinel"), KeyboardInterrupt()),
+)
+def test_web_authz_convergence_preserves_attempt_on_put_baseexception(
+    failure: BaseException,
+) -> None:
+    identity, requested, request_bodies = _authorization_services_convergence_identity(
+        pre_status="MISSING",
+        post_status="MISSING",
+        action_failure=failure,
+    )
+
+    evidence = cast(Any, identity).converge_web_authorization_services_disabled()
+    rendered = probe.format_gateway_web_authorization_services_evidence(evidence)
+
+    assert (
+        evidence.classification
+        is probe.GatewayWebAuthorizationServicesClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.action_attempted is True
+    assert evidence.action_succeeded is False
+    assert evidence.mutation_outcome_known is False
+    assert evidence.mutation_count == 1
+    assert evidence.retry_count == 0
+    assert sum(method == "PUT" for method, _path in requested) == 1
+    assert sum(path == "/admin/realms/datariver/clients" for _method, path in requested) == 2
+    assert request_bodies == [{"authorizationServicesEnabled": False}]
+    assert "raw-put-runtime-sentinel" not in rendered
+    identity.release_without_mutation()
+
+
+@pytest.mark.parametrize(
+    ("action_failure", "post_failure", "action_succeeded", "mutation_known"),
+    (
+        (None, RuntimeError("raw-post-runtime-sentinel"), True, True),
+        (
+            RuntimeError("raw-put-runtime-sentinel"),
+            KeyboardInterrupt(),
+            False,
+            False,
+        ),
+    ),
+)
+def test_web_authz_convergence_preserves_attempt_when_post_proof_raises(
+    action_failure: BaseException | None,
+    post_failure: BaseException,
+    action_succeeded: bool,
+    mutation_known: bool,
+) -> None:
+    identity, requested, request_bodies = _authorization_services_convergence_identity(
+        pre_status="MISSING",
+        post_status="MISSING",
+        action_failure=action_failure,
+        post_failure=post_failure,
+    )
+
+    evidence = cast(Any, identity).converge_web_authorization_services_disabled()
+    rendered = probe.format_gateway_web_authorization_services_evidence(evidence)
+
+    assert (
+        evidence.classification
+        is probe.GatewayWebAuthorizationServicesClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.action_attempted is True
+    assert evidence.action_succeeded is action_succeeded
+    assert evidence.mutation_outcome_known is mutation_known
+    assert evidence.post_status_known is False
+    assert evidence.fingerprint_equal_known is False
+    assert evidence.mutation_count == 1
+    assert evidence.retry_count == 0
+    assert sum(method == "PUT" for method, _path in requested) == 1
+    assert sum(path == "/admin/realms/datariver/clients" for _method, path in requested) == 2
+    assert request_bodies == [{"authorizationServicesEnabled": False}]
+    assert "raw-" not in rendered
+    identity.release_without_mutation()
+
+
+@pytest.mark.parametrize(
+    ("post_status", "post_drift", "post_identity_drift"),
+    (
+        ("TRUE", False, False),
+        ("NON_BOOL", False, False),
+        ("FALSE", True, False),
+        ("FALSE", False, True),
+    ),
+)
+def test_exact_web_authorization_services_convergence_rejects_postcondition_drift(
+    post_status: str,
+    post_drift: bool,
+    post_identity_drift: bool,
+) -> None:
+    identity, _requested, request_bodies = _authorization_services_convergence_identity(
+        pre_status="MISSING",
+        post_status=post_status,
+        post_drift=post_drift,
+        post_identity_drift=post_identity_drift,
+    )
+
+    evidence = cast(Any, identity).converge_web_authorization_services_disabled()
+
+    assert (
+        evidence.classification
+        is probe.GatewayWebAuthorizationServicesClassification.POSTCONDITION_FAILED
+    )
+    assert evidence.action_attempted is True
+    assert evidence.action_succeeded is True
+    assert evidence.mutation_outcome_known is True
+    assert request_bodies == [{"authorizationServicesEnabled": False}]
+    identity.release_without_mutation()
+
+
+def test_exact_web_authorization_services_convergence_reports_unavailable_post_proof() -> None:
+    identity, requested, request_bodies = _authorization_services_convergence_identity(
+        pre_status="MISSING",
+        post_status="MISSING",
+        post_unavailable=True,
+    )
+
+    evidence = cast(Any, identity).converge_web_authorization_services_disabled()
+
+    assert (
+        evidence.classification
+        is probe.GatewayWebAuthorizationServicesClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.action_succeeded is True
+    assert evidence.post_status_known is False
+    assert evidence.fingerprint_equal_known is False
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.ADMIN_BOUNDARY_UNAVAILABLE
+    assert request_bodies == [{"authorizationServicesEnabled": False}]
+    assert sum(method == "PUT" for method, _path in requested) == 1
+    identity.release_without_mutation()
+
+
 def test_production_web_boolean_subpredicate_uses_one_full_document_and_no_mapper_read() -> None:
     web_document, _mapper_documents = _production_web_contract()
     web_document.pop("bearerOnly")
