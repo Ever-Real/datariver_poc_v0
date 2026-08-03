@@ -44,6 +44,7 @@ _BUILDER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
 _OFFICIAL_BUILDX_DRIVER_KINDS = (
     "docker",
     "docker-container",
+    "cloud",
     "kubernetes",
     "remote",
 )
@@ -185,6 +186,7 @@ class DockerBuilderSelectionPlanRecorder:
 class PriorDriverPredicate(StrEnum):
     """Closed, value-free classification of the plan's current prior driver."""
 
+    CLOUD = "CLOUD"
     KUBERNETES = "KUBERNETES"
     REMOTE = "REMOTE"
     UNRECOGNIZED = "UNRECOGNIZED"
@@ -1161,6 +1163,8 @@ def require_docker_builder_selection_plan(
         )
     if prior.driver == "docker-container":
         prior_driver.record(PriorDriverPredicate.PASS)
+    elif prior.driver == "cloud":
+        prior_driver.record(PriorDriverPredicate.CLOUD)
     elif prior.driver == "kubernetes":
         prior_driver.record(PriorDriverPredicate.KUBERNETES)
     elif prior.driver == "remote":

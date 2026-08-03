@@ -1561,6 +1561,7 @@ def test_selection_plan_recorder_preserves_nested_expected_transition() -> None:
     assert builder_recorder.predicate is capacity.BuilderSelectionPredicate.DRIVER_NOT_DOCKER
     assert node_recorder.predicate is capacity.NodeSchemaPredicate.PASS
     assert tuple(capacity.PriorDriverPredicate) == (
+        capacity.PriorDriverPredicate.CLOUD,
         capacity.PriorDriverPredicate.KUBERNETES,
         capacity.PriorDriverPredicate.REMOTE,
         capacity.PriorDriverPredicate.UNRECOGNIZED,
@@ -1570,6 +1571,7 @@ def test_selection_plan_recorder_preserves_nested_expected_transition() -> None:
     assert capacity._OFFICIAL_BUILDX_DRIVER_KINDS == (
         "docker",
         "docker-container",
+        "cloud",
         "kubernetes",
         "remote",
     )
@@ -1579,6 +1581,7 @@ def test_selection_plan_recorder_preserves_nested_expected_transition() -> None:
 @pytest.mark.parametrize(
     ("driver", "expected"),
     (
+        ("cloud", "CLOUD"),
         ("kubernetes", "KUBERNETES"),
         ("remote", "REMOTE"),
         ("future-driver-raw-sentinel", "UNRECOGNIZED"),

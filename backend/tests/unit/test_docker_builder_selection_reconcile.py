@@ -1155,6 +1155,7 @@ def test_read_only_prestate_diagnostic_classifies_capture_and_reproof(
 @pytest.mark.parametrize(
     ("driver", "expected"),
     (
+        ("cloud", "CLOUD"),
         ("kubernetes", "KUBERNETES"),
         ("remote", "REMOTE"),
         ("future-driver-raw-sentinel", "UNRECOGNIZED"),

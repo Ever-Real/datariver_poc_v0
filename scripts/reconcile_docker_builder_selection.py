@@ -133,6 +133,7 @@ def _prestate_nested_evidence_is_consistent(
             and node is NodeSchemaPredicate.PASS
             and prior_driver
             in {
+                PriorDriverPredicate.CLOUD,
                 PriorDriverPredicate.KUBERNETES,
                 PriorDriverPredicate.REMOTE,
                 PriorDriverPredicate.UNRECOGNIZED,

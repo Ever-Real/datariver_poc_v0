@@ -1884,7 +1884,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ]
     if len(official_driver_assignments) != 1 or ast.literal_eval(
         official_driver_assignments[0].value
-    ) != ("docker", "docker-container", "kubernetes", "remote"):
+    ) != ("docker", "docker-container", "cloud", "kubernetes", "remote"):
         raise AssertionError("the official Buildx driver vocabulary has drifted")
     plan_recorder = capacity.split("class DockerBuilderSelectionPlanRecorder:", maxsplit=1)[
         1
@@ -1903,6 +1903,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
     expected_prior_driver_predicates = tuple(
         (value, value)
         for value in (
+            "CLOUD",
             "KUBERNETES",
             "REMOTE",
             "UNRECOGNIZED",
@@ -2375,7 +2376,15 @@ def verify_governed_docker_build_capacity_contract() -> None:
         or not isinstance(docker_container_branch.orelse[0], ast.If)
     ):
         raise AssertionError("exact docker-container must record prior-driver PASS")
-    kubernetes_branch = docker_container_branch.orelse[0]
+    cloud_branch = docker_container_branch.orelse[0]
+    if (
+        not prior_driver_condition(cloud_branch, "cloud")
+        or prior_driver_records(cloud_branch.body) != ("CLOUD",)
+        or len(cloud_branch.orelse) != 1
+        or not isinstance(cloud_branch.orelse[0], ast.If)
+    ):
+        raise AssertionError("exact cloud must record its closed prior-driver subtype")
+    kubernetes_branch = cloud_branch.orelse[0]
     if (
         not prior_driver_condition(kubernetes_branch, "kubernetes")
         or prior_driver_records(kubernetes_branch.body) != ("KUBERNETES",)
@@ -2461,6 +2470,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
     )[1].split("def format_builder_selection_prestate_diagnostic(", maxsplit=1)[0]
     for fragment in (
         "plan is DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER",
+        "PriorDriverPredicate.CLOUD",
         "PriorDriverPredicate.KUBERNETES",
         "PriorDriverPredicate.REMOTE",
         "PriorDriverPredicate.UNRECOGNIZED",
@@ -2977,9 +2987,6 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "`SEC-DOCKER-BUILDER-SELECT-001`",
         "does not make `docker-container` acceptable",
         "Plan construction advances a separate closed, value-free prestate recorder",
-        "official\n[`docker`, `docker-container`, `kubernetes`, and `remote` driver vocabulary]",
-        "only exact `docker-container` records `PASS`",
-        "does not expose the\nprovider string, accept a new driver, normalize a spelling",
         "initial `CAPTURE` or immediate `REPROOF`",
         "`--diagnostic-phase BUILDER_SELECTION_PRESTATE`",
         "stops before active-build history",
@@ -2987,11 +2994,39 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0112 omits governed capacity term: {fragment}")
+    compact_adr = " ".join(adr.split())
+    cloud_authority_chain = (
+        (
+            "official core [`docker`, `docker-container`, `kubernetes`, and `remote` driver "
+            "vocabulary](https://docs.docker.com/build/builders/drivers/)"
+        ),
+        (
+            "plus the exact [`cloud` driver documented by Docker Build Cloud]"
+            "(https://docs.docker.com/build-cloud/setup/)"
+        ),
+        (
+            "and its [multi-platform example]"
+            "(https://docs.docker.com/build/building/multi-platform/)"
+        ),
+        "`CLOUD`, `KUBERNETES`, `REMOTE`, or `UNRECOGNIZED`",
+        "only exact `docker-container` records `PASS`",
+        (
+            "does not expose the provider string, accept a new driver, normalize a spelling or "
+            "claim that the current host binary is pinned to a particular Buildx version"
+        ),
+    )
+    if any(fragment not in compact_adr for fragment in cloud_authority_chain):
+        raise AssertionError("ADR-0112 omits exact Docker Build Cloud authority or guardrails")
+    cloud_authority_positions = tuple(
+        compact_adr.index(fragment) for fragment in cloud_authority_chain
+    )
+    if cloud_authority_positions != tuple(sorted(cloud_authority_positions)):
+        raise AssertionError("ADR-0112 Docker Build Cloud authority order has drifted")
     docs_index = (ROOT / "docs" / "README.md").read_text(encoding="utf-8")
     if (
         "fixed `BUILDER_SELECTION_PRESTATE` phase" not in docs_index
         or "cannot select a builder or authorize a host change" not in docs_index
-        or "closed\nprior-driver evidence distinguishes Kubernetes, remote and unrecognized drivers"
+        or "closed\nprior-driver evidence distinguishes Docker Build Cloud, Kubernetes, remote"
         not in docs_index
     ):
         raise AssertionError("the controlled index omits the read-only builder prestate phase")
