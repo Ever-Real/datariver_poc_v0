@@ -12,8 +12,9 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import Enum
 from html.parser import HTMLParser
-from typing import Any, Literal, Protocol, Self
+from typing import Any, Literal, NoReturn, Protocol, Self
 from urllib.parse import parse_qs, urljoin, urlsplit
 from uuid import UUID
 
@@ -79,6 +80,85 @@ _MAXIMUM_PRODUCTION_MAPPERS = 64
 
 class GatewayAuthParityError(RuntimeError):
     """Fixed operator-safe failure with no credential or provider payload."""
+
+
+class ProductionWebInvariantPredicate(str, Enum):
+    """Closed, value-free classification for the fixed production Web client."""
+
+    CLIENT_MATCH_COUNT = "CLIENT_MATCH_COUNT"
+    CLIENT_SEARCH_SHAPE = "CLIENT_SEARCH_SHAPE"
+    CLIENT_UUID = "CLIENT_UUID"
+    CLIENT_DOCUMENT_IDENTITY = "CLIENT_DOCUMENT_IDENTITY"
+    CLIENT_STRING_SHAPE = "CLIENT_STRING_SHAPE"
+    CLIENT_BOOLEAN_SHAPE = "CLIENT_BOOLEAN_SHAPE"
+    CLIENT_OPTIONAL_URL_SHAPE = "CLIENT_OPTIONAL_URL_SHAPE"
+    CLIENT_LIST_SHAPE = "CLIENT_LIST_SHAPE"
+    CLIENT_MAPPING_SHAPE = "CLIENT_MAPPING_SHAPE"
+    MAPPER_INVENTORY_SHAPE = "MAPPER_INVENTORY_SHAPE"
+    MAPPER_COUNT = "MAPPER_COUNT"
+    MAPPER_UUID = "MAPPER_UUID"
+    MAPPER_NAME = "MAPPER_NAME"
+    MAPPER_PROTOCOL = "MAPPER_PROTOCOL"
+    MAPPER_TYPE = "MAPPER_TYPE"
+    MAPPER_CONSENT_SHAPE = "MAPPER_CONSENT_SHAPE"
+    MAPPER_ID_DUPLICATE = "MAPPER_ID_DUPLICATE"
+    MAPPER_NAME_DUPLICATE = "MAPPER_NAME_DUPLICATE"
+    MAPPER_CONFIG_SHAPE = "MAPPER_CONFIG_SHAPE"
+    ADMIN_BOUNDARY_UNAVAILABLE = "ADMIN_BOUNDARY_UNAVAILABLE"
+    UNKNOWN = "UNKNOWN"
+    PASS = "PASS"  # noqa: S105 - closed diagnostic predicate, not a credential.
+
+
+@dataclass(frozen=True, slots=True)
+class _ProductionWebInvariantEvidence:
+    predicate: ProductionWebInvariantPredicate
+    fingerprint: str | None
+    client_match_count: int | None
+    mapper_count: int | None
+
+    def __post_init__(self) -> None:
+        if (self.client_match_count is not None and not 0 <= self.client_match_count <= 2) or (
+            self.mapper_count is not None and not 0 <= self.mapper_count <= 64
+        ):
+            raise ValueError("GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID")
+        fingerprint_valid = self.fingerprint is not None and (
+            len(self.fingerprint) == 64
+            and all(character in "0123456789abcdef" for character in self.fingerprint)
+        )
+        if (self.predicate is ProductionWebInvariantPredicate.PASS) != fingerprint_valid:
+            raise ValueError("GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID")
+
+
+class _ProductionWebInvariantFailure(Exception):
+    def __init__(
+        self,
+        predicate: ProductionWebInvariantPredicate,
+        *,
+        client_match_count: int | None = None,
+        mapper_count: int | None = None,
+    ) -> None:
+        self.predicate = predicate
+        self.client_match_count = client_match_count
+        self.mapper_count = mapper_count
+        super().__init__(predicate.value)
+
+
+def format_production_web_invariant_evidence(
+    evidence: _ProductionWebInvariantEvidence,
+) -> str:
+    """Render the sole bounded diagnostic line; no provider value is accepted."""
+
+    fields = [
+        f"predicate={evidence.predicate.value}",
+        f"client_match_count_known={str(evidence.client_match_count is not None).lower()}",
+    ]
+    if evidence.client_match_count is not None:
+        fields.append(f"client_match_count={evidence.client_match_count}")
+    fields.append(f"mapper_count_known={str(evidence.mapper_count is not None).lower()}")
+    if evidence.mapper_count is not None:
+        fields.append(f"mapper_count={evidence.mapper_count}")
+    fields.extend(("mutation_count=0", "retry_count=0"))
+    return " ".join(fields)
 
 
 _FIRST_FAILURE_CLASSIFICATIONS = frozenset(
@@ -392,18 +472,42 @@ def _genuine_expiry_reached(*, expires_at: int, observed_at: int) -> bool:
     return observed_at > expires_at + OIDC_VERIFIER_LEEWAY_SECONDS
 
 
-def _normalized_unique_strings(value: object) -> tuple[str, ...]:
+def _production_failure(
+    predicate: ProductionWebInvariantPredicate,
+    *,
+    client_match_count: int | None,
+    mapper_count: int | None = None,
+) -> NoReturn:
+    raise _ProductionWebInvariantFailure(
+        predicate,
+        client_match_count=client_match_count,
+        mapper_count=mapper_count,
+    )
+
+
+def _normalized_unique_strings(
+    value: object,
+    *,
+    predicate: ProductionWebInvariantPredicate,
+    client_match_count: int,
+) -> tuple[str, ...]:
     if (
         not isinstance(value, list)
         or len(value) > 64
         or not all(isinstance(item, str) and item for item in value)
         or len(set(value)) != len(value)
     ):
-        raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED")
+        _production_failure(predicate, client_match_count=client_match_count)
     return tuple(sorted(value))
 
 
-def _normalized_string_mapping(value: object) -> tuple[tuple[str, str], ...]:
+def _normalized_string_mapping(
+    value: object,
+    *,
+    predicate: ProductionWebInvariantPredicate,
+    client_match_count: int,
+    mapper_count: int | None = None,
+) -> tuple[tuple[str, str], ...]:
     if (
         not isinstance(value, dict)
         or len(value) > 64
@@ -411,8 +515,267 @@ def _normalized_string_mapping(value: object) -> tuple[tuple[str, str], ...]:
             isinstance(key, str) and key and isinstance(item, str) for key, item in value.items()
         )
     ):
-        raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED")
+        _production_failure(
+            predicate,
+            client_match_count=client_match_count,
+            mapper_count=mapper_count,
+        )
     return tuple(sorted(value.items()))
+
+
+def _production_response_document(
+    reader: Callable[[], httpx.Response],
+    *,
+    shape_predicate: ProductionWebInvariantPredicate,
+    client_match_count: int | None,
+    mapper_count: int | None = None,
+) -> object:
+    try:
+        response = reader()
+    except GatewayAuthParityError:
+        _production_failure(
+            ProductionWebInvariantPredicate.ADMIN_BOUNDARY_UNAVAILABLE,
+            client_match_count=client_match_count,
+            mapper_count=mapper_count,
+        )
+    try:
+        return response.json()
+    except ValueError:
+        _production_failure(
+            shape_predicate,
+            client_match_count=client_match_count,
+            mapper_count=mapper_count,
+        )
+
+
+def _normalize_production_web_contract(
+    *,
+    client_search: Callable[[], httpx.Response],
+    client_document: Callable[[str], httpx.Response],
+    mapper_inventory: Callable[[str], httpx.Response],
+) -> _ProductionWebInvariantEvidence:
+    """Apply the one ordered production-Web contract used by runtime and diagnosis."""
+
+    search_document = _production_response_document(
+        client_search,
+        shape_predicate=ProductionWebInvariantPredicate.CLIENT_SEARCH_SHAPE,
+        client_match_count=None,
+    )
+    if not isinstance(search_document, list) or len(search_document) > 2:
+        _production_failure(
+            ProductionWebInvariantPredicate.CLIENT_SEARCH_SHAPE,
+            client_match_count=None,
+        )
+    matches = [
+        item
+        for item in search_document
+        if isinstance(item, dict) and item.get("clientId") == "datariver-web"
+    ]
+    client_match_count = len(matches)
+    if client_match_count != 1:
+        _production_failure(
+            ProductionWebInvariantPredicate.CLIENT_MATCH_COUNT,
+            client_match_count=client_match_count,
+        )
+    try:
+        client_uuid = str(UUID(matches[0].get("id")))
+    except (TypeError, ValueError):
+        _production_failure(
+            ProductionWebInvariantPredicate.CLIENT_UUID,
+            client_match_count=client_match_count,
+        )
+
+    selected = _production_response_document(
+        lambda: client_document(client_uuid),
+        shape_predicate=ProductionWebInvariantPredicate.CLIENT_DOCUMENT_IDENTITY,
+        client_match_count=client_match_count,
+    )
+    if (
+        not isinstance(selected, dict)
+        or selected.get("id") != client_uuid
+        or selected.get("clientId") != "datariver-web"
+        or type(selected.get("notBefore")) is not int
+    ):
+        _production_failure(
+            ProductionWebInvariantPredicate.CLIENT_DOCUMENT_IDENTITY,
+            client_match_count=client_match_count,
+        )
+    if any(
+        not isinstance(selected.get(field), str) or not selected[field]
+        for field in _PRODUCTION_WEB_STRING_FIELDS
+    ):
+        _production_failure(
+            ProductionWebInvariantPredicate.CLIENT_STRING_SHAPE,
+            client_match_count=client_match_count,
+        )
+    if any(type(selected.get(field)) is not bool for field in _PRODUCTION_WEB_BOOLEAN_FIELDS):
+        _production_failure(
+            ProductionWebInvariantPredicate.CLIENT_BOOLEAN_SHAPE,
+            client_match_count=client_match_count,
+        )
+    if any(
+        selected.get(field) is not None and not isinstance(selected[field], str)
+        for field in _PRODUCTION_WEB_OPTIONAL_URL_FIELDS
+    ):
+        _production_failure(
+            ProductionWebInvariantPredicate.CLIENT_OPTIONAL_URL_SHAPE,
+            client_match_count=client_match_count,
+        )
+
+    normalized_lists = {
+        field: _normalized_unique_strings(
+            selected.get(field),
+            predicate=ProductionWebInvariantPredicate.CLIENT_LIST_SHAPE,
+            client_match_count=client_match_count,
+        )
+        for field in _PRODUCTION_WEB_LIST_FIELDS
+    }
+    flow_overrides = _normalized_string_mapping(
+        selected.get("authenticationFlowBindingOverrides"),
+        predicate=ProductionWebInvariantPredicate.CLIENT_MAPPING_SHAPE,
+        client_match_count=client_match_count,
+    )
+    attributes = _normalized_string_mapping(
+        selected.get("attributes"),
+        predicate=ProductionWebInvariantPredicate.CLIENT_MAPPING_SHAPE,
+        client_match_count=client_match_count,
+    )
+
+    mapper_document = _production_response_document(
+        lambda: mapper_inventory(client_uuid),
+        shape_predicate=ProductionWebInvariantPredicate.MAPPER_INVENTORY_SHAPE,
+        client_match_count=client_match_count,
+    )
+    if not isinstance(mapper_document, list) or not all(
+        isinstance(item, dict) for item in mapper_document
+    ):
+        _production_failure(
+            ProductionWebInvariantPredicate.MAPPER_INVENTORY_SHAPE,
+            client_match_count=client_match_count,
+        )
+    if len(mapper_document) > _MAXIMUM_PRODUCTION_MAPPERS:
+        _production_failure(
+            ProductionWebInvariantPredicate.MAPPER_COUNT,
+            client_match_count=client_match_count,
+        )
+    mapper_count = len(mapper_document)
+    normalized_mappers: list[dict[str, object]] = []
+    mapper_ids: set[str] = set()
+    mapper_names: set[str] = set()
+    for mapper in mapper_document:
+        try:
+            mapper_id = str(UUID(mapper.get("id")))
+        except (TypeError, ValueError):
+            _production_failure(
+                ProductionWebInvariantPredicate.MAPPER_UUID,
+                client_match_count=client_match_count,
+                mapper_count=mapper_count,
+            )
+        name = mapper.get("name")
+        protocol = mapper.get("protocol")
+        protocol_mapper = mapper.get("protocolMapper")
+        consent_required = mapper.get("consentRequired")
+        if not isinstance(name, str) or not name:
+            _production_failure(
+                ProductionWebInvariantPredicate.MAPPER_NAME,
+                client_match_count=client_match_count,
+                mapper_count=mapper_count,
+            )
+        if not isinstance(protocol, str) or not protocol:
+            _production_failure(
+                ProductionWebInvariantPredicate.MAPPER_PROTOCOL,
+                client_match_count=client_match_count,
+                mapper_count=mapper_count,
+            )
+        if not isinstance(protocol_mapper, str) or not protocol_mapper:
+            _production_failure(
+                ProductionWebInvariantPredicate.MAPPER_TYPE,
+                client_match_count=client_match_count,
+                mapper_count=mapper_count,
+            )
+        if type(consent_required) is not bool:
+            _production_failure(
+                ProductionWebInvariantPredicate.MAPPER_CONSENT_SHAPE,
+                client_match_count=client_match_count,
+                mapper_count=mapper_count,
+            )
+        if mapper_id in mapper_ids:
+            _production_failure(
+                ProductionWebInvariantPredicate.MAPPER_ID_DUPLICATE,
+                client_match_count=client_match_count,
+                mapper_count=mapper_count,
+            )
+        if name in mapper_names:
+            _production_failure(
+                ProductionWebInvariantPredicate.MAPPER_NAME_DUPLICATE,
+                client_match_count=client_match_count,
+                mapper_count=mapper_count,
+            )
+        mapper_ids.add(mapper_id)
+        mapper_names.add(name)
+        normalized_mappers.append(
+            {
+                "id": mapper_id,
+                "name": name,
+                "protocol": protocol,
+                "protocolMapper": protocol_mapper,
+                "consentRequired": consent_required,
+                "config": _normalized_string_mapping(
+                    mapper.get("config"),
+                    predicate=ProductionWebInvariantPredicate.MAPPER_CONFIG_SHAPE,
+                    client_match_count=client_match_count,
+                    mapper_count=mapper_count,
+                ),
+            }
+        )
+    bounded = {
+        "id": client_uuid,
+        **{field: selected[field] for field in _PRODUCTION_WEB_STRING_FIELDS},
+        **{field: selected[field] for field in _PRODUCTION_WEB_BOOLEAN_FIELDS},
+        "notBefore": selected["notBefore"],
+        **{field: selected.get(field) for field in _PRODUCTION_WEB_OPTIONAL_URL_FIELDS},
+        **normalized_lists,
+        "authenticationFlowBindingOverrides": flow_overrides,
+        "attributes": attributes,
+        "protocolMappers": tuple(
+            sorted(normalized_mappers, key=lambda document: str(document["id"]))
+        ),
+    }
+    encoded = json.dumps(bounded, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return _ProductionWebInvariantEvidence(
+        predicate=ProductionWebInvariantPredicate.PASS,
+        fingerprint=hashlib.sha256(encoded).hexdigest(),
+        client_match_count=client_match_count,
+        mapper_count=mapper_count,
+    )
+
+
+def _classify_production_web_contract(
+    *,
+    client_search: Callable[[], httpx.Response],
+    client_document: Callable[[str], httpx.Response],
+    mapper_inventory: Callable[[str], httpx.Response],
+) -> _ProductionWebInvariantEvidence:
+    try:
+        return _normalize_production_web_contract(
+            client_search=client_search,
+            client_document=client_document,
+            mapper_inventory=mapper_inventory,
+        )
+    except _ProductionWebInvariantFailure as error:
+        return _ProductionWebInvariantEvidence(
+            predicate=error.predicate,
+            fingerprint=None,
+            client_match_count=error.client_match_count,
+            mapper_count=error.mapper_count,
+        )
+    except Exception:
+        return _ProductionWebInvariantEvidence(
+            predicate=ProductionWebInvariantPredicate.UNKNOWN,
+            fingerprint=None,
+            client_match_count=None,
+            mapper_count=None,
+        )
 
 
 def _bounded_response(client: httpx.Client, request: httpx.Request) -> httpx.Response:
@@ -525,114 +888,35 @@ class KeycloakGatewayAuthParityIdentity:
         return [item for item in document if isinstance(item, dict) and item.get(key) == value]
 
     def _production_contract_fingerprint(self) -> str:
-        matches = self._find("clients", "clientId", "datariver-web")
-        if len(matches) != 1:
-            raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED")
-        try:
-            client_uuid = str(UUID(matches[0].get("id")))
-        except (TypeError, ValueError):
-            raise GatewayAuthParityError(
-                "GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED"
-            ) from None
-        selected = self._get_admin_document(f"/admin/realms/datariver/clients/{client_uuid}")
+        evidence = self.classify_production_web_invariant()
         if (
-            selected.get("id") != client_uuid
-            or selected.get("clientId") != "datariver-web"
-            or type(selected.get("notBefore")) is not int
-            or any(
-                not isinstance(selected.get(field), str) or not selected[field]
-                for field in _PRODUCTION_WEB_STRING_FIELDS
-            )
-            or any(
-                type(selected.get(field)) is not bool for field in _PRODUCTION_WEB_BOOLEAN_FIELDS
-            )
-            or any(
-                selected.get(field) is not None and not isinstance(selected[field], str)
-                for field in _PRODUCTION_WEB_OPTIONAL_URL_FIELDS
-            )
+            evidence.predicate is not ProductionWebInvariantPredicate.PASS
+            or evidence.fingerprint is None
         ):
             raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED")
-        mapper_inventory = self._get_production_mapper_inventory(client_uuid)
-        if len(mapper_inventory) > _MAXIMUM_PRODUCTION_MAPPERS:
-            raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED")
-        normalized_mappers: list[dict[str, object]] = []
-        mapper_ids: set[str] = set()
-        mapper_names: set[str] = set()
-        for mapper in mapper_inventory:
-            try:
-                mapper_id = str(UUID(mapper.get("id")))
-            except (TypeError, ValueError):
-                raise GatewayAuthParityError(
-                    "GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED"
-                ) from None
-            name = mapper.get("name")
-            protocol = mapper.get("protocol")
-            protocol_mapper = mapper.get("protocolMapper")
-            consent_required = mapper.get("consentRequired")
-            if (
-                not isinstance(name, str)
-                or not name
-                or not isinstance(protocol, str)
-                or not protocol
-                or not isinstance(protocol_mapper, str)
-                or not protocol_mapper
-                or type(consent_required) is not bool
-                or mapper_id in mapper_ids
-                or name in mapper_names
-            ):
-                raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED")
-            mapper_ids.add(mapper_id)
-            mapper_names.add(name)
-            normalized_mappers.append(
-                {
-                    "id": mapper_id,
-                    "name": name,
-                    "protocol": protocol,
-                    "protocolMapper": protocol_mapper,
-                    "consentRequired": consent_required,
-                    "config": _normalized_string_mapping(mapper.get("config")),
-                }
-            )
-        bounded = {
-            "id": client_uuid,
-            **{field: selected[field] for field in _PRODUCTION_WEB_STRING_FIELDS},
-            **{field: selected[field] for field in _PRODUCTION_WEB_BOOLEAN_FIELDS},
-            "notBefore": selected["notBefore"],
-            **{field: selected.get(field) for field in _PRODUCTION_WEB_OPTIONAL_URL_FIELDS},
-            **{
-                field: _normalized_unique_strings(selected.get(field))
-                for field in _PRODUCTION_WEB_LIST_FIELDS
-            },
-            "authenticationFlowBindingOverrides": _normalized_string_mapping(
-                selected.get("authenticationFlowBindingOverrides")
-            ),
-            "attributes": _normalized_string_mapping(selected.get("attributes")),
-            "protocolMappers": tuple(
-                sorted(normalized_mappers, key=lambda document: str(document["id"]))
-            ),
-        }
-        encoded = json.dumps(bounded, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        return hashlib.sha256(encoded).hexdigest()
+        return evidence.fingerprint
 
-    def _get_production_mapper_inventory(self, client_uuid: str) -> list[dict[str, Any]]:
-        response = self._request(
-            "GET",
-            f"/admin/realms/datariver/clients/{client_uuid}/protocol-mappers/models",
-            expected=frozenset({200}),
+    def classify_production_web_invariant(self) -> _ProductionWebInvariantEvidence:
+        """Read only the fixed production Web client through the shared normalizer."""
+
+        return _classify_production_web_contract(
+            client_search=lambda: self._request(
+                "GET",
+                "/admin/realms/datariver/clients",
+                expected=frozenset({200}),
+                params={"clientId": "datariver-web"},
+            ),
+            client_document=lambda client_uuid: self._request(
+                "GET",
+                f"/admin/realms/datariver/clients/{client_uuid}",
+                expected=frozenset({200}),
+            ),
+            mapper_inventory=lambda client_uuid: self._request(
+                "GET",
+                f"/admin/realms/datariver/clients/{client_uuid}/protocol-mappers/models",
+                expected=frozenset({200}),
+            ),
         )
-        try:
-            document = response.json()
-        except ValueError:
-            raise GatewayAuthParityError(
-                "GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED"
-            ) from None
-        if (
-            not isinstance(document, list)
-            or len(document) > _MAXIMUM_PRODUCTION_MAPPERS
-            or not all(isinstance(item, dict) for item in document)
-        ):
-            raise GatewayAuthParityError("GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED")
-        return document
 
     def _get_admin_document(self, path: str) -> dict[str, Any]:
         response = self._request("GET", path, expected=frozenset({200}))

@@ -2452,6 +2452,7 @@ def verify_transparent_gateway_contract() -> None:
 
 def verify_gateway_auth_parity_fixture_contract() -> None:
     probe_path = ROOT / "scripts" / "probe_gateway_auth_parity.py"
+    classifier_path = ROOT / "scripts" / "classify_gateway_production_invariant.py"
     fixture_path = ROOT / "backend" / "src" / "datariver" / "gateway_auth_parity_fixture.py"
     probe_test_path = ROOT / "backend" / "tests" / "unit" / "test_gateway_auth_parity_probe.py"
     fixture_test_path = ROOT / "backend" / "tests" / "unit" / "test_gateway_auth_parity_fixture.py"
@@ -2459,6 +2460,7 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     workflow_path = ROOT / "scripts" / "workflow_update_restart.py"
     for path in (
         probe_path,
+        classifier_path,
         fixture_path,
         probe_test_path,
         fixture_test_path,
@@ -2469,6 +2471,7 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
             raise AssertionError("the governed gateway parity fixture path is missing")
 
     probe = probe_path.read_text(encoding="utf-8")
+    classifier = classifier_path.read_text(encoding="utf-8")
     fixture = fixture_path.read_text(encoding="utf-8")
     probe_tests = probe_test_path.read_text(encoding="utf-8")
     fixture_tests = fixture_test_path.read_text(encoding="utf-8")
@@ -2524,10 +2527,16 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "raise GatewayAuthParityExecutionError(",
         "self._admin_token = None",
         "def release_without_mutation(self) -> None:",
-        "def _get_production_mapper_inventory(",
-        "if len(mapper_inventory) > _MAXIMUM_PRODUCTION_MAPPERS:",
-        '"authenticationFlowBindingOverrides": _normalized_string_mapping(',
+        "if len(mapper_document) > _MAXIMUM_PRODUCTION_MAPPERS:",
+        "flow_overrides = _normalized_string_mapping(",
+        "attributes = _normalized_string_mapping(",
+        '"authenticationFlowBindingOverrides": flow_overrides',
         '"protocolMappers": tuple(',
+        "class ProductionWebInvariantPredicate(str, Enum):",
+        "def _normalize_production_web_contract(",
+        "def _classify_production_web_contract(",
+        "def classify_production_web_invariant(self)",
+        "format_production_web_invariant_evidence(",
     ):
         if fragment not in probe:
             raise AssertionError(f"the governed gateway parity probe is missing: {fragment}")
@@ -2648,6 +2657,218 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
             raise AssertionError(
                 "production Web cleanup invariant failure must remain fixed and nonleaking"
             )
+
+    probe_syntax = ast.parse(probe, filename=probe_path.as_posix())
+    predicate_classes = [
+        node
+        for node in probe_syntax.body
+        if isinstance(node, ast.ClassDef) and node.name == "ProductionWebInvariantPredicate"
+    ]
+    if len(predicate_classes) != 1:
+        raise AssertionError("production Web diagnostic predicate enum is missing or duplicated")
+    predicate_members = tuple(
+        (statement.targets[0].id, ast.literal_eval(statement.value))
+        for statement in predicate_classes[0].body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    )
+    exact_predicates = (
+        "CLIENT_MATCH_COUNT",
+        "CLIENT_SEARCH_SHAPE",
+        "CLIENT_UUID",
+        "CLIENT_DOCUMENT_IDENTITY",
+        "CLIENT_STRING_SHAPE",
+        "CLIENT_BOOLEAN_SHAPE",
+        "CLIENT_OPTIONAL_URL_SHAPE",
+        "CLIENT_LIST_SHAPE",
+        "CLIENT_MAPPING_SHAPE",
+        "MAPPER_INVENTORY_SHAPE",
+        "MAPPER_COUNT",
+        "MAPPER_UUID",
+        "MAPPER_NAME",
+        "MAPPER_PROTOCOL",
+        "MAPPER_TYPE",
+        "MAPPER_CONSENT_SHAPE",
+        "MAPPER_ID_DUPLICATE",
+        "MAPPER_NAME_DUPLICATE",
+        "MAPPER_CONFIG_SHAPE",
+        "ADMIN_BOUNDARY_UNAVAILABLE",
+        "UNKNOWN",
+        "PASS",
+    )
+    if predicate_members != tuple((value, value) for value in exact_predicates):
+        raise AssertionError("production Web diagnostic predicate enum has drifted")
+    normalizer = probe.split("def _normalize_production_web_contract(", maxsplit=1)[1].split(
+        "def _classify_production_web_contract(", maxsplit=1
+    )[0]
+    classifier_wrapper = probe.split("def _classify_production_web_contract(", maxsplit=1)[1].split(
+        "def _bounded_response(", maxsplit=1
+    )[0]
+    production_fingerprint = production_identity.split(
+        "def _production_contract_fingerprint(self) -> str:", maxsplit=1
+    )[1].split("def classify_production_web_invariant(", maxsplit=1)[0]
+    production_diagnostic = production_identity.split(
+        "def classify_production_web_invariant(", maxsplit=1
+    )[1].split("def _get_admin_document(", maxsplit=1)[0]
+    if (
+        "return _normalize_production_web_contract(" not in classifier_wrapper
+        or "self.classify_production_web_invariant()" not in production_fingerprint
+        or "return _classify_production_web_contract(" not in production_diagnostic
+        or '"/admin/realms/datariver/clients"' not in production_diagnostic
+        or 'f"/admin/realms/datariver/clients/{client_uuid}/protocol-mappers/models"'
+        not in production_diagnostic
+        or "ProductionWebInvariantPredicate.CLIENT_MATCH_COUNT" not in normalizer
+        or "ProductionWebInvariantPredicate.MAPPER_CONFIG_SHAPE" not in normalizer
+    ):
+        raise AssertionError("production Web fingerprint and diagnostic must share one normalizer")
+    for fragment in (
+        "client_match_count_known=",
+        "mapper_count_known=",
+        "mutation_count=0",
+        "retry_count=0",
+        "if evidence.client_match_count is not None:",
+        "if evidence.mapper_count is not None:",
+    ):
+        if fragment not in probe:
+            raise AssertionError(f"production Web sanitized evidence is missing: {fragment}")
+    evidence_formatters = [
+        node
+        for node in probe_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "format_production_web_invariant_evidence"
+    ]
+    if len(evidence_formatters) != 1:
+        raise AssertionError("production Web evidence formatter is missing or duplicated")
+    formatted_prefixes = {
+        node.values[0].value
+        for node in ast.walk(evidence_formatters[0])
+        if isinstance(node, ast.JoinedStr)
+        and node.values
+        and isinstance(node.values[0], ast.Constant)
+        and isinstance(node.values[0].value, str)
+    }
+    if formatted_prefixes != {
+        "predicate=",
+        "client_match_count_known=",
+        "client_match_count=",
+        "mapper_count_known=",
+        "mapper_count=",
+    }:
+        raise AssertionError("production Web evidence dynamic output keys have drifted")
+    for forbidden in (
+        "fingerprint={",
+        "client_uuid={",
+        "redirectUris={",
+        "webOrigins={",
+        "protocolMappers={",
+    ):
+        if forbidden in probe:
+            raise AssertionError("production Web diagnostic cannot format provider values")
+
+    classifier_syntax = ast.parse(classifier, filename=classifier_path.as_posix())
+    imported_modules = {
+        node.module
+        for node in classifier_syntax.body
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    if imported_modules != {
+        "__future__",
+        "docker_capacity",
+        "pathlib",
+        "platform_workflow",
+        "probe_gateway_auth_parity",
+        "workflow_update_restart",
+    }:
+        raise AssertionError("production Web classifier imports have drifted")
+    classifier_calls = [node for node in ast.walk(classifier_syntax) if isinstance(node, ast.Call)]
+    print_calls = [
+        node
+        for node in classifier_calls
+        if isinstance(node.func, ast.Name) and node.func.id == "print"
+    ]
+    if len(print_calls) != 1:
+        raise AssertionError("production Web classifier must have exactly one output call")
+    forbidden_call_names = {
+        "open",
+        "write_applied_state",
+        "capture_local_topology",
+        "create_disabled_fixture",
+        "cleanup_client",
+        "cleanup_sessions_and_users",
+    }
+    forbidden_attributes = {"write", "write_text", "write_bytes", "unlink", "mkdir", "rmdir"}
+    if any(
+        (isinstance(call.func, ast.Name) and call.func.id in forbidden_call_names)
+        or (isinstance(call.func, ast.Attribute) and call.func.attr in forbidden_attributes)
+        for call in classifier_calls
+    ):
+        raise AssertionError("production Web classifier cannot persist or mutate state")
+    for fragment in (
+        'PROFILE = "mac-development"',
+        'ENVIRONMENT_FILE = ".env.mac-development"',
+        "SECRET_NAMES = TOPOLOGY_RECONCILIATION_SECRET_NAMES",
+        "with exclusive_docker_workflow_lock(ROOT):",
+        "_environment_file, keycloak_port = _mac_environment()",
+        "with require_topology_reconciliation_secrets(ROOT) as guard:",
+        "password = _read_gateway_admin_password(guard)",
+        'base_url=f"http://127.0.0.1:{keycloak_port}"',
+        'admin_username="datariver-bootstrap"',
+        "return identity.classify_production_web_invariant()",
+        "identity.release_without_mutation()",
+        "print(format_production_web_invariant_evidence(evidence), flush=True)",
+        "len(sys.argv) == 1",
+    ):
+        if fragment not in classifier:
+            raise AssertionError(f"production Web classifier contract is missing: {fragment}")
+    classifier_order = tuple(
+        classifier.index(fragment)
+        for fragment in (
+            "with exclusive_docker_workflow_lock(ROOT):",
+            "_environment_file, keycloak_port = _mac_environment()",
+            "with require_topology_reconciliation_secrets(ROOT) as guard:",
+            "password = _read_gateway_admin_password(guard)",
+            "identity = KeycloakGatewayAuthParityIdentity(",
+            "return identity.classify_production_web_invariant()",
+            "identity.release_without_mutation()",
+        )
+    )
+    if classifier_order != tuple(sorted(classifier_order)):
+        raise AssertionError("production Web classifier lock/read/release order has drifted")
+    for forbidden in (
+        "argparse",
+        "subprocess",
+        "create_disabled_fixture",
+        "require_absent_and_capture_invariants",
+        "authenticate_allow",
+        "authenticate_deny",
+        "cleanup_client",
+        "cleanup_sessions_and_users",
+        "write_applied_state",
+        "capture_local_topology",
+        "docker build",
+        "docker compose",
+        '"PUT"',
+        '"DELETE"',
+    ):
+        if forbidden in classifier:
+            raise AssertionError(
+                f"production Web classifier mutation boundary drifted: {forbidden}"
+            )
+    for test_name in (
+        "test_production_web_normalizer_returns_every_closed_predicate_without_raw_values",
+        "test_normal_runtime_maps_every_internal_production_predicate_to_generic_failure",
+        "test_production_web_admin_reads_are_token_then_search_document_mapper_and_short_circuit",
+        "test_production_web_admin_boundary_and_response_failures_are_fixed_and_nonleaking",
+        "test_production_web_provider_container_shapes_fail_at_the_first_exact_stage",
+        "test_classifier_mac_state_and_environment_drift_is_fixed_before_secret_or_admin_read",
+        "test_classifier_holds_lock_state_env_exact8_guard_and_releases_before_one_line_output",
+        "test_classifier_rejects_exact8_guard_key_drift_before_admin_boundary",
+        "test_classifier_baseexception_closes_every_resource_and_emits_only_fixed_unknown",
+        "test_classifier_rejects_all_arguments_before_lock_or_admin_boundary",
+    ):
+        if f"def {test_name}(" not in probe_tests:
+            raise AssertionError(f"production Web diagnostic negative is missing: {test_name}")
     for forbidden_delete in (
         "delete(CanonicalAdminBindingModel)",
         "delete(ProfileRoleAssignmentModel)",
@@ -2778,6 +2999,10 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         "complete interval for `api`, `apisix` and `web`",
         "all-Workspace Membership count",
         "complete bounded protocol-mapper inventory",
+        "same\nprivate normalizer",
+        "admin_token_grant=1",
+        "mutation_count=0",
+        "runtime remains a separate reviewed exact-one operation",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0113 omits gateway parity term: {fragment}")

@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any, cast
 
 import httpx
@@ -16,6 +16,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = ROOT / "scripts" / "probe_gateway_auth_parity.py"
+CLASSIFIER_MODULE_PATH = ROOT / "scripts" / "classify_gateway_production_invariant.py"
 
 
 def _load_module() -> ModuleType:
@@ -24,11 +25,34 @@ def _load_module() -> ModuleType:
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
-    spec.loader.exec_module(module)
+    scripts_path = str(ROOT / "scripts")
+    sys.path.insert(0, scripts_path)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(scripts_path)
     return module
 
 
 probe = _load_module()
+
+
+def _load_classifier_module() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "classify_gateway_production_invariant",
+        CLASSIFIER_MODULE_PATH,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    scripts_path = str(ROOT / "scripts")
+    sys.path.insert(0, scripts_path)
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.remove(scripts_path)
+    return module
 
 
 @dataclass(frozen=True)
@@ -828,18 +852,22 @@ def _install_production_web_contract(
     monkeypatch: pytest.MonkeyPatch,
     client: dict[str, object],
     mappers: list[dict[str, object]],
+    *,
+    search: object | None = None,
 ) -> None:
+    search_document = (
+        [{"id": client["id"], "clientId": "datariver-web"}] if search is None else search
+    )
+    monkeypatch.setattr(identity, "_find", lambda _kind, _key, _value: [])
     monkeypatch.setattr(
         identity,
-        "_find",
-        lambda _kind, key, value: (
-            [{"id": client["id"], "clientId": "datariver-web"}]
-            if key == "clientId" and value == "datariver-web"
-            else []
+        "classify_production_web_invariant",
+        lambda: probe._classify_production_web_contract(
+            client_search=lambda: _production_response(search_document),
+            client_document=lambda _uuid: _production_response(client),
+            mapper_inventory=lambda _uuid: _production_response(mappers),
         ),
     )
-    monkeypatch.setattr(identity, "_get_admin_document", lambda _path: client)
-    monkeypatch.setattr(identity, "_get_production_mapper_inventory", lambda _uuid: mappers)
 
 
 def test_production_web_fingerprint_reads_exact_client_and_mapper_inventory(
@@ -853,29 +881,24 @@ def test_production_web_fingerprint_reads_exact_client_and_mapper_inventory(
     web_document, mapper_documents = _production_web_contract()
     client_uuid = cast(str, web_document["id"])
     requested: list[tuple[str, str]] = []
-    monkeypatch.setattr(
-        identity,
-        "_find",
-        lambda _kind, key, value: (
-            [{"id": client_uuid, "clientId": "datariver-web"}]
-            if key == "clientId" and value == "datariver-web"
-            else []
-        ),
-    )
 
     def request(method: str, path: str, **_kwargs: object) -> httpx.Response:
         requested.append((method, path))
-        document: object = (
-            mapper_documents if path.endswith("/protocol-mappers/models") else web_document
-        )
+        if path == "/admin/realms/datariver/clients":
+            document: object = [{"id": client_uuid, "clientId": "datariver-web"}]
+        elif path.endswith("/protocol-mappers/models"):
+            document = mapper_documents
+        else:
+            document = web_document
         return httpx.Response(200, json=document)
 
     monkeypatch.setattr(identity, "_request", request)
 
     fingerprint = cast(Any, identity)._production_contract_fingerprint()
 
-    assert len(fingerprint) == 64
+    assert fingerprint == "ffc69db96bb50a2712ca81c5d38ba56d59ba9d17781fa368039c9a849c94b6d5"
     assert requested == [
+        ("GET", "/admin/realms/datariver/clients"),
         ("GET", f"/admin/realms/datariver/clients/{client_uuid}"),
         (
             "GET",
@@ -980,20 +1003,18 @@ def test_production_web_invariant_rejects_incomplete_or_duplicate_baseline_befor
     if invalid == "missing":
         del web_document["protocol"]
     elif invalid == "duplicate-client":
-        monkeypatch.setattr(
+        _install_production_web_contract(
             identity,
-            "_find",
-            lambda _kind, key, value: (
-                [
-                    {"id": web_document["id"], "clientId": "datariver-web"},
-                    {
-                        "id": "10000000-0000-4000-8000-000000000099",
-                        "clientId": "datariver-web",
-                    },
-                ]
-                if key == "clientId" and value == "datariver-web"
-                else []
-            ),
+            monkeypatch,
+            web_document,
+            mapper_documents,
+            search=[
+                {"id": web_document["id"], "clientId": "datariver-web"},
+                {
+                    "id": "10000000-0000-4000-8000-000000000099",
+                    "clientId": "datariver-web",
+                },
+            ],
         )
     elif invalid == "duplicate-scope":
         cast(list[str], web_document["defaultClientScopes"]).append("roles")
@@ -1020,6 +1041,709 @@ def test_production_web_invariant_rejects_incomplete_or_duplicate_baseline_befor
         identity.require_absent_and_capture_invariants()
 
     identity.release_without_mutation()
+
+
+def _production_invariant_case(
+    case: str,
+) -> tuple[
+    object,
+    dict[str, object],
+    object,
+    type[BaseException] | None,
+]:
+    client, mapper_documents = _production_web_contract()
+    mapper_inventory: object = mapper_documents
+    search: object = [{"id": client["id"], "clientId": "datariver-web"}]
+    raised: type[BaseException] | None = None
+    if case == "CLIENT_SEARCH_SHAPE":
+        search = {"provider-raw-secret": "sentinel"}
+    elif case == "CLIENT_MATCH_COUNT":
+        search = []
+    elif case == "CLIENT_UUID":
+        search = [{"id": "provider-uuid-secret", "clientId": "datariver-web"}]
+    elif case == "CLIENT_DOCUMENT_IDENTITY":
+        client["id"] = "10000000-0000-4000-8000-000000000099"
+    elif case == "CLIENT_STRING_SHAPE":
+        client["name"] = ""
+    elif case == "CLIENT_BOOLEAN_SHAPE":
+        client["enabled"] = "provider-boolean-secret"
+    elif case == "CLIENT_OPTIONAL_URL_SHAPE":
+        client["rootUrl"] = 9
+    elif case == "CLIENT_LIST_SHAPE":
+        client["redirectUris"] = ["provider-list-secret", "provider-list-secret"]
+    elif case == "CLIENT_MAPPING_SHAPE":
+        client["attributes"] = {"provider-mapping-secret": 9}
+    elif case == "MAPPER_INVENTORY_SHAPE":
+        mapper_inventory = {"provider-mapper-secret": "sentinel"}
+    elif case == "MAPPER_COUNT":
+        mapper_inventory = [
+            {
+                **mapper_documents[0],
+                "id": f"10000000-0000-4000-8000-{index:012d}",
+                "name": f"bounded-mapper-{index}",
+            }
+            for index in range(probe._MAXIMUM_PRODUCTION_MAPPERS + 1)
+        ]
+    elif case == "MAPPER_UUID":
+        mapper_documents[0]["id"] = "provider-mapper-uuid-secret"
+    elif case == "MAPPER_NAME":
+        mapper_documents[0]["name"] = ""
+    elif case == "MAPPER_PROTOCOL":
+        mapper_documents[0]["protocol"] = ""
+    elif case == "MAPPER_TYPE":
+        mapper_documents[0]["protocolMapper"] = ""
+    elif case == "MAPPER_CONSENT_SHAPE":
+        mapper_documents[0]["consentRequired"] = "provider-consent-secret"
+    elif case == "MAPPER_ID_DUPLICATE":
+        duplicate = dict(mapper_documents[0])
+        duplicate["name"] = "bounded-second-mapper"
+        mapper_documents.append(duplicate)
+    elif case == "MAPPER_NAME_DUPLICATE":
+        duplicate = dict(mapper_documents[0])
+        duplicate["id"] = "10000000-0000-4000-8000-000000000082"
+        mapper_documents.append(duplicate)
+    elif case == "MAPPER_CONFIG_SHAPE":
+        mapper_documents[0]["config"] = {"provider-config-secret": 9}
+    elif case == "ADMIN_BOUNDARY_UNAVAILABLE":
+        raised = probe.GatewayAuthParityError
+    elif case == "UNKNOWN":
+        raised = RuntimeError
+    elif case != "PASS":
+        raise AssertionError(f"unhandled production invariant case: {case}")
+    return search, client, mapper_inventory, raised
+
+
+def _production_response(value: object) -> httpx.Response:
+    return httpx.Response(200, json=value)
+
+
+@pytest.mark.parametrize(
+    "expected",
+    (
+        "CLIENT_MATCH_COUNT",
+        "CLIENT_SEARCH_SHAPE",
+        "CLIENT_UUID",
+        "CLIENT_DOCUMENT_IDENTITY",
+        "CLIENT_STRING_SHAPE",
+        "CLIENT_BOOLEAN_SHAPE",
+        "CLIENT_OPTIONAL_URL_SHAPE",
+        "CLIENT_LIST_SHAPE",
+        "CLIENT_MAPPING_SHAPE",
+        "MAPPER_INVENTORY_SHAPE",
+        "MAPPER_COUNT",
+        "MAPPER_UUID",
+        "MAPPER_NAME",
+        "MAPPER_PROTOCOL",
+        "MAPPER_TYPE",
+        "MAPPER_CONSENT_SHAPE",
+        "MAPPER_ID_DUPLICATE",
+        "MAPPER_NAME_DUPLICATE",
+        "MAPPER_CONFIG_SHAPE",
+        "ADMIN_BOUNDARY_UNAVAILABLE",
+        "UNKNOWN",
+        "PASS",
+    ),
+)
+def test_production_web_normalizer_returns_every_closed_predicate_without_raw_values(
+    expected: str,
+) -> None:
+    search, client, mapper_inventory, raised = _production_invariant_case(expected)
+
+    def client_search() -> httpx.Response:
+        if raised is not None:
+            raise raised("provider-search-secret")
+        return _production_response(search)
+
+    evidence = probe._classify_production_web_contract(
+        client_search=client_search,
+        client_document=lambda _uuid: _production_response(client),
+        mapper_inventory=lambda _uuid: _production_response(mapper_inventory),
+    )
+    rendered = probe.format_production_web_invariant_evidence(evidence)
+
+    assert evidence.predicate.value == expected
+    assert rendered.count("\n") == 0
+    assert f"predicate={expected}" in rendered
+    assert "mutation_count=0 retry_count=0" in rendered
+    assert "provider-" not in rendered
+    assert "10000000-" not in rendered
+    assert "http://" not in rendered
+    assert "fingerprint" not in rendered
+
+
+def test_production_web_closed_predicate_table_covers_the_exact_enum() -> None:
+    assert tuple(item.value for item in probe.ProductionWebInvariantPredicate) == (
+        "CLIENT_MATCH_COUNT",
+        "CLIENT_SEARCH_SHAPE",
+        "CLIENT_UUID",
+        "CLIENT_DOCUMENT_IDENTITY",
+        "CLIENT_STRING_SHAPE",
+        "CLIENT_BOOLEAN_SHAPE",
+        "CLIENT_OPTIONAL_URL_SHAPE",
+        "CLIENT_LIST_SHAPE",
+        "CLIENT_MAPPING_SHAPE",
+        "MAPPER_INVENTORY_SHAPE",
+        "MAPPER_COUNT",
+        "MAPPER_UUID",
+        "MAPPER_NAME",
+        "MAPPER_PROTOCOL",
+        "MAPPER_TYPE",
+        "MAPPER_CONSENT_SHAPE",
+        "MAPPER_ID_DUPLICATE",
+        "MAPPER_NAME_DUPLICATE",
+        "MAPPER_CONFIG_SHAPE",
+        "ADMIN_BOUNDARY_UNAVAILABLE",
+        "UNKNOWN",
+        "PASS",
+    )
+
+
+@pytest.mark.parametrize(
+    "predicate",
+    tuple(
+        item
+        for item in (
+            "CLIENT_MATCH_COUNT",
+            "CLIENT_SEARCH_SHAPE",
+            "CLIENT_UUID",
+            "CLIENT_DOCUMENT_IDENTITY",
+            "CLIENT_STRING_SHAPE",
+            "CLIENT_BOOLEAN_SHAPE",
+            "CLIENT_OPTIONAL_URL_SHAPE",
+            "CLIENT_LIST_SHAPE",
+            "CLIENT_MAPPING_SHAPE",
+            "MAPPER_INVENTORY_SHAPE",
+            "MAPPER_COUNT",
+            "MAPPER_UUID",
+            "MAPPER_NAME",
+            "MAPPER_PROTOCOL",
+            "MAPPER_TYPE",
+            "MAPPER_CONSENT_SHAPE",
+            "MAPPER_ID_DUPLICATE",
+            "MAPPER_NAME_DUPLICATE",
+            "MAPPER_CONFIG_SHAPE",
+            "ADMIN_BOUNDARY_UNAVAILABLE",
+            "UNKNOWN",
+        )
+    ),
+)
+def test_normal_runtime_maps_every_internal_production_predicate_to_generic_failure(
+    predicate: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    identity = probe.KeycloakGatewayAuthParityIdentity(
+        base_url="http://127.0.0.1:8081",
+        admin_username="datariver-bootstrap",
+        admin_password="admin-secret-sentinel",
+    )
+    evidence = probe._ProductionWebInvariantEvidence(
+        predicate=probe.ProductionWebInvariantPredicate(predicate),
+        fingerprint=None,
+        client_match_count=None,
+        mapper_count=None,
+    )
+    monkeypatch.setattr(identity, "classify_production_web_invariant", lambda: evidence)
+
+    with pytest.raises(
+        probe.GatewayAuthParityError,
+        match=r"^GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED$",
+    ):
+        cast(Any, identity)._production_contract_fingerprint()
+
+    identity.release_without_mutation()
+
+
+def test_production_web_admin_reads_are_token_then_search_document_mapper_and_short_circuit() -> (
+    None
+):
+    web_document, mapper_documents = _production_web_contract()
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.url.path.endswith("/protocol/openid-connect/token"):
+            return httpx.Response(200, json={"access_token": "admin-token-secret-sentinel"})
+        if request.url.path == "/admin/realms/datariver/clients":
+            return httpx.Response(
+                200,
+                json=[{"id": web_document["id"], "clientId": "datariver-web"}],
+            )
+        if request.url.path.endswith("/protocol-mappers/models"):
+            return httpx.Response(200, json=mapper_documents)
+        return httpx.Response(200, json=web_document)
+
+    identity = probe.KeycloakGatewayAuthParityIdentity(
+        base_url="http://127.0.0.1:8081",
+        admin_username="datariver-bootstrap",
+        admin_password="admin-secret-sentinel",
+    )
+    cast(Any, identity)._client.close()
+    cast(Any, identity)._client = httpx.Client(
+        base_url="http://127.0.0.1:8081",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+
+    evidence = identity.classify_production_web_invariant()
+
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.PASS
+    assert requests == [
+        ("POST", "/realms/master/protocol/openid-connect/token"),
+        ("GET", "/admin/realms/datariver/clients"),
+        ("GET", f"/admin/realms/datariver/clients/{web_document['id']}"),
+        (
+            "GET",
+            f"/admin/realms/datariver/clients/{web_document['id']}/protocol-mappers/models",
+        ),
+    ]
+    identity.release_without_mutation()
+
+
+def test_production_web_first_predicate_short_circuits_later_admin_reads() -> None:
+    requests: list[tuple[str, str]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.url.path.endswith("/protocol/openid-connect/token"):
+            return httpx.Response(200, json={"access_token": "admin-token-secret-sentinel"})
+        return httpx.Response(200, json=[])
+
+    identity = probe.KeycloakGatewayAuthParityIdentity(
+        base_url="http://127.0.0.1:8081",
+        admin_username="datariver-bootstrap",
+        admin_password="admin-secret-sentinel",
+    )
+    cast(Any, identity)._client.close()
+    cast(Any, identity)._client = httpx.Client(
+        base_url="http://127.0.0.1:8081",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+
+    evidence = identity.classify_production_web_invariant()
+
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.CLIENT_MATCH_COUNT
+    assert evidence.client_match_count == 0
+    assert evidence.mapper_count is None
+    assert requests == [
+        ("POST", "/realms/master/protocol/openid-connect/token"),
+        ("GET", "/admin/realms/datariver/clients"),
+    ]
+    identity.release_without_mutation()
+
+
+@pytest.mark.parametrize("match_count", (0, 2))
+def test_production_web_client_match_count_is_bounded_when_known(match_count: int) -> None:
+    client, mappers = _production_web_contract()
+    search = [
+        {
+            "id": f"10000000-0000-4000-8000-{index:012d}",
+            "clientId": "datariver-web",
+        }
+        for index in range(match_count)
+    ]
+
+    evidence = probe._classify_production_web_contract(
+        client_search=lambda: _production_response(search),
+        client_document=lambda _uuid: _production_response(client),
+        mapper_inventory=lambda _uuid: _production_response(mappers),
+    )
+
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.CLIENT_MATCH_COUNT
+    assert evidence.client_match_count == match_count
+    assert f"client_match_count={match_count}" in (
+        probe.format_production_web_invariant_evidence(evidence)
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage", "expected"),
+    (
+        ("search-overflow", "CLIENT_SEARCH_SHAPE"),
+        ("client-nondict", "CLIENT_DOCUMENT_IDENTITY"),
+        ("mapper-nonlist", "MAPPER_INVENTORY_SHAPE"),
+    ),
+)
+def test_production_web_provider_container_shapes_fail_at_the_first_exact_stage(
+    stage: str,
+    expected: str,
+) -> None:
+    client, mappers = _production_web_contract()
+    search: object = [{"id": client["id"], "clientId": "datariver-web"}]
+    client_document: object = client
+    mapper_inventory: object = mappers
+    if stage == "search-overflow":
+        search = [
+            {"id": client["id"], "clientId": "datariver-web"},
+            {"id": client["id"], "clientId": "ignored-one"},
+            {"id": client["id"], "clientId": "ignored-two"},
+        ]
+    elif stage == "client-nondict":
+        client_document = ["provider-client-secret"]
+    else:
+        mapper_inventory = {"provider-mapper-secret": "sentinel"}
+
+    evidence = probe._classify_production_web_contract(
+        client_search=lambda: _production_response(search),
+        client_document=lambda _uuid: _production_response(client_document),
+        mapper_inventory=lambda _uuid: _production_response(mapper_inventory),
+    )
+
+    assert evidence.predicate.value == expected
+    assert "provider-" not in probe.format_production_web_invariant_evidence(evidence)
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected"),
+    (
+        ("timeout", "ADMIN_BOUNDARY_UNAVAILABLE"),
+        ("overflow", "ADMIN_BOUNDARY_UNAVAILABLE"),
+        ("search-non-json", "CLIENT_SEARCH_SHAPE"),
+    ),
+)
+def test_production_web_admin_boundary_and_response_failures_are_fixed_and_nonleaking(
+    failure: str,
+    expected: str,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if failure == "timeout":
+            raise httpx.ReadTimeout("provider-timeout-secret", request=request)
+        if failure == "overflow":
+            return httpx.Response(
+                200,
+                content=b"provider-overflow-secret" * probe.MAXIMUM_RESPONSE_BYTES,
+            )
+        if request.url.path.endswith("/protocol/openid-connect/token"):
+            return httpx.Response(200, json={"access_token": "admin-token-secret-sentinel"})
+        return httpx.Response(200, content=b"provider-non-json-secret")
+
+    identity = probe.KeycloakGatewayAuthParityIdentity(
+        base_url="http://127.0.0.1:8081",
+        admin_username="datariver-bootstrap",
+        admin_password="admin-secret-sentinel",
+    )
+    cast(Any, identity)._client.close()
+    cast(Any, identity)._client = httpx.Client(
+        base_url="http://127.0.0.1:8081",
+        transport=httpx.MockTransport(handler),
+        trust_env=False,
+    )
+
+    evidence = identity.classify_production_web_invariant()
+    rendered = probe.format_production_web_invariant_evidence(evidence)
+
+    assert evidence.predicate.value == expected
+    combined = capsys.readouterr().out + capsys.readouterr().err + rendered
+    for forbidden in ("provider-timeout", "provider-overflow", "provider-non-json", "admin-token"):
+        assert forbidden not in combined
+    identity.release_without_mutation()
+
+
+def test_production_web_diagnostic_omits_unavailable_counts_instead_of_estimating() -> None:
+    client, mappers = _production_web_contract()
+    evidence = probe._classify_production_web_contract(
+        client_search=lambda: _production_response(
+            [{"id": client["id"], "clientId": "datariver-web"}]
+        ),
+        client_document=lambda _uuid: _production_response(client),
+        mapper_inventory=lambda _uuid: _production_response(
+            [
+                {
+                    **mappers[0],
+                    "id": f"10000000-0000-4000-8000-{index:012d}",
+                    "name": f"bounded-mapper-{index}",
+                }
+                for index in range(probe._MAXIMUM_PRODUCTION_MAPPERS + 1)
+            ]
+        ),
+    )
+
+    rendered = probe.format_production_web_invariant_evidence(evidence)
+
+    assert evidence.predicate is probe.ProductionWebInvariantPredicate.MAPPER_COUNT
+    assert "client_match_count_known=true client_match_count=1" in rendered
+    assert "mapper_count_known=false" in rendered
+    assert "mapper_count=" not in rendered
+
+
+@pytest.mark.parametrize(("client_count", "mapper_count"), ((3, None), (None, 65)))
+def test_production_web_evidence_rejects_unbounded_counts(
+    client_count: int | None,
+    mapper_count: int | None,
+) -> None:
+    with pytest.raises(ValueError, match="GATEWAY_PRODUCTION_INVARIANT_EVIDENCE_INVALID"):
+        probe._ProductionWebInvariantEvidence(
+            predicate=probe.ProductionWebInvariantPredicate.UNKNOWN,
+            fingerprint=None,
+            client_match_count=client_count,
+            mapper_count=mapper_count,
+        )
+
+
+class _RecordingContext:
+    def __init__(self, events: list[str], label: str, value: object) -> None:
+        self.events = events
+        self.label = label
+        self.value = value
+
+    def __enter__(self) -> object:
+        self.events.append(f"{self.label}-enter")
+        return self.value
+
+    def __exit__(self, *_args: object) -> None:
+        self.events.append(f"{self.label}-exit")
+
+
+def _install_classifier_runtime(
+    classifier: ModuleType,
+    probe_module: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    events: list[str],
+    *,
+    failure: BaseException | None = None,
+) -> None:
+    guard = SimpleNamespace(
+        file_descriptors={name: index for index, name in enumerate(classifier.SECRET_NAMES)},
+        file_identities={name: (index,) for index, name in enumerate(classifier.SECRET_NAMES)},
+        revalidate=lambda: events.append("guard-revalidate"),
+    )
+    monkeypatch.setattr(
+        classifier,
+        "exclusive_docker_workflow_lock",
+        lambda _root: _RecordingContext(events, "lock", object()),
+    )
+
+    def applied_state(_path: Path) -> SimpleNamespace:
+        events.append("state")
+        return SimpleNamespace(
+            profile="mac-development",
+            deployment_mode="build",
+            env_file=".env.mac-development",
+            environment_key_hashes={"SAFE": "digest"},
+            local_gateway=False,
+            local_graph=False,
+        )
+
+    def environment_values(_path: Path) -> dict[str, str]:
+        events.append("env")
+        return {"SAFE": "opaque", "KEYCLOAK_PORT": "8081"}
+
+    def admin_password(_guard: object) -> str:
+        events.append("password-read")
+        return "admin-secret-sentinel"
+
+    monkeypatch.setattr(
+        classifier,
+        "load_applied_state",
+        applied_state,
+    )
+    monkeypatch.setattr(
+        classifier,
+        "read_env_values",
+        environment_values,
+    )
+    monkeypatch.setattr(
+        classifier,
+        "environment_key_hashes",
+        lambda _values: {"SAFE": "digest"},
+    )
+    monkeypatch.setattr(
+        classifier,
+        "require_topology_reconciliation_secrets",
+        lambda _root: _RecordingContext(events, "guard", guard),
+    )
+    monkeypatch.setattr(
+        classifier,
+        "_read_gateway_admin_password",
+        admin_password,
+    )
+
+    class Identity:
+        def __init__(self, **kwargs: object) -> None:
+            assert kwargs["base_url"] == "http://127.0.0.1:8081"
+            assert kwargs["admin_username"] == "datariver-bootstrap"
+            assert kwargs["admin_password"] == "admin-secret-sentinel"
+            events.append("identity")
+
+        def classify_production_web_invariant(self) -> object:
+            events.append("diagnostic")
+            if failure is not None:
+                raise failure
+            return probe_module._ProductionWebInvariantEvidence(
+                predicate=probe_module.ProductionWebInvariantPredicate.PASS,
+                fingerprint="a" * 64,
+                client_match_count=1,
+                mapper_count=1,
+            )
+
+        def release_without_mutation(self) -> None:
+            events.append("release")
+
+    monkeypatch.setattr(classifier, "KeycloakGatewayAuthParityIdentity", Identity)
+
+
+@pytest.mark.parametrize(
+    "drift",
+    (
+        "profile",
+        "deployment",
+        "gateway-selected",
+        "graph-selected",
+        "environment-path",
+        "environment-hash",
+        "keycloak-port",
+    ),
+)
+def test_classifier_mac_state_and_environment_drift_is_fixed_before_secret_or_admin_read(
+    drift: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    classifier = _load_classifier_module()
+    state = SimpleNamespace(
+        profile="portable-development" if drift == "profile" else "mac-development",
+        deployment_mode="offline" if drift == "deployment" else "build",
+        env_file="provider-path-secret" if drift == "environment-path" else ".env.mac-development",
+        environment_key_hashes={"SAFE": "wrong" if drift == "environment-hash" else "digest"},
+        local_gateway=drift == "gateway-selected",
+        local_graph=drift == "graph-selected",
+    )
+    monkeypatch.setattr(classifier, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(
+        classifier,
+        "read_env_values",
+        lambda _path: {
+            "SAFE": "opaque-provider-value",
+            "KEYCLOAK_PORT": "provider-port-secret" if drift == "keycloak-port" else "8081",
+        },
+    )
+    monkeypatch.setattr(classifier, "environment_key_hashes", lambda _values: {"SAFE": "digest"})
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"^GATEWAY_PRODUCTION_INVARIANT_CONTEXT_INVALID$",
+    ) as captured:
+        classifier._mac_environment()
+
+    combined = capsys.readouterr().out + capsys.readouterr().err + str(captured.value)
+    for forbidden in ("provider-path", "provider-port", "opaque-provider"):
+        assert forbidden not in combined
+
+
+def test_classifier_holds_lock_state_env_exact8_guard_and_releases_before_one_line_output(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    classifier = _load_classifier_module()
+    events: list[str] = []
+    _install_classifier_runtime(classifier, probe, monkeypatch, events)
+    monkeypatch.setattr(sys, "argv", [str(CLASSIFIER_MODULE_PATH)])
+
+    assert classifier.main() == 0
+
+    assert events == [
+        "lock-enter",
+        "state",
+        "env",
+        "guard-enter",
+        "guard-revalidate",
+        "password-read",
+        "guard-revalidate",
+        "identity",
+        "diagnostic",
+        "release",
+        "guard-revalidate",
+        "guard-exit",
+        "lock-exit",
+    ]
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert output.out == (
+        "predicate=PASS client_match_count_known=true client_match_count=1 "
+        "mapper_count_known=true mapper_count=1 mutation_count=0 retry_count=0\n"
+    )
+    assert "a" * 64 not in output.out
+    assert "admin-secret-sentinel" not in output.out
+
+
+def test_classifier_rejects_exact8_guard_key_drift_before_admin_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    classifier = _load_classifier_module()
+    events: list[str] = []
+    _install_classifier_runtime(classifier, probe, monkeypatch, events)
+    guard = SimpleNamespace(
+        file_descriptors={name: index for index, name in enumerate(classifier.SECRET_NAMES[:-1])},
+        file_identities={name: (index,) for index, name in enumerate(classifier.SECRET_NAMES[:-1])},
+        revalidate=lambda: events.append("drift-guard-revalidate"),
+    )
+    monkeypatch.setattr(
+        classifier,
+        "require_topology_reconciliation_secrets",
+        lambda _root: _RecordingContext(events, "drift-guard", guard),
+    )
+    monkeypatch.setattr(sys, "argv", [str(CLASSIFIER_MODULE_PATH)])
+
+    assert classifier.main() == 2
+
+    assert "password-read" not in events
+    assert "identity" not in events
+    assert events[-2:] == ["drift-guard-exit", "lock-exit"]
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert output.out.startswith("predicate=UNKNOWN ")
+
+
+@pytest.mark.parametrize("failure", (RuntimeError("raw-runtime-sentinel"), KeyboardInterrupt()))
+def test_classifier_baseexception_closes_every_resource_and_emits_only_fixed_unknown(
+    failure: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    classifier = _load_classifier_module()
+    events: list[str] = []
+    _install_classifier_runtime(classifier, probe, monkeypatch, events, failure=failure)
+    monkeypatch.setattr(sys, "argv", [str(CLASSIFIER_MODULE_PATH)])
+
+    assert classifier.main() == 2
+
+    assert events.count("diagnostic") == 1
+    assert events.count("release") == 1
+    assert events[-2:] == ["guard-exit", "lock-exit"]
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert output.out == (
+        "predicate=UNKNOWN client_match_count_known=false mapper_count_known=false "
+        "mutation_count=0 retry_count=0\n"
+    )
+    assert "raw-runtime-sentinel" not in output.out
+
+
+def test_classifier_rejects_all_arguments_before_lock_or_admin_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    classifier = _load_classifier_module()
+    entered: list[str] = []
+    monkeypatch.setattr(
+        classifier,
+        "exclusive_docker_workflow_lock",
+        lambda _root: entered.append("lock"),
+    )
+    monkeypatch.setattr(sys, "argv", [str(CLASSIFIER_MODULE_PATH), "provider-url-secret"])
+
+    assert classifier.main() == 2
+
+    assert entered == []
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert output.out == (
+        "predicate=UNKNOWN client_match_count_known=false mapper_count_known=false "
+        "mutation_count=0 retry_count=0\n"
+    )
+    assert "provider-url-secret" not in output.out
 
 
 def test_cleanup_retains_multiple_or_nonexact_task_resources_without_deleting(

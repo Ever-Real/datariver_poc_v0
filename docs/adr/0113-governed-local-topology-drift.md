@@ -118,6 +118,24 @@ redirect/origin lists, PKCE and other authentication attributes, default/optiona
 normalized mapper configuration. Missing, duplicate, extra or drifted authentication surfaces fail
 closed without exposing their values.
 
+The fixed Mac-development diagnostic `classify_gateway_production_invariant.py` uses that same
+private normalizer; it does not duplicate or relax the runtime predicate. Normal reconciliation
+continues to collapse every internal predicate to
+`GATEWAY_AUTH_PARITY_PRODUCTION_INVARIANT_FAILED`. The diagnostic holds the existing exclusive
+workflow lock, requires the exact Mac AppliedState and ignored environment fingerprint, retains the
+reviewed eight-secret guard and reads the held administrator-password descriptor through its
+existing pre/post revalidation. It then performs exactly one memory-only administrator token grant
+(`admin_token_grant=1`) followed only by the fixed `datariver-web` search, exact client-document and
+complete bounded mapper reads. This administrator boundary is not a human or fixture PKCE login.
+Password, token, provider response, client/mapper content and fingerprint are discarded locally.
+
+Its only evidence is one line containing a closed predicate, known booleans and bounded client or
+mapper counts when available, plus `mutation_count=0` and `retry_count=0`. Missing counts are omitted
+rather than estimated. The executable accepts no URL, realm, client or field argument and performs
+no fixture absence check, create, update, delete, logout, PKCE flow, topology/capacity action,
+Docker/service operation, state write or push. Source acceptance does not authorize this Admin read;
+runtime remains a separate reviewed exact-one operation.
+
 The operation then executes real HTTP requests for Knowledge Registry and Change Request through
 the direct loopback API, loopback APISIX and Web proxy. It requires identical bounded status,
 response-header and body-digest evidence for authorized `200`, explicitly denied `403`, malformed
