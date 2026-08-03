@@ -22,7 +22,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, NoReturn
 
@@ -72,6 +72,7 @@ _IMAGE_ID = re.compile(r"^sha256:[0-9a-f]{64}$")
 _CONTAINER_ID = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_SECRET = re.compile(rb"^[A-Za-z0-9_-]+$")
 _VERSION_ID = re.compile(r"^[!-~]{1,1024}$")
+_LOCAL_APFS_DEVICE = re.compile(rb"^/dev/disk[0-9]+(?:s[0-9]+){0,2}$")
 _POSTGRES_DB = "datariver_bind_probe"
 _MINIO_ALIAS = "probe"
 _MINIO_BUCKET = "datariver-bind-probe"
@@ -125,6 +126,172 @@ class PathIdentity:
 
 
 @dataclass(frozen=True)
+class DirectoryMetadata:
+    identity: PathIdentity
+    uid: int
+    gid: int
+
+
+@dataclass(frozen=True)
+class BlockDeviceIdentity:
+    device: int
+    inode: int
+    raw_device: int
+
+
+@dataclass(frozen=True)
+class MountEvidence:
+    source: bytes = field(repr=False)
+    options: frozenset[bytes] = field(repr=False)
+    block_device: BlockDeviceIdentity
+
+
+@dataclass
+class MountRootGuard:
+    executor: PrivateExecutor = field(repr=False)
+    mount_root: Path = field(repr=False)
+    descriptor: int
+    metadata: DirectoryMetadata
+    mount: MountEvidence = field(repr=False)
+    filesystem_noowners: bool
+    group_writable: bool
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    def revalidate(self, *, classification: str = "PROBE_HOST_ROOT_CHANGED") -> None:
+        if self._closed:
+            fail(classification)
+        try:
+            descriptor_metadata = _directory_metadata_from_stat(
+                os.fstat(self.descriptor),
+                classification=classification,
+            )
+        except OSError as error:
+            raise ProbeError(classification) from error
+        path_metadata = _directory_metadata(self.mount_root, classification=classification)
+        current_mount = _mount_evidence(
+            self.executor,
+            self.mount_root,
+            classification=classification,
+        )
+        if (
+            descriptor_metadata != self.metadata
+            or path_metadata != self.metadata
+            or current_mount != self.mount
+        ):
+            fail(classification)
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            try:
+                os.close(self.descriptor)
+            except OSError as error:
+                raise ProbeError("PROBE_HOST_ROOT_CLOSE_FAILED") from error
+
+
+@dataclass(frozen=True)
+class GuardedDirectory:
+    path: Path = field(repr=False)
+    descriptor: int
+    metadata: DirectoryMetadata
+
+    def revalidate(self, *, classification: str) -> None:
+        try:
+            descriptor_metadata = _directory_metadata_from_stat(
+                os.fstat(self.descriptor),
+                classification=classification,
+            )
+        except OSError as error:
+            raise ProbeError(classification) from error
+        path_metadata = _directory_metadata(self.path, classification=classification)
+        if descriptor_metadata != self.metadata or path_metadata != self.metadata:
+            fail(classification)
+
+
+@dataclass
+class LayoutGuard:
+    parent: GuardedDirectory
+    leaf: GuardedDirectory
+    postgres: GuardedDirectory
+    postgres_data: GuardedDirectory
+    minio: GuardedDirectory
+    minio_data: GuardedDirectory
+    evidence: GuardedDirectory
+    secrets: GuardedDirectory
+    _closed: bool = field(default=False, init=False, repr=False)
+
+    @property
+    def directories(self) -> tuple[GuardedDirectory, ...]:
+        return (
+            self.parent,
+            self.leaf,
+            self.postgres,
+            self.postgres_data,
+            self.minio,
+            self.minio_data,
+            self.evidence,
+            self.secrets,
+        )
+
+    def revalidate(self, *, classification: str = "PROBE_LAYOUT_CHANGED") -> None:
+        if self._closed:
+            fail(classification)
+        for directory in self.directories:
+            directory.revalidate(classification=classification)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        close_failed = False
+        for directory in reversed(self.directories):
+            try:
+                os.close(directory.descriptor)
+            except OSError:
+                close_failed = True
+        if close_failed:
+            fail("PROBE_LAYOUT_CLOSE_FAILED")
+
+    def verify_removed(self, *, parent_created: bool) -> None:
+        if self._closed:
+            fail("PROBE_CLEANUP_EVIDENCE_INVALID")
+        for directory in self.directories:
+            try:
+                descriptor_metadata = _directory_metadata_from_stat(
+                    os.fstat(directory.descriptor),
+                    classification="PROBE_CLEANUP_EVIDENCE_INVALID",
+                )
+            except OSError as error:
+                raise ProbeError("PROBE_CLEANUP_EVIDENCE_INVALID") from error
+            if descriptor_metadata != directory.metadata:
+                fail("PROBE_CLEANUP_EVIDENCE_INVALID")
+        for directory in self.directories[1:]:
+            try:
+                directory.path.lstat()
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise ProbeError("PROBE_CLEANUP_EVIDENCE_INVALID") from error
+            fail("PROBE_CLEANUP_EVIDENCE_INVALID")
+        if parent_created:
+            try:
+                self.parent.path.lstat()
+            except FileNotFoundError:
+                return
+            except OSError as error:
+                raise ProbeError("PROBE_CLEANUP_EVIDENCE_INVALID") from error
+            fail("PROBE_CLEANUP_EVIDENCE_INVALID")
+        self.parent.revalidate(classification="PROBE_CLEANUP_EVIDENCE_INVALID")
+
+
+@dataclass(frozen=True)
+class CleanupEntry:
+    components: tuple[str, ...]
+    identity: PathIdentity
+    is_directory: bool
+
+
+@dataclass(frozen=True)
 class RegularFileIdentity:
     device: int
     inode: int
@@ -146,6 +313,7 @@ class ProbeLayout:
     parent_created: bool
     parent_identity: PathIdentity
     leaf_identity: PathIdentity
+    guard: LayoutGuard = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -176,6 +344,7 @@ class ImageEvidence:
 @dataclass(frozen=True)
 class ProbeEvidence:
     filesystem_noowners: bool
+    mount_root_group_writable: bool
     postgres_uid: int
     postgres_gid: int
     postgres_mode: int
@@ -190,6 +359,7 @@ class ProbeEvidence:
         return (
             "DURABLE_BIND_PROBE_OK "
             f"filesystem_noowners={str(self.filesystem_noowners).lower()} "
+            f"mount_root_group_writable={str(self.mount_root_group_writable).lower()} "
             "ownership_enforcement_claimed=false "
             f"postgres_uid={self.postgres_uid} postgres_gid={self.postgres_gid} "
             f"postgres_mode={self.postgres_mode:o} minio_uid={self.minio_uid} "
@@ -305,6 +475,7 @@ class PrivateExecutor:
         destination: Path,
         classification: str,
         timeout_seconds: int,
+        destination_directory_descriptor: int | None = None,
     ) -> tuple[int, str]:
         command = self._validate_arguments(arguments)
         flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
@@ -317,7 +488,15 @@ class PrivateExecutor:
         captured_size = 0
         captured_digest = ""
         try:
-            descriptor = os.open(destination, flags, 0o600)
+            if destination_directory_descriptor is None:
+                descriptor = os.open(destination, flags, 0o600)
+            else:
+                descriptor = os.open(
+                    destination.name,
+                    flags,
+                    0o600,
+                    dir_fd=destination_directory_descriptor,
+                )
             with os.fdopen(descriptor, "wb", closefd=True) as stream:
                 descriptor = None
                 opened = _regular_file_identity_from_metadata(
@@ -364,10 +543,17 @@ class PrivateExecutor:
                 stream.flush()
                 os.fsync(stream.fileno())
                 metadata = os.fstat(stream.fileno())
-                current_path = _regular_file_identity(
-                    destination,
-                    classification="POSTGRES_PROBE_DUMP_PATH_CHANGED",
-                )
+                if destination_directory_descriptor is None:
+                    current_path = _regular_file_identity(
+                        destination,
+                        classification="POSTGRES_PROBE_DUMP_PATH_CHANGED",
+                    )
+                else:
+                    current_path = _regular_file_identity_at(
+                        destination_directory_descriptor,
+                        destination.name,
+                        classification="POSTGRES_PROBE_DUMP_PATH_CHANGED",
+                    )
                 if current_path.device != metadata.st_dev or current_path.inode != metadata.st_ino:
                     fail("POSTGRES_PROBE_DUMP_PATH_CHANGED")
                 captured = _regular_file_identity_from_metadata(
@@ -423,18 +609,34 @@ def _json_document(payload: bytes, *, classification: str) -> dict[str, Any]:
     return document[0]
 
 
-def _path_identity(path: Path, *, classification: str) -> PathIdentity:
+def _directory_metadata_from_stat(
+    metadata: os.stat_result,
+    *,
+    classification: str,
+) -> DirectoryMetadata:
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+        fail(classification)
+    return DirectoryMetadata(
+        identity=PathIdentity(
+            device=metadata.st_dev,
+            inode=metadata.st_ino,
+            mode=stat.S_IMODE(metadata.st_mode),
+        ),
+        uid=metadata.st_uid,
+        gid=metadata.st_gid,
+    )
+
+
+def _directory_metadata(path: Path, *, classification: str) -> DirectoryMetadata:
     try:
         metadata = path.lstat()
     except OSError as error:
         raise ProbeError(classification) from error
-    if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
-        fail(classification)
-    return PathIdentity(
-        device=metadata.st_dev,
-        inode=metadata.st_ino,
-        mode=stat.S_IMODE(metadata.st_mode),
-    )
+    return _directory_metadata_from_stat(metadata, classification=classification)
+
+
+def _path_identity(path: Path, *, classification: str) -> PathIdentity:
+    return _directory_metadata(path, classification=classification).identity
 
 
 def _require_same_path(path: Path, identity: PathIdentity, *, classification: str) -> None:
@@ -443,20 +645,212 @@ def _require_same_path(path: Path, identity: PathIdentity, *, classification: st
         fail(classification)
 
 
-def _mkdir_private(path: Path) -> None:
+def _block_device_identity(source: bytes, *, classification: str) -> BlockDeviceIdentity:
+    if _LOCAL_APFS_DEVICE.fullmatch(source) is None:
+        fail(classification)
     try:
-        path.mkdir(mode=0o700)
-        os.chmod(path, 0o700)
+        path = Path(os.fsdecode(source))
+        linked = path.lstat()
+        resolved = path.stat()
+    except (OSError, UnicodeDecodeError) as error:
+        raise ProbeError(classification) from error
+    if (
+        stat.S_ISLNK(linked.st_mode)
+        or not stat.S_ISBLK(linked.st_mode)
+        or not stat.S_ISBLK(resolved.st_mode)
+        or linked.st_dev != resolved.st_dev
+        or linked.st_ino != resolved.st_ino
+        or linked.st_rdev <= 0
+        or linked.st_rdev != resolved.st_rdev
+    ):
+        fail(classification)
+    return BlockDeviceIdentity(
+        device=linked.st_dev,
+        inode=linked.st_ino,
+        raw_device=linked.st_rdev,
+    )
+
+
+def _mount_evidence(
+    executor: PrivateExecutor,
+    mount_root: Path,
+    *,
+    classification: str,
+) -> MountEvidence:
+    payload = executor.output(("mount",), classification="PROBE_FILESYSTEM_INSPECT_FAILED")
+    marker = b" on " + os.fsencode(mount_root) + b" ("
+    matches = [line for line in payload.splitlines() if marker in line]
+    if len(matches) != 1 or not matches[0].endswith(b")"):
+        fail(classification)
+    source, separator, option_payload = matches[0].partition(marker)
+    options = frozenset(part.strip().lower() for part in option_payload[:-1].split(b","))
+    if (
+        separator != marker
+        or not source
+        or b"apfs" not in options
+        or b"local" not in options
+        or b"noowners" not in options
+    ):
+        fail(classification)
+    return MountEvidence(
+        source=source,
+        options=options,
+        block_device=_block_device_identity(source, classification=classification),
+    )
+
+
+def capture_mount_root_guard(
+    executor: PrivateExecutor,
+    mount_root: Path,
+) -> MountRootGuard:
+    """Capture the fixed APFS mount identity without exposing its source token."""
+
+    if mount_root != DATA_PARENT.parent:
+        fail("PROBE_HOST_ROOT_INVALID")
+    try:
+        if not mount_root.is_absolute() or mount_root.resolve(strict=True) != mount_root:
+            fail("PROBE_HOST_ROOT_INVALID")
+    except OSError as error:
+        raise ProbeError("PROBE_HOST_ROOT_INVALID") from error
+    metadata = _directory_metadata(mount_root, classification="PROBE_HOST_ROOT_INVALID")
+    if (
+        metadata.identity.mode != 0o775
+        or metadata.identity.mode & 0o002
+        or metadata.uid != os.getuid()
+        or metadata.gid != os.getgid()
+    ):
+        fail("PROBE_HOST_ROOT_INVALID")
+    parent_metadata = _directory_metadata(
+        mount_root.parent,
+        classification="PROBE_HOST_ROOT_INVALID",
+    )
+    if parent_metadata.identity.device == metadata.identity.device:
+        fail("PROBE_HOST_ROOT_INVALID")
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            mount_root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+        descriptor_metadata = _directory_metadata_from_stat(
+            os.fstat(descriptor),
+            classification="PROBE_HOST_ROOT_INVALID",
+        )
+        if descriptor_metadata != metadata:
+            fail("PROBE_HOST_ROOT_INVALID")
+        mount = _mount_evidence(
+            executor,
+            mount_root,
+            classification="PROBE_FILESYSTEM_EVIDENCE_INVALID",
+        )
+        guard = MountRootGuard(
+            executor=executor,
+            mount_root=mount_root,
+            descriptor=descriptor,
+            metadata=metadata,
+            mount=mount,
+            filesystem_noowners=True,
+            group_writable=True,
+        )
+        descriptor = None
+        return guard
+    except ProbeError:
+        raise
+    except OSError as error:
+        raise ProbeError("PROBE_HOST_ROOT_INVALID") from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def _component_name(path: Path, *, classification: str) -> str:
+    name = path.name
+    if not name or name in {".", ".."} or "/" in name or "\x00" in name:
+        fail(classification)
+    return name
+
+
+def _open_private_directory_at(
+    parent_descriptor: int,
+    name: str,
+    *,
+    allow_existing: bool,
+    exists_classification: str,
+    invalid_classification: str,
+) -> tuple[int, DirectoryMetadata, bool]:
+    created = False
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent_descriptor)
+        created = True
+    except FileExistsError as error:
+        if not allow_existing:
+            raise ProbeError(exists_classification) from error
     except OSError as error:
         raise ProbeError("PROBE_HOST_PATH_CREATE_FAILED") from error
 
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=parent_descriptor,
+        )
+        opened = _directory_metadata_from_stat(
+            os.fstat(descriptor),
+            classification=invalid_classification,
+        )
+        linked = _directory_metadata_from_stat(
+            os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False),
+            classification=invalid_classification,
+        )
+        if opened != linked:
+            fail(invalid_classification)
+        if created:
+            os.fchmod(descriptor, 0o700)
+            os.fsync(descriptor)
+            os.fsync(parent_descriptor)
+            opened = _directory_metadata_from_stat(
+                os.fstat(descriptor),
+                classification=invalid_classification,
+            )
+        if opened.identity.mode != 0o700 or opened.uid != os.getuid() or opened.gid != os.getgid():
+            fail(invalid_classification)
+        result = (descriptor, opened, created)
+        descriptor = None
+        return result
+    except ProbeError:
+        raise
+    except OSError as error:
+        raise ProbeError(invalid_classification) from error
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
 
-def prepare_layout(parent: Path) -> ProbeLayout:
+
+def _create_private_child(
+    parent_descriptor: int,
+    name: str,
+) -> tuple[int, DirectoryMetadata]:
+    descriptor, metadata, _created = _open_private_directory_at(
+        parent_descriptor,
+        name,
+        allow_existing=False,
+        exists_classification="PROBE_LEAF_ALREADY_EXISTS",
+        invalid_classification="PROBE_LEAF_INVALID",
+    )
+    return descriptor, metadata
+
+
+def prepare_layout(parent: Path, *, root_descriptor: int | None = None) -> ProbeLayout:
     """Create the absent-only private probe tree after validating its parent mount."""
 
     mount_root = parent.parent
-    mount_identity = _path_identity(mount_root, classification="PROBE_HOST_ROOT_INVALID")
-    if mount_identity.mode & 0o022:
+    mount_metadata = _directory_metadata(mount_root, classification="PROBE_HOST_ROOT_INVALID")
+    borrowed_root = root_descriptor is not None
+    if borrowed_root:
+        if parent != DATA_PARENT or mount_metadata.identity.mode != 0o775:
+            fail("PROBE_HOST_ROOT_INVALID")
+    elif mount_metadata.identity.mode & 0o022:
         fail("PROBE_HOST_ROOT_INVALID")
     try:
         free_bytes = os.statvfs(mount_root).f_bavail * os.statvfs(mount_root).f_frsize
@@ -465,59 +859,136 @@ def prepare_layout(parent: Path) -> ProbeLayout:
     if free_bytes < MINIMUM_HOST_FREE_BYTES:
         fail("PROBE_HOST_CAPACITY_INSUFFICIENT")
 
-    parent_created = False
-    if parent.exists() or parent.is_symlink():
-        parent_identity = _path_identity(parent, classification="PROBE_PARENT_INVALID")
-        if parent_identity.mode != 0o700 or parent.stat().st_uid != os.getuid():
-            fail("PROBE_PARENT_INVALID")
-    else:
-        _mkdir_private(parent)
-        parent_created = True
-        parent_identity = _path_identity(parent, classification="PROBE_PARENT_INVALID")
+    owned_root_descriptor: int | None = None
+    held_descriptors: list[int] = []
+    try:
+        if root_descriptor is None:
+            owned_root_descriptor = os.open(
+                mount_root,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+            root_descriptor = owned_root_descriptor
+        root_metadata = _directory_metadata_from_stat(
+            os.fstat(root_descriptor),
+            classification="PROBE_HOST_ROOT_INVALID",
+        )
+        if root_metadata != mount_metadata:
+            fail("PROBE_HOST_ROOT_INVALID")
 
-    leaf = parent / PROBE_LEAF_NAME
-    if leaf.exists() or leaf.is_symlink():
-        fail("PROBE_LEAF_ALREADY_EXISTS")
-    _mkdir_private(leaf)
-    leaf_identity = _path_identity(leaf, classification="PROBE_LEAF_INVALID")
+        parent_name = _component_name(parent, classification="PROBE_PARENT_INVALID")
+        parent_descriptor, parent_metadata, parent_created = _open_private_directory_at(
+            root_descriptor,
+            parent_name,
+            allow_existing=True,
+            exists_classification="PROBE_PARENT_INVALID",
+            invalid_classification="PROBE_PARENT_INVALID",
+        )
+        held_descriptors.append(parent_descriptor)
+        leaf = parent / PROBE_LEAF_NAME
+        leaf_descriptor, leaf_metadata, _leaf_created = _open_private_directory_at(
+            parent_descriptor,
+            _component_name(leaf, classification="PROBE_LEAF_INVALID"),
+            allow_existing=False,
+            exists_classification="PROBE_LEAF_ALREADY_EXISTS",
+            invalid_classification="PROBE_LEAF_INVALID",
+        )
+        held_descriptors.append(leaf_descriptor)
 
-    postgres_data = leaf / "postgres" / "data"
-    minio_data = leaf / "minio" / "data"
-    evidence = leaf / "evidence"
-    secrets_dir = leaf / "secrets"
-    for directory in (
-        postgres_data.parent,
-        postgres_data,
-        minio_data.parent,
-        minio_data,
-        evidence,
-        secrets_dir,
-    ):
-        _mkdir_private(directory)
+        postgres = leaf / "postgres"
+        postgres_data = postgres / "data"
+        minio = leaf / "minio"
+        minio_data = minio / "data"
+        evidence = leaf / "evidence"
+        secrets_dir = leaf / "secrets"
 
-    return ProbeLayout(
-        parent=parent,
-        leaf=leaf,
-        postgres_data=postgres_data,
-        minio_data=minio_data,
-        evidence=evidence,
-        secrets_dir=secrets_dir,
-        postgres_password_file=secrets_dir / "postgres_password",
-        minio_access_file=secrets_dir / "minio_access_key",
-        minio_secret_file=secrets_dir / "minio_secret_key",
-        parent_created=parent_created,
-        parent_identity=parent_identity,
-        leaf_identity=leaf_identity,
-    )
+        postgres_descriptor, postgres_metadata = _create_private_child(
+            leaf_descriptor,
+            postgres.name,
+        )
+        held_descriptors.append(postgres_descriptor)
+        postgres_data_descriptor, postgres_data_metadata = _create_private_child(
+            postgres_descriptor,
+            postgres_data.name,
+        )
+        held_descriptors.append(postgres_data_descriptor)
+        minio_descriptor, minio_metadata = _create_private_child(
+            leaf_descriptor,
+            minio.name,
+        )
+        held_descriptors.append(minio_descriptor)
+        minio_data_descriptor, minio_data_metadata = _create_private_child(
+            minio_descriptor,
+            minio_data.name,
+        )
+        held_descriptors.append(minio_data_descriptor)
+        evidence_descriptor, evidence_metadata = _create_private_child(
+            leaf_descriptor,
+            evidence.name,
+        )
+        held_descriptors.append(evidence_descriptor)
+        secrets_descriptor, secrets_metadata = _create_private_child(
+            leaf_descriptor,
+            secrets_dir.name,
+        )
+        held_descriptors.append(secrets_descriptor)
+
+        guard = LayoutGuard(
+            parent=GuardedDirectory(parent, parent_descriptor, parent_metadata),
+            leaf=GuardedDirectory(leaf, leaf_descriptor, leaf_metadata),
+            postgres=GuardedDirectory(postgres, postgres_descriptor, postgres_metadata),
+            postgres_data=GuardedDirectory(
+                postgres_data,
+                postgres_data_descriptor,
+                postgres_data_metadata,
+            ),
+            minio=GuardedDirectory(minio, minio_descriptor, minio_metadata),
+            minio_data=GuardedDirectory(
+                minio_data,
+                minio_data_descriptor,
+                minio_data_metadata,
+            ),
+            evidence=GuardedDirectory(evidence, evidence_descriptor, evidence_metadata),
+            secrets=GuardedDirectory(secrets_dir, secrets_descriptor, secrets_metadata),
+        )
+        guard.revalidate(classification="PROBE_LAYOUT_INVALID")
+        held_descriptors.clear()
+        return ProbeLayout(
+            parent=parent,
+            leaf=leaf,
+            postgres_data=postgres_data,
+            minio_data=minio_data,
+            evidence=evidence,
+            secrets_dir=secrets_dir,
+            postgres_password_file=secrets_dir / "postgres_password",
+            minio_access_file=secrets_dir / "minio_access_key",
+            minio_secret_file=secrets_dir / "minio_secret_key",
+            parent_created=parent_created,
+            parent_identity=parent_metadata.identity,
+            leaf_identity=leaf_metadata.identity,
+            guard=guard,
+        )
+    except ProbeError:
+        raise
+    except OSError as error:
+        raise ProbeError("PROBE_HOST_PATH_CREATE_FAILED") from error
+    finally:
+        for descriptor in reversed(held_descriptors):
+            os.close(descriptor)
+        if owned_root_descriptor is not None:
+            os.close(owned_root_descriptor)
 
 
-def _write_secret(path: Path, value: bytes) -> RegularFileIdentity:
+def _write_secret(
+    directory_descriptor: int,
+    name: str,
+    value: bytes,
+) -> RegularFileIdentity:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor: int | None = None
     try:
-        descriptor = os.open(path, flags, 0o600)
+        descriptor = os.open(name, flags, 0o600, dir_fd=directory_descriptor)
         with os.fdopen(descriptor, "wb", closefd=True) as stream:
             descriptor = None
             stream.write(value + b"\n")
@@ -566,6 +1037,23 @@ def _regular_file_identity(path: Path, *, classification: str) -> RegularFileIde
     return _regular_file_identity_from_metadata(metadata, classification=classification)
 
 
+def _regular_file_identity_at(
+    directory_descriptor: int,
+    name: str,
+    *,
+    classification: str,
+) -> RegularFileIdentity:
+    try:
+        metadata = os.stat(
+            name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as error:
+        raise ProbeError(classification) from error
+    return _regular_file_identity_from_metadata(metadata, classification=classification)
+
+
 def _secret_paths(layout: ProbeLayout) -> tuple[Path, Path, Path]:
     return (
         layout.postgres_password_file,
@@ -574,7 +1062,13 @@ def _secret_paths(layout: ProbeLayout) -> tuple[Path, Path, Path]:
     )
 
 
+def _secret_names(layout: ProbeLayout) -> tuple[str, str, str]:
+    postgres_password, minio_access, minio_secret = _secret_paths(layout)
+    return postgres_password.name, minio_access.name, minio_secret.name
+
+
 def create_probe_secrets(layout: ProbeLayout) -> SecretBundle:
+    layout.guard.revalidate()
     postgres_password = secrets.token_urlsafe(36).encode("ascii")
     minio_access = secrets.token_hex(10).encode("ascii")
     minio_secret = secrets.token_urlsafe(32).encode("ascii")
@@ -587,18 +1081,28 @@ def create_probe_secrets(layout: ProbeLayout) -> SecretBundle:
         or len(set(values)) != 3
     ):
         fail("PROBE_SECRET_CONTRACT_INVALID")
-    paths = _secret_paths(layout)
+    names = _secret_names(layout)
+    directory_descriptor = layout.guard.secrets.descriptor
     identities = (
-        _write_secret(paths[0], values[0]),
-        _write_secret(paths[1], values[1]),
-        _write_secret(paths[2], values[2]),
+        _write_secret(directory_descriptor, names[0], values[0]),
+        _write_secret(directory_descriptor, names[1], values[1]),
+        _write_secret(directory_descriptor, names[2], values[2]),
     )
-    _fsync_directory(layout.secrets_dir)
+    try:
+        os.fsync(directory_descriptor)
+    except OSError as error:
+        raise ProbeError("PROBE_DIRECTORY_FSYNC_FAILED") from error
     current_identities = tuple(
-        _regular_file_identity(path, classification="PROBE_SECRET_FILE_CHANGED") for path in paths
+        _regular_file_identity_at(
+            directory_descriptor,
+            name,
+            classification="PROBE_SECRET_FILE_CHANGED",
+        )
+        for name in names
     )
     if current_identities != identities:
         fail("PROBE_SECRET_FILE_CHANGED")
+    layout.guard.revalidate()
     return SecretBundle(
         postgres_password=postgres_password,
         minio_access=minio_access,
@@ -755,24 +1259,44 @@ def _fsync_directory(path: Path) -> None:
 
 
 def probe_host_atomicity(layout: ProbeLayout) -> str:
-    partial = layout.evidence / ".atomic.partial"
-    final = layout.evidence / "atomic.ok"
+    layout.guard.revalidate()
+    partial = ".atomic.partial"
+    final = "atomic.ok"
+    directory_descriptor = layout.guard.evidence.descriptor
     payload = b"datariver-persistent-bind-atomic-v1\n"
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     descriptor: int | None = None
     try:
-        descriptor = os.open(partial, flags, 0o600)
+        descriptor = os.open(partial, flags, 0o600, dir_fd=directory_descriptor)
         with os.fdopen(descriptor, "wb", closefd=True) as stream:
             descriptor = None
             stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(partial, final)
-        _fsync_directory(layout.evidence)
-        if final.read_bytes() != payload:
+        os.replace(
+            partial,
+            final,
+            src_dir_fd=directory_descriptor,
+            dst_dir_fd=directory_descriptor,
+        )
+        os.fsync(directory_descriptor)
+        read_descriptor = os.open(
+            final,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=directory_descriptor,
+        )
+        try:
+            with os.fdopen(read_descriptor, "rb", closefd=True) as stream:
+                read_descriptor = -1
+                readback = stream.read(len(payload) + 1)
+        finally:
+            if read_descriptor >= 0:
+                os.close(read_descriptor)
+        if readback != payload:
             fail("PROBE_ATOMIC_READBACK_FAILED")
+        layout.guard.revalidate()
         return hashlib.sha256(payload).hexdigest()
     except ProbeError:
         raise
@@ -1192,6 +1716,15 @@ def _parse_uid_mode(payload: bytes, *, classification: str) -> tuple[int, int, i
     return uid, gid, mode
 
 
+def _revalidate_host_guards(
+    mount_guard: MountRootGuard | None,
+    layout: ProbeLayout,
+) -> None:
+    if mount_guard is not None:
+        mount_guard.revalidate()
+    layout.guard.revalidate()
+
+
 def _start_postgres(
     executor: PrivateExecutor,
     *,
@@ -1199,16 +1732,21 @@ def _start_postgres(
     secrets_bundle: SecretBundle,
     created_containers: set[str],
     spec: ProbeContainerSpec,
+    mount_guard: MountRootGuard | None = None,
 ) -> tuple[str, tuple[int, int, int], int, str]:
+    _revalidate_host_guards(mount_guard, layout)
     created_containers.add(POSTGRES_PROBE_CONTAINER)
-    created = (
-        executor.output(
-            postgres_create_arguments(layout),
-            classification="POSTGRES_PROBE_CREATE_FAILED",
+    try:
+        created = (
+            executor.output(
+                postgres_create_arguments(layout),
+                classification="POSTGRES_PROBE_CREATE_FAILED",
+            )
+            .decode("ascii", errors="ignore")
+            .strip()
         )
-        .decode("ascii", errors="ignore")
-        .strip()
-    )
+    finally:
+        _revalidate_host_guards(mount_guard, layout)
     if _CONTAINER_ID.fullmatch(created) is None:
         fail("POSTGRES_PROBE_CREATE_EVIDENCE_INVALID")
     executor.output(
@@ -1256,6 +1794,7 @@ def _start_postgres(
     )
     dump_partial = layout.evidence / "postgres.dump.partial"
     dump_final = layout.evidence / "postgres.dump"
+    _revalidate_host_guards(mount_guard, layout)
     dump_bytes, dump_sha256 = executor.stream_stdout(
         (
             "docker",
@@ -1275,12 +1814,19 @@ def _start_postgres(
         destination=dump_partial,
         classification="POSTGRES_PROBE_DUMP_FAILED",
         timeout_seconds=POSTGRES_STOP_TIMEOUT_SECONDS,
+        destination_directory_descriptor=layout.guard.evidence.descriptor,
     )
     try:
-        os.replace(dump_partial, dump_final)
-        _fsync_directory(layout.evidence)
+        os.replace(
+            dump_partial.name,
+            dump_final.name,
+            src_dir_fd=layout.guard.evidence.descriptor,
+            dst_dir_fd=layout.guard.evidence.descriptor,
+        )
+        os.fsync(layout.guard.evidence.descriptor)
     except OSError as error:
         raise ProbeError("POSTGRES_PROBE_DUMP_PUBLISH_FAILED") from error
+    _revalidate_host_guards(mount_guard, layout)
     ownership = _parse_uid_mode(
         executor.output(
             (
@@ -1496,16 +2042,21 @@ def _start_minio(
     bundle: SecretBundle,
     created_containers: set[str],
     spec: ProbeContainerSpec,
+    mount_guard: MountRootGuard | None = None,
 ) -> tuple[str, tuple[int, int, int], str, tuple[str, ...]]:
+    _revalidate_host_guards(mount_guard, layout)
     created_containers.add(MINIO_PROBE_CONTAINER)
-    created = (
-        executor.output(
-            minio_create_arguments(layout),
-            classification="MINIO_PROBE_CREATE_FAILED",
+    try:
+        created = (
+            executor.output(
+                minio_create_arguments(layout),
+                classification="MINIO_PROBE_CREATE_FAILED",
+            )
+            .decode("ascii", errors="ignore")
+            .strip()
         )
-        .decode("ascii", errors="ignore")
-        .strip()
-    )
+    finally:
+        _revalidate_host_guards(mount_guard, layout)
     if _CONTAINER_ID.fullmatch(created) is None:
         fail("MINIO_PROBE_CREATE_EVIDENCE_INVALID")
     executor.output(
@@ -1692,27 +2243,36 @@ def require_probe_stopped(executor: PrivateExecutor, name: str) -> None:
         fail("PROBE_STOPPED_STATE_INVALID")
 
 
-def _remove_secret_file(path: Path, expected_identity: RegularFileIdentity) -> None:
+def _remove_secret_file(
+    directory_descriptor: int,
+    name: str,
+    expected_identity: RegularFileIdentity,
+) -> None:
     try:
-        parent = path.parent
-        parent_identity = _path_identity(parent, classification="PROBE_SECRET_PARENT_INVALID")
-        current = _regular_file_identity(path, classification="PROBE_SECRET_FILE_INVALID")
+        current = _regular_file_identity_at(
+            directory_descriptor,
+            name,
+            classification="PROBE_SECRET_FILE_INVALID",
+        )
         if current != expected_identity:
             fail("PROBE_SECRET_FILE_CHANGED")
-        path.unlink()
-        _require_same_path(parent, parent_identity, classification="PROBE_SECRET_PARENT_CHANGED")
-        _fsync_directory(parent)
+        os.unlink(name, dir_fd=directory_descriptor)
+        os.fsync(directory_descriptor)
     except ProbeError:
         raise
     except OSError as error:
         raise ProbeError("PROBE_SECRET_UNLINK_FAILED") from error
 
 
-def _secret_presence_count(paths: tuple[Path, ...]) -> int | None:
+def _secret_presence_count(layout: ProbeLayout) -> int | None:
     present = 0
-    for path in paths:
+    for name in _secret_names(layout):
         try:
-            path.lstat()
+            os.stat(
+                name,
+                dir_fd=layout.guard.secrets.descriptor,
+                follow_symlinks=False,
+            )
         except FileNotFoundError:
             continue
         except OSError:
@@ -1757,6 +2317,7 @@ def cleanup_failure(
         RegularFileIdentity,
     ]
     | None,
+    mount_guard: MountRootGuard | None = None,
 ) -> FailureCleanupEvidence:
     """Stop created probes once; unlink secrets only after both are proven stopped."""
 
@@ -1791,16 +2352,29 @@ def cleanup_failure(
         both_stopped = None
     else:
         both_stopped = all(state is True for state in stopped_states)
-    secret_paths = () if layout is None else _secret_paths(layout)
-    retained = _secret_presence_count(secret_paths)
+    if mount_guard is not None:
+        try:
+            mount_guard.revalidate(classification="PROBE_HOST_ROOT_CHANGED")
+        except BaseException:
+            return FailureCleanupEvidence(both_stopped, None, None)
+    if layout is not None:
+        try:
+            layout.guard.revalidate(classification="PROBE_LAYOUT_CHANGED")
+        except BaseException:
+            return FailureCleanupEvidence(both_stopped, None, None)
+    retained = 0 if layout is None else _secret_presence_count(layout)
     if retained is None:
         return FailureCleanupEvidence(both_stopped, None, None)
     if both_stopped is not True or layout is None or secret_file_identities is None:
         return FailureCleanupEvidence(both_stopped, 0, retained)
     try:
         current_identities = tuple(
-            _regular_file_identity(path, classification="PROBE_SECRET_FILE_INVALID")
-            for path in secret_paths
+            _regular_file_identity_at(
+                layout.guard.secrets.descriptor,
+                name,
+                classification="PROBE_SECRET_FILE_INVALID",
+            )
+            for name in _secret_names(layout)
         )
         if current_identities != secret_file_identities:
             fail("PROBE_SECRET_FILE_CHANGED")
@@ -1808,82 +2382,221 @@ def cleanup_failure(
         return FailureCleanupEvidence(True, 0, retained)
     removed = 0
     try:
-        for path, expected_identity in zip(
-            secret_paths,
+        for name, expected_identity in zip(
+            _secret_names(layout),
             secret_file_identities,
             strict=True,
         ):
-            _remove_secret_file(path, expected_identity)
+            _revalidate_host_guards(mount_guard, layout)
+            _remove_secret_file(
+                layout.guard.secrets.descriptor,
+                name,
+                expected_identity,
+            )
             removed += 1
+            _revalidate_host_guards(mount_guard, layout)
     except BaseException:
         return FailureCleanupEvidence(True, None, None)
     return FailureCleanupEvidence(True, removed, 0)
 
 
-def _cleanup_manifest(root: Path) -> tuple[tuple[Path, PathIdentity, bool], ...]:
-    root_resolved = root.resolve(strict=True)
-    entries: list[tuple[Path, PathIdentity, bool]] = []
-    for current_root, directories, files in os.walk(root, topdown=True, followlinks=False):
-        current = Path(current_root)
-        for name in (*directories, *files):
-            path = current / name
-            metadata = path.lstat()
-            if stat.S_ISLNK(metadata.st_mode) or not (
-                stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)
-            ):
+def _cleanup_manifest(root_descriptor: int) -> tuple[CleanupEntry, ...]:
+    entries: list[CleanupEntry] = []
+
+    def visit(directory_descriptor: int, prefix: tuple[str, ...]) -> None:
+        try:
+            names = sorted(os.listdir(directory_descriptor))
+        except OSError as error:
+            raise ProbeError("PROBE_CLEANUP_MANIFEST_INVALID") from error
+        for name in names:
+            if _component_name(Path(name), classification="PROBE_CLEANUP_MANIFEST_INVALID") != name:
                 fail("PROBE_CLEANUP_MANIFEST_INVALID")
-            if path.resolve(strict=True).is_relative_to(root_resolved) is False:
-                fail("PROBE_CLEANUP_MANIFEST_INVALID")
-            if stat.S_ISREG(metadata.st_mode) and metadata.st_nlink != 1:
-                fail("PROBE_CLEANUP_MANIFEST_INVALID")
-            entries.append(
-                (
-                    path,
-                    PathIdentity(metadata.st_dev, metadata.st_ino, stat.S_IMODE(metadata.st_mode)),
-                    stat.S_ISDIR(metadata.st_mode),
+            try:
+                metadata = os.stat(
+                    name,
+                    dir_fd=directory_descriptor,
+                    follow_symlinks=False,
                 )
+            except OSError as error:
+                raise ProbeError("PROBE_CLEANUP_MANIFEST_INVALID") from error
+            identity = PathIdentity(
+                metadata.st_dev,
+                metadata.st_ino,
+                stat.S_IMODE(metadata.st_mode),
             )
+            components = (*prefix, name)
+            if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+                child_descriptor: int | None = None
+                try:
+                    child_descriptor = os.open(
+                        name,
+                        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                        dir_fd=directory_descriptor,
+                    )
+                    opened = os.fstat(child_descriptor)
+                    if opened.st_dev != identity.device or opened.st_ino != identity.inode:
+                        fail("PROBE_CLEANUP_MANIFEST_INVALID")
+                    visit(child_descriptor, components)
+                except ProbeError:
+                    raise
+                except OSError as error:
+                    raise ProbeError("PROBE_CLEANUP_MANIFEST_INVALID") from error
+                finally:
+                    if child_descriptor is not None:
+                        os.close(child_descriptor)
+                entries.append(CleanupEntry(components, identity, True))
+            elif stat.S_ISREG(metadata.st_mode) and metadata.st_nlink == 1:
+                entries.append(CleanupEntry(components, identity, False))
+            else:
+                fail("PROBE_CLEANUP_MANIFEST_INVALID")
+
+    visit(root_descriptor, ())
     return tuple(entries)
 
 
-def cleanup_success(layout: ProbeLayout) -> None:
-    _require_same_path(layout.leaf, layout.leaf_identity, classification="PROBE_LEAF_CHANGED")
-    manifest = _cleanup_manifest(layout.leaf)
-    for path, identity, is_directory in sorted(
-        manifest,
-        key=lambda item: (len(item[0].parts), item[1].inode),
-        reverse=True,
-    ):
-        metadata = path.lstat()
-        if metadata.st_dev != identity.device or metadata.st_ino != identity.inode:
-            fail("PROBE_CLEANUP_TARGET_CHANGED")
-        try:
-            if is_directory:
-                path.rmdir()
-            else:
-                path.unlink()
-        except OSError as error:
-            raise ProbeError("PROBE_CLEANUP_FAILED") from error
+def _open_cleanup_parent(
+    root_descriptor: int,
+    components: tuple[str, ...],
+    directory_identities: dict[tuple[str, ...], PathIdentity],
+) -> int:
+    descriptor = os.dup(root_descriptor)
+    prefix: tuple[str, ...] = ()
     try:
-        layout.leaf.rmdir()
-        _fsync_directory(layout.parent)
+        for name in components:
+            prefix = (*prefix, name)
+            expected = directory_identities.get(prefix)
+            if expected is None:
+                fail("PROBE_CLEANUP_MANIFEST_INVALID")
+            child = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=descriptor,
+            )
+            try:
+                opened = os.fstat(child)
+                linked = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+                if (
+                    opened.st_dev != expected.device
+                    or opened.st_ino != expected.inode
+                    or linked.st_dev != expected.device
+                    or linked.st_ino != expected.inode
+                ):
+                    fail("PROBE_CLEANUP_TARGET_CHANGED")
+            except BaseException:
+                os.close(child)
+                raise
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except ProbeError:
+        os.close(descriptor)
+        raise
+    except OSError as error:
+        os.close(descriptor)
+        raise ProbeError("PROBE_CLEANUP_TARGET_CHANGED") from error
+
+
+def _remove_cleanup_entry(
+    root_descriptor: int,
+    entry: CleanupEntry,
+    directory_identities: dict[tuple[str, ...], PathIdentity],
+) -> None:
+    parent_descriptor = _open_cleanup_parent(
+        root_descriptor,
+        entry.components[:-1],
+        directory_identities,
+    )
+    try:
+        metadata = os.stat(
+            entry.components[-1],
+            dir_fd=parent_descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            metadata.st_dev != entry.identity.device
+            or metadata.st_ino != entry.identity.inode
+            or stat.S_ISDIR(metadata.st_mode) != entry.is_directory
+            or stat.S_ISLNK(metadata.st_mode)
+        ):
+            fail("PROBE_CLEANUP_TARGET_CHANGED")
+        if entry.is_directory:
+            os.rmdir(entry.components[-1], dir_fd=parent_descriptor)
+        else:
+            os.unlink(entry.components[-1], dir_fd=parent_descriptor)
+        os.fsync(parent_descriptor)
+    except ProbeError:
+        raise
+    except OSError as error:
+        raise ProbeError("PROBE_CLEANUP_FAILED") from error
+    finally:
+        os.close(parent_descriptor)
+
+
+def cleanup_success(
+    layout: ProbeLayout,
+    *,
+    mount_guard: MountRootGuard | None = None,
+) -> None:
+    layout.guard.revalidate(classification="PROBE_LAYOUT_CHANGED")
+    manifest = _cleanup_manifest(layout.guard.leaf.descriptor)
+    layout.guard.revalidate(classification="PROBE_LAYOUT_CHANGED")
+    directory_identities = {
+        entry.components: entry.identity for entry in manifest if entry.is_directory
+    }
+    for entry in manifest:
+        _remove_cleanup_entry(
+            layout.guard.leaf.descriptor,
+            entry,
+            directory_identities,
+        )
+    try:
+        linked_leaf = os.stat(
+            layout.leaf.name,
+            dir_fd=layout.guard.parent.descriptor,
+            follow_symlinks=False,
+        )
+        if (
+            linked_leaf.st_dev != layout.leaf_identity.device
+            or linked_leaf.st_ino != layout.leaf_identity.inode
+        ):
+            fail("PROBE_LEAF_CHANGED")
+        os.rmdir(layout.leaf.name, dir_fd=layout.guard.parent.descriptor)
+        os.fsync(layout.guard.parent.descriptor)
+    except ProbeError:
+        raise
     except OSError as error:
         raise ProbeError("PROBE_CLEANUP_FAILED") from error
     if layout.parent_created:
-        _require_same_path(
-            layout.parent,
-            layout.parent_identity,
-            classification="PROBE_PARENT_CHANGED",
-        )
         try:
-            if any(layout.parent.iterdir()):
+            if os.listdir(layout.guard.parent.descriptor):
                 fail("PROBE_PARENT_NOT_EMPTY")
-            layout.parent.rmdir()
-            _fsync_directory(layout.parent.parent)
+            if mount_guard is None:
+                _require_same_path(
+                    layout.parent,
+                    layout.parent_identity,
+                    classification="PROBE_PARENT_CHANGED",
+                )
+                layout.parent.rmdir()
+                _fsync_directory(layout.parent.parent)
+            else:
+                mount_guard.revalidate()
+                linked_parent = os.stat(
+                    layout.parent.name,
+                    dir_fd=mount_guard.descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    linked_parent.st_dev != layout.parent_identity.device
+                    or linked_parent.st_ino != layout.parent_identity.inode
+                ):
+                    fail("PROBE_PARENT_CHANGED")
+                os.rmdir(layout.parent.name, dir_fd=mount_guard.descriptor)
+                os.fsync(mount_guard.descriptor)
         except ProbeError:
             raise
         except OSError as error:
             raise ProbeError("PROBE_PARENT_CLEANUP_FAILED") from error
+    layout.guard.verify_removed(parent_created=layout.parent_created)
 
 
 def _filesystem_noowners(executor: PrivateExecutor) -> bool:
@@ -1902,6 +2615,7 @@ def execute_probe(
 ) -> ProbeEvidence:
     layout: ProbeLayout | None = None
     bundle: SecretBundle | None = None
+    mount_guard: MountRootGuard | None = None
     created_containers: set[str] = set()
     with exclusive_docker_workflow_lock(ROOT) as lock:
         lock.require_held()
@@ -1924,9 +2638,16 @@ def execute_probe(
             governed_environment_prefixes=("MINIO_", "MC_"),
             reviewed_environment_keys=MINIO_REVIEWED_IMAGE_ENVIRONMENT_KEYS,
         )
-        filesystem_noowners = _filesystem_noowners(executor)
         try:
-            layout = prepare_layout(data_parent)
+            if data_parent == DATA_PARENT:
+                mount_guard = capture_mount_root_guard(executor, data_parent.parent)
+                filesystem_noowners = mount_guard.filesystem_noowners
+                mount_root_group_writable = mount_guard.group_writable
+                layout = prepare_layout(data_parent, root_descriptor=mount_guard.descriptor)
+            else:
+                filesystem_noowners = _filesystem_noowners(executor)
+                mount_root_group_writable = False
+                layout = prepare_layout(data_parent)
             specs = _container_specs(
                 layout,
                 postgres_image_environment=postgres_image.environment,
@@ -1942,6 +2663,7 @@ def execute_probe(
                 secrets_bundle=bundle,
                 created_containers=created_containers,
                 spec=specs[POSTGRES_PROBE_CONTAINER],
+                mount_guard=mount_guard,
             )
             _verify_postgres_after_restart(
                 executor,
@@ -1958,6 +2680,7 @@ def execute_probe(
                 bundle=bundle,
                 created_containers=created_containers,
                 spec=specs[MINIO_PROBE_CONTAINER],
+                mount_guard=mount_guard,
             )
             _verify_minio_after_restart(
                 executor,
@@ -1973,6 +2696,7 @@ def execute_probe(
             require_production_unchanged(executor, baseline)
             if _volume_names(executor) != volume_names:
                 fail("DOCKER_VOLUME_SET_CHANGED")
+            _revalidate_host_guards(mount_guard, layout)
             for name in (POSTGRES_PROBE_CONTAINER, MINIO_PROBE_CONTAINER):
                 require_probe_stopped(executor, name)
                 executor.output(
@@ -1980,12 +2704,15 @@ def execute_probe(
                     classification="PROBE_CONTAINER_REMOVE_FAILED",
                 )
             created_containers.clear()
-            cleanup_success(layout)
+            cleanup_success(layout, mount_guard=mount_guard)
+            if mount_guard is not None:
+                mount_guard.revalidate()
             require_production_unchanged(executor, baseline)
             if _volume_names(executor) != volume_names:
                 fail("DOCKER_VOLUME_SET_CHANGED")
             return ProbeEvidence(
                 filesystem_noowners=filesystem_noowners,
+                mount_root_group_writable=mount_root_group_writable,
                 postgres_uid=postgres_mode[0],
                 postgres_gid=postgres_mode[1],
                 postgres_mode=postgres_mode[2],
@@ -2003,6 +2730,7 @@ def execute_probe(
                     layout=layout,
                     created_containers=created_containers,
                     secret_file_identities=(None if bundle is None else bundle.file_identities),
+                    mount_guard=mount_guard,
                 )
             except BaseException:
                 cleanup = FailureCleanupEvidence(
@@ -2031,6 +2759,20 @@ def execute_probe(
             if isinstance(error, ProbeError):
                 raise error
             raise ProbeError("PROBE_INTERNAL_FAILURE") from None
+        finally:
+            close_failed = False
+            if layout is not None:
+                try:
+                    layout.guard.close()
+                except BaseException:
+                    close_failed = True
+            if mount_guard is not None:
+                try:
+                    mount_guard.close()
+                except BaseException:
+                    close_failed = True
+            if close_failed:
+                fail("PROBE_HOST_GUARD_CLOSE_FAILED")
 
 
 def _parse_args() -> argparse.Namespace:

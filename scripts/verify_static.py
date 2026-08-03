@@ -1950,6 +1950,7 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
     for fragment in (
         'DATA_PARENT = Path("/Volumes/SSD_Mac/datariver-data")',
         'PROBE_LEAF_NAME = ".c2-bind-probe-v1"',
+        '_LOCAL_APFS_DEVICE = re.compile(rb"^/dev/disk[0-9]+(?:s[0-9]+){0,2}$")',
         'CONFIRMATION = "SEC-DURABLE-BIND-PROBE-001-A"',
         'POSTGRES_IMAGE_ID = "sha256:'
         'feb68f4f15446397d8cac7f4fe48fe4586de83160d1fc48b46283312d1a33966"',
@@ -1959,6 +1960,14 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
         "with exclusive_docker_workflow_lock(ROOT) as lock:",
         '"PROBE_SECRET_CLEANUP_REQUIRED"',
         '"ownership_enforcement_claimed=false "',
+        'f"mount_root_group_writable={str(self.mount_root_group_writable).lower()} "',
+        "class MountRootGuard:",
+        "class GuardedDirectory:",
+        "class LayoutGuard:",
+        "source: bytes = field(repr=False)",
+        "options: frozenset[bytes] = field(repr=False)",
+        "mount_root: Path = field(repr=False)",
+        "mount: MountEvidence = field(repr=False)",
         'input_bytes=bundle.minio_access + b"\\n" + bundle.minio_secret + b"\\n"',
         "class RegularFileIdentity:",
         "os.fstat(stream.fileno())",
@@ -1988,6 +1997,21 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
         "require_production_unchanged(executor, baseline)",
         "if _volume_names(executor) != volume_names:",
         "def _failure_probe_is_stopped(",
+        "os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW",
+        "metadata.identity.mode != 0o775",
+        "or metadata.identity.mode & 0o002",
+        "metadata.uid != os.getuid()",
+        "metadata.gid != os.getgid()",
+        "parent_metadata.identity.device == metadata.identity.device",
+        "stat.S_ISBLK(linked.st_mode)",
+        "linked.st_rdev != resolved.st_rdev",
+        "mount_root != DATA_PARENT.parent",
+        "mount_root.resolve(strict=True) != mount_root",
+        "os.mkdir(name, 0o700, dir_fd=parent_descriptor)",
+        "os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)",
+        "os.fchmod(descriptor, 0o700)",
+        "guard: LayoutGuard = field(repr=False)",
+        "layout.guard.revalidate()",
     ):
         if fragment not in probe:
             raise AssertionError(f"the persistent-data bind probe is missing: {fragment}")
@@ -2047,6 +2071,114 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
             )
     if "_sha256_file(destination)" in probe:
         raise AssertionError("the bounded PostgreSQL dump must not reopen its destination")
+    for forbidden_mount_fragment in (
+        "source_sha",
+        "source_hash",
+        "hashlib.sha256(source",
+    ):
+        if forbidden_mount_fragment in probe:
+            raise AssertionError("the APFS source token must not be fingerprinted or persisted")
+
+    prepare = probe.split("def prepare_layout(", maxsplit=1)[1].split(
+        "def _write_secret(", maxsplit=1
+    )[0]
+    for forbidden_prepare_fragment in (
+        ".exists()",
+        ".is_symlink()",
+        ".mkdir(",
+        "exist_ok",
+    ):
+        if forbidden_prepare_fragment in prepare:
+            raise AssertionError("the probe layout must use only dir-fd absent creation")
+    dir_fd_create = probe.split("def _open_private_directory_at(", maxsplit=1)[1].split(
+        "def _create_private_child(", maxsplit=1
+    )[0]
+    dir_fd_fragments = (
+        "os.mkdir(name, 0o700, dir_fd=parent_descriptor)",
+        "descriptor = os.open(",
+        "os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW",
+        "os.fstat(descriptor)",
+        "os.stat(name, dir_fd=parent_descriptor, follow_symlinks=False)",
+        "if opened != linked:",
+        "os.fchmod(descriptor, 0o700)",
+        "os.fsync(descriptor)",
+        "os.fsync(parent_descriptor)",
+    )
+    positions = [dir_fd_create.index(fragment) for fragment in dir_fd_fragments]
+    if positions != sorted(positions):
+        raise AssertionError("the probe dir-fd creation and durability order has drifted")
+    if dir_fd_create.count("dir_fd=parent_descriptor") != 3:
+        raise AssertionError("the probe dir-fd binding count has drifted")
+
+    guarded_directory = probe.split("class GuardedDirectory:", maxsplit=1)[1].split(
+        "class LayoutGuard:", maxsplit=1
+    )[0]
+    for fragment in (
+        "os.fstat(self.descriptor)",
+        "path_metadata = _directory_metadata(self.path, classification=classification)",
+        "descriptor_metadata != self.metadata or path_metadata != self.metadata",
+    ):
+        if fragment not in guarded_directory:
+            raise AssertionError("the retained child path-to-FD contract has drifted")
+
+    layout_guard = probe.split("class LayoutGuard:", maxsplit=1)[1].split(
+        "class RegularFileIdentity:", maxsplit=1
+    )[0]
+    for field_name in (
+        "parent",
+        "leaf",
+        "postgres",
+        "postgres_data",
+        "minio",
+        "minio_data",
+        "evidence",
+        "secrets",
+    ):
+        if layout_guard.count(f"{field_name}: GuardedDirectory") != 1:
+            raise AssertionError("the retained layout directory set has drifted")
+    for fragment in (
+        "for directory in self.directories:",
+        "directory.revalidate(classification=classification)",
+        "for directory in reversed(self.directories):",
+        "os.close(directory.descriptor)",
+        "def verify_removed(self, *, parent_created: bool) -> None:",
+        "descriptor_metadata != directory.metadata",
+        "for directory in self.directories[1:]:",
+        'self.parent.revalidate(classification="PROBE_CLEANUP_EVIDENCE_INVALID")',
+    ):
+        if fragment not in layout_guard:
+            raise AssertionError("the retained layout identity/close contract has drifted")
+
+    atomicity = probe.split("def probe_host_atomicity(", maxsplit=1)[1].split(
+        "def _expected_architecture(", maxsplit=1
+    )[0]
+    for fragment in (
+        "layout.guard.revalidate()",
+        "directory_descriptor = layout.guard.evidence.descriptor",
+        "dir_fd=directory_descriptor",
+        "src_dir_fd=directory_descriptor",
+        "dst_dir_fd=directory_descriptor",
+        "os.fsync(directory_descriptor)",
+    ):
+        if fragment not in atomicity:
+            raise AssertionError("the atomicity dir-fd contract has drifted")
+    if atomicity.count("layout.guard.revalidate()") != 2:
+        raise AssertionError("the atomicity child recheck count has drifted")
+
+    secret_creation = probe.split("def create_probe_secrets(", maxsplit=1)[1].split(
+        "def _mount(", maxsplit=1
+    )[0]
+    for fragment in (
+        "layout.guard.revalidate()",
+        "directory_descriptor = layout.guard.secrets.descriptor",
+        "_write_secret(directory_descriptor, names[0], values[0])",
+        "os.fsync(directory_descriptor)",
+        "_regular_file_identity_at(",
+    ):
+        if fragment not in secret_creation:
+            raise AssertionError("the synthetic-secret dir-fd contract has drifted")
+    if secret_creation.count("layout.guard.revalidate()") != 2:
+        raise AssertionError("the synthetic-secret child recheck count has drifted")
 
     postgres_start = probe.split("def _start_postgres(", maxsplit=1)[1].split(
         "def _verify_postgres_after_restart(", maxsplit=1
@@ -2062,6 +2194,10 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
         create = start.index("executor.output(")
         if tracked >= create:
             raise AssertionError("a probe name must be tracked before docker create")
+    if postgres_start.count("_revalidate_host_guards(mount_guard, layout)") != 4:
+        raise AssertionError("the PostgreSQL create/dump child recheck count has drifted")
+    if minio_start.count("_revalidate_host_guards(mount_guard, layout)") != 2:
+        raise AssertionError("the MinIO create child recheck count has drifted")
 
     failure_cleanup = probe.split("def cleanup_failure(", maxsplit=1)[1].split(
         "def _cleanup_manifest(", maxsplit=1
@@ -2070,17 +2206,101 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
         raise AssertionError("failure cleanup must perform one initial and one final inspect")
     if failure_cleanup.count('("docker", "stop", "--time", str(timeouts[name]), name)') != 1:
         raise AssertionError("failure cleanup must contain one bounded stop site")
+    if failure_cleanup.count("mount_guard.revalidate(") != 1:
+        raise AssertionError("failure cleanup must recheck the mount before secret unlink")
+    mount_recheck = failure_cleanup.index("mount_guard.revalidate(")
+    layout_recheck = failure_cleanup.index("layout.guard.revalidate(", mount_recheck)
+    secret_presence = failure_cleanup.index("_secret_presence_count(layout)", layout_recheck)
+    if not mount_recheck < layout_recheck < secret_presence:
+        raise AssertionError("failure cleanup child recheck must precede secret observation")
+    unlink = failure_cleanup.index("_remove_secret_file(")
+    first_host_recheck = failure_cleanup.index(
+        "_revalidate_host_guards(mount_guard, layout)",
+        secret_presence,
+    )
+    second_host_recheck = failure_cleanup.index(
+        "_revalidate_host_guards(mount_guard, layout)",
+        first_host_recheck + 1,
+    )
+    if not first_host_recheck < unlink < second_host_recheck:
+        raise AssertionError("every failure secret unlink must be bracketed by host guards")
+
+    cleanup_manifest = probe.split("def _cleanup_manifest(", maxsplit=1)[1].split(
+        "def _open_cleanup_parent(", maxsplit=1
+    )[0]
+    for fragment in (
+        "names = sorted(os.listdir(directory_descriptor))",
+        "dir_fd=directory_descriptor",
+        "follow_symlinks=False",
+        "os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW",
+        "opened = os.fstat(child_descriptor)",
+        "visit(child_descriptor, components)",
+        "entries.append(CleanupEntry(components, identity, True))",
+        "metadata.st_nlink == 1",
+    ):
+        if fragment not in cleanup_manifest:
+            raise AssertionError("the exact leaf cleanup manifest contract has drifted")
+    if "os.walk(" in probe or "glob(" in cleanup_manifest:
+        raise AssertionError("the bind probe must not use generalized recursive cleanup")
+
+    cleanup_remove = probe.split("def _open_cleanup_parent(", maxsplit=1)[1].split(
+        "def cleanup_success(", maxsplit=1
+    )[0]
+    for fragment in (
+        "descriptor = os.dup(root_descriptor)",
+        "os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW",
+        "linked = os.stat(name, dir_fd=descriptor, follow_symlinks=False)",
+        "os.rmdir(entry.components[-1], dir_fd=parent_descriptor)",
+        "os.unlink(entry.components[-1], dir_fd=parent_descriptor)",
+        "os.fsync(parent_descriptor)",
+    ):
+        if fragment not in cleanup_remove:
+            raise AssertionError("the manifest deletion dir-fd contract has drifted")
+
+    success_cleanup = probe.split("def cleanup_success(", maxsplit=1)[1].split(
+        "def _filesystem_noowners(", maxsplit=1
+    )[0]
+    for fragment in (
+        'layout.guard.revalidate(classification="PROBE_LAYOUT_CHANGED")',
+        "manifest = _cleanup_manifest(layout.guard.leaf.descriptor)",
+        "_remove_cleanup_entry(",
+        "dir_fd=layout.guard.parent.descriptor",
+        "dir_fd=mount_guard.descriptor",
+        "layout.guard.verify_removed(parent_created=layout.parent_created)",
+    ):
+        if fragment not in success_cleanup:
+            raise AssertionError("the PASS cleanup identity lifecycle has drifted")
+    if success_cleanup.count('layout.guard.revalidate(classification="PROBE_LAYOUT_CHANGED")') != 2:
+        raise AssertionError("PASS cleanup must recheck children around manifest capture")
 
     execute = probe.split("def execute_probe(", maxsplit=1)[1].split(
         "def _parse_args(", maxsplit=1
     )[0]
     lock = execute.index("with exclusive_docker_workflow_lock(ROOT) as lock:")
     baseline = execute.index("baseline = capture_production_identity(executor)", lock)
-    host_mutation = execute.index("layout = prepare_layout(data_parent)", baseline)
+    mount_capture = execute.index("mount_guard = capture_mount_root_guard(", baseline)
+    host_mutation = execute.index(
+        "layout = prepare_layout(data_parent, root_descriptor=mount_guard.descriptor)",
+        mount_capture,
+    )
     postgres = execute.index("_start_postgres(", host_mutation)
     minio = execute.index("_start_minio(", postgres)
+    pass_cleanup = execute.index("cleanup_success(layout, mount_guard=mount_guard)", minio)
     final_identity = execute.rindex("require_production_unchanged(executor, baseline)")
-    if not lock < baseline < host_mutation < postgres < minio < final_identity:
+    if execute.count("_revalidate_host_guards(mount_guard, layout)") != 1:
+        raise AssertionError("PASS cleanup must have one combined host guard recheck")
+    if execute.count("layout.guard.close()") != 1 or execute.count("mount_guard.close()") != 1:
+        raise AssertionError("the outer probe finally must close both host guards")
+    if (
+        not lock
+        < baseline
+        < mount_capture
+        < host_mutation
+        < postgres
+        < minio
+        < pass_cleanup
+        < final_identity
+    ):
         raise AssertionError("the bind probe lock, identity and mutation order has drifted")
 
     container_contract = probe.split("def require_probe_container_contract(", maxsplit=1)[1].split(
@@ -2120,6 +2340,26 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
         "test_pg_dump_digest_is_streamed_without_reopening_the_destination",
         "test_pg_dump_capture_rejects_destination_path_replacement",
         "test_prepare_rejects_a_symlinked_parent",
+        "test_exact_ssd_mount_root_accepts_only_path_scoped_mode_0775",
+        "test_arbitrary_group_writable_root_remains_rejected",
+        "test_exact_ssd_mount_root_rejects_every_mode_except_0775",
+        "test_exact_ssd_mount_root_rejects_same_device_parent",
+        "test_exact_ssd_mount_root_rejects_owner_or_group_drift",
+        "test_exact_ssd_mount_root_rejects_symlinked_mountpoint",
+        "test_exact_ssd_mount_root_requires_apfs_local_noowners",
+        "test_mount_source_must_be_an_anchored_local_block_device",
+        "test_mount_guard_rejects_mode_and_source_drift_without_raw_payload",
+        "test_mount_guard_rejects_root_mode_drift",
+        "test_mount_guard_rejects_block_device_identity_drift",
+        "test_prepare_layout_uses_only_dir_fd_absent_creation",
+        "test_prepare_layout_rejects_parent_replacement_between_mkdir_and_open",
+        "test_prepare_layout_rejects_leaf_replacement_between_mkdir_and_open",
+        "test_prepare_layout_rejects_precreated_or_symlinked_leaf",
+        "test_prepare_layout_fails_closed_on_dir_fd_operation_error",
+        "test_dir_fd_component_rejects_escape_names",
+        "test_layout_guard_rejects_post_layout_child_path_replacement",
+        "test_atomicity_and_secret_creation_are_directory_fd_relative",
+        "test_success_cleanup_uses_a_held_leaf_fd_manifest",
         "test_probe_evidence_never_claims_apfs_noowners_as_ownership_enforcement",
         "test_probe_container_contract_rejects_postgres_capability_expansion",
         "test_probe_container_contract_rejects_a_nonzero_restart_count",
@@ -2138,6 +2378,9 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
         "test_execute_probe_rejects_image_key_drift_before_any_mutation",
         "test_failure_cleanup_unlinks_secrets_only_after_both_containers_are_stopped",
         "test_failure_cleanup_retains_all_secrets_when_any_stop_fails",
+        "test_failure_cleanup_never_unlinks_secrets_when_mount_recheck_is_unknown",
+        "test_failure_cleanup_never_unlinks_secrets_when_child_identity_drifted",
+        "test_failure_cleanup_stops_unlinking_after_mid_cleanup_child_drift",
         "test_failure_cleanup_never_unlinks_replaced_or_linked_secret_files",
         "test_secret_bundle_rejects_replacement_between_open_fd_and_post_fsync_check",
         "test_unknown_cleanup_evidence_omits_all_unobserved_numeric_claims",
@@ -2145,6 +2388,12 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
         "test_failure_cleanup_always_final_inspects_after_ambiguous_initial_or_stop",
         "test_minio_versioning_and_object_version_json_are_structured_and_exact",
         "test_execute_probe_records_exact_governed_order_and_success_cleanup",
+        "test_execute_probe_revalidates_mount_before_each_create_and_pass_cleanup",
+        "test_execute_probe_mount_drift_stops_before_the_next_bind_create",
+        "test_execute_probe_child_replacement_stops_before_next_mutation_or_cleanup",
+        "test_create_failure_still_runs_post_create_child_revalidation",
+        "test_success_cleanup_refuses_post_layout_leaf_replacement",
+        "test_success_cleanup_detects_replacement_after_manifest_before_unlink",
         "test_execute_probe_pre_mutation_gates_fail_before_any_create_or_host_write",
         "test_execute_probe_tracks_ambiguous_daemon_creation_before_client_error",
         "test_execute_probe_mutation_failures_use_one_cleanup_and_recheck_production",
@@ -2159,6 +2408,14 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
 
     for fragment in (
         "runtime probe and migration open",
+        "exact `/Volumes/SSD_Mac` mountpoint at mode `0775`",
+        "does not persist or emit the source",
+        "directory-descriptor-relative creation",
+        "mkdir(..., dir_fd=...)",
+        "mount_root_group_writable=true",
+        "identity-checked manifest only beneath the exact leaf",
+        "generalized recursive delete",
+        "identity-pinned descriptors for the parent, leaf, evidence, secrets",
         "ownership_enforcement_claimed=false",
         "PROBE_SECRET_CLEANUP_REQUIRED",
         "creation-time",

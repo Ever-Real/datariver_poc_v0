@@ -44,6 +44,10 @@ def _bundle(layout: Any) -> Any:
     return probe.create_probe_secrets(layout)
 
 
+def _chmod_mount_policy_fixture(path: Path, mode: int) -> None:
+    os.chmod(path, mode)
+
+
 def test_checked_in_image_references_remain_exactly_pinned() -> None:
     compose = (ROOT / "compose.yaml").read_text(encoding="utf-8")
     connectors = (ROOT / "compose.local-connectors.yaml").read_text(encoding="utf-8")
@@ -196,21 +200,58 @@ def test_secret_bundle_rejects_replacement_between_open_fd_and_post_fsync_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     layout = _layout(tmp_path)
-    original_fsync = probe._fsync_directory
+    original_fsync = probe.os.fsync
+    replaced = False
 
-    def replace_after_fsync(path: Path) -> None:
-        original_fsync(path)
-        if path == layout.secrets_dir:
+    def replace_after_fsync(descriptor: int) -> None:
+        nonlocal replaced
+        original_fsync(descriptor)
+        if descriptor == layout.guard.secrets.descriptor and not replaced:
             layout.minio_access_file.unlink()
             layout.minio_access_file.write_bytes(b"R" * 20 + b"\n")
             layout.minio_access_file.chmod(0o600)
+            replaced = True
 
-    monkeypatch.setattr(probe, "_fsync_directory", replace_after_fsync)
+    monkeypatch.setattr(probe.os, "fsync", replace_after_fsync)
 
     with pytest.raises(probe.ProbeError, match=r"^PROBE_SECRET_FILE_CHANGED$"):
         probe.create_probe_secrets(layout)
 
     assert all(path.exists() for path in probe._secret_paths(layout))
+
+
+def test_atomicity_and_secret_creation_are_directory_fd_relative(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _layout(tmp_path)
+    original_open = probe.os.open
+    opened: list[tuple[Any, int | None]] = []
+
+    def open_path(
+        path: Any,
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        opened.append((path, dir_fd))
+        return cast(int, original_open(path, flags, mode, dir_fd=dir_fd))
+
+    monkeypatch.setattr(probe.os, "open", open_path)
+
+    probe.probe_host_atomicity(layout)
+    probe.create_probe_secrets(layout)
+
+    assert (".atomic.partial", layout.guard.evidence.descriptor) in opened
+    for name in probe._secret_names(layout):
+        assert (name, layout.guard.secrets.descriptor) in opened
+    assert not any(
+        isinstance(path, Path) and path.parent in {layout.evidence, layout.secrets_dir}
+        for path, _dir_fd in opened
+    )
+    probe.cleanup_success(layout)
+    layout.guard.close()
 
 
 def test_private_executor_closes_binary_stdin_and_applies_timeout(
@@ -406,6 +447,7 @@ def test_prepare_and_success_cleanup_remove_a_task_created_parent(tmp_path: Path
     (layout.postgres_data / "probe.bin").write_bytes(b"value")
 
     probe.cleanup_success(layout)
+    layout.guard.close()
 
     assert not parent.exists()
 
@@ -418,9 +460,86 @@ def test_success_cleanup_retains_a_preexisting_parent(tmp_path: Path) -> None:
     layout = probe.prepare_layout(parent)
 
     probe.cleanup_success(layout)
+    layout.guard.close()
 
     assert parent.is_dir()
     assert list(parent.iterdir()) == []
+
+
+def test_success_cleanup_uses_a_held_leaf_fd_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    os.chmod(tmp_path, 0o700)
+    parent = tmp_path / "datariver-data"
+    parent.mkdir(mode=0o700)
+    layout = probe.prepare_layout(parent)
+    nested = layout.postgres_data / "nested"
+    nested.mkdir(mode=0o700)
+    (nested / "value.bin").write_bytes(b"value")
+    original_unlink = probe.os.unlink
+    original_rmdir = probe.os.rmdir
+    operations: list[tuple[str, int | None]] = []
+
+    def unlink(name: Any, *, dir_fd: int | None = None) -> None:
+        operations.append(("unlink", dir_fd))
+        original_unlink(name, dir_fd=dir_fd)
+
+    def rmdir(name: Any, *, dir_fd: int | None = None) -> None:
+        operations.append(("rmdir", dir_fd))
+        original_rmdir(name, dir_fd=dir_fd)
+
+    monkeypatch.setattr(probe.os, "unlink", unlink)
+    monkeypatch.setattr(probe.os, "rmdir", rmdir)
+
+    probe.cleanup_success(layout)
+
+    assert operations
+    assert all(descriptor is not None for _operation, descriptor in operations)
+    assert parent.is_dir()
+    assert list(parent.iterdir()) == []
+    layout.guard.close()
+
+
+def test_success_cleanup_refuses_post_layout_leaf_replacement(tmp_path: Path) -> None:
+    layout = _layout(tmp_path)
+    original = layout.leaf.with_name(layout.leaf.name + ".original")
+    layout.leaf.rename(original)
+    layout.leaf.symlink_to(original, target_is_directory=True)
+
+    try:
+        with pytest.raises(probe.ProbeError, match=r"^PROBE_LAYOUT_CHANGED$"):
+            probe.cleanup_success(layout)
+    finally:
+        layout.guard.close()
+
+    assert original.is_dir()
+
+
+def test_success_cleanup_detects_replacement_after_manifest_before_unlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _layout(tmp_path)
+    (layout.postgres_data / "retained.bin").write_bytes(b"retained")
+    original_manifest = probe._cleanup_manifest
+
+    def manifest_then_replace(descriptor: int) -> Any:
+        manifest = original_manifest(descriptor)
+        original = layout.parent.with_name("datariver-data.original")
+        layout.parent.rename(original)
+        layout.parent.symlink_to(original, target_is_directory=True)
+        return manifest
+
+    monkeypatch.setattr(probe, "_cleanup_manifest", manifest_then_replace)
+
+    try:
+        with pytest.raises(probe.ProbeError, match=r"^PROBE_LAYOUT_CHANGED$"):
+            probe.cleanup_success(layout)
+    finally:
+        layout.guard.close()
+
+    assert (layout.postgres_data / "retained.bin").read_bytes() == b"retained"
 
 
 def test_prepare_rejects_a_symlinked_parent(tmp_path: Path) -> None:
@@ -434,9 +553,418 @@ def test_prepare_rejects_a_symlinked_parent(tmp_path: Path) -> None:
         probe.prepare_layout(linked)
 
 
+class _MountEvidenceExecutor:
+    def __init__(
+        self,
+        mount_root: Path,
+        *,
+        source: bytes = b"/dev/disk9s1",
+        options: bytes = b"apfs, local, noowners",
+    ) -> None:
+        self.mount_root = mount_root
+        self.source = source
+        self.options = options
+        self.calls = 0
+
+    def output(self, arguments: Any, **_kwargs: Any) -> bytes:
+        assert tuple(arguments) == ("mount",)
+        self.calls += 1
+        return self.source + b" on " + os.fsencode(self.mount_root) + b" (" + self.options + b")\n"
+
+
+def _allow_test_mount_device_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    mount_root: Path,
+) -> None:
+    original_metadata = probe._directory_metadata
+
+    def directory_metadata(path: Path, *, classification: str) -> Any:
+        metadata = original_metadata(path, classification=classification)
+        if path == mount_root.parent:
+            return probe.DirectoryMetadata(
+                identity=probe.PathIdentity(
+                    device=metadata.identity.device + 1,
+                    inode=metadata.identity.inode,
+                    mode=metadata.identity.mode,
+                ),
+                uid=metadata.uid,
+                gid=metadata.gid,
+            )
+        return metadata
+
+    monkeypatch.setattr(probe, "_directory_metadata", directory_metadata)
+    monkeypatch.setattr(
+        probe,
+        "_block_device_identity",
+        lambda _source, *, classification: probe.BlockDeviceIdentity(1, 2, 3),
+    )
+
+
+def test_exact_ssd_mount_root_accepts_only_path_scoped_mode_0775(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mount_root = tmp_path / "SSD_Mac"
+    mount_root.mkdir(mode=0o775)
+    _chmod_mount_policy_fixture(mount_root, 0o775)
+    data_parent = mount_root / "datariver-data"
+    monkeypatch.setattr(probe, "DATA_PARENT", data_parent)
+    _allow_test_mount_device_boundary(monkeypatch, mount_root)
+
+    guard = probe.capture_mount_root_guard(_MountEvidenceExecutor(mount_root), mount_root)
+    try:
+        layout = probe.prepare_layout(data_parent, root_descriptor=guard.descriptor)
+        assert "/dev/disk9s1" not in repr(guard)
+    finally:
+        guard.close()
+
+    assert guard.group_writable is True
+    assert layout.parent_identity.mode == 0o700
+    assert layout.leaf_identity.mode == 0o700
+    probe.cleanup_success(layout)
+    layout.guard.close()
+
+
+def test_arbitrary_group_writable_root_remains_rejected(tmp_path: Path) -> None:
+    _chmod_mount_policy_fixture(tmp_path, 0o775)
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_HOST_ROOT_INVALID$"):
+        probe.prepare_layout(tmp_path / "datariver-data")
+
+
+@pytest.mark.parametrize("mode", (0o777, 0o770, 0o765, 0o755))
+def test_exact_ssd_mount_root_rejects_every_mode_except_0775(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: int,
+) -> None:
+    mount_root = tmp_path / "SSD_Mac"
+    mount_root.mkdir(mode=mode)
+    _chmod_mount_policy_fixture(mount_root, mode)
+    monkeypatch.setattr(probe, "DATA_PARENT", mount_root / "datariver-data")
+    _allow_test_mount_device_boundary(monkeypatch, mount_root)
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_HOST_ROOT_INVALID$"):
+        probe.capture_mount_root_guard(_MountEvidenceExecutor(mount_root), mount_root)
+
+
+def test_exact_ssd_mount_root_rejects_same_device_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mount_root = tmp_path / "SSD_Mac"
+    mount_root.mkdir(mode=0o775)
+    _chmod_mount_policy_fixture(mount_root, 0o775)
+    monkeypatch.setattr(probe, "DATA_PARENT", mount_root / "datariver-data")
+    monkeypatch.setattr(
+        probe,
+        "_block_device_identity",
+        lambda _source, *, classification: probe.BlockDeviceIdentity(1, 2, 3),
+    )
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_HOST_ROOT_INVALID$"):
+        probe.capture_mount_root_guard(_MountEvidenceExecutor(mount_root), mount_root)
+
+
+@pytest.mark.parametrize("identity_field", ("uid", "gid"))
+def test_exact_ssd_mount_root_rejects_owner_or_group_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    identity_field: str,
+) -> None:
+    mount_root = tmp_path / "SSD_Mac"
+    mount_root.mkdir(mode=0o775)
+    _chmod_mount_policy_fixture(mount_root, 0o775)
+    monkeypatch.setattr(probe, "DATA_PARENT", mount_root / "datariver-data")
+    original_metadata = probe._directory_metadata
+
+    def directory_metadata(path: Path, *, classification: str) -> Any:
+        metadata = original_metadata(path, classification=classification)
+        if path == mount_root.parent:
+            return replace(
+                metadata,
+                identity=replace(
+                    metadata.identity,
+                    device=metadata.identity.device + 1,
+                ),
+            )
+        if path == mount_root:
+            return replace(metadata, **{identity_field: getattr(metadata, identity_field) + 1})
+        return metadata
+
+    monkeypatch.setattr(probe, "_directory_metadata", directory_metadata)
+    monkeypatch.setattr(
+        probe,
+        "_block_device_identity",
+        lambda _source, *, classification: probe.BlockDeviceIdentity(1, 2, 3),
+    )
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_HOST_ROOT_INVALID$"):
+        probe.capture_mount_root_guard(_MountEvidenceExecutor(mount_root), mount_root)
+
+
+def test_exact_ssd_mount_root_rejects_symlinked_mountpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    physical = tmp_path / "physical"
+    physical.mkdir(mode=0o775)
+    _chmod_mount_policy_fixture(physical, 0o775)
+    mount_root = tmp_path / "SSD_Mac"
+    mount_root.symlink_to(physical, target_is_directory=True)
+    monkeypatch.setattr(probe, "DATA_PARENT", mount_root / "datariver-data")
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_HOST_ROOT_INVALID$"):
+        probe.capture_mount_root_guard(_MountEvidenceExecutor(mount_root), mount_root)
+
+
+@pytest.mark.parametrize(
+    "options",
+    (b"apfs, local", b"apfs, noowners", b"local, noowners", b"ext4, local, noowners"),
+)
+def test_exact_ssd_mount_root_requires_apfs_local_noowners(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    options: bytes,
+) -> None:
+    mount_root = tmp_path / "SSD_Mac"
+    mount_root.mkdir(mode=0o775)
+    _chmod_mount_policy_fixture(mount_root, 0o775)
+    monkeypatch.setattr(probe, "DATA_PARENT", mount_root / "datariver-data")
+    _allow_test_mount_device_boundary(monkeypatch, mount_root)
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_FILESYSTEM_EVIDENCE_INVALID$"):
+        probe.capture_mount_root_guard(
+            _MountEvidenceExecutor(mount_root, options=options),
+            mount_root,
+        )
+
+
+def test_mount_source_must_be_an_anchored_local_block_device() -> None:
+    sentinel = b"/dev/disk9s1;raw-secret-sentinel"
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_FILESYSTEM_EVIDENCE_INVALID$") as raised:
+        probe._block_device_identity(
+            sentinel,
+            classification="PROBE_FILESYSTEM_EVIDENCE_INVALID",
+        )
+
+    assert sentinel.decode() not in str(raised.value)
+
+
+def test_mount_guard_rejects_mode_and_source_drift_without_raw_payload(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mount_root = tmp_path / "SSD_Mac"
+    mount_root.mkdir(mode=0o775)
+    _chmod_mount_policy_fixture(mount_root, 0o775)
+    monkeypatch.setattr(probe, "DATA_PARENT", mount_root / "datariver-data")
+    _allow_test_mount_device_boundary(monkeypatch, mount_root)
+    executor = _MountEvidenceExecutor(mount_root)
+    guard = probe.capture_mount_root_guard(executor, mount_root)
+    executor.source = b"/dev/disk8s1"
+    try:
+        with pytest.raises(probe.ProbeError, match=r"^PROBE_HOST_ROOT_CHANGED$") as raised:
+            guard.revalidate()
+    finally:
+        guard.close()
+
+    assert "/dev/disk8s1" not in str(raised.value)
+
+
+def test_mount_guard_rejects_root_mode_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mount_root = tmp_path / "SSD_Mac"
+    mount_root.mkdir(mode=0o775)
+    _chmod_mount_policy_fixture(mount_root, 0o775)
+    monkeypatch.setattr(probe, "DATA_PARENT", mount_root / "datariver-data")
+    _allow_test_mount_device_boundary(monkeypatch, mount_root)
+    guard = probe.capture_mount_root_guard(_MountEvidenceExecutor(mount_root), mount_root)
+    _chmod_mount_policy_fixture(mount_root, 0o755)
+    try:
+        with pytest.raises(probe.ProbeError, match=r"^PROBE_HOST_ROOT_CHANGED$"):
+            guard.revalidate()
+    finally:
+        guard.close()
+
+
+def test_mount_guard_rejects_block_device_identity_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mount_root = tmp_path / "SSD_Mac"
+    mount_root.mkdir(mode=0o775)
+    _chmod_mount_policy_fixture(mount_root, 0o775)
+    monkeypatch.setattr(probe, "DATA_PARENT", mount_root / "datariver-data")
+    _allow_test_mount_device_boundary(monkeypatch, mount_root)
+    identities = iter(
+        (
+            probe.BlockDeviceIdentity(1, 2, 3),
+            probe.BlockDeviceIdentity(1, 2, 4),
+        )
+    )
+    monkeypatch.setattr(
+        probe,
+        "_block_device_identity",
+        lambda _source, *, classification: next(identities),
+    )
+    guard = probe.capture_mount_root_guard(_MountEvidenceExecutor(mount_root), mount_root)
+    try:
+        with pytest.raises(probe.ProbeError, match=r"^PROBE_HOST_ROOT_CHANGED$"):
+            guard.revalidate()
+    finally:
+        guard.close()
+
+
+def test_prepare_layout_uses_only_dir_fd_absent_creation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    os.chmod(tmp_path, 0o700)
+    mkdir_calls: list[tuple[str, int | None]] = []
+    original_mkdir = probe.os.mkdir
+
+    def mkdir(name: str, mode: int, *, dir_fd: int | None = None) -> None:
+        mkdir_calls.append((name, dir_fd))
+        original_mkdir(name, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(probe.os, "mkdir", mkdir)
+    monkeypatch.setattr(
+        Path,
+        "exists",
+        lambda _path: (_ for _ in ()).throw(AssertionError("exists must not be used")),
+    )
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda _path: (_ for _ in ()).throw(AssertionError("is_symlink must not be used")),
+    )
+
+    layout = probe.prepare_layout(tmp_path / "datariver-data")
+
+    assert mkdir_calls
+    assert all(dir_fd is not None for _name, dir_fd in mkdir_calls)
+    probe.cleanup_success(layout)
+    layout.guard.close()
+
+
+def test_prepare_layout_rejects_parent_replacement_between_mkdir_and_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    os.chmod(tmp_path, 0o700)
+    parent = tmp_path / "datariver-data"
+    replacement = tmp_path / "replacement"
+    replacement.mkdir(mode=0o700)
+    original_open = probe.os.open
+    replaced = False
+
+    def open_path(path: Any, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        nonlocal replaced
+        if path == "datariver-data" and dir_fd is not None and not replaced:
+            parent.rmdir()
+            parent.symlink_to(replacement, target_is_directory=True)
+            replaced = True
+        return cast(int, original_open(path, flags, mode, dir_fd=dir_fd))
+
+    monkeypatch.setattr(probe.os, "open", open_path)
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_PARENT_INVALID$"):
+        probe.prepare_layout(parent)
+
+
+def test_prepare_layout_rejects_leaf_replacement_between_mkdir_and_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    os.chmod(tmp_path, 0o700)
+    parent = tmp_path / "datariver-data"
+    replacement = tmp_path / "replacement"
+    replacement.mkdir(mode=0o700)
+    leaf = parent / probe.PROBE_LEAF_NAME
+    original_open = probe.os.open
+    replaced = False
+
+    def open_path(path: Any, flags: int, mode: int = 0o777, *, dir_fd: int | None = None) -> int:
+        nonlocal replaced
+        if path == probe.PROBE_LEAF_NAME and dir_fd is not None and not replaced:
+            leaf.rmdir()
+            leaf.symlink_to(replacement, target_is_directory=True)
+            replaced = True
+        return cast(int, original_open(path, flags, mode, dir_fd=dir_fd))
+
+    monkeypatch.setattr(probe.os, "open", open_path)
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_LEAF_INVALID$"):
+        probe.prepare_layout(parent)
+
+
+def test_prepare_layout_rejects_precreated_or_symlinked_leaf(tmp_path: Path) -> None:
+    os.chmod(tmp_path, 0o700)
+    parent = tmp_path / "datariver-data"
+    parent.mkdir(mode=0o700)
+    os.chmod(parent, 0o700)
+    leaf = parent / probe.PROBE_LEAF_NAME
+    leaf.mkdir(mode=0o700)
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_LEAF_ALREADY_EXISTS$"):
+        probe.prepare_layout(parent)
+
+
+@pytest.mark.parametrize("operation", ("fchmod", "fsync", "open"))
+def test_prepare_layout_fails_closed_on_dir_fd_operation_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    operation: str,
+) -> None:
+    os.chmod(tmp_path, 0o700)
+    original = getattr(probe.os, operation)
+
+    def fail_once(*args: Any, **kwargs: Any) -> Any:
+        monkeypatch.setattr(probe.os, operation, original)
+        raise OSError("raw-dir-fd-sentinel")
+
+    monkeypatch.setattr(probe.os, operation, fail_once)
+
+    with pytest.raises(probe.ProbeError) as raised:
+        probe.prepare_layout(tmp_path / "datariver-data")
+
+    assert "raw-dir-fd-sentinel" not in str(raised.value)
+
+
+def test_dir_fd_component_rejects_escape_names() -> None:
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_PARENT_INVALID$"):
+        probe._component_name(Path(".."), classification="PROBE_PARENT_INVALID")
+
+
+@pytest.mark.parametrize(
+    "target_name",
+    ("parent", "leaf", "postgres_data", "minio_data", "evidence", "secrets_dir"),
+)
+def test_layout_guard_rejects_post_layout_child_path_replacement(
+    tmp_path: Path,
+    target_name: str,
+) -> None:
+    layout = _layout(tmp_path)
+    target = cast(Path, getattr(layout, target_name))
+    original = target.with_name(target.name + ".original")
+    target.rename(original)
+    target.symlink_to(original, target_is_directory=True)
+
+    try:
+        with pytest.raises(probe.ProbeError, match=r"^PROBE_LAYOUT_CHANGED$"):
+            layout.guard.revalidate()
+    finally:
+        layout.guard.close()
+
+
 def test_probe_evidence_never_claims_apfs_noowners_as_ownership_enforcement() -> None:
     evidence = probe.ProbeEvidence(
         filesystem_noowners=True,
+        mount_root_group_writable=True,
         postgres_uid=999,
         postgres_gid=999,
         postgres_mode=0o700,
@@ -451,6 +979,7 @@ def test_probe_evidence_never_claims_apfs_noowners_as_ownership_enforcement() ->
     summary = evidence.summary()
 
     assert "filesystem_noowners=true" in summary
+    assert "mount_root_group_writable=true" in summary
     assert "ownership_enforcement_claimed=false" in summary
 
 
@@ -1073,6 +1602,104 @@ def test_failure_cleanup_retains_all_secrets_when_any_stop_fails(tmp_path: Path)
     assert all(path.exists() for path in secret_paths)
 
 
+class _FailureMountGuard:
+    def __init__(self, error: BaseException | None = None) -> None:
+        self.error = error
+        self.calls = 0
+
+    def revalidate(self, **_kwargs: Any) -> None:
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+
+
+def test_failure_cleanup_never_unlinks_secrets_when_mount_recheck_is_unknown(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    bundle = _bundle(layout)
+    secret_paths = probe._secret_paths(layout)
+    guard = _FailureMountGuard(OSError("raw-mount-drift-sentinel"))
+
+    evidence = probe.cleanup_failure(
+        _StoppedExecutor(fail_stop=False, secret_paths=secret_paths),
+        layout=layout,
+        created_containers={probe.POSTGRES_PROBE_CONTAINER, probe.MINIO_PROBE_CONTAINER},
+        secret_file_identities=bundle.file_identities,
+        mount_guard=guard,
+    )
+
+    assert guard.calls == 1
+    assert evidence.classification == "PROBE_SECRET_CLEANUP_REQUIRED"
+    assert evidence.secret_files_removed is None
+    assert evidence.secret_files_retained is None
+    assert all(path.exists() for path in secret_paths)
+
+
+def test_failure_cleanup_never_unlinks_secrets_when_child_identity_drifted(
+    tmp_path: Path,
+) -> None:
+    layout = _layout(tmp_path)
+    bundle = _bundle(layout)
+    secret_paths = probe._secret_paths(layout)
+    original = layout.secrets_dir.with_name("secrets.original")
+    layout.secrets_dir.rename(original)
+    layout.secrets_dir.symlink_to(original, target_is_directory=True)
+
+    evidence = probe.cleanup_failure(
+        _StoppedExecutor(fail_stop=False, secret_paths=secret_paths),
+        layout=layout,
+        created_containers={probe.POSTGRES_PROBE_CONTAINER, probe.MINIO_PROBE_CONTAINER},
+        secret_file_identities=bundle.file_identities,
+    )
+
+    assert evidence.classification == "PROBE_SECRET_CLEANUP_REQUIRED"
+    assert evidence.secret_files_removed is None
+    assert evidence.secret_files_retained is None
+    assert all(path.exists() for path in secret_paths)
+    layout.guard.close()
+
+
+def test_failure_cleanup_stops_unlinking_after_mid_cleanup_child_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    layout = _layout(tmp_path)
+    bundle = _bundle(layout)
+    secret_paths = probe._secret_paths(layout)
+    original_remove = probe._remove_secret_file
+    removals = 0
+
+    def remove_then_replace(
+        directory_descriptor: int,
+        name: str,
+        expected_identity: Any,
+    ) -> None:
+        nonlocal removals
+        original_remove(directory_descriptor, name, expected_identity)
+        removals += 1
+        if removals == 1:
+            original = layout.parent.with_name("datariver-data.original")
+            layout.parent.rename(original)
+            layout.parent.symlink_to(original, target_is_directory=True)
+
+    monkeypatch.setattr(probe, "_remove_secret_file", remove_then_replace)
+
+    evidence = probe.cleanup_failure(
+        _StoppedExecutor(fail_stop=False, secret_paths=secret_paths),
+        layout=layout,
+        created_containers={probe.POSTGRES_PROBE_CONTAINER, probe.MINIO_PROBE_CONTAINER},
+        secret_file_identities=bundle.file_identities,
+    )
+
+    assert removals == 1
+    assert evidence.classification == "PROBE_SECRET_CLEANUP_REQUIRED"
+    assert evidence.secret_files_removed is None
+    assert evidence.secret_files_retained is None
+    assert sum(path.exists() for path in secret_paths) == 2
+    layout.guard.close()
+
+
 @pytest.mark.parametrize("replacement", ("regular", "symlink", "hardlink"))
 def test_failure_cleanup_never_unlinks_replaced_or_linked_secret_files(
     tmp_path: Path,
@@ -1419,6 +2046,7 @@ class _ProbeProtocolExecutor:
         }
         self.minio_values: list[bytes] = []
         self.image_environments: dict[str, tuple[tuple[str, str], ...]] = {}
+        self.dump_directory_descriptor: int | None = None
 
     def set_forbidden(self, _values: Any) -> None:
         self.events.append("secrets.registered")
@@ -1555,14 +2183,26 @@ class _ProbeProtocolExecutor:
         *,
         destination: Path,
         classification: str,
+        destination_directory_descriptor: int | None = None,
         **_kwargs: Any,
     ) -> tuple[int, str]:
         self.calls.append(tuple(arguments))
         self.events.append(classification)
         self._inject(classification)
         payload = b"PGDMP-governed"
-        destination.write_bytes(payload)
-        destination.chmod(0o600)
+        self.dump_directory_descriptor = destination_directory_descriptor
+        if destination_directory_descriptor is None:
+            destination.write_bytes(payload)
+            destination.chmod(0o600)
+        else:
+            descriptor = os.open(
+                destination.name,
+                os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=destination_directory_descriptor,
+            )
+            with os.fdopen(descriptor, "wb", closefd=True) as stream:
+                stream.write(payload)
         return len(payload), probe.hashlib.sha256(payload).hexdigest()
 
     @staticmethod
@@ -1605,6 +2245,70 @@ class _ProbeProtocolExecutor:
         )
 
 
+class _RecorderMountGuard:
+    def __init__(
+        self,
+        descriptor: int,
+        events: list[str],
+        *,
+        fail_at: int | None = None,
+    ) -> None:
+        self.descriptor = descriptor
+        self.events = events
+        self.fail_at = fail_at
+        self.calls = 0
+        self.closed = False
+        self.filesystem_noowners = True
+        self.group_writable = True
+
+    def revalidate(self, **_kwargs: Any) -> None:
+        self.calls += 1
+        self.events.append(f"mount.revalidate.{self.calls}")
+        if self.calls == self.fail_at:
+            raise probe.ProbeError("PROBE_HOST_ROOT_CHANGED")
+
+    def close(self) -> None:
+        os.close(self.descriptor)
+        self.closed = True
+
+
+def _run_recorded_exact_mount_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fail_at: int | None = None,
+    holder: dict[str, Any] | None = None,
+) -> tuple[_ProbeProtocolExecutor, list[str], _RecorderMountGuard, Any]:
+    events: list[str] = []
+    executor = _ProbeProtocolExecutor(events)
+    mount_root = tmp_path / "SSD_Mac"
+    mount_root.mkdir(mode=0o775)
+    _chmod_mount_policy_fixture(mount_root, 0o775)
+    data_parent = mount_root / "datariver-data"
+    monkeypatch.setattr(probe, "DATA_PARENT", data_parent)
+    descriptor = os.open(mount_root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    guard = _RecorderMountGuard(descriptor, events, fail_at=fail_at)
+    if holder is not None:
+        holder.update(executor=executor, events=events, guard=guard)
+    original_prepare = probe.prepare_layout
+
+    def prepare(parent: Path, *, root_descriptor: int | None = None) -> Any:
+        events.append("host.prepare")
+        layout = original_prepare(parent, root_descriptor=root_descriptor)
+        executor.layout = layout
+        return layout
+
+    monkeypatch.setattr(probe, "prepare_layout", prepare)
+    monkeypatch.setattr(probe, "capture_mount_root_guard", lambda *_args: guard)
+    monkeypatch.setattr(
+        probe,
+        "exclusive_docker_workflow_lock",
+        lambda _root: _RecorderLock(events),
+    )
+    result = probe.execute_probe(executor, data_parent=data_parent)
+    return executor, events, guard, result
+
+
 def _run_recorded_probe(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1614,6 +2318,7 @@ def _run_recorded_probe(
     ambiguous_created_name: str | None = None,
     image_environment_extra: str | None = None,
     remove_image_environment_key: bool = False,
+    layout_replacement: tuple[int, str] | None = None,
 ) -> tuple[_ProbeProtocolExecutor, list[str], Any]:
     events: list[str] = []
     executor = _ProbeProtocolExecutor(
@@ -1628,10 +2333,27 @@ def _run_recorded_probe(
         holder["events"] = events
     original_prepare = probe.prepare_layout
 
-    def prepare(parent: Path) -> Any:
+    def prepare(parent: Path, *, root_descriptor: int | None = None) -> Any:
         events.append("host.prepare")
-        layout = original_prepare(parent)
+        layout = original_prepare(parent, root_descriptor=root_descriptor)
         executor.layout = layout
+        if layout_replacement is not None:
+            replacement_call, target_name = layout_replacement
+            original_revalidate = layout.guard.revalidate
+            revalidate_calls = 0
+
+            def revalidate(**kwargs: Any) -> None:
+                nonlocal revalidate_calls
+                revalidate_calls += 1
+                if revalidate_calls == replacement_call:
+                    target = cast(Path, getattr(layout, target_name))
+                    original = target.with_name(target.name + ".drifted")
+                    target.rename(original)
+                    target.symlink_to(original, target_is_directory=True)
+                    events.append("layout.replaced")
+                original_revalidate(**kwargs)
+
+            layout.guard.revalidate = revalidate
         return layout
 
     monkeypatch.setattr(probe, "prepare_layout", prepare)
@@ -1656,6 +2378,8 @@ def test_execute_probe_records_exact_governed_order_and_success_cleanup(
     executor, events, result = _run_recorded_probe(tmp_path, monkeypatch)
 
     assert result.postgres_dump_bytes == len(b"PGDMP-governed")
+    assert executor.layout is not None
+    assert executor.dump_directory_descriptor == executor.layout.guard.evidence.descriptor
     assert events[:2] == ["lock.enter", "lock.held"]
     assert events.index("host.prepare") > events.index("PROBE_IMAGE_INSPECT_FAILED")
     mutations = [
@@ -1688,6 +2412,132 @@ def test_execute_probe_records_exact_governed_order_and_success_cleanup(
     assert events.count("DOCKER_VOLUME_LIST_FAILED") == 3
     assert events[-1] == "lock.exit"
     assert not (tmp_path / "datariver-data").exists()
+
+
+def test_execute_probe_revalidates_mount_before_each_create_and_pass_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor, events, guard, result = _run_recorded_exact_mount_probe(tmp_path, monkeypatch)
+
+    assert result.mount_root_group_writable is True
+    assert guard.calls == 9
+    assert guard.closed is True
+    postgres_create = next(
+        index
+        for index, call in enumerate(executor.calls)
+        if call[:2] == ("docker", "create") and call[3] == probe.POSTGRES_PROBE_CONTAINER
+    )
+    minio_create = next(
+        index
+        for index, call in enumerate(executor.calls)
+        if call[:2] == ("docker", "create") and call[3] == probe.MINIO_PROBE_CONTAINER
+    )
+    assert events.index("mount.revalidate.1") < events.index("POSTGRES_PROBE_CREATE_FAILED")
+    assert events.index("POSTGRES_PROBE_CREATE_FAILED") < events.index("mount.revalidate.2")
+    assert events.index("mount.revalidate.5") < events.index("MINIO_PROBE_CREATE_FAILED")
+    assert events.index("MINIO_PROBE_CREATE_FAILED") < events.index("mount.revalidate.6")
+    assert postgres_create < minio_create
+    assert events.index("mount.revalidate.7") < events.index("PROBE_CONTAINER_REMOVE_FAILED")
+    assert events.index("mount.revalidate.8") < events.index("mount.revalidate.9")
+    assert events.index("mount.revalidate.9") < events.index("lock.exit")
+
+
+def test_create_failure_still_runs_post_create_child_revalidation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    holder: dict[str, Any] = {}
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_LAYOUT_CHANGED$"):
+        _run_recorded_probe(
+            tmp_path,
+            monkeypatch,
+            holder=holder,
+            injected=(
+                "POSTGRES_PROBE_CREATE_FAILED",
+                probe.ProbeError("POSTGRES_PROBE_CREATE_FAILED"),
+            ),
+            layout_replacement=(6, "leaf"),
+        )
+
+    executor = holder["executor"]
+    assert sum(call[:2] == ("docker", "create") for call in executor.calls) == 1
+    assert not any(call[:2] == ("docker", "start") for call in executor.calls)
+    assert not any(call[:3] == ("docker", "container", "rm") for call in executor.calls)
+    captured = capsys.readouterr().err
+    assert "PROBE_SECRET_CLEANUP_REQUIRED" in captured
+    assert "drifted" not in captured
+
+
+@pytest.mark.parametrize(("fail_at", "expected_creates"), ((1, 0), (2, 1)))
+def test_execute_probe_mount_drift_stops_before_the_next_bind_create(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_at: int,
+    expected_creates: int,
+) -> None:
+    holder: dict[str, Any] = {}
+    try:
+        _run_recorded_exact_mount_probe(
+            tmp_path,
+            monkeypatch,
+            fail_at=fail_at,
+            holder=holder,
+        )
+    except probe.ProbeError as error:
+        holder["error"] = error
+    else:
+        raise AssertionError("mount drift must fail closed")
+
+    assert str(holder["error"]) == "PROBE_HOST_ROOT_CHANGED"
+    executor = holder["executor"]
+    creates = [call for call in executor.calls if call[:2] == ("docker", "create")]
+    assert len(creates) == expected_creates
+    assert holder["guard"].closed is True
+
+
+@pytest.mark.parametrize(
+    ("replacement_call", "target_name", "expected_creates"),
+    (
+        (5, "parent", 0),
+        (6, "leaf", 1),
+        (9, "postgres_data", 1),
+        (10, "minio_data", 2),
+        (11, "secrets_dir", 2),
+    ),
+)
+def test_execute_probe_child_replacement_stops_before_next_mutation_or_cleanup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    replacement_call: int,
+    target_name: str,
+    expected_creates: int,
+) -> None:
+    holder: dict[str, Any] = {}
+
+    with pytest.raises(probe.ProbeError, match=r"^PROBE_LAYOUT_CHANGED$"):
+        _run_recorded_probe(
+            tmp_path,
+            monkeypatch,
+            holder=holder,
+            layout_replacement=(replacement_call, target_name),
+        )
+
+    executor = holder["executor"]
+    creates = [call for call in executor.calls if call[:2] == ("docker", "create")]
+    removes = [call for call in executor.calls if call[:3] == ("docker", "container", "rm")]
+    captured = capsys.readouterr().err
+    assert len(creates) == expected_creates
+    assert removes == []
+    assert "PROBE_SECRET_CLEANUP_REQUIRED" in captured
+    assert "secret_files_removed_known=false" in captured
+    assert "secret_files_retained_known=false" in captured
+    assert "production_identity_unchanged=true" in captured
+    assert "production_volumes_unchanged=true" in captured
+    assert "drifted" not in captured
 
 
 @pytest.mark.parametrize(

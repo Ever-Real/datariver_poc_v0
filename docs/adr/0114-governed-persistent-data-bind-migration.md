@@ -36,11 +36,47 @@ before host or container mutation. A probe container must expose exactly that ba
 reviewed PostgreSQL or MinIO/`mc` overrides applied. Conflicting duplicate keys and every added
 password, access, host or other environment key are rejected.
 
-The fixed target is `/Volumes/SSD_Mac/datariver-data/.c2-bind-probe-v1`. Both components must be
-absent and non-symlink before creation. The task may create the parent only when it is absent. On
-success it removes the exact manifest-controlled leaf, then removes the parent only when the task
-created it, it is still the same inode and it is empty. A pre-existing valid private parent remains.
-Failure evidence remains in place; there is no recursive or glob cleanup.
+The fixed target is `/Volumes/SSD_Mac/datariver-data/.c2-bind-probe-v1`. The only group-writable
+placement root exception is the exact `/Volumes/SSD_Mac` mountpoint at mode `0775`; arbitrary roots
+still reject every group- or world-writable mode, and mode `0777`, `0770` or another mode at the
+fixed mountpoint is invalid. The mountpoint must be a real, non-symlink APFS local `noowners`
+mount owned by the current uid and gid, on a different filesystem device from `/Volumes`.
+
+The probe keeps the mount-root directory descriptor open for its entire host-mutation lifecycle.
+It validates an anchored local `/dev/disk*` block-device source in memory, including its device,
+inode and raw-device identity, but does not persist or emit the source, a source hash or another
+stable device fingerprint. Mount source, options and root device/inode/mode/uid/gid are compared
+before host mutation, after layout/atomicity/secret creation immediately before each bind-using
+container create, on failure before any secret unlink, immediately before successful container and
+tree cleanup, and after successful cleanup. A failed or unknown failure-path mount recheck retains
+all secrets and reports `PROBE_SECRET_CLEANUP_REQUIRED`; container stop attempts may still proceed.
+Operator evidence includes only the bounded booleans `filesystem_noowners=true`,
+`mount_root_group_writable=true` and `ownership_enforcement_claimed=false`.
+
+The parent and leaf use fixed single-component, directory-descriptor-relative creation. Each
+directory is created absent-only with `mkdir(..., dir_fd=...)`, opened with
+`O_DIRECTORY|O_NOFOLLOW`, compared by path and open-descriptor `fstat`, forced to mode `0700`, and
+`fsync`ed together with its parent directory. There is no exists-then-mkdir check, `exist_ok`, glob
+or generalized recursive delete. The task may create the parent only when it is absent. Successful
+cleanup builds an identity-checked manifest only beneath the exact leaf and deletes that bounded
+manifest depth-first through the held leaf descriptor; every reopened directory and deletion target
+must match the manifest before a directory-FD-relative unlink or removal. It is not an arbitrary-path
+deletion facility. It then removes the parent only when the task created it, it is still the same
+inode and it is empty. After cleanup, held descriptors must retain their captured identities while
+the deleted child paths are absent; a pre-existing valid private parent must still map to its held
+descriptor. Failure evidence remains in place.
+
+The probe also holds identity-pinned descriptors for the parent, leaf, evidence, secrets,
+PostgreSQL data, MinIO data and their intermediate directories until the outer command `finally`
+block. Every child path must still resolve to the metadata observed through its held descriptor.
+Atomicity and synthetic-secret files are created, published, read and `fsync`ed relative to the
+held evidence or secrets descriptor. The bounded PostgreSQL dump is captured and published relative
+to the held evidence descriptor. The complete child guard is checked before and after each Docker
+bind-create, around these sensitive host writes, before and after every failure-path secret unlink,
+and before the successful cleanup manifest is captured and applied. Successful cleanup then proves
+the held directory identities are unchanged and the removed child paths remain absent. Child
+identity drift stops further host write or unlink; already-created probe containers may only undergo
+the bounded failure stop sequence and all evidence is retained.
 
 The isolated containers have no network, published ports, Docker socket, host namespaces, device
 mounts, named or anonymous volumes, registry pull or Docker log driver:
@@ -68,8 +104,8 @@ stdin contracts are corroborated by the upstream
 and [mc release source](https://github.com/minio/mc/blob/RELEASE.2025-08-13T08-35-41Z/cmd/alias-set.go).
 
 The host probe requires at least 2 GiB available, an `fsync` plus atomic rename and directory
-`fsync`, and reports `filesystem_noowners` separately from the fixed
-`ownership_enforcement_claimed=false`. PostgreSQL creates and checkpoints a row, captures a binary
+`fsync`, and makes no ownership-enforcement claim for the APFS `noowners` volume. PostgreSQL creates
+and checkpoints a row, captures a binary
 custom-format dump directly into an `O_EXCL`/`O_NOFOLLOW` bounded `0600` file, hashes it, atomically
 publishes it and proves the row and data mode after the same container restarts. The child stdout
 is read incrementally and never writes beyond 16 MiB; overflow terminates and boundedly reaps the
@@ -121,7 +157,11 @@ normal daily commands keep their existing names and required arguments.
 
 ## Evidence boundary
 
-Mocked source tests prove fixed argv, exact capabilities and limits, CSPRNG lengths, binary stdin,
+Mocked source tests prove the exact mountpoint-only `0775` exception, arbitrary-root group-write
+rejection, world-write and wrong-mode denial, mount/source/owner/device drift, non-symlink local
+block-device evidence without source disclosure, directory-descriptor creation and race rejection,
+all lifecycle rechecks and failure-path secret retention. They also prove fixed argv, exact
+capabilities and limits, CSPRNG lengths, binary stdin,
 in-flight dump bounds and child reap, structured two-version readback, immutable image environment,
 secret inode/link identity, exact lifecycle ordering, unexpected-failure cleanup, symlink rejection,
 stop-before-secret-unlink, APFS noowners non-claim, top-level restart-count validation and immutable
