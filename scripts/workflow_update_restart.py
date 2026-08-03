@@ -558,12 +558,42 @@ MAXIMUM_FIXTURE_EXECUTION_EVIDENCE_BYTES = 2_048
 _FIXTURE_DIAGNOSTIC_CONTAINER_NAME = "datariver-gateway-auth-parity-require-absent"
 _FIXTURE_DIAGNOSTIC_CONTAINER_CONTRACT_LABEL = f"datariver.fixture.contract={FIXTURE_CONTRACT}"
 _FIXTURE_DIAGNOSTIC_CONTAINER_OPERATION_LABEL = "datariver.fixture.operation=REQUIRE_ABSENT"
+_HOST_ENVIRONMENT_PREFLIGHT_ARGUMENTS = (
+    "--diagnostic-phase",
+    "HOST_ENVIRONMENT_PREFLIGHT",
+)
+MAXIMUM_HOST_ENVIRONMENT_PREFLIGHT_EVIDENCE_BYTES = 256
 
 
 class FixtureDiagnosticExecutionClassification(StrEnum):
     PASS = "PASS"  # noqa: S105 - fixed diagnostic classification, not a secret.
     REJECTED = "REJECTED"
     OPERATOR_REVIEW_REQUIRED = "OPERATOR_REVIEW_REQUIRED"
+
+
+class HostEnvironmentPreflightClassification(StrEnum):
+    PASS = "PASS"  # noqa: S105 - fixed diagnostic classification, not a secret.
+    REJECTED = "REJECTED"
+    OPERATOR_REVIEW_REQUIRED = "OPERATOR_REVIEW_REQUIRED"
+
+
+class HostEnvironmentPreflightPhase(StrEnum):
+    HOST_ENVIRONMENT_PREFLIGHT = "HOST_ENVIRONMENT_PREFLIGHT"
+
+
+class HostEnvironmentPreflightPredicate(StrEnum):
+    APPLIED_STATE_CONTRACT = "APPLIED_STATE_CONTRACT"
+    PROFILE_SELECTION = "PROFILE_SELECTION"
+    DEPLOYMENT_MODE_SELECTION = "DEPLOYMENT_MODE_SELECTION"
+    GATEWAY_SELECTION = "GATEWAY_SELECTION"
+    GRAPH_SELECTION = "GRAPH_SELECTION"
+    ENV_PATH_CONTRACT = "ENV_PATH_CONTRACT"
+    ENV_FILE_CONTRACT = "ENV_FILE_CONTRACT"
+    ENV_READ = "ENV_READ"
+    ENV_FINGERPRINT = "ENV_FINGERPRINT"
+    COMPOSE_SELECTION = "COMPOSE_SELECTION"
+    PASS = "PASS"  # noqa: S105 - fixed diagnostic predicate, not a secret.
+    UNKNOWN = "UNKNOWN"
 
 
 class _FixtureContainerState(StrEnum):
@@ -585,6 +615,51 @@ class _FixtureBuildOutcome:
     attempted: bool
     succeeded: bool
     outcome_known: bool
+
+
+@dataclass(frozen=True, slots=True)
+class HostEnvironmentPreflightEvidence:
+    classification: HostEnvironmentPreflightClassification
+    phase: HostEnvironmentPreflightPhase
+    predicate: HostEnvironmentPreflightPredicate
+    mutation_count: int = 0
+    retry_count: int = 0
+
+    def __post_init__(self) -> None:
+        if (
+            self.phase is not HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT
+            or type(self.mutation_count) is not int
+            or self.mutation_count != 0
+            or type(self.retry_count) is not int
+            or self.retry_count != 0
+            or (
+                self.classification is HostEnvironmentPreflightClassification.PASS
+                and self.predicate is not HostEnvironmentPreflightPredicate.PASS
+            )
+            or (
+                self.classification is HostEnvironmentPreflightClassification.REJECTED
+                and self.predicate is HostEnvironmentPreflightPredicate.PASS
+            )
+            or (
+                self.classification
+                is HostEnvironmentPreflightClassification.OPERATOR_REVIEW_REQUIRED
+                and self.predicate is not HostEnvironmentPreflightPredicate.UNKNOWN
+            )
+        ):
+            raise WorkflowError("HOST_ENVIRONMENT_PREFLIGHT_EVIDENCE_INVALID")
+
+
+@dataclass(frozen=True, slots=True)
+class _HostEnvironmentPreflightResult:
+    evidence: HostEnvironmentPreflightEvidence
+    state: AppliedState | None = None
+    env_file: Path | None = None
+    files: tuple[Path, ...] = ()
+
+    def __post_init__(self) -> None:
+        passed = self.evidence.predicate is HostEnvironmentPreflightPredicate.PASS
+        if passed != (self.state is not None and self.env_file is not None and bool(self.files)):
+            raise WorkflowError("HOST_ENVIRONMENT_PREFLIGHT_EVIDENCE_INVALID")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1999,6 +2074,121 @@ def _print_plan(
     print(f"  Neo4j: {'restart' if plan.restart_graph else 'unchanged'}", flush=True)
 
 
+def format_host_environment_preflight_line(
+    evidence: HostEnvironmentPreflightEvidence,
+) -> str:
+    line = json.dumps(
+        {
+            "classification": evidence.classification.value,
+            "mutation_count": evidence.mutation_count,
+            "phase": evidence.phase.value,
+            "predicate": evidence.predicate.value,
+            "retry_count": evidence.retry_count,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(line.encode("utf-8")) > MAXIMUM_HOST_ENVIRONMENT_PREFLIGHT_EVIDENCE_BYTES:
+        raise WorkflowError("HOST_ENVIRONMENT_PREFLIGHT_EVIDENCE_INVALID")
+    return line
+
+
+def _host_environment_preflight_failure(
+    predicate: HostEnvironmentPreflightPredicate,
+) -> _HostEnvironmentPreflightResult:
+    return _HostEnvironmentPreflightResult(
+        HostEnvironmentPreflightEvidence(
+            classification=HostEnvironmentPreflightClassification.REJECTED,
+            phase=HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT,
+            predicate=predicate,
+        )
+    )
+
+
+def _host_environment_preflight_under_lock() -> _HostEnvironmentPreflightResult:
+    try:
+        state = load_applied_state(state_path(ROOT, "mac-development"))
+    except Exception:
+        return _host_environment_preflight_failure(
+            HostEnvironmentPreflightPredicate.APPLIED_STATE_CONTRACT
+        )
+    if state.profile != "mac-development":
+        return _host_environment_preflight_failure(
+            HostEnvironmentPreflightPredicate.PROFILE_SELECTION
+        )
+    if state.deployment_mode != "build":
+        return _host_environment_preflight_failure(
+            HostEnvironmentPreflightPredicate.DEPLOYMENT_MODE_SELECTION
+        )
+    if state.local_gateway:
+        return _host_environment_preflight_failure(
+            HostEnvironmentPreflightPredicate.GATEWAY_SELECTION
+        )
+    if state.local_graph:
+        return _host_environment_preflight_failure(
+            HostEnvironmentPreflightPredicate.GRAPH_SELECTION
+        )
+    try:
+        env_file = _resolve_repo_path(state.env_file)
+    except Exception:
+        return _host_environment_preflight_failure(
+            HostEnvironmentPreflightPredicate.ENV_PATH_CONTRACT
+        )
+    try:
+        require_regular_file(env_file, label="Environment file")
+    except Exception:
+        return _host_environment_preflight_failure(
+            HostEnvironmentPreflightPredicate.ENV_FILE_CONTRACT
+        )
+    try:
+        environment_values = read_env_values(env_file)
+    except Exception:
+        return _host_environment_preflight_failure(HostEnvironmentPreflightPredicate.ENV_READ)
+    try:
+        environment_fingerprint = environment_key_hashes(environment_values)
+    except Exception:
+        return _host_environment_preflight_failure(
+            HostEnvironmentPreflightPredicate.ENV_FINGERPRINT
+        )
+    if environment_fingerprint != state.environment_key_hashes:
+        return _host_environment_preflight_failure(
+            HostEnvironmentPreflightPredicate.ENV_FINGERPRINT
+        )
+    try:
+        files = _compose_files(state, release_override=None)
+    except Exception:
+        return _host_environment_preflight_failure(
+            HostEnvironmentPreflightPredicate.COMPOSE_SELECTION
+        )
+    if files != (ROOT / "compose.yaml", ROOT / "compose.identity.yaml"):
+        return _host_environment_preflight_failure(
+            HostEnvironmentPreflightPredicate.COMPOSE_SELECTION
+        )
+    return _HostEnvironmentPreflightResult(
+        HostEnvironmentPreflightEvidence(
+            classification=HostEnvironmentPreflightClassification.PASS,
+            phase=HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT,
+            predicate=HostEnvironmentPreflightPredicate.PASS,
+        ),
+        state=state,
+        env_file=env_file,
+        files=files,
+    )
+
+
+def _host_environment_preflight_diagnostic() -> HostEnvironmentPreflightEvidence:
+    try:
+        with exclusive_docker_workflow_lock(ROOT):
+            result = _host_environment_preflight_under_lock()
+    except BaseException:
+        return HostEnvironmentPreflightEvidence(
+            classification=HostEnvironmentPreflightClassification.OPERATOR_REVIEW_REQUIRED,
+            phase=HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT,
+            predicate=HostEnvironmentPreflightPredicate.UNKNOWN,
+        )
+    return result.evidence
+
+
 def _fixture_require_absent_diagnostic() -> FixtureDiagnosticExecutionEvidence:
     """Run the sole locked fixture absence diagnostic with honest Docker evidence."""
 
@@ -2006,23 +2196,13 @@ def _fixture_require_absent_diagnostic() -> FixtureDiagnosticExecutionEvidence:
     capacity_executor = _FixtureDiagnosticCapacityExecutor()
     try:
         with exclusive_docker_workflow_lock(ROOT) as capacity_lock:
-            try:
-                state = load_applied_state(state_path(ROOT, "mac-development"))
-                if (
-                    state.profile != "mac-development"
-                    or state.deployment_mode != "build"
-                    or state.local_gateway
-                    or state.local_graph
-                ):
-                    raise WorkflowError("GATEWAY_AUTH_PARITY_FIXTURE_DIAGNOSTIC_INVALID")
-                env_file = _resolve_repo_path(state.env_file)
-                require_regular_file(env_file, label="Environment file")
-                environment_values = read_env_values(env_file)
-                if environment_key_hashes(environment_values) != state.environment_key_hashes:
-                    raise WorkflowError("GATEWAY_AUTH_PARITY_FIXTURE_DIAGNOSTIC_INVALID")
-                files = _compose_files(state, release_override=None)
-            except BaseException:
+            preflight = _host_environment_preflight_under_lock()
+            if preflight.evidence.predicate is not HostEnvironmentPreflightPredicate.PASS:
                 return execution.to_evidence(FixtureDiagnosticPredicate.ENVIRONMENT_DEPENDENCY)
+            assert preflight.state is not None
+            assert preflight.env_file is not None
+            env_file = preflight.env_file
+            files = preflight.files
             try:
                 if not _fixture_diagnostic_source_is_clean():
                     raise WorkflowError("GATEWAY_AUTH_PARITY_FIXTURE_IMAGE_PROVENANCE_INVALID")
@@ -2119,6 +2299,23 @@ def _fixture_require_absent_diagnostic() -> FixtureDiagnosticExecutionEvidence:
 
 
 def main() -> int:
+    diagnostic_arguments = tuple(sys.argv[1:])
+    if diagnostic_arguments == _HOST_ENVIRONMENT_PREFLIGHT_ARGUMENTS:
+        environment_evidence = _host_environment_preflight_diagnostic()
+        print(format_host_environment_preflight_line(environment_evidence))
+        return (
+            0
+            if environment_evidence.classification is HostEnvironmentPreflightClassification.PASS
+            else 2
+        )
+    if "--diagnostic-phase" in diagnostic_arguments:
+        environment_evidence = HostEnvironmentPreflightEvidence(
+            classification=HostEnvironmentPreflightClassification.REJECTED,
+            phase=HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT,
+            predicate=HostEnvironmentPreflightPredicate.UNKNOWN,
+        )
+        print(format_host_environment_preflight_line(environment_evidence))
+        return 2
     if len(sys.argv) == 1:
         evidence = _fixture_require_absent_diagnostic()
         print(format_fixture_diagnostic_execution_line(evidence))

@@ -205,6 +205,23 @@ after cleanup is known, no cleanup is required, residual state is known and its 
 non-PASS child predicate remains the first defect when cleanup also fails; a child PASS with an
 unknown or retained container becomes the fixed unknown predicate before any identity creation.
 
+The fixed `--diagnostic-phase HOST_ENVIRONMENT_PREFLIGHT` operation is the narrower read-only
+classifier for a fixture diagnostic that stopped with `ENVIRONMENT_DEPENDENCY` before its governed
+build attempt. It holds the same exclusive workflow lock and reuses the canonical AppliedState
+loader, repository-path resolution, regular environment-file guard, environment parser and
+key-schema fingerprint, and Compose-file selection. It stops before source/image provenance,
+capacity or cache probing, builder inspection, build, Compose execution, network or login, database
+access, identity, topology, AppliedState write or push. Its closed first-failure predicate is exactly
+one of `APPLIED_STATE_CONTRACT`, `PROFILE_SELECTION`, `DEPLOYMENT_MODE_SELECTION`,
+`GATEWAY_SELECTION`, `GRAPH_SELECTION`, `ENV_PATH_CONTRACT`, `ENV_FILE_CONTRACT`, `ENV_READ`,
+`ENV_FINGERPRINT`, `COMPOSE_SELECTION`, `PASS` or `UNKNOWN`. The one-line evidence contains only
+classification, fixed phase, predicate, mutation count zero and retry count zero. Environment keys,
+values, hashes and paths, secrets, state SHAs, Compose paths and exception text are never emitted.
+Unexpected arguments fail before lock acquisition, and a lock acquisition or release defect yields
+operator-review-required `UNKNOWN` rather than a false pass. An interrupt or other `BaseException`
+at any canonical preflight step follows that same unknown review boundary; it is never reported as
+proof that a specific environment predicate failed.
+
 The child and parent share one closed `REQUIRE_ABSENT` envelope whose value-free predicate is
 exactly one of PASS, fixed-input/protocol, environment/dependency, repository-not-absent,
 repository-query/dependency, image-provenance, process-spawn, process-timeout, process-nonzero,

@@ -2319,6 +2319,490 @@ def test_no_argument_fixture_diagnostic_holds_lock_and_stops_after_require_absen
     assert output["retry_count"] == 0
 
 
+def test_host_environment_preflight_is_locked_ordered_and_stops_before_later_paths(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    environment = {"APP_ENV": "development"}
+    expected_hashes = cast(dict[str, str], update.environment_key_hashes(environment))
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        environment_key_hashes=expected_hashes,
+    )
+    events: list[str] = []
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        events.append("lock-enter")
+        try:
+            yield object()
+        finally:
+            events.append("lock-exit")
+
+    def load(_path: Path) -> object:
+        events.append("state")
+        return state
+
+    def resolve(_value: str | Path) -> Path:
+        events.append("env-path")
+        return env_file
+
+    def regular(_path: Path, *, label: str) -> None:
+        assert label == "Environment file"
+        events.append("env-file")
+
+    def read(_path: Path) -> dict[str, str]:
+        events.append("env-read")
+        return environment
+
+    def hashes(_values: dict[str, str]) -> dict[str, str]:
+        events.append("env-fingerprint")
+        return expected_hashes
+
+    def compose(_state: object, *, release_override: Path | None) -> tuple[Path, ...]:
+        assert release_override is None
+        events.append("compose-selection")
+        return (ROOT / "compose.yaml", ROOT / "compose.identity.yaml")
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("later diagnostic path must not run")
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", load)
+    monkeypatch.setattr(update, "_resolve_repo_path", resolve)
+    monkeypatch.setattr(update, "require_regular_file", regular)
+    monkeypatch.setattr(update, "read_env_values", read)
+    monkeypatch.setattr(update, "environment_key_hashes", hashes)
+    monkeypatch.setattr(update, "_compose_files", compose)
+    for name in (
+        "_fixture_diagnostic_source_is_clean",
+        "current_fixture_source_sha256",
+        "_preflight_build_capacity",
+        "_require_idle_builder",
+        "_build_current_fixture_image",
+        "_ComposeGatewayAuthParityFixture",
+        "_gateway_auth_parity_session",
+        "_apply_topology_reconciliation",
+        "write_applied_state",
+    ):
+        monkeypatch.setattr(update, name, forbidden)
+
+    evidence = update._host_environment_preflight_diagnostic()
+
+    assert evidence.classification is update.HostEnvironmentPreflightClassification.PASS
+    assert evidence.phase is update.HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT
+    assert evidence.predicate is update.HostEnvironmentPreflightPredicate.PASS
+    assert evidence.mutation_count == 0
+    assert evidence.retry_count == 0
+    assert events == [
+        "lock-enter",
+        "state",
+        "env-path",
+        "env-file",
+        "env-read",
+        "env-fingerprint",
+        "compose-selection",
+        "lock-exit",
+    ]
+
+
+def test_host_environment_preflight_vocabulary_and_evidence_are_exact() -> None:
+    update = _load_update_module()
+
+    assert tuple(item.value for item in update.HostEnvironmentPreflightPredicate) == (
+        "APPLIED_STATE_CONTRACT",
+        "PROFILE_SELECTION",
+        "DEPLOYMENT_MODE_SELECTION",
+        "GATEWAY_SELECTION",
+        "GRAPH_SELECTION",
+        "ENV_PATH_CONTRACT",
+        "ENV_FILE_CONTRACT",
+        "ENV_READ",
+        "ENV_FINGERPRINT",
+        "COMPOSE_SELECTION",
+        "PASS",
+        "UNKNOWN",
+    )
+    with pytest.raises(update.WorkflowError, match="HOST_ENVIRONMENT_PREFLIGHT_EVIDENCE_INVALID"):
+        update.HostEnvironmentPreflightEvidence(
+            classification=update.HostEnvironmentPreflightClassification.PASS,
+            phase=update.HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT,
+            predicate=update.HostEnvironmentPreflightPredicate.ENV_READ,
+        )
+    with pytest.raises(update.WorkflowError, match="HOST_ENVIRONMENT_PREFLIGHT_EVIDENCE_INVALID"):
+        update.HostEnvironmentPreflightEvidence(
+            classification=update.HostEnvironmentPreflightClassification.REJECTED,
+            phase=update.HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT,
+            predicate=update.HostEnvironmentPreflightPredicate.ENV_READ,
+            mutation_count=1,
+        )
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    (
+        ("state", "APPLIED_STATE_CONTRACT"),
+        ("profile", "PROFILE_SELECTION"),
+        ("deployment", "DEPLOYMENT_MODE_SELECTION"),
+        ("gateway", "GATEWAY_SELECTION"),
+        ("graph", "GRAPH_SELECTION"),
+        ("env-path", "ENV_PATH_CONTRACT"),
+        ("env-file", "ENV_FILE_CONTRACT"),
+        ("env-read", "ENV_READ"),
+        ("env-fingerprint", "ENV_FINGERPRINT"),
+        ("compose", "COMPOSE_SELECTION"),
+    ),
+)
+def test_host_environment_preflight_classifies_each_boundary_without_raw(
+    case: str,
+    expected: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    environment = {"APP_ENV": "development"}
+    overrides: dict[str, object] = {
+        "profile": "mac-development",
+        "env_file": os.fspath(env_file),
+        "environment_key_hashes": update.environment_key_hashes(environment),
+    }
+    if case == "profile":
+        overrides["profile"] = "portable-development"
+    elif case == "deployment":
+        overrides["deployment_mode"] = "offline"
+    elif case == "gateway":
+        overrides["local_gateway"] = True
+    elif case == "graph":
+        overrides["local_graph"] = True
+    elif case == "env-fingerprint":
+        overrides["environment_key_hashes"] = {"APP_ENV": "b" * 64}
+    state = _topology_state(**overrides)
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    def fail(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("raw-path-env-secret-sentinel")
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "_resolve_repo_path", lambda _value: env_file)
+    monkeypatch.setattr(update, "require_regular_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "read_env_values", lambda _path: environment)
+    monkeypatch.setattr(
+        update,
+        "_compose_files",
+        lambda _state, *, release_override: (ROOT / "compose.yaml",),
+    )
+    failure_target = {
+        "state": "load_applied_state",
+        "env-path": "_resolve_repo_path",
+        "env-file": "require_regular_file",
+        "env-read": "read_env_values",
+        "compose": "_compose_files",
+    }.get(case)
+    if failure_target is not None:
+        monkeypatch.setattr(update, failure_target, fail)
+
+    evidence = update._host_environment_preflight_diagnostic()
+    line = update.format_host_environment_preflight_line(evidence)
+
+    assert evidence.classification is update.HostEnvironmentPreflightClassification.REJECTED
+    assert evidence.predicate.value == expected
+    assert evidence.mutation_count == 0
+    assert evidence.retry_count == 0
+    assert "raw-path-env-secret-sentinel" not in line
+    assert os.fspath(env_file) not in line
+
+
+def test_host_environment_preflight_rejects_noncanonical_compose_selection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    environment = {"APP_ENV": "development"}
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        environment_key_hashes=update.environment_key_hashes(environment),
+    )
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "_resolve_repo_path", lambda _value: env_file)
+    monkeypatch.setattr(update, "require_regular_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "read_env_values", lambda _path: environment)
+    monkeypatch.setattr(update, "_compose_files", lambda *_args, **_kwargs: ())
+
+    evidence = update._host_environment_preflight_diagnostic()
+
+    assert evidence.classification is update.HostEnvironmentPreflightClassification.REJECTED
+    assert evidence.predicate is update.HostEnvironmentPreflightPredicate.COMPOSE_SELECTION
+
+
+@pytest.mark.parametrize(
+    "step",
+    ("state", "env-path", "env-file", "env-read", "env-fingerprint", "compose"),
+)
+@pytest.mark.parametrize("failure", (KeyboardInterrupt, SystemExit, BaseException))
+def test_host_environment_preflight_interrupt_at_step_is_fixed_and_nonleaking(
+    step: str,
+    failure: type[BaseException],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    environment = {"APP_ENV": "development"}
+    expected_hashes = cast(dict[str, str], update.environment_key_hashes(environment))
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        environment_key_hashes=expected_hashes,
+    )
+    events: list[str] = []
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        events.append("lock-enter")
+        try:
+            yield object()
+        finally:
+            events.append("lock-exit")
+
+    def interrupt_if_selected(name: str) -> None:
+        events.append(name)
+        if step == name:
+            raise failure("raw-environment-value-sentinel")
+
+    def load(_path: Path) -> object:
+        interrupt_if_selected("state")
+        return state
+
+    def resolve(_value: str | Path) -> Path:
+        interrupt_if_selected("env-path")
+        return env_file
+
+    def regular(_path: Path, *, label: str) -> None:
+        assert label == "Environment file"
+        interrupt_if_selected("env-file")
+
+    def read(_path: Path) -> dict[str, str]:
+        interrupt_if_selected("env-read")
+        return environment
+
+    def fingerprint(_values: dict[str, str]) -> dict[str, str]:
+        interrupt_if_selected("env-fingerprint")
+        return expected_hashes
+
+    def compose(_state: object, *, release_override: Path | None) -> tuple[Path, ...]:
+        assert release_override is None
+        interrupt_if_selected("compose")
+        return (ROOT / "compose.yaml", ROOT / "compose.identity.yaml")
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", load)
+    monkeypatch.setattr(update, "_resolve_repo_path", resolve)
+    monkeypatch.setattr(update, "require_regular_file", regular)
+    monkeypatch.setattr(update, "read_env_values", read)
+    monkeypatch.setattr(update, "environment_key_hashes", fingerprint)
+    monkeypatch.setattr(update, "_compose_files", compose)
+
+    evidence = update._host_environment_preflight_diagnostic()
+    line = update.format_host_environment_preflight_line(evidence)
+
+    assert evidence.classification is (
+        update.HostEnvironmentPreflightClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is update.HostEnvironmentPreflightPredicate.UNKNOWN
+    order = ("state", "env-path", "env-file", "env-read", "env-fingerprint", "compose")
+    assert events == ["lock-enter", *order[: order.index(step) + 1], "lock-exit"]
+    assert "raw-environment-value-sentinel" not in line
+
+
+def test_fixture_diagnostic_preflight_interrupt_is_unknown_before_later_actions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+    )
+    later_actions: list[str] = []
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    def interrupt(_path: Path) -> dict[str, str]:
+        raise KeyboardInterrupt("raw-fixture-preflight-secret-sentinel")
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        later_actions.append("forbidden")
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "_resolve_repo_path", lambda _value: env_file)
+    monkeypatch.setattr(update, "require_regular_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "read_env_values", interrupt)
+    for name in (
+        "_fixture_diagnostic_source_is_clean",
+        "current_fixture_source_sha256",
+        "_preflight_build_capacity",
+        "_require_idle_builder",
+        "_build_current_fixture_image",
+        "_ComposeGatewayAuthParityFixture",
+    ):
+        monkeypatch.setattr(update, name, forbidden)
+
+    evidence = update._fixture_require_absent_diagnostic()
+    line = update.format_fixture_diagnostic_execution_line(evidence)
+
+    assert evidence.predicate is FixtureDiagnosticPredicate.UNKNOWN
+    assert evidence.build_attempted is False
+    assert evidence.container_attempted is False
+    assert evidence.business_mutation_count == 0
+    assert evidence.retry_count == 0
+    assert later_actions == []
+    assert "raw-fixture-preflight-secret-sentinel" not in line
+
+
+@pytest.mark.parametrize("failure", (RuntimeError, KeyboardInterrupt))
+def test_host_environment_preflight_lock_failure_is_review_required_and_nonleaking(
+    failure: type[BaseException],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        try:
+            raise failure("raw-lock-secret-sentinel")
+        finally:
+            pass
+        yield object()
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+
+    evidence = update._host_environment_preflight_diagnostic()
+    line = update.format_host_environment_preflight_line(evidence)
+
+    assert evidence.classification is (
+        update.HostEnvironmentPreflightClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is update.HostEnvironmentPreflightPredicate.UNKNOWN
+    assert evidence.mutation_count == 0
+    assert evidence.retry_count == 0
+    assert "raw-lock-secret-sentinel" not in line
+
+
+def test_host_environment_preflight_lock_exit_failure_downgrades_pass(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    environment = {"APP_ENV": "development"}
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        environment_key_hashes=update.environment_key_hashes(environment),
+    )
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+        raise RuntimeError("raw-lock-exit-sentinel")
+
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "_resolve_repo_path", lambda _value: env_file)
+    monkeypatch.setattr(update, "require_regular_file", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(update, "read_env_values", lambda _path: environment)
+
+    evidence = update._host_environment_preflight_diagnostic()
+    line = update.format_host_environment_preflight_line(evidence)
+
+    assert evidence.classification is (
+        update.HostEnvironmentPreflightClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is update.HostEnvironmentPreflightPredicate.UNKNOWN
+    assert "raw-lock-exit-sentinel" not in line
+
+
+def test_host_environment_preflight_main_accepts_only_exact_phase_argv(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    accepted = update.HostEnvironmentPreflightEvidence(
+        classification=update.HostEnvironmentPreflightClassification.PASS,
+        phase=update.HostEnvironmentPreflightPhase.HOST_ENVIRONMENT_PREFLIGHT,
+        predicate=update.HostEnvironmentPreflightPredicate.PASS,
+    )
+    calls: list[str] = []
+
+    def diagnose() -> object:
+        calls.append("diagnose")
+        return accepted
+
+    monkeypatch.setattr(update, "_host_environment_preflight_diagnostic", diagnose)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            os.fspath(UPDATE_MODULE_PATH),
+            "--diagnostic-phase",
+            "HOST_ENVIRONMENT_PREFLIGHT",
+        ],
+    )
+
+    assert update.main() == 0
+    assert calls == ["diagnose"]
+    assert json.loads(capsys.readouterr().out) == {
+        "classification": "PASS",
+        "mutation_count": 0,
+        "phase": "HOST_ENVIRONMENT_PREFLIGHT",
+        "predicate": "PASS",
+        "retry_count": 0,
+    }
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            os.fspath(UPDATE_MODULE_PATH),
+            "--diagnostic-phase",
+            "HOST_ENVIRONMENT_PREFLIGHT",
+            os.fspath(tmp_path / "raw-secret-extra"),
+        ],
+    )
+    assert update.main() == 2
+    assert calls == ["diagnose"]
+    rejected = json.loads(capsys.readouterr().out)
+    assert rejected == {
+        "classification": "REJECTED",
+        "mutation_count": 0,
+        "phase": "HOST_ENVIRONMENT_PREFLIGHT",
+        "predicate": "UNKNOWN",
+        "retry_count": 0,
+    }
+    assert "raw-secret-extra" not in json.dumps(rejected)
+
+
 @pytest.mark.parametrize("outcome_known", (True, False))
 def test_fixture_diagnostic_provenance_failure_stops_before_ephemeral_query(
     outcome_known: bool,

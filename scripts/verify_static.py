@@ -2727,6 +2727,31 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         ("OPERATOR_REVIEW_REQUIRED", "OPERATOR_REVIEW_REQUIRED"),
     ):
         raise AssertionError("the outer fixture classification vocabulary has drifted")
+    if workflow_enum_members("HostEnvironmentPreflightClassification") != (
+        ("PASS", "PASS"),
+        ("REJECTED", "REJECTED"),
+        ("OPERATOR_REVIEW_REQUIRED", "OPERATOR_REVIEW_REQUIRED"),
+    ):
+        raise AssertionError("the host-environment classification vocabulary has drifted")
+    if workflow_enum_members("HostEnvironmentPreflightPhase") != (
+        ("HOST_ENVIRONMENT_PREFLIGHT", "HOST_ENVIRONMENT_PREFLIGHT"),
+    ):
+        raise AssertionError("the host-environment diagnostic phase has drifted")
+    if workflow_enum_members("HostEnvironmentPreflightPredicate") != (
+        ("APPLIED_STATE_CONTRACT", "APPLIED_STATE_CONTRACT"),
+        ("PROFILE_SELECTION", "PROFILE_SELECTION"),
+        ("DEPLOYMENT_MODE_SELECTION", "DEPLOYMENT_MODE_SELECTION"),
+        ("GATEWAY_SELECTION", "GATEWAY_SELECTION"),
+        ("GRAPH_SELECTION", "GRAPH_SELECTION"),
+        ("ENV_PATH_CONTRACT", "ENV_PATH_CONTRACT"),
+        ("ENV_FILE_CONTRACT", "ENV_FILE_CONTRACT"),
+        ("ENV_READ", "ENV_READ"),
+        ("ENV_FINGERPRINT", "ENV_FINGERPRINT"),
+        ("COMPOSE_SELECTION", "COMPOSE_SELECTION"),
+        ("PASS", "PASS"),
+        ("UNKNOWN", "UNKNOWN"),
+    ):
+        raise AssertionError("the host-environment predicate vocabulary has drifted")
     if workflow_enum_members("_FixtureContainerState") != (
         ("ABSENT", "ABSENT"),
         ("OWNED_RUNNING", "OWNED_RUNNING"),
@@ -2964,6 +2989,97 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     )
     if output_key_matches != tuple(sorted(exact_execution_output_keys)):
         raise AssertionError("the outer fixture execution output allowlist has drifted")
+    host_output = workflow.split("def format_host_environment_preflight_line(", maxsplit=1)[
+        1
+    ].split("def _host_environment_preflight_failure(", maxsplit=1)[0]
+    host_output_keys = tuple(
+        re.findall(
+            r'^\s{12}"([a-z_]+)": evidence\.',
+            host_output,
+            flags=re.MULTILINE,
+        )
+    )
+    if host_output_keys != (
+        "classification",
+        "mutation_count",
+        "phase",
+        "predicate",
+        "retry_count",
+    ):
+        raise AssertionError("the host-environment output allowlist has drifted")
+    host_functions = [
+        node
+        for node in workflow_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name
+        in {
+            "_host_environment_preflight_under_lock",
+            "_host_environment_preflight_diagnostic",
+        }
+    ]
+    if len(host_functions) != 2:
+        raise AssertionError("the host-environment preflight functions must remain unique")
+    host_preflight = workflow.split(
+        "def _host_environment_preflight_under_lock() -> _HostEnvironmentPreflightResult:",
+        maxsplit=1,
+    )[1].split("def _host_environment_preflight_diagnostic()", maxsplit=1)[0]
+    host_order = tuple(
+        host_preflight.index(fragment)
+        for fragment in (
+            'load_applied_state(state_path(ROOT, "mac-development"))',
+            'if state.profile != "mac-development":',
+            'if state.deployment_mode != "build":',
+            "if state.local_gateway:",
+            "if state.local_graph:",
+            "env_file = _resolve_repo_path(state.env_file)",
+            'require_regular_file(env_file, label="Environment file")',
+            "environment_values = read_env_values(env_file)",
+            "environment_fingerprint = environment_key_hashes(environment_values)",
+            "if environment_fingerprint != state.environment_key_hashes:",
+            "files = _compose_files(state, release_override=None)",
+            'if files != (ROOT / "compose.yaml", ROOT / "compose.identity.yaml"):',
+            "predicate=HostEnvironmentPreflightPredicate.PASS",
+        )
+    )
+    if host_order != tuple(sorted(host_order)):
+        raise AssertionError("the host-environment canonical preflight order has drifted")
+    if "except BaseException:" in host_preflight:
+        raise AssertionError("step-local host-environment failures must not absorb interrupts")
+    for forbidden in (
+        "_fixture_diagnostic_source_is_clean",
+        "current_fixture_source_sha256",
+        "_preflight_build_capacity",
+        "governed_compose_build_capacity",
+        "_require_idle_builder",
+        "require_no_active_builds",
+        "_build_current_fixture_image",
+        "_ComposeGatewayAuthParityFixture",
+        "_bounded_fixture_diagnostic_process",
+        "_gateway_auth_parity_session",
+        "_read_gateway_admin_password",
+        "KeycloakGatewayAuthParityIdentity",
+        "_apply_topology_reconciliation",
+        "write_applied_state",
+        "subprocess.",
+    ):
+        if forbidden in host_preflight:
+            raise AssertionError(
+                f"the host-environment phase crossed a forbidden later boundary: {forbidden}"
+            )
+    host_operator = workflow.split(
+        "def _host_environment_preflight_diagnostic() -> HostEnvironmentPreflightEvidence:",
+        maxsplit=1,
+    )[1].split("def _fixture_require_absent_diagnostic()", maxsplit=1)[0]
+    if host_operator.count("except BaseException:") != 1 or not (
+        host_operator.index("with exclusive_docker_workflow_lock(ROOT):")
+        < host_operator.index("result = _host_environment_preflight_under_lock()")
+        < host_operator.index("except BaseException:")
+        < host_operator.index(
+            "classification=HostEnvironmentPreflightClassification.OPERATOR_REVIEW_REQUIRED"
+        )
+        < host_operator.index("predicate=HostEnvironmentPreflightPredicate.UNKNOWN")
+    ):
+        raise AssertionError("the host-environment lock/finalization boundary has drifted")
     capacity_recorder = workflow.split("class _FixtureDiagnosticCapacityExecutor:", maxsplit=1)[
         1
     ].split("def _bounded_fixture_diagnostic_process(", maxsplit=1)[0]
@@ -2985,8 +3101,7 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         operator_diagnostic.index(fragment)
         for fragment in (
             "with exclusive_docker_workflow_lock(ROOT) as capacity_lock:",
-            'load_applied_state(state_path(ROOT, "mac-development"))',
-            "read_env_values(env_file)",
+            "preflight = _host_environment_preflight_under_lock()",
             "if not _fixture_diagnostic_source_is_clean():",
             "source_sha256 = current_fixture_source_sha256()",
             "selected_builder = _preflight_build_capacity(",
@@ -3068,12 +3183,32 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
         if forbidden in operator_diagnostic:
             raise AssertionError("the fixture diagnostic must stop before mutation")
     workflow_main = workflow.split("def main() -> int:", maxsplit=1)[1]
-    if not workflow_main.index("if len(sys.argv) == 1:") < workflow_main.index(
-        "args = parse_args()"
+    if not (
+        workflow_main.index("if diagnostic_arguments == _HOST_ENVIRONMENT_PREFLIGHT_ARGUMENTS:")
+        < workflow_main.index('if "--diagnostic-phase" in diagnostic_arguments:')
+        < workflow_main.index("if len(sys.argv) == 1:")
+        < workflow_main.index("args = parse_args()")
     ):
-        raise AssertionError(
-            "the fixed no-argument diagnostic must precede normal argument parsing"
-        )
+        raise AssertionError("the fixed diagnostics must precede normal argument parsing")
+    for fragment in (
+        '_HOST_ENVIRONMENT_PREFLIGHT_ARGUMENTS = (\n    "--diagnostic-phase",\n'
+        '    "HOST_ENVIRONMENT_PREFLIGHT",\n)',
+        "environment_evidence = _host_environment_preflight_diagnostic()",
+        "print(format_host_environment_preflight_line(environment_evidence))",
+    ):
+        if fragment not in workflow:
+            raise AssertionError(f"the fixed host-environment argv is missing: {fragment}")
+    for test_name in (
+        "test_host_environment_preflight_is_locked_ordered_and_stops_before_later_paths",
+        "test_host_environment_preflight_classifies_each_boundary_without_raw",
+        "test_host_environment_preflight_rejects_noncanonical_compose_selection",
+        "test_host_environment_preflight_interrupt_at_step_is_fixed_and_nonleaking",
+        "test_fixture_diagnostic_preflight_interrupt_is_unknown_before_later_actions",
+        "test_host_environment_preflight_lock_exit_failure_downgrades_pass",
+        "test_host_environment_preflight_main_accepts_only_exact_phase_argv",
+    ):
+        if f"def {test_name}(" not in platform_tests:
+            raise AssertionError(f"the host-environment negative is missing: {test_name}")
     for test_name, source in (
         (
             "test_require_absent_diagnostic_envelope_is_closed_bounded_and_value_free",
