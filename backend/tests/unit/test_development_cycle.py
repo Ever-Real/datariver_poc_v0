@@ -281,3 +281,80 @@ def test_failed_atomic_replace_preserves_last_successful_manifest(
 def test_missing_readiness_manifest_fails_closed(tmp_path: Path) -> None:
     with pytest.raises(cycle.DevelopmentCycleError, match="Run prep-update"):
         cycle.verify_readiness_manifest(_readiness_evidence(), tmp_path / "missing.json")
+
+
+class _PrepCheckRunner:
+    def __init__(self) -> None:
+        self.commands: list[tuple[str, ...]] = []
+        self.notes: list[str] = []
+
+    def note(self, message: str) -> None:
+        self.notes.append(message)
+
+    def run(self, arguments: object) -> None:
+        assert isinstance(arguments, tuple)
+        self.commands.append(tuple(os.fspath(argument) for argument in arguments))
+
+
+def test_prep_check_is_repeatable_and_read_only_after_successful_update(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env_file = tmp_path / ".env.wsl-intranet-development"
+    env_file.write_text("API_PORT=38101\n", encoding="utf-8")
+    original_env = env_file.read_bytes()
+    commit = "a" * 40
+    runner = _PrepCheckRunner()
+    git_calls: list[tuple[str, ...]] = []
+    verified: list[dict[str, object]] = []
+
+    monkeypatch.setattr(cycle, "require_platform", lambda **_kwargs: None)
+    monkeypatch.setattr(cycle, "require_dev_checkout", lambda _runner: None)
+    monkeypatch.setattr(cycle, "require_expected_origin", lambda _runner: None)
+    monkeypatch.setattr(cycle, "current_commit", lambda _runner: commit)
+
+    def git_output(_runner: object, *arguments: str) -> str:
+        git_calls.append(arguments)
+        return commit
+
+    monkeypatch.setattr(cycle, "git_output", git_output)
+    monkeypatch.setattr(
+        cycle,
+        "capture_source_host_preflight",
+        lambda _runner, _env: {"runtime_activation": False},
+    )
+    monkeypatch.setattr(cycle, "read_env_values", lambda _path: {"API_PORT": "38101"})
+    monkeypatch.setattr(
+        cycle,
+        "verify_source_host_health",
+        lambda _runner, _values: {"api": {"status": 200}},
+    )
+    monkeypatch.setattr(
+        cycle,
+        "build_readiness_evidence",
+        lambda _runner, **_kwargs: _readiness_evidence(commit),
+    )
+    monkeypatch.setattr(
+        cycle,
+        "verify_readiness_manifest",
+        lambda evidence: verified.append(dict(evidence)),
+    )
+
+    def reject_mutation(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("prep-check must not call an update or readiness-write path")
+
+    monkeypatch.setattr(cycle, "prepare_source_host", reject_mutation)
+    monkeypatch.setattr(cycle, "sync_changed_dependencies", reject_mutation)
+    monkeypatch.setattr(cycle, "write_readiness_manifest", reject_mutation)
+
+    cycle.prep_check(runner, env_file)
+    cycle.prep_check(runner, env_file)
+
+    expected_status = tuple(
+        os.fspath(argument) for argument in cycle.source_host_arguments("status", env_file)
+    )
+    assert runner.commands == [expected_status, expected_status]
+    assert git_calls == [("rev-parse", "--verify", "origin/dev")] * 2
+    assert verified == [_readiness_evidence(commit), _readiness_evidence(commit)]
+    assert env_file.read_bytes() == original_env
+    assert len(runner.notes) == 4

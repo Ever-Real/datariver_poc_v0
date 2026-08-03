@@ -9,6 +9,11 @@ An operator builds an exact clean commit on the amd64 preparation PC, transfers
 `/home/datariver/`. The isolated server stores release assets, one host-local `.env`, secret files
 and named volumes, but no source checkout or build context.
 
+The export commit is the exact `main` checkpoint promoted only after the preparation PC has passed
+`prep-update`, `prep-check` and an unchanged second `prep-check`. Mac-to-preparation delivery remains
+source-only through `origin/dev`; the Pilot archive is a separate preparation-to-operations release
+boundary.
+
 This does not provide HA, WAF, production Secret Manager, database restore acceptance, enterprise
 IdP onboarding or an IP-trusted TLS certificate. It does not bundle independently operated
 DataHub/S3/Airflow/LLM/graph/observability systems.
@@ -47,7 +52,7 @@ DataHub/S3/Airflow/LLM/graph/observability systems.
 ## Operator sequence
 
 ```bash
-# Preparation PC: exact clean commit on dev or an approved main checkpoint
+# Preparation PC: exact clean approved main checkpoint on native Linux amd64
 ./scripts/export_release.sh \
   --commit <FULL_GIT_SHA> \
   --output /approved-transfer/datariver-<12-char-sha> \
@@ -66,6 +71,12 @@ On the first run, complete `/home/datariver/.env` and the explicitly reported fi
 `/home/datariver/secrets/`, then rerun the same deploy command. Do not copy the preparation PC's
 development secrets.
 
+For a redeploy or an idempotence check, invoke the same `deploy_pilot.sh` command with the same
+verified archive. It loads the checked image bundle but performs no build or pull, and it moves the
+`current` pointer only after health succeeds. The archive is produced with `docker image save`; it
+must never be replaced by `docker export`, `docker container export`, `docker commit` or a captured
+running container. Keep the previous release and a compatible PostgreSQL backup for rollback.
+
 ## Rollback boundary
 
 Keep the previous release directory/archive, image tags, `.env` backup and a tested PostgreSQL
@@ -81,7 +92,11 @@ shortcut.
 - [x] Static tests prove archive/Compose have no build or pull path and no API/DB/Redis publication.
 - [x] Shell syntax, Ruff, strict mypy, relevant pytest and `scripts/verify_static.py` pass.
 - [ ] Preparation PC produces an amd64 archive for the requested full commit.
+- [ ] The requested full commit is the exact accepted `main` checkpoint after one `prep-update` and
+      two unchanged successful `prep-check` runs.
 - [ ] Target verifies the archive checksum and every loaded image as `linux/amd64`.
+- [ ] Reapplying the same archive through the same deploy command preserves host-local environment,
+      secrets and volumes and changes `current` only after readiness succeeds.
 - [ ] Empty-volume migration and local identity bootstrap succeed.
 - [ ] Existing-volume update preserves DB/Draft/Release state and passes readiness.
 - [ ] Target backup/restore and rollback rehearsal is recorded.

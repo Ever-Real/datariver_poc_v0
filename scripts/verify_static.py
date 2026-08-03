@@ -1622,6 +1622,28 @@ def verify_amd64_source_readiness_contract() -> None:
     ):
         raise AssertionError("readiness evidence must be written only after runtime verification")
 
+    prep_check_source = workflow[workflow.index("def prep_check(") : workflow.index("\ndef main()")]
+    for fragment in (
+        "capture_source_host_preflight(runner, selected_env)",
+        'source_host_arguments("status", selected_env)',
+        "verify_source_host_health(runner, read_env_values(selected_env))",
+        "verify_readiness_manifest(evidence)",
+    ):
+        if fragment not in prep_check_source:
+            raise AssertionError(f"prep-check lost its read-only readiness gate: {fragment}")
+    for fragment in (
+        "prepare_source_host(",
+        "sync_changed_dependencies(",
+        "write_readiness_manifest(",
+        '"fetch"',
+        '"merge"',
+        '"migrate"',
+        '"start"',
+        '"bootstrap-identity"',
+    ):
+        if fragment in prep_check_source:
+            raise AssertionError(f"prep-check must remain repeatable and read-only: {fragment}")
+
     test_source = (ROOT / "backend" / "tests" / "unit" / "test_development_cycle.py").read_text(
         encoding="utf-8"
     )
@@ -1632,6 +1654,7 @@ def verify_amd64_source_readiness_contract() -> None:
         "test_preflight_subprocess_failure_suppresses_captured_raw_output",
         "test_failed_atomic_replace_preserves_last_successful_manifest",
         "test_missing_readiness_manifest_fails_closed",
+        "test_prep_check_is_repeatable_and_read_only_after_successful_update",
     ):
         if fragment not in test_source:
             raise AssertionError(f"the amd64 readiness direct test is missing: {fragment}")

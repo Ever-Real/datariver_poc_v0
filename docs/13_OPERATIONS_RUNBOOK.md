@@ -1,5 +1,41 @@
 # Operations, backup and recovery runbook
 
+## Canonical PC delivery and source-free operations boundary
+
+The Mac development PC publishes only a clean `dev` commit with
+`./scripts/development_cycle.py dev-publish`. The Linux amd64 preparation PC fast-forwards
+`origin/dev` with `prep-update`, runs `prep-check`, and then runs the same `prep-check` again without
+changing source, environment or runtime. The second check is the no-op/idempotence proof;
+`prep-update` is not repeated for that purpose because it reapplies schema, migration, bootstrap and
+runtime state.
+
+Only the exact preparation SHA accepted by both checks may be promoted to `main`. From a clean
+Linux amd64 checkout of that exact main checkpoint, the existing operations handoff is:
+
+```bash
+./scripts/export_release.sh \
+  --commit <FULL_APPROVED_MAIN_SHA> \
+  --output /approved-transfer/datariver-<12-char-sha> \
+  --accept-redis-image-redistribution
+
+DATARIVER_PILOT_HOME=/home/datariver \
+  ./deploy_pilot.sh ./release.tar.gz
+```
+
+Reapply or redeploy by invoking the same `deploy_pilot.sh` command with the same verified archive.
+The deployer verifies and loads the `linux/amd64` image bundle, performs no build or pull, runs the
+one-shot migration/bootstrap sequence, checks health, and changes `current` only after success. It
+does not import an exported/committed running container. Keep the prior release and a compatible
+database backup: an application-image rollback after an applied migration is not a database
+rollback.
+
+`.env`, `secrets/`, readiness/applied state and volumes are owned by each host and never promoted
+through Git or the release archive. Mac-to-preparation delivery is source through `origin/dev`, not
+Docker. A preloaded `linux/amd64` pgvector PostgreSQL image is a preparation-host runtime
+prerequisite checked before mutation; it is not a source-transfer artifact. Detailed gates are in
+`docs/48_AIR_GAPPED_SOURCE_FREE_PILOT_PRD_CHECKLIST.md` and
+`docs/57_AMD64_SOURCE_BUILT_PORTABILITY_CONTRACT.md`.
+
 ## Service ownership and severity
 
 | Signal | Severity trigger | First action |
@@ -13,7 +49,7 @@
 | catalog cache | sustained `error` outcomes or unexpected hit-rate collapse | verify Redis cache health; correctness must continue through PostgreSQL without extending TTL |
 | grant quota denial | sustained 429 | confirm consumer identity/plan before changing limits |
 
-## Local stack control
+## Local development stack control
 
 Bootstrap may be rerun with a replacement DataHub token. It preserves existing database, Redis, S3,
 Keycloak and Airflow credentials, migrates legacy Valkey secret filenames when necessary and

@@ -63,6 +63,13 @@ source must not be represented as having that protection.
 `./scripts/development_cycle.py prep-check`를 사용한다. 개발 PC에서 push 없이 전체 source gate만
 재실행하려면 `./scripts/development_cycle.py verify`를 사용한다.
 
+준비 PC의 승격 검증은 성공한 `prep-update` 직후 `prep-check`를 실행하고, source·환경·runtime을
+변경하지 않은 상태에서 같은 `prep-check`를 한 번 더 실행하는 순서다. 두 번째 검증을
+`prep-update`로 대체하지 않는다. `prep-update`는 최신 SHA에서도 환경 schema 재적용, migration,
+bootstrap과 start를 수행하는 update 명령이며 no-op 검증 명령이 아니다. 두 번의 `prep-check`가
+같은 readiness payload로 성공한 exact `origin/dev` SHA만 승인 절차를 거쳐 `main` checkpoint로
+승격한다.
+
 일상 명령이 읽는 canonical ignored 환경은 개발 PC의 `.env.mac-development`와 준비 PC의
 `.env.wsl-intranet-development`다. 이 파일과 `secrets/`는 PC별로 한 번 구성하고 Git으로
 복사하지 않는다. 아래의 bootstrap, dependency cache, 개별 migrate/start 명령은 최초 구성,
@@ -219,15 +226,20 @@ Commit only the repository sources. A second PC clones the same tree, runs the m
 
 ## 소스 없는 폐쇄망 amd64 Pilot 운영 배포
 
-개발 Mac에서 준비 PC까지는 계속 `origin/dev` source 경로를 사용한다. 준비 PC의 clean amd64
-checkout에서만 아래의 별도 Pilot bundle을 만들고, 운영 서버에는 source/Git/build context를
-복제하지 않는다.
+개발 Mac에서 준비 PC까지는 계속 `origin/dev` source 경로만 사용하며 Docker image, container,
+registry를 전달하지 않는다. 위의 준비 PC 검증을 통과한 exact SHA를 `main`으로 승격한 뒤,
+clean amd64 준비 PC의 그 `main` checkout에서만 아래의 별도 Pilot image bundle을 만든다.
+운영 서버에는 source/Git/build context를 복제하지 않는다.
 
 ```bash
-# 준비 PC: 반드시 현재 HEAD와 같은 full commit을 지정한다.
+# 준비 PC: 승인된 main checkpoint를 fast-forward하고 exact full commit을 지정한다.
+git switch main
+git pull --ff-only origin main
+datariver_main_sha="$(git rev-parse --verify origin/main)"
+test "$(git rev-parse HEAD)" = "$datariver_main_sha"
 ./scripts/export_release.sh \
-  --commit "$(git rev-parse HEAD)" \
-  --output /approved-transfer/datariver-"$(git rev-parse --short=12 HEAD)" \
+  --commit "$datariver_main_sha" \
+  --output /approved-transfer/datariver-"${datariver_main_sha:0:12}" \
   --accept-redis-image-redistribution
 
 # 운영 서버: release.tar.gz.sha256이 같은 디렉터리에 있어야 한다.
@@ -242,6 +254,13 @@ DATARIVER_PILOT_HOME=/home/datariver \
 넣은 뒤 같은 명령을 다시 실행한다. 이후 스크립트가 archive 검증, `docker load`,
 PostgreSQL/Redis/Keycloak health, one-shot Alembic, S3 초기화, local identity bootstrap,
 application start 순서로 진행한다.
+
+업데이트와 재검증도 같은 `deploy_pilot.sh`와 같은 archive 인자를 다시 사용한다. 이 archive는
+준비 PC에서 native `linux/amd64`로 만든 검증된 runtime **image bundle**이며 실행 중 container를
+`docker export`, `docker commit` 또는 임의 registry로 전달한 결과가 아니다. `deploy_pilot.sh`는
+운영 PC에서 build와 pull을 수행하지 않고, readiness가 성공한 뒤에만 `current` pointer를
+전환한다. migration 이후 rollback은 이전 image만 재실행하지 말고 호환되는 DB backup을 함께
+복원해야 한다.
 
 Compose에는 `build:`가 없고 모든 image의 `pull_policy`는 `never`다. Python/npm runtime
 라이브러리는 backend/web image 안에 있으며, PostgreSQL init도 전용 image에 들어 있다.
@@ -652,6 +671,8 @@ offline override 순서를 다시 입력하지 않는다. `dev_host.sh migrate`�
 `pgvector/pgvector:0.8.2-pg17-bookworm`과 기존 `datariver-keycloak:26.7.0` final image를 모두 로컬에서
 검사하고 `linux/amd64`가 아니거나 없으면 container를 중지하기 전에 실패한다. 이 경로는
 `--pull never --no-build`이므로 폐쇄망에서 registry나 Quay metadata를 조회하지 않는다.
+이 pgvector image는 준비 PC에 별도로 사전 적재한 runtime prerequisite이며, 개발 Mac에서
+전달한 DataRiver source/image로 간주하지 않는다.
 `SOURCE_HOST_POSTGRES_IMAGE`와 `SOURCE_HOST_KEYCLOAK_IMAGE`로 이미 로드된 다른 승인 reference를
 선택할 수 있다. `--reuse-local-images`는 applied state가 있어도 이 개발 경로를 강제로 선택할
 때만 필요하며, 기존 `--connected-build`는 호환 alias이다. 이 경로는 offline release가
@@ -1823,9 +1844,12 @@ WEB_PORT=18080 KEYCLOAK_PORT=18081 APISIX_PORT=19080 \
 
 An OIDC issuer is an identity, not merely a port mapping. For browser sign-in on alternate ports, also change `APP_PUBLIC_ORIGIN`, `OIDC_PUBLIC_ORIGIN`, `OIDC_PUBLIC_AUTHORITY` and `OIDC_ISSUER` consistently in `.env`, then rebuild web/API/Keycloak. Never accept tokens from two issuer strings for convenience.
 
-## 운영 환경 업데이트 가이드
+## 레거시: 소스 checkout 기반 Single-node 운영 가이드
 
-이 절차는 승인된 릴리스 커밋을 운영 PC의 기존 배포에 반영하기 위한 순서이다. 저장소의
+이 절차는 이미 소스 checkout과 직접 Compose build로 운영 중인 기존 환경의 복구 참고용이다.
+신규 준비·운영 PC 전달에는 사용하지 않으며, 위의 `export_release.sh`와 `deploy_pilot.sh`를
+canonical 운영 인터페이스로 사용한다. 아래 명령을 준비 PC의 일상 `prep-update` 또는
+source-free 운영 배포와 혼용하지 않는다. 저장소의
 기본 Compose는 **Single-node Pilot** 토폴로지이며 HA 운영 배포본이 아니다. 실제 운영은
 [배포 운영 문서](docs/08_DEPLOYMENT.md)의 외부 OIDC, 별도 운영 DataHub, 백업·복구,
 TLS, 이미지 digest 고정 및 승격 게이트를 먼저 충족해야 한다. `compose.identity.yaml`,
