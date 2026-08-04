@@ -16,6 +16,7 @@ import tempfile
 import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
+from enum import StrEnum
 from pathlib import Path
 from typing import Literal, NoReturn, Self
 from urllib.parse import urlsplit
@@ -201,6 +202,28 @@ OPERATOR_ONLY_SOURCE_PATHS = frozenset(
 
 class WorkflowError(RuntimeError):
     """An operator-correctable workflow failure."""
+
+
+class _PrivateQueryPredicate(StrEnum):
+    DEADLINE_EXPIRED = "DEADLINE_EXPIRED"
+    PROCESS_SPAWN = "PROCESS_SPAWN"
+    PROCESS_TIMEOUT = "PROCESS_TIMEOUT"
+    PROCESS_NONZERO = "PROCESS_NONZERO"
+    OUTPUT_SIZE = "OUTPUT_SIZE"
+    OUTPUT_UTF8 = "OUTPUT_UTF8"
+    CLEANUP_UNREAPED = "CLEANUP_UNREAPED"
+    INTERRUPT = "INTERRUPT"
+    UNKNOWN = "UNKNOWN"
+
+
+class _Level2CoreQueryFailure(WorkflowError):
+    """A private closed process outcome for one fixed Level2 core query."""
+
+    def __init__(self, predicate: _PrivateQueryPredicate) -> None:
+        if not isinstance(predicate, _PrivateQueryPredicate):
+            raise ValueError("LEVEL2_CORE_QUERY_FAILURE_INVALID")
+        super().__init__("LEVEL2_CORE_QUERY_FAILED")
+        self.predicate = predicate
 
 
 @dataclass(frozen=True)
@@ -558,66 +581,94 @@ class Runner:
         classification: str,
         *,
         timeout_seconds: int | None = None,
+        typed_level2_failure: bool = False,
     ) -> str:
         if self.dry_run:
             return ""
         process: subprocess.Popen[bytes] | None = None
         selector: selectors.BaseSelector | None = None
         output = b""
-        failed = False
+        failure: _PrivateQueryPredicate | None = None
         interrupted: BaseException | None = None
+        timeout = _PRIVATE_OUTPUT_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+        deadline = time.monotonic() + timeout
+        if self.deadline is not None:
+            deadline = min(deadline, self.deadline)
+        if deadline <= time.monotonic():
+            failure = _PrivateQueryPredicate.DEADLINE_EXPIRED
         try:
-            timeout = (
-                _PRIVATE_OUTPUT_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
-            )
-            deadline = time.monotonic() + timeout
-            if self.deadline is not None:
-                deadline = min(deadline, self.deadline)
-            if deadline <= time.monotonic():
-                raise TimeoutError
+            if failure is not None:
+                raise _Level2CoreQueryFailure(failure)
             process = subprocess.Popen(  # noqa: S603 - callers provide closed argv only.
                 command,
                 cwd=self.root,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
             )
+        except _Level2CoreQueryFailure as error:
+            failure = error.predicate
+        except Exception:
+            failure = _PrivateQueryPredicate.PROCESS_SPAWN
+        except BaseException as error:
+            interrupted = error
+        try:
+            if process is None or failure is not None or interrupted is not None:
+                raise _Level2CoreQueryFailure(failure or _PrivateQueryPredicate.INTERRUPT)
             assert process.stdout is not None
             selector = selectors.DefaultSelector()
             selector.register(process.stdout, selectors.EVENT_READ)
             output = _read_private_process(process, selector, deadline)
+        except _Level2CoreQueryFailure as error:
+            if failure is None and interrupted is None:
+                failure = error.predicate
         except Exception:
-            failed = True
+            failure = _PrivateQueryPredicate.UNKNOWN
         except BaseException as error:
-            failed = True
             interrupted = error
         if not _finalize_private_process(process, selector):
-            raise WorkflowError(classification)
+            failure = _PrivateQueryPredicate.CLEANUP_UNREAPED
+            interrupted = None
         if interrupted is not None:
+            if typed_level2_failure:
+                raise _Level2CoreQueryFailure(_PrivateQueryPredicate.INTERRUPT) from None
             raise interrupted
-        if failed:
+        if failure is not None:
+            if typed_level2_failure:
+                raise _Level2CoreQueryFailure(failure) from None
             raise WorkflowError(classification)
         try:
             return output.decode("utf-8", errors="strict").strip()
         except UnicodeDecodeError:
+            if typed_level2_failure:
+                raise _Level2CoreQueryFailure(_PrivateQueryPredicate.OUTPUT_UTF8) from None
             raise WorkflowError(classification) from None
 
-    def fixed_core_service_identity_output(self, spec: CoreServiceSpec) -> str:
+    def fixed_core_service_identity_output(
+        self,
+        spec: CoreServiceSpec,
+        *,
+        typed_level2_failure: bool = False,
+    ) -> str:
         """Capture IDs for one exact Level1/Level2 service label."""
 
         return self._private_bounded_output(
             fixed_core_service_query_argv(spec),
             "LEVEL2_CORE_QUERY_FAILED",
+            typed_level2_failure=typed_level2_failure,
         )
 
     def fixed_core_service_batch_inspect_output(
         self,
         requested: Sequence[tuple[CoreServiceSpec, str]],
+        *,
+        typed_level2_failure: bool = False,
     ) -> str:
         """Capture structured state once for all privately validated container IDs."""
 
         return self._private_bounded_output(
             fixed_core_service_batch_inspect_argv(requested),
             "LEVEL2_CORE_QUERY_FAILED",
+            typed_level2_failure=typed_level2_failure,
         )
 
 
@@ -630,7 +681,7 @@ def _read_private_process(
     while selector.get_map():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise TimeoutError
+            raise _Level2CoreQueryFailure(_PrivateQueryPredicate.PROCESS_TIMEOUT)
         for key, _mask in selector.select(timeout=min(remaining, 0.25)):
             requested = min(64 * 1024, _PRIVATE_OUTPUT_MAXIMUM_BYTES - len(output) + 1)
             chunk = os.read(key.fd, requested)
@@ -639,10 +690,14 @@ def _read_private_process(
                 continue
             output.extend(chunk)
             if len(output) > _PRIVATE_OUTPUT_MAXIMUM_BYTES:
-                raise OverflowError
+                raise _Level2CoreQueryFailure(_PrivateQueryPredicate.OUTPUT_SIZE)
     remaining = max(0.001, deadline - time.monotonic())
-    if process.wait(timeout=remaining) != 0:
-        raise ChildProcessError
+    try:
+        return_code = process.wait(timeout=remaining)
+    except subprocess.TimeoutExpired:
+        raise _Level2CoreQueryFailure(_PrivateQueryPredicate.PROCESS_TIMEOUT) from None
+    if return_code != 0:
+        raise _Level2CoreQueryFailure(_PrivateQueryPredicate.PROCESS_NONZERO)
     return bytes(output)
 
 

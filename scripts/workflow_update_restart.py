@@ -51,6 +51,7 @@ from mac_core_publication import (
     Level2CoreDiagnosticPredicate,
     Level2CoreEvidence,
     Level2CorePredicate,
+    Level2CoreProjection,
     classify_publication_paths,
     evaluate_level2_core_snapshot,
     format_level2_core_evidence,
@@ -66,6 +67,8 @@ from platform_workflow import (
     TopologyReconciliationPlan,
     TopologyReconciliationSecretGuard,
     WorkflowError,
+    _Level2CoreQueryFailure,
+    _PrivateQueryPredicate,
     build_local_topology_audit,
     build_topology_reconciliation_plan,
     capture_local_topology,
@@ -2924,6 +2927,69 @@ def _level2_core_step[T](
         ) from None
 
 
+def _level2_core_query_step[T](
+    action: Callable[[], T],
+    *,
+    protocol: bool = False,
+) -> T:
+    try:
+        return action()
+    except _Level2CoreQueryFailure as error:
+        unavailable = error.predicate in {
+            _PrivateQueryPredicate.DEADLINE_EXPIRED,
+            _PrivateQueryPredicate.PROCESS_TIMEOUT,
+            _PrivateQueryPredicate.PROCESS_NONZERO,
+        }
+        invalid = error.predicate in {
+            _PrivateQueryPredicate.OUTPUT_SIZE,
+            _PrivateQueryPredicate.OUTPUT_UTF8,
+        }
+        raise _Level2CoreDiagnosticStop(
+            Level2CoreDiagnosticPredicate.DOCKER_QUERY_UNAVAILABLE
+            if unavailable
+            else Level2CoreDiagnosticPredicate.QUERY_EVIDENCE_INVALID
+            if invalid
+            else Level2CoreDiagnosticPredicate.UNKNOWN,
+            review_required=not (unavailable or invalid),
+        ) from None
+    except WorkflowError:
+        raise _Level2CoreDiagnosticStop(
+            Level2CoreDiagnosticPredicate.QUERY_EVIDENCE_INVALID
+            if protocol
+            else Level2CoreDiagnosticPredicate.UNKNOWN,
+            review_required=not protocol,
+        ) from None
+    except Exception:
+        raise _Level2CoreDiagnosticStop(
+            Level2CoreDiagnosticPredicate.UNKNOWN,
+            review_required=True,
+        ) from None
+    except BaseException:
+        raise _Level2CoreDiagnosticStop(
+            Level2CoreDiagnosticPredicate.UNKNOWN,
+            review_required=True,
+        ) from None
+
+
+def _level2_core_stop_evidence(
+    error: _Level2CoreDiagnosticStop,
+    query_count: int,
+    observation: Level2CoreProjection | None,
+) -> Level2CoreEvidence:
+    return Level2CoreEvidence(
+        classification=(
+            Level2CoreClassification.OPERATOR_REVIEW_REQUIRED
+            if error.review_required
+            else Level2CoreClassification.REJECTED
+        ),
+        predicate=(
+            Level2CoreDiagnosticPredicate.UNKNOWN if error.review_required else error.predicate
+        ),
+        observation=observation,
+        docker_query_count=query_count,
+    )
+
+
 def _level2_core_compose_hashes() -> tuple[str, ...]:
     paths = (
         ROOT / "compose.yaml",
@@ -3005,11 +3071,7 @@ def _capture_level2_core_prestate(
         _level2_core_compose_hashes,
     )
     query_count[0] += 1
-    docker_identity = _level2_core_step(
-        Level2CoreDiagnosticPredicate.UNKNOWN,
-        lambda: _capture_docker_execution_identity(runner),
-        review_required=True,
-    )
+    docker_identity = _level2_core_query_step(lambda: _capture_docker_execution_identity(runner))
     specs = _level2_core_step(
         Level2CoreDiagnosticPredicate.ENVIRONMENT_FINGERPRINT,
         lambda: level2_core_query_plan(values),
@@ -3049,14 +3111,16 @@ def _capture_level2_core_services(
     requested: list[tuple[CoreServiceSpec, str]] = []
     for spec in specs:
         query_count[0] += 1
-        identity_output = _level2_core_step(
-            Level2CoreDiagnosticPredicate.UNKNOWN,
-            partial(runner.fixed_core_service_identity_output, spec),
-            review_required=True,
+        identity_output = _level2_core_query_step(
+            partial(
+                runner.fixed_core_service_identity_output,
+                spec,
+                typed_level2_failure=True,
+            )
         )
-        private_id = _level2_core_step(
-            Level2CoreDiagnosticPredicate.QUERY,
+        private_id = _level2_core_query_step(
             partial(parse_fixed_core_service_identity, spec, identity_output),
+            protocol=True,
         )
         if private_id is None:
             by_key[spec.key] = CoreServiceObservation(spec.key, None, CoreServiceCondition.ABSENT)
@@ -3064,14 +3128,15 @@ def _capture_level2_core_services(
             requested.append((spec, private_id))
     if requested:
         query_count[0] += 1
-        output = _level2_core_step(
-            Level2CoreDiagnosticPredicate.UNKNOWN,
-            lambda: runner.fixed_core_service_batch_inspect_output(requested),
-            review_required=True,
+        output = _level2_core_query_step(
+            lambda: runner.fixed_core_service_batch_inspect_output(
+                requested,
+                typed_level2_failure=True,
+            )
         )
-        observed = _level2_core_step(
-            Level2CoreDiagnosticPredicate.QUERY,
+        observed = _level2_core_query_step(
             lambda: parse_fixed_core_service_batch_output(requested, output),
+            protocol=True,
         )
         by_key.update((observation.key, observation) for observation in observed)
     return tuple(by_key[spec.key] for spec in specs)
@@ -3109,18 +3174,7 @@ def _level2_core_prestate_diagnostic() -> Level2CoreEvidence:
             docker_query_count=query_count[0],
         )
     except _Level2CoreDiagnosticStop as error:
-        return Level2CoreEvidence(
-            classification=(
-                Level2CoreClassification.OPERATOR_REVIEW_REQUIRED
-                if error.review_required
-                else Level2CoreClassification.REJECTED
-            ),
-            predicate=(
-                Level2CoreDiagnosticPredicate.UNKNOWN if error.review_required else error.predicate
-            ),
-            observation=observation,
-            docker_query_count=query_count[0],
-        )
+        return _level2_core_stop_evidence(error, query_count[0], observation)
     except BaseException:
         return Level2CoreEvidence(
             classification=Level2CoreClassification.OPERATOR_REVIEW_REQUIRED,

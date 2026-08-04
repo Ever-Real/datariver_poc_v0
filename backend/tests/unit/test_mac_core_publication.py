@@ -242,3 +242,70 @@ def test_projection_and_evidence_reject_contradictory_public_states() -> None:
             observation=ready,
             docker_query_count=45,
         )
+
+
+@pytest.mark.parametrize(
+    ("classification", "predicate"),
+    (
+        ("REJECTED", "DOCKER_QUERY_UNAVAILABLE"),
+        ("REJECTED", "QUERY_EVIDENCE_INVALID"),
+        ("OPERATOR_REVIEW_REQUIRED", "UNKNOWN"),
+    ),
+)
+def test_query_failure_output_is_top_level_only(
+    classification: str,
+    predicate: str,
+) -> None:
+    evidence = Level2CoreEvidence(
+        classification=Level2CoreClassification(classification),
+        predicate=Level2CoreDiagnosticPredicate(predicate),
+        docker_query_count=2,
+    )
+
+    line = MODULE.format_level2_core_evidence(evidence)
+    document = MODULE.json.loads(line)
+
+    assert document["classification"] == classification
+    assert document["predicate"] == predicate
+    assert document["schema"] == "DATARIVER_LEVEL2_CORE_PRESTATE_V1"
+    assert set(document) == {
+        "action_count",
+        "classification",
+        "docker_query_count",
+        "mutation_count",
+        "observation_known",
+        "phase",
+        "predicate",
+        "retry_count",
+        "schema",
+    }
+    assert "query_evidence" not in document
+    assert all(
+        forbidden not in line
+        for forbidden in (
+            "postgres",
+            "container-private-id",
+            "argv-sentinel",
+            "signal-sentinel",
+            "/private/runtime",
+        )
+    )
+
+
+def test_second_snapshot_query_failure_can_retain_first_observation_honestly() -> None:
+    ready = evaluate_level2_core_snapshot(
+        observations=_ready_observations(),
+        expected_specs=selected_core_service_specs({}),
+        local_redis=True,
+        local_graph=True,
+        local_gateway=True,
+    )
+    evidence = Level2CoreEvidence(
+        classification=Level2CoreClassification.REJECTED,
+        predicate=Level2CoreDiagnosticPredicate.DOCKER_QUERY_UNAVAILABLE,
+        observation=ready,
+        docker_query_count=27,
+    )
+
+    assert evidence.observation is ready
+    assert len(MODULE.format_level2_core_evidence(evidence).encode("utf-8")) <= 1_024

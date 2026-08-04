@@ -7618,6 +7618,15 @@ def _level2_core_static_function(
     return matches[0]
 
 
+def _level2_core_static_class(trees: dict[str, ast.Module], name: str, owner: str) -> ast.ClassDef:
+    matches = [
+        node for node in trees[owner].body if isinstance(node, ast.ClassDef) and node.name == name
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"Level2 core class boundary drifted: {owner}.{name}")
+    return matches[0]
+
+
 def _verify_level2_core_purity_and_size(trees: dict[str, ast.Module]) -> None:
     core_imports = {
         node.module
@@ -7668,6 +7677,8 @@ def _verify_level2_core_purity_and_size(trees: dict[str, ast.Module]) -> None:
             "_capture_level2_core_prestate",
             "_capture_level2_core_services",
             "_level2_core_prestate_diagnostic",
+            "_level2_core_query_step",
+            "_level2_core_stop_evidence",
             "_capture_level2_core_runtime",
             "_query_fixed_core_services",
             "_validate_publication_scope",
@@ -7686,6 +7697,107 @@ def _verify_level2_core_purity_and_size(trees: dict[str, ast.Module]) -> None:
     assert update_main.end_lineno is not None
     if update_main.end_lineno - update_main.lineno + 1 > 718:
         raise AssertionError("the existing update orchestrator grew beyond its baseline")
+
+
+def _verify_level2_core_query_observability(trees: dict[str, ast.Module]) -> None:
+    if any(
+        isinstance(node, ast.ClassDef) and node.name.startswith("Level2CoreQuery")
+        for node in trees["core"].body
+    ):
+        raise AssertionError("Level2 core gained an unreviewed public query evidence type")
+    evidence = _level2_core_static_class(trees, "Level2CoreEvidence", "core")
+    evidence_fields = {
+        node.target.id
+        for node in evidence.body
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+    }
+    if any(name.startswith("query_evidence") for name in evidence_fields):
+        raise AssertionError("Level2 evidence gained an unreviewed nested query model")
+    private_enum = _level2_core_static_class(trees, "_PrivateQueryPredicate", "platform")
+    private_values = {
+        node.value.value
+        for node in private_enum.body
+        if isinstance(node, ast.Assign)
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, str)
+    }
+    if private_values != {
+        "DEADLINE_EXPIRED",
+        "PROCESS_SPAWN",
+        "PROCESS_TIMEOUT",
+        "PROCESS_NONZERO",
+        "OUTPUT_SIZE",
+        "OUTPUT_UTF8",
+        "CLEANUP_UNREAPED",
+        "INTERRUPT",
+        "UNKNOWN",
+    }:
+        raise AssertionError("private Level2 query cause vocabulary drifted")
+    bounded = _level2_core_static_function(trees, "_private_bounded_output", "platform")
+    bounded_names = {
+        node.attr
+        for node in ast.walk(bounded)
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+    }
+    required = {
+        "DEADLINE_EXPIRED",
+        "PROCESS_SPAWN",
+        "OUTPUT_UTF8",
+        "CLEANUP_UNREAPED",
+        "INTERRUPT",
+        "UNKNOWN",
+    }
+    if not required.issubset(bounded_names):
+        raise AssertionError("Level2 bounded runner collapses private query outcomes")
+    formatter = _level2_core_static_function(trees, "format_level2_core_evidence", "core")
+    formatter_literals = {
+        node.value for node in ast.walk(formatter) if isinstance(node, ast.Constant)
+    }
+    if "query_evidence" in formatter_literals or "query_evidence_known" in formatter_literals:
+        raise AssertionError("Level2 evidence gained an unreviewed nested query schema")
+
+
+def _verify_level2_core_typed_query_boundary(trees: dict[str, ast.Module]) -> None:
+    runner = _level2_core_static_class(trees, "Runner", "platform")
+    methods = [
+        node
+        for node in runner.body
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("fixed_core_service_")
+    ]
+    if len(methods) != 2:
+        raise AssertionError("Level2 fixed query methods drifted")
+    defaults = [
+        default
+        for method in methods
+        for argument, default in zip(
+            method.args.kwonlyargs,
+            method.args.kw_defaults,
+            strict=True,
+        )
+        if argument.arg == "typed_level2_failure"
+    ]
+    if len(defaults) != 2 or any(
+        not isinstance(default, ast.Constant) or default.value is not False for default in defaults
+    ):
+        raise AssertionError("normal Level2 queries must default to untyped failure propagation")
+    diagnostic = _level2_core_static_function(trees, "_capture_level2_core_services", "update")
+    runtime = _level2_core_static_function(trees, "_query_fixed_core_services", "update")
+    diagnostic_values = [
+        keyword.value.value
+        for node in ast.walk(diagnostic)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "typed_level2_failure" and isinstance(keyword.value, ast.Constant)
+    ]
+    runtime_keywords = [
+        keyword
+        for node in ast.walk(runtime)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg == "typed_level2_failure"
+    ]
+    if diagnostic_values != [True, True] or runtime_keywords:
+        raise AssertionError("normal runtime queries must preserve BaseException propagation")
 
 
 def _verify_level2_core_executor_boundary(trees: dict[str, ast.Module]) -> None:
@@ -7929,6 +8041,8 @@ def _verify_level2_core_launcher_contract(trees: dict[str, ast.Module]) -> None:
 def verify_mac_level2_core_publication_contract() -> None:
     trees = _level2_core_static_trees()
     _verify_level2_core_purity_and_size(trees)
+    _verify_level2_core_query_observability(trees)
+    _verify_level2_core_typed_query_boundary(trees)
     _verify_level2_core_executor_boundary(trees)
     _verify_level2_core_order_and_routing(trees)
     _verify_level2_core_deadline_contract(trees)

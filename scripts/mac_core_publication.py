@@ -373,6 +373,8 @@ class Level2CoreDiagnosticPredicate(StrEnum):
     ENVIRONMENT_FINGERPRINT = "ENVIRONMENT_FINGERPRINT"
     COMPOSE_CONTRACT = "COMPOSE_CONTRACT"
     QUERY = "QUERY"
+    DOCKER_QUERY_UNAVAILABLE = "DOCKER_QUERY_UNAVAILABLE"
+    QUERY_EVIDENCE_INVALID = "QUERY_EVIDENCE_INVALID"
     LEVEL2_ADOPTION_REQUIRED = "LEVEL2_ADOPTION_REQUIRED"
     LEVEL1_CONTRACT = "LEVEL1_CONTRACT"
     LEVEL2_CONTRACT = "LEVEL2_CONTRACT"
@@ -421,13 +423,20 @@ class Level2CoreEvidence:
             )
             or (
                 observation_required != (self.observation is not None)
-                and self.predicate is not Level2CoreDiagnosticPredicate.UNKNOWN
+                and self.predicate
+                not in {
+                    Level2CoreDiagnosticPredicate.DOCKER_QUERY_UNAVAILABLE,
+                    Level2CoreDiagnosticPredicate.QUERY_EVIDENCE_INVALID,
+                    Level2CoreDiagnosticPredicate.UNKNOWN,
+                }
             )
             or (
                 self.observation is not None
                 and self.predicate
                 not in {
                     Level2CoreDiagnosticPredicate.PRESTATE_DRIFT,
+                    Level2CoreDiagnosticPredicate.DOCKER_QUERY_UNAVAILABLE,
+                    Level2CoreDiagnosticPredicate.QUERY_EVIDENCE_INVALID,
                     Level2CoreDiagnosticPredicate.UNKNOWN,
                     Level2CoreDiagnosticPredicate(self.observation.predicate.value),
                 }

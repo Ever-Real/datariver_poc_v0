@@ -649,12 +649,19 @@ def test_level2_capture_batches_inspect_once_and_skips_it_when_every_service_abs
     batch_calls: list[tuple[tuple[Any, str], ...]] = []
 
     class BatchRunner:
-        def fixed_core_service_identity_output(self, spec: Any) -> str:
+        def fixed_core_service_identity_output(
+            self, spec: Any, *, typed_level2_failure: bool = False
+        ) -> str:
+            assert typed_level2_failure
             return f"{specs.index(spec) + 1:064x}"
 
         def fixed_core_service_batch_inspect_output(
-            self, requested: tuple[tuple[Any, str], ...]
+            self,
+            requested: tuple[tuple[Any, str], ...],
+            *,
+            typed_level2_failure: bool = False,
         ) -> str:
+            assert typed_level2_failure
             batch_calls.append(tuple(requested))
             return "\n".join(
                 _core_inspect_output(
@@ -675,12 +682,19 @@ def test_level2_capture_batches_inspect_once_and_skips_it_when_every_service_abs
     assert len(batch_calls) == 1
 
     class AbsentRunner(BatchRunner):
-        def fixed_core_service_identity_output(self, _spec: Any) -> str:
+        def fixed_core_service_identity_output(
+            self, _spec: Any, *, typed_level2_failure: bool = False
+        ) -> str:
+            assert typed_level2_failure
             return ""
 
         def fixed_core_service_batch_inspect_output(
-            self, _requested: tuple[tuple[Any, str], ...]
+            self,
+            _requested: tuple[tuple[Any, str], ...],
+            *,
+            typed_level2_failure: bool = False,
         ) -> str:
+            assert typed_level2_failure
             raise AssertionError("absent-only capture must not inspect")
 
     query_count = [0]
@@ -694,11 +708,16 @@ def test_runtime_and_diagnostic_reject_batch_inspect_id_mismatch() -> None:
     specs = workflow.level2_core_query_plan({})
 
     class MismatchRunner:
-        def fixed_core_service_identity_output(self, spec: Any) -> str:
+        def fixed_core_service_identity_output(
+            self, spec: Any, *, typed_level2_failure: bool = False
+        ) -> str:
             return f"{specs.index(spec) + 1:064x}"
 
         def fixed_core_service_batch_inspect_output(
-            self, requested: tuple[tuple[Any, str], ...]
+            self,
+            requested: tuple[tuple[Any, str], ...],
+            *,
+            typed_level2_failure: bool = False,
         ) -> str:
             return "\n".join(
                 _core_inspect_output(
@@ -713,7 +732,7 @@ def test_runtime_and_diagnostic_reject_batch_inspect_id_mismatch() -> None:
         update._query_fixed_core_services(cast(Any, MismatchRunner()), specs)
     with pytest.raises(update._Level2CoreDiagnosticStop) as raised:
         update._capture_level2_core_services(cast(Any, MismatchRunner()), specs, [0])
-    assert raised.value.predicate.value == "QUERY"
+    assert raised.value.predicate.value == "QUERY_EVIDENCE_INVALID"
 
 
 def test_max_service_runtime_deadline_stops_every_later_query() -> None:
@@ -7324,6 +7343,339 @@ def test_private_bounded_output_reaps_before_propagating_keyboard_interrupt(
 
     assert process.reaped
     assert events == ["terminate", "wait:2", "close"]
+
+
+@pytest.mark.parametrize(
+    ("program", "predicate"),
+    (
+        ("import sys; sys.exit(7)", "PROCESS_NONZERO"),
+        ("import sys; sys.stdout.buffer.write(b'\\xff')", "OUTPUT_UTF8"),
+        ("import sys; sys.stdout.buffer.write(b'x' * 9)", "OUTPUT_SIZE"),
+    ),
+)
+def test_level2_core_private_query_preserves_closed_process_predicate(
+    program: str,
+    predicate: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(workflow, "_PRIVATE_OUTPUT_MAXIMUM_BYTES", 8)
+    runner = workflow.Runner(root=tmp_path)
+    spec = workflow.level2_core_query_plan({})[0]
+    monkeypatch.setattr(
+        workflow,
+        "fixed_core_service_query_argv",
+        lambda _spec: (sys.executable, "-c", program),
+    )
+
+    with pytest.raises(workflow._Level2CoreQueryFailure) as raised:
+        runner.fixed_core_service_identity_output(spec, typed_level2_failure=True)
+
+    assert raised.value.predicate.value == predicate
+    assert str(raised.value) == "LEVEL2_CORE_QUERY_FAILED"
+
+
+def test_level2_core_private_query_classifies_spawn_deadline_and_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    spec = workflow.level2_core_query_plan({})[0]
+    runner = workflow.Runner(root=tmp_path)
+
+    monkeypatch.setattr(
+        workflow.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("private-spawn")),
+    )
+    with pytest.raises(workflow._Level2CoreQueryFailure) as spawned:
+        runner.fixed_core_service_identity_output(spec, typed_level2_failure=True)
+    assert spawned.value.predicate.value == "PROCESS_SPAWN"
+
+    runner.deadline = 0.0
+    monkeypatch.setattr(workflow.time, "monotonic", lambda: 1.0)
+    with pytest.raises(workflow._Level2CoreQueryFailure) as expired:
+        runner.fixed_core_service_identity_output(spec, typed_level2_failure=True)
+    assert expired.value.predicate.value == "DEADLINE_EXPIRED"
+
+    runner.deadline = None
+    monkeypatch.setattr(workflow.time, "monotonic", lambda: 1.0)
+    monkeypatch.setattr(
+        workflow.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=object()),
+    )
+    monkeypatch.setattr(
+        workflow.selectors,
+        "DefaultSelector",
+        lambda: SimpleNamespace(register=lambda *_args: None),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_read_private_process",
+        lambda *_args: (_ for _ in ()).throw(
+            workflow._Level2CoreQueryFailure(workflow._PrivateQueryPredicate.PROCESS_TIMEOUT)
+        ),
+    )
+    monkeypatch.setattr(workflow, "_finalize_private_process", lambda *_args: True)
+    with pytest.raises(workflow._Level2CoreQueryFailure) as timed_out:
+        runner.fixed_core_service_identity_output(spec, typed_level2_failure=True)
+    assert timed_out.value.predicate.value == "PROCESS_TIMEOUT"
+
+
+def test_level2_core_private_query_timeout_is_terminated_and_reaped(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    spec = workflow.level2_core_query_plan({})[0]
+    monkeypatch.setattr(workflow, "_PRIVATE_OUTPUT_TIMEOUT_SECONDS", 0.02)
+    monkeypatch.setattr(
+        workflow,
+        "fixed_core_service_query_argv",
+        lambda _spec: (sys.executable, "-c", "import time; time.sleep(1)"),
+    )
+
+    with pytest.raises(workflow._Level2CoreQueryFailure) as raised:
+        workflow.Runner(root=tmp_path).fixed_core_service_identity_output(
+            spec,
+            typed_level2_failure=True,
+        )
+
+    assert raised.value.predicate.value == "PROCESS_TIMEOUT"
+
+
+@pytest.mark.parametrize("first_predicate", ("PROCESS_NONZERO", "OUTPUT_SIZE"))
+def test_level2_core_cleanup_ambiguity_overrides_trustworthy_outcome(
+    first_predicate: str,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        workflow,
+        "_read_private_process",
+        lambda *_args: (_ for _ in ()).throw(
+            workflow._Level2CoreQueryFailure(workflow._PrivateQueryPredicate(first_predicate))
+        ),
+    )
+    monkeypatch.setattr(workflow, "_finalize_private_process", lambda *_args: False)
+
+    with pytest.raises(workflow._Level2CoreQueryFailure) as raised:
+        workflow.Runner(root=tmp_path).fixed_core_service_identity_output(
+            workflow.level2_core_query_plan({})[0],
+            typed_level2_failure=True,
+        )
+
+    assert raised.value.predicate.value == "CLEANUP_UNREAPED"
+
+
+def test_level2_core_diagnostic_query_reaps_then_closes_baseexception_as_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    process = SimpleNamespace(stdout=object())
+    monkeypatch.setattr(workflow.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(
+        workflow.selectors,
+        "DefaultSelector",
+        lambda: SimpleNamespace(register=lambda *_args: None),
+    )
+    monkeypatch.setattr(
+        workflow,
+        "_read_private_process",
+        lambda *_args: (_ for _ in ()).throw(KeyboardInterrupt("private")),
+    )
+    finalized: list[object] = []
+
+    def finalize(observed: object, _selector: object) -> bool:
+        finalized.append(observed)
+        return True
+
+    monkeypatch.setattr(
+        workflow,
+        "_finalize_private_process",
+        finalize,
+    )
+
+    with pytest.raises(workflow._Level2CoreQueryFailure) as raised:
+        workflow.Runner(root=tmp_path).fixed_core_service_identity_output(
+            workflow.level2_core_query_plan({})[0],
+            typed_level2_failure=True,
+        )
+
+    assert finalized == [process]
+    assert raised.value.predicate.value == "INTERRUPT"
+
+
+def test_level2_core_runtime_query_keeps_untyped_baseexception_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    def untyped_boundary(
+        _self: object,
+        _command: object,
+        _classification: str,
+        *,
+        timeout_seconds: int | None = None,
+        typed_level2_failure: bool = False,
+    ) -> str:
+        assert timeout_seconds is None
+        assert not typed_level2_failure
+        raise KeyboardInterrupt("private-runtime")
+
+    monkeypatch.setattr(workflow.Runner, "_private_bounded_output", untyped_boundary)
+
+    with pytest.raises(KeyboardInterrupt, match="private-runtime"):
+        workflow.Runner(root=tmp_path).fixed_core_service_identity_output(
+            workflow.level2_core_query_plan({})[0]
+        )
+
+
+@pytest.mark.parametrize(
+    ("query_predicate", "top_classification", "top_predicate"),
+    (
+        ("DEADLINE_EXPIRED", "REJECTED", "DOCKER_QUERY_UNAVAILABLE"),
+        ("PROCESS_NONZERO", "REJECTED", "DOCKER_QUERY_UNAVAILABLE"),
+        ("PROCESS_TIMEOUT", "REJECTED", "DOCKER_QUERY_UNAVAILABLE"),
+        ("OUTPUT_SIZE", "REJECTED", "QUERY_EVIDENCE_INVALID"),
+        ("OUTPUT_UTF8", "REJECTED", "QUERY_EVIDENCE_INVALID"),
+        ("PROCESS_SPAWN", "OPERATOR_REVIEW_REQUIRED", "UNKNOWN"),
+        ("CLEANUP_UNREAPED", "OPERATOR_REVIEW_REQUIRED", "UNKNOWN"),
+        ("INTERRUPT", "OPERATOR_REVIEW_REQUIRED", "UNKNOWN"),
+        ("UNKNOWN", "OPERATOR_REVIEW_REQUIRED", "UNKNOWN"),
+    ),
+)
+def test_level2_core_query2_failure_is_typed_and_stops_later_queries(
+    query_predicate: str,
+    top_classification: str,
+    top_predicate: str,
+) -> None:
+    update = _load_update_module()
+    specs = workflow.level2_core_query_plan({})
+    calls: list[object] = []
+
+    class Query2Runner:
+        def fixed_core_service_identity_output(
+            self, spec: object, *, typed_level2_failure: bool = False
+        ) -> str:
+            assert typed_level2_failure
+            calls.append(spec)
+            raise workflow._Level2CoreQueryFailure(workflow._PrivateQueryPredicate(query_predicate))
+
+        def fixed_core_service_batch_inspect_output(
+            self, _requested: object, *, typed_level2_failure: bool = False
+        ) -> str:
+            raise AssertionError("batch inspect must remain unobserved")
+
+    query_count = [1]
+    with pytest.raises(update._Level2CoreDiagnosticStop) as stopped:
+        update._capture_level2_core_services(cast(Any, Query2Runner()), specs, query_count)
+
+    evidence = update._level2_core_stop_evidence(stopped.value, query_count[0], None)
+    assert query_count == [2]
+    assert specs[0].key.value == "LEVEL1_POSTGRES"
+    assert calls == [specs[0]]
+    assert evidence.classification.value == top_classification
+    assert evidence.predicate.value == top_predicate
+    assert evidence.action_count == evidence.mutation_count == evidence.retry_count == 0
+    line = update.format_level2_core_evidence(evidence)
+    assert "query_evidence" not in line
+    if query_predicate != top_predicate:
+        assert query_predicate not in line
+
+
+def test_level2_core_preexpired_query2_counts_attempt_without_spawning(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    update = _load_update_module()
+    spawned: list[object] = []
+    monkeypatch.setattr(workflow.time, "monotonic", lambda: 1.0)
+    monkeypatch.setattr(
+        workflow.subprocess,
+        "Popen",
+        lambda *_args, **_kwargs: spawned.append(object()),
+    )
+    query_count = [1]
+
+    with pytest.raises(update._Level2CoreDiagnosticStop) as stopped:
+        update._capture_level2_core_services(
+            workflow.Runner(root=tmp_path, deadline=0.0),
+            workflow.level2_core_query_plan({}),
+            query_count,
+        )
+
+    evidence = update._level2_core_stop_evidence(stopped.value, query_count[0], None)
+    assert query_count == [2]
+    assert spawned == []
+    assert evidence.classification.value == "REJECTED"
+    assert evidence.predicate.value == "DOCKER_QUERY_UNAVAILABLE"
+
+
+def test_level2_core_query2_protocol_failure_is_rejected_and_stops_later_queries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    specs = workflow.level2_core_query_plan({})
+    calls: list[object] = []
+
+    class MalformedQuery2Runner:
+        def fixed_core_service_identity_output(
+            self, spec: object, *, typed_level2_failure: bool = False
+        ) -> str:
+            assert typed_level2_failure
+            calls.append(spec)
+            return "private-invalid-identity"
+
+        def fixed_core_service_batch_inspect_output(
+            self, _requested: object, *, typed_level2_failure: bool = False
+        ) -> str:
+            raise AssertionError("batch inspect must remain unobserved")
+
+    query_count = [1]
+    with pytest.raises(update._Level2CoreDiagnosticStop) as stopped:
+        update._capture_level2_core_services(cast(Any, MalformedQuery2Runner()), specs, query_count)
+
+    evidence = update._level2_core_stop_evidence(stopped.value, query_count[0], None)
+    assert query_count == [2]
+    assert calls == [specs[0]]
+    assert evidence.classification.value == "REJECTED"
+    assert evidence.predicate.value == "QUERY_EVIDENCE_INVALID"
+    line = update.format_level2_core_evidence(evidence)
+    assert "query_evidence" not in line
+    assert "private-invalid-identity" not in line
+
+    calls.clear()
+    query_count = [1]
+    monkeypatch.setattr(
+        update,
+        "parse_fixed_core_service_identity",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("private-unexpected")),
+    )
+    with pytest.raises(update._Level2CoreDiagnosticStop) as unexpected:
+        update._capture_level2_core_services(cast(Any, MalformedQuery2Runner()), specs, query_count)
+    evidence = update._level2_core_stop_evidence(unexpected.value, query_count[0], None)
+    line = update.format_level2_core_evidence(evidence)
+    assert query_count == [2]
+    assert calls == [specs[0]]
+    assert evidence.classification.value == "OPERATOR_REVIEW_REQUIRED"
+    assert evidence.predicate.value == "UNKNOWN"
+    assert "private-unexpected" not in line
+
+
+@pytest.mark.parametrize("failure", (RuntimeError("private"), KeyboardInterrupt("private")))
+def test_level2_core_internal_ambiguity_is_closed_without_raw_cause(
+    failure: BaseException,
+) -> None:
+    update = _load_update_module()
+
+    with pytest.raises(update._Level2CoreDiagnosticStop) as stopped:
+        update._level2_core_query_step(lambda: (_ for _ in ()).throw(failure))
+
+    evidence = update._level2_core_stop_evidence(stopped.value, 1, None)
+    line = update.format_level2_core_evidence(evidence)
+    assert evidence.classification.value == "OPERATOR_REVIEW_REQUIRED"
+    assert evidence.predicate.value == "UNKNOWN"
+    assert "query_evidence" not in line
+    assert "private" not in line
 
 
 def test_local_topology_malformed_evidence_never_echoes_raw_value() -> None:

@@ -373,6 +373,16 @@ identifiers never leave the process. A non-selected state remains `LEVEL2_ADOPTI
 when the observed services are healthy. This is observation evidence only and authorizes no
 adoption or mutation.
 
+The diagnostic exposes only a coarse query result: trustworthy reaped timeout or nonzero is
+`DOCKER_QUERY_UNAVAILABLE`; bounded overflow, invalid UTF-8 or malformed structured evidence is
+`QUERY_EVIDENCE_INVALID`; process or cleanup ambiguity remains `OPERATOR_REVIEW_REQUIRED/UNKNOWN`.
+These two coarse predicates extend the V1 predicate allowlist without changing its schema identifier
+or structure, so the private supervisor accepts them as valid child evidence rather than launch
+failure. No nested cause or service identity is emitted. `docker_query_count` is the governed
+query-attempt ordinal: it increments before invoking the Runner and does not claim that a child was
+spawned. It is the sole position evidence; the first defect stops every later query and second
+snapshot.
+
 The checked-in `development_cycle.level2_core_prestate_command()` is the sole launch contract for
 that phase. An external private supervisor executes its exact project-interpreter argv with the
 repository root as `cwd`; direct shebang execution, `PYTHONPATH`, interpreter/PATH substitution and
