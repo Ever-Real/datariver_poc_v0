@@ -10,7 +10,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from typing import Any, Self, cast
+from typing import Any, Literal, Self, cast
 
 import pytest
 
@@ -1321,7 +1321,9 @@ def test_selected_gateway_state_renders_only_reviewed_routing_overlays() -> None
     )
 
 
-def _topology_reconciliation_plan() -> Any:
+def _topology_reconciliation_plan(
+    checkpoint: Literal["initial", "web-missing-recovery"] = "initial",
+) -> Any:
     state = _topology_state(
         profile="mac-development",
         local_airflow=True,
@@ -1331,13 +1333,15 @@ def _topology_reconciliation_plan() -> Any:
     )
     return workflow.TopologyReconciliationPlan(
         name="mac-development-graph-gateway-v1",
-        checkpoint="initial",
+        checkpoint=checkpoint,
         target_state=workflow.replace(state, local_gateway=True, local_graph=True),
         missing_worker_service="governance-document-worker",
     )
 
 
+@pytest.mark.parametrize("checkpoint", ("initial", "web-missing-recovery"))
 def test_topology_reconciliation_mutation_order_is_worker_gateway_web_airflow(
+    checkpoint: Literal["initial", "web-missing-recovery"],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1368,7 +1372,7 @@ def test_topology_reconciliation_mutation_order_is_worker_gateway_web_airflow(
         SimpleNamespace(note=lambda _message: None),
         env_file=tmp_path / ".env",
         files=(ROOT / "compose.yaml", ROOT / "compose.gateway.yaml"),
-        plan=_topology_reconciliation_plan(),
+        plan=_topology_reconciliation_plan(checkpoint),
         selected_builder="builder",
         capacity_lock=object(),
         secret_guard=SecretGuard(),
@@ -1387,6 +1391,335 @@ def test_topology_reconciliation_mutation_order_is_worker_gateway_web_airflow(
     assert events[7][-1] == "web"
     assert sum(event[-1:] == ("web",) for event in events) == 1
     assert events[8][-4:] == workflow.AIRFLOW_SERVICES
+    assert sum("governance-document-worker" in event for event in events) == 1
+    assert all("neo4j" not in event for event in events)
+    assert all(not {"stop", "rm", "down"}.intersection(event) for event in events)
+
+
+def test_reconciliation_filters_only_reserved_general_restarts_and_graph_flag() -> None:
+    update = _load_update_module()
+    reconciliation = _topology_reconciliation_plan("web-missing-recovery")
+    plan = workflow.ChangePlan(
+        services=("api", "web", "governance-document-worker"),
+        requires_migration=True,
+        configure_keycloak=True,
+        restart_datahub=True,
+        restart_airflow=False,
+        restart_gateway=False,
+        restart_graph=True,
+        local_connector_services=("minio",),
+    )
+
+    assert update._immediate_restart_services(
+        plan.services,
+        reconciliation,
+    ) == ("api",)
+    assert update._effective_change_plan(plan, reconciliation) == replace(
+        plan,
+        restart_airflow=True,
+        restart_gateway=True,
+        restart_graph=False,
+    )
+
+
+def test_tokenless_restart_and_graph_plan_remain_byte_semantic_controls() -> None:
+    update = _load_update_module()
+    plan = workflow.ChangePlan(
+        services=("api", "web", "governance-document-worker"),
+        requires_migration=False,
+        configure_keycloak=False,
+        restart_datahub=False,
+        restart_airflow=False,
+        restart_gateway=False,
+        restart_graph=True,
+        local_connector_services=(),
+    )
+
+    assert update._immediate_restart_services(plan.services, None) == plan.services
+    assert update._effective_change_plan(plan, None) is plan
+
+
+def test_reconciliation_plan_output_reports_only_effective_general_actions(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    reconciliation = _topology_reconciliation_plan()
+    plan = workflow.ChangePlan(
+        services=("api", "web", "governance-document-worker"),
+        requires_migration=False,
+        configure_keycloak=False,
+        restart_datahub=False,
+        restart_airflow=False,
+        restart_gateway=False,
+        restart_graph=True,
+        local_connector_services=(),
+    )
+
+    update._print_plan(
+        previous_commit="a" * 40,
+        current_source_commit="b" * 40,
+        runtime_commit="b" * 40,
+        paths=(),
+        environment_keys=(),
+        plan=update._effective_change_plan(plan, reconciliation),
+        restart_services=update._immediate_restart_services(plan.services, reconciliation),
+        reconciliation_plan=reconciliation,
+    )
+    reconciliation_output = capsys.readouterr().out
+    assert "restart services: api" in reconciliation_output
+    assert "Airflow: restart" in reconciliation_output
+    assert "APISIX: restart" in reconciliation_output
+    assert "Neo4j: unchanged" in reconciliation_output
+    assert (
+        "governed reconciliation: governance-document-worker up --no-build; "
+        "APISIX build/up; Web force-recreate; Airflow force-recreate" in reconciliation_output
+    )
+
+    update._print_plan(
+        previous_commit="a" * 40,
+        current_source_commit="b" * 40,
+        runtime_commit="b" * 40,
+        paths=(),
+        environment_keys=(),
+        plan=update._effective_change_plan(plan, None),
+        restart_services=update._immediate_restart_services(plan.services, None),
+        reconciliation_plan=None,
+    )
+    tokenless_output = capsys.readouterr().out
+    assert "restart services: api, web, governance-document-worker" in tokenless_output
+    assert "Neo4j: restart" in tokenless_output
+
+
+@pytest.mark.parametrize(
+    ("reconciliation", "checkpoint", "requires_migration", "failure"),
+    (
+        (True, "web-missing-recovery", False, None),
+        (True, "web-missing-recovery", False, "general"),
+        (True, "web-missing-recovery", False, "governed"),
+        (True, "initial", True, None),
+        (True, "initial", True, "migration"),
+        (False, "initial", True, None),
+    ),
+)
+def test_update_main_reconciliation_owns_reserved_services_and_preserves_tokenless_control(
+    reconciliation: bool,
+    checkpoint: Literal["initial", "web-missing-recovery"],
+    requires_migration: bool,
+    failure: Literal["general", "governed", "migration"] | None,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    environment = {"APP_ENV": "development"}
+    env_file.write_text("APP_ENV=development\n", encoding="utf-8")
+    state = _topology_state(
+        profile="mac-development",
+        env_file=os.fspath(env_file),
+        local_airflow=True,
+        local_graph=not reconciliation,
+        environment_key_hashes=workflow.environment_key_hashes(environment),
+    )
+    topology_plan = workflow.TopologyReconciliationPlan(
+        name="mac-development-graph-gateway-v1",
+        checkpoint=checkpoint,
+        target_state=replace(state, local_gateway=True, local_graph=True),
+        missing_worker_service="governance-document-worker",
+    )
+    change_plan = workflow.ChangePlan(
+        services=("api", "web", "governance-document-worker"),
+        requires_migration=requires_migration,
+        configure_keycloak=False,
+        restart_datahub=False,
+        restart_airflow=False,
+        restart_gateway=False,
+        restart_graph=True,
+        local_connector_services=(),
+    )
+    compose_calls: list[tuple[str, ...]] = []
+    events: list[str] = []
+
+    class FakeRunner:
+        def note(self, _message: str) -> None:
+            return None
+
+        def run(self, _command: tuple[object, ...], **_kwargs: object) -> str:
+            raise AssertionError("the collision fixture must not invoke a direct child command")
+
+    class SecretGuard:
+        def revalidate(self) -> None:
+            events.append("secret-reproof")
+
+    @contextmanager
+    def held_lock(_root: Path) -> Iterator[object]:
+        events.append("lock-enter")
+        try:
+            yield object()
+        finally:
+            events.append("lock-exit")
+
+    @contextmanager
+    def held_secrets(_root: Path) -> Iterator[SecretGuard]:
+        events.append("secret-enter")
+        try:
+            yield SecretGuard()
+        finally:
+            events.append("secret-exit")
+
+    def compose(_runner: object, **kwargs: object) -> None:
+        trailing = cast(tuple[str, ...], kwargs["trailing"])
+        compose_calls.append(trailing)
+        events.append(f"compose:{','.join(trailing)}")
+        if failure == "general" and trailing[:2] == ("up", "-d") and trailing[-1:] == ("api",):
+            events.append("general-failure")
+            raise workflow.WorkflowError("INJECTED_GENERAL_RESTART_FAILURE")
+
+    def prepare(*_args: object, **_kwargs: object) -> Any:
+        events.append("prepare")
+        return topology_plan
+
+    def governed(*_args: object, **_kwargs: object) -> None:
+        events.append("governed")
+        if failure == "governed":
+            raise workflow.WorkflowError("INJECTED_GOVERNED_RECONCILIATION_FAILURE")
+
+    def audit(*_args: object, **_kwargs: object) -> None:
+        events.append("target-audit")
+
+    def capacity(*_args: object, **_kwargs: object) -> str:
+        events.append("capacity")
+        return "builder"
+
+    def reconcile_postgres(*_args: object, **_kwargs: object) -> None:
+        events.append("postgres")
+        if failure == "migration":
+            events.append("migration-failure")
+            raise workflow.WorkflowError("INJECTED_MIGRATION_PRECONDITION_FAILURE")
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="mac-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=True,
+            assume_yes=True,
+            reconcile_local_topology=(
+                "mac-development-graph-gateway-v1" if reconciliation else None
+            ),
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FakeRunner)
+    monkeypatch.setattr(update, "require_command", lambda _command: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda _root, _profile: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "b" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda *_args: ("docs/contract.md",))
+    monkeypatch.setattr(update, "merge_change_plans", lambda *_args: change_plan)
+    monkeypatch.setattr(
+        update,
+        "_running_services",
+        lambda *_args, **_kwargs: change_plan.services,
+    )
+    monkeypatch.setattr(update, "_compose", compose)
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", held_lock)
+    monkeypatch.setattr(update, "require_topology_reconciliation_secrets", held_secrets)
+    monkeypatch.setattr(update, "_prepare_topology_reconciliation", prepare)
+    monkeypatch.setattr(
+        update,
+        "_require_gateway_auth_parity_evidence_available",
+        lambda _name: None,
+    )
+    monkeypatch.setattr(update, "_preflight_build_capacity", capacity)
+    monkeypatch.setattr(update, "_require_idle_builder", lambda *_args: None)
+    monkeypatch.setattr(update, "_reconcile_postgres", reconcile_postgres)
+    monkeypatch.setattr(
+        update,
+        "_reconcile_local_reranker",
+        lambda *_args, **_kwargs: events.append("reranker"),
+    )
+    monkeypatch.setattr(update, "_gateway_auth_parity_session", lambda **_kwargs: object())
+    monkeypatch.setattr(update, "_reconcile_topology_with_gateway_parity", governed)
+    monkeypatch.setattr(update, "_health_check", lambda *_args, **_kwargs: events.append("health"))
+    monkeypatch.setattr(
+        update, "_probe_datahub", lambda *_args, **_kwargs: events.append("datahub")
+    )
+    monkeypatch.setattr(
+        update,
+        "_verify_gateway_transparency",
+        lambda *_args, **_kwargs: events.append("gateway-proof"),
+    )
+    monkeypatch.setattr(update, "enforce_local_topology", audit)
+    monkeypatch.setattr(
+        update,
+        "write_applied_state",
+        lambda *_args, **_kwargs: events.append("state-write"),
+    )
+
+    result = update.main()
+    captured = capsys.readouterr()
+    up_calls = [call for call in compose_calls if call[:2] == ("up", "-d")]
+    stop_calls = [call for call in compose_calls if call[:1] == ("stop",)]
+
+    if reconciliation:
+        assert "restart services: api" in captured.out
+        assert "Airflow: restart" in captured.out
+        assert "APISIX: restart" in captured.out
+        assert "Neo4j: unchanged" in captured.out
+        assert (
+            "governed reconciliation: governance-document-worker up --no-build; "
+            "APISIX build/up; Web force-recreate; Airflow force-recreate" in captured.out
+        )
+        assert len(up_calls) == (0 if failure == "migration" else 1)
+        if up_calls:
+            assert up_calls[0][-1:] == ("api",)
+        assert stop_calls == ([("stop", "api")] if requires_migration else [])
+        assert all("neo4j" not in call for call in compose_calls)
+        assert all(
+            not {"web", topology_plan.missing_worker_service}.intersection(call)
+            for call in (*up_calls, *stop_calls)
+        )
+        assert events.count("governed") == (0 if failure in {"general", "migration"} else 1)
+        if failure is None:
+            assert result == 0
+            general = next(
+                event
+                for event in events
+                if event.startswith("compose:up,-d") and event.endswith(",api")
+            )
+            assert events.index(general) < events.index("governed")
+            assert events.index("governed") < events.index("target-audit")
+            assert events.index("target-audit") < events.index("state-write")
+        else:
+            assert result == 2
+            assert "state-write" not in events
+            assert "target-audit" not in events
+            assert "health" not in events
+            terminal = {
+                "general": "general-failure",
+                "governed": "governed",
+                "migration": "migration-failure",
+            }[failure]
+            assert events[events.index(terminal) + 1 :] == ["secret-exit", "lock-exit"]
+    else:
+        assert failure is None
+        assert result == 0
+        assert "restart services: api, web, governance-document-worker" in captured.out
+        assert "Airflow: unchanged" in captured.out
+        assert "APISIX: unchanged" in captured.out
+        assert "Neo4j: restart" in captured.out
+        assert "governed reconciliation:" not in captured.out
+        assert any(call[-3:] == change_plan.services for call in up_calls)
+        assert stop_calls == [("stop", *change_plan.services)]
+        assert sum(call[-1:] == ("neo4j",) for call in up_calls) == 1
+        assert "governed" not in events
+        assert events.index("target-audit") < events.index("state-write")
 
 
 def test_governance_document_role_and_backlog_are_separate_sanitized_queries(

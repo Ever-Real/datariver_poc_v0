@@ -4130,6 +4130,212 @@ def verify_governed_docker_build_capacity_contract() -> None:
         raise AssertionError("the controlled index omits the read-only builder prestate phase")
 
 
+def _verify_topology_reconciliation_plan_ast(
+    functions: dict[str, ast.FunctionDef],
+) -> None:
+    effective = functions["_effective_change_plan"]
+    effective_returns = [node for node in effective.body if isinstance(node, ast.Return)]
+    expected_effective = ast.parse(
+        "replace(plan, restart_airflow=reconciliation_plan.target_state.local_airflow, "
+        "restart_gateway=True, restart_graph=False)",
+        mode="eval",
+    ).body
+    if len(effective_returns) != 1 or ast.dump(
+        effective_returns[0].value, include_attributes=False
+    ) != ast.dump(expected_effective, include_attributes=False):
+        raise AssertionError("the reconciliation display plan is incomplete")
+
+    printer = functions["_print_plan"]
+    printer_arguments = {
+        argument.arg for argument in (*printer.args.args, *printer.args.kwonlyargs)
+    }
+    if "reconciliation_plan" not in printer_arguments:
+        raise AssertionError("the printed plan omits reconciliation evidence")
+    governed_blocks = [
+        node
+        for node in printer.body
+        if isinstance(node, ast.If) and ast.unparse(node.test) == "reconciliation_plan is not None"
+    ]
+    governed_literals = {
+        node.value
+        for block in governed_blocks
+        for node in ast.walk(block)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    required_literals = {
+        "  governed reconciliation: ",
+        " up --no-build; APISIX build/up; Web force-recreate; Airflow ",
+    }
+    if len(governed_blocks) != 1 or not required_literals.issubset(governed_literals):
+        raise AssertionError("the governed worker/gateway/Web/Airflow plan is incomplete")
+
+    main = functions["main"]
+    assignments = {
+        target.id: node.value
+        for node in ast.walk(main)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+    }
+    expected_stop = (
+        "tuple((service for service in immediate_restart_services if service in running))"
+    )
+    if ast.unparse(assignments.get("stop_services")) != expected_stop:
+        raise AssertionError("migration stop must use the exact reconciliation-reserved projection")
+    print_calls = [
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_print_plan"
+    ]
+    if len(print_calls) != 1 or not any(
+        keyword.arg == "reconciliation_plan"
+        and isinstance(keyword.value, ast.Name)
+        and keyword.value.id == "reconciliation_plan"
+        for keyword in print_calls[0].keywords
+    ):
+        raise AssertionError("main must project the complete reconciliation plan")
+
+
+def _verify_topology_reconciliation_execution_ast(workflow_tree: ast.Module) -> None:
+    functions = {
+        node.name: node for node in workflow_tree.body if isinstance(node, ast.FunctionDef)
+    }
+    required = {
+        "_immediate_restart_services",
+        "_effective_change_plan",
+        "_apply_topology_reconciliation",
+        "_print_plan",
+        "main",
+    }
+    if not required.issubset(functions):
+        raise AssertionError("topology reconciliation execution functions are incomplete")
+
+    immediate = functions["_immediate_restart_services"]
+    reserved_assignments = [
+        node
+        for node in immediate.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "reserved_services"
+            for target in node.targets
+        )
+    ]
+    expected_reserved = ast.parse(
+        '{"web", reconciliation_plan.missing_worker_service}', mode="eval"
+    ).body
+    if len(reserved_assignments) != 1 or ast.dump(
+        reserved_assignments[0].value, include_attributes=False
+    ) != ast.dump(expected_reserved, include_attributes=False):
+        raise AssertionError("reconciliation must reserve only Web and the exact missing worker")
+    immediate_returns = [node for node in immediate.body if isinstance(node, ast.Return)]
+    if len(immediate_returns) != 1 or ast.unparse(immediate_returns[0].value) != (
+        "tuple((service for service in restart_services if service not in reserved_services))"
+    ):
+        raise AssertionError("general immediate restart filtering has drifted")
+
+    _verify_topology_reconciliation_plan_ast(functions)
+
+    main = functions["main"]
+    graph_branches = [
+        node
+        for node in ast.walk(main)
+        if isinstance(node, ast.If)
+        and any(
+            isinstance(value, ast.Constant) and value.value == "neo4j"
+            for statement in node.body
+            for value in ast.walk(statement)
+        )
+    ]
+    expected_graph_guard = (
+        "reconciliation_plan is None and plan.restart_graph and operating_state.local_graph"
+    )
+    if len(graph_branches) != 1 or ast.unparse(graph_branches[0].test) != expected_graph_guard:
+        raise AssertionError("general Neo4j mutation must be tokenless-only")
+
+    assignments = {
+        target.id: node.value
+        for node in ast.walk(main)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance((target := node.targets[0]), ast.Name)
+    }
+    if ast.unparse(assignments.get("immediate_restart_services")) != (
+        "_immediate_restart_services(restart_services, reconciliation_plan)"
+    ) or ast.unparse(assignments.get("effective_plan")) != (
+        "_effective_change_plan(plan, reconciliation_plan)"
+    ):
+        raise AssertionError("main must use the exact reconciliation execution projections")
+    auxiliary = ast.unparse(assignments.get("auxiliary_changed"))
+    if "reconciliation_plan is not None" not in auxiliary or expected_graph_guard not in auxiliary:
+        raise AssertionError("topology health selection must reflect actual reconciliation actions")
+
+    call_lines: dict[str, list[int]] = {}
+    for call in (node for node in ast.walk(main) if isinstance(node, ast.Call)):
+        if isinstance(call.func, ast.Name):
+            call_lines.setdefault(call.func.id, []).append(call.lineno)
+    reconcile_line = call_lines.get("_reconcile_topology_with_gateway_parity", [])
+    target_lines = call_lines.get("enforce_local_topology", [])
+    state_lines = call_lines.get("write_applied_state", [])
+    if not (
+        len(reconcile_line) == 1
+        and target_lines
+        and len(state_lines) == 1
+        and reconcile_line[0] < max(target_lines) < state_lines[0]
+    ):
+        raise AssertionError("target proof and AppliedState-last ordering has drifted")
+
+
+def _verify_topology_publication_ast(development_tree: ast.Module) -> None:
+    assignments = [
+        node
+        for node in development_tree.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "LOCAL_TOPOLOGY_RECONCILIATION"
+            for target in node.targets
+        )
+    ]
+    if len(assignments) != 1 or ast.literal_eval(assignments[0].value) != (
+        "mac-development-graph-gateway-v1"
+    ):
+        raise AssertionError("the exact public topology token has drifted")
+    extensions = [
+        node
+        for node in ast.walk(development_tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "command"
+        and node.func.attr == "extend"
+        and len(node.args) == 1
+        and ast.unparse(node.args[0]) == "('--reconcile-local-topology', reconciliation)"
+    ]
+    if len(extensions) != 1:
+        raise AssertionError("the stable topology publication argv has drifted")
+    dev_publish = next(
+        (
+            node
+            for node in development_tree.body
+            if isinstance(node, ast.FunctionDef) and node.name == "dev_publish"
+        ),
+        None,
+    )
+    if dev_publish is None:
+        raise AssertionError("the stable dev publication function is missing")
+    rendered_calls = {
+        ast.unparse(node): node.lineno
+        for node in ast.walk(dev_publish)
+        if isinstance(node, ast.Call)
+    }
+    runtime = rendered_calls.get("runner.run(dev_runtime_update_command(reconciliation))")
+    push = rendered_calls.get("runner.run(('git', 'push', 'origin', 'dev'))")
+    remote = rendered_calls.get("verify_remote_dev(runner, commit)")
+    if runtime is None or push is None or remote is None or not runtime < push < remote:
+        raise AssertionError("runtime, push-last and remote-SHA ordering has drifted")
+
+
 def verify_governed_local_topology_contract() -> None:
     platform_path = ROOT / "scripts" / "platform_workflow.py"
     platform = platform_path.read_text(encoding="utf-8")
@@ -4345,6 +4551,10 @@ def verify_governed_local_topology_contract() -> None:
         raise AssertionError("unrelated canonical secrets cannot influence topology selection")
 
     update_source = (ROOT / "scripts" / "workflow_update_restart.py").read_text(encoding="utf-8")
+    update_tree = ast.parse(update_source)
+    _verify_topology_reconciliation_execution_ast(update_tree)
+    development_tree = ast.parse((ROOT / "scripts" / "development_cycle.py").read_text())
+    _verify_topology_publication_ast(development_tree)
     admin_reader = update_source.split("def _read_gateway_admin_password(", maxsplit=1)[1].split(
         "def _gateway_auth_parity_session(", maxsplit=1
     )[0]
@@ -4471,6 +4681,8 @@ def verify_governed_local_topology_contract() -> None:
         raise AssertionError("topology reconciliation mutation order has drifted")
     if any(fragment in reconciliation for fragment in ('"stop"', '"rm"', '"down"')):
         raise AssertionError("topology reconciliation cannot stop or delete selected services")
+    if reconciliation.count("plan.missing_worker_service") != 1 or '"neo4j"' in reconciliation:
+        raise AssertionError("the governed worker must be unique and Neo4j observation-only")
 
     test_source = (ROOT / "backend" / "tests" / "unit" / "test_platform_workflow.py").read_text(
         encoding="utf-8"
@@ -4502,6 +4714,10 @@ def verify_governed_local_topology_contract() -> None:
         "test_topology_secret_guard_detects_selected_file_replacement_after_preflight",
         "test_topology_secret_preflight_fails_closed_without_reading_values",
         "test_topology_reconciliation_mutation_order_is_worker_gateway_web_airflow",
+        "test_reconciliation_filters_only_reserved_general_restarts_and_graph_flag",
+        "test_tokenless_restart_and_graph_plan_remain_byte_semantic_controls",
+        "test_reconciliation_plan_output_reports_only_effective_general_actions",
+        "test_update_main_reconciliation_owns_reserved_services_and_preserves_tokenless_control",
         "test_worker_create_is_bracketed_by_retained_secret_guard_on_ambiguous_failure",
         "test_worker_create_stops_before_mutation_when_retained_secret_guard_drifted",
         "test_governance_document_role_and_backlog_are_separate_sanitized_queries",

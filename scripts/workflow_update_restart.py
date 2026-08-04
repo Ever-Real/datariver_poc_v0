@@ -2303,6 +2303,7 @@ def _print_plan(
     environment_keys: tuple[str, ...],
     plan: ChangePlan,
     restart_services: tuple[str, ...],
+    reconciliation_plan: TopologyReconciliationPlan | None,
 ) -> None:
     print("Update plan", flush=True)
     print(f"  source:  {previous_commit[:12]} -> {current_source_commit[:12]}", flush=True)
@@ -2322,6 +2323,41 @@ def _print_plan(
     print(f"  Airflow: {'restart' if plan.restart_airflow else 'unchanged'}", flush=True)
     print(f"  APISIX: {'restart' if plan.restart_gateway else 'unchanged'}", flush=True)
     print(f"  Neo4j: {'restart' if plan.restart_graph else 'unchanged'}", flush=True)
+    if reconciliation_plan is not None:
+        airflow_action = (
+            "force-recreate" if reconciliation_plan.target_state.local_airflow else "unchanged"
+        )
+        print(
+            "  governed reconciliation: "
+            f"{reconciliation_plan.missing_worker_service} up --no-build; "
+            "APISIX build/up; Web force-recreate; "
+            f"Airflow {airflow_action}",
+            flush=True,
+        )
+
+
+def _immediate_restart_services(
+    restart_services: tuple[str, ...],
+    reconciliation_plan: TopologyReconciliationPlan | None,
+) -> tuple[str, ...]:
+    if reconciliation_plan is None:
+        return restart_services
+    reserved_services = {"web", reconciliation_plan.missing_worker_service}
+    return tuple(service for service in restart_services if service not in reserved_services)
+
+
+def _effective_change_plan(
+    plan: ChangePlan,
+    reconciliation_plan: TopologyReconciliationPlan | None,
+) -> ChangePlan:
+    if reconciliation_plan is None:
+        return plan
+    return replace(
+        plan,
+        restart_airflow=reconciliation_plan.target_state.local_airflow,
+        restart_gateway=True,
+        restart_graph=False,
+    )
 
 
 def format_host_environment_preflight_line(
@@ -3011,19 +3047,20 @@ def main() -> int:
             plan.services,
             running_services=(*running, *enabled_optional_services),
         )
-        immediate_restart_services = tuple(
-            service
-            for service in restart_services
-            if reconciliation_plan is None or service != "web"
+        immediate_restart_services = _immediate_restart_services(
+            restart_services,
+            reconciliation_plan,
         )
+        effective_plan = _effective_change_plan(plan, reconciliation_plan)
         _print_plan(
             previous_commit=state.applied_commit,
             current_source_commit=current_source_commit,
             runtime_commit=runtime_commit,
             paths=changed_paths,
             environment_keys=environment_keys,
-            plan=plan,
-            restart_services=restart_services,
+            plan=effective_plan,
+            restart_services=immediate_restart_services,
+            reconciliation_plan=reconciliation_plan,
         )
         if not args.assume_yes and (changed_paths or environment_keys):
             if not prompt_confirm("위 변경만 적용할까요?", default=True):
@@ -3126,7 +3163,9 @@ def main() -> int:
             )
 
         if plan.requires_migration:
-            stop_services = tuple(service for service in restart_services if service in running)
+            stop_services = tuple(
+                service for service in immediate_restart_services if service in running
+            )
             if stop_services:
                 runner.note("Schema 변경 전에 영향받는 실행 서비스를 중지합니다.")
                 _compose(
@@ -3362,7 +3401,7 @@ def main() -> int:
             runner.note("Mac 개발용 DataHub 구성을 재적용합니다.")
             runner.run((ROOT / "scripts" / "start_datahub_mac_dev.sh", "start-offline"))
 
-        if plan.restart_graph and operating_state.local_graph:
+        if reconciliation_plan is None and plan.restart_graph and operating_state.local_graph:
             graph_files = (*files, ROOT / "compose.graph.yaml")
             if offline_layout is not None:
                 graph_override = release_optional_compose(
@@ -3441,9 +3480,10 @@ def main() -> int:
         ) or (state.local_storage and "minio" in plan.local_connector_services)
         auxiliary_changed = any(
             (
+                reconciliation_plan is not None,
                 plan.restart_datahub and state.local_datahub,
                 plan.restart_airflow and state.local_airflow,
-                plan.restart_graph and operating_state.local_graph,
+                reconciliation_plan is None and plan.restart_graph and operating_state.local_graph,
                 plan.restart_gateway and operating_state.local_gateway,
                 connector_changed,
             )

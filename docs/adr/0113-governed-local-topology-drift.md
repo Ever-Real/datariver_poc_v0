@@ -75,6 +75,14 @@ database role and backlog with two separate fixed queries, then applies the chec
 APISIX/Web/Airflow routing overlays. Both checkpoints use that same governed order: APISIX is
 reconciled before Web is force-recreated exactly once through its selected gateway overlay. There
 is no preliminary manual Web start. Neo4j is not recreated or written.
+In reconciliation mode the general `ChangePlan` immediate-restart set reserves exactly Web and the
+plan's named missing worker, so the worker has one governed `up --no-build` site after any selected
+image build proof. The same exact reservation filters migration-time general stops, so neither Web
+nor the named worker is stopped before its governed recovery. The displayed plan identifies the
+governed worker, APISIX build/up, Web force-recreate and selected Airflow recreation before operator
+confirmation. The general graph restart flag is suppressed for both execution and displayed plan
+evidence: Neo4j is observed and required healthy at both audits but is never mutated by this
+transition. Tokenless update behavior retains its existing worker, Web and graph restart semantics.
 Only after the target audit passes does the normal atomic writer change `local_graph` and
 `local_gateway` to true while preserving every other state field and fingerprint. Origin push
 remains after the complete runtime transaction.
