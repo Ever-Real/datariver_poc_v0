@@ -2385,6 +2385,16 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "_context_default_evidence_from_runtime",
         "_run_context_default_builder_preflight_under_lock",
         "_run_context_default_builder_preflight",
+        "_desktop_status_preflight_evidence_is_consistent",
+        "format_docker_desktop_status_preflight",
+        "_unique_json_mapping",
+        "_classify_desktop_status_document",
+        "_capture_desktop_status_prestate",
+        "_reprove_desktop_status_prestate",
+        "_probe_docker_desktop_status",
+        "_desktop_status_evidence_from_runtime",
+        "_run_docker_desktop_status_preflight_under_lock",
+        "_run_docker_desktop_status_preflight",
     }
     for tree in (capacity_syntax, selection_operator_syntax):
         for node in ast.walk(tree):
@@ -2394,6 +2404,18 @@ def verify_governed_docker_build_capacity_contract() -> None:
                 and (node.end_lineno is None or node.end_lineno - node.lineno + 1 > 100)
             ):
                 raise AssertionError(f"the touched product function is too large: {node.name}")
+    desktop_status_functions = {
+        name
+        for name in bounded_functions
+        if "desktop_status" in name or name == "_unique_json_mapping"
+    }
+    for node in ast.walk(selection_operator_syntax):
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name in desktop_status_functions
+            and (node.end_lineno is None or node.end_lineno - node.lineno + 1 > 80)
+        ):
+            raise AssertionError(f"the Desktop status function exceeds 80 lines: {node.name}")
     snapshot_validators = [
         node
         for node in capacity_syntax.body
@@ -2494,6 +2516,22 @@ def verify_governed_docker_build_capacity_contract() -> None:
         != expected_context_predicates
     ):
         raise AssertionError("the context-default preflight vocabulary has drifted")
+    expected_desktop_status_predicates = tuple(
+        (value, value)
+        for value in (
+            "RUNNING",
+            "STOPPED",
+            "STATUS_UNAVAILABLE",
+            "STATUS_EVIDENCE_INVALID",
+            "PRESTATE_DRIFT",
+            "UNKNOWN",
+        )
+    )
+    if (
+        operator_enum_members("DockerDesktopStatusPreflightPredicate")
+        != expected_desktop_status_predicates
+    ):
+        raise AssertionError("the Docker Desktop status vocabulary has drifted")
     diagnostic_classes = [
         node
         for node in selection_operator_syntax.body
@@ -3183,17 +3221,6 @@ def verify_governed_docker_build_capacity_contract() -> None:
         for argument in daemon_outcome_calls[0].args
     ):
         raise AssertionError("the context-default phase must make one fixed daemon probe")
-    all_typed_outcome_calls = [
-        node
-        for node in ast.walk(selection_operator_syntax)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "bounded_outcome"
-    ]
-    if all_typed_outcome_calls != daemon_outcome_calls:
-        raise AssertionError(
-            "only the context-default daemon probe may observe exit after overflow"
-        )
     daemon_kind_order = tuple(
         node.attr
         for node in sorted(
@@ -3282,6 +3309,452 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ):
         if test_name not in selection_test_source:
             raise AssertionError(f"the context-default preflight test is missing: {test_name}")
+    desktop_status_classes = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.ClassDef) and node.name == "DockerDesktopStatusPreflightEvidence"
+    ]
+    if len(desktop_status_classes) != 1:
+        raise AssertionError("the Docker Desktop status evidence must remain unique")
+    desktop_status_fields = tuple(
+        statement.target.id
+        for statement in desktop_status_classes[0].body
+        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name)
+    )
+    if desktop_status_fields != (
+        "classification",
+        "predicate",
+        "desktop_status_query_count",
+        "schema",
+        "phase",
+        "action_count",
+        "rollback_count",
+        "selection_mutation_count",
+        "engine_query_count",
+        "buildx_query_count",
+        "cache_action_count",
+        "build_count",
+        "container_action_count",
+        "volume_action_count",
+        "business_mutation_count",
+        "state_mutation_count",
+        "push_count",
+        "mutation_count",
+        "retry_count",
+    ):
+        raise AssertionError("the Docker Desktop status evidence fields have drifted")
+    desktop_status_formatters = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "format_docker_desktop_status_preflight"
+    ]
+    if len(desktop_status_formatters) != 1:
+        raise AssertionError("the Docker Desktop status formatter must remain unique")
+    desktop_status_output_keys = {
+        key.value
+        for node in ast.walk(desktop_status_formatters[0])
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+    if desktop_status_output_keys != set(desktop_status_fields):
+        raise AssertionError("the Docker Desktop status output keys have drifted")
+    desktop_status_argv = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_DESKTOP_STATUS_ARGUMENTS"
+            for target in node.targets
+        )
+    ]
+    if len(desktop_status_argv) != 1 or ast.literal_eval(desktop_status_argv[0].value) != (
+        "docker",
+        "desktop",
+        "status",
+        "--format",
+        "json",
+    ):
+        raise AssertionError("the Docker Desktop status argv has drifted")
+    desktop_status_bounds = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_MAXIMUM_DESKTOP_STATUS_BYTES"
+            for target in node.targets
+        )
+    ]
+    if len(desktop_status_bounds) != 1 or ast.literal_eval(desktop_status_bounds[0].value) != 4096:
+        raise AssertionError("the Docker Desktop status document bound has drifted")
+    desktop_status_entry_bounds = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_MAXIMUM_DESKTOP_STATUS_ENTRIES"
+            for target in node.targets
+        )
+    ]
+    if (
+        len(desktop_status_entry_bounds) != 1
+        or ast.literal_eval(desktop_status_entry_bounds[0].value) != 32
+    ):
+        raise AssertionError("the Docker Desktop status entry bound has drifted")
+    desktop_status_token_constants = {
+        target.id: ast.literal_eval(node.value)
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+        and target.id in {"_DESKTOP_STATUS_SEMANTIC_TOKENS", "_DESKTOP_STATUS_LIFECYCLE_TOKENS"}
+    }
+    if desktop_status_token_constants != {
+        "_DESKTOP_STATUS_SEMANTIC_TOKENS": ("running", "stopped"),
+        "_DESKTOP_STATUS_LIFECYCLE_TOKENS": (
+            "running",
+            "stopped",
+            "starting",
+            "unknown",
+        ),
+    }:
+        raise AssertionError("the Docker Desktop lifecycle vocabulary has drifted")
+    desktop_status_parsers = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_classify_desktop_status_document"
+    ]
+    if len(desktop_status_parsers) != 1:
+        raise AssertionError("the Docker Desktop status parser must remain unique")
+    desktop_parser = desktop_status_parsers[0]
+    json_load_calls = [
+        node
+        for node in ast.walk(desktop_parser)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "json"
+        and node.func.attr == "loads"
+    ]
+    json_load_keywords = (
+        {keyword.arg: keyword.value for keyword in json_load_calls[0].keywords}
+        if len(json_load_calls) == 1
+        else {}
+    )
+    if (
+        len(json_load_calls) != 1
+        or not isinstance(json_load_keywords.get("object_pairs_hook"), ast.Name)
+        or json_load_keywords["object_pairs_hook"].id != "_unique_json_mapping"
+        or not isinstance(json_load_keywords.get("parse_constant"), ast.Name)
+        or json_load_keywords["parse_constant"].id != "_reject_nonstandard_json_constant"
+    ):
+        raise AssertionError("Desktop status JSON must reject duplicate mapping keys")
+    parser_string_constants = {
+        node.value
+        for node in ast.walk(desktop_parser)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    if "utf-8" not in parser_string_constants or any(
+        value.lower() in {"status", "state"} for value in parser_string_constants
+    ):
+        raise AssertionError("Desktop status parsing must remain key-name agnostic")
+    parser_calls = [node for node in ast.walk(desktop_parser) if isinstance(node, ast.Call)]
+    parser_value_calls = [
+        node
+        for node in parser_calls
+        if isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "document"
+        and node.func.attr == "values"
+    ]
+    if len(parser_value_calls) != 1 or any(
+        isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "document"
+        and node.func.attr in {"items", "keys"}
+        for node in parser_calls
+    ):
+        raise AssertionError("Desktop status parsing must scan values without trusting key names")
+    primitive_type_guards = [
+        node
+        for node in ast.walk(desktop_parser)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Call)
+        and isinstance(node.left.func, ast.Name)
+        and node.left.func.id == "type"
+        and len(node.left.args) == 1
+        and isinstance(node.left.args[0], ast.Name)
+        and node.left.args[0].id == "value"
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], ast.NotIn)
+        and len(node.comparators) == 1
+        and isinstance(node.comparators[0], ast.Tuple)
+    ]
+    if len(primitive_type_guards) != 1:
+        raise AssertionError("Desktop status parsing must reject nested top-level values")
+    primitive_type_names: set[str] = set()
+    for member in primitive_type_guards[0].comparators[0].elts:
+        if isinstance(member, ast.Name):
+            primitive_type_names.add(member.id)
+        elif (
+            isinstance(member, ast.Call)
+            and isinstance(member.func, ast.Name)
+            and member.func.id == "type"
+            and len(member.args) == 1
+            and isinstance(member.args[0], ast.Constant)
+            and member.args[0].value is None
+        ):
+            primitive_type_names.add("None")
+    finite_number_calls = [
+        node
+        for node in parser_calls
+        if isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "math"
+        and node.func.attr == "isfinite"
+    ]
+    if (
+        primitive_type_names != {"str", "int", "float", "bool", "None"}
+        or len(finite_number_calls) != 1
+    ):
+        raise AssertionError(
+            "Desktop status parsing must allow bounded primitives and reject non-finite numbers"
+        )
+    if not any(
+        isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Call)
+        and isinstance(node.left.func, ast.Name)
+        and node.left.func.id == "len"
+        and len(node.left.args) == 1
+        and isinstance(node.left.args[0], ast.Name)
+        and node.left.args[0].id == "document"
+        and any(
+            isinstance(comparator, ast.Name) and comparator.id == "_MAXIMUM_DESKTOP_STATUS_ENTRIES"
+            for comparator in node.comparators
+        )
+        for node in ast.walk(desktop_parser)
+    ):
+        raise AssertionError("Desktop status parsing must enforce the top-level entry bound")
+    if not any(
+        isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Call)
+        and isinstance(node.left.func, ast.Name)
+        and node.left.func.id == "len"
+        and len(node.left.args) == 1
+        and isinstance(node.left.args[0], ast.Name)
+        and node.left.args[0].id == "semantic_tokens"
+        and any(
+            isinstance(comparator, ast.Constant) and comparator.value == 1
+            for comparator in node.comparators
+        )
+        for node in ast.walk(desktop_parser)
+    ):
+        raise AssertionError("Desktop status parsing must require exactly one semantic value")
+    desktop_value_scans = [
+        node
+        for node in ast.walk(desktop_parser)
+        if isinstance(node, ast.For)
+        and isinstance(node.target, ast.Name)
+        and node.target.id == "value"
+        and node.iter in parser_value_calls
+    ]
+    normalized_lifecycle_assignments = [
+        node
+        for node in ast.walk(desktop_parser)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "normalized_lifecycle"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Attribute)
+        and node.value.func.attr == "lower"
+        and isinstance(node.value.func.value, ast.Call)
+        and isinstance(node.value.func.value.func, ast.Attribute)
+        and node.value.func.value.func.attr == "strip"
+    ]
+    lifecycle_membership_pairs = {
+        (node.left.id, comparator.id)
+        for node in ast.walk(desktop_parser)
+        if isinstance(node, ast.Compare)
+        and isinstance(node.left, ast.Name)
+        and len(node.ops) == 1
+        and isinstance(node.ops[0], ast.In)
+        and len(node.comparators) == 1
+        and isinstance((comparator := node.comparators[0]), ast.Name)
+    }
+    lifecycle_ambiguity_assignments = {
+        node.value.value
+        for node in ast.walk(desktop_parser)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "lifecycle_ambiguous"
+            for target in node.targets
+        )
+        and isinstance(node.value, ast.Constant)
+        and isinstance(node.value.value, bool)
+    }
+    ambiguity_guards = [
+        node
+        for node in ast.walk(desktop_parser)
+        if isinstance(node, ast.If)
+        and isinstance(node.test, ast.BoolOp)
+        and isinstance(node.test.op, ast.Or)
+        and any(
+            isinstance(value, ast.Name) and value.id == "lifecycle_ambiguous"
+            for value in node.test.values
+        )
+    ]
+    semantic_result_assignments = [
+        node
+        for node in ast.walk(desktop_parser)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "semantic_token"
+            for target in node.targets
+        )
+    ]
+    if (
+        len(desktop_value_scans) != 1
+        or len(normalized_lifecycle_assignments) != 1
+        or not {
+            ("normalized_lifecycle", "_DESKTOP_STATUS_LIFECYCLE_TOKENS"),
+            ("value", "_DESKTOP_STATUS_SEMANTIC_TOKENS"),
+        }.issubset(lifecycle_membership_pairs)
+        or lifecycle_ambiguity_assignments != {False, True}
+        or len(ambiguity_guards) != 1
+        or len(semantic_result_assignments) != 1
+        or desktop_value_scans[0].end_lineno is None
+        or desktop_value_scans[0].end_lineno >= ambiguity_guards[0].lineno
+        or ambiguity_guards[0].lineno >= semantic_result_assignments[0].lineno
+    ):
+        raise AssertionError(
+            "Desktop status lifecycle ambiguity must gate success after the full value scan"
+        )
+    desktop_status_runners = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_run_docker_desktop_status_preflight_under_lock"
+    ]
+    if len(desktop_status_runners) != 1:
+        raise AssertionError("the Docker Desktop status runner must remain unique")
+    status_runner_calls = tuple(
+        node.func.id
+        for node in sorted(
+            (item for item in ast.walk(desktop_status_runners[0]) if isinstance(item, ast.Call)),
+            key=lambda item: (item.lineno, item.col_offset),
+        )
+        if isinstance(node.func, ast.Name)
+    )
+    status_order = (
+        "_capture_desktop_status_prestate",
+        "_probe_docker_desktop_status",
+        "_reprove_desktop_status_prestate",
+    )
+    status_positions = tuple(status_runner_calls.index(name) for name in status_order)
+    if status_positions != tuple(sorted(status_positions)):
+        raise AssertionError("the Docker Desktop status capture/query/reproof order has drifted")
+    forbidden_status_calls = {
+        "_record_buildx_authority",
+        "_capture_diagnostic_prestate",
+        "_require_idle",
+        "docker_builder_is_idle",
+        "_capture_poststate",
+    }
+    if forbidden_status_calls.intersection(status_runner_calls):
+        raise AssertionError("the Docker Desktop status phase reached a later query or action")
+    status_probes = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_probe_docker_desktop_status"
+    ]
+    if len(status_probes) != 1:
+        raise AssertionError("the Docker Desktop status probe must remain unique")
+    status_outcome_calls = [
+        node
+        for node in ast.walk(status_probes[0])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "executor"
+        and node.func.attr == "bounded_outcome"
+    ]
+    if len(status_outcome_calls) != 1 or not any(
+        isinstance(argument, ast.Name) and argument.id == "_DESKTOP_STATUS_ARGUMENTS"
+        for argument in status_outcome_calls[0].args
+    ):
+        raise AssertionError("the Desktop status phase must make one fixed bounded query")
+    all_typed_outcome_calls = [
+        node
+        for node in ast.walk(selection_operator_syntax)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "bounded_outcome"
+    ]
+    reviewed_typed_outcome_calls = (*daemon_outcome_calls, *status_outcome_calls)
+    if len(all_typed_outcome_calls) != 2 or any(
+        node not in reviewed_typed_outcome_calls for node in all_typed_outcome_calls
+    ):
+        raise AssertionError(
+            "only the fixed daemon and Desktop status probes may observe exit after overflow"
+        )
+    status_kind_order = tuple(
+        node.attr
+        for node in sorted(
+            (
+                item
+                for item in ast.walk(status_probes[0])
+                if isinstance(item, ast.Attribute)
+                and isinstance(item.value, ast.Name)
+                and item.value.id == "_BoundedProcessOutcomeKind"
+            ),
+            key=lambda item: (item.lineno, item.col_offset),
+        )
+    )
+    if status_kind_order != (
+        "INTERNAL_FAILURE",
+        "REAPED_NONZERO",
+        "REAPED_TIMEOUT",
+        "OUTPUT_INVALID",
+    ) or any(isinstance(node, ast.Try) for node in ast.walk(status_probes[0])):
+        raise AssertionError("typed Desktop status outcomes must keep fixed honest precedence")
+    status_count_increments = {
+        (node.target.value.id, node.target.attr)
+        for node in ast.walk(status_probes[0])
+        if isinstance(node, ast.AugAssign)
+        and isinstance(node.target, ast.Attribute)
+        and isinstance(node.target.value, ast.Name)
+    }
+    if status_count_increments != {("runtime", "desktop_status_query_count")}:
+        raise AssertionError("the Desktop status query counter has drifted")
+    desktop_phase_names = {
+        node.id
+        for node in ast.walk(operator_mains[0])
+        if isinstance(node, ast.Name) and node.id == "_DESKTOP_STATUS_PREFLIGHT_PHASE"
+    }
+    if desktop_phase_names != {"_DESKTOP_STATUS_PREFLIGHT_PHASE"} or not {
+        "_run_docker_desktop_status_preflight",
+        "format_docker_desktop_status_preflight",
+    }.issubset(context_phase_calls):
+        raise AssertionError("the fixed Docker Desktop status entrypoint has drifted")
+    for test_name in (
+        "test_desktop_status_document_accepts_one_key_agnostic_semantic_token",
+        "test_desktop_status_document_rejects_ambiguous_nested_or_invalid_evidence",
+        "test_desktop_status_document_rejects_combined_lifecycle_ambiguity",
+        "test_desktop_status_preflight_combined_ambiguity_is_fixed_and_nonleaking",
+        "test_desktop_status_preflight_observes_status_without_later_action",
+        ("test_desktop_status_preflight_classifies_trustworthy_process_outcomes_and_reproves"),
+        "test_desktop_status_preflight_ambiguous_process_stops_without_reproof",
+        "test_desktop_status_preflight_typed_internal_failure_stops_without_reproof",
+        "test_desktop_status_preflight_detects_source_or_context_drift",
+        "test_desktop_status_preflight_lock_exit_preserves_query_and_downgrades",
+        "test_desktop_status_preflight_main_is_fixed_nonzero_and_normal_query_zero",
+        "test_desktop_status_preflight_evidence_rejects_pass_unknown_and_nonzero_actions",
+    ):
+        if test_name not in selection_test_source:
+            raise AssertionError(f"the Docker Desktop status test is missing: {test_name}")
     diagnostic_runners = [
         node
         for node in selection_operator_syntax.body
@@ -3614,13 +4087,35 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "first output-cap breach stops all later payload reads",
         "remaining cap plus exactly one byte",
         "may use larger discard reads after that first bounded breach",
-        "Only `CONTEXT_DEFAULT_BUILDER_PREFLIGHT` selects observe-exit-after-overflow",
+        (
+            "Only the two fixed read-only probes—the `CONTEXT_DEFAULT_BUILDER_PREFLIGHT` daemon "
+            "probe and the `DOCKER_DESKTOP_STATUS_PREFLIGHT` status probe—select "
+            "observe-exit-after-overflow"
+        ),
+        "Every normal or mutating caller remains on immediate-stop overflow handling",
         "`DAEMON_API_UNAVAILABLE`",
         "`DAEMON_EVIDENCE_INVALID`",
         "`BUILDX_DEFAULT_UNRESOLVED`",
         "Every conclusive result remains `REJECTED`",
         "this phase never reports `PASS`",
         "Normal no-argument operator and Linux/WSL behavior issue this daemon probe zero times",
+        "`--diagnostic-phase DOCKER_DESKTOP_STATUS_PREFLIGHT`",
+        "https://docs.docker.com/reference/cli/docker/desktop/status/",
+        "`docker desktop status --format json` exactly once",
+        "bounded, duplicate-free JSON mapping without trusting any key name",
+        "at most 32 top-level primitive values",
+        "requires exactly one exact lowercase `running` or `stopped`",
+        "non-finite JSON numbers including `NaN` and `Infinity`",
+        "cannot override an additional lifecycle-like value",
+        "after the complete bounded value scan",
+        "`STATUS_EVIDENCE_INVALID`",
+        "`STATUS_UNAVAILABLE`",
+        "zero Engine, Buildx, action, rollback, selection, cache",
+        "It cannot start, stop or restart Desktop",
+        (
+            "Normal no-argument operator, generic deployment and Linux/WSL behavior issue this "
+            "status query zero times"
+        ),
     ):
         if fragment not in compact_adr:
             raise AssertionError(f"ADR-0112 omits Buildx authority evidence: {fragment}")

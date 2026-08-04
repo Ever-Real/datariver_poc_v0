@@ -98,6 +98,9 @@ class _Executor:
         daemon_output: str = "28.5.1\n",
         daemon_error: BaseException | None = None,
         daemon_outcome: Any | None = None,
+        desktop_status_output: str = '{"Status":"running"}',
+        desktop_status_error: BaseException | None = None,
+        desktop_status_outcome: Any | None = None,
     ) -> None:
         self.action_error = action_error
         self.apply_action = apply_action
@@ -114,6 +117,9 @@ class _Executor:
         self.daemon_output = daemon_output
         self.daemon_error = daemon_error
         self.daemon_outcome = daemon_outcome
+        self.desktop_status_output = desktop_status_output
+        self.desktop_status_error = desktop_status_error
+        self.desktop_status_outcome = desktop_status_outcome
         self.selected = "managed-builder"
         self.calls: list[tuple[str, ...]] = []
         self.selection_calls: list[tuple[str, ...]] = []
@@ -195,11 +201,17 @@ class _Executor:
     ) -> Any:
         del classification, timeout_seconds
         self.calls.append(arguments)
-        assert arguments == ("docker", "version", "--format", "{{.Server.Version}}")
-        if self.daemon_error is not None:
-            raise self.daemon_error
-        assert self.daemon_outcome is not None
-        return self.daemon_outcome
+        if arguments == ("docker", "version", "--format", "{{.Server.Version}}"):
+            if self.daemon_error is not None:
+                raise self.daemon_error
+            assert self.daemon_outcome is not None
+            return self.daemon_outcome
+        if arguments == ("docker", "desktop", "status", "--format", "json"):
+            if self.desktop_status_error is not None:
+                raise self.desktop_status_error
+            assert self.desktop_status_outcome is not None
+            return self.desktop_status_outcome
+        raise AssertionError(f"unexpected bounded argv: {arguments!r}")
 
 
 class _ContextDefaultExecutor(_Executor):
@@ -236,6 +248,25 @@ def _context_default_executor(
         daemon_output=daemon_output,
         daemon_error=daemon_error,
         daemon_outcome=outcome,
+    )
+
+
+def _desktop_status_executor(
+    operator: ModuleType,
+    *,
+    outcome_kind: str = "SUCCESS",
+    output: str = '{"Status":"running"}',
+    error: BaseException | None = None,
+) -> _Executor:
+    bounded_output = output if outcome_kind == "SUCCESS" else None
+    outcome = operator._BoundedProcessOutcome(
+        operator._BoundedProcessOutcomeKind[outcome_kind],
+        bounded_output,
+    )
+    return _Executor(
+        desktop_status_output=output,
+        desktop_status_error=error,
+        desktop_status_outcome=outcome,
     )
 
 
@@ -3063,3 +3094,386 @@ def test_context_default_preflight_evidence_rejects_pass_and_impossible_counts()
             match="CONTEXT_DEFAULT_BUILDER_PREFLIGHT_EVIDENCE_INVALID",
         ):
             operator.ContextDefaultBuilderPreflightEvidence(**(valid | changed))
+
+
+@pytest.mark.parametrize(
+    ("output", "predicate_name"),
+    (
+        ('{"Status":"running"}', "RUNNING"),
+        ('{"undocumented-key-name":"stopped"}', "STOPPED"),
+        (
+            '{"opaque-name":"raw-name-sentinel","session":7,'
+            '"provider-state":"running","ready":true,"optional":null}',
+            "RUNNING",
+        ),
+        (
+            json.dumps(
+                {**{f"opaque-{index}": index for index in range(31)}, "semantic": "stopped"}
+            ),
+            "STOPPED",
+        ),
+    ),
+)
+def test_desktop_status_document_accepts_one_key_agnostic_semantic_token(
+    output: str,
+    predicate_name: str,
+) -> None:
+    operator = _load_operator()
+
+    predicate = operator._classify_desktop_status_document(output)
+
+    assert predicate is operator.DockerDesktopStatusPreflightPredicate[predicate_name]
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        "[]",
+        '"running"',
+        "{}",
+        '{"Status":"starting"}',
+        '{"Status":"unknown"}',
+        '{"Status":"RUNNING"}',
+        '{"first":"running","second":"stopped"}',
+        '{"first":"running","second":"running"}',
+        '{"Status":"running","Status":"running"}',
+        '{"nested":{"Status":"running"}}',
+        '{"nested":["running"]}',
+        '{"name":"raw-name-sentinel","session":7}',
+        '{"Status":null}',
+        '{"Status":NaN}',
+        '{"Status":Infinity}',
+        '{"Status":1e999}',
+        json.dumps({**{f"opaque-{index}": index for index in range(32)}, "state": "running"}),
+        '{"Status":"running"',
+        '{"Status":"' + "x" * 4096 + '"}',
+    ),
+)
+def test_desktop_status_document_rejects_ambiguous_nested_or_invalid_evidence(
+    output: str,
+) -> None:
+    operator = _load_operator()
+
+    predicate = operator._classify_desktop_status_document(output)
+
+    assert predicate is operator.DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+
+
+@pytest.mark.parametrize(
+    ("semantic_token", "ambiguous_token"),
+    (
+        ("running", "starting"),
+        ("stopped", "unknown"),
+        ("running", "Running"),
+        ("stopped", "STOPPED"),
+        ("running", " stopped "),
+        ("stopped", "\trunning\t"),
+        ("running", " Starting "),
+        ("stopped", " UNKNOWN "),
+    ),
+)
+def test_desktop_status_document_rejects_combined_lifecycle_ambiguity(
+    semantic_token: str,
+    ambiguous_token: str,
+) -> None:
+    operator = _load_operator()
+    output = json.dumps(
+        {
+            "opaque-name": "raw-name-sentinel",
+            "semantic": semantic_token,
+            "auxiliary": ambiguous_token,
+        }
+    )
+
+    predicate = operator._classify_desktop_status_document(output)
+
+    assert predicate is operator.DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+
+
+def test_desktop_status_preflight_combined_ambiguity_is_fixed_and_nonleaking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _desktop_status_executor(
+        operator,
+        output=json.dumps(
+            {
+                "semantic": "running",
+                "auxiliary": " UNKNOWN ",
+                "opaque-name": "raw-name-sentinel",
+            }
+        ),
+    )
+
+    evidence = operator._run_docker_desktop_status_preflight(
+        operator._RuntimeState(), executor=executor, environ={}
+    )
+    line = operator.format_docker_desktop_status_preflight(evidence)
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is (
+        operator.DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+    )
+    assert evidence.desktop_status_query_count == 1
+    assert "UNKNOWN" not in line
+    assert "raw-name-sentinel" not in line
+
+
+@pytest.mark.parametrize(
+    ("semantic_token", "predicate_name"),
+    (("running", "RUNNING"), ("stopped", "STOPPED")),
+)
+def test_desktop_status_preflight_observes_status_without_later_action(
+    semantic_token: str,
+    predicate_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _desktop_status_executor(
+        operator,
+        output=json.dumps(
+            {
+                "opaque-name": "raw-name-sentinel",
+                "session": "raw-session-sentinel",
+                "provider-state": semantic_token,
+                "ready": True,
+            }
+        ),
+    )
+
+    evidence = operator._run_docker_desktop_status_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+    line = operator.format_docker_desktop_status_preflight(evidence)
+    document = json.loads(line)
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is operator.DockerDesktopStatusPreflightPredicate[predicate_name]
+    assert evidence.desktop_status_query_count == 1
+    assert executor.calls == [("docker", "desktop", "status", "--format", "json")]
+    assert executor.selection_calls == []
+    assert document["predicate"] == predicate_name
+    assert all(
+        document[name] == 0
+        for name in (
+            "action_count",
+            "rollback_count",
+            "selection_mutation_count",
+            "engine_query_count",
+            "buildx_query_count",
+            "cache_action_count",
+            "build_count",
+            "container_action_count",
+            "volume_action_count",
+            "business_mutation_count",
+            "state_mutation_count",
+            "push_count",
+            "mutation_count",
+            "retry_count",
+        )
+    )
+    assert "provider-state" not in line
+    assert "raw-name-sentinel" not in line
+    assert "raw-session-sentinel" not in line
+
+
+@pytest.mark.parametrize(
+    ("outcome_kind", "predicate_name"),
+    (
+        ("REAPED_NONZERO", "STATUS_UNAVAILABLE"),
+        ("REAPED_TIMEOUT", "STATUS_UNAVAILABLE"),
+        ("OUTPUT_INVALID", "STATUS_EVIDENCE_INVALID"),
+    ),
+)
+def test_desktop_status_preflight_classifies_trustworthy_process_outcomes_and_reproves(
+    outcome_kind: str,
+    predicate_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    source_calls = 0
+
+    def stable_source(_executor: object) -> str:
+        nonlocal source_calls
+        source_calls += 1
+        return "a" * 40
+
+    monkeypatch.setattr(operator, "_source_identity", stable_source)
+    executor = _desktop_status_executor(operator, outcome_kind=outcome_kind)
+
+    evidence = operator._run_docker_desktop_status_preflight(
+        operator._RuntimeState(), executor=executor, environ={}
+    )
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is operator.DockerDesktopStatusPreflightPredicate[predicate_name]
+    assert evidence.desktop_status_query_count == 1
+    assert source_calls == 2
+    assert executor.calls == [("docker", "desktop", "status", "--format", "json")]
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        OSError("raw-spawn-sentinel"),
+        KeyboardInterrupt("raw-interrupt-sentinel"),
+        SystemExit("raw-system-exit-sentinel"),
+    ),
+)
+def test_desktop_status_preflight_ambiguous_process_stops_without_reproof(
+    error: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    source_calls = 0
+
+    def stable_source(_executor: object) -> str:
+        nonlocal source_calls
+        source_calls += 1
+        return "a" * 40
+
+    monkeypatch.setattr(operator, "_source_identity", stable_source)
+    executor = _desktop_status_executor(operator, error=error)
+
+    evidence = operator._run_docker_desktop_status_preflight(
+        operator._RuntimeState(), executor=executor, environ={}
+    )
+    line = operator.format_docker_desktop_status_preflight(evidence)
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.DockerDesktopStatusPreflightPredicate.UNKNOWN
+    assert evidence.desktop_status_query_count == 1
+    assert source_calls == 1
+    assert executor.selection_calls == []
+    assert "raw-" not in line
+
+
+def test_desktop_status_preflight_typed_internal_failure_stops_without_reproof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _desktop_status_executor(operator, outcome_kind="INTERNAL_FAILURE")
+
+    evidence = operator._run_docker_desktop_status_preflight(
+        operator._RuntimeState(), executor=executor, environ={}
+    )
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.DockerDesktopStatusPreflightPredicate.UNKNOWN
+    assert evidence.desktop_status_query_count == 1
+
+
+@pytest.mark.parametrize("drift_kind", ("source", "context"))
+def test_desktop_status_preflight_detects_source_or_context_drift(
+    drift_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    source_values = iter(("a" * 40, "b" * 40 if drift_kind == "source" else "a" * 40))
+    context_values = iter(
+        ("desktop-linux", "changed" if drift_kind == "context" else "desktop-linux")
+    )
+    monkeypatch.setattr(operator, "_source_identity", lambda _executor: next(source_values))
+    monkeypatch.setattr(
+        operator,
+        "require_local_unix_docker_context",
+        lambda _executor, _environ: next(context_values),
+    )
+    executor = _desktop_status_executor(operator)
+
+    evidence = operator._run_docker_desktop_status_preflight(
+        operator._RuntimeState(), executor=executor, environ={}
+    )
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is operator.DockerDesktopStatusPreflightPredicate.PRESTATE_DRIFT
+    assert evidence.desktop_status_query_count == 1
+    assert executor.selection_calls == []
+
+
+def test_desktop_status_preflight_lock_exit_preserves_query_and_downgrades(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(
+        operator,
+        monkeypatch,
+        lock_exit_failure=RuntimeError("raw-lock-exit-sentinel"),
+    )
+    executor = _desktop_status_executor(operator)
+
+    evidence = operator._run_docker_desktop_status_preflight(
+        operator._RuntimeState(), executor=executor, environ={}
+    )
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.DockerDesktopStatusPreflightPredicate.UNKNOWN
+    assert evidence.desktop_status_query_count == 1
+    assert "raw-" not in operator.format_docker_desktop_status_preflight(evidence)
+
+
+def test_desktop_status_preflight_main_is_fixed_nonzero_and_normal_query_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    operator = _load_operator()
+    fixed = operator.DockerDesktopStatusPreflightEvidence(
+        classification=operator.BuilderSelectionReconcileClassification.REJECTED,
+        predicate=operator.DockerDesktopStatusPreflightPredicate.RUNNING,
+        desktop_status_query_count=1,
+    )
+    monkeypatch.setattr(operator, "_run_docker_desktop_status_preflight", lambda _runtime: fixed)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(OPERATOR), "--diagnostic-phase", "DOCKER_DESKTOP_STATUS_PREFLIGHT"],
+    )
+
+    assert operator.main() == 2
+    document = json.loads(capsys.readouterr().out)
+    assert document["schema"] == "DOCKER_DESKTOP_STATUS_PREFLIGHT_V1"
+    assert document["classification"] == "REJECTED"
+    assert document["predicate"] == "RUNNING"
+
+    _install_fixed_context(operator, monkeypatch)
+    ordinary_executor = _Executor()
+    ordinary = operator._run_operator(
+        operator._RuntimeState(), executor=ordinary_executor, environ={}
+    )
+    assert ordinary.action_attempted is True
+    assert ("docker", "desktop", "status", "--format", "json") not in ordinary_executor.calls
+
+
+def test_desktop_status_preflight_evidence_rejects_pass_unknown_and_nonzero_actions() -> None:
+    operator = _load_operator()
+    valid = {
+        "classification": operator.BuilderSelectionReconcileClassification.REJECTED,
+        "predicate": operator.DockerDesktopStatusPreflightPredicate.RUNNING,
+        "desktop_status_query_count": 1,
+    }
+
+    for changed in (
+        {"classification": operator.BuilderSelectionReconcileClassification.PASS},
+        {"predicate": operator.DockerDesktopStatusPreflightPredicate.UNKNOWN},
+        {"desktop_status_query_count": 0},
+        {"engine_query_count": 1},
+        {"buildx_query_count": 1},
+        {"action_count": 1},
+        {"retry_count": 1},
+    ):
+        with pytest.raises(ValueError, match="DOCKER_DESKTOP_STATUS_PREFLIGHT_EVIDENCE_INVALID"):
+            operator.DockerDesktopStatusPreflightEvidence(**(valid | changed))

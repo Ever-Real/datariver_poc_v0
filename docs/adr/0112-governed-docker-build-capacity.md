@@ -137,8 +137,10 @@ all later payload reads and immediately starts terminate/reap, preserving the ac
 opportunity as well as the fixed process-failure or unreaped result. Both adapters share one private
 runner and finalizer. Before the first breach, their read request is bounded to the smaller of 64
 KiB and the remaining cap plus exactly one byte, so the legacy cleanup boundary cannot consume
-additional bytes beyond the first over-cap byte. Only `CONTEXT_DEFAULT_BUILDER_PREFLIGHT` selects
-observe-exit-after-overflow and may use larger discard reads after that first bounded breach.
+additional bytes beyond the first over-cap byte. Only the two fixed read-only probes—the
+`CONTEXT_DEFAULT_BUILDER_PREFLIGHT` daemon probe and the `DOCKER_DESKTOP_STATUS_PREFLIGHT` status
+probe—select observe-exit-after-overflow and may use larger discard reads after that first bounded
+breach. Every normal or mutating caller remains on immediate-stop overflow handling.
 
 A structurally valid daemon response followed by an identical whole-snapshot reproof is
 `BUILDX_DEFAULT_UNRESOLVED`. Any source, host, context or snapshot change is `PRESTATE_DRIFT`. An
@@ -153,6 +155,39 @@ container, general-mutation and retry counts. It performs no active-history quer
 builder create/use/remove/stop/bootstrap, context or environment change, Docker Desktop setting or
 restart, prune, build, container, database, identity, topology, AppliedState write or push. Normal
 no-argument operator and Linux/WSL behavior issue this daemon probe zero times and remain unchanged.
+
+The fixed `--diagnostic-phase DOCKER_DESKTOP_STATUS_PREFLIGHT` mode is a still narrower Mac-only
+read-only follow-up after an attempted Docker Desktop recovery has an unknown result. It holds the
+same B1 lock, captures the clean source, AppliedState/environment, Docker override and validated
+local-Unix context identities, invokes the official
+[`docker desktop status`](https://docs.docker.com/reference/cli/docker/desktop/status/) tuple
+`docker desktop status --format json` exactly once, and then reproves every captured identity.
+The status query is not an Engine probe and does not query Buildx, cache, images, containers or
+volumes.
+
+The public Docker reference documents JSON output and only the semantic states `running` and
+`stopped`; it does not publish a JSON field-name contract. The phase therefore parses a bounded,
+duplicate-free JSON mapping without trusting any key name. It permits at most 32 top-level primitive
+values so undocumented primitive metadata does not become a provider-schema assumption, rejects
+every nested mapping or list, and requires exactly one exact lowercase `running` or `stopped`
+semantic value. Duplicate keys, zero or multiple semantic values, `starting`, `unknown`, spelling
+variants, non-mappings, non-finite JSON numbers including `NaN` and `Infinity`, malformed JSON,
+invalid UTF-8, entry-bound overflow and oversized output are `STATUS_EVIDENCE_INVALID`. Keys, values,
+IDs, sessions, versions, paths and provider output are discarded and never emitted.
+An otherwise valid `running` or `stopped` value cannot override an additional lifecycle-like value:
+exact `starting` or `unknown`, or any case or outer-whitespace variant of those four lifecycle words,
+makes the whole observation ambiguous and invalid after the complete bounded value scan.
+
+A trustworthy reaped nonzero or bounded timeout is `STATUS_UNAVAILABLE`; process-boundary,
+cleanup, liveness or interrupt ambiguity is operator-review-required `UNKNOWN` and performs no
+reproof. A successful or trustworthy failed query is followed by exact source, host, environment
+and context reproof; inequality is `PRESTATE_DRIFT`. Conclusive observations are `REJECTED` rather
+than `PASS`, because `RUNNING` or `STOPPED` describes only the Desktop control plane and proves
+nothing about Engine availability, builder health or container and volume invariants. The fixed
+line reports one status-query count and zero Engine, Buildx, action, rollback, selection, cache,
+build, container, volume, business, state, push, mutation and retry counts. It cannot start, stop or
+restart Desktop, gather logs or diagnostics, or authorize another host action. Normal no-argument
+operator, generic deployment and Linux/WSL behavior issue this status query zero times.
 
 The operator may issue exactly one `docker buildx use <validated-current-context>` command, with
 neither `--default` nor `--global`; the Docker driver is automatically created by the Docker

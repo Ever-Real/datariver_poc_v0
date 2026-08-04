@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import platform
 import re
@@ -73,6 +74,12 @@ _DAEMON_VERSION_PROBE = "DOCKER_DAEMON_VERSION_PROBE"
 _DAEMON_VERSION_ARGUMENTS = ("docker", "version", "--format", "{{.Server.Version}}")
 _MAXIMUM_DAEMON_VERSION_BYTES = 256
 _DAEMON_VERSION_LINE = re.compile(r"^[!-~]+(?:\r?\n)?$")
+_DESKTOP_STATUS_PROBE = "DOCKER_DESKTOP_STATUS_PROBE"
+_DESKTOP_STATUS_ARGUMENTS = ("docker", "desktop", "status", "--format", "json")
+_MAXIMUM_DESKTOP_STATUS_BYTES = 4096
+_MAXIMUM_DESKTOP_STATUS_ENTRIES = 32
+_DESKTOP_STATUS_SEMANTIC_TOKENS = ("running", "stopped")
+_DESKTOP_STATUS_LIFECYCLE_TOKENS = ("running", "stopped", "starting", "unknown")
 
 
 class BuilderSelectionReconcileClassification(StrEnum):
@@ -106,12 +113,23 @@ class BuilderSelectionPrestateCheckpoint(StrEnum):
 _PRESTATE_DIAGNOSTIC_PHASE = "BUILDER_SELECTION_PRESTATE"
 _CONTEXT_DEFAULT_PREFLIGHT_PHASE = "CONTEXT_DEFAULT_BUILDER_PREFLIGHT"
 _CONTEXT_DEFAULT_PREFLIGHT_SCHEMA = "CONTEXT_DEFAULT_BUILDER_PREFLIGHT_V1"
+_DESKTOP_STATUS_PREFLIGHT_PHASE = "DOCKER_DESKTOP_STATUS_PREFLIGHT"
+_DESKTOP_STATUS_PREFLIGHT_SCHEMA = "DOCKER_DESKTOP_STATUS_PREFLIGHT_V1"
 
 
 class ContextDefaultBuilderPreflightPredicate(StrEnum):
     DAEMON_API_UNAVAILABLE = "DAEMON_API_UNAVAILABLE"
     DAEMON_EVIDENCE_INVALID = "DAEMON_EVIDENCE_INVALID"
     BUILDX_DEFAULT_UNRESOLVED = "BUILDX_DEFAULT_UNRESOLVED"
+    PRESTATE_DRIFT = "PRESTATE_DRIFT"
+    UNKNOWN = "UNKNOWN"
+
+
+class DockerDesktopStatusPreflightPredicate(StrEnum):
+    RUNNING = "RUNNING"
+    STOPPED = "STOPPED"
+    STATUS_UNAVAILABLE = "STATUS_UNAVAILABLE"
+    STATUS_EVIDENCE_INVALID = "STATUS_EVIDENCE_INVALID"
     PRESTATE_DRIFT = "PRESTATE_DRIFT"
     UNKNOWN = "UNKNOWN"
 
@@ -678,6 +696,105 @@ def format_context_default_builder_preflight(
     return line
 
 
+@dataclass(frozen=True, slots=True)
+class DockerDesktopStatusPreflightEvidence:
+    classification: BuilderSelectionReconcileClassification
+    predicate: DockerDesktopStatusPreflightPredicate
+    desktop_status_query_count: int
+    schema: str = _DESKTOP_STATUS_PREFLIGHT_SCHEMA
+    phase: str = _DESKTOP_STATUS_PREFLIGHT_PHASE
+    action_count: int = 0
+    rollback_count: int = 0
+    selection_mutation_count: int = 0
+    engine_query_count: int = 0
+    buildx_query_count: int = 0
+    cache_action_count: int = 0
+    build_count: int = 0
+    container_action_count: int = 0
+    volume_action_count: int = 0
+    business_mutation_count: int = 0
+    state_mutation_count: int = 0
+    push_count: int = 0
+    mutation_count: int = 0
+    retry_count: int = 0
+
+    def __post_init__(self) -> None:
+        fixed_zero_counts = (
+            self.action_count,
+            self.rollback_count,
+            self.selection_mutation_count,
+            self.engine_query_count,
+            self.buildx_query_count,
+            self.cache_action_count,
+            self.build_count,
+            self.container_action_count,
+            self.volume_action_count,
+            self.business_mutation_count,
+            self.state_mutation_count,
+            self.push_count,
+            self.mutation_count,
+            self.retry_count,
+        )
+        if (
+            not isinstance(self.classification, BuilderSelectionReconcileClassification)
+            or not isinstance(self.predicate, DockerDesktopStatusPreflightPredicate)
+            or self.schema != _DESKTOP_STATUS_PREFLIGHT_SCHEMA
+            or self.phase != _DESKTOP_STATUS_PREFLIGHT_PHASE
+            or type(self.desktop_status_query_count) is not int
+            or self.desktop_status_query_count not in {0, 1}
+            or any(type(count) is not int or count != 0 for count in fixed_zero_counts)
+            or not _desktop_status_preflight_evidence_is_consistent(self)
+        ):
+            raise ValueError("DOCKER_DESKTOP_STATUS_PREFLIGHT_EVIDENCE_INVALID")
+
+
+def _desktop_status_preflight_evidence_is_consistent(
+    evidence: DockerDesktopStatusPreflightEvidence,
+) -> bool:
+    if evidence.classification is BuilderSelectionReconcileClassification.REJECTED:
+        if evidence.predicate is DockerDesktopStatusPreflightPredicate.UNKNOWN:
+            return False
+        if evidence.predicate is DockerDesktopStatusPreflightPredicate.PRESTATE_DRIFT:
+            return True
+        return evidence.desktop_status_query_count == 1
+    return (
+        evidence.classification is BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+        and evidence.predicate is DockerDesktopStatusPreflightPredicate.UNKNOWN
+    )
+
+
+def format_docker_desktop_status_preflight(
+    evidence: DockerDesktopStatusPreflightEvidence,
+) -> str:
+    if not isinstance(evidence, DockerDesktopStatusPreflightEvidence):
+        raise ValueError("DOCKER_DESKTOP_STATUS_PREFLIGHT_EVIDENCE_INVALID")
+    fields: dict[str, object] = {
+        "action_count": evidence.action_count,
+        "rollback_count": evidence.rollback_count,
+        "selection_mutation_count": evidence.selection_mutation_count,
+        "engine_query_count": evidence.engine_query_count,
+        "buildx_query_count": evidence.buildx_query_count,
+        "cache_action_count": evidence.cache_action_count,
+        "build_count": evidence.build_count,
+        "container_action_count": evidence.container_action_count,
+        "volume_action_count": evidence.volume_action_count,
+        "business_mutation_count": evidence.business_mutation_count,
+        "state_mutation_count": evidence.state_mutation_count,
+        "push_count": evidence.push_count,
+        "mutation_count": evidence.mutation_count,
+        "retry_count": evidence.retry_count,
+        "desktop_status_query_count": evidence.desktop_status_query_count,
+        "schema": evidence.schema,
+        "phase": evidence.phase,
+        "classification": evidence.classification.value,
+        "predicate": evidence.predicate.value,
+    }
+    line = json.dumps(fields, sort_keys=True, separators=(",", ":"))
+    if len(line.encode("utf-8")) > MAXIMUM_EVIDENCE_BYTES:
+        raise ValueError("DOCKER_DESKTOP_STATUS_PREFLIGHT_EVIDENCE_INVALID")
+    return line
+
+
 class _ReconcileFailure(RuntimeError):
     def __init__(self, predicate: BuilderSelectionReconcilePredicate) -> None:
         super().__init__(predicate.value)
@@ -944,6 +1061,14 @@ class _DiagnosticPrestate:
 
 
 @dataclass(frozen=True)
+class _DesktopStatusPrestate:
+    source_commit: str
+    host_identity: _HostIdentity
+    docker_environment_identity: tuple[str, str, str, str]
+    current_context: str = field(repr=False)
+
+
+@dataclass(frozen=True)
 class _PostProof:
     selected: str | None
     known: bool
@@ -974,6 +1099,7 @@ class _RuntimeState:
     buildx_version_query_count: int = 0
     builder_inventory_query_count: int = 0
     daemon_probe_count: int = 0
+    desktop_status_query_count: int = 0
 
     @property
     def mutation_count(self) -> int:
@@ -1936,9 +2062,240 @@ def _run_context_default_builder_preflight(
         )
 
 
+def _unique_json_mapping(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    document: dict[str, object] = {}
+    for key, value in pairs:
+        if key in document:
+            raise ValueError("DOCKER_DESKTOP_STATUS_JSON_DUPLICATE")
+        document[key] = value
+    return document
+
+
+def _reject_nonstandard_json_constant(_value: str) -> NoReturn:
+    raise ValueError("DOCKER_DESKTOP_STATUS_JSON_CONSTANT")
+
+
+def _classify_desktop_status_document(
+    output: str,
+) -> DockerDesktopStatusPreflightPredicate:
+    try:
+        encoded = output.encode("utf-8")
+    except UnicodeEncodeError:
+        return DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+    if len(encoded) > _MAXIMUM_DESKTOP_STATUS_BYTES:
+        return DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+    try:
+        document = json.loads(
+            output,
+            object_pairs_hook=_unique_json_mapping,
+            parse_constant=_reject_nonstandard_json_constant,
+        )
+    except (RecursionError, TypeError, ValueError):
+        return DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+    if type(document) is not dict or len(document) > _MAXIMUM_DESKTOP_STATUS_ENTRIES:
+        return DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+    semantic_tokens: list[str] = []
+    lifecycle_ambiguous = False
+    for value in document.values():
+        if type(value) not in (str, int, float, bool, type(None)):
+            return DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+        if isinstance(value, float) and not math.isfinite(value):
+            return DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+        if type(value) is str:
+            normalized_lifecycle = value.strip().lower()
+            if normalized_lifecycle in _DESKTOP_STATUS_LIFECYCLE_TOKENS:
+                if value in _DESKTOP_STATUS_SEMANTIC_TOKENS:
+                    semantic_tokens.append(value)
+                else:
+                    lifecycle_ambiguous = True
+    if lifecycle_ambiguous or len(semantic_tokens) != 1:
+        return DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+    semantic_token = semantic_tokens[0]
+    if semantic_token == "running":  # noqa: S105 - documented fixed lifecycle state.
+        return DockerDesktopStatusPreflightPredicate.RUNNING
+    if semantic_token == "stopped":  # noqa: S105 - documented fixed lifecycle state.
+        return DockerDesktopStatusPreflightPredicate.STOPPED
+    return DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+
+
+def _capture_desktop_status_prestate(
+    *,
+    root: Path,
+    executor: CapacityExecutor,
+    environ: Mapping[str, str],
+) -> _DesktopStatusPrestate:
+    source_commit = _source_identity(executor)
+    host_identity = _host_identity(root)
+    environment_identity = (
+        environ.get("BUILDKIT_HOST", ""),
+        environ.get("BUILDX_BUILDER", ""),
+        environ.get("DOCKER_HOST", ""),
+        environ.get("DOCKER_CONTEXT", ""),
+    )
+    if environment_identity[0].strip() or environment_identity[1].strip():
+        _failure(BuilderSelectionReconcilePredicate.ENVIRONMENT_OVERRIDE)
+    try:
+        current_context = require_local_unix_docker_context(executor, environ)
+    except DockerCapacityError:
+        _failure(BuilderSelectionReconcilePredicate.DOCKER_CONTEXT)
+    return _DesktopStatusPrestate(
+        source_commit,
+        host_identity,
+        environment_identity,
+        current_context,
+    )
+
+
+def _reprove_desktop_status_prestate(
+    prestate: _DesktopStatusPrestate,
+    *,
+    root: Path,
+    executor: CapacityExecutor,
+    environ: Mapping[str, str],
+) -> None:
+    if _source_identity(executor) != prestate.source_commit or _host_identity(root) != (
+        prestate.host_identity
+    ):
+        _failure(BuilderSelectionReconcilePredicate.PRESTATE)
+    environment_identity = (
+        environ.get("BUILDKIT_HOST", ""),
+        environ.get("BUILDX_BUILDER", ""),
+        environ.get("DOCKER_HOST", ""),
+        environ.get("DOCKER_CONTEXT", ""),
+    )
+    if environment_identity != prestate.docker_environment_identity:
+        _failure(BuilderSelectionReconcilePredicate.PRESTATE)
+    try:
+        current_context = require_local_unix_docker_context(executor, environ)
+    except DockerCapacityError:
+        _failure(BuilderSelectionReconcilePredicate.PRESTATE)
+    if current_context != prestate.current_context:
+        _failure(BuilderSelectionReconcilePredicate.PRESTATE)
+
+
+def _probe_docker_desktop_status(
+    runtime: _RuntimeState,
+    executor: _ContextDefaultProcessExecutor,
+) -> DockerDesktopStatusPreflightPredicate | None:
+    runtime.desktop_status_query_count += 1
+    outcome = executor.bounded_outcome(
+        _DESKTOP_STATUS_ARGUMENTS,
+        classification=_DESKTOP_STATUS_PROBE,
+        timeout_seconds=10,
+    )
+    if outcome.kind is _BoundedProcessOutcomeKind.INTERNAL_FAILURE:
+        return None
+    if outcome.kind in {
+        _BoundedProcessOutcomeKind.REAPED_NONZERO,
+        _BoundedProcessOutcomeKind.REAPED_TIMEOUT,
+    }:
+        return DockerDesktopStatusPreflightPredicate.STATUS_UNAVAILABLE
+    if outcome.kind is _BoundedProcessOutcomeKind.OUTPUT_INVALID:
+        return DockerDesktopStatusPreflightPredicate.STATUS_EVIDENCE_INVALID
+    assert outcome.output is not None
+    return _classify_desktop_status_document(outcome.output)
+
+
+def _desktop_status_evidence_from_runtime(
+    runtime: _RuntimeState,
+    *,
+    classification: BuilderSelectionReconcileClassification,
+    predicate: DockerDesktopStatusPreflightPredicate,
+) -> DockerDesktopStatusPreflightEvidence:
+    return DockerDesktopStatusPreflightEvidence(
+        classification=classification,
+        predicate=predicate,
+        desktop_status_query_count=runtime.desktop_status_query_count,
+    )
+
+
+def _run_docker_desktop_status_preflight_under_lock(
+    runtime: _RuntimeState,
+    *,
+    root: Path,
+    lock: DockerWorkflowLock,
+    executor: _ContextDefaultProcessExecutor,
+    environ: Mapping[str, str],
+) -> DockerDesktopStatusPreflightEvidence:
+    del lock
+    prestate = _capture_desktop_status_prestate(
+        root=root,
+        executor=executor,
+        environ=environ,
+    )
+    predicate = _probe_docker_desktop_status(runtime, executor)
+    if predicate is None:
+        return _desktop_status_evidence_from_runtime(
+            runtime,
+            classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
+            predicate=DockerDesktopStatusPreflightPredicate.UNKNOWN,
+        )
+    _reprove_desktop_status_prestate(
+        prestate,
+        root=root,
+        executor=executor,
+        environ=environ,
+    )
+    return _desktop_status_evidence_from_runtime(
+        runtime,
+        classification=BuilderSelectionReconcileClassification.REJECTED,
+        predicate=predicate,
+    )
+
+
+def _run_docker_desktop_status_preflight(
+    runtime: _RuntimeState,
+    *,
+    root: Path = ROOT,
+    executor: _ContextDefaultProcessExecutor | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> DockerDesktopStatusPreflightEvidence:
+    command_executor = executor or _BoundedProcessExecutor()
+    selected_environment = os.environ if environ is None else environ
+    if platform.system() != "Darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
+        return _desktop_status_evidence_from_runtime(
+            runtime,
+            classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
+            predicate=DockerDesktopStatusPreflightPredicate.UNKNOWN,
+        )
+    try:
+        with exclusive_docker_workflow_lock(root) as lock:
+            try:
+                return _run_docker_desktop_status_preflight_under_lock(
+                    runtime,
+                    root=root,
+                    lock=lock,
+                    executor=command_executor,
+                    environ=selected_environment,
+                )
+            except _ReconcileFailure:
+                return _desktop_status_evidence_from_runtime(
+                    runtime,
+                    classification=BuilderSelectionReconcileClassification.REJECTED,
+                    predicate=DockerDesktopStatusPreflightPredicate.PRESTATE_DRIFT,
+                )
+    except BaseException:
+        return _desktop_status_evidence_from_runtime(
+            runtime,
+            classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
+            predicate=DockerDesktopStatusPreflightPredicate.UNKNOWN,
+        )
+
+
 def main() -> int:
     runtime = _RuntimeState()
     arguments = tuple(sys.argv[1:])
+    if arguments == ("--diagnostic-phase", _DESKTOP_STATUS_PREFLIGHT_PHASE):
+        try:
+            status = _run_docker_desktop_status_preflight(runtime)
+        except BaseException:
+            status = _desktop_status_evidence_from_runtime(
+                runtime,
+                classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
+                predicate=DockerDesktopStatusPreflightPredicate.UNKNOWN,
+            )
+        print(format_docker_desktop_status_preflight(status), flush=True)
+        return 2
     if arguments == ("--diagnostic-phase", _CONTEXT_DEFAULT_PREFLIGHT_PHASE):
         try:
             preflight = _run_context_default_builder_preflight(runtime)
