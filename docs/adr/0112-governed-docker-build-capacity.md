@@ -108,6 +108,52 @@ action/mutation/retry counts; it never contains a
 builder/context/node/endpoint name, source SHA, path, environment value or provider output. A
 `PASS` is diagnostic evidence only and does not authorize the mutating operator or a host repair.
 
+The fixed `--diagnostic-phase CONTEXT_DEFAULT_BUILDER_PREFLIGHT` mode is a narrower read-only
+follow-up for one exact rejected snapshot: the current and context-default identities are the same,
+the prior driver is empty, the builder-level error is present, and the context-default target fails
+the `docker` driver contract. It reuses the same lock, source, AppliedState/environment, Docker
+override, local-context and immutable-snapshot evaluator. No second inventory parser or mutable
+recorder is introduced. A different capture is `PRESTATE_DRIFT` and stops before the daemon probe.
+
+For the exact phenotype, the phase invokes the official fixed read-only
+[`docker version`](https://docs.docker.com/reference/cli/docker/version/) tuple
+`docker version --format {{.Server.Version}}` once. The returned version is accepted only as one
+bounded visible-ASCII non-whitespace token with one optional line terminator; leading or trailing
+whitespace, spaces, tabs, NUL/control bytes, empty, multiline, oversized and invalid UTF-8 output
+are rejected. The token is never parsed, retained or emitted and does not establish a Docker
+Desktop product or installed-version identity.
+
+The bounded runner retains a private typed process outcome until final liveness and cleanup proof.
+Only a reaped nonzero or a bounded timeout with trustworthy cleanup is
+`DAEMON_API_UNAVAILABLE`. A zero exit with trustworthy cleanup but invalid output evidence is
+`DAEMON_EVIDENCE_INVALID`. A reaped nonzero remains the first outcome even when its discarded
+output is oversized, malformed or invalid UTF-8. Spawn, selector, registration, read, wait,
+finalization or cleanup ambiguity is operator-review-required `UNKNOWN`; an unreaped or
+liveness-unknown child has highest priority and permits neither snapshot reproof nor host-action
+inference. The runner caps and discards excess output in flight but continues to observe the fixed
+command's exit and cleanup state only for this diagnostic typed-outcome boundary. Existing normal
+operator callers continue through the legacy `output()` adapter: its first output-cap breach stops
+all later payload reads and immediately starts terminate/reap, preserving the accepted mutation
+opportunity as well as the fixed process-failure or unreaped result. Both adapters share one private
+runner and finalizer. Before the first breach, their read request is bounded to the smaller of 64
+KiB and the remaining cap plus exactly one byte, so the legacy cleanup boundary cannot consume
+additional bytes beyond the first over-cap byte. Only `CONTEXT_DEFAULT_BUILDER_PREFLIGHT` selects
+observe-exit-after-overflow and may use larger discard reads after that first bounded breach.
+
+A structurally valid daemon response followed by an identical whole-snapshot reproof is
+`BUILDX_DEFAULT_UNRESOLVED`. Any source, host, context or snapshot change is `PRESTATE_DRIFT`. An
+interruption, lock-exit defect or other unstructured failure is likewise only
+operator-review-required `UNKNOWN`.
+
+Every conclusive result remains `REJECTED`; this phase never reports `PASS` because it classifies an
+already rejected builder prestate rather than proving builder health. Its fixed one-line schema
+reports only the closed predicate, whether the exact phenotype was observed, bounded Buildx-version,
+inventory and daemon-query counts, and zero action, rollback, selection-mutation, cache, build,
+container, general-mutation and retry counts. It performs no active-history query, `buildx inspect`,
+builder create/use/remove/stop/bootstrap, context or environment change, Docker Desktop setting or
+restart, prune, build, container, database, identity, topology, AppliedState write or push. Normal
+no-argument operator and Linux/WSL behavior issue this daemon probe zero times and remain unchanged.
+
 The operator may issue exactly one `docker buildx use <validated-current-context>` command, with
 neither `--default` nor `--global`; the Docker driver is automatically created by the Docker
 context and is never created by this workflow. Afterward, the complete inventory must differ only

@@ -2378,6 +2378,13 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "_reprove_diagnostic_prestate",
         "_diagnostic_evidence_from_runtime",
         "_run_prestate_diagnostic_under_lock",
+        "_context_default_preflight_evidence_is_consistent",
+        "format_context_default_builder_preflight",
+        "_context_default_phenotype_matches",
+        "_probe_context_default_daemon",
+        "_context_default_evidence_from_runtime",
+        "_run_context_default_builder_preflight_under_lock",
+        "_run_context_default_builder_preflight",
     }
     for tree in (capacity_syntax, selection_operator_syntax):
         for node in ast.walk(tree):
@@ -2472,6 +2479,21 @@ def verify_governed_docker_build_capacity_contract() -> None:
     )
     if operator_enum_members("BuilderSelectionReconcilePredicate") != expected_reconcile_predicates:
         raise AssertionError("the builder-selection operator predicate vocabulary has drifted")
+    expected_context_predicates = tuple(
+        (value, value)
+        for value in (
+            "DAEMON_API_UNAVAILABLE",
+            "DAEMON_EVIDENCE_INVALID",
+            "BUILDX_DEFAULT_UNRESOLVED",
+            "PRESTATE_DRIFT",
+            "UNKNOWN",
+        )
+    )
+    if (
+        operator_enum_members("ContextDefaultBuilderPreflightPredicate")
+        != expected_context_predicates
+    ):
+        raise AssertionError("the context-default preflight vocabulary has drifted")
     diagnostic_classes = [
         node
         for node in selection_operator_syntax.body
@@ -2522,6 +2544,37 @@ def verify_governed_docker_build_capacity_contract() -> None:
         for node in ast.walk(post_init)
     ):
         raise AssertionError("V2 evidence must reject internally inconsistent snapshots")
+    context_evidence_classes = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.ClassDef) and node.name == "ContextDefaultBuilderPreflightEvidence"
+    ]
+    if len(context_evidence_classes) != 1:
+        raise AssertionError("the context-default preflight evidence must remain unique")
+    context_evidence_fields = tuple(
+        statement.target.id
+        for statement in context_evidence_classes[0].body
+        if isinstance(statement, ast.AnnAssign) and isinstance(statement.target, ast.Name)
+    )
+    if context_evidence_fields != (
+        "classification",
+        "predicate",
+        "phenotype_known",
+        "buildx_version_query_count",
+        "builder_inventory_query_count",
+        "daemon_probe_count",
+        "schema",
+        "phase",
+        "action_count",
+        "rollback_count",
+        "selection_mutation_count",
+        "cache_action_count",
+        "build_count",
+        "container_action_count",
+        "mutation_count",
+        "retry_count",
+    ):
+        raise AssertionError("the context-default preflight evidence fields have drifted")
     runtime_classes = [
         node
         for node in selection_operator_syntax.body
@@ -2535,7 +2588,14 @@ def verify_governed_docker_build_capacity_contract() -> None:
     }
     if (
         len(runtime_classes) != 1
-        or not {"capture_snapshot", "buildx_version"}.issubset(runtime_fields)
+        or not {
+            "capture_snapshot",
+            "buildx_version",
+            "context_default_phenotype_known",
+            "buildx_version_query_count",
+            "builder_inventory_query_count",
+            "daemon_probe_count",
+        }.issubset(runtime_fields)
         or any(field.endswith("_recorder") for field in runtime_fields)
     ):
         raise AssertionError("the diagnostic runtime must retain one immutable snapshot")
@@ -2565,7 +2625,6 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "container_action_count: int = 0",
         "retry_count: int = 0",
         "stderr=subprocess.STDOUT",
-        "_MAXIMUM_PROCESS_OUTPUT_BYTES - len(output) + 1",
         "class _ProcessUnreaped(BaseException):",
         "process.terminate()",
         "process.kill()",
@@ -2579,34 +2638,250 @@ def verify_governed_docker_build_capacity_contract() -> None:
     ):
         if fragment not in selection_operator:
             raise AssertionError(f"the governed builder-selection operator is missing: {fragment}")
-    process_finalizer = selection_operator.split("def _finalize_bounded_process(", maxsplit=1)[
-        1
-    ].split("class _BoundedProcessExecutor:", maxsplit=1)[0]
-    selector_close = process_finalizer.index("selector.close()")
-    terminate = process_finalizer.index("process.terminate()")
-    first_wait = process_finalizer.index("process.wait(timeout=_PROCESS_REAP_SECONDS)")
-    kill = process_finalizer.index("process.kill()")
-    second_wait = process_finalizer.rindex("process.wait(timeout=_PROCESS_REAP_SECONDS)")
-    final_poll = process_finalizer.rindex("child_reaped = process.poll() is not None")
-    stdout_close = process_finalizer.index("process_output.close()", final_poll)
-    unreaped_guard = process_finalizer.rindex("if not child_reaped:")
-    unreaped_raise = process_finalizer.index("raise _ProcessUnreaped() from None", unreaped_guard)
-    close_failure_guard = process_finalizer.index("if cleanup_failed:", unreaped_raise)
-    if not (
-        selector_close
-        < terminate
-        < first_wait
-        < kill
-        < second_wait
-        < final_poll
-        < stdout_close
-        < unreaped_guard
-        < unreaped_raise
-        < close_failure_guard
+    process_finalizers = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_finalize_bounded_process"
+    ]
+    if len(process_finalizers) != 1:
+        raise AssertionError("the bounded process finalizer must remain unique")
+    process_finalizer = process_finalizers[0]
+    cleanup_calls = tuple(
+        (node.func.value.id, node.func.attr)
+        for node in sorted(
+            (item for item in ast.walk(process_finalizer) if isinstance(item, ast.Call)),
+            key=lambda item: (item.lineno, item.col_offset),
+        )
+        if isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and (node.func.value.id, node.func.attr)
+        in {
+            ("selector", "close"),
+            ("process", "poll"),
+            ("process", "terminate"),
+            ("process", "wait"),
+            ("process", "kill"),
+            ("process_output", "close"),
+        }
+    )
+    if cleanup_calls != (
+        ("selector", "close"),
+        ("process", "poll"),
+        ("process", "terminate"),
+        ("process", "wait"),
+        ("process", "kill"),
+        ("process", "wait"),
+        ("process", "poll"),
+        ("process_output", "close"),
     ):
-        raise AssertionError("the bounded builder-selection process reap contract has drifted")
-    if process_finalizer.count("except BaseException:") != 9:
+        raise AssertionError("the bounded builder-selection process reap order has drifted")
+    cleanup_handlers = [
+        handler
+        for node in ast.walk(process_finalizer)
+        if isinstance(node, ast.Try)
+        for handler in node.handlers
+        if isinstance(handler.type, ast.Name) and handler.type.id == "BaseException"
+    ]
+    if len(cleanup_handlers) != 9:
         raise AssertionError("every bounded process cleanup step must absorb BaseException")
+    unreaped_raises = [
+        node
+        for node in ast.walk(process_finalizer)
+        if isinstance(node, ast.Raise)
+        and isinstance(node.exc, ast.Call)
+        and isinstance(node.exc.func, ast.Name)
+        and node.exc.func.id == "_ProcessUnreaped"
+    ]
+    cleanup_returns = [
+        node
+        for node in ast.walk(process_finalizer)
+        if isinstance(node, ast.Return)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "cleanup_failed"
+    ]
+    if (
+        len(unreaped_raises) != 1
+        or len(cleanup_returns) != 2
+        or max(node.lineno for node in cleanup_returns) <= unreaped_raises[0].lineno
+    ):
+        raise AssertionError("unreaped must outrank the returned cleanup evidence")
+    outcome_enums = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.ClassDef) and node.name == "_BoundedProcessOutcomeKind"
+    ]
+    if len(outcome_enums) != 1:
+        raise AssertionError("the bounded process outcome vocabulary must remain unique")
+    outcome_members = tuple(
+        statement.targets[0].id
+        for statement in outcome_enums[0].body
+        if isinstance(statement, ast.Assign)
+        and len(statement.targets) == 1
+        and isinstance(statement.targets[0], ast.Name)
+    )
+    if outcome_members != (
+        "SUCCESS",
+        "REAPED_NONZERO",
+        "REAPED_TIMEOUT",
+        "OUTPUT_INVALID",
+        "INTERNAL_FAILURE",
+    ):
+        raise AssertionError("the bounded process outcome vocabulary has drifted")
+    process_executors = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.ClassDef) and node.name == "_BoundedProcessExecutor"
+    ]
+    if len(process_executors) != 1:
+        raise AssertionError("the bounded process executor must remain unique")
+    process_methods = {
+        node.name: node for node in process_executors[0].body if isinstance(node, ast.FunctionDef)
+    }
+    process_runner = process_methods.get("_run_bounded")
+    bounded_outcome = process_methods.get("bounded_outcome")
+    legacy_output = process_methods.get("output")
+    if process_runner is None or bounded_outcome is None or legacy_output is None:
+        raise AssertionError("typed process evidence and the legacy adapter are required")
+    outcome_calls = [
+        node
+        for node in ast.walk(process_runner)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_BoundedProcessOutcome"
+    ]
+    outcome_priorities = tuple(
+        argument.attr
+        for node in sorted(outcome_calls, key=lambda item: (item.lineno, item.col_offset))
+        if node.args
+        for argument in node.args[:1]
+        if isinstance(argument, ast.Attribute)
+        and isinstance(argument.value, ast.Name)
+        and argument.value.id == "_BoundedProcessOutcomeKind"
+    )
+    if outcome_priorities != (
+        "INTERNAL_FAILURE",
+        "OUTPUT_INVALID",
+        "INTERNAL_FAILURE",
+        "REAPED_NONZERO",
+        "REAPED_TIMEOUT",
+        "OUTPUT_INVALID",
+        "OUTPUT_INVALID",
+        "SUCCESS",
+    ):
+        raise AssertionError("process cleanup/exit/output precedence has drifted")
+    bounded_call_names = {
+        node.func.id
+        for node in ast.walk(process_runner)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    bounded_attributes = {
+        node.func.attr
+        for node in ast.walk(process_runner)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    if "_finalize_bounded_process" not in bounded_call_names or "clear" not in bounded_attributes:
+        raise AssertionError("bounded output must be discarded before typed final evidence")
+    requested_size_assignments = [
+        node
+        for node in ast.walk(process_runner)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "requested_size"
+            for target in node.targets
+        )
+    ]
+    process_reads = [
+        node
+        for node in ast.walk(process_runner)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "os"
+        and node.func.attr == "read"
+    ]
+    if (
+        len(requested_size_assignments) != 1
+        or ast.unparse(requested_size_assignments[0].value)
+        != (
+            "64 * 1024 if output_invalid else min(64 * 1024, "
+            "_MAXIMUM_PROCESS_OUTPUT_BYTES - len(output) + 1)"
+        )
+        or len(process_reads) != 1
+        or len(process_reads[0].args) != 2
+        or not isinstance(process_reads[0].args[1], ast.Name)
+        or process_reads[0].args[1].id != "requested_size"
+        or requested_size_assignments[0].lineno >= process_reads[0].lineno
+    ):
+        raise AssertionError("the first overflow read must stop at remaining-cap plus one byte")
+    finalizer_calls = [
+        node
+        for node in ast.walk(process_runner)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_finalize_bounded_process"
+    ]
+    if len(finalizer_calls) != 1 or any(
+        call.lineno <= finalizer_calls[0].lineno for call in outcome_calls
+    ):
+        raise AssertionError("final liveness/cleanup proof must precede every process outcome")
+    if any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"Popen", "run"}
+        for node in ast.walk(legacy_output)
+    ):
+        raise AssertionError("the legacy adapter must reuse the typed bounded runner")
+    overflow_modes: dict[str, str] = {}
+    for method_name, method in (
+        ("bounded_outcome", bounded_outcome),
+        ("output", legacy_output),
+    ):
+        runner_calls = [
+            node
+            for node in ast.walk(method)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "self"
+            and node.func.attr == "_run_bounded"
+        ]
+        if len(runner_calls) != 1:
+            raise AssertionError("each process adapter must call the shared runner exactly once")
+        mode_keywords = [
+            keyword.value for keyword in runner_calls[0].keywords if keyword.arg == "overflow_mode"
+        ]
+        if (
+            len(mode_keywords) != 1
+            or not isinstance(mode_keywords[0], ast.Attribute)
+            or not isinstance(mode_keywords[0].value, ast.Name)
+            or mode_keywords[0].value.id != "_BoundedOverflowMode"
+        ):
+            raise AssertionError("each process adapter must select a fixed overflow mode")
+        overflow_modes[method_name] = mode_keywords[0].attr
+    if overflow_modes != {
+        "bounded_outcome": "OBSERVE_EXIT",
+        "output": "STOP_IMMEDIATELY",
+    }:
+        raise AssertionError("legacy and diagnostic overflow semantics have drifted")
+    overflow_breaks = [
+        node
+        for node in ast.walk(process_runner)
+        if isinstance(node, ast.Break)
+        and any(
+            isinstance(parent, ast.If)
+            and parent.lineno <= node.lineno <= (parent.end_lineno or parent.lineno)
+            and any(
+                isinstance(item, ast.Attribute)
+                and isinstance(item.value, ast.Name)
+                and item.value.id == "_BoundedOverflowMode"
+                and item.attr == "STOP_IMMEDIATELY"
+                for item in ast.walk(parent.test)
+            )
+            for parent in ast.walk(process_runner)
+        )
+    ]
+    if len(overflow_breaks) != 1:
+        raise AssertionError("legacy output must stop at the first bounded overflow")
 
     def dotted_name(node: ast.expr) -> tuple[str, ...]:
         if isinstance(node, ast.Name):
@@ -2786,6 +3061,227 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "retry_count",
     }:
         raise AssertionError("the prestate diagnostic value-free output keys have drifted")
+    context_formatters = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "format_context_default_builder_preflight"
+    ]
+    if len(context_formatters) != 1:
+        raise AssertionError("the context-default preflight formatter must remain unique")
+    context_output_keys = {
+        key.value
+        for node in ast.walk(context_formatters[0])
+        if isinstance(node, ast.Dict)
+        for key in node.keys
+        if isinstance(key, ast.Constant) and isinstance(key.value, str)
+    }
+    if context_output_keys != {
+        "action_count",
+        "builder_inventory_query_count",
+        "build_count",
+        "buildx_version_query_count",
+        "cache_action_count",
+        "classification",
+        "container_action_count",
+        "daemon_probe_count",
+        "mutation_count",
+        "phase",
+        "phenotype_known",
+        "predicate",
+        "retry_count",
+        "rollback_count",
+        "schema",
+        "selection_mutation_count",
+    }:
+        raise AssertionError("the context-default preflight output keys have drifted")
+    context_runners = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_run_context_default_builder_preflight_under_lock"
+    ]
+    if len(context_runners) != 1:
+        raise AssertionError("the context-default preflight runner must remain unique")
+    context_calls = tuple(
+        node.func.id
+        for node in sorted(
+            (item for item in ast.walk(context_runners[0]) if isinstance(item, ast.Call)),
+            key=lambda item: (item.lineno, item.col_offset),
+        )
+        if isinstance(node.func, ast.Name)
+    )
+    context_order = (
+        "_record_buildx_authority",
+        "_capture_diagnostic_prestate",
+        "_context_default_phenotype_matches",
+        "_probe_context_default_daemon",
+        "_reprove_diagnostic_prestate",
+    )
+    context_positions = tuple(context_calls.index(name) for name in context_order)
+    if context_positions != tuple(sorted(context_positions)):
+        raise AssertionError("the context-default capture/probe/reproof order has drifted")
+    context_call_names = {
+        node.func.id
+        for node in ast.walk(context_runners[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    context_attributes = {
+        node.attr for node in ast.walk(context_runners[0]) if isinstance(node, ast.Attribute)
+    }
+    if context_call_names.intersection(
+        {"_require_idle", "docker_builder_is_idle", "_capture_poststate"}
+    ) or context_attributes.intersection({"selection_argv", "rollback_argv"}):
+        raise AssertionError("the context-default preflight reached a later action boundary")
+    daemon_argument_assignments = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_DAEMON_VERSION_ARGUMENTS"
+            for target in node.targets
+        )
+    ]
+    if len(daemon_argument_assignments) != 1 or ast.literal_eval(
+        daemon_argument_assignments[0].value
+    ) != ("docker", "version", "--format", "{{.Server.Version}}"):
+        raise AssertionError("the context-default daemon argv has drifted")
+    daemon_line_assignments = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name) and target.id == "_DAEMON_VERSION_LINE"
+            for target in node.targets
+        )
+    ]
+    if (
+        len(daemon_line_assignments) != 1
+        or not isinstance(daemon_line_assignments[0].value, ast.Call)
+        or len(daemon_line_assignments[0].value.args) != 1
+        or ast.literal_eval(daemon_line_assignments[0].value.args[0]) != r"^[!-~]+(?:\r?\n)?$"
+    ):
+        raise AssertionError("daemon evidence must remain one visible non-whitespace ASCII token")
+    daemon_probes = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_probe_context_default_daemon"
+    ]
+    if len(daemon_probes) != 1:
+        raise AssertionError("the context-default daemon probe must remain unique")
+    daemon_outcome_calls = [
+        node
+        for node in ast.walk(daemon_probes[0])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "executor"
+        and node.func.attr == "bounded_outcome"
+    ]
+    if len(daemon_outcome_calls) != 1 or not any(
+        isinstance(argument, ast.Name) and argument.id == "_DAEMON_VERSION_ARGUMENTS"
+        for argument in daemon_outcome_calls[0].args
+    ):
+        raise AssertionError("the context-default phase must make one fixed daemon probe")
+    all_typed_outcome_calls = [
+        node
+        for node in ast.walk(selection_operator_syntax)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "bounded_outcome"
+    ]
+    if all_typed_outcome_calls != daemon_outcome_calls:
+        raise AssertionError(
+            "only the context-default daemon probe may observe exit after overflow"
+        )
+    daemon_kind_order = tuple(
+        node.attr
+        for node in sorted(
+            (
+                item
+                for item in ast.walk(daemon_probes[0])
+                if isinstance(item, ast.Attribute)
+                and isinstance(item.value, ast.Name)
+                and item.value.id == "_BoundedProcessOutcomeKind"
+            ),
+            key=lambda item: (item.lineno, item.col_offset),
+        )
+    )
+    if daemon_kind_order != (
+        "INTERNAL_FAILURE",
+        "REAPED_NONZERO",
+        "REAPED_TIMEOUT",
+        "OUTPUT_INVALID",
+    ) or any(isinstance(node, ast.Try) for node in ast.walk(daemon_probes[0])):
+        raise AssertionError("typed daemon process outcomes must keep fixed honest precedence")
+    count_increments = {
+        (node.target.value.id, node.target.attr)
+        for function in selection_operator_syntax.body
+        if isinstance(function, ast.FunctionDef)
+        and function.name
+        in {
+            "_record_buildx_authority",
+            "_capture_diagnostic_prestate",
+            "_reprove_diagnostic_prestate",
+            "_probe_context_default_daemon",
+        }
+        for node in ast.walk(function)
+        if isinstance(node, ast.AugAssign)
+        and isinstance(node.target, ast.Attribute)
+        and isinstance(node.target.value, ast.Name)
+    }
+    if count_increments != {
+        ("runtime", "buildx_version_query_count"),
+        ("runtime", "builder_inventory_query_count"),
+        ("runtime", "daemon_probe_count"),
+    }:
+        raise AssertionError("the context-default query counters have drifted")
+    operator_mains = [
+        node
+        for node in selection_operator_syntax.body
+        if isinstance(node, ast.FunctionDef) and node.name == "main"
+    ]
+    if len(operator_mains) != 1:
+        raise AssertionError("the builder-selection main must remain unique")
+    context_phase_names = {
+        node.id
+        for node in ast.walk(operator_mains[0])
+        if isinstance(node, ast.Name) and node.id == "_CONTEXT_DEFAULT_PREFLIGHT_PHASE"
+    }
+    context_phase_calls = {
+        node.func.id
+        for node in ast.walk(operator_mains[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    if context_phase_names != {"_CONTEXT_DEFAULT_PREFLIGHT_PHASE"} or not {
+        "_run_context_default_builder_preflight",
+        "format_context_default_builder_preflight",
+    }.issubset(context_phase_calls):
+        raise AssertionError("the fixed context-default diagnostic entrypoint has drifted")
+    selection_test_source = (
+        ROOT / "backend" / "tests" / "unit" / "test_docker_builder_selection_reconcile.py"
+    ).read_text(encoding="utf-8")
+    for test_name in (
+        "test_context_default_preflight_requires_exact_phenotype_before_daemon_probe",
+        "test_context_default_preflight_classifies_stable_unresolved_builder_value_free",
+        "test_context_default_preflight_classifies_reaped_daemon_failure_and_reproves",
+        "test_context_default_preflight_rejects_invalid_daemon_evidence",
+        "test_context_default_preflight_process_boundary_failure_is_unknown_without_reproof",
+        "test_context_default_preflight_typed_internal_failure_is_unknown_without_reproof",
+        "test_context_default_preflight_trustworthy_output_failure_is_invalid_and_reproved",
+        "test_bounded_process_outcome_preserves_exit_output_and_cleanup_precedence",
+        "test_bounded_process_outcome_distinguishes_timeout_from_internal_boundary_failure",
+        "test_legacy_output_stops_reading_and_begins_cleanup_at_first_overflow",
+        "test_diagnostic_outcome_uses_discard_reads_only_after_first_bounded_breach",
+        "test_context_default_preflight_detects_every_snapshot_field_drift",
+        "test_context_default_preflight_interrupt_stops_before_reproof",
+        "test_context_default_preflight_unreaped_probe_never_runs_reproof",
+        "test_context_default_preflight_lock_exit_downgrades_without_erasing_counts",
+        "test_context_default_preflight_main_is_fixed_nonzero_and_normal_operator_query_zero",
+        "test_context_default_preflight_evidence_rejects_pass_and_impossible_counts",
+    ):
+        if test_name not in selection_test_source:
+            raise AssertionError(f"the context-default preflight test is missing: {test_name}")
     diagnostic_runners = [
         node
         for node in selection_operator_syntax.body
@@ -3052,6 +3548,8 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "`--diagnostic-phase BUILDER_SELECTION_PRESTATE`",
         "stops before active-build history",
         "`PASS` is diagnostic evidence only",
+        "`--diagnostic-phase CONTEXT_DEFAULT_BUILDER_PREFLIGHT`",
+        "https://docs.docker.com/reference/cli/docker/version/",
     ):
         if fragment not in adr:
             raise AssertionError(f"ADR-0112 omits governed capacity term: {fragment}")
@@ -3106,6 +3604,23 @@ def verify_governed_docker_build_capacity_contract() -> None:
         "https://docs.docker.com/desktop/release-notes/",
         "`BUILDER_PRESTATE_V2`, one `observation_known` flag",
         "unequal reproof projects only the original capture snapshot with `PLAN_DRIFT`",
+        "the current and context-default identities are the same",
+        "`docker version --format {{.Server.Version}}` once",
+        "bounded visible-ASCII non-whitespace token",
+        "Only a reaped nonzero or a bounded timeout with trustworthy cleanup",
+        "A zero exit with trustworthy cleanup but invalid output evidence",
+        "an unreaped or liveness-unknown child has highest priority",
+        "caps and discards excess output in flight",
+        "first output-cap breach stops all later payload reads",
+        "remaining cap plus exactly one byte",
+        "may use larger discard reads after that first bounded breach",
+        "Only `CONTEXT_DEFAULT_BUILDER_PREFLIGHT` selects observe-exit-after-overflow",
+        "`DAEMON_API_UNAVAILABLE`",
+        "`DAEMON_EVIDENCE_INVALID`",
+        "`BUILDX_DEFAULT_UNRESOLVED`",
+        "Every conclusive result remains `REJECTED`",
+        "this phase never reports `PASS`",
+        "Normal no-argument operator and Linux/WSL behavior issue this daemon probe zero times",
     ):
         if fragment not in compact_adr:
             raise AssertionError(f"ADR-0112 omits Buildx authority evidence: {fragment}")

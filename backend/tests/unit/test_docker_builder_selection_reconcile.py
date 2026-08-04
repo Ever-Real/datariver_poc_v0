@@ -95,6 +95,9 @@ class _Executor:
         apply_rollback: bool = True,
         version_output: str | None = None,
         version_error: BaseException | None = None,
+        daemon_output: str = "28.5.1\n",
+        daemon_error: BaseException | None = None,
+        daemon_outcome: Any | None = None,
     ) -> None:
         self.action_error = action_error
         self.apply_action = apply_action
@@ -108,6 +111,9 @@ class _Executor:
             else version_output
         )
         self.version_error = version_error
+        self.daemon_output = daemon_output
+        self.daemon_error = daemon_error
+        self.daemon_outcome = daemon_outcome
         self.selected = "managed-builder"
         self.calls: list[tuple[str, ...]] = []
         self.selection_calls: list[tuple[str, ...]] = []
@@ -148,6 +154,10 @@ class _Executor:
             if self.version_error is not None:
                 raise self.version_error
             return self.version_output
+        if arguments == ("docker", "version", "--format", "{{.Server.Version}}"):
+            if self.daemon_error is not None:
+                raise self.daemon_error
+            return self.daemon_output
         if arguments == ("docker", "buildx", "ls", "--format", "{{json .}}"):
             return self._rows()
         if arguments[:4] == ("docker", "buildx", "history", "ls"):
@@ -175,6 +185,58 @@ class _Executor:
                 raise self.rollback_error
             return "raw-provider-rollback-sentinel"
         raise AssertionError(f"unexpected argv: {arguments!r}")
+
+    def bounded_outcome(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        classification: str,
+        timeout_seconds: int,
+    ) -> Any:
+        del classification, timeout_seconds
+        self.calls.append(arguments)
+        assert arguments == ("docker", "version", "--format", "{{.Server.Version}}")
+        if self.daemon_error is not None:
+            raise self.daemon_error
+        assert self.daemon_outcome is not None
+        return self.daemon_outcome
+
+
+class _ContextDefaultExecutor(_Executor):
+    def _rows(self) -> str:
+        return json.dumps(
+            {
+                "Current": True,
+                "Driver": "",
+                "Err": "raw-builder-error-sentinel",
+                "Name": "desktop-linux",
+                "Nodes": [
+                    {
+                        "Endpoint": "desktop-linux",
+                        "Name": "desktop-linux",
+                    }
+                ],
+            }
+        )
+
+
+def _context_default_executor(
+    operator: ModuleType,
+    *,
+    outcome_kind: str = "SUCCESS",
+    daemon_output: str = "28.5.1\n",
+    daemon_error: BaseException | None = None,
+) -> _ContextDefaultExecutor:
+    output = daemon_output if outcome_kind == "SUCCESS" else None
+    outcome = operator._BoundedProcessOutcome(
+        operator._BoundedProcessOutcomeKind[outcome_kind],
+        output,
+    )
+    return _ContextDefaultExecutor(
+        daemon_output=daemon_output,
+        daemon_error=daemon_error,
+        daemon_outcome=outcome,
+    )
 
 
 def _install_fixed_context(
@@ -1966,6 +2028,142 @@ def test_bounded_process_output_overflow_terminates_and_reaps_without_raw_output
     assert "raw-secret-sentinel" not in exposed
 
 
+def test_legacy_output_stops_reading_and_begins_cleanup_at_first_overflow(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    operator = _load_operator()
+    chunks = [b"raw-first-overflow", b"raw-later-payload", b""]
+    events: list[str] = []
+    requested_sizes: list[int] = []
+
+    class Output:
+        def fileno(self) -> int:
+            return 99
+
+        def close(self) -> None:
+            events.append("stdout-close")
+
+    class Process:
+        stdout = Output()
+        terminated = False
+        reaped = False
+
+        def poll(self) -> int | None:
+            events.append("poll")
+            if not self.reaped:
+                return None
+            return 143 if self.terminated else 0
+
+        def terminate(self) -> None:
+            events.append("terminate")
+            self.terminated = True
+
+        def kill(self) -> None:
+            raise AssertionError("reaped process must not be killed")
+
+        def wait(self, *, timeout: float) -> int:
+            del timeout
+            events.append("cleanup-wait" if self.terminated else "natural-wait")
+            self.reaped = True
+            return 143 if self.terminated else 0
+
+    class Selector:
+        def register(self, *_args: object) -> None:
+            return None
+
+        def select(self, _timeout: float) -> list[object]:
+            events.append("select")
+            return [object()]
+
+        def close(self) -> None:
+            events.append("selector-close")
+
+    def read(_fd: int, requested_size: int) -> bytes:
+        events.append("read")
+        requested_sizes.append(requested_size)
+        return chunks.pop(0)
+
+    monkeypatch.setattr(operator.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(operator.selectors, "DefaultSelector", Selector)
+    monkeypatch.setattr(operator.os, "read", read)
+    monkeypatch.setattr(operator, "_MAXIMUM_PROCESS_OUTPUT_BYTES", 8)
+
+    with pytest.raises(
+        operator._ProcessEvidenceInvalid,
+        match="DOCKER_BUILDER_SELECTION_PROCESS_FAILED",
+    ):
+        operator._BoundedProcessExecutor().output(
+            ("fixed",),
+            classification="FIXED",
+            timeout_seconds=1,
+        )
+
+    assert events.count("read") == 1
+    assert requested_sizes == [9]
+    assert "natural-wait" not in events
+    assert events.index("read") < events.index("selector-close")
+    assert events.index("selector-close") < events.index("terminate")
+    assert events.index("terminate") < events.index("cleanup-wait")
+    assert chunks == [b"raw-later-payload", b""]
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+def test_diagnostic_outcome_uses_discard_reads_only_after_first_bounded_breach(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    chunks = [b"x" * 9, b"raw-discarded-payload", b""]
+    requested_sizes: list[int] = []
+
+    class Output:
+        def fileno(self) -> int:
+            return 99
+
+        def close(self) -> None:
+            return None
+
+    class Process:
+        stdout = Output()
+
+        def wait(self, *, timeout: float) -> int:
+            del timeout
+            return 0
+
+        def poll(self) -> int:
+            return 0
+
+    class Selector:
+        def register(self, *_args: object) -> None:
+            return None
+
+        def select(self, _timeout: float) -> list[object]:
+            return [object()]
+
+        def close(self) -> None:
+            return None
+
+    def read(_fd: int, requested_size: int) -> bytes:
+        requested_sizes.append(requested_size)
+        return chunks.pop(0)
+
+    monkeypatch.setattr(operator.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(operator.selectors, "DefaultSelector", Selector)
+    monkeypatch.setattr(operator.os, "read", read)
+    monkeypatch.setattr(operator, "_MAXIMUM_PROCESS_OUTPUT_BYTES", 8)
+
+    outcome = operator._BoundedProcessExecutor().bounded_outcome(
+        ("fixed",),
+        classification="FIXED",
+        timeout_seconds=1,
+    )
+
+    assert outcome.kind is operator._BoundedProcessOutcomeKind.OUTPUT_INVALID
+    assert requested_sizes == [9, 64 * 1024, 64 * 1024]
+
+
 def test_bounded_process_timeout_kills_terminate_ignoring_child(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2243,3 +2441,625 @@ def test_bounded_process_spawn_nonzero_and_invalid_utf8_never_emit_raw(
         executor.output(("fixed",), classification="FIXED", timeout_seconds=2)
     exposed = capsys.readouterr().out + capsys.readouterr().err
     assert "raw-" not in exposed
+
+
+def test_context_default_preflight_requires_exact_phenotype_before_daemon_probe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _Executor()
+
+    evidence = operator._run_context_default_builder_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is operator.ContextDefaultBuilderPreflightPredicate.PRESTATE_DRIFT
+    assert evidence.phenotype_known is False
+    assert evidence.buildx_version_query_count == 1
+    assert evidence.builder_inventory_query_count == 1
+    assert evidence.daemon_probe_count == 0
+    assert ("docker", "version", "--format", "{{.Server.Version}}") not in executor.calls
+    assert executor.selection_calls == []
+
+
+def test_context_default_preflight_classifies_stable_unresolved_builder_value_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _context_default_executor(
+        operator,
+        daemon_output="raw-version-sentinel\n",
+    )
+
+    evidence = operator._run_context_default_builder_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+    line = operator.format_context_default_builder_preflight(evidence)
+    document = json.loads(line)
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is (
+        operator.ContextDefaultBuilderPreflightPredicate.BUILDX_DEFAULT_UNRESOLVED
+    )
+    assert evidence.phenotype_known is True
+    assert evidence.buildx_version_query_count == 1
+    assert evidence.builder_inventory_query_count == 2
+    assert evidence.daemon_probe_count == 1
+    assert executor.calls.count(("docker", "version", "--format", "{{.Server.Version}}")) == 1
+    assert set(document) == {
+        "action_count",
+        "builder_inventory_query_count",
+        "build_count",
+        "buildx_version_query_count",
+        "cache_action_count",
+        "classification",
+        "container_action_count",
+        "daemon_probe_count",
+        "mutation_count",
+        "phase",
+        "phenotype_known",
+        "predicate",
+        "retry_count",
+        "rollback_count",
+        "schema",
+        "selection_mutation_count",
+    }
+    assert document["schema"] == "CONTEXT_DEFAULT_BUILDER_PREFLIGHT_V1"
+    assert document["phase"] == "CONTEXT_DEFAULT_BUILDER_PREFLIGHT"
+    assert all(
+        document[name] == 0
+        for name in (
+            "action_count",
+            "rollback_count",
+            "selection_mutation_count",
+            "cache_action_count",
+            "build_count",
+            "container_action_count",
+            "mutation_count",
+            "retry_count",
+        )
+    )
+    assert "raw-" not in line
+    assert "28.5.1" not in line
+    assert executor.selection_calls == []
+
+
+@pytest.mark.parametrize(
+    "outcome_kind",
+    ("REAPED_NONZERO", "REAPED_TIMEOUT"),
+)
+def test_context_default_preflight_classifies_reaped_daemon_failure_and_reproves(
+    outcome_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _context_default_executor(operator, outcome_kind=outcome_kind)
+
+    evidence = operator._run_context_default_builder_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is (
+        operator.ContextDefaultBuilderPreflightPredicate.DAEMON_API_UNAVAILABLE
+    )
+    assert evidence.phenotype_known is True
+    assert evidence.daemon_probe_count == 1
+    assert evidence.builder_inventory_query_count == 2
+    assert executor.selection_calls == []
+    assert "raw-" not in operator.format_context_default_builder_preflight(evidence)
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        "",
+        "\n",
+        "   \n",
+        "\t\n",
+        "\x00\n",
+        " leading\n",
+        "trailing \n",
+        "embedded\tcontrol\n",
+        "one\ntwo\n",
+        "x" * 257 + "\n",
+    ),
+)
+def test_context_default_preflight_rejects_invalid_daemon_evidence(
+    output: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _context_default_executor(operator, daemon_output=output)
+
+    evidence = operator._run_context_default_builder_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is (
+        operator.ContextDefaultBuilderPreflightPredicate.DAEMON_EVIDENCE_INVALID
+    )
+    assert evidence.daemon_probe_count == 1
+    assert evidence.builder_inventory_query_count == 2
+    assert executor.selection_calls == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        OSError("raw-spawn-sentinel"),
+        subprocess.SubprocessError("raw-process-boundary-sentinel"),
+    ),
+)
+def test_context_default_preflight_process_boundary_failure_is_unknown_without_reproof(
+    error: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _context_default_executor(operator, daemon_error=error)
+
+    evidence = operator._run_context_default_builder_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.ContextDefaultBuilderPreflightPredicate.UNKNOWN
+    assert evidence.phenotype_known is True
+    assert evidence.daemon_probe_count == 1
+    assert evidence.builder_inventory_query_count == 1
+    assert executor.calls.count(("docker", "buildx", "ls", "--format", "{{json .}}")) == 1
+    assert executor.selection_calls == []
+    assert "raw-" not in operator.format_context_default_builder_preflight(evidence)
+
+
+def test_context_default_preflight_typed_internal_failure_is_unknown_without_reproof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _context_default_executor(operator, outcome_kind="INTERNAL_FAILURE")
+
+    evidence = operator._run_context_default_builder_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.ContextDefaultBuilderPreflightPredicate.UNKNOWN
+    assert evidence.daemon_probe_count == 1
+    assert evidence.builder_inventory_query_count == 1
+
+
+def test_context_default_preflight_trustworthy_output_failure_is_invalid_and_reproved(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _context_default_executor(operator, outcome_kind="OUTPUT_INVALID")
+
+    evidence = operator._run_context_default_builder_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is (
+        operator.ContextDefaultBuilderPreflightPredicate.DAEMON_EVIDENCE_INVALID
+    )
+    assert evidence.daemon_probe_count == 1
+    assert evidence.builder_inventory_query_count == 2
+
+
+@pytest.mark.parametrize(
+    ("return_code", "payload", "cleanup_step", "expected_kind"),
+    (
+        (7, b"raw-oversized-sentinel", None, "REAPED_NONZERO"),
+        (7, b"   \n", None, "REAPED_NONZERO"),
+        (0, b"raw-oversized-sentinel", None, "OUTPUT_INVALID"),
+        (7, b"\xffraw-invalid-utf8", None, "REAPED_NONZERO"),
+        (0, b"\xffraw-invalid-utf8", None, "OUTPUT_INVALID"),
+        (7, b"raw-oversized-sentinel", "selector", "INTERNAL_FAILURE"),
+        (0, b"raw-oversized-sentinel", "selector", "INTERNAL_FAILURE"),
+        (7, b"raw-oversized-sentinel", "stdout", "INTERNAL_FAILURE"),
+    ),
+)
+def test_bounded_process_outcome_preserves_exit_output_and_cleanup_precedence(
+    return_code: int,
+    payload: bytes,
+    cleanup_step: str | None,
+    expected_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    operator = _load_operator()
+    chunks = [payload, b""]
+    events: list[str] = []
+
+    class Output:
+        def fileno(self) -> int:
+            return 99
+
+        def close(self) -> None:
+            events.append("stdout-close")
+            if cleanup_step == "stdout":
+                raise OSError("raw-stdout-close-sentinel")
+
+    class Process:
+        stdout = Output()
+
+        def wait(self, *, timeout: float) -> int:
+            del timeout
+            events.append("wait")
+            return return_code
+
+        def poll(self) -> int:
+            events.append("poll")
+            return return_code
+
+    class Selector:
+        def register(self, *_args: object) -> None:
+            return None
+
+        def select(self, _timeout: float) -> list[object]:
+            return [object()]
+
+        def close(self) -> None:
+            events.append("selector-close")
+            if cleanup_step == "selector":
+                raise KeyboardInterrupt("raw-selector-close-sentinel")
+
+    def read(_fd: int, _size: int) -> bytes:
+        events.append("read")
+        return chunks.pop(0)
+
+    monkeypatch.setattr(operator.subprocess, "Popen", lambda *_args, **_kwargs: Process())
+    monkeypatch.setattr(operator.selectors, "DefaultSelector", Selector)
+    monkeypatch.setattr(operator.os, "read", read)
+    monkeypatch.setattr(operator, "_MAXIMUM_PROCESS_OUTPUT_BYTES", 8)
+
+    outcome = operator._BoundedProcessExecutor().bounded_outcome(
+        ("fixed",),
+        classification="FIXED",
+        timeout_seconds=1,
+    )
+
+    assert outcome.kind.value == expected_kind
+    assert outcome.output is None
+    assert events.count("read") == 2
+    assert events.index("wait") < events.index("selector-close")
+    assert events.index("selector-close") < events.index("poll")
+    assert events.index("poll") < events.index("stdout-close")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize(
+    ("failure_step", "expected_kind"),
+    (
+        ("spawn", "INTERNAL_FAILURE"),
+        ("register", "INTERNAL_FAILURE"),
+        ("select", "INTERNAL_FAILURE"),
+        ("read", "INTERNAL_FAILURE"),
+        ("wait", "INTERNAL_FAILURE"),
+        ("timeout", "REAPED_TIMEOUT"),
+        ("timeout-cleanup", "INTERNAL_FAILURE"),
+    ),
+)
+def test_bounded_process_outcome_distinguishes_timeout_from_internal_boundary_failure(
+    failure_step: str,
+    expected_kind: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    events: list[str] = []
+
+    class Output:
+        def fileno(self) -> int:
+            return 99
+
+        def close(self) -> None:
+            events.append("stdout-close")
+
+    class Process:
+        stdout = Output()
+        reaped = False
+
+        def poll(self) -> int | None:
+            events.append("poll")
+            return 143 if self.reaped else None
+
+        def terminate(self) -> None:
+            events.append("terminate")
+            if failure_step == "timeout-cleanup":
+                raise KeyboardInterrupt("raw-terminate-sentinel")
+
+        def kill(self) -> None:
+            events.append("kill")
+
+        def wait(self, *, timeout: float) -> int:
+            del timeout
+            events.append("wait")
+            if failure_step == "wait":
+                self.reaped = True
+                raise OSError("raw-wait-sentinel")
+            self.reaped = True
+            return 143
+
+    class Selector:
+        def register(self, *_args: object) -> None:
+            events.append("register")
+            if failure_step == "register":
+                raise OSError("raw-register-sentinel")
+
+        def select(self, _timeout: float) -> list[object]:
+            events.append("select")
+            if failure_step == "select":
+                raise KeyboardInterrupt("raw-select-sentinel")
+            if failure_step in {"timeout", "timeout-cleanup"}:
+                return []
+            return [object()]
+
+        def close(self) -> None:
+            events.append("selector-close")
+
+    def popen(*_args: object, **_kwargs: object) -> Process:
+        if failure_step == "spawn":
+            raise OSError("raw-spawn-sentinel")
+        return Process()
+
+    def read(_fd: int, _size: int) -> bytes:
+        events.append("read")
+        if failure_step == "read":
+            raise OSError("raw-read-sentinel")
+        return b""
+
+    monkeypatch.setattr(operator.subprocess, "Popen", popen)
+    monkeypatch.setattr(operator.selectors, "DefaultSelector", Selector)
+    monkeypatch.setattr(operator.os, "read", read)
+
+    outcome = operator._BoundedProcessExecutor().bounded_outcome(
+        ("fixed",),
+        classification="FIXED",
+        timeout_seconds=1,
+    )
+
+    assert outcome.kind.value == expected_kind
+    assert outcome.output is None
+
+
+@pytest.mark.parametrize(
+    ("field_name", "enum_name", "member_name"),
+    (
+        ("buildx_authority", "BuildxAuthorityPredicate", "UNKNOWN"),
+        ("buildx_distribution", "BuildxDistributionPredicate", "DOCUMENTED_DESKTOP_SUFFIX"),
+        ("builder_selection", "BuilderSelectionPredicate", "PASS"),
+        ("node_schema", "NodeSchemaPredicate", "NODE_NOT_MAPPING"),
+        ("prior_driver", "PriorDriverPredicate", "UNRECOGNIZED"),
+        ("builder_error", "BuilderErrorPredicate", "ABSENT"),
+        ("prior_target_relation", "PriorTargetRelationPredicate", "DISTINCT"),
+        ("prior_status", "PriorStatusPredicate", "RUNNING"),
+        ("prior_node_error", "BuilderErrorPredicate", "PRESENT"),
+        ("target_contract", "TargetContractPredicate", "PASS"),
+        ("first_defect", "DockerBuilderSelectionPlanPredicate", "CURRENT_ALREADY_CANONICAL"),
+    ),
+)
+def test_context_default_preflight_detects_every_snapshot_field_drift(
+    field_name: str,
+    enum_name: str,
+    member_name: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _context_default_executor(operator)
+    original = operator.evaluate_docker_builder_selection_plan
+    calls = 0
+
+    def drifting_evaluation(*args: object, **kwargs: object) -> Any:
+        nonlocal calls
+        calls += 1
+        evaluation = original(*args, **kwargs)
+        if calls == 2:
+            enum_type = getattr(operator, enum_name)
+            changed = replace(
+                evaluation.snapshot,
+                **{field_name: getattr(enum_type, member_name)},
+            )
+            return replace(evaluation, snapshot=changed)
+        return evaluation
+
+    monkeypatch.setattr(operator, "evaluate_docker_builder_selection_plan", drifting_evaluation)
+
+    evidence = operator._run_context_default_builder_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is operator.BuilderSelectionReconcileClassification.REJECTED
+    assert evidence.predicate is operator.ContextDefaultBuilderPreflightPredicate.PRESTATE_DRIFT
+    assert evidence.phenotype_known is True
+    assert evidence.daemon_probe_count == 1
+    assert evidence.builder_inventory_query_count == 2
+    assert executor.selection_calls == []
+
+
+@pytest.mark.parametrize(
+    "error",
+    (
+        KeyboardInterrupt("raw-interrupt-sentinel"),
+        SystemExit("raw-system-exit-sentinel"),
+    ),
+)
+def test_context_default_preflight_interrupt_stops_before_reproof(
+    error: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _context_default_executor(operator, daemon_error=error)
+
+    evidence = operator._run_context_default_builder_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.ContextDefaultBuilderPreflightPredicate.UNKNOWN
+    assert evidence.phenotype_known is True
+    assert evidence.daemon_probe_count == 1
+    assert evidence.builder_inventory_query_count == 1
+    assert executor.selection_calls == []
+    assert "raw-" not in operator.format_context_default_builder_preflight(evidence)
+
+
+def test_context_default_preflight_unreaped_probe_never_runs_reproof(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    executor = _context_default_executor(
+        operator,
+        daemon_error=operator._ProcessUnreaped(),
+    )
+
+    evidence = operator._run_context_default_builder_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.ContextDefaultBuilderPreflightPredicate.UNKNOWN
+    assert evidence.phenotype_known is True
+    assert evidence.daemon_probe_count == 1
+    assert evidence.builder_inventory_query_count == 1
+    assert executor.calls.count(("docker", "buildx", "ls", "--format", "{{json .}}")) == 1
+    assert executor.selection_calls == []
+
+
+def test_context_default_preflight_lock_exit_downgrades_without_erasing_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(
+        operator,
+        monkeypatch,
+        lock_exit_failure=RuntimeError("raw-lock-exit-sentinel"),
+    )
+    executor = _context_default_executor(operator)
+
+    evidence = operator._run_context_default_builder_preflight(
+        operator._RuntimeState(),
+        executor=executor,
+        environ={},
+    )
+
+    assert evidence.classification is (
+        operator.BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+    )
+    assert evidence.predicate is operator.ContextDefaultBuilderPreflightPredicate.UNKNOWN
+    assert evidence.phenotype_known is True
+    assert evidence.daemon_probe_count == 1
+    assert evidence.builder_inventory_query_count == 2
+    assert executor.selection_calls == []
+
+
+def test_context_default_preflight_main_is_fixed_nonzero_and_normal_operator_query_zero(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    operator = _load_operator()
+    _install_fixed_context(operator, monkeypatch)
+    fixed = operator.ContextDefaultBuilderPreflightEvidence(
+        classification=operator.BuilderSelectionReconcileClassification.REJECTED,
+        predicate=operator.ContextDefaultBuilderPreflightPredicate.BUILDX_DEFAULT_UNRESOLVED,
+        phenotype_known=True,
+        buildx_version_query_count=1,
+        builder_inventory_query_count=2,
+        daemon_probe_count=1,
+    )
+    monkeypatch.setattr(
+        operator,
+        "_run_context_default_builder_preflight",
+        lambda _runtime: fixed,
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            str(OPERATOR),
+            "--diagnostic-phase",
+            "CONTEXT_DEFAULT_BUILDER_PREFLIGHT",
+        ],
+    )
+
+    assert operator.main() == 2
+    document = json.loads(capsys.readouterr().out)
+    assert document["classification"] == "REJECTED"
+    assert document["predicate"] == "BUILDX_DEFAULT_UNRESOLVED"
+
+    ordinary_executor = _Executor()
+    ordinary = operator._run_operator(
+        operator._RuntimeState(),
+        executor=ordinary_executor,
+        environ={},
+    )
+    assert ordinary.action_attempted is True
+    assert ("docker", "version", "--format", "{{.Server.Version}}") not in (ordinary_executor.calls)
+
+
+def test_context_default_preflight_evidence_rejects_pass_and_impossible_counts() -> None:
+    operator = _load_operator()
+    valid = {
+        "classification": operator.BuilderSelectionReconcileClassification.REJECTED,
+        "predicate": operator.ContextDefaultBuilderPreflightPredicate.BUILDX_DEFAULT_UNRESOLVED,
+        "phenotype_known": True,
+        "buildx_version_query_count": 1,
+        "builder_inventory_query_count": 2,
+        "daemon_probe_count": 1,
+    }
+
+    for changed in (
+        {"classification": operator.BuilderSelectionReconcileClassification.PASS},
+        {"predicate": operator.ContextDefaultBuilderPreflightPredicate.UNKNOWN},
+        {"phenotype_known": False},
+        {"buildx_version_query_count": 0},
+        {"builder_inventory_query_count": 3},
+        {"daemon_probe_count": 0},
+        {"action_count": 1},
+    ):
+        with pytest.raises(
+            ValueError,
+            match="CONTEXT_DEFAULT_BUILDER_PREFLIGHT_EVIDENCE_INVALID",
+        ):
+            operator.ContextDefaultBuilderPreflightEvidence(**(valid | changed))

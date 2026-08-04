@@ -15,7 +15,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
-from typing import NoReturn
+from typing import NoReturn, Protocol
 
 import docker_builder_prestate as _prestate
 from docker_builder_prestate import (
@@ -69,6 +69,10 @@ _GIT_COMMIT = "DOCKER_BUILDER_SELECTION_GIT_COMMIT"
 _GIT_BRANCH = "DOCKER_BUILDER_SELECTION_GIT_BRANCH"
 _SELECTION_ACTION = "DOCKER_BUILDER_SELECTION_ACTION"
 _BUILDX_VERSION_PROBE = "DOCKER_BUILDX_VERSION_PROBE"
+_DAEMON_VERSION_PROBE = "DOCKER_DAEMON_VERSION_PROBE"
+_DAEMON_VERSION_ARGUMENTS = ("docker", "version", "--format", "{{.Server.Version}}")
+_MAXIMUM_DAEMON_VERSION_BYTES = 256
+_DAEMON_VERSION_LINE = re.compile(r"^[!-~]+(?:\r?\n)?$")
 
 
 class BuilderSelectionReconcileClassification(StrEnum):
@@ -100,6 +104,16 @@ class BuilderSelectionPrestateCheckpoint(StrEnum):
 
 
 _PRESTATE_DIAGNOSTIC_PHASE = "BUILDER_SELECTION_PRESTATE"
+_CONTEXT_DEFAULT_PREFLIGHT_PHASE = "CONTEXT_DEFAULT_BUILDER_PREFLIGHT"
+_CONTEXT_DEFAULT_PREFLIGHT_SCHEMA = "CONTEXT_DEFAULT_BUILDER_PREFLIGHT_V1"
+
+
+class ContextDefaultBuilderPreflightPredicate(StrEnum):
+    DAEMON_API_UNAVAILABLE = "DAEMON_API_UNAVAILABLE"
+    DAEMON_EVIDENCE_INVALID = "DAEMON_EVIDENCE_INVALID"
+    BUILDX_DEFAULT_UNRESOLVED = "BUILDX_DEFAULT_UNRESOLVED"
+    PRESTATE_DRIFT = "PRESTATE_DRIFT"
+    UNKNOWN = "UNKNOWN"
 
 
 def _prestate_nested_evidence_is_consistent(
@@ -548,10 +562,165 @@ def format_builder_selection_prestate_diagnostic(
     return line
 
 
+@dataclass(frozen=True, slots=True)
+class ContextDefaultBuilderPreflightEvidence:
+    classification: BuilderSelectionReconcileClassification
+    predicate: ContextDefaultBuilderPreflightPredicate
+    phenotype_known: bool
+    buildx_version_query_count: int
+    builder_inventory_query_count: int
+    daemon_probe_count: int
+    schema: str = _CONTEXT_DEFAULT_PREFLIGHT_SCHEMA
+    phase: str = _CONTEXT_DEFAULT_PREFLIGHT_PHASE
+    action_count: int = 0
+    rollback_count: int = 0
+    selection_mutation_count: int = 0
+    cache_action_count: int = 0
+    build_count: int = 0
+    container_action_count: int = 0
+    mutation_count: int = 0
+    retry_count: int = 0
+
+    def __post_init__(self) -> None:
+        query_counts = (
+            self.buildx_version_query_count,
+            self.builder_inventory_query_count,
+            self.daemon_probe_count,
+        )
+        action_counts = (
+            self.action_count,
+            self.rollback_count,
+            self.selection_mutation_count,
+            self.cache_action_count,
+            self.build_count,
+            self.container_action_count,
+            self.mutation_count,
+            self.retry_count,
+        )
+        if (
+            not isinstance(self.classification, BuilderSelectionReconcileClassification)
+            or not isinstance(self.predicate, ContextDefaultBuilderPreflightPredicate)
+            or type(self.phenotype_known) is not bool
+            or self.schema != _CONTEXT_DEFAULT_PREFLIGHT_SCHEMA
+            or self.phase != _CONTEXT_DEFAULT_PREFLIGHT_PHASE
+            or any(type(count) is not int for count in (*query_counts, *action_counts))
+            or self.buildx_version_query_count not in {0, 1}
+            or self.builder_inventory_query_count not in {0, 1, 2}
+            or self.daemon_probe_count not in {0, 1}
+            or any(count != 0 for count in action_counts)
+            or not _context_default_preflight_evidence_is_consistent(self)
+        ):
+            raise ValueError("CONTEXT_DEFAULT_BUILDER_PREFLIGHT_EVIDENCE_INVALID")
+
+
+def _context_default_preflight_evidence_is_consistent(
+    evidence: ContextDefaultBuilderPreflightEvidence,
+) -> bool:
+    if evidence.builder_inventory_query_count > 0 and evidence.buildx_version_query_count != 1:
+        return False
+    if evidence.daemon_probe_count > 0 and (
+        not evidence.phenotype_known or evidence.builder_inventory_query_count < 1
+    ):
+        return False
+    if evidence.builder_inventory_query_count == 2 and evidence.daemon_probe_count != 1:
+        return False
+    if evidence.phenotype_known and (
+        evidence.buildx_version_query_count != 1 or evidence.builder_inventory_query_count < 1
+    ):
+        return False
+    if evidence.classification is BuilderSelectionReconcileClassification.REJECTED:
+        if evidence.predicate is ContextDefaultBuilderPreflightPredicate.UNKNOWN:
+            return False
+        if evidence.predicate in {
+            ContextDefaultBuilderPreflightPredicate.DAEMON_API_UNAVAILABLE,
+            ContextDefaultBuilderPreflightPredicate.DAEMON_EVIDENCE_INVALID,
+            ContextDefaultBuilderPreflightPredicate.BUILDX_DEFAULT_UNRESOLVED,
+        }:
+            return (
+                evidence.phenotype_known
+                and evidence.buildx_version_query_count == 1
+                and evidence.builder_inventory_query_count == 2
+                and evidence.daemon_probe_count == 1
+            )
+        return evidence.predicate is ContextDefaultBuilderPreflightPredicate.PRESTATE_DRIFT
+    return (
+        evidence.classification is BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED
+        and evidence.predicate is ContextDefaultBuilderPreflightPredicate.UNKNOWN
+    )
+
+
+def format_context_default_builder_preflight(
+    evidence: ContextDefaultBuilderPreflightEvidence,
+) -> str:
+    if not isinstance(evidence, ContextDefaultBuilderPreflightEvidence):
+        raise ValueError("CONTEXT_DEFAULT_BUILDER_PREFLIGHT_EVIDENCE_INVALID")
+    fields: dict[str, object] = {
+        "action_count": evidence.action_count,
+        "builder_inventory_query_count": evidence.builder_inventory_query_count,
+        "build_count": evidence.build_count,
+        "buildx_version_query_count": evidence.buildx_version_query_count,
+        "cache_action_count": evidence.cache_action_count,
+        "classification": evidence.classification.value,
+        "container_action_count": evidence.container_action_count,
+        "daemon_probe_count": evidence.daemon_probe_count,
+        "mutation_count": evidence.mutation_count,
+        "phase": evidence.phase,
+        "phenotype_known": evidence.phenotype_known,
+        "predicate": evidence.predicate.value,
+        "retry_count": evidence.retry_count,
+        "rollback_count": evidence.rollback_count,
+        "schema": evidence.schema,
+        "selection_mutation_count": evidence.selection_mutation_count,
+    }
+    line = json.dumps(fields, sort_keys=True, separators=(",", ":"))
+    if len(line.encode("utf-8")) > MAXIMUM_EVIDENCE_BYTES:
+        raise ValueError("CONTEXT_DEFAULT_BUILDER_PREFLIGHT_EVIDENCE_INVALID")
+    return line
+
+
 class _ReconcileFailure(RuntimeError):
     def __init__(self, predicate: BuilderSelectionReconcilePredicate) -> None:
         super().__init__(predicate.value)
         self.predicate = predicate
+
+
+class _ProcessEvidenceInvalid(RuntimeError):
+    """A reaped child emitted output outside the fixed bounded shape."""
+
+
+class _BoundedProcessOutcomeKind(StrEnum):
+    SUCCESS = "SUCCESS"
+    REAPED_NONZERO = "REAPED_NONZERO"
+    REAPED_TIMEOUT = "REAPED_TIMEOUT"
+    OUTPUT_INVALID = "OUTPUT_INVALID"
+    INTERNAL_FAILURE = "INTERNAL_FAILURE"
+
+
+class _BoundedOverflowMode(StrEnum):
+    STOP_IMMEDIATELY = "STOP_IMMEDIATELY"
+    OBSERVE_EXIT = "OBSERVE_EXIT"
+
+
+@dataclass(frozen=True, slots=True)
+class _BoundedProcessOutcome:
+    kind: _BoundedProcessOutcomeKind
+    output: str | None = field(default=None, repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.kind, _BoundedProcessOutcomeKind) or (
+            (self.kind is _BoundedProcessOutcomeKind.SUCCESS) != (type(self.output) is str)
+        ):
+            raise ValueError("DOCKER_BUILDER_SELECTION_PROCESS_OUTCOME_INVALID")
+
+
+class _ContextDefaultProcessExecutor(CapacityExecutor, Protocol):
+    def bounded_outcome(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        classification: str,
+        timeout_seconds: int,
+    ) -> _BoundedProcessOutcome: ...
 
 
 class _ProcessUnreaped(BaseException):
@@ -566,7 +735,7 @@ def _finalize_bounded_process(
     selector: selectors.BaseSelector | None,
     *,
     completed: bool,
-) -> None:
+) -> bool:
     cleanup_failed = False
     if selector is not None:
         try:
@@ -574,9 +743,7 @@ def _finalize_bounded_process(
         except BaseException:
             cleanup_failed = True
     if process is None:
-        if cleanup_failed:
-            raise RuntimeError("DOCKER_BUILDER_SELECTION_PROCESS_FAILED") from None
-        return
+        return cleanup_failed
 
     child_reaped = completed
     if not child_reaped:
@@ -628,24 +795,30 @@ def _finalize_bounded_process(
 
     if not child_reaped:
         raise _ProcessUnreaped() from None
-    if cleanup_failed:
-        raise RuntimeError("DOCKER_BUILDER_SELECTION_PROCESS_FAILED") from None
+    return cleanup_failed
 
 
 class _BoundedProcessExecutor:
     """Run fixed argv with one in-flight combined-output cap and no shell."""
 
-    def output(
+    def _run_bounded(
         self,
         arguments: tuple[str, ...],
         *,
         classification: str,
         timeout_seconds: int,
-    ) -> str:
+        overflow_mode: _BoundedOverflowMode,
+    ) -> _BoundedProcessOutcome:
         del classification
         process: subprocess.Popen[bytes] | None = None
         selector: selectors.BaseSelector | None = None
         completed = False
+        internal_failure = False
+        timed_out = False
+        output_invalid = False
+        stopped_on_overflow = False
+        return_code: int | None = None
+        output = bytearray()
         try:
             process = subprocess.Popen(  # noqa: S603 - every argv is fixed or validated.
                 arguments,
@@ -654,41 +827,96 @@ class _BoundedProcessExecutor:
                 stderr=subprocess.STDOUT,
             )
             if process.stdout is None:
-                raise RuntimeError("DOCKER_BUILDER_SELECTION_PROCESS_FAILED")
+                raise OSError
             selector = selectors.DefaultSelector()
             selector.register(process.stdout, selectors.EVENT_READ)
             deadline = time.monotonic() + timeout_seconds
-            output = bytearray()
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise RuntimeError("DOCKER_BUILDER_SELECTION_PROCESS_FAILED")
+                    timed_out = True
+                    break
                 events = selector.select(remaining)
                 if not events:
-                    raise RuntimeError("DOCKER_BUILDER_SELECTION_PROCESS_FAILED")
-                chunk = os.read(
-                    process.stdout.fileno(),
-                    min(64 * 1024, _MAXIMUM_PROCESS_OUTPUT_BYTES - len(output) + 1),
+                    timed_out = True
+                    break
+                requested_size = (
+                    64 * 1024
+                    if output_invalid
+                    else min(
+                        64 * 1024,
+                        _MAXIMUM_PROCESS_OUTPUT_BYTES - len(output) + 1,
+                    )
                 )
+                chunk = os.read(process.stdout.fileno(), requested_size)
                 if not chunk:
                     break
-                output.extend(chunk)
-                if len(output) > _MAXIMUM_PROCESS_OUTPUT_BYTES:
-                    raise RuntimeError("DOCKER_BUILDER_SELECTION_PROCESS_FAILED")
-            return_code = process.wait(timeout=_PROCESS_REAP_SECONDS)
-            completed = True
-            if return_code != 0:
-                raise RuntimeError("DOCKER_BUILDER_SELECTION_PROCESS_FAILED")
-            try:
-                return bytes(output).decode("utf-8")
-            except UnicodeDecodeError:
-                raise RuntimeError("DOCKER_BUILDER_SELECTION_PROCESS_FAILED") from None
-        except RuntimeError:
-            raise
-        except (OSError, subprocess.SubprocessError):
-            raise RuntimeError("DOCKER_BUILDER_SELECTION_PROCESS_FAILED") from None
-        finally:
-            _finalize_bounded_process(process, selector, completed=completed)
+                if not output_invalid:
+                    if len(output) + len(chunk) > _MAXIMUM_PROCESS_OUTPUT_BYTES:
+                        output_invalid = True
+                        output.clear()
+                        if overflow_mode is _BoundedOverflowMode.STOP_IMMEDIATELY:
+                            stopped_on_overflow = True
+                            break
+                    else:
+                        output.extend(chunk)
+            if not timed_out and not stopped_on_overflow:
+                return_code = process.wait(timeout=_PROCESS_REAP_SECONDS)
+                completed = True
+        except BaseException:
+            internal_failure = True
+        cleanup_failed = _finalize_bounded_process(process, selector, completed=completed)
+        if cleanup_failed or internal_failure:
+            return _BoundedProcessOutcome(_BoundedProcessOutcomeKind.INTERNAL_FAILURE)
+        if stopped_on_overflow:
+            return _BoundedProcessOutcome(_BoundedProcessOutcomeKind.OUTPUT_INVALID)
+        if return_code is None and not timed_out:
+            return _BoundedProcessOutcome(_BoundedProcessOutcomeKind.INTERNAL_FAILURE)
+        if return_code not in {None, 0}:
+            return _BoundedProcessOutcome(_BoundedProcessOutcomeKind.REAPED_NONZERO)
+        if timed_out:
+            return _BoundedProcessOutcome(_BoundedProcessOutcomeKind.REAPED_TIMEOUT)
+        if output_invalid:
+            return _BoundedProcessOutcome(_BoundedProcessOutcomeKind.OUTPUT_INVALID)
+        try:
+            decoded = bytes(output).decode("utf-8")
+        except UnicodeDecodeError:
+            return _BoundedProcessOutcome(_BoundedProcessOutcomeKind.OUTPUT_INVALID)
+        return _BoundedProcessOutcome(_BoundedProcessOutcomeKind.SUCCESS, decoded)
+
+    def bounded_outcome(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        classification: str,
+        timeout_seconds: int,
+    ) -> _BoundedProcessOutcome:
+        return self._run_bounded(
+            arguments,
+            classification=classification,
+            timeout_seconds=timeout_seconds,
+            overflow_mode=_BoundedOverflowMode.OBSERVE_EXIT,
+        )
+
+    def output(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        classification: str,
+        timeout_seconds: int,
+    ) -> str:
+        outcome = self._run_bounded(
+            arguments,
+            classification=classification,
+            timeout_seconds=timeout_seconds,
+            overflow_mode=_BoundedOverflowMode.STOP_IMMEDIATELY,
+        )
+        if outcome.kind is _BoundedProcessOutcomeKind.SUCCESS:
+            assert outcome.output is not None
+            return outcome.output
+        if outcome.kind is _BoundedProcessOutcomeKind.OUTPUT_INVALID:
+            raise _ProcessEvidenceInvalid("DOCKER_BUILDER_SELECTION_PROCESS_FAILED") from None
+        raise RuntimeError("DOCKER_BUILDER_SELECTION_PROCESS_FAILED") from None
 
 
 @dataclass(frozen=True)
@@ -742,6 +970,10 @@ class _RuntimeState:
     plan_predicate: DockerBuilderSelectionPlanPredicate | None = None
     capture_snapshot: BuilderPrestateSnapshot | None = None
     buildx_version: BuildxVersionObservation | None = None
+    context_default_phenotype_known: bool = False
+    buildx_version_query_count: int = 0
+    builder_inventory_query_count: int = 0
+    daemon_probe_count: int = 0
 
     @property
     def mutation_count(self) -> int:
@@ -829,6 +1061,7 @@ def _builder_listing(executor: CapacityExecutor) -> str:
 
 
 def _record_buildx_authority(runtime: _RuntimeState, executor: CapacityExecutor) -> None:
+    runtime.buildx_version_query_count += 1
     try:
         raw = executor.output(
             ("docker", "buildx", "version"),
@@ -1393,6 +1626,7 @@ def _capture_diagnostic_prestate(
         _failure(BuilderSelectionReconcilePredicate.ENVIRONMENT_OVERRIDE)
     try:
         current_context = require_local_unix_docker_context(executor, environ)
+        runtime.builder_inventory_query_count += 1
         evaluation = evaluate_docker_builder_selection_plan(
             _builder_listing(executor),
             environ,
@@ -1438,6 +1672,7 @@ def _reprove_diagnostic_prestate(
         _failure(BuilderSelectionReconcilePredicate.PRESTATE)
     try:
         current_context = require_local_unix_docker_context(executor, environ)
+        runtime.builder_inventory_query_count += 1
         evaluation = evaluate_docker_builder_selection_plan(
             _builder_listing(executor),
             environ,
@@ -1561,9 +1796,160 @@ def _run_prestate_diagnostic(
         )
 
 
+def _context_default_phenotype_matches(snapshot: BuilderPrestateSnapshot) -> bool:
+    return (
+        snapshot.first_defect is DockerBuilderSelectionPlanPredicate.PRIOR_DRIVER
+        and snapshot.prior_driver is PriorDriverPredicate.EMPTY
+        and snapshot.builder_error is BuilderErrorPredicate.PRESENT
+        and snapshot.prior_target_relation is PriorTargetRelationPredicate.SAME
+        and snapshot.target_contract is TargetContractPredicate.DRIVER
+    )
+
+
+def _probe_context_default_daemon(
+    runtime: _RuntimeState,
+    executor: _ContextDefaultProcessExecutor,
+) -> ContextDefaultBuilderPreflightPredicate | None:
+    runtime.daemon_probe_count += 1
+    outcome = executor.bounded_outcome(
+        _DAEMON_VERSION_ARGUMENTS,
+        classification=_DAEMON_VERSION_PROBE,
+        timeout_seconds=10,
+    )
+    if outcome.kind is _BoundedProcessOutcomeKind.INTERNAL_FAILURE:
+        return None
+    if outcome.kind in {
+        _BoundedProcessOutcomeKind.REAPED_NONZERO,
+        _BoundedProcessOutcomeKind.REAPED_TIMEOUT,
+    }:
+        return ContextDefaultBuilderPreflightPredicate.DAEMON_API_UNAVAILABLE
+    if outcome.kind is _BoundedProcessOutcomeKind.OUTPUT_INVALID:
+        return ContextDefaultBuilderPreflightPredicate.DAEMON_EVIDENCE_INVALID
+    output = outcome.output
+    if (
+        type(output) is not str
+        or len(output.encode("utf-8")) > _MAXIMUM_DAEMON_VERSION_BYTES
+        or _DAEMON_VERSION_LINE.fullmatch(output) is None
+    ):
+        return ContextDefaultBuilderPreflightPredicate.DAEMON_EVIDENCE_INVALID
+    return ContextDefaultBuilderPreflightPredicate.BUILDX_DEFAULT_UNRESOLVED
+
+
+def _context_default_evidence_from_runtime(
+    runtime: _RuntimeState,
+    *,
+    classification: BuilderSelectionReconcileClassification,
+    predicate: ContextDefaultBuilderPreflightPredicate,
+) -> ContextDefaultBuilderPreflightEvidence:
+    return ContextDefaultBuilderPreflightEvidence(
+        classification=classification,
+        predicate=predicate,
+        phenotype_known=runtime.context_default_phenotype_known,
+        buildx_version_query_count=runtime.buildx_version_query_count,
+        builder_inventory_query_count=runtime.builder_inventory_query_count,
+        daemon_probe_count=runtime.daemon_probe_count,
+    )
+
+
+def _run_context_default_builder_preflight_under_lock(
+    runtime: _RuntimeState,
+    *,
+    root: Path,
+    lock: DockerWorkflowLock,
+    executor: _ContextDefaultProcessExecutor,
+    environ: Mapping[str, str],
+) -> ContextDefaultBuilderPreflightEvidence:
+    del lock
+    _record_buildx_authority(runtime, executor)
+    prestate = _capture_diagnostic_prestate(
+        runtime,
+        root=root,
+        executor=executor,
+        environ=environ,
+    )
+    if not _context_default_phenotype_matches(prestate.snapshot):
+        return _context_default_evidence_from_runtime(
+            runtime,
+            classification=BuilderSelectionReconcileClassification.REJECTED,
+            predicate=ContextDefaultBuilderPreflightPredicate.PRESTATE_DRIFT,
+        )
+    runtime.context_default_phenotype_known = True
+    probe_predicate = _probe_context_default_daemon(runtime, executor)
+    if probe_predicate is None:
+        return _context_default_evidence_from_runtime(
+            runtime,
+            classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
+            predicate=ContextDefaultBuilderPreflightPredicate.UNKNOWN,
+        )
+    _reprove_diagnostic_prestate(
+        runtime,
+        prestate,
+        root=root,
+        executor=executor,
+        environ=environ,
+    )
+    if runtime.plan_predicate is DockerBuilderSelectionPlanPredicate.PLAN_DRIFT:
+        probe_predicate = ContextDefaultBuilderPreflightPredicate.PRESTATE_DRIFT
+    return _context_default_evidence_from_runtime(
+        runtime,
+        classification=BuilderSelectionReconcileClassification.REJECTED,
+        predicate=probe_predicate,
+    )
+
+
+def _run_context_default_builder_preflight(
+    runtime: _RuntimeState,
+    *,
+    root: Path = ROOT,
+    executor: _ContextDefaultProcessExecutor | None = None,
+    environ: Mapping[str, str] | None = None,
+) -> ContextDefaultBuilderPreflightEvidence:
+    command_executor = executor or _BoundedProcessExecutor()
+    selected_environment = os.environ if environ is None else environ
+    if platform.system() != "Darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
+        return _context_default_evidence_from_runtime(
+            runtime,
+            classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
+            predicate=ContextDefaultBuilderPreflightPredicate.UNKNOWN,
+        )
+    try:
+        with exclusive_docker_workflow_lock(root) as lock:
+            try:
+                return _run_context_default_builder_preflight_under_lock(
+                    runtime,
+                    root=root,
+                    lock=lock,
+                    executor=command_executor,
+                    environ=selected_environment,
+                )
+            except _ReconcileFailure:
+                return _context_default_evidence_from_runtime(
+                    runtime,
+                    classification=BuilderSelectionReconcileClassification.REJECTED,
+                    predicate=ContextDefaultBuilderPreflightPredicate.PRESTATE_DRIFT,
+                )
+    except BaseException:
+        return _context_default_evidence_from_runtime(
+            runtime,
+            classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
+            predicate=ContextDefaultBuilderPreflightPredicate.UNKNOWN,
+        )
+
+
 def main() -> int:
     runtime = _RuntimeState()
     arguments = tuple(sys.argv[1:])
+    if arguments == ("--diagnostic-phase", _CONTEXT_DEFAULT_PREFLIGHT_PHASE):
+        try:
+            preflight = _run_context_default_builder_preflight(runtime)
+        except BaseException:
+            preflight = _context_default_evidence_from_runtime(
+                runtime,
+                classification=BuilderSelectionReconcileClassification.OPERATOR_REVIEW_REQUIRED,
+                predicate=ContextDefaultBuilderPreflightPredicate.UNKNOWN,
+            )
+        print(format_context_default_builder_preflight(preflight), flush=True)
+        return 2
     if arguments == ("--diagnostic-phase", _PRESTATE_DIAGNOSTIC_PHASE):
         try:
             diagnostic = _run_prestate_diagnostic(runtime)
