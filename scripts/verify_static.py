@@ -3869,7 +3869,7 @@ def verify_governed_docker_build_capacity_contract() -> None:
             "gateway parity local-bootstrap build must recheck the selected builder under lock"
         )
     for fragment in (
-        "selected_build_services=tuple(selected_build_services)",
+        "selected_build_services=selected_build_services",
         'trailing=("build", *core_build_services)',
     ):
         if fragment not in main_source:
@@ -4170,9 +4170,10 @@ def _verify_topology_reconciliation_plan_ast(
         raise AssertionError("the governed worker/gateway/Web/Airflow plan is incomplete")
 
     main = functions["main"]
+    migration = functions["_apply_database_migration"]
     assignments = {
         target.id: node.value
-        for node in ast.walk(main)
+        for node in ast.walk(migration)
         if isinstance(node, ast.Assign)
         and len(node.targets) == 1
         and isinstance((target := node.targets[0]), ast.Name)
@@ -4206,6 +4207,7 @@ def _verify_topology_reconciliation_execution_ast(workflow_tree: ast.Module) -> 
         "_immediate_restart_services",
         "_effective_change_plan",
         "_apply_topology_reconciliation",
+        "_apply_database_migration",
         "_print_plan",
         "main",
     }
@@ -4277,11 +4279,19 @@ def _verify_topology_reconciliation_execution_ast(workflow_tree: ast.Module) -> 
             call_lines.setdefault(call.func.id, []).append(call.lineno)
     reconcile_line = call_lines.get("_reconcile_topology_with_gateway_parity", [])
     target_lines = call_lines.get("enforce_local_topology", [])
-    state_lines = call_lines.get("write_applied_state", [])
+    state_lines = call_lines.get("_write_completed_state", [])
+    state_writer_calls = [
+        node
+        for node in ast.walk(functions["_write_completed_state"])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "write_applied_state"
+    ]
     if not (
         len(reconcile_line) == 1
         and target_lines
         and len(state_lines) == 1
+        and len(state_writer_calls) == 1
         and reconcile_line[0] < max(target_lines) < state_lines[0]
     ):
         raise AssertionError("target proof and AppliedState-last ordering has drifted")
@@ -4589,34 +4599,57 @@ def verify_governed_local_topology_contract() -> None:
         if test_name not in platform_test_source:
             raise AssertionError(f"the topology secret-guard direct test is missing: {test_name}")
 
-    private_query = platform.split("def local_topology_output(", maxsplit=1)[1].split(
-        "def _topology_health_class", maxsplit=1
-    )[0]
-    for fragment in (
-        '"docker",',
-        '"container",',
-        '"ls",',
-        '"--all",',
-        'f"label=com.docker.compose.project={project}"',
-        'raise WorkflowError("LOCAL_TOPOLOGY_QUERY_FAILED")',
-        "timeout=20,",
-        "subprocess.TimeoutExpired",
+    functions = {
+        node.name: node for node in ast.walk(platform_tree) if isinstance(node, ast.FunctionDef)
+    }
+    local_query = functions["local_topology_output"]
+    local_constants = {
+        node.value
+        for node in ast.walk(local_query)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    local_calls = {
+        ast.unparse(node.func) for node in ast.walk(local_query) if isinstance(node, ast.Call)
+    }
+    if (
+        not {"docker", "container", "ls", "--all"}.issubset(local_constants)
+        or not (
+            "subprocess.run" in local_calls
+            and any(
+                keyword.arg == "capture_output"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for node in ast.walk(local_query)
+                if isinstance(node, ast.Call)
+                for keyword in node.keywords
+            )
+        )
+        or any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_private_bounded_output"
+            for node in ast.walk(local_query)
+        )
     ):
-        if fragment not in private_query:
-            raise AssertionError("local-topology private query contract is incomplete")
-    if "print(" in private_query or "self.run(" in private_query or "self.output(" in private_query:
-        raise AssertionError("local-topology private query must not render argv or raw payload")
+        raise AssertionError("legacy local-topology stdout-only query contract drifted")
 
-    capture = platform.split("def capture_local_topology(", maxsplit=1)[1].split(
-        "def _enabled_optional_topology_services", maxsplit=1
-    )[0]
-    if "runner.local_topology_output(project=project)" not in capture:
-        raise AssertionError("local-topology capture must use the fixed private query")
-    for forbidden in ('"stop"', '"rm"', '"down"', '"restart"', '"inspect"'):
-        if forbidden in capture:
-            raise AssertionError(f"local-topology capture contains a mutation: {forbidden}")
-    if "runner.output(" in capture or "runner.run(" in capture:
-        raise AssertionError("local-topology capture must keep Docker argv and payload private")
+    capture = functions["capture_local_topology"]
+    capture_calls = {
+        node.func.attr
+        for node in ast.walk(capture)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    capture_literals = {
+        node.value
+        for node in ast.walk(capture)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    if "local_topology_output" not in capture_calls or capture_calls.intersection(
+        {"output", "run"}
+    ):
+        raise AssertionError("local-topology capture must use only the fixed private query")
+    if capture_literals.intersection({"stop", "rm", "down", "restart", "inspect"}):
+        raise AssertionError("local-topology capture contains a Docker action")
 
     workflow = (ROOT / "scripts" / "workflow_update_restart.py").read_text(encoding="utf-8")
     main_source = workflow.split("def main() -> int:", maxsplit=1)[1]
@@ -4626,7 +4659,7 @@ def verify_governed_local_topology_contract() -> None:
     evidence_gate = main_source.index(
         "_require_gateway_auth_parity_evidence_available(reconciliation_name)", early_lock
     )
-    refresh_bootstrap = main_source.index("if args.refresh_bootstrap:", evidence_gate)
+    refresh_bootstrap = main_source.index("_update_environment_contract(", evidence_gate)
     config = main_source.index('trailing=("config", "--quiet")')
     running = main_source.index("running = _running_services", config)
     audit = main_source.index("enforce_local_topology(", running)
@@ -4896,7 +4929,7 @@ def verify_transparent_gateway_contract() -> None:
     availability_gate = update_main.index(
         "_require_gateway_auth_parity_evidence_available(reconciliation_name)"
     )
-    if availability_gate > update_main.index("if args.refresh_bootstrap:"):
+    if availability_gate > update_main.index("_update_environment_contract("):
         raise AssertionError("unavailable auth parity must stop before refresh-bootstrap")
     if "_forward_api_status_below_rate_limit" in test_source:
         raise AssertionError("static status echo cannot be gateway auth-parity evidence")
@@ -4906,7 +4939,7 @@ def verify_transparent_gateway_contract() -> None:
         raise AssertionError("selected Airflow restarts must retain transparent gateway routing")
     transparency = main_source.index("_verify_gateway_transparency(")
     target_audit = main_source.index("enforce_local_topology(", transparency)
-    state_write = main_source.index("write_applied_state(", target_audit)
+    state_write = main_source.index("_write_completed_state(", target_audit)
     if not transparency < target_audit < state_write:
         raise AssertionError("transparent gateway evidence must precede audit and state write")
 
@@ -5755,7 +5788,7 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
     operator_diagnostic = workflow.split(
         "def _fixture_require_absent_diagnostic() -> FixtureDiagnosticExecutionEvidence:",
         maxsplit=1,
-    )[1].split("def main() -> int:", maxsplit=1)[0]
+    )[1].split("class _Level2CorePrivatePrestate:", maxsplit=1)[0]
     diagnostic_order = tuple(
         operator_diagnostic.index(fragment)
         for fragment in (
@@ -6871,7 +6904,7 @@ def verify_gateway_auth_parity_fixture_contract() -> None:
             raise AssertionError("the gateway parity fixture cannot enable a credential shortcut")
 
     for fragment in (
-        'selected_build_services.append("local-bootstrap")',
+        'selected.append("local-bootstrap")',
         'trailing=("build", "local-bootstrap")',
         "class _ComposeGatewayAuthParityFixture:",
         '"--no-build",',
@@ -7579,6 +7612,305 @@ def verify_governed_persistent_data_bind_probe_contract() -> None:
             raise AssertionError(f"ADR-0114 omits persistent-data term: {fragment}")
 
 
+def _level2_core_static_trees() -> dict[str, ast.Module]:
+    paths = {
+        "core": ROOT / "scripts" / "mac_core_publication.py",
+        "platform": ROOT / "scripts" / "platform_workflow.py",
+        "update": ROOT / "scripts" / "workflow_update_restart.py",
+        "cycle": ROOT / "scripts" / "development_cycle.py",
+    }
+    return {
+        name: ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
+        for name, path in paths.items()
+    }
+
+
+def _level2_core_static_function(
+    trees: dict[str, ast.Module], name: str, owner: str
+) -> ast.FunctionDef:
+    matches = [
+        node
+        for node in ast.walk(trees[owner])
+        if isinstance(node, ast.FunctionDef) and node.name == name
+    ]
+    if len(matches) != 1:
+        raise AssertionError(f"Level2 core function boundary drifted: {owner}.{name}")
+    return matches[0]
+
+
+def _verify_level2_core_purity_and_size(trees: dict[str, ast.Module]) -> None:
+    core_imports = {
+        node.module
+        for node in trees["core"].body
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    } | {
+        alias.name
+        for node in trees["core"].body
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    if core_imports != {"__future__", "collections.abc", "dataclasses", "enum", "json", "re"}:
+        raise AssertionError("Mac core projection must remain pure and I/O-free")
+    consumers = set()
+    for path in (*((ROOT / "backend" / "src").rglob("*.py")), *((ROOT / "scripts").glob("*.py"))):
+        syntax = ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
+        if any(
+            isinstance(node, ast.ImportFrom) and node.module == "mac_core_publication"
+            for node in syntax.body
+        ):
+            consumers.add(path.relative_to(ROOT).as_posix())
+    if consumers != {
+        "scripts/platform_workflow.py",
+        "scripts/workflow_update_restart.py",
+    }:
+        raise AssertionError("Mac core projection escaped its infrastructure adapter boundary")
+
+    bounded = {
+        "core": (
+            "classify_publication_paths",
+            "format_level2_core_evidence",
+            "evaluate_level2_core_snapshot",
+        ),
+        "platform": (
+            "level2_core_query_plan",
+            "fixed_core_service_query_argv",
+            "fixed_core_service_batch_inspect_argv",
+            "parse_fixed_core_service_identity",
+            "parse_fixed_core_service_output",
+            "parse_fixed_core_service_batch_output",
+            "_private_bounded_output",
+            "_read_private_process",
+            "_finalize_private_process",
+        ),
+        "update": (
+            "_capture_docker_execution_identity",
+            "_reprove_docker_execution_identity",
+            "_capture_level2_core_prestate",
+            "_capture_level2_core_services",
+            "_level2_core_prestate_diagnostic",
+            "_capture_level2_core_runtime",
+            "_query_fixed_core_services",
+            "_validate_publication_scope",
+            "_publication_source_plan",
+            "_complete_core_publication",
+        ),
+    }
+    for owner, names in bounded.items():
+        for name in names:
+            node = _level2_core_static_function(trees, name, owner)
+            assert node.end_lineno is not None
+            limit = 60 if name.startswith(("classify", "parse", "format", "evaluate")) else 80
+            if node.end_lineno - node.lineno + 1 > limit:
+                raise AssertionError(f"Level2 core function grew beyond {limit} lines: {name}")
+    update_main = _level2_core_static_function(trees, "main", "update")
+    assert update_main.end_lineno is not None
+    if update_main.end_lineno - update_main.lineno + 1 > 718:
+        raise AssertionError("the existing update orchestrator grew beyond its baseline")
+
+
+def _verify_level2_core_executor_boundary(trees: dict[str, ast.Module]) -> None:
+    query = _level2_core_static_function(trees, "fixed_core_service_query_argv", "platform")
+    query_constants = [
+        node.value
+        for node in ast.walk(query)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    if query_constants.count("--filter") != 2 or not {
+        "docker",
+        "container",
+        "ls",
+        "--all",
+        "--no-trunc",
+    }.issubset(query_constants):
+        raise AssertionError("Level2 core query is not exact service-label selection")
+    if any(value in query_constants for value in ("ps", "inspect", "start", "restart", "rm")):
+        raise AssertionError("Level2 core query gained broad or mutating authority")
+
+    inspect = _level2_core_static_function(
+        trees, "fixed_core_service_batch_inspect_argv", "platform"
+    )
+    inspect_constants = {
+        node.value
+        for node in ast.walk(inspect)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    if not {"docker", "container", "inspect", "--format"}.issubset(inspect_constants) or any(
+        value in inspect_constants for value in ("start", "restart", "rm", "logs")
+    ):
+        raise AssertionError("Level2 core inspect is not fixed read-only structured evidence")
+
+    bounded = _level2_core_static_function(trees, "_private_bounded_output", "platform")
+    bounded_calls = {
+        ast.unparse(node.func) for node in ast.walk(bounded) if isinstance(node, ast.Call)
+    }
+    if "subprocess.run" in bounded_calls or not {
+        "subprocess.Popen",
+        "_read_private_process",
+        "_finalize_private_process",
+    }.issubset(bounded_calls):
+        raise AssertionError("fixed core evidence bypasses bounded streaming and reaping")
+    runner_output = _level2_core_static_function(trees, "output", "platform")
+    output_calls = {
+        node.func.attr if isinstance(node.func, ast.Attribute) else node.func.id
+        for node in ast.walk(runner_output)
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))
+    }
+    if "_private_bounded_output" not in output_calls:
+        raise AssertionError("Docker context capacity adapter bypasses the sole bounded runner")
+
+    identity = _level2_core_static_function(
+        trees,
+        "_capture_docker_execution_identity",
+        "update",
+    )
+    identity_literals = {
+        node.value
+        for node in ast.walk(identity)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    if not {
+        "DOCKER_HOST",
+        "DOCKER_CONTEXT",
+        "BUILDX_BUILDER",
+        "BUILDKIT_HOST",
+    }.issubset(identity_literals):
+        raise AssertionError("Docker execution environment identity is incomplete")
+    identity_calls = {
+        node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+        for node in ast.walk(identity)
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))
+    }
+    if (
+        "SubprocessCapacityExecutor" in identity_calls
+        or "require_local_unix_docker_context" not in identity_calls
+    ):
+        raise AssertionError("Docker identity must reuse the existing bounded Runner adapter")
+
+
+def _verify_level2_core_order_and_routing(trees: dict[str, ast.Module]) -> None:
+    update_main = _level2_core_static_function(trees, "main", "update")
+    identity_lines = sorted(
+        node.lineno
+        for node in ast.walk(update_main)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_capture_docker_execution_identity"
+    )
+    reproof_lines = [
+        node.lineno
+        for node in ast.walk(update_main)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_reprove_docker_execution_identity"
+    ]
+    compose_lines = [
+        node.lineno
+        for node in ast.walk(update_main)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_compose"
+    ]
+    state_lines = [
+        node.lineno
+        for node in ast.walk(update_main)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_write_completed_state"
+    ]
+    if (
+        len(identity_lines) != 1
+        or len(reproof_lines) != 1
+        or not compose_lines
+        or len(state_lines) != 1
+        or identity_lines[0] >= min(compose_lines)
+        or reproof_lines[0] >= state_lines[0]
+    ):
+        raise AssertionError("Docker execution identity capture/reproof order drifted")
+
+    cycle_command = _level2_core_static_function(trees, "dev_runtime_update_command", "cycle")
+    command_literals = {
+        node.value
+        for node in ast.walk(cycle_command)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    }
+    if not {"--publication-scope", "level2-core", "--reconcile-local-topology"}.issubset(
+        command_literals
+    ):
+        raise AssertionError("tokenless core scope or legacy reconciliation routing drifted")
+    if any("adopt" in value.casefold() for value in command_literals):
+        raise AssertionError("Stage1 cannot add a Level2 adoption token")
+
+
+def _verify_level2_core_deadline_contract(trees: dict[str, ast.Module]) -> None:
+    capture = _level2_core_static_function(trees, "_capture_level2_core_runtime", "update")
+    named_assignments = {
+        target.id: node.value
+        for node in ast.walk(capture)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    capture_deadline = named_assignments.get("capture_deadline")
+    if capture_deadline is None:
+        raise AssertionError("Level2 runtime capture lacks its fresh deadline")
+    capture_names = {node.id for node in ast.walk(capture_deadline) if isinstance(node, ast.Name)}
+    capture_calls = {
+        ast.unparse(node.func) for node in ast.walk(capture_deadline) if isinstance(node, ast.Call)
+    }
+    if (
+        "_LEVEL2_CORE_CAPTURE_TIMEOUT_SECONDS" not in capture_names
+        or "time.monotonic" not in capture_calls
+    ):
+        raise AssertionError("Level2 runtime capture deadline authority drifted")
+    deadline_assignments = [
+        node
+        for node in ast.walk(capture)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Attribute)
+            and isinstance(target.value, ast.Name)
+            and target.value.id == "runner"
+            and target.attr == "deadline"
+            for target in node.targets
+        )
+    ]
+    if len(deadline_assignments) != 2:
+        raise AssertionError("Level2 runtime deadline install/restore count drifted")
+    install, restore = sorted(deadline_assignments, key=lambda node: node.lineno)
+    if not isinstance(install.value, ast.IfExp):
+        raise AssertionError("Level2 runtime deadline no longer preserves an earlier bound")
+    install_names = {node.id for node in ast.walk(install.value) if isinstance(node, ast.Name)}
+    install_calls = {
+        node.func.id
+        for node in ast.walk(install.value)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    if (
+        not {"previous_deadline", "capture_deadline"}.issubset(install_names)
+        or "min" not in install_calls
+    ):
+        raise AssertionError("Level2 runtime deadline may widen an existing deadline")
+    if not (
+        isinstance(restore.value, ast.Name)
+        and restore.value.id == "previous_deadline"
+        and any(
+            restore in final_node
+            for node in ast.walk(capture)
+            if isinstance(node, ast.Try)
+            for final_node in (node.finalbody,)
+        )
+    ):
+        raise AssertionError("Level2 runtime deadline is not restored from finally")
+
+
+def verify_mac_level2_core_publication_contract() -> None:
+    trees = _level2_core_static_trees()
+    _verify_level2_core_purity_and_size(trees)
+    _verify_level2_core_executor_boundary(trees)
+    _verify_level2_core_order_and_routing(trees)
+    _verify_level2_core_deadline_contract(trees)
+
+
 def verify_document_links() -> None:
     pattern = re.compile(r"(?<!!)\[[^\]]+\]\(([^)]+)\)")
     for path in (ROOT / "docs").rglob("*.md"):
@@ -7615,6 +7947,7 @@ def main() -> None:
     verify_transparent_gateway_contract()
     verify_gateway_auth_parity_fixture_contract()
     verify_governed_persistent_data_bind_probe_contract()
+    verify_mac_level2_core_publication_contract()
     verify_document_links()
     print(
         "static verification passed: compose, build/release context, DataHub release contract, "

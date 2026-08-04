@@ -4,16 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
+import platform
 import selectors
 import subprocess
 import sys
 import time
+from collections.abc import Callable
 from contextlib import ExitStack
 from dataclasses import dataclass, replace
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime
 from enum import StrEnum
+from functools import partial
 from pathlib import Path
 from typing import ClassVar
 from uuid import UUID
@@ -34,7 +39,22 @@ from docker_capacity import (
     SubprocessCapacityExecutor,
     exclusive_docker_workflow_lock,
     governed_compose_build_capacity,
+    require_local_unix_docker_context,
     require_no_active_builds,
+)
+from mac_core_publication import (
+    CoreServiceCondition,
+    CoreServiceObservation,
+    CoreServiceSpec,
+    Level2CoreCapture,
+    Level2CoreClassification,
+    Level2CoreDiagnosticPredicate,
+    Level2CoreEvidence,
+    Level2CorePredicate,
+    classify_publication_paths,
+    evaluate_level2_core_snapshot,
+    format_level2_core_evidence,
+    projection_diagnostic_predicate,
 )
 from platform_workflow import (
     AIRFLOW_SERVICES,
@@ -56,9 +76,12 @@ from platform_workflow import (
     current_commit,
     enforce_local_topology,
     environment_key_hashes,
+    level2_core_query_plan,
     load_applied_state,
     merge_change_plans,
     merge_no_proxy,
+    parse_fixed_core_service_batch_output,
+    parse_fixed_core_service_identity,
     prompt_confirm,
     read_env_values,
     release_layout,
@@ -239,6 +262,7 @@ _DOCKER_DAEMON_PROBE = (
 _DOCKER_DAEMON_UNAVAILABLE = "DOCKER_DAEMON_UNAVAILABLE"
 _COMPOSE_RUNNING_SERVICES_QUERY_FAILED = "COMPOSE_RUNNING_SERVICES_QUERY_FAILED"
 _TOPOLOGY_RECONCILIATION = "mac-development-graph-gateway-v1"
+_LEVEL2_CORE_PUBLICATION_SCOPE = "level2-core"
 _GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE = "GATEWAY_AUTH_PARITY_EVIDENCE_UNAVAILABLE"
 _GOVERNANCE_DOCUMENT_ROLE_QUERY = """\
 password="$(tr -d '\\r\\n' </run/secrets/postgres_governance_document_password)"
@@ -300,6 +324,11 @@ def parse_args() -> argparse.Namespace:
         "--reconcile-local-topology",
         choices=(_TOPOLOGY_RECONCILIATION,),
         help="Apply the sole reviewed Mac-development graph/gateway adoption.",
+    )
+    parser.add_argument(
+        "--publication-scope",
+        choices=(_LEVEL2_CORE_PUBLICATION_SCOPE,),
+        help="Maintain an already-adopted Mac Level1+Level2 runtime without optional providers.",
     )
     return parser.parse_args()
 
@@ -562,6 +591,7 @@ def _require_gateway_auth_parity_evidence_available(reconciliation_name: str | N
 
 
 _FIXTURE_DIAGNOSTIC_TIMEOUT_SECONDS = 30
+_LEVEL2_CORE_CAPTURE_TIMEOUT_SECONDS = 30
 _FIXTURE_DIAGNOSTIC_REAP_SECONDS = 5
 _FIXTURE_DIAGNOSTIC_BUILD_TIMEOUT_SECONDS = 20 * 60
 MAXIMUM_FIXTURE_EXECUTION_EVIDENCE_BYTES = 2_048
@@ -571,6 +601,10 @@ _FIXTURE_DIAGNOSTIC_CONTAINER_OPERATION_LABEL = "datariver.fixture.operation=REQ
 _HOST_ENVIRONMENT_PREFLIGHT_ARGUMENTS = (
     "--diagnostic-phase",
     "HOST_ENVIRONMENT_PREFLIGHT",
+)
+_LEVEL2_CORE_PRESTATE_ARGUMENTS = (
+    "--diagnostic-phase",
+    "LEVEL2_CORE_PRESTATE",
 )
 _BUILD_CAPACITY_PREFLIGHT_ARGUMENTS = (
     "--diagnostic-phase",
@@ -583,6 +617,7 @@ _BUILD_CAPACITY_PREFLIGHT_EQUALS_PREFIX = (
 _HOST_ENVIRONMENT_PREFLIGHT_EQUALS_PREFIX = (
     _DIAGNOSTIC_PHASE_EQUALS_PREFIX + "HOST_ENVIRONMENT_PREFLIGHT"
 )
+_LEVEL2_CORE_PRESTATE_EQUALS_PREFIX = _DIAGNOSTIC_PHASE_EQUALS_PREFIX + "LEVEL2_CORE_PRESTATE"
 MAXIMUM_HOST_ENVIRONMENT_PREFLIGHT_EVIDENCE_BYTES = 256
 MAXIMUM_BUILD_CAPACITY_PREFLIGHT_EVIDENCE_BYTES = 384
 
@@ -2846,6 +2881,527 @@ def _fixture_require_absent_diagnostic() -> FixtureDiagnosticExecutionEvidence:
         return execution.to_evidence(FixtureDiagnosticPredicate.UNKNOWN)
 
 
+@dataclass(frozen=True, slots=True)
+class _DockerExecutionIdentity:
+    context_name: str = dataclass_field(repr=False)
+    environment: tuple[tuple[str, str], ...] = dataclass_field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class _Level2CorePrivatePrestate:
+    source_commit: str = dataclass_field(repr=False)
+    state: AppliedState = dataclass_field(repr=False)
+    environment_hashes: tuple[tuple[str, str], ...] = dataclass_field(repr=False)
+    compose_hashes: tuple[str, ...] = dataclass_field(repr=False)
+    docker_identity: _DockerExecutionIdentity = dataclass_field(repr=False)
+    capture: Level2CoreCapture
+
+
+class _Level2CoreDiagnosticStop(Exception):
+    def __init__(
+        self,
+        predicate: Level2CoreDiagnosticPredicate,
+        *,
+        review_required: bool = False,
+    ) -> None:
+        super().__init__()
+        self.predicate = predicate
+        self.review_required = review_required
+
+
+def _level2_core_step[T](
+    predicate: Level2CoreDiagnosticPredicate,
+    action: Callable[[], T],
+    *,
+    review_required: bool = False,
+) -> T:
+    try:
+        return action()
+    except Exception:
+        raise _Level2CoreDiagnosticStop(
+            predicate,
+            review_required=review_required,
+        ) from None
+
+
+def _level2_core_compose_hashes() -> tuple[str, ...]:
+    paths = (
+        ROOT / "compose.yaml",
+        ROOT / "compose.identity.yaml",
+        ROOT / "compose.local-connectors.yaml",
+        ROOT / "compose.graph.yaml",
+        ROOT / "compose.gateway.yaml",
+        ROOT / "compose.gateway-routing.yaml",
+    )
+    for path in paths:
+        require_regular_file(path, label="Level2 core Compose file")
+    return tuple(hashlib.sha256(path.read_bytes()).hexdigest() for path in paths)
+
+
+def _capture_docker_execution_identity(runner: Runner) -> _DockerExecutionIdentity:
+    names = ("DOCKER_HOST", "DOCKER_CONTEXT", "BUILDX_BUILDER", "BUILDKIT_HOST")
+    environment = tuple((name, os.environ.get(name, "")) for name in names)
+    if any(value.strip() for name, value in environment if name.startswith("BUIL")):
+        raise WorkflowError("DOCKER_EXECUTION_ENVIRONMENT_INVALID")
+    try:
+        context_name = require_local_unix_docker_context(
+            runner,
+            os.environ,
+        )
+    except DockerCapacityError:
+        raise WorkflowError("DOCKER_EXECUTION_IDENTITY_INVALID") from None
+    return _DockerExecutionIdentity(context_name, environment)
+
+
+def _reprove_docker_execution_identity(
+    expected: _DockerExecutionIdentity | None,
+    runner: Runner,
+) -> None:
+    if expected is None or _capture_docker_execution_identity(runner) != expected:
+        raise WorkflowError("DOCKER_EXECUTION_IDENTITY_DRIFT")
+
+
+def _capture_level2_core_prestate(
+    runner: Runner,
+    query_count: list[int],
+) -> _Level2CorePrivatePrestate:
+    _level2_core_step(
+        Level2CoreDiagnosticPredicate.UNKNOWN,
+        runner.require_private_deadline,
+        review_required=True,
+    )
+    _level2_core_step(
+        Level2CoreDiagnosticPredicate.SOURCE_CONTRACT,
+        lambda: require_clean_worktree(runner),
+    )
+    source_commit = _level2_core_step(
+        Level2CoreDiagnosticPredicate.SOURCE_CONTRACT,
+        lambda: current_commit(runner),
+    )
+    state_file = state_path(ROOT, "mac-development")
+    state = _level2_core_step(
+        Level2CoreDiagnosticPredicate.APPLIED_STATE_CONTRACT,
+        lambda: load_applied_state(state_file),
+    )
+    if state.profile != "mac-development" or state.deployment_mode != "build":
+        raise _Level2CoreDiagnosticStop(Level2CoreDiagnosticPredicate.APPLIED_STATE_CONTRACT)
+    env_file = _resolve_repo_path(state.env_file)
+    _level2_core_step(
+        Level2CoreDiagnosticPredicate.ENVIRONMENT_FINGERPRINT,
+        lambda: require_regular_file(env_file, label="Environment file"),
+    )
+    values = _level2_core_step(
+        Level2CoreDiagnosticPredicate.ENVIRONMENT_FINGERPRINT,
+        lambda: read_env_values(env_file),
+    )
+    hashes = _level2_core_step(
+        Level2CoreDiagnosticPredicate.ENVIRONMENT_FINGERPRINT,
+        lambda: environment_key_hashes(values),
+    )
+    if hashes != state.environment_key_hashes:
+        raise _Level2CoreDiagnosticStop(Level2CoreDiagnosticPredicate.ENVIRONMENT_FINGERPRINT)
+    compose_hashes = _level2_core_step(
+        Level2CoreDiagnosticPredicate.COMPOSE_CONTRACT,
+        _level2_core_compose_hashes,
+    )
+    query_count[0] += 1
+    docker_identity = _level2_core_step(
+        Level2CoreDiagnosticPredicate.UNKNOWN,
+        lambda: _capture_docker_execution_identity(runner),
+        review_required=True,
+    )
+    specs = _level2_core_step(
+        Level2CoreDiagnosticPredicate.ENVIRONMENT_FINGERPRINT,
+        lambda: level2_core_query_plan(values),
+    )
+    observations = _capture_level2_core_services(runner, specs, query_count)
+    projection = _level2_core_step(
+        Level2CoreDiagnosticPredicate.QUERY,
+        lambda: evaluate_level2_core_snapshot(
+            observations=observations,
+            expected_specs=specs,
+            local_redis=state.local_redis,
+            local_graph=state.local_graph,
+            local_gateway=state.local_gateway,
+        ),
+    )
+    _level2_core_step(
+        Level2CoreDiagnosticPredicate.UNKNOWN,
+        runner.require_private_deadline,
+        review_required=True,
+    )
+    return _Level2CorePrivatePrestate(
+        source_commit=source_commit,
+        state=state,
+        environment_hashes=tuple(sorted(hashes.items())),
+        compose_hashes=compose_hashes,
+        docker_identity=docker_identity,
+        capture=Level2CoreCapture(observations, projection),
+    )
+
+
+def _capture_level2_core_services(
+    runner: Runner,
+    specs: tuple[CoreServiceSpec, ...],
+    query_count: list[int],
+) -> tuple[CoreServiceObservation, ...]:
+    by_key: dict[object, CoreServiceObservation] = {}
+    requested: list[tuple[CoreServiceSpec, str]] = []
+    for spec in specs:
+        query_count[0] += 1
+        identity_output = _level2_core_step(
+            Level2CoreDiagnosticPredicate.UNKNOWN,
+            partial(runner.fixed_core_service_identity_output, spec),
+            review_required=True,
+        )
+        private_id = _level2_core_step(
+            Level2CoreDiagnosticPredicate.QUERY,
+            partial(parse_fixed_core_service_identity, spec, identity_output),
+        )
+        if private_id is None:
+            by_key[spec.key] = CoreServiceObservation(spec.key, None, CoreServiceCondition.ABSENT)
+        else:
+            requested.append((spec, private_id))
+    if requested:
+        query_count[0] += 1
+        output = _level2_core_step(
+            Level2CoreDiagnosticPredicate.UNKNOWN,
+            lambda: runner.fixed_core_service_batch_inspect_output(requested),
+            review_required=True,
+        )
+        observed = _level2_core_step(
+            Level2CoreDiagnosticPredicate.QUERY,
+            lambda: parse_fixed_core_service_batch_output(requested, output),
+        )
+        by_key.update((observation.key, observation) for observation in observed)
+    return tuple(by_key[spec.key] for spec in specs)
+
+
+def _level2_core_prestate_diagnostic() -> Level2CoreEvidence:
+    observation = None
+    query_count = [0]
+    try:
+        if platform.system() != "Darwin" or platform.machine().lower() not in {"arm64", "aarch64"}:
+            raise _Level2CoreDiagnosticStop(Level2CoreDiagnosticPredicate.HOST_CONTRACT)
+        with exclusive_docker_workflow_lock(ROOT):
+            deadline = time.monotonic() + _LEVEL2_CORE_CAPTURE_TIMEOUT_SECONDS
+            runner = Runner(quiet=True, deadline=deadline)
+            first = _capture_level2_core_prestate(runner, query_count)
+            observation = first.capture.projection
+            second = _capture_level2_core_prestate(runner, query_count)
+            if first != second:
+                return Level2CoreEvidence(
+                    classification=Level2CoreClassification.REJECTED,
+                    predicate=Level2CoreDiagnosticPredicate.PRESTATE_DRIFT,
+                    observation=observation,
+                    docker_query_count=query_count[0],
+                )
+        predicate = projection_diagnostic_predicate(observation)
+        classification = (
+            Level2CoreClassification.PASS
+            if predicate is Level2CoreDiagnosticPredicate.PASS
+            else Level2CoreClassification.REJECTED
+        )
+        return Level2CoreEvidence(
+            classification=classification,
+            predicate=predicate,
+            observation=observation,
+            docker_query_count=query_count[0],
+        )
+    except _Level2CoreDiagnosticStop as error:
+        return Level2CoreEvidence(
+            classification=(
+                Level2CoreClassification.OPERATOR_REVIEW_REQUIRED
+                if error.review_required
+                else Level2CoreClassification.REJECTED
+            ),
+            predicate=(
+                Level2CoreDiagnosticPredicate.UNKNOWN if error.review_required else error.predicate
+            ),
+            observation=observation,
+            docker_query_count=query_count[0],
+        )
+    except BaseException:
+        return Level2CoreEvidence(
+            classification=Level2CoreClassification.OPERATOR_REVIEW_REQUIRED,
+            predicate=Level2CoreDiagnosticPredicate.UNKNOWN,
+            observation=observation,
+            docker_query_count=query_count[0],
+        )
+
+
+def _capture_level2_core_runtime(
+    runner: Runner,
+    *,
+    state: AppliedState,
+    environment_values: dict[str, str],
+) -> tuple[Level2CoreCapture, tuple[str, ...]]:
+    previous_deadline = runner.deadline
+    capture_deadline = time.monotonic() + _LEVEL2_CORE_CAPTURE_TIMEOUT_SECONDS
+    runner.deadline = (
+        capture_deadline if previous_deadline is None else min(previous_deadline, capture_deadline)
+    )
+    try:
+        runner.require_private_deadline()
+        specs = level2_core_query_plan(environment_values)
+        observations = _query_fixed_core_services(runner, specs)
+        projection = evaluate_level2_core_snapshot(
+            observations=observations,
+            expected_specs=specs,
+            local_redis=state.local_redis,
+            local_graph=state.local_graph,
+            local_gateway=state.local_gateway,
+        )
+        runner.require_private_deadline()
+    except ValueError as error:
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL") from error
+    finally:
+        runner.deadline = previous_deadline
+    if projection.predicate is not Level2CorePredicate.PASS:
+        raise WorkflowError(projection.predicate.value)
+    return Level2CoreCapture(observations, projection), tuple(spec.service for spec in specs)
+
+
+def _query_fixed_core_services(
+    runner: Runner,
+    specs: tuple[CoreServiceSpec, ...],
+) -> tuple[CoreServiceObservation, ...]:
+    by_key: dict[object, CoreServiceObservation] = {}
+    requested: list[tuple[CoreServiceSpec, str]] = []
+    for spec in specs:
+        identity = parse_fixed_core_service_identity(
+            spec, runner.fixed_core_service_identity_output(spec)
+        )
+        if identity is None:
+            by_key[spec.key] = CoreServiceObservation(spec.key, None, CoreServiceCondition.ABSENT)
+        else:
+            requested.append((spec, identity))
+    if requested:
+        observed = parse_fixed_core_service_batch_output(
+            requested,
+            runner.fixed_core_service_batch_inspect_output(requested),
+        )
+        by_key.update((observation.key, observation) for observation in observed)
+    return tuple(by_key[spec.key] for spec in specs)
+
+
+def _validate_publication_scope(
+    state: AppliedState,
+    publication_scope: str | None,
+    reconciliation_name: str | None,
+) -> None:
+    if publication_scope is None:
+        return
+    if (
+        publication_scope != _LEVEL2_CORE_PUBLICATION_SCOPE
+        or reconciliation_name is not None
+        or state.profile != "mac-development"
+        or state.deployment_mode != "build"
+    ):
+        raise WorkflowError("LEVEL2_CORE_SCOPE_INVALID")
+    if not (state.local_redis and state.local_graph and state.local_gateway):
+        raise WorkflowError("LEVEL2_ADOPTION_REQUIRED")
+
+
+def _publication_source_plan(
+    changed_paths: tuple[str, ...],
+    *,
+    profile: str,
+    publication_scope: str | None,
+) -> tuple[ChangePlan, bool]:
+    publication = (
+        classify_publication_paths(changed_paths) if publication_scope is not None else None
+    )
+    if publication is not None and not publication.accepted:
+        raise WorkflowError("LEVEL2_CORE_SOURCE_IMPACT_UNKNOWN")
+    core_paths = publication.core_paths if publication is not None else changed_paths
+    return (
+        classify_changes(core_paths),
+        requires_local_identity_bootstrap(core_paths, profile=profile),
+    )
+
+
+def _update_environment_contract(
+    runner: Runner,
+    *,
+    args: argparse.Namespace,
+    state: AppliedState,
+    env_file: Path,
+    publication_scope: str | None,
+) -> tuple[dict[str, str], dict[str, str], tuple[str, ...]]:
+    if publication_scope is not None:
+        values = read_env_values(env_file)
+        hashes = environment_key_hashes(values)
+        keys = changed_environment_keys(state.environment_key_hashes, hashes)
+        if keys:
+            raise WorkflowError("LEVEL2_CORE_ENVIRONMENT_DRIFT")
+    if args.refresh_bootstrap:
+        runner.note("기존 secret을 보존하며 bootstrap 파생 설정을 재적용합니다.")
+        _bootstrap(runner, state=state, env_file=env_file)
+    if publication_scope is None:
+        values = read_env_values(env_file)
+        hashes = environment_key_hashes(values)
+        keys = changed_environment_keys(state.environment_key_hashes, hashes)
+    elif environment_key_hashes(read_env_values(env_file)) != hashes:
+        raise WorkflowError("LEVEL2_CORE_ENVIRONMENT_DRIFT")
+    return values, hashes, keys
+
+
+def _core_scoped_change_plan(
+    plan: ChangePlan,
+    publication_scope: str | None,
+) -> ChangePlan:
+    if publication_scope is None:
+        return plan
+    return replace(
+        plan,
+        restart_datahub=False,
+        restart_airflow=False,
+        local_connector_services=tuple(
+            service
+            for service in plan.local_connector_services
+            if service in {"redis-cache", "redis-delivery"}
+        ),
+    )
+
+
+def _complete_core_publication(
+    runner: Runner,
+    *,
+    state: AppliedState,
+    environment_values: dict[str, str],
+) -> None:
+    runner.note("Level1+Level2 fixed-service target를 state write 전에 최종 검증합니다.")
+    _capture_level2_core_runtime(
+        runner,
+        state=state,
+        environment_values=environment_values,
+    )
+
+
+def _selected_build_contract(
+    *,
+    plan: ChangePlan,
+    state: AppliedState,
+    files: tuple[Path, ...],
+    restart_services: tuple[str, ...],
+    reapply_local_identity: bool,
+    reconciliation_plan: TopologyReconciliationPlan | None,
+) -> tuple[tuple[str, ...], tuple[str, ...], tuple[Path, ...]]:
+    if state.deployment_mode == "offline":
+        return (), (), files
+    core = (
+        [*restart_services, *(("migrate",) if plan.requires_migration else ())]
+        if restart_services
+        else []
+    )
+    selected = [*core]
+    capacity_files = [*files]
+    if reapply_local_identity or reconciliation_plan is not None:
+        selected.append("local-bootstrap")
+    if plan.restart_airflow and state.local_airflow and reconciliation_plan is None:
+        selected.extend(AIRFLOW_SERVICES)
+        capacity_files.append(ROOT / "compose.airflow.yaml")
+    if plan.restart_gateway and state.local_gateway:
+        selected.append("apisix")
+        capacity_files.append(ROOT / "compose.gateway.yaml")
+    return (
+        tuple(dict.fromkeys(core)),
+        tuple(dict.fromkeys(selected)),
+        tuple(dict.fromkeys(capacity_files)),
+    )
+
+
+def _apply_database_migration(
+    runner: Runner,
+    *,
+    plan: ChangePlan,
+    immediate_restart_services: tuple[str, ...],
+    running: tuple[str, ...],
+    env_file: Path,
+    files: tuple[Path, ...],
+    environment_keys: tuple[str, ...],
+    offline: bool,
+) -> None:
+    if not plan.requires_migration:
+        return
+    stop_services = tuple(service for service in immediate_restart_services if service in running)
+    if stop_services:
+        runner.note("Schema 변경 전에 영향받는 실행 서비스를 중지합니다.")
+        _compose(
+            runner,
+            env_file=env_file,
+            files=files,
+            trailing=("stop", *stop_services),
+        )
+    if _requires_postgres_secret_remount(environment_keys):
+        runner.note("새 PostgreSQL role secret mount를 migration 전에 재적용합니다.")
+        _compose(
+            runner,
+            env_file=env_file,
+            files=(ROOT / "compose.yaml",),
+            trailing=(
+                "up",
+                "-d",
+                "--wait",
+                "--no-deps",
+                "--force-recreate",
+                *(("--pull", "never") if offline else ()),
+                "postgres",
+            ),
+        )
+    runner.note("Migration 선행 PostgreSQL 역할 계약을 재적용합니다.")
+    _reconcile_postgres(runner, env_file=env_file)
+    runner.note("Alembic migration을 적용합니다.")
+    _compose(
+        runner,
+        env_file=env_file,
+        files=files,
+        trailing=(
+            "run",
+            "--rm",
+            *(("--pull", "never") if offline else ()),
+            "migrate",
+        ),
+    )
+    runner.note("Migration 후 PostgreSQL 역할 grant를 재적용합니다.")
+    _reconcile_postgres(runner, env_file=env_file)
+
+
+def _write_completed_state(
+    runner: Runner,
+    *,
+    state_file: Path,
+    state: AppliedState,
+    current_source_commit: str,
+    runtime_commit: str,
+    env_file: Path,
+    release_dir: Path | None,
+    environment_hashes: dict[str, str],
+    changed_paths: tuple[str, ...],
+    environment_keys: tuple[str, ...],
+) -> None:
+    write_applied_state(
+        state_file,
+        replace(
+            state,
+            applied_commit=current_source_commit,
+            runtime_commit=runtime_commit,
+            env_file=(
+                os.fspath(env_file.relative_to(ROOT))
+                if env_file.is_relative_to(ROOT)
+                else os.fspath(env_file)
+            ),
+            release_dir=os.fspath(release_dir) if release_dir else state.release_dir,
+            environment_key_hashes=environment_hashes,
+        ),
+    )
+    if not changed_paths and not environment_keys:
+        runner.note("적용할 source/runtime/환경 변경이 없어 컨테이너를 재시작하지 않았습니다.")
+    else:
+        runner.note("업데이트 적용과 선택적 재시작을 완료했습니다.")
+
+
 def main() -> int:
     diagnostic_arguments = tuple(sys.argv[1:])
     diagnostic_equals_arguments = tuple(
@@ -2866,6 +3422,10 @@ def main() -> int:
             if capacity_evidence.classification is BuildCapacityPreflightClassification.PASS
             else 2
         )
+    if diagnostic_arguments == _LEVEL2_CORE_PRESTATE_ARGUMENTS:
+        level2_evidence = _level2_core_prestate_diagnostic()
+        print(format_level2_core_evidence(level2_evidence))
+        return 0 if level2_evidence.classification is Level2CoreClassification.PASS else 2
     if diagnostic_equals_arguments:
         diagnostic_equals_argument = diagnostic_equals_arguments[0]
         if diagnostic_equals_argument.startswith(_BUILD_CAPACITY_PREFLIGHT_EQUALS_PREFIX):
@@ -2883,6 +3443,13 @@ def main() -> int:
                 predicate=HostEnvironmentPreflightPredicate.UNKNOWN,
             )
             print(format_host_environment_preflight_line(environment_evidence))
+            return 2
+        if diagnostic_equals_argument.startswith(_LEVEL2_CORE_PRESTATE_EQUALS_PREFIX):
+            level2_evidence = Level2CoreEvidence(
+                classification=Level2CoreClassification.OPERATOR_REVIEW_REQUIRED,
+                predicate=Level2CoreDiagnosticPredicate.UNKNOWN,
+            )
+            print(format_level2_core_evidence(level2_evidence))
             return 2
         print(_fixed_invalid_diagnostic_line())
         return 2
@@ -2902,6 +3469,13 @@ def main() -> int:
             if environment_evidence.classification is HostEnvironmentPreflightClassification.PASS
             else 2
         )
+    if "LEVEL2_CORE_PRESTATE" in diagnostic_arguments:
+        level2_evidence = Level2CoreEvidence(
+            classification=Level2CoreClassification.OPERATOR_REVIEW_REQUIRED,
+            predicate=Level2CoreDiagnosticPredicate.UNKNOWN,
+        )
+        print(format_level2_core_evidence(level2_evidence))
+        return 2
     if "--diagnostic-phase" in diagnostic_arguments:
         environment_evidence = HostEnvironmentPreflightEvidence(
             classification=HostEnvironmentPreflightClassification.REJECTED,
@@ -2916,8 +3490,10 @@ def main() -> int:
         return 0 if evidence.classification is FixtureDiagnosticExecutionClassification.PASS else 2
     args = parse_args()
     reconciliation_name = getattr(args, "reconcile_local_topology", None)
+    publication_scope = getattr(args, "publication_scope", None)
     runner = Runner()
     mutation_stack = ExitStack()
+    docker_execution_identity: _DockerExecutionIdentity | None = None
     try:
         for command in ("docker", "git"):
             require_command(command)
@@ -2925,6 +3501,7 @@ def main() -> int:
         state = load_applied_state(state_file)
         if state.profile != args.profile:
             raise WorkflowError("The requested profile does not match its applied state.")
+        _validate_publication_scope(state, publication_scope, reconciliation_name)
         capacity_lock: DockerWorkflowLock | None = None
         if reconciliation_name is not None:
             capacity_lock = mutation_stack.enter_context(exclusive_docker_workflow_lock(ROOT))
@@ -2986,22 +3563,20 @@ def main() -> int:
             raise WorkflowError("--release-dir is valid only for an offline applied state.")
 
         changed_paths = tuple(dict.fromkeys((*source_paths, *runtime_paths)))
-        source_plan = classify_changes(changed_paths)
-        reapply_local_identity = requires_local_identity_bootstrap(
+        source_plan, reapply_local_identity = _publication_source_plan(
             changed_paths,
             profile=state.profile,
+            publication_scope=publication_scope,
         )
         files = _compose_files(state, release_override=release_dir)
-
-        if args.refresh_bootstrap:
-            runner.note("기존 secret을 보존하며 bootstrap 파생 설정을 재적용합니다.")
-            _bootstrap(runner, state=state, env_file=env_file)
-
-        environment_values = read_env_values(env_file)
-        current_environment_hashes = environment_key_hashes(environment_values)
-        environment_keys = changed_environment_keys(
-            state.environment_key_hashes,
-            current_environment_hashes,
+        environment_values, current_environment_hashes, environment_keys = (
+            _update_environment_contract(
+                runner,
+                args=args,
+                state=state,
+                env_file=env_file,
+                publication_scope=publication_scope,
+            )
         )
         immutable_bootstrap_keys = {"POSTGRES_DB", "POSTGRES_USER"}
         changed_immutable_keys = sorted(immutable_bootstrap_keys.intersection(environment_keys))
@@ -3015,7 +3590,11 @@ def main() -> int:
             source_plan,
             classify_environment_changes(environment_keys),
         )
+        plan = _core_scoped_change_plan(plan, publication_scope)
 
+        if publication_scope is not None and capacity_lock is None:
+            capacity_lock = mutation_stack.enter_context(exclusive_docker_workflow_lock(ROOT))
+            docker_execution_identity = _capture_docker_execution_identity(runner)
         runner.note("Compose 구성을 서비스 변경 전에 검증합니다.")
         _compose(
             runner,
@@ -3023,15 +3602,22 @@ def main() -> int:
             files=files,
             trailing=("config", "--quiet"),
         )
-        running = _running_services(runner, env_file=env_file, files=files)
+        if publication_scope is None:
+            running = _running_services(runner, env_file=env_file, files=files)
+        else:
+            _core_capture, running = _capture_level2_core_runtime(
+                runner,
+                state=state,
+                environment_values=environment_values,
+            )
         reconciliation_plan: TopologyReconciliationPlan | None = None
-        if reconciliation_name is None:
+        if reconciliation_name is None and publication_scope is None:
             enforce_local_topology(
                 runner=runner,
                 state=state,
                 environment_values=environment_values,
             )
-        else:
+        elif reconciliation_name is not None:
             reconciliation_plan = _prepare_topology_reconciliation(
                 runner,
                 state=state,
@@ -3067,30 +3653,14 @@ def main() -> int:
                 raise WorkflowError("Operator cancelled before service mutation.")
 
         offline = state.deployment_mode == "offline"
-        core_build_services: list[str] = []
-        selected_build_services: list[str] = []
-        capacity_files = list(files)
-        if not offline:
-            if restart_services:
-                core_build_services.extend(restart_services)
-                core_build_services.extend(("migrate",) if plan.requires_migration else ())
-                selected_build_services.extend(core_build_services)
-            if reapply_local_identity:
-                selected_build_services.append("local-bootstrap")
-            if reconciliation_plan is not None:
-                selected_build_services.append("local-bootstrap")
-            if (
-                plan.restart_airflow
-                and operating_state.local_airflow
-                and reconciliation_plan is None
-            ):
-                selected_build_services.extend(AIRFLOW_SERVICES)
-                capacity_files.append(ROOT / "compose.airflow.yaml")
-            if plan.restart_gateway and operating_state.local_gateway:
-                selected_build_services.append("apisix")
-                capacity_files.append(ROOT / "compose.gateway.yaml")
-        core_build_services = list(dict.fromkeys(core_build_services))
-        selected_build_services = list(dict.fromkeys(selected_build_services))
+        core_build_services, selected_build_services, capacity_files = _selected_build_contract(
+            plan=plan,
+            state=operating_state,
+            files=files,
+            restart_services=restart_services,
+            reapply_local_identity=reapply_local_identity,
+            reconciliation_plan=reconciliation_plan,
+        )
 
         topology_secret_guard: TopologyReconciliationSecretGuard | None = None
         selected_builder: str | None = None
@@ -3123,8 +3693,8 @@ def main() -> int:
                 selected_builder = _preflight_build_capacity(
                     runner,
                     env_file=env_file,
-                    files=tuple(dict.fromkeys(capacity_files)),
-                    selected_build_services=tuple(selected_build_services),
+                    files=capacity_files,
+                    selected_build_services=selected_build_services,
                     lock=capacity_lock,
                 )
 
@@ -3139,7 +3709,8 @@ def main() -> int:
                 trailing=("build", "local-bootstrap"),
             )
 
-        _reconcile_local_reranker(runner, env_file=env_file, profile=state.profile)
+        if publication_scope is None:
+            _reconcile_local_reranker(runner, env_file=env_file, profile=state.profile)
 
         if not offline and restart_services:
             _require_idle_builder(selected_builder, capacity_lock)
@@ -3162,50 +3733,16 @@ def main() -> int:
                 trailing=("build", "local-bootstrap"),
             )
 
-        if plan.requires_migration:
-            stop_services = tuple(
-                service for service in immediate_restart_services if service in running
-            )
-            if stop_services:
-                runner.note("Schema 변경 전에 영향받는 실행 서비스를 중지합니다.")
-                _compose(
-                    runner,
-                    env_file=env_file,
-                    files=files,
-                    trailing=("stop", *stop_services),
-                )
-            if _requires_postgres_secret_remount(environment_keys):
-                runner.note("새 PostgreSQL role secret mount를 migration 전에 재적용합니다.")
-                _compose(
-                    runner,
-                    env_file=env_file,
-                    files=(ROOT / "compose.yaml",),
-                    trailing=(
-                        "up",
-                        "-d",
-                        "--wait",
-                        "--no-deps",
-                        "--force-recreate",
-                        *(("--pull", "never") if offline else ()),
-                        "postgres",
-                    ),
-                )
-            runner.note("Migration 선행 PostgreSQL 역할 계약을 재적용합니다.")
-            _reconcile_postgres(runner, env_file=env_file)
-            runner.note("Alembic migration을 적용합니다.")
-            _compose(
-                runner,
-                env_file=env_file,
-                files=files,
-                trailing=(
-                    "run",
-                    "--rm",
-                    *(("--pull", "never") if offline else ()),
-                    "migrate",
-                ),
-            )
-            runner.note("Migration 후 PostgreSQL 역할 grant를 재적용합니다.")
-            _reconcile_postgres(runner, env_file=env_file)
+        _apply_database_migration(
+            runner,
+            plan=plan,
+            immediate_restart_services=immediate_restart_services,
+            running=running,
+            env_file=env_file,
+            files=files,
+            environment_keys=environment_keys,
+            offline=offline,
+        )
 
         if reapply_local_identity:
             runner.note("변경된 Mac 로컬 maker/checker identity를 재적용합니다.")
@@ -3217,8 +3754,13 @@ def main() -> int:
                 trailing=("run", "--rm", "local-bootstrap"),
             )
 
-        if state.local_storage and (
-            environment_values.get("KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED", "").lower() == "true"
+        if (
+            publication_scope is None
+            and state.local_storage
+            and (
+                environment_values.get("KNOWLEDGE_STUDIO_PROPOSAL_WORKER_ENABLED", "").lower()
+                == "true"
+            )
         ):
             knowledge_storage_files: tuple[Path, ...] = (ROOT / "compose.local-connectors.yaml",)
             if offline_layout is not None:
@@ -3307,7 +3849,11 @@ def main() -> int:
                 )
                 if offline:
                     connector_env["REDIS_IMAGE"] = "redis:8.2.6-bookworm"
-            if state.local_storage and "minio" in plan.local_connector_services:
+            if (
+                publication_scope is None
+                and state.local_storage
+                and "minio" in plan.local_connector_services
+            ):
                 connector_services.append("minio")
                 profiles = ("object-storage",)
             if connector_services:
@@ -3488,13 +4034,19 @@ def main() -> int:
                 connector_changed,
             )
         )
-        if restart_services or plan.requires_migration or auxiliary_changed:
+        if (
+            publication_scope is not None
+            or restart_services
+            or plan.requires_migration
+            or auxiliary_changed
+        ):
             runner.note("DataRiver liveness/readiness/Web health를 검증합니다.")
             _health_check(runner, env_file=env_file)
-            runner.note("DataHub GMS token/version 계약을 API 컨테이너에서 검증합니다.")
-            _probe_datahub(runner, env_file=env_file, files=files)
+            if publication_scope is None:
+                runner.note("DataHub GMS token/version 계약을 API 컨테이너에서 검증합니다.")
+                _probe_datahub(runner, env_file=env_file, files=files)
 
-        if reconciliation_plan is not None:
+        if reconciliation_plan is not None or publication_scope is not None:
             runner.note("APISIX transparent auth/header/log 계약을 state write 전에 검증합니다.")
             _verify_gateway_transparency(
                 runner,
@@ -3507,13 +4059,15 @@ def main() -> int:
             for path in changed_paths
         ) or any(key.startswith("DATAHUB_") for key in environment_keys)
         catalog_synced = False
-        if (backend_changed or (plan.restart_datahub and state.local_datahub)) and (
-            not args.skip_catalog_sync
+        if (
+            publication_scope is None
+            and (backend_changed or (plan.restart_datahub and state.local_datahub))
+            and (not args.skip_catalog_sync)
         ):
             runner.note("Backend 변경 후 DataHub catalog projection을 동기화합니다.")
             _sync_catalog(runner, env_file=env_file)
             catalog_synced = True
-        if catalog_synced or reapply_local_identity:
+        if publication_scope is None and (catalog_synced or reapply_local_identity):
             runner.note("활성 Catalog System/Domain 범위를 로컬 관리자에게 동기화합니다.")
             _reconcile_local_admin_catalog_access(
                 runner,
@@ -3532,25 +4086,26 @@ def main() -> int:
                 environment_values=environment_values,
             )
 
-        write_applied_state(
-            state_file,
-            replace(
-                operating_state,
-                applied_commit=current_source_commit,
-                runtime_commit=runtime_commit,
-                env_file=(
-                    os.fspath(env_file.relative_to(ROOT))
-                    if env_file.is_relative_to(ROOT)
-                    else os.fspath(env_file)
-                ),
-                release_dir=os.fspath(release_dir) if release_dir else state.release_dir,
-                environment_key_hashes=current_environment_hashes,
-            ),
+        if publication_scope is not None:
+            _reprove_docker_execution_identity(docker_execution_identity, runner)
+            _complete_core_publication(
+                runner,
+                state=state,
+                environment_values=environment_values,
+            )
+
+        _write_completed_state(
+            runner,
+            state_file=state_file,
+            state=operating_state,
+            current_source_commit=current_source_commit,
+            runtime_commit=runtime_commit,
+            env_file=env_file,
+            release_dir=release_dir,
+            environment_hashes=current_environment_hashes,
+            changed_paths=changed_paths,
+            environment_keys=environment_keys,
         )
-        if not changed_paths and not environment_keys:
-            runner.note("적용할 source/runtime/환경 변경이 없어 컨테이너를 재시작하지 않았습니다.")
-        else:
-            runner.note("업데이트 적용과 선택적 재시작을 완료했습니다.")
         return 0
     except (
         DockerCapacityError,

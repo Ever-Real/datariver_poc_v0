@@ -339,16 +339,51 @@ only; it cannot fall back to a public/direct API path or bypass API ABAC/RLS.
 
 ## Compatibility
 
+Stage 1 adds a Mac-only Level1+Level2 publication scope behind the unchanged tokenless
+`development_cycle.py dev-publish` interface. An AppliedState that has not already selected Redis,
+Neo4j and APISIX stops with `LEVEL2_ADOPTION_REQUIRED` before a Compose or Docker query or any
+runtime/state action. Stage 1 does not discover or adopt those services, add a reconciliation token,
+or change the existing `mac-development-graph-gateway-v1` command. A later adoption action requires
+a separately reviewed literal checkpoint and action matrix.
+
+For an already adopted state, publication queries only exact project-and-service labels for the
+reviewed Level1 services, enabled DataRiver workers, Redis cache/delivery, Neo4j and APISIX. It does
+not enumerate a project or all containers and does not query, build, probe or mutate local DataHub,
+Airflow, MinIO, local LLM/reranker or observability providers. Backend provider-adapter changes are
+still Level1 runtime impacts, while provider lifecycle wrappers and local IaC are optional-only.
+AppliedState records the proven Level1+Level2 core runtime SHA and makes no statement about optional
+provider application or health. A separate integration-validation contract evaluates optional
+providers against the full current source SHA. Level2 paths can never be classified as
+optional-only.
+
+The fixed read-only `LEVEL2_CORE_PRESTATE` phase takes two whole private snapshots under the Docker
+workflow lock. Each snapshot re-proves clean source, AppliedState, environment, Compose identity and
+the local Unix context and Docker execution overrides, then issues only service-specific
+Level1+Level2 ID-list queries followed by at most one batch structured-state inspect for the exact
+validated IDs. One Level2-owned 30-second monotonic deadline bounds the complete two-snapshot
+diagnostic observation/query interval; each child keeps its 20-second ceiling and receives only the
+remaining interval. Tokenless initial and final runtime audits each receive a fresh, independent
+30-second Level2 observation/query deadline, so build, migration and service actions between them
+are outside either audit deadline. The deadline covers observation/query work; bounded
+terminate-then-kill-and-reap cleanup may extend total wall-clock time. The same execution identity
+is captured
+before tokenless core Docker work and re-proven before final core audit and AppliedState. The
+diagnostic emits one bounded value-free line and requires exact snapshot equality; private container
+identifiers never leave the process. A non-selected state remains `LEVEL2_ADOPTION_REQUIRED` even
+when the observed services are healthy. This is observation evidence only and authorizes no
+adoption or mutation.
+
 - `development_cycle.py dev-publish`, `workflow_update_restart.py`, `prep-update` and `prep-check`
-  keep their names and existing arguments.
+  keep their public names and existing daily arguments.
 - No environment key, Dockerfile, service profile or required daily input changes. The optional
   operation alone selects the checked-in Web/APISIX and Airflow routing overlays.
 - Optional worker intent continues to come from its existing explicit enable flag; one-shot and
   unselected exited containers are not reported as missing.
 - Running services without a Docker healthcheck are accepted as running; services that define a
   healthcheck must reach `healthy`.
-- Without the exact optional reconciliation token, `dev-publish`, update, preparation and check
-  semantics remain unchanged and the current drift remains fail-closed.
+- The existing explicit graph/gateway reconciliation output and actions remain unchanged in Stage
+  1; preparation, release and WSL behavior remain unchanged. Tokenless Mac publication now applies
+  the fail-closed Level1+Level2 scope described above.
 
 ## Runtime and evidence boundary
 

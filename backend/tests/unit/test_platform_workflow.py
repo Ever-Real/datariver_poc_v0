@@ -25,10 +25,28 @@ from datariver.gateway_auth_parity_fixture import (
 
 ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = ROOT / "scripts" / "platform_workflow.py"
+MAC_CORE_MODULE_PATH = ROOT / "scripts" / "mac_core_publication.py"
 FRESH_SETUP_MODULE_PATH = ROOT / "scripts" / "workflow_fresh_setup.py"
 UPDATE_MODULE_PATH = ROOT / "scripts" / "workflow_update_restart.py"
 CAPACITY_MODULE_PATH = ROOT / "scripts" / "docker_capacity.py"
+BUILDER_PRESTATE_MODULE_PATH = ROOT / "scripts" / "docker_builder_prestate.py"
 GATEWAY_PARITY_MODULE_PATH = ROOT / "scripts" / "probe_gateway_auth_parity.py"
+
+
+def _load_mac_core_module() -> ModuleType:
+    existing = sys.modules.get("mac_core_publication")
+    if existing is not None:
+        return existing
+    spec = importlib.util.spec_from_file_location("mac_core_publication", MAC_CORE_MODULE_PATH)
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+mac_core = _load_mac_core_module()
 
 
 def _load_module() -> ModuleType:
@@ -75,7 +93,15 @@ def _load_update_module() -> ModuleType:
     previous_update_module = sys.modules.get(spec.name)
     previous_platform_module = sys.modules.get("platform_workflow")
     previous_capacity_module = sys.modules.get("docker_capacity")
+    previous_builder_prestate_module = sys.modules.get("docker_builder_prestate")
     previous_gateway_parity_module = sys.modules.get("probe_gateway_auth_parity")
+    builder_prestate_spec = importlib.util.spec_from_file_location(
+        "docker_builder_prestate",
+        BUILDER_PRESTATE_MODULE_PATH,
+    )
+    assert builder_prestate_spec is not None
+    assert builder_prestate_spec.loader is not None
+    builder_prestate_module = importlib.util.module_from_spec(builder_prestate_spec)
     capacity_spec = importlib.util.spec_from_file_location(
         "docker_capacity",
         CAPACITY_MODULE_PATH,
@@ -91,10 +117,12 @@ def _load_update_module() -> ModuleType:
     assert gateway_parity_spec.loader is not None
     gateway_parity_module = importlib.util.module_from_spec(gateway_parity_spec)
     sys.modules["platform_workflow"] = workflow
+    sys.modules["docker_builder_prestate"] = builder_prestate_module
     sys.modules["docker_capacity"] = capacity_module
     sys.modules["probe_gateway_auth_parity"] = gateway_parity_module
     sys.modules[spec.name] = module
     try:
+        builder_prestate_spec.loader.exec_module(builder_prestate_module)
         capacity_spec.loader.exec_module(capacity_module)
         gateway_parity_spec.loader.exec_module(gateway_parity_module)
         spec.loader.exec_module(module)
@@ -107,6 +135,10 @@ def _load_update_module() -> ModuleType:
             sys.modules.pop("docker_capacity", None)
         else:
             sys.modules["docker_capacity"] = previous_capacity_module
+        if previous_builder_prestate_module is None:
+            sys.modules.pop("docker_builder_prestate", None)
+        else:
+            sys.modules["docker_builder_prestate"] = previous_builder_prestate_module
         if previous_gateway_parity_module is None:
             sys.modules.pop("probe_gateway_auth_parity", None)
         else:
@@ -473,6 +505,949 @@ def test_environment_fingerprints_detect_keys_without_persisting_values() -> Non
     assert all(len(value) == 64 for value in current.values())
     assert "new.example" not in json.dumps(current)
     assert "datahub_token" not in json.dumps(current)
+
+
+def _core_inspect_output(
+    spec: Any,
+    *,
+    private_id: str = "a" * 64,
+    state: str = "running",
+    health: str | None = "healthy",
+) -> str:
+    return "|".join(
+        json.dumps(value) for value in (private_id, spec.project, spec.service, state, health)
+    )
+
+
+def test_level2_core_query_plan_is_service_specific_and_optional_blind() -> None:
+    plan = workflow.level2_core_query_plan(
+        {
+            "GOVERNANCE_DOCUMENT_WORKER_ENABLED": "true",
+            "KNOWLEDGE_SOURCE_WORKER_ENABLED": "false",
+        }
+    )
+    commands = tuple(workflow.fixed_core_service_query_argv(spec) for spec in plan)
+    requested = tuple((spec, f"{index:064x}") for index, spec in enumerate(plan, start=1))
+    inspect_command = workflow.fixed_core_service_batch_inspect_argv(requested)
+
+    assert all(command[:4] == ("docker", "container", "ls", "--all") for command in commands)
+    assert all(command.count("--filter") == 2 for command in commands)
+    assert all(
+        any(value == f"label=com.docker.compose.service={spec.service}" for value in command)
+        for spec, command in zip(plan, commands, strict=True)
+    )
+    combined = " ".join(value for command in commands for value in command).lower()
+    assert inspect_command[:3] == ("docker", "container", "inspect")
+    assert inspect_command[-len(requested) :] == tuple(value for _spec, value in requested)
+    for optional_label in ("datahub", "airflow", "minio", "llama", "observability"):
+        assert optional_label not in combined
+
+
+def test_fixed_core_service_parser_keeps_identity_private_and_rejects_duplicates() -> None:
+    spec = next(
+        value for value in workflow.level2_core_query_plan({}) if value.service == "redis-cache"
+    )
+    output = _core_inspect_output(spec)
+
+    observation = workflow.parse_fixed_core_service_output(spec, output, "a" * 64)
+
+    assert observation.key.value == "LEVEL2_REDIS_CACHE"
+    assert observation.condition.value == "RUNNING_HEALTHY"
+    assert "a" * 64 not in repr(observation)
+    assert workflow.parse_fixed_core_service_identity(spec, "a" * 64) == "a" * 64
+    with pytest.raises(workflow.WorkflowError, match="LEVEL2_CORE_DUPLICATE"):
+        workflow.parse_fixed_core_service_identity(spec, f"{'a' * 64}\n{'b' * 64}")
+
+
+@pytest.mark.parametrize(
+    ("state", "health", "condition"),
+    (
+        ("created", None, "CREATED"),
+        ("running", None, "RUNNING_NO_HEALTH"),
+        ("running", "starting", "RUNNING_STARTING"),
+        ("running", "healthy", "RUNNING_HEALTHY"),
+        ("running", "unhealthy", "RUNNING_UNHEALTHY"),
+        ("paused", None, "PAUSED"),
+        ("restarting", None, "RESTARTING"),
+        ("removing", None, "REMOVING"),
+        ("exited", None, "EXITED"),
+        ("dead", None, "DEAD"),
+    ),
+)
+def test_fixed_core_service_parser_closes_every_docker_condition(
+    state: str, health: str | None, condition: str
+) -> None:
+    spec = next(value for value in workflow.level2_core_query_plan({}) if value.service == "neo4j")
+    output = _core_inspect_output(spec, private_id="c" * 64, state=state, health=health)
+
+    assert (
+        workflow.parse_fixed_core_service_output(spec, output, "c" * 64).condition.value
+        == condition
+    )
+
+
+@pytest.mark.parametrize(
+    "output",
+    (
+        '"short"|"datariver-next"|"neo4j"|"running"|"healthy"',
+        f'"{"d" * 64}"|"wrong-project"|"neo4j"|"running"|"healthy"',
+        f'"{"d" * 64}"|"datariver-next"|"wrong-service"|"running"|"healthy"',
+        f'"{"d" * 64}"|"datariver-next"|"neo4j"|"unknown"|null',
+        f'"{"d" * 64}"|"datariver-next"|"neo4j"|[]|null',
+        f'"{"d" * 64}"|"datariver-next"|"neo4j"|"running"|{{}}',
+        "x" * (64 * 1024 + 1),
+    ),
+)
+def test_fixed_core_service_parser_rejects_protocol_and_output_limits(output: str) -> None:
+    spec = next(value for value in workflow.level2_core_query_plan({}) if value.service == "neo4j")
+
+    with pytest.raises(workflow.WorkflowError, match="LEVEL2_CORE_"):
+        workflow.parse_fixed_core_service_output(spec, output, "d" * 64)
+
+
+def test_fixed_core_batch_parser_binds_every_inspect_row_to_requested_identity() -> None:
+    specs = workflow.level2_core_query_plan({})[-4:]
+    requested = tuple((spec, f"{index:064x}") for index, spec in enumerate(specs, start=1))
+    lines = tuple(
+        _core_inspect_output(
+            spec,
+            private_id=private_id,
+            health="healthy" if spec.health_required else None,
+        )
+        for spec, private_id in reversed(requested)
+    )
+
+    observations = workflow.parse_fixed_core_service_batch_output(requested, "\n".join(lines))
+
+    assert tuple(observation.key for observation in observations) == tuple(
+        spec.key for spec, _private_id in requested
+    )
+    for malformed in (
+        "\n".join(lines[:-1]),
+        "\n".join((*lines, lines[0])),
+        "\n".join((*lines[:-1], _core_inspect_output(specs[0], private_id="f" * 64))),
+        _core_inspect_output(requested[0][0], private_id=requested[1][1]),
+    ):
+        with pytest.raises(workflow.WorkflowError, match="LEVEL2_CORE_QUERY_PROTOCOL"):
+            workflow.parse_fixed_core_service_batch_output(requested, malformed)
+
+
+def test_fixed_core_single_parser_rejects_list_inspect_identity_mismatch() -> None:
+    spec = workflow.level2_core_query_plan({})[-1]
+
+    with pytest.raises(workflow.WorkflowError, match="LEVEL2_CORE_QUERY_PROTOCOL"):
+        workflow.parse_fixed_core_service_output(
+            spec,
+            _core_inspect_output(spec, private_id="e" * 64),
+            "d" * 64,
+        )
+
+
+def test_level2_capture_batches_inspect_once_and_skips_it_when_every_service_absent() -> None:
+    update = _load_update_module()
+    specs = workflow.level2_core_query_plan({})
+    batch_calls: list[tuple[tuple[Any, str], ...]] = []
+
+    class BatchRunner:
+        def fixed_core_service_identity_output(self, spec: Any) -> str:
+            return f"{specs.index(spec) + 1:064x}"
+
+        def fixed_core_service_batch_inspect_output(
+            self, requested: tuple[tuple[Any, str], ...]
+        ) -> str:
+            batch_calls.append(tuple(requested))
+            return "\n".join(
+                _core_inspect_output(
+                    spec,
+                    private_id=private_id,
+                    health="healthy" if spec.health_required else None,
+                )
+                for spec, private_id in requested
+            )
+
+    query_count = [0]
+    observations = update._capture_level2_core_services(
+        cast(Any, BatchRunner()), specs, query_count
+    )
+
+    assert len(observations) == len(specs)
+    assert query_count == [len(specs) + 1]
+    assert len(batch_calls) == 1
+
+    class AbsentRunner(BatchRunner):
+        def fixed_core_service_identity_output(self, _spec: Any) -> str:
+            return ""
+
+        def fixed_core_service_batch_inspect_output(
+            self, _requested: tuple[tuple[Any, str], ...]
+        ) -> str:
+            raise AssertionError("absent-only capture must not inspect")
+
+    query_count = [0]
+    absent = update._capture_level2_core_services(cast(Any, AbsentRunner()), specs, query_count)
+    assert query_count == [len(specs)]
+    assert all(value.condition.value == "ABSENT" for value in absent)
+
+
+def test_runtime_and_diagnostic_reject_batch_inspect_id_mismatch() -> None:
+    update = _load_update_module()
+    specs = workflow.level2_core_query_plan({})
+
+    class MismatchRunner:
+        def fixed_core_service_identity_output(self, spec: Any) -> str:
+            return f"{specs.index(spec) + 1:064x}"
+
+        def fixed_core_service_batch_inspect_output(
+            self, requested: tuple[tuple[Any, str], ...]
+        ) -> str:
+            return "\n".join(
+                _core_inspect_output(
+                    spec,
+                    private_id=("f" * 64 if index == 0 else private_id),
+                    health="healthy" if spec.health_required else None,
+                )
+                for index, (spec, private_id) in enumerate(requested)
+            )
+
+    with pytest.raises(workflow.WorkflowError, match="LEVEL2_CORE_QUERY_PROTOCOL"):
+        update._query_fixed_core_services(cast(Any, MismatchRunner()), specs)
+    with pytest.raises(update._Level2CoreDiagnosticStop) as raised:
+        update._capture_level2_core_services(cast(Any, MismatchRunner()), specs, [0])
+    assert raised.value.predicate.value == "QUERY"
+
+
+def test_max_service_runtime_deadline_stops_every_later_query() -> None:
+    update = _load_update_module()
+    clock = [0.0]
+    environment = {
+        spec.environment_key: "true"
+        for spec in mac_core._ENVIRONMENT_SERVICE_SPECS
+        if spec.environment_key is not None
+    }
+    specs = workflow.level2_core_query_plan(environment)
+    calls: list[str] = []
+
+    class ExpiringRunner:
+        deadline: float | None = None
+
+        def require_private_deadline(self) -> None:
+            if self.deadline is None or clock[0] >= self.deadline:
+                raise workflow.WorkflowError("PRIVATE_QUERY_DEADLINE_EXPIRED")
+
+        def fixed_core_service_identity_output(self, spec: Any) -> str:
+            calls.append(spec.service)
+            if len(calls) == 5:
+                clock[0] = 31.0
+            self.require_private_deadline()
+            return ""
+
+        def fixed_core_service_batch_inspect_output(self, _requested: object) -> str:
+            raise AssertionError("deadline expiry must stop before inspect")
+
+    runner = ExpiringRunner()
+    original_monotonic = update.time.monotonic
+    update.time.monotonic = lambda: clock[0]
+    try:
+        with pytest.raises(workflow.WorkflowError, match="PRIVATE_QUERY_DEADLINE_EXPIRED"):
+            update._capture_level2_core_runtime(
+                cast(Any, runner),
+                state=_topology_state(
+                    profile="mac-development",
+                    local_redis=True,
+                    local_graph=True,
+                    local_gateway=True,
+                ),
+                environment_values=environment,
+            )
+    finally:
+        update.time.monotonic = original_monotonic
+    assert len(specs) == 20
+    assert len(calls) == 5
+    assert runner.deadline is None
+
+
+@pytest.mark.parametrize(
+    ("previous_deadline", "expected_deadline"),
+    ((None, 30.0), (10.0, 10.0), (100.0, 30.0)),
+)
+def test_runtime_capture_deadline_never_widens_and_restores_on_success(
+    previous_deadline: float | None,
+    expected_deadline: float,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    specs = workflow.level2_core_query_plan({})
+    observed_deadlines: list[float] = []
+
+    class ReadyRunner:
+        deadline = previous_deadline
+
+        def require_private_deadline(self) -> None:
+            assert self.deadline is not None
+            observed_deadlines.append(self.deadline)
+
+        def fixed_core_service_identity_output(self, spec: Any) -> str:
+            return f"{specs.index(spec) + 1:064x}"
+
+        def fixed_core_service_batch_inspect_output(
+            self, requested: tuple[tuple[Any, str], ...]
+        ) -> str:
+            return "\n".join(
+                _core_inspect_output(
+                    spec,
+                    private_id=private_id,
+                    health="healthy" if spec.health_required else None,
+                )
+                for spec, private_id in requested
+            )
+
+    runner = ReadyRunner()
+    monkeypatch.setattr(update.time, "monotonic", lambda: 0.0)
+
+    update._capture_level2_core_runtime(
+        cast(Any, runner),
+        state=_topology_state(
+            profile="mac-development",
+            local_redis=True,
+            local_graph=True,
+            local_gateway=True,
+        ),
+        environment_values={},
+    )
+
+    assert observed_deadlines == [expected_deadline, expected_deadline]
+    assert runner.deadline == previous_deadline
+
+
+def test_expired_prior_runtime_deadline_stops_before_spawn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    spawned: list[str] = []
+
+    class ExpiredRunner:
+        deadline: float | None = -1.0
+
+        def require_private_deadline(self) -> None:
+            if self.deadline is None or self.deadline <= 0:
+                raise workflow.WorkflowError("PRIVATE_QUERY_DEADLINE_EXPIRED")
+
+        def fixed_core_service_identity_output(self, spec: Any) -> str:
+            spawned.append(spec.service)
+            return ""
+
+    runner = ExpiredRunner()
+    monkeypatch.setattr(update.time, "monotonic", lambda: 0.0)
+
+    with pytest.raises(workflow.WorkflowError, match="PRIVATE_QUERY_DEADLINE_EXPIRED"):
+        update._capture_level2_core_runtime(
+            cast(Any, runner),
+            state=_topology_state(profile="mac-development"),
+            environment_values={},
+        )
+    assert spawned == []
+    assert runner.deadline == -1.0
+
+
+@pytest.mark.parametrize("failure", (RuntimeError, KeyboardInterrupt, BaseException))
+def test_runtime_capture_restores_prior_deadline_after_failure(
+    failure: type[BaseException],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+
+    class FailingRunner:
+        deadline: float | None = 7.0
+
+        def require_private_deadline(self) -> None:
+            assert self.deadline == 7.0
+
+        def fixed_core_service_identity_output(self, _spec: Any) -> str:
+            raise failure("private-runtime-deadline")
+
+    runner = FailingRunner()
+    monkeypatch.setattr(update.time, "monotonic", lambda: 0.0)
+
+    with pytest.raises(failure):
+        update._capture_level2_core_runtime(
+            cast(Any, runner),
+            state=_topology_state(profile="mac-development"),
+            environment_values={},
+        )
+    assert runner.deadline == 7.0
+
+
+@pytest.mark.parametrize(
+    ("local_redis", "local_graph", "local_gateway"),
+    (
+        (False, False, False),
+        (False, False, True),
+        (False, True, False),
+        (False, True, True),
+        (True, False, False),
+        (True, False, True),
+        (True, True, False),
+    ),
+)
+def test_level2_core_scope_refuses_every_unadopted_state_before_child_process(
+    local_redis: bool,
+    local_graph: bool,
+    local_gateway: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    state = _topology_state(
+        profile="mac-development",
+        local_redis=local_redis,
+        local_graph=local_graph,
+        local_gateway=local_gateway,
+    )
+
+    class NoChildRunner:
+        def run(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("LEVEL2_ADOPTION_REQUIRED must precede every child process")
+
+        def output(self, *_args: object, **_kwargs: object) -> str:
+            raise AssertionError("LEVEL2_ADOPTION_REQUIRED must precede every child process")
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="mac-development",
+            env_file=None,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=True,
+            skip_catalog_sync=False,
+            assume_yes=True,
+            reconcile_local_topology=None,
+            publication_scope="level2-core",
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", NoChildRunner)
+    monkeypatch.setattr(update, "require_command", lambda _name: None)
+    monkeypatch.setattr(update, "state_path", lambda *_args: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(
+        update,
+        "write_applied_state",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("state write forbidden")),
+    )
+
+    assert update.main() == 2
+    assert "LEVEL2_ADOPTION_REQUIRED" in capsys.readouterr().err
+
+
+def test_level2_core_prestate_is_value_free_and_drift_monotonic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    specs = workflow.level2_core_query_plan({})
+    observations = tuple(
+        mac_core.CoreServiceObservation(
+            key=spec.key,
+            private_id=f"{index + 1:064x}",
+            condition=(
+                mac_core.CoreServiceCondition.RUNNING_HEALTHY
+                if spec.health_required
+                else mac_core.CoreServiceCondition.RUNNING_NO_HEALTH
+            ),
+        )
+        for index, spec in enumerate(specs)
+    )
+    projection = mac_core.evaluate_level2_core_snapshot(
+        observations=observations,
+        expected_specs=specs,
+        local_redis=False,
+        local_graph=False,
+        local_gateway=False,
+    )
+    state = _topology_state(profile="mac-development")
+
+    def private(value: tuple[Any, ...]) -> Any:
+        return update._Level2CorePrivatePrestate(
+            source_commit="a" * 40,
+            state=state,
+            environment_hashes=(),
+            compose_hashes=("b" * 64,),
+            docker_identity=update._DockerExecutionIdentity(
+                "desktop-linux",
+                (("DOCKER_HOST", ""), ("DOCKER_CONTEXT", "")),
+            ),
+            capture=mac_core.Level2CoreCapture(value, projection),
+        )
+
+    captures = iter((private(observations), private(observations)))
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    def capture(private_runner: object, query_count: list[int]) -> Any:
+        assert cast(Any, private_runner).quiet is True
+        assert cast(Any, private_runner).deadline == 130.0
+        query_count[0] += len(specs) + 2
+        return next(captures)
+
+    monkeypatch.setattr(update.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(update.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(update.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(update, "_FIXTURE_DIAGNOSTIC_TIMEOUT_SECONDS", 0)
+    monkeypatch.setattr(update, "_LEVEL2_CORE_CAPTURE_TIMEOUT_SECONDS", 30)
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_capture_level2_core_prestate", capture)
+
+    evidence = update._level2_core_prestate_diagnostic()
+    line = update.format_level2_core_evidence(evidence)
+
+    assert evidence.predicate.value == "LEVEL2_ADOPTION_REQUIRED"
+    assert evidence.docker_query_count == 2 * (len(specs) + 2)
+    assert "desktop-linux" not in line
+    assert "0000000000000000000000000000000000000000000000000000000000000001" not in line
+    assert "null" not in line
+
+
+def test_level2_core_prestate_private_identity_change_is_prestate_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    core = sys.modules[update.Level2CoreEvidence.__module__]
+    specs = workflow.level2_core_query_plan({})
+    base = tuple(
+        core.CoreServiceObservation(
+            key=spec.key,
+            private_id=f"{index + 1:064x}",
+            condition=(
+                core.CoreServiceCondition.RUNNING_HEALTHY
+                if spec.health_required
+                else core.CoreServiceCondition.RUNNING_NO_HEALTH
+            ),
+        )
+        for index, spec in enumerate(specs)
+    )
+    changed = (replace(base[0], private_id="f" * 64), *base[1:])
+    projection = core.evaluate_level2_core_snapshot(
+        observations=base,
+        expected_specs=specs,
+        local_redis=True,
+        local_graph=True,
+        local_gateway=True,
+    )
+    state = _topology_state(
+        profile="mac-development",
+        local_redis=True,
+        local_graph=True,
+        local_gateway=True,
+    )
+    captures = iter(
+        update._Level2CorePrivatePrestate(
+            source_commit="a" * 40,
+            state=state,
+            environment_hashes=(),
+            compose_hashes=("b" * 64,),
+            docker_identity=update._DockerExecutionIdentity(
+                "desktop-linux",
+                (("DOCKER_HOST", ""), ("DOCKER_CONTEXT", "")),
+            ),
+            capture=core.Level2CoreCapture(observations, projection),
+        )
+        for observations in (base, changed)
+    )
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    monkeypatch.setattr(update.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(update.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(
+        update,
+        "_capture_level2_core_prestate",
+        lambda _runner, _count: next(captures),
+    )
+
+    evidence = update._level2_core_prestate_diagnostic()
+
+    assert evidence.predicate.value == "PRESTATE_DRIFT"
+    assert evidence.classification.value == "REJECTED"
+
+
+@pytest.mark.parametrize("failure", (RuntimeError("private"), KeyboardInterrupt(), SystemExit()))
+def test_level2_core_prestate_baseexceptions_are_fixed_unknown(
+    failure: BaseException,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    monkeypatch.setattr(update.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(update.platform, "machine", lambda: "arm64")
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(
+        update,
+        "_capture_level2_core_prestate",
+        lambda *_args: (_ for _ in ()).throw(failure),
+    )
+
+    evidence = update._level2_core_prestate_diagnostic()
+    line = update.format_level2_core_evidence(evidence)
+
+    assert evidence.classification.value == "OPERATOR_REVIEW_REQUIRED"
+    assert evidence.predicate.value == "UNKNOWN"
+    assert "private" not in line
+
+
+def test_level2_core_diagnostic_main_emits_one_compact_line(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    update = _load_update_module()
+    evidence = update.Level2CoreEvidence(
+        classification=update.Level2CoreClassification.REJECTED,
+        predicate=update.Level2CoreDiagnosticPredicate.QUERY,
+    )
+    monkeypatch.setattr(
+        update.sys, "argv", ["operator", "--diagnostic-phase", "LEVEL2_CORE_PRESTATE"]
+    )
+    monkeypatch.setattr(update, "_level2_core_prestate_diagnostic", lambda: evidence)
+
+    assert update.main() == 2
+
+    captured = capsys.readouterr()
+    assert captured.out == update.format_level2_core_evidence(evidence) + "\n"
+    assert captured.err == ""
+
+
+def test_docker_execution_identity_rejects_builder_overrides_before_context_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    monkeypatch.setenv("BUILDX_BUILDER", "private-builder-sentinel")
+    monkeypatch.setattr(
+        update,
+        "require_local_unix_docker_context",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("context query must not run")),
+    )
+
+    with pytest.raises(update.WorkflowError, match="DOCKER_EXECUTION_ENVIRONMENT_INVALID"):
+        update._capture_docker_execution_identity(workflow.Runner(dry_run=True))
+
+
+def test_docker_execution_identity_captures_context_and_override_environment_privately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    for name in ("DOCKER_HOST", "BUILDX_BUILDER", "BUILDKIT_HOST"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("DOCKER_CONTEXT", "desktop-linux")
+    seen_executors: list[object] = []
+
+    def require_context(executor: object, _environment: object) -> str:
+        seen_executors.append(executor)
+        return "desktop-linux"
+
+    monkeypatch.setattr(
+        update,
+        "require_local_unix_docker_context",
+        require_context,
+    )
+    runner = workflow.Runner(dry_run=True)
+
+    identity = update._capture_docker_execution_identity(runner)
+
+    assert identity == update._DockerExecutionIdentity(
+        "desktop-linux",
+        (
+            ("DOCKER_HOST", ""),
+            ("DOCKER_CONTEXT", "desktop-linux"),
+            ("BUILDX_BUILDER", ""),
+            ("BUILDKIT_HOST", ""),
+        ),
+    )
+    assert seen_executors == [runner]
+    assert "desktop-linux" not in repr(identity)
+
+
+@pytest.mark.parametrize(
+    ("local_datahub", "local_airflow", "local_storage", "identity_drift"),
+    (
+        (False, False, False, False),
+        (True, True, True, False),
+        (True, False, True, True),
+    ),
+)
+def test_post_adoption_core_maintenance_is_optional_provider_blind(
+    local_datahub: bool,
+    local_airflow: bool,
+    local_storage: bool,
+    identity_drift: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    env_file.write_text("APP_ENV=development\n", encoding="utf-8")
+    environment = {"APP_ENV": "development"}
+    state = _topology_state(
+        profile="mac-development",
+        applied_commit="a" * 40,
+        runtime_commit="a" * 40,
+        env_file=os.fspath(env_file),
+        local_redis=True,
+        local_graph=True,
+        local_gateway=True,
+        local_datahub=local_datahub,
+        local_airflow=local_airflow,
+        local_storage=local_storage,
+        environment_key_hashes=workflow.environment_key_hashes(environment),
+    )
+    fixed_queries: list[tuple[str, str]] = []
+    runtime_deadlines: list[float] = []
+    runners: list[Any] = []
+    events: list[str] = []
+    written_states: list[Any] = []
+    identity_count = 0
+
+    class FixedRunner:
+        def __init__(self) -> None:
+            self.deadline: float | None = 200.0
+            runners.append(self)
+
+        def require_private_deadline(self) -> None:
+            assert self.deadline is not None
+            runtime_deadlines.append(self.deadline)
+
+        def note(self, message: str) -> None:
+            events.append(f"note:{message}")
+
+        def run(self, *_args: object, **_kwargs: object) -> object:
+            raise AssertionError("no generic child process is expected in the zero-delta fixture")
+
+        def output(self, *_args: object, **_kwargs: object) -> str:
+            raise AssertionError("broad output/query is forbidden in core scope")
+
+        def fixed_core_service_identity_output(self, spec: Any) -> str:
+            fixed_queries.append((spec.project, spec.service))
+            return f"{sum(map(ord, spec.service)):064x}"
+
+        def fixed_core_service_batch_inspect_output(
+            self, requested: tuple[tuple[Any, str], ...]
+        ) -> str:
+            return "\n".join(
+                _core_inspect_output(
+                    spec,
+                    private_id=private_id,
+                    health="healthy" if spec.health_required else None,
+                )
+                for spec, private_id in requested
+            )
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        events.append("lock-enter")
+        try:
+            yield object()
+        finally:
+            events.append("lock-exit")
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("optional or legacy topology boundary must remain query/action0")
+
+    def compose(_runner: object, **kwargs: object) -> None:
+        assert cast(tuple[str, ...], kwargs["trailing"]) == ("config", "--quiet")
+        events.append("compose-config")
+
+    def docker_identity(_runner: object) -> Any:
+        nonlocal identity_count
+        identity_count += 1
+        events.append("docker-identity")
+        environment = (
+            (("DOCKER_HOST", "unix:///drift.sock"),)
+            if identity_drift and identity_count == 2
+            else ()
+        )
+        return update._DockerExecutionIdentity("desktop-linux", environment)
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="mac-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=False,
+            assume_yes=True,
+            reconcile_local_topology=None,
+            publication_scope="level2-core",
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", FixedRunner)
+    monkeypatch.setattr(update, "require_command", lambda _name: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda *_args: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda *_args: ())
+    monkeypatch.setattr(update, "_compose", compose)
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(update, "_capture_docker_execution_identity", docker_identity)
+    monkeypatch.setattr(update, "_running_services", forbidden)
+    monkeypatch.setattr(update, "enforce_local_topology", forbidden)
+    monkeypatch.setattr(update, "_reconcile_local_reranker", forbidden)
+    monkeypatch.setattr(update, "_probe_datahub", forbidden)
+    monkeypatch.setattr(update, "_sync_catalog", forbidden)
+    monkeypatch.setattr(update, "_reconcile_local_admin_catalog_access", forbidden)
+    monkeypatch.setattr(
+        update,
+        "_health_check",
+        lambda *_args, **_kwargs: events.append("health"),
+    )
+    monkeypatch.setattr(
+        update,
+        "_verify_gateway_transparency",
+        lambda *_args, **_kwargs: events.append("gateway-proof"),
+    )
+
+    def write_state(_path: Path, value: Any) -> None:
+        events.append("state-write")
+        written_states.append(value)
+
+    monkeypatch.setattr(update, "write_applied_state", write_state)
+    deadline_starts = iter((0.0, 100.0))
+    monkeypatch.setattr(update.time, "monotonic", lambda: next(deadline_starts))
+
+    assert update.main() == (2 if identity_drift else 0)
+    specs = workflow.level2_core_query_plan(environment)
+    expected_specs = specs if identity_drift else (*specs, *specs)
+    assert fixed_queries == [(spec.project, spec.service) for spec in expected_specs]
+    rendered_queries = repr(fixed_queries).lower()
+    for optional_label in ("datahub", "airflow", "minio", "llama", "observability"):
+        assert optional_label not in rendered_queries
+    assert events.index("health") < events.index("gateway-proof")
+    if identity_drift:
+        assert written_states == []
+    else:
+        assert events.index("gateway-proof") < events.index("state-write")
+    assert events.count("docker-identity") == 2
+    assert events.index("docker-identity") < events.index("compose-config")
+    if written_states:
+        assert events.index("docker-identity", 2) < events.index("state-write")
+    assert events[-1] == "lock-exit"
+    assert len(runners) == 1
+    assert runners[0].deadline == 200.0
+    if written_states:
+        assert written_states[0].local_datahub is local_datahub
+        assert written_states[0].local_airflow is local_airflow
+        assert written_states[0].local_storage is local_storage
+        assert runtime_deadlines == [30.0, 30.0, 130.0, 130.0]
+
+
+def test_post_adoption_level2_defect_blocks_later_actions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    env_file = tmp_path / ".env.mac-development"
+    env_file.write_text("APP_ENV=development\n", encoding="utf-8")
+    state = _topology_state(
+        profile="mac-development",
+        applied_commit="a" * 40,
+        runtime_commit="a" * 40,
+        env_file=os.fspath(env_file),
+        local_redis=True,
+        local_graph=True,
+        local_gateway=True,
+        environment_key_hashes=workflow.environment_key_hashes({"APP_ENV": "development"}),
+    )
+    events: list[str] = []
+
+    class DefectiveRunner:
+        deadline: float | None = None
+
+        def require_private_deadline(self) -> None:
+            assert self.deadline is not None
+
+        def note(self, _message: str) -> None:
+            return None
+
+        def fixed_core_service_identity_output(self, spec: Any) -> str:
+            return f"{sum(map(ord, spec.service)):064x}"
+
+        def fixed_core_service_batch_inspect_output(
+            self, requested: tuple[tuple[Any, str], ...]
+        ) -> str:
+            return "\n".join(
+                _core_inspect_output(
+                    spec,
+                    private_id=private_id,
+                    health=(
+                        "unhealthy"
+                        if spec.service == "neo4j"
+                        else "healthy"
+                        if spec.health_required
+                        else None
+                    ),
+                )
+                for spec, private_id in requested
+            )
+
+    @contextmanager
+    def lock(_root: Path) -> Iterator[object]:
+        yield object()
+
+    monkeypatch.setattr(
+        update,
+        "parse_args",
+        lambda: SimpleNamespace(
+            profile="mac-development",
+            env_file=env_file,
+            release_dir=None,
+            git_pull=False,
+            reload_release=False,
+            refresh_bootstrap=False,
+            skip_catalog_sync=False,
+            assume_yes=True,
+            reconcile_local_topology=None,
+            publication_scope="level2-core",
+        ),
+    )
+    monkeypatch.setattr(update, "Runner", DefectiveRunner)
+    monkeypatch.setattr(update, "require_command", lambda _name: None)
+    monkeypatch.setattr(update, "require_clean_worktree", lambda _runner: None)
+    monkeypatch.setattr(update, "state_path", lambda *_args: tmp_path / "state.json")
+    monkeypatch.setattr(update, "load_applied_state", lambda _path: state)
+    monkeypatch.setattr(update, "current_commit", lambda _runner: "a" * 40)
+    monkeypatch.setattr(update, "_git_paths", lambda *_args: ())
+    monkeypatch.setattr(update, "exclusive_docker_workflow_lock", lock)
+    monkeypatch.setattr(
+        update,
+        "_capture_docker_execution_identity",
+        lambda _runner: update._DockerExecutionIdentity("desktop-linux", ()),
+    )
+    monkeypatch.setattr(
+        update,
+        "_compose",
+        lambda *_args, **_kwargs: events.append("compose-config"),
+    )
+    monkeypatch.setattr(
+        update,
+        "write_applied_state",
+        lambda *_args, **_kwargs: events.append("state-write"),
+    )
+
+    assert update.main() == 2
+    assert events == ["compose-config"]
 
 
 def test_environment_change_classification_restarts_only_known_consumers() -> None:
@@ -6055,12 +7030,9 @@ def test_local_topology_private_capture_never_prints_command_or_payload(
 ) -> None:
     sentinel = "container-id=0123456789 credential=/private/runtime.env"
 
-    def fake_run(*args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+    def fake_run(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         return subprocess.CompletedProcess(
-            args[0],
-            0,
-            f"{sentinel}\trunning\tUp 2 hours\n",
-            "future_secret=never-print",
+            ("docker",), 0, f"{sentinel}\trunning\tUp 2 hours\n", "stderr-sentinel"
         )
 
     monkeypatch.setattr(workflow.subprocess, "run", fake_run)
@@ -6085,15 +7057,10 @@ def test_local_topology_private_capture_failure_is_fixed_and_sanitized(
 ) -> None:
     sentinel = "container-id=0123456789 credential=/private/runtime.env"
 
-    def fail_run(*args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
-        raise subprocess.CalledProcessError(
-            1,
-            args[0],
-            output=sentinel,
-            stderr="future_secret=never-print",
-        )
+    def fail_spawn(*_args: Any, **_kwargs: Any) -> Any:
+        raise OSError(sentinel)
 
-    monkeypatch.setattr(workflow.subprocess, "run", fail_run)
+    monkeypatch.setattr(workflow.subprocess, "run", fail_spawn)
     runner = workflow.Runner(root=tmp_path)
 
     with pytest.raises(workflow.WorkflowError, match=r"^LOCAL_TOPOLOGY_QUERY_FAILED$") as raised:
@@ -6105,6 +7072,33 @@ def test_local_topology_private_capture_failure_is_fixed_and_sanitized(
     assert "future_secret" not in observed
     assert "com.docker.compose.project" not in observed
     assert "datariver-next" not in observed
+
+
+@pytest.mark.parametrize("size", (65 * 1024, 255 * 1024))
+def test_local_topology_legacy_stdout_boundary_accepts_64_to_256k_and_ignores_stderr(
+    size: int,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    payload = "x" * size
+    calls: list[dict[str, object]] = []
+
+    def fake_run(*_args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(kwargs)
+        return subprocess.CompletedProcess(("docker",), 0, payload, "private-stderr")
+
+    monkeypatch.setattr(workflow.subprocess, "run", fake_run)
+
+    assert workflow.Runner(root=tmp_path).local_topology_output(project="datariver-next") == payload
+    assert calls == [
+        {
+            "cwd": tmp_path,
+            "check": True,
+            "text": True,
+            "capture_output": True,
+            "timeout": 20,
+        }
+    ]
 
 
 def test_local_topology_private_capture_timeout_is_fixed_sanitized_and_not_retried(
@@ -6113,31 +7107,223 @@ def test_local_topology_private_capture_timeout_is_fixed_sanitized_and_not_retri
     tmp_path: Path,
 ) -> None:
     sentinel = "container-id=0123456789 credential=/private/runtime.env"
-    calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
+    calls = 0
+    real_popen = workflow.subprocess.Popen
 
-    def timeout_run(*args: Any, **kwargs: Any) -> subprocess.CompletedProcess[str]:
-        calls.append((args, kwargs))
-        raise subprocess.TimeoutExpired(
-            args[0],
-            kwargs["timeout"],
-            output=sentinel,
-            stderr="future_secret=never-print",
-        )
+    def counted_popen(*args: Any, **kwargs: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return real_popen(*args, **kwargs)
 
-    monkeypatch.setattr(workflow.subprocess, "run", timeout_run)
+    monkeypatch.setattr(workflow.subprocess, "Popen", counted_popen)
+    monkeypatch.setattr(workflow, "_PRIVATE_OUTPUT_TIMEOUT_SECONDS", 0.02)
     runner = workflow.Runner(root=tmp_path)
 
     with pytest.raises(workflow.WorkflowError, match=r"^LOCAL_TOPOLOGY_QUERY_FAILED$") as raised:
-        workflow.capture_local_topology(runner)
+        runner._private_bounded_output(
+            (sys.executable, "-c", "import time; time.sleep(1)"),
+            "LOCAL_TOPOLOGY_QUERY_FAILED",
+        )
 
-    assert len(calls) == 1
-    assert calls[0][1]["timeout"] == 20
+    assert calls == 1
     captured = capsys.readouterr()
     observed = captured.out + captured.err + str(raised.value)
     assert sentinel not in observed
     assert "future_secret" not in observed
     assert "com.docker.compose.project" not in observed
     assert "datariver-next" not in observed
+
+
+@pytest.mark.parametrize(
+    "program",
+    (
+        "import sys; sys.exit(7)",
+        "import sys; sys.stdout.buffer.write(b'\\xff')",
+        "import sys; sys.stdout.buffer.write(b'x' * 9)",
+    ),
+)
+def test_private_bounded_output_fails_closed_without_raw_output(
+    program: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
+) -> None:
+    sentinel = "private-process-sentinel"
+    monkeypatch.setattr(workflow, "_PRIVATE_OUTPUT_MAXIMUM_BYTES", 8)
+    runner = workflow.Runner(root=tmp_path)
+
+    with pytest.raises(workflow.WorkflowError, match="FIXED_PRIVATE_FAILURE") as raised:
+        runner._private_bounded_output(
+            (sys.executable, "-c", program),
+            "FIXED_PRIVATE_FAILURE",
+        )
+
+    captured = capsys.readouterr()
+    assert sentinel not in captured.out + captured.err + str(raised.value)
+
+
+def test_private_aggregate_deadline_expires_before_any_later_child_query(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    spawned: list[tuple[object, ...]] = []
+
+    def forbidden_spawn(*args: object, **_kwargs: object) -> object:
+        spawned.append(args)
+        raise AssertionError("expired interval must stop before spawn")
+
+    monkeypatch.setattr(workflow.time, "monotonic", lambda: 20.0)
+    monkeypatch.setattr(workflow.subprocess, "Popen", forbidden_spawn)
+    runner = workflow.Runner(root=tmp_path, deadline=10.0)
+
+    with pytest.raises(workflow.WorkflowError, match="LEVEL2_CORE_QUERY_FAILED"):
+        runner.fixed_core_service_identity_output(workflow.level2_core_query_plan({})[0])
+    assert spawned == []
+
+
+def test_private_process_finalizer_terminates_then_kills_and_reports_unreaped() -> None:
+    events: list[str] = []
+
+    class Stream:
+        def close(self) -> None:
+            events.append("close")
+
+    class Process:
+        stdout = Stream()
+
+        def poll(self) -> None:
+            return None
+
+        def terminate(self) -> None:
+            events.append("terminate")
+
+        def kill(self) -> None:
+            events.append("kill")
+
+        def wait(self, *, timeout: int) -> None:
+            events.append(f"wait:{timeout}")
+            raise subprocess.TimeoutExpired(("private",), timeout)
+
+    assert not workflow._finalize_private_process(cast(Any, Process()), None)
+    assert events == ["terminate", "wait:2", "kill", "wait:2", "close"]
+
+
+@pytest.mark.parametrize(
+    "stage",
+    ("selector", "poll", "terminate", "wait1", "kill", "wait2", "stream"),
+)
+@pytest.mark.parametrize("failure", (KeyboardInterrupt, SystemExit, BaseException))
+def test_private_process_finalizer_attempts_every_cleanup_after_baseexception(
+    stage: str,
+    failure: type[BaseException],
+) -> None:
+    events: list[str] = []
+
+    class Selector:
+        def close(self) -> None:
+            events.append("selector")
+            if stage == "selector":
+                raise failure("private-cleanup")
+
+    class Stream:
+        def close(self) -> None:
+            events.append("stream")
+            if stage == "stream":
+                raise failure("private-cleanup")
+
+    class Process:
+        stdout = Stream()
+        waits = 0
+
+        def poll(self) -> None:
+            events.append("poll")
+            if stage == "poll":
+                raise failure("private-cleanup")
+            return None
+
+        def terminate(self) -> None:
+            events.append("terminate")
+            if stage == "terminate":
+                raise failure("private-cleanup")
+
+        def kill(self) -> None:
+            events.append("kill")
+            if stage == "kill":
+                raise failure("private-cleanup")
+
+        def wait(self, *, timeout: int) -> int:
+            del timeout
+            self.waits += 1
+            events.append(f"wait{self.waits}")
+            if self.waits == 1 and stage in {"wait1", "kill", "wait2"}:
+                if stage == "wait1":
+                    raise failure("private-cleanup")
+                raise RuntimeError("force-kill-path")
+            if self.waits == 2 and stage == "wait2":
+                raise failure("private-cleanup")
+            return 0
+
+    assert not workflow._finalize_private_process(cast(Any, Process()), cast(Any, Selector()))
+    assert events[0] == "selector"
+    assert events[-1] == "stream"
+    if stage in {"wait1", "kill", "wait2"}:
+        assert "kill" in events
+        assert "wait2" in events
+
+
+def test_private_bounded_output_reaps_before_propagating_keyboard_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    events: list[str] = []
+
+    class Stream:
+        def close(self) -> None:
+            events.append("close")
+
+    class Process:
+        stdout = Stream()
+        reaped = False
+
+        def poll(self) -> int | None:
+            return 0 if self.reaped else None
+
+        def terminate(self) -> None:
+            events.append("terminate")
+
+        def wait(self, *, timeout: float) -> int:
+            events.append(f"wait:{timeout}")
+            self.reaped = True
+            return 0
+
+    process = Process()
+
+    class InterruptSelector:
+        def register(self, *_args: object) -> None:
+            return None
+
+        def get_map(self) -> dict[str, int]:
+            return {"stream": 1}
+
+        def select(self, *, timeout: float) -> list[object]:
+            del timeout
+            raise KeyboardInterrupt
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(workflow.subprocess, "Popen", lambda *_args, **_kwargs: process)
+    monkeypatch.setattr(workflow.selectors, "DefaultSelector", InterruptSelector)
+    runner = workflow.Runner(root=tmp_path)
+
+    with pytest.raises(KeyboardInterrupt):
+        runner._private_bounded_output(
+            (sys.executable, "-c", "import time; time.sleep(1)"),
+            "FIXED_PRIVATE_FAILURE",
+        )
+
+    assert process.reaped
+    assert events == ["terminate", "wait:2", "close"]
 
 
 def test_local_topology_malformed_evidence_never_echoes_raw_value() -> None:
@@ -6266,31 +7452,70 @@ def test_running_services_stops_after_one_sanitized_query_retry(
     assert "29.4.2" not in observed
 
 
-def test_update_remounts_a_new_postgres_role_secret_before_reconciliation() -> None:
+def test_update_remounts_a_new_postgres_role_secret_before_reconciliation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     update = _load_update_module()
     assert update._requires_postgres_secret_remount(("KNOWLEDGE_PROPOSAL_DATABASE_SECRET_REF",))
+    events: list[str] = []
+    monkeypatch.setattr(
+        update,
+        "_compose",
+        lambda *_args, **kwargs: events.append(
+            "compose:" + cast(tuple[str, ...], kwargs["trailing"])[-1]
+        ),
+    )
+    monkeypatch.setattr(
+        update,
+        "_reconcile_postgres",
+        lambda *_args, **_kwargs: events.append("postgres-role"),
+    )
+    update._apply_database_migration(
+        SimpleNamespace(note=lambda _message: None),
+        plan=replace(workflow.classify_changes(()), requires_migration=True),
+        immediate_restart_services=(),
+        running=(),
+        env_file=Path("env"),
+        files=(Path("compose"),),
+        environment_keys=("KNOWLEDGE_PROPOSAL_DATABASE_SECRET_REF",),
+        offline=False,
+    )
 
-    source = UPDATE_MODULE_PATH.read_text(encoding="utf-8")
-    migration_block = source.split("if plan.requires_migration:", maxsplit=1)[1].split(
-        "if reapply_local_identity:", maxsplit=1
-    )[0]
-    remount = migration_block.index("새 PostgreSQL role secret mount")
-    reconcile = migration_block.index("Migration 선행 PostgreSQL 역할 계약")
-    assert remount < reconcile
+    assert events == [
+        "compose:postgres",
+        "postgres-role",
+        "compose:migrate",
+        "postgres-role",
+    ]
 
 
-def test_update_reconciles_runtime_roles_before_and_after_migration() -> None:
-    source = UPDATE_MODULE_PATH.read_text(encoding="utf-8")
-    migration_block = source.split("if plan.requires_migration:", maxsplit=1)[1].split(
-        "if reapply_local_identity:", maxsplit=1
-    )[0]
+def test_update_reconciles_runtime_roles_before_and_after_migration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    update = _load_update_module()
+    events: list[str] = []
+    monkeypatch.setattr(
+        update,
+        "_compose",
+        lambda *_args, **_kwargs: events.append("migrate"),
+    )
+    monkeypatch.setattr(
+        update,
+        "_reconcile_postgres",
+        lambda *_args, **_kwargs: events.append("postgres"),
+    )
+    update._apply_database_migration(
+        SimpleNamespace(note=lambda _message: None),
+        plan=replace(workflow.classify_changes(()), requires_migration=True),
+        immediate_restart_services=(),
+        running=(),
+        env_file=Path("env"),
+        files=(Path("compose"),),
+        environment_keys=(),
+        offline=False,
+    )
 
-    before = migration_block.index("Migration 선행 PostgreSQL 역할 계약")
-    migrate = migration_block.index('runner.note("Alembic migration을 적용합니다.")')
-    after = migration_block.index("Migration 후 PostgreSQL 역할 grant")
-
-    assert before < migrate < after
-    assert migration_block.count("_reconcile_postgres(runner, env_file=env_file)") == 2
+    assert events == ["postgres", "migrate", "postgres"]
 
 
 def test_update_recovers_a_stopped_keycloak_before_reconfiguration() -> None:

@@ -61,6 +61,14 @@ Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_R
 
 Architecture decisions are immutable records under `adr/`. Superseded artifacts remain in Git and link to their replacement; they are not silently overwritten.
 
+Mac tokenless `dev-publish` uses the Stage 1 Level1+Level2 publication boundary defined by
+[ADR-0113](adr/0113-governed-local-topology-drift.md). It requires already-selected Redis, Neo4j and
+APISIX, preserves optional local integration providers without querying or mutating them, records
+no optional-provider application or health claim, and adds no adoption action. AppliedState proves
+only the Level1+Level2 core runtime SHA; optional integrations are validated later against the full
+current source SHA. Preparation, WSL and production continue to prove their own target-local
+contracts.
+
 Current retention decisions: [governed retention and immutable archive](adr/0010-governed-retention-and-immutable-archive.md), [maintained S3 and archive promotion](adr/0012-maintained-s3-and-immutable-archive-promotion.md), [Chat active-policy binding](adr/0018-chat-retention-policy-binding.md), and [archive-only execution control plane](adr/0037-retention-execution-control-plane.md).
 
 Current administrator decisions: [hardware WebAuthn and governed password fallback](adr/0009-hardware-webauthn-and-governed-password-fallback.md), [workspace access roles and development connection probes](adr/0024-workspace-access-roles-and-development-connection-probes.md), and [operator security modes and stable authentication renewal](adr/0025-operator-security-modes-and-stable-auth-renewal.md).

@@ -321,7 +321,9 @@ def dev_runtime_update_command(
         "--refresh-bootstrap",
         "--assume-yes",
     ]
-    if reconciliation is not None:
+    if reconciliation is None:
+        command.extend(("--publication-scope", "level2-core"))
+    else:
         command.extend(("--reconcile-local-topology", reconciliation))
     return tuple(command)
 

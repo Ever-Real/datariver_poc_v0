@@ -84,7 +84,7 @@ def test_local_topology_reconciliation_is_optional_and_dev_publish_only() -> Non
             )
 
 
-def test_dev_runtime_update_command_keeps_normal_contract_and_exact_opt_in() -> None:
+def test_dev_runtime_update_command_selects_core_only_for_tokenless_publish() -> None:
     normal = tuple(os.fspath(value) for value in cycle.dev_runtime_update_command(None))
     adopted = tuple(
         os.fspath(value)
@@ -98,9 +98,16 @@ def test_dev_runtime_update_command_keeps_normal_contract_and_exact_opt_in() -> 
         "mac-development",
         "--refresh-bootstrap",
         "--assume-yes",
+        "--publication-scope",
+        "level2-core",
     )
     assert adopted == (
-        *normal,
+        os.fspath(ROOT / ".venv" / "bin" / "python"),
+        os.fspath(ROOT / "scripts" / "workflow_update_restart.py"),
+        "--profile",
+        "mac-development",
+        "--refresh-bootstrap",
+        "--assume-yes",
         "--reconcile-local-topology",
         "mac-development-graph-gateway-v1",
     )

@@ -7,16 +7,25 @@ import hashlib
 import json
 import os
 import re
+import selectors
 import shlex
 import shutil
 import stat
 import subprocess
 import tempfile
+import time
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field, fields, replace
 from pathlib import Path
 from typing import Literal, NoReturn, Self
 from urllib.parse import urlsplit
+
+from mac_core_publication import (
+    CoreServiceCondition,
+    CoreServiceObservation,
+    CoreServiceSpec,
+    selected_core_service_specs,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -162,6 +171,16 @@ _TOPOLOGY_DOCKER_STATES = {
     "dead",
 }
 _TOPOLOGY_STATUS_FORMAT = '{{.Label "com.docker.compose.service"}}\t{{.State}}\t{{.Status}}'
+_CORE_SERVICE_ID_FORMAT = "{{.ID}}"
+_CORE_SERVICE_INSPECT_FORMAT = (
+    '{{json .Id}}|{{json (index .Config.Labels "com.docker.compose.project")}}|'
+    '{{json (index .Config.Labels "com.docker.compose.service")}}|{{json .State.Status}}|'
+    "{{if .State.Health}}{{json .State.Health.Status}}{{else}}null{{end}}"
+)
+_CORE_SERVICE_ID = re.compile(r"^[0-9a-f]{64}$")
+_PRIVATE_OUTPUT_MAXIMUM_BYTES = 64 * 1024
+_PRIVATE_OUTPUT_TIMEOUT_SECONDS = 20
+_PRIVATE_OUTPUT_REAP_SECONDS = 2
 
 _ENV_KEY = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
@@ -426,14 +445,28 @@ class ChangePlan:
 class Runner:
     """Print and execute subprocesses without shell interpolation."""
 
-    def __init__(self, *, root: Path = ROOT, dry_run: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        root: Path = ROOT,
+        dry_run: bool = False,
+        quiet: bool = False,
+        deadline: float | None = None,
+    ) -> None:
         self.root = root.resolve()
         self.dry_run = dry_run
+        self.quiet = quiet
+        self.deadline = deadline
         self.step = 0
 
     def note(self, message: str) -> None:
         self.step += 1
-        print(f"[{self.step:02d}] {message}", flush=True)
+        if not self.quiet:
+            print(f"[{self.step:02d}] {message}", flush=True)
+
+    def require_private_deadline(self) -> None:
+        if self.deadline is not None and time.monotonic() >= self.deadline:
+            raise WorkflowError("PRIVATE_QUERY_DEADLINE_EXPIRED")
 
     def run(
         self,
@@ -445,7 +478,8 @@ class Runner:
         capture_output: bool = False,
     ) -> subprocess.CompletedProcess[str]:
         command = [os.fspath(argument) for argument in arguments]
-        print(f"     $ {shlex.join(command)}", flush=True)
+        if not self.quiet:
+            print(f"     $ {shlex.join(command)}", flush=True)
         if self.dry_run:
             return subprocess.CompletedProcess(command, 0, "", "")
         try:
@@ -469,7 +503,17 @@ class Runner:
         *,
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
+        classification: str | None = None,
+        timeout_seconds: int = _PRIVATE_OUTPUT_TIMEOUT_SECONDS,
     ) -> str:
+        if classification is not None or self.deadline is not None:
+            if cwd is not None or env is not None:
+                raise WorkflowError(classification or "PRIVATE_QUERY_FAILED")
+            return self._private_bounded_output(
+                tuple(os.fspath(argument) for argument in arguments),
+                classification or "PRIVATE_QUERY_FAILED",
+                timeout_seconds=timeout_seconds,
+            )
         result = self.run(
             arguments,
             cwd=cwd,
@@ -507,6 +551,143 @@ class Runner:
         except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
             raise WorkflowError("LOCAL_TOPOLOGY_QUERY_FAILED") from error
         return result.stdout.strip()
+
+    def _private_bounded_output(
+        self,
+        command: Sequence[str],
+        classification: str,
+        *,
+        timeout_seconds: int | None = None,
+    ) -> str:
+        if self.dry_run:
+            return ""
+        process: subprocess.Popen[bytes] | None = None
+        selector: selectors.BaseSelector | None = None
+        output = b""
+        failed = False
+        interrupted: BaseException | None = None
+        try:
+            timeout = (
+                _PRIVATE_OUTPUT_TIMEOUT_SECONDS if timeout_seconds is None else timeout_seconds
+            )
+            deadline = time.monotonic() + timeout
+            if self.deadline is not None:
+                deadline = min(deadline, self.deadline)
+            if deadline <= time.monotonic():
+                raise TimeoutError
+            process = subprocess.Popen(  # noqa: S603 - callers provide closed argv only.
+                command,
+                cwd=self.root,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+            )
+            assert process.stdout is not None
+            selector = selectors.DefaultSelector()
+            selector.register(process.stdout, selectors.EVENT_READ)
+            output = _read_private_process(process, selector, deadline)
+        except Exception:
+            failed = True
+        except BaseException as error:
+            failed = True
+            interrupted = error
+        if not _finalize_private_process(process, selector):
+            raise WorkflowError(classification)
+        if interrupted is not None:
+            raise interrupted
+        if failed:
+            raise WorkflowError(classification)
+        try:
+            return output.decode("utf-8", errors="strict").strip()
+        except UnicodeDecodeError:
+            raise WorkflowError(classification) from None
+
+    def fixed_core_service_identity_output(self, spec: CoreServiceSpec) -> str:
+        """Capture IDs for one exact Level1/Level2 service label."""
+
+        return self._private_bounded_output(
+            fixed_core_service_query_argv(spec),
+            "LEVEL2_CORE_QUERY_FAILED",
+        )
+
+    def fixed_core_service_batch_inspect_output(
+        self,
+        requested: Sequence[tuple[CoreServiceSpec, str]],
+    ) -> str:
+        """Capture structured state once for all privately validated container IDs."""
+
+        return self._private_bounded_output(
+            fixed_core_service_batch_inspect_argv(requested),
+            "LEVEL2_CORE_QUERY_FAILED",
+        )
+
+
+def _read_private_process(
+    process: subprocess.Popen[bytes],
+    selector: selectors.BaseSelector,
+    deadline: float,
+) -> bytes:
+    output = bytearray()
+    while selector.get_map():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError
+        for key, _mask in selector.select(timeout=min(remaining, 0.25)):
+            requested = min(64 * 1024, _PRIVATE_OUTPUT_MAXIMUM_BYTES - len(output) + 1)
+            chunk = os.read(key.fd, requested)
+            if not chunk:
+                selector.unregister(key.fileobj)
+                continue
+            output.extend(chunk)
+            if len(output) > _PRIVATE_OUTPUT_MAXIMUM_BYTES:
+                raise OverflowError
+    remaining = max(0.001, deadline - time.monotonic())
+    if process.wait(timeout=remaining) != 0:
+        raise ChildProcessError
+    return bytes(output)
+
+
+def _finalize_private_process(
+    process: subprocess.Popen[bytes] | None,
+    selector: selectors.BaseSelector | None,
+) -> bool:
+    cleanup_ok = True
+    reaped = process is None
+    try:
+        if selector is not None:
+            selector.close()
+    except BaseException:
+        cleanup_ok = False
+    if process is not None:
+        try:
+            reaped = process.poll() is not None
+        except BaseException:
+            cleanup_ok = False
+        if not reaped:
+            try:
+                process.terminate()
+            except BaseException:
+                cleanup_ok = False
+            try:
+                process.wait(timeout=_PRIVATE_OUTPUT_REAP_SECONDS)
+                reaped = True
+            except BaseException:
+                cleanup_ok = False
+        if not reaped:
+            try:
+                process.kill()
+            except BaseException:
+                cleanup_ok = False
+            try:
+                process.wait(timeout=_PRIVATE_OUTPUT_REAP_SECONDS)
+                reaped = True
+            except BaseException:
+                cleanup_ok = False
+        try:
+            if process.stdout is not None:
+                process.stdout.close()
+        except BaseException:
+            cleanup_ok = False
+    return cleanup_ok and reaped
 
 
 def _topology_health_class(status: str) -> str:
@@ -567,6 +748,159 @@ def capture_local_topology(
         except WorkflowError as error:
             raise WorkflowError("LOCAL_TOPOLOGY_QUERY_FAILED") from error
     return tuple(observations)
+
+
+def level2_core_query_plan(environment_values: dict[str, str]) -> tuple[CoreServiceSpec, ...]:
+    """Return the immutable fixed-service plan; optional providers are never represented."""
+
+    try:
+        return selected_core_service_specs(environment_values)
+    except ValueError as error:
+        raise WorkflowError("LEVEL2_CORE_ENVIRONMENT_INVALID") from error
+
+
+def fixed_core_service_query_argv(spec: CoreServiceSpec) -> tuple[str, ...]:
+    selection = {} if spec.environment_key is None else {spec.environment_key: "true"}
+    if spec not in selected_core_service_specs(selection):
+        raise WorkflowError("LEVEL2_CORE_QUERY_PLAN_INVALID")
+    return (
+        "docker",
+        "container",
+        "ls",
+        "--all",
+        "--no-trunc",
+        "--filter",
+        f"label=com.docker.compose.project={spec.project}",
+        "--filter",
+        f"label=com.docker.compose.service={spec.service}",
+        "--format",
+        _CORE_SERVICE_ID_FORMAT,
+    )
+
+
+def fixed_core_service_batch_inspect_argv(
+    requested: Sequence[tuple[CoreServiceSpec, str]],
+) -> tuple[str, ...]:
+    pairs = tuple(requested)
+    if not pairs or len({private_id for _spec, private_id in pairs}) != len(pairs):
+        raise WorkflowError("LEVEL2_CORE_QUERY_PLAN_INVALID")
+    for spec, private_id in pairs:
+        selection = {} if spec.environment_key is None else {spec.environment_key: "true"}
+        if (
+            spec not in selected_core_service_specs(selection)
+            or _CORE_SERVICE_ID.fullmatch(private_id) is None
+        ):
+            raise WorkflowError("LEVEL2_CORE_QUERY_PLAN_INVALID")
+    return (
+        "docker",
+        "container",
+        "inspect",
+        "--format",
+        _CORE_SERVICE_INSPECT_FORMAT,
+        *(private_id for _spec, private_id in pairs),
+    )
+
+
+def parse_fixed_core_service_identity(
+    spec: CoreServiceSpec,
+    output: str,
+) -> str | None:
+    selection = {} if spec.environment_key is None else {spec.environment_key: "true"}
+    if spec not in selected_core_service_specs(selection):
+        raise WorkflowError("LEVEL2_CORE_QUERY_PLAN_INVALID")
+    lines = tuple(line for line in output.splitlines() if line)
+    if not lines:
+        return None
+    if len(lines) != 1:
+        raise WorkflowError("LEVEL2_CORE_DUPLICATE")
+    if _CORE_SERVICE_ID.fullmatch(lines[0]) is None:
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL")
+    return lines[0]
+
+
+def _core_service_condition(
+    state: str,
+    health: str | None,
+) -> CoreServiceCondition:
+    if state == "running":
+        return {
+            None: CoreServiceCondition.RUNNING_NO_HEALTH,
+            "starting": CoreServiceCondition.RUNNING_STARTING,
+            "healthy": CoreServiceCondition.RUNNING_HEALTHY,
+            "unhealthy": CoreServiceCondition.RUNNING_UNHEALTHY,
+        }[health]
+    if health is not None:
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL")
+    try:
+        return CoreServiceCondition(state.upper())
+    except ValueError:
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL") from None
+
+
+def parse_fixed_core_service_output(
+    spec: CoreServiceSpec,
+    output: str,
+    expected_private_id: str,
+) -> CoreServiceObservation:
+    if len(output.encode("utf-8")) > 64 * 1024:
+        raise WorkflowError("LEVEL2_CORE_QUERY_OUTPUT_LIMIT")
+    lines = tuple(line for line in output.splitlines() if line)
+    if len(lines) != 1:
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL")
+    parts = lines[0].split("|", maxsplit=4)
+    if len(parts) != 5:
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL")
+    try:
+        private_id, project, service, state, health = (json.loads(value) for value in parts)
+    except json.JSONDecodeError:
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL") from None
+    if not (
+        isinstance(private_id, str)
+        and _CORE_SERVICE_ID.fullmatch(private_id)
+        and private_id == expected_private_id
+        and project == spec.project
+        and service == spec.service
+        and isinstance(state, str)
+        and state in _TOPOLOGY_DOCKER_STATES
+        and (health is None or isinstance(health, str))
+        and health in {None, "starting", "healthy", "unhealthy"}
+    ):
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL")
+    try:
+        return CoreServiceObservation(
+            key=spec.key,
+            private_id=private_id,
+            condition=_core_service_condition(state, health),
+        )
+    except ValueError as error:
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL") from error
+
+
+def parse_fixed_core_service_batch_output(
+    requested: Sequence[tuple[CoreServiceSpec, str]],
+    output: str,
+) -> tuple[CoreServiceObservation, ...]:
+    pairs = tuple(requested)
+    if not pairs or len(output.encode("utf-8")) > _PRIVATE_OUTPUT_MAXIMUM_BYTES:
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL")
+    by_id = {private_id: spec for spec, private_id in pairs}
+    if len(by_id) != len(pairs):
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL")
+    observations: dict[str, CoreServiceObservation] = {}
+    for line in tuple(line for line in output.splitlines() if line):
+        head = line.split("|", maxsplit=1)[0]
+        try:
+            private_id = json.loads(head)
+        except json.JSONDecodeError:
+            raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL") from None
+        if not isinstance(private_id, str) or private_id not in by_id or private_id in observations:
+            raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL")
+        observations[private_id] = parse_fixed_core_service_output(
+            by_id[private_id], line, private_id
+        )
+    if set(observations) != set(by_id):
+        raise WorkflowError("LEVEL2_CORE_QUERY_PROTOCOL")
+    return tuple(observations[private_id] for _spec, private_id in pairs)
 
 
 def _enabled_optional_topology_services(values: dict[str, str]) -> tuple[str, ...]:
