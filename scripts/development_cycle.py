@@ -307,14 +307,29 @@ def require_platform(*, expected_system: str, expected_machines: set[str]) -> No
         )
 
 
-def dev_runtime_update_command(
-    reconciliation: str | None,
-) -> tuple[str | os.PathLike[str], ...]:
+def _project_python() -> Path:
     python_bin = ROOT / ".venv" / "bin" / "python"
     if not python_bin.is_file() or not os.access(python_bin, os.X_OK):
         raise DevelopmentCycleError("The project Python interpreter is absent or not executable.")
+    return python_bin
+
+
+def level2_core_prestate_command() -> tuple[str | os.PathLike[str], ...]:
+    """Return the exact private-supervisor argv; its required cwd is ``ROOT``."""
+
+    return (
+        _project_python(),
+        ROOT / "scripts" / "workflow_update_restart.py",
+        "--diagnostic-phase",
+        "LEVEL2_CORE_PRESTATE",
+    )
+
+
+def dev_runtime_update_command(
+    reconciliation: str | None,
+) -> tuple[str | os.PathLike[str], ...]:
     command: list[str | os.PathLike[str]] = [
-        python_bin,
+        _project_python(),
         ROOT / "scripts" / "workflow_update_restart.py",
         "--profile",
         "mac-development",

@@ -373,6 +373,13 @@ identifiers never leave the process. A non-selected state remains `LEVEL2_ADOPTI
 when the observed services are healthy. This is observation evidence only and authorizes no
 adoption or mutation.
 
+The checked-in `development_cycle.level2_core_prestate_command()` is the sole launch contract for
+that phase. An external private supervisor executes its exact project-interpreter argv with the
+repository root as `cwd`; direct shebang execution, `PYTHONPATH`, interpreter/PATH substitution and
+repository-internal daily call sites are forbidden. The supervisor privately bounds child output
+and maps nonzero, import or malformed evidence to `LEVEL2_CORE_PRESTATE_LAUNCH_FAILED` without
+emitting provider output or a traceback. The builder itself executes and parses nothing.
+
 - `development_cycle.py dev-publish`, `workflow_update_restart.py`, `prep-update` and `prep-check`
   keep their public names and existing daily arguments.
 - No environment key, Dockerfile, service profile or required daily input changes. The optional

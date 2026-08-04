@@ -1617,25 +1617,6 @@ def verify_amd64_source_readiness_contract() -> None:
         )
     if 'print(f"     {output}")' in workflow:
         raise AssertionError("raw source-host preflight output must never reach operator logs")
-    runtime_launcher = workflow.split("def dev_runtime_update_command(", maxsplit=1)[1].split(
-        "def dev_publish(", maxsplit=1
-    )[0]
-    for fragment in (
-        'python_bin = ROOT / ".venv" / "bin" / "python"',
-        "not python_bin.is_file() or not os.access(python_bin, os.X_OK)",
-        '"The project Python interpreter is absent or not executable."',
-        'ROOT / "scripts" / "workflow_update_restart.py"',
-        'command.extend(("--reconcile-local-topology", reconciliation))',
-    ):
-        if fragment not in runtime_launcher:
-            raise AssertionError(f"the Mac runtime project-Python launcher is missing: {fragment}")
-    if runtime_launcher.index("python_bin,") > runtime_launcher.index(
-        'ROOT / "scripts" / "workflow_update_restart.py"'
-    ):
-        raise AssertionError("the project Python must precede the exact runtime workflow script")
-    for forbidden in ("sys.executable", "os.environ", "shell=True"):
-        if forbidden in runtime_launcher:
-            raise AssertionError("the Mac runtime launcher cannot select an alternate interpreter")
     if workflow.index("runtime = prepare_source_host") > workflow.index(
         "write_readiness_manifest(evidence)"
     ):
@@ -1675,7 +1656,6 @@ def verify_amd64_source_readiness_contract() -> None:
         "test_missing_readiness_manifest_fails_closed",
         "test_prep_check_is_repeatable_and_read_only_after_successful_update",
         "test_dev_runtime_update_command_requires_executable_project_python",
-        "test_dev_runtime_update_operator_boundary_imports_with_project_python",
         "test_dev_publish_propagates_runtime_child_interrupt_without_push",
     ):
         if fragment not in test_source:
@@ -7903,12 +7883,56 @@ def _verify_level2_core_deadline_contract(trees: dict[str, ast.Module]) -> None:
         raise AssertionError("Level2 runtime deadline is not restored from finally")
 
 
+def _verify_level2_core_launcher_contract(trees: dict[str, ast.Module]) -> None:
+    project_python = _level2_core_static_function(trees, "_project_python", "cycle")
+    project_source = ast.unparse(project_python)
+    for required in (
+        "ROOT / '.venv' / 'bin' / 'python'",
+        "python_bin.is_file()",
+        "os.access(python_bin, os.X_OK)",
+        "The project Python interpreter is absent or not executable.",
+    ):
+        if required not in project_source:
+            raise AssertionError(f"project Python validation drifted: {required}")
+
+    builder = _level2_core_static_function(trees, "level2_core_prestate_command", "cycle")
+    returns = [node for node in builder.body if isinstance(node, ast.Return)]
+    if len(returns) != 1 or not isinstance(returns[0].value, ast.Tuple):
+        raise AssertionError("Level2 prestate builder must return one literal tuple")
+    elements = returns[0].value.elts
+    if len(elements) != 4 or tuple(ast.unparse(value) for value in elements) != (
+        "_project_python()",
+        "ROOT / 'scripts' / 'workflow_update_restart.py'",
+        "'--diagnostic-phase'",
+        "'LEVEL2_CORE_PRESTATE'",
+    ):
+        raise AssertionError("Level2 prestate supervisor argv drifted")
+    if "required cwd is ``ROOT``" not in (ast.get_docstring(builder) or ""):
+        raise AssertionError("Level2 prestate builder lost its ROOT cwd contract")
+    builder_source = ast.unparse(builder)
+    if any(
+        forbidden in builder_source
+        for forbidden in ("subprocess", "sys.executable", "os.environ", "PYTHONPATH", "shell")
+    ):
+        raise AssertionError("Level2 prestate builder gained execution or environment authority")
+    internal_calls = [
+        node
+        for node in ast.walk(trees["cycle"])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "level2_core_prestate_command"
+    ]
+    if internal_calls:
+        raise AssertionError("daily repository workflows cannot consume the private launcher")
+
+
 def verify_mac_level2_core_publication_contract() -> None:
     trees = _level2_core_static_trees()
     _verify_level2_core_purity_and_size(trees)
     _verify_level2_core_executor_boundary(trees)
     _verify_level2_core_order_and_routing(trees)
     _verify_level2_core_deadline_contract(trees)
+    _verify_level2_core_launcher_contract(trees)
 
 
 def verify_document_links() -> None:

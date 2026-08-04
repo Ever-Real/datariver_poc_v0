@@ -113,6 +113,36 @@ def test_dev_runtime_update_command_selects_core_only_for_tokenless_publish() ->
     )
 
 
+def test_level2_core_prestate_command_uses_project_python_and_fixed_args() -> None:
+    command = tuple(os.fspath(value) for value in cycle.level2_core_prestate_command())
+
+    assert command == (
+        os.fspath(ROOT / ".venv" / "bin" / "python"),
+        os.fspath(ROOT / "scripts" / "workflow_update_restart.py"),
+        "--diagnostic-phase",
+        "LEVEL2_CORE_PRESTATE",
+    )
+
+
+@pytest.mark.parametrize("failure", ("missing", "nonregular", "non-executable"))
+def test_level2_core_prestate_command_requires_executable_project_python(
+    failure: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_python = tmp_path / ".venv" / "bin" / "python"
+    if failure == "nonregular":
+        project_python.mkdir(parents=True)
+    elif failure == "non-executable":
+        project_python.parent.mkdir(parents=True)
+        project_python.write_text("", encoding="utf-8")
+        project_python.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    monkeypatch.setattr(cycle, "ROOT", tmp_path)
+
+    with pytest.raises(cycle.DevelopmentCycleError, match="project Python"):
+        cycle.level2_core_prestate_command()
+
+
 @pytest.mark.parametrize("failure", ("missing", "non-executable"))
 def test_dev_runtime_update_command_requires_executable_project_python(
     failure: str,
@@ -136,12 +166,15 @@ def test_dev_runtime_update_command_requires_executable_project_python(
         cycle.dev_runtime_update_command(None)
 
 
-def test_dev_runtime_update_operator_boundary_imports_with_project_python() -> None:
-    command = tuple(os.fspath(value) for value in cycle.dev_runtime_update_command(None))
+def test_level2_core_prestate_operator_boundary_imports_without_pythonpath() -> None:
+    command = tuple(os.fspath(value) for value in cycle.level2_core_prestate_command())
+    environment = os.environ.copy()
+    environment.pop("PYTHONPATH", None)
 
     completed = subprocess.run(  # noqa: S603 - exact repository-owned interpreter and script.
         (*command[:2], "--help"),
         cwd=ROOT,
+        env=environment,
         check=False,
         capture_output=True,
         text=True,
@@ -150,7 +183,8 @@ def test_dev_runtime_update_operator_boundary_imports_with_project_python() -> N
 
     assert completed.returncode == 0
     assert "usage:" in completed.stdout
-    assert "ModuleNotFoundError" not in completed.stderr
+    assert completed.stderr == ""
+    assert "Traceback" not in completed.stdout
 
 
 def test_dev_publish_keeps_runtime_reconciliation_before_push(
