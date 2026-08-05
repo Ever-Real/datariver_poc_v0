@@ -57,6 +57,9 @@ ABOX_MIGRATION = ROOT / "backend/alembic/versions/0060_knowledge_studio_abox_bin
 PUBLICATION_MIGRATION = (
     ROOT / "backend/alembic/versions/0061_knowledge_studio_governed_publication.py"
 )
+PROPOSAL_JOB_MIGRATION = (
+    ROOT / "backend/alembic/versions/0084_governed_knowledge_studio_tbox_proposal_jobs.py"
+)
 QA_MIGRATION = ROOT / "backend/alembic/versions/0062_knowledge_qa_domain_archive.py"
 BUILDER_MIGRATION = ROOT / "backend/alembic/versions/0063_ontology_builder_and_ingestion_jobs.py"
 HIERARCHY_MIGRATION = ROOT / "backend/alembic/versions/0064_normalize_tbox_hierarchy.py"
@@ -92,6 +95,18 @@ def _catalog_pin_migration() -> ModuleType:
     spec = importlib.util.spec_from_file_location(
         "test_knowledge_studio_catalog_pin_v2",
         CATALOG_PIN_MIGRATION,
+    )
+    assert spec is not None
+    assert spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def _proposal_job_migration() -> ModuleType:
+    spec = importlib.util.spec_from_file_location(
+        "test_governed_knowledge_studio_tbox_proposal_jobs",
+        PROPOSAL_JOB_MIGRATION,
     )
     assert spec is not None
     assert spec.loader is not None
@@ -922,6 +937,33 @@ def test_proposal_authorization_scope_is_pinned_reversible_and_canonical() -> No
     assert initial.rfind("iam.canonical_admin_bindings AS admin_binding") > initial.rfind(
         "CREATE OR REPLACE FUNCTION knowledge.fail_tbox_proposal_job_v1("
     )
+
+
+def test_revision_0084_pins_pre_role_authorization_until_revision_0094(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proposal_job = _proposal_job_migration()
+    authorization_scope = _proposal_authorization_scope_migration()
+    revision_0084_sql = proposal_job._revision_0084_function_sql()
+    revision_0094_sql = authorization_scope.current_authorization_function_sql()
+
+    assert proposal_job.revision == "0084"
+    assert proposal_job.down_revision == "0083"
+    assert authorization_scope.revision == "0094"
+    assert authorization_scope.down_revision == "0093"
+    assert "iam.canonical_admin_bindings" not in revision_0084_sql
+    assert "iam.profile_role_assignments" not in revision_0084_sql
+    assert "membership.attributes -> 'allowed_system_ids'" in revision_0084_sql
+    assert "iam.canonical_admin_bindings" in revision_0094_sql
+    assert "iam.profile_role_assignments" in revision_0094_sql
+
+    scripts: list[str] = []
+    monkeypatch.setattr(proposal_job, "_execute_sql_script", scripts.append)
+    monkeypatch.setattr(proposal_job, "op", SimpleNamespace(execute=lambda _sql: None))
+
+    proposal_job.upgrade()
+
+    assert scripts[2] == revision_0084_sql
 
 
 def test_proposal_control_guard_is_pinned_reversible_and_canonical() -> None:

@@ -7,6 +7,7 @@ Create Date: 2026-07-31
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import Sequence
 
 from alembic import op
@@ -22,6 +23,102 @@ revision: str = "0084"
 down_revision: str | Sequence[str] | None = "0083"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
+
+_AUTHORIZATION_FUNCTION_START = (
+    "CREATE OR REPLACE FUNCTION knowledge.current_tbox_proposal_authorization_hash_v1("
+)
+_AUTHORIZATION_FUNCTION_END = (
+    "\n\nCREATE OR REPLACE FUNCTION knowledge.current_tbox_proposal_human_can_v1("
+)
+_REVISION_0084_AUTHORIZATION_SHA256 = (
+    "9c89eaa41c1b4b5b60d358ac6416336a568f605a5f397d4a216485acd7e823f9"
+)
+_REVISION_0084_AUTHORIZATION_FUNCTION_SQL = r"""
+CREATE OR REPLACE FUNCTION knowledge.current_tbox_proposal_authorization_hash_v1(
+    p_workspace_id uuid,
+    p_subject_id uuid
+)
+RETURNS text
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, platform, iam, knowledge
+AS $$
+    SELECT knowledge.tbox_proposal_json_hash_v1(jsonb_build_object(
+        'contract', 'KNOWLEDGE_STUDIO_PROPOSAL_REQUEST_AUTHORIZATION_V1',
+        'subject_id', membership.subject_id::text,
+        'workspace_id', membership.workspace_id::text,
+        'active', subject.active AND membership.active AND (
+            membership.access_expires_at IS NULL
+            OR membership.access_expires_at > transaction_timestamp()
+        ),
+        'department_id', CASE WHEN membership.department_id IS NULL THEN NULL
+            ELSE to_jsonb(membership.department_id::text) END,
+        'groups', COALESCE((
+            SELECT jsonb_agg(value ORDER BY value)
+            FROM jsonb_array_elements_text(
+                COALESCE(membership.attributes -> 'groups', '[]'::jsonb)
+            ) AS item(value)
+        ), '[]'::jsonb),
+        'job_function', membership.job_function,
+        'clearance', membership.clearance,
+        'allowed_system_ids', COALESCE((
+            SELECT jsonb_agg(value ORDER BY value)
+            FROM jsonb_array_elements_text(
+                COALESCE(membership.attributes -> 'allowed_system_ids', '[]'::jsonb)
+            ) AS item(value)
+        ), '[]'::jsonb),
+        'allowed_domain_ids', COALESCE((
+            SELECT jsonb_agg(value ORDER BY value)
+            FROM jsonb_array_elements_text(
+                COALESCE(membership.attributes -> 'allowed_domain_ids', '[]'::jsonb)
+            ) AS item(value)
+        ), '[]'::jsonb),
+        'allowed_actions', COALESCE((
+            SELECT jsonb_agg(value ORDER BY value)
+            FROM jsonb_array_elements_text(
+                COALESCE(membership.attributes -> 'allowed_actions', '[]'::jsonb)
+            ) AS item(value)
+        ), '[]'::jsonb),
+        'denied_actions', COALESCE((
+            SELECT jsonb_agg(value ORDER BY value)
+            FROM jsonb_array_elements_text(
+                COALESCE(membership.attributes -> 'denied_actions', '[]'::jsonb)
+            ) AS item(value)
+        ), '[]'::jsonb),
+        'builtin_policy_version', 'builtin-abac-v3'
+    ))
+    FROM iam.workspace_memberships AS membership
+    JOIN iam.subjects AS subject ON subject.id = membership.subject_id
+    WHERE membership.workspace_id = p_workspace_id
+      AND membership.subject_id = p_subject_id
+$$;
+""".strip()
+
+
+def _revision_0084_function_sql() -> str:
+    """Return the Proposal functions with the authorization contract as of 0084."""
+
+    if hashlib.sha256(_REVISION_0084_AUTHORIZATION_FUNCTION_SQL.encode()).hexdigest() != (
+        _REVISION_0084_AUTHORIZATION_SHA256
+    ):
+        raise RuntimeError("0084 authorization function snapshot changed")
+    if (
+        TBOX_PROPOSAL_JOB_ALL_FUNCTION_SQL.count(_AUTHORIZATION_FUNCTION_START) != 1
+        or TBOX_PROPOSAL_JOB_ALL_FUNCTION_SQL.count(_AUTHORIZATION_FUNCTION_END) != 1
+    ):
+        raise RuntimeError("0084 authorization function boundary changed")
+    prefix, _separator, remainder = TBOX_PROPOSAL_JOB_ALL_FUNCTION_SQL.partition(
+        _AUTHORIZATION_FUNCTION_START
+    )
+    _current, _separator, suffix = remainder.partition(_AUTHORIZATION_FUNCTION_END)
+    pinned = (
+        prefix + _REVISION_0084_AUTHORIZATION_FUNCTION_SQL + _AUTHORIZATION_FUNCTION_END + suffix
+    )
+    if "iam.canonical_admin_bindings" in pinned or "iam.profile_role_assignments" in pinned:
+        raise RuntimeError("0084 function SQL references a post-0084 Role authority table")
+    return pinned
+
 
 _ROLE_ASSERTION_SQL = """
 DO $datariver$
@@ -647,7 +744,7 @@ def upgrade() -> None:
     op.execute(_ROLE_ASSERTION_SQL)
     _execute_sql_script(_UPLOAD_PROFILE_SQL)
     _execute_sql_script(_TABLES_SQL)
-    _execute_sql_script(TBOX_PROPOSAL_JOB_ALL_FUNCTION_SQL)
+    _execute_sql_script(_revision_0084_function_sql())
     op.execute(_HISTORICAL_PROMPT_SANITIZATION_SQL)
     _execute_sql_script(_RLS_TRIGGERS_SQL)
     for signature in (
