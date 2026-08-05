@@ -130,7 +130,7 @@ redis_image="datariver-pilot-redis:$release_id"
 for df in backend/Dockerfile frontend/Dockerfile infra/keycloak/Dockerfile infra/pilot/postgres/Dockerfile; do
   grep -E '^FROM ' "$root/$df" | awk '{print $2}' | while read -r base; do
     if echo "$base" | grep -q '@sha256:'; then
-      base_no_digest=$(echo "$base" | sed 's/@sha256:[a-f0-9]\{64\}//g')
+      base_no_digest=$(echo "$base" | sed 's/@sha256:[^ ]*//g')
       docker image tag "$base" "$base_no_digest" >/dev/null 2>&1 || true
     fi
   done
@@ -141,7 +141,7 @@ build_image() {
   local image=$2
   
   local tmp_df="$staging/$(basename "$dockerfile")"
-  sed 's/@sha256:[a-f0-9]\{64\}//g' "$root/$dockerfile" > "$tmp_df"
+  sed 's/@sha256:[^ ]*//g' "$root/$dockerfile" > "$tmp_df"
 
   docker build \
     --platform linux/amd64 \
@@ -156,7 +156,7 @@ build_image frontend/Dockerfile "$web_image"
 build_image infra/keycloak/Dockerfile "$keycloak_image"
 build_image infra/pilot/postgres/Dockerfile "$postgres_image"
 
-redis_no_digest=$(echo "$redis_source" | sed 's/@sha256:[a-f0-9]\{64\}//g')
+redis_no_digest=$(echo "$redis_source" | sed 's/@sha256:[^ ]*//g')
 if ! docker image inspect "$redis_source" >/dev/null 2>&1; then
   if docker image inspect "$redis_no_digest" >/dev/null 2>&1; then
     redis_source="$redis_no_digest"
