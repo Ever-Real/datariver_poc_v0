@@ -168,6 +168,7 @@ services:
       KC_BOOTSTRAP_ADMIN_USERNAME: datariver-bootstrap
       KC_HOSTNAME: ${OIDC_PUBLIC_ORIGIN:?OIDC_PUBLIC_ORIGIN is required}
       KC_HOSTNAME_STRICT: "true"
+      KC_HOSTNAME_STRICT_HTTPS: "false"
       KC_HTTP_ENABLED: "true"
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
