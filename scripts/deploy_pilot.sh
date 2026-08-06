@@ -154,10 +154,19 @@ while IFS="$(printf '\t')" read -r image expected_id platform source_commit buil
   fi
   actual_id=$(docker image inspect --format '{{.Id}}' "$image")
   actual_platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")
-  if [ "$actual_id" != "$expected_id" ] || [ "$actual_platform" != linux/amd64 ]; then
-    echo "Loaded image does not match the release manifest: $image" >&2
+  # Normalize x86_64 -> amd64 (some Docker/Linux versions report x86_64)
+  actual_platform=$(printf '%s' "$actual_platform" | sed 's|/x86_64$|/amd64|')
+  if [ "$actual_id" != "$expected_id" ]; then
+    echo "Image ID mismatch for $image:" >&2
+    echo "  manifest: $expected_id" >&2
+    echo "  actual:   $actual_id" >&2
     exit 2
   fi
+  if [ "$actual_platform" != linux/amd64 ]; then
+    echo "Image platform mismatch for $image: expected linux/amd64, got $actual_platform" >&2
+    exit 2
+  fi
+
   if [ "$source_commit" != "$release_commit" ]; then
     echo "Image manifest source commit does not match the release: $image" >&2
     exit 2
