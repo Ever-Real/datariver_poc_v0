@@ -11,5 +11,9 @@ FROM quay.io/keycloak/keycloak:26.7.0@sha256:2eb3cd316835c990e69e26ade292ffa78f6
 COPY --chown=1000:0 --from=builder /opt/keycloak/ /opt/keycloak/
 COPY --chown=1000:0 infra/keycloak/themes/datariver /opt/keycloak/themes/datariver
 
+# Ensure empty directories exist (Docker COPY sometimes drops them)
+RUN mkdir -p /opt/keycloak/providers /opt/keycloak/data/import && \
+    chown -R 1000:0 /opt/keycloak/providers /opt/keycloak/data/import
+
 # Keep the upstream non-root runtime explicit for both reviewers and scanners.
 USER 1000
