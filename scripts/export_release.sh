@@ -4,7 +4,10 @@ set -euo pipefail
 root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 commit=""
 output_dir=""
-redis_redistribution_accepted=false
+external_images_accepted=false
+
+# Pinned external (third-party) images used in the Pilot stack.
+# Each entry is name:tag@sha256:digest  (linux/amd64).
 redis_source="redis:8.2.6-bookworm@sha256:3055dc25265b0c19ec90a1756dad4e0faff6f79e2557a6ac3d1274e39ee906f6"
 staging=""
 
@@ -33,8 +36,8 @@ while [ "$#" -gt 0 ]; do
       shift
       output_dir=${1:?--output requires a directory}
       ;;
-    --accept-redis-image-redistribution)
-      redis_redistribution_accepted=true
+    --accept-external-images)
+      external_images_accepted=true
       ;;
     --help|-h)
       usage
@@ -61,9 +64,10 @@ commit=$(printf '%s' "$commit" | tr '[:upper:]' '[:lower:]')
 if [ -z "$output_dir" ]; then
   output_dir="$root/docker_imgs/datariver-$(printf '%s' "$commit" | cut -c1-12)"
 fi
-if [ "$redis_redistribution_accepted" != true ]; then
-  echo "Redis export requires --accept-redis-image-redistribution." >&2
-  echo "Record approval for the exact digest before copying it into the Pilot bundle." >&2
+if [ "$external_images_accepted" != true ]; then
+  echo "Exporting pinned external images (Redis, pgvector, Keycloak, Node) requires" >&2
+  echo "  --accept-external-images" >&2
+  echo "Verify the license/redistribution terms for each pinned image before running." >&2
   exit 2
 fi
 for command in docker find git install sha256sum sort tar xargs; do
@@ -156,20 +160,27 @@ build_image frontend/Dockerfile "$web_image"
 build_image infra/keycloak/Dockerfile "$keycloak_image"
 build_image infra/pilot/postgres/Dockerfile "$postgres_image"
 
-redis_no_digest=$(echo "$redis_source" | sed 's/@sha256:[^ ]*//g')
-if ! docker image inspect "$redis_source" >/dev/null 2>&1; then
-  if docker image inspect "$redis_no_digest" >/dev/null 2>&1; then
-    redis_source="$redis_no_digest"
-  else
-    docker image pull --platform linux/amd64 "$redis_source"
+# Pull/verify all pinned third-party images.
+pull_or_verify() {
+  local ref=$1 label=$2
+  local no_digest; no_digest=$(echo "$ref" | sed 's/@sha256:[^ ]*//g')
+  if ! docker image inspect "$ref" >/dev/null 2>&1; then
+    if docker image inspect "$no_digest" >/dev/null 2>&1; then
+      ref="$no_digest"
+    else
+      echo "Pulling $label..."
+      docker image pull --platform linux/amd64 "$ref"
+    fi
   fi
-fi
-redis_platform=$(docker image inspect --platform linux/amd64 \
-  --format '{{.Os}}/{{.Architecture}}' "$redis_source")
-if [ "$redis_platform" != linux/amd64 ]; then
-  echo "Pinned Redis image has unexpected platform: $redis_platform" >&2
-  exit 2
-fi
+  local platform; platform=$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$ref")
+  if [ "$platform" != linux/amd64 ]; then
+    echo "$label image is $platform, expected linux/amd64." >&2
+    exit 2
+  fi
+  echo "$ref"
+}
+
+redis_source=$(pull_or_verify "$redis_source" Redis)
 docker image tag "$redis_source" "$redis_image"
 
 images=(
