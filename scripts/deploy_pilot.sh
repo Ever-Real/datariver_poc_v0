@@ -415,7 +415,9 @@ for path in "$secrets_dir"/*; do
     echo "Every secrets entry must be a regular non-symlink file: $path" >&2
     exit 2
   fi
-  chmod 0600 "$path"
+  # 0644: secrets dir is 0700 so other host users cannot enter it;
+  # containers need read access via bind-mount (non-root uid inside container).
+  chmod 0644 "$path"
 done
 
 marker="$runtime_dir/keycloak-public-origins"
