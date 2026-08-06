@@ -31,6 +31,11 @@ services:
       - postgres_upload_password
       - postgres_governance_password
       - postgres_knowledge_password
+      - postgres_knowledge_proposal_password
+      - postgres_knowledge_ingestion_password
+      - postgres_quality_password
+      - postgres_governance_document_password
+      - postgres_catalog_profile_password
       - postgres_export_password
       - postgres_retention_scheduler_password
       - postgres_archive_password
@@ -464,6 +469,16 @@ secrets:
     file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_governance_password
   postgres_knowledge_password:
     file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_knowledge_password
+  postgres_knowledge_proposal_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_knowledge_proposal_password
+  postgres_knowledge_ingestion_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_knowledge_ingestion_password
+  postgres_quality_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_quality_password
+  postgres_governance_document_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_governance_document_password
+  postgres_catalog_profile_password:
+    file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_catalog_profile_password
   postgres_export_password:
     file: ${DATARIVER_PILOT_SECRETS_DIR:?DATARIVER_PILOT_SECRETS_DIR is required}/postgres_export_password
   postgres_retention_scheduler_password:
