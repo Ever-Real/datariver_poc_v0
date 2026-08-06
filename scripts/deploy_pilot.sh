@@ -421,6 +421,8 @@ for path in "$secrets_dir"/*; do
 done
 
 marker="$runtime_dir/keycloak-public-origins"
+mkdir -p "$runtime_dir/keycloak"
+chmod 755 "$runtime_dir/keycloak"
 realm="$runtime_dir/keycloak/datariver-realm.json"
 retention_control="$runtime_dir/retention-execution.enabled"
 if [ -L "$marker" ] || [ -L "$realm" ] || [ -L "$retention_control" ]; then
