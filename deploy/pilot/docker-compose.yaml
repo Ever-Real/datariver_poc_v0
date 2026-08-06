@@ -160,7 +160,7 @@ services:
       - >-
         export KC_DB_PASSWORD="$$(cat /run/secrets/keycloak_db_password)";
         export KC_BOOTSTRAP_ADMIN_PASSWORD="$$(cat /run/secrets/keycloak_admin_password)";
-        exec /opt/keycloak/bin/kc.sh start-dev --import-realm
+        exec /opt/keycloak/bin/kc.sh start-dev
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
@@ -173,6 +173,7 @@ services:
       KC_HEALTH_ENABLED: "true"
       KC_METRICS_ENABLED: "true"
       KC_PROXY_HEADERS: xforwarded
+      KC_SPI_IMPORT_SINGLE_FILE: /opt/keycloak/import-realm/datariver-realm.json
     secrets:
       - keycloak_db_password
       - keycloak_admin_password
@@ -180,7 +181,7 @@ services:
       - keycloak_identity_admin_client_secret
       - keycloak_demo_password
     volumes:
-      - ${DATARIVER_PILOT_RUNTIME_DIR:?DATARIVER_PILOT_RUNTIME_DIR is required}/keycloak/datariver-realm.json:/opt/keycloak/data/import/datariver-realm.json:ro,z
+      - ${DATARIVER_PILOT_RUNTIME_DIR:?DATARIVER_PILOT_RUNTIME_DIR is required}/keycloak/datariver-realm.json:/opt/keycloak/import-realm/datariver-realm.json:ro,z
       - keycloak-data:/opt/keycloak/data
     depends_on:
       postgres:
