@@ -180,7 +180,7 @@ services:
       - keycloak_identity_admin_client_secret
       - keycloak_demo_password
     volumes:
-      - ${DATARIVER_PILOT_RUNTIME_DIR:?DATARIVER_PILOT_RUNTIME_DIR is required}/keycloak:/opt/keycloak/data/import:ro,z
+      - ${DATARIVER_PILOT_RUNTIME_DIR:?DATARIVER_PILOT_RUNTIME_DIR is required}/keycloak/datariver-realm.json:/opt/keycloak/data/import/datariver-realm.json:ro,z
       - keycloak-data:/opt/keycloak/data
     depends_on:
       postgres:
