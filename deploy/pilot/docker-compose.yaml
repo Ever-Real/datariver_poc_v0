@@ -160,7 +160,7 @@ services:
       - >-
         export KC_DB_PASSWORD="$$(cat /run/secrets/keycloak_db_password)";
         export KC_BOOTSTRAP_ADMIN_PASSWORD="$$(cat /run/secrets/keycloak_admin_password)";
-        exec /opt/keycloak/bin/kc.sh start --optimized --import-realm
+        exec /opt/keycloak/bin/kc.sh start-dev --import-realm
     environment:
       KC_DB: postgres
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
