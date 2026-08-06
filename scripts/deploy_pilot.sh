@@ -316,13 +316,18 @@ validate_origin() {
   if [[ "$value" =~ ^http://localhost:${expected_port}$ ]]; then
     return
   fi
+  # Intranet pilot: allow plain HTTP with IP address (no HTTPS ingress available).
+  # Accepted only for closed-network, non-production deployments.
+  if [[ "$value" =~ ^http://([0-9]{1,3}\.){3}[0-9]{1,3}:${expected_port}$ ]]; then
+    return
+  fi
   if [[ "$value" =~ ^https://([A-Za-z0-9-]+\.)*[A-Za-z0-9-]+:${expected_port}$ ]]; then
     return
   fi
   if [[ "$value" =~ ^https://([0-9]{1,3}\.){3}[0-9]{1,3}:${expected_port}$ ]]; then
     return
   fi
-  echo "$name must be localhost HTTP or one credential-free HTTPS origin on port $expected_port." >&2
+  echo "$name must be localhost HTTP, an intranet IP HTTP, or one credential-free HTTPS origin on port $expected_port." >&2
   exit 2
 }
 validate_origin APP_PUBLIC_ORIGIN "$app_origin" "$web_port"
@@ -367,8 +372,12 @@ validate_bind_address() {
   if [ "$address" = 127.0.0.1 ]; then
     return
   fi
-  echo "PILOT_BIND_ADDRESS must remain 127.0.0.1 behind the approved HTTPS ingress." >&2
-  echo "Direct LAN HTTP is not a secure browser context and is not supported." >&2
+  # Intranet pilot: allow 0.0.0.0 for LAN HTTP access without a reverse proxy.
+  # Accepted only for closed-network, non-production deployments.
+  if [ "$address" = 0.0.0.0 ]; then
+    return
+  fi
+  echo "PILOT_BIND_ADDRESS must be 127.0.0.1 (behind HTTPS ingress) or 0.0.0.0 (intranet pilot only)." >&2
   exit 2
 }
 validate_bind_address "$bind_address"
