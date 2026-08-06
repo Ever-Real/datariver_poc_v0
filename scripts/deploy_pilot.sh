@@ -450,10 +450,10 @@ sed \
   -e "s|__IDENTITY_ADMIN_CLIENT_SECRET__|$identity_secret|g" \
   -e "s|__WEB_PUBLIC_ORIGIN__|$app_origin|g" \
   "$release_dir/keycloak-realm.template.json" >"$realm_tmp"
-chmod 0600 "$realm_tmp"
+chmod 0644 "$realm_tmp"
 mv "$realm_tmp" "$realm"
 printf '%s' "$marker_value" >"$marker"
-chmod 0600 "$marker"
+chmod 0644 "$marker"
 if [ ! -e "$retention_control" ]; then
   printf 'DISABLED\n' >"$retention_control"
   chmod 0600 "$retention_control"
