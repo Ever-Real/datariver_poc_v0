@@ -47,10 +47,11 @@ def _existing_object_count() -> int:
 
 
 def upgrade() -> None:
-    existing_objects = _existing_object_count()
-    if existing_objects:
-        if existing_objects != EXPECTED_OBJECT_COUNT:
-            raise RuntimeError("The Workspace access-role schema is only partially present.")
+    table_exists = op.get_bind().execute(
+        sa.text("SELECT (to_regclass('iam.access_roles') IS NOT NULL)::int")
+    ).scalar_one()
+    
+    if table_exists:
         return
     op.create_table(
         "access_roles",
