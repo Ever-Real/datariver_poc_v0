@@ -13,10 +13,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 COPY --from=uv /uv /uvx /usr/local/bin/
 
-RUN apt-get update \
-    && apt-get upgrade --yes \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 10001 datariver \
+RUN groupadd --system --gid 10001 datariver \
     && useradd --system --uid 10001 --gid datariver --home-dir /app datariver \
     && install -d -o datariver -g datariver -m 0700 /var/spool/datariver-knowledge
 
@@ -36,13 +33,8 @@ COPY pyproject.toml uv.lock README.md ./
 COPY backend ./backend
 COPY seed ./seed
 
-# Try offline first; fall back to online if the cache is incomplete/missing.
-RUN if uv sync --frozen --no-dev --no-editable --offline 2>/dev/null; then \
-        echo "uv sync completed offline"; \
-    else \
-        echo "Offline cache miss – falling back to online sync"; \
-        uv sync --frozen --no-dev --no-editable; \
-    fi \
+# Strictly enforce offline sync. If it fails, the cache is incomplete.
+RUN uv sync --frozen --no-dev --no-editable --offline \
     && chown -R datariver:datariver /app
 
 USER 10001:10001
