@@ -70,8 +70,10 @@ docker run --rm \
   -v "$root:/src:ro" \
   -v "$root/offline_python:/cache" \
   --platform linux/amd64 \
-  ghcr.io/astral-sh/uv:0.9.17 \
+  python:3.12.12-slim-bookworm \
   /bin/sh -c "
+    echo 'Installing uv...'
+    pip install uv==0.9.17
     echo 'Syncing project dependencies to offline cache...'
     uv sync --project /src --frozen --no-dev --no-editable --cache-dir /tmp/uv-cache 2>&1 || true
     echo 'Compressing cache...'
