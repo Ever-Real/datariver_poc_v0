@@ -69,13 +69,14 @@ echo "Building new offline uv cache for lock $LOCK_SHA (This may take a few minu
 docker run --rm \
   -v "$root:/src:ro" \
   -v "$root/offline_python:/cache" \
+  -e UV_PROJECT_ENVIRONMENT=/tmp/.venv \
   --platform linux/amd64 \
   python:3.12.12-slim-bookworm \
   /bin/sh -c "
     echo 'Installing uv...'
     pip install uv==0.9.17
     echo 'Syncing project dependencies to offline cache...'
-    uv sync --project /src --frozen --no-dev --no-editable --cache-dir /tmp/uv-cache 2>&1 || true
+    uv sync --project /src --frozen --no-dev --no-editable --cache-dir /tmp/uv-cache
     echo 'Compressing cache...'
     tar -czf /cache/$CACHE_FILENAME -C /tmp uv-cache
   "
