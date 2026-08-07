@@ -33,3 +33,4 @@ uploads/
 *.log
 docs/generated/
 infra/generated/
+offline_npm/
