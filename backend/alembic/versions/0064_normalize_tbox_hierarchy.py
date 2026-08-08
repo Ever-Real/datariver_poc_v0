@@ -116,8 +116,7 @@ def _create_normalized_tables() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(
-        "ix_tbox_classes_parent",
+    op.create_index(if_not_exists=True, "ix_tbox_classes_parent",
         "tbox_classes",
         ["workspace_id", "draft_id", "parent_stable_class_id"],
         schema="knowledge",
@@ -199,8 +198,7 @@ def _create_normalized_tables() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(
-        "ix_tbox_properties_owner",
+    op.create_index(if_not_exists=True, "ix_tbox_properties_owner",
         "tbox_properties",
         ["workspace_id", "draft_id", "owner_stable_class_id"],
         schema="knowledge",
@@ -295,8 +293,7 @@ def _create_normalized_tables() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(
-        "ix_tbox_relationships_endpoints",
+    op.create_index(if_not_exists=True, "ix_tbox_relationships_endpoints",
         "tbox_relationships",
         [
             "workspace_id",

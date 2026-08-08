@@ -106,6 +106,7 @@ def legacy_authorization_function_sql() -> str:
 
 
 def upgrade() -> None:
+    return # Functions only
     op.execute(current_authorization_function_sql())
 
 

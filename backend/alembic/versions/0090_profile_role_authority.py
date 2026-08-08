@@ -35,6 +35,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    if sa.inspect(op.get_bind()).has_table("profile_role_assignments", schema="iam"): return
     op.create_table(
         "profile_role_assignments",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -104,8 +105,7 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("workspace_id", "subject_id"),
         schema="iam",
     )
-    op.create_index(
-        "ix_profile_role_assignments_workspace_tier",
+    op.create_index(if_not_exists=True, "ix_profile_role_assignments_workspace_tier",
         "profile_role_assignments",
         ["workspace_id", "tier", "state"],
         schema="iam",
@@ -183,8 +183,7 @@ def upgrade() -> None:
         ),
         schema="iam",
     )
-    op.create_index(
-        "ix_profile_role_assignment_events_workspace_subject_occurred",
+    op.create_index(if_not_exists=True, "ix_profile_role_assignment_events_workspace_subject_occurred",
         "profile_role_assignment_events",
         ["workspace_id", "subject_id", "occurred_at"],
         schema="iam",

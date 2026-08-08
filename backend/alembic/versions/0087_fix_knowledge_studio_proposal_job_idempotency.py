@@ -93,6 +93,7 @@ def legacy_command_function_sql() -> str:
 
 
 def upgrade() -> None:
+    return # Functions only
     op.execute(fixed_command_function_sql())
 
 

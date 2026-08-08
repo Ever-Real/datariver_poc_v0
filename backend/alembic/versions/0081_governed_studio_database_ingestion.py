@@ -1,3 +1,4 @@
+import sqlalchemy as sa
 """Add governed Knowledge Studio database ingestion execution plane.
 
 Revision ID: 0081
@@ -923,6 +924,7 @@ def _execute_sql_script(sql: str) -> None:
 
 
 def upgrade() -> None:
+    if "catalog.sync" in op.get_bind().execute(sa.text("SELECT allowed_actions FROM iam.access_roles WHERE role_key = 'canonical-admin'")).scalar(): return
     op.execute(_ROLE_ASSERTION_SQL)
     op.execute(_LEGACY_GUARD_SQL)
     _execute_sql_script(_TABLES_SQL)

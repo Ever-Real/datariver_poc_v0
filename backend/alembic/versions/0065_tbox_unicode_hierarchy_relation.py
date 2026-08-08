@@ -65,8 +65,7 @@ def upgrade() -> None:
         table_name="tbox_classes",
         schema="knowledge",
     )
-    op.create_index(
-        "ix_tbox_classes_parent",
+    op.create_index(if_not_exists=True, "ix_tbox_classes_parent",
         "tbox_classes",
         ["workspace_id", "draft_id", "parent_stable_class_id", "stable_class_id"],
         schema="knowledge",
@@ -96,8 +95,7 @@ def downgrade() -> None:
         table_name="tbox_classes",
         schema="knowledge",
     )
-    op.create_index(
-        "ix_tbox_classes_parent",
+    op.create_index(if_not_exists=True, "ix_tbox_classes_parent",
         "tbox_classes",
         ["workspace_id", "draft_id", "parent_stable_class_id"],
         schema="knowledge",

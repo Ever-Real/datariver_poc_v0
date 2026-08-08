@@ -741,6 +741,7 @@ def _execute_sql_script(sql: str) -> None:
 
 
 def upgrade() -> None:
+    return # Functions only
     op.execute(_ROLE_ASSERTION_SQL)
     _execute_sql_script(_UPLOAD_PROFILE_SQL)
     _execute_sql_script(_TABLES_SQL)

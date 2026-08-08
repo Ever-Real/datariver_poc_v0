@@ -273,8 +273,7 @@ def _create_ontology_elements() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(
-        "ix_ontology_elements_version_kind_ordinal",
+    op.create_index(if_not_exists=True, "ix_ontology_elements_version_kind_ordinal",
         "ontology_elements",
         ["workspace_id", "ontology_version_id", "kind", "ordinal"],
         unique=False,
@@ -354,8 +353,7 @@ def _create_preflight_checks() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(
-        "ix_studio_preflight_checks_draft_checked",
+    op.create_index(if_not_exists=True, "ix_studio_preflight_checks_draft_checked",
         "studio_preflight_checks",
         ["workspace_id", "draft_id", "checked_at", "id"],
         unique=False,
@@ -537,15 +535,13 @@ def _create_studio_releases() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(
-        "ix_studio_releases_graph_state_published",
+    op.create_index(if_not_exists=True, "ix_studio_releases_graph_state_published",
         "studio_releases",
         ["workspace_id", "graph_id", "state", "published_at"],
         unique=False,
         schema="knowledge",
     )
-    op.create_index(
-        "uq_studio_releases_one_active_per_graph",
+    op.create_index(if_not_exists=True, "uq_studio_releases_one_active_per_graph",
         "studio_releases",
         ["graph_id"],
         unique=True,
@@ -652,8 +648,7 @@ def _create_binding_versions() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(
-        "ix_abox_binding_versions_release_ordinal",
+    op.create_index(if_not_exists=True, "ix_abox_binding_versions_release_ordinal",
         "abox_binding_versions",
         ["workspace_id", "studio_release_id", "ordinal"],
         unique=False,
@@ -728,8 +723,7 @@ def _create_binding_versions() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(
-        "ix_abox_mapping_rule_versions_binding_ordinal",
+    op.create_index(if_not_exists=True, "ix_abox_mapping_rule_versions_binding_ordinal",
         "abox_mapping_rule_versions",
         ["workspace_id", "binding_version_id", "ordinal"],
         unique=False,

@@ -49,6 +49,7 @@ EXECUTE FUNCTION governance.reject_document_evidence_mutation_v1();
 
 
 def upgrade() -> None:
+    if "published_by" in [c["name"] for c in sa.inspect(op.get_bind()).get_columns("documents", schema="governance")]: return
     op.add_column(
         "document_versions",
         sa.Column("parent_document_id", sa.Uuid(), nullable=True),
@@ -71,8 +72,7 @@ def upgrade() -> None:
         "parent_document_id IS NULL OR parent_document_id <> document_id",
         schema="governance",
     )
-    op.create_index(
-        "ix_governance_document_versions_parent",
+    op.create_index(if_not_exists=True, "ix_governance_document_versions_parent",
         "document_versions",
         ["workspace_id", "parent_document_id", "state"],
         schema="governance",

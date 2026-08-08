@@ -20,6 +20,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    if sa.inspect(op.get_bind()).has_table("delivery_policies", schema="knowledge"): return
     op.create_table(
         "delivery_policies",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -107,8 +108,7 @@ def upgrade() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(
-        "ix_delivery_policies_chat_match",
+    op.create_index(if_not_exists=True, "ix_delivery_policies_chat_match",
         "delivery_policies",
         ["workspace_id", "chat_enabled", "priority", "graph_id"],
         schema="knowledge",

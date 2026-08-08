@@ -1,3 +1,4 @@
+import sqlalchemy as sa
 """Add governed administrator identity-profile projection updates.
 
 Revision ID: 0083
@@ -21,6 +22,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    if "iam.profile_role_assignments" in op.get_bind().execute(sa.text("SELECT 1 FROM pg_tables WHERE schemaname = 'iam' AND tablename = 'profile_role_assignments'")).scalar(): return
     op.execute(IDENTITY_PROFILE_UPDATE_FUNCTION_SQL)
     op.execute(f"REVOKE ALL ON FUNCTION {IDENTITY_PROFILE_UPDATE_SIGNATURE} FROM PUBLIC")
     op.execute(

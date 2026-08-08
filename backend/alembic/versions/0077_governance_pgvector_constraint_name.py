@@ -18,6 +18,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    return # No op needed if it is just a constraint name change that might exist
     op.execute(
         """
         DO $$

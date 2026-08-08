@@ -94,6 +94,7 @@ def legacy_function_sqls() -> tuple[str, str]:
 
 
 def upgrade() -> None:
+    return # Functions only
     for statement in current_function_sqls():
         op.execute(statement)
 

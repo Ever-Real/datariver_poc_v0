@@ -260,6 +260,7 @@ $datariver$;
 
 
 def upgrade() -> None:
+    if "role_kind" in [c["name"] for c in sa.inspect(op.get_bind()).get_columns("canonical_admin_bindings", schema="iam")]: return
     op.add_column(
         "access_roles",
         sa.Column("role_kind", sa.String(length=32), server_default="HUMAN_ROLE", nullable=False),
@@ -309,8 +310,7 @@ def upgrade() -> None:
         ["workspace_id", "id", "role_kind"],
         schema="iam",
     )
-    op.create_index(
-        "uq_access_roles_workspace_canonical_admin",
+    op.create_index(if_not_exists=True, "uq_access_roles_workspace_canonical_admin",
         "access_roles",
         ["workspace_id"],
         unique=True,

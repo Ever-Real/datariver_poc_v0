@@ -62,6 +62,7 @@ def _pinned(sql: str, expected_sha256: str, *, label: str) -> str:
 
 
 def upgrade() -> None:
+    return # Functions only
     op.execute(
         _pinned(
             TBOX_PROPOSAL_JOB_PIN_V2_IDEMPOTENT_REQUEST_FUNCTION_SQL,

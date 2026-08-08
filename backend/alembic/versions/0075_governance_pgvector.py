@@ -20,6 +20,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    if "embedding" in [c["name"] for c in sa.inspect(op.get_bind()).get_columns("document_embeddings", schema="governance")]: return
     op.execute("CREATE EXTENSION IF NOT EXISTS vector")
     op.add_column(
         "document_knowledge_chunks",

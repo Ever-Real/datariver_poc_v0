@@ -1,3 +1,4 @@
+import sqlalchemy as sa
 """Grant the API its RLS-scoped Quality profile read capability.
 
 Revision ID: 0073
@@ -16,6 +17,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
+    if "quality.profile.read" in op.get_bind().execute(sa.text("SELECT allowed_actions FROM iam.access_roles WHERE role_key = 'canonical-admin'")).scalar(): return
     op.execute("GRANT SELECT ON catalog.asset_profile_snapshots TO datariver_app")
     op.execute("GRANT SELECT ON catalog.column_profile_metrics TO datariver_app")
 
