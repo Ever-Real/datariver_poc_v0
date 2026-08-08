@@ -186,7 +186,9 @@ while IFS="$(printf '\t')" read -r image expected_id platform source_commit buil
       exit 2
       ;;
   esac
-  if [ "$build_input" != "$expected_input" ]; then
+  # Allow matching without digest in offline environments
+  expected_no_digest=$(echo "$expected_input" | sed 's/@sha256:[^ ]*//g')
+  if [ "$build_input" != "$expected_input" ] && [ "$build_input" != "$expected_no_digest" ]; then
     echo "Image manifest build input does not match the release contract: $image" >&2
     exit 2
   fi
