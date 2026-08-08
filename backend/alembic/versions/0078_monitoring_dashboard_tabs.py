@@ -20,7 +20,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    if sa.inspect(op.get_bind()).has_table("monitoring_dashboard_tabs", schema="platform"): return
+    if sa.inspect(op.get_bind()).has_table("monitoring_configurations", schema="platform"): return
     op.create_table(
         "monitoring_configurations",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
