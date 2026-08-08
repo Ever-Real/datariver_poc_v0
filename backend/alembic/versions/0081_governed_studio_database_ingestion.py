@@ -925,7 +925,7 @@ def _execute_sql_script(sql: str) -> None:
 import sqlalchemy as sa
 
 def upgrade() -> None:
-    if "catalog.sync" in op.get_bind().execute(sa.text("SELECT allowed_actions FROM iam.access_roles WHERE role_key = 'canonical-admin'")).scalar(): return
+    if "catalog_connection_id" in [c["name"] for c in sa.inspect(op.get_bind()).get_columns("ingestion_jobs", schema="knowledge")]: return
     op.execute(_ROLE_ASSERTION_SQL)
     op.execute(_LEGACY_GUARD_SQL)
     _execute_sql_script(_TABLES_SQL)

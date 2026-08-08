@@ -49,7 +49,7 @@ EXECUTE FUNCTION governance.reject_document_evidence_mutation_v1();
 
 
 def upgrade() -> None:
-    if "published_by" in [c["name"] for c in sa.inspect(op.get_bind()).get_columns("documents", schema="governance")]: return
+    if "parent_document_id" in [c["name"] for c in sa.inspect(op.get_bind()).get_columns("document_versions", schema="governance")]: return
     op.add_column(
         "document_versions",
         sa.Column("parent_document_id", sa.Uuid(), nullable=True),

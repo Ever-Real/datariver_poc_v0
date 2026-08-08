@@ -23,7 +23,7 @@ depends_on: str | Sequence[str] | None = None
 import sqlalchemy as sa
 
 def upgrade() -> None:
-    if "iam.profile_role_assignments" in op.get_bind().execute(sa.text("SELECT 1 FROM pg_tables WHERE schemaname = 'iam' AND tablename = 'profile_role_assignments'")).scalar(): return
+    if sa.inspect(op.get_bind()).has_table("subject_identities", schema="iam"): return
     op.execute(IDENTITY_PROFILE_UPDATE_FUNCTION_SQL)
     op.execute(f"REVOKE ALL ON FUNCTION {IDENTITY_PROFILE_UPDATE_SIGNATURE} FROM PUBLIC")
     op.execute(

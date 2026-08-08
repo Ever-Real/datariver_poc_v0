@@ -133,6 +133,7 @@ def _source_snapshot_constraint_state() -> _SourceSnapshotConstraintState:
 
 
 def upgrade() -> None:
+    return # No bypass needed, only constraint adjustments
     state = _source_snapshot_constraint_state()
     if state.current:
         return
