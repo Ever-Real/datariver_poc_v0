@@ -160,18 +160,18 @@ def upgrade() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_property_profiles_graph_stable_property",
+    op.create_index("ix_property_profiles_graph_stable_property",
         "property_profiles",
         ["workspace_id", "graph_id", "stable_property_id"],
         schema="knowledge",
-    )
-    op.create_index(if_not_exists=True, "uq_property_profiles_one_active_per_element",
+     if_not_exists=True)
+    op.create_index("uq_property_profiles_one_active_per_element",
         "property_profiles",
         ["workspace_id", "ontology_element_id"],
         unique=True,
         schema="knowledge",
         postgresql_where=sa.text("lifecycle = 'ACTIVE'"),
-    )
+     if_not_exists=True)
     op.create_table(
         "property_profile_synonyms",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -210,11 +210,11 @@ def upgrade() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_property_profile_synonyms_value",
+    op.create_index("ix_property_profile_synonyms_value",
         "property_profile_synonyms",
         ["workspace_id", "normalized_value"],
         schema="knowledge",
-    )
+     if_not_exists=True)
     for table in ("property_profiles", "property_profile_synonyms"):
         op.execute(f"ALTER TABLE knowledge.{table} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE knowledge.{table} FORCE ROW LEVEL SECURITY")

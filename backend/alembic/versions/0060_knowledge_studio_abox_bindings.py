@@ -168,12 +168,12 @@ def _create_tbox_elements() -> None:
             initially="DEFERRED",
             use_alter=True,
         )
-    op.create_index(if_not_exists=True, "ix_tbox_draft_elements_draft_kind_ordinal",
+    op.create_index("ix_tbox_draft_elements_draft_kind_ordinal",
         "tbox_draft_elements",
         ["workspace_id", "draft_id", "kind", "ordinal"],
         unique=False,
         schema="knowledge",
-    )
+     if_not_exists=True)
 
 
 def _create_source_references() -> None:
@@ -251,12 +251,12 @@ def _create_source_references() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_source_references_workspace_asset_version",
+    op.create_index("ix_source_references_workspace_asset_version",
         "source_references",
         ["workspace_id", "catalog_asset_id", "source_version"],
         unique=False,
         schema="knowledge",
-    )
+     if_not_exists=True)
 
 
 def _create_bindings() -> None:
@@ -344,12 +344,12 @@ def _create_bindings() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_abox_binding_drafts_draft_readiness",
+    op.create_index("ix_abox_binding_drafts_draft_readiness",
         "abox_binding_drafts",
         ["workspace_id", "draft_id", "readiness", "target_stable_element_id"],
         unique=False,
         schema="knowledge",
-    )
+     if_not_exists=True)
     op.create_table(
         "abox_mapping_rule_drafts",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -453,12 +453,12 @@ def _create_bindings() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_abox_mapping_rule_drafts_binding_ordinal",
+    op.create_index("ix_abox_mapping_rule_drafts_binding_ordinal",
         "abox_mapping_rule_drafts",
         ["workspace_id", "binding_id", "ordinal"],
         unique=False,
         schema="knowledge",
-    )
+     if_not_exists=True)
 
 
 def _install_rls() -> None:

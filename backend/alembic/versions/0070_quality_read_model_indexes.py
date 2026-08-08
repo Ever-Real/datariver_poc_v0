@@ -19,7 +19,7 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    op.create_index(if_not_exists=True, "ix_quality_rule_sets_list",
+    op.create_index("ix_quality_rule_sets_list",
         "rule_sets",
         [
             "workspace_id",
@@ -27,8 +27,8 @@ def upgrade() -> None:
             sa.literal_column("id DESC"),
         ],
         schema="quality",
-    )
-    op.create_index(if_not_exists=True, "ix_quality_validation_runs_list",
+     if_not_exists=True)
+    op.create_index("ix_quality_validation_runs_list",
         "validation_runs",
         [
             "workspace_id",
@@ -36,8 +36,8 @@ def upgrade() -> None:
             sa.literal_column("id DESC"),
         ],
         schema="quality",
-    )
-    op.create_index(if_not_exists=True, "ix_quality_expectation_results_issues",
+     if_not_exists=True)
+    op.create_index("ix_quality_expectation_results_issues",
         "expectation_results",
         [
             "workspace_id",
@@ -46,7 +46,7 @@ def upgrade() -> None:
         ],
         schema="quality",
         postgresql_where=sa.text("outcome IN ('ADVISORY_FAIL','BLOCKING_FAIL')"),
-    )
+     if_not_exists=True)
 
 
 def downgrade() -> None:

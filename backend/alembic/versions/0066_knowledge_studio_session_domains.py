@@ -110,14 +110,14 @@ def upgrade() -> None:
         "AND endpoint_aliases ->> 0 = endpoint_alias",
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_studio_drafts_workspace_endpoint_aliases_live",
+    op.create_index("ix_studio_drafts_workspace_endpoint_aliases_live",
         "studio_drafts",
         ["endpoint_aliases"],
         unique=False,
         schema="knowledge",
         postgresql_using="gin",
         postgresql_where=sa.text("state IN ('DRAFT', 'REVIEW')"),
-    )
+     if_not_exists=True)
     op.add_column(
         "tbox_proposals",
         sa.Column(

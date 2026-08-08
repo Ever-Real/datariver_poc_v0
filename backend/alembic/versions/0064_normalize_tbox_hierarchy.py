@@ -116,11 +116,11 @@ def _create_normalized_tables() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_tbox_classes_parent",
+    op.create_index("ix_tbox_classes_parent",
         "tbox_classes",
         ["workspace_id", "draft_id", "parent_stable_class_id"],
         schema="knowledge",
-    )
+     if_not_exists=True)
     op.create_table(
         "tbox_properties",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -198,11 +198,11 @@ def _create_normalized_tables() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_tbox_properties_owner",
+    op.create_index("ix_tbox_properties_owner",
         "tbox_properties",
         ["workspace_id", "draft_id", "owner_stable_class_id"],
         schema="knowledge",
-    )
+     if_not_exists=True)
     op.create_table(
         "tbox_relationships",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -293,7 +293,7 @@ def _create_normalized_tables() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_tbox_relationships_endpoints",
+    op.create_index("ix_tbox_relationships_endpoints",
         "tbox_relationships",
         [
             "workspace_id",
@@ -302,7 +302,7 @@ def _create_normalized_tables() -> None:
             "target_stable_class_id",
         ],
         schema="knowledge",
-    )
+     if_not_exists=True)
 
 
 def _backfill_and_reduce_supertype() -> None:

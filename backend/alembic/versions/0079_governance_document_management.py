@@ -72,12 +72,12 @@ def upgrade() -> None:
         "parent_document_id IS NULL OR parent_document_id <> document_id",
         schema="governance",
     )
-    op.create_index(if_not_exists=True, "ix_governance_document_versions_parent",
+    op.create_index("ix_governance_document_versions_parent",
         "document_versions",
         ["workspace_id", "parent_document_id", "state"],
         schema="governance",
         postgresql_where=sa.text("parent_document_id IS NOT NULL"),
-    )
+     if_not_exists=True)
 
     op.add_column(
         "document_attachments",

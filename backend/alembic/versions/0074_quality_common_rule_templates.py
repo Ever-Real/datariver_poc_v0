@@ -72,12 +72,12 @@ def upgrade() -> None:
         sa.UniqueConstraint("workspace_id", "name", name="uq_quality_common_rule_templates_name"),
         schema="quality",
     )
-    op.create_index(if_not_exists=True, "ix_quality_common_rule_templates_list",
+    op.create_index("ix_quality_common_rule_templates_list",
         "common_rule_templates",
         ["workspace_id", sa.literal_column("updated_at DESC"), sa.literal_column("id DESC")],
         unique=False,
         schema="quality",
-    )
+     if_not_exists=True)
     op.create_table(
         "common_rule_template_mappings",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -139,12 +139,12 @@ def upgrade() -> None:
         ),
         schema="quality",
     )
-    op.create_index(if_not_exists=True, "ix_quality_common_rule_template_mappings_template",
+    op.create_index("ix_quality_common_rule_template_mappings_template",
         "common_rule_template_mappings",
         ["workspace_id", "template_id", sa.literal_column("created_at DESC")],
         unique=False,
         schema="quality",
-    )
+     if_not_exists=True)
     for table in ("common_rule_templates", "common_rule_template_mappings"):
         op.execute(f"ALTER TABLE quality.{table} ENABLE ROW LEVEL SECURITY")
         op.execute(f"ALTER TABLE quality.{table} FORCE ROW LEVEL SECURITY")

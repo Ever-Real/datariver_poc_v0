@@ -108,11 +108,11 @@ def upgrade() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_delivery_policies_chat_match",
+    op.create_index("ix_delivery_policies_chat_match",
         "delivery_policies",
         ["workspace_id", "chat_enabled", "priority", "graph_id"],
         schema="knowledge",
-    )
+     if_not_exists=True)
     op.execute("ALTER TABLE knowledge.delivery_policies ENABLE ROW LEVEL SECURITY")
     op.execute("ALTER TABLE knowledge.delivery_policies FORCE ROW LEVEL SECURITY")
     op.execute(

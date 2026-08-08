@@ -107,12 +107,12 @@ def _create_blocks_and_extend_elements() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_tbox_draft_blocks_draft_ordinal",
+    op.create_index("ix_tbox_draft_blocks_draft_ordinal",
         "tbox_draft_blocks",
         ["workspace_id", "draft_id", "ordinal"],
         unique=False,
         schema="knowledge",
-    )
+     if_not_exists=True)
     op.get_bind().exec_driver_sql(
         """
         INSERT INTO knowledge.tbox_draft_blocks (
@@ -285,12 +285,12 @@ def _create_proposals() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_tbox_proposals_draft_created",
+    op.create_index("ix_tbox_proposals_draft_created",
         "tbox_proposals",
         ["workspace_id", "draft_id", "created_at", "id"],
         unique=False,
         schema="knowledge",
-    )
+     if_not_exists=True)
 
 
 def _create_ingestion_jobs() -> None:
@@ -375,18 +375,18 @@ def _create_ingestion_jobs() -> None:
         ),
         schema="knowledge",
     )
-    op.create_index(if_not_exists=True, "ix_studio_ingestion_jobs_claim",
+    op.create_index("ix_studio_ingestion_jobs_claim",
         "studio_ingestion_jobs",
         ["state", "lease_expires_at", "created_at", "id"],
         unique=False,
         schema="knowledge",
-    )
-    op.create_index(if_not_exists=True, "ix_studio_ingestion_jobs_draft_created",
+     if_not_exists=True)
+    op.create_index("ix_studio_ingestion_jobs_draft_created",
         "studio_ingestion_jobs",
         ["workspace_id", "draft_id", "created_at", "id"],
         unique=False,
         schema="knowledge",
-    )
+     if_not_exists=True)
 
 
 def _install_rls_and_grants() -> None:

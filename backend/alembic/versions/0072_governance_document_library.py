@@ -791,12 +791,12 @@ def _create_tables() -> None:
         ),
         schema="governance",
     )
-    op.create_index(if_not_exists=True, "ix_governance_documents_title",
+    op.create_index("ix_governance_documents_title",
         "documents",
         ["workspace_id", sa.literal_column("lower(title)"), "id"],
         schema="governance",
-    )
-    op.create_index(if_not_exists=True, "ix_governance_documents_list",
+     if_not_exists=True)
+    op.create_index("ix_governance_documents_list",
         "documents",
         [
             "workspace_id",
@@ -806,7 +806,7 @@ def _create_tables() -> None:
             sa.literal_column("id DESC"),
         ],
         schema="governance",
-    )
+     if_not_exists=True)
     _create_version_table()
     op.create_foreign_key(
         "fk_governance_document_versions_template",
@@ -985,20 +985,20 @@ def _create_version_table() -> None:
         ),
         schema="governance",
     )
-    op.create_index(if_not_exists=True, "ix_governance_document_versions_projection",
+    op.create_index("ix_governance_document_versions_projection",
         "document_versions",
         ["knowledge_state", "next_attempt_at", "lease_until", "id"],
         schema="governance",
         postgresql_where=sa.text("state = 'PUBLISHED' AND knowledge_state IN ('PENDING','FAILED')"),
-    )
-    op.create_index(if_not_exists=True, "uq_governance_document_versions_live_candidate",
+     if_not_exists=True)
+    op.create_index("uq_governance_document_versions_live_candidate",
         "document_versions",
         ["workspace_id", "document_id"],
         unique=True,
         schema="governance",
         postgresql_where=sa.text("state IN ('DRAFT','IN_REVIEW')"),
-    )
-    op.create_index(if_not_exists=True, "ix_governance_document_versions_history",
+     if_not_exists=True)
+    op.create_index("ix_governance_document_versions_history",
         "document_versions",
         [
             "workspace_id",
@@ -1007,7 +1007,7 @@ def _create_version_table() -> None:
             sa.literal_column("id DESC"),
         ],
         schema="governance",
-    )
+     if_not_exists=True)
 
 
 def _create_evidence_tables() -> None:
@@ -1073,7 +1073,7 @@ def _create_review_and_event_tables() -> None:
         ),
         schema="governance",
     )
-    op.create_index(if_not_exists=True, "ix_governance_document_reviews_history",
+    op.create_index("ix_governance_document_reviews_history",
         "document_reviews",
         [
             "workspace_id",
@@ -1082,7 +1082,7 @@ def _create_review_and_event_tables() -> None:
             sa.literal_column("id DESC"),
         ],
         schema="governance",
-    )
+     if_not_exists=True)
     op.create_table(
         "document_events",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),
@@ -1147,11 +1147,11 @@ def _create_review_and_event_tables() -> None:
         ),
         schema="governance",
     )
-    op.create_index(if_not_exists=True, "ix_governance_document_events_history",
+    op.create_index("ix_governance_document_events_history",
         "document_events",
         ["workspace_id", "document_id", "sequence"],
         schema="governance",
-    )
+     if_not_exists=True)
 
 
 def _create_artifact_and_attachment_tables() -> None:
@@ -1277,11 +1277,11 @@ def _create_artifact_and_attachment_tables() -> None:
         ),
         schema="governance",
     )
-    op.create_index(if_not_exists=True, "ix_governance_document_attachments_version",
+    op.create_index("ix_governance_document_attachments_version",
         "document_attachments",
         ["workspace_id", "document_version_id", "created_at", "id"],
         schema="governance",
-    )
+     if_not_exists=True)
 
 
 def _create_projection_tables() -> None:
@@ -1347,11 +1347,11 @@ def _create_projection_tables() -> None:
         ),
         schema="governance",
     )
-    op.create_index(if_not_exists=True, "ix_governance_document_knowledge_chunks_search",
+    op.create_index("ix_governance_document_knowledge_chunks_search",
         "document_knowledge_chunks",
         ["workspace_id", "document_id", "document_version_id", "ordinal"],
         schema="governance",
-    )
+     if_not_exists=True)
     op.create_table(
         "document_projection_receipts",
         sa.Column("workspace_id", sa.Uuid(), nullable=False),

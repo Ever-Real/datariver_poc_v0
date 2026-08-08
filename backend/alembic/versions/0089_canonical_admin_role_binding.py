@@ -310,13 +310,13 @@ def upgrade() -> None:
         ["workspace_id", "id", "role_kind"],
         schema="iam",
     )
-    op.create_index(if_not_exists=True, "uq_access_roles_workspace_canonical_admin",
+    op.create_index("uq_access_roles_workspace_canonical_admin",
         "access_roles",
         ["workspace_id"],
         unique=True,
         schema="iam",
         postgresql_where=sa.text("role_kind = 'CANONICAL_ADMIN'"),
-    )
+     if_not_exists=True)
 
     op.add_column(
         "access_role_assignments",

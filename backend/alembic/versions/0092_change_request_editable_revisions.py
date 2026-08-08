@@ -431,11 +431,11 @@ def upgrade() -> None:
         ),
         schema="governance",
     )
-    op.create_index(if_not_exists=True, "ix_change_request_round_items_current",
+    op.create_index("ix_change_request_round_items_current",
         "change_request_round_items",
         ["workspace_id", "change_request_id", "round_id", "ordinal"],
         schema="governance",
-    )
+     if_not_exists=True)
     op.execute(
         """
         WITH selected_system AS (
