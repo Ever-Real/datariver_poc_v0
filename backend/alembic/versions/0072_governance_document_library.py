@@ -668,6 +668,7 @@ def _statements(value: str) -> tuple[str, ...]:
 
 def upgrade() -> None:
     if sa.inspect(op.get_bind()).has_table("document_folders", schema="governance"): return
+    if sa.inspect(op.get_bind()).has_table("documents", schema="governance"): return
     _create_tables()
     op.execute(_ROLE_ASSERTION_SQL)
     for statement in _statements(_SECURITY_SQL):
