@@ -925,7 +925,7 @@ def _execute_sql_script(sql: str) -> None:
 import sqlalchemy as sa
 
 def upgrade() -> None:
-    if "catalog_connection_id" in [c["name"] for c in sa.inspect(op.get_bind()).get_columns("ingestion_jobs", schema="knowledge")]: return
+    if sa.inspect(op.get_bind()).has_table("studio_ingestion_jobs", schema="knowledge"): return
     op.execute(_ROLE_ASSERTION_SQL)
     op.execute(_LEGACY_GUARD_SQL)
     _execute_sql_script(_TABLES_SQL)
