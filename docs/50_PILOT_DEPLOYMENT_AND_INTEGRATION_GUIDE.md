@@ -719,6 +719,8 @@ DATARIVER_PILOT_HOME=/home/datariver \
 동작 특성:
 
 - 기존 named volume과 데이터를 삭제하지 않는다.
+- Keycloak은 host가 생성한 exact realm 파일을 서버 시작 전에 `--override false`로 import한다.
+  신규 DB에는 realm을 생성하고, 이미 존재하는 realm은 자동으로 덮어쓰지 않는다.
 - 변경되지 않은 container는 Compose가 재사용한다.
 - migration은 application 최종 재생성 전에 one-shot으로 실행한다.
 - API/Web는 single-node이므로 image가 바뀌는 순간 짧은 재생성 시간이 발생할 수 있다.

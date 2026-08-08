@@ -61,6 +61,26 @@ def test_pilot_migration_and_bootstrap_are_explicit_one_shot_services() -> None:
     assert services["storage-init"]["profiles"] == ["deploy-tools"]
 
 
+def test_pilot_keycloak_imports_the_generated_realm_before_start() -> None:
+    keycloak = _compose()["services"]["keycloak"]
+    command = keycloak["command"][0]
+
+    import_command = (
+        "/opt/keycloak/bin/kc.sh import --optimized "
+        "--file /opt/keycloak/import-realm/datariver-realm.json --override false"
+    )
+    assert import_command in command
+    assert command.index(import_command) < command.index(
+        "exec /opt/keycloak/bin/kc.sh start-dev"
+    )
+    assert "KC_SPI_IMPORT_SINGLE_FILE" not in keycloak["environment"]
+    assert (
+        "${DATARIVER_PILOT_RUNTIME_DIR:?DATARIVER_PILOT_RUNTIME_DIR is required}"
+        "/keycloak/datariver-realm.json:"
+        "/opt/keycloak/import-realm/datariver-realm.json:ro,z"
+    ) in keycloak["volumes"]
+
+
 def test_export_and_deploy_scripts_preserve_air_gap_and_host_state() -> None:
     exporter = (ROOT / "scripts" / "export_release.sh").read_text(encoding="utf-8")
     deployer = (ROOT / "scripts" / "deploy_pilot.sh").read_text(encoding="utf-8")
