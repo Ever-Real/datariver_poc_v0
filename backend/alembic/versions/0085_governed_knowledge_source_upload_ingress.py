@@ -339,7 +339,7 @@ def _allowlist(profiles: tuple[str, ...]) -> str:
 
 
 def upgrade() -> None:
-    if "ingress_type" in [c["name"] for c in sa.inspect(op.get_bind()).get_columns("source_snapshots", schema="knowledge")]: return
+    if "legacy_knowledge_source_eligible" in [c["name"] for c in sa.inspect(op.get_bind()).get_columns("object_manifests", schema="integration")]: return
     op.add_column(
         "object_manifests",
         sa.Column(
