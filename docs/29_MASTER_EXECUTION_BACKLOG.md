@@ -28,6 +28,35 @@ an unsafe bypass, or a historical result from another commit.
 | Current controlled phase | Owner-directed Phase 8 documentation. Phase 6F/6G and Phase 7 implementation/testing are skipped; their uncommitted work was rolled back. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
+## 2026-08-08 Pilot handoff recovery and inherited-change review
+
+The immediate delivery route is now development Mac source → closed-network amd64 WSL preparation
+PC → file transfer to the closed-network Linux operations PC. The preparation PC may fetch Git and
+may receive pre-downloaded dependency artifacts, but Docker builds there must not contact external
+APT, package or image registries. The operations PC receives only a checksum-verified release that
+passed on the preparation PC; a Mac container, image, volume, environment file or secret is never
+promoted as target evidence.
+
+The attached prior-session handover is **reference-only and unverified**. Its claims are not accepted
+as migration, security or production evidence until the following work is completed against the
+current `origin/dev` bytes:
+
+| ID | Priority | Status | Required review / exit evidence |
+|---|---:|---|---|
+| PILOT-HO-01 | P0 | `PENDING` | Audit every post-`e23e5eb9` migration edit and the preparation database from revision `0061`. Current source contains early whole-revision returns and converts strict partial-schema failures to prints, including a no-op `0084`; an Alembic `0095` marker therefore does not prove functions, RLS, grants, constraints or indexes exist. Reconcile metadata/migrations/data-model docs, run empty-database and `0061→head` upgrades plus deliberate partial-state negatives on PostgreSQL 17, and define repair/restore handling before operations deployment. |
+| PILOT-HO-02 | P0 | `PENDING` | Review the post-`e23e5eb9` Pilot release/security changes: digest stripping, image-ID mismatch acceptance, optional online frontend fallback, Keycloak `start-dev`, removal of read-only mode, direct LAN HTTP, and host-readable secret modes. Restore or explicitly approve an exact checksum/image/config/TLS/secret contract; preparation PASS must use the resulting committed bytes. |
+| PILOT-HO-03 | P0 | `EXTERNAL_GATE` | On the preparation PC, fix the current environment validation without weakening the validator. `SYSTEM_CONFIGURATION_PROBE_PLAINTEXT_ALLOWED_IPS` contains exact IP literals only and must be a subset of `SYSTEM_CONFIGURATION_PROBE_ALLOWED_HOSTS`; otherwise leave the plaintext list empty. Preserve the default core service hosts and add only reviewed external connector hosts/IPs. Then rebuild/redeploy and capture fixed classification plus API/Web/OIDC, migration-head and container-health evidence. |
+| PILOT-HO-04 | P1 | `PENDING` + `EXTERNAL_GATE` | Verify the external MinIO decision. `S3_CORS_MANAGEMENT_MODE=external` is acceptable only with an administrator-applied, read-back CORS policy and browser upload/download evidence; provider API incompatibility alone is not proof that CORS is correct. |
+| PILOT-HO-05 | P1 | `PENDING` + `EXTERNAL_GATE` | Replace the handover's Neo4j example before use: no default password, no secret in argv/environment evidence, exact pinned amd64 image identity, dedicated secret file, fixed DataRiver network alias, persistent-volume ownership, health/read-back and PostgreSQL-canonical projection checks. |
+| PILOT-HO-06 | P1 | `PENDING` | Audit `datariver-platform-amd64-distribution` independently: current required source-built images, pinned third-party images, Python/npm/OS artifacts, license/redistribution decisions, LFS object availability, checksums and offline build reproducibility. Do not rewrite its history merely because older artifacts appear unused. |
+| PILOT-HO-07 | P1 | `PENDING` | Review the untracked root diagnostic/patch scripts and `test-import-dir/` as user-owned forensic material. Do not execute, stage, delete or treat them as accepted implementation until their provenance and relation to the committed migration changes are established. |
+| PILOT-HO-08 | P0 | `EXTERNAL_GATE` | Promote preparation evidence to operations only after the same exact source/release checksum, amd64 image identities, offline build, database migration/repair, API/Web/OIDC and Level1/Level2 integration gates pass. Operations must use host-local reviewed `.env` and secrets, target-local backup/rollback, and its own DataHub/MinIO/Airflow/Neo4j/connectivity checks; preparation runtime state is not copied as proof. |
+| PILOT-HO-09 | P2 | `PENDING` | After the preparation/operations platform is stable, resume the existing feature backlogs rather than creating parallel memory: Knowledge and Knowledge Studio, Quality authoring and Quality Run, Catalog/Search/API, governance, access/ABAC, Chat/LLM, monitoring, migrations and the controlled-document conflicts in this ledger. Revalidate any prior-session claims at the then-current exact SHA. |
+
+Immediate stop conditions are any migration/schema uncertainty, unknown image/config identity, secret
+or TLS regression, failed core health/OIDC check, or checksum/SHA mismatch. Starting containers is
+not an acceptance result, and a preparation-only success is not a production or HA claim.
+
 ## Status language
 
 | Status | Meaning |
