@@ -1,4 +1,3 @@
-import sqlalchemy as sa
 """Add governed administrator identity-profile projection updates.
 
 Revision ID: 0083
@@ -20,6 +19,8 @@ down_revision: str | Sequence[str] | None = "0082"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
+
+import sqlalchemy as sa
 
 def upgrade() -> None:
     if "iam.profile_role_assignments" in op.get_bind().execute(sa.text("SELECT 1 FROM pg_tables WHERE schemaname = 'iam' AND tablename = 'profile_role_assignments'")).scalar(): return
