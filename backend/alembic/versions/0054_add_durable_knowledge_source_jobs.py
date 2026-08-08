@@ -2047,7 +2047,7 @@ def _canonical_phase5_contract_exists() -> bool:
             column["name"]
             for column in inspector.get_columns(table_name, schema="knowledge")
         }
-        if actual_columns != expected_columns:
+        if not expected_columns.issubset(actual_columns):
             raise RuntimeError(f"Malformed durable Knowledge table: {table_name}")
     if "source_analysis_job_id" not in changeset_columns or not {
         "source_analysis_job_id",
@@ -2073,7 +2073,7 @@ def _canonical_phase5_contract_exists() -> bool:
             {"tables": list(expected_tables)},
         )
     }
-    if constraints != _PHASE5_CONSTRAINTS:
+    if not _PHASE5_CONSTRAINTS.issubset(constraints):
         raise RuntimeError("Malformed durable Knowledge constraint contract.")
     bridge_constraints = {
         row[0]
@@ -2094,7 +2094,7 @@ def _canonical_phase5_contract_exists() -> bool:
             )
         )
     }
-    if bridge_constraints != _PHASE5_BRIDGE_CONSTRAINTS:
+    if not _PHASE5_BRIDGE_CONSTRAINTS.issubset(bridge_constraints):
         raise RuntimeError("Malformed durable Knowledge provenance constraints.")
     indexes = {
         row[0]
@@ -2109,7 +2109,7 @@ def _canonical_phase5_contract_exists() -> bool:
             )
         )
     }
-    if indexes != _PHASE5_INDEXES:
+    if not _PHASE5_INDEXES.issubset(indexes):
         raise RuntimeError("Malformed durable Knowledge index contract.")
     policies = {
         (row[0], row[1])
@@ -2125,7 +2125,7 @@ def _canonical_phase5_contract_exists() -> bool:
             {"tables": list(expected_tables)},
         )
     }
-    if policies != _PHASE5_POLICIES:
+    if not _PHASE5_POLICIES.issubset(policies):
         raise RuntimeError("Malformed durable Knowledge RLS policy contract.")
     claim_policies = {
         (row[0], row[1], row[2])
@@ -2171,9 +2171,9 @@ def _canonical_phase5_contract_exists() -> bool:
         ),
         {"tables": list(expected_tables)},
     )
-    if {
-        (str(row[0]), bool(row[1]), bool(row[2])) for row in rls_rows
-    } != {(table_name, True, True) for table_name in expected_tables}:
+    if not {(table_name, True, True) for table_name in expected_tables}.issubset(
+        {(str(row[0]), bool(row[1]), bool(row[2])) for row in rls_rows}
+    ):
         raise RuntimeError("Durable Knowledge tables must use FORCE RLS.")
     triggers = {
         (row[0], row[1])

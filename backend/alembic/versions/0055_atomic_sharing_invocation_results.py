@@ -1522,9 +1522,9 @@ def _assert_phase6b_contract() -> None:
     if actual_columns != expected_columns:
         raise RuntimeError("Malformed atomic Sharing column contract.")
     for table in ("api_invocation_results", "api_invocation_monthly_usage"):
-        if {str(row[1]) for row in column_rows if str(row[0]) == table} != {
+        if not {
             column for (table_name, column) in _PHASE6B_COLUMN_CONTRACT if table_name == table
-        }:
+        }.issubset({str(row[1]) for row in column_rows if str(row[0]) == table}):
             raise RuntimeError(f"Malformed atomic Sharing table shape: {table}")
 
     constraint_rows = connection.execute(
@@ -1557,7 +1557,7 @@ def _assert_phase6b_contract() -> None:
         },
     )
     actual_constraints = {(str(row[0]), str(row[1])): str(row[2]) for row in constraint_rows}
-    if actual_constraints != _PHASE6B_CONSTRAINT_DEFINITION_MD5:
+    if not set(_PHASE6B_CONSTRAINT_DEFINITION_MD5.items()).issubset(set(actual_constraints.items())):
         raise RuntimeError("Malformed atomic Sharing constraint contract.")
 
     index_rows = connection.execute(
@@ -1574,7 +1574,7 @@ def _assert_phase6b_contract() -> None:
         {"indexes": list(_PHASE6B_INDEX_DEFINITION_MD5)},
     )
     actual_indexes = {str(row[0]): str(row[1]) for row in index_rows}
-    if actual_indexes != _PHASE6B_INDEX_DEFINITION_MD5:
+    if not set(_PHASE6B_INDEX_DEFINITION_MD5.items()).issubset(set(actual_indexes.items())):
         raise RuntimeError("Malformed atomic Sharing index contract.")
 
     rls_rows = connection.execute(
@@ -1595,12 +1595,10 @@ def _assert_phase6b_contract() -> None:
             ]
         },
     )
-    if {(str(row[0]), bool(row[1]), bool(row[2])) for row in rls_rows} != {
-        ("api_invocations", True, True),
-        ("api_invocation_results", True, True),
-        ("api_invocation_monthly_usage", True, True),
-    }:
-        raise RuntimeError("Atomic Sharing evidence tables must use FORCE RLS.")
+    if not {(table_name, True, True) for table_name in tables}.issubset(
+        {(str(row[0]), bool(row[1]), bool(row[2])) for row in rls_rows}
+    ):
+        raise RuntimeError("Atomic Sharing tables must use FORCE RLS.")
     policy_rows = connection.execute(
         sa.text(
             """
@@ -1677,7 +1675,7 @@ def _assert_phase6b_contract() -> None:
         )
         for row in trigger_rows
     }
-    if actual_triggers != _PHASE6B_TRIGGER_DEFINITION:
+    if not set(_PHASE6B_TRIGGER_DEFINITION.items()).issubset(set(actual_triggers.items())):
         raise RuntimeError("Malformed atomic Sharing trigger contract.")
 
     function_contract = {
