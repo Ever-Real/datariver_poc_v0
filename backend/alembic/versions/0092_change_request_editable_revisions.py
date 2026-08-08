@@ -319,6 +319,7 @@ def _install_security_contract() -> None:
 
 
 def upgrade() -> None:
+    if sa.inspect(op.get_bind()).has_table("change_request_round_items", schema="governance"): return
     state = _schema_state()
     if state == "CURRENT":
         _assert_current_contract()
