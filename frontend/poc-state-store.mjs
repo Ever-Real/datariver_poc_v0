@@ -98,11 +98,18 @@ export function createPocStateStore() {
     await redis.set(`datariver:poc:cache:${key}`, JSON.stringify(value), { EX: ttlSeconds })
   }
 
+  async function cacheDelete(key) {
+    await start()
+    if (!redis) return
+    await redis.del(`datariver:poc:cache:${key}`)
+  }
+
   return {
     read,
     write,
     cacheGet,
     cacheSet,
+    cacheDelete,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
   }
 }

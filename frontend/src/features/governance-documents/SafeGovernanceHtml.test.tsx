@@ -20,6 +20,18 @@ describe('SafeGovernanceHtml', () => {
     expect(container.querySelector('th')).toHaveAttribute('colspan', '2')
   })
 
+  it('renders allowlisted void elements without passing forbidden children', () => {
+    const { container } = render(<SafeGovernanceHtml
+      html={'<p>첫 줄<br>둘째 줄</p><hr>'}
+      contentHash={'d'.repeat(64)}
+      sanitizerPolicyVersion="GOVERNANCE_HTML_V1"
+    />)
+
+    expect(screen.getByText(/첫 줄/)).toBeInTheDocument()
+    expect(container.querySelectorAll('br')).toHaveLength(1)
+    expect(container.querySelectorAll('hr')).toHaveLength(1)
+  })
+
   it('suppresses executable, embedded, form and active-media subtrees', () => {
     const { container } = render(<SafeGovernanceHtml
       html={'<script>script-secret</script><style>style-secret</style><svg><a>svg-secret</a></svg><img src=x onerror=alert(1)><iframe srcdoc="<script>alert(1)</script>"></iframe><form><input value="credential"></form><a href="javascript:alert(1)">unsafe-link</a><p>허용 본문</p>'}

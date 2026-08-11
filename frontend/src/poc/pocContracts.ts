@@ -9,7 +9,7 @@ export function authorizationWindow() {
   const observedAt = new Date()
   return {
     observed_at: observedAt.toISOString(),
-    authorization_valid_until: new Date(observedAt.getTime() + 30_000).toISOString(),
+    authorization_valid_until: new Date(observedAt.getTime() + 60 * 60 * 1000).toISOString(),
   }
 }
 

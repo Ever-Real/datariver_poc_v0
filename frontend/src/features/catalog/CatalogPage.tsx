@@ -326,12 +326,7 @@ export function CatalogPage({
     if (!target) return
     setDraftQuery(target.name)
     setQuery(target.name)
-    setFilters({
-      ...emptyFilters,
-      platform: target.platform ?? '',
-      databaseName: target.database_name ?? '',
-      schemaName: target.schema_name ?? '',
-    })
+    setFilters(emptyFilters)
     onQueryChange?.(target.name)
   }
 

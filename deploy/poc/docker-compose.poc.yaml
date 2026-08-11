@@ -20,9 +20,11 @@ services:
       GRAFANA_EMBED_BASE_URL: ${GRAFANA_EMBED_BASE_URL:-}
       GRAFANA_EMBED_ENABLED: ${GRAFANA_EMBED_ENABLED:-false}
       GRAFANA_EMBED_EVIDENCE_REFERENCE: ${GRAFANA_EMBED_EVIDENCE_REFERENCE:-}
+      MONITORING_DASHBOARDS_JSON: ${MONITORING_DASHBOARDS_JSON:-[]}
       AIRFLOW_URL: ${AIRFLOW_URL:-}
       AIRFLOW_USERNAME: ${AIRFLOW_USERNAME:-}
       AIRFLOW_PASSWORD: ${AIRFLOW_PASSWORD:-}
+      AIRFLOW_DAG_ID: ${AIRFLOW_DAG_ID:-datariver_bulk_registration_prepare}
       MINIO_URL: ${MINIO_URL:-}
       MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
       MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
@@ -88,6 +90,8 @@ services:
       NEO4J_dbms_usage__report_enabled: "false"
     networks:
       - poc-services
+    ports:
+      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_NEO4J_HTTP_PORT:-17475}:7474"
     volumes:
       - neo4j-data:/data
       - neo4j-logs:/logs
@@ -104,7 +108,7 @@ services:
       - no-new-privileges:true
 
   pgvector:
-    image: ${POC_PGVECTOR_IMAGE:-pgvector/pgvector:pg16-bookworm}
+    image: ${POC_PGVECTOR_IMAGE:-pgvector/pgvector:0.8.2-pg17-bookworm}
     platform: ${POC_PLATFORM:-linux/amd64}
     environment:
       POSTGRES_DB: ${POC_POSTGRES_DB:-datariver_poc}
@@ -112,6 +116,8 @@ services:
       POSTGRES_PASSWORD: ${POC_POSTGRES_PASSWORD:?POC_POSTGRES_PASSWORD is required}
     networks:
       - poc-services
+    ports:
+      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_POSTGRES_HOST_PORT:-15432}:5432"
     volumes:
       - pgvector-data:/var/lib/postgresql/data
       - ./postgres-init:/docker-entrypoint-initdb.d:ro
@@ -128,11 +134,13 @@ services:
       - no-new-privileges:true
 
   redis:
-    image: ${POC_REDIS_IMAGE:-redis:7.4-bookworm}
+    image: ${POC_REDIS_IMAGE:-redis:8.2.6-bookworm}
     platform: ${POC_PLATFORM:-linux/amd64}
     command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lfu"]
     networks:
       - poc-services
+    ports:
+      - "${POC_STATE_BIND_HOST:-127.0.0.1}:${POC_REDIS_PORT:-16379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s

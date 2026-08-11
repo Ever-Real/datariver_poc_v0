@@ -2,12 +2,18 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { after, before, test } from 'node:test'
-import { createPocServer } from './poc-server.mjs'
 
 let server
 let origin
 
 before(async () => {
+  Object.assign(process.env, {
+    POC_ENV_FILE: 'poc-server.test.env.missing',
+    POC_DATABASE_URL: '',
+    POC_POSTGRES_HOST: '',
+    POC_REDIS_URL: '',
+  })
+  const { createPocServer } = await import('./poc-server.mjs?fallback-contract-test')
   server = createPocServer()
   await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
   const address = server.address()

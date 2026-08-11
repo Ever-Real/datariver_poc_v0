@@ -6,6 +6,7 @@ import { after, before, test } from 'node:test'
 const requests = []
 const objects = new Map()
 let forcedClassifierResponse
+let failNeo4j
 let providerServer
 let pocServer
 let pocOrigin
@@ -153,6 +154,7 @@ function providerHandler(request, response) {
       return sendJson(response, { data: { dataset: { lineage: { total: relationships.length, relationships } } } })
     }
     if (url.pathname === '/db/neo4j/tx/commit') {
+      if (failNeo4j) return sendJson(response, { errors: [{ code: 'Neo.ClientError.Security.Unauthorized' }] }, 401)
       return sendJson(response, { errors: [], results: [{ data: [
         { row: ['wafer', 'Wafer', 'CLASS', 'HAS_INSPECTION', 'inspection', 'Inspection', 'CLASS'] },
       ] }] })
@@ -180,6 +182,8 @@ before(async () => {
   assert.equal(typeof providerAddress, 'object')
   const providerOrigin = `http://127.0.0.1:${providerAddress.port}`
   Object.assign(process.env, {
+    POC_REDIS_URL: '',
+    POC_POSTGRES_HOST: '',
     DATAHUB_GMS_URL: providerOrigin,
     DATAHUB_GMS_TOKEN: 'datahub-test-token',
     AIRFLOW_URL: `${providerOrigin}/airflow`,
@@ -204,6 +208,10 @@ before(async () => {
     GRAFANA_EMBED_BASE_URL: providerOrigin,
     GRAFANA_EMBED_ENABLED: 'true',
     GRAFANA_EMBED_EVIDENCE_REFERENCE: 'prep-poc-grafana-config-v1',
+    MONITORING_DASHBOARDS_JSON: JSON.stringify([
+      { id: 'platform', label: 'Platform', url: `${providerOrigin}/dashboards/datariver`, height_px: 900 },
+      { id: 'airflow', label: 'Airflow', url: `${providerOrigin}/dashboards/airflow`, height_px: 720 },
+    ]),
   })
   const module = await import('./poc-server.mjs?provider-contract-test')
   pocServer = module.createPocServer()
@@ -230,7 +238,13 @@ test('publishes only enabled flags while all provider probes pass', async () => 
   assert.ok(capability.items.every((item) => item.state === 'available'))
   assert.equal(capability.grafana_embed.state, 'AVAILABLE')
   assert.equal(capability.items.find((item) => item.name === 'Airflow').detail_code, 'AIRFLOW_API_V1')
-  assert.equal(capability.monitoring_configuration.items[0].embed_url, `${new URL(capability.grafana_embed.url).origin}/dashboards/datariver`)
+  assert.deepEqual(
+    capability.monitoring_configuration.items.map((item) => [item.id, item.embed_state, item.embed_url]),
+    [
+      ['platform', 'AVAILABLE', `${new URL(capability.grafana_embed.url).origin}/dashboards/datariver`],
+      ['airflow', 'AVAILABLE', `${new URL(capability.grafana_embed.url).origin}/dashboards/airflow`],
+    ],
+  )
   assert.ok(requests.some((request) => request.method === 'POST' && request.path.endsWith('/rerank')))
 })
 
@@ -304,6 +318,21 @@ test('routes lineage questions through bounded DataHub and Neo4j graph evidence'
   assert.equal(payload.route.reason, 'GRAPH_INTENT')
   assert.ok(payload.evidence.some((item) => item.evidence_type === 'DATAHUB_LINEAGE'))
   assert.ok(payload.evidence.some((item) => item.evidence_type === 'KNOWLEDGE_GRAPH'))
+})
+
+test('keeps DataHub lineage answers available when optional Neo4j is unavailable', async () => {
+  failNeo4j = true
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'Show upstream lineage impact', mode: 'GRAPH' }),
+  })
+  failNeo4j = false
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.ok(payload.evidence.some((item) => item.evidence_type === 'DATAHUB_LINEAGE'))
+  assert.ok(payload.evidence.every((item) => item.evidence_type !== 'KNOWLEDGE_GRAPH'))
+  assert.ok(payload.workflow.some((item) => item.detail_code === 'NEO4J_UNAVAILABLE_DATAHUB_LINEAGE_USED'))
 })
 
 test('bypasses the classifier for explicit Chat routes and fails malformed AUTO routes closed', async () => {

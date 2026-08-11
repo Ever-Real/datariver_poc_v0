@@ -77,6 +77,7 @@ const suppressedElements = new Set([
   'canvas',
   'xmp',
 ])
+const voidElements = new Set(['br', 'hr'])
 
 export function SafeGovernanceHtml({
   html,
@@ -142,6 +143,7 @@ function safeNode(node: Node, key: string): ReactNode[] {
       ...(rowSpan ? { rowSpan } : {}),
     }, children)]
   }
+  if (voidElements.has(tag)) return [createElement(tag, { key })]
   return [createElement(tag, { key }, children)]
 }
 

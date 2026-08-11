@@ -150,6 +150,31 @@ function installGatewayMock() {
         source_version: 'datahub-live',
       }))
     }
+    if (url.pathname === '/poc-api/datahub/manual-metadata') {
+      return Promise.resolve(json({
+        urn: liveAssets[0]!.id,
+        reports: ['datasetProperties', 'domains', 'globalTags', 'glossaryTerms', 'schemaMetadata']
+          .map((aspectName, index) => ({
+            aspect_name: aspectName,
+            aspect_ordinal: index + 1,
+            outcome: 'APPLIED_VERIFIED',
+            before_hash: `before-${index}`,
+            expected_hash: `expected-${index}`,
+            observed_hash: `expected-${index}`,
+            write_attempted: true,
+            failure_code: null,
+            provider_version: '0',
+            provider_response_hash: `provider-${index}`,
+            observed_at: meta.observed_at,
+          })),
+      }))
+    }
+    if (/^\/poc-api\/minio\/uploads\/[^/]+\/parts\/1$/.test(url.pathname)) {
+      return Promise.resolve(new Response(null, { status: 200, headers: { ETag: '"poc-etag"' } }))
+    }
+    if (/^\/poc-api\/minio\/uploads\/[^/]+\/complete$/.test(url.pathname)) {
+      return Promise.resolve(json({ state: 'STORED' }))
+    }
     if (url.pathname === '/poc-api/capabilities') {
       return Promise.resolve(json({
         items: [
@@ -205,6 +230,7 @@ describe('POC live-provider compatibility adapter', () => {
         llmEmbedding: true,
         llmReranker: true,
         neo4j: true,
+        minio: true,
       }
     installGatewayMock()
   })

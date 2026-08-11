@@ -14,6 +14,11 @@ _refresh_at = 0.0
 def service_token() -> str:
     """Return a short-lived client-credentials token, refreshing before expiry."""
     global _refresh_at, _token
+    # The authentication-free POC is an explicit, isolated deployment mode.
+    # Its Node gateway accepts only fixed registration worker routes and never
+    # interprets this sentinel as a production identity.
+    if os.getenv("DATARIVER_POC_OPEN_ACCESS", "").strip().lower() == "true":
+        return "datariver-poc-open-access"
     now = time.monotonic()
     if _token is not None and now < _refresh_at:
         return _token

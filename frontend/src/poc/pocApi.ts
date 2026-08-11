@@ -20,6 +20,8 @@ import type {
   ChatMode,
   ChatResponse,
   ChatSession,
+  CapabilitiesResponse,
+  MonitoringConfiguration,
   SystemConfigurationEntry,
   SystemConfigurationTestResult,
   WorkspaceMembershipSummary,
@@ -120,6 +122,7 @@ let changeRecords: ChangeRequestRecord[] = []
 let chatSessions: ChatSession[] = []
 let uploadRecords: Array<Record<string, unknown>> = []
 let manualSubmissionReports: Array<Record<string, unknown>> = []
+let monitoringConfiguration: MonitoringConfiguration | undefined
 let adminMemberships: WorkspaceMembershipSummary[] = [pocAdminMembership()]
 let adminSystems: Array<{
   system_id: string
@@ -159,6 +162,7 @@ const chatMessages = new Map<string, ChatMessage[]>()
 const changeAttachmentUploads = new Map<string, ChangeRequestAttachmentUpload & { file: File }>()
 const changeAttachments = new Map<string, Array<ChangeRequestAttachment & { file: File }>>()
 const liveAssetDetails = new Map<string, CatalogAssetDetail>()
+const bulkCandidatePreviews = new Map<string, Record<string, unknown>>()
 
 function pocSystemEntry(system: typeof adminSystems[number]) {
   const assignees = adminSystemAssignees.get(system.system_id) ?? []
@@ -601,24 +605,23 @@ async function createChangeAttachmentUpload(
   const existing = changeAttachmentUploads.get(uploadId)
   if (existing) return publicAttachmentUpload(existing)
   const digest = await sha256(new Uint8Array(await file.arrayBuffer()))
-  if (runtimeFlags().minio) {
-    const part = await fetch(`/poc-api/minio/uploads/${encodeURIComponent(uploadId)}/parts/1`, {
-      method: 'PUT',
-      signal: options.signal,
-      headers: { 'Content-Type': file.type || 'application/octet-stream' },
-      body: file,
-    })
-    if (!part.ok) throw new Error(`MinIO 첨부파일 저장에 실패했습니다. (${part.status})`)
-    await gatewayRequest(`/poc-api/minio/uploads/${encodeURIComponent(uploadId)}/complete`, {
-      method: 'POST',
-      signal: options.signal,
-      body: JSON.stringify({
-        part_count: 1,
-        display_name: file.name,
-        content_type: file.type || 'application/octet-stream',
-      }),
-    })
-  }
+  if (!runtimeFlags().minio) throw new Error('변경요청 첨부파일에는 MinIO 설정이 필요합니다.')
+  const part = await fetch(`/poc-api/minio/uploads/${encodeURIComponent(uploadId)}/parts/1`, {
+    method: 'PUT',
+    signal: options.signal,
+    headers: { 'Content-Type': file.type || 'application/octet-stream' },
+    body: file,
+  })
+  if (!part.ok) throw new Error(`MinIO 첨부파일 저장에 실패했습니다. (${part.status})`)
+  await gatewayRequest(`/poc-api/minio/uploads/${encodeURIComponent(uploadId)}/complete`, {
+    method: 'POST',
+    signal: options.signal,
+    body: JSON.stringify({
+      part_count: 1,
+      display_name: file.name,
+      content_type: file.type || 'application/octet-stream',
+    }),
+  })
   const upload: ChangeRequestAttachmentUpload & { file: File } = {
     id: uploadId,
     change_request_id: record.id,
@@ -960,6 +963,11 @@ class PocApiClient {
         if (!value) return
         if (Number.isSafeInteger(value.sequence)) sequence = Number(value.sequence)
         if (Array.isArray(value.changeRecords)) changeRecords = value.changeRecords as ChangeRequestRecord[]
+        if (Array.isArray(value.uploadRecords)) uploadRecords = value.uploadRecords as Array<Record<string, unknown>>
+        if (Array.isArray(value.manualSubmissionReports)) manualSubmissionReports = value.manualSubmissionReports as Array<Record<string, unknown>>
+        if (value.monitoringConfiguration && typeof value.monitoringConfiguration === 'object') {
+          monitoringConfiguration = value.monitoringConfiguration as MonitoringConfiguration
+        }
         if (Array.isArray(value.adminMemberships)) adminMemberships = value.adminMemberships as WorkspaceMembershipSummary[]
         if (Array.isArray(value.adminSystems)) adminSystems = value.adminSystems as typeof adminSystems
         if (Array.isArray(value.knowledgeDomains)) knowledgeDomains = value.knowledgeDomains as Array<Record<string, unknown>>
@@ -1021,6 +1029,9 @@ class PocApiClient {
         value: {
           sequence,
           changeRecords,
+          uploadRecords,
+          manualSubmissionReports,
+          monitoringConfiguration,
           adminMemberships,
           adminSystems,
           adminSystemAssignees: [...adminSystemAssignees.entries()],
@@ -1134,8 +1145,19 @@ class PocApiClient {
   }
 
   download(path: string): Promise<ApiDownload> {
-    void path
-    return Promise.reject(new Error('생성된 내보내기 산출물이 없습니다.'))
+    const templateProfile = path.match(/^\/uploads\/profiles\/(CATALOG_METADATA_ROWS_(?:CSV|XLSX)_V1)\/template$/)
+    if (templateProfile) {
+      const extension = templateProfile[1]?.includes('XLSX') ? 'xlsx' : 'csv'
+      return fetch(`/poc-api/templates/catalog-metadata.${extension}`, { cache: 'no-store' }).then(async (response) => {
+        if (!response.ok) throw new Error(`Excel 템플릿을 내려받지 못했습니다. (${response.status})`)
+        return {
+          blob: await response.blob(),
+          filename: `datariver-catalog-metadata-rows.${extension}`,
+          etag: response.headers.get('ETag') ?? undefined,
+        }
+      })
+    }
+    return Promise.reject(new Error('이 POC에서 생성된 다운로드 산출물이 없습니다.'))
   }
 
   private async dispatch(url: URL, options: PocRequestOptions): Promise<unknown> {
@@ -1156,10 +1178,55 @@ class PocApiClient {
       ],
     }
     if (path === '/capabilities') {
-      return runtimeFlags().datahub || runtimeFlags().airflow || runtimeFlags().minio
+      const providerCapabilities = runtimeFlags().datahub || runtimeFlags().airflow || runtimeFlags().minio
         || runtimeFlags().llmChat || runtimeFlags().neo4j
-        ? gatewayRequest('/poc-api/capabilities', { signal: options.signal })
+        ? await gatewayRequest<CapabilitiesResponse>('/poc-api/capabilities', { signal: options.signal })
         : capabilities
+      return monitoringConfiguration
+        ? { ...providerCapabilities, monitoring_configuration: monitoringConfiguration }
+        : providerCapabilities
+    }
+    if (path === '/admin/monitoring-configuration' && method === 'PUT') {
+      const body = jsonBody(options)
+      const items = Array.isArray(body.items) ? body.items : []
+      if (items.length > 8) throw new Error('Monitoring 탭은 최대 8개까지 설정할 수 있습니다.')
+      const deployed = await gatewayRequest<CapabilitiesResponse>('/poc-api/capabilities', { signal: options.signal })
+      const approvedOrigins = new Set(deployed.monitoring_configuration.items.map((item) => new URL(item.url).origin))
+      const embeddableOrigins = new Set(deployed.monitoring_configuration.items
+        .filter((item) => item.embed_state === 'AVAILABLE')
+        .map((item) => new URL(item.url).origin))
+      const ids = new Set<string>()
+      const normalized = items.map((item, index) => {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) throw new Error(`Monitoring 탭 ${index + 1} 형식이 올바르지 않습니다.`)
+        const draft = item as Record<string, unknown>
+        const id = responseString(draft.id, '').trim()
+        const label = responseString(draft.label, '').trim()
+        const rawUrl = responseString(draft.url, '').trim()
+        let url: URL
+        try { url = new URL(rawUrl) } catch { throw new Error(`Monitoring 탭 ${index + 1} URL이 올바르지 않습니다.`) }
+        const height = Number(draft.height_px ?? 900)
+        if (!/^[a-zA-Z][a-zA-Z0-9_-]{1,99}$/.test(id) || ids.has(id) || !label) {
+          throw new Error(`Monitoring 탭 ${index + 1}의 id 또는 이름이 올바르지 않습니다.`)
+        }
+        if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.hash
+          || !approvedOrigins.has(url.origin)) {
+          throw new Error('새 Dashboard origin은 먼저 MONITORING_DASHBOARDS_JSON과 Grafana embed 환경변수로 승인해야 합니다.')
+        }
+        if (!Number.isInteger(height) || height < 480 || height > 2000) throw new Error('Monitoring 높이는 480~2000px이어야 합니다.')
+        ids.add(id)
+        const available = embeddableOrigins.has(url.origin)
+        return {
+          id, label, url: url.toString(), height_px: height,
+          embed_state: available ? 'AVAILABLE' : 'DISABLED',
+          ...(available ? { embed_url: url.toString() } : {}),
+        }
+      }) as MonitoringConfiguration['items']
+      monitoringConfiguration = {
+        items: normalized,
+        version: (monitoringConfiguration?.version ?? deployed.monitoring_configuration.version) + 1,
+      }
+      await this.persistCore()
+      return monitoringConfiguration
     }
     if (path === '/catalog/export-capability') return { enabled: false }
     if (path === '/poc/glossary') {
@@ -1382,51 +1449,169 @@ class PocApiClient {
     if (path === '/uploads/operator-capability') return { eligible: true, can_view_workspace_history: true, reason_code: 'ELIGIBLE', allowed_roles: ['ADMIN', 'DATA_STEWARD'] }
     const knowledgeUploadCollection = path.match(/^\/knowledge\/graphs\/[^/]+\/source-uploads$/)
     if ((path === '/uploads' || knowledgeUploadCollection) && method === 'POST') {
-      return createUploadRecord(jsonBody(options), knowledgeUploadCollection ? 'KNOWLEDGE_SOURCE_DOCUMENT_V1' : undefined)
+      if (!runtimeFlags().minio) throw new Error('파일 업로드에는 MinIO 설정이 필요합니다.')
+      const record = createUploadRecord(jsonBody(options), knowledgeUploadCollection ? 'KNOWLEDGE_SOURCE_DOCUMENT_V1' : undefined)
+      await this.persistCore()
+      return record
     }
     if (path === '/uploads' && method === 'GET') return { items: uploadRecords }
     const uploadPart = path.match(/^\/uploads\/([^/]+)\/parts$/)
       ?? path.match(/^\/knowledge\/graphs\/[^/]+\/source-uploads\/([^/]+)\/parts$/)
     if (uploadPart && method === 'POST') {
+      if (!runtimeFlags().minio) throw new Error('파일 업로드에는 MinIO 설정이 필요합니다.')
       const partNumber = Number(jsonBody(options).part_number ?? 1)
       return { url: `/poc-api/minio/uploads/${encodeURIComponent(uploadPart[1] ?? '')}/parts/${partNumber}` }
     }
     const uploadComplete = path.match(/^\/uploads\/([^/]+)\/complete$/)
       ?? path.match(/^\/knowledge\/graphs\/[^/]+\/source-uploads\/([^/]+)\/complete$/)
     if (uploadComplete && method === 'POST') {
+      if (!runtimeFlags().minio) throw new Error('파일 업로드 완료에는 MinIO 설정이 필요합니다.')
       const record = uploadById(uploadComplete[1] ?? '')
       if (!record) throw new Error('POC upload record was not found.')
       const parts = jsonBody(options).parts
-      if (runtimeFlags().minio) {
-        await gatewayRequest(`/poc-api/minio/uploads/${encodeURIComponent(String(record.id))}/complete`, {
+      const stored = await gatewayRequest<{ bucket?: string; key?: string; sha256?: string }>(
+        `/poc-api/minio/uploads/${encodeURIComponent(String(record.id))}/complete`,
+        {
           method: 'POST',
           signal: options.signal,
           body: JSON.stringify({
             part_count: Array.isArray(parts) ? parts.length : 1,
             display_name: record.display_name,
             content_type: record.content_type,
+            ...(['CATALOG_METADATA_ROWS_CSV_V1', 'CATALOG_METADATA_ROWS_XLSX_V1'].includes(String(record.content_profile))
+              ? { target_bucket: 'filefolder' }
+              : {}),
           }),
-        })
-      }
+        },
+      )
       Object.assign(record, {
         state: 'ACCEPTED',
         version: Number(record.version) + 2,
         validation_summary: {
-          provider: runtimeFlags().minio ? 'MINIO_LIVE' : 'POC_MEMORY_ONLY',
+          provider: 'MINIO_LIVE',
           status: 'PASS',
         },
+        ...(stored?.bucket && stored.key ? {
+          object_bucket: stored.bucket,
+          object_key: stored.key,
+          provider_sha256: stored.sha256,
+        } : {}),
       })
+      await this.persistCore()
       return { ...record }
     }
     const uploadDetail = path.match(/^\/uploads\/([^/]+)$/)
       ?? path.match(/^\/knowledge\/graphs\/[^/]+\/source-uploads\/([^/]+)$/)
-    if (uploadDetail && method === 'GET') return uploadById(uploadDetail[1] ?? '') ?? createUploadRecord({})
-    if (/^\/uploads\/[^/]+\/preparations$/.test(path)) return { items: [] }
+    if (uploadDetail && method === 'GET') {
+      const record = uploadById(uploadDetail[1] ?? '')
+      if (!record) throw new Error('업로드를 찾을 수 없습니다.')
+      return record
+    }
+    const preparationCollection = path.match(/^\/uploads\/([^/]+)\/preparations$/)
+    if (preparationCollection && method === 'GET') {
+      return gatewayRequest(
+        `/poc-api/bulk/uploads/${encodeURIComponent(preparationCollection[1] ?? '')}/preparations`,
+        { signal: options.signal },
+      )
+    }
+    if (preparationCollection && method === 'POST') {
+      const record = uploadById(preparationCollection[1] ?? '')
+      if (!record || record.state !== 'ACCEPTED') throw new Error('검증·승격된 bulk 업로드가 필요합니다.')
+      if (!record.object_key || !record.object_bucket) throw new Error('filefolder 저장 영수증이 없습니다.')
+      return gatewayRequest('/poc-api/bulk/preparations', {
+        method: 'POST',
+        signal: options.signal,
+        body: JSON.stringify({
+          upload_id: record.id,
+          content_profile: record.content_profile,
+          source_sha256: record.sha256,
+          object_bucket: record.object_bucket,
+          object_key: record.object_key,
+        }),
+      })
+    }
+    const bulkCandidateCollection = path.match(/^\/uploads\/([^/]+)\/preparations\/([^/]+)\/metadata-candidates$/)
+    if (bulkCandidateCollection && method === 'GET') {
+      return gatewayRequest(
+        `/poc-api/bulk/uploads/${encodeURIComponent(bulkCandidateCollection[1] ?? '')}/preparations/${encodeURIComponent(bulkCandidateCollection[2] ?? '')}/metadata-candidates?${url.searchParams.toString()}`,
+        { signal: options.signal },
+      )
+    }
+    const bulkCandidatePreviewPath = path.match(/^\/uploads\/([^/]+)\/preparations\/([^/]+)\/metadata-candidates\/([^/]+)\/preview$/)
+    if (bulkCandidatePreviewPath && method === 'GET') {
+      const preview = await gatewayRequest<Record<string, unknown>>(
+        `/poc-api/bulk/uploads/${encodeURIComponent(bulkCandidatePreviewPath[1] ?? '')}/preparations/${encodeURIComponent(bulkCandidatePreviewPath[2] ?? '')}/metadata-candidates/${encodeURIComponent(bulkCandidatePreviewPath[3] ?? '')}/preview`,
+        { signal: options.signal },
+      )
+      bulkCandidatePreviews.set(bulkCandidatePreviewPath[3] ?? '', preview)
+      return preview
+    }
+    const bulkCandidateChangePath = path.match(/^\/uploads\/([^/]+)\/preparations\/([^/]+)\/metadata-candidates\/([^/]+)\/change-request$/)
+    if (bulkCandidateChangePath && method === 'POST') {
+      const preview = bulkCandidatePreviews.get(bulkCandidateChangePath[3] ?? '')
+      if (!preview) throw new Error('변경요청 전에 bulk 후보 미리보기를 다시 확인하세요.')
+      const body = jsonBody(options)
+      const targetAssetId = responseString(preview.target_asset_id, '')
+      const detail = await gatewayRequest<CatalogAssetDetail>(
+        `/poc-api/datahub/asset?urn=${encodeURIComponent(targetAssetId)}`,
+        { signal: options.signal },
+      )
+      const target: Record<string, unknown> = { kind: 'EXISTING', asset_id: targetAssetId }
+      const sample = Array.isArray(preview.description_change_sample)
+        ? preview.description_change_sample[0] as Record<string, unknown> | undefined
+        : undefined
+      if (preview.record_kind === 'TABLE_DESCRIPTION') target.description = sample?.proposed_description ?? ''
+      if (preview.record_kind === 'COLUMN_DESCRIPTION') target.columns = [{
+        field_path: sample?.field_path,
+        description: sample?.proposed_description ?? '',
+        requested_change: responseString(body.reason, ''),
+      }]
+      const record = createChangeRequest({
+        title: responseString(body.title, `${detail.name} bulk metadata 변경`),
+        system_id: detail.platform,
+        request_reason: responseString(body.reason, ''),
+        request_content: responseString(body.reason, ''),
+        priority: 'NORMAL', urgency: 'NORMAL', security_level: detail.classification,
+        targets: [target],
+      })
+      if (preview.record_kind === 'COLUMN_DESCRIPTION') record.items[0]!.aspect_name = 'schemaMetadata'
+      else if (preview.record_kind === 'TABLE_DESCRIPTION') record.items[0]!.aspect_name = 'datasetProperties'
+      else {
+        record.items[0]!.aspect_name = preview.record_kind === 'DATASET_DOMAIN' ? 'domains'
+          : preview.record_kind === 'DATASET_TERM' ? 'glossaryTerms' : 'globalTags'
+      }
+      await this.persistCore()
+      return { id: record.id, number: record.number, request_type: 'BULK_CATALOG_METADATA', state: record.state }
+    }
     if (path === '/registration/manual-submissions' && method === 'POST') {
       const body = jsonBody(options)
+      if (!runtimeFlags().datahub) throw new Error('Manual metadata 저장에는 DataHub 설정이 필요합니다.')
       const now = new Date().toISOString()
       const serialNumber = manualSubmissionReports.length + 1
       const columnEdits = Array.isArray(body.column_edits) ? body.column_edits : []
+      const applied = await gatewayRequest<{
+        urn: string
+        reports: Array<{
+          aspect_name: string
+          aspect_ordinal: number
+          outcome: string
+          before_hash: string
+          expected_hash: string
+          observed_hash: string
+          write_attempted: boolean
+          failure_code: string | null
+          provider_version: string
+          provider_response_hash: string | null
+          observed_at: string
+        }>
+      }>('/poc-api/datahub/manual-metadata', {
+        method: 'POST',
+        signal: options.signal,
+        body: JSON.stringify(body),
+      })
+      if (applied.urn !== body.asset_id || applied.reports.length !== 5) {
+        throw new Error('DataHub Manual 적용 영수증이 요청 대상과 일치하지 않습니다.')
+      }
       const submission = {
         id: nextId('manual-submission'),
         state: 'APPLIED',
@@ -1442,26 +1627,8 @@ class PocApiClient {
         last_error_code: null,
         version: 1,
       }
-      const reportHash = await sha256(JSON.stringify(body))
-      const aspects = [
-        ['datasetProperties', 1],
-        ['domains', 2],
-        ['globalTags', 3],
-        ['glossaryTerms', 4],
-        ['schemaMetadata', 5],
-      ].map(([aspectName, aspectOrdinal]) => ({
-        aspect_name: aspectName,
-        aspect_ordinal: aspectOrdinal,
-        outcome: 'APPLIED_VERIFIED',
-        before_hash: null,
-        expected_hash: reportHash,
-        observed_hash: reportHash,
-        write_attempted: false,
-        failure_code: null,
-        provider_version: 'POC_MEMORY_ONLY',
-        provider_response_hash: reportHash,
-        observed_at: now,
-      }))
+      const aspects = applied.reports
+      const reportHash = await sha256(JSON.stringify(aspects))
       const report = {
         submission,
         attempts: [{
@@ -1477,6 +1644,7 @@ class PocApiClient {
         }],
       }
       manualSubmissionReports.unshift(report)
+      await this.persistCore()
       return submission
     }
     if (path === '/registration/manual-submissions' && method === 'GET') {
@@ -1496,9 +1664,22 @@ class PocApiClient {
     }
 
     if (path === '/change-requests/systems') {
-      return runtimeFlags().datahub
-        ? gatewayRequest('/poc-api/datahub/systems', { signal: options.signal })
+      const live = runtimeFlags().datahub
+        ? await gatewayRequest<{ items: Array<{ id: string; code: string; name: string }> }>(
+            '/poc-api/datahub/systems', { signal: options.signal },
+          )
         : { items: [] }
+      const merged = new Map(live.items.map((item) => [item.id, item]))
+      for (const system of adminSystems.filter((item) => item.active)) {
+        if (!merged.has(system.system_id)) {
+          merged.set(system.system_id, {
+            id: system.system_id,
+            code: system.code,
+            name: system.name,
+          })
+        }
+      }
+      return { items: [...merged.values()] }
     }
     if (path === '/change-requests/targets') {
       const systemId = url.searchParams.get('system_id')
@@ -2703,7 +2884,7 @@ class PocApiClient {
       if (url.searchParams.has('limit')) return { items: [], page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) } }
       return { items: [] }
     }
-    return { id: nextId('memory-record'), state: 'COMPLETED', version: 1, replayed: false }
+    throw new Error(`POC live provider contract is not implemented for ${method} ${path}.`)
   }
 }
 
@@ -2730,6 +2911,7 @@ export function resetPocMemory(): void {
   chatSessions = []
   uploadRecords = []
   manualSubmissionReports = []
+  monitoringConfiguration = undefined
   adminMemberships = [pocAdminMembership()]
   adminSystems = []
   adminSystemAssignees.clear()

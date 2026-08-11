@@ -12,7 +12,7 @@ POC는 별도 축약 화면을 만들지 않습니다. 원본 `App`과 기존 Da
 
 이 구성은 사내망의 다른 PC에 공개하는 POC입니다. 인터넷 공개용 구성이 아닙니다.
 
-## 실제 provider와 sample-memory의 역할
+## 실제 provider와 POC 상태 저장소의 역할
 
 브라우저는 provider URL이나 credential을 받지 않고 같은 origin의 `/poc-api`만 호출합니다.
 POC Web 프로세스가 고정된 allowlist route로 provider를 호출합니다. 임의 URL, GraphQL,
@@ -21,9 +21,9 @@ Cypher, DAG ID 또는 S3 bucket을 browser가 전달할 수 없습니다.
 | 화면 기능 | provider | 동작 |
 |---|---|---|
 | Catalog 검색·상세·lineage | DataHub GMS | 설정 시 live 조회, 미설정 시 빈 상태 |
-| Bulk/Knowledge 파일 전송 | MinIO | POC Web proxy를 통해 quarantine/accepted bucket에 저장 |
-| Quality Run 실행 요청 | Airflow | 고정 `datariver_quality_dispatch` DAG만 trigger |
-| Chat | DataHub + Embedding + Reranker + Chat | DataHub 근거를 고정 pipeline으로 전달 |
+| Bulk/Knowledge 파일 전송 | MinIO | POC Web proxy를 통해 고정 bucket/prefix에 저장 |
+| Bulk 등록 준비 | Airflow | 검토된 `datariver_bulk_registration_prepare` DAG만 trigger |
+| Chat | DataHub + Neo4j + Embedding + Reranker + Chat | live 근거를 고정 pipeline으로 전달 |
 | Knowledge graph snapshot | 함께 실행되는 Neo4j | live 조회만 수행하며 sample graph를 seed하지 않음 |
 | 사용자·System·변경관리 POC 상태 | POC PostgreSQL | 사용자가 만든 항목만 versioned JSONB로 보관 |
 | 거버넌스 문서·Knowledge Studio 상태 | POC PostgreSQL | 사용자가 만든 Draft·검토·발행 기록만 보관; seed 없음 |
@@ -45,7 +45,8 @@ Airflow DAG가 기존 DataRiver API를 요구한다면 downstream 단계는 별�
   `DATAHUB_UI_URL`
 - Airflow: `AIRFLOW_URL`, `AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD`. URL에는 `/api/v1` 또는
   `/api/v2`를 붙이지 않고 Webserver origin(예: `http://17.x.x.x:8888`)만 입력합니다. POC는
-  Airflow API v2를 먼저 확인하고 Airflow 2.x의 v1 API로 fallback합니다.
+  Airflow 3 API v2에서는 `/auth/token` JWT를 발급받고, Airflow 2.x에서는 Basic auth 기반
+  v1 API로 fallback합니다.
 - MinIO: `MINIO_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` 및 기존 다섯 `S3_BUCKET_*`
   이름. region은 기본 `us-east-1`이며 비표준 설정에서만 `MINIO_REGION`을 추가합니다.
 - LLM: Chat/Embedding/Reranker별 `URL`, `MODEL`, `TOKEN`. URL은 `/v1`까지의 base 또는
@@ -55,6 +56,11 @@ Airflow DAG가 기존 DataRiver API를 요구한다면 downstream 단계는 별�
 - POC 지원 컨테이너: `POC_POSTGRES_PASSWORD`를 반드시 변경합니다. 폐쇄망에서는 로컬에
   적재된 tag를 `POC_PGVECTOR_IMAGE`, `POC_REDIS_IMAGE`, `NEO4J_IMAGE`에 정확히 지정합니다.
 
+Bulk XLSX/CSV는 `S3_BUCKET_FILEFOLDER`의
+`bulk-registration/<upload-id>/catalog-metadata-source.xlsx` 또는 `.csv`에만 저장됩니다.
+브라우저가 bucket이나 object key를 정할 수 없고, 저장 완료 후 같은 Object를 다시 읽어
+SHA-256을 검증한 경우에만 후보를 생성하고 Airflow DAG를 시작합니다.
+
 Grafana iframe은 다음 네 값을 함께 설정합니다. `UI_GRAFANA_URL`은 실제 dashboard 전체
 링크이고 `GRAFANA_EMBED_BASE_URL`은 같은 dashboard의 scheme/host/port까지만 입력합니다.
 
@@ -63,7 +69,12 @@ UI_GRAFANA_URL=http://grafana.internal:3000/d/datariver/platform
 GRAFANA_EMBED_BASE_URL=http://grafana.internal:3000
 GRAFANA_EMBED_ENABLED=true
 GRAFANA_EMBED_EVIDENCE_REFERENCE=prep-grafana-reviewed-v1
+MONITORING_DASHBOARDS_JSON=[{"id":"platform","label":"Platform","url":"http://grafana.internal:3000/d/platform/main","height_px":900},{"id":"airflow","label":"Airflow","url":"http://grafana.internal:3000/d/airflow/main","height_px":900}]
 ```
+
+`MONITORING_DASHBOARDS_JSON`은 최대 8개 탭을 받습니다. iframe으로 표시할 모든 URL은
+`GRAFANA_EMBED_BASE_URL`과 exact origin이 같아야 하며 Grafana의 `allow_embedding` 및
+사내 인증 정책도 별도로 준비해야 합니다. 조건이 맞지 않는 URL은 링크 탭으로만 표시합니다.
 
 DataHub·Airflow·MinIO·LLM 컨테이너가 별도 Compose project에서 실행 중이면 그 project도
 `POC_SHARED_NETWORK`와 같은 external network에 연결하고 `.env` URL에 container DNS 이름을
@@ -83,9 +94,11 @@ npm run poc
 
 `npm run poc`는 POC build 후 정적 화면과 gateway를 한 프로세스로 실행합니다. 기본 URL은
 `http://<prep-ip>:39080/`입니다. 동등한 helper는 `./scripts/run_poc.sh npm`입니다. npm 단독
-모드는 Redis·pgvector·Neo4j 컨테이너를 시작하지 않습니다. 상태는 해당 Node 프로세스가
-살아 있는 동안만 유지되고 DataHub cache 없이 live 조회합니다. 지원 컨테이너를 포함한 전체
-묶음은 아래 Compose 명령을 사용합니다.
+모드는 Redis·pgvector·Neo4j 컨테이너를 시작하지 않습니다. 단, `.env`의
+`POC_POSTGRES_*`, `POC_REDIS_URL`, `NEO4J_HTTP_URL`이 이미 실행 중인 지원 서비스의 host
+주소를 가리키면 npm 실행도 PostgreSQL 상태 저장, Redis cache, Neo4j graph를 그대로
+사용합니다. 이 값들이 없을 때만 상태가 Node 프로세스 수명으로 제한됩니다. 지원 컨테이너를
+포함한 전체 묶음은 아래 Compose 명령을 사용합니다.
 
 ## Docker로 실행
 
@@ -99,8 +112,8 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
 
 또는 `./scripts/run_poc.sh docker`를 사용할 수 있습니다. 기본 Docker target은
 `linux/amd64`이고 Web/gateway, Redis, pgvector PostgreSQL, Neo4j를 함께 실행합니다.
-DataHub·Airflow·MinIO·LLM은 이 Compose가 생성하거나 변경하지 않습니다. 네 지원 서비스는
-host port를 공개하지 않고 전용 Compose network에서만 연결됩니다.
+DataHub·Airflow·MinIO·LLM은 이 Compose가 생성하거나 변경하지 않습니다. PostgreSQL,
+Redis, Neo4j 진단 port는 기본적으로 `127.0.0.1`에만 bind되고 Web만 사내망에 공개됩니다.
 
 ```bash
 ./scripts/run_poc.sh status
@@ -109,6 +122,25 @@ host port를 공개하지 않고 전용 Compose network에서만 연결됩니다
 ```
 
 `stop`은 컨테이너와 network만 중지하며 Neo4j·pgvector named volume은 삭제하지 않습니다.
+
+### 별도 Airflow POC 실행
+
+Airflow를 함께 준비해야 할 때도 Web Compose와 분리해 실행합니다. 이 구성은 repository의
+기존 `bulk_registration_prepare.py`, `datariver_bulk_registration.py`,
+`datariver_auth.py` 세 파일만 read-only로 mount하고 예제 DAG는 적재하지 않습니다.
+
+```bash
+docker compose --env-file deploy/poc/.env \
+  -f deploy/poc/docker-compose.airflow.yaml config --quiet
+docker compose --env-file deploy/poc/.env \
+  -f deploy/poc/docker-compose.airflow.yaml up -d
+```
+
+`.env`에는 `AIRFLOW_URL=http://<host>:18888`, `AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD`,
+`AIRFLOW_DAG_ID=datariver_bulk_registration_prepare`만 연결값으로 지정합니다. DAG는 안전을
+위해 이 검토된 파일 하나만 mount하며 새 POC Airflow 상태에서는 active로 생성됩니다. Web은
+Bulk 파일 검증을 끝낸 경우에만 REST API로 명시 실행합니다. 기존 Airflow state volume에서
+DAG가 이미 pause되어 있다면 UI에서 한 번 unpause해야 합니다.
 
 ### Git pull만 가능한 Prep PC의 프록시 Dockerfile
 
