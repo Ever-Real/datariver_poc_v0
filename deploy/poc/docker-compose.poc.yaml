@@ -1,0 +1,27 @@
+name: datariver-static-poc
+
+services:
+  web:
+    image: datariver-static-poc:06111-amd64
+    container_name: datariver-static-poc-web
+    platform: linux/amd64
+    pull_policy: never
+    ports:
+      - "0.0.0.0:${POC_PORT:-39080}:8080"
+    read_only: true
+    user: "101:101"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    pids_limit: 128
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      start_period: 5s
+      retries: 6
+    stop_grace_period: 10s

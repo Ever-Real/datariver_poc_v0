@@ -20,6 +20,7 @@ build/
 *.egg-info/
 node_modules/
 frontend/dist/
+frontend/dist-poc/
 playwright-report/
 test-results/
 .DS_Store

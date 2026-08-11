@@ -3,7 +3,7 @@ import reactHooks from 'eslint-plugin-react-hooks'
 import tseslint from 'typescript-eslint'
 
 export default tseslint.config(
-  { ignores: ['dist', 'coverage'] },
+  { ignores: ['dist', 'dist-poc', 'coverage'] },
   { ...js.configs.recommended, files: ['**/*.{js,mjs,cjs}'] },
   ...tseslint.configs.recommendedTypeChecked.map((config) => ({
     ...config,

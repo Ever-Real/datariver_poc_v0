@@ -1,0 +1,14 @@
+{
+  "project": "datariver_poc_v0",
+  "source_base": "06111ae9d94bb423adbd62d31cc56fc43feafd66",
+  "source_commit": "RECORDED_BY_EXPORT",
+  "release_type": "STATIC_POC",
+  "authentication": "NONE",
+  "canonical_data": "NONE",
+  "external_integrations": "SIMULATED",
+  "fixture_classification": "SYNTHETIC_NON_SENSITIVE",
+  "platform": "linux/amd64",
+  "image": "datariver-static-poc:06111-amd64",
+  "image_id": "RECORDED_BY_EXPORT",
+  "archive_sha256": "RECORDED_BESIDE_ARCHIVE"
+}
