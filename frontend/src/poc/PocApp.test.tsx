@@ -106,4 +106,19 @@ describe('POC compatibility application', () => {
     expect(screen.getByText(/개발 검증 세션/)).toBeVisible()
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
+
+  it('shows the bounded POC user and system settings administration surfaces', async () => {
+    window.history.replaceState({}, '', '/poc.html?page=admin&adminSection=memberships')
+    renderPoc()
+
+    await waitFor(() => expect(window.location.search).toContain('page=admin'))
+    expect(await screen.findByRole('heading', { name: /관리자 및 데이터 거버넌스|Administration and data governance/ })).toBeVisible()
+    expect(screen.getByRole('heading', { name: '계정/권한' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '사용자 등록' })).toBeEnabled()
+
+    fireEvent.click(screen.getByRole('tab', { name: /시스템 설정|System settings/ }))
+    expect(await screen.findByRole('heading', { name: '시스템 설정' })).toBeVisible()
+    expect(screen.getAllByText('DataHub GMS').length).toBeGreaterThan(0)
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
 })

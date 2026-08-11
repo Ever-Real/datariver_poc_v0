@@ -299,8 +299,8 @@ export function CatalogDetailPane({
             <div><dt>Schema</dt><dd>{detailText(detail.schema_name)}</dd></div>
             <div><dt>Domain</dt><dd>{detailText(detail.domain)}</dd></div>
             <div><dt>Owner</dt><dd>{detailText(ownerValues(detail.ownership).join(', ') || detail.owner, detail.ownership_truncated)}</dd></div>
-            <div><dt>Rows</dt><dd>{detailText(formatObservedValue(detail.quality.rowCount ?? detail.quality.rows))}</dd></div>
-            <div><dt>Size</dt><dd>{detailText(formatObservedValue(detail.quality.sizeInBytes ?? detail.quality.size, ' B'))}</dd></div>
+            <div><dt>Rows</dt><dd>{detailText(formatObservedValue(detail.quality?.rowCount ?? detail.quality?.rows))}</dd></div>
+            <div><dt>Size</dt><dd>{detailText(formatObservedValue(detail.quality?.sizeInBytes ?? detail.quality?.size, ' B'))}</dd></div>
             <div><dt>Created Date</dt><dd>{detailText(detail.created_at ? new Date(detail.created_at).toLocaleString() : undefined)}</dd></div>
             <div className="wide"><dt>Description</dt><dd>{detailText(detail.description, detail.description_truncated)}</dd></div>
             <div className="metadata-vocabulary"><dt>Terms</dt><dd><BadgeScroller label="테이블 Terms" values={detail.terms ?? []} truncated={detail.terms_truncated} /></dd></div>
@@ -312,8 +312,8 @@ export function CatalogDetailPane({
             {detail.schema_fields_truncated && <div className="catalog-detail-state" role="status">원본 {detail.schema_fields_total_exact ? '' : '최소 '}{detail.schema_fields_total.toLocaleString()}개 중 메모리 보호 상한인 {detail.schema_fields_available.toLocaleString()}개 컬럼만 제공합니다.</div>}
             <table><caption className="sr-only">스키마 필드</caption><thead><tr><th>Column</th><th>Type</th><th>Description</th><th>Terms</th><th>Tags</th></tr></thead>
               <tbody>{detail.schema_fields.map((field, index) => {
-                const fieldName = valueOf(field, 'fieldPath', 'name')
-                const type = valueOf(field, 'nativeDataType', 'type')
+                const fieldName = valueOf(field, 'fieldPath', 'field_path', 'name')
+                const type = valueOf(field, 'nativeDataType', 'native_data_type', 'type')
                 const description = valueOf(field, 'description')
                 const typeTruncated = field.nativeDataType
                   ? fieldFlag(field, 'nativeDataType_truncated')

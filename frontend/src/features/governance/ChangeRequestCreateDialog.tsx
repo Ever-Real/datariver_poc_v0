@@ -81,7 +81,10 @@ function tokens(value: unknown, collection: 'tags' | 'terms'): string[] {
 }
 
 function termValues(asset: CatalogAssetDetail): string[] {
-  return asset.glossary_terms.flatMap((value) => tokens({ terms: [value] }, 'terms'))
+  return unique([
+    ...(asset.terms ?? []),
+    ...asset.glossary_terms.flatMap((value) => tokens({ terms: [value] }, 'terms')),
+  ])
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {

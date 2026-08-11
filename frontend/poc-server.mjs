@@ -352,7 +352,10 @@ async function datahubAsset(urn) {
     schema_fields_offset: 0,
     schema_fields_limit: 100,
     schema_fields_has_more: false,
-    quality: null,
+    // The original Catalog detail contract always exposes an object here.
+    // DataHub does not provide the governed Quality projection in this POC,
+    // so retain the shape without inventing row/size values.
+    quality: {},
     projection_source_version: 'datahub-live-poc',
     source_version: 'datahub-live',
   }
@@ -575,7 +578,16 @@ async function capabilities() {
     providerState('MinIO', Boolean(minio), async () => requireOk(await providerFetch(joinProviderUrl(minio.url, '/minio/health/live')), 'MinIO')),
     providerState('LLM Chat', Boolean(llm.chat), async () => requireOk(await providerFetch(joinProviderUrl(llm.chat.url, '/models'), { headers: { Authorization: `Bearer ${llm.chat.token}` } }), 'LLM Chat')),
     providerState('LLM Embedding', Boolean(llm.embedding), async () => requireOk(await providerFetch(joinProviderUrl(llm.embedding.url, '/models'), { headers: { Authorization: `Bearer ${llm.embedding.token}` } }), 'LLM Embedding')),
-    providerState('LLM Reranker', Boolean(llm.reranker), async () => requireOk(await providerFetch(llm.reranker.url, { headers: { Authorization: `Bearer ${llm.reranker.token}` } }), 'LLM Reranker')),
+    providerState('LLM Reranker', Boolean(llm.reranker), async () => {
+      const payload = await llmRequest(llm.reranker, '/rerank', {
+        model: llm.reranker.model,
+        query: 'DataRiver capability probe',
+        documents: ['DataRiver capability probe'],
+        top_n: 1,
+      })
+      const results = payload.results || payload.data
+      if (!Array.isArray(results)) throw new Error('LLM Reranker returned no ordered results.')
+    }),
     providerState('Neo4j', Boolean(neo4j), async () => neo4jQuery('RETURN 1')),
   ])
   return {

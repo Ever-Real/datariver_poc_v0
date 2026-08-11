@@ -160,6 +160,7 @@ test('publishes only enabled flags while all provider probes pass', async () => 
   assert.doesNotMatch(runtime, /test-token|test-password|test-secret/)
   const capability = await (await fetch(`${pocOrigin}/poc-api/capabilities`)).json()
   assert.ok(capability.items.every((item) => item.state === 'available'))
+  assert.ok(requests.some((request) => request.method === 'POST' && request.path === '/rerank'))
 })
 
 test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
@@ -169,6 +170,7 @@ test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
   const urn = encodeURIComponent(catalog.items[0].external_urn)
   const detail = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}`)).json()
   assert.equal(detail.schema_fields[0].field_path, 'wafer_id')
+  assert.deepEqual(detail.quality, {})
   const lineage = await (await fetch(`${pocOrigin}/poc-api/datahub/lineage?urn=${urn}`)).json()
   assert.equal(lineage.center_asset_id, catalog.items[0].external_urn)
 })
