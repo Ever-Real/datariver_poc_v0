@@ -7,9 +7,8 @@ POC는 별도 축약 화면을 만들지 않습니다. 원본 `App`과 기존 Da
 메뉴, 화면 배치, 탭, 필터, 상세 패널과 UI interaction은 원본과 같습니다.
 
 제거되는 것은 Keycloak/OIDC 로그인, token 갱신, 로그아웃, WebAuthn, step-up 및 비밀번호
-재인증 UI/동작입니다. 모든 화면에는 다음 경계 문구가 계속 표시됩니다.
-
-`POC / NO AUTH / SAMPLE DATA / NOT FOR PRODUCTION`
+재인증 UI/동작입니다. 원본 상단 메뉴 오른쪽의 작은 `[poc]` 배지가 이 무인증 실행 경계를
+표시합니다.
 
 이 구성은 사내망의 다른 PC에 공개하는 POC입니다. 인터넷 공개용 구성이 아닙니다.
 
@@ -21,12 +20,13 @@ Cypher, DAG ID 또는 S3 bucket을 browser가 전달할 수 없습니다.
 
 | 화면 기능 | provider | 동작 |
 |---|---|---|
-| Catalog 검색·상세·lineage | DataHub GMS | 설정 시 live 조회, 미설정 시 synthetic fixture |
+| Catalog 검색·상세·lineage | DataHub GMS | 설정 시 live 조회, 미설정 시 빈 상태 |
 | Bulk/Knowledge 파일 전송 | MinIO | POC Web proxy를 통해 quarantine/accepted bucket에 저장 |
 | Quality Run 실행 요청 | Airflow | 고정 `datariver_quality_dispatch` DAG만 trigger |
 | Chat | DataHub + Embedding + Reranker + Chat | DataHub 근거를 고정 pipeline으로 전달 |
-| Knowledge graph snapshot | 함께 실행되는 Neo4j | 시작 시 synthetic sample graph를 `MERGE`하고 live 조회 |
-| 변경관리·거버넌스·품질 control-plane 상태 | browser memory | 새로고침하면 초기 sample 상태로 복원 |
+| Knowledge graph snapshot | 함께 실행되는 Neo4j | live 조회만 수행하며 sample graph를 seed하지 않음 |
+| 변경관리 POC 상태 | browser memory | 사용자가 만든 CR 흐름만 보관하며 새로고침하면 초기화 |
+| 거버넌스·품질 control-plane 상태 | 별도 정본 서비스 필요 | fixture 대신 빈 상태 또는 unavailable 표시 |
 
 별도 PostgreSQL/Valkey/DataRiver API가 없으므로 변경관리 승인, 거버넌스 정본, 품질 결과
 보존은 실제 운영 처리로 주장하지 않습니다. Airflow DAG가 기존 DataRiver API를 요구한다면
@@ -64,9 +64,8 @@ npm run poc
 
 `npm run poc`는 POC build 후 정적 화면과 gateway를 한 프로세스로 실행합니다. 기본 URL은
 `http://<prep-ip>:39080/`입니다. 동등한 helper는 `./scripts/run_poc.sh npm`입니다. npm 단독
-모드는 Neo4j 컨테이너를 시작하지 않으므로 Neo4j live graph는 비활성화되고 sample-memory
-화면으로 동작합니다. 외부 provider 연결을 포함한 Web+Neo4j 전체 묶음은 아래 Compose 명령을
-사용합니다.
+모드는 Neo4j 컨테이너를 시작하지 않으므로 Neo4j live graph는 비활성화됩니다. 외부 provider
+연결을 포함한 Web+Neo4j 전체 묶음은 아래 Compose 명령을 사용합니다.
 
 ## Docker로 실행
 
@@ -89,6 +88,44 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
 ```
 
 `stop`은 컨테이너와 network만 중지하며 Neo4j named volume은 삭제하지 않습니다.
+
+### Git pull만 가능한 Prep PC의 프록시 Dockerfile
+
+Git이 추적하는 표준 빌드 파일은 `deploy/poc/Dockerfile.example`입니다. Prep PC 전용 프록시
+설정은 이 파일을 직접 수정하지 말고, Git에서 제외되는 `Dockerfile.local`에 둡니다.
+
+이미 기존의 추적 대상 `deploy/poc/Dockerfile`을 수정해 `git pull`이 중단되는 Prep PC에서는
+다음 절차를 최초 한 번만 실행합니다. 백업은 pull 대상 저장소 밖에 생성합니다.
+
+```bash
+cd /path/to/datariver_poc_v0
+git status --short
+cp deploy/poc/Dockerfile ../datariver-poc-prep-Dockerfile.backup
+git restore --source=HEAD -- deploy/poc/Dockerfile
+git pull --ff-only origin dev
+
+cp ../datariver-poc-prep-Dockerfile.backup deploy/poc/Dockerfile.local
+# deploy/poc/.env에서 다음 값 지정
+# POC_DOCKERFILE=deploy/poc/Dockerfile.local
+
+git status --short
+docker compose --env-file deploy/poc/.env \
+  -f deploy/poc/docker-compose.poc.yaml config --quiet
+docker compose --env-file deploy/poc/.env \
+  -f deploy/poc/docker-compose.poc.yaml up -d --build
+```
+
+`Dockerfile.local`과 `deploy/poc/.env`는 Git에 포함되지 않으므로 이후 `git pull --ff-only
+origin dev`가 두 파일을 덮어쓰지 않습니다. 표준 `Dockerfile.example`이 변경된 커밋을 받은
+경우에는 다음 명령으로 차이를 확인하고, 최신 example을 다시 복사한 뒤 필요한 프록시 설정만
+재적용합니다.
+
+```bash
+diff -u deploy/poc/Dockerfile.example deploy/poc/Dockerfile.local || true
+```
+
+프록시가 필요하지 않은 host는 `.env`의 기본값
+`POC_DOCKERFILE=deploy/poc/Dockerfile.example`을 그대로 사용합니다.
 
 ## 주장하지 않는 것
 

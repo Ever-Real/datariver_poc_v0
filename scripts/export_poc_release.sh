@@ -40,7 +40,7 @@ docker buildx build \
   --pull=false \
   --load \
   --build-arg "POC_SOURCE_COMMIT=${source_commit}" \
-  --file "${repository_root}/deploy/poc/Dockerfile" \
+  --file "${repository_root}/deploy/poc/Dockerfile.example" \
   --tag "${image_ref}" \
   "${repository_root}"
 

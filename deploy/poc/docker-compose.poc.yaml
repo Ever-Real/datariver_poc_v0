@@ -6,7 +6,7 @@ services:
     platform: ${POC_PLATFORM:-linux/amd64}
     build:
       context: ../..
-      dockerfile: deploy/poc/Dockerfile
+      dockerfile: ${POC_DOCKERFILE:-deploy/poc/Dockerfile.example}
       args:
         POC_SOURCE_COMMIT: ${POC_SOURCE_COMMIT:-local}
         NODE_IMAGE: ${POC_NODE_IMAGE:-node:22.19.0-bookworm-slim}
