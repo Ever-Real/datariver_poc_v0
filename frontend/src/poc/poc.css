@@ -1,29 +1,26 @@
-/* The POC intentionally reuses the production page and component styles unchanged.
-   Only the persistent boundary notice and its sticky-header offset are POC-specific. */
+/* The POC intentionally reuses the production page and component styles unchanged. */
 
 .poc-app {
   min-height: 100vh;
 }
 
-.poc-banner {
-  position: sticky;
-  z-index: 60;
-  top: 0;
-  min-height: 30px;
+.top-navigation-profile-slot {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border-bottom: 1px solid #b6953d;
-  padding: 5px 12px;
-  color: #382b08;
-  background: #ffe89a;
-  font-size: 9px;
-  letter-spacing: .08em;
+  justify-content: flex-end;
+  gap: 5px;
 }
 
-.poc-app .top-navigation {
-  top: 30px;
+.poc-navigation-badge {
+  flex: 0 0 auto;
+  border: 1px solid rgba(255, 232, 154, .62);
+  border-radius: 999px;
+  padding: 2px 5px;
+  color: #ffe89a;
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: .04em;
+  line-height: 1;
 }
 
 .poc-app .deployment-footer {
@@ -31,10 +28,6 @@
   background: #fff4ca;
 }
 
-@media (max-width: 600px) {
-  .poc-banner {
-    gap: 4px;
-    font-size: 7px;
-    letter-spacing: .04em;
-  }
+@media (max-width: 860px) {
+  .top-navigation-profile-slot { grid-area: profile; }
 }

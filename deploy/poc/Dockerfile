@@ -1,5 +1,5 @@
-# syntax=docker/dockerfile:1
-FROM node:22.19.0-alpine3.22 AS build
+ARG NODE_IMAGE=node:22.19.0-bookworm-slim
+FROM ${NODE_IMAGE} AS build
 
 WORKDIR /source/frontend
 COPY frontend/package.json frontend/package-lock.json ./
@@ -7,7 +7,7 @@ RUN npm ci --ignore-scripts
 COPY frontend/ ./
 RUN npm run build:poc
 
-FROM node:22.19.0-alpine3.22
+FROM ${NODE_IMAGE}
 
 ARG POC_SOURCE_COMMIT=unrecorded
 LABEL org.opencontainers.image.title="DataRiver 06111 Hybrid POC" \

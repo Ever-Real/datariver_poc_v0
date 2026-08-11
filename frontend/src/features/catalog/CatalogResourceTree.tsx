@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, ChevronDown, ChevronRight, Database, Layers3, Table2 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { CatalogTreeNode, CatalogTreePage } from '../../api/types'
+import type { CatalogSearch, CatalogTreeNode, CatalogTreePage } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
+import { CursorPagination } from '../../components/common/CursorPagination'
 import { TruncatedText } from '../../components/common/TruncatedText'
+import { GlobalCatalogSearch } from '../../components/layout/GlobalCatalogSearch'
 
 interface Branch {
   items: CatalogTreeNode[]
@@ -71,15 +73,27 @@ export function CatalogResourceTree({
   client,
   selectedAssetId,
   onSelectAsset,
+  searchable = false,
+  searchIdPrefix = 'resource-tree',
+  searchLabel = 'Resource Tree 검색',
 }: {
   client: ApiClient
   selectedAssetId?: string
   onSelectAsset: (assetId: string) => void
+  searchable?: boolean
+  searchIdPrefix?: string
+  searchLabel?: string
 }) {
   const [branches, setBranches] = useState<Record<string, Branch>>({})
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState<Set<string>>(new Set())
   const [error, setError] = useState<unknown>()
+  const [searchQuery, setSearchQuery] = useState('')
+  const [searchResult, setSearchResult] = useState<CatalogSearch>()
+  const [searchLoading, setSearchLoading] = useState(false)
+  const [searchCursors, setSearchCursors] = useState<Array<string | undefined>>([undefined])
+  const [searchPageIndex, setSearchPageIndex] = useState(0)
+  const [searchResetGeneration, setSearchResetGeneration] = useState(0)
   const generation = useRef(0)
   const controllers = useRef(new Map<string, AbortController>())
   const activeBranchKeys = useRef(new Set<string>())
@@ -146,6 +160,30 @@ export function CatalogResourceTree({
     // never narrow it or mutate the active Search Results filter state.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [client])
+
+  useEffect(() => {
+    if (!searchable || !searchQuery) {
+      setSearchResult(undefined)
+      setSearchLoading(false)
+      return
+    }
+    const controller = new AbortController()
+    const parameters = new URLSearchParams({ q: searchQuery, limit: '25' })
+    const cursor = searchCursors[searchPageIndex]
+    if (cursor) parameters.set('cursor', cursor)
+    setSearchLoading(true)
+    setError(undefined)
+    void client.request<CatalogSearch>(`/catalog/assets?${parameters.toString()}`, {
+      signal: controller.signal,
+    }).then((value) => {
+      if (!controller.signal.aborted) setSearchResult(value)
+    }).catch((next: unknown) => {
+      if (!controller.signal.aborted) setError(next)
+    }).finally(() => {
+      if (!controller.signal.aborted) setSearchLoading(false)
+    })
+    return () => controller.abort()
+  }, [client, searchCursors, searchPageIndex, searchQuery, searchable])
 
   /**
    * ROOT 브랜치 로드 완료 후 1단계 노드를 자동으로 펼침.
@@ -233,10 +271,69 @@ export function CatalogResourceTree({
     return flattened
   }, [branches, expanded])
 
+  const resetSearch = () => {
+    setSearchQuery('')
+    setSearchResult(undefined)
+    setSearchCursors([undefined])
+    setSearchPageIndex(0)
+    setSearchResetGeneration((current) => current + 1)
+  }
+
   return <aside className="catalog-tree panel" aria-label="Resource Tree">
-    <header><div><span className="eyebrow">Canonical hierarchy</span><h2>Resource Tree</h2></div><span>{rows.length}</span></header>
+    <header><div><span className="eyebrow">Canonical hierarchy</span><h2>Resource Tree</h2></div><span>{searchQuery ? searchResult?.total ?? 0 : rows.length}</span></header>
+    {searchable && <div className="catalog-tree-search">
+      <GlobalCatalogSearch
+        key={`${searchIdPrefix}-${searchResetGeneration}`}
+        client={client}
+        idPrefix={searchIdPrefix}
+        searchLabel={searchLabel}
+        inputLabel={searchLabel}
+        placeholder="스키마·테이블·컬럼 검색..."
+        maxLength={200}
+        onSearch={(value) => {
+          setSearchQuery(value)
+          setSearchCursors([undefined])
+          setSearchPageIndex(0)
+        }}
+      />
+      {searchQuery && <div className="catalog-tree-search-heading">
+        <strong>“{searchQuery}” 검색 결과</strong>
+        <button className="button button-secondary" type="button" onClick={resetSearch}>전체 계층 보기</button>
+      </div>}
+    </div>}
     <ErrorNotice error={error} />
-    <div className="catalog-tree-rows" aria-busy={loading.size > 0}>
+    {searchQuery ? <>
+      <div className="catalog-tree-search-results" aria-busy={searchLoading}>
+        {searchResult?.items.map((asset) => <button
+          key={asset.id}
+          type="button"
+          className={asset.id === selectedAssetId ? 'selected' : ''}
+          onClick={() => onSelectAsset(asset.id)}
+        >
+          <Table2 size={13} aria-hidden="true" />
+          <span><TruncatedText value={asset.name} /><small>{[asset.platform, asset.database_name, asset.schema_name].filter(Boolean).join(' · ') || '위치 정보 없음'}</small></span>
+        </button>)}
+        {searchLoading && <div className="catalog-tree-state" role="status">검색 중입니다.</div>}
+        {!searchLoading && searchResult?.items.length === 0 && <div className="catalog-tree-state">검색 조건에 맞는 자산이 없습니다.</div>}
+      </div>
+      <CursorPagination
+        page={searchPageIndex + 1}
+        pageSize={25}
+        pageSizeOptions={[25]}
+        itemCount={searchResult?.items.length ?? 0}
+        canPrevious={searchPageIndex > 0}
+        canNext={Boolean(searchResult?.page.next_cursor)}
+        onPrevious={() => setSearchPageIndex((current) => Math.max(0, current - 1))}
+        onNext={() => {
+          const cursor = searchResult?.page.next_cursor
+          if (!cursor) return
+          setSearchCursors((current) => [...current.slice(0, searchPageIndex + 1), cursor])
+          setSearchPageIndex((current) => current + 1)
+        }}
+        onPageSizeChange={() => undefined}
+        label="Resource Tree 검색 결과 페이지 탐색"
+      />
+    </> : <div className="catalog-tree-rows" aria-busy={loading.size > 0}>
       {rows.map((row) => {
         if (row.type === 'LIMIT') return <div
           key={`${row.parent.id}-limit`}
@@ -268,8 +365,8 @@ export function CatalogResourceTree({
       })}
       {loading.has('ROOT') && <div className="catalog-tree-state">계층을 불러오는 중입니다.</div>}
       {!loading.has('ROOT') && rows.length === 0 && <div className="catalog-tree-state">표시할 권한 범위의 계층이 없습니다.</div>}
-    </div>
-    {branches.ROOT?.nextCursor && <button className="tree-more" type="button" onClick={() => void loadBranch(undefined, true)}>플랫폼 더 보기</button>}
-    {branches.ROOT?.truncated && <p className="catalog-tree-state">메모리 보호를 위해 플랫폼 200개만 표시합니다.</p>}
+    </div>}
+    {!searchQuery && branches.ROOT?.nextCursor && <button className="tree-more" type="button" onClick={() => void loadBranch(undefined, true)}>플랫폼 더 보기</button>}
+    {!searchQuery && branches.ROOT?.truncated && <p className="catalog-tree-state">메모리 보호를 위해 플랫폼 200개만 표시합니다.</p>}
   </aside>
 }

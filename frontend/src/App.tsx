@@ -336,6 +336,7 @@ export function App() {
   return (
     <AppShell
       page={page}
+      pocMode={!authenticationEnabled}
       client={client}
       workspace={activeWorkspace}
       securityEpoch={auth.securityEpoch}

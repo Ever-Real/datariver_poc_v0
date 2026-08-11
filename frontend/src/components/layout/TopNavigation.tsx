@@ -11,6 +11,7 @@ import { DataRiverMark } from './DataRiverMark'
 
 interface TopNavigationProps {
   page: Page
+  pocMode?: boolean
   client?: ApiClient
   workspace: string
   workspaceSelectionEnabled?: boolean
@@ -33,6 +34,7 @@ interface TopNavigationProps {
 
 export function TopNavigation({
   page,
+  pocMode = false,
   client,
   workspace,
   workspaceSelectionEnabled = true,
@@ -90,22 +92,25 @@ export function TopNavigation({
         onSearch={onSearch}
       />
       <ExternalSystemLinks links={externalSystemLinks} />
-      <ProfileMenu
-        displayName={displayName}
-        workspace={workspace}
-        workspaceSelectionEnabled={workspaceSelectionEnabled}
-        hardwareWebauthnEnabled={hardwareWebauthnEnabled}
-        deploymentTier={deploymentTier}
-        adminMenuItems={adminMenuItems}
-        email={email}
-        adminContextStatus={adminContextStatus}
-        onAdmin={onNavigateAdmin}
-        onProfile={onProfile}
-        onWorkspaceChange={onWorkspaceChange}
-        onPasswordReauth={onPasswordReauth}
-        onEnrollSecurityKey={onEnrollSecurityKey}
-        onSignOut={onSignOut}
-      />
+      <div className="top-navigation-profile-slot">
+        <ProfileMenu
+          displayName={displayName}
+          workspace={workspace}
+          workspaceSelectionEnabled={workspaceSelectionEnabled}
+          hardwareWebauthnEnabled={hardwareWebauthnEnabled}
+          deploymentTier={deploymentTier}
+          adminMenuItems={adminMenuItems}
+          email={email}
+          adminContextStatus={adminContextStatus}
+          onAdmin={onNavigateAdmin}
+          onProfile={onProfile}
+          onWorkspaceChange={onWorkspaceChange}
+          onPasswordReauth={onPasswordReauth}
+          onEnrollSecurityKey={onEnrollSecurityKey}
+          onSignOut={onSignOut}
+        />
+        {pocMode && <span className="poc-navigation-badge" aria-label="POC mode">[poc]</span>}
+      </div>
     </header>
   )
 }

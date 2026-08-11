@@ -24,11 +24,11 @@ export function schemaDescriptionFields(
   const seen = new Set<string>()
   const values: SchemaDescriptionField[] = []
   for (const value of fields) {
-    const fieldPath = value.fieldPath
+    const fieldPath = value.fieldPath ?? value.field_path
     if (typeof fieldPath !== 'string' || !fieldPath || seen.has(fieldPath)) continue
     const description = value.description
     const logicalName = value.label
-    const dataType = value.nativeDataType ?? value.dataType
+    const dataType = value.nativeDataType ?? value.native_data_type ?? value.dataType ?? value.type
     if (description !== undefined && description !== null && typeof description !== 'string') continue
     if (logicalName !== undefined && logicalName !== null && typeof logicalName !== 'string') continue
     values.push({

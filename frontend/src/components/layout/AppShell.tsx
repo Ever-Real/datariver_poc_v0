@@ -8,6 +8,7 @@ import type { AdminContextStatus, AdminMenuItem } from './ProfileMenu'
 
 interface AppShellProps {
   page: Page
+  pocMode?: boolean
   client?: ApiClient
   workspace: string
   securityEpoch?: number
@@ -34,6 +35,7 @@ interface AppShellProps {
 
 export function AppShell({
   page,
+  pocMode = false,
   client,
   workspace,
   securityEpoch = 0,
@@ -64,6 +66,7 @@ export function AppShell({
       <TopNavigation
         key={securityBoundaryKey}
         page={page}
+        pocMode={pocMode}
         client={client}
         workspace={workspace}
         workspaceSelectionEnabled={workspaceSelectionEnabled}

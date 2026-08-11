@@ -35,6 +35,34 @@ function providerHandler(request, response) {
     if (url.pathname === '/api/graphql') {
       const payload = JSON.parse(body.toString('utf8'))
       if (payload.query.includes('DataRiverPocCatalog')) {
+        if (payload.variables.input.query === 'cursor-test') {
+          const secondPage = payload.variables.input.scrollId === 'provider-page-2'
+          const entity = secondPage ? {
+            urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.inspection_results,PROD)',
+            type: 'DATASET', name: 'inspection_results',
+            platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
+            properties: { name: 'inspection_results', description: 'Second provider page' },
+            editableProperties: { description: null },
+            browsePathV2: { path: [{ name: 'MANUFACTURING' }, { name: 'QUALITY' }, { name: 'inspection_results' }] },
+            domain: null, ownership: { owners: [] }, globalTags: { tags: [] }, glossaryTerms: { terms: [] },
+            schemaMetadata: { fields: [{ fieldPath: 'inspection_id' }] },
+          } : {
+            urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)',
+            type: 'DATASET', name: 'wafer_events',
+            platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
+            properties: { name: 'wafer_events', description: 'First provider page' },
+            editableProperties: { description: null },
+            browsePathV2: { path: [{ name: 'MANUFACTURING' }, { name: 'QUALITY' }, { name: 'wafer_events' }] },
+            domain: null, ownership: { owners: [] }, globalTags: { tags: [] }, glossaryTerms: { terms: [] },
+            schemaMetadata: { fields: [{ fieldPath: 'wafer_id' }] },
+          }
+          return sendJson(response, { data: { scrollAcrossEntities: {
+            count: 1,
+            total: 2,
+            nextScrollId: secondPage ? null : 'provider-page-2',
+            searchResults: [{ entity }],
+          } } })
+        }
         return sendJson(response, { data: { scrollAcrossEntities: {
           count: 2,
           total: 2,
@@ -78,12 +106,22 @@ function providerHandler(request, response) {
           platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
           properties: { name: 'wafer_events', description: 'Live DataHub wafer evidence' },
           editableProperties: { description: null },
-          browsePathV2: { path: [{ name: 'MANUFACTURING' }, { name: 'QUALITY' }, { name: 'wafer_events' }] },
+          browsePathV2: { path: [
+            { name: 'urn:li:container:database', entity: { urn: 'urn:li:container:database', type: 'CONTAINER', properties: { name: 'urn:li:container:database', qualifiedName: 'MANUFACTURING' }, subTypes: { typeNames: ['Database'] } } },
+            { name: 'urn:li:container:schema', entity: { urn: 'urn:li:container:schema', type: 'CONTAINER', properties: { name: 'urn:li:container:schema', qualifiedName: 'MANUFACTURING.QUALITY' }, subTypes: { typeNames: ['Schema'] } } },
+          ] },
           domain: null,
           ownership: { owners: [] },
           globalTags: { tags: [] },
           glossaryTerms: { terms: [] },
-          schemaMetadata: { fields: [{ fieldPath: 'wafer_id', nativeDataType: 'VARCHAR', description: 'Wafer ID' }] },
+          schemaMetadata: { fields: [
+            {
+              fieldPath: 'wafer_id', nativeDataType: 'VARCHAR', description: 'Wafer ID',
+              globalTags: { tags: [{ tag: { urn: 'urn:li:tag:identifier', name: 'identifier' } }] },
+              glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:waferId', name: 'Wafer ID' } }] },
+            },
+            { fieldPath: 'observed_at', nativeDataType: 'TIMESTAMP', description: 'Observed timestamp' },
+          ] },
         } } })
       }
       return sendJson(response, { data: { dataset: { lineage: { total: 0, relationships: [] } } } })
@@ -136,6 +174,10 @@ before(async () => {
     NEO4J_HTTP_URL: providerOrigin,
     NEO4J_USERNAME: 'neo4j',
     NEO4J_PASSWORD: 'neo4j-test-password',
+    UI_GRAFANA_URL: `${providerOrigin}/dashboards/datariver`,
+    GRAFANA_EMBED_BASE_URL: providerOrigin,
+    GRAFANA_EMBED_ENABLED: 'true',
+    GRAFANA_EMBED_EVIDENCE_REFERENCE: 'prep-poc-grafana-config-v1',
   })
   const module = await import('./poc-server.mjs?provider-contract-test')
   pocServer = module.createPocServer()
@@ -160,6 +202,8 @@ test('publishes only enabled flags while all provider probes pass', async () => 
   assert.doesNotMatch(runtime, /test-token|test-password|test-secret/)
   const capability = await (await fetch(`${pocOrigin}/poc-api/capabilities`)).json()
   assert.ok(capability.items.every((item) => item.state === 'available'))
+  assert.equal(capability.grafana_embed.state, 'AVAILABLE')
+  assert.equal(capability.monitoring_configuration.items[0].embed_url, `${new URL(capability.grafana_embed.url).origin}/dashboards/datariver`)
   assert.ok(requests.some((request) => request.method === 'POST' && request.path === '/rerank'))
 })
 
@@ -169,10 +213,36 @@ test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
   assert.equal(catalog.items[0].database_name, 'MANUFACTURING')
   const urn = encodeURIComponent(catalog.items[0].external_urn)
   const detail = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}`)).json()
-  assert.equal(detail.schema_fields[0].field_path, 'wafer_id')
+  assert.equal(detail.database_name, 'MANUFACTURING')
+  assert.equal(detail.schema_name, 'QUALITY')
+  assert.equal(detail.schema_fields[0].fieldPath, 'wafer_id')
+  assert.equal(detail.schema_fields[0].globalTags.tags[0].tag.name, 'identifier')
+  assert.equal(detail.schema_fields[0].glossaryTerms.terms[0].term.name, 'Wafer ID')
   assert.deepEqual(detail.quality, {})
+  const secondFieldPage = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}&field_offset=1&field_limit=1`)).json()
+  assert.equal(secondFieldPage.schema_fields[0].fieldPath, 'observed_at')
+  assert.equal(secondFieldPage.schema_fields_offset, 1)
+  assert.equal(secondFieldPage.schema_fields_has_more, false)
   const lineage = await (await fetch(`${pocOrigin}/poc-api/datahub/lineage?urn=${urn}`)).json()
   assert.equal(lineage.center_asset_id, catalog.items[0].external_urn)
+})
+
+test('keeps provider cursors server-side and aggregates the complete DataHub inventory', async () => {
+  const first = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=cursor-test&limit=1`)).json()
+  assert.equal(first.items[0].name, 'wafer_events')
+  assert.ok(first.page.next_cursor)
+  assert.notEqual(first.page.next_cursor, 'provider-page-2')
+  const second = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=cursor-test&limit=1&cursor=${encodeURIComponent(first.page.next_cursor)}`)).json()
+  assert.equal(second.items[0].name, 'inspection_results')
+  assert.equal(second.page.next_cursor, null)
+
+  const root = await (await fetch(`${pocOrigin}/poc-api/datahub/tree?parent_kind=ROOT&limit=100`)).json()
+  assert.deepEqual(root.items.map((item) => item.label), ['postgres'])
+  assert.equal(root.items[0].asset_count, 2)
+  const dashboard = await (await fetch(`${pocOrigin}/poc-api/datahub/dashboard`)).json()
+  assert.equal(dashboard.catalog_asset_count, 2)
+  const systems = await (await fetch(`${pocOrigin}/poc-api/datahub/systems`)).json()
+  assert.deepEqual(systems.items.map((item) => item.id), ['postgres'])
 })
 
 test('runs the fixed embedding, reranking and Chat pipeline', async () => {

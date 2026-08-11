@@ -1,5 +1,5 @@
 /* global AbortSignal, Buffer, URL, URLSearchParams, fetch, process */
-import { createHmac, createHash } from 'node:crypto'
+import { createHmac, createHash, randomUUID } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { extname, join, normalize, resolve, sep } from 'node:path'
@@ -21,6 +21,13 @@ const allowedAirflowDags = new Set([
   'datariver_semiconductor_seed_ingestion',
 ])
 
+const datahubCursorTtlMs = 5 * 60 * 1000
+const datahubInventoryTtlMs = 30 * 1000
+const maximumCursorEntries = 1_024
+const maximumInventoryPages = 10_002
+const cursorEntries = new Map()
+let inventorySnapshot
+
 function optionalUrl(name) {
   const raw = process.env[name]?.trim()
   if (!raw) return undefined
@@ -29,6 +36,14 @@ function optionalUrl(name) {
     throw new Error(`${name} must be an http(s) URL without credentials or a fragment.`)
   }
   return value.toString().replace(/\/$/, '')
+}
+
+function enabled(name) {
+  const raw = process.env[name]?.trim().toLowerCase()
+  if (!raw) return false
+  if (raw === 'true') return true
+  if (raw === 'false') return false
+  throw new Error(`${name} must be true or false.`)
 }
 
 function stage(prefix) {
@@ -90,6 +105,18 @@ const llm = {
 }
 const neo4j = credentials('NEO4J', 'NEO4J_HTTP_URL', { allowUrlOmission: true })
 const datahubUiUrl = optionalUrl('DATAHUB_UI_URL')
+const grafanaUiUrl = optionalUrl('UI_GRAFANA_URL')
+const grafanaEmbedBaseUrl = optionalUrl('GRAFANA_EMBED_BASE_URL')
+const grafanaEmbedEnabled = enabled('GRAFANA_EMBED_ENABLED')
+const grafanaEvidenceReference = process.env.GRAFANA_EMBED_EVIDENCE_REFERENCE?.trim()
+if (grafanaEmbedEnabled) {
+  if (!grafanaUiUrl || !grafanaEmbedBaseUrl || !grafanaEvidenceReference) {
+    throw new Error('Grafana embed requires UI_GRAFANA_URL, GRAFANA_EMBED_BASE_URL and GRAFANA_EMBED_EVIDENCE_REFERENCE.')
+  }
+  if (new URL(grafanaUiUrl).origin !== new URL(grafanaEmbedBaseUrl).origin) {
+    throw new Error('UI_GRAFANA_URL and GRAFANA_EMBED_BASE_URL must use the same exact origin.')
+  }
+}
 const runtimeFlags = Object.freeze({
   datahub: Boolean(datahub),
   airflow: Boolean(airflow),
@@ -117,8 +144,11 @@ function problem(response, status, code, detail) {
 }
 
 function securityHeaders() {
+  const frameSource = grafanaEmbedEnabled && grafanaUiUrl
+    ? new URL(grafanaUiUrl).origin
+    : "'none'"
   return {
-    'Content-Security-Policy': "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; frame-src 'none'; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'",
+    'Content-Security-Policy': `default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; frame-src ${frameSource}; img-src 'self' data:; object-src 'none'; script-src 'self'; style-src 'self'`,
     'Permissions-Policy': 'camera=(), geolocation=(), microphone=(), payment=(), usb=()',
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
@@ -171,21 +201,38 @@ async function requireOk(response, label) {
 const datahubSearchQuery = `
 query DataRiverPocCatalog($input: ScrollAcrossEntitiesInput!) {
   scrollAcrossEntities(input: $input) {
-    count total
+    nextScrollId count total
     searchResults {
       entity {
         urn type
         ... on Dataset {
           name
           platform { urn name }
-          properties { name description created }
+          properties { name description created customProperties { key value } }
           editableProperties { description }
-          browsePathV2 { path { name } }
+          browsePathV2 {
+            path {
+              name
+              entity {
+                urn type
+                ... on Container {
+                  properties { name qualifiedName }
+                  subTypes { typeNames }
+                }
+              }
+            }
+          }
           domain { domain { urn } }
           ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } } }
           globalTags: tags { tags { tag { name properties { name } } } }
           glossaryTerms { terms { term { urn name } } }
-          schemaMetadata { fields { fieldPath } }
+          schemaMetadata {
+            fields {
+              fieldPath label type nativeDataType description
+              globalTags { tags { tag { urn name properties { name } } } }
+              glossaryTerms { terms { term { urn name } } }
+            }
+          }
         }
       }
     }
@@ -201,12 +248,29 @@ query DataRiverPocAsset($urn: String!) {
       platform { urn name }
       properties { name description created }
       editableProperties { description }
-      browsePathV2 { path { name } }
+      browsePathV2 {
+        path {
+          name
+          entity {
+            urn type
+            ... on Container {
+              properties { name qualifiedName }
+              subTypes { typeNames }
+            }
+          }
+        }
+      }
       domain { domain { urn } }
       ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } type } }
       globalTags: tags { tags { tag { urn name properties { name } } } }
       glossaryTerms { terms { term { urn name } } }
-      schemaMetadata { fields { fieldPath label type nativeDataType description } }
+      schemaMetadata {
+        fields {
+          fieldPath label type nativeDataType description
+          globalTags { tags { tag { urn name properties { name } } } }
+          glossaryTerms { terms { term { urn name } } }
+        }
+      }
     }
   }
 }`
@@ -239,17 +303,68 @@ function urnTail(value) {
   return value.split(':').at(-1)?.replace(/[()]/g, '') || value
 }
 
+function containerKind(entry) {
+  const entity = entry?.entity
+  if (entity?.type !== 'CONTAINER') return undefined
+  const names = (entity.subTypes?.typeNames || [])
+    .map((value) => String(value).toLowerCase().replace(/[^a-z0-9]/g, ''))
+  if (names.some((value) => value === 'database' || value.endsWith('database'))) return 'DATABASE'
+  if (names.some((value) => value === 'schema' || value.endsWith('schema'))) return 'SCHEMA'
+  return undefined
+}
+
+function customProperty(entity, key) {
+  const match = (entity.properties?.customProperties || []).find((item) => item?.key === key)
+  return typeof match?.value === 'string' && match.value.trim() ? match.value.trim() : ''
+}
+
+function readablePathName(value) {
+  if (typeof value !== 'string' || !value.trim() || value.startsWith('urn:li:')) return ''
+  return value.trim()
+}
+
+function containerDisplayName(entry) {
+  const properties = entry?.entity?.properties
+  const explicit = readablePathName(properties?.name)
+  if (explicit) return explicit
+  const qualified = readablePathName(properties?.qualifiedName)
+  if (qualified) return qualified.split(/[./]/).filter(Boolean).at(-1) || qualified
+  return readablePathName(entry?.name)
+}
+
 function datasetIdentity(entity) {
   const match = typeof entity.urn === 'string'
     ? entity.urn.match(/^urn:li:dataset:\([^,]+,([^,]+),[^)]+\)$/)
     : undefined
   const qualifiedName = match?.[1] || ''
   const parts = qualifiedName.split('.').filter(Boolean)
-  const path = entity.browsePathV2?.path?.map((item) => item.name).filter(Boolean) || []
+  const path = entity.browsePathV2?.path || []
+  const databaseNames = path
+    .filter((entry) => containerKind(entry) === 'DATABASE')
+    .map(containerDisplayName)
+    .filter(Boolean)
+  const schemaNames = path
+    .filter((entry) => containerKind(entry) === 'SCHEMA')
+    .map(containerDisplayName)
+    .filter(Boolean)
+  const untypedNames = path
+    .filter((entry) => entry?.entity?.type !== 'CONTAINER')
+    .map((entry) => entry?.name)
+    .filter((value) => typeof value === 'string' && value.trim() && !value.startsWith('urn:li:'))
+  const propertyName = typeof entity.properties?.name === 'string' && !entity.properties.name.startsWith('urn:li:')
+    ? entity.properties.name
+    : ''
+  const entityName = typeof entity.name === 'string' && !entity.name.startsWith('urn:li:')
+    ? entity.name
+    : ''
   return {
-    databaseName: path.at(-3) || parts.at(-3) || '',
-    schemaName: path.at(-2) || parts.at(-2) || '',
-    tableName: entity.name || entity.properties?.name || parts.at(-1) || urnTail(entity.urn),
+    databaseName: databaseNames.length === 1
+      ? databaseNames[0]
+      : customProperty(entity, 'datariver.seed.database_name') || parts.at(-3) || '',
+    schemaName: schemaNames.length === 1
+      ? schemaNames[0]
+      : untypedNames.length === 1 ? untypedNames[0] : parts.at(-2) || '',
+    tableName: propertyName || entityName || parts.at(-1) || urnTail(entity.urn),
   }
 }
 
@@ -298,35 +413,303 @@ function catalogMeta() {
   }
 }
 
-async function datahubCatalog(searchParameters) {
-  const query = boundedString(searchParameters.get('q'), 500, '*') || '*'
-  const limit = Math.min(100, Math.max(1, Number(searchParameters.get('limit') || 50)))
+function pruneCursorEntries() {
+  const now = Date.now()
+  for (const [key, entry] of cursorEntries) {
+    if (entry.expiresAt <= now) cursorEntries.delete(key)
+  }
+  while (cursorEntries.size >= maximumCursorEntries) {
+    const oldest = cursorEntries.keys().next().value
+    if (!oldest) break
+    cursorEntries.delete(oldest)
+  }
+}
+
+function issueCursor(scope, value) {
+  pruneCursorEntries()
+  const token = randomUUID()
+  cursorEntries.set(token, { scope, value, expiresAt: Date.now() + datahubCursorTtlMs })
+  return token
+}
+
+function cursorValue(token, scope) {
+  if (!token) return undefined
+  pruneCursorEntries()
+  const entry = cursorEntries.get(token)
+  if (!entry || entry.scope !== scope) {
+    throw Object.assign(new Error('The POC cursor is invalid, expired or belongs to a different query.'), { statusCode: 400 })
+  }
+  return entry.value
+}
+
+async function datahubCatalogPage(query, limit, providerCursor) {
+  const input = {
+    types: ['DATASET'],
+    query,
+    count: limit,
+    keepAlive: '1m',
+    sortInput: { sortCriteria: [{ field: 'urn', sortOrder: 'ASCENDING' }] },
+    searchFlags: { skipAggregates: true, skipHighlighting: true },
+  }
+  if (providerCursor) input.scrollId = providerCursor
   const data = await datahubGraphql(datahubSearchQuery, {
-    input: {
-      types: ['DATASET'],
-      query,
-      count: limit,
-      keepAlive: '1m',
-      searchFlags: { skipAggregates: true, skipHighlighting: true },
-    },
+    input,
   })
   const page = data.scrollAcrossEntities
   const items = (page?.searchResults || []).map((item) => datasetAsset(item.entity))
+  const nextProviderCursor = typeof page?.nextScrollId === 'string' && page.nextScrollId
+    ? page.nextScrollId
+    : undefined
+  if (nextProviderCursor && nextProviderCursor === providerCursor) {
+    throw Object.assign(new Error('DataHub returned a repeated scroll cursor.'), { statusCode: 502 })
+  }
+  return { items, total: Number(page?.total ?? items.length), nextProviderCursor }
+}
+
+async function datahubInventory() {
+  const now = Date.now()
+  if (inventorySnapshot?.expiresAt > now) return inventorySnapshot.items
+  if (inventorySnapshot?.promise) return inventorySnapshot.promise
+  const promise = (async () => {
+    const items = []
+    const observed = new Set()
+    let providerCursor
+    for (let pageNumber = 0; pageNumber < maximumInventoryPages; pageNumber += 1) {
+      const page = await datahubCatalogPage('*', 100, providerCursor)
+      for (const item of page.items) {
+        if (!observed.has(item.id)) {
+          observed.add(item.id)
+          items.push(item)
+        }
+      }
+      if (!page.nextProviderCursor) {
+        inventorySnapshot = { items, expiresAt: Date.now() + datahubInventoryTtlMs }
+        return items
+      }
+      providerCursor = page.nextProviderCursor
+    }
+    throw Object.assign(new Error('DataHub inventory exceeded the configured reconciliation page bound.'), { statusCode: 503 })
+  })()
+  inventorySnapshot = { promise, expiresAt: 0 }
+  try {
+    return await promise
+  } catch (error) {
+    inventorySnapshot = undefined
+    throw error
+  }
+}
+
+function assetMatches(asset, searchParameters) {
+  const query = boundedString(searchParameters.get('q'), 500, '*').trim().toLowerCase()
+  const searchable = [
+    asset.name, asset.description, asset.platform, asset.database_name, asset.schema_name,
+    asset.owner, asset.domain, ...(asset.tags || []), ...(asset.terms || []),
+  ].filter(Boolean).join(' ').toLowerCase()
+  const exact = (parameter, value) => {
+    const expected = searchParameters.get(parameter)
+    return !expected || expected === value
+  }
+  return (query === '' || query === '*' || searchable.includes(query))
+    && exact('asset_type', asset.asset_type)
+    && exact('platform', asset.platform)
+    && exact('database', asset.database_name)
+    && exact('schema', asset.schema_name)
+    && exact('domain', asset.domain)
+    && exact('classification', asset.classification)
+    && exact('lifecycle', asset.lifecycle)
+}
+
+function parameterScope(prefix, searchParameters, keys) {
+  return `${prefix}:${keys.map((key) => `${key}=${searchParameters.get(key) || ''}`).join('&')}`
+}
+
+function offsetPage(items, searchParameters, scope, defaultLimit = 100) {
+  const requested = Number(searchParameters.get('limit') || defaultLimit)
+  const limit = Math.min(100, Math.max(1, Number.isFinite(requested) ? requested : defaultLimit))
+  const offset = Number(cursorValue(searchParameters.get('cursor'), scope) ?? 0)
+  if (!Number.isInteger(offset) || offset < 0 || offset > items.length) {
+    throw Object.assign(new Error('The POC cursor offset is invalid.'), { statusCode: 400 })
+  }
+  const pageItems = items.slice(offset, offset + limit)
+  const nextOffset = offset + pageItems.length
   return {
-    items,
-    page: { next_cursor: null, limit },
-    total: Number(page?.total ?? items.length),
+    items: pageItems,
+    page: { next_cursor: nextOffset < items.length ? issueCursor(scope, nextOffset) : null, limit },
+  }
+}
+
+async function datahubCatalog(searchParameters) {
+  const query = boundedString(searchParameters.get('q'), 500, '*') || '*'
+  const requested = Number(searchParameters.get('limit') || 50)
+  const limit = Math.min(100, Math.max(1, Number.isFinite(requested) ? requested : 50))
+  const filterKeys = ['asset_type', 'platform', 'database', 'schema', 'domain', 'classification', 'lifecycle']
+  const hasExactFilter = filterKeys.some((key) => searchParameters.has(key))
+  if (hasExactFilter) {
+    const allItems = (await datahubInventory()).filter((item) => assetMatches(item, searchParameters))
+    const scope = parameterScope('catalog-filtered', searchParameters, ['q', ...filterKeys, 'search_fields', 'limit'])
+    const page = offsetPage(allItems, searchParameters, scope, limit)
+    return {
+      ...page,
+      total: allItems.length,
+      total_exact: true,
+      meta: catalogMeta(),
+      match_mode: 'ALL',
+    }
+  }
+  const scope = parameterScope('catalog-provider', searchParameters, ['q', 'search_fields', 'limit'])
+  const providerCursor = cursorValue(searchParameters.get('cursor'), scope)
+  const page = await datahubCatalogPage(query, limit, providerCursor)
+  return {
+    items: page.items,
+    page: {
+      next_cursor: page.nextProviderCursor ? issueCursor(scope, page.nextProviderCursor) : null,
+      limit,
+    },
+    total: page.total,
     total_exact: true,
     meta: catalogMeta(),
     match_mode: 'ALL',
   }
 }
 
-async function datahubAsset(urn) {
+function uniqueValues(values) {
+  return [...new Set(values.filter((value) => typeof value === 'string' && value.trim()))]
+    .sort((left, right) => left.localeCompare(right))
+}
+
+async function datahubTree(searchParameters) {
+  const assets = await datahubInventory()
+  const parentKind = searchParameters.get('parent_kind') || 'ROOT'
+  const platform = searchParameters.get('platform') || ''
+  const databaseName = searchParameters.get('database') || ''
+  const schemaName = searchParameters.get('schema') || ''
+  let items
+  if (parentKind === 'ROOT') {
+    items = uniqueValues(assets.map((asset) => asset.platform)).map((value) => ({
+      id: `PLATFORM:${value}`,
+      kind: 'PLATFORM',
+      label: value,
+      asset_count: assets.filter((asset) => asset.platform === value).length,
+      has_children: assets.some((asset) => asset.platform === value && asset.database_name),
+      platform: value,
+    }))
+  } else if (parentKind === 'PLATFORM') {
+    items = uniqueValues(assets
+      .filter((asset) => asset.platform === platform)
+      .map((asset) => asset.database_name)).map((value) => ({
+      id: `DATABASE:${platform}:${value}`,
+      kind: 'DATABASE',
+      label: value,
+      asset_count: assets.filter((asset) => asset.platform === platform && asset.database_name === value).length,
+      has_children: assets.some((asset) => asset.platform === platform && asset.database_name === value && asset.schema_name),
+      platform,
+      database_name: value,
+    }))
+  } else if (parentKind === 'DATABASE') {
+    items = uniqueValues(assets
+      .filter((asset) => asset.platform === platform && asset.database_name === databaseName)
+      .map((asset) => asset.schema_name)).map((value) => ({
+      id: `SCHEMA:${platform}:${databaseName}:${value}`,
+      kind: 'SCHEMA',
+      label: value,
+      asset_count: assets.filter((asset) => asset.platform === platform && asset.database_name === databaseName && asset.schema_name === value).length,
+      has_children: assets.some((asset) => asset.platform === platform && asset.database_name === databaseName && asset.schema_name === value),
+      platform,
+      database_name: databaseName,
+      schema_name: value,
+    }))
+  } else if (parentKind === 'SCHEMA') {
+    items = assets
+      .filter((asset) => asset.platform === platform && asset.database_name === databaseName && asset.schema_name === schemaName)
+      .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+      .map((asset) => ({
+        id: `ASSET:${asset.id}`,
+        kind: 'ASSET',
+        label: asset.name,
+        asset_count: 1,
+        has_children: false,
+        platform,
+        database_name: databaseName,
+        schema_name: schemaName,
+        asset,
+      }))
+  } else {
+    throw Object.assign(new Error('Unsupported DataHub hierarchy parent kind.'), { statusCode: 400 })
+  }
+  const scope = parameterScope('catalog-tree', searchParameters, ['parent_kind', 'platform', 'database', 'schema', 'limit'])
+  return { ...offsetPage(items, searchParameters, scope), meta: catalogMeta() }
+}
+
+function facetCounts(values) {
+  const counts = new Map()
+  for (const value of values) {
+    if (typeof value === 'string' && value) counts.set(value, (counts.get(value) || 0) + 1)
+  }
+  return [...counts].map(([value, count]) => ({ value, count }))
+    .sort((left, right) => left.value.localeCompare(right.value))
+}
+
+async function datahubFacets(searchParameters) {
+  const assets = (await datahubInventory()).filter((asset) => assetMatches(asset, searchParameters))
+  return {
+    asset_types: facetCounts(assets.map((item) => item.asset_type)),
+    platforms: facetCounts(assets.map((item) => item.platform)),
+    classifications: facetCounts(assets.map((item) => item.classification)),
+    databases: facetCounts(assets.map((item) => item.database_name)),
+    schemas: facetCounts(assets.map((item) => item.schema_name)),
+    domains: facetCounts(assets.map((item) => item.domain)),
+    lifecycles: facetCounts(assets.map((item) => item.lifecycle)),
+    meta: catalogMeta(),
+  }
+}
+
+async function datahubDashboard() {
+  const assets = await datahubInventory()
+  const schemaMetrics = new Map()
+  const glossaryTerms = new Set()
+  for (const asset of assets) {
+    const key = [asset.platform, asset.database_name, asset.schema_name].join('\u0000')
+    const current = schemaMetrics.get(key) || {
+      platform: asset.platform,
+      database_name: asset.database_name,
+      schema_name: asset.schema_name,
+      asset_count: 0,
+      described_asset_count: 0,
+    }
+    current.asset_count += 1
+    if (asset.description?.trim()) current.described_asset_count += 1
+    schemaMetrics.set(key, current)
+    for (const term of asset.terms || []) glossaryTerms.add(term)
+  }
+  return {
+    observed_at: new Date().toISOString(),
+    changes_by_state: {},
+    catalog_asset_count: assets.length,
+    catalog_described_asset_count: assets.filter((asset) => asset.description?.trim()).length,
+    catalog_glossary_term_count: glossaryTerms.size,
+    catalog_schema_metrics: [...schemaMetrics.values()].slice(0, 200),
+    catalog_schema_metrics_truncated: schemaMetrics.size > 200,
+  }
+}
+
+async function datahubSystems() {
+  return {
+    items: uniqueValues((await datahubInventory()).map((asset) => asset.platform)).map((platform, index) => ({
+      id: platform,
+      code: platform.toUpperCase().replace(/[^A-Z0-9]+/g, '_') || `DATAHUB_${index + 1}`,
+      name: platform,
+    })),
+  }
+}
+
+async function datahubAsset(urn, requestedOffset = 0, requestedLimit = 100) {
   const data = await datahubGraphql(datahubAssetQuery, { urn })
   if (!data.entity) throw Object.assign(new Error('DataHub asset was not found.'), { statusCode: 404 })
   const asset = datasetAsset(data.entity)
   const fields = data.entity.schemaMetadata?.fields || []
+  const fieldOffset = Math.max(0, Number.isInteger(requestedOffset) ? requestedOffset : 0)
+  const fieldLimit = Math.min(100, Math.max(1, Number.isInteger(requestedLimit) ? requestedLimit : 100))
+  const pageFields = fields.slice(fieldOffset, fieldOffset + fieldLimit)
   return {
     ...asset,
     ownership: (data.entity.ownership?.owners || []).map((item) => ({
@@ -337,21 +720,23 @@ async function datahubAsset(urn) {
       urn: item.term?.urn,
       name: item.term?.name,
     })),
-    schema_fields: fields.map((field) => ({
-      field_path: field.fieldPath,
+    schema_fields: pageFields.map((field) => ({
+      fieldPath: field.fieldPath,
       label: field.label || null,
       type: field.type || null,
-      native_data_type: field.nativeDataType || null,
+      nativeDataType: field.nativeDataType || null,
       description: field.description || null,
+      globalTags: field.globalTags || { tags: [] },
+      glossaryTerms: field.glossaryTerms || { terms: [] },
       nullable: true,
     })),
     schema_fields_total: fields.length,
     schema_fields_available: fields.length,
     schema_fields_truncated: false,
     schema_fields_total_exact: true,
-    schema_fields_offset: 0,
-    schema_fields_limit: 100,
-    schema_fields_has_more: false,
+    schema_fields_offset: fieldOffset,
+    schema_fields_limit: fieldLimit,
+    schema_fields_has_more: fieldOffset + pageFields.length < fields.length,
     // The original Catalog detail contract always exposes an object here.
     // DataHub does not provide the governed Quality projection in this POC,
     // so retain the shape without inventing row/size values.
@@ -528,17 +913,6 @@ async function neo4jQuery(statement, parameters = {}) {
   return payload.results?.[0]?.data || []
 }
 
-async function seedNeo4j() {
-  if (!neo4j) return
-  await neo4jQuery(`
-    MERGE (w:PocEntity {id: 'wafer'}) SET w.name = 'Wafer', w.entity_type = 'CLASS'
-    MERGE (i:PocEntity {id: 'inspection'}) SET i.name = 'Inspection', i.entity_type = 'CLASS'
-    MERGE (d:PocEntity {id: 'defect'}) SET d.name = 'Defect', d.entity_type = 'CLASS'
-    MERGE (w)-[:HAS_INSPECTION]->(i)
-    MERGE (i)-[:OBSERVES]->(d)
-  `)
-}
-
 async function neo4jGraph() {
   const rows = await neo4jQuery(`
     MATCH (source:PocEntity)
@@ -590,11 +964,24 @@ async function capabilities() {
     }),
     providerState('Neo4j', Boolean(neo4j), async () => neo4jQuery('RETURN 1')),
   ])
+  const grafanaAvailable = Boolean(
+    grafanaEmbedEnabled && grafanaUiUrl && grafanaEmbedBaseUrl && grafanaEvidenceReference,
+  )
+  const monitoringItems = grafanaUiUrl ? [{
+    id: 'poc-grafana-dashboard',
+    label: 'Grafana',
+    url: grafanaUiUrl,
+    height_px: 900,
+    embed_state: grafanaAvailable ? 'AVAILABLE' : 'DISABLED',
+    ...(grafanaAvailable ? { embed_url: grafanaUiUrl } : {}),
+  }] : []
   return {
     items,
     external_system_links: datahubUiUrl ? [{ id: 'datahub', label: 'DataHub', url: datahubUiUrl }] : [],
-    grafana_embed: { state: 'DISABLED' },
-    monitoring_configuration: { version: 1, items: [] },
+    grafana_embed: grafanaAvailable
+      ? { state: 'AVAILABLE', url: grafanaUiUrl }
+      : { state: grafanaUiUrl ? 'DISABLED' : 'NOT_CONFIGURED' },
+    monitoring_configuration: { version: 1, items: monitoringItems },
     deployment_tier: 'SINGLE_NODE_PILOT',
   }
 }
@@ -602,7 +989,15 @@ async function capabilities() {
 async function api(request, response, url) {
   if (request.method === 'GET' && url.pathname === '/poc-api/capabilities') return json(response, 200, await capabilities())
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/catalog') return json(response, 200, await datahubCatalog(url.searchParams))
-  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/asset') return json(response, 200, await datahubAsset(boundedString(url.searchParams.get('urn'), 4096)))
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/tree') return json(response, 200, await datahubTree(url.searchParams))
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/facets') return json(response, 200, await datahubFacets(url.searchParams))
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/dashboard') return json(response, 200, await datahubDashboard())
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/systems') return json(response, 200, await datahubSystems())
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/asset') return json(response, 200, await datahubAsset(
+    boundedString(url.searchParams.get('urn'), 4096),
+    Number(url.searchParams.get('field_offset') || 0),
+    Number(url.searchParams.get('field_limit') || 100),
+  ))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/lineage') return json(response, 200, await datahubLineage(boundedString(url.searchParams.get('urn'), 4096)))
   if (request.method === 'POST' && url.pathname === '/poc-api/llm/chat') {
     const body = await bodyJson(request)
@@ -727,7 +1122,6 @@ export function createPocServer() {
 
 export async function startPocServer() {
   if (!existsSync(join(staticDirectory, 'poc.html'))) throw new Error('Run npm run build:poc before starting the POC server.')
-  await seedNeo4j()
   const server = createPocServer()
   const host = process.env.POC_SERVER_HOST?.trim() || '0.0.0.0'
   const port = Number(process.env.POC_SERVER_PORT || process.env.POC_PORT || 39080)

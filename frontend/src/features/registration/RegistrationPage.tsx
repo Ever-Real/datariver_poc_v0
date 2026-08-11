@@ -183,6 +183,9 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
           <CatalogResourceTree
             client={client}
             selectedAssetId={selectedAssetId}
+            searchable
+            searchIdPrefix="registration-resource"
+            searchLabel="등록 대상 자산 검색"
             onSelectAsset={(assetId) => {
               setSelectedAssetDetail(undefined)
               setSelectedAssetId(assetId)

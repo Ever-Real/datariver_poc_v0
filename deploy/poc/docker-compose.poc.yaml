@@ -9,12 +9,17 @@ services:
       dockerfile: deploy/poc/Dockerfile
       args:
         POC_SOURCE_COMMIT: ${POC_SOURCE_COMMIT:-local}
+        NODE_IMAGE: ${POC_NODE_IMAGE:-node:22.19.0-bookworm-slim}
     ports:
       - "${POC_BIND_HOST:-0.0.0.0}:${POC_PORT:-39080}:8080"
     environment:
       DATAHUB_GMS_URL: ${DATAHUB_GMS_URL:-}
       DATAHUB_GMS_TOKEN: ${DATAHUB_GMS_TOKEN:-}
       DATAHUB_UI_URL: ${DATAHUB_UI_URL:-}
+      UI_GRAFANA_URL: ${UI_GRAFANA_URL:-}
+      GRAFANA_EMBED_BASE_URL: ${GRAFANA_EMBED_BASE_URL:-}
+      GRAFANA_EMBED_ENABLED: ${GRAFANA_EMBED_ENABLED:-false}
+      GRAFANA_EMBED_EVIDENCE_REFERENCE: ${GRAFANA_EMBED_EVIDENCE_REFERENCE:-}
       AIRFLOW_URL: ${AIRFLOW_URL:-}
       AIRFLOW_USERNAME: ${AIRFLOW_USERNAME:-}
       AIRFLOW_PASSWORD: ${AIRFLOW_PASSWORD:-}
@@ -63,7 +68,7 @@ services:
     stop_grace_period: 10s
 
   neo4j:
-    image: ${NEO4J_IMAGE:-neo4j:2026.06.0@sha256:ba2b859bdbe7017a9baa1a7b5681ac9732198753719b0a502e3645feddfdec72}
+    image: ${NEO4J_IMAGE:-neo4j:2026.06.0}
     platform: ${POC_PLATFORM:-linux/amd64}
     environment:
       NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}

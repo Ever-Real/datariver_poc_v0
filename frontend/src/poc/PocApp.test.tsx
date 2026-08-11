@@ -35,33 +35,28 @@ describe('POC compatibility application', () => {
     vi.unstubAllGlobals()
   })
 
-  it('renders the original dashboard layout under the permanent POC boundary banner', async () => {
+  it('renders the original dashboard layout with only the compact navigation POC badge', async () => {
     renderPoc()
 
-    expect(screen.getByTestId('poc-banner')).toHaveTextContent(
-      /POC\s*\/\s*NO AUTH\s*\/\s*SAMPLE DATA\s*\/\s*NOT FOR PRODUCTION/,
-    )
+    expect(screen.queryByTestId('poc-banner')).not.toBeInTheDocument()
+    expect(screen.getByLabelText('POC mode')).toHaveTextContent('[poc]')
     expect(await screen.findByRole('heading', { name: 'Governance Dashboard' })).toBeVisible()
     expect(screen.getByRole('navigation', { name: 'Governance shortcuts' })).toBeVisible()
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
-  it('keeps the original catalog search, results and detail interaction', async () => {
+  it('keeps the original catalog workspace without showing fixture metadata', async () => {
     renderPoc()
     fireEvent.click(within(navigation()).getByRole('button', { name: '검색' }))
 
     expect(await screen.findByRole('heading', { name: '데이터 카탈로그 검색' })).toBeVisible()
-    expect((await screen.findAllByText('wafer_inspection_events'))[0]).toBeVisible()
+    expect(await screen.findByText('현재 권한 범위에서 표시할 자산이 없습니다.')).toBeVisible()
     const query = screen.getByRole('combobox', { name: '데이터셋 이름이나 설명 검색' })
     fireEvent.change(query, { target: { value: 'yield' } })
     fireEvent.submit(screen.getByRole('search', { name: '카탈로그 상세 검색' }))
 
     const results = screen.getByRole('region', { name: '카탈로그 검색 결과' })
-    expect((await within(results).findAllByText('yield_summary_daily'))[0]).toBeVisible()
-    expect(within(results).queryByText('lot_genealogy')).not.toBeInTheDocument()
-    fireEvent.click(within(results).getByTitle('yield_summary_daily'))
-    expect(await screen.findByText('Table details')).toBeVisible()
-    expect(screen.getByText('Column metadata')).toBeVisible()
+    expect(await within(results).findByText('검색 조건에 맞는 허용 자산이 없습니다.')).toBeVisible()
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
@@ -80,10 +75,10 @@ describe('POC compatibility application', () => {
     for (const [menuName, heading] of pages) {
       fireEvent.click(within(navigation()).getByRole('button', { name: new RegExp(menuName) }))
       expect(await screen.findByRole('heading', { name: heading })).toBeVisible()
-      expect(screen.getByTestId('poc-banner')).toBeVisible()
+      expect(screen.getByLabelText('POC mode')).toHaveTextContent('[poc]')
     }
 
-    fireEvent.click(screen.getByRole('button', { name: 'POC Sample User 사용자 메뉴' }))
+    fireEvent.click(screen.getByRole('button', { name: 'POC User 사용자 메뉴' }))
     expect(screen.getByRole('menu', { name: '사용자 작업' })).toBeVisible()
     expect(screen.queryByRole('menuitem', { name: '나가기' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '내 프로필' })).not.toBeInTheDocument()
@@ -91,19 +86,17 @@ describe('POC compatibility application', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
-  it('updates chat history only through the browser-memory adapter', async () => {
+  it('fails Chat closed when live DataHub and LLM are not configured', async () => {
     renderPoc()
     fireEvent.click(within(navigation()).getByRole('button', { name: /Chat/ }))
     await screen.findByRole('heading', { name: '카탈로그 Chat' })
-    fireEvent.click(await screen.findByRole('button', { name: 'Wafer inspection 품질 상태 열기' }))
-    expect(await screen.findByText(/98\.75%/)).toBeVisible()
-
     const input = screen.getByRole('textbox', { name: '카탈로그 질문' })
     fireEvent.change(input, { target: { value: 'wafer 품질 근거를 다시 알려줘' } })
     fireEvent.submit(input.closest('form')!)
 
-    await waitFor(() => expect(screen.getAllByText(/98\.75%/).length).toBeGreaterThan(1))
-    expect(screen.getByText(/개발 검증 세션/)).toBeVisible()
+    expect(await screen.findByText(/검증 불가: DataHub와 LLM Chat 연결을 모두 설정해야 합니다/)).toBeVisible()
+    expect(screen.queryByText(/98\.75%/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Synthetic catalog/)).not.toBeInTheDocument()
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 

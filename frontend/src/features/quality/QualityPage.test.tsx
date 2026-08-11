@@ -98,7 +98,7 @@ describe('QualityPage', () => {
     expect(screen.getByRole('tab', { name: '공통 룰셋 관리' })).toHaveAttribute('aria-selected', 'true')
     await waitFor(() => {
       expect(requestPaths(fetchMock)).toEqual(expect.arrayContaining([
-        '/api/v1/quality/assets',
+        '/api/v1/catalog/tree/nodes',
         '/api/v1/quality/common-rule-templates',
       ]))
     })

@@ -5,8 +5,8 @@ const subjectId = '00000000-0000-4000-8000-000000000111'
 
 const profile: AuthenticatedProfile = {
   subject: subjectId,
-  display_name: 'POC Sample User',
-  email: 'sample.user@poc.invalid',
+  display_name: 'POC User',
+  email: 'poc.user@local',
   roles: ['Data Steward'],
   authentication_assurance: 'UNKNOWN',
   default_workspace_id: workspaceId,

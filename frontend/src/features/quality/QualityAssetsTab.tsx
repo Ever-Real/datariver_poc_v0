@@ -1,11 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ApiError, type ApiClient } from '../../api/client'
-import type { QualityAsset, QualityCapabilityAxis } from '../../api/types'
+import type { QualityCapabilityAxis } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { AccordionItem } from '../../components/common/Accordion'
-import { CursorPagination } from '../../components/common/CursorPagination'
-import { GlobalCatalogSearch } from '../../components/layout/GlobalCatalogSearch'
 import { CatalogResourceTree } from '../catalog/CatalogResourceTree'
 import { QualityFieldDrawer } from './QualityFieldDrawer'
 import { QualityFieldBulkApplyDialog } from './QualityFieldBulkApplyDialog'
@@ -18,7 +16,6 @@ import {
   QualityStatus,
 } from './QualityShared'
 import { isAuthorizationBoundaryError } from './useBoundedQualityRunPolling'
-import { useQualityCursorPage } from './useQualityCursorPage'
 import './qualityFields.css'
 
 export function QualityAssetsTab({
@@ -38,14 +35,6 @@ export function QualityAssetsTab({
   onSelectedAsset: (assetId?: string) => void
   onBoundaryInvalid: () => void
 }) {
-  const [query, setQuery] = useState('')
-  const assets = useQualityCursorPage({
-    boundary,
-    resource: 'assets',
-    scope: [query],
-    load: (cursor, signal) => api.assets(cursor, signal, { query }),
-    onBoundaryInvalid,
-  })
   const workspace = useQuery({
     queryKey: qualityQueryKey(boundary, 'asset-workspace', selectedAssetId),
     queryFn: ({ signal }) => api.assetWorkspace(
@@ -67,53 +56,14 @@ export function QualityAssetsTab({
     }
   }, [onBoundaryInvalid, workspace.error])
   return <section className="quality-asset-workspace">
-    <aside className="quality-asset-directory panel" aria-label="품질 대상 자산 목록">
-      <header>
-        <div>
-          <span className="eyebrow">Schema · table directory</span>
-          <h2>자산 선택</h2>
-        </div>
-        <span>{query ? `${countText(assets.data?.items.length)}개 검색` : '계층 선택'}</span>
-      </header>
-      <div className="quality-asset-global-search">
-        <GlobalCatalogSearch
-          client={client}
-          idPrefix="quality-asset"
-          searchLabel="품질 자산 검색"
-          inputLabel="품질 자산 검색"
-          placeholder="스키마·테이블·컬럼 검색..."
-          maxLength={200}
-          onSearch={(value) => {
-            setQuery(value)
-            onSelectedAsset(undefined)
-          }}
-        />
-      </div>
-      {query ? <>
-        <header className="quality-asset-search-result-header">
-          <strong>“{query}” 검색 결과</strong>
-          <button className="button button-secondary" type="button" onClick={() => setQuery('')}>전체 계층 보기</button>
-        </header>
-        {assets.error && <ErrorNotice error={assets.error} />}
-        {assets.isPending && <p className="quality-loading" role="status">자산을 불러오는 중입니다.</p>}
-        {!assets.isPending && assets.data?.items.length === 0 && (
-          <p className="quality-empty">검색 조건에 맞는 품질 자산이 없습니다.</p>
-        )}
-        <div className="quality-asset-list">
-          {assets.data?.items.map((asset) => <AssetButton
-            key={asset.asset_id}
-            asset={asset}
-            selected={asset.asset_id === selectedAssetId}
-            onSelect={() => onSelectedAsset(asset.asset_id)}
-          />)}
-        </div>
-        <CursorPagination {...assets.pagination} label="품질 자산 페이지 탐색" />
-      </> : <CatalogResourceTree
-        client={client}
-        selectedAssetId={selectedAssetId}
-        onSelectAsset={onSelectedAsset}
-      />}
-    </aside>
+    <CatalogResourceTree
+      client={client}
+      selectedAssetId={selectedAssetId}
+      onSelectAsset={onSelectedAsset}
+      searchable
+      searchIdPrefix="quality-asset"
+      searchLabel="품질 자산 검색"
+    />
 
     <section className="quality-asset-inspector panel" aria-live="polite">
       {!selectedAssetId && (
@@ -135,36 +85,6 @@ export function QualityAssetsTab({
       />}
     </section>
   </section>
-}
-
-function AssetButton({
-  asset,
-  selected,
-  onSelect,
-}: {
-  asset: QualityAsset
-  selected: boolean
-  onSelect: () => void
-}) {
-  return <button
-    type="button"
-    className={`quality-asset-item${selected ? ' selected' : ''}`}
-    aria-pressed={selected}
-    onClick={onSelect}
-  >
-    <span className="quality-asset-item-main">
-      <strong>{asset.name}</strong>
-      <small>
-        {[asset.platform, asset.database_name, asset.schema_name]
-          .filter(Boolean)
-          .join(' · ') || '위치 정보 없음'}
-      </small>
-    </span>
-    <span className="quality-asset-item-score">
-      <QualityStatus value={asset.latest_quality_outcome} />
-      <b>{basisPointsText(asset.latest_score_basis_points)}</b>
-    </span>
-  </button>
 }
 
 function AssetInspector({

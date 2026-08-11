@@ -4,11 +4,15 @@ import type {
   ApiEventStreamHandler,
   ApiResponse,
 } from '../api/client'
+import { sha256 } from 'hash-wasm'
 import type {
   CatalogAsset,
+  CatalogAssetDetail,
   CatalogPolicyMeta,
   CatalogSearch,
   ChangeRequestRecord,
+  ChangeRequestAttachment,
+  ChangeRequestAttachmentUpload,
   ChangeRequestSummary,
   ChangeRequestState,
   ChatMessage,
@@ -24,27 +28,10 @@ import {
   POC_SUBJECT_ID,
   POC_WORKSPACE_ID,
   authorizationWindow,
-  catalogAssets,
-  catalogDetail,
-  catalogLineage,
   catalogMeta,
-  changeRecord,
-  changeSummary,
-  chatEvidence,
   chatWorkflow,
-  initialChatMessages,
-  initialChatSession,
-  knowledgeAsset,
-  knowledgeDetail,
-  knowledgeGraph,
-  knowledgeRelease,
-  knowledgeSnapshot,
-  qualityAsset,
-  qualityAuthoring,
-  qualityRuleSet,
-  qualityRun,
   scorePolicy,
-} from './pocFixtures'
+} from './pocContracts'
 
 interface PocRequestOptions extends RequestInit {
   idempotencyKey?: string
@@ -89,22 +76,12 @@ async function gatewayRequest<T>(path: string, options: RequestInit = {}): Promi
 
 const capabilities = {
   items: [
-    { name: 'DataHub', state: 'sample', observed_at: POC_NOW, latency_ms: 0, detail_code: 'POC_MEMORY_ONLY' },
-    { name: 'Quality', state: 'sample', observed_at: POC_NOW, latency_ms: 0, detail_code: 'POC_MEMORY_ONLY' },
-    { name: 'Knowledge', state: 'sample', observed_at: POC_NOW, latency_ms: 0, detail_code: 'POC_MEMORY_ONLY' },
+    ...['DataHub', 'Airflow', 'MinIO', 'LLM Chat', 'LLM Embedding', 'LLM Reranker', 'Neo4j']
+      .map((name) => ({ name, state: 'disabled', observed_at: POC_NOW, latency_ms: null, detail_code: 'NOT_CONFIGURED' })),
   ],
   external_system_links: [],
-  grafana_embed: { state: 'DISABLED' },
-  monitoring_configuration: {
-    version: 1,
-    items: [{
-      id: '00000000-0000-4000-8000-000000000701',
-      label: 'POC Platform',
-      url: 'https://monitoring.poc.invalid/platform',
-      height_px: 840,
-      embed_state: 'DISABLED',
-    }],
-  },
+  grafana_embed: { state: 'NOT_CONFIGURED' },
+  monitoring_configuration: { version: 1, items: [] },
   deployment_tier: 'SINGLE_NODE_PILOT',
 } as const
 
@@ -114,77 +91,31 @@ const managedIndicators = [
   { indicator_id: 'TIMELINESS', name: 'Timeliness', definition: '정해진 시점 내 관측', calculation: '현재 watermark와 기준 비교', target_grain: 'TABLE', rule_kinds: ['RANGE'] },
 ].map((item) => ({ ...item, contract_version: 'QUALITY_MANAGED_INDICATORS_V1' }))
 
-const governanceDocument = {
-  document_id: '00000000-0000-4000-8000-000000000801',
-  workspace_id: POC_WORKSPACE_ID,
-  kind: 'DOCUMENT',
-  category: 'POLICY',
-  title: '데이터 분류·접근 정책',
-  summary: 'POC에서 기존 문서 조회 화면을 확인하기 위한 sample 문서입니다.',
-  classification: 1,
-  state: 'ACTIVE',
-  owner_subject_id: POC_SUBJECT_ID,
-  current_published_version_id: '00000000-0000-4000-8000-000000000802',
-  current_version_number: 1,
-  created_at: POC_NOW,
-  updated_at: POC_NOW,
-  version: 1,
-  allowed_actions: ['read'],
-}
-
-const governanceVersion = {
-  version_id: governanceDocument.current_published_version_id,
-  workspace_id: POC_WORKSPACE_ID,
-  document_id: governanceDocument.document_id,
-  version_number: 1,
-  version_tag: 'v1',
-  title: governanceDocument.title,
-  summary: governanceDocument.summary,
-  applicability_scope: 'POC SAMPLE ONLY',
-  sanitized_html: '<h2>POC sample 정책</h2><p>이 문서는 synthetic fixture이며 실제 정책 또는 운영 승인을 의미하지 않습니다.</p>',
-  plain_text: 'POC sample 정책. 이 문서는 synthetic fixture이며 실제 정책 또는 운영 승인을 의미하지 않습니다.',
-  content_sha256: '8'.repeat(64),
-  size_bytes: 148,
-  sanitizer_policy_version: 'POC_SANITIZER_V1',
-  sanitizer_policy_sha256: '9'.repeat(64),
-  source_format: 'HTML',
-  source_template_version_id: null,
-  parent_document_id: null,
-  state: 'PUBLISHED',
-  author_id: POC_SUBJECT_ID,
-  submitted_at: POC_NOW,
-  reviewed_by: POC_SUBJECT_ID,
-  reviewed_at: POC_NOW,
-  published_at: POC_NOW,
-  artifact_state: 'STORED',
-  knowledge_state: 'READY',
-  created_at: POC_NOW,
-  version: 1,
-}
-
 let sequence = 900
-let changeRecords: ChangeRequestRecord[] = [changeRecord()]
-let chatSessions: ChatSession[] = [{ ...initialChatSession }]
+let changeRecords: ChangeRequestRecord[] = []
+let chatSessions: ChatSession[] = []
 let uploadRecords: Array<Record<string, unknown>> = []
-let adminMemberships: WorkspaceMembershipSummary[] = [sampleAdminMembership()]
-const chatMessages = new Map<string, ChatMessage[]>([
-  [initialChatSession.id, initialChatMessages.map((item) => ({ ...item }))],
-])
+let manualSubmissionReports: Array<Record<string, unknown>> = []
+let adminMemberships: WorkspaceMembershipSummary[] = [pocAdminMembership()]
+const chatMessages = new Map<string, ChatMessage[]>()
+const changeAttachmentUploads = new Map<string, ChangeRequestAttachmentUpload & { file: File }>()
+const changeAttachments = new Map<string, Array<ChangeRequestAttachment & { file: File }>>()
+const liveAssetDetails = new Map<string, CatalogAssetDetail>()
 
 function nextId(namespace: string): string {
   sequence += 1
   return `poc-${namespace}-${sequence}`
 }
 
-function sampleAdminMembership(): WorkspaceMembershipSummary {
+function pocAdminMembership(): WorkspaceMembershipSummary {
   return {
     subject_id: POC_SUBJECT_ID,
-    display_name: 'POC Sample User',
-    email: 'sample.user@poc.invalid',
+    display_name: 'POC User',
+    email: 'poc.user@local',
     last_login_at: null,
     last_login_ip: null,
-    owned_table_count: catalogAssets.length,
-    change_request_count: 1,
+    owned_table_count: 0,
+    change_request_count: 0,
     joined_at: POC_NOW,
     access_expires_at: null,
     renewal_eligible_at: null,
@@ -194,7 +125,7 @@ function sampleAdminMembership(): WorkspaceMembershipSummary {
     subject_active: true,
     membership_active: true,
     department_id: null,
-    job_function: 'POC_SAMPLE',
+    job_function: 'POC',
     clearance: 'INTERNAL',
     membership_version: 1,
     effective_profile_role: 'ADMIN',
@@ -223,6 +154,35 @@ function changeSummaryOf(record: ChangeRequestRecord): ChangeRequestSummary {
       target_ref: first?.target_ref ?? 'POC target',
       aspect_name: first?.aspect_name ?? 'datasetProperties',
       operation: first?.operation ?? 'UPSERT',
+    },
+  }
+}
+
+function changeAfterDocument(target: Record<string, unknown>): Record<string, unknown> {
+  if (target.kind !== 'EXISTING') return { ...target }
+  const columns = Array.isArray(target.columns)
+    ? target.columns.filter((item): item is Record<string, unknown> => (
+        Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+      ))
+    : []
+  return {
+    kind: 'EXISTING',
+    asset_id: target.asset_id,
+    requested: {
+      description: target.description,
+      requested_change: target.requested_change,
+      tags: target.tags,
+      terms: target.terms,
+      columns: columns.map((column) => ({
+        field_path: column.field_path,
+        requested: {
+          data_type: column.data_type,
+          description: column.description,
+          requested_change: column.requested_change,
+          tags: column.tags,
+          terms: column.terms,
+        },
+      })),
     },
   }
 }
@@ -262,8 +222,11 @@ function createChangeRequest(body: Record<string, unknown>): ChangeRequestRecord
     version: 1,
     items: targets.map((target, index) => {
       const existing = target.kind === 'EXISTING'
+      const assetId = responseString(target.asset_id, '')
+      const asset = existing ? liveAssetDetails.get(assetId) : undefined
       const targetRef = existing
-        ? responseString(target.asset_id, `POC target ${index + 1}`)
+        ? [asset?.platform, asset?.database_name, asset?.schema_name, asset?.name]
+            .filter(Boolean).join('.') || assetId || `POC target ${index + 1}`
         : [target.database_name, target.schema_name, target.table_name].filter(Boolean).join('.') || `POC target ${index + 1}`
       return {
         id: nextId('change-item'),
@@ -271,8 +234,8 @@ function createChangeRequest(body: Record<string, unknown>): ChangeRequestRecord
         target_ref: targetRef,
         aspect_name: 'datasetProperties',
         operation: 'UPSERT',
-        after_document: { ...target },
-        target_asset_id: existing ? responseString(target.asset_id, '') || null : null,
+        after_document: changeAfterDocument(target),
+        target_asset_id: existing ? assetId || null : null,
         target_asset_type: 'DATASET',
         target_system_id: responseString(body.system_id, '') || null,
         target_domain_id: null,
@@ -314,6 +277,195 @@ function createChangeRequest(body: Record<string, unknown>): ChangeRequestRecord
   }
   changeRecords.unshift(record)
   return record
+}
+
+function changeRecordById(id: string): ChangeRequestRecord {
+  const record = changeRecords.find((item) => item.id === id)
+  if (!record) throw new Error('POC 변경 요청을 찾을 수 없습니다.')
+  return record
+}
+
+function requireCurrentVersion(record: ChangeRequestRecord, options: PocRequestOptions): void {
+  if (options.ifMatch && options.ifMatch !== `"${record.version}"`) {
+    throw new Error('변경 요청 버전이 갱신되었습니다. 상세를 새로고침한 뒤 다시 시도하세요.')
+  }
+}
+
+function currentRound(record: ChangeRequestRecord) {
+  return record.rounds.find((round) => round.id === record.current_round_id)
+}
+
+function hasCurrentApproval(record: ChangeRequestRecord, stage: 'REVIEW' | 'TEST' | 'FINAL'): boolean {
+  return record.approvals.some((approval) => (
+    approval.round_id === record.current_round_id
+    && approval.stage === stage
+    && approval.decision === 'APPROVED'
+  ))
+}
+
+function revisionItems(
+  targets: Record<string, unknown>[],
+  body: Record<string, unknown>,
+  classification: string,
+  now: string,
+): ChangeRequestRecord['items'] {
+  return targets.map((target, index) => {
+    const existing = target.kind === 'EXISTING'
+    const assetId = responseString(target.asset_id, '')
+    const asset = existing ? liveAssetDetails.get(assetId) : undefined
+    return {
+      id: nextId('change-item'),
+      target_type: 'DATASET',
+      target_ref: existing
+        ? [asset?.platform, asset?.database_name, asset?.schema_name, asset?.name]
+            .filter(Boolean).join('.') || assetId || `POC target ${index + 1}`
+        : [target.database_name, target.schema_name, target.table_name]
+            .filter(Boolean).join('.') || `POC target ${index + 1}`,
+      aspect_name: 'datasetProperties',
+      operation: 'UPSERT',
+      after_document: changeAfterDocument(target),
+      target_asset_id: existing ? assetId || null : null,
+      target_asset_type: 'DATASET',
+      target_system_id: responseString(body.system_id, '') || null,
+      target_domain_id: null,
+      target_owner_department_id: null,
+      target_classification: classification,
+      target_lifecycle: 'ACTIVE',
+      target_source_version: existing ? 'datahub-live' : 'poc-manual',
+      target_observed_at: now,
+      target_binding_hash: '5'.repeat(64),
+      routing_system_id: responseString(body.system_id, '') || null,
+    }
+  })
+}
+
+function reviseChangeRequest(
+  record: ChangeRequestRecord,
+  body: Record<string, unknown>,
+): ChangeRequestRecord {
+  if (record.state !== 'CHANGES_REQUESTED' || !record.revision_allowed) {
+    throw new Error('현재 변경 요청은 수정하여 재상신할 수 없습니다.')
+  }
+  const targets = Array.isArray(body.targets)
+    ? body.targets.filter((item): item is Record<string, unknown> => (
+        Boolean(item) && typeof item === 'object' && !Array.isArray(item)
+      ))
+    : []
+  if (targets.length === 0) throw new Error('수정 재상신에는 하나 이상의 현재 대상이 필요합니다.')
+  const oldRound = currentRound(record)
+  const selectedSystemId = oldRound?.selected_system_id
+  if (!selectedSystemId || body.system_id !== selectedSystemId) {
+    throw new Error('수정 재상신에서는 기존 관련 시스템을 변경할 수 없습니다.')
+  }
+  const now = new Date().toISOString()
+  if (oldRound) oldRound.closed_at = now
+  const roundId = nextId('change-round')
+  const classification = responseString(body.security_level, record.classification)
+  const title = responseString(body.title, record.title)
+  record.items = revisionItems(targets, body, classification, now)
+  record.rounds.push({
+    id: roundId,
+    round_number: record.current_round_number + 1,
+    submitted_by: POC_SUBJECT_ID,
+    submitted_at: now,
+    closed_at: null,
+    evidence_hash: '6'.repeat(64),
+    revision_kind: 'EDITED',
+    title,
+    request_date: responseString(body.request_date, '') || null,
+    request_department: responseString(body.request_department, ''),
+    request_reason: responseString(body.request_reason, ''),
+    request_content: responseString(body.request_content, ''),
+    requested_due_date: typeof body.requested_due_date === 'string' ? body.requested_due_date : null,
+    priority: ['LOW', 'NORMAL', 'HIGH', 'CRITICAL'].includes(String(body.priority))
+      ? body.priority as ChangeRequestRecord['priority']
+      : 'NORMAL',
+    urgency: ['NORMAL', 'URGENT', 'EMERGENCY'].includes(String(body.urgency))
+      ? body.urgency as ChangeRequestRecord['urgency']
+      : 'NORMAL',
+    classification,
+    selected_system_id: selectedSystemId,
+  })
+  record.transitions.push({
+    id: nextId('change-transition'),
+    from_state: 'CHANGES_REQUESTED',
+    to_state: 'REGISTERED',
+    actor_id: POC_SUBJECT_ID,
+    reason: '수정된 변경 요청 재상신',
+    occurred_at: now,
+    round_id: roundId,
+  })
+  record.current_round_id = roundId
+  record.current_round_number += 1
+  record.title = title
+  record.description = responseString(body.request_content, '')
+  record.classification = classification
+  record.requested_due_date = typeof body.requested_due_date === 'string' && body.requested_due_date
+    ? new Date(`${body.requested_due_date}T00:00:00.000Z`).toISOString()
+    : null
+  record.priority = record.rounds.at(-1)?.priority ?? 'NORMAL'
+  record.urgency = record.rounds.at(-1)?.urgency ?? 'NORMAL'
+  record.state = 'REGISTERED'
+  record.version += 1
+  return record
+}
+
+function publicAttachmentUpload(
+  value: ChangeRequestAttachmentUpload & { file: File },
+): ChangeRequestAttachmentUpload {
+  const { file: _file, ...upload } = value
+  void _file
+  return upload
+}
+
+async function createChangeAttachmentUpload(
+  changeRequestId: string,
+  options: PocRequestOptions,
+): Promise<ChangeRequestAttachmentUpload> {
+  const record = changeRecordById(changeRequestId)
+  if (!(options.body instanceof FormData)) throw new Error('첨부파일 FormData가 필요합니다.')
+  const kind = options.body.get('kind') === 'TEST' ? 'TEST' : 'REQUEST'
+  const uploadId = responseString(options.body.get('upload_id'), '')
+  const file = options.body.get('file')
+  if (!uploadId || !(file instanceof File)) throw new Error('첨부파일과 upload_id가 필요합니다.')
+  const existing = changeAttachmentUploads.get(uploadId)
+  if (existing) return publicAttachmentUpload(existing)
+  const digest = await sha256(new Uint8Array(await file.arrayBuffer()))
+  if (runtimeFlags().minio) {
+    const part = await fetch(`/poc-api/minio/uploads/${encodeURIComponent(uploadId)}/parts/1`, {
+      method: 'PUT',
+      signal: options.signal,
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file,
+    })
+    if (!part.ok) throw new Error(`MinIO 첨부파일 저장에 실패했습니다. (${part.status})`)
+    await gatewayRequest(`/poc-api/minio/uploads/${encodeURIComponent(uploadId)}/complete`, {
+      method: 'POST',
+      signal: options.signal,
+      body: JSON.stringify({
+        part_count: 1,
+        display_name: file.name,
+        content_type: file.type || 'application/octet-stream',
+      }),
+    })
+  }
+  const upload: ChangeRequestAttachmentUpload & { file: File } = {
+    id: uploadId,
+    change_request_id: record.id,
+    round_id: record.current_round_id,
+    kind,
+    original_name: file.name,
+    state: 'STORED',
+    expected_size_bytes: file.size,
+    expected_content_sha256: digest,
+    provider_checksum: digest,
+    failure_code: null,
+    status_url: `/change-requests/${record.id}/attachment-uploads/${uploadId}`,
+    finalize_url: `/change-requests/${record.id}/attachment-uploads/${uploadId}/finalize`,
+    file,
+  }
+  changeAttachmentUploads.set(uploadId, upload)
+  return publicAttachmentUpload(upload)
 }
 
 function createUploadRecord(body: Record<string, unknown>, contentProfile?: string): Record<string, unknown> {
@@ -373,13 +525,44 @@ function qualityList<T>(items: T[], url: URL) {
   }
 }
 
-function catalogSearch(url: URL) {
+function qualityAssetFromCatalog(asset: CatalogAsset) {
+  return {
+    asset_id: asset.id,
+    name: asset.name,
+    platform: asset.platform,
+    database_name: asset.database_name,
+    schema_name: asset.schema_name,
+    classification: asset.classification,
+    lifecycle: asset.lifecycle,
+    profile_readiness: 'UNAVAILABLE' as const,
+    profile_observed_at: null,
+    active_rule_set_count: 0,
+    latest_run_state: null,
+    latest_quality_outcome: null,
+    latest_score_basis_points: null,
+  }
+}
+
+function qualityLogicalType(value: unknown) {
+  const normalized = (typeof value === 'string' || typeof value === 'number'
+    ? String(value)
+    : '').toUpperCase()
+  if (/INT|LONG|SHORT/.test(normalized)) return 'INTEGER' as const
+  if (/DECIMAL|DOUBLE|FLOAT|NUMBER|NUMERIC/.test(normalized)) return 'DECIMAL' as const
+  if (/TIMESTAMP|DATETIME/.test(normalized)) return 'TIMESTAMP' as const
+  if (/DATE/.test(normalized)) return 'DATE' as const
+  if (/BOOL/.test(normalized)) return 'BOOLEAN' as const
+  if (/CHAR|STRING|TEXT/.test(normalized)) return 'STRING' as const
+  return 'OTHER' as const
+}
+
+function catalogSearch(url: URL, assets: CatalogAsset[] = []) {
   const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase()
   const platform = url.searchParams.get('platform')
   const databaseName = url.searchParams.get('database_name')
   const schemaName = url.searchParams.get('schema_name')
   const classification = url.searchParams.get('classification')
-  const items = catalogAssets.filter((asset) => {
+  const items = assets.filter((asset) => {
     const searchable = [
       asset.name,
       asset.description,
@@ -410,7 +593,7 @@ function catalogSearch(url: URL) {
 
 function catalogTree(
   url: URL,
-  assets: CatalogAsset[] = catalogAssets,
+  assets: CatalogAsset[] = [],
   meta: CatalogPolicyMeta = catalogMeta,
 ) {
   const parentKind = url.searchParams.get('parent_kind') ?? 'ROOT'
@@ -475,90 +658,16 @@ async function liveCatalog(
   parameters.set('q', searchParameters.get('q')?.trim() || '*')
   const requestedLimit = Number(searchParameters.get('limit') ?? 100)
   parameters.set('limit', String(Math.min(100, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 100))))
+  for (const key of [
+    'cursor', 'asset_type', 'platform', 'database', 'schema', 'domain',
+    'classification', 'lifecycle', 'search_fields',
+  ]) {
+    const value = searchParameters.get(key)
+    if (value) parameters.set(key, value)
+  }
   return gatewayRequest<CatalogSearch>(`/poc-api/datahub/catalog?${parameters.toString()}`, {
     ...(signal ? { signal } : {}),
   })
-}
-
-function filterLiveCatalog(response: CatalogSearch, url: URL): CatalogSearch {
-  const filters = {
-    assetType: url.searchParams.get('asset_type'),
-    platform: url.searchParams.get('platform'),
-    databaseName: url.searchParams.get('database_name'),
-    schemaName: url.searchParams.get('schema_name'),
-    domain: url.searchParams.get('domain'),
-    classification: url.searchParams.get('classification'),
-    lifecycle: url.searchParams.get('lifecycle'),
-  }
-  const items = response.items.filter((asset) => (
-    (!filters.assetType || asset.asset_type === filters.assetType)
-    && (!filters.platform || asset.platform === filters.platform)
-    && (!filters.databaseName || asset.database_name === filters.databaseName)
-    && (!filters.schemaName || asset.schema_name === filters.schemaName)
-    && (!filters.domain || asset.domain === filters.domain)
-    && (!filters.classification || asset.classification === filters.classification)
-    && (!filters.lifecycle || asset.lifecycle === filters.lifecycle)
-  ))
-  const filtered = Object.values(filters).some(Boolean)
-  return {
-    ...response,
-    items,
-    total: filtered ? items.length : response.total,
-    total_exact: filtered ? response.items.length >= response.total : response.total_exact,
-  }
-}
-
-function liveFacets(items: CatalogAsset[], meta: CatalogPolicyMeta) {
-  const counts = (values: Array<string | null | undefined>) => {
-    const observed = new Map<string, number>()
-    for (const value of values) {
-      if (value) observed.set(value, (observed.get(value) ?? 0) + 1)
-    }
-    return [...observed].map(([value, count]) => ({ value, count }))
-  }
-  return {
-    asset_types: counts(items.map((item) => item.asset_type)),
-    platforms: counts(items.map((item) => item.platform)),
-    classifications: counts(items.map((item) => item.classification)),
-    databases: counts(items.map((item) => item.database_name)),
-    schemas: counts(items.map((item) => item.schema_name)),
-    domains: counts(items.map((item) => item.domain)),
-    lifecycles: counts(items.map((item) => item.lifecycle)),
-    meta,
-  }
-}
-
-function liveDashboard(response: CatalogSearch) {
-  const schemas = new Map<string, {
-    platform?: string
-    database_name?: string
-    schema_name?: string
-    asset_count: number
-    described_asset_count: number
-  }>()
-  for (const asset of response.items) {
-    const key = [asset.platform, asset.database_name, asset.schema_name].join('\u0000')
-    const current = schemas.get(key) ?? {
-      platform: asset.platform ?? undefined,
-      database_name: asset.database_name ?? undefined,
-      schema_name: asset.schema_name ?? undefined,
-      asset_count: 0,
-      described_asset_count: 0,
-    }
-    current.asset_count += 1
-    if (asset.description?.trim()) current.described_asset_count += 1
-    schemas.set(key, current)
-  }
-  const terms = new Set(response.items.flatMap((asset) => asset.terms ?? []))
-  return {
-    observed_at: response.meta.observed_at ?? new Date().toISOString(),
-    changes_by_state: Object.fromEntries(changeRecords.map((record) => record.state).map((state) => [state, changeRecords.filter((record) => record.state === state).length])),
-    catalog_asset_count: response.total,
-    catalog_described_asset_count: response.items.filter((asset) => asset.description?.trim()).length,
-    catalog_glossary_term_count: terms.size,
-    catalog_schema_metrics: [...schemas.values()],
-    catalog_schema_metrics_truncated: response.total > response.items.length,
-  }
 }
 
 function chatRoute(mode: ChatMode) {
@@ -689,24 +798,22 @@ class PocApiClient {
     onEvent: ApiEventStreamHandler,
   ): Promise<T> {
     const body = jsonBody(options)
-    const question = typeof body.question === 'string' ? body.question : 'POC sample question'
+    const question = typeof body.question === 'string' ? body.question.trim() : ''
+    if (!question) return Promise.reject(new Error('질문을 입력하세요.'))
     const mode = ['AUTO', 'GENERAL', 'VECTOR', 'GRAPH'].includes(String(body.mode))
       ? body.mode as ChatMode
       : 'AUTO'
     const sessionId = typeof body.session_id === 'string' && body.session_id
       ? body.session_id
       : nextId('chat-session')
-    const live = runtimeFlags().llmChat
+    const live = runtimeFlags().llmChat && runtimeFlags().datahub
       ? gatewayRequest<{ answer: string; evidence: Array<Record<string, unknown>> }>('/poc-api/llm/chat', {
           method: 'POST',
           signal: options.signal,
           body: JSON.stringify({ question }),
         })
-      : Promise.resolve({
-          answer: `Sample \`${catalogAssets[0]!.name}\`의 품질 점수는 **98.75%**입니다. 이 답변은 브라우저 메모리 fixture 근거만 사용하며 실제 시스템 상태를 의미하지 않습니다.`,
-          evidence: [] as Array<Record<string, unknown>>,
-        })
-    return live.then((liveResult) => {
+      : Promise.reject(new Error('검증 불가: DataHub와 LLM Chat 연결을 모두 설정해야 합니다.'))
+    return live.then(async (liveResult) => {
       const workflow = chatWorkflow.map((step) => ({
         ...step,
         detail_code: runtimeFlags().llmChat ? 'POC_LIVE_PROVIDER' : step.detail_code,
@@ -715,19 +822,32 @@ class PocApiClient {
       const requestId = nextId('chat-request')
       const responseId = nextId('chat-response')
       const route = chatRoute(mode)
-      const evidence = liveResult.evidence.length
-        ? liveResult.evidence.map((item, index) => ({
-            ...chatEvidence,
-            chunk_id: `poc-live-evidence-${index + 1}`,
-            resource_id: responseString(item.id ?? item.external_urn, chatEvidence.resource_id),
-            name: responseString(item.name, 'DataHub asset'),
-            description: responseString(item.description, ''),
-            source_locator: responseString(item.external_urn ?? item.id, 'datahub://asset'),
-            source_version: 'datahub-live',
-            extraction_method: 'DATAHUB_GMS',
-            rank: index + 1,
-          }))
-        : [chatEvidence]
+      const evidence = await Promise.all(liveResult.evidence.map(async (item, index) => {
+        const resourceId = responseString(item.id ?? item.external_urn, '')
+        const classification = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
+          .includes(String(item.classification))
+          ? item.classification as 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
+          : 'INTERNAL'
+        return {
+          chunk_id: `datahub-evidence-${index + 1}`,
+          resource_id: resourceId,
+          classification,
+          system_id: null,
+          domain_id: null,
+          owner_department_id: null,
+          name: responseString(item.name, 'DataHub asset'),
+          description: responseString(item.description, '') || null,
+          source_type: 'CATALOG_ASSET',
+          source_locator: responseString(item.external_urn ?? item.id, ''),
+          source_version: responseString(item.source_version, 'datahub-live'),
+          content_hash: await sha256(JSON.stringify(item)),
+          effective_from: new Date().toISOString(),
+          effective_until: null,
+          extraction_method: 'DATAHUB_GMS',
+          rank: index + 1,
+          retrieval_method: runtimeFlags().llmReranker ? 'RERANKED' : 'DATAHUB_SEARCH',
+        }
+      }))
       const messages = chatMessages.get(sessionId) ?? []
       messages.push({ id: requestId, session_id: sessionId, role: 'user', content: question, evidence_json: null, created_at: new Date().toISOString(), route: null, workflow: [] })
       messages.push({ id: responseId, session_id: sessionId, role: 'assistant', content: liveResult.answer, evidence_json: evidence, created_at: new Date().toISOString(), route, workflow })
@@ -755,11 +875,7 @@ class PocApiClient {
 
   download(path: string): Promise<ApiDownload> {
     void path
-    return Promise.resolve({
-      blob: new Blob(['DataRiver POC sample export\n'], { type: 'text/plain;charset=utf-8' }),
-      filename: 'datariver-poc-sample.txt',
-      etag: '"1"',
-    })
+    return Promise.reject(new Error('생성된 내보내기 산출물이 없습니다.'))
   }
 
   private async dispatch(url: URL, options: PocRequestOptions): Promise<unknown> {
@@ -769,7 +885,7 @@ class PocApiClient {
     if (path === '/admin/me') return {
       subject_id: POC_SUBJECT_ID,
       workspace_id: POC_WORKSPACE_ID,
-      display_name: 'POC Sample User',
+      display_name: 'POC User',
       authentication_assurance: 'UNKNOWN',
       fallback_enabled: false,
       allowed_operations: [
@@ -788,44 +904,39 @@ class PocApiClient {
     if (path === '/catalog/export-capability') return { enabled: false }
     if (path === '/operations/dashboard') {
       if (runtimeFlags().datahub) {
-        return liveDashboard(await liveCatalog(new URLSearchParams({ q: '*', limit: '100' }), options.signal))
+        const dashboard = await gatewayRequest<Record<string, unknown>>(
+          '/poc-api/datahub/dashboard', { signal: options.signal },
+        )
+        const changesByState = changeRecords.reduce<Record<string, number>>((counts, record) => {
+          counts[record.state] = (counts[record.state] ?? 0) + 1
+          return counts
+        }, {})
+        return { ...dashboard, changes_by_state: changesByState }
       }
       return {
-        observed_at: POC_NOW,
-        changes_by_state: { REGISTERED: 2, IN_REVIEW: 1, APPLIED: 4 },
-        catalog_asset_count: catalogAssets.length,
-        catalog_described_asset_count: catalogAssets.length,
-        catalog_glossary_term_count: 7,
-        catalog_schema_metrics: catalogAssets.map((asset) => ({
-          platform: asset.platform,
-          database_name: asset.database_name,
-          schema_name: asset.schema_name,
-          asset_count: 1,
-          described_asset_count: 1,
-        })),
+        observed_at: new Date().toISOString(),
+        changes_by_state: {},
+        catalog_asset_count: 0,
+        catalog_described_asset_count: 0,
+        catalog_glossary_term_count: 0,
+        catalog_schema_metrics: [],
         catalog_schema_metrics_truncated: false,
       }
     }
 
     if (path === '/catalog/assets') {
       return runtimeFlags().datahub
-        ? filterLiveCatalog(await liveCatalog(url.searchParams, options.signal), url)
-        : catalogSearch(url)
+        ? liveCatalog(url.searchParams, options.signal)
+        : catalogSearch(url, [])
     }
     if (path === '/catalog/facets') {
       if (runtimeFlags().datahub) {
-        const live = await liveCatalog(new URLSearchParams({ q: '*', limit: '100' }), options.signal)
-        return liveFacets(live.items, live.meta)
+        return gatewayRequest(`/poc-api/datahub/facets?${url.searchParams.toString()}`, {
+          signal: options.signal,
+        })
       }
-      const counts = (values: Array<string | null | undefined>) => [...new Set(values.filter((value): value is string => Boolean(value)))].map((value) => ({ value, count: catalogAssets.filter((asset) => Object.values(asset).includes(value)).length || 1 }))
       return {
-        asset_types: counts(catalogAssets.map((item) => item.asset_type)),
-        platforms: counts(catalogAssets.map((item) => item.platform)),
-        classifications: counts(catalogAssets.map((item) => item.classification)),
-        databases: counts(catalogAssets.map((item) => item.database_name)),
-        schemas: counts(catalogAssets.map((item) => item.schema_name)),
-        domains: counts(catalogAssets.map((item) => item.domain)),
-        lifecycles: counts(catalogAssets.map((item) => item.lifecycle)),
+        asset_types: [], platforms: [], classifications: [], databases: [], schemas: [], domains: [], lifecycles: [],
         meta: catalogMeta,
       }
     }
@@ -847,19 +958,7 @@ class PocApiClient {
           match_mode: 'ALL',
         }
       }
-      return {
-        items: catalogAssets.filter((asset) => asset.name.toLocaleLowerCase().includes(query)).slice(0, 8).map((asset) => ({
-          id: asset.id,
-          name: asset.name,
-          asset_type: asset.asset_type,
-          platform: asset.platform,
-          database_name: asset.database_name,
-          schema_name: asset.schema_name,
-          matches: asset.matches,
-        })),
-        meta: catalogMeta,
-        match_mode: 'ALL',
-      }
+      return { items: [], meta: catalogMeta, match_mode: 'ALL' }
     }
     if (path === '/catalog/vocabulary') {
       if (runtimeFlags().datahub) {
@@ -869,28 +968,151 @@ class PocApiClient {
           meta: live.meta,
         }
       }
-      return { items: ['Manufacturing Quality', 'Yield Engineering', 'gold', 'Wafer'], meta: catalogMeta }
+      return { items: [], meta: catalogMeta }
     }
     if (path === '/catalog/tree/nodes') {
       if (runtimeFlags().datahub) {
-        const live = await liveCatalog(new URLSearchParams({ q: '*', limit: '100' }), options.signal)
-        return catalogTree(url, live.items, live.meta)
+        return gatewayRequest(`/poc-api/datahub/tree?${url.searchParams.toString()}`, {
+          signal: options.signal,
+        })
       }
-      return catalogTree(url)
+      return catalogTree(url, [])
     }
     if (path.endsWith('/lineage') && path.startsWith('/catalog/assets/')) {
       const assetId = decodeURIComponent(path.split('/')[3] ?? '')
       if (runtimeFlags().datahub && assetId.startsWith('urn:li:')) {
         return gatewayRequest(`/poc-api/datahub/lineage?urn=${encodeURIComponent(assetId)}`, { signal: options.signal })
       }
-      return catalogLineage(assetId)
+      throw new Error(`DataHub lineage를 사용할 수 없는 자산입니다: ${assetId}`)
+    }
+    const metadataPreview = path.match(/^\/catalog\/assets\/([^/]+)\/(description-previews|column-description-previews|controlled-metadata-previews)$/)
+    if (metadataPreview && method === 'POST') {
+      const assetId = decodeURIComponent(metadataPreview[1] ?? '')
+      if (!runtimeFlags().datahub || !assetId.startsWith('urn:li:')) {
+        throw new Error('DataHub 원본 메타데이터를 확인할 수 없습니다.')
+      }
+      const detail = await gatewayRequest<CatalogAssetDetail>(
+        `/poc-api/datahub/asset?urn=${encodeURIComponent(assetId)}`, { signal: options.signal },
+      )
+      liveAssetDetails.set(assetId, detail)
+      const body = jsonBody(options)
+      const kind = metadataPreview[2]
+      const observedAt = new Date().toISOString()
+      if (kind === 'description-previews') {
+        const proposed = responseString(body.description, '')
+        const beforeHash = await sha256(JSON.stringify({ description: detail.description ?? null }))
+        const afterHash = await sha256(JSON.stringify({ description: proposed }))
+        return {
+          asset_id: detail.id,
+          target_ref: detail.external_urn,
+          aspect_name: 'datasetProperties',
+          current_description: detail.description ?? null,
+          proposed_description: proposed,
+          before_hash: beforeHash,
+          after_hash: afterHash,
+          preview_etag: `"${beforeHash}"`,
+          source_version: detail.source_version,
+          observed_at: observedAt,
+        }
+      }
+      if (kind === 'column-description-previews') {
+        const fieldPath = responseString(body.field_path, '')
+        const field = detail.schema_fields.find((item) => (item.fieldPath ?? item.field_path) === fieldPath)
+        if (!field) throw new Error('DataHub 원본에서 대상 컬럼을 찾을 수 없습니다.')
+        const currentDescription = typeof field.description === 'string' ? field.description : null
+        const proposed = responseString(body.description, '')
+        const beforeHash = await sha256(JSON.stringify({ field_path: fieldPath, description: currentDescription }))
+        const afterHash = await sha256(JSON.stringify({ field_path: fieldPath, description: proposed }))
+        return {
+          asset_id: detail.id,
+          target_ref: detail.external_urn,
+          aspect_name: 'schemaMetadata',
+          field_path: fieldPath,
+          current_description: currentDescription,
+          proposed_description: proposed,
+          before_hash: beforeHash,
+          after_hash: afterHash,
+          preview_etag: `"${beforeHash}"`,
+          source_version: detail.source_version,
+          observed_at: observedAt,
+        }
+      }
+      const aspectName = ['domains', 'globalTags', 'glossaryTerms'].includes(String(body.aspect_name))
+        ? String(body.aspect_name)
+        : 'globalTags'
+      const proposedRefs = Array.isArray(body.refs)
+        ? body.refs.filter((item): item is string => typeof item === 'string')
+        : []
+      const currentRefs = aspectName === 'domains'
+        ? detail.domain ? [detail.domain] : []
+        : aspectName === 'globalTags'
+          ? detail.tags ?? []
+          : detail.glossary_terms.flatMap((entry) => {
+              const term = entry.term as Record<string, unknown> | undefined
+              const value = term?.urn ?? entry.urn
+              return typeof value === 'string' ? [value] : []
+            })
+      const beforeHash = await sha256(JSON.stringify({ aspect_name: aspectName, refs: currentRefs }))
+      const afterHash = await sha256(JSON.stringify({ aspect_name: aspectName, refs: proposedRefs }))
+      return {
+        asset_id: detail.id,
+        target_ref: detail.external_urn,
+        aspect_name: aspectName,
+        current_refs: currentRefs,
+        proposed_refs: proposedRefs,
+        before_hash: beforeHash,
+        after_hash: afterHash,
+        preview_etag: `"${beforeHash}"`,
+        source_version: detail.source_version,
+        observed_at: observedAt,
+      }
+    }
+    const metadataChangeRequest = path.match(/^\/catalog\/assets\/([^/]+)\/(description-change-requests|column-description-change-requests|controlled-metadata-change-requests)$/)
+    if (metadataChangeRequest && method === 'POST') {
+      const assetId = decodeURIComponent(metadataChangeRequest[1] ?? '')
+      const detail = liveAssetDetails.get(assetId)
+      if (!detail) throw new Error('변경 요청 전에 DataHub 원본 미리보기를 다시 실행하세요.')
+      const body = jsonBody(options)
+      const kind = metadataChangeRequest[2]
+      const target: Record<string, unknown> = { kind: 'EXISTING', asset_id: assetId }
+      if (kind === 'description-change-requests') target.description = responseString(body.description, '')
+      if (kind === 'column-description-change-requests') target.columns = [{
+        field_path: responseString(body.field_path, ''),
+        description: responseString(body.description, ''),
+        requested_change: responseString(body.change_description, ''),
+      }]
+      const record = createChangeRequest({
+        title: responseString(body.title, `${detail.name} metadata 변경`),
+        system_id: detail.platform,
+        request_reason: responseString(body.change_description, ''),
+        request_content: responseString(body.change_description, ''),
+        priority: 'NORMAL',
+        urgency: 'NORMAL',
+        security_level: detail.classification,
+        targets: [target],
+      })
+      if (kind === 'column-description-change-requests') record.items[0]!.aspect_name = 'schemaMetadata'
+      if (kind === 'controlled-metadata-change-requests') {
+        record.items[0]!.aspect_name = responseString(body.aspect_name, 'globalTags')
+        record.items[0]!.after_document = { refs: Array.isArray(body.refs) ? body.refs : [] }
+      }
+      return { ...record }
     }
     if (path.startsWith('/catalog/assets/')) {
       const assetId = decodeURIComponent(path.split('/')[3] ?? '')
       if (runtimeFlags().datahub && assetId.startsWith('urn:li:')) {
-        return gatewayRequest(`/poc-api/datahub/asset?urn=${encodeURIComponent(assetId)}`, { signal: options.signal })
+        const parameters = new URLSearchParams({ urn: assetId })
+        const fieldOffset = url.searchParams.get('field_offset')
+        const fieldLimit = url.searchParams.get('field_limit')
+        if (fieldOffset) parameters.set('field_offset', fieldOffset)
+        if (fieldLimit) parameters.set('field_limit', fieldLimit)
+        const asset = await gatewayRequest<CatalogAssetDetail>(
+          `/poc-api/datahub/asset?${parameters.toString()}`, { signal: options.signal },
+        )
+        liveAssetDetails.set(assetId, asset)
+        return asset
       }
-      return catalogDetail(assetId, Number(url.searchParams.get('field_offset') ?? 0))
+      throw new Error(`DataHub 상세를 사용할 수 없는 자산입니다: ${assetId}`)
     }
     if (path === '/uploads/operator-capability') return { eligible: true, can_view_workspace_history: true, reason_code: 'ELIGIBLE', allowed_roles: ['ADMIN', 'DATA_STEWARD'] }
     const knowledgeUploadCollection = path.match(/^\/knowledge\/graphs\/[^/]+\/source-uploads$/)
@@ -935,26 +1157,93 @@ class PocApiClient {
       ?? path.match(/^\/knowledge\/graphs\/[^/]+\/source-uploads\/([^/]+)$/)
     if (uploadDetail && method === 'GET') return uploadById(uploadDetail[1] ?? '') ?? createUploadRecord({})
     if (/^\/uploads\/[^/]+\/preparations$/.test(path)) return { items: [] }
-    if (path.startsWith('/registration/manual-submissions')) return path.endsWith('/report') ? { submission: {}, attempts: [] } : { items: [], page: { next_cursor: null, limit: 25 } }
+    if (path === '/registration/manual-submissions' && method === 'POST') {
+      const body = jsonBody(options)
+      const now = new Date().toISOString()
+      const serialNumber = manualSubmissionReports.length + 1
+      const columnEdits = Array.isArray(body.column_edits) ? body.column_edits : []
+      const submission = {
+        id: nextId('manual-submission'),
+        state: 'APPLIED',
+        serial_number: serialNumber,
+        row_count: 1 + columnEdits.length,
+        source_version: responseString(body.source_version, 'datahub-live-poc'),
+        provider_source_version: responseString(body.provider_source_version, 'datahub-live'),
+        created_at: now,
+        updated_at: now,
+        applied_at: now,
+        attempts: 1,
+        next_attempt_at: null,
+        last_error_code: null,
+        version: 1,
+      }
+      const reportHash = await sha256(JSON.stringify(body))
+      const aspects = [
+        ['datasetProperties', 1],
+        ['domains', 2],
+        ['globalTags', 3],
+        ['glossaryTerms', 4],
+        ['schemaMetadata', 5],
+      ].map(([aspectName, aspectOrdinal]) => ({
+        aspect_name: aspectName,
+        aspect_ordinal: aspectOrdinal,
+        outcome: 'APPLIED_VERIFIED',
+        before_hash: null,
+        expected_hash: reportHash,
+        observed_hash: reportHash,
+        write_attempted: false,
+        failure_code: null,
+        provider_version: 'POC_MEMORY_ONLY',
+        provider_response_hash: reportHash,
+        observed_at: now,
+      }))
+      const report = {
+        submission,
+        attempts: [{
+          id: nextId('manual-attempt'),
+          attempt_no: 1,
+          lease_epoch: 1,
+          state: 'APPLIED',
+          failure_code: null,
+          report_root_hash: reportHash,
+          started_at: now,
+          finished_at: now,
+          aspects,
+        }],
+      }
+      manualSubmissionReports.unshift(report)
+      return submission
+    }
+    if (path === '/registration/manual-submissions' && method === 'GET') {
+      const limit = Number(url.searchParams.get('limit') ?? 25)
+      return {
+        items: manualSubmissionReports.slice(0, limit).map((item) => item.submission),
+        page: { next_cursor: null, limit },
+      }
+    }
+    const manualSubmission = path.match(/^\/registration\/manual-submissions\/([^/]+)$/)
+    if (manualSubmission && method === 'GET') {
+      const report = manualSubmissionReports.find((item) => (
+        (item.submission as { id?: unknown } | undefined)?.id === decodeURIComponent(manualSubmission[1] ?? '')
+      ))
+      if (!report) throw new Error('Manual 실행 이력을 찾을 수 없습니다.')
+      return report
+    }
 
     if (path === '/change-requests/systems') {
-      const assets = runtimeFlags().datahub
-        ? (await liveCatalog(new URLSearchParams({ q: '*', limit: '100' }), options.signal)).items
-        : catalogAssets
-      const platforms = [...new Set(assets.map((asset) => asset.platform).filter((value): value is string => Boolean(value)))]
-      return {
-        items: platforms.map((platform, index) => ({
-          id: platform,
-          code: platform.toUpperCase().replace(/[^A-Z0-9]+/g, '_') || `DATAHUB_${index + 1}`,
-          name: platform,
-        })),
-      }
+      return runtimeFlags().datahub
+        ? gatewayRequest('/poc-api/datahub/systems', { signal: options.signal })
+        : { items: [] }
     }
     if (path === '/change-requests/targets') {
       const systemId = url.searchParams.get('system_id')
       const result = runtimeFlags().datahub
-        ? await liveCatalog(url.searchParams, options.signal)
-        : catalogSearch(url)
+        ? await liveCatalog(new URLSearchParams({
+            q: url.searchParams.get('q') ?? '*',
+            limit: url.searchParams.get('limit') ?? '12',
+            ...(systemId ? { platform: systemId } : {}),
+          }), options.signal)
+        : catalogSearch(url, [])
       const items = result.items.filter((asset) => !systemId || asset.platform === systemId)
       return { ...result, items, total: items.length, total_exact: true }
     }
@@ -962,12 +1251,56 @@ class PocApiClient {
     if (changeTarget) {
       const assetId = decodeURIComponent(changeTarget[1] ?? '')
       if (runtimeFlags().datahub && assetId.startsWith('urn:li:')) {
-        return gatewayRequest(`/poc-api/datahub/asset?urn=${encodeURIComponent(assetId)}`, { signal: options.signal })
+        const asset = await gatewayRequest<CatalogAssetDetail>(
+          `/poc-api/datahub/asset?urn=${encodeURIComponent(assetId)}`, { signal: options.signal },
+        )
+        liveAssetDetails.set(assetId, asset)
+        return asset
       }
-      return catalogDetail(assetId, 0)
+      throw new Error(`DataHub 상세를 사용할 수 없는 변경 대상입니다: ${assetId}`)
+    }
+    const revisionTargetList = path.match(/^\/change-requests\/([^/]+)\/revision-targets$/)
+    if (revisionTargetList && method === 'GET') {
+      const record = changeRecordById(decodeURIComponent(revisionTargetList[1] ?? ''))
+      if (record.state !== 'CHANGES_REQUESTED' || !record.revision_allowed) {
+        throw new Error('현재 변경 요청은 수정 대상 검색을 사용할 수 없습니다.')
+      }
+      const systemId = currentRound(record)?.selected_system_id
+      if (!runtimeFlags().datahub || !systemId) return catalogSearch(url, [])
+      return liveCatalog(new URLSearchParams({
+        q: url.searchParams.get('q') ?? '*',
+        limit: url.searchParams.get('limit') ?? '12',
+        platform: systemId,
+        ...(url.searchParams.get('cursor') ? { cursor: url.searchParams.get('cursor')! } : {}),
+      }), options.signal)
+    }
+    const revisionTargetDetail = path.match(/^\/change-requests\/([^/]+)\/revision-targets\/(.+)$/)
+    if (revisionTargetDetail && method === 'GET') {
+      const record = changeRecordById(decodeURIComponent(revisionTargetDetail[1] ?? ''))
+      if (record.state !== 'CHANGES_REQUESTED' || !record.revision_allowed) {
+        throw new Error('현재 변경 요청은 수정 대상 상세를 사용할 수 없습니다.')
+      }
+      const assetId = decodeURIComponent(revisionTargetDetail[2] ?? '')
+      if (!runtimeFlags().datahub || !assetId.startsWith('urn:li:')) {
+        throw new Error('DataHub 현재 대상 상세를 확인할 수 없습니다.')
+      }
+      const asset = await gatewayRequest<CatalogAssetDetail>(
+        `/poc-api/datahub/asset?urn=${encodeURIComponent(assetId)}`, { signal: options.signal },
+      )
+      if (asset.platform !== currentRound(record)?.selected_system_id) {
+        throw new Error('현재 변경 요청의 관련 시스템과 대상이 일치하지 않습니다.')
+      }
+      liveAssetDetails.set(assetId, asset)
+      return asset
     }
     if (path === '/change-requests/intake' && method === 'POST') {
       return createChangeRequest(jsonBody(options))
+    }
+    const revisionCommand = path.match(/^\/change-requests\/([^/]+)\/revisions$/)
+    if (revisionCommand && method === 'POST') {
+      const record = changeRecordById(decodeURIComponent(revisionCommand[1] ?? ''))
+      requireCurrentVersion(record, options)
+      return { ...reviseChangeRequest(record, jsonBody(options)) }
     }
     if (path === '/change-requests/summaries') {
       const state = url.searchParams.get('state')
@@ -978,9 +1311,77 @@ class PocApiClient {
         page: { next_cursor: null, limit: 25 },
       }
     }
-    if (/^\/change-requests\/[^/]+\/attachments\/page$/.test(path)) return { items: [], page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) } }
+    const attachmentCreate = path.match(/^\/change-requests\/([^/]+)\/attachments$/)
+    if (attachmentCreate && method === 'POST') {
+      return createChangeAttachmentUpload(decodeURIComponent(attachmentCreate[1] ?? ''), options)
+    }
+    const attachmentPage = path.match(/^\/change-requests\/([^/]+)\/attachments\/page$/)
+    if (attachmentPage && method === 'GET') {
+      const record = changeRecordById(decodeURIComponent(attachmentPage[1] ?? ''))
+      const limit = Number(url.searchParams.get('limit') ?? 25)
+      return {
+        items: (changeAttachments.get(record.id) ?? [])
+          .filter((item) => item.round_id === record.current_round_id)
+          .slice(0, limit)
+          .map(({ file: _file, ...item }) => { void _file; return item }),
+        page: { next_cursor: null, limit },
+      }
+    }
+    const attachmentDownload = path.match(/^\/change-requests\/([^/]+)\/attachments\/([^/]+)\/download$/)
+    if (attachmentDownload && method === 'GET') {
+      const record = changeRecordById(decodeURIComponent(attachmentDownload[1] ?? ''))
+      const attachment = (changeAttachments.get(record.id) ?? [])
+        .find((item) => item.id === decodeURIComponent(attachmentDownload[2] ?? ''))
+      if (!attachment) throw new Error('첨부파일을 찾을 수 없습니다.')
+      return { url: URL.createObjectURL(attachment.file) }
+    }
+    const attachmentUploadList = path.match(/^\/change-requests\/([^/]+)\/attachment-uploads$/)
+    if (attachmentUploadList && method === 'GET') {
+      const record = changeRecordById(decodeURIComponent(attachmentUploadList[1] ?? ''))
+      const roundId = url.searchParams.get('round_id')
+      const limit = Math.min(10, Number(url.searchParams.get('limit') ?? 10))
+      return {
+        items: [...changeAttachmentUploads.values()]
+          .filter((item) => item.change_request_id === record.id && (!roundId || item.round_id === roundId))
+          .slice(0, limit)
+          .map(publicAttachmentUpload),
+      }
+    }
+    const attachmentFinalize = path.match(/^\/change-requests\/([^/]+)\/attachment-uploads\/([^/]+)\/finalize$/)
+    if (attachmentFinalize && method === 'POST') {
+      const record = changeRecordById(decodeURIComponent(attachmentFinalize[1] ?? ''))
+      const uploadId = decodeURIComponent(attachmentFinalize[2] ?? '')
+      const upload = changeAttachmentUploads.get(uploadId)
+      if (!upload || upload.change_request_id !== record.id) throw new Error('첨부파일 업로드를 찾을 수 없습니다.')
+      if (upload.round_id !== record.current_round_id) throw new Error('이전 회차 첨부파일은 현재 회차에 확정할 수 없습니다.')
+      if (upload.state !== 'FINALIZED') {
+        const attachments = changeAttachments.get(record.id) ?? []
+        attachments.push({
+          id: nextId('change-attachment'),
+          kind: upload.kind,
+          round_id: upload.round_id,
+          original_name: upload.original_name,
+          serial_number: attachments.length + 1,
+          content_type: upload.file.type || 'application/octet-stream',
+          size_bytes: upload.expected_size_bytes,
+          content_sha256: upload.expected_content_sha256,
+          created_at: new Date().toISOString(),
+          file: upload.file,
+        })
+        changeAttachments.set(record.id, attachments)
+        upload.state = 'FINALIZED'
+      }
+      return publicAttachmentUpload(upload)
+    }
+    const attachmentUploadStatus = path.match(/^\/change-requests\/([^/]+)\/attachment-uploads\/([^/]+)$/)
+    if (attachmentUploadStatus && method === 'GET') {
+      const record = changeRecordById(decodeURIComponent(attachmentUploadStatus[1] ?? ''))
+      const upload = changeAttachmentUploads.get(decodeURIComponent(attachmentUploadStatus[2] ?? ''))
+      if (!upload || upload.change_request_id !== record.id) throw new Error('첨부파일 업로드를 찾을 수 없습니다.')
+      return publicAttachmentUpload(upload)
+    }
     if (/^\/change-requests\/[^/]+\/apply-report$/.test(path)) return {
-      change_request_id: path.split('/')[2] ?? changeSummary.id,
+      change_request_id: path.split('/')[2] ?? '',
       job_id: null,
       state: 'NOT_STARTED',
       attempt_count: 0,
@@ -997,27 +1398,46 @@ class PocApiClient {
     if (changeCommand && method === 'POST') {
       const changeRequestId = decodeURIComponent(changeCommand[1] ?? '')
       const command = changeCommand[2]
-      const record = changeRecords.find((item) => item.id === changeRequestId)
-      if (!record) throw new Error('POC 변경 요청을 찾을 수 없습니다.')
+      const record = changeRecordById(changeRequestId)
+      requireCurrentVersion(record, options)
       const body = jsonBody(options)
       const now = new Date().toISOString()
       if (command === 'approvals') {
+        const stage = responseString(body.stage, 'REVIEW') as 'REVIEW' | 'TEST' | 'FINAL'
+        const requiredState: Record<typeof stage, ChangeRequestState> = {
+          REVIEW: 'IN_REVIEW', TEST: 'TESTING', FINAL: 'FINAL_REVIEW',
+        }
+        if (record.state !== requiredState[stage]) throw new Error('현재 단계에서는 해당 승인을 기록할 수 없습니다.')
+        if (hasCurrentApproval(record, stage)) throw new Error('현재 회차에 이미 기록된 승인입니다.')
+        const systemId = currentRound(record)?.selected_system_id ?? null
         record.approvals.push({
           id: nextId('change-approval'),
-          stage: responseString(body.stage, 'REVIEW'),
+          stage,
           decision: responseString(body.decision, 'APPROVED'),
           actor_id: POC_SUBJECT_ID,
-          reason: responseString(body.reason, 'POC browser-memory approval'),
+          reason: responseString(body.reason, 'POC 단일 사용자 승인 시연'),
           occurred_at: now,
           round_id: record.current_round_id,
-          authorities: [{ kind: 'GLOBAL_ADMIN', system_id: null }],
+          authorities: stage === 'FINAL'
+            ? [
+                { kind: 'SYSTEM_DEVELOPER', system_id: systemId },
+                { kind: 'SYSTEM_DATA_STEWARD', system_id: systemId },
+                { kind: 'GLOBAL_ADMIN', system_id: null },
+              ]
+            : [{ kind: 'SYSTEM_DEVELOPER', system_id: systemId }],
         })
       } else if (command === 'test-runs') {
+        if (record.state !== 'TESTING') throw new Error('TESTING 단계에서만 테스트 결과를 기록할 수 있습니다.')
+        const attachmentId = responseString(body.attachment_id, '')
+        const attachment = (changeAttachments.get(record.id) ?? []).find((item) => (
+          item.id === attachmentId && item.round_id === record.current_round_id && item.kind === 'TEST'
+        ))
+        if (!attachment) throw new Error('현재 회차의 TEST 첨부파일을 선택하세요.')
         record.test_runs.push({
           id: nextId('change-test-run'),
           round_id: record.current_round_id,
           system_id: responseString(body.system_id, record.rounds.at(-1)?.selected_system_id ?? 'POC_SYSTEM'),
-          attachment_id: responseString(body.attachment_id, 'POC_ATTACHMENT'),
+          attachment_id: attachment.id,
           state: body.state === 'FAILED' ? 'FAILED' : 'PASSED',
           plan_hash: '7'.repeat(64),
           result_hash: '8'.repeat(64),
@@ -1032,7 +1452,29 @@ class PocApiClient {
         const target = command === 'complete-intake'
           ? 'COMPLETED'
           : responseString(body.target_state, previous) as ChangeRequestState
+        const legalTransitions: Partial<Record<ChangeRequestState, ChangeRequestState[]>> = {
+          REGISTERED: ['IN_REVIEW', 'CANCELLED'],
+          IN_REVIEW: ['TESTING', 'CHANGES_REQUESTED', 'REJECTED', 'CANCELLED'],
+          TESTING: ['IN_REVIEW', 'FINAL_REVIEW', 'CHANGES_REQUESTED', 'REJECTED', 'CANCELLED'],
+          FINAL_REVIEW: ['COMPLETED', 'CHANGES_REQUESTED', 'REJECTED', 'CANCELLED'],
+          APPLY_FAILED: ['APPLY_QUEUED', 'CANCELLED'],
+          CHANGES_REQUESTED: ['CANCELLED'],
+        }
+        if (!(legalTransitions[previous] ?? []).includes(target)) throw new Error('허용되지 않은 변경 요청 상태 전이입니다.')
+        if (previous === 'IN_REVIEW' && target === 'TESTING' && !hasCurrentApproval(record, 'REVIEW')) {
+          throw new Error('REVIEW 승인 후 TESTING 단계로 이동할 수 있습니다.')
+        }
+        if (previous === 'TESTING' && target === 'FINAL_REVIEW') {
+          const passed = record.test_runs.some((run) => run.round_id === record.current_round_id && run.state === 'PASSED')
+          if (!passed || !hasCurrentApproval(record, 'TEST')) {
+            throw new Error('현재 회차의 통과한 테스트 결과와 TEST 승인이 필요합니다.')
+          }
+        }
+        if (previous === 'FINAL_REVIEW' && target === 'COMPLETED' && !hasCurrentApproval(record, 'FINAL')) {
+          throw new Error('FINAL 승인 후 변경 요청을 완료할 수 있습니다.')
+        }
         record.state = target
+        if (target === 'REJECTED' || target === 'CANCELLED' || target === 'COMPLETED') record.revision_allowed = false
         record.transitions.push({
           id: nextId('change-transition'),
           from_state: previous,
@@ -1046,64 +1488,56 @@ class PocApiClient {
       record.version += 1
       return { ...record }
     }
-    if (/^\/change-requests\/[^/]+\/(submit|approve|reject|request-changes|cancel|test-runs|apply)$/.test(path) && method === 'POST') {
-      const action = path.split('/').at(-1)
-      const nextStates: Record<string, ChangeRequestState> = { submit: 'IN_REVIEW', approve: 'FINAL_REVIEW', reject: 'REJECTED', 'request-changes': 'CHANGES_REQUESTED', cancel: 'CANCELLED', apply: 'APPLIED', 'test-runs': 'TESTING' }
-      const changeRequestId = path.split('/')[2] ?? ''
-      const record = changeRecords.find((item) => item.id === changeRequestId)
-      if (!record) throw new Error('POC 변경 요청을 찾을 수 없습니다.')
-      const previous = record.state
-      record.state = nextStates[action ?? ''] ?? record.state
-      record.version += 1
-      record.transitions.push({
-        id: nextId('change-transition'),
-        from_state: previous,
-        to_state: record.state,
-        actor_id: POC_SUBJECT_ID,
-        reason: responseString(jsonBody(options).reason, 'POC browser-memory transition'),
-        occurred_at: new Date().toISOString(),
-        round_id: record.current_round_id,
-      })
-      return { ...record }
-    }
     if (/^\/change-requests\/[^/]+$/.test(path)) {
-      const record = changeRecords.find((item) => item.id === path.split('/')[2])
-      if (!record) throw new Error('POC 변경 요청을 찾을 수 없습니다.')
-      return { ...record }
+      return { ...changeRecordById(path.split('/')[2] ?? '') }
     }
 
     if (path === '/quality/capability') {
       const observedAt = new Date()
+      const readAvailable = runtimeFlags().datahub
       return {
         contract_version: 'QUALITY_CAPABILITY_V2',
         observed_at: observedAt.toISOString(),
         valid_until: new Date(observedAt.getTime() + 30_000).toISOString(),
         cache_scope: POC_CACHE_SCOPE,
-        axes: ['read_access', 'profile_readiness', 'rule_authoring', 'review', 'activation', 'manual_execution', 'scheduling', 'operations'].map((id) => ({ id, state: 'AVAILABLE' })),
+        axes: ['read_access', 'profile_readiness', 'rule_authoring', 'review', 'activation', 'manual_execution', 'scheduling', 'operations'].map((id) => ({
+          id,
+          state: id === 'read_access' && readAvailable ? 'AVAILABLE' : 'UNAVAILABLE',
+          reason_code: id === 'read_access' && !readAvailable
+            ? 'DATAHUB_NOT_CONFIGURED'
+            : id === 'read_access' ? null : 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED',
+        })),
       }
     }
-    if (path === '/quality/dashboard') return {
-      contract_version: 'QUALITY_DASHBOARD_V1',
-      cache_scope: POC_CACHE_SCOPE,
-      ...authorizationWindow(),
-      as_of: POC_NOW,
-      schema_count: 3,
-      table_count: catalogAssets.length,
-      active_rule_set_count: 1,
-      common_rule_template_count: 1,
-      covered_table_count: 1,
-      table_coverage_basis_points: 3333,
-      managed_rule_sets: managedIndicators,
-      schemas: [],
-      schemas_truncated: false,
+    if (path === '/quality/dashboard') {
+      const dashboard = runtimeFlags().datahub
+        ? await gatewayRequest<{ catalog_asset_count: number; catalog_schema_metrics: unknown[] }>(
+            '/poc-api/datahub/dashboard', { signal: options.signal },
+          )
+        : { catalog_asset_count: 0, catalog_schema_metrics: [] }
+      return {
+        contract_version: 'QUALITY_DASHBOARD_V1',
+        cache_scope: POC_CACHE_SCOPE,
+        ...authorizationWindow(),
+        as_of: new Date().toISOString(),
+        schema_count: dashboard.catalog_schema_metrics.length,
+        table_count: dashboard.catalog_asset_count,
+        active_rule_set_count: 0,
+        common_rule_template_count: 0,
+        covered_table_count: 0,
+        table_coverage_basis_points: dashboard.catalog_asset_count ? 0 : null,
+        managed_rule_sets: managedIndicators,
+        schemas: [],
+        schemas_truncated: false,
+      }
     }
     if (path === '/quality/overview') return {
-      availability: 'AVAILABLE', freshness: 'CURRENT', as_of: POC_NOW,
+      availability: runtimeFlags().datahub ? 'AVAILABLE' : 'UNAVAILABLE', freshness: 'UNKNOWN', as_of: new Date().toISOString(),
       authorization_valid_until: authorizationWindow().authorization_valid_until,
-      overall_state: 'PASS', active_rule_set_count: 1, evaluated_rule_set_count: 1,
-      unknown_rule_set_count: 0, passed_count: 79, advisory_failed_count: 0,
-      blocking_failed_count: 1, evaluated_rule_count: 80, score_basis_points: 9875,
-      coverage_basis_points: 3333, trend: [{ bucket_start: POC_NOW, passed_count: 79, advisory_failed_count: 0, blocking_failed_count: 1, evaluated_rule_count: 80, score_basis_points: 9875 }], failure_code: null,
+      overall_state: 'UNKNOWN', active_rule_set_count: 0, evaluated_rule_set_count: 0,
+      unknown_rule_set_count: 0, passed_count: 0, advisory_failed_count: 0,
+      blocking_failed_count: 0, evaluated_rule_count: 0, score_basis_points: null,
+      coverage_basis_points: null, trend: [], failure_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED',
     }
     if (path === '/quality/rule-definitions') return {
       contract_version: 'QUALITY_TYPED_RULES_V1',
@@ -1114,31 +1548,74 @@ class PocApiClient {
       ],
     }
     if (path === '/quality/assets/summary-batch') {
-      const ids = jsonBody(options).asset_ids
-      return { items: Array.isArray(ids) && ids.includes(qualityAsset.asset_id) ? [qualityAsset] : [], cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
+      return { items: [], cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
     }
-    if (path === '/quality/assets') return qualityList([qualityAsset], url)
-    if (/^\/quality\/assets\/[^/]+\/workspace$/.test(path)) return qualityEnvelope({
-      asset: qualityAsset,
-      rule_sets: [qualityRuleSet],
-      runs: [qualityRun],
-      trend: [{ bucket_start: POC_NOW, passed_count: 79, advisory_failed_count: 0, blocking_failed_count: 1, evaluated_rule_count: 80, score_basis_points: 9875 }],
-      authoring: { ...qualityAuthoring, fields: qualityAuthoring.fields.map((field) => ({ ...field, supported_rule_kinds: [...field.supported_rule_kinds] })) },
-      fields: [{ ...qualityAuthoring.fields[0], supported_rule_kinds: ['NOT_NULL'], configured_rule_count: 1, active_rule_count: 1, evaluated_rule_count: 1, passed_count: 1, advisory_failed_count: 0, blocking_failed_count: 0, latest_score_basis_points: 10000, latest_quality_outcome: 'PASS', latest_evaluated_at: POC_NOW }],
-      score_policy: scorePolicy,
-    })
-    if (/^\/quality\/assets\/[^/]+\/fields\/[^/]+\/workspace$/.test(path)) return qualityEnvelope({
-      asset_id: qualityAsset.asset_id,
-      field: { ...qualityAuthoring.fields[0], supported_rule_kinds: ['NOT_NULL'] },
-      rules: [{ rule_definition_id: 'poc-rule-definition-1', rule_set_id: qualityRuleSet.rule_set_id, rule_set_name: qualityRuleSet.name, version_id: qualityRuleSet.active_version_id, version_number: 1, version_state: 'ACTIVE', kind: 'NOT_NULL', severity: 'BLOCKING', parameters: {} }],
-      runs: [{ ...qualityRun, run_quality_outcome: 'PASS', field_quality_outcome: 'PASS', evaluated_value_count: 80, missing_count: 0, unexpected_count: 0 }],
-      trend: [{ bucket_start: POC_NOW, passed_count: 1, advisory_failed_count: 0, blocking_failed_count: 0, evaluated_rule_count: 1, score_basis_points: 10000 }],
-      score_policy: scorePolicy,
-    })
-    if (/^\/quality\/assets\/[^/]+$/.test(path)) return { ...qualityEnvelope(qualityAsset), authoring: { ...qualityAuthoring, fields: qualityAuthoring.fields.map((field) => ({ ...field, supported_rule_kinds: [...field.supported_rule_kinds] })) } }
-    if (path === '/quality/common-rule-templates') return { items: [{ template_id: 'poc-template-1', name: 'Essential completeness', description: 'Sample reusable rules', rules: [{ field_identifier: 'wafer_id', kind: 'NOT_NULL', severity: 'BLOCKING', parameters: {} }], mapping_count: 1, created_at: POC_NOW, updated_at: POC_NOW }], cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
-    if (path === '/quality/rule-sets') return qualityList([qualityRuleSet], url)
-    if (/^\/quality\/rule-sets\/[^/]+$/.test(path)) return qualityEnvelope({ rule_set: qualityRuleSet, versions: [{ version_id: qualityRuleSet.active_version_id, version_number: 1, state: 'ACTIVE', author_id: POC_SUBJECT_ID, reviewed_by: POC_SUBJECT_ID, activated_by: POC_SUBJECT_ID, rule_count: 2, schedule_mode: 'MANUAL', created_at: POC_NOW, updated_at: POC_NOW, version: 1 }], definitions: [{ rule_definition_id: 'poc-rule-definition-1', version_id: qualityRuleSet.active_version_id, ordinal: 1, field_identifier: 'wafer_id', kind: 'NOT_NULL', severity: 'BLOCKING', parameters: {} }] })
+    if (path === '/quality/assets') {
+      if (!runtimeFlags().datahub) return { ...qualityList([], url) }
+      const result = await liveCatalog(new URLSearchParams({
+        q: url.searchParams.get('q') ?? '*',
+        limit: url.searchParams.get('limit') ?? '25',
+        ...(url.searchParams.get('schema') ? { schema: url.searchParams.get('schema')! } : {}),
+        ...(url.searchParams.get('cursor') ? { cursor: url.searchParams.get('cursor')! } : {}),
+      }), options.signal)
+      return {
+        items: result.items.map(qualityAssetFromCatalog),
+        page: result.page,
+        cache_scope: POC_CACHE_SCOPE,
+        ...authorizationWindow(),
+      }
+    }
+    const qualityWorkspace = path.match(/^\/quality\/assets\/([^/]+)\/workspace$/)
+    if (qualityWorkspace) {
+      const assetId = decodeURIComponent(qualityWorkspace[1] ?? '')
+      if (!runtimeFlags().datahub) throw new Error('DataHub가 설정되지 않았습니다.')
+      const detail = await gatewayRequest<CatalogAssetDetail>(
+        `/poc-api/datahub/asset?urn=${encodeURIComponent(assetId)}`, { signal: options.signal },
+      )
+      liveAssetDetails.set(assetId, detail)
+      const fields = detail.schema_fields.flatMap((field) => {
+        const fieldPath = field.fieldPath ?? field.field_path
+        if (typeof fieldPath !== 'string' || !fieldPath) return []
+        const nativeType = field.nativeDataType ?? field.native_data_type ?? field.type
+        return [{
+          field_identifier: fieldPath,
+          display_path: fieldPath,
+          logical_type: qualityLogicalType(nativeType),
+          supported_rule_kinds: [],
+          configured_rule_count: 0,
+          active_rule_count: 0,
+          evaluated_rule_count: 0,
+          passed_count: 0,
+          advisory_failed_count: 0,
+          blocking_failed_count: 0,
+          latest_score_basis_points: null,
+          latest_quality_outcome: null,
+          latest_evaluated_at: null,
+        }]
+      })
+      return qualityEnvelope({
+        asset: qualityAssetFromCatalog(detail),
+        rule_sets: [],
+        runs: [],
+        trend: [],
+        authoring: {
+          state: 'UNAVAILABLE',
+          reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED',
+          source_version: detail.source_version,
+          schema_hash: null,
+          fields: fields.map(({ configured_rule_count: _configured, active_rule_count: _active, evaluated_rule_count: _evaluated, passed_count: _passed, advisory_failed_count: _advisory, blocking_failed_count: _blocking, latest_score_basis_points: _score, latest_quality_outcome: _outcome, latest_evaluated_at: _at, ...field }) => {
+            void _configured; void _active; void _evaluated; void _passed; void _advisory; void _blocking; void _score; void _outcome; void _at
+            return field
+          }),
+        },
+        fields,
+        score_policy: scorePolicy,
+      })
+    }
+    if (/^\/quality\/assets\/[^/]+\/fields\/[^/]+\/workspace$/.test(path)) throw new Error('품질 제어 plane이 설정되지 않았습니다.')
+    if (/^\/quality\/assets\/[^/]+$/.test(path)) throw new Error('품질 제어 plane이 설정되지 않았습니다.')
+    if (path === '/quality/common-rule-templates') return { items: [], cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
+    if (path === '/quality/rule-sets') return qualityList([], url)
     if (path === '/quality/runs' && method === 'POST') {
       const runId = nextId('quality-run')
       if (runtimeFlags().airflow) {
@@ -1150,42 +1627,14 @@ class PocApiClient {
       }
       return { run_id: runId, state: 'QUEUED', created_at: new Date().toISOString(), replayed: false }
     }
-    if (path === '/quality/runs') return qualityList([qualityRun], url)
-    if (/^\/quality\/runs\/[^/]+\/results$/.test(path)) return qualityList([{ result_id: 'poc-result-1', rule_definition_id: 'poc-rule-definition-1', field_identifier: 'wafer_id', kind: 'NOT_NULL', severity: 'BLOCKING', outcome: 'PASS', evaluated_count: 80, missing_count: 0, unexpected_count: 0, missing_ratio: 0, unexpected_ratio: 0, duration_ms: 12, occurred_at: POC_NOW }], url)
-    if (/^\/quality\/runs\/[^/]+$/.test(path)) return qualityEnvelope(qualityRun)
-    if (path === '/quality/issues') return qualityList([{ issue_id: 'poc-issue-1', asset_id: qualityAsset.asset_id, asset_name: qualityAsset.name, field_identifier: 'defect_code', kind: 'NOT_NULL', severity: 'ADVISORY', outcome: 'ADVISORY_FAIL', occurrence_count: 1, last_observed_at: POC_NOW }], url)
+    if (path === '/quality/runs') return qualityList([], url)
+    if (/^\/quality\/runs\/[^/]+\/results$/.test(path)) return qualityList([], url)
+    if (path === '/quality/issues') return qualityList([], url)
 
-    if (path === '/knowledge/graphs') return [knowledgeGraph]
-    if (path === '/knowledge/registry/assets') return { items: [knowledgeAsset], next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) }
-    if (path === `/knowledge/registry/assets/${knowledgeAsset.id}/detail`) return knowledgeDetail
-    if (path === `/knowledge/registry/assets/${knowledgeAsset.id}/versions`) return { items: [{ id: knowledgeRelease.id, kind: 'INSTANCE_RELEASE', version_label: 'Release 1', title: 'Initial sample release', status: 'PUBLISHED', author_id: POC_SUBJECT_ID, author_name: 'POC Sample User', author_email: 'sample.user@poc.invalid', reviewed_by: POC_SUBJECT_ID, reviewer_name: 'POC Sample User', reviewer_email: 'sample.user@poc.invalid', published_by: POC_SUBJECT_ID, publisher_name: 'POC Sample User', publisher_email: 'sample.user@poc.invalid', created_at: POC_NOW, is_current: true, studio_release_id: knowledgeAsset.active_studio_release_id, instance_release_id: knowledgeRelease.id, changeset_id: null, content_hash: knowledgeRelease.content_hash, node_count: 3, edge_count: 2 }], next_cursor: null, limit: 50 }
-    if (path === `/knowledge/graphs/${knowledgeAsset.id}/releases`) return [knowledgeRelease]
-    if (path === `/knowledge/graphs/${knowledgeAsset.id}/releases/${knowledgeRelease.id}/snapshot`) {
-      if (!runtimeFlags().neo4j) return knowledgeSnapshot
-      const graph = await gatewayRequest<{
-        nodes: Array<{ id: string; name: string; entity_type: string }>
-        edges: Array<{ id: string; source_id: string; target_id: string; edge_type: string }>
-      }>('/poc-api/neo4j/graph', { signal: options.signal })
-      const provenance = knowledgeSnapshot.nodes[0]?.provenance ?? []
-      return {
-        release: { ...knowledgeRelease, node_count: graph.nodes.length, edge_count: graph.edges.length },
-        nodes: graph.nodes.map((node) => ({
-          id: node.id,
-          entity_type: node.entity_type,
-          properties: { name: node.name },
-          classification: 1,
-          provenance,
-        })),
-        edges: graph.edges.map((edge) => ({
-          ...edge,
-          properties: {},
-          classification: 1,
-          provenance,
-        })),
-        filtered: false,
-      }
-    }
-    if (/^\/knowledge\/graphs\/[^/]+\/releases$/.test(path)) return [knowledgeRelease]
+    if (path === '/knowledge/graphs') return []
+    if (path === '/knowledge/registry/assets') return { items: [], next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) }
+    if (/^\/knowledge\/registry\/assets\/[^/]+\/(detail|versions)$/.test(path)) throw new Error('등록된 지식 자산이 없습니다.')
+    if (/^\/knowledge\/graphs\/[^/]+\/releases(\/[^/]+\/snapshot)?$/.test(path)) throw new Error('등록된 지식 그래프 릴리스가 없습니다.')
     if (/^\/knowledge\/graphs\/[^/]+\/changesets$/.test(path)) return []
 
     if (path === '/governance/documents/capability') {
@@ -1199,8 +1648,7 @@ class PocApiClient {
         limits: { max_html_bytes: 1_000_000, max_attachment_bytes: 10_000_000, max_attachments_per_version: 25 },
       }
     }
-    if (path === '/governance/documents') return { items: [governanceDocument], page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 100) }, cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
-    if (path === `/governance/documents/${governanceDocument.document_id}`) return { item: { document: governanceDocument, versions: [governanceVersion], reviews: [], attachments: [], parent_document: null, child_documents: [] }, cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
+    if (path === '/governance/documents') return { items: [], page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 100) }, cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
     if (path === '/admin/profile-role-policy') return { policy_version: 'PROFILE_ROLE_POLICY_V1', items: [{ tier: 'ENGINEER_STEWARD', label: 'Engineer / Steward', description: '담당 System 범위의 등록·수정·검토', allowed_actions: ['change.read', 'change.create', 'change.edit', 'change.review'], services: [{ service_key: 'change', service_label: '변경관리', action_labels: ['조회', '등록', '수정', '검토'] }], assignable_to_system: true, lifecycle_note: '취소·이력 보존' }] }
     if (path === '/admin/system-configuration') return {
       items: systemConfigurationItems(),
@@ -1235,7 +1683,7 @@ class PocApiClient {
       const lastName = responseString(body.last_name, '')
       const displayName = `${firstName} ${lastName}`.trim() || responseString(body.username, 'POC User')
       const member: WorkspaceMembershipSummary = {
-        ...sampleAdminMembership(),
+        ...pocAdminMembership(),
         subject_id: subjectId,
         display_name: displayName,
         email: responseString(body.email, ''),
@@ -1286,7 +1734,7 @@ class PocApiClient {
     const favoriteMatch = path.match(/^\/chat\/sessions\/([^/]+)\/favorite$/)
     if (favoriteMatch && method === 'PATCH') {
       const session = chatSessions.find((item) => item.id === favoriteMatch[1])
-      if (!session) return initialChatSession
+      if (!session) throw new Error('Chat 세션을 찾을 수 없습니다.')
       session.is_favorite = Boolean(jsonBody(options).is_favorite)
       session.version += 1
       session.updated_at = new Date().toISOString()
@@ -1302,11 +1750,11 @@ class PocApiClient {
     if (path === '/api-products') return []
     if (/^\/api-products\/[^/]+\/grants$/.test(path)) return []
     if (path === '/admin/workspace-memberships/me/summary') return {
-      subject_id: POC_SUBJECT_ID, display_name: 'POC Sample User', email: 'sample.user@poc.invalid',
-      last_login_at: null, last_login_ip: null, owned_table_count: 3, change_request_count: 1,
+      subject_id: POC_SUBJECT_ID, display_name: 'POC User', email: 'poc.user@local',
+      last_login_at: null, last_login_ip: null, owned_table_count: 0, change_request_count: changeRecords.length,
       joined_at: POC_NOW, access_expires_at: null, renewal_eligible_at: null, access_expired: false,
       renewal_request_eligible: false, pending_renewal_request_id: null, subject_active: true,
-      membership_active: true, department_id: null, job_function: 'POC_SAMPLE', clearance: 'INTERNAL',
+      membership_active: true, department_id: null, job_function: 'POC', clearance: 'INTERNAL',
       membership_version: 1, effective_profile_role: 'ENGINEER_STEWARD',
     }
     if (path === '/admin/membership-renewals/me') return { items: [] }
@@ -1337,10 +1785,13 @@ export function useStableApiClient(
 }
 
 export function resetPocMemory(): void {
-  changeRecords = [changeRecord()]
-  chatSessions = [{ ...initialChatSession }]
+  changeRecords = []
+  chatSessions = []
   uploadRecords = []
-  adminMemberships = [sampleAdminMembership()]
+  manualSubmissionReports = []
+  adminMemberships = [pocAdminMembership()]
   chatMessages.clear()
-  chatMessages.set(initialChatSession.id, initialChatMessages.map((item) => ({ ...item })))
+  changeAttachmentUploads.clear()
+  changeAttachments.clear()
+  liveAssetDetails.clear()
 }

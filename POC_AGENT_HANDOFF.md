@@ -74,6 +74,31 @@ an anonymous live DataRiver API, a fixed production Subject, a JWT/ABAC/RLS bypa
 GraphQL/Cypher/DAG/provider proxying, internet publication, or use of real customer data. Canonical
 workflow/control-plane state remains simulated unless a separately approved system owns it.
 
+### 2026-08-11 original-UI and live-metadata amendment
+
+The user later explicitly superseded the synthetic walkthrough presentation requirements:
+
+- Preserve the original page composition, feature placement, and interaction process. Do not
+  replace pages with a simplified POC design.
+- Remove the full-width POC banner and show only a compact `[poc]` badge at the far right of the
+  original top navigation.
+- Do not show bundled catalog, dashboard, quality, Chat, Knowledge, governance-document, or Neo4j
+  sample records. When DataHub is configured, catalog-derived screens use its live metadata; when
+  it is not configured, they show an honest empty/unavailable state.
+- The live gateway may read the complete bounded DataHub scroll inventory and may call the fixed
+  Airflow, MinIO, LLM, Neo4j, and Grafana contracts. Credentials remain server-side.
+- The original change-request process may be exercised as browser-memory POC state, including
+  review, changes requested, immutable resubmission, test evidence, final approval, rejection and
+  completion. It is not durable or multi-identity production approval evidence.
+- PostgreSQL and Valkey are not standalone substitutes for the production API, workers, identity,
+  ABAC/RLS and migration contract. Do not add or claim those services merely to make the anonymous
+  gateway look production-equivalent.
+
+The exact current feature and provider boundary is recorded in
+`docs/POC_FUNCTIONAL_PARITY.md`. This amendment supersedes the earlier banner, sample-data and
+single-static-request acceptance bullets where they conflict; the isolation, no-auth production
+backend prohibition, credential boundary and honest-evidence rules remain authoritative.
+
 The original `06111` web SPA initializes OIDC/PKCE and browser Web Crypto. A private-IP HTTP origin
 is not a secure context, so `Crypto.subtle` is unavailable. `DEVELOPMENT_ADMIN_PASSWORD_BYPASS_ENABLED`
 is not a login, PKCE or Keycloak-origin bypass. Removing Keycloak from the existing Compose file or
