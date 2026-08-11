@@ -5,6 +5,7 @@ import { after, before, test } from 'node:test'
 
 const requests = []
 const objects = new Map()
+let forcedClassifierResponse
 let providerServer
 let pocServer
 let pocOrigin
@@ -37,7 +38,7 @@ function providerHandler(request, response) {
       const systemPrompt = payload.messages?.[0]?.content || ''
       if (systemPrompt.includes('Classify the user question')) {
         const question = payload.messages?.[1]?.content || ''
-        return sendJson(response, { choices: [{ message: { content: /lineage|upstream/i.test(question) ? 'GRAPH' : 'VECTOR' } }] })
+        return sendJson(response, { choices: [{ message: { content: forcedClassifierResponse ?? (/lineage|upstream/i.test(question) ? 'GRAPH' : 'VECTOR') } }] })
       }
       return sendJson(response, { choices: [{ message: { content: 'Live provider answer [1]' } }] })
     }
@@ -125,12 +126,25 @@ function providerHandler(request, response) {
           glossaryTerms: { terms: [] },
           schemaMetadata: { fields: [
             {
-              fieldPath: 'wafer_id', nativeDataType: 'VARCHAR', description: 'Wafer ID',
+              fieldPath: 'wafer_id', nativeDataType: 'VARCHAR', description: 'Base wafer ID',
               globalTags: { tags: [{ tag: { urn: 'urn:li:tag:identifier', name: 'identifier' } }] },
               glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:waferId', name: 'Wafer ID' } }] },
+              schemaFieldEntity: {
+                globalTags: { tags: [{ tag: { urn: 'urn:li:tag:primary-key', name: 'primary-key' } }] },
+                glossaryTerms: { terms: [] },
+              },
             },
             { fieldPath: 'observed_at', nativeDataType: 'TIMESTAMP', description: 'Observed timestamp' },
           ] },
+          editableSchemaMetadata: { editableSchemaFieldInfo: [{
+            fieldPath: 'wafer_id', description: 'Curated wafer identifier',
+            globalTags: { tags: [{ tag: { urn: 'urn:li:tag:curated', name: 'curated' } }] },
+            glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:identifier', name: 'Identifier' } }] },
+          }] },
+          latestFullTableProfile: [{
+            rowCount: 4200, columnCount: 2, sizeInBytes: 8192, timestampMillis: 1_700_000_000_000,
+            partitionSpec: { type: 'FULL_TABLE', partition: 'FULL_TABLE_SNAPSHOT' },
+          }],
         } } })
       }
       const relationships = payload.variables?.input?.direction === 'UPSTREAM'
@@ -229,9 +243,13 @@ test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
   assert.equal(detail.database_name, 'MANUFACTURING')
   assert.equal(detail.schema_name, 'QUALITY')
   assert.equal(detail.schema_fields[0].fieldPath, 'wafer_id')
+  assert.equal(detail.schema_fields[0].description, 'Curated wafer identifier')
   assert.equal(detail.schema_fields[0].globalTags.tags[0].tag.name, 'identifier')
+  assert.deepEqual(detail.schema_fields[0].globalTags.tags.map((item) => item.tag.name), ['identifier', 'primary-key', 'curated'])
   assert.equal(detail.schema_fields[0].glossaryTerms.terms[0].term.name, 'Wafer ID')
-  assert.deepEqual(detail.quality, {})
+  assert.deepEqual(detail.schema_fields[0].glossaryTerms.terms.map((item) => item.term.name), ['Wafer ID', 'Identifier'])
+  assert.equal(detail.quality.rowCount, 4200)
+  assert.equal(detail.quality.sizeInBytes, 8192)
   const secondFieldPage = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}&field_offset=1&field_limit=1`)).json()
   assert.equal(secondFieldPage.schema_fields[0].fieldPath, 'observed_at')
   assert.equal(secondFieldPage.schema_fields_offset, 1)
@@ -288,6 +306,26 @@ test('routes lineage questions through bounded DataHub and Neo4j graph evidence'
   assert.ok(payload.evidence.some((item) => item.evidence_type === 'KNOWLEDGE_GRAPH'))
 })
 
+test('bypasses the classifier for explicit Chat routes and fails malformed AUTO routes closed', async () => {
+  const before = requests.filter((request) => request.path.endsWith('/chat/completions')).length
+  const explicit = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'Explain governance in general', mode: 'GENERAL' }),
+  })
+  assert.equal(explicit.status, 200)
+  assert.equal((await explicit.json()).route.selected_mode, 'GENERAL')
+  assert.equal(requests.filter((request) => request.path.endsWith('/chat/completions')).length, before + 1)
+
+  forcedClassifierResponse = 'VECTOR because metadata'
+  const malformed = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'Find table metadata', mode: 'AUTO' }),
+  })
+  forcedClassifierResponse = undefined
+  assert.equal(malformed.status, 503)
+  assert.match((await malformed.json()).detail, /bounded classifier failed/)
+})
+
 test('triggers only the fixed Airflow DAG and proxies a bounded MinIO upload', async () => {
   const dag = await fetch(`${pocOrigin}/poc-api/airflow/dags/datariver_quality_dispatch/runs`, {
     method: 'POST',
@@ -309,6 +347,9 @@ test('triggers only the fixed Airflow DAG and proxies a bounded MinIO upload', a
   })
   assert.equal(complete.status, 200)
   assert.equal((await complete.json()).size_bytes, 13)
+  const download = await fetch(`${pocOrigin}/poc-api/minio/accepted/upload-1/sample.txt`)
+  assert.equal(download.status, 200)
+  assert.equal(await download.text(), 'sample-object')
   const invalid = await fetch(`${pocOrigin}/poc-api/minio/uploads/upload-1/complete`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

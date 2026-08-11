@@ -105,6 +105,7 @@ export function CatalogPage({
   const [suggestionIndex, setSuggestionIndex] = useState(-1)
   const [filtersOpen, setFiltersOpen] = useState(false)
   const [selectedAssetId, setSelectedAssetId] = useState<string>()
+  const [focusedAssetId, setFocusedAssetId] = useState<string>()
   const [detailWidth, setDetailWidth] = useState(550)
   const [cursors, setCursors] = useState<Array<string | undefined>>([undefined])
   const [pageIndex, setPageIndex] = useState(0)
@@ -306,12 +307,32 @@ export function CatalogPage({
     setPageIndex(0)
     setPageSize(50)
     setSelectedAssetId(undefined)
+    setFocusedAssetId(undefined)
     setError(undefined)
     onQueryChange?.('')
   }
 
   const selectAsset = (assetId: string) => {
+    setFocusedAssetId(assetId)
     setSelectedAssetId(assetId)
+  }
+
+  const focusTreeAsset = (assetId: string, asset?: CatalogAsset) => {
+    const target = asset ?? result?.items.find((item) => item.id === assetId)
+    setFocusedAssetId(assetId)
+    setSelectedAssetId(undefined)
+    setCursors([undefined])
+    setPageIndex(0)
+    if (!target) return
+    setDraftQuery(target.name)
+    setQuery(target.name)
+    setFilters({
+      ...emptyFilters,
+      platform: target.platform ?? '',
+      databaseName: target.database_name ?? '',
+      schemaName: target.schema_name ?? '',
+    })
+    onQueryChange?.(target.name)
   }
 
   const closeSelectedAsset = () => {
@@ -328,7 +349,7 @@ export function CatalogPage({
     filters.classification,
     filters.lifecycle,
   ].filter(Boolean).length + (filters.searchFields.length === allSearchFields.length ? 0 : 1)
-  const canReset = activeFilterCount > 0 || Boolean(draftQuery || query || selectedAssetId) || pageIndex > 0 || pageSize !== 50
+  const canReset = activeFilterCount > 0 || Boolean(draftQuery || query || selectedAssetId || focusedAssetId) || pageIndex > 0 || pageSize !== 50
 
   const paginationProps = {
     page: pageIndex + 1,
@@ -405,10 +426,10 @@ export function CatalogPage({
       ref={workspaceRef}
       aria-busy={loading}
     >
-      <CatalogResourceTree client={client} selectedAssetId={selectedAssetId} onSelectAsset={selectAsset} />
+      <CatalogResourceTree client={client} selectedAssetId={focusedAssetId} onSelectAsset={focusTreeAsset} />
       <section className="catalog-results" aria-label="카탈로그 검색 결과">
         <header><div><span className="eyebrow">Permission scoped</span><h2>Search Results</h2><span>{result ? (result.total_exact ? `${result.total.toLocaleString()} items` : `현재 ${result.items.length.toLocaleString()}건${result.page.next_cursor ? ' · 더 있음' : ''}`) : '0 items'} · ALL keywords · ↔ 좌우 스크롤</span></div><CursorPagination {...paginationProps} label="Search Results 상단 페이지 탐색" /></header>
-        <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={selectedAssetId} onRowActivate={(item) => selectAsset(item.id)} />
+        <DenseDataTable caption="카탈로그 검색 결과" columns={columns} data={result?.items ?? []} getRowId={(item) => item.id} loading={loading} emptyMessage={query ? '검색 조건에 맞는 허용 자산이 없습니다.' : '현재 권한 범위에서 표시할 자산이 없습니다.'} selectedRowId={focusedAssetId} onRowActivate={(item) => selectAsset(item.id)} />
         <p className="catalog-local-table-note">열 정렬은 현재 로드된 {result?.items.length.toLocaleString() ?? 0}건에 적용됩니다.</p>
         <CursorPagination {...paginationProps} />
         {result && <footer className="catalog-result-meta"><span>projection v{result.meta.projection_version}</span><span>policy {result.meta.policy_version}</span><time dateTime={result.meta.observed_at ?? undefined}>{result.meta.observed_at ? new Date(result.meta.observed_at).toLocaleString() : '관측 시각 없음'}</time></footer>}

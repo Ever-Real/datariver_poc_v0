@@ -1,7 +1,7 @@
 export type AdminMessageKey =
   | 'eyebrow' | 'title' | 'refresh' | 'memberships' | 'systems' | 'systemSettings' | 'roles' | 'fallback' | 'retention' | 'holds' | 'erasure'
   | 'classification' | 'providers' | 'restrictedGrants'
-  | 'auditLogs' | 'metadataLogs' | 'securityLogs' | 'dictionary'
+  | 'auditLogs' | 'metadataLogs' | 'securityLogs' | 'dictionary' | 'featurePermissions'
   | 'adminContext' | 'currentAssurance' | 'fallbackState' | 'enabled' | 'disabled'
   | 'members' | 'selectMember' | 'active' | 'clearance' | 'groups'
   | 'allowedActions' | 'deniedActions' | 'systemScopes' | 'domainScopes' | 'directUpdate'
@@ -28,7 +28,7 @@ const ko: AdminMessages = {
   eyebrow: 'Governed administration', title: '관리자 및 데이터 거버넌스', refresh: '새로고침',
   memberships: '계정/권한', systems: 'SYSTEMS · 시스템', systemSettings: '시스템 설정', roles: '간편 Role', fallback: '비밀번호 예외 승인', retention: '보존·파기 거버넌스', holds: 'Legal Hold', erasure: '파기 검토',
   classification: '데이터 분류 접근', providers: 'AI Provider 승인', restrictedGrants: 'RESTRICTED 예외 승인',
-  auditLogs: 'Audit/Log 조회', metadataLogs: '메타데이터 변경 로그', securityLogs: '시스템 보안 로그', dictionary: '용어사전',
+  auditLogs: 'Audit/Log 조회', metadataLogs: '메타데이터 변경 로그', securityLogs: '시스템 보안 로그', dictionary: '용어사전', featurePermissions: '기능별 권한',
   adminContext: '현재 관리자 컨텍스트', currentAssurance: '인증 보증', fallbackState: '비밀번호 예외 경로',
   enabled: '활성', disabled: '비활성', members: '워크스페이스 멤버', selectMember: '편집할 멤버를 선택하세요.',
   active: '멤버십 활성', clearance: '허용 등급', groups: '그룹',
@@ -71,7 +71,7 @@ const en: AdminMessages = {
   eyebrow: 'Governed administration', title: 'Administration and data governance', refresh: 'Refresh',
   memberships: 'Accounts & access', systems: 'Systems', systemSettings: 'System settings', roles: 'Quick roles', fallback: 'Password exception approvals', retention: 'Retention & erasure governance', holds: 'Legal Hold', erasure: 'Erasure review',
   classification: 'Data classification access', providers: 'AI provider approvals', restrictedGrants: 'RESTRICTED exception approvals',
-  auditLogs: 'Audit/Log review', metadataLogs: 'Metadata change log', securityLogs: 'System security log', dictionary: 'Terminology dictionary',
+  auditLogs: 'Audit/Log review', metadataLogs: 'Metadata change log', securityLogs: 'System security log', dictionary: 'Terminology dictionary', featurePermissions: 'Feature access',
   adminContext: 'Current administrator context', currentAssurance: 'Authentication assurance',
   fallbackState: 'Password fallback', enabled: 'Enabled', disabled: 'Disabled', members: 'Workspace members',
   selectMember: 'Select a member to edit.', active: 'Membership active',

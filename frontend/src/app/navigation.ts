@@ -19,6 +19,7 @@ export type Page =
   | 'knowledge-instances'
   | 'knowledge-profiles'
   | 'knowledge-studio'
+  | 'glossary'
   | 'profile'
 
 const pageIds = new Set<Page>([
@@ -30,6 +31,7 @@ const pageIds = new Set<Page>([
   'knowledge-instances',
   'knowledge-profiles',
   'knowledge-studio',
+  'glossary',
   'profile',
 ])
 

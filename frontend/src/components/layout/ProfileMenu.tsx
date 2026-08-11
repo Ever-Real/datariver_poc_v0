@@ -24,6 +24,7 @@ function adminIcon(id: string) {
 }
 
 interface ProfileMenuProps {
+  pocMode?: boolean
   displayName: string
   email?: string
   workspace: string
@@ -41,6 +42,7 @@ interface ProfileMenuProps {
 }
 
 export function ProfileMenu({
+  pocMode = false,
   displayName,
   email,
   workspace,
@@ -143,8 +145,8 @@ export function ProfileMenu({
             </section>
           )}
           {adminMenuItems.length > 0 && (
-            <section className="legacy-admin-items" aria-label="Administration">
-              <p>Administration</p>
+            <section className="legacy-admin-items" aria-label={pocMode ? 'POC USER' : 'Administration'}>
+              <p>{pocMode ? 'POC USER' : 'Administration'}</p>
               {adminMenuItems.map((item) => (
                 <button key={item.id} type="button" role="menuitem" onClick={() => perform(() => onAdmin(item.id))}>
                   {adminIcon(item.id)}<span>{item.label}</span>

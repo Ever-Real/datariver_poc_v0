@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Box, ChevronDown, ChevronRight, Database, Layers3, Table2 } from 'lucide-react'
 import type { ApiClient } from '../../api/client'
-import type { CatalogSearch, CatalogTreeNode, CatalogTreePage } from '../../api/types'
+import type { CatalogAsset, CatalogSearch, CatalogTreeNode, CatalogTreePage } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { CursorPagination } from '../../components/common/CursorPagination'
 import { TruncatedText } from '../../components/common/TruncatedText'
@@ -79,7 +79,7 @@ export function CatalogResourceTree({
 }: {
   client: ApiClient
   selectedAssetId?: string
-  onSelectAsset: (assetId: string) => void
+  onSelectAsset: (assetId: string, asset?: CatalogAsset) => void
   searchable?: boolean
   searchIdPrefix?: string
   searchLabel?: string
@@ -208,7 +208,7 @@ export function CatalogResourceTree({
   }, [branches.ROOT])
 
   const toggle = (node: CatalogTreeNode) => {
-    if (node.kind === 'ASSET') { if (node.asset) onSelectAsset(node.asset.id); return }
+    if (node.kind === 'ASSET') { if (node.asset) onSelectAsset(node.asset.id, node.asset); return }
     const key = branchKey(node)
     const isExpanded = expanded.has(key)
     if (isExpanded) {
@@ -308,7 +308,7 @@ export function CatalogResourceTree({
           key={asset.id}
           type="button"
           className={asset.id === selectedAssetId ? 'selected' : ''}
-          onClick={() => onSelectAsset(asset.id)}
+          onClick={() => onSelectAsset(asset.id, asset)}
         >
           <Table2 size={13} aria-hidden="true" />
           <span><TruncatedText value={asset.name} /><small>{[asset.platform, asset.database_name, asset.schema_name].filter(Boolean).join(' · ') || '위치 정보 없음'}</small></span>

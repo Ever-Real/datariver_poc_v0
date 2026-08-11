@@ -1,4 +1,4 @@
-import { Fragment, useState, type KeyboardEvent, type ReactNode } from 'react'
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import {
   flexRender,
   getCoreRowModel,
@@ -40,6 +40,7 @@ export function DenseDataTable<T>({
   renderExpandedRow,
 }: DenseDataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
+  const rowElements = useRef(new Map<string, HTMLTableRowElement>())
   // TanStack Table intentionally exposes stateful callbacks that React Compiler does not memoize.
   // eslint-disable-next-line react-hooks/incompatible-library
   const table = useReactTable({
@@ -56,6 +57,11 @@ export function DenseDataTable<T>({
     if (!onRowActivate || (event.key !== 'Enter' && event.key !== ' ')) return
     event.preventDefault(); onRowActivate(row)
   }
+
+  useEffect(() => {
+    if (!selectedRowId) return
+    rowElements.current.get(selectedRowId)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' })
+  }, [data, selectedRowId])
 
   return (
     <div className="dense-table-frame" aria-busy={loading} aria-label={`${caption} 스크롤 영역`} tabIndex={0}>
@@ -110,6 +116,10 @@ export function DenseDataTable<T>({
           {!loading && table.getRowModel().rows.map((row) => (
             <Fragment key={row.id}>
               <tr
+                ref={(element) => {
+                  if (element) rowElements.current.set(row.id, element)
+                  else rowElements.current.delete(row.id)
+                }}
                 className={`${selectedRowId === row.id ? 'selected' : ''} ${onRowActivate ? 'interactive' : ''}`.trim()}
                 aria-selected={selectedRowId === row.id || undefined}
                 aria-expanded={renderExpandedRow ? expandedRowId === row.id : undefined}

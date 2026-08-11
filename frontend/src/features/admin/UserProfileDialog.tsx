@@ -81,6 +81,7 @@ export function UserProfileDialog({
   const [passwordResetComplete, setPasswordResetComplete] = useState(false)
   const loadGeneration = useRef(0)
   const operations = new Set(context?.allowed_operations ?? [])
+  const pocOpenAccess = context?.action_vocabulary.includes('POC_OPEN_ACCESS_V1') ?? false
   const canReadIdentity = operations.has('IDENTITY_USER_PROFILE_READ')
   const canUpdateIdentity = operations.has('IDENTITY_USER_PROFILE_UPDATE')
   const canResetPassword = operations.has('IDENTITY_USER_PASSWORD_RESET')
@@ -295,7 +296,7 @@ export function UserProfileDialog({
     size="large"
     compactHeight
     title="사용자 프로필 수정"
-    description="사용자 정보, 데이터·화면 접근 Role, 실제 업무 활동과 인증 복구를 한 곳에서 관리합니다."
+    description={pocOpenAccess ? 'POC 사용자 정보, 향후 적용할 접근 Role과 실제 업무 활동을 관리합니다.' : '사용자 정보, 데이터·화면 접근 Role, 실제 업무 활동과 인증 복구를 한 곳에서 관리합니다.'}
     onRequestClose={onRequestClose}
     footer={<button type="button" className="button button-secondary" onClick={onRequestClose}>닫기</button>}
   >
@@ -307,7 +308,7 @@ export function UserProfileDialog({
         <div><span className="eyebrow">상태</span><strong className="mt-1 block text-sm">{member.membership_active ? 'ACTIVE' : 'INACTIVE'} · {member.clearance}</strong></div>
       </div>
       <div className="flex flex-wrap gap-1 border-b border-slate-300" role="tablist" aria-label="사용자 프로필 관리">
-        {PROFILE_TABS.map((tab) => <button
+        {PROFILE_TABS.filter((tab) => !pocOpenAccess || tab.id !== 'security').map((tab) => <button
           key={tab.id}
           type="button"
           role="tab"

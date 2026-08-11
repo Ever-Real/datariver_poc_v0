@@ -61,6 +61,9 @@ export function TopNavigation({
     || page === 'knowledge-studio'
     ? 'knowledge'
     : page
+  const navigationItems = pocMode
+    ? primaryNavigation.filter(({ id }) => id !== 'registration' && id !== 'knowledge')
+    : primaryNavigation
 
   return (
     <header className="top-navigation">
@@ -71,7 +74,7 @@ export function TopNavigation({
       <nav className="primary-navigation" aria-label="주 메뉴">
         <button className="navigation-scroll navigation-scroll-left" type="button" aria-label="이전 메뉴" onClick={() => navigation?.scrollBy({ left: -240, behavior: 'smooth' })}><ChevronLeft size={14} /></button>
         <div className="primary-navigation-track" ref={setNavigation}>
-        {primaryNavigation.map(({ id, label, badge }) => (
+        {navigationItems.map(({ id, label, badge }) => (
           <button
             type="button"
             key={id}
@@ -94,6 +97,7 @@ export function TopNavigation({
       <ExternalSystemLinks links={externalSystemLinks} />
       <div className="top-navigation-profile-slot">
         <ProfileMenu
+          pocMode={pocMode}
           displayName={displayName}
           workspace={workspace}
           workspaceSelectionEnabled={workspaceSelectionEnabled}

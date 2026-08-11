@@ -25,12 +25,15 @@ Cypher, DAG ID 또는 S3 bucket을 browser가 전달할 수 없습니다.
 | Quality Run 실행 요청 | Airflow | 고정 `datariver_quality_dispatch` DAG만 trigger |
 | Chat | DataHub + Embedding + Reranker + Chat | DataHub 근거를 고정 pipeline으로 전달 |
 | Knowledge graph snapshot | 함께 실행되는 Neo4j | live 조회만 수행하며 sample graph를 seed하지 않음 |
-| 변경관리 POC 상태 | browser memory | 사용자가 만든 CR 흐름만 보관하며 새로고침하면 초기화 |
-| 거버넌스·품질 control-plane 상태 | 별도 정본 서비스 필요 | fixture 대신 빈 상태 또는 unavailable 표시 |
+| 사용자·System·변경관리 POC 상태 | POC PostgreSQL | 사용자가 만든 항목만 versioned JSONB로 보관 |
+| 거버넌스 문서·Knowledge Studio 상태 | POC PostgreSQL | 사용자가 만든 Draft·검토·발행 기록만 보관; seed 없음 |
+| DataHub 반복 inventory/detail | POC Redis | 짧은 TTL cache; 장애 시 DataHub live 조회로 fallback |
+| 품질 control-plane 상태 | 별도 정본 서비스 필요 | fixture 대신 live DataHub 현황과 unavailable 축을 구분 |
 
-별도 PostgreSQL/Valkey/DataRiver API가 없으므로 변경관리 승인, 거버넌스 정본, 품질 결과
-보존은 실제 운영 처리로 주장하지 않습니다. Airflow DAG가 기존 DataRiver API를 요구한다면
-그 downstream 단계는 별도 시스템의 설정에 따라 실패할 수 있습니다.
+Compose의 pgvector PostgreSQL은 무인증 POC adapter 상태만 저장하며 운영 DataRiver schema나
+감사 정본이 아닙니다. Redis는 정확성 정본이 아니고 반복 DataHub 로딩 속도만 개선합니다.
+Airflow DAG가 기존 DataRiver API를 요구한다면 downstream 단계는 별도 시스템 설정에 따라
+실패할 수 있습니다.
 
 ## 최소 `.env`
 
@@ -49,6 +52,8 @@ Cypher, DAG ID 또는 S3 bucket을 browser가 전달할 수 없습니다.
   `/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank` 같은 단계별 전체 endpoint를 모두
   지원합니다.
 - Neo4j: `NEO4J_USERNAME`, `NEO4J_PASSWORD`; image/port는 기본값이 있어 보통 변경 불필요
+- POC 지원 컨테이너: `POC_POSTGRES_PASSWORD`를 반드시 변경합니다. 폐쇄망에서는 로컬에
+  적재된 tag를 `POC_PGVECTOR_IMAGE`, `POC_REDIS_IMAGE`, `NEO4J_IMAGE`에 정확히 지정합니다.
 
 Grafana iframe은 다음 네 값을 함께 설정합니다. `UI_GRAFANA_URL`은 실제 dashboard 전체
 링크이고 `GRAFANA_EMBED_BASE_URL`은 같은 dashboard의 scheme/host/port까지만 입력합니다.
@@ -78,8 +83,9 @@ npm run poc
 
 `npm run poc`는 POC build 후 정적 화면과 gateway를 한 프로세스로 실행합니다. 기본 URL은
 `http://<prep-ip>:39080/`입니다. 동등한 helper는 `./scripts/run_poc.sh npm`입니다. npm 단독
-모드는 Neo4j 컨테이너를 시작하지 않으므로 Neo4j live graph는 비활성화됩니다. 외부 provider
-연결을 포함한 Web+Neo4j 전체 묶음은 아래 Compose 명령을 사용합니다.
+모드는 Redis·pgvector·Neo4j 컨테이너를 시작하지 않습니다. 상태는 해당 Node 프로세스가
+살아 있는 동안만 유지되고 DataHub cache 없이 live 조회합니다. 지원 컨테이너를 포함한 전체
+묶음은 아래 Compose 명령을 사용합니다.
 
 ## Docker로 실행
 
@@ -92,8 +98,9 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
 ```
 
 또는 `./scripts/run_poc.sh docker`를 사용할 수 있습니다. 기본 Docker target은
-`linux/amd64`이고 Web/gateway와 Neo4j만 함께 실행합니다. DataHub·Airflow·MinIO·LLM은
-이 Compose가 생성하거나 변경하지 않습니다.
+`linux/amd64`이고 Web/gateway, Redis, pgvector PostgreSQL, Neo4j를 함께 실행합니다.
+DataHub·Airflow·MinIO·LLM은 이 Compose가 생성하거나 변경하지 않습니다. 네 지원 서비스는
+host port를 공개하지 않고 전용 Compose network에서만 연결됩니다.
 
 ```bash
 ./scripts/run_poc.sh status
@@ -101,7 +108,7 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
 ./scripts/run_poc.sh stop
 ```
 
-`stop`은 컨테이너와 network만 중지하며 Neo4j named volume은 삭제하지 않습니다.
+`stop`은 컨테이너와 network만 중지하며 Neo4j·pgvector named volume은 삭제하지 않습니다.
 
 ### Git pull만 가능한 Prep PC의 프록시 Dockerfile
 
@@ -144,7 +151,7 @@ diff -u deploy/poc/Dockerfile.example deploy/poc/Dockerfile.local || true
 ## 주장하지 않는 것
 
 - 실제 사용자 인증, Workspace ABAC/RLS 또는 다중 사용자 격리
-- PostgreSQL canonical state, durable audit, migration, backup 또는 rollback 증거
+- POC PostgreSQL을 운영 canonical state, durable audit, 정식 migration/backup/rollback으로 보는 주장
 - 외부 provider의 운영 SLA·권한 적정성·데이터 정합성
 - Airflow DAG downstream DataRiver API 성공
 - production TLS, 인터넷 공개, availability, performance, recovery 또는 security acceptance

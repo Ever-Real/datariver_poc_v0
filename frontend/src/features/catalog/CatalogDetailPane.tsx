@@ -96,6 +96,7 @@ export function CatalogDetailPane({
   const [toastVisible, setToastVisible] = useState(false)
   const [fieldOffset, setFieldOffset] = useState(0)
   const copyFeedbackTimer = useRef<number | undefined>(undefined)
+  const panelRef = useRef<HTMLElement>(null)
   const pagedAssetId = useRef(assetId)
   const fieldSourceVersion = useRef<string | undefined>(undefined)
 
@@ -134,10 +135,8 @@ export function CatalogDetailPane({
   useEffect(() => {
     if (!asOverlay) return
     const handleClickOutside = (event: MouseEvent) => {
-      // panel 외부 영역 클릭 시 닫기
-      const target = event.target as Node
-      const panel = document.querySelector('.catalog-detail.panel')
-      if (panel && !panel.contains(target)) {
+      const target = event.target
+      if (target instanceof Node && !panelRef.current?.contains(target)) {
         onClose()
       }
     }
@@ -227,6 +226,7 @@ export function CatalogDetailPane({
         </div>
       )}
       <aside
+        ref={panelRef}
         className={`catalog-detail panel${asOverlay ? ' catalog-detail--overlay' : ''}${asModal ? ' catalog-detail--modal' : ''}`}
         aria-label="카탈로그 상세"
         style={{ width: width ? `${width}px` : undefined }}

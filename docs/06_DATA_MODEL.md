@@ -1013,6 +1013,15 @@ claimed.
 archives only minimal erasure approval/execution evidence and stops at
 `ARCHIVE_VERIFIED_DESTRUCTIVE_DISABLED`; automatic event/content deletion remains disabled.
 
+## Authentication-free POC state (isolated)
+
+ADR-0115 defines a separate Compose-only `poc_state` table with `scope text` as its primary key,
+`value jsonb`, an incrementing `version` and `updated_at`. It belongs only to
+`deploy/poc/docker-compose.poc.yaml`; it is not part of the canonical DataRiver ORM or Alembic
+history and production processes must not connect to it. The current `core` document contains
+POC-created users, Change Requests and System directory state. No DataHub asset or dummy business
+record is copied into this table. Redis holds only expiring DataHub response projections.
+
 ## Retention and deletion
 
 An approved database policy version distinguishes legal audit, Chat content, completed delivery

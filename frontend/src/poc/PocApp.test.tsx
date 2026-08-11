@@ -60,13 +60,11 @@ describe('POC compatibility application', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
-  it('preserves every original primary page and removes login-specific menu actions', async () => {
+  it('preserves primary pages, moves admin-oriented pages under POC USER, and removes login actions', async () => {
     renderPoc()
     const pages = [
-      ['등록관리', '데이터 등록'],
       ['변경관리', '변경 요청과 승인'],
       ['품질관리', '품질관리'],
-      ['지식관리', '지식관리'],
       ['모니터링', 'Infrastructure Monitoring'],
       ['거버넌스', '거버넌스'],
       ['Chat', '카탈로그 Chat'],
@@ -80,9 +78,15 @@ describe('POC compatibility application', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'POC User 사용자 메뉴' }))
     expect(screen.getByRole('menu', { name: '사용자 작업' })).toBeVisible()
+    expect(screen.getByText('POC USER')).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: '등록관리' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: '지식관리' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: '용어사전' })).toBeVisible()
     expect(screen.queryByRole('menuitem', { name: '나가기' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '내 프로필' })).not.toBeInTheDocument()
     expect(screen.queryByText(/WebAuthn 보안키 등록/)).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('menuitem', { name: '지식관리' }))
+    expect(await screen.findByRole('heading', { name: '지식관리' })).toBeVisible()
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
@@ -106,12 +110,16 @@ describe('POC compatibility application', () => {
 
     await waitFor(() => expect(window.location.search).toContain('page=admin'))
     expect(await screen.findByRole('heading', { name: /관리자 및 데이터 거버넌스|Administration and data governance/ })).toBeVisible()
+    expect(screen.queryByText('WebAuthn 보안키 인증이 필요합니다.')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '계정/권한' })).toBeVisible()
     expect(screen.getByRole('button', { name: '사용자 등록' })).toBeEnabled()
 
     fireEvent.click(screen.getByRole('tab', { name: /시스템 설정|System settings/ }))
     expect(await screen.findByRole('heading', { name: '시스템 설정' })).toBeVisible()
     expect(screen.getAllByText('DataHub GMS').length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('tab', { name: /기능별 권한|Feature access/ }))
+    expect(await screen.findByRole('table', { name: 'POC 기능별 권한 현황' })).toBeVisible()
+    expect(screen.getAllByText('OPEN').length).toBeGreaterThan(0)
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 })

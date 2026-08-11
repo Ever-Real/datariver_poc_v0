@@ -6,6 +6,7 @@ import type {
 } from '../api/client'
 import { sha256 } from 'hash-wasm'
 import type {
+  AdminOperation,
   CatalogAsset,
   CatalogAssetDetail,
   CatalogPolicyMeta,
@@ -23,6 +24,12 @@ import type {
   SystemConfigurationTestResult,
   WorkspaceMembershipSummary,
 } from '../api/types'
+import type {
+  GovernanceDocumentAttachment,
+  GovernanceDocumentReview,
+  GovernanceDocumentSummary,
+  GovernanceDocumentVersion,
+} from '../features/governance-documents/types'
 import {
   POC_CACHE_SCOPE,
   POC_NOW,
@@ -46,6 +53,7 @@ interface PocRuntimeFlags {
   llmEmbedding?: boolean
   llmReranker?: boolean
   neo4j?: boolean
+  pocState?: boolean
 }
 
 function runtimeFlags(): PocRuntimeFlags {
@@ -91,16 +99,178 @@ const managedIndicators = [
   { indicator_id: 'TIMELINESS', name: 'Timeliness', definition: '정해진 시점 내 관측', calculation: '현재 watermark와 기준 비교', target_grain: 'TABLE', rule_kinds: ['RANGE'] },
 ].map((item) => ({ ...item, contract_version: 'QUALITY_MANAGED_INDICATORS_V1' }))
 
+const pocAdminOperations: AdminOperation[] = [
+  'IDENTITY_USER_PROVISION', 'IDENTITY_USER_PROFILE_READ', 'IDENTITY_USER_PROFILE_UPDATE',
+  'MEMBERSHIP_ACCESS_READ', 'MEMBERSHIP_ACCESS_UPDATE',
+  'MEMBERSHIP_RENEWAL_READ', 'MEMBERSHIP_RENEWAL_DECIDE', 'SYSTEM_ASSIGNMENT_UPDATE',
+  'SYSTEM_CONFIGURATION_READ', 'SYSTEM_CONFIGURATION_UPDATE', 'SYSTEM_CONFIGURATION_ACTIVATE',
+  'MONITORING_CONFIGURATION_READ', 'MONITORING_CONFIGURATION_UPDATE',
+  'FALLBACK_REQUEST_READ', 'FALLBACK_REQUEST_CREATE', 'FALLBACK_REQUEST_DECIDE',
+  'FALLBACK_REQUEST_CONSUME', 'CLASSIFICATION_POLICY_READ', 'CLASSIFICATION_POLICY_PROPOSE',
+  'CLASSIFICATION_POLICY_DECIDE', 'INFERENCE_PROVIDER_PROFILE_READ',
+  'INFERENCE_PROVIDER_PROFILE_DECIDE', 'INFERENCE_PROVIDER_PROFILE_REVOKE',
+  'RESTRICTED_SEARCH_GRANT_READ', 'RESTRICTED_SEARCH_GRANT_PROPOSE',
+  'RESTRICTED_SEARCH_GRANT_DECIDE', 'RESTRICTED_SEARCH_GRANT_REVOKE',
+  'RETENTION_POLICY_READ', 'RETENTION_POLICY_MANAGE', 'LEGAL_HOLD_READ', 'LEGAL_HOLD_PLACE',
+  'LEGAL_HOLD_RELEASE', 'ERASURE_READ', 'ERASURE_REQUEST', 'ERASURE_APPROVE',
+]
+
 let sequence = 900
 let changeRecords: ChangeRequestRecord[] = []
 let chatSessions: ChatSession[] = []
 let uploadRecords: Array<Record<string, unknown>> = []
 let manualSubmissionReports: Array<Record<string, unknown>> = []
 let adminMemberships: WorkspaceMembershipSummary[] = [pocAdminMembership()]
+let adminSystems: Array<{
+  system_id: string
+  code: string
+  name: string
+  description: string
+  active: boolean
+  version: number
+}> = []
+const adminSystemAssignees = new Map<string, Array<{
+  subject_id: string
+  display_name: string
+  responsibility: 'DEVELOPER' | 'DATA_STEWARD'
+  priority: number
+  active: boolean
+}>>()
+const adminSystemSchemaScopes = new Map<string, Array<{
+  scope_id: string
+  system_id: string
+  platform: string
+  database_name: string
+  schema_name: string
+  active: boolean
+  version: number
+}>>()
+let knowledgeDomains: Array<Record<string, unknown>> = []
+let knowledgeDrafts: Array<Record<string, unknown>> = []
+let knowledgeReleases: Array<Record<string, unknown>> = []
+const knowledgeDraftBlocks = new Map<string, Array<Record<string, unknown>>>()
+const knowledgeDraftBindings = new Map<string, Array<Record<string, unknown>>>()
+let governanceDocuments: GovernanceDocumentSummary[] = []
+let governanceVersions: GovernanceDocumentVersion[] = []
+let governanceReviews: GovernanceDocumentReview[] = []
+let governanceAttachments: GovernanceDocumentAttachment[] = []
+const governanceAttachmentLocations = new Map<string, { upload_id: string; key: string }>()
 const chatMessages = new Map<string, ChatMessage[]>()
 const changeAttachmentUploads = new Map<string, ChangeRequestAttachmentUpload & { file: File }>()
 const changeAttachments = new Map<string, Array<ChangeRequestAttachment & { file: File }>>()
 const liveAssetDetails = new Map<string, CatalogAssetDetail>()
+
+function pocSystemEntry(system: typeof adminSystems[number]) {
+  const assignees = adminSystemAssignees.get(system.system_id) ?? []
+  return { ...system, assignee_count: assignees.length, assignees }
+}
+
+function knowledgeDraftById(id: string): Record<string, unknown> {
+  const draft = knowledgeDrafts.find((item) => item.id === id)
+  if (!draft) throw new Error('POC Knowledge Studio Draft를 찾을 수 없습니다.')
+  return draft
+}
+
+function knowledgeTBox(draftId: string) {
+  return { draft: knowledgeDraftById(draftId), blocks: knowledgeDraftBlocks.get(draftId) ?? [] }
+}
+
+function knowledgeAssetSummary(draft: Record<string, unknown>, release: Record<string, unknown>) {
+  const blocks = knowledgeDraftBlocks.get(String(draft.id)) ?? []
+  const elements = blocks.flatMap((block) => Array.isArray(block.elements) ? block.elements as Array<Record<string, unknown>> : [])
+  return {
+    id: draft.materialized_graph_id,
+    slug: draft.endpoint_alias,
+    name: draft.name,
+    graph_type: 'CURATED_KNOWLEDGE',
+    status: 'ACTIVE',
+    classification: draft.classification,
+    domain_id: draft.domain_id,
+    domain_name: knowledgeDomains.find((domain) => domain.id === draft.domain_id)?.display_name ?? null,
+    creator_name: 'POC User', creator_email: 'poc.user@local',
+    editor_name: 'POC User', editor_email: 'poc.user@local',
+    active_studio_release_id: release.id, active_studio_release_no: release.release_no,
+    active_release_id: null, active_release_no: null,
+    class_count: elements.filter((item) => item.kind === 'CLASS').length,
+    property_count: elements.filter((item) => item.kind === 'PROPERTY').length,
+    relationship_count: elements.filter((item) => item.kind === 'RELATION').length,
+    binding_count: 0, source_count: 0, node_count: 0, edge_count: 0,
+    projection_state: null,
+    created_at: draft.created_at,
+    updated_at: draft.updated_at,
+    version: draft.version,
+    delivery_policy: null,
+  }
+}
+
+function governanceActions(document: GovernanceDocumentSummary) {
+  if (document.state === 'ARCHIVED') return ['read', 'download_attachment'] satisfies GovernanceDocumentSummary['allowed_actions']
+  const actions: GovernanceDocumentSummary['allowed_actions'] = [
+    'read', 'create_version', 'submit', 'review', 'publish', 'archive',
+    'add_attachment', 'download_attachment',
+  ]
+  if (document.kind === 'TEMPLATE') actions.push('instantiate_template')
+  return actions
+}
+
+function governanceDetail(documentId: string) {
+  const document = governanceDocuments.find((item) => item.document_id === documentId)
+  if (!document) throw new Error('POC 거버넌스 문서를 찾을 수 없습니다.')
+  document.allowed_actions = [...governanceActions(document)]
+  return {
+    document,
+    versions: governanceVersions
+      .filter((item) => item.document_id === documentId)
+      .sort((left, right) => right.version_number - left.version_number),
+    reviews: governanceReviews.filter((item) => item.document_id === documentId),
+    attachments: governanceAttachments.filter((item) => item.document_id === documentId),
+    parent_document: document.current_published_version_id
+      ? (() => {
+          const version = governanceVersions.find((item) => item.version_id === document.current_published_version_id)
+          return version?.parent_document_id
+            ? governanceDocuments.find((item) => item.document_id === version.parent_document_id) ?? null
+            : null
+        })()
+      : null,
+    child_documents: governanceDocuments.filter((candidate) => governanceVersions.some((version) => (
+      version.document_id === candidate.document_id && version.parent_document_id === documentId
+    ))),
+  }
+}
+
+function governancePlainText(html: string): string {
+  return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+async function governanceVersion(
+  document: GovernanceDocumentSummary,
+  input: {
+    title: string
+    summary: string
+    applicability_scope: string
+    sanitized_html: string
+    source_template_version_id: string | null
+    parent_document_id: string | null
+    source_format?: 'HTML' | 'MARKDOWN' | 'DOCX'
+  },
+): Promise<GovernanceDocumentVersion> {
+  const now = new Date().toISOString()
+  const versionNumber = governanceVersions.filter((item) => item.document_id === document.document_id).length + 1
+  const contentHash = await sha256(input.sanitized_html)
+  return {
+    version_id: crypto.randomUUID(), workspace_id: POC_WORKSPACE_ID,
+    document_id: document.document_id, version_number: versionNumber,
+    version_tag: `v${versionNumber}`, state: 'DRAFT', title: input.title,
+    summary: input.summary, applicability_scope: input.applicability_scope,
+    sanitized_html: input.sanitized_html, plain_text: governancePlainText(input.sanitized_html),
+    content_sha256: contentHash, size_bytes: new TextEncoder().encode(input.sanitized_html).byteLength,
+    sanitizer_policy_version: 'POC_SANITIZER_V1', sanitizer_policy_sha256: 'c'.repeat(64),
+    source_format: input.source_format ?? 'HTML', source_template_version_id: input.source_template_version_id,
+    parent_document_id: input.parent_document_id, author_id: POC_SUBJECT_ID,
+    submitted_at: null, reviewed_by: null, reviewed_at: null, published_at: null,
+    artifact_state: 'STORED', knowledge_state: 'PENDING', created_at: now, version: 1,
+  }
+}
 
 function nextId(namespace: string): string {
   sequence += 1
@@ -781,12 +951,102 @@ async function testSystemConfiguration(
 }
 
 class PocApiClient {
+  private hydration?: Promise<void>
+
+  private ensureHydrated(): Promise<void> {
+    if (this.hydration) return this.hydration
+    this.hydration = gatewayRequest<{ value: Record<string, unknown> | null }>('/poc-api/state/core')
+      .then(({ value }) => {
+        if (!value) return
+        if (Number.isSafeInteger(value.sequence)) sequence = Number(value.sequence)
+        if (Array.isArray(value.changeRecords)) changeRecords = value.changeRecords as ChangeRequestRecord[]
+        if (Array.isArray(value.adminMemberships)) adminMemberships = value.adminMemberships as WorkspaceMembershipSummary[]
+        if (Array.isArray(value.adminSystems)) adminSystems = value.adminSystems as typeof adminSystems
+        if (Array.isArray(value.knowledgeDomains)) knowledgeDomains = value.knowledgeDomains as Array<Record<string, unknown>>
+        if (Array.isArray(value.knowledgeDrafts)) knowledgeDrafts = value.knowledgeDrafts as Array<Record<string, unknown>>
+        if (Array.isArray(value.knowledgeReleases)) knowledgeReleases = value.knowledgeReleases as Array<Record<string, unknown>>
+        if (Array.isArray(value.governanceDocuments)) governanceDocuments = value.governanceDocuments as GovernanceDocumentSummary[]
+        if (Array.isArray(value.governanceVersions)) governanceVersions = value.governanceVersions as GovernanceDocumentVersion[]
+        if (Array.isArray(value.governanceReviews)) governanceReviews = value.governanceReviews as GovernanceDocumentReview[]
+        if (Array.isArray(value.governanceAttachments)) governanceAttachments = value.governanceAttachments as GovernanceDocumentAttachment[]
+        if (Array.isArray(value.knowledgeDraftBlocks)) {
+          knowledgeDraftBlocks.clear()
+          for (const entry of value.knowledgeDraftBlocks) {
+            if (Array.isArray(entry) && typeof entry[0] === 'string' && Array.isArray(entry[1])) {
+              knowledgeDraftBlocks.set(entry[0], entry[1] as Array<Record<string, unknown>>)
+            }
+          }
+        }
+        if (Array.isArray(value.knowledgeDraftBindings)) {
+          knowledgeDraftBindings.clear()
+          for (const entry of value.knowledgeDraftBindings) {
+            if (Array.isArray(entry) && typeof entry[0] === 'string' && Array.isArray(entry[1])) {
+              knowledgeDraftBindings.set(entry[0], entry[1] as Array<Record<string, unknown>>)
+            }
+          }
+        }
+        if (Array.isArray(value.adminSystemAssignees)) {
+          adminSystemAssignees.clear()
+          for (const entry of value.adminSystemAssignees) {
+            if (Array.isArray(entry) && typeof entry[0] === 'string' && Array.isArray(entry[1])) {
+              adminSystemAssignees.set(entry[0], entry[1] as Parameters<typeof adminSystemAssignees.set>[1])
+            }
+          }
+        }
+        if (Array.isArray(value.adminSystemSchemaScopes)) {
+          adminSystemSchemaScopes.clear()
+          for (const entry of value.adminSystemSchemaScopes) {
+            if (Array.isArray(entry) && typeof entry[0] === 'string' && Array.isArray(entry[1])) {
+              adminSystemSchemaScopes.set(entry[0], entry[1] as Parameters<typeof adminSystemSchemaScopes.set>[1])
+            }
+          }
+        }
+        if (Array.isArray(value.governanceAttachmentLocations)) {
+          governanceAttachmentLocations.clear()
+          for (const entry of value.governanceAttachmentLocations) {
+            if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object') {
+              governanceAttachmentLocations.set(entry[0], entry[1] as { upload_id: string; key: string })
+            }
+          }
+        }
+      })
+    return this.hydration
+  }
+
+  private async persistCore(): Promise<void> {
+    if (!runtimeFlags().pocState) return
+    await gatewayRequest('/poc-api/state/core', {
+      method: 'PUT',
+      body: JSON.stringify({
+        value: {
+          sequence,
+          changeRecords,
+          adminMemberships,
+          adminSystems,
+          adminSystemAssignees: [...adminSystemAssignees.entries()],
+          adminSystemSchemaScopes: [...adminSystemSchemaScopes.entries()],
+          knowledgeDomains,
+          knowledgeDrafts,
+          knowledgeReleases,
+          knowledgeDraftBlocks: [...knowledgeDraftBlocks.entries()],
+          knowledgeDraftBindings: [...knowledgeDraftBindings.entries()],
+          governanceDocuments,
+          governanceVersions,
+          governanceReviews,
+          governanceAttachments,
+          governanceAttachmentLocations: [...governanceAttachmentLocations.entries()],
+        },
+      }),
+    })
+  }
+
   async request<T>(path: string, options: PocRequestOptions = {}): Promise<T> {
     return (await this.requestWithMeta<T>(path, options)).data
   }
 
   async requestWithMeta<T>(path: string, options: PocRequestOptions = {}): Promise<ApiResponse<T>> {
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
+    if (runtimeFlags().pocState) await this.ensureHydrated()
     const value = await this.dispatch(parsedPath(path), options)
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
     return { data: value as T, etag: '"1"' }
@@ -888,12 +1148,12 @@ class PocApiClient {
       display_name: 'POC User',
       authentication_assurance: 'UNKNOWN',
       fallback_enabled: false,
-      allowed_operations: [
-        'IDENTITY_USER_PROVISION',
-        'MEMBERSHIP_ACCESS_READ',
-        'SYSTEM_CONFIGURATION_READ',
+      allowed_operations: pocAdminOperations,
+      action_vocabulary: [
+        'POC_OPEN_ACCESS_V1', 'catalog.read', 'registration.create', 'change.create',
+        'change.review', 'change.approve', 'quality.read', 'quality.execute', 'kg.read',
+        'kg.edit', 'governance.read', 'governance.edit', 'chat.query', 'admin.manage',
       ],
-      action_vocabulary: ['POC_BROWSER_MEMORY_USER_CREATE', 'POC_PROVIDER_CONFIGURATION_READ'],
     }
     if (path === '/capabilities') {
       return runtimeFlags().datahub || runtimeFlags().airflow || runtimeFlags().minio
@@ -902,6 +1162,11 @@ class PocApiClient {
         : capabilities
     }
     if (path === '/catalog/export-capability') return { enabled: false }
+    if (path === '/poc/glossary') {
+      return runtimeFlags().datahub
+        ? gatewayRequest(`/poc-api/datahub/glossary?${url.searchParams.toString()}`, { signal: options.signal })
+        : { items: [] }
+    }
     if (path === '/operations/dashboard') {
       if (runtimeFlags().datahub) {
         const dashboard = await gatewayRequest<Record<string, unknown>>(
@@ -1294,13 +1559,17 @@ class PocApiClient {
       return asset
     }
     if (path === '/change-requests/intake' && method === 'POST') {
-      return createChangeRequest(jsonBody(options))
+      const created = createChangeRequest(jsonBody(options))
+      await this.persistCore()
+      return created
     }
     const revisionCommand = path.match(/^\/change-requests\/([^/]+)\/revisions$/)
     if (revisionCommand && method === 'POST') {
       const record = changeRecordById(decodeURIComponent(revisionCommand[1] ?? ''))
       requireCurrentVersion(record, options)
-      return { ...reviseChangeRequest(record, jsonBody(options)) }
+      const revised = reviseChangeRequest(record, jsonBody(options))
+      await this.persistCore()
+      return { ...revised }
     }
     if (path === '/change-requests/summaries') {
       const state = url.searchParams.get('state')
@@ -1486,6 +1755,7 @@ class PocApiClient {
         })
       }
       record.version += 1
+      await this.persistCore()
       return { ...record }
     }
     if (/^\/change-requests\/[^/]+$/.test(path)) {
@@ -1494,19 +1764,28 @@ class PocApiClient {
 
     if (path === '/quality/capability') {
       const observedAt = new Date()
-      const readAvailable = runtimeFlags().datahub
+      const states: Record<string, { state: 'AVAILABLE' | 'UNAVAILABLE'; reason_code: string | null }> = {
+        read_access: runtimeFlags().datahub
+          ? { state: 'AVAILABLE', reason_code: null }
+          : { state: 'UNAVAILABLE', reason_code: 'DATAHUB_NOT_CONFIGURED' },
+        profile_readiness: runtimeFlags().datahub
+          ? { state: 'AVAILABLE', reason_code: null }
+          : { state: 'UNAVAILABLE', reason_code: 'DATAHUB_NOT_CONFIGURED' },
+        rule_authoring: { state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
+        review: { state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
+        activation: { state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
+        manual_execution: runtimeFlags().airflow
+          ? { state: 'AVAILABLE', reason_code: null }
+          : { state: 'UNAVAILABLE', reason_code: 'AIRFLOW_NOT_CONFIGURED' },
+        scheduling: { state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
+        operations: { state: 'UNAVAILABLE', reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED' },
+      }
       return {
         contract_version: 'QUALITY_CAPABILITY_V2',
         observed_at: observedAt.toISOString(),
         valid_until: new Date(observedAt.getTime() + 30_000).toISOString(),
         cache_scope: POC_CACHE_SCOPE,
-        axes: ['read_access', 'profile_readiness', 'rule_authoring', 'review', 'activation', 'manual_execution', 'scheduling', 'operations'].map((id) => ({
-          id,
-          state: id === 'read_access' && readAvailable ? 'AVAILABLE' : 'UNAVAILABLE',
-          reason_code: id === 'read_access' && !readAvailable
-            ? 'DATAHUB_NOT_CONFIGURED'
-            : id === 'read_access' ? null : 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED',
-        })),
+        axes: Object.entries(states).map(([id, state]) => ({ id, ...state })),
       }
     }
     if (path === '/quality/dashboard') {
@@ -1628,24 +1907,556 @@ class PocApiClient {
     if (/^\/quality\/runs\/[^/]+\/results$/.test(path)) return qualityList([], url)
     if (path === '/quality/issues') return qualityList([], url)
 
-    if (path === '/knowledge/graphs') return []
-    if (path === '/knowledge/registry/assets') return { items: [], next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) }
-    if (/^\/knowledge\/registry\/assets\/[^/]+\/(detail|versions)$/.test(path)) throw new Error('등록된 지식 자산이 없습니다.')
-    if (/^\/knowledge\/graphs\/[^/]+\/releases(\/[^/]+\/snapshot)?$/.test(path)) throw new Error('등록된 지식 그래프 릴리스가 없습니다.')
+    if (path === '/knowledge/domains/manage') return { items: knowledgeDomains.filter((item) => item.managed === true) }
+    if (path === '/knowledge/domains' && method === 'GET') {
+      const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase()
+      return { items: knowledgeDomains.filter((item) => !query || String(item.display_name).toLocaleLowerCase().includes(query)) }
+    }
+    if (path === '/knowledge/domains' && method === 'POST') {
+      const now = new Date().toISOString()
+      const displayName = responseString(jsonBody(options).display_name, '').trim()
+      if (!displayName) throw new Error('Domain 표시명이 필요합니다.')
+      const domain = {
+        id: crypto.randomUUID(), display_name: displayName, source_version: 'd'.repeat(64),
+        created_by: POC_SUBJECT_ID, creator_display_name: 'POC User', creator_email: 'poc.user@local',
+        asset_count: 0, lifecycle: 'ACTIVE', version: 1, created_at: now, updated_at: now, managed: true,
+      }
+      knowledgeDomains = [...knowledgeDomains, domain]
+      await this.persistCore()
+      return domain
+    }
+    const knowledgeDomainPath = path.match(/^\/knowledge\/domains\/([^/]+)$/)
+    if (knowledgeDomainPath) {
+      const domain = knowledgeDomains.find((item) => item.id === decodeURIComponent(knowledgeDomainPath[1] ?? ''))
+      if (!domain) throw new Error('POC Knowledge Domain을 찾을 수 없습니다.')
+      if (method === 'PATCH') {
+        const displayName = responseString(jsonBody(options).display_name, '').trim()
+        if (!displayName) throw new Error('Domain 표시명이 필요합니다.')
+        domain.display_name = displayName
+        domain.version = Number(domain.version) + 1
+        domain.updated_at = new Date().toISOString()
+        await this.persistCore()
+        return domain
+      }
+      if (method === 'DELETE') {
+        domain.lifecycle = 'INACTIVE'
+        domain.version = Number(domain.version) + 1
+        domain.updated_at = new Date().toISOString()
+        await this.persistCore()
+        return undefined
+      }
+    }
+    if (path === '/knowledge/property-profiles') return { items: [] }
+    const knowledgeEditDraftPath = path.match(/^\/knowledge\/studio\/drafts\/from-asset\/([^/]+)$/)
+    if (knowledgeEditDraftPath && method === 'POST') {
+      const graphId = decodeURIComponent(knowledgeEditDraftPath[1] ?? '')
+      const source = knowledgeDrafts.find((item) => item.materialized_graph_id === graphId && item.state === 'PUBLISHED')
+      if (!source) throw new Error('편집할 게시 지식 자산을 찾을 수 없습니다.')
+      const existing = knowledgeDrafts.find((item) => item.materialized_graph_id === graphId && item.kind === 'EDIT' && item.state === 'DRAFT')
+      if (existing) return existing
+      const now = new Date().toISOString()
+      const draft = {
+        ...source, id: crypto.randomUUID(), author_id: POC_SUBJECT_ID, kind: 'EDIT', state: 'DRAFT',
+        current_step: 'TBOX', last_autosaved_at: now, version: 1, created_at: now, updated_at: now,
+        reviewed_by: undefined, reviewed_at: undefined, review_reason: undefined,
+        published_by: undefined, published_at: undefined, published_studio_release_id: undefined,
+      }
+      knowledgeDrafts = [...knowledgeDrafts, draft]
+      knowledgeDraftBlocks.set(String(draft.id), structuredClone(knowledgeDraftBlocks.get(String(source.id)) ?? []))
+      knowledgeDraftBindings.set(String(draft.id), structuredClone(knowledgeDraftBindings.get(String(source.id)) ?? []))
+      await this.persistCore()
+      return draft
+    }
+    if (path === '/knowledge/studio/drafts/resumable') {
+      const alias = url.searchParams.get('endpoint_alias') ?? ''
+      const draft = knowledgeDrafts.find((item) => item.endpoint_alias === alias && item.state === 'DRAFT')
+      if (!draft) throw new Error('A resumable Knowledge Studio draft does not exist.')
+      return draft
+    }
+    if (path === '/knowledge/studio/drafts' && method === 'POST') {
+      const body = jsonBody(options)
+      const domain = knowledgeDomains.find((item) => item.id === body.domain_id && item.lifecycle === 'ACTIVE')
+      if (!domain) throw new Error('활성 Knowledge Domain을 선택하세요.')
+      const now = new Date().toISOString()
+      const draft = {
+        id: crypto.randomUUID(), author_id: POC_SUBJECT_ID, kind: 'CREATE', state: 'DRAFT', current_step: 'BASIC',
+        name: responseString(body.name, '').trim(), endpoint_alias: responseString(body.endpoint_alias, '').trim(),
+        endpoint_aliases: Array.isArray(body.endpoint_aliases) ? body.endpoint_aliases : [body.endpoint_alias],
+        domain_id: body.domain_id, domain_source_version: body.domain_source_version,
+        classification: body.classification ?? 'INTERNAL', last_autosaved_at: now,
+        version: 1, created_at: now, updated_at: now,
+      }
+      if (!draft.name || !/^[a-z][a-z0-9_]{2,99}$/.test(draft.endpoint_alias)) throw new Error('Knowledge Asset 이름과 유효한 endpoint alias가 필요합니다.')
+      if (knowledgeDrafts.some((item) => item.endpoint_alias === draft.endpoint_alias && !['DISCARDED', 'PUBLISHED'].includes(String(item.state)))) throw new Error('동일한 endpoint alias의 Draft가 이미 있습니다.')
+      knowledgeDrafts = [...knowledgeDrafts, draft]
+      knowledgeDraftBlocks.set(draft.id, [])
+      knowledgeDraftBindings.set(draft.id, [])
+      await this.persistCore()
+      return draft
+    }
+    const knowledgeDraftPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)$/)
+    if (knowledgeDraftPath) {
+      const draft = knowledgeDraftById(decodeURIComponent(knowledgeDraftPath[1] ?? ''))
+      if (method === 'GET') return draft
+      if (method === 'PATCH') {
+        Object.assign(draft, jsonBody(options), { version: Number(draft.version) + 1, updated_at: new Date().toISOString(), last_autosaved_at: new Date().toISOString() })
+        await this.persistCore()
+        return draft
+      }
+    }
+    const draftAdvancePath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/advance$/)
+    if (draftAdvancePath && method === 'POST') {
+      const draft = knowledgeDraftById(decodeURIComponent(draftAdvancePath[1] ?? ''))
+      const target = jsonBody(options).target_step
+      draft.current_step = target === 'ABOX' ? 'ABOX' : 'TBOX'
+      draft.version = Number(draft.version) + 1
+      draft.updated_at = new Date().toISOString()
+      await this.persistCore()
+      return draft
+    }
+    const tboxPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/tbox$/)
+    if (tboxPath && method === 'GET') return knowledgeTBox(decodeURIComponent(tboxPath[1] ?? ''))
+    const tboxBlocksPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/tbox\/blocks$/)
+    if (tboxBlocksPath && method === 'POST') {
+      const draftId = decodeURIComponent(tboxBlocksPath[1] ?? '')
+      const draft = knowledgeDraftById(draftId)
+      const body = jsonBody(options)
+      const blocks = knowledgeDraftBlocks.get(draftId) ?? []
+      const now = new Date().toISOString()
+      blocks.push({ id: crypto.randomUUID(), kind: body.kind ?? 'DIRECT', title: responseString(body.title, 'Layer'), weight: Number(body.weight) || 0, ordinal: blocks.length, collapsed: false, version: 1, elements: [], created_at: now, updated_at: now })
+      knowledgeDraftBlocks.set(draftId, blocks)
+      draft.version = Number(draft.version) + 1
+      draft.updated_at = now
+      await this.persistCore()
+      return knowledgeTBox(draftId)
+    }
+    const tboxBlockOperationPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/tbox\/blocks\/([^/]+)\/operations$/)
+    if (tboxBlockOperationPath && method === 'POST') {
+      const draftId = decodeURIComponent(tboxBlockOperationPath[1] ?? '')
+      const blockId = decodeURIComponent(tboxBlockOperationPath[2] ?? '')
+      const draft = knowledgeDraftById(draftId)
+      const block = (knowledgeDraftBlocks.get(draftId) ?? []).find((item) => item.id === blockId)
+      if (!block) throw new Error('POC T-Box Layer를 찾을 수 없습니다.')
+      const elements = Array.isArray(block.elements) ? block.elements as Array<Record<string, unknown>> : []
+      const operations = jsonBody(options).operations
+      for (const raw of Array.isArray(operations) ? operations : []) {
+        if (!raw || typeof raw !== 'object') continue
+        const operation = raw as Record<string, unknown>
+        const stableId = responseString(operation.stable_element_id, '')
+        const index = elements.findIndex((item) => item.stable_element_id === stableId)
+        if (operation.operation === 'DELETE_ELEMENT') {
+          if (index >= 0) elements.splice(index, 1)
+        } else if (operation.operation === 'SET_LAYOUT' && index >= 0) {
+          Object.assign(elements[index]!, { layout_x: operation.layout_x, layout_y: operation.layout_y, version: Number(elements[index]!.version) + 1 })
+        } else if (operation.operation === 'UPSERT_ELEMENT' && operation.element && typeof operation.element === 'object') {
+          const value = { ...(operation.element as Record<string, unknown>), stable_element_id: stableId, ordinal: index >= 0 ? elements[index]!.ordinal : elements.length, version: index >= 0 ? Number(elements[index]!.version) + 1 : 1, block_id: blockId, locked_by_later_block: false }
+          if (index >= 0) elements[index] = value
+          else elements.push(value)
+        }
+      }
+      block.elements = elements
+      block.version = Number(block.version) + 1
+      block.updated_at = new Date().toISOString()
+      draft.version = Number(draft.version) + 1
+      draft.updated_at = block.updated_at
+      await this.persistCore()
+      return knowledgeTBox(draftId)
+    }
+    const tboxBlockPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/tbox\/blocks\/([^/]+)$/)
+    if (tboxBlockPath) {
+      const draftId = decodeURIComponent(tboxBlockPath[1] ?? '')
+      const blockId = decodeURIComponent(tboxBlockPath[2] ?? '')
+      const draft = knowledgeDraftById(draftId)
+      const blocks = knowledgeDraftBlocks.get(draftId) ?? []
+      const block = blocks.find((item) => item.id === blockId)
+      if (!block) throw new Error('POC T-Box Layer를 찾을 수 없습니다.')
+      if (method === 'PATCH') Object.assign(block, jsonBody(options), { version: Number(block.version) + 1, updated_at: new Date().toISOString() })
+      if (method === 'DELETE') knowledgeDraftBlocks.set(draftId, blocks.filter((item) => item.id !== blockId))
+      draft.version = Number(draft.version) + 1
+      draft.updated_at = new Date().toISOString()
+      await this.persistCore()
+      return knowledgeTBox(draftId)
+    }
+    const aboxPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/abox$/)
+    if (aboxPath && method === 'GET') {
+      const draftId = decodeURIComponent(aboxPath[1] ?? '')
+      const blocks = knowledgeDraftBlocks.get(draftId) ?? []
+      return { draft: knowledgeDraftById(draftId), tbox_elements: blocks.flatMap((block) => Array.isArray(block.elements) ? block.elements as Array<Record<string, unknown>> : []), bindings: knowledgeDraftBindings.get(draftId) ?? [] }
+    }
+    const aboxBindingPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/abox\/bindings\/(.+)$/)
+    if (aboxBindingPath && method === 'PATCH') {
+      const draftId = decodeURIComponent(aboxBindingPath[1] ?? '')
+      const targetStableElementId = decodeURIComponent(aboxBindingPath[2] ?? '')
+      const draft = knowledgeDraftById(draftId)
+      const body = jsonBody(options)
+      const assetId = responseString(body.source_asset_id, '')
+      const detail = await gatewayRequest<CatalogAssetDetail>(`/poc-api/datahub/asset?urn=${encodeURIComponent(assetId)}`, { signal: options.signal })
+      const now = new Date().toISOString()
+      const bindings = knowledgeDraftBindings.get(draftId) ?? []
+      const existingIndex = bindings.findIndex((item) => item.target_stable_element_id === targetStableElementId)
+      const binding = {
+        id: existingIndex >= 0 ? bindings[existingIndex]!.id : crypto.randomUUID(),
+        target_stable_element_id: targetStableElementId, source_reference_id: assetId,
+        source_asset_id: assetId, source_name: detail.name,
+        source_version: responseString(body.source_version, detail.source_version),
+        projection_source_version: responseString(body.projection_source_version, detail.projection_source_version),
+        source_classification: detail.classification, readiness: 'DRAFT',
+        tbox_version: Number(draft.version), version: existingIndex >= 0 ? Number(bindings[existingIndex]!.version) + 1 : 1,
+        rules: (Array.isArray(body.rules) ? body.rules : []).map((rule, ordinal) => ({
+          ...(rule as Record<string, unknown>), id: crypto.randomUUID(), ordinal,
+          transform_id: 'IDENTITY', transform_version: '1',
+        })),
+        created_at: existingIndex >= 0 ? bindings[existingIndex]!.created_at : now, updated_at: now,
+      }
+      if (existingIndex >= 0) bindings[existingIndex] = binding
+      else bindings.push(binding)
+      knowledgeDraftBindings.set(draftId, bindings)
+      draft.version = Number(draft.version) + 1; draft.updated_at = now
+      await this.persistCore()
+      return { draft, binding }
+    }
+    const catalogSourcesPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/(?:tbox\/catalog-sources|abox\/sources)$/)
+    if (catalogSourcesPath && method === 'GET') {
+      knowledgeDraftById(decodeURIComponent(catalogSourcesPath[1] ?? ''))
+      const result = runtimeFlags().datahub
+        ? await liveCatalog(new URLSearchParams({ q: url.searchParams.get('q') || '*', limit: url.searchParams.get('limit') || '25' }), options.signal)
+        : { items: [], page: { next_cursor: null, limit: 25 } }
+      return { items: result.items.map((asset) => ({ id: asset.id, name: asset.name, asset_type: 'DATASET', platform: asset.platform, database_name: asset.database_name, schema_name: asset.schema_name, classification: asset.classification, source_version: 'datahub-live', projection_source_version: 'datahub-live-poc', field_paths: [], fields_truncated: false, domain: asset.domain, tags: asset.tags, glossary_terms: asset.terms, description: asset.description, description_truncated: false, field_metadata: [], selection_fingerprint: null })), page: result.page }
+    }
+    const catalogSourceDetailPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/(?:tbox\/catalog-sources|abox\/sources)\/(.+)$/)
+    if (catalogSourceDetailPath && method === 'GET') {
+      knowledgeDraftById(decodeURIComponent(catalogSourceDetailPath[1] ?? ''))
+      const detail = await gatewayRequest<CatalogAssetDetail>(`/poc-api/datahub/asset?urn=${encodeURIComponent(decodeURIComponent(catalogSourceDetailPath[2] ?? ''))}`, { signal: options.signal })
+      const fieldMetadata = detail.schema_fields.map((field) => ({
+        field_path: responseString(field.fieldPath ?? field.field_path, ''), field_type: field.type ?? null,
+        native_data_type: field.nativeDataType ?? field.native_data_type ?? null,
+        description: field.description ?? null, description_truncated: false,
+        tags: Array.isArray(field.tags) ? field.tags.map(String) : [], tags_truncated: false,
+        glossary_terms: Array.isArray(field.terms) ? field.terms.map(String) : [], terms_truncated: false,
+      }))
+      return { dataset: { id: detail.id, name: detail.name, asset_type: 'DATASET', platform: detail.platform, database_name: detail.database_name, schema_name: detail.schema_name, classification: detail.classification, source_version: detail.source_version, projection_source_version: detail.projection_source_version, field_paths: fieldMetadata.map((field) => field.field_path), fields_truncated: detail.schema_fields_truncated, domain: detail.domain, tags: detail.tags, glossary_terms: detail.terms, description: detail.description, description_truncated: false, field_metadata: fieldMetadata, selection_fingerprint: null }, observed_at: new Date().toISOString() }
+    }
+    const preflightPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/abox\/preflight$/)
+    if (preflightPath && method === 'POST') {
+      const draft = knowledgeDraftById(decodeURIComponent(preflightPath[1] ?? ''))
+      return { status: 'PASS', valid: true, draft_version: draft.version, checked_at: new Date().toISOString(), receipt_id: crypto.randomUUID(), contract_hash: 'e'.repeat(64), evidence: [] }
+    }
+    const draftLifecyclePath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/(submit-review|discard|publish)$/)
+    if (draftLifecyclePath && method === 'POST') {
+      const draft = knowledgeDraftById(decodeURIComponent(draftLifecyclePath[1] ?? ''))
+      const action = draftLifecyclePath[2]
+      const now = new Date().toISOString()
+      draft.version = Number(draft.version) + 1
+      draft.updated_at = now
+      if (action === 'submit-review') {
+        draft.state = 'REVIEW'
+        draft.submitted_preflight_check_id = crypto.randomUUID()
+        await this.persistCore()
+        return draft
+      }
+      if (action === 'discard') {
+        draft.state = 'DISCARDED'
+        await this.persistCore()
+        return draft
+      }
+      const graphId = responseString(draft.materialized_graph_id, crypto.randomUUID())
+      const release = { id: crypto.randomUUID(), graph_id: graphId, ontology_version_id: crypto.randomUUID(), release_no: 1, state: 'ACTIVE', contract_version: 'KNOWLEDGE_STUDIO_RELEASE_V1', contract_hash: 'f'.repeat(64), tbox_hash: 'a'.repeat(64), abox_hash: 'b'.repeat(64), reviewed_by: POC_SUBJECT_ID, published_by: POC_SUBJECT_ID, published_at: now }
+      Object.assign(draft, { state: 'PUBLISHED', reviewed_by: POC_SUBJECT_ID, reviewed_at: now, review_reason: responseString(jsonBody(options).review_reason, 'POC open review'), published_by: POC_SUBJECT_ID, published_at: now, materialized_graph_id: graphId, materialized_ontology_version_id: release.ontology_version_id, published_studio_release_id: release.id })
+      knowledgeReleases = [...knowledgeReleases, release]
+      await this.persistCore()
+      return { draft, release }
+    }
+    const publishedPairs = knowledgeDrafts.flatMap((draft) => {
+      const release = knowledgeReleases.find((item) => item.id === draft.published_studio_release_id)
+      return release ? [{ draft, release }] : []
+    })
+    if (path === '/knowledge/graphs') return publishedPairs.map(({ draft, release }) => ({ id: draft.materialized_graph_id, slug: draft.endpoint_alias, name: draft.name, graph_type: 'CURATED_KNOWLEDGE', status: 'ACTIVE', classification: draft.classification, domain_id: draft.domain_id, domain_source_version: draft.domain_source_version, domain_name: knowledgeDomains.find((item) => item.id === draft.domain_id)?.display_name, active_release_id: release.id, created_by: POC_SUBJECT_ID, updated_by: POC_SUBJECT_ID, created_at: draft.created_at, updated_at: draft.updated_at, version: draft.version }))
+    if (path === '/knowledge/registry/assets') return { items: publishedPairs.map(({ draft, release }) => knowledgeAssetSummary(draft, release)), next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) }
+    const knowledgeRegistryPath = path.match(/^\/knowledge\/registry\/assets\/([^/]+)\/(detail|versions)$/)
+    if (knowledgeRegistryPath) {
+      const graphId = decodeURIComponent(knowledgeRegistryPath[1] ?? '')
+      const pair = publishedPairs.find(({ draft }) => draft.materialized_graph_id === graphId)
+      if (!pair) throw new Error('등록된 지식 자산이 없습니다.')
+      const asset = knowledgeAssetSummary(pair.draft, pair.release)
+      const blocks = knowledgeDraftBlocks.get(String(pair.draft.id)) ?? []
+      const elements = blocks.flatMap((block) => Array.isArray(block.elements) ? block.elements as Array<Record<string, unknown>> : [])
+      if (knowledgeRegistryPath[2] === 'detail') return { asset, schema_elements: elements.map((item) => ({ stable_element_id: item.stable_element_id, kind: item.kind, display_name: item.display_name, canonical_name: item.canonical_name, parent_stable_element_id: item.parent_stable_element_id ?? null, data_type: item.data_type ?? null, source_stable_element_id: item.source_stable_element_id ?? null, target_stable_element_id: item.target_stable_element_id ?? null })), bindings: [], projections: [] }
+      return { items: [{ id: pair.release.id, kind: 'STUDIO_RELEASE', version_label: `T v${responseString(pair.release.release_no, '1')}`, title: responseString(pair.draft.name, 'POC knowledge asset'), status: 'ACTIVE', author_id: POC_SUBJECT_ID, author_name: 'POC User', author_email: 'poc.user@local', reviewed_by: POC_SUBJECT_ID, reviewer_name: 'POC User', reviewer_email: 'poc.user@local', published_by: POC_SUBJECT_ID, publisher_name: 'POC User', publisher_email: 'poc.user@local', created_at: pair.release.published_at, is_current: true, studio_release_id: pair.release.id, instance_release_id: null, changeset_id: null, content_hash: pair.release.contract_hash, node_count: 0, edge_count: 0 }], next_cursor: null, limit: 50 }
+    }
+    const graphReleasesPath = path.match(/^\/knowledge\/graphs\/([^/]+)\/releases$/)
+    if (graphReleasesPath) {
+      const graphId = decodeURIComponent(graphReleasesPath[1] ?? '')
+      return knowledgeReleases.filter((item) => item.graph_id === graphId).map((item) => ({ id: item.id, graph_id: item.graph_id, release_no: item.release_no, ontology_version_id: item.ontology_version_id, content_hash: item.contract_hash, node_count: 0, edge_count: 0, published_by: POC_SUBJECT_ID, published_at: item.published_at, publisher_name: 'POC User', publisher_email: 'poc.user@local' }))
+    }
+    const graphSnapshotPath = path.match(/^\/knowledge\/graphs\/([^/]+)\/releases\/([^/]+)\/snapshot$/)
+    if (graphSnapshotPath) {
+      const graphId = decodeURIComponent(graphSnapshotPath[1] ?? '')
+      const releaseId = decodeURIComponent(graphSnapshotPath[2] ?? '')
+      const release = knowledgeReleases.find((item) => item.graph_id === graphId && item.id === releaseId)
+      if (!release) throw new Error('등록된 지식 그래프 릴리스가 없습니다.')
+      return { release: { id: release.id, graph_id: graphId, release_no: release.release_no, ontology_version_id: release.ontology_version_id, content_hash: release.contract_hash, node_count: 0, edge_count: 0, published_by: POC_SUBJECT_ID, published_at: release.published_at }, nodes: [], edges: [], filtered: false }
+    }
     if (/^\/knowledge\/graphs\/[^/]+\/changesets$/.test(path)) return []
 
     if (path === '/governance/documents/capability') {
       const window = authorizationWindow()
+      const providerAxis = (id: string, configured: boolean) => ({
+        id,
+        state: configured ? 'AVAILABLE' : 'UNAVAILABLE',
+        reason_code: configured ? null : 'PROVIDER_NOT_CONFIGURED',
+      })
       return {
         contract_version: 'GOVERNANCE_DOCUMENT_CAPABILITY_V1',
         observed_at: window.observed_at,
         valid_until: window.authorization_valid_until,
         cache_scope: POC_CACHE_SCOPE,
-        axes: ['read', 'create', 'edit', 'review', 'publish', 'archive', 'template_manage', 'artifact_storage', 'knowledge_projection'].map((id) => ({ id, state: id === 'read' ? 'AVAILABLE' : 'DENIED', reason_code: id === 'read' ? null : 'POC_READ_ONLY' })),
+        axes: [
+          ...['read', 'create', 'edit', 'review', 'publish', 'archive', 'template_manage']
+            .map((id) => ({ id, state: 'AVAILABLE', reason_code: null })),
+          providerAxis('artifact_storage', Boolean(runtimeFlags().minio)),
+          providerAxis('knowledge_projection', Boolean(runtimeFlags().neo4j)),
+        ],
         limits: { max_html_bytes: 1_000_000, max_attachment_bytes: 10_000_000, max_attachments_per_version: 25 },
       }
     }
-    if (path === '/governance/documents') return { items: [], page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 100) }, cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
+    if (path === '/governance/documents/template-blueprints') {
+      const definitions = [
+        ['template-policy', 'TEMPLATE', 'POLICY', '정책 Template', '정책 문서 작성을 위한 승인 가능한 기본 구조', '전사 데이터 정책', '<h2>목적</h2><p>정책 목적을 작성하세요.</p><h2>통제</h2><p>통제 기준을 작성하세요.</p>'],
+        ['template-terminology', 'TEMPLATE', 'STANDARD_TERMINOLOGY', '표준 용어 Template', '표준 용어와 적용 범위를 기록하는 기본 구조', '전사 표준 용어', '<h2>정의</h2><p>표준 용어를 작성하세요.</p><h2>적용 범위</h2><p>적용 범위를 작성하세요.</p>'],
+        ['template-security', 'TEMPLATE', 'SECURITY_GUIDE', '보안 가이드 Template', '데이터 보안 통제를 기록하는 기본 구조', '전사 보안 통제', '<h2>보호 대상</h2><p>보호 대상을 작성하세요.</p><h2>보안 통제</h2><p>통제를 작성하세요.</p>'],
+        ['starter-classification', 'STARTER_DOCUMENT', 'POLICY', '데이터 분류·접근 정책', '분류와 접근 원칙을 작성하는 시작 문서', '전사 데이터', '<h2>데이터 분류</h2><p>분류 기준을 작성하세요.</p><h2>접근 원칙</h2><p>접근 통제를 작성하세요.</p>'],
+        ['starter-retention', 'STARTER_DOCUMENT', 'POLICY', '보존·파기 정책', '보존 기간과 파기 절차를 작성하는 시작 문서', '전사 데이터', '<h2>보존</h2><p>보존 기간을 작성하세요.</p><h2>파기</h2><p>파기 절차를 작성하세요.</p>'],
+        ['starter-legal-hold', 'STARTER_DOCUMENT', 'SECURITY_GUIDE', 'Legal Hold 관리', '법적 보존 대상과 해제 절차를 작성하는 시작 문서', '법적 보존 대상', '<h2>지정</h2><p>Legal Hold 지정 기준을 작성하세요.</p><h2>해제</h2><p>해제 절차를 작성하세요.</p>'],
+      ] as const
+      return {
+        contract_version: 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V2',
+        items: await Promise.all(definitions.map(async ([id, purpose, category, title, summary, scope, html]) => ({
+          blueprint_id: id, blueprint_version: 'GOVERNANCE_DOCUMENT_BLUEPRINTS_V2', purpose,
+          category, title, summary, applicability_scope: scope, sanitized_html: html,
+          content_sha256: await sha256(html), sanitizer_policy_version: 'POC_SANITIZER_V1',
+          sanitizer_policy_sha256: 'c'.repeat(64),
+        }))),
+      }
+    }
+    if (path === '/governance/documents/knowledge/evidence') {
+      const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase()
+      const items = governanceVersions
+        .filter((version) => version.state === 'PUBLISHED' && (!query || `${version.title} ${version.plain_text}`.toLocaleLowerCase().includes(query)))
+        .slice(0, 25)
+        .map((version, index) => ({
+          chunk_id: `${version.version_id}:0`, document_id: version.document_id,
+          document_version_id: version.version_id, document_title: version.title,
+          version_tag: version.version_tag, ordinal: index,
+          excerpt: version.plain_text.slice(0, 500), content_sha256: version.content_sha256,
+          score_basis_points: 10_000, classification: governanceDocuments.find((item) => item.document_id === version.document_id)?.classification ?? 1,
+          published_at: version.published_at ?? version.created_at,
+        }))
+      return { items, cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
+    }
+    const governanceCreate = path === '/governance/documents' && method === 'POST'
+      || path === '/governance/documents/imports' && method === 'POST'
+    if (governanceCreate) {
+      const form = options.body instanceof FormData ? options.body : null
+      const body = form ? Object.fromEntries(form.entries()) : jsonBody(options)
+      const now = new Date().toISOString()
+      const documentId = crypto.randomUUID()
+      const title = responseString(body.title, '').trim()
+      if (!title) throw new Error('거버넌스 문서명이 필요합니다.')
+      const kind = body.kind === 'TEMPLATE' ? 'TEMPLATE' as const : 'DOCUMENT' as const
+      const category = ['POLICY', 'STANDARD_TERMINOLOGY', 'SECURITY_GUIDE', 'OTHER'].includes(String(body.category))
+        ? body.category as GovernanceDocumentSummary['category'] : 'OTHER'
+      const document: GovernanceDocumentSummary = {
+        document_id: documentId, workspace_id: POC_WORKSPACE_ID, kind, category, title,
+        summary: responseString(body.summary, ''), classification: Number(body.classification) || 1,
+        state: 'DRAFT', owner_subject_id: POC_SUBJECT_ID, current_published_version_id: null,
+        current_version_number: null, created_at: now, updated_at: now, version: 1, allowed_actions: [],
+      }
+      let html = responseString(body.sanitized_html, '')
+      const sourceTemplateId = responseString(body.source_template_version_id, '') || null
+      if (!html && sourceTemplateId) html = governanceVersions.find((item) => item.version_id === sourceTemplateId)?.sanitized_html ?? ''
+      const imported = form?.get('file')
+      if (imported instanceof File) {
+        const source = await imported.text()
+        const escaped = source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        html = `<pre>${escaped}</pre>`
+      }
+      if (!html) html = '<p></p>'
+      const version = await governanceVersion(document, {
+        title, summary: document.summary,
+        applicability_scope: responseString(body.applicability_scope, ''), sanitized_html: html,
+        source_template_version_id: sourceTemplateId,
+        parent_document_id: responseString(body.parent_document_id, '') || null,
+        source_format: imported instanceof File && imported.name.toLocaleLowerCase().endsWith('.docx') ? 'DOCX' : 'HTML',
+      })
+      document.allowed_actions = [...governanceActions(document)]
+      governanceDocuments = [...governanceDocuments, document]
+      governanceVersions = [...governanceVersions, version]
+      await this.persistCore()
+      return { item: governanceDetail(documentId) }
+    }
+    if (path === '/governance/documents' && method === 'GET') {
+      const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase()
+      const kind = url.searchParams.get('kind')
+      const state = url.searchParams.get('state')
+      const includeArchived = url.searchParams.get('include_archived') === 'true'
+      const limit = Number(url.searchParams.get('limit') ?? 100)
+      const items = governanceDocuments.filter((item) => (
+        (!query || `${item.title} ${item.summary}`.toLocaleLowerCase().includes(query))
+        && (!kind || item.kind === kind)
+        && (!state || item.state === state)
+        && (includeArchived || item.state !== 'ARCHIVED')
+      )).slice(0, limit).map((item) => ({ ...item, allowed_actions: [...governanceActions(item)] }))
+      return { items, page: { next_cursor: null, limit }, cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
+    }
+    const governanceExportPath = path.match(/^\/governance\/documents\/([^/]+)\/export$/)
+    if (governanceExportPath && method === 'GET') {
+      const documentId = decodeURIComponent(governanceExportPath[1] ?? '')
+      const detail = governanceDetail(documentId)
+      const requestedVersion = url.searchParams.get('version_id')
+      const selected = detail.versions.find((item) => item.version_id === requestedVersion)
+        ?? detail.versions.find((item) => item.version_id === detail.document.current_published_version_id)
+        ?? detail.versions[0]
+      if (!selected) throw new Error('내보낼 문서 버전이 없습니다.')
+      return {
+        contract_version: 'GOVERNANCE_DOCUMENT_EXPORT_V1', exported_at: new Date().toISOString(),
+        document: detail.document, selected_version: selected, version_history: detail.versions,
+        reviews: detail.reviews, attachments: detail.attachments,
+        parent_document: detail.parent_document, child_documents: detail.child_documents,
+        cache_scope: POC_CACHE_SCOPE, ...authorizationWindow(),
+      }
+    }
+    const governanceVersionCreatePath = path.match(/^\/governance\/documents\/([^/]+)\/versions$/)
+    if (governanceVersionCreatePath && method === 'POST') {
+      const documentId = decodeURIComponent(governanceVersionCreatePath[1] ?? '')
+      const document = governanceDetail(documentId).document
+      const form = options.body instanceof FormData ? options.body : null
+      const body = form ? Object.fromEntries(form.entries()) : jsonBody(options)
+      let html = responseString(body.sanitized_html, '')
+      const imported = form?.get('file')
+      if (imported instanceof File) {
+        const source = await imported.text()
+        const escaped = source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        html = `<pre>${escaped}</pre>`
+      }
+      const version = await governanceVersion(document, {
+        title: responseString(body.title, document.title), summary: responseString(body.summary, document.summary),
+        applicability_scope: responseString(body.applicability_scope, ''), sanitized_html: html || '<p></p>',
+        source_template_version_id: responseString(body.source_template_version_id, '') || null,
+        parent_document_id: responseString(body.parent_document_id, '') || null,
+        source_format: imported instanceof File && imported.name.toLocaleLowerCase().endsWith('.docx') ? 'DOCX' : 'HTML',
+      })
+      governanceVersions = [...governanceVersions, version]
+      document.version += 1
+      document.updated_at = new Date().toISOString()
+      await this.persistCore()
+      return { item: governanceDetail(documentId) }
+    }
+    const governanceSubmissionPath = path.match(/^\/governance\/documents\/([^/]+)\/versions\/([^/]+)\/submissions$/)
+    if (governanceSubmissionPath && method === 'POST') {
+      const documentId = decodeURIComponent(governanceSubmissionPath[1] ?? '')
+      const versionId = decodeURIComponent(governanceSubmissionPath[2] ?? '')
+      const document = governanceDetail(documentId).document
+      const version = governanceVersions.find((item) => item.document_id === documentId && item.version_id === versionId)
+      if (!version || version.state !== 'DRAFT') throw new Error('상신 가능한 Draft 버전이 아닙니다.')
+      version.state = 'IN_REVIEW'; version.submitted_at = new Date().toISOString(); version.version += 1
+      document.version += 1; document.updated_at = version.submitted_at
+      await this.persistCore()
+      return { item: governanceDetail(documentId) }
+    }
+    const governanceReviewPath = path.match(/^\/governance\/documents\/([^/]+)\/versions\/([^/]+)\/reviews$/)
+    if (governanceReviewPath && method === 'POST') {
+      const documentId = decodeURIComponent(governanceReviewPath[1] ?? '')
+      const versionId = decodeURIComponent(governanceReviewPath[2] ?? '')
+      const document = governanceDetail(documentId).document
+      const version = governanceVersions.find((item) => item.document_id === documentId && item.version_id === versionId)
+      if (!version || version.state !== 'IN_REVIEW') throw new Error('검토 가능한 상신 버전이 아닙니다.')
+      const body = jsonBody(options)
+      const decision = body.decision === 'REJECT' ? 'REJECT' as const : 'APPROVE' as const
+      const now = new Date().toISOString()
+      governanceReviews = [...governanceReviews, {
+        review_id: crypto.randomUUID(), workspace_id: POC_WORKSPACE_ID, document_id: documentId,
+        document_version_id: versionId, decision, reviewer_id: POC_SUBJECT_ID,
+        reason: responseString(body.reason, ''), policy_decision_id: 'POC_OPEN_SCOPE',
+        authentication_assurance: 'POC_OPEN_SCOPE', created_at: now,
+      }]
+      version.state = decision === 'APPROVE' ? 'PUBLISHED' : 'REJECTED'
+      version.reviewed_by = POC_SUBJECT_ID; version.reviewed_at = now; version.version += 1
+      if (decision === 'APPROVE') {
+        for (const candidate of governanceVersions) {
+          if (candidate.document_id === documentId && candidate.state === 'PUBLISHED' && candidate.version_id !== versionId) candidate.state = 'SUPERSEDED'
+        }
+        version.published_at = now
+        version.knowledge_state = runtimeFlags().neo4j ? 'READY' : 'PENDING'
+        document.state = 'ACTIVE'; document.current_published_version_id = versionId
+        document.current_version_number = version.version_number; document.title = version.title; document.summary = version.summary
+      }
+      document.version += 1; document.updated_at = now
+      await this.persistCore()
+      return { item: governanceDetail(documentId) }
+    }
+    const governanceArchivePath = path.match(/^\/governance\/documents\/([^/]+)\/archive$/)
+    if (governanceArchivePath && method === 'POST') {
+      const documentId = decodeURIComponent(governanceArchivePath[1] ?? '')
+      const document = governanceDetail(documentId).document
+      document.state = 'ARCHIVED'; document.version += 1; document.updated_at = new Date().toISOString()
+      document.allowed_actions = [...governanceActions(document)]
+      await this.persistCore()
+      return { item: governanceDetail(documentId) }
+    }
+    const governanceAttachmentPath = path.match(/^\/governance\/documents\/([^/]+)\/versions\/([^/]+)\/attachments$/)
+    if (governanceAttachmentPath && method === 'POST') {
+      if (!runtimeFlags().minio) throw new Error('거버넌스 첨부파일에는 MinIO 설정이 필요합니다.')
+      if (!(options.body instanceof FormData)) throw new Error('첨부파일 FormData가 필요합니다.')
+      const file = options.body.get('file')
+      if (!(file instanceof File)) throw new Error('첨부파일이 필요합니다.')
+      const documentId = decodeURIComponent(governanceAttachmentPath[1] ?? '')
+      const versionId = decodeURIComponent(governanceAttachmentPath[2] ?? '')
+      const document = governanceDetail(documentId).document
+      if (!governanceVersions.some((item) => item.document_id === documentId && item.version_id === versionId)) throw new Error('첨부 대상 버전이 없습니다.')
+      const uploadId = crypto.randomUUID()
+      const digest = await sha256(new Uint8Array(await file.arrayBuffer()))
+      const part = await fetch(`/poc-api/minio/uploads/${encodeURIComponent(uploadId)}/parts/1`, {
+        method: 'PUT', signal: options.signal,
+        headers: { 'Content-Type': file.type || 'application/octet-stream' }, body: file,
+      })
+      if (!part.ok) throw new Error(`MinIO 첨부파일 저장에 실패했습니다. (${part.status})`)
+      const stored = await gatewayRequest<{ key: string }>(`/poc-api/minio/uploads/${encodeURIComponent(uploadId)}/complete`, {
+        method: 'POST', signal: options.signal,
+        body: JSON.stringify({ part_count: 1, display_name: file.name, content_type: file.type || 'application/octet-stream' }),
+      })
+      const attachment: GovernanceDocumentAttachment = {
+        attachment_id: crypto.randomUUID(), workspace_id: POC_WORKSPACE_ID, document_id: documentId,
+        document_version_id: versionId,
+        serial_number: governanceAttachments.filter((item) => item.document_version_id === versionId).length + 1,
+        storage_filename: stored.key, original_name: file.name,
+        content_type: file.type || 'application/octet-stream', size_bytes: file.size,
+        content_sha256: digest, uploaded_by: POC_SUBJECT_ID, created_at: new Date().toISOString(),
+      }
+      governanceAttachments = [...governanceAttachments, attachment]
+      governanceAttachmentLocations.set(attachment.attachment_id, { upload_id: uploadId, key: stored.key })
+      document.version += 1; document.updated_at = attachment.created_at
+      await this.persistCore()
+      return attachment
+    }
+    const governanceAttachmentDownloadPath = path.match(/^\/governance\/documents\/([^/]+)\/attachments\/([^/]+)\/download$/)
+    if (governanceAttachmentDownloadPath && method === 'GET') {
+      const documentId = decodeURIComponent(governanceAttachmentDownloadPath[1] ?? '')
+      const attachmentId = decodeURIComponent(governanceAttachmentDownloadPath[2] ?? '')
+      const attachment = governanceAttachments.find((item) => item.document_id === documentId && item.attachment_id === attachmentId)
+      const location = governanceAttachmentLocations.get(attachmentId)
+      if (!attachment || !location) throw new Error('첨부파일 저장 위치를 찾을 수 없습니다.')
+      const origin = globalThis.location?.origin ?? 'http://127.0.0.1:39080'
+      return {
+        attachment,
+        url: `${origin}/poc-api/minio/accepted/${encodeURIComponent(location.upload_id)}/${encodeURIComponent(attachment.original_name)}`,
+        expires_at: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+      }
+    }
+    const governanceDetailPath = path.match(/^\/governance\/documents\/([^/]+)$/)
+    if (governanceDetailPath && method === 'GET') {
+      const documentId = decodeURIComponent(governanceDetailPath[1] ?? '')
+      return { item: governanceDetail(documentId), cache_scope: POC_CACHE_SCOPE, ...authorizationWindow() }
+    }
     if (path === '/admin/profile-role-policy') return { policy_version: 'PROFILE_ROLE_POLICY_V1', items: [{ tier: 'ENGINEER_STEWARD', label: 'Engineer / Steward', description: '담당 System 범위의 등록·수정·검토', allowed_actions: ['change.read', 'change.create', 'change.edit', 'change.review'], services: [{ service_key: 'change', service_label: '변경관리', action_labels: ['조회', '등록', '수정', '검토'] }], assignable_to_system: true, lifecycle_note: '취소·이력 보존' }] }
     if (path === '/admin/system-configuration') return {
       items: systemConfigurationItems(),
@@ -1660,6 +2471,131 @@ class PocApiClient {
     const systemConfigurationTest = path.match(/^\/admin\/system-configuration\/([^/]+)\/test-deployment$/)
     if (systemConfigurationTest && method === 'POST') {
       return testSystemConfiguration(decodeURIComponent(systemConfigurationTest[1] ?? ''), options.signal)
+    }
+    if (path === '/admin/systems/assignee-candidates' && method === 'GET') {
+      const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase()
+      const items = adminMemberships.flatMap((member) => {
+        if (!['ENGINEER_STEWARD', 'MANAGER', 'ADMIN'].includes(member.effective_profile_role)) return []
+        if (query && ![member.display_name, member.email].filter(Boolean).join(' ').toLocaleLowerCase().includes(query)) return []
+        return [{
+          subject_id: member.subject_id,
+          display_name: member.display_name,
+          email: member.email,
+          tier: member.effective_profile_role,
+        }]
+      })
+      return { items, page: { next_cursor: null, limit: 25 } }
+    }
+    if (path === '/admin/systems' && method === 'GET') {
+      const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase()
+      const items = adminSystems
+        .filter((system) => !query || `${system.code} ${system.name}`.toLocaleLowerCase().includes(query))
+        .map(pocSystemEntry)
+      return { items, page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) } }
+    }
+    if (path === '/admin/systems' && method === 'POST') {
+      const body = jsonBody(options)
+      const code = responseString(body.code, '').trim()
+      const name = responseString(body.name, '').trim()
+      if (!/^[A-Za-z][A-Za-z0-9_-]{1,99}$/.test(code) || !name) throw new Error('유효한 시스템 코드와 이름이 필요합니다.')
+      if (adminSystems.some((item) => item.code.toLocaleLowerCase() === code.toLocaleLowerCase())) throw new Error('이미 등록된 시스템 코드입니다.')
+      const system = {
+        system_id: nextId('system'), code, name,
+        description: responseString(body.description, '').trim(),
+        active: true, version: 1,
+      }
+      adminSystems = [...adminSystems, system]
+      adminSystemAssignees.set(system.system_id, [])
+      adminSystemSchemaScopes.set(system.system_id, [])
+      await this.persistCore()
+      return pocSystemEntry(system)
+    }
+    const systemAssigneePath = path.match(/^\/admin\/systems\/([^/]+)\/assignees$/)
+    if (systemAssigneePath) {
+      const systemId = decodeURIComponent(systemAssigneePath[1] ?? '')
+      const system = adminSystems.find((item) => item.system_id === systemId)
+      if (!system) throw new Error('POC 시스템을 찾을 수 없습니다.')
+      if (method === 'GET') return {
+        system_version: system.version,
+        items: adminSystemAssignees.get(systemId) ?? [],
+        page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) },
+      }
+      if (method === 'PATCH' || method === 'PUT') {
+        const body = jsonBody(options)
+        const current = [...(adminSystemAssignees.get(systemId) ?? [])]
+        const removals = Array.isArray(body.removals) ? body.removals : method === 'PUT' ? current : []
+        const upserts = Array.isArray(body.upserts) ? body.upserts : Array.isArray(body.assignees) ? body.assignees : []
+        const removalKeys = new Set(removals.flatMap((item) => item && typeof item === 'object'
+          ? [`${String((item as Record<string, unknown>).responsibility)}:${String((item as Record<string, unknown>).subject_id)}`]
+          : []))
+        const next = current.filter((item) => !removalKeys.has(`${item.responsibility}:${item.subject_id}`))
+        for (const raw of upserts) {
+          if (!raw || typeof raw !== 'object') continue
+          const value = raw as Record<string, unknown>
+          const subjectId = responseString(value.subject_id, '')
+          const responsibility = value.responsibility === 'DATA_STEWARD' ? 'DATA_STEWARD' as const : 'DEVELOPER' as const
+          const member = adminMemberships.find((item) => item.subject_id === subjectId)
+          if (!member) throw new Error('등록된 POC 사용자만 시스템 담당자로 지정할 수 있습니다.')
+          const assignment = { subject_id: subjectId, display_name: member.display_name, responsibility, priority: Number(value.priority) || 1, active: true }
+          const index = next.findIndex((item) => item.subject_id === subjectId && item.responsibility === responsibility)
+          if (index >= 0) next[index] = assignment
+          else next.push(assignment)
+        }
+        adminSystemAssignees.set(systemId, next)
+        system.version += 1
+        await this.persistCore()
+        return { system_id: systemId, system_version: system.version, payload_hash: 'a'.repeat(64) }
+      }
+    }
+    const systemSchemaCandidatePath = path.match(/^\/admin\/systems\/([^/]+)\/schema-scope-candidates$/)
+    if (systemSchemaCandidatePath && method === 'GET') {
+      const systemId = decodeURIComponent(systemSchemaCandidatePath[1] ?? '')
+      if (!adminSystems.some((item) => item.system_id === systemId)) throw new Error('POC 시스템을 찾을 수 없습니다.')
+      const query = url.searchParams.get('q') ?? '*'
+      const catalog = runtimeFlags().datahub
+        ? await liveCatalog(new URLSearchParams({ q: query || '*', limit: '25' }), options.signal)
+        : { items: [] }
+      return {
+        items: catalog.items.map((asset) => ({
+          asset_id: asset.id, asset_name: asset.name, asset_type: 'DATASET',
+          platform: asset.platform, database_name: asset.database_name, schema_name: asset.schema_name,
+          classification: asset.classification,
+          mapped_system_id: [...adminSystemSchemaScopes.entries()].find(([, scopes]) => scopes.some((scope) => (
+            scope.active && scope.platform === asset.platform && scope.database_name === asset.database_name && scope.schema_name === asset.schema_name
+          )))?.[0] ?? null,
+        })),
+        page: { next_cursor: null, limit: 25 },
+      }
+    }
+    const systemSchemaPath = path.match(/^\/admin\/systems\/([^/]+)\/schema-scopes$/)
+    if (systemSchemaPath) {
+      const systemId = decodeURIComponent(systemSchemaPath[1] ?? '')
+      const system = adminSystems.find((item) => item.system_id === systemId)
+      if (!system) throw new Error('POC 시스템을 찾을 수 없습니다.')
+      if (method === 'GET') return {
+        system_version: system.version,
+        items: adminSystemSchemaScopes.get(systemId) ?? [],
+        page: { next_cursor: null, limit: 100 },
+      }
+      if (method === 'PATCH') {
+        const body = jsonBody(options)
+        const scopes = [...(adminSystemSchemaScopes.get(systemId) ?? [])]
+        const deactivate = new Set(Array.isArray(body.deactivate_scope_ids) ? body.deactivate_scope_ids.map(String) : [])
+        for (const scope of scopes) if (deactivate.has(scope.scope_id)) scope.active = false
+        for (const assetId of Array.isArray(body.upsert_asset_ids) ? body.upsert_asset_ids.map(String) : []) {
+          const detail = runtimeFlags().datahub
+            ? await gatewayRequest<CatalogAssetDetail>(`/poc-api/datahub/asset?urn=${encodeURIComponent(assetId)}`, { signal: options.signal })
+            : undefined
+          if (!detail) continue
+          const existing = scopes.find((scope) => scope.platform === detail.platform && scope.database_name === detail.database_name && scope.schema_name === detail.schema_name)
+          if (existing) existing.active = true
+          else scopes.push({ scope_id: nextId('system-schema'), system_id: systemId, platform: detail.platform ?? '', database_name: detail.database_name ?? '', schema_name: detail.schema_name ?? '', active: true, version: 1 })
+        }
+        adminSystemSchemaScopes.set(systemId, scopes)
+        system.version += 1
+        await this.persistCore()
+        return { system_id: systemId, system_version: system.version, payload_hash: 'b'.repeat(64) }
+      }
     }
     if (path === '/admin/workspace-memberships' && method === 'GET') {
       const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase()
@@ -1679,6 +2615,12 @@ class PocApiClient {
       const firstName = responseString(body.first_name, '')
       const lastName = responseString(body.last_name, '')
       const displayName = `${firstName} ${lastName}`.trim() || responseString(body.username, 'POC User')
+      const jobFunction = ['developer', 'data_steward', 'viewer', 'admin'].includes(String(body.job_function))
+        ? String(body.job_function)
+        : 'viewer'
+      const effectiveProfileRole = jobFunction === 'admin'
+        ? 'ADMIN' as const
+        : jobFunction === 'viewer' ? 'VIEWER' as const : 'ENGINEER_STEWARD' as const
       const member: WorkspaceMembershipSummary = {
         ...pocAdminMembership(),
         subject_id: subjectId,
@@ -1688,10 +2630,11 @@ class PocApiClient {
         change_request_count: 0,
         joined_at: new Date().toISOString(),
         department_id: responseString(body.department_id, '') || null,
-        job_function: responseString(body.job_function, '') || null,
-        effective_profile_role: 'VIEWER',
+        job_function: jobFunction,
+        effective_profile_role: effectiveProfileRole,
       }
       adminMemberships = [...adminMemberships, member]
+      await this.persistCore()
       return {
         subject_id: subjectId,
         username: responseString(body.username, 'poc.user'),
@@ -1700,7 +2643,7 @@ class PocApiClient {
         workspace_id: POC_WORKSPACE_ID,
         role_id: null,
         access_expires_at: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(),
-        temporary_password_required: true,
+        temporary_password_required: false,
       }
     }
     const memberAccess = path.match(/^\/admin\/workspace-memberships\/([^/]+)\/access$/)
@@ -1782,11 +2725,25 @@ export function useStableApiClient(
 }
 
 export function resetPocMemory(): void {
+  sequence = 900
   changeRecords = []
   chatSessions = []
   uploadRecords = []
   manualSubmissionReports = []
   adminMemberships = [pocAdminMembership()]
+  adminSystems = []
+  adminSystemAssignees.clear()
+  adminSystemSchemaScopes.clear()
+  knowledgeDomains = []
+  knowledgeDrafts = []
+  knowledgeReleases = []
+  knowledgeDraftBlocks.clear()
+  knowledgeDraftBindings.clear()
+  governanceDocuments = []
+  governanceVersions = []
+  governanceReviews = []
+  governanceAttachments = []
+  governanceAttachmentLocations.clear()
   chatMessages.clear()
   changeAttachmentUploads.clear()
   changeAttachments.clear()

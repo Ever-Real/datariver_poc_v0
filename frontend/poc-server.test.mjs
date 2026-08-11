@@ -23,6 +23,8 @@ test('serves the POC at the root with the runtime boundary', async () => {
   const response = await fetch(origin)
   assert.equal(response.status, 200)
   assert.match(response.headers.get('content-security-policy'), /connect-src 'self'/)
+  assert.match(response.headers.get('content-security-policy'), /script-src 'self' 'wasm-unsafe-eval'/)
+  assert.doesNotMatch(response.headers.get('content-security-policy'), /script-src[^;]*\s'unsafe-eval'(?:\s|;|$)/)
   const body = await response.text()
   assert.match(body, /poc-runtime-config\.js/)
   assert.match(body, /src="\.\/assets\/poc-/)
@@ -61,6 +63,22 @@ test('reports a safe provider capability inventory', async () => {
   assert.ok(Array.isArray(body.items))
   assert.equal(body.items.length, 7)
   assert.ok(body.items.every((item) => ['available', 'disabled', 'unavailable'].includes(item.state)))
+})
+
+test('persists only fixed allowlisted POC state scopes in the server fallback store', async () => {
+  const empty = await fetch(new URL('/poc-api/state/core', origin))
+  assert.equal(empty.status, 200)
+  assert.equal((await empty.json()).value, null)
+  const stored = await fetch(new URL('/poc-api/state/core', origin), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ value: { sequence: 901, changeRecords: [] } }),
+  })
+  assert.equal(stored.status, 200)
+  assert.equal((await stored.json()).version, 1)
+  const reread = await (await fetch(new URL('/poc-api/state/core', origin))).json()
+  assert.deepEqual(reread.value, { sequence: 901, changeRecords: [] })
+  assert.equal((await fetch(new URL('/poc-api/state/arbitrary', origin))).status, 404)
 })
 
 test('rejects arbitrary gateway paths and non-allowlisted DAGs', async () => {

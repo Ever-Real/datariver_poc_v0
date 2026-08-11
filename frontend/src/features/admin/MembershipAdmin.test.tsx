@@ -119,9 +119,10 @@ function renderUsers(
   api: object,
   allowedOperations: AdminReadContext['allowed_operations'],
   requestConfirmation: (next: PendingAdminMutation) => void = vi.fn(),
+  actionVocabulary: string[] = ['catalog.read'],
 ) {
   return render(<MembershipAccessAdmin
-    api={api as never} context={context(allowedOperations)} messages={getAdminMessages('ko')}
+    api={api as never} context={{ ...context(allowedOperations), action_vocabulary: actionVocabulary }} messages={getAdminMessages('ko')}
     requestConfirmation={requestConfirmation} keyFor={() => 'stable-key'} clearKey={vi.fn()}
     reportError={vi.fn()} onStepUp={vi.fn(() => Promise.resolve())}
     onPasswordReauth={vi.fn(() => Promise.resolve())} onEnroll={vi.fn(() => Promise.resolve())}
@@ -172,7 +173,9 @@ describe('MembershipAccessAdmin', () => {
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'hong@example.test' } })
     fireEvent.change(screen.getByLabelText('이름'), { target: { value: 'Gildong' } })
     fireEvent.change(screen.getByLabelText('성'), { target: { value: 'Hong' } })
-    expect(screen.getByText(/신규 Viewer 기본/)).toBeInTheDocument()
+    expect(screen.getByLabelText('업무 역할').tagName).toBe('SELECT')
+    fireEvent.change(screen.getByLabelText('업무 역할'), { target: { value: 'data_steward' } })
+    expect(screen.getByText(/POC 접근 정책/)).toBeInTheDocument()
     expect(screen.queryByLabelText('데이터·화면 접근 Role')).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('임시 비밀번호'), { target: { value: 'Temporary-Only-42!' } })
     fireEvent.change(screen.getByLabelText('임시 비밀번호 확인'), { target: { value: 'Temporary-Only-42!' } })
@@ -180,10 +183,38 @@ describe('MembershipAccessAdmin', () => {
 
     await waitFor(() => expect(api.provisionIdentityUser).toHaveBeenCalledWith({
       username: 'hong.gildong', email: 'hong@example.test', first_name: 'Gildong', last_name: 'Hong',
-      department_id: null, job_function: null, role_id: null,
+      department_id: null, job_function: 'data_steward', role_id: null,
       temporary_password: 'Temporary-Only-42!',
     }, 'stable-key'))
     expect(screen.queryByRole('dialog', { name: '사용자 등록' })).not.toBeInTheDocument()
+  })
+
+  it('creates a local POC profile without collecting an authentication password', async () => {
+    const api = {
+      listMembershipPage: vi.fn(() => Promise.resolve({ items: [], nextCursor: null, limit: 25 })),
+      provisionIdentityUser: vi.fn(() => Promise.resolve({ subject_id: 'poc-user' })),
+    }
+    renderUsers(
+      api,
+      ['MEMBERSHIP_ACCESS_READ', 'IDENTITY_USER_PROVISION'],
+      vi.fn(),
+      ['POC_OPEN_ACCESS_V1'],
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: '사용자 등록' }))
+    expect(await screen.findByText(/Keycloak 계정과 비밀번호는 생성하지 않습니다/)).toBeInTheDocument()
+    expect(screen.queryByLabelText('임시 비밀번호')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('사용자명'), { target: { value: 'poc.viewer' } })
+    fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'poc.viewer@example.test' } })
+    fireEvent.change(screen.getByLabelText('이름'), { target: { value: 'POC' } })
+    fireEvent.change(screen.getByLabelText('성'), { target: { value: 'Viewer' } })
+    fireEvent.change(screen.getByLabelText('업무 역할'), { target: { value: 'viewer' } })
+    fireEvent.click(screen.getAllByRole('button', { name: '사용자 등록' }).at(-1)!)
+
+    await waitFor(() => expect(api.provisionIdentityUser).toHaveBeenCalledWith({
+      username: 'poc.viewer', email: 'poc.viewer@example.test', first_name: 'POC', last_name: 'Viewer',
+      department_id: null, job_function: 'viewer', role_id: null, temporary_password: '',
+    }, 'stable-key'))
   })
 
   it('opens the profile modal and assigns a server-managed profile tier', async () => {

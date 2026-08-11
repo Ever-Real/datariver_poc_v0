@@ -9,6 +9,7 @@ import type {
   WorkspaceMembershipSummary,
 } from '../api/types'
 import { QualityApi } from '../features/quality/qualityApi'
+import { GovernanceDocumentsApi } from '../features/governance-documents/governanceDocumentsApi'
 import { resetPocMemory, useStableApiClient } from './pocApi'
 
 const meta = {
@@ -448,22 +449,76 @@ describe('POC live-provider compatibility adapter', () => {
       'IDENTITY_USER_PROVISION', 'MEMBERSHIP_ACCESS_READ', 'SYSTEM_CONFIGURATION_READ',
     ]))
 
-    await client.request('/admin/identity-users', {
+    const provisioned = await client.request<{ temporary_password_required: boolean }>('/admin/identity-users', {
       method: 'POST',
       body: JSON.stringify({
         username: 'poc.viewer', email: 'poc.viewer@poc.invalid',
-        first_name: 'POC', last_name: 'Viewer', temporary_password: 'not-persisted',
+        first_name: 'POC', last_name: 'Viewer', job_function: 'data_steward', temporary_password: '',
       }),
     })
+    expect(provisioned.temporary_password_required).toBe(false)
     const memberships = await client.request<{ items: WorkspaceMembershipSummary[] }>('/admin/workspace-memberships?limit=25')
     expect(memberships.items.map((item) => item.email)).toContain('poc.viewer@poc.invalid')
+    expect(memberships.items.find((item) => item.email === 'poc.viewer@poc.invalid')).toMatchObject({
+      job_function: 'data_steward', effective_profile_role: 'ENGINEER_STEWARD',
+    })
+
+    const system = await client.request<{ system_id: string; code: string }>('/admin/systems', {
+      method: 'POST', body: JSON.stringify({ code: 'MES', name: 'Manufacturing Execution', description: 'POC system' }),
+    })
+    expect(system.code).toBe('MES')
+    const systems = await client.request<{ items: Array<{ system_id: string }> }>('/admin/systems?limit=25')
+    expect(systems.items.map((item) => item.system_id)).toContain(system.system_id)
 
     const settings = await client.request<{ items: SystemConfigurationEntry[] }>('/admin/system-configuration')
     expect(settings.items.find((item) => item.system_id === 'DATAHUB_GMS')?.state).toBe('CONFIGURED')
     expect(settings.items.find((item) => item.system_id === 'S3_STORAGE')?.environment_template)
       .toContain('S3_BUCKET_INFOSCHEMA=')
-    expect(JSON.stringify(settings)).not.toContain('not-persisted')
+    expect(JSON.stringify(settings)).not.toContain('temporary_password')
     const probe = await client.request<SystemConfigurationTestResult>('/admin/system-configuration/AIRFLOW/test-deployment', { method: 'POST' })
     expect(probe.status).toBe('AVAILABLE')
+  })
+
+  it('provides open POC governance lifecycle contracts without seeded documents', async () => {
+    const api = new GovernanceDocumentsApi(useStableApiClient())
+    const capability = await api.capability()
+    expect(capability.axes.some((axis) => axis.state === 'DENIED')).toBe(false)
+    expect((await api.documents(capability.cache_scope, { kind: 'DOCUMENT', limit: 25 })).items).toEqual([])
+    expect((await api.templateBlueprints()).items).toHaveLength(6)
+
+    const created = await api.createDocument({
+      kind: 'DOCUMENT', category: 'POLICY', title: 'POC 데이터 정책', summary: '검토 흐름',
+      classification: 1, applicability_scope: 'POC', sanitized_html: '<p>정책 본문</p>',
+      source_template_version_id: null, parent_document_id: null,
+    }, 'governance-create')
+    const draft = created.item.versions[0]!
+    const submitted = await api.submitVersion(
+      created.item.document.document_id, draft.version_id, created.item.document.version, 'governance-submit',
+    )
+    const reviewed = await api.reviewVersion(
+      created.item.document.document_id, draft.version_id, submitted.item.document.version,
+      { decision: 'APPROVE', reason: 'POC 검토 완료' }, 'governance-review',
+    )
+    expect(reviewed.item.document.state).toBe('ACTIVE')
+    expect(reviewed.item.versions[0]?.state).toBe('PUBLISHED')
+  })
+
+  it('creates Knowledge Studio state only from user input and live DataHub sources', async () => {
+    const client = useStableApiClient()
+    expect((await client.request<{ items: unknown[] }>('/knowledge/domains')).items).toEqual([])
+    const domain = await client.request<{ id: string; source_version: string }>('/knowledge/domains', {
+      method: 'POST', body: JSON.stringify({ display_name: 'Manufacturing' }),
+    })
+    const draft = await client.request<{ id: string; state: string }>('/knowledge/studio/drafts', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Manufacturing ontology', endpoint_alias: 'manufacturing_ontology',
+        endpoint_aliases: ['manufacturing_ontology'], domain_id: domain.id,
+        domain_source_version: domain.source_version, classification: 'INTERNAL',
+      }),
+    })
+    expect(draft.state).toBe('DRAFT')
+    const sources = await client.request<{ items: Array<{ id: string }> }>(`/knowledge/studio/drafts/${draft.id}/tbox/catalog-sources?q=wafer`)
+    expect(sources.items[0]?.id).toBe(liveAssets[0]!.id)
   })
 })

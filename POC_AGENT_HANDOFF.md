@@ -94,6 +94,21 @@ The user later explicitly superseded the synthetic walkthrough presentation requ
   ABAC/RLS and migration contract. Do not add or claim those services merely to make the anonymous
   gateway look production-equivalent.
 
+### 2026-08-11 POC state, cache and open-access amendment
+
+The user subsequently approved private Compose-owned Redis, pgvector PostgreSQL and Neo4j support
+for this isolated POC. ADR-0115 is authoritative for that topology. Redis is only a short-lived
+DataHub response cache. PostgreSQL stores only user-created POC adapter state for users, Systems,
+Change Requests, Knowledge Studio and governance documents; it is not the production schema,
+authorization authority or audit evidence. No business fixture rows are seeded. `npm run poc`
+must still work with a process-memory fallback when those containers are absent.
+
+All feature permissions are open to the single POC identity. Provider-dependent capabilities must
+still report `UNAVAILABLE` when their provider or control plane is missing; open permission must not
+be presented as fabricated provider readiness. The profile menu exposes the permission inventory,
+Registration, Knowledge and the live DataHub glossary for a future Admin migration. Production
+OIDC, ABAC/RLS and maker/checker paths remain unchanged.
+
 The exact current feature and provider boundary is recorded in
 `docs/POC_FUNCTIONAL_PARITY.md`. This amendment supersedes the earlier banner, sample-data and
 single-static-request acceptance bullets where they conflict; the isolation, no-auth production

@@ -11,6 +11,7 @@ import { AccountAccessAdmin } from './AccountAccessAdmin'
 import { AdminMutationConfirmDialog, type PendingAdminMutation } from './AdminMutationConfirmDialog'
 import { RetentionGovernanceAdmin } from './RetentionGovernanceAdmin'
 import { SystemConfigurationAdmin } from './SystemConfigurationAdmin'
+import { PocFeaturePermissionAdmin } from './PocFeaturePermissionAdmin'
 import { getAdminMessages } from './messages'
 import { adminSectionFromLocation, allowedAdminSections, type AdminSection } from './adminSections'
 
@@ -20,6 +21,7 @@ export function AdminPage({
   workspace,
   suspended = false,
   hardwareWebauthnEnabled = true,
+  openAccess = false,
   ...assurance
 }: {
   client: ApiClient
@@ -27,6 +29,7 @@ export function AdminPage({
   workspace: string
   suspended?: boolean
   hardwareWebauthnEnabled?: boolean
+  openAccess?: boolean
 } & AssuranceActions) {
   const api = useMemo(() => new AdminApi(client), [client])
   const messages = useMemo(() => getAdminMessages(), [])
@@ -88,7 +91,7 @@ export function AdminPage({
     setMutation(undefined)
   }, [contextEpoch])
   useEffect(() => {
-    if (!context || hardwareWebauthnEnabled) {
+    if (!context || hardwareWebauthnEnabled || openAccess) {
       setShowWebauthnDisabledWarning(false)
       return
     }
@@ -105,7 +108,7 @@ export function AdminPage({
       // session-only fallback without broadening who receives the notice.
       setShowWebauthnDisabledWarning(true)
     }
-  }, [context, hardwareWebauthnEnabled])
+  }, [context, hardwareWebauthnEnabled, openAccess])
   useEffect(() => {
     if (!showWebauthnDisabledWarning) return
     const timeoutId = window.setTimeout(() => setShowWebauthnDisabledWarning(false), 3_000)
@@ -172,7 +175,7 @@ export function AdminPage({
   }
   const shared = {
     api, context, messages, requestConfirmation, keyFor, clearKey, reportError,
-    hardwareWebauthnEnabled,
+    hardwareWebauthnEnabled: openAccess || hardwareWebauthnEnabled,
     ...assurance,
   }
   const locationParameters = new URL(window.location.href).searchParams
@@ -186,7 +189,9 @@ export function AdminPage({
       icon="AD"
       eyebrow={messages.eyebrow}
       title={messages.title}
-      description="서버가 허용한 관리 기능만 노출하며 고위험 변경은 보안키 인증과 독립 승인을 요구합니다."
+      description={openAccess
+        ? '현재 POC의 기능 권한은 모두 OPEN이며, provider 준비 상태는 별도 capability로 표시합니다.'
+        : '서버가 허용한 관리 기능만 노출하며 고위험 변경은 보안키 인증과 독립 승인을 요구합니다.'}
       actions={<button className="button button-secondary" onClick={() => void loadContext()}>{messages.refresh}</button>}
     />
     <div className="admin-tabs" role="tablist" aria-label={messages.title}>{visibleSections.map((id) => <button key={id} {...primaryTabs.tabProps(id)} type="button" className={activeSection === id ? 'active' : ''} onClick={() => navigate(id)}>{messages[id]}</button>)}</div>
@@ -200,17 +205,18 @@ export function AdminPage({
       <span>이 배포에서는 WebAuthn이 비활성화되어 있습니다. 개발 환경의 관리자 작업은 서버가 허용한 비밀번호 보증 예외가 있는 경우에만 실행할 수 있습니다.</span>
       <div className="action-row"><button type="button" className="button button-secondary" onClick={() => setShowWebauthnDisabledWarning(false)}>확인</button></div>
     </div>}
-    <AssuranceNotice error={error} requiredAssurance={assuranceType} hardwareWebauthnEnabled={hardwareWebauthnEnabled} {...assurance} />
+    {!openAccess && <AssuranceNotice error={error} requiredAssurance={assuranceType} hardwareWebauthnEnabled={hardwareWebauthnEnabled} {...assurance} />}
     <ErrorNotice error={error} />
     {activeSection && <div {...primaryTabs.panelProps(activeSection)}>
       {activeSection === 'memberships' && <AccountAccessAdmin {...shared} />}
+      {activeSection === 'featurePermissions' && <PocFeaturePermissionAdmin />}
       {activeSection === 'systemSettings' && <SystemConfigurationAdmin {...shared} />}
       {activeSection === 'retention' && <RetentionGovernanceAdmin {...shared} />}
     </div>}
     <GovernedUnavailable
       compact
-      title="Audit/Log·전사 용어사전 관리자 API 미구현"
-      description="레거시 관리자 URL은 실제 로그나 용어 데이터를 조회하지 않습니다. 민감 필드 마스킹·전용 읽기 권한·서버 페이지·감사 가능한 내보내기와 용어 정본 승인 계약이 추가되기 전까지 기능을 명시적으로 비활성화합니다."
+      title="Audit/Log·용어 승인 관리 API 미구현"
+      description="실시간 DataHub 연결 용어 조회는 POC USER의 용어사전에서 제공합니다. Audit 내보내기와 용어 생성·승인 정본 관리는 별도 계약이 추가되기 전까지 비활성화합니다."
     />
     <AdminMutationConfirmDialog mutation={mutation} busy={busy} messages={messages} onCancel={() => setMutation(undefined)} onConfirm={() => void confirmMutation()} />
   </section>

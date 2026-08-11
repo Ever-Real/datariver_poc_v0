@@ -19,6 +19,7 @@ const CatalogPage = lazy(() => import('./features/catalog/CatalogPage').then((mo
 const ChatPage = lazy(() => import('./features/chat/ChatPage').then((module) => ({ default: module.ChatPage })))
 const DashboardPage = lazy(() => import('./features/dashboard/DashboardPage').then((module) => ({ default: module.DashboardPage })))
 const GovernancePage = lazy(() => import('./features/governance/GovernancePage').then((module) => ({ default: module.GovernancePage })))
+const PocGlossaryPage = lazy(() => import('./features/admin/PocGlossaryPage').then((module) => ({ default: module.PocGlossaryPage })))
 const KnowledgeWorkspacePage = lazy(() => import('./features/knowledge/KnowledgeWorkspacePage').then((module) => ({ default: module.KnowledgeWorkspacePage })))
 const MonitoringPage = lazy(() => import('./features/monitoring/MonitoringPage').then((module) => ({ default: module.MonitoringPage })))
 const PolicyGovernancePage = lazy(() => import('./features/policy/PolicyGovernancePage').then((module) => ({ default: module.PolicyGovernancePage })))
@@ -245,6 +246,9 @@ export function App() {
   }, [])
 
   const navigateAdmin = useCallback((adminSection: string) => {
+    if (adminSection === 'poc-registration') return navigate('registration')
+    if (adminSection === 'poc-knowledge') return navigate('knowledge')
+    if (adminSection === 'poc-glossary') return navigate('glossary')
     const url = new URL(window.location.href)
     url.searchParams.set('page', 'admin')
     url.searchParams.set('adminSection', adminSection)
@@ -252,7 +256,7 @@ export function App() {
     window.history.pushState({}, '', `${url.pathname}${url.search}${url.hash}`)
     setCatalogQuery('')
     setPage('admin')
-  }, [])
+  }, [navigate])
 
   const searchCatalog = useCallback((query: string) => {
     window.history.pushState({}, '', pageUrl('catalog', { query }))
@@ -319,9 +323,14 @@ export function App() {
   const mayReadPolicyGovernance = Boolean(currentAdminContext && policyReadOperations
     .every((operation) => currentAdminContext.allowed_operations.includes(operation)))
   const adminMessages = getAdminMessages()
-  const adminMenuItems = currentAdminContext
+  const adminMenuItems: Array<{ id: string; label: string }> = currentAdminContext
     ? allowedAdminSections(currentAdminContext).map((id) => ({ id, label: adminMessages[id] }))
     : []
+  if (!authenticationEnabled) adminMenuItems.unshift(
+    { id: 'poc-registration', label: '등록관리' },
+    { id: 'poc-knowledge', label: '지식관리' },
+    { id: 'poc-glossary', label: '용어사전' },
+  )
   const adminContextKey = cachedAdminContext
     ? [
         cachedAdminContext.workspace_id,
@@ -379,6 +388,7 @@ export function App() {
           authorizationRevision={auth.authorizationRevision}
         />}
         {page === 'registration' && <RegistrationPage client={client} />}
+        {page === 'glossary' && <PocGlossaryPage client={client} />}
         {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={authenticationEnabled && auth.profile?.hardware_webauthn_enabled === true} />}
         {page === 'quality' && <QualityPage
           client={client}
@@ -439,6 +449,7 @@ export function App() {
             initialContext={cachedAdminContext}
             workspace={activeWorkspace}
             suspended={!currentAdminContext}
+            openAccess={!authenticationEnabled}
             hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled !== false}
             onStepUp={auth.beginStepUp}
             onPasswordReauth={auth.beginPasswordReauth}
