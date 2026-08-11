@@ -86,7 +86,7 @@ describe('POC compatibility application', () => {
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
-  it('fails Chat closed when live DataHub and LLM are not configured', async () => {
+  it('fails Chat closed when LLM Chat is not configured', async () => {
     renderPoc()
     fireEvent.click(within(navigation()).getByRole('button', { name: /Chat/ }))
     await screen.findByRole('heading', { name: '카탈로그 Chat' })
@@ -94,7 +94,7 @@ describe('POC compatibility application', () => {
     fireEvent.change(input, { target: { value: 'wafer 품질 근거를 다시 알려줘' } })
     fireEvent.submit(input.closest('form')!)
 
-    expect(await screen.findByText(/검증 불가: DataHub와 LLM Chat 연결을 모두 설정해야 합니다/)).toBeVisible()
+    expect(await screen.findByText(/검증 불가: LLM Chat 연결을 설정해야 합니다/)).toBeVisible()
     expect(screen.queryByText(/98\.75%/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Synthetic catalog/)).not.toBeInTheDocument()
     expect(globalThis.fetch).not.toHaveBeenCalled()

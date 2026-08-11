@@ -341,6 +341,7 @@ describe('ChangeRequestCreateDialog', () => {
   })
 
   it('reports missing fields, then submits existing and manual targets together', async () => {
+    let attachmentUploadId = ''
     const asset = {
       id: 'catalog-asset-1',
       external_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,erp.orders,PROD)',
@@ -389,6 +390,28 @@ describe('ChangeRequestCreateDialog', () => {
       if (path === '/change-requests/intake' && options?.method === 'POST') {
         return Promise.resolve(created)
       }
+      if (path === `/change-requests/${created.id}/attachments` && options?.method === 'POST') {
+        const body = options.body
+        const uploadId = body instanceof FormData ? body.get('upload_id') : null
+        attachmentUploadId = typeof uploadId === 'string' ? uploadId : ''
+        return Promise.resolve({
+          id: attachmentUploadId,
+          change_request_id: created.id,
+          round_id: 'round-1',
+          kind: 'REQUEST',
+          original_name: 'request-evidence.txt',
+          state: 'STORED',
+          expected_size_bytes: 8,
+          expected_content_sha256: 'a'.repeat(64),
+          provider_checksum: 'a'.repeat(64),
+          failure_code: null,
+          status_url: `/change-requests/${created.id}/attachment-uploads/${attachmentUploadId}`,
+          finalize_url: `/change-requests/${created.id}/attachment-uploads/${attachmentUploadId}/finalize`,
+        })
+      }
+      if (path === `/change-requests/${created.id}/attachment-uploads/${attachmentUploadId}/finalize` && options?.method === 'POST') {
+        return Promise.resolve({})
+      }
       throw new Error(`Unexpected request: ${path}`)
     })
     const onCreated = vi.fn()
@@ -424,6 +447,9 @@ describe('ChangeRequestCreateDialog', () => {
     fireEvent.change(screen.getByLabelText('신규 테이블 2 테이블명'), {
       target: { value: 'wafer_summary' },
     })
+    fireEvent.change(screen.getByLabelText(/클릭하거나 파일을 드래그하세요/), {
+      target: { files: [new File(['evidence'], 'request-evidence.txt', { type: 'text/plain' })] },
+    })
     fireEvent.click(submit)
 
     await waitFor(() => expect(request).toHaveBeenCalledWith(
@@ -448,6 +474,11 @@ describe('ChangeRequestCreateDialog', () => {
       ],
     }))
     expect(onCreated).toHaveBeenCalledWith(created)
+    expect(attachmentUploadId).toMatch(/^[0-9a-f-]{36}$/)
+    expect(request).toHaveBeenCalledWith(
+      `/change-requests/${created.id}/attachment-uploads/${attachmentUploadId}/finalize`,
+      expect.objectContaining({ method: 'POST' }),
+    )
   })
 
   it('reuses the bounded editor for one fixed-system revision POST', async () => {

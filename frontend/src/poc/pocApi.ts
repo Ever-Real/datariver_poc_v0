@@ -17,6 +17,7 @@ import type {
   ChangeRequestState,
   ChatMessage,
   ChatMode,
+  ChatResponse,
   ChatSession,
   SystemConfigurationEntry,
   SystemConfigurationTestResult,
@@ -29,7 +30,6 @@ import {
   POC_WORKSPACE_ID,
   authorizationWindow,
   catalogMeta,
-  chatWorkflow,
   scorePolicy,
 } from './pocContracts'
 
@@ -806,22 +806,19 @@ class PocApiClient {
     const sessionId = typeof body.session_id === 'string' && body.session_id
       ? body.session_id
       : nextId('chat-session')
-    const live = runtimeFlags().llmChat && runtimeFlags().datahub
-      ? gatewayRequest<{ answer: string; evidence: Array<Record<string, unknown>> }>('/poc-api/llm/chat', {
+    const live = runtimeFlags().llmChat
+      ? gatewayRequest<Pick<ChatResponse, 'answer' | 'route' | 'workflow'> & { evidence: Array<Record<string, unknown>> }>('/poc-api/llm/chat', {
           method: 'POST',
           signal: options.signal,
-          body: JSON.stringify({ question }),
+          body: JSON.stringify({ question, mode }),
         })
-      : Promise.reject(new Error('검증 불가: DataHub와 LLM Chat 연결을 모두 설정해야 합니다.'))
+      : Promise.reject(new Error('검증 불가: LLM Chat 연결을 설정해야 합니다.'))
     return live.then(async (liveResult) => {
-      const workflow = chatWorkflow.map((step) => ({
-        ...step,
-        detail_code: runtimeFlags().llmChat ? 'POC_LIVE_PROVIDER' : step.detail_code,
-      }))
+      const workflow = liveResult.workflow
       for (const step of workflow) onEvent({ event: 'workflow', data: { ...step, status: 'IN_PROGRESS' } })
       const requestId = nextId('chat-request')
       const responseId = nextId('chat-response')
-      const route = chatRoute(mode)
+      const route = liveResult.route ?? chatRoute(mode)
       const evidence = await Promise.all(liveResult.evidence.map(async (item, index) => {
         const resourceId = responseString(item.id ?? item.external_urn, '')
         const classification = ['PUBLIC', 'INTERNAL', 'CONFIDENTIAL', 'RESTRICTED']
@@ -832,20 +829,23 @@ class PocApiClient {
           chunk_id: `datahub-evidence-${index + 1}`,
           resource_id: resourceId,
           classification,
-          system_id: null,
-          domain_id: null,
+          system_id: responseString(item.platform, '') || null,
+          domain_id: responseString(item.domain, '') || null,
           owner_department_id: null,
           name: responseString(item.name, 'DataHub asset'),
           description: responseString(item.description, '') || null,
-          source_type: 'CATALOG_ASSET',
+          source_type: responseString(item.evidence_type, 'CATALOG_ASSET'),
           source_locator: responseString(item.external_urn ?? item.id, ''),
           source_version: responseString(item.source_version, 'datahub-live'),
           content_hash: await sha256(JSON.stringify(item)),
           effective_from: new Date().toISOString(),
           effective_until: null,
-          extraction_method: 'DATAHUB_GMS',
+          extraction_method: responseString(item.extraction_method, 'DATAHUB_GMS'),
           rank: index + 1,
-          retrieval_method: runtimeFlags().llmReranker ? 'RERANKED' : 'DATAHUB_SEARCH',
+          retrieval_method: responseString(
+            item.retrieval_method,
+            runtimeFlags().llmReranker ? 'RERANKED' : 'DATAHUB_SEARCH',
+          ),
         }
       }))
       const messages = chatMessages.get(sessionId) ?? []
@@ -1589,7 +1589,7 @@ class PocApiClient {
           advisory_failed_count: 0,
           blocking_failed_count: 0,
           latest_score_basis_points: null,
-          latest_quality_outcome: null,
+          latest_quality_outcome: 'UNKNOWN' as const,
           latest_evaluated_at: null,
         }]
       })
@@ -1603,10 +1603,7 @@ class PocApiClient {
           reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED',
           source_version: detail.source_version,
           schema_hash: null,
-          fields: fields.map(({ configured_rule_count: _configured, active_rule_count: _active, evaluated_rule_count: _evaluated, passed_count: _passed, advisory_failed_count: _advisory, blocking_failed_count: _blocking, latest_score_basis_points: _score, latest_quality_outcome: _outcome, latest_evaluated_at: _at, ...field }) => {
-            void _configured; void _active; void _evaluated; void _passed; void _advisory; void _blocking; void _score; void _outcome; void _at
-            return field
-          }),
+          fields: [],
         },
         fields,
         score_policy: scorePolicy,

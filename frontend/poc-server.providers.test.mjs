@@ -26,12 +26,21 @@ function providerHandler(request, response) {
     const body = await readBody(request)
     const url = new URL(request.url || '/', 'http://provider.test')
     requests.push({ method: request.method, path: url.pathname, headers: request.headers, body: body.toString('utf8') })
-    if (url.pathname === '/' || url.pathname === '/config' || url.pathname === '/models' || url.pathname === '/minio/health/live') return sendJson(response, { ok: true })
-    if (url.pathname === '/api/v2/monitor/health') return sendJson(response, { metadatabase: { status: 'healthy' } })
-    if (/^\/api\/v2\/dags\/[^/]+\/dagRuns$/.test(url.pathname)) return sendJson(response, { state: 'queued' }, 201)
-    if (url.pathname === '/embeddings') return sendJson(response, { data: [{ embedding: [0.1, 0.2] }] })
-    if (url.pathname === '/rerank') return sendJson(response, { results: [{ index: 0, relevance_score: 0.9 }] })
-    if (url.pathname === '/chat/completions') return sendJson(response, { choices: [{ message: { content: 'Live provider answer' } }] })
+    if (url.pathname === '/' || url.pathname === '/config' || url.pathname.endsWith('/models') || url.pathname === '/minio/health/live') return sendJson(response, { ok: true })
+    if (url.pathname === '/airflow/api/v2/monitor/health') return sendJson(response, { detail: 'Airflow 2.x has no API v2' }, 404)
+    if (url.pathname === '/airflow/api/v1/dags' && request.method === 'GET') return sendJson(response, { dags: [] })
+    if (/^\/airflow\/api\/v1\/dags\/[^/]+\/dagRuns$/.test(url.pathname)) return sendJson(response, { state: 'queued' }, 201)
+    if (url.pathname.endsWith('/embeddings')) return sendJson(response, { data: [{ embedding: [0.1, 0.2] }] })
+    if (url.pathname.endsWith('/rerank')) return sendJson(response, { results: [{ index: 0, relevance_score: 0.9 }] })
+    if (url.pathname.endsWith('/chat/completions')) {
+      const payload = JSON.parse(body.toString('utf8'))
+      const systemPrompt = payload.messages?.[0]?.content || ''
+      if (systemPrompt.includes('Classify the user question')) {
+        const question = payload.messages?.[1]?.content || ''
+        return sendJson(response, { choices: [{ message: { content: /lineage|upstream/i.test(question) ? 'GRAPH' : 'VECTOR' } }] })
+      }
+      return sendJson(response, { choices: [{ message: { content: 'Live provider answer [1]' } }] })
+    }
     if (url.pathname === '/api/graphql') {
       const payload = JSON.parse(body.toString('utf8'))
       if (payload.query.includes('DataRiverPocCatalog')) {
@@ -124,7 +133,10 @@ function providerHandler(request, response) {
           ] },
         } } })
       }
-      return sendJson(response, { data: { dataset: { lineage: { total: 0, relationships: [] } } } })
+      const relationships = payload.variables?.input?.direction === 'UPSTREAM'
+        ? [{ entity: { urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.RAW.source_events,PROD)', type: 'DATASET' } }]
+        : []
+      return sendJson(response, { data: { dataset: { lineage: { total: relationships.length, relationships } } } })
     }
     if (url.pathname === '/db/neo4j/tx/commit') {
       return sendJson(response, { errors: [], results: [{ data: [
@@ -156,19 +168,19 @@ before(async () => {
   Object.assign(process.env, {
     DATAHUB_GMS_URL: providerOrigin,
     DATAHUB_GMS_TOKEN: 'datahub-test-token',
-    AIRFLOW_URL: providerOrigin,
+    AIRFLOW_URL: `${providerOrigin}/airflow`,
     AIRFLOW_USERNAME: 'airflow-test',
     AIRFLOW_PASSWORD: 'airflow-test-password',
     MINIO_URL: providerOrigin,
     MINIO_ACCESS_KEY: 'minio-test-access',
     MINIO_SECRET_KEY: 'minio-test-secret',
-    LLM_CHAT_URL: providerOrigin,
+    LLM_CHAT_URL: `${providerOrigin}/llm/chat/v1/chat/completions`,
     LLM_CHAT_MODEL: 'chat-model',
     LLM_CHAT_TOKEN: 'chat-test-token',
-    LLM_EMBEDDING_URL: providerOrigin,
+    LLM_EMBEDDING_URL: `${providerOrigin}/llm/embedding/v1/embeddings`,
     LLM_EMBEDDING_MODEL: 'embedding-model',
     LLM_EMBEDDING_TOKEN: 'embedding-test-token',
-    LLM_RERANKER_URL: providerOrigin,
+    LLM_RERANKER_URL: `${providerOrigin}/llm/reranker/v1/rerank`,
     LLM_RERANKER_MODEL: 'reranker-model',
     LLM_RERANKER_TOKEN: 'reranker-test-token',
     NEO4J_HTTP_URL: providerOrigin,
@@ -203,8 +215,9 @@ test('publishes only enabled flags while all provider probes pass', async () => 
   const capability = await (await fetch(`${pocOrigin}/poc-api/capabilities`)).json()
   assert.ok(capability.items.every((item) => item.state === 'available'))
   assert.equal(capability.grafana_embed.state, 'AVAILABLE')
+  assert.equal(capability.items.find((item) => item.name === 'Airflow').detail_code, 'AIRFLOW_API_V1')
   assert.equal(capability.monitoring_configuration.items[0].embed_url, `${new URL(capability.grafana_embed.url).origin}/dashboards/datariver`)
-  assert.ok(requests.some((request) => request.method === 'POST' && request.path === '/rerank'))
+  assert.ok(requests.some((request) => request.method === 'POST' && request.path.endsWith('/rerank')))
 })
 
 test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
@@ -249,13 +262,30 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question: 'wafer evidence' }),
+    body: JSON.stringify({ question: 'wafer metadata evidence', mode: 'AUTO' }),
   })
   assert.equal(response.status, 200)
-  assert.equal((await response.json()).answer, 'Live provider answer')
+  const payload = await response.json()
+  assert.equal(payload.answer, 'Live provider answer [1]')
+  assert.equal(payload.route.selected_mode, 'VECTOR')
+  assert.equal(payload.evidence[0].evidence_type, 'CATALOG_ASSET')
   for (const path of ['/embeddings', '/rerank', '/chat/completions']) {
-    assert.ok(requests.some((request) => request.path === path))
+    assert.ok(requests.some((request) => request.path.endsWith(path)))
   }
+})
+
+test('routes lineage questions through bounded DataHub and Neo4j graph evidence', async () => {
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'Show upstream lineage impact', mode: 'AUTO' }),
+  })
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.route.selected_mode, 'GRAPH')
+  assert.equal(payload.route.reason, 'GRAPH_INTENT')
+  assert.ok(payload.evidence.some((item) => item.evidence_type === 'DATAHUB_LINEAGE'))
+  assert.ok(payload.evidence.some((item) => item.evidence_type === 'KNOWLEDGE_GRAPH'))
 })
 
 test('triggers only the fixed Airflow DAG and proxies a bounded MinIO upload', async () => {
@@ -265,6 +295,7 @@ test('triggers only the fixed Airflow DAG and proxies a bounded MinIO upload', a
     body: JSON.stringify({ conf: { poc_run_id: 'run-1' } }),
   })
   assert.equal(dag.status, 202)
+  assert.ok(requests.some((request) => request.path.includes('/airflow/api/v1/dags/datariver_quality_dispatch/dagRuns')))
   const part = await fetch(`${pocOrigin}/poc-api/minio/uploads/upload-1/parts/1`, {
     method: 'PUT',
     headers: { 'Content-Type': 'text/plain' },

@@ -2,6 +2,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { PocApp } from './PocApp'
+import { installPocRandomUuidCompatibility } from './pocUuidCompat'
 import '../styles/tailwind.css'
 import '../styles/tokens.css'
 import '../styles.css'
@@ -9,6 +10,10 @@ import '../styles/shell.css'
 import '../styles/primitives.css'
 import '../styles/chat.css'
 import './poc.css'
+
+// Private-IP HTTP is intentionally supported by this no-auth POC. Web Crypto's
+// randomUUID may be absent there, while getRandomValues remains available.
+installPocRandomUuidCompatibility()
 
 const queryClient = new QueryClient({
   defaultOptions: {

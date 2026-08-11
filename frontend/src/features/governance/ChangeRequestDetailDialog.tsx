@@ -117,9 +117,7 @@ function stageForState(state: ChangeRequestState): number {
 }
 
 function currentStage(value: ChangeRequestRecord): number {
-  if (!['CHANGES_REQUESTED', 'REJECTED', 'CANCELLED'].includes(value.state)) return stageForState(value.state)
-  const last = [...value.transitions].reverse().find((transition) => transition.to_state === value.state)
-  return last ? stageForState(last.from_state) : 0
+  return stageForState(value.state)
 }
 
 function targetRows(value: ChangeRequestRecord): ChangeTargetRow[] {

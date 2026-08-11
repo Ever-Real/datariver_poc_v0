@@ -40,11 +40,25 @@ Cypher, DAG ID 또는 S3 bucket을 browser가 전달할 수 없습니다.
 
 - DataHub: `DATAHUB_GMS_URL`, `DATAHUB_GMS_TOKEN`; 사용자용 링크가 필요할 때만
   `DATAHUB_UI_URL`
-- Airflow: `AIRFLOW_URL`, `AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD`
+- Airflow: `AIRFLOW_URL`, `AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD`. URL에는 `/api/v1` 또는
+  `/api/v2`를 붙이지 않고 Webserver origin(예: `http://17.x.x.x:8888`)만 입력합니다. POC는
+  Airflow API v2를 먼저 확인하고 Airflow 2.x의 v1 API로 fallback합니다.
 - MinIO: `MINIO_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY` 및 기존 다섯 `S3_BUCKET_*`
   이름. region은 기본 `us-east-1`이며 비표준 설정에서만 `MINIO_REGION`을 추가합니다.
-- LLM: Chat/Embedding/Reranker별 `URL`, `MODEL`, `TOKEN`
+- LLM: Chat/Embedding/Reranker별 `URL`, `MODEL`, `TOKEN`. URL은 `/v1`까지의 base 또는
+  `/v1/chat/completions`, `/v1/embeddings`, `/v1/rerank` 같은 단계별 전체 endpoint를 모두
+  지원합니다.
 - Neo4j: `NEO4J_USERNAME`, `NEO4J_PASSWORD`; image/port는 기본값이 있어 보통 변경 불필요
+
+Grafana iframe은 다음 네 값을 함께 설정합니다. `UI_GRAFANA_URL`은 실제 dashboard 전체
+링크이고 `GRAFANA_EMBED_BASE_URL`은 같은 dashboard의 scheme/host/port까지만 입력합니다.
+
+```dotenv
+UI_GRAFANA_URL=http://grafana.internal:3000/d/datariver/platform
+GRAFANA_EMBED_BASE_URL=http://grafana.internal:3000
+GRAFANA_EMBED_ENABLED=true
+GRAFANA_EMBED_EVIDENCE_REFERENCE=prep-grafana-reviewed-v1
+```
 
 DataHub·Airflow·MinIO·LLM 컨테이너가 별도 Compose project에서 실행 중이면 그 project도
 `POC_SHARED_NETWORK`와 같은 external network에 연결하고 `.env` URL에 container DNS 이름을

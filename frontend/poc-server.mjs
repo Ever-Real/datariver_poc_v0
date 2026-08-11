@@ -185,6 +185,19 @@ function joinProviderUrl(base, suffix) {
   return `${base.replace(/\/$/, '')}/${suffix.replace(/^\//, '')}`
 }
 
+function llmEndpoint(provider, endpoint) {
+  const requested = `/${endpoint.replace(/^\//, '')}`
+  const value = new URL(provider.url)
+  const knownEndpoints = ['/chat/completions', '/embeddings', '/rerankings', '/rerank', '/models']
+  const configuredEndpoint = knownEndpoints.find((candidate) => value.pathname.endsWith(candidate))
+  if (configuredEndpoint) {
+    if (configuredEndpoint === requested
+      || (requested === '/rerank' && configuredEndpoint === '/rerankings')) return value.toString()
+    value.pathname = value.pathname.slice(0, -configuredEndpoint.length) || '/'
+  }
+  return joinProviderUrl(value.toString(), requested)
+}
+
 async function providerFetch(url, options = {}) {
   return fetch(url, {
     ...options,
@@ -792,9 +805,11 @@ function basicAuthorization(provider) {
   return `Basic ${Buffer.from(`${provider.username}:${provider.password}`).toString('base64')}`
 }
 
-async function airflowRequest(path, options = {}) {
+let airflowApiVersion
+
+async function airflowFetch(path, options = {}) {
   if (!airflow) throw Object.assign(new Error('Airflow is not configured.'), { statusCode: 503 })
-  const response = await providerFetch(joinProviderUrl(airflow.url, path), {
+  return providerFetch(joinProviderUrl(airflow.url, path), {
     ...options,
     headers: {
       Authorization: basicAuthorization(airflow),
@@ -802,13 +817,46 @@ async function airflowRequest(path, options = {}) {
       ...options.headers,
     },
   })
-  await requireOk(response, 'Airflow')
+}
+
+async function detectAirflowApiVersion() {
+  if (airflowApiVersion) return airflowApiVersion
+  const probes = [
+    { version: 'v2', path: '/api/v2/monitor/health' },
+    { version: 'v1', path: '/api/v1/dags?limit=1' },
+  ]
+  const statuses = []
+  for (const probe of probes) {
+    try {
+      const response = await airflowFetch(probe.path)
+      statuses.push(`${probe.version}:${response.status}`)
+      if (response.ok) {
+        airflowApiVersion = probe.version
+        return airflowApiVersion
+      }
+    } catch (error) {
+      statuses.push(`${probe.version}:${error instanceof Error ? error.name : 'NETWORK_ERROR'}`)
+    }
+  }
+  throw Object.assign(
+    new Error(`Airflow REST API probe failed (${statuses.join(', ')}).`),
+    { detailCode: 'AIRFLOW_REST_API_PROBE_FAILED' },
+  )
+}
+
+async function triggerAirflowDag(dagId, body) {
+  const version = await detectAirflowApiVersion()
+  const response = await airflowFetch(
+    `/api/${version}/dags/${encodeURIComponent(dagId)}/dagRuns`,
+    { method: 'POST', body: JSON.stringify(body) },
+  )
+  await requireOk(response, `Airflow ${version}`)
   return response
 }
 
 async function llmRequest(provider, endpoint, body) {
   if (!provider) throw Object.assign(new Error('The requested LLM stage is not configured.'), { statusCode: 503 })
-  const response = await providerFetch(joinProviderUrl(provider.url, endpoint), {
+  const response = await providerFetch(llmEndpoint(provider, endpoint), {
     method: 'POST',
     headers: { Authorization: `Bearer ${provider.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
@@ -817,39 +865,170 @@ async function llmRequest(provider, endpoint, body) {
   return response.json()
 }
 
-async function liveChat(question) {
+function deterministicChatMode(question) {
+  if (/(계보|영향|upstream|downstream|lineage|dependency|dependencies|연결|선행|후행)/i.test(question)) return 'GRAPH'
+  if (/(메타데이터|카탈로그|스키마|테이블|컬럼|태그|용어|metadata|catalog|schema|table|column|tag|term|dataset|asset)/i.test(question)) return 'VECTOR'
+  return 'GENERAL'
+}
+
+async function chatRoute(question, requestedMode) {
+  let selectedMode = requestedMode
+  let reason = 'EXPLICIT_SELECTION'
+  if (requestedMode === 'AUTO') {
+    try {
+      const classification = await llmRequest(llm.chat, '/chat/completions', {
+        model: llm.chat.model,
+        stream: false,
+        temperature: 0,
+        max_tokens: 16,
+        messages: [
+          { role: 'system', content: 'Classify the user question. Return exactly one token: GENERAL, VECTOR, or GRAPH. Use GRAPH for lineage, dependency, upstream/downstream, impact, and connected knowledge. Use VECTOR for metadata, schema, table, column, tag, term, dataset, or semantic catalog questions. Otherwise use GENERAL.' },
+          { role: 'user', content: question },
+        ],
+      })
+      const value = classification.choices?.[0]?.message?.content
+      selectedMode = typeof value === 'string'
+        ? value.toUpperCase().match(/\b(GENERAL|VECTOR|GRAPH)\b/)?.[1] || deterministicChatMode(question)
+        : deterministicChatMode(question)
+    } catch {
+      selectedMode = deterministicChatMode(question)
+    }
+    reason = selectedMode === 'GRAPH'
+      ? 'GRAPH_INTENT'
+      : selectedMode === 'VECTOR' ? 'SEMANTIC_INTENT' : 'GENERAL_DEFAULT'
+  }
+  const ready = selectedMode === 'VECTOR'
+    ? Boolean(datahub && llm.embedding)
+    : selectedMode === 'GRAPH' ? Boolean(datahub || neo4j) : true
+  return {
+    requested_mode: requestedMode,
+    selected_mode: selectedMode,
+    reason,
+    adapter_state: ready ? 'READY' : 'UNAVAILABLE',
+  }
+}
+
+async function datahubLineageEvidence(asset) {
+  const directions = await Promise.all(['UPSTREAM', 'DOWNSTREAM'].map(async (direction) => {
+    const data = await datahubGraphql(datahubLineageQuery, {
+      urn: asset.external_urn || asset.id,
+      input: { direction, start: 0, count: 10 },
+    })
+    return (data.dataset?.lineage?.relationships || []).map((relationship) => ({
+      direction,
+      urn: relationship.entity?.urn,
+      type: relationship.entity?.type,
+    })).filter((relationship) => relationship.urn)
+  }))
+  const relationships = directions.flat().slice(0, 20)
+  const names = relationships.map((relationship) => urnTail(relationship.urn)).filter(Boolean)
+  return {
+    ...asset,
+    evidence_type: 'DATAHUB_LINEAGE',
+    extraction_method: 'DATAHUB_GMS_LINEAGE',
+    retrieval_method: 'GRAPH',
+    description: [asset.description, names.length ? `Connected lineage: ${names.join(', ')}` : 'No connected lineage was returned.']
+      .filter(Boolean).join('\n'),
+    relationships,
+  }
+}
+
+async function neo4jEvidence(question) {
+  if (!neo4j) return []
+  const graph = await neo4jGraph()
+  const tokens = question.toLocaleLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((value) => value.length > 1)
+  const nodes = new Map(graph.nodes.map((node) => [node.id, node]))
+  const ranked = graph.edges.map((edge) => {
+    const source = nodes.get(edge.source_id)
+    const target = nodes.get(edge.target_id)
+    const text = `${source?.name || ''} ${edge.edge_type} ${target?.name || ''}`.toLocaleLowerCase()
+    return { edge, source, target, score: tokens.filter((token) => text.includes(token)).length }
+  }).sort((left, right) => right.score - left.score).slice(0, 5)
+  return ranked.flatMap(({ edge, source, target }) => source && target ? [{
+    id: `neo4j:${edge.id}`,
+    external_urn: `neo4j://${edge.id}`,
+    name: `${source.name} → ${target.name}`,
+    description: `${edge.edge_type} · ${source.entity_type} → ${target.entity_type}`,
+    classification: 'INTERNAL',
+    lifecycle: 'ACTIVE',
+    source_version: 'neo4j-live',
+    evidence_type: 'KNOWLEDGE_GRAPH',
+    extraction_method: 'NEO4J_FIXED_GRAPH_QUERY',
+    retrieval_method: 'GRAPH',
+  }] : [])
+}
+
+function completedChatWorkflow(route, evidenceCount, reranked) {
+  return [
+    { stage: 'AUTHORIZATION', status: 'COMPLETED', detail_code: 'POC_SERVER_BOUNDARY' },
+    { stage: 'BUDGET_RESERVATION', status: 'SKIPPED', detail_code: 'POC_NO_DURABLE_BUDGET' },
+    { stage: 'ROUTING', status: 'COMPLETED', detail_code: `${route.selected_mode}_ROUTE_SELECTED` },
+    { stage: 'RETRIEVAL', status: 'COMPLETED', detail_code: evidenceCount ? `${route.selected_mode}_RETRIEVAL_COMPLETED` : 'NO_AUTHORIZED_EVIDENCE' },
+    { stage: 'RERANKING', status: reranked ? 'COMPLETED' : 'SKIPPED', detail_code: reranked ? 'RERANKING_COMPLETED' : 'RERANKING_NOT_USED' },
+    { stage: 'COMPOSITION', status: 'COMPLETED', detail_code: 'POC_LIVE_PROVIDER' },
+    { stage: 'CITATION_VALIDATION', status: 'COMPLETED', detail_code: 'DATAHUB_NEO4J_EVIDENCE_BOUND' },
+    { stage: 'PERSISTENCE', status: 'SKIPPED', detail_code: 'EPHEMERAL_NO_STORE' },
+  ]
+}
+
+async function liveChat(question, requestedMode = 'AUTO') {
+  const route = await chatRoute(question, requestedMode)
+  if (route.adapter_state !== 'READY') {
+    throw Object.assign(new Error(`${route.selected_mode} Chat route is not configured.`), { statusCode: 503 })
+  }
   let evidence = []
   if (datahub) {
     const catalog = await datahubCatalog(new URLSearchParams({ q: question, limit: '5' }))
     evidence = catalog.items
   }
-  if (llm.embedding) {
+  if (route.selected_mode === 'GRAPH' && datahub) {
+    evidence = await Promise.all(evidence.slice(0, 3).map(datahubLineageEvidence))
+  }
+  if (route.selected_mode === 'GRAPH') {
+    evidence = [...evidence, ...await neo4jEvidence(question)].slice(0, 8)
+  }
+  if (route.selected_mode === 'VECTOR' && llm.embedding) {
     await llmRequest(llm.embedding, '/embeddings', { model: llm.embedding.model, input: question })
   }
-  if (llm.reranker && evidence.length > 1) {
-    const reranked = await llmRequest(llm.reranker, '/rerank', {
+  let reranked = false
+  if (route.selected_mode !== 'GRAPH' && llm.reranker && evidence.length > 1) {
+    const rerankResponse = await llmRequest(llm.reranker, '/rerank', {
       model: llm.reranker.model,
       query: question,
       documents: evidence.map((item) => `${item.name}\n${item.description}`),
       top_n: Math.min(5, evidence.length),
     })
-    const indices = (reranked.results || reranked.data || []).map((item) => Number(item.index))
+    const indices = (rerankResponse.results || rerankResponse.data || []).map((item) => Number(item.index))
     const ordered = indices.map((index) => evidence[index]).filter(Boolean)
-    if (ordered.length) evidence = ordered
+    if (ordered.length) {
+      evidence = ordered
+      reranked = true
+    }
   }
-  const context = evidence.map((item, index) => `[${index + 1}] ${item.name}: ${item.description}`).join('\n')
+  evidence = evidence.map((item) => ({
+    ...item,
+    evidence_type: item.evidence_type || 'CATALOG_ASSET',
+    extraction_method: item.extraction_method || 'DATAHUB_GMS',
+    retrieval_method: item.retrieval_method || (reranked ? 'RERANKED' : route.selected_mode),
+  }))
+  const context = evidence.map((item, index) => `[${index + 1}] (${item.evidence_type}) ${item.name}: ${item.description}`).join('\n')
   const completion = await llmRequest(llm.chat, '/chat/completions', {
     model: llm.chat.model,
     stream: false,
     temperature: 0,
     messages: [
-      { role: 'system', content: 'Answer only from the supplied DataHub context. State clearly when evidence is insufficient.' },
-      { role: 'user', content: `Question: ${question}\n\nDataHub context:\n${context || '(no DataHub evidence)'}` },
+      { role: 'system', content: 'Answer from the supplied authorized DataHub metadata, lineage, and Neo4j knowledge evidence. Cite evidence numbers such as [1]. State clearly when evidence is insufficient. Never invent an asset or relationship.' },
+      { role: 'user', content: `Selected route: ${route.selected_mode}\nQuestion: ${question}\n\nAuthorized evidence:\n${context || '(no authorized evidence)'}` },
     ],
   })
   const answer = completion.choices?.[0]?.message?.content
   if (typeof answer !== 'string' || !answer.trim()) throw new Error('The Chat model returned no answer.')
-  return { answer: answer.trim(), evidence }
+  return {
+    answer: answer.trim(),
+    route,
+    workflow: completedChatWorkflow(route, evidence.length, reranked),
+    evidence,
+  }
 }
 
 function sha256(value) {
@@ -915,9 +1094,14 @@ async function neo4jQuery(statement, parameters = {}) {
 
 async function neo4jGraph() {
   const rows = await neo4jQuery(`
-    MATCH (source:PocEntity)
-    OPTIONAL MATCH (source)-[relation]->(target:PocEntity)
-    RETURN source.id, source.name, source.entity_type, type(relation), target.id, target.name, target.entity_type
+    MATCH (source)-[relation]->(target)
+    RETURN coalesce(source.id, source.urn, elementId(source)),
+           coalesce(source.name, source.label, source.urn, elementId(source)),
+           coalesce(source.entity_type, head(labels(source)), 'ENTITY'),
+           type(relation),
+           coalesce(target.id, target.urn, elementId(target)),
+           coalesce(target.name, target.label, target.urn, elementId(target)),
+           coalesce(target.entity_type, head(labels(target)), 'ENTITY')
     ORDER BY source.id, target.id
     LIMIT 100
   `)
@@ -925,6 +1109,7 @@ async function neo4jGraph() {
   const edges = []
   for (const item of rows) {
     const row = item.row || []
+    if (!row[0]) continue
     nodes.set(row[0], { id: row[0], name: row[1], entity_type: row[2] || 'CLASS' })
     if (row[4]) {
       nodes.set(row[4], { id: row[4], name: row[5], entity_type: row[6] || 'CLASS' })
@@ -938,20 +1123,26 @@ async function providerState(name, enabled, probe) {
   if (!enabled) return { name, state: 'disabled', observed_at: new Date().toISOString(), latency_ms: null, detail_code: 'NOT_CONFIGURED' }
   const started = Date.now()
   try {
-    await probe()
-    return { name, state: 'available', observed_at: new Date().toISOString(), latency_ms: Date.now() - started, detail_code: 'LIVE' }
-  } catch {
-    return { name, state: 'unavailable', observed_at: new Date().toISOString(), latency_ms: Date.now() - started, detail_code: 'PROBE_FAILED' }
+    const detailCode = await probe()
+    return { name, state: 'available', observed_at: new Date().toISOString(), latency_ms: Date.now() - started, detail_code: detailCode || 'LIVE' }
+  } catch (error) {
+    return {
+      name,
+      state: 'unavailable',
+      observed_at: new Date().toISOString(),
+      latency_ms: Date.now() - started,
+      detail_code: error?.detailCode || 'PROBE_FAILED',
+    }
   }
 }
 
 async function capabilities() {
   const items = await Promise.all([
     providerState('DataHub', Boolean(datahub), async () => requireOk(await providerFetch(joinProviderUrl(datahub.url, '/config'), { headers: { Authorization: `Bearer ${datahub.token}` } }), 'DataHub')),
-    providerState('Airflow', Boolean(airflow), async () => airflowRequest('/api/v2/monitor/health')),
+    providerState('Airflow', Boolean(airflow), async () => `AIRFLOW_API_${(await detectAirflowApiVersion()).toUpperCase()}`),
     providerState('MinIO', Boolean(minio), async () => requireOk(await providerFetch(joinProviderUrl(minio.url, '/minio/health/live')), 'MinIO')),
-    providerState('LLM Chat', Boolean(llm.chat), async () => requireOk(await providerFetch(joinProviderUrl(llm.chat.url, '/models'), { headers: { Authorization: `Bearer ${llm.chat.token}` } }), 'LLM Chat')),
-    providerState('LLM Embedding', Boolean(llm.embedding), async () => requireOk(await providerFetch(joinProviderUrl(llm.embedding.url, '/models'), { headers: { Authorization: `Bearer ${llm.embedding.token}` } }), 'LLM Embedding')),
+    providerState('LLM Chat', Boolean(llm.chat), async () => requireOk(await providerFetch(llmEndpoint(llm.chat, '/models'), { headers: { Authorization: `Bearer ${llm.chat.token}` } }), 'LLM Chat')),
+    providerState('LLM Embedding', Boolean(llm.embedding), async () => requireOk(await providerFetch(llmEndpoint(llm.embedding, '/models'), { headers: { Authorization: `Bearer ${llm.embedding.token}` } }), 'LLM Embedding')),
     providerState('LLM Reranker', Boolean(llm.reranker), async () => {
       const payload = await llmRequest(llm.reranker, '/rerank', {
         model: llm.reranker.model,
@@ -1002,8 +1193,9 @@ async function api(request, response, url) {
   if (request.method === 'POST' && url.pathname === '/poc-api/llm/chat') {
     const body = await bodyJson(request)
     const question = boundedString(body.question, 4000)
+    const mode = ['AUTO', 'GENERAL', 'VECTOR', 'GRAPH'].includes(body.mode) ? body.mode : 'AUTO'
     if (!question.trim()) return problem(response, 400, 'QUESTION_REQUIRED', 'A non-empty question is required.')
-    return json(response, 200, await liveChat(question))
+    return json(response, 200, await liveChat(question, mode))
   }
   const airflowMatch = url.pathname.match(/^\/poc-api\/airflow\/dags\/([^/]+)\/runs$/)
   if (request.method === 'POST' && airflowMatch) {
@@ -1011,10 +1203,7 @@ async function api(request, response, url) {
     if (!allowedAirflowDags.has(dagId)) return problem(response, 400, 'DAG_NOT_ALLOWED', 'The DAG is not allowlisted for this POC.')
     const body = await bodyJson(request)
     const runId = `poc-${Date.now()}`
-    const upstream = await airflowRequest(`/api/v2/dags/${encodeURIComponent(dagId)}/dagRuns`, {
-      method: 'POST',
-      body: JSON.stringify({ dag_run_id: runId, conf: { poc: true, ...body.conf } }),
-    })
+    const upstream = await triggerAirflowDag(dagId, { dag_run_id: runId, conf: { poc: true, ...body.conf } })
     return json(response, 202, { dag_id: dagId, run_id: runId, upstream: await upstream.json() })
   }
   const minioPart = url.pathname.match(/^\/poc-api\/minio\/uploads\/([a-zA-Z0-9_-]+)\/parts\/(\d+)$/)

@@ -14,9 +14,9 @@ authorization, persistence, worker, or provider mutation path ran.
 | Resource Tree | Platform → database → schema → table expansion with complete bounded DataHub inventory reconciliation | DataHub |
 | Catalog detail | Human-readable database/schema, paged columns, table/column tags and terms, and null-safe quality values | DataHub |
 | Registration | Shared searchable Resource Tree, live DataHub detail, typed previews, CR creation, and user-created manual history | DataHub read + browser memory commands |
-| Change management | Registration, review, changes requested, immutable revision/resubmission, test attachment/result, test approval, final approval, rejection/cancellation, and completion | Browser memory; attachments optionally stored through MinIO |
+| Change management | Registration with request attachments, review, changes requested, immutable revision/resubmission, test attachment/result, test approval, final approval, rejection/cancellation, and completion | Browser memory; attachments optionally stored through MinIO |
 | Quality asset history tab | Same searchable Resource Tree and live DataHub columns; no fabricated quality scores, rules, runs, or trends | DataHub read |
-| Chat | Runs only when DataHub and Chat LLM are both live; optional embedding/reranking stages; evidence comes only from returned DataHub assets | DataHub + configured LLMs |
+| Chat | Server-selected GENERAL/VECTOR/GRAPH routing; VECTOR uses DataHub metadata plus configured embedding/reranking, GRAPH uses bounded DataHub lineage and optional Neo4j knowledge edges; evidence cards preserve their live source type | DataHub/Neo4j + configured LLMs |
 | Monitoring | Provider probes plus optional exact-origin Grafana dashboard embed | POC server + Grafana |
 | Admin | POC user creation is browser-memory only; deployment system configuration is redacted and provider probes are live | Browser memory + POC server |
 | Knowledge and governance documents | No preloaded fixture records are returned | Empty until a separately approved canonical control plane exists |

@@ -8,6 +8,7 @@ import type {
   SystemConfigurationTestResult,
   WorkspaceMembershipSummary,
 } from '../api/types'
+import { QualityApi } from '../features/quality/qualityApi'
 import { resetPocMemory, useStableApiClient } from './pocApi'
 
 const meta = {
@@ -160,6 +161,34 @@ function installGatewayMock() {
         deployment_tier: 'SINGLE_NODE_PILOT',
       }))
     }
+    if (url.pathname === '/poc-api/llm/chat') {
+      return Promise.resolve(json({
+        answer: 'wafer_events는 source_events의 영향을 받습니다. [1]',
+        route: {
+          requested_mode: 'AUTO',
+          selected_mode: 'GRAPH',
+          reason: 'GRAPH_INTENT',
+          adapter_state: 'READY',
+        },
+        workflow: [
+          { stage: 'ROUTING', status: 'COMPLETED', detail_code: 'GRAPH_ROUTE_SELECTED' },
+          { stage: 'RETRIEVAL', status: 'COMPLETED', detail_code: 'GRAPH_RETRIEVAL_COMPLETED' },
+        ],
+        evidence: [{
+          id: liveAssets[0]!.id,
+          external_urn: liveAssets[0]!.external_urn,
+          name: liveAssets[0]!.name,
+          description: 'source_events → wafer_events',
+          classification: 'INTERNAL',
+          platform: 'postgres',
+          domain: 'manufacturing',
+          source_version: 'datahub-live',
+          evidence_type: 'DATAHUB_LINEAGE',
+          extraction_method: 'DATAHUB_GMS_LINEAGE',
+          retrieval_method: 'GRAPH',
+        }],
+      }))
+    }
     throw new Error(`Unexpected POC gateway request: ${url.pathname}`)
   }))
 }
@@ -171,6 +200,10 @@ describe('POC live-provider compatibility adapter', () => {
       .__DATARIVER_POC_RUNTIME__ = {
         datahub: true,
         airflow: true,
+        llmChat: true,
+        llmEmbedding: true,
+        llmReranker: true,
+        neo4j: true,
       }
     installGatewayMock()
   })
@@ -333,6 +366,47 @@ describe('POC live-provider compatibility adapter', () => {
       method: 'POST', body: JSON.stringify({ reason: 'complete', if_match: current.version }),
     })
     expect(current.state).toBe('COMPLETED')
+  })
+
+  it('returns a contract-valid live DataHub quality workspace without fabricated runs', async () => {
+    const client = useStableApiClient()
+    const api = new QualityApi(client)
+    const workspace = await api.assetWorkspace(liveAssets[0]!.id, 'a'.repeat(64))
+    expect(workspace.asset.asset_id).toBe(liveAssets[0]!.id)
+    expect(workspace.authoring).toMatchObject({
+      state: 'UNAVAILABLE',
+      reason_code: 'QUALITY_CONTROL_PLANE_NOT_CONFIGURED',
+      fields: [],
+    })
+    expect(workspace.fields).toEqual([
+      expect.objectContaining({
+        field_identifier: 'wafer_id',
+        latest_quality_outcome: 'UNKNOWN',
+      }),
+    ])
+    expect(workspace.rule_sets).toEqual([])
+    expect(workspace.runs).toEqual([])
+  })
+
+  it('preserves server-selected graph routing and lineage evidence in Chat', async () => {
+    const client = useStableApiClient()
+    const workflow: unknown[] = []
+    const response = await client.requestEventStream<{
+      route: { selected_mode: string; reason: string }
+      evidence: Array<{ source_type: string; retrieval_method: string }>
+    }>(
+      '/chat/query/stream',
+      { method: 'POST', body: JSON.stringify({ question: 'upstream 계보 영향은?', mode: 'AUTO' }) },
+      (event) => workflow.push(event.data),
+    )
+    expect(response.route).toMatchObject({ selected_mode: 'GRAPH', reason: 'GRAPH_INTENT' })
+    expect(response.evidence[0]).toMatchObject({
+      source_type: 'DATAHUB_LINEAGE',
+      retrieval_method: 'GRAPH',
+    })
+    expect(workflow).toEqual(expect.arrayContaining([
+      expect.objectContaining({ stage: 'ROUTING', status: 'IN_PROGRESS' }),
+    ]))
   })
 
   it('supports review rejection, immutable revision and resubmission in a new round', async () => {
