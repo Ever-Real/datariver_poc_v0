@@ -106,20 +106,16 @@ afterEach(() => {
 })
 
 describe('useTBoxProposalJob', () => {
-  it('validates the bounded document contract and hashes bytes with WebCrypto', async () => {
-    vi.stubGlobal('crypto', {
-      randomUUID: () => '019fa57b-52de-74c0-9f5e-06ae7b1bf3ff',
-      subtle: {
-        digest: vi.fn().mockResolvedValue(Uint8Array.from({ length: 32 }, () => 0xab).buffer),
-      },
-    })
+  it('validates the bounded document contract and hashes bytes without a secure-context dependency', async () => {
     const file = new File(['{}'], 'schema.json', { type: 'application/json' })
     Object.defineProperty(file, 'arrayBuffer', {
       value: () => Promise.resolve(new TextEncoder().encode('{}').buffer),
     })
 
     expect(validateTBoxDocument(file)).toBe('application/json')
-    await expect(sha256TBoxDocument(file)).resolves.toBe('ab'.repeat(32))
+    await expect(sha256TBoxDocument(file)).resolves.toBe(
+      '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
+    )
     expect(() => validateTBoxDocument({
       name: 'schema.yaml',
       type: 'application/yaml',
@@ -135,9 +131,6 @@ describe('useTBoxProposalJob', () => {
   it('runs accepted upload to a terminal 202 job and fetches the exact Proposal', async () => {
     vi.stubGlobal('crypto', {
       randomUUID: vi.fn().mockReturnValue('019fa57b-52de-74c0-9f5e-06ae7b1bf3ff'),
-      subtle: {
-        digest: vi.fn().mockResolvedValue(new Uint8Array(32).buffer),
-      },
     })
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
@@ -194,7 +187,7 @@ describe('useTBoxProposalJob', () => {
     expect(JSON.parse(typeof initiateBody === 'string' ? initiateBody : '{}')).toMatchObject({
       display_name: 'schema.json',
       content_type: 'application/json',
-      sha256: '0'.repeat(64),
+      sha256: '44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a',
     })
     const jobCall = fetchMock.mock.calls.find(([input]) => (
       requestUrl(input).endsWith('/tbox/proposal-jobs')

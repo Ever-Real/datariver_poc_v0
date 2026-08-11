@@ -30,6 +30,7 @@ const SharingPage = lazy(() => import('./features/sharing/SharingPage').then((mo
 export function App() {
   const auth = useAuth()
   const runtimeConfig = publicRuntimeConfig()
+  const authenticationEnabled = runtimeConfig.apiBaseUrl !== 'poc-memory-only'
   const [page, setPage] = useState<Page>(pageFromLocation)
   const [locationRevision, setLocationRevision] = useState(0)
   const [catalogQuery, setCatalogQuery] = useState(() => new URL(window.location.href).searchParams.get('q') ?? '')
@@ -349,12 +350,12 @@ export function App() {
       notice={auth.notice}
       onNavigate={navigate}
       onNavigateAdmin={navigateAdmin}
-      onProfile={() => navigate('profile')}
+      onProfile={authenticationEnabled ? () => navigate('profile') : undefined}
       onSearch={searchCatalog}
       onWorkspaceChange={saveWorkspace}
-      onPasswordReauth={() => void auth.beginPasswordReauth()}
-      onEnrollSecurityKey={() => void auth.beginWebAuthnEnrollment()}
-      onSignOut={() => void auth.signOut()}
+      onPasswordReauth={authenticationEnabled ? () => void auth.beginPasswordReauth() : undefined}
+      onEnrollSecurityKey={authenticationEnabled ? () => void auth.beginWebAuthnEnrollment() : undefined}
+      onSignOut={authenticationEnabled ? () => void auth.signOut() : undefined}
       onClearNotice={auth.clearNotice}
     >
       <Suspense fallback={<main className="centered"><div className="loader" /><p>화면을 불러오고 있습니다.</p></main>}>
@@ -377,7 +378,7 @@ export function App() {
           authorizationRevision={auth.authorizationRevision}
         />}
         {page === 'registration' && <RegistrationPage client={client} />}
-        {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled === true} />}
+        {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={authenticationEnabled && auth.profile?.hardware_webauthn_enabled === true} />}
         {page === 'quality' && <QualityPage
           client={client}
           workspaceId={activeWorkspace}
@@ -398,10 +399,10 @@ export function App() {
             locationRevision={locationRevision}
             onNavigate={navigate}
             onOpenStudio={navigateKnowledgeStudio}
-            onStepUp={auth.beginStepUp}
-            onPasswordReauth={auth.beginPasswordReauth}
-            onEnroll={auth.beginWebAuthnEnrollment}
-            hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled === true}
+            onStepUp={authenticationEnabled ? auth.beginStepUp : undefined}
+            onPasswordReauth={authenticationEnabled ? auth.beginPasswordReauth : undefined}
+            onEnroll={authenticationEnabled ? auth.beginWebAuthnEnrollment : undefined}
+            hardwareWebauthnEnabled={authenticationEnabled && auth.profile?.hardware_webauthn_enabled === true}
           />
         )}
         {page === 'monitoring' && (
@@ -417,15 +418,16 @@ export function App() {
                 'MONITORING_CONFIGURATION_UPDATE',
               ) ?? false
             }
-            onRequestAdminAssurance={
-              auth.profile?.hardware_webauthn_enabled === false
+            onRequestAdminAssurance={authenticationEnabled
+              ? auth.profile?.hardware_webauthn_enabled === false
                 ? auth.beginPasswordReauth
                 : auth.beginStepUp
+              : undefined
             }
           />
         )}
-        {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} assurance={{ onStepUp: auth.beginStepUp, onPasswordReauth: auth.beginPasswordReauth, onEnroll: auth.beginWebAuthnEnrollment, hardwareWebauthnEnabled: auth.profile?.hardware_webauthn_enabled === true }} />}
-        {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled === true} />}
+        {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} assurance={authenticationEnabled ? { onStepUp: auth.beginStepUp, onPasswordReauth: auth.beginPasswordReauth, onEnroll: auth.beginWebAuthnEnrollment, hardwareWebauthnEnabled: auth.profile?.hardware_webauthn_enabled === true } : undefined} />}
+        {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={authenticationEnabled && auth.profile?.hardware_webauthn_enabled === true} />}
         {page === 'chat' && <ChatPage client={client} />}
         {page === 'profile' && auth.profile && <ProfilePage client={client} profile={auth.profile} workspace={activeWorkspace} capabilities={capabilities} externalSystemLinks={externalSystemLinks} onPasswordChange={() => void auth.beginPasswordChange()} onPasswordReauth={() => void auth.beginPasswordReauth()} />}
         {page === 'profile' && !auth.profile && <PageTitle icon="ME" eyebrow="Verified identity profile" title="내 프로필" description="서버에서 검증된 프로필을 불러오지 못했습니다." />}

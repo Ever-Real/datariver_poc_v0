@@ -1,15 +1,51 @@
-name: datariver-static-poc
+name: datariver-poc
 
 services:
   web:
-    image: datariver-static-poc:06111-amd64
-    container_name: datariver-static-poc-web
-    platform: linux/amd64
-    pull_policy: never
+    image: datariver-poc:${POC_IMAGE_TAG:-local}
+    platform: ${POC_PLATFORM:-linux/amd64}
+    build:
+      context: ../..
+      dockerfile: deploy/poc/Dockerfile
+      args:
+        POC_SOURCE_COMMIT: ${POC_SOURCE_COMMIT:-local}
     ports:
-      - "0.0.0.0:${POC_PORT:-39080}:8080"
+      - "${POC_BIND_HOST:-0.0.0.0}:${POC_PORT:-39080}:8080"
+    environment:
+      DATAHUB_GMS_URL: ${DATAHUB_GMS_URL:-}
+      DATAHUB_GMS_TOKEN: ${DATAHUB_GMS_TOKEN:-}
+      DATAHUB_UI_URL: ${DATAHUB_UI_URL:-}
+      AIRFLOW_URL: ${AIRFLOW_URL:-}
+      AIRFLOW_USERNAME: ${AIRFLOW_USERNAME:-}
+      AIRFLOW_PASSWORD: ${AIRFLOW_PASSWORD:-}
+      MINIO_URL: ${MINIO_URL:-}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-}
+      MINIO_REGION: ${MINIO_REGION:-us-east-1}
+      S3_BUCKET_QUARANTINE: ${S3_BUCKET_QUARANTINE:-datariver-quarantine}
+      S3_BUCKET_ACCEPTED: ${S3_BUCKET_ACCEPTED:-datariver-accepted}
+      S3_BUCKET_EXPORTS: ${S3_BUCKET_EXPORTS:-datariver-exports}
+      S3_BUCKET_FILEFOLDER: ${S3_BUCKET_FILEFOLDER:-datariver-filefolder}
+      S3_BUCKET_INFOSCHEMA: ${S3_BUCKET_INFOSCHEMA:-datariver-infoschema}
+      LLM_CHAT_URL: ${LLM_CHAT_URL:-}
+      LLM_CHAT_MODEL: ${LLM_CHAT_MODEL:-}
+      LLM_CHAT_TOKEN: ${LLM_CHAT_TOKEN:-}
+      LLM_EMBEDDING_URL: ${LLM_EMBEDDING_URL:-}
+      LLM_EMBEDDING_MODEL: ${LLM_EMBEDDING_MODEL:-}
+      LLM_EMBEDDING_TOKEN: ${LLM_EMBEDDING_TOKEN:-}
+      LLM_RERANKER_URL: ${LLM_RERANKER_URL:-}
+      LLM_RERANKER_MODEL: ${LLM_RERANKER_MODEL:-}
+      LLM_RERANKER_TOKEN: ${LLM_RERANKER_TOKEN:-}
+      NEO4J_HTTP_URL: http://neo4j:7474
+      NEO4J_USERNAME: ${NEO4J_USERNAME:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+    depends_on:
+      neo4j:
+        condition: service_healthy
+    networks:
+      - poc-services
     read_only: true
-    user: "101:101"
+    user: "1000:1000"
     cap_drop:
       - ALL
     security_opt:
@@ -19,9 +55,43 @@ services:
     pids_limit: 128
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
       timeout: 3s
       start_period: 5s
       retries: 6
     stop_grace_period: 10s
+
+  neo4j:
+    image: ${NEO4J_IMAGE:-neo4j:2026.06.0@sha256:ba2b859bdbe7017a9baa1a7b5681ac9732198753719b0a502e3645feddfdec72}
+    platform: ${POC_PLATFORM:-linux/amd64}
+    environment:
+      NEO4J_AUTH: ${NEO4J_USERNAME:-neo4j}/${NEO4J_PASSWORD:?NEO4J_PASSWORD is required}
+      NEO4J_server_memory_heap_initial__size: 256M
+      NEO4J_server_memory_heap_max__size: 512M
+      NEO4J_server_memory_pagecache_size: 256M
+      NEO4J_dbms_usage__report_enabled: "false"
+    networks:
+      - poc-services
+    volumes:
+      - neo4j-data:/data
+      - neo4j-logs:/logs
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:7474/"]
+      interval: 10s
+      timeout: 10s
+      start_period: 60s
+      retries: 20
+    restart: unless-stopped
+    mem_limit: 1280m
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  poc-services:
+    name: ${POC_SHARED_NETWORK:-datariver-poc-services}
+
+volumes:
+  neo4j-data:
+  neo4j-logs:

@@ -8,13 +8,15 @@
   },
   "scripts": {
     "dev": "vite --host 0.0.0.0",
+    "poc": "npm run build:poc && node poc-server.mjs",
     "dev:poc": "vite --config vite.poc.config.ts --mode poc",
     "build": "tsc -b && vite build",
     "build:poc": "tsc -b && vite build --config vite.poc.config.ts --mode poc",
     "typecheck": "tsc -b --pretty false",
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run --config vitest.config.ts",
-    "test:poc": "vitest run --config vitest.config.ts src/poc/PocApp.test.tsx"
+    "test:poc": "vitest run --config vitest.config.ts src/poc/PocApp.test.tsx",
+    "test:poc-server": "node --test poc-server.test.mjs poc-server.providers.test.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "4.3.3",

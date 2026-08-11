@@ -1,3 +1,4 @@
+import { sha256 } from 'hash-wasm'
 import type { KnowledgeStudioBasicInformation } from './knowledgeStudioApi'
 
 const DATABASE_NAME = 'datariver-knowledge-studio-recovery-v1'
@@ -110,8 +111,5 @@ export async function knowledgeDraftRecoveryScope(
   subjectId: string,
 ): Promise<string> {
   const input = new TextEncoder().encode(`${workspaceId}\u0000${subjectId}`)
-  const digest = await crypto.subtle.digest('SHA-256', input)
-  return [...new Uint8Array(digest)]
-    .map((value) => value.toString(16).padStart(2, '0'))
-    .join('')
+  return sha256(input)
 }

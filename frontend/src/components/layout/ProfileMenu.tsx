@@ -36,8 +36,8 @@ interface ProfileMenuProps {
   onProfile?: () => void
   onWorkspaceChange: (workspace: string) => void
   onPasswordReauth?: () => void
-  onEnrollSecurityKey: () => void
-  onSignOut: () => void
+  onEnrollSecurityKey?: () => void
+  onSignOut?: () => void
 }
 
 export function ProfileMenu({
@@ -121,10 +121,12 @@ export function ProfileMenu({
           <header>
             <div><strong title={displayName}>{displayName}</strong><small title={email}>{email || `조직 계정 · ${deploymentTierLabel(deploymentTier)}`}</small></div>
           </header>
-          <section className="legacy-profile-items" aria-label="프로필 설정">
-            <button type="button" role="menuitem" onClick={() => onProfile ? perform(onProfile) : openWorkspaceEditor()}><UserRound size={14} aria-hidden="true" /><span>내 프로필</span></button>
-            {workspaceSelectionEnabled && <button type="button" role="menuitem" onClick={openWorkspaceEditor}><Settings size={14} aria-hidden="true" /><span>Workspace 전환</span></button>}
-          </section>
+          {(onProfile || workspaceSelectionEnabled) && (
+            <section className="legacy-profile-items" aria-label="프로필 설정">
+              {onProfile && <button type="button" role="menuitem" onClick={() => perform(onProfile)}><UserRound size={14} aria-hidden="true" /><span>내 프로필</span></button>}
+              {workspaceSelectionEnabled && <button type="button" role="menuitem" onClick={openWorkspaceEditor}><Settings size={14} aria-hidden="true" /><span>Workspace 전환</span></button>}
+            </section>
+          )}
           {workspaceSelectionEnabled && workspaceEditorOpen && <section className="profile-workspace-section" aria-label="프로필 Workspace 설정">
             <form className="profile-workspace" onSubmit={applyWorkspace}>
               <label htmlFor="profile-workspace-id">Workspace</label>
@@ -150,10 +152,12 @@ export function ProfileMenu({
               ))}
             </section>
           )}
-          <div className="profile-menu-actions">
-            {hardwareWebauthnEnabled && <button type="button" role="menuitem" onClick={() => perform(onEnrollSecurityKey)}><KeyRound size={14} aria-hidden="true" /><span>WebAuthn 보안키 등록</span></button>}
-            <button type="button" role="menuitem" className="danger" onClick={() => perform(onSignOut)}><LogOut size={14} aria-hidden="true" /><span>나가기</span></button>
-          </div>
+          {(hardwareWebauthnEnabled && onEnrollSecurityKey || onSignOut) && (
+            <div className="profile-menu-actions">
+              {hardwareWebauthnEnabled && onEnrollSecurityKey && <button type="button" role="menuitem" onClick={() => perform(onEnrollSecurityKey)}><KeyRound size={14} aria-hidden="true" /><span>WebAuthn 보안키 등록</span></button>}
+              {onSignOut && <button type="button" role="menuitem" className="danger" onClick={() => perform(onSignOut)}><LogOut size={14} aria-hidden="true" /><span>나가기</span></button>}
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -61,6 +61,19 @@ The POC should show how the `06111` platform and the following capabilities beha
 
 ## 3. Proven root cause and architecture decision
 
+### 2026-08-11 user-approved hybrid POC scope update
+
+The user subsequently required the POC to connect to separately operated DataHub, Airflow, MinIO
+and Chat/Embedding/Reranker services on the internal network, and to start Neo4j with the POC.
+That later instruction supersedes this handoff's earlier memory-only/single-static-container rules
+only for this isolated POC. The original page components and layout remain mandatory.
+
+Provider credentials remain server-side and must never enter the Vite bundle or browser runtime.
+The no-Keycloak browser calls only a same-origin, allowlisted POC gateway. This does not authorize
+an anonymous live DataRiver API, a fixed production Subject, a JWT/ABAC/RLS bypass, arbitrary
+GraphQL/Cypher/DAG/provider proxying, internet publication, or use of real customer data. Canonical
+workflow/control-plane state remains simulated unless a separately approved system owns it.
+
 The original `06111` web SPA initializes OIDC/PKCE and browser Web Crypto. A private-IP HTTP origin
 is not a secure context, so `Crypto.subtle` is unavailable. `DEVELOPMENT_ADMIN_PASSWORD_BYPASS_ENABLED`
 is not a login, PKCE or Keycloak-origin bypass. Removing Keycloak from the existing Compose file or

@@ -27,8 +27,8 @@ interface AppShellProps {
   onSearch: (query: string) => void
   onWorkspaceChange: (workspace: string) => void
   onPasswordReauth?: () => void
-  onEnrollSecurityKey: () => void
-  onSignOut: () => void
+  onEnrollSecurityKey?: () => void
+  onSignOut?: () => void
   onClearNotice: () => void
 }
 

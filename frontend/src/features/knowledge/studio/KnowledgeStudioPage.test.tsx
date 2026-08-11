@@ -5,6 +5,10 @@ import type { DraftRecoveryQueue, DraftRecoveryRecord } from './draftRecoveryQue
 import { KnowledgeStudioPage } from './KnowledgeStudioPage'
 import { useKnowledgeStudioSessionStore } from './knowledgeStudioSessionStore'
 
+vi.mock('hash-wasm', () => ({
+  sha256: vi.fn(() => Promise.resolve('0'.repeat(64))),
+}))
+
 const domainId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3af'
 const draftId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3b0'
 

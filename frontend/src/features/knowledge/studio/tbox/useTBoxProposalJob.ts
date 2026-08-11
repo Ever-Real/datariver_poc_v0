@@ -1,3 +1,4 @@
+import { sha256 } from 'hash-wasm'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ApiClient } from '../../../../api/client'
 import {
@@ -151,11 +152,9 @@ export async function sha256TBoxDocument(
   signal?.throwIfAborted()
   const bytes = await file.arrayBuffer()
   signal?.throwIfAborted()
-  const digest = await crypto.subtle.digest('SHA-256', bytes)
+  const digest = await sha256(new Uint8Array(bytes))
   signal?.throwIfAborted()
-  return [...new Uint8Array(digest)]
-    .map((value) => value.toString(16).padStart(2, '0'))
-    .join('')
+  return digest
 }
 
 function isAbortError(error: unknown): boolean {

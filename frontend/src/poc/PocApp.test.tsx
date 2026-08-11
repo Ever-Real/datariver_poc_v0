@@ -1,81 +1,109 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { PocApp } from './PocApp'
+import { resetPocMemory } from './pocApi'
 
-describe('static POC application', () => {
+vi.mock('../auth/AuthProvider', () => import('./pocAuthCompat'))
+vi.mock('../api/useStableApiClient', () => import('./pocApi'))
+vi.mock('../api/client', () => import('./pocClientCompat'))
+vi.mock('../runtimeConfig', () => import('./pocRuntimeConfig'))
+
+function renderPoc() {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  })
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <PocApp />
+    </QueryClientProvider>,
+  )
+}
+
+function navigation() {
+  return screen.getByRole('navigation', { name: '주 메뉴' })
+}
+
+describe('POC compatibility application', () => {
   beforeEach(() => {
-    window.history.replaceState({}, '', '/poc.html#/overview')
-    window.scrollTo = vi.fn()
-    vi.stubGlobal('fetch', vi.fn())
+    resetPocMemory()
+    window.history.replaceState({}, '', '/poc.html?page=dashboard')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('POC must not use fetch'))))
   })
 
   afterEach(() => {
     vi.unstubAllGlobals()
   })
 
-  it('keeps the no-auth sample-data banner visible while navigating', async () => {
-    render(<PocApp />)
+  it('renders the original dashboard layout under the permanent POC boundary banner', async () => {
+    renderPoc()
 
     expect(screen.getByTestId('poc-banner')).toHaveTextContent(
       /POC\s*\/\s*NO AUTH\s*\/\s*SAMPLE DATA\s*\/\s*NOT FOR PRODUCTION/,
     )
-    const navigation = screen.getByRole('navigation', { name: '주 메뉴' })
-    fireEvent.click(within(navigation).getByRole('button', { name: '검색' }))
-
-    expect(await screen.findByRole('heading', { name: 'Find trusted data faster' })).toBeVisible()
-    expect(screen.getByTestId('poc-banner')).toBeVisible()
+    expect(await screen.findByRole('heading', { name: 'Governance Dashboard' })).toBeVisible()
+    expect(screen.getByRole('navigation', { name: 'Governance shortcuts' })).toBeVisible()
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
-  it('searches deterministic fixture assets and opens column details', async () => {
-    render(<PocApp />)
-    const navigation = screen.getByRole('navigation', { name: '주 메뉴' })
-    fireEvent.click(within(navigation).getByRole('button', { name: '검색' }))
-    const search = await screen.findByRole('textbox', { name: 'Search sample assets' })
+  it('keeps the original catalog search, results and detail interaction', async () => {
+    renderPoc()
+    fireEvent.click(within(navigation()).getByRole('button', { name: '검색' }))
 
-    fireEvent.change(search, { target: { value: 'equipment' } })
+    expect(await screen.findByRole('heading', { name: '데이터 카탈로그 검색' })).toBeVisible()
+    expect((await screen.findAllByText('wafer_inspection_events'))[0]).toBeVisible()
+    const query = screen.getByRole('combobox', { name: '데이터셋 이름이나 설명 검색' })
+    fireEvent.change(query, { target: { value: 'yield' } })
+    fireEvent.submit(screen.getByRole('search', { name: '카탈로그 상세 검색' }))
 
-    expect(screen.getAllByText('equipment_alarm_history').length).toBeGreaterThan(0)
-    expect(screen.queryByText('lot_genealogy')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByRole('tab', { name: /Columns/ }))
-    expect(screen.getByText('alarm_code')).toBeVisible()
+    const results = screen.getByRole('region', { name: '카탈로그 검색 결과' })
+    expect((await within(results).findAllByText('yield_summary_daily'))[0]).toBeVisible()
+    expect(within(results).queryByText('lot_genealogy')).not.toBeInTheDocument()
+    fireEvent.click(within(results).getByTitle('yield_summary_daily'))
+    expect(await screen.findByText('Table details')).toBeVisible()
+    expect(screen.getByText('Column metadata')).toBeVisible()
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
-  it('advances registration only in memory and resets after remount', async () => {
-    const firstRender = render(<PocApp />)
-    const navigation = screen.getByRole('navigation', { name: '주 메뉴' })
-    fireEvent.click(within(navigation).getByRole('button', { name: '등록관리' }))
-    await screen.findByRole('heading', { name: 'Move an intake request forward' })
+  it('preserves every original primary page and removes login-specific menu actions', async () => {
+    renderPoc()
+    const pages = [
+      ['등록관리', '데이터 등록'],
+      ['변경관리', '변경 요청과 승인'],
+      ['품질관리', '품질관리'],
+      ['지식관리', '지식관리'],
+      ['모니터링', 'Infrastructure Monitoring'],
+      ['거버넌스', '거버넌스'],
+      ['Chat', '카탈로그 Chat'],
+    ] as const
 
-    fireEvent.click(screen.getByRole('button', { name: /다음 단계/ }))
-    expect(screen.getAllByText('검증 완료').length).toBeGreaterThan(0)
-    fireEvent.click(screen.getByRole('button', { name: /다음 단계/ }))
-    expect(screen.getAllByText('등록 완료').length).toBeGreaterThan(0)
+    for (const [menuName, heading] of pages) {
+      fireEvent.click(within(navigation()).getByRole('button', { name: new RegExp(menuName) }))
+      expect(await screen.findByRole('heading', { name: heading })).toBeVisible()
+      expect(screen.getByTestId('poc-banner')).toBeVisible()
+    }
 
-    firstRender.unmount()
-    render(<PocApp />)
-
-    await waitFor(() => expect(screen.getAllByText('요청 접수').length).toBeGreaterThan(0))
-    expect(screen.getByRole('button', { name: /다음 단계/ })).toBeEnabled()
-    expect(screen.queryByRole('button', { name: /시연 완료/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'POC Sample User 사용자 메뉴' }))
+    expect(screen.getByRole('menu', { name: '사용자 작업' })).toBeVisible()
+    expect(screen.queryByRole('menuitem', { name: '나가기' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '내 프로필' })).not.toBeInTheDocument()
+    expect(screen.queryByText(/WebAuthn 보안키 등록/)).not.toBeInTheDocument()
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 
-  it('steps a Quality Run through sanitized deterministic results', async () => {
-    render(<PocApp />)
-    const shortcuts = screen.getByRole('navigation', { name: 'POC walkthrough shortcuts' })
-    fireEvent.click(within(shortcuts).getByRole('link', { name: /Quality Run/ }))
-    await screen.findByRole('heading', { name: 'Follow a quality execution' })
+  it('updates chat history only through the browser-memory adapter', async () => {
+    renderPoc()
+    fireEvent.click(within(navigation()).getByRole('button', { name: /Chat/ }))
+    await screen.findByRole('heading', { name: '카탈로그 Chat' })
+    fireEvent.click(await screen.findByRole('button', { name: 'Wafer inspection 품질 상태 열기' }))
+    expect(await screen.findByText(/98\.75%/)).toBeVisible()
 
-    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '14')
-    fireEvent.click(screen.getByRole('button', { name: /실행 시작/ }))
-    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '62')
-    fireEvent.click(screen.getByRole('button', { name: /결과 완료/ }))
+    const input = screen.getByRole('textbox', { name: '카탈로그 질문' })
+    fireEvent.change(input, { target: { value: 'wafer 품질 근거를 다시 알려줘' } })
+    fireEvent.submit(input.closest('form')!)
 
-    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '100')
-    expect(screen.getByText('0', { selector: '.run-results strong' })).toBeVisible()
-    expect(screen.getByText('raw rows')).toBeVisible()
+    await waitFor(() => expect(screen.getAllByText(/98\.75%/).length).toBeGreaterThan(1))
+    expect(screen.getByText(/개발 검증 세션/)).toBeVisible()
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
 })
