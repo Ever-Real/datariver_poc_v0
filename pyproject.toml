@@ -21,7 +21,7 @@ dependencies = [
   "redis>=6.0,<7",
   "SQLAlchemy==2.0.49",
   "structlog>=25.0,<26",
-  "uvicorn[standard]==0.47.0",
+  "uvicorn[standard]==0.52.1",
   "pypdf==6.14.2",
   "neo4j==6.0.3",
   "bleach==6.4.0",
