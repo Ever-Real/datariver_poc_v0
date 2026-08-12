@@ -338,6 +338,8 @@
     radial-gradient(circle at 50% 0, rgba(225, 239, 247, .28), transparent 38%),
     #fcfdfd;
   scrollbar-gutter: stable;
+  scroll-behavior: smooth;
+  outline: none;
 }
 
 .chat-conversation .message {
@@ -376,9 +378,24 @@
 }
 
 .chat-answer-content {
+  position: relative;
   border-radius: 0;
   outline: none;
   cursor: pointer;
+}
+
+.chat-conversation .message-assistant.is-revealing .chat-answer-content {
+  animation: chat-answer-sharpen 480ms cubic-bezier(.18, .78, .28, 1) both;
+}
+
+.chat-conversation .message-assistant.is-revealing .chat-answer-content::after {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(105deg, transparent 28%, rgba(255, 255, 255, .88) 48%, transparent 68%);
+  background-size: 220% 100%;
+  content: "";
+  animation: chat-answer-sweep 480ms ease-out both;
 }
 
 .chat-answer-content:focus-visible {
@@ -722,9 +739,23 @@
 }
 
 .chat-question-field small {
-  padding: 0 8px 2px;
   color: #8a98a5;
   font-size: 8px;
+}
+
+.chat-question-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0 8px 2px;
+}
+
+.chat-question-meta small:last-child {
+  flex: 0 0 auto;
+  color: #647586;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
 }
 
 .chat-send-button {
@@ -1610,6 +1641,17 @@
   to { opacity: 1; transform: translateY(0) scale(1); }
 }
 
+@keyframes chat-answer-sharpen {
+  0% { opacity: .48; filter: blur(1.8px); transform: translateY(2px); }
+  38% { opacity: .82; filter: blur(.75px); }
+  100% { opacity: 1; filter: blur(0); transform: translateY(0); }
+}
+
+@keyframes chat-answer-sweep {
+  0% { opacity: .75; background-position: 135% 0; }
+  100% { opacity: 0; background-position: -85% 0; }
+}
+
 @media (max-width: 1180px) {
   .chat-workspace {
     --chat-history-width: 270px;
@@ -1678,7 +1720,7 @@
   }
 
   .chat-composer-label,
-  .chat-question-field small {
+  .chat-question-meta small:first-child {
     display: none;
   }
 
@@ -1699,6 +1741,10 @@
     max-height: calc(100vh - 16px);
   }
 
+  .chat-question-meta {
+    justify-content: flex-end;
+  }
+
   .catalog-detail.catalog-detail--modal {
     height: calc(100vh - 16px) !important;
     max-height: calc(100vh - 16px) !important;
@@ -1717,7 +1763,9 @@
   .chat-route-options,
   .chat-workflow-rail li.is-progress .chat-workflow-node,
   .chat-evidence-modal,
-  .chat-evidence-modal-surface {
+  .chat-evidence-modal-surface,
+  .chat-conversation .message-assistant.is-revealing .chat-answer-content,
+  .chat-conversation .message-assistant.is-revealing .chat-answer-content::after {
     scroll-behavior: auto;
     transition: none;
     animation: none;

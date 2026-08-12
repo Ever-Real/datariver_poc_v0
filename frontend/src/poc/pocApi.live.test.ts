@@ -188,6 +188,9 @@ function installGatewayMock() {
         deployment_tier: 'SINGLE_NODE_PILOT',
       }))
     }
+    if (url.pathname === '/poc-api/llm/chat/compact') {
+      return Promise.resolve(json({ summary: 'wafer_events 계보를 확인한 대화', compacted_turn_count: 5 }))
+    }
     if (url.pathname === '/poc-api/llm/chat/stream') {
       const result = {
         answer: 'wafer_events는 source_events의 영향을 받습니다. [1]',
@@ -445,6 +448,69 @@ describe('POC live-provider compatibility adapter', () => {
     expect(workflow).toEqual(expect.arrayContaining([
       expect.objectContaining({ stage: 'ROUTING', status: 'IN_PROGRESS' }),
     ]))
+  })
+
+  it('carries bounded same-session question and answer memory and compacts every five turns', async () => {
+    const client = useStableApiClient()
+    let sessionId: string | undefined
+    for (let index = 1; index <= 5; index += 1) {
+      const result = await client.requestEventStream<{ session_id: string }>(
+        '/chat/query/stream',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            ...(sessionId ? { session_id: sessionId } : {}),
+            question: `${index}번째 wafer_events 질문`,
+            mode: 'AUTO',
+          }),
+        },
+        () => undefined,
+      )
+      sessionId = result.session_id
+    }
+
+    await vi.waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => (
+      new URL(input instanceof Request ? input.url : input.toString(), 'https://poc.invalid').pathname
+        === '/poc-api/llm/chat/compact'
+    ))).toBe(true))
+    const compactCall = vi.mocked(fetch).mock.calls.find(([input]) => (
+      new URL(input instanceof Request ? input.url : input.toString(), 'https://poc.invalid').pathname
+        === '/poc-api/llm/chat/compact'
+    ))
+    const compactBody = JSON.parse(String((compactCall?.[1] as RequestInit | undefined)?.body)) as {
+      memory: { recent_turns: unknown[] }
+    }
+    expect(compactBody.memory.recent_turns).toHaveLength(5)
+    await new Promise((resolve) => window.setTimeout(resolve, 0))
+
+    await client.requestEventStream(
+      '/chat/query/stream',
+      { method: 'POST', body: JSON.stringify({ session_id: sessionId, question: '그 테이블은?', mode: 'AUTO' }) },
+      () => undefined,
+    )
+    const streamCalls = vi.mocked(fetch).mock.calls.filter(([input]) => (
+      new URL(input instanceof Request ? input.url : input.toString(), 'https://poc.invalid').pathname
+        === '/poc-api/llm/chat/stream'
+    ))
+    const sixthBody = JSON.parse(String((streamCalls.at(-1)?.[1] as RequestInit | undefined)?.body)) as {
+      memory: { summary: string; compacted_turn_count: number; recent_turns: unknown[] }
+    }
+    expect(sixthBody.memory).toEqual({
+      summary: 'wafer_events 계보를 확인한 대화',
+      compacted_turn_count: 5,
+      recent_turns: [],
+    })
+  })
+
+  it('rejects a Chat question beyond 12,000 characters before a provider request', async () => {
+    const client = useStableApiClient()
+    const fetchCalls = vi.mocked(fetch).mock.calls.length
+    await expect(client.requestEventStream(
+      '/chat/query/stream',
+      { method: 'POST', body: JSON.stringify({ question: '가'.repeat(12_001), mode: 'AUTO' }) },
+      () => undefined,
+    )).rejects.toThrow('12,000자')
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(fetchCalls)
   })
 
   it('supports review changes requested, immutable revision and resubmission in a new round', async () => {

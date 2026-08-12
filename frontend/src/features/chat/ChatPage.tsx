@@ -47,6 +47,8 @@ const modeOptions: ChatRouteOption[] = [
   { value: 'GRAPH', label: '그래프', description: 'Asset Graph 어댑터가 준비된 경우에만 경로를 탐색합니다.' },
 ]
 
+const maximumQuestionCharacters = 12_000
+
 const modeLabels: Record<ChatMode, string> = {
   AUTO: '자동',
   GENERAL: '일반',
@@ -187,8 +189,12 @@ export function ChatPage({ client }: { client: ApiClient }) {
   const [evidenceExpanded, setEvidenceExpanded] = useState(true)
   const [selectedAssistantMessageId, setSelectedAssistantMessageId] = useState<string>()
   const [selectedEvidenceAssetId, setSelectedEvidenceAssetId] = useState<string>()
+  const [revealingMessageId, setRevealingMessageId] = useState<string>()
   const historyRequestVersion = useRef(0)
   const evidenceTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const chatLogRef = useRef<HTMLDivElement | null>(null)
+  const messageElementsRef = useRef(new Map<string, HTMLElement>())
+  const answerFocusEnabledRef = useRef(false)
 
   const refreshSessions = useCallback(async (signal?: AbortSignal) => {
     try {
@@ -210,6 +216,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setSelectedEvidenceAssetId(undefined)
     setPersistence(undefined)
     setCopyFeedback(undefined)
+    setRevealingMessageId(undefined)
+    answerFocusEnabledRef.current = false
     void refreshSessions(controller.signal)
     return () => controller.abort()
   }, [client, refreshSessions])
@@ -254,6 +262,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
       setSessionId(id)
       setMessages(restored)
       setSelectedAssistantMessageId(lastAssistant(restored)?.id)
+      setRevealingMessageId(undefined)
+      answerFocusEnabledRef.current = false
       setPersistence(undefined)
     } catch (next) {
       if (historyRequestVersion.current === requestVersion) setError(next)
@@ -273,6 +283,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setSelectedAssistantMessageId(undefined)
     setSelectedEvidenceAssetId(undefined)
     setCopyFeedback(undefined)
+    setRevealingMessageId(undefined)
+    answerFocusEnabledRef.current = false
     setError(undefined)
     setLoading(false)
   }, [])
@@ -337,6 +349,29 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setEvidenceCollapsed(false)
   }
 
+  const cancelAnswerFocus = useCallback(() => {
+    answerFocusEnabledRef.current = false
+  }, [])
+
+  useEffect(() => {
+    if (!answerFocusEnabledRef.current) return
+    const target = revealingMessageId ? messageElementsRef.current.get(revealingMessageId) : undefined
+    if (target && typeof target.scrollIntoView === 'function') {
+      target.scrollIntoView({ behavior: 'smooth', block: 'start' })
+      return
+    }
+    const log = chatLogRef.current
+    if (log) log.scrollTo?.({ top: log.scrollHeight, behavior: 'smooth' })
+  }, [liveWorkflow, loading, messages, revealingMessageId])
+
+  useEffect(() => {
+    if (!revealingMessageId) return undefined
+    const timeout = window.setTimeout(() => setRevealingMessageId((current) => (
+      current === revealingMessageId ? undefined : current
+    )), 520)
+    return () => window.clearTimeout(timeout)
+  }, [revealingMessageId])
+
   const submit = async (event: FormEvent) => {
     event.preventDefault()
     const text = question.trim()
@@ -351,6 +386,8 @@ export function ChatPage({ client }: { client: ApiClient }) {
     setSelectedAssistantMessageId(undefined)
     setSelectedEvidenceAssetId(undefined)
     setLiveWorkflow([])
+    setRevealingMessageId(undefined)
+    answerFocusEnabledRef.current = true
     try {
       const result = await client.requestEventStream<ChatResponse>(
         '/chat/query/stream',
@@ -373,6 +410,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
       setPersistence(result.persistence)
       setLiveWorkflow(result.workflow)
       setSelectedAssistantMessageId(result.response_message_id)
+      setRevealingMessageId(result.response_message_id)
       setMessages((current) => [
         ...current.map((message) => message.id === pendingMessageId
           ? { ...message, id: result.request_message_id }
@@ -547,15 +585,33 @@ export function ChatPage({ client }: { client: ApiClient }) {
               <span className="chat-status-dot" data-loading={loading}>{loading ? '응답 생성 중' : '준비됨'}</span>
             </div>
           </header>
-          <div aria-live="polite" className="chat-log">
+          <div
+            aria-live="polite"
+            className="chat-log"
+            onKeyDown={(event) => {
+              if (['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown', ' '].includes(event.key)) {
+                cancelAnswerFocus()
+              }
+            }}
+            onPointerDown={cancelAnswerFocus}
+            onTouchStart={cancelAnswerFocus}
+            onWheel={cancelAnswerFocus}
+            ref={chatLogRef}
+            tabIndex={0}
+          >
             {messages.map((message) => (
               <article
                 className={[
                   'message',
                   `message-${message.role}`,
                   message.id === visibleAssistant?.id ? 'is-evidence-selected' : '',
+                  message.id === revealingMessageId ? 'is-revealing' : '',
                 ].filter(Boolean).join(' ')}
                 key={message.id}
+                ref={(node) => {
+                  if (node) messageElementsRef.current.set(message.id, node)
+                  else messageElementsRef.current.delete(message.id)
+                }}
               >
                 {message.role === 'assistant' ? (
                   <div
@@ -626,17 +682,20 @@ export function ChatPage({ client }: { client: ApiClient }) {
             <div className="chat-question-field">
               <label className="sr-only" htmlFor="chat-question">카탈로그 질문</label>
               <textarea
-                aria-describedby="chat-keyboard-hint"
+                aria-describedby="chat-keyboard-hint chat-question-count"
                 aria-keyshortcuts="Enter"
                 disabled={loading}
                 id="chat-question"
-                maxLength={4000}
-                onChange={(event) => setQuestion(event.target.value)}
+                maxLength={maximumQuestionCharacters}
+                onChange={(event) => setQuestion(event.target.value.slice(0, maximumQuestionCharacters))}
                 onKeyDown={submitOnEnter}
                 placeholder="예: 고객 주문 데이터는 어떤 테이블에 있나요?"
                 value={question}
               />
-              <small id="chat-keyboard-hint">Enter 전송 · Shift+Enter 줄바꿈</small>
+              <span className="chat-question-meta">
+                <small id="chat-keyboard-hint">Enter 전송 · Shift+Enter 줄바꿈</small>
+                <small aria-live="polite" id="chat-question-count">{question.length.toLocaleString()} / {maximumQuestionCharacters.toLocaleString()}</small>
+              </span>
             </div>
             <button
               aria-label={loading ? '응답 대기 중' : '질문 전송'}

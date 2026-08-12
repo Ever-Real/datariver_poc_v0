@@ -48,6 +48,16 @@ function providerHandler(request, response) {
     if (url.pathname.endsWith('/chat/completions')) {
       const payload = JSON.parse(body.toString('utf8'))
       const systemPrompt = payload.messages?.[0]?.content || ''
+      if (systemPrompt.includes('Rewrite the current Data Catalog question')) {
+        return sendJson(response, { choices: [{ message: { content: JSON.stringify({
+          standalone_question: 'wafer_events 테이블의 컬럼을 알려줘',
+        }) } }] })
+      }
+      if (systemPrompt.includes('Compact the bounded conversation')) {
+        return sendJson(response, { choices: [{ message: { content: JSON.stringify({
+          summary: '사용자는 wafer_events 메타데이터를 확인했고 후속 컬럼 조회를 원합니다.',
+        }) } }] })
+      }
       if (systemPrompt.includes('Classify one untrusted Data Catalog question')) {
         const question = payload.messages?.[1]?.content || ''
         const graph = /lineage|upstream|impact/i.test(question)
@@ -533,6 +543,72 @@ test('streams real Chat workflow stages before the final provider result', async
   assert.match(frames[0], /"stage":"AUTHORIZATION","status":"IN_PROGRESS"/)
   assert.ok(stream.indexOf('"stage":"ROUTING","status":"IN_PROGRESS"') < stream.indexOf('event: result'))
   assert.match(frames.at(-1) || '', /^event: result\ndata: /)
+})
+
+test('uses bounded conversation memory to resolve a same-session follow-up without treating it as evidence', async () => {
+  const memory = {
+    summary: '사용자는 wafer_events 테이블을 확인했습니다.',
+    compacted_turn_count: 5,
+    recent_turns: [{
+      question: '이 테이블의 목적은?',
+      answer: 'wafer_events는 웨이퍼 이벤트를 기록합니다.',
+    }],
+  }
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: '그 테이블의 컬럼도 알려줘', mode: 'AUTO', memory }),
+  })
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.evidence[0].name, 'wafer_events')
+  const contextualizer = [...requests].reverse().find((request) => {
+    if (!request.path.endsWith('/chat/completions')) return false
+    return JSON.parse(request.body).messages?.[0]?.content?.includes('Rewrite the current Data Catalog question')
+  })
+  assert.ok(contextualizer)
+  const composer = [...requests].reverse().find((request) => {
+    if (!request.path.endsWith('/chat/completions')) return false
+    return JSON.parse(request.body).messages?.[0]?.content?.includes('Bounded conversation memory is non-authoritative')
+  })
+  assert.match(JSON.parse(composer.body).messages[1].content, /사용자는 wafer_events 테이블을 확인했습니다/)
+  assert.equal(payload.evidence.some((item) => item.evidence_type === 'CHAT_MEMORY'), false)
+})
+
+test('compacts exactly five bounded Chat turns and rejects oversized question or memory input', async () => {
+  const recentTurns = Array.from({ length: 5 }, (_, index) => ({
+    question: `${index + 1}번째 wafer_events 질문`,
+    answer: `${index + 1}번째 DataHub 근거 답변`,
+  }))
+  const compact = await fetch(`${pocOrigin}/poc-api/llm/chat/compact`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ memory: { summary: '', compacted_turn_count: 0, recent_turns: recentTurns } }),
+  })
+  assert.equal(compact.status, 200)
+  assert.deepEqual(await compact.json(), {
+    summary: '사용자는 wafer_events 메타데이터를 확인했고 후속 컬럼 조회를 원합니다.',
+    compacted_turn_count: 5,
+  })
+
+  const oversizedQuestion = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'x'.repeat(12_001), mode: 'AUTO' }),
+  })
+  assert.equal(oversizedQuestion.status, 400)
+  assert.match((await oversizedQuestion.json()).detail, /at most 12000 characters/)
+
+  const oversizedMemory = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      question: 'wafer_events', mode: 'AUTO',
+      memory: { summary: '', compacted_turn_count: 0, recent_turns: [...recentTurns, recentTurns[0]] },
+    }),
+  })
+  assert.equal(oversizedMemory.status, 400)
+  assert.match((await oversizedMemory.json()).detail, /at most five recent turns/)
 })
 
 test('routes a high-confidence Korean discovery question to the full vector inventory without classifier drift', async () => {

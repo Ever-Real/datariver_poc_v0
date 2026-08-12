@@ -243,6 +243,19 @@ let governanceReviews: GovernanceDocumentReview[] = []
 let governanceAttachments: GovernanceDocumentAttachment[] = []
 const governanceAttachmentLocations = new Map<string, { upload_id: string; key: string }>()
 const chatMessages = new Map<string, ChatMessage[]>()
+const CHAT_QUESTION_MAX_CHARACTERS = 12_000
+const CHAT_MEMORY_COMPACTION_INTERVAL = 5
+const CHAT_MEMORY_SUMMARY_CHARACTERS = 5_000
+const CHAT_MEMORY_TURN_QUESTION_CHARACTERS = 900
+const CHAT_MEMORY_TURN_ANSWER_CHARACTERS = 1_300
+interface PocChatMemoryTurn { question: string; answer: string }
+interface PocChatMemoryState {
+  summary: string
+  compactedTurnCount: number
+  recentTurns: PocChatMemoryTurn[]
+  compaction?: Promise<void>
+}
+const chatMemory = new Map<string, PocChatMemoryState>()
 const changeAttachmentUploads = new Map<string, ChangeRequestAttachmentUpload & { file: File }>()
 const changeAttachments = new Map<string, Array<ChangeRequestAttachment & { file?: File }>>()
 const changeAttachmentLocations = new Map<string, { upload_id: string; display_name: string }>()
@@ -1063,6 +1076,78 @@ async function testSystemConfiguration(
   }
 }
 
+function boundedChatMemoryTurn(question: string, answer: string): PocChatMemoryTurn {
+  return {
+    question: question.slice(0, CHAT_MEMORY_TURN_QUESTION_CHARACTERS),
+    answer: answer.slice(0, CHAT_MEMORY_TURN_ANSWER_CHARACTERS),
+  }
+}
+
+function chatMemoryRequest(sessionId: string): Record<string, unknown> | undefined {
+  const state = chatMemory.get(sessionId)
+  if (!state || (!state.summary && !state.recentTurns.length)) return undefined
+  return {
+    summary: state.summary,
+    compacted_turn_count: state.compactedTurnCount,
+    recent_turns: state.recentTurns.slice(-CHAT_MEMORY_COMPACTION_INTERVAL),
+  }
+}
+
+function deterministicChatMemorySummary(previous: string, turns: PocChatMemoryTurn[]): string {
+  const turnText = turns.map((turn, index) => (
+    `${index + 1}. 질문: ${turn.question}\n답변 요지: ${turn.answer}`
+  )).join('\n')
+  return [previous ? `이전 요약:\n${previous}` : '', turnText]
+    .filter(Boolean)
+    .join('\n\n')
+    .slice(-CHAT_MEMORY_SUMMARY_CHARACTERS)
+}
+
+function scheduleChatMemoryCompaction(sessionId: string, state: PocChatMemoryState): void {
+  if (state.compaction || state.recentTurns.length < CHAT_MEMORY_COMPACTION_INTERVAL) return
+  const turns = state.recentTurns.slice(0, CHAT_MEMORY_COMPACTION_INTERVAL)
+  const previousSummary = state.summary
+  const previousCompactedTurnCount = state.compactedTurnCount
+  state.compaction = gatewayRequest<{ summary: string; compacted_turn_count: number }>(
+    '/poc-api/llm/chat/compact',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        memory: {
+          summary: previousSummary,
+          compacted_turn_count: previousCompactedTurnCount,
+          recent_turns: turns,
+        },
+      }),
+    },
+  ).then((result) => {
+    if (chatMemory.get(sessionId) !== state) return
+    state.summary = result.summary.slice(0, CHAT_MEMORY_SUMMARY_CHARACTERS)
+    state.compactedTurnCount = result.compacted_turn_count
+    state.recentTurns.splice(0, CHAT_MEMORY_COMPACTION_INTERVAL)
+  }).catch(() => {
+    if (chatMemory.get(sessionId) !== state) return
+    state.summary = deterministicChatMemorySummary(previousSummary, turns)
+    state.compactedTurnCount = previousCompactedTurnCount + turns.length
+    state.recentTurns.splice(0, CHAT_MEMORY_COMPACTION_INTERVAL)
+  }).finally(() => {
+    if (chatMemory.get(sessionId) !== state) return
+    state.compaction = undefined
+    scheduleChatMemoryCompaction(sessionId, state)
+  })
+}
+
+function rememberChatTurn(sessionId: string, question: string, answer: string): void {
+  const state = chatMemory.get(sessionId) ?? {
+    summary: '',
+    compactedTurnCount: 0,
+    recentTurns: [],
+  }
+  if (!chatMemory.has(sessionId)) chatMemory.set(sessionId, state)
+  state.recentTurns.push(boundedChatMemoryTurn(question, answer))
+  scheduleChatMemoryCompaction(sessionId, state)
+}
+
 class PocApiClient {
   private hydration?: Promise<void>
 
@@ -1202,7 +1287,11 @@ class PocApiClient {
     onEvent: ApiEventStreamHandler,
   ): Promise<T> {
     const body = jsonBody(options)
-    const question = typeof body.question === 'string' ? body.question.trim() : ''
+    const rawQuestion = typeof body.question === 'string' ? body.question : ''
+    if (rawQuestion.length > CHAT_QUESTION_MAX_CHARACTERS) {
+      return Promise.reject(new Error(`질문은 ${CHAT_QUESTION_MAX_CHARACTERS.toLocaleString()}자까지 입력할 수 있습니다.`))
+    }
+    const question = rawQuestion.trim()
     if (!question) return Promise.reject(new Error('질문을 입력하세요.'))
     const mode = ['AUTO', 'GENERAL', 'VECTOR', 'GRAPH'].includes(String(body.mode))
       ? body.mode as ChatMode
@@ -1210,11 +1299,12 @@ class PocApiClient {
     const sessionId = typeof body.session_id === 'string' && body.session_id
       ? body.session_id
       : nextId('chat-session')
+    const memory = chatMemoryRequest(sessionId)
     const live = runtimeFlags().llmChat
       ? gatewayEventStream<Pick<ChatResponse, 'answer' | 'route' | 'workflow'> & { evidence: Array<Record<string, unknown>> }>('/poc-api/llm/chat/stream', {
           method: 'POST',
           signal: options.signal,
-          body: JSON.stringify({ question, mode }),
+          body: JSON.stringify({ question, mode, ...(memory ? { memory } : {}) }),
         }, onEvent)
       : Promise.reject(new Error('검증 불가: LLM Chat 연결을 설정해야 합니다.'))
     return live.then(async (liveResult) => {
@@ -1256,6 +1346,7 @@ class PocApiClient {
       messages.push({ id: requestId, session_id: sessionId, role: 'user', content: question, evidence_json: null, created_at: new Date().toISOString(), route: null, workflow: [] })
       messages.push({ id: responseId, session_id: sessionId, role: 'assistant', content: liveResult.answer, evidence_json: evidence, created_at: new Date().toISOString(), route, workflow })
       chatMessages.set(sessionId, messages)
+      rememberChatTurn(sessionId, question, liveResult.answer)
       const existing = chatSessions.find((item) => item.id === sessionId)
       if (existing) {
         existing.message_count = messages.length
@@ -3034,6 +3125,7 @@ class PocApiClient {
     if (deleteMatch && method === 'DELETE') {
       chatSessions = chatSessions.filter((item) => item.id !== deleteMatch[1])
       chatMessages.delete(deleteMatch[1] ?? '')
+      chatMemory.delete(deleteMatch[1] ?? '')
       return undefined
     }
 
@@ -3096,6 +3188,7 @@ export function resetPocMemory(): void {
   governanceAttachments = []
   governanceAttachmentLocations.clear()
   chatMessages.clear()
+  chatMemory.clear()
   changeAttachmentUploads.clear()
   changeAttachments.clear()
   changeAttachmentLocations.clear()

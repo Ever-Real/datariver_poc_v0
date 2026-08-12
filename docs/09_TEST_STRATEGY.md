@@ -2,6 +2,23 @@
 
 ## Current verification status
 
+### POC bounded Chat session memory and response focus — 2026-08-12
+
+ADR-0120 tests require a 12,000-character browser/gateway question boundary, at most five bounded
+recent Q/A turns, a 16,000-character total memory payload and one compaction after every five
+completed questions. A referential follow-up may be rewritten for routing and retrieval, but prior
+answers never become `ChatEvidence` or a current DataHub citation. Component tests require the live
+counter, completed-answer focus, wheel cancellation and the immediate full-answer reveal class.
+
+The single-worker frontend suite passed `81` files / `522` tests. The POC server/provider/router
+suite passed `24` tests, including compaction, oversized input negatives and live-evidence
+reauthoring of a memory-resolved follow-up. ESLint, TypeScript, POC and production builds, static
+verification and whitespace validation passed. On the development runtime, a six-question GENERAL
+session retained the user-declared code name `오로라` after the fifth-question compaction; the sixth
+answer returned `오로라`, the counter reset to `0 / 12,000`, and workflow progress appeared before
+the answer. This evidence is POC same-browser-session continuity, not a production durable memory,
+retention or provider-token-streaming claim.
+
 ### POC Catalog cardinality, strict matches and one-click TEST approval — 2026-08-12
 
 ADR-0119 tests pin `ALL`-term Catalog matching to enabled DataHub-derived fields, require real

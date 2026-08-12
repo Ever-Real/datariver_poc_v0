@@ -273,6 +273,63 @@ describe('ChatPage', () => {
     ).toBe(true))
   })
 
+  it('caps questions at 12,000 characters and shows the live count at the composer edge', async () => {
+    const { client } = chatClient()
+    render(<ChatPage client={client} />)
+    await screen.findByText('주문 데이터')
+
+    const question = screen.getByLabelText('카탈로그 질문')
+    expect(question).toHaveAttribute('maxlength', '12000')
+    expect(screen.getByText('0 / 12,000')).toBeInTheDocument()
+    fireEvent.change(question, { target: { value: '가'.repeat(12_001) } })
+    expect(question).toHaveValue('가'.repeat(12_000))
+    expect(screen.getByText('12,000 / 12,000')).toBeInTheDocument()
+  })
+
+  it('focuses the completed answer and applies a non-blocking reveal treatment', async () => {
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+    const { client } = chatClient()
+    render(<ChatPage client={client} />)
+    await screen.findByText('주문 데이터')
+
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '주문 테이블을 찾아줘' } })
+    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
+
+    const answerHeading = await screen.findByRole('heading', { name: '확인된 테이블' })
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth', block: 'start' }))
+    expect(answerHeading.closest('article')).toHaveClass('is-revealing')
+  })
+
+  it('stops answer focusing as soon as the user scrolls the conversation', async () => {
+    let resolveResult: ((value: ChatResponse) => void) | undefined
+    const scrollIntoView = vi.fn()
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    })
+    const { client: baseClient } = chatClient()
+    const requestEventStream = vi.fn(() => new Promise<ChatResponse>((resolve) => {
+      resolveResult = resolve
+    }))
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
+    await screen.findByText('주문 데이터')
+
+    fireEvent.change(screen.getByLabelText('카탈로그 질문'), { target: { value: '주문 테이블을 찾아줘' } })
+    fireEvent.click(screen.getByRole('button', { name: '질문 전송' }))
+    fireEvent.wheel(screen.getByLabelText('답변 생성 중').closest('.chat-log')!, { deltaY: -120 })
+    resolveResult?.(response)
+
+    expect(await screen.findByRole('heading', { name: '확인된 테이블' })).toBeInTheDocument()
+    expect(scrollIntoView).not.toHaveBeenCalled()
+  })
+
   it('does not submit an Enter key event while an IME composition is active', async () => {
     const { client, requestEventStream } = chatClient()
     render(<ChatPage client={client} />)
