@@ -7,6 +7,7 @@ const requests = []
 const objects = new Map()
 let forcedClassifierResponse
 let failNeo4j
+let hideExactFromTextSearch
 let providerServer
 let pocServer
 let pocOrigin
@@ -75,6 +76,11 @@ function providerHandler(request, response) {
     if (url.pathname === '/api/graphql') {
       const payload = JSON.parse(body.toString('utf8'))
       if (payload.query.includes('DataRiverPocCatalog')) {
+        if (hideExactFromTextSearch && payload.variables.input.query !== '*') {
+          return sendJson(response, { data: { scrollAcrossEntities: {
+            count: 0, total: 0, nextScrollId: null, searchResults: [],
+          } } })
+        }
         if (payload.variables.input.query === 'cursor-test') {
           const secondPage = payload.variables.input.scrollId === 'provider-page-2'
           const entity = secondPage ? {
@@ -534,6 +540,7 @@ test('resolves an exact table name and composes detailed DataHub metadata eviden
 test('routes an exact Korean relationship question deterministically before the classifier', async () => {
   const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
     && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
+  const completionsBefore = requests.filter((request) => request.path.endsWith('/chat/completions')).length
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -544,9 +551,30 @@ test('routes an exact Korean relationship question deterministically before the 
   assert.equal(payload.route.selected_mode, 'GRAPH')
   assert.equal(payload.route.intent, 'RELATIONSHIP')
   assert.ok(payload.evidence.some((item) => item.evidence_type === 'DATAHUB_LINEAGE'))
+  assert.match(payload.answer, /source_events/)
+  assert.match(payload.answer, /wafer_quality_view/)
   const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
     && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
   assert.equal(classifiersAfter, classifiersBefore)
+  assert.equal(requests.filter((request) => request.path.endsWith('/chat/completions')).length, completionsBefore)
+})
+
+test('resolves an exact graph asset from the cached provider inventory when DataHub text ranking omits it', async () => {
+  hideExactFromTextSearch = true
+  try {
+    const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'wafer_events 테이블의 upstream과 downstream을 알려줘', mode: 'AUTO' }),
+    })
+    assert.equal(response.status, 200)
+    const payload = await response.json()
+    const lineage = payload.evidence.find((item) => item.evidence_type === 'DATAHUB_LINEAGE')
+    assert.equal(lineage.entity_resolution_method, 'CATALOG_EXACT')
+    assert.doesNotMatch(payload.answer, /가장 가까운 후보/)
+  } finally {
+    hideExactFromTextSearch = false
+  }
 })
 
 test('routes lineage questions through bounded DataHub and Neo4j graph evidence', async () => {
@@ -565,6 +593,7 @@ test('routes lineage questions through bounded DataHub and Neo4j graph evidence'
   assert.match(lineage.description, /Upstream datasets: source_events/)
   assert.match(lineage.description, /Downstream datasets: wafer_quality_view/)
   assert.doesNotMatch(lineage.description, /view_f09ab31/)
+  assert.doesNotMatch(lineage.description, /Columns \(/)
 })
 
 test('keeps DataHub lineage answers available when optional Neo4j is unavailable', async () => {

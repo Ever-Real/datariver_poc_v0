@@ -1942,19 +1942,53 @@ async function datahubLineageEvidence(asset) {
     .map((relationship) => relationship.name).filter(Boolean)
   const downstream = relationships.filter((relationship) => relationship.direction === 'DOWNSTREAM')
     .map((relationship) => relationship.name).filter(Boolean)
+  const providerDescription = boundedString(asset.provider_description || asset.description, 2_000).trim()
   return {
     ...asset,
     evidence_type: 'DATAHUB_LINEAGE',
     extraction_method: 'DATAHUB_GMS_LINEAGE',
+    entity_resolution_method: asset.retrieval_method || asset.extraction_method || 'DATAHUB_GMS',
     retrieval_method: 'GRAPH',
     description: [
-      asset.description,
+      providerDescription,
       upstream.length ? `Upstream datasets: ${upstream.join(', ')}` : 'Upstream datasets: none returned by DataHub.',
       downstream.length ? `Downstream datasets: ${downstream.join(', ')}` : 'Downstream datasets: none returned by DataHub.',
     ]
       .filter(Boolean).join('\n'),
     relationships,
   }
+}
+
+function graphEvidenceAnswer(evidence) {
+  const lineage = evidence.map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.evidence_type === 'DATAHUB_LINEAGE')
+  const knowledge = evidence.map((item, index) => ({ item, index }))
+    .filter(({ item }) => item.evidence_type === 'KNOWLEDGE_GRAPH')
+  if (!lineage.length && !knowledge.length) {
+    return '실시간 DataHub 및 Neo4j 근거에서 질문과 일치하는 계보 관계를 찾지 못했습니다.'
+  }
+  const lines = []
+  if (lineage.length && !lineage.some(({ item }) => item.entity_resolution_method === 'CATALOG_EXACT')) {
+    lines.push('질문의 자산명과 정확히 일치하는 live DataHub 자산을 식별하지 못해 가장 가까운 후보 계보를 표시합니다.')
+  }
+  for (const { item, index } of lineage) {
+    const upstream = (item.relationships || [])
+      .filter((relationship) => relationship.direction === 'UPSTREAM')
+      .map((relationship) => relationship.name).filter(Boolean)
+    const downstream = (item.relationships || [])
+      .filter((relationship) => relationship.direction === 'DOWNSTREAM')
+      .map((relationship) => relationship.name).filter(Boolean)
+    lines.push(
+      `- **${item.name || '이름 미등록 자산'}** [${index + 1}]`,
+      `  - Upstream: ${upstream.length ? upstream.join(', ') : 'DataHub에서 반환된 관계 없음'}`,
+      `  - Downstream: ${downstream.length ? downstream.join(', ') : 'DataHub에서 반환된 관계 없음'}`,
+    )
+  }
+  if (knowledge.length) {
+    lines.push('Neo4j 지식 그래프에서 함께 확인된 관계:')
+    for (const { item, index } of knowledge) lines.push(`- ${item.name} (${item.description}) [${index + 1}]`)
+  }
+  return lines.join('\n')
 }
 
 async function neo4jEvidence(question) {
@@ -2051,6 +2085,7 @@ async function exactCatalogEvidence(question, limit = 3) {
     const detail = await datahubAsset(asset.external_urn || asset.id, 0, 100)
     return {
       ...detail,
+      provider_description: detail.description,
       evidence_type: 'CATALOG_METADATA',
       extraction_method: 'DATAHUB_GMS_EXACT_ASSET',
       retrieval_method: 'CATALOG_EXACT',
@@ -2067,7 +2102,7 @@ async function rankedExactCatalogAssets(question) {
     const catalog = await datahubCatalog(new URLSearchParams({ q: identifier, limit: '20' }))
     for (const asset of catalog.items) candidates.set(asset.id, asset)
   }
-  return [...candidates.values()].flatMap((asset) => {
+  const rank = (assets) => assets.flatMap((asset) => {
     const identities = catalogIdentityValues(asset)
     let score = 0
     for (const identifier of identifiers) {
@@ -2079,6 +2114,15 @@ async function rankedExactCatalogAssets(question) {
     }
     return score ? [{ asset, score }] : []
   }).sort((left, right) => right.score - left.score || left.asset.name.localeCompare(right.asset.name))
+  let ranked = rank([...candidates.values()])
+  if (ranked[0]?.score >= 95) return ranked
+  // DataHub full-text search may rank many similarly-described datasets ahead
+  // of an exact physical name. The provider-derived inventory is already the
+  // bounded, cached catalog projection, so use it as the authoritative exact
+  // identity fallback before considering semantic candidates.
+  for (const asset of await datahubInventory()) candidates.set(asset.id, asset)
+  ranked = rank([...candidates.values()])
+  return ranked
 }
 
 function catalogDetailEvidence(asset) {
@@ -2286,6 +2330,7 @@ async function semanticCatalogEvidence(question, limit) {
       const detail = await datahubAsset(candidate.assetUrn, 0, 100)
       return {
         ...detail,
+        provider_description: detail.description,
         evidence_type: 'CATALOG_METADATA',
         extraction_method: 'DATAHUB_GMS_VECTOR_RESOLVED_DETAIL',
         retrieval_method: 'PGVECTOR_COSINE',
@@ -2295,6 +2340,7 @@ async function semanticCatalogEvidence(question, limit) {
     } catch {
       return {
         ...fallback,
+        provider_description: fallback.description,
         evidence_type: 'CATALOG_ASSET',
         extraction_method: 'DATAHUB_GMS_VECTOR_INDEX',
         retrieval_method: 'PGVECTOR_COSINE',
@@ -2342,7 +2388,9 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow) {
     evidence = await datahubChatEvidence(question, route)
   }
   if (route.selected_mode === 'GRAPH' && datahub) {
-    evidence = await Promise.all(evidence.slice(0, 3).map(datahubLineageEvidence))
+    const exactResolved = evidence.some((item) => item.retrieval_method === 'CATALOG_EXACT')
+    const candidateLimit = exactResolved || route.intent === 'MIXED_DISCOVERY_GRAPH' ? 3 : 1
+    evidence = await Promise.all(evidence.slice(0, candidateLimit).map(datahubLineageEvidence))
   }
   if (route.selected_mode === 'GRAPH') {
     try {
@@ -2393,19 +2441,27 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow) {
   }))
   const context = evidence.map((item, index) => `[${index + 1}] (${item.evidence_type}) ${item.name}: ${item.description}`).join('\n')
   progress('COMPOSITION', 'IN_PROGRESS', 'COMPOSITION_IN_PROGRESS')
-  const completion = await llmRequest(llm.chat, '/chat/completions', {
-    model: llm.chat.model,
-    stream: false,
-    reasoning_effort: 'none',
-    temperature: 0,
-    max_tokens: 512,
-    messages: [
-      { role: 'system', content: 'Answer concisely from the supplied live DataHub metadata, lineage, and Neo4j knowledge evidence when the selected route requires it. Cite evidence numbers such as [1]. If one exact name resolves to multiple platforms, identify and compare every supplied exact asset instead of silently choosing one. State clearly when live evidence is insufficient. Never invent an asset or relationship. This POC intentionally has no feature-level authorization filter.' },
-      { role: 'user', content: `Selected route: ${route.selected_mode}\nQuestion: ${question}\n\nLive POC evidence:\n${context || '(no matching live evidence)'}` },
-    ],
-  }, 60_000)
-  const answer = completion.choices?.[0]?.message?.content
-  if (typeof answer !== 'string' || !answer.trim()) throw new Error('The Chat model returned no answer.')
+  let answer
+  if (route.selected_mode === 'GRAPH') {
+    // Directional relationships are already typed provider facts. Rendering
+    // them deterministically avoids a slow model round trip and prevents the
+    // composer from merging unrelated candidate graphs.
+    answer = graphEvidenceAnswer(evidence)
+  } else {
+    const completion = await llmRequest(llm.chat, '/chat/completions', {
+      model: llm.chat.model,
+      stream: false,
+      reasoning_effort: 'none',
+      temperature: 0,
+      max_tokens: 512,
+      messages: [
+        { role: 'system', content: 'Answer concisely from the supplied live DataHub metadata and catalog evidence when the selected route requires it. Cite evidence numbers such as [1]. If one exact name resolves to multiple platforms, identify and compare every supplied exact asset instead of silently choosing one. State clearly when live evidence is insufficient. Never invent an asset or relationship. This POC intentionally has no feature-level authorization filter.' },
+        { role: 'user', content: `Selected route: ${route.selected_mode}\nQuestion: ${question}\n\nLive POC evidence:\n${context || '(no matching live evidence)'}` },
+      ],
+    }, 60_000)
+    answer = completion.choices?.[0]?.message?.content
+    if (typeof answer !== 'string' || !answer.trim()) throw new Error('The Chat model returned no answer.')
+  }
   progress('COMPOSITION', 'COMPLETED', 'POC_LIVE_PROVIDER')
   const validatedAnswer = evidence.length
     ? answer.trim()

@@ -30,6 +30,15 @@ incrementally embeds a bounded DataHub lexical candidate window when that bindin
 complete hash-incremental reconciliation is scheduled in the background at a bounded interval.
 The question therefore does not wait for full-inventory rebuild, while the full projection remains
 the eventual table-level recall surface described by ADR-0116.
+Graph composition carries only the resolved table identity, bounded provider description and
+directional relationships. Column-detail evidence remains available to exact metadata questions
+but is not repeated into a lineage prompt. Because lineage relationships are already typed provider
+facts, the graph route renders the upstream/downstream report deterministically instead of waiting
+for a second Chat-model pass. Exact cross-platform matches remain separate evidence items; a fuzzy
+fallback is limited to the highest-ranked candidate and is labelled as a candidate in the answer.
+When DataHub full-text search fails to rank an exact physical or qualified name in its bounded
+result page, entity resolution rechecks the cached complete DataHub inventory before using a
+semantic candidate. This does not create a second source of truth: both paths remain provider reads.
 
 Catalog detail requests read up to ten DataHub DatasetProfiles, discard query/sample profiles, and
 choose the newest profile containing a usable table metric. An absent partition marker is accepted
