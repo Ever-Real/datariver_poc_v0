@@ -67,4 +67,44 @@ describe('change request presentation', () => {
       targetState: 'TESTING',
     })
   })
+
+  it('shows only the final approval request after the current round test is passed and approved', () => {
+    const testing = {
+      ...changesRequested,
+      state: 'TESTING',
+      approvals: [{
+        id: 'approval-test', stage: 'TEST', decision: 'APPROVED', actor_id: 'tester',
+        reason: '테스트 승인', occurred_at: '2026-07-17T02:03:04Z', round_id: changesRequested.current_round_id,
+        authorities: [{ kind: 'SYSTEM_DEVELOPER', system_id: null }],
+      }],
+      test_runs: [{
+        id: 'test-run', round_id: changesRequested.current_round_id, system_id: 'system',
+        attachment_id: 'attachment', state: 'PASSED', plan_hash: 'a'.repeat(64),
+        result_hash: 'b'.repeat(64), bounded_summary: {}, recorded_by: 'tester',
+        occurred_at: '2026-07-17T02:02:00Z',
+      }],
+    } satisfies ChangeRequestRecord
+
+    expect(changeActionHints(testing)).toEqual([
+      expect.objectContaining({ label: '최종 승인 요청', targetState: 'FINAL_REVIEW' }),
+    ])
+  })
+
+  it('offers the same single final approval request when a passed test still needs TEST approval', () => {
+    const testing = {
+      ...changesRequested,
+      state: 'TESTING',
+      approvals: [],
+      test_runs: [{
+        id: 'test-run', round_id: changesRequested.current_round_id, system_id: 'system',
+        attachment_id: 'attachment', state: 'PASSED', plan_hash: 'a'.repeat(64),
+        result_hash: 'b'.repeat(64), bounded_summary: {}, recorded_by: 'tester',
+        occurred_at: '2026-07-17T02:02:00Z',
+      }],
+    } satisfies ChangeRequestRecord
+
+    expect(changeActionHints(testing)).toEqual([
+      expect.objectContaining({ label: '최종 승인 요청', kind: 'APPROVAL', stage: 'TEST' }),
+    ])
+  })
 })

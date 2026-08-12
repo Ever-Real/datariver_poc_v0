@@ -32,7 +32,17 @@ function providerHandler(request, response) {
     if (url.pathname === '/airflow/api/v2/monitor/health') return sendJson(response, { detail: 'Airflow 2.x has no API v2' }, 404)
     if (url.pathname === '/airflow/api/v1/dags' && request.method === 'GET') return sendJson(response, { dags: [] })
     if (/^\/airflow\/api\/v1\/dags\/[^/]+\/dagRuns$/.test(url.pathname)) return sendJson(response, { state: 'queued' }, 201)
-    if (url.pathname.endsWith('/embeddings')) return sendJson(response, { data: [{ embedding: [0.1, 0.2] }] })
+    if (url.pathname.endsWith('/embeddings')) {
+      const payload = JSON.parse(body.toString('utf8'))
+      const inputs = Array.isArray(payload.input) ? payload.input : [payload.input]
+      return sendJson(response, { data: inputs.map((value, index) => {
+        const normalized = String(value || '').toLocaleLowerCase()
+        const embedding = normalized.includes('wafer')
+          ? [1, 0]
+          : normalized.includes('inspection') ? [0, 1] : [0.5, 0.5]
+        return { index, embedding }
+      }) })
+    }
     if (url.pathname.endsWith('/rerank')) return sendJson(response, { results: [{ index: 0, relevance_score: 0.9 }] })
     if (url.pathname.endsWith('/chat/completions')) {
       const payload = JSON.parse(body.toString('utf8'))
@@ -134,7 +144,7 @@ function providerHandler(request, response) {
           type: 'DATASET',
           name: 'wafer_events',
           platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
-          properties: { name: 'wafer_events', description: 'Live DataHub wafer evidence' },
+          properties: { name: 'wafer_events', description: 'Live DataHub wafer evidence', created: 1_700_000_000_000 },
           editableProperties: { description: null },
           browsePathV2: { path: [
             { name: 'urn:li:container:database', entity: { urn: 'urn:li:container:database', type: 'CONTAINER', properties: { name: 'urn:li:container:database', qualifiedName: 'MANUFACTURING' }, subTypes: { typeNames: ['Database'] } } },
@@ -361,6 +371,8 @@ test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
   assert.deepEqual(detail.schema_fields[0].glossaryTerms.terms.map((item) => item.term.name), ['Wafer ID', 'Identifier'])
   assert.equal(detail.quality.rowCount, 4200)
   assert.equal(detail.quality.sizeInBytes, 8192)
+  assert.equal(detail.created_at, '2023-11-14T22:13:20.000Z')
+  assert.equal(detail.quality.sizeInBytes, 8192)
   const secondFieldPage = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}&field_offset=1&field_limit=1`)).json()
   assert.equal(secondFieldPage.schema_fields[0].fieldPath, 'observed_at')
   assert.equal(secondFieldPage.schema_fields_offset, 1)
@@ -427,15 +439,39 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   const payload = await response.json()
   assert.equal(payload.answer, 'Live provider answer [1]')
   assert.equal(payload.route.selected_mode, 'VECTOR')
-  assert.equal(payload.evidence[0].evidence_type, 'CATALOG_ASSET')
+  assert.equal(payload.evidence[0].evidence_type, 'CATALOG_METADATA')
+  assert.equal(payload.evidence[0].retrieval_method, 'PGVECTOR_COSINE')
   for (const path of ['/embeddings', '/rerank', '/chat/completions']) {
     assert.ok(requests.some((request) => request.path.endsWith(path)))
   }
+  const catalogBatch = requests.find((request) => request.path.endsWith('/embeddings')
+    && Array.isArray(JSON.parse(request.body).input)
+    && JSON.parse(request.body).input.length === 2)
+  assert.ok(catalogBatch, 'the complete two-asset DataHub inventory must be embedded')
   const classifierRequest = [...requests].reverse().find((request) => {
     if (!request.path.endsWith('/chat/completions')) return false
     return JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')
   })
   assert.equal(JSON.parse(classifierRequest.body).response_format.type, 'json_schema')
+})
+
+test('routes a high-confidence Korean discovery question to the full vector inventory without classifier drift', async () => {
+  const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: '설비 투자와 관련된 테이블을 추천해줘', mode: 'AUTO' }),
+  })
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.route.selected_mode, 'VECTOR')
+  assert.equal(payload.route.intent, 'SEMANTIC_DISCOVERY')
+  assert.ok(payload.evidence.length > 0)
+  assert.ok(payload.evidence.every((item) => item.retrieval_method === 'PGVECTOR_COSINE'))
+  const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
+  assert.equal(classifiersAfter, classifiersBefore)
 })
 
 test('resolves an exact table name and composes detailed DataHub metadata evidence', async () => {
@@ -492,6 +528,10 @@ test('routes lineage questions through bounded DataHub and Neo4j graph evidence'
   assert.equal(payload.route.reason, 'GRAPH_INTENT')
   assert.ok(payload.evidence.some((item) => item.evidence_type === 'DATAHUB_LINEAGE'))
   assert.ok(payload.evidence.some((item) => item.evidence_type === 'KNOWLEDGE_GRAPH'))
+  const lineage = payload.evidence.find((item) => item.evidence_type === 'DATAHUB_LINEAGE')
+  assert.match(lineage.description, /Upstream datasets: source_events/)
+  assert.match(lineage.description, /Downstream datasets: wafer_quality_view/)
+  assert.doesNotMatch(lineage.description, /view_f09ab31/)
 })
 
 test('keeps DataHub lineage answers available when optional Neo4j is unavailable', async () => {
@@ -522,7 +562,7 @@ test('bypasses the classifier for explicit Chat routes and fails malformed AUTO 
   forcedClassifierResponse = 'VECTOR because metadata'
   const malformed = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question: 'Find table metadata', mode: 'AUTO' }),
+    body: JSON.stringify({ question: 'Please classify this request', mode: 'AUTO' }),
   })
   forcedClassifierResponse = undefined
   assert.equal(malformed.status, 503)

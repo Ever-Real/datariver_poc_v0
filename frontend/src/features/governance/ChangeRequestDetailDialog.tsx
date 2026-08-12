@@ -463,7 +463,10 @@ export function ChangeRequestDetailDialog({
                 <DenseDataTable caption="CR 변경 대상" columns={targetColumns} data={rows} getRowId={(row) => row.id} emptyMessage="등록된 변경 대상이 없습니다." />
                 <div className="mt-3"><GovernedUnavailable compact title={canEdit ? '새 회차에서 수정 가능' : '현재 요청 수정 불가'} description={canEdit ? 'Edit Request를 누르면 현재 회차의 메타데이터와 대상을 새 revision draft로 불러옵니다. 기존 회차 증거는 변경되지 않습니다.' : '서버가 현재 사용자·상태·대상 권한을 확인한 결과 수정 가능한 revision 명령을 제공하지 않았습니다.'} /></div>
               </section>
-              <div className="flex justify-end gap-2">{stageHints.map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy} onClick={() => onAction(hint)}>{hint.label}</button>)}</div>
+              <div className="flex justify-end gap-2">
+                {canEdit && <button type="button" className="button" disabled={busy} onClick={onEdit}>보완 후 재신청</button>}
+                {stageHints.map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy} onClick={() => onAction(hint)}>{hint.label}</button>)}
+              </div>
             </div>
           </section>}
 

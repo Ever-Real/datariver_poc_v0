@@ -489,6 +489,16 @@ function changeRecordById(id: string): ChangeRequestRecord {
   return record
 }
 
+function normalizePocChangeRecord(record: ChangeRequestRecord): ChangeRequestRecord {
+  // Older persisted POC records may predate editable revision rounds. The
+  // authentication-free POC keeps CHANGE_INTAKE revisions open after a
+  // recoverable changes request; terminal REJECTED/CANCELLED records stay closed.
+  if (record.request_type === 'CHANGE_INTAKE' && record.state === 'CHANGES_REQUESTED') {
+    record.revision_allowed = true
+  }
+  return record
+}
+
 function requireCurrentVersion(record: ChangeRequestRecord, options: PocRequestOptions): void {
   if (options.ifMatch && options.ifMatch !== `"${record.version}"`) {
     throw new Error('변경 요청 버전이 갱신되었습니다. 상세를 새로고침한 뒤 다시 시도하세요.')
@@ -992,7 +1002,9 @@ class PocApiClient {
       .then(({ value }) => {
         if (!value) return
         if (Number.isSafeInteger(value.sequence)) sequence = Number(value.sequence)
-        if (Array.isArray(value.changeRecords)) changeRecords = value.changeRecords as ChangeRequestRecord[]
+        if (Array.isArray(value.changeRecords)) {
+          changeRecords = (value.changeRecords as ChangeRequestRecord[]).map(normalizePocChangeRecord)
+        }
         if (Array.isArray(value.uploadRecords)) uploadRecords = value.uploadRecords as Array<Record<string, unknown>>
         if (Array.isArray(value.manualSubmissionReports)) manualSubmissionReports = value.manualSubmissionReports as Array<Record<string, unknown>>
         if (value.monitoringConfiguration && typeof value.monitoringConfiguration === 'object') {
@@ -1972,6 +1984,9 @@ class PocApiClient {
           throw new Error('FINAL 승인 후 변경 요청을 완료할 수 있습니다.')
         }
         record.state = target
+        if (target === 'CHANGES_REQUESTED' && record.request_type === 'CHANGE_INTAKE') {
+          record.revision_allowed = true
+        }
         if (target === 'REJECTED' || target === 'CANCELLED' || target === 'COMPLETED') record.revision_allowed = false
         record.transitions.push({
           id: nextId('change-transition'),

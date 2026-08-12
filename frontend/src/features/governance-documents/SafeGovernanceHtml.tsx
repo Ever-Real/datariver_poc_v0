@@ -4,6 +4,7 @@ import {
   type ComponentPropsWithoutRef,
   type ReactNode,
 } from 'react'
+import { governancePresentationReactStyle } from './governancePresentationStyle'
 
 const allowedElements = new Set([
   'p',
@@ -123,6 +124,7 @@ function safeNode(node: Node, key: string): ReactNode[] {
   const children = Array.from(node.childNodes).flatMap((child, index) => (
     safeNode(child, `${key}-${index}`)
   ))
+  const style = governancePresentationReactStyle(node.getAttribute('data-governance-style'))
   if (!allowedElements.has(tag)) return children
   if (tag === 'a') {
     const href = safeHref(node.getAttribute('href'))
@@ -132,19 +134,20 @@ function safeNode(node: Node, key: string): ReactNode[] {
       rel: 'noopener noreferrer',
     }
     if (/^https?:\/\//i.test(href)) props.target = '_blank'
-    return [createElement('a', { ...props, key }, children)]
+    return [createElement('a', { ...props, key, ...(style ? { style } : {}) }, children)]
   }
   if (tag === 'th' || tag === 'td') {
     const span = boundedSpan(node.getAttribute('colspan'))
     const rowSpan = boundedSpan(node.getAttribute('rowspan'))
     return [createElement(tag, {
       key,
+      ...(style ? { style } : {}),
       ...(span ? { colSpan: span } : {}),
       ...(rowSpan ? { rowSpan } : {}),
     }, children)]
   }
-  if (voidElements.has(tag)) return [createElement(tag, { key })]
-  return [createElement(tag, { key }, children)]
+  if (voidElements.has(tag)) return [createElement(tag, { key, ...(style ? { style } : {}) })]
+  return [createElement(tag, { key, ...(style ? { style } : {}) }, children)]
 }
 
 function safeHref(value: string | null): string | undefined {

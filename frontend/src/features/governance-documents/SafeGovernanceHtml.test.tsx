@@ -32,6 +32,21 @@ describe('SafeGovernanceHtml', () => {
     expect(container.querySelectorAll('hr')).toHaveLength(1)
   })
 
+  it('renders only the imported static presentation allowlist', () => {
+    const { container } = render(<SafeGovernanceHtml
+      html={'<h2 data-governance-style="color:#123456;padding:12px;position:fixed;background-image:url(https://evil.test/x)">정적 디자인</h2>'}
+      contentHash={'e'.repeat(64)}
+      sanitizerPolicyVersion="POC_STATIC_PRESENTATION_V1"
+    />)
+
+    expect(screen.getByRole('heading', { name: '정적 디자인' })).toHaveStyle({
+      color: '#123456',
+      padding: '12px',
+    })
+    expect(container.querySelector('h2')).not.toHaveStyle({ position: 'fixed' })
+    expect(container.querySelector('h2')?.getAttribute('style')).not.toMatch(/background-image|url/i)
+  })
+
   it('suppresses executable, embedded, form and active-media subtrees', () => {
     const { container } = render(<SafeGovernanceHtml
       html={'<script>script-secret</script><style>style-secret</style><svg><a>svg-secret</a></svg><img src=x onerror=alert(1)><iframe srcdoc="<script>alert(1)</script>"></iframe><form><input value="credential"></form><a href="javascript:alert(1)">unsafe-link</a><p>허용 본문</p>'}

@@ -3,6 +3,7 @@
 - Status: Accepted for the authentication-free POC only
 - Date: 2026-08-11
 - Owners: POC application and operations owners
+- Refined by: ADR-0116
 - Does not modify: ADR-0033 production connector ownership or canonical platform authorization
 
 ## Context
@@ -38,8 +39,9 @@ decisions remain unchanged and cannot point at this POC database.
 
 ## Consequences and evidence
 
-- pgvector is available for later bounded Chat vector storage, but its presence alone is not a
-  catalog performance claim; Redis is the catalog acceleration layer.
+- ADR-0116 activates pgvector as a bounded, rebuildable full-inventory Catalog embedding
+  projection for POC Chat. Its presence remains neither a production recall/latency claim nor a
+  replacement for Redis catalog response caching.
 - The single-node database volume needs operator backup if POC records matter. It is not HA,
   production retention evidence or a production restore claim.
 - Source verification covers npm fallback, fixed state routes, Redis fallback, Compose rendering,

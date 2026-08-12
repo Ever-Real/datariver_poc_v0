@@ -37,9 +37,11 @@ const datahubCursorTtlMs = 5 * 60 * 1000
 const datahubInventoryTtlMs = 15 * 60 * 1000
 const maximumCursorEntries = 1_024
 const maximumInventoryPages = 10_002
+const catalogEmbeddingBatchSize = 32
 const cursorEntries = new Map()
 let inventorySnapshot
 let hierarchySnapshot
+let catalogEmbeddingSnapshot
 const bulkPreparations = new Map()
 const bulkTemplatePath = join(sourceDirectory, 'poc-assets/datariver-catalog-metadata-rows.xlsx')
 const catalogMetadataHeaders = [
@@ -389,7 +391,7 @@ query DataRiverPocAsset($urn: String!) {
     ... on Dataset {
       name
       platform { urn name }
-      properties { name description created }
+      properties { name description created customProperties { key value } }
       editableProperties { description }
       browsePathV2 {
         path {
@@ -425,16 +427,7 @@ query DataRiverPocAsset($urn: String!) {
           glossaryTerms { terms { term { urn name } } }
         }
       }
-      latestFullTableProfile: datasetProfiles(
-        limit: 1
-        filter: {
-          and: [{
-            field: "partitionSpec.partition"
-            values: ["FULL_TABLE_SNAPSHOT", "SAMPLE"]
-            condition: START_WITH
-          }]
-        }
-      ) {
+      latestFullTableProfile: datasetProfiles(limit: 1) {
         rowCount columnCount sizeInBytes timestampMillis
         partitionSpec { type partition }
       }
@@ -594,6 +587,7 @@ function datahubAssetCacheKey(urn) {
 async function invalidateDatahubCaches(urn) {
   inventorySnapshot = undefined
   hierarchySnapshot = undefined
+  catalogEmbeddingSnapshot = undefined
   await Promise.allSettled([
     pocStateStore.cacheDelete(datahubInventoryCacheKey),
     pocStateStore.cacheDelete(datahubHierarchyCacheKey),
@@ -868,6 +862,24 @@ function tagNames(entity) {
   return (entity.globalTags?.tags || []).map((item) => item.tag?.properties?.name || item.tag?.name).filter(Boolean)
 }
 
+function datahubCreatedAt(properties) {
+  const candidates = [properties?.created]
+  for (const candidate of candidates) {
+    if (typeof candidate === 'number' || (typeof candidate === 'string' && /^\d+$/.test(candidate.trim()))) {
+      const raw = Number(candidate)
+      const milliseconds = raw < 10_000_000_000 ? raw * 1_000 : raw
+      const parsed = new Date(milliseconds)
+      if (raw > 0 && Number.isFinite(parsed.getTime())) return parsed.toISOString()
+      continue
+    }
+    if (typeof candidate === 'string' && candidate.trim()) {
+      const parsed = new Date(candidate.trim())
+      if (Number.isFinite(parsed.getTime())) return parsed.toISOString()
+    }
+  }
+  return null
+}
+
 function datasetAsset(entity) {
   const identity = datasetIdentity(entity)
   const tags = tagNames(entity)
@@ -894,7 +906,7 @@ function datasetAsset(entity) {
         ? [{ urn: item.term.urn, name: item.term.name }]
         : []
     )),
-    created_at: entity.properties?.created ? new Date(Number(entity.properties.created)).toISOString() : null,
+    created_at: datahubCreatedAt(entity.properties),
     classification,
     lifecycle: 'ACTIVE',
     observed_at: new Date().toISOString(),
@@ -1459,8 +1471,7 @@ function datahubSchemaFields(entity) {
 
 function datahubProfileQuality(value) {
   const profile = Array.isArray(value) && value[0] && typeof value[0] === 'object' ? value[0] : undefined
-  if (profile?.partitionSpec?.type !== 'FULL_TABLE'
-    || profile.partitionSpec.partition !== 'FULL_TABLE_SNAPSHOT') return {}
+  if (!profile) return {}
   const quality = {}
   for (const key of ['rowCount', 'columnCount', 'sizeInBytes']) {
     if (Number.isInteger(profile[key]) && profile[key] >= 0) quality[key] = profile[key]
@@ -1468,6 +1479,13 @@ function datahubProfileQuality(value) {
   if (Number.isFinite(profile.timestampMillis) && profile.timestampMillis >= 0) {
     quality.profiledAt = new Date(profile.timestampMillis).toISOString()
   }
+  const partitionType = profile.partitionSpec?.type
+  const partition = profile.partitionSpec?.partition
+  quality.profileKind = partitionType === 'FULL_TABLE' && partition === 'FULL_TABLE_SNAPSHOT'
+    ? 'FULL'
+    : partitionType === 'QUERY' && /^SAMPLE(?: \(sample rows \d+\))?$/.test(partition || '')
+      ? 'SAMPLE'
+      : partitionType || 'UNKNOWN'
   return quality
 }
 
@@ -1779,7 +1797,12 @@ function parseChatRouteDecision(value) {
   }
   if ((parsed.graph_traversal_required && parsed.mode !== 'GRAPH')
     || (parsed.mode === 'GRAPH' && !parsed.graph_traversal_required)
-    || (parsed.intent === 'EXACT_METADATA' && (parsed.mode !== 'VECTOR' || parsed.semantic_retrieval_required))) {
+    || (parsed.intent === 'EXACT_METADATA' && (parsed.mode !== 'VECTOR' || parsed.semantic_retrieval_required))
+    || (['SEMANTIC_DISCOVERY', 'SEMANTIC_SIMILARITY'].includes(parsed.intent)
+      && (parsed.mode !== 'VECTOR' || !parsed.semantic_retrieval_required))
+    || (['LINEAGE', 'IMPACT_ANALYSIS', 'RELATIONSHIP', 'MIXED_DISCOVERY_GRAPH'].includes(parsed.intent)
+      && (parsed.mode !== 'GRAPH' || !parsed.graph_traversal_required))
+    || (parsed.intent === 'GENERAL_CONVERSATION' && parsed.mode !== 'GENERAL')) {
     throw new Error('The Chat route classifier returned an inconsistent route.')
   }
   return parsed
@@ -1787,19 +1810,33 @@ function parseChatRouteDecision(value) {
 
 async function deterministicAutoRoute(question) {
   if (!datahub) return null
-  const exact = await rankedExactCatalogAssets(question)
-  if (!exact.length || exact[0].score < 95) return null
   const graphIntent = /\b(?:upstream|downstream|lineage|dependency|dependencies|impact|relationship|path)\b|계보|영향(?:도|받|범위|분석)?|연결\s*(?:관계|경로)|의존(?:성|관계)|어디에서\s*(?:생성|만들)|변경하면/iu.test(question)
-  if (graphIntent) {
+  const dataTarget = /\b(?:table|dataset|column|asset|data)\b|테이블|데이터셋|컬럼|데이터\s*(?:자산)?/iu.test(question)
+  const semanticDiscovery = /\b(?:find|recommend|search|similar|related)\b|찾(?:아|기|을|는)?|검색|추천|비슷|유사|관련(?:된|한)?/iu.test(question)
+  const definitionOnly = /(?:뜻|의미|정의|용어).*(?:알려|설명)|(?:무슨|어떤)\s*(?:뜻|의미)/u.test(question)
+  const exact = await rankedExactCatalogAssets(question)
+  if (graphIntent && !definitionOnly && (dataTarget || (exact[0]?.score ?? 0) >= 95)) {
     const impactIntent = /\bimpact\b|영향|변경하면/iu.test(question)
     const relationshipIntent = /\b(?:relationship|path|dependency|dependencies)\b|연결\s*(?:관계|경로)|의존(?:성|관계)/iu.test(question)
     return {
       requested_mode: 'AUTO', selected_mode: 'GRAPH', reason: 'GRAPH_INTENT', adapter_state: 'READY',
-      intent: impactIntent ? 'IMPACT_ANALYSIS' : relationshipIntent ? 'RELATIONSHIP' : 'LINEAGE',
+      intent: semanticDiscovery && (exact[0]?.score ?? 0) < 95
+        ? 'MIXED_DISCOVERY_GRAPH'
+        : impactIntent ? 'IMPACT_ANALYSIS' : relationshipIntent ? 'RELATIONSHIP' : 'LINEAGE',
       confidence: 1, entity_resolution_required: true, graph_traversal_required: true,
-      semantic_retrieval_required: false, fallback_mode: 'VECTOR', clarification_required: false,
+      semantic_retrieval_required: semanticDiscovery && (exact[0]?.score ?? 0) < 95,
+      fallback_mode: 'VECTOR', clarification_required: false,
     }
   }
+  if (semanticDiscovery && dataTarget && !definitionOnly) {
+    return {
+      requested_mode: 'AUTO', selected_mode: 'VECTOR', reason: 'SEMANTIC_INTENT', adapter_state: llm.embedding ? 'READY' : 'UNAVAILABLE',
+      intent: /\b(?:similar)\b|비슷|유사/iu.test(question) ? 'SEMANTIC_SIMILARITY' : 'SEMANTIC_DISCOVERY',
+      confidence: 0.98, entity_resolution_required: false, graph_traversal_required: false,
+      semantic_retrieval_required: true, fallback_mode: 'GENERAL', clarification_required: false,
+    }
+  }
+  if (!exact.length || exact[0].score < 95) return null
   return {
     requested_mode: 'AUTO', selected_mode: 'VECTOR', reason: 'SEMANTIC_INTENT', adapter_state: 'READY',
     intent: 'EXACT_METADATA', confidence: 1, entity_resolution_required: true,
@@ -1827,14 +1864,23 @@ async function datahubLineageEvidence(asset) {
         : '',
     })).filter((relationship) => relationship.urn && relationship.type === 'DATASET')
   }))
-  const relationships = directions.flat().slice(0, 20)
-  const names = relationships.map((relationship) => relationship.name).filter(Boolean)
+  const relationships = [...new Map(directions.flat().map((relationship) => (
+    [`${relationship.direction}:${relationship.urn}`, relationship]
+  ))).values()].slice(0, 20)
+  const upstream = relationships.filter((relationship) => relationship.direction === 'UPSTREAM')
+    .map((relationship) => relationship.name).filter(Boolean)
+  const downstream = relationships.filter((relationship) => relationship.direction === 'DOWNSTREAM')
+    .map((relationship) => relationship.name).filter(Boolean)
   return {
     ...asset,
     evidence_type: 'DATAHUB_LINEAGE',
     extraction_method: 'DATAHUB_GMS_LINEAGE',
     retrieval_method: 'GRAPH',
-    description: [asset.description, names.length ? `Connected lineage: ${names.join(', ')}` : 'No connected lineage was returned.']
+    description: [
+      asset.description,
+      upstream.length ? `Upstream datasets: ${upstream.join(', ')}` : 'Upstream datasets: none returned by DataHub.',
+      downstream.length ? `Downstream datasets: ${downstream.join(', ')}` : 'Downstream datasets: none returned by DataHub.',
+    ]
       .filter(Boolean).join('\n'),
     relationships,
   }
@@ -1983,6 +2029,16 @@ function catalogDetailEvidence(asset) {
 async function datahubChatEvidence(question, route) {
   const exact = await exactCatalogEvidence(question)
   if (exact.length) return exact
+  if (llm.embedding && (route.semantic_retrieval_required || route.entity_resolution_required)) {
+    try {
+      const semantic = await semanticCatalogEvidence(question, route.entity_resolution_required ? 3 : 5)
+      if (semantic.length) return semantic
+    } catch {
+      // The bounded DataHub lexical search below remains an honest fallback.
+      // The composer sees only live provider evidence and cannot invent a
+      // result when the embedding projection is temporarily unavailable.
+    }
+  }
   const results = new Map()
   for (const query of chatRetrievalQueries(question)) {
     const catalog = await datahubCatalog(new URLSearchParams({ q: query, limit: '5' }))
@@ -1990,6 +2046,142 @@ async function datahubChatEvidence(question, route) {
     if (results.size >= 5) break
   }
   return [...results.values()].slice(0, route.entity_resolution_required ? 3 : 5)
+}
+
+function catalogEmbeddingBindingHash() {
+  if (!datahub || !llm.embedding) return undefined
+  return sha256(canonicalJson({
+    source: datahubCacheScope,
+    endpoint: llm.embedding.url,
+    model: llm.embedding.model,
+    contract: 'POC_DATAHUB_CATALOG_ASSET_V1',
+  }))
+}
+
+function catalogEmbeddingDocument(asset) {
+  return [
+    `Table: ${asset.name}`,
+    `Qualified name: ${[asset.database_name, asset.schema_name, asset.name].filter(Boolean).join('.')}`,
+    `Platform: ${asset.platform || 'unknown'}`,
+    asset.database_name ? `Database: ${asset.database_name}` : '',
+    asset.schema_name ? `Schema: ${asset.schema_name}` : '',
+    asset.owner ? `Owner: ${asset.owner}` : '',
+    asset.domain ? `Domain: ${asset.domain}` : '',
+    asset.description ? `Description: ${asset.description}` : '',
+    asset.tags?.length ? `Tags: ${asset.tags.join(', ')}` : '',
+    asset.terms?.length ? `Glossary terms: ${asset.terms.join(', ')}` : '',
+    asset.created_at ? `Created: ${asset.created_at}` : '',
+  ].filter(Boolean).join('\n').slice(0, 12_000)
+}
+
+function embeddingVectors(payload, expectedCount) {
+  const rows = Array.isArray(payload?.data)
+    ? [...payload.data].sort((left, right) => Number(left?.index ?? 0) - Number(right?.index ?? 0))
+    : Array.isArray(payload?.embeddings) ? payload.embeddings.map((embedding) => ({ embedding })) : []
+  const vectors = rows.map((row) => row?.embedding)
+  if (vectors.length !== expectedCount || vectors.some((vector) => (
+    !Array.isArray(vector) || vector.length < 1 || vector.length > 4096
+    || vector.some((value) => typeof value !== 'number' || !Number.isFinite(value))
+  ))) {
+    throw new Error('The Embedding provider returned a malformed or incomplete batch.')
+  }
+  const dimension = vectors[0].length
+  if (vectors.some((vector) => vector.length !== dimension)) {
+    throw new Error('The Embedding provider returned inconsistent vector dimensions.')
+  }
+  return vectors
+}
+
+async function embedCatalogTexts(texts) {
+  const payload = await llmRequest(llm.embedding, '/embeddings', {
+    model: llm.embedding.model,
+    input: texts,
+  }, 60_000)
+  return embeddingVectors(payload, texts.length)
+}
+
+async function ensureCatalogEmbeddingIndex() {
+  const bindingHash = catalogEmbeddingBindingHash()
+  if (!bindingHash) throw new Error('The catalog Embedding projection is not configured.')
+  const inventory = await datahubInventory()
+  const documents = inventory.map((asset) => {
+    const contentText = catalogEmbeddingDocument(asset)
+    return { asset, contentText, sourceHash: sha256(contentText) }
+  }).sort((left, right) => left.asset.id.localeCompare(right.asset.id))
+  const sourceGeneration = sha256(documents.map((item) => `${item.asset.id}:${item.sourceHash}`).join('\n'))
+  if (catalogEmbeddingSnapshot?.generation === sourceGeneration) {
+    if (catalogEmbeddingSnapshot.promise) return catalogEmbeddingSnapshot.promise
+    return catalogEmbeddingSnapshot
+  }
+  const promise = (async () => {
+    const hashes = await pocStateStore.catalogEmbeddingHashes(bindingHash)
+    const changed = documents.filter((item) => hashes.get(item.asset.id) !== item.sourceHash)
+    for (let offset = 0; offset < changed.length; offset += catalogEmbeddingBatchSize) {
+      const batch = changed.slice(offset, offset + catalogEmbeddingBatchSize)
+      const vectors = await embedCatalogTexts(batch.map((item) => item.contentText))
+      await pocStateStore.upsertCatalogEmbeddings(batch.map((item, index) => ({
+        bindingHash,
+        assetUrn: item.asset.id,
+        sourceHash: item.sourceHash,
+        sourceGeneration,
+        contentText: item.contentText,
+        metadata: item.asset,
+        embedding: vectors[index],
+      })))
+    }
+    await pocStateStore.retainCatalogEmbeddingGeneration(
+      bindingHash,
+      sourceGeneration,
+      documents.map((item) => item.asset.id),
+    )
+    await pocStateStore.deleteCatalogEmbeddingsExceptGeneration(bindingHash, sourceGeneration)
+    return {
+      bindingHash,
+      generation: sourceGeneration,
+      indexed: documents.length,
+      refreshed: changed.length,
+    }
+  })()
+  catalogEmbeddingSnapshot = { generation: sourceGeneration, promise }
+  try {
+    const completed = await promise
+    catalogEmbeddingSnapshot = completed
+    return completed
+  } catch (error) {
+    catalogEmbeddingSnapshot = undefined
+    throw error
+  }
+}
+
+async function semanticCatalogEvidence(question, limit) {
+  const index = await ensureCatalogEmbeddingIndex()
+  const [queryVector] = await embedCatalogTexts([question])
+  const ranked = await pocStateStore.searchCatalogEmbeddings(index.bindingHash, queryVector, limit)
+  return Promise.all(ranked.map(async (candidate) => {
+    const fallback = candidate.metadata && typeof candidate.metadata === 'object'
+      ? candidate.metadata
+      : { id: candidate.assetUrn, external_urn: candidate.assetUrn, name: candidate.assetUrn }
+    try {
+      const detail = await datahubAsset(candidate.assetUrn, 0, 100)
+      return {
+        ...detail,
+        evidence_type: 'CATALOG_METADATA',
+        extraction_method: 'DATAHUB_GMS_VECTOR_RESOLVED_DETAIL',
+        retrieval_method: 'PGVECTOR_COSINE',
+        similarity: candidate.similarity,
+        description: catalogDetailEvidence(detail),
+      }
+    } catch {
+      return {
+        ...fallback,
+        evidence_type: 'CATALOG_ASSET',
+        extraction_method: 'DATAHUB_GMS_VECTOR_INDEX',
+        retrieval_method: 'PGVECTOR_COSINE',
+        similarity: candidate.similarity,
+        description: candidate.contentText,
+      }
+    }
+  }))
 }
 
 async function liveChat(question, requestedMode = 'AUTO') {
@@ -2023,9 +2215,6 @@ async function liveChat(question, requestedMode = 'AUTO') {
       // Neo4j projection is unavailable or its local credentials are stale.
       graphProviderState = 'FAILED_OPEN'
     }
-  }
-  if (route.selected_mode === 'VECTOR' && route.semantic_retrieval_required && llm.embedding) {
-    await llmRequest(llm.embedding, '/embeddings', { model: llm.embedding.model, input: question }, 30_000)
   }
   let rerankingState = 'NOT_USED'
   if (route.semantic_retrieval_required && route.selected_mode !== 'GRAPH' && llm.reranker && evidence.length > 1) {

@@ -1,6 +1,13 @@
 const MAXIMUM_MARKUP_CHARACTERS = 1_000_000
 const MAXIMUM_TABLE_COLUMNS = 20
 const MAXIMUM_TABLE_ROWS = 200
+const MAXIMUM_STYLE_RULES = 200
+const MAXIMUM_STYLE_MATCHES = 5_000
+
+import {
+  mergeGovernancePresentations,
+  safeGovernancePresentation,
+} from './governancePresentationStyle'
 
 const allowedElements = new Set([
   'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'strong', 'em', 'u', 's',
@@ -25,12 +32,57 @@ export async function governanceMarkupFromFile(file: File): Promise<GovernanceMa
   const name = file.name.toLocaleLowerCase()
   const source = (await file.text()).slice(0, MAXIMUM_MARKUP_CHARACTERS)
   if (name.endsWith('.html') || name.endsWith('.htm')) {
-    return { format: 'HTML', html: sanitizeGovernanceHtml(source) }
+    return { format: 'HTML', html: importGovernanceHtml(source) }
   }
   if (name.endsWith('.md') || file.type === 'text/markdown') {
     return { format: 'MARKDOWN', html: markdownToGovernanceHtml(source) }
   }
   throw new Error('HTML 또는 Markdown 파일만 편집기에서 미리 볼 수 있습니다.')
+}
+
+function importGovernanceHtml(value: string): string {
+  if (typeof DOMParser === 'undefined') return ''
+  const parsed = new DOMParser().parseFromString(
+    value.slice(0, MAXIMUM_MARKUP_CHARACTERS),
+    'text/html',
+  )
+  let matched = 0
+  const rules = Array.from(parsed.querySelectorAll('style')).flatMap((style) => {
+    const source = style.textContent?.replace(/\/\*[\s\S]*?\*\//g, '') ?? ''
+    if (source.includes('@')) return []
+    return [...source.matchAll(/([^{}]+)\{([^{}]*)\}/g)].slice(0, MAXIMUM_STYLE_RULES)
+  }).slice(0, MAXIMUM_STYLE_RULES)
+  for (const rule of rules) {
+    const presentation = safeGovernancePresentation(rule[2])
+    if (!presentation) continue
+    for (const selector of (rule[1] ?? '').split(',').map((item) => item.trim())) {
+      if (!safePresentationSelector(selector)) continue
+      for (const element of Array.from(parsed.body.querySelectorAll(selector))) {
+        if (matched >= MAXIMUM_STYLE_MATCHES) break
+        element.setAttribute('data-governance-style', mergeGovernancePresentations(
+          element.getAttribute('data-governance-style'),
+          presentation,
+        ))
+        matched += 1
+      }
+    }
+  }
+  for (const element of Array.from(parsed.body.querySelectorAll('[style]'))) {
+    element.setAttribute('data-governance-style', mergeGovernancePresentations(
+      element.getAttribute('data-governance-style'),
+      element.getAttribute('style'),
+    ))
+  }
+  return sanitizeGovernanceHtml(parsed.body.innerHTML)
+}
+
+function safePresentationSelector(value: string): boolean {
+  if (!value || value.length > 160 || /[:\[\]*+~]/.test(value)) return false
+  const segments = value.split(/\s+|\s*>\s*/).filter(Boolean)
+  return segments.length > 0 && segments.length <= 4 && segments.every((segment) => (
+    /^(?:[a-z][a-z0-9-]*)?(?:[.#][a-z_][a-z0-9_-]*){0,2}$/i.test(segment)
+    && /[a-z0-9_]/i.test(segment)
+  ))
 }
 
 export function sanitizeGovernanceHtml(value: string): string {
@@ -163,6 +215,8 @@ function sanitizeNode(node: Node, output: Document): Node | undefined {
     return anchor
   }
   const element = output.createElement(tag)
+  const presentation = safeGovernancePresentation(node.getAttribute('data-governance-style'))
+  if (presentation) element.setAttribute('data-governance-style', presentation)
   if (tag === 'th' || tag === 'td') {
     const colSpan = boundedSpan(node.getAttribute('colspan'))
     const rowSpan = boundedSpan(node.getAttribute('rowspan'))

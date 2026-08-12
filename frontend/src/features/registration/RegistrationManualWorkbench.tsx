@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Columns3, Database, Save, ShieldCheck } from 'lucide-react'
+import { CheckCircle2, Clock3, Columns3, Database, History, LoaderCircle, Save, ShieldCheck, TriangleAlert } from 'lucide-react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type {
   CatalogAssetDetail,
@@ -53,6 +53,20 @@ function tableTerms(asset: CatalogAssetDetail): string[] {
 
 function unique(values: string[], maximum = 100): string[] {
   return values.map((value) => value.trim()).filter(Boolean).filter((value, index, all) => all.indexOf(value) === index).slice(0, maximum)
+}
+
+function manualStatePresentation(state: ManualMetadataSubmission['state']) {
+  if (state === 'APPLIED') return { label: '적용 완료', icon: CheckCircle2 }
+  if (state === 'FAILED') return { label: '실패', icon: TriangleAlert }
+  if (state === 'APPLYING') return { label: '적용 중', icon: LoaderCircle }
+  return { label: '대기 중', icon: Clock3 }
+}
+
+function manualTimestamp(value: string): string {
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : new Intl.DateTimeFormat('ko-KR', {
+    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(parsed)
 }
 
 /** v0.3-shaped inputs, backed by an independent manual-submission contract. */
@@ -432,10 +446,14 @@ export function RegistrationManualWorkbench({
       <p className="registration-manual-handoff">SAVE는 변경 이력과 CSV 영수증을 저장한 뒤, 구성된 Airflow 적용 대기열에 제출합니다. 브라우저는 DataHub·MinIO·Airflow 자격증명에 접근하지 않습니다.</p>
       {submission && <div className="registration-description-success" role="status">제출 #{submission.serial_number}이 {submission.row_count}개 행으로 저장되었습니다. 상태: {submission.state}{pollingStopped && submission.state !== 'APPLIED' && submission.state !== 'FAILED' && <button className="button button-quiet" type="button" onClick={refreshCurrentSubmission}>상태 새로고침</button>}</div>}
       <section className="registration-manual-history" aria-labelledby="manual-history-title">
-        <header><h3 id="manual-history-title">최근 Manual 실행</h3><div className="registration-header-actions">{canViewWorkspaceHistory && <label>조회 범위<select aria-label="Manual 실행 조회 범위" value={historyScope} onChange={(event) => setHistoryScope(event.target.value as 'mine' | 'workspace')}><option value="mine">내 실행</option><option value="workspace">워크스페이스 전체</option></select></label>}<button className="button button-quiet" type="button" onClick={previousHistoryPage} disabled={!historyCursorStack.length}>이전</button><button className="button button-quiet" type="button" onClick={nextHistoryPage} disabled={!historyNextCursor}>다음</button></div></header>
-        <div className="dense-table-frame"><table className="dense-table"><thead><tr><th>제출</th><th>상태</th><th>시도</th><th>오류</th></tr></thead><tbody>
-          {history.map((item) => <tr key={item.id}><td><button className="button button-quiet" type="button" onClick={() => void openReport(item.id, item.source_version)}>#{item.serial_number}</button></td><td>{item.state}</td><td>{item.attempts}</td><td>{item.last_error_code ?? '—'}</td></tr>)}
-          {!history.length && <tr><td colSpan={4} className="empty-cell">표시할 Manual 실행 이력이 없습니다.</td></tr>}
+        <header><div className="registration-manual-history-title"><History size={15} aria-hidden="true" /><div><h3 id="manual-history-title">최근 Manual 실행</h3><span>선택한 실행의 DataHub 적용 증거를 확인합니다.</span></div><strong>{history.length}</strong></div><div className="registration-header-actions">{canViewWorkspaceHistory && <label>조회 범위<select aria-label="Manual 실행 조회 범위" value={historyScope} onChange={(event) => setHistoryScope(event.target.value as 'mine' | 'workspace')}><option value="mine">내 실행</option><option value="workspace">워크스페이스 전체</option></select></label>}<button className="button button-quiet" type="button" onClick={previousHistoryPage} disabled={!historyCursorStack.length}>이전</button><button className="button button-quiet" type="button" onClick={nextHistoryPage} disabled={!historyNextCursor}>다음</button></div></header>
+        <div className="dense-table-frame"><table className="dense-table registration-manual-history-table"><thead><tr><th>제출</th><th>상태</th><th>등록 시각</th><th>시도</th><th>오류</th></tr></thead><tbody>
+          {history.map((item) => {
+            const state = manualStatePresentation(item.state)
+            const StateIcon = state.icon
+            return <tr key={item.id}><td><button className="registration-manual-run-link" type="button" aria-label={`#${item.serial_number}`} onClick={() => void openReport(item.id, item.source_version)}><span>#{item.serial_number}</span><small>{item.row_count} rows</small></button></td><td><span className={`registration-manual-state registration-manual-state-${item.state.toLocaleLowerCase()}`}><StateIcon size={11} aria-hidden="true" />{state.label}</span></td><td><time dateTime={item.created_at}>{manualTimestamp(item.created_at)}</time></td><td><strong>{item.attempts}</strong></td><td>{item.last_error_code ? <code>{item.last_error_code}</code> : <span className="registration-manual-no-error">정상</span>}</td></tr>
+          })}
+          {!history.length && <tr><td colSpan={5} className="empty-cell"><span className="registration-manual-history-empty"><History size={22} aria-hidden="true" /><strong>아직 Manual 실행 이력이 없습니다.</strong><small>SAVE를 완료하면 적용 상태와 검증 증거가 여기에 표시됩니다.</small></span></td></tr>}
         </tbody></table></div>
       </section>
       {report && <section className="registration-manual-report" aria-labelledby="manual-report-title"><header><h3 id="manual-report-title">제출 #{report.submission.serial_number} 적용 증거</h3></header>

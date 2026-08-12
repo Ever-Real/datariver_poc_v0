@@ -57,7 +57,7 @@ const reviewApproval: ChangeActionHint = {
 const testApproval: ChangeActionHint = {
   id: 'approval-test',
   kind: 'APPROVAL',
-  label: '테스트 승인 기록',
+  label: '최종 승인 요청',
   stage: 'TEST',
   decision: 'APPROVED',
 }
@@ -103,15 +103,23 @@ export function changeActionHints(changeRequest: ChangeRequestRecord): ChangeAct
         transition('CANCELLED', '요청 취소', 'danger'),
       ]
     }
-    case 'TESTING':
+    case 'TESTING': {
+      const testPassed = changeRequest.test_runs.some((run) => (
+        run.round_id === changeRequest.current_round_id && run.state === 'PASSED'
+      ))
+      const testApproved = changeRequest.approvals.some((approval) => (
+        approval.round_id === changeRequest.current_round_id
+        && approval.stage === 'TEST'
+        && approval.decision === 'APPROVED'
+      ))
+      if (testPassed) return [testApproved
+        ? transition('FINAL_REVIEW', '최종 승인 요청', 'primary')
+        : testApproval]
       return [
-        testApproval,
-        transition('IN_REVIEW', '검토로 되돌리기'),
-        transition('FINAL_REVIEW', '최종 검토 요청', 'primary'),
         transition('CHANGES_REQUESTED', '보완 요청', 'danger'),
-        transition('REJECTED', '반려', 'danger'),
         transition('CANCELLED', '요청 취소', 'danger'),
       ]
+    }
     case 'FINAL_REVIEW':
       return [
         finalApproval,

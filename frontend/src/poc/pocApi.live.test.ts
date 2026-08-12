@@ -454,6 +454,7 @@ describe('POC live-provider compatibility adapter', () => {
       method: 'POST', body: JSON.stringify({ target_state: 'CHANGES_REQUESTED', reason: 'fix description', if_match: current.version }),
     })
     expect(current.state).toBe('CHANGES_REQUESTED')
+    expect(current.revision_allowed).toBe(true)
 
     current = await client.request<ChangeRequestRecord>(`/change-requests/${current.id}/revisions`, {
       method: 'POST',
@@ -556,12 +557,14 @@ describe('POC live-provider compatibility adapter', () => {
     expect(reviewed.item.versions[0]?.state).toBe('PUBLISHED')
 
     const importedHtml = await api.importDocument({
-      file: new File(['<h1>HTML 정책</h1><p><strong>서식</strong> 본문</p><script>alert(1)</script>'], 'policy.html', { type: 'text/html' }),
+      file: new File(['<style>.policy{color:#123456;padding:12px;position:fixed}</style><h1 class="policy">HTML 정책</h1><p><strong>서식</strong> 본문</p><script>alert(1)</script>'], 'policy.html', { type: 'text/html' }),
       kind: 'DOCUMENT', category: 'POLICY', title: 'HTML 가져오기', summary: 'HTML import',
       classification: 1, applicabilityScope: 'POC', parentDocumentId: null,
     }, 'governance-html-import')
-    expect(importedHtml.item.versions[0]?.sanitized_html).toContain('<h1>HTML 정책</h1>')
+    expect(importedHtml.item.versions[0]?.sanitized_html).toContain('>HTML 정책</h1>')
     expect(importedHtml.item.versions[0]?.sanitized_html).toContain('<strong>서식</strong>')
+    expect(importedHtml.item.versions[0]?.sanitized_html).toContain('data-governance-style="color:#123456;padding:12px"')
+    expect(importedHtml.item.versions[0]?.sanitized_html).not.toContain('position')
     expect(importedHtml.item.versions[0]?.sanitized_html).not.toMatch(/script|alert/i)
 
     const importedMarkdown = await api.importDocument({

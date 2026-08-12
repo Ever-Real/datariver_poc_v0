@@ -682,7 +682,9 @@ export function GovernancePage({
         signal: controller.signal,
         body: JSON.stringify(body),
       })
-      if (action.kind === 'APPROVAL' && action.stage === 'REVIEW' && next.state === 'IN_REVIEW') {
+      if (action.kind === 'APPROVAL'
+        && (action.stage === 'REVIEW' || action.stage === 'TEST')
+        && next.state === (action.stage === 'REVIEW' ? 'IN_REVIEW' : 'TESTING')) {
         approvalPersisted = true
         next = await client.request<ChangeRequestRecord>(
           `/change-requests/${current.id}/transitions`,
@@ -692,7 +694,7 @@ export function GovernancePage({
             ifMatch: `"${next.version}"`,
             signal: controller.signal,
             body: JSON.stringify({
-              target_state: 'TESTING',
+              target_state: action.stage === 'REVIEW' ? 'TESTING' : 'FINAL_REVIEW',
               reason,
             }),
           },
