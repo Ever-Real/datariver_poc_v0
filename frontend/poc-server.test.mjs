@@ -22,6 +22,7 @@ before(async () => {
 })
 
 after(async () => {
+  server.closeAllConnections()
   await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()))
 })
 

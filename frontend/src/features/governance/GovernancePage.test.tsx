@@ -1053,7 +1053,7 @@ describe('GovernancePage', () => {
     expect(await within(detailDialog).findByText('검토 중 · IN_REVIEW')).toBeInTheDocument()
   })
 
-  it('keeps recoverable changes requests distinct from terminal rejection', async () => {
+  it('offers a recoverable changes request without a terminal reject action', async () => {
     const existing = changeRequest({ state: 'IN_REVIEW' })
     const changesRequested = changeRequest({
       state: 'CHANGES_REQUESTED',
@@ -1090,10 +1090,8 @@ describe('GovernancePage', () => {
     )
 
     expect(within(detailDialog).getByRole('button', { name: '보완 요청' })).toBeInTheDocument()
-    fireEvent.click(within(detailDialog).getByRole('button', { name: '최종 반려 (재상신 불가)' }))
-    expect(within(detailDialog).getByRole('button', { name: '최종 반려 확정' })).toBeInTheDocument()
+    expect(within(detailDialog).queryByRole('button', { name: /반려/ })).not.toBeInTheDocument()
     expect(request.mock.calls.filter(([path]) => path.endsWith('/transitions'))).toHaveLength(0)
-    fireEvent.click(within(detailDialog).getByRole('button', { name: '최종 반려 취소' }))
 
     fireEvent.click(within(detailDialog).getByRole('button', { name: '보완 요청' }))
     const confirmDialog = screen.getByRole('dialog', { name: '변경관리 명령 확인' })
@@ -1110,30 +1108,24 @@ describe('GovernancePage', () => {
     expect(await within(detailDialog).findByText('보완 요청 · CHANGES_REQUESTED')).toBeInTheDocument()
   })
 
-  it('moves a terminal rejection out of the review stage presentation', async () => {
-    const existing = changeRequest({ state: 'IN_REVIEW' })
-    const rejected = changeRequest({
-      state: 'REJECTED',
-      revision_allowed: false,
+  it('records review approval and advances to testing in one explicit UI action', async () => {
+    const existing = changeRequest({ state: 'IN_REVIEW', approvals: [] })
+    const approved = changeRequest({
+      state: 'IN_REVIEW',
       version: 8,
-      transitions: [
-        ...existing.transitions,
-        {
-          id: 'transition-rejected',
-          from_state: 'IN_REVIEW',
-          to_state: 'REJECTED',
-          actor_id: 'reviewer-1',
-          reason: '요청을 최종 반려합니다.',
-          occurred_at: '2026-07-17T03:04:05Z',
-          round_id: existing.current_round_id,
-        },
-      ],
+    })
+    const testing = changeRequest({
+      state: 'TESTING',
+      version: 9,
     })
     const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
       if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([existing]))
       if (path === `/change-requests/${existing.id}`) return Promise.resolve(existing)
+      if (path === `/change-requests/${existing.id}/approvals` && options?.method === 'POST') {
+        return Promise.resolve(approved)
+      }
       if (path === `/change-requests/${existing.id}/transitions` && options?.method === 'POST') {
-        return Promise.resolve(rejected)
+        return Promise.resolve(testing)
       }
       if (path.includes(`/catalog/assets/${existing.items[0]!.target_asset_id}/lineage`)) {
         return Promise.resolve({ center_asset_id: 'asset-1', nodes: [], edges: [], direction: 'BOTH', depth: 2, truncated: false, meta: { projection_version: 1, policy_version: 'test' } })
@@ -1144,16 +1136,23 @@ describe('GovernancePage', () => {
     const detailDialog = await openDetail(existing)
     fireEvent.change(
       await within(detailDialog).findByRole('textbox', { name: 'REVIEWER COMMENTS · Data Steward 검토 의견' }),
-      { target: { value: '요청을 최종 반려합니다.' } },
+      { target: { value: '검토 승인 후 테스트를 진행합니다.' } },
     )
-    fireEvent.click(within(detailDialog).getByRole('button', { name: '최종 반려 (재상신 불가)' }))
-    fireEvent.click(within(detailDialog).getByRole('button', { name: '최종 반려 확정' }))
+    fireEvent.click(within(detailDialog).getByRole('button', { name: '검토 승인 및 변경 \/ 테스트로 이동' }))
     const confirmDialog = screen.getByRole('dialog', { name: '변경관리 명령 확인' })
     fireEvent.click(within(confirmDialog).getByRole('button', { name: '확인 후 제출' }))
 
-    expect(await within(detailDialog).findByText('반려 · REJECTED')).toBeInTheDocument()
-    expect(within(detailDialog).getByText('REQUEST REASON')).toBeInTheDocument()
-    expect(within(detailDialog).queryByText('Impact Analysis')).not.toBeInTheDocument()
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path.endsWith('/approvals'))).toHaveLength(1))
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path.endsWith('/transitions'))).toHaveLength(1))
+    const transition = request.mock.calls.find(([path]) => path.endsWith('/transitions'))
+    expect(transition?.[1]).toMatchObject({ method: 'POST', ifMatch: '"8"' })
+    const transitionBody = transition?.[1]?.body
+    if (typeof transitionBody !== 'string') throw new Error('Expected a JSON transition body')
+    expect(JSON.parse(transitionBody) as unknown).toEqual({
+      target_state: 'TESTING',
+      reason: '검토 승인 후 테스트를 진행합니다.',
+    })
+    expect(await within(detailDialog).findByText('변경 / 테스트 · TESTING')).toBeInTheDocument()
   })
 
   it('does not replay a denied mutation after step-up', async () => {

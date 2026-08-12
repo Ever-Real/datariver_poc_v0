@@ -49,7 +49,7 @@ const transition = (
 const reviewApproval: ChangeActionHint = {
   id: 'approval-review',
   kind: 'APPROVAL',
-  label: '검토 승인 기록',
+  label: '검토 승인 및 변경 / 테스트로 이동',
   stage: 'REVIEW',
   decision: 'APPROVED',
 }
@@ -89,14 +89,20 @@ export function changeActionHints(changeRequest: ChangeRequestRecord): ChangeAct
         transition('IN_REVIEW', '검토 시작', 'primary'),
         transition('CANCELLED', '요청 취소', 'danger'),
       ]
-    case 'IN_REVIEW':
+    case 'IN_REVIEW': {
+      const reviewApproved = changeRequest.approvals.some((approval) => (
+        approval.round_id === changeRequest.current_round_id
+        && approval.stage === 'REVIEW'
+        && approval.decision === 'APPROVED'
+      ))
       return [
-        reviewApproval,
-        transition('TESTING', '변경 / 테스트로 이동', 'primary'),
+        reviewApproved
+          ? transition('TESTING', '변경 / 테스트로 이동', 'primary')
+          : reviewApproval,
         transition('CHANGES_REQUESTED', '보완 요청', 'danger'),
-        transition('REJECTED', '반려', 'danger'),
         transition('CANCELLED', '요청 취소', 'danger'),
       ]
+    }
     case 'TESTING':
       return [
         testApproval,

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
-import { CheckCircle2, FileCheck2, RotateCcw, ShieldCheck } from 'lucide-react'
+import { CheckCircle2, FileCheck2, ShieldCheck } from 'lucide-react'
 import { newIdempotencyKey, type ApiClient } from '../../api/client'
 import type {
   CatalogLineage,
@@ -229,7 +229,6 @@ export function ChangeRequestDetailDialog({
   const [lineage, setLineage] = useState<CatalogLineage[]>([])
   const [lineageLoading, setLineageLoading] = useState(false)
   const [lineageError, setLineageError] = useState<unknown>()
-  const [rejectionArmed, setRejectionArmed] = useState(false)
   const [testSystemId, setTestSystemId] = useState('')
   const [testAttachmentId, setTestAttachmentId] = useState('')
   const [testSummary, setTestSummary] = useState('')
@@ -261,7 +260,6 @@ export function ChangeRequestDetailDialog({
     setReviewComment('')
     setPendingFiles([])
     setUploadError(undefined)
-    setRejectionArmed(false)
     setTestSystemId('')
     setTestAttachmentId('')
     setTestSummary('')
@@ -392,7 +390,6 @@ export function ChangeRequestDetailDialog({
     }
   }, [client, onRefresh, testAttachmentId, testState, testSummary, testSystemId, value])
   const stageHints = selectedStage === activeStage ? hints : []
-  const rejectHint = stageHints.find((hint) => hint.targetState === 'REJECTED')
   const currentRound = value?.rounds.find((item) => item.id === value.current_round_id)
   const canEdit = Boolean(
     value?.revision_allowed
@@ -477,12 +474,10 @@ export function ChangeRequestDetailDialog({
             <FlowCanvas ariaLabel="변경 대상 영향도 계보" nodes={flowNodes} edges={flowEdges} height={440} emptyTitle="조회 가능한 Lineage가 없습니다." emptyDescription="수동 신규 대상이거나 현재 권한 범위에 연결된 계보가 없습니다." />
             {lineage.some((item) => item.truncated) && <p className="m-0 text-xs font-bold text-amber-800">서버 조회 한도에 따라 일부 계보가 생략되었습니다.</p>}
             <label className="grid gap-2 rounded-enterprise border border-slate-300 bg-white p-4 text-xs font-black text-navy-900">REVIEWER COMMENTS · Data Steward 검토 의견
-              <textarea className="min-h-24 resize-y border border-slate-300 p-3 text-sm font-normal" maxLength={4000} placeholder="승인·반려 사유로 기록할 검토 의견을 입력하세요." value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} />
+              <textarea className="min-h-24 resize-y border border-slate-300 p-3 text-sm font-normal" maxLength={4000} placeholder="승인·보완 요청 사유로 기록할 검토 의견을 입력하세요." value={reviewComment} onChange={(event) => setReviewComment(event.target.value)} />
             </label>
             <div className="flex flex-wrap justify-end gap-2">
-              {rejectHint && !rejectionArmed && <button type="button" className="button button-danger" disabled={busy} onClick={() => setRejectionArmed(true)}>최종 반려 (재상신 불가)</button>}
-              {rejectHint && rejectionArmed && <><button type="button" className="button button-secondary" onClick={() => setRejectionArmed(false)}><RotateCcw size={13} /> 최종 반려 취소</button><button type="button" className="button button-danger" disabled={busy || !reviewComment.trim()} onClick={() => onAction(rejectHint, reviewComment)}>최종 반려 확정</button></>}
-              {stageHints.filter((hint) => hint !== rejectHint).map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy || !reviewComment.trim()} onClick={() => onAction(hint, reviewComment)}>{hint.label}</button>)}
+              {stageHints.map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy || !reviewComment.trim()} onClick={() => onAction(hint, reviewComment)}>{hint.label}</button>)}
             </div>
           </section>}
 

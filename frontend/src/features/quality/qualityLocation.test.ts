@@ -24,21 +24,21 @@ describe('qualityLocation', () => {
     const oversized = 'x'.repeat(201)
     const href = `https://example.test/?page=quality&qualityTab=unknown&assetId=asset-1&templateId=${oversized}`
 
-    expect(qualityLocationFromHref(href)).toEqual({ tab: 'assets', assetId: 'asset-1' })
-    expect(sanitizeQualityUrl(href)).toBe('/?page=quality&assetId=asset-1')
+    expect(qualityLocationFromHref(href)).toEqual({ tab: 'dashboard' })
+    expect(sanitizeQualityUrl(href)).toBe('/?page=quality')
   })
 
   it('does not preserve a selected row when switching tabs', () => {
-    const href = 'https://example.test/?page=quality&assetId=asset-1'
+    const href = 'https://example.test/?page=quality&qualityTab=assets&assetId=asset-1'
     expect(qualityUrl({ tab: 'templates' }, href)).toBe(
       '/?page=quality&qualityTab=templates',
     )
   })
 
-  it('keeps the dashboard as an explicit quality tab without row identifiers', () => {
+  it('keeps the dashboard as the default quality tab without row identifiers', () => {
     const href = 'https://example.test/?page=quality&qualityTab=dashboard&assetId=asset-1'
 
     expect(qualityLocationFromHref(href)).toEqual({ tab: 'dashboard' })
-    expect(sanitizeQualityUrl(href)).toBe('/?page=quality&qualityTab=dashboard')
+    expect(sanitizeQualityUrl(href)).toBe('/?page=quality')
   })
 })

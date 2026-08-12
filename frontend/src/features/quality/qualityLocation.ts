@@ -20,7 +20,7 @@ export function qualityLocationFromHref(href = window.location.href): QualityLoc
   const requestedTab = parameters.get('qualityTab')
   const tab = requestedTab && qualityTabs.has(requestedTab as QualityTab)
     ? requestedTab as QualityTab
-    : 'assets'
+    : 'dashboard'
   const assetId = boundedOpaqueId(parameters.get('assetId'))
   const templateId = boundedOpaqueId(parameters.get('templateId'))
   return {
@@ -40,7 +40,7 @@ export function qualityUrl(
   }
   url.searchParams.set('page', 'quality')
   const tab = next.tab ?? qualityLocationFromHref(href).tab
-  if (tab === 'assets') url.searchParams.delete('qualityTab')
+  if (tab === 'dashboard') url.searchParams.delete('qualityTab')
   else url.searchParams.set('qualityTab', tab)
   setOpaqueParameter(url, 'assetId', tab === 'assets' ? next.assetId : undefined)
   setOpaqueParameter(

@@ -436,7 +436,7 @@ describe('POC live-provider compatibility adapter', () => {
     ]))
   })
 
-  it('supports review rejection, immutable revision and resubmission in a new round', async () => {
+  it('supports review changes requested, immutable revision and resubmission in a new round', async () => {
     const client = useStableApiClient()
     let current = await client.request<ChangeRequestRecord>('/change-requests/intake', {
       method: 'POST',
@@ -470,10 +470,14 @@ describe('POC live-provider compatibility adapter', () => {
 
   it('exposes POC user creation and redacted system settings without Keycloak', async () => {
     const client = useStableApiClient()
-    const context = await client.request<{ allowed_operations: string[] }>('/admin/me')
+    const context = await client.request<{
+      allowed_operations: string[]
+      action_vocabulary: string[]
+    }>('/admin/me')
     expect(context.allowed_operations).toEqual(expect.arrayContaining([
       'IDENTITY_USER_PROVISION', 'MEMBERSHIP_ACCESS_READ', 'SYSTEM_CONFIGURATION_READ',
     ]))
+    expect(context.action_vocabulary).toContain('change.edit')
 
     const provisioned = await client.request<{ temporary_password_required: boolean }>('/admin/identity-users', {
       method: 'POST',

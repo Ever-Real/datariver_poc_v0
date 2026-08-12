@@ -14,7 +14,7 @@ interface PocFeaturePermission {
 const permissions: PocFeaturePermission[] = [
   { id: 'catalog', area: '검색', feature: '검색·상세·계보·Resource Tree', operations: 'read / search / lineage', currentAccess: 'OPEN', futureControl: '자산·분류·System 범위' },
   { id: 'registration', area: '등록관리', feature: '수동 등록·메타데이터 변경 요청', operations: 'create / edit / submit', currentAccess: 'OPEN', futureControl: '등록자·Data Steward' },
-  { id: 'change', area: '변경관리', feature: 'CR 등록·검토·반려·재상신·테스트·결재', operations: 'create / review / test / approve', currentAccess: 'OPEN', futureControl: 'Maker/Checker·System 책임' },
+  { id: 'change', area: '변경관리', feature: 'CR 등록·검토·보완요청·수정 재요청·테스트·결재', operations: 'create / edit / review / test / approve', currentAccess: 'OPEN', futureControl: 'Maker/Checker·System 책임' },
   { id: 'quality', area: '품질관리', feature: '현황·이력·규칙·실행', operations: 'read / author / run', currentAccess: 'OPEN', futureControl: '자산·품질 운영 역할' },
   { id: 'knowledge', area: '지식관리', feature: 'Registry·Studio·정보관리·Release', operations: 'read / create / edit / publish', currentAccess: 'OPEN', futureControl: 'Domain·분류·Reviewer' },
   { id: 'governance', area: '거버넌스', feature: '문서·Template·검토·발행·Archive', operations: 'read / create / review / publish', currentAccess: 'OPEN', futureControl: 'Maker/Checker·분류 범위' },

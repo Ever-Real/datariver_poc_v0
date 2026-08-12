@@ -323,14 +323,16 @@ export function App() {
   const mayReadPolicyGovernance = Boolean(currentAdminContext && policyReadOperations
     .every((operation) => currentAdminContext.allowed_operations.includes(operation)))
   const adminMessages = getAdminMessages()
-  const adminMenuItems: Array<{ id: string; label: string }> = currentAdminContext
-    ? allowedAdminSections(currentAdminContext).map((id) => ({ id, label: adminMessages[id] }))
-    : []
-  if (!authenticationEnabled) adminMenuItems.unshift(
-    { id: 'poc-registration', label: '등록관리' },
-    { id: 'poc-knowledge', label: '지식관리' },
-    { id: 'poc-glossary', label: '용어사전' },
-  )
+  const adminMenuItems: Array<{ id: string; label: string }> = !authenticationEnabled
+    ? [
+        { id: 'poc-registration', label: '등록관리' },
+        { id: 'poc-knowledge', label: '지식관리' },
+        { id: 'poc-glossary', label: '용어사전' },
+        ...(currentAdminContext ? [{ id: 'memberships', label: '관리자메뉴' }] : []),
+      ]
+    : currentAdminContext
+      ? allowedAdminSections(currentAdminContext).map((id) => ({ id, label: adminMessages[id] }))
+      : []
   const adminContextKey = cachedAdminContext
     ? [
         cachedAdminContext.workspace_id,

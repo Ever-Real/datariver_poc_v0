@@ -1192,7 +1192,7 @@ class PocApiClient {
       allowed_operations: pocAdminOperations,
       action_vocabulary: [
         'POC_OPEN_ACCESS_V1', 'catalog.read', 'registration.create', 'change.create',
-        'change.review', 'change.approve', 'quality.read', 'quality.execute', 'kg.read',
+        'change.edit', 'change.review', 'change.approve', 'quality.read', 'quality.execute', 'kg.read',
         'kg.edit', 'governance.read', 'governance.edit', 'chat.query', 'admin.manage',
       ],
     }

@@ -3,13 +3,13 @@
 }
 
 .chat-workspace {
-  --chat-history-width: 300px;
-  --chat-evidence-width: 390px;
+  --chat-history-width: 240px;
+  --chat-evidence-width: 320px;
   display: grid;
   grid-template-columns: var(--chat-history-width) minmax(360px, 1fr) var(--chat-evidence-width);
-  gap: 12px;
+  gap: 9px;
   align-items: stretch;
-  min-height: clamp(620px, calc(100vh - 205px), 860px);
+  min-height: clamp(560px, calc(100vh - 235px), 780px);
   transition: grid-template-columns 240ms cubic-bezier(.2, .8, .2, 1);
 }
 
@@ -26,28 +26,27 @@
 .chat-evidence-panel {
   min-width: 0;
   min-height: 0;
-  height: clamp(620px, calc(100vh - 205px), 860px);
+  height: clamp(560px, calc(100vh - 235px), 780px);
   padding: 0;
   overflow: hidden;
-  border-color: #d7e0e7;
-  border-radius: 14px;
+  border-color: var(--line-300);
+  border-radius: var(--radius);
   background: #fff;
-  box-shadow: 0 8px 30px rgba(15, 34, 55, .07);
+  box-shadow: var(--shadow-sm);
   transition: width 240ms cubic-bezier(.2, .8, .2, 1), box-shadow 180ms ease;
 }
 
 .chat-session-panel > header,
 .chat-conversation > header,
 .chat-evidence-panel > header {
-  min-height: 62px;
+  min-height: 48px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  border-bottom: 1px solid #e1e8ed;
-  padding: 10px 12px;
-  background: rgba(248, 250, 252, .94);
-  backdrop-filter: blur(12px);
+  border-bottom: 2px solid var(--blue-700);
+  padding: 7px 9px;
+  background: #f3f5f6;
 }
 
 .chat-session-panel h2,
@@ -90,7 +89,7 @@
 }
 
 .chat-panel-content {
-  height: calc(100% - 62px);
+  height: calc(100% - 48px);
   display: grid;
   grid-template-rows: auto auto minmax(0, 1fr) auto;
   gap: 10px;
@@ -300,7 +299,7 @@
 }
 
 .chat-conversation > header {
-  border-radius: 14px 14px 0 0;
+  border-radius: var(--radius) var(--radius) 0 0;
 }
 
 .chat-status-dot {

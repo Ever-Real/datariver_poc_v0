@@ -41,4 +41,30 @@ describe('change request presentation', () => {
       'CANCELLED',
     ])
   })
+
+  it('keeps terminal rejection out of review and resumes an already approved review', () => {
+    const review = {
+      ...changesRequested,
+      state: 'IN_REVIEW',
+      approvals: [],
+    } satisfies ChangeRequestRecord
+    expect(changeActionHints(review).map((hint) => hint.label)).toEqual([
+      '검토 승인 및 변경 / 테스트로 이동',
+      '보완 요청',
+      '요청 취소',
+    ])
+
+    const approved = {
+      ...review,
+      approvals: [{
+        id: 'approval-review', stage: 'REVIEW', decision: 'APPROVED', actor_id: 'reviewer',
+        reason: '승인', occurred_at: '2026-07-17T02:03:04Z', round_id: review.current_round_id,
+        authorities: [{ kind: 'SYSTEM_DEVELOPER', system_id: null }],
+      }],
+    } satisfies ChangeRequestRecord
+    expect(changeActionHints(approved)[0]).toMatchObject({
+      kind: 'TRANSITION',
+      targetState: 'TESTING',
+    })
+  })
 })

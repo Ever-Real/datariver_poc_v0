@@ -663,6 +663,7 @@ export function GovernancePage({
     const { controller, expectedGeneration } = beginOperation()
     setBusy(true)
     setActionError(undefined)
+    let approvalPersisted = false
     try {
       const path = action.kind === 'APPROVAL'
         ? `/change-requests/${current.id}/approvals`
@@ -674,13 +675,29 @@ export function GovernancePage({
         : action.kind === 'INTAKE_COMPLETE'
           ? { reason }
           : { target_state: action.targetState, reason }
-      const next = await client.request<ChangeRequestRecord>(path, {
+      let next = await client.request<ChangeRequestRecord>(path, {
         method: 'POST',
         idempotencyKey: newIdempotencyKey('change-action'),
         ifMatch: `"${current.version}"`,
         signal: controller.signal,
         body: JSON.stringify(body),
       })
+      if (action.kind === 'APPROVAL' && action.stage === 'REVIEW' && next.state === 'IN_REVIEW') {
+        approvalPersisted = true
+        next = await client.request<ChangeRequestRecord>(
+          `/change-requests/${current.id}/transitions`,
+          {
+            method: 'POST',
+            idempotencyKey: newIdempotencyKey('change-review-transition'),
+            ifMatch: `"${next.version}"`,
+            signal: controller.signal,
+            body: JSON.stringify({
+              target_state: 'TESTING',
+              reason,
+            }),
+          },
+        )
+      }
       if (controller.signal.aborted || expectedGeneration !== generation.current) return
       setPendingAction(undefined)
       setDetail(next)
@@ -696,7 +713,7 @@ export function GovernancePage({
       if (controller.signal.aborted || expectedGeneration !== generation.current) return
       setPendingAction(undefined)
       setActionError(error)
-      if (error instanceof ApiError && error.problem.status === 409) {
+      if (approvalPersisted || (error instanceof ApiError && error.problem.status === 409)) {
         preserveReasonForConflictRetry.current = true
         await loadDetail(current.id)
       }

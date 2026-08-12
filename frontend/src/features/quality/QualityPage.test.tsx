@@ -26,11 +26,30 @@ describe('QualityPage', () => {
     expect(requestPaths(fetchMock)).toEqual(['/api/v1/quality/capability'])
   })
 
+  it('opens the quality dashboard by default', async () => {
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const path = requestUrl(input).pathname
+      if (path.endsWith('/quality/capability')) return Promise.resolve(json(capability('AVAILABLE')))
+      if (path.endsWith('/quality/dashboard')) return Promise.resolve(json(qualityDashboard()))
+      return Promise.reject(new Error(`unexpected request: ${requestUrl(input).href}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+
+    expect(await screen.findByRole('tab', { name: '품질 대시보드' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(await screen.findByRole('heading', { name: '품질 대시보드' })).toBeInTheDocument()
+    expect(requestPaths(fetchMock)).toContain('/api/v1/quality/dashboard')
+    expect(requestPaths(fetchMock)).not.toContain('/api/v1/quality/assets')
+  })
+
   it('combines one asset rule sets, recent runs, and score trend in one inspector', async () => {
     window.history.replaceState(
       {},
       '',
-      `/?page=quality&workspace=workspace-one&assetId=${qualityAsset.asset_id}`,
+      `/?page=quality&workspace=workspace-one&qualityTab=assets&assetId=${qualityAsset.asset_id}`,
     )
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = requestUrl(input)
@@ -79,6 +98,7 @@ describe('QualityPage', () => {
   })
 
   it('supports roving keyboard tabs and fetches only the newly active tab resources', async () => {
+    window.history.replaceState({}, '', '/?page=quality&workspace=workspace-one&qualityTab=assets')
     const fetchMock = vi.fn((input: string | URL | Request) => {
       const url = requestUrl(input)
       if (url.pathname.endsWith('/quality/capability')) return Promise.resolve(json(capability('AVAILABLE')))
@@ -108,7 +128,7 @@ describe('QualityPage', () => {
     window.history.replaceState(
       {},
       '',
-      `/?page=quality&workspace=workspace-one&assetId=${qualityAsset.asset_id}`,
+      `/?page=quality&workspace=workspace-one&qualityTab=assets&assetId=${qualityAsset.asset_id}`,
     )
     let resolveWorkspace!: (response: Response) => void
     let workspaceSignal: AbortSignal | undefined
@@ -259,6 +279,7 @@ describe('QualityPage', () => {
   })
 
   it('coalesces repeated focus events while the capability request is in flight', async () => {
+    window.history.replaceState({}, '', '/?page=quality&workspace=workspace-one&qualityTab=assets')
     let resolveCapability!: (response: Response) => void
     let capabilitySignal: AbortSignal | undefined
     const capabilityResponse = new Promise<Response>((resolve) => {
@@ -301,7 +322,7 @@ describe('QualityPage', () => {
     window.history.replaceState(
       {},
       '',
-      `/?page=quality&workspace=workspace-one&assetId=${qualityAsset.asset_id}`,
+      `/?page=quality&workspace=workspace-one&qualityTab=assets&assetId=${qualityAsset.asset_id}`,
     )
     const workspaceSignals: AbortSignal[] = []
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -340,7 +361,7 @@ describe('QualityPage', () => {
     window.history.replaceState(
       {},
       '',
-      `/?page=quality&workspace=workspace-one&assetId=${qualityAsset.asset_id}`,
+      `/?page=quality&workspace=workspace-one&qualityTab=assets&assetId=${qualityAsset.asset_id}`,
     )
     const workspaceSignals: AbortSignal[] = []
     const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
@@ -607,11 +628,47 @@ function treePage() {
   }
 }
 
+function qualityDashboard() {
+  const indicator = (
+    indicatorId: 'ACCURACY' | 'COMPLETENESS' | 'TIMELINESS',
+    targetGrain: 'FIELD' | 'TABLE',
+    ruleKinds: Array<'NOT_NULL' | 'RANGE' | 'REGEX'>,
+  ) => ({
+    indicator_id: indicatorId,
+    name: indicatorId,
+    definition: `${indicatorId} definition`,
+    calculation: `${indicatorId} calculation`,
+    target_grain: targetGrain,
+    rule_kinds: ruleKinds,
+    contract_version: 'QUALITY_MANAGED_INDICATORS_V1',
+  })
+  return {
+    contract_version: 'QUALITY_DASHBOARD_V1',
+    cache_scope: cacheScope,
+    observed_at: '2026-07-30T00:00:00Z',
+    authorization_valid_until: '2026-07-30T00:00:30Z',
+    as_of: '2026-07-30T00:00:00Z',
+    schema_count: 0,
+    table_count: 0,
+    active_rule_set_count: 0,
+    common_rule_template_count: 0,
+    covered_table_count: 0,
+    table_coverage_basis_points: null,
+    managed_rule_sets: [
+      indicator('ACCURACY', 'FIELD', ['RANGE']),
+      indicator('COMPLETENESS', 'FIELD', ['NOT_NULL']),
+      indicator('TIMELINESS', 'TABLE', []),
+    ],
+    schemas: [],
+    schemas_truncated: false,
+  }
+}
+
 function selectQualityAsset() {
   window.history.replaceState(
     {},
     '',
-    `/?page=quality&workspace=workspace-one&assetId=${qualityAsset.asset_id}`,
+    `/?page=quality&workspace=workspace-one&qualityTab=assets&assetId=${qualityAsset.asset_id}`,
   )
 }
 
