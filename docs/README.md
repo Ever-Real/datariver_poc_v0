@@ -62,6 +62,7 @@
 | 64 | [Development DataHub profile diagnostic](reviews/2026-08-12_POC_DATAHUB_PROFILE_DIAGNOSTIC.md) | Current GMS aspect/profile inventory and exact external activation gate | Read-only local evidence |
 | 65 | [POC Catalog search cardinality and TEST approval](adr/0119-poc-catalog-search-cardinality-and-test-approval.md) | Strict field matches, complete inventory counts, bounded explicit lists and one-click TEST approval | Accepted for authentication-free POC only |
 | 66 | [POC bounded Chat session memory and response focus](adr/0120-poc-bounded-chat-session-memory-and-response-focus.md) | Five-turn compaction, 12,000-character questions, cancellable answer focus and non-blocking reveal | Accepted for authentication-free POC only |
+| 67 | [POC reasoning-model Chat classifier compatibility](adr/0121-poc-reasoning-model-chat-classifier-compatibility.md) | Strict reasoning-disable controls and bounded AUTO classifier output for reasoning-capable providers | Accepted for authentication-free POC only |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and

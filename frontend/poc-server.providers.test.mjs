@@ -506,7 +506,11 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
     if (!request.path.endsWith('/chat/completions')) return false
     return JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')
   })
-  assert.equal(JSON.parse(classifierRequest.body).response_format.type, 'json_schema')
+  const classifierPayload = JSON.parse(classifierRequest.body)
+  assert.equal(classifierPayload.response_format.type, 'json_schema')
+  assert.equal(classifierPayload.reasoning_effort, 'none')
+  assert.deepEqual(classifierPayload.reasoning, { effort: 'none' })
+  assert.equal(classifierPayload.max_tokens, 320)
 })
 
 test('counts the complete DataHub table inventory and returns the requested list cardinality', async () => {
@@ -753,6 +757,23 @@ test('bypasses the classifier for explicit Chat routes and fails malformed AUTO 
   forcedClassifierResponse = undefined
   assert.equal(malformed.status, 503)
   assert.match((await malformed.json()).detail, /bounded classifier failed/)
+})
+
+test('routes general Korean conversation without probing DataHub as arbitrary asset identifiers', async () => {
+  const graphqlBefore = requests.filter((request) => request.path === '/api/graphql').length
+  forcedClassifierResponse = JSON.stringify({
+    mode: 'GENERAL', confidence: 0.99, intent: 'GENERAL_CONVERSATION',
+    entity_resolution_required: false, graph_traversal_required: false,
+    semantic_retrieval_required: false, fallback_mode: null,
+  })
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: '나의 이름은 뭐지?', mode: 'AUTO' }),
+  })
+  forcedClassifierResponse = undefined
+  assert.equal(response.status, 200)
+  assert.equal((await response.json()).route.selected_mode, 'GENERAL')
+  assert.equal(requests.filter((request) => request.path === '/api/graphql').length, graphqlBefore)
 })
 
 test('triggers only the fixed Airflow DAG and proxies a bounded MinIO upload', async () => {

@@ -2186,8 +2186,9 @@ async function chatRoute(question, requestedMode) {
         model: llm.chat.model,
         stream: false,
         reasoning_effort: 'none',
+        reasoning: { effort: 'none' },
         temperature: 0,
-        max_tokens: 160,
+        max_tokens: 320,
         response_format: {
           type: 'json_schema',
           json_schema: {
@@ -2503,8 +2504,9 @@ function normalizedCatalogIdentifier(value) {
 
 function questionCatalogIdentifiers(question) {
   const quoted = [...question.matchAll(/["'`]([^"'`]{2,200})["'`]/g)].map((match) => match[1])
-  const tokens = question.match(/[\p{L}\p{N}_.$-]{3,200}/gu) || []
-  return [...new Set([...quoted, ...tokens].map(normalizedCatalogIdentifier).filter(Boolean))]
+  const technicalTokens = (question.match(/[\p{L}\p{N}_.$-]{3,200}/gu) || [])
+    .filter((token) => /[A-Za-z0-9_]/.test(token))
+  return [...new Set([...quoted, ...technicalTokens].map(normalizedCatalogIdentifier).filter(Boolean))]
     .sort((left, right) => right.length - left.length)
     .slice(0, 20)
 }
