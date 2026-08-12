@@ -162,6 +162,7 @@ function evidenceDescriptionForDisplay(description: string | null | undefined): 
 }
 
 function evidenceKindLabel(kind: ChatEvidence['asset_kind']): string {
+  if (kind === 'CATALOG') return '카탈로그 집계'
   if (kind === 'VIEW') return '뷰'
   if (kind === 'MATERIALIZED_VIEW') return '구체화 뷰'
   return '테이블'

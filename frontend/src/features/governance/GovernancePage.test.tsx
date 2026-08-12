@@ -693,7 +693,7 @@ describe('GovernancePage', () => {
     fireEvent.change(within(firstDialog).getByLabelText('테스트 결과 요약'), {
       target: { value: 'A evidence must not refresh after switching.' },
     })
-    fireEvent.click(within(firstDialog).getByRole('button', { name: 'Typed TEST 결과 기록' }))
+    fireEvent.click(within(firstDialog).getByRole('button', { name: '승인 요청' }))
     await waitFor(() => expect(testRunSignal).toBeInstanceOf(AbortSignal))
 
     const secondRow = screen.getByText(second.number).closest('tr')
@@ -762,7 +762,7 @@ describe('GovernancePage', () => {
     fireEvent.change(within(firstDialog).getByLabelText('테스트 결과 요약'), {
       target: { value: 'A late failure must not appear in B.' },
     })
-    fireEvent.click(within(firstDialog).getByRole('button', { name: 'Typed TEST 결과 기록' }))
+    fireEvent.click(within(firstDialog).getByRole('button', { name: '승인 요청' }))
     await waitFor(() => expect(testRunSignal).toBeInstanceOf(AbortSignal))
 
     const secondRow = screen.getByText(second.number).closest('tr')
@@ -1208,16 +1208,97 @@ describe('GovernancePage', () => {
     const approvalButton = await within(detailDialog).findByRole('button', { name: '승인 요청' })
     expect(approvalButton).toBeEnabled()
     fireEvent.click(approvalButton)
-    const confirmDialog = screen.getByRole('dialog', { name: '변경관리 명령 확인' })
-    fireEvent.change(within(confirmDialog).getByLabelText('판단 사유'), {
-      target: { value: '현재 회차의 PASSED 테스트 증거를 확인했습니다.' },
-    })
-    fireEvent.click(within(confirmDialog).getByRole('button', { name: '확인 후 제출' }))
 
     await waitFor(() => expect(request.mock.calls.filter(([path]) => path.endsWith('/approvals'))).toHaveLength(1))
     await waitFor(() => expect(request.mock.calls.filter(([path]) => path.endsWith('/transitions'))).toHaveLength(1))
     const transition = request.mock.calls.find(([path]) => path.endsWith('/transitions'))
     expect(transition?.[1]).toMatchObject({ method: 'POST', ifMatch: '"8"' })
+    expect(screen.queryByRole('dialog', { name: '변경관리 명령 확인' })).not.toBeInTheDocument()
+    expect(await within(detailDialog).findByText('최종 검토 · FINAL_REVIEW')).toBeInTheDocument()
+  })
+
+  it('asks for missing current-round TEST evidence only when approval is requested', async () => {
+    const testing = changeRequest({ state: 'TESTING', test_runs: [] })
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([testing]))
+      if (path === `/change-requests/${testing.id}`) return Promise.resolve(testing)
+      if (path === `/change-requests/${testing.id}/attachments/page?limit=25`) {
+        return Promise.resolve({ items: [], page: { limit: 25, next_cursor: null } })
+      }
+      if (path.endsWith('/apply-report')) return Promise.reject(new Error('No apply report yet.'))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderPage(apiClient(request))
+    const detailDialog = await openDetail(testing)
+
+    expect(within(detailDialog).queryByRole('button', { name: 'Typed TEST 결과 기록' })).not.toBeInTheDocument()
+    fireEvent.click(await within(detailDialog).findByRole('button', { name: '승인 요청' }))
+
+    const validationDialog = screen.getByRole('dialog', { name: '테스트 결과 입력 필요' })
+    expect(within(validationDialog).getByText(/현재 회차 TEST 증거 파일/)).toBeInTheDocument()
+    expect(within(validationDialog).getByText(/테스트 결과 요약/)).toBeInTheDocument()
+    expect(request.mock.calls.filter(([path]) => path.endsWith('/test-runs'))).toHaveLength(0)
+    expect(request.mock.calls.filter(([path]) => path.endsWith('/approvals'))).toHaveLength(0)
+  })
+
+  it('records a PASSED result and advances to final review in one approval request', async () => {
+    const testing = changeRequest({ state: 'TESTING', test_runs: [] })
+    const attachment = {
+      id: 'test-attachment-1', kind: 'TEST' as const, round_id: testing.current_round_id,
+      original_name: 'sandbox-result.txt', serial_number: 1, content_type: 'text/plain',
+      size_bytes: 12, content_sha256: 'a'.repeat(64), created_at: '2026-07-17T03:00:00Z',
+    }
+    const passedRun = {
+      id: 'test-run-1', round_id: testing.current_round_id, system_id: 'system-1',
+      attachment_id: attachment.id, state: 'PASSED' as const, plan_hash: 'b'.repeat(64),
+      result_hash: 'c'.repeat(64), bounded_summary: { summary: '전체 검증 통과' },
+      recorded_by: 'subject-1', occurred_at: '2026-07-17T03:01:00Z',
+    }
+    const recorded = changeRequest({ state: 'TESTING', version: 8, test_runs: [passedRun] })
+    const approved = changeRequest({ state: 'TESTING', version: 9, test_runs: [passedRun], approvals: [
+      ...recorded.approvals,
+      {
+        id: 'approval-test', stage: 'TEST', decision: 'APPROVED', actor_id: 'tester-1',
+        reason: '전체 검증 통과', occurred_at: '2026-07-17T03:02:00Z', round_id: testing.current_round_id,
+        authorities: [{ kind: 'SYSTEM_DEVELOPER', system_id: 'system-1' }],
+      },
+    ] })
+    const finalReview = changeRequest({
+      state: 'FINAL_REVIEW', version: 10, test_runs: [passedRun], approvals: approved.approvals,
+    })
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([testing]))
+      if (path === `/change-requests/${testing.id}`) return Promise.resolve(testing)
+      if (path === `/change-requests/${testing.id}/attachments/page?limit=25`) {
+        return Promise.resolve({ items: [attachment], page: { limit: 25, next_cursor: null } })
+      }
+      if (path === `/change-requests/${testing.id}/test-runs` && options?.method === 'POST') return Promise.resolve(recorded)
+      if (path === `/change-requests/${testing.id}/approvals` && options?.method === 'POST') return Promise.resolve(approved)
+      if (path === `/change-requests/${testing.id}/transitions` && options?.method === 'POST') return Promise.resolve(finalReview)
+      if (path.endsWith('/apply-report')) return Promise.reject(new Error('No apply report yet.'))
+      throw new Error(`Unexpected request: ${path} ${options?.method ?? 'GET'}`)
+    })
+    renderPage(apiClient(request))
+    const detailDialog = await openDetail(testing)
+    await waitFor(() => expect(within(detailDialog).getByLabelText('테스트 대상 시스템')).toHaveValue('system-1'))
+    await waitFor(() => expect(within(detailDialog).getByLabelText('테스트 증거 파일')).toHaveValue(attachment.id))
+    fireEvent.change(within(detailDialog).getByLabelText('테스트 결과 요약'), {
+      target: { value: '전체 검증 통과' },
+    })
+    fireEvent.click(within(detailDialog).getByRole('button', { name: '승인 요청' }))
+
+    await waitFor(() => expect(request.mock.calls.filter(([path]) => path.endsWith('/transitions'))).toHaveLength(1))
+    const testRunMutation = request.mock.calls.find(([path]) => path.endsWith('/test-runs'))?.[1]
+    const approvalMutation = request.mock.calls.find(([path]) => path.endsWith('/approvals'))?.[1]
+    const transitionMutation = request.mock.calls.find(([path]) => path.endsWith('/transitions'))?.[1]
+    expect(testRunMutation).toMatchObject({ method: 'POST', ifMatch: '"7"' })
+    if (typeof testRunMutation?.body !== 'string') throw new Error('Expected a JSON TEST run body')
+    expect(JSON.parse(testRunMutation.body) as unknown).toEqual({
+      system_id: 'system-1', attachment_id: attachment.id, state: 'PASSED',
+      bounded_summary: { summary: '전체 검증 통과' },
+    })
+    expect(approvalMutation).toMatchObject({ method: 'POST', ifMatch: '"8"' })
+    expect(transitionMutation).toMatchObject({ method: 'POST', ifMatch: '"9"' })
     expect(await within(detailDialog).findByText('최종 검토 · FINAL_REVIEW')).toBeInTheDocument()
   })
 

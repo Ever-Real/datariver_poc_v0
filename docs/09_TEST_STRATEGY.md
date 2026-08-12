@@ -2,6 +2,24 @@
 
 ## Current verification status
 
+### POC Catalog cardinality, strict matches and one-click TEST approval — 2026-08-12
+
+ADR-0119 tests pin `ALL`-term Catalog matching to enabled DataHub-derived fields, require real
+bounded `Matches` fragments and reject an absent term instead of preserving a fuzzy provider rank.
+Chat tests distinguish the default five-item semantic evidence window from complete inventory
+count/list intent, cap an explicit list at 20 and require deterministic totals rather than an LLM
+estimate. Change tests require `승인 요청` to name missing current-round TEST evidence without a
+mutation, or sequence PASSED result, TEST approval and `FINAL_REVIEW` transition with successive
+versions and idempotency keys.
+
+The complete frontend suite passed `81` files / `517` tests; the POC provider/router suite passed
+`22` tests. ESLint, TypeScript, both POC and production frontend builds, static repository
+verification and whitespace validation passed. Live development-runtime evidence against DataHub
+returned `1,001` tables, honored a request for `12` named tables and rendered `13` evidence cards
+(one aggregate plus twelve assets). Browser inspection also proved strict provider-derived Catalog
+matches and an enabled TEST `승인 요청` with no separate typed-result button. These checks do not
+claim target preparation-PC latency, reranker availability, or unconfigured MinIO/Grafana gates.
+
 ### Editable Change Request revision rounds — 2026-08-02
 
 ADR-0110/revision `0092` tests require an honest multi-round legacy backfill, unchanged legacy

@@ -110,7 +110,7 @@ describe('change request presentation', () => {
     ])
   })
 
-  it('shows but disables approval until the current round has a PASSED result', () => {
+  it('offers approval and delegates missing current-round evidence validation to the dialog', () => {
     const testing = {
       ...changesRequested,
       state: 'TESTING',
@@ -126,6 +126,6 @@ describe('change request presentation', () => {
         kind: 'APPROVAL',
       }),
     ])
-    expect(hints[1]?.disabledReason).toContain('PASSED')
+    expect(hints[1]?.disabledReason).toBeUndefined()
   })
 })

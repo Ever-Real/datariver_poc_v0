@@ -1195,7 +1195,7 @@ export interface ChatEvidence {
   domain_id: string | null
   owner_department_id: string | null
   name: string
-  asset_kind?: 'TABLE' | 'VIEW' | 'MATERIALIZED_VIEW'
+  asset_kind?: 'TABLE' | 'VIEW' | 'MATERIALIZED_VIEW' | 'CATALOG'
   description: string | null
   source_type: string
   source_locator: string

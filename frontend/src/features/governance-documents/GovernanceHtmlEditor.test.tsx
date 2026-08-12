@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { GovernanceHtmlEditor } from './GovernanceHtmlEditor'
 
@@ -14,6 +14,9 @@ describe('GovernanceHtmlEditor', () => {
     const editor = await screen.findByRole('textbox', { name: '문서 본문' })
     expect(editor).toHaveTextContent('운영 정책')
     expect(editor.querySelector('table')).not.toBeNull()
+    const blockStyle = screen.getByRole('combobox', { name: '문단 스타일' })
+    expect(within(blockStyle).getAllByRole('option').map((option) => option.textContent)).toEqual(['본문', '제목 1', '제목 2'])
+    fireEvent.change(blockStyle, { target: { value: 'heading-2' } })
     fireEvent.click(screen.getByRole('button', { name: '구분선' }))
     await waitFor(() => expect(onHtmlChange).toHaveBeenCalled())
     expect(onHtmlChange.mock.calls.at(-1)?.[0]).toContain('<hr>')

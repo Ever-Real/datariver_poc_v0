@@ -375,9 +375,23 @@ test('publishes only enabled flags while all provider probes pass', async () => 
 })
 
 test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
-  const catalog = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=wafer&limit=5`)).json()
+  const catalog = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=wafer%20evidence&limit=5`)).json()
   assert.equal(catalog.items[0].name, 'wafer_events')
   assert.equal(catalog.items[0].database_name, 'MANUFACTURING')
+  assert.equal(catalog.match_mode, 'ALL')
+  assert.deepEqual(catalog.items[0].matches.map((match) => match.field), ['NAME', 'DESCRIPTION', 'COLUMN', 'TERM'])
+  assert.deepEqual(catalog.items[0].matches.find((match) => match.field === 'NAME').matched_terms, ['wafer'])
+  assert.deepEqual(catalog.items[0].matches.find((match) => match.field === 'DESCRIPTION').matched_terms, ['wafer', 'evidence'])
+  const missingTerm = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=wafer%20missing&limit=5`)).json()
+  assert.equal(missingTerm.items.length, 0)
+  const columnMatch = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=inspection_id&search_fields=COLUMN&limit=5`)).json()
+  assert.equal(columnMatch.items[0].name, 'inspection_results')
+  assert.deepEqual(columnMatch.items[0].matches.map((match) => match.field), ['COLUMN'])
+  const tagMatch = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=gold&search_fields=TAG&limit=5`)).json()
+  assert.equal(tagMatch.items[0].name, 'wafer_events')
+  assert.deepEqual(tagMatch.items[0].matches.map((match) => match.field), ['TAG'])
+  const wrongField = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=gold&search_fields=TABLE&limit=5`)).json()
+  assert.equal(wrongField.items.length, 0)
   const urn = encodeURIComponent(catalog.items[0].external_urn)
   const detail = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}`)).json()
   assert.equal(detail.database_name, 'MANUFACTURING')
@@ -416,13 +430,13 @@ test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
   assert.ok(lineageRequests.every((request) => request.variables.input.includeGhostEntities === false))
 })
 
-test('keeps provider cursors server-side and aggregates the complete DataHub inventory', async () => {
-  const first = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=cursor-test&limit=1`)).json()
-  assert.equal(first.items[0].name, 'wafer_events')
+test('keeps opaque cursors server-side and aggregates the complete DataHub inventory', async () => {
+  const first = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=evidence&limit=1`)).json()
+  assert.equal(first.items[0].name, 'inspection_results')
   assert.ok(first.page.next_cursor)
   assert.notEqual(first.page.next_cursor, 'provider-page-2')
-  const second = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=cursor-test&limit=1&cursor=${encodeURIComponent(first.page.next_cursor)}`)).json()
-  assert.equal(second.items[0].name, 'inspection_results')
+  const second = await (await fetch(`${pocOrigin}/poc-api/datahub/catalog?q=evidence&limit=1&cursor=${encodeURIComponent(first.page.next_cursor)}`)).json()
+  assert.equal(second.items[0].name, 'wafer_events')
   assert.equal(second.page.next_cursor, null)
 
   const root = await (await fetch(`${pocOrigin}/poc-api/datahub/tree?parent_kind=ROOT&limit=100`)).json()
@@ -483,6 +497,26 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
     return JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')
   })
   assert.equal(JSON.parse(classifierRequest.body).response_format.type, 'json_schema')
+})
+
+test('counts the complete DataHub table inventory and returns the requested list cardinality', async () => {
+  const completionsBefore = requests.filter((request) => request.path.endsWith('/chat/completions')).length
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'DataHub에 테이블이 몇 개 있고 10개를 나열해줘', mode: 'AUTO' }),
+  })
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.route.selected_mode, 'VECTOR')
+  assert.equal(payload.route.intent, 'CATALOG_INVENTORY')
+  assert.equal(payload.evidence[0].dataset_kind, 'CATALOG')
+  assert.equal(payload.evidence[0].inventory_total, 2)
+  assert.deepEqual(payload.evidence.slice(1).map((item) => item.name), ['inspection_results', 'wafer_events'])
+  assert.match(payload.answer, /테이블 2개/)
+  assert.match(payload.answer, /inspection_results/)
+  assert.match(payload.answer, /wafer_events/)
+  assert.equal(requests.filter((request) => request.path.endsWith('/chat/completions')).length, completionsBefore)
 })
 
 test('streams real Chat workflow stages before the final provider result', async () => {

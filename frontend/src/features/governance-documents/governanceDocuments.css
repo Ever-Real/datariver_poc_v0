@@ -70,13 +70,19 @@
 .governance-editor-main > header h3 { margin: 2px 0 0; color: var(--navy-900); font-size: 13px; }
 .governance-editor-main > header > span { color: var(--text-500); font-size: 9px; font-variant-numeric: tabular-nums; }
 .governance-html-editor { min-height: 596px; border: 0; background: #fffdf8; }
-.governance-editor-toolbar { position: sticky; z-index: 2; top: 0; display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--line-300); padding: 8px 10px; background: rgba(245, 248, 248, .97); backdrop-filter: blur(6px); }
-.governance-editor-tool-group { display: inline-flex; align-items: center; gap: 3px; border-right: 1px solid var(--line-300); padding-right: 6px; }
+.governance-editor-toolbar { position: sticky; z-index: 2; top: 0; display: flex; flex-wrap: wrap; gap: 0; border-bottom: 1px solid var(--line-300); padding: 6px 8px; background: rgba(247, 249, 249, .98); box-shadow: 0 1px 3px rgba(14, 39, 56, .04); backdrop-filter: blur(6px); }
+.governance-editor-tool-group { min-height: 30px; display: inline-flex; align-items: center; gap: 1px; margin: 2px 0; border-right: 1px solid var(--line-300); padding: 0 6px; }
+.governance-editor-tool-group:first-child { padding-left: 0; }
 .governance-editor-tool-group:last-child { border-right: 0; padding-right: 0; }
-.governance-editor-toolbar button { min-width: 36px; min-height: 31px; border: 1px solid #b6c4cb; border-radius: 4px; color: var(--navy-900); background: #fff; font-size: 10px; font-weight: 900; }
-.governance-editor-toolbar button:hover:not(:disabled) { border-color: var(--blue-700); color: var(--blue-700); background: var(--blue-100); }
-.governance-editor-toolbar button.active, .governance-editor-toolbar button[aria-pressed="true"] { border-color: var(--blue-700); color: #fff; background: var(--blue-700); }
-.governance-editor-table-tools { flex-basis: 100%; border-top: 1px solid var(--line-200); border-right: 0; padding-top: 6px; padding-right: 0; }
+.governance-editor-toolbar button { width: 30px; min-width: 30px; height: 30px; min-height: 30px; display: inline-grid; place-items: center; border: 1px solid transparent; border-radius: 3px; padding: 0; color: var(--navy-900); background: transparent; font-size: 10px; font-weight: 900; }
+.governance-editor-toolbar button:hover:not(:disabled) { border-color: #b8c8d0; color: var(--blue-700); background: #eef4f6; }
+.governance-editor-toolbar button:focus-visible, .governance-editor-toolbar select:focus-visible { outline: 2px solid var(--blue-700); outline-offset: 1px; }
+.governance-editor-toolbar button.active, .governance-editor-toolbar button[aria-pressed="true"] { border-color: #9ebdcb; color: var(--blue-700); background: #dfeef4; box-shadow: inset 0 -2px var(--blue-700); }
+.governance-editor-toolbar button:disabled { color: #98a6ac; }
+.governance-editor-block-style select { width: 94px; height: 30px; border: 1px solid #b8c8d0; border-radius: 3px; padding: 0 24px 0 8px; color: var(--navy-900); background-color: #fff; font-size: 10px; font-weight: 800; }
+.governance-editor-table-tools { flex-basis: 100%; justify-content: flex-start; border-top: 1px solid var(--line-200); border-right: 0; padding: 6px 0 0; }
+.governance-editor-table-tools::before { margin-right: 6px; color: var(--text-500); content: '표 편집'; font-size: 9px; font-weight: 900; }
+.governance-editor-table-tools button { width: auto; padding: 0 8px; }
 .governance-editor-content { min-height: 545px; }
 .governance-editor-surface { min-height: 545px; padding: 32px clamp(28px, 5vw, 72px); overflow-wrap: anywhere; color: var(--text-700); font-size: 12px; line-height: 1.75; outline: none; }
 .governance-editor-surface:focus { box-shadow: inset 0 0 0 2px var(--blue-700); }

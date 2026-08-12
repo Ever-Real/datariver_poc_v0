@@ -136,6 +136,12 @@ describe('catalog workspace', () => {
     const headings = within(table).getAllByRole('columnheader').map((heading) => heading.textContent)
     expect(headings.indexOf('Terms ↕')).toBeLessThan(headings.indexOf('Owner ↕'))
     expect(headings.indexOf('Tags ↕')).toBeLessThan(headings.indexOf('Owner ↕'))
+    for (const [label, width] of [
+      ['No', '36px'], ['Platform', '60px'], ['Database', '68px'], ['Schema', '68px'],
+      ['Quality', '80px'], ['Terms', '104px'], ['Tags', '104px'], ['Owner', '86px'], ['Domain', '80px'],
+    ]) {
+      expect(within(table).getByRole('columnheader', { name: new RegExp(`^${label}`) })).toHaveStyle({ width })
+    }
     expect(table.closest('.dense-table-frame')).toHaveAttribute('aria-label', '카탈로그 검색 결과 스크롤 영역')
     expect(Number.parseFloat(table.style.width)).toBeGreaterThan(840)
     const toolbar = document.querySelector('.catalog-search-toolbar')

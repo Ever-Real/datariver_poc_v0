@@ -120,10 +120,7 @@ export function changeActionHints(changeRequest: ChangeRequestRecord): ChangeAct
           ? testApproved
             ? transition('FINAL_REVIEW', '승인 요청', 'primary')
             : testApproval
-          : {
-              ...testApproval,
-              disabledReason: '현재 회차의 PASSED 테스트 결과를 먼저 기록해야 합니다.',
-            },
+          : testApproval,
       ]
     }
     case 'FINAL_REVIEW':

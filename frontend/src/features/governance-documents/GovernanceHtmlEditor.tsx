@@ -9,14 +9,11 @@ import {
   AlignRight,
   Bold,
   Code2,
-  Heading1,
-  Heading2,
   Italic,
   Link2,
   List,
   ListOrdered,
   Minus,
-  Pilcrow,
   Quote,
   Redo2,
   Strikethrough,
@@ -41,6 +38,7 @@ function ToolbarButton({
   return <button
     type="button"
     aria-label={label}
+    title={label}
     aria-pressed={active || undefined}
     className={active ? 'active' : undefined}
     disabled={disabled}
@@ -108,10 +106,22 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
         <ToolbarButton label="실행 취소" disabled={commandDisabled || !editor.can().chain().focus().undo().run()} onClick={() => editor.chain().focus().undo().run()}><Undo2 size={14} /></ToolbarButton>
         <ToolbarButton label="다시 실행" disabled={commandDisabled || !editor.can().chain().focus().redo().run()} onClick={() => editor.chain().focus().redo().run()}><Redo2 size={14} /></ToolbarButton>
       </div>
-      <div className="governance-editor-tool-group" aria-label="문단 스타일">
-        <ToolbarButton label="본문 문단" active={editor.isActive('paragraph')} disabled={commandDisabled} onClick={() => editor.chain().focus().setParagraph().run()}><Pilcrow size={14} /></ToolbarButton>
-        <ToolbarButton label="제목 1" active={editor.isActive('heading', { level: 1 })} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}><Heading1 size={14} /></ToolbarButton>
-        <ToolbarButton label="제목 2" active={editor.isActive('heading', { level: 2 })} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}><Heading2 size={14} /></ToolbarButton>
+      <div className="governance-editor-tool-group governance-editor-block-style" aria-label="문단 스타일">
+        <select
+          aria-label="문단 스타일"
+          title="문단 스타일"
+          disabled={commandDisabled}
+          value={editor.isActive('heading', { level: 1 }) ? 'heading-1' : editor.isActive('heading', { level: 2 }) ? 'heading-2' : 'paragraph'}
+          onChange={(event) => {
+            if (event.target.value === 'heading-1') editor.chain().focus().setHeading({ level: 1 }).run()
+            else if (event.target.value === 'heading-2') editor.chain().focus().setHeading({ level: 2 }).run()
+            else editor.chain().focus().setParagraph().run()
+          }}
+        >
+          <option value="paragraph">본문</option>
+          <option value="heading-1">제목 1</option>
+          <option value="heading-2">제목 2</option>
+        </select>
       </div>
       <div className="governance-editor-tool-group" aria-label="문자 스타일">
         <ToolbarButton label="굵게" active={editor.isActive('bold')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleBold().run()}><Bold size={14} /></ToolbarButton>

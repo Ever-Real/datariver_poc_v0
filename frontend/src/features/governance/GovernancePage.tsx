@@ -884,6 +884,16 @@ export function GovernancePage({
         onEdit={() => { if (detail?.revision_allowed) setRevision(detail) }}
         onRefresh={() => { if (selectedId) void loadDetail(selectedId) }}
         onAction={openAction}
+        onTestApprovalComplete={(next) => {
+          setActionError(undefined)
+          setDetail(next)
+          setRequests((values) => {
+            if (stateFilter && next.state !== stateFilter) return values.filter((item) => item.id !== next.id)
+            return values.map((item) => item.id === next.id
+              ? { ...item, state: next.state, version: next.version, current_round_number: next.current_round_number }
+              : item)
+          })
+        }}
         onDownloadAttachment={(attachment) => { void downloadAttachment(attachment) }}
         onNextAttachmentPage={nextAttachmentPage}
         onPreviousAttachmentPage={previousAttachmentPage}

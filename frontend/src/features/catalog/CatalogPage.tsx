@@ -242,16 +242,16 @@ export function CatalogPage({
   }
 
   const columns = useMemo<ColumnDef<CatalogAsset>[]>(() => [
-    { id: 'number', header: 'No', size: 56, enableSorting: false, cell: ({ row }) => <span>{pageIndex * pageSize + row.index + 1}</span> },
+    { id: 'number', header: 'No', size: 36, enableSorting: false, cell: ({ row }) => <span>{pageIndex * pageSize + row.index + 1}</span> },
     { accessorKey: 'asset_type', header: 'Type', size: 76, cell: ({ row }) => <span className={`badge catalog-asset-type-${row.original.asset_type.toLowerCase()}`}>{row.original.asset_type}</span> },
-    { accessorKey: 'platform', header: 'Platform', size: 96, cell: ({ row }) => optionalTableText(row.original.platform) },
-    { accessorKey: 'database_name', header: 'Database', size: 110, cell: ({ row }) => optionalTableText(row.original.database_name) },
-    { accessorKey: 'schema_name', header: 'Schema', size: 110, cell: ({ row }) => optionalTableText(row.original.schema_name) },
+    { accessorKey: 'platform', header: 'Platform', size: 60, cell: ({ row }) => optionalTableText(row.original.platform) },
+    { accessorKey: 'database_name', header: 'Database', size: 68, cell: ({ row }) => optionalTableText(row.original.database_name) },
+    { accessorKey: 'schema_name', header: 'Schema', size: 68, cell: ({ row }) => optionalTableText(row.original.schema_name) },
     { accessorKey: 'name', header: 'Table / Asset', size: 210, cell: ({ row }) => <TruncatedText value={row.original.name} className="catalog-asset-name" /> },
     {
       id: 'quality',
       header: 'Quality',
-      size: 132,
+      size: 80,
       enableSorting: false,
       cell: ({ row }) => <CatalogQualitySummary
         available={qualityReadAvailable}
@@ -259,10 +259,10 @@ export function CatalogPage({
         value={qualityByAsset.get(row.original.id)}
       />,
     },
-    { id: 'terms', accessorFn: (row) => (row.terms ?? []).join(' '), header: 'Terms', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Terms`} values={row.original.terms ?? []} truncated={row.original.terms_truncated} /> },
-    { id: 'tags', accessorFn: (row) => (row.tags ?? []).join(' '), header: 'Tags', size: 170, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Tags`} values={row.original.tags ?? []} truncated={row.original.tags_truncated} /> },
-    { accessorKey: 'owner', header: 'Owner', size: 140, cell: ({ row }) => optionalTableText(row.original.owner) },
-    { accessorKey: 'domain', header: 'Domain', size: 130, cell: ({ row }) => optionalTableText(row.original.domain) },
+    { id: 'terms', accessorFn: (row) => (row.terms ?? []).join(' '), header: 'Terms', size: 104, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Terms`} values={row.original.terms ?? []} truncated={row.original.terms_truncated} /> },
+    { id: 'tags', accessorFn: (row) => (row.tags ?? []).join(' '), header: 'Tags', size: 104, cell: ({ row }) => <BadgeScroller label={`${row.original.name} Tags`} values={row.original.tags ?? []} truncated={row.original.tags_truncated} /> },
+    { accessorKey: 'owner', header: 'Owner', size: 86, cell: ({ row }) => optionalTableText(row.original.owner) },
+    { accessorKey: 'domain', header: 'Domain', size: 80, cell: ({ row }) => optionalTableText(row.original.domain) },
     { accessorKey: 'classification', header: 'Class', size: 100, cell: ({ row }) => <span className="badge badge-soft">{row.original.classification}</span> },
     { accessorKey: 'description', header: 'Description', size: 260, cell: ({ row }) => boundedTableText(row.original.description, row.original.description_truncated) },
     { id: 'matches', accessorFn: (row) => row.matches.map((match) => match.text).join(' '), header: 'Matches', size: 300, cell: ({ row }) => <CatalogMatchPreview fragments={row.original.matches} /> },

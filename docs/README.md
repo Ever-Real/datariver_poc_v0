@@ -60,6 +60,7 @@
 | 62 | [POC complete DataHub Catalog evidence and MCP boundary](adr/0118-poc-complete-datahub-catalog-evidence.md) | Complete table/column/profile vector evidence, compact cards and direct-GMS/MCP decision | Accepted for authentication-free POC only |
 | 63 | [GX, DataHub and DataRiver integration guide](62_GX_DATAHUB_DATARIVER_INTEGRATION_GUIDE.md) | Native profile ingestion, GX Assertion publication, Airflow dispatch and DataRiver result ownership | Operator guide; target runtime gates open |
 | 64 | [Development DataHub profile diagnostic](reviews/2026-08-12_POC_DATAHUB_PROFILE_DIAGNOSTIC.md) | Current GMS aspect/profile inventory and exact external activation gate | Read-only local evidence |
+| 65 | [POC Catalog search cardinality and TEST approval](adr/0119-poc-catalog-search-cardinality-and-test-approval.md) | Strict field matches, complete inventory counts, bounded explicit lists and one-click TEST approval | Accepted for authentication-free POC only |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and

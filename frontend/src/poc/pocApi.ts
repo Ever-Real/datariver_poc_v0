@@ -75,8 +75,8 @@ function responseString(value: unknown, fallback: string): string {
     : fallback
 }
 
-function responseAssetKind(value: unknown): 'TABLE' | 'VIEW' | 'MATERIALIZED_VIEW' {
-  return value === 'VIEW' || value === 'MATERIALIZED_VIEW' ? value : 'TABLE'
+function responseAssetKind(value: unknown): 'TABLE' | 'VIEW' | 'MATERIALIZED_VIEW' | 'CATALOG' {
+  return value === 'VIEW' || value === 'MATERIALIZED_VIEW' || value === 'CATALOG' ? value : 'TABLE'
 }
 
 async function gatewayRequest<T>(path: string, options: RequestInit = {}): Promise<T> {

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react'
 import type { ColumnDef } from '@tanstack/react-table'
 import { CheckCircle2, FileCheck2, ShieldCheck } from 'lucide-react'
-import { newIdempotencyKey, type ApiClient } from '../../api/client'
+import { ApiError, newIdempotencyKey, type ApiClient } from '../../api/client'
 import type {
   CatalogLineage,
   ChangeRequestAttachment,
@@ -42,6 +42,7 @@ interface ChangeRequestDetailDialogProps extends AssuranceActions {
   onEdit: () => void
   onRefresh: () => void | Promise<void>
   onAction: (action: ChangeActionHint, reason?: string) => void
+  onTestApprovalComplete: (value: ChangeRequestRecord) => void
   onDownloadAttachment: (attachment: ChangeRequestAttachment) => void
   onNextAttachmentPage: () => void
   onPreviousAttachmentPage: () => void
@@ -208,6 +209,7 @@ export function ChangeRequestDetailDialog({
   onEdit,
   onRefresh,
   onAction,
+  onTestApprovalComplete,
   onDownloadAttachment,
   onUploadAttachments,
   onStepUp,
@@ -227,9 +229,9 @@ export function ChangeRequestDetailDialog({
   const [testSystemId, setTestSystemId] = useState('')
   const [testAttachmentId, setTestAttachmentId] = useState('')
   const [testSummary, setTestSummary] = useState('')
-  const [testState, setTestState] = useState<'PASSED' | 'FAILED'>('PASSED')
   const [testSaving, setTestSaving] = useState(false)
   const [testError, setTestError] = useState<unknown>()
+  const [testValidationMessage, setTestValidationMessage] = useState<string>()
   const busyRef = useRef(busy)
   const uploadIntent = useRef(0)
   const testMutationIntent = useRef(0)
@@ -260,6 +262,7 @@ export function ChangeRequestDetailDialog({
     setTestSummary('')
     setTestSaving(false)
     setTestError(undefined)
+    setTestValidationMessage(undefined)
   }, [current])
   useEffect(() => () => {
     uploadIntent.current += 1
@@ -342,44 +345,93 @@ export function ChangeRequestDetailDialog({
       if (intent === uploadIntent.current) setUploadError(next)
     }
   }
-  const recordTestEvidence = useCallback(async () => {
-    if (!value || !testSystemId || !testAttachmentId || !testSummary.trim()) return
+  const submitTestApproval = useCallback(async (hint: ChangeActionHint) => {
+    if (!value) return
+    const passedRun = value.test_runs.find((run) => (
+      run.round_id === value.current_round_id && run.state === 'PASSED'
+    ))
+    const passedSummary = asRecord(passedRun?.bounded_summary)?.summary
+    const existingSummary = typeof passedSummary === 'string' ? passedSummary.trim() : ''
+    if (!passedRun) {
+      const missing = [
+        !testSystemId ? '테스트 대상 시스템' : '',
+        !testAttachmentId ? '현재 회차 TEST 증거 파일' : '',
+        !testSummary.trim() ? '테스트 결과 요약' : '',
+      ].filter(Boolean)
+      if (missing.length) {
+        setTestValidationMessage(`승인 요청 전에 ${missing.join(', ')}을(를) 입력해 주세요.`)
+        return
+      }
+    }
     testMutationController.current?.abort()
     const controller = new AbortController()
     testMutationController.current = controller
     const intent = ++testMutationIntent.current
     const changeRequestId = value.id
     const changeRequestVersion = value.version
+    const mutationIsStale = () => (
+      controller.signal.aborted
+      || intent !== testMutationIntent.current
+      || value.id !== changeRequestId
+      || value.version !== changeRequestVersion
+    )
     setTestSaving(true)
     setTestError(undefined)
+    let mutationPersisted = false
     try {
-      await client.request<ChangeRequestRecord>(`/change-requests/${changeRequestId}/test-runs`, {
-        method: 'POST',
-        signal: controller.signal,
-        body: JSON.stringify({
-          system_id: testSystemId,
-          attachment_id: testAttachmentId,
-          state: testState,
-          bounded_summary: { summary: testSummary.trim() },
-        }),
-        idempotencyKey: newIdempotencyKey('change-test-run'),
-        ifMatch: `"${changeRequestVersion}"`,
-      })
-      if (
-        controller.signal.aborted
-        || intent !== testMutationIntent.current
-        || value.id !== changeRequestId
-        || value.version !== changeRequestVersion
-      ) return
+      let next = value
+      const reason = testSummary.trim() || existingSummary || '현재 회차의 PASSED 테스트 결과를 승인합니다.'
+      if (!passedRun) {
+        next = await client.request<ChangeRequestRecord>(`/change-requests/${changeRequestId}/test-runs`, {
+          method: 'POST',
+          signal: controller.signal,
+          body: JSON.stringify({
+            system_id: testSystemId,
+            attachment_id: testAttachmentId,
+            state: 'PASSED',
+            bounded_summary: { summary: testSummary.trim() },
+          }),
+          idempotencyKey: newIdempotencyKey('change-test-run'),
+          ifMatch: `"${next.version}"`,
+        })
+        if (mutationIsStale()) return
+        mutationPersisted = true
+      }
+      if (hint.kind === 'APPROVAL') {
+        next = await client.request<ChangeRequestRecord>(`/change-requests/${changeRequestId}/approvals`, {
+          method: 'POST',
+          signal: controller.signal,
+          body: JSON.stringify({ stage: 'TEST', decision: 'APPROVED', reason }),
+          idempotencyKey: newIdempotencyKey('change-test-approval'),
+          ifMatch: `"${next.version}"`,
+        })
+        if (mutationIsStale()) return
+        mutationPersisted = true
+      }
+      if (next.state === 'TESTING') {
+        next = await client.request<ChangeRequestRecord>(`/change-requests/${changeRequestId}/transitions`, {
+          method: 'POST',
+          signal: controller.signal,
+          body: JSON.stringify({ target_state: 'FINAL_REVIEW', reason }),
+          idempotencyKey: newIdempotencyKey('change-test-transition'),
+          ifMatch: `"${next.version}"`,
+        })
+      }
+      if (mutationIsStale()) return
       setTestSummary('')
-      await onRefresh()
+      onTestApprovalComplete(next)
     } catch (next) {
       if (
         !controller.signal.aborted
         && intent === testMutationIntent.current
         && value.id === changeRequestId
         && value.version === changeRequestVersion
-      ) setTestError(next)
+      ) {
+        setTestError(next)
+        if (mutationPersisted || (next instanceof ApiError && next.problem.status === 409)) {
+          await onRefresh()
+        }
+      }
     } finally {
       if (testMutationController.current === controller) {
         testMutationController.current = undefined
@@ -391,7 +443,7 @@ export function ChangeRequestDetailDialog({
         && value.version === changeRequestVersion
       ) setTestSaving(false)
     }
-  }, [client, onRefresh, testAttachmentId, testState, testSummary, testSystemId, value])
+  }, [client, onRefresh, onTestApprovalComplete, testAttachmentId, testSummary, testSystemId, value])
   const stageHints = selectedStage === activeStage ? hints : []
   const currentRound = value?.rounds.find((item) => item.id === value.current_round_id)
   const canEdit = Boolean(
@@ -400,7 +452,7 @@ export function ChangeRequestDetailDialog({
     && value.request_type === 'CHANGE_INTAKE',
   )
 
-  return (
+  return <>
     <Dialog
       open={open}
       size="workspace"
@@ -500,19 +552,20 @@ export function ChangeRequestDetailDialog({
               {uploadKind === 'TEST' && pendingFiles.length > 0 && <button type="button" className="button mt-2" disabled={attachmentBusy} onClick={() => void upload()}>{attachmentBusy ? '저장 중…' : `${pendingFiles.length}개 TEST 증거 저장`}</button>}
             </section>
             <section className="grid gap-3 rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm">
-              <h4 className="m-0 text-xs font-black text-navy-900">시스템별 검증 결과 기록</h4>
+              <div>
+                <h4 className="m-0 text-xs font-black text-navy-900">승인 요청에 포함할 검증 결과</h4>
+                <p className="mb-0 mt-1 text-[11px] text-slate-500">승인 요청 시 현재 회차의 PASSED 결과를 함께 기록하고 최종 승인 단계로 이동합니다.</p>
+              </div>
               {value.test_runs.filter((run) => run.round_id === value.current_round_id).map((run) => <div key={run.id} className="flex flex-wrap gap-2 border-b border-slate-200 pb-2 text-xs"><span className={run.state === 'PASSED' ? 'badge' : 'badge badge-danger'}>{run.state}</span><TruncatedText value={run.system_id} /><span className="text-slate-500">{eventTime(run.occurred_at)}</span></div>)}
               {value.state === 'TESTING' && <div className="grid gap-2 md:grid-cols-3">
                 <select aria-label="테스트 대상 시스템" className="border border-slate-300 p-2 text-xs" value={testSystemId} onChange={(event) => setTestSystemId(event.target.value)}><option value="">대상 시스템 선택</option>{routedSystems.map((systemId) => <option key={systemId} value={systemId}>{systemId}</option>)}</select>
                 <select aria-label="테스트 증거 파일" className="border border-slate-300 p-2 text-xs" value={testAttachmentId} onChange={(event) => setTestAttachmentId(event.target.value)}><option value="">현재 회차 TEST 파일 선택</option>{currentTestAttachments.map((attachment) => <option key={attachment.id} value={attachment.id}>{attachment.original_name}</option>)}</select>
-                <select aria-label="테스트 결과" className="border border-slate-300 p-2 text-xs" value={testState} onChange={(event) => setTestState(event.target.value as 'PASSED' | 'FAILED')}><option value="PASSED">PASSED</option><option value="FAILED">FAILED</option></select>
+                <div className="flex items-center border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-black text-emerald-800">승인 결과 · PASSED</div>
                 <textarea aria-label="테스트 결과 요약" className="min-h-20 resize-y border border-slate-300 p-2 text-xs md:col-span-3" maxLength={4000} placeholder="실제 검증 결과와 확인 범위를 기록하세요." value={testSummary} onChange={(event) => setTestSummary(event.target.value)} />
-                <button type="button" className="button md:col-span-3" disabled={testSaving || !testSystemId || !testAttachmentId || !testSummary.trim()} onClick={() => void recordTestEvidence()}>{testSaving ? '기록 중…' : 'Typed TEST 결과 기록'}</button>
               </div>}
               <ErrorNotice error={testError} />
             </section>
-            {stageHints.some((hint) => hint.disabledReason) && <p className="m-0 text-right text-xs font-bold text-amber-800" role="status">{stageHints.find((hint) => hint.disabledReason)?.disabledReason}</p>}
-            <div className="flex flex-wrap justify-end gap-2">{stageHints.map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy || Boolean(hint.disabledReason)} title={hint.disabledReason} onClick={() => onAction(hint)}>{hint.label}</button>)}</div>
+            <div className="flex flex-wrap justify-end gap-2">{stageHints.map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy || testSaving} onClick={() => hint.stage === 'TEST' ? void submitTestApproval(hint) : onAction(hint)}>{testSaving && hint.stage === 'TEST' ? '승인 요청 중…' : hint.label}</button>)}</div>
           </section>}
 
           {selectedStage === 3 && <section className="grid gap-4" aria-labelledby="approval-stage-heading">
@@ -555,5 +608,15 @@ export function ChangeRequestDetailDialog({
         </>}
       </div>
     </Dialog>
-  )
+    <Dialog
+      open={Boolean(testValidationMessage)}
+      size="medium"
+      title="테스트 결과 입력 필요"
+      description="승인 요청에 필요한 현재 회차의 검증 증거를 확인해 주세요."
+      onRequestClose={() => setTestValidationMessage(undefined)}
+      footer={<button type="button" className="button" onClick={() => setTestValidationMessage(undefined)}>확인</button>}
+    >
+      <p className="m-0 text-sm leading-6 text-slate-700">{testValidationMessage}</p>
+    </Dialog>
+  </>
 }
