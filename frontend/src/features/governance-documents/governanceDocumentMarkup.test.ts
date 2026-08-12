@@ -49,4 +49,12 @@ describe('governance document markup import', () => {
     expect(sanitizeGovernanceHtml('<p style="color:red" onmouseover="x()">본문</p><iframe src="x"></iframe>'))
       .toBe('<p>본문</p>')
   })
+
+  it('keeps only bounded editor presentation properties across save sanitization', () => {
+    expect(sanitizeGovernanceHtml(
+      '<p data-governance-style="font-size:18px;padding-left:2em;text-align:center;position:fixed">본문</p>',
+    )).toBe(
+      '<p data-governance-style="font-size:18px;padding-left:2em;text-align:center">본문</p>',
+    )
+  })
 })

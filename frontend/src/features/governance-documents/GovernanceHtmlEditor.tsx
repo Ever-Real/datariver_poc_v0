@@ -1,7 +1,7 @@
 import { memo, useEffect, type ReactNode } from 'react'
+import { Extension } from '@tiptap/core'
 import { EditorContent, useEditor, type Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
-import TextAlign from '@tiptap/extension-text-align'
 import { TableKit } from '@tiptap/extension-table'
 import {
   AlignCenter,
@@ -9,6 +9,8 @@ import {
   AlignRight,
   Bold,
   Code2,
+  IndentDecrease,
+  IndentIncrease,
   Italic,
   Link2,
   List,
@@ -21,6 +23,85 @@ import {
   UnderlineIcon,
   Undo2,
 } from 'lucide-react'
+import { safeGovernancePresentation } from './governancePresentationStyle'
+
+const fontSizes = ['10px', '12px', '14px', '16px', '18px', '24px', '32px'] as const
+const maximumIndentLevel = 6
+
+const GovernanceBlockPresentation = Extension.create({
+  name: 'governanceBlockPresentation',
+  addGlobalAttributes() {
+    return [{
+      types: ['heading', 'paragraph'],
+      attributes: {
+        governancePresentation: {
+          default: null,
+          parseHTML: (element) => safeGovernancePresentation(
+            element.getAttribute('data-governance-style') ?? element.getAttribute('style'),
+          ) || null,
+          renderHTML: (attributes) => {
+            const presentation = safeGovernancePresentation(
+              typeof attributes.governancePresentation === 'string'
+                ? attributes.governancePresentation
+                : '',
+            )
+            return presentation
+              ? { 'data-governance-style': presentation, style: presentation }
+              : {}
+          },
+        },
+      },
+    }]
+  },
+})
+
+function presentationEntries(value: unknown): Map<string, string> {
+  const presentation = safeGovernancePresentation(typeof value === 'string' ? value : '')
+  return new Map(presentation.split(';').flatMap((declaration) => {
+    const delimiter = declaration.indexOf(':')
+    return delimiter > 0
+      ? [[declaration.slice(0, delimiter), declaration.slice(delimiter + 1)] as const]
+      : []
+  }))
+}
+
+function activeBlockType(editor: Editor): 'heading' | 'paragraph' {
+  return editor.isActive('heading') ? 'heading' : 'paragraph'
+}
+
+function activePresentation(editor: Editor): Map<string, string> {
+  return presentationEntries(
+    editor.getAttributes(activeBlockType(editor)).governancePresentation,
+  )
+}
+
+function updatePresentation(
+  editor: Editor,
+  property: 'font-size' | 'padding-left' | 'text-align',
+  value: string | null,
+) {
+  const entries = activePresentation(editor)
+  if (value) entries.set(property, value)
+  else entries.delete(property)
+  const presentation = [...entries]
+    .map(([name, candidate]) => `${name}:${candidate}`)
+    .join(';')
+  editor.chain().focus().updateAttributes(activeBlockType(editor), {
+    governancePresentation: presentation || null,
+  }).run()
+}
+
+function currentIndentLevel(editor: Editor): number {
+  const padding = activePresentation(editor).get('padding-left') ?? ''
+  const match = /^(\d+)em$/.exec(padding)
+  if (!match) return 0
+  return Math.min(maximumIndentLevel, Math.floor(Number(match[1]) / 2))
+}
+
+function changeIndent(editor: Editor, direction: 1 | -1) {
+  const next = Math.max(0, Math.min(maximumIndentLevel, currentIndentLevel(editor) + direction))
+  updatePresentation(editor, 'padding-left', next > 0 ? `${next * 2}em` : null)
+}
 
 function ToolbarButton({
   label,
@@ -77,7 +158,7 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
       StarterKit.configure({
         link: { openOnClick: false, autolink: false, defaultProtocol: 'https' },
       }),
-      TextAlign.configure({ types: ['heading', 'paragraph'] }),
+      GovernanceBlockPresentation,
       TableKit.configure({ table: { resizable: true } }),
     ],
     editorProps: {
@@ -123,6 +204,22 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
           <option value="heading-2">제목 2</option>
         </select>
       </div>
+      <div className="governance-editor-tool-group governance-editor-font-size" aria-label="글자 크기">
+        <select
+          aria-label="글자 크기"
+          title="글자 크기"
+          disabled={commandDisabled}
+          value={activePresentation(editor).get('font-size') ?? 'default'}
+          onChange={(event) => updatePresentation(
+            editor,
+            'font-size',
+            event.target.value === 'default' ? null : event.target.value,
+          )}
+        >
+          <option value="default">기본 크기</option>
+          {fontSizes.map((fontSize) => <option key={fontSize} value={fontSize}>{fontSize}</option>)}
+        </select>
+      </div>
       <div className="governance-editor-tool-group" aria-label="문자 스타일">
         <ToolbarButton label="굵게" active={editor.isActive('bold')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleBold().run()}><Bold size={14} /></ToolbarButton>
         <ToolbarButton label="기울임" active={editor.isActive('italic')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleItalic().run()}><Italic size={14} /></ToolbarButton>
@@ -136,11 +233,13 @@ export const GovernanceHtmlEditor = memo(function GovernanceHtmlEditor({
         <ToolbarButton label="번호 목록" active={editor.isActive('orderedList')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleOrderedList().run()}><ListOrdered size={14} /></ToolbarButton>
         <ToolbarButton label="인용문" active={editor.isActive('blockquote')} disabled={commandDisabled} onClick={() => editor.chain().focus().toggleBlockquote().run()}><Quote size={14} /></ToolbarButton>
         <ToolbarButton label="구분선" disabled={commandDisabled} onClick={() => editor.chain().focus().setHorizontalRule().run()}><Minus size={14} /></ToolbarButton>
+        <ToolbarButton label="내어쓰기" disabled={commandDisabled || currentIndentLevel(editor) === 0} onClick={() => changeIndent(editor, -1)}><IndentDecrease size={14} /></ToolbarButton>
+        <ToolbarButton label="들여쓰기" disabled={commandDisabled || currentIndentLevel(editor) >= maximumIndentLevel} onClick={() => changeIndent(editor, 1)}><IndentIncrease size={14} /></ToolbarButton>
       </div>
       <div className="governance-editor-tool-group" aria-label="정렬과 표">
-        <ToolbarButton label="왼쪽 정렬" active={editor.isActive({ textAlign: 'left' })} disabled={commandDisabled} onClick={() => editor.chain().focus().setTextAlign('left').run()}><AlignLeft size={14} /></ToolbarButton>
-        <ToolbarButton label="가운데 정렬" active={editor.isActive({ textAlign: 'center' })} disabled={commandDisabled} onClick={() => editor.chain().focus().setTextAlign('center').run()}><AlignCenter size={14} /></ToolbarButton>
-        <ToolbarButton label="오른쪽 정렬" active={editor.isActive({ textAlign: 'right' })} disabled={commandDisabled} onClick={() => editor.chain().focus().setTextAlign('right').run()}><AlignRight size={14} /></ToolbarButton>
+        <ToolbarButton label="왼쪽 정렬" active={!activePresentation(editor).has('text-align') || activePresentation(editor).get('text-align') === 'left'} disabled={commandDisabled} onClick={() => updatePresentation(editor, 'text-align', null)}><AlignLeft size={14} /></ToolbarButton>
+        <ToolbarButton label="가운데 정렬" active={activePresentation(editor).get('text-align') === 'center'} disabled={commandDisabled} onClick={() => updatePresentation(editor, 'text-align', 'center')}><AlignCenter size={14} /></ToolbarButton>
+        <ToolbarButton label="오른쪽 정렬" active={activePresentation(editor).get('text-align') === 'right'} disabled={commandDisabled} onClick={() => updatePresentation(editor, 'text-align', 'right')}><AlignRight size={14} /></ToolbarButton>
         <ToolbarButton label="3열 표 삽입" disabled={commandDisabled} onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}><Table2 size={14} /></ToolbarButton>
       </div>
       {editor.isActive('table') && <div className="governance-editor-tool-group governance-editor-table-tools" aria-label="표 편집">

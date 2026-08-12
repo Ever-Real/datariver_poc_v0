@@ -630,7 +630,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
                   >
                     <SafeMarkdown value={message.text} />
                   </div>
-                ) : <p>{message.text}</p>}
+                ) : <p className="chat-question-text">{message.text}</p>}
                 <footer>
                   {message.role === 'assistant' && (
                     <button

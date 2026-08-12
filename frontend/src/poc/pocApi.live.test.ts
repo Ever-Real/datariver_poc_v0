@@ -477,7 +477,9 @@ describe('POC live-provider compatibility adapter', () => {
       new URL(input instanceof Request ? input.url : input.toString(), 'https://poc.invalid').pathname
         === '/poc-api/llm/chat/compact'
     ))
-    const compactBody = JSON.parse(String((compactCall?.[1] as RequestInit | undefined)?.body)) as {
+    const compactBodySource = compactCall?.[1]?.body
+    if (typeof compactBodySource !== 'string') throw new Error('Expected a JSON compaction request body')
+    const compactBody = JSON.parse(compactBodySource) as {
       memory: { recent_turns: unknown[] }
     }
     expect(compactBody.memory.recent_turns).toHaveLength(5)
@@ -492,7 +494,9 @@ describe('POC live-provider compatibility adapter', () => {
       new URL(input instanceof Request ? input.url : input.toString(), 'https://poc.invalid').pathname
         === '/poc-api/llm/chat/stream'
     ))
-    const sixthBody = JSON.parse(String((streamCalls.at(-1)?.[1] as RequestInit | undefined)?.body)) as {
+    const sixthBodySource = streamCalls.at(-1)?.[1]?.body
+    if (typeof sixthBodySource !== 'string') throw new Error('Expected a JSON Chat request body')
+    const sixthBody = JSON.parse(sixthBodySource) as {
       memory: { summary: string; compacted_turn_count: number; recent_turns: unknown[] }
     }
     expect(sixthBody.memory).toEqual({

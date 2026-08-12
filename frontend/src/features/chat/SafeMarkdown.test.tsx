@@ -24,6 +24,21 @@ describe('SafeMarkdown', () => {
     expect(screen.getByText('권한 확인')).toBeInTheDocument()
   })
 
+  it('keeps authored line breaks and spacing while rendering common inline emphasis', () => {
+    const { container } = render(<SafeMarkdown value={[
+      '첫째  문장',
+      '둘째 문장과 *기울임*, _강조_, ~~취소~~',
+    ].join('\n')} />)
+
+    const paragraph = container.querySelector('.chat-markdown > p')
+    expect(paragraph).not.toBeNull()
+    expect(paragraph?.textContent).toContain('첫째  문장')
+    expect(paragraph?.querySelector('br')).not.toBeNull()
+    expect(screen.getByText('기울임').tagName).toBe('EM')
+    expect(screen.getByText('강조').tagName).toBe('EM')
+    expect(screen.getByText('취소').tagName).toBe('S')
+  })
+
   it('copies only the rendered table as Excel-compatible safe TSV', async () => {
     const writeText = vi.fn<() => Promise<void>>().mockResolvedValue()
     Object.defineProperty(navigator, 'clipboard', {

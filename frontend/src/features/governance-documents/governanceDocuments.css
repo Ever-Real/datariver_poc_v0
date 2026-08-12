@@ -79,7 +79,9 @@
 .governance-editor-toolbar button:focus-visible, .governance-editor-toolbar select:focus-visible { outline: 2px solid var(--blue-700); outline-offset: 1px; }
 .governance-editor-toolbar button.active, .governance-editor-toolbar button[aria-pressed="true"] { border-color: #9ebdcb; color: var(--blue-700); background: #dfeef4; box-shadow: inset 0 -2px var(--blue-700); }
 .governance-editor-toolbar button:disabled { color: #98a6ac; }
-.governance-editor-block-style select { width: 94px; height: 30px; border: 1px solid #b8c8d0; border-radius: 3px; padding: 0 24px 0 8px; color: var(--navy-900); background-color: #fff; font-size: 10px; font-weight: 800; }
+.governance-editor-block-style select, .governance-editor-font-size select { height: 30px; border: 1px solid #b8c8d0; border-radius: 3px; padding: 0 24px 0 8px; color: var(--navy-900); background-color: #fff; font-size: 10px; font-weight: 800; }
+.governance-editor-block-style select { width: 94px; }
+.governance-editor-font-size select { width: 94px; }
 .governance-editor-table-tools { flex-basis: 100%; justify-content: flex-start; border-top: 1px solid var(--line-200); border-right: 0; padding: 6px 0 0; }
 .governance-editor-table-tools::before { margin-right: 6px; color: var(--text-500); content: '표 편집'; font-size: 9px; font-weight: 900; }
 .governance-editor-table-tools button { width: auto; padding: 0 8px; }

@@ -6,7 +6,7 @@ const MAX_TABLE_ROWS = 100
 
 function inlineMarkdown(value: string, keyPrefix: string): ReactNode[] {
   const parts: ReactNode[] = []
-  const token = /(`[^`\n]+`|\*\*[^*\n]+\*\*|\[[^\]\n]+\]\([^\s)\n]+\))/g
+  const token = /(`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_|\[[^\]\n]+\]\([^\s)\n]+\))/g
   let cursor = 0
   let match: RegExpExecArray | null
   let tokenIndex = 0
@@ -17,8 +17,12 @@ function inlineMarkdown(value: string, keyPrefix: string): ReactNode[] {
     const key = `${keyPrefix}-${tokenIndex}`
     if (current.startsWith('`')) {
       parts.push(<code key={key}>{current.slice(1, -1)}</code>)
-    } else if (current.startsWith('**')) {
+    } else if (current.startsWith('**') || current.startsWith('__')) {
       parts.push(<strong key={key}>{current.slice(2, -2)}</strong>)
+    } else if (current.startsWith('~~')) {
+      parts.push(<s key={key}>{current.slice(2, -2)}</s>)
+    } else if (current.startsWith('*') || current.startsWith('_')) {
+      parts.push(<em key={key}>{current.slice(1, -1)}</em>)
     } else {
       const separator = current.lastIndexOf('](')
       const label = current.slice(1, separator)
@@ -49,6 +53,10 @@ function tableClipboardCell(value: string): string {
   const plainText = value
     .replace(/`([^`\n]+)`/g, '$1')
     .replace(/\*\*([^*\n]+)\*\*/g, '$1')
+    .replace(/__([^_\n]+)__/g, '$1')
+    .replace(/~~([^~\n]+)~~/g, '$1')
+    .replace(/\*([^*\n]+)\*/g, '$1')
+    .replace(/_([^_\n]+)_/g, '$1')
     .replace(/\[([^\]\n]+)\]\([^\s)\n]+\)/g, '$1')
     .replace(/[\t\r\n]+/g, ' ')
 

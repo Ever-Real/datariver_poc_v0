@@ -271,6 +271,10 @@ describe('ChatPage', () => {
     await waitFor(() => expect(
       requestEventStream.mock.calls.some(([path]) => path === '/chat/query/stream'),
     ).toBe(true))
+    const renderedQuestion = document.querySelector('.chat-question-text')
+    if (!renderedQuestion) throw new Error('Expected the submitted question to be rendered')
+    expect(renderedQuestion).toHaveClass('chat-question-text')
+    expect(renderedQuestion.textContent).toBe('첫 줄\n둘째 줄')
   })
 
   it('caps questions at 12,000 characters and shows the live count at the composer edge', async () => {
