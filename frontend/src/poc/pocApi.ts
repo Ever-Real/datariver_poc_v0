@@ -33,6 +33,10 @@ import type {
   GovernanceDocumentVersion,
 } from '../features/governance-documents/types'
 import {
+  governanceMarkupFromFile,
+  sanitizeGovernanceHtml,
+} from '../features/governance-documents/governanceDocumentMarkup'
+import {
   POC_CACHE_SCOPE,
   POC_NOW,
   POC_SUBJECT_ID,
@@ -260,20 +264,35 @@ async function governanceVersion(
 ): Promise<GovernanceDocumentVersion> {
   const now = new Date().toISOString()
   const versionNumber = governanceVersions.filter((item) => item.document_id === document.document_id).length + 1
-  const contentHash = await sha256(input.sanitized_html)
+  const sanitizedHtml = sanitizeGovernanceHtml(input.sanitized_html)
+  const contentHash = await sha256(sanitizedHtml)
   return {
     version_id: crypto.randomUUID(), workspace_id: POC_WORKSPACE_ID,
     document_id: document.document_id, version_number: versionNumber,
     version_tag: `v${versionNumber}`, state: 'DRAFT', title: input.title,
     summary: input.summary, applicability_scope: input.applicability_scope,
-    sanitized_html: input.sanitized_html, plain_text: governancePlainText(input.sanitized_html),
-    content_sha256: contentHash, size_bytes: new TextEncoder().encode(input.sanitized_html).byteLength,
+    sanitized_html: sanitizedHtml, plain_text: governancePlainText(sanitizedHtml),
+    content_sha256: contentHash, size_bytes: new TextEncoder().encode(sanitizedHtml).byteLength,
     sanitizer_policy_version: 'POC_SANITIZER_V1', sanitizer_policy_sha256: 'c'.repeat(64),
     source_format: input.source_format ?? 'HTML', source_template_version_id: input.source_template_version_id,
     parent_document_id: input.parent_document_id, author_id: POC_SUBJECT_ID,
     submitted_at: null, reviewed_by: null, reviewed_at: null, published_at: null,
     artifact_state: 'STORED', knowledge_state: 'PENDING', created_at: now, version: 1,
   }
+}
+
+async function governanceImportedMarkup(file: File): Promise<{
+  html: string
+  sourceFormat: 'HTML' | 'MARKDOWN' | 'DOCX'
+}> {
+  const name = file.name.toLocaleLowerCase()
+  if (!name.endsWith('.docx')) {
+    const imported = await governanceMarkupFromFile(file)
+    return { html: imported.html, sourceFormat: imported.format }
+  }
+  const source = await file.text()
+  const escaped = source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  return { html: `<pre>${escaped}</pre>`, sourceFormat: 'DOCX' }
 }
 
 function nextId(namespace: string): string {
@@ -2456,10 +2475,11 @@ class PocApiClient {
       const sourceTemplateId = responseString(body.source_template_version_id, '') || null
       if (!html && sourceTemplateId) html = governanceVersions.find((item) => item.version_id === sourceTemplateId)?.sanitized_html ?? ''
       const imported = form?.get('file')
+      let sourceFormat: 'HTML' | 'MARKDOWN' | 'DOCX' = 'HTML'
       if (imported instanceof File) {
-        const source = await imported.text()
-        const escaped = source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        html = `<pre>${escaped}</pre>`
+        const converted = await governanceImportedMarkup(imported)
+        html = converted.html
+        sourceFormat = converted.sourceFormat
       }
       if (!html) html = '<p></p>'
       const version = await governanceVersion(document, {
@@ -2467,7 +2487,7 @@ class PocApiClient {
         applicability_scope: responseString(body.applicability_scope, ''), sanitized_html: html,
         source_template_version_id: sourceTemplateId,
         parent_document_id: responseString(body.parent_document_id, '') || null,
-        source_format: imported instanceof File && imported.name.toLocaleLowerCase().endsWith('.docx') ? 'DOCX' : 'HTML',
+        source_format: sourceFormat,
       })
       document.allowed_actions = [...governanceActions(document)]
       governanceDocuments = [...governanceDocuments, document]
@@ -2514,17 +2534,18 @@ class PocApiClient {
       const body = form ? Object.fromEntries(form.entries()) : jsonBody(options)
       let html = responseString(body.sanitized_html, '')
       const imported = form?.get('file')
+      let sourceFormat: 'HTML' | 'MARKDOWN' | 'DOCX' = 'HTML'
       if (imported instanceof File) {
-        const source = await imported.text()
-        const escaped = source.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-        html = `<pre>${escaped}</pre>`
+        const converted = await governanceImportedMarkup(imported)
+        html = converted.html
+        sourceFormat = converted.sourceFormat
       }
       const version = await governanceVersion(document, {
         title: responseString(body.title, document.title), summary: responseString(body.summary, document.summary),
         applicability_scope: responseString(body.applicability_scope, ''), sanitized_html: html || '<p></p>',
         source_template_version_id: responseString(body.source_template_version_id, '') || null,
         parent_document_id: responseString(body.parent_document_id, '') || null,
-        source_format: imported instanceof File && imported.name.toLocaleLowerCase().endsWith('.docx') ? 'DOCX' : 'HTML',
+        source_format: sourceFormat,
       })
       governanceVersions = [...governanceVersions, version]
       document.version += 1

@@ -92,6 +92,18 @@ const detailLabels: Partial<Record<string, string>> = {
   ANSWER_COMPOSED: '근거 기반 답변을 작성했습니다.',
   CITATIONS_VALID: '인용 근거를 검증했습니다.',
   PERSISTED: '보존정책에 따라 대화를 저장했습니다.',
+  POC_OPEN_SCOPE: 'POC에서는 기능과 데이터 조회 범위를 개방합니다.',
+  POC_NO_DURABLE_BUDGET: 'POC에서는 지속 예산을 예약하지 않습니다.',
+  NO_LIVE_EVIDENCE: '실시간 외부 서비스에서 일치하는 근거를 찾지 못했습니다.',
+  RERANKING_NOT_USED: '현재 질문은 재정렬이 필요하지 않습니다.',
+  RERANKING_COMPLETED: '근거 우선순위 재정렬을 완료했습니다.',
+  RERANKER_UNAVAILABLE_LEXICAL_ORDER_USED: '리랭커를 사용할 수 없어 DataHub 결과 순서를 유지했습니다.',
+  POC_LIVE_PROVIDER: '실시간 제공자의 근거로 답변을 작성했습니다.',
+  DATAHUB_NEO4J_EVIDENCE_BOUND: 'DataHub와 Neo4j의 실시간 근거 범위를 검증했습니다.',
+  NEO4J_UNAVAILABLE_DATAHUB_LINEAGE_USED: 'Neo4j 대신 DataHub lineage 근거를 사용했습니다.',
+  CLARIFICATION_REQUIRED: '질문의 대상과 원하는 작업을 먼저 확인해야 합니다.',
+  CLARIFICATION_PROMPT_RETURNED: '할루시네이션을 피하기 위해 추가 확인 안내를 반환했습니다.',
+  NO_EVIDENCE_CLARIFICATION: '추가 확인 단계이므로 인용 근거를 검증하지 않습니다.',
 }
 
 const statusLabels: Record<ChatWorkflowProgressStep['status'], string> = {

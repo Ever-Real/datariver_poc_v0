@@ -1,0 +1,48 @@
+import { describe, expect, it } from 'vitest'
+import {
+  governanceMarkupFromFile,
+  markdownToGovernanceHtml,
+  sanitizeGovernanceHtml,
+} from './governanceDocumentMarkup'
+
+describe('governance document markup import', () => {
+  it('preserves allowlisted HTML structure and strips executable content', async () => {
+    const imported = await governanceMarkupFromFile(new File([
+      '<h1>정책</h1><p><strong>승인</strong> 본문</p>',
+      '<script>globalThis.compromised=true</script>',
+      '<a href="javascript:alert(1)" onclick="alert(2)">위험 링크</a>',
+    ], 'policy.html', { type: 'text/html' }))
+
+    expect(imported.format).toBe('HTML')
+    expect(imported.html).toContain('<h1>정책</h1>')
+    expect(imported.html).toContain('<strong>승인</strong>')
+    expect(imported.html).not.toMatch(/script|javascript|onclick/i)
+    expect(imported.html).toContain('위험 링크')
+  })
+
+  it('converts Markdown headings, lists, tables and inline formatting to safe HTML', () => {
+    const html = markdownToGovernanceHtml([
+      '# 데이터 정책',
+      '',
+      '**필수** 통제와 `owner`를 정의합니다.',
+      '',
+      '- 승인 절차',
+      '- 변경 이력',
+      '',
+      '| 항목 | 기준 |',
+      '| --- | --- |',
+      '| 보존 | 3년 |',
+    ].join('\n'))
+
+    expect(html).toContain('<h1>데이터 정책</h1>')
+    expect(html).toContain('<strong>필수</strong>')
+    expect(html).toContain('<code>owner</code>')
+    expect(html).toContain('<ul><li>승인 절차</li><li>변경 이력</li></ul>')
+    expect(html).toContain('<table>')
+  })
+
+  it('drops unsafe attributes from directly sanitized HTML', () => {
+    expect(sanitizeGovernanceHtml('<p style="color:red" onmouseover="x()">본문</p><iframe src="x"></iframe>'))
+      .toBe('<p>본문</p>')
+  })
+})

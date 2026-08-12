@@ -18,6 +18,7 @@ import { DenseDataTable } from '../../components/common/DenseDataTable'
 import { Dialog } from '../../components/common/Dialog'
 import { GovernedUnavailable } from '../../components/common/GovernedUnavailable'
 import { GovernanceHtmlEditor } from './GovernanceHtmlEditor'
+import { governanceMarkupFromFile } from './governanceDocumentMarkup'
 import {
   GovernanceDocumentsApi,
   governanceDocumentQueryKey,
@@ -139,6 +140,7 @@ function GovernanceDocumentWorkspace({
   const [templateVersionId, setTemplateVersionId] = useState('')
   const [blueprintId, setBlueprintId] = useState('')
   const [editorInitialHtml, setEditorInitialHtml] = useState('<p></p>')
+  const [editorContentRevision, setEditorContentRevision] = useState(0)
   const [importFile, setImportFile] = useState<File>()
   const [editorAttachmentFile, setEditorAttachmentFile] = useState<File>()
   const [reviewDecision, setReviewDecision] = useState<ReviewDecision>()
@@ -349,6 +351,7 @@ function GovernanceDocumentWorkspace({
     setEditorAttachmentFile(undefined)
     editorHtml.current = '<p></p>'
     setEditorInitialHtml('<p></p>')
+    setEditorContentRevision((current) => current + 1)
     setMutationError(undefined)
     setEditorMode('CREATE')
   }
@@ -363,6 +366,7 @@ function GovernanceDocumentWorkspace({
     setEditorAttachmentFile(undefined)
     editorHtml.current = selectedVersion.sanitized_html
     setEditorInitialHtml(selectedVersion.sanitized_html)
+    setEditorContentRevision((current) => current + 1)
     setMutationError(undefined)
     setEditorMode('CREATE_VERSION')
   }
@@ -374,6 +378,7 @@ function GovernanceDocumentWorkspace({
     if (!blueprint) {
       editorHtml.current = '<p></p>'
       setEditorInitialHtml('<p></p>')
+      setEditorContentRevision((current) => current + 1)
       return
     }
     setTitle(blueprint.title)
@@ -384,6 +389,7 @@ function GovernanceDocumentWorkspace({
     setParentDocumentId('')
     editorHtml.current = blueprint.sanitized_html
     setEditorInitialHtml(blueprint.sanitized_html)
+    setEditorContentRevision((current) => current + 1)
   }
   const saveEditor = async () => {
     if (editorMode === 'CREATE') {
@@ -751,7 +757,7 @@ function GovernanceDocumentWorkspace({
       blueprintId={blueprintId}
       templateVersionId={templateVersionId}
       initialHtml={editorInitialHtml}
-      editorKey={`${editorMode ?? 'closed'}:${selectedVersionId ?? (blueprintId || 'blank')}`}
+      editorKey={`${editorMode ?? 'closed'}:${selectedVersionId ?? (blueprintId || 'blank')}:${editorContentRevision}`}
       importFile={importFile}
       attachmentFile={editorAttachmentFile}
       parentDocumentId={parentDocumentId}
@@ -783,6 +789,11 @@ function GovernanceDocumentWorkspace({
       onHtmlChange={useCallback((value: string) => {
         editorHtml.current = value
       }, [])}
+      onMarkupImported={(value) => {
+        editorHtml.current = value
+        setEditorInitialHtml(value)
+        setEditorContentRevision((current) => current + 1)
+      }}
       onImportFile={setImportFile}
       onAttachmentFile={setEditorAttachmentFile}
       onSubmit={() => void saveEditor()}
@@ -1040,6 +1051,7 @@ function EditorDialog({
   onTemplateVersion,
   onBlueprint,
   onHtmlChange,
+  onMarkupImported,
   onImportFile,
   onAttachmentFile,
   onSubmit,
@@ -1076,13 +1088,22 @@ function EditorDialog({
   onTemplateVersion: (value: string) => void
   onBlueprint: (value: string) => void
   onHtmlChange: (value: string) => void
+  onMarkupImported: (value: string) => void
   onImportFile: (file?: File) => void
   onAttachmentFile: (file?: File) => void
   onSubmit: () => void
   onClose: () => void
 }) {
   const [htmlBytes, setHtmlBytes] = useState(() => utf8Bytes(initialHtml))
+  const [importFeedback, setImportFeedback] = useState<string>()
+  const [importError, setImportError] = useState<unknown>()
+  const [importing, setImporting] = useState(false)
   useEffect(() => setHtmlBytes(utf8Bytes(initialHtml)), [initialHtml, mode])
+  useEffect(() => {
+    setImportFeedback(undefined)
+    setImportError(undefined)
+    setImporting(false)
+  }, [mode])
   const importValid = !importFile
     || (importFile.size <= maximumImportBytes && supportedImport(importFile))
   const attachmentValid = !attachmentFile || attachmentFile.size <= maximumImportBytes
@@ -1096,6 +1117,32 @@ function EditorDialog({
       || htmlBytes <= maximumHtmlBytes
     ),
   )
+  const selectImport = async (file?: File) => {
+    setImportFeedback(undefined)
+    setImportError(undefined)
+    if (!file) {
+      onImportFile(undefined)
+      return
+    }
+    const name = file.name.toLocaleLowerCase()
+    if (name.endsWith('.docx')) {
+      onImportFile(file)
+      setImportFeedback('Word 파일은 저장 시 서버 변환·sanitize 경계에서 처리합니다.')
+      return
+    }
+    onImportFile(undefined)
+    setImporting(true)
+    try {
+      const imported = await governanceMarkupFromFile(file)
+      onMarkupImported(imported.html)
+      setHtmlBytes(utf8Bytes(imported.html))
+      setImportFeedback(`${imported.format === 'MARKDOWN' ? 'Markdown' : 'HTML'} 서식을 안전한 편집 본문으로 불러왔습니다. 저장 전에 아래에서 수정할 수 있습니다.`)
+    } catch (next) {
+      setImportError(next)
+    } finally {
+      setImporting(false)
+    }
+  }
   return <Dialog
     open={Boolean(mode)}
     title={mode === 'CREATE' ? (kind === 'TEMPLATE' ? '템플릿 작성' : '문서 작성') : '새 immutable 버전'}
@@ -1106,61 +1153,78 @@ function EditorDialog({
     onRequestClose={onClose}
     footer={<>
       <button type="button" className="button button-secondary" disabled={busy} onClick={onClose}>취소</button>
-      <button type="button" className="button" disabled={busy || !createValid} onClick={onSubmit}>{busy ? '저장 중…' : '저장'}</button>
+      <button type="button" className="button" disabled={busy || importing || !createValid} onClick={onSubmit}>{busy ? '저장 중…' : '저장'}</button>
     </>}
   >
     {Boolean(error) && <ErrorNotice error={error} />}
-    <div className="governance-editor-fields">
-      <label>버전 제목<input required maxLength={500} value={title} disabled={busy} onChange={(event) => onTitle(event.target.value)} /></label>
-      {mode === 'CREATE' && <>
-        <label>유형<select value={category} disabled={busy} onChange={(event) => onCategory(event.target.value as GovernanceDocumentCategory)}>{CATEGORIES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
-        <label>분류<select value={classification} disabled={busy} onChange={(event) => onClassification(Number(event.target.value))}><option value={0}>PUBLIC</option><option value={1}>INTERNAL</option><option value={2}>CONFIDENTIAL</option><option value={3}>RESTRICTED</option></select></label>
-        <label>요약<textarea maxLength={2000} value={summary} disabled={busy} onChange={(event) => onSummary(event.target.value)} /></label>
-        {kind === 'TEMPLATE' && <label>기본 양식<select value={blueprintId} disabled={busy} onChange={(event) => onBlueprint(event.target.value)}><option value="">빈 템플릿</option>{blueprints.map((blueprint) => <option key={blueprint.blueprint_id} value={blueprint.blueprint_id}>{categoryLabel(blueprint.category)} · {blueprint.title}</option>)}</select></label>}
-        {kind === 'DOCUMENT' && <>
-          <label>기본 관리 문서<select value={blueprintId} disabled={busy} onChange={(event) => onBlueprint(event.target.value)}><option value="">빈 문서</option>{blueprints.map((blueprint) => <option key={blueprint.blueprint_id} value={blueprint.blueprint_id}>{blueprint.title}</option>)}</select></label>
-          <label>게시 템플릿 선택<select value={templateVersionId} disabled={busy} onChange={(event) => onTemplateVersion(event.target.value)}><option value="">사용하지 않음</option>{templates.map((template) => <option key={template.document_id} value={template.current_published_version_id ?? ''}>{template.title} · v{template.current_version_number}</option>)}</select></label>
-        </>}
-      </>}
-      {kind === 'DOCUMENT' && <label>상위 문서<select value={parentDocumentId} disabled={busy} onChange={(event) => onParentDocument(event.target.value)}><option value="">상위 문서 없음</option>{parentDocuments.map((parent) => <option key={parent.document_id} value={parent.document_id}>{parent.title}</option>)}</select></label>}
-      <label>적용 범위<textarea maxLength={4000} value={applicabilityScope} disabled={busy} onChange={(event) => onApplicabilityScope(event.target.value)} />
-        <small>지식그래프 연결이 필요하면 `dataset:참조` 또는 `term:용어`를 쉼표·줄바꿈으로 선언하세요. 본문에서는 `[[Dataset:참조]]`, `[[Term:용어]]`를 사용할 수 있습니다.</small>
-      </label>
-      <label>HTML·Markdown·Word 가져오기
-        <input
-          type="file"
-          accept=".html,text/html,.md,text/markdown,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-          disabled={busy}
-          onChange={(event) => onImportFile(event.target.files?.[0])}
-        />
-      </label>
+    {Boolean(importError) && <ErrorNotice error={importError} />}
+    <div className="governance-editor-layout">
+      <aside className="governance-editor-sidebar" aria-label="문서 속성과 가져오기 설정">
+        <section className="governance-editor-card">
+          <header><span>01</span><div><strong>문서 정보</strong><small>식별과 게시 범위를 설정합니다.</small></div></header>
+          <div className="governance-editor-fields">
+            <label>버전 제목<input required maxLength={500} value={title} disabled={busy} onChange={(event) => onTitle(event.target.value)} /></label>
+            {mode === 'CREATE' && <>
+              <label>유형<select value={category} disabled={busy} onChange={(event) => onCategory(event.target.value as GovernanceDocumentCategory)}>{CATEGORIES.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+              <label>분류<select value={classification} disabled={busy} onChange={(event) => onClassification(Number(event.target.value))}><option value={0}>PUBLIC</option><option value={1}>INTERNAL</option><option value={2}>CONFIDENTIAL</option><option value={3}>RESTRICTED</option></select></label>
+              <label>요약<textarea maxLength={2000} value={summary} disabled={busy} onChange={(event) => onSummary(event.target.value)} /></label>
+            </>}
+            {kind === 'DOCUMENT' && <label>상위 문서<select value={parentDocumentId} disabled={busy} onChange={(event) => onParentDocument(event.target.value)}><option value="">상위 문서 없음</option>{parentDocuments.map((parent) => <option key={parent.document_id} value={parent.document_id}>{parent.title}</option>)}</select></label>}
+            <label>적용 범위<textarea maxLength={4000} value={applicabilityScope} disabled={busy} onChange={(event) => onApplicabilityScope(event.target.value)} />
+              <small>필요한 경우 `dataset:참조` 또는 `term:용어`를 선언하세요.</small>
+            </label>
+          </div>
+        </section>
+        {mode === 'CREATE' && <section className="governance-editor-card">
+          <header><span>02</span><div><strong>시작 양식</strong><small>승인된 구조를 선택하거나 빈 문서로 시작합니다.</small></div></header>
+          <div className="governance-editor-fields">
+            {kind === 'TEMPLATE' && <label>기본 양식<select value={blueprintId} disabled={busy} onChange={(event) => onBlueprint(event.target.value)}><option value="">빈 템플릿</option>{blueprints.map((blueprint) => <option key={blueprint.blueprint_id} value={blueprint.blueprint_id}>{categoryLabel(blueprint.category)} · {blueprint.title}</option>)}</select></label>}
+            {kind === 'DOCUMENT' && <>
+              <label>기본 관리 문서<select value={blueprintId} disabled={busy} onChange={(event) => onBlueprint(event.target.value)}><option value="">빈 문서</option>{blueprints.map((blueprint) => <option key={blueprint.blueprint_id} value={blueprint.blueprint_id}>{blueprint.title}</option>)}</select></label>
+              <label>게시 템플릿 선택<select value={templateVersionId} disabled={busy} onChange={(event) => onTemplateVersion(event.target.value)}><option value="">사용하지 않음</option>{templates.map((template) => <option key={template.document_id} value={template.current_published_version_id ?? ''}>{template.title} · v{template.current_version_number}</option>)}</select></label>
+            </>}
+          </div>
+        </section>}
+        <section className="governance-editor-card governance-editor-import-card">
+          <header><span>03</span><div><strong>파일 가져오기</strong><small>HTML·Markdown은 즉시 편집 가능한 안전한 본문으로 변환합니다.</small></div></header>
+          <label className="governance-file-drop">HTML·Markdown·Word 선택
+            <input
+              type="file"
+              accept=".html,text/html,.md,text/markdown,.docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+              disabled={busy || importing}
+              onChange={(event) => void selectImport(event.target.files?.[0])}
+            />
+            <small>최대 {formatBytes(maximumImportBytes)} · script/style/iframe은 제거됩니다.</small>
+          </label>
+          {importing && <p role="status">문서 서식을 변환하는 중입니다…</p>}
+          {importFeedback && <p className="notice notice-success" role="status">{importFeedback}</p>}
+          {importFile && !supportedImport(importFile) && <p role="alert">HTML, Markdown 또는 DOCX 파일만 가져올 수 있습니다.</p>}
+          {importFile && importFile.size > maximumImportBytes && <p role="alert">선택한 파일이 서버의 가져오기 허용 크기를 초과합니다.</p>}
+        </section>
+        {kind === 'DOCUMENT' && <section className="governance-editor-card governance-editor-attachment" aria-labelledby="governance-editor-attachment-title">
+          <header><span>04</span><div><strong id="governance-editor-attachment-title">별첨 등록</strong><small>본문과 분리된 불변 Object로 저장합니다.</small></div></header>
+          <label>별첨 파일<input type="file" disabled={busy || !attachmentAvailable} onChange={(event) => onAttachmentFile(event.target.files?.[0])} /></label>
+          {!attachmentAvailable && <small>현재 Object Storage capability가 준비되지 않아 별첨을 선택할 수 없습니다.</small>}
+          {attachmentFile && <small>{attachmentFile.name} · {formatBytes(attachmentFile.size)}</small>}
+          {attachmentFile && !attachmentValid && <p role="alert">선택한 별첨이 서버 허용 크기를 초과합니다.</p>}
+        </section>}
+      </aside>
+      <main className="governance-editor-main">
+        <header><div><span className="eyebrow">Safe document canvas</span><h3>문서 본문</h3></div><span>{formatBytes(htmlBytes)} / {formatBytes(maximumHtmlBytes)}</span></header>
+        {!templateVersionId && !importFile && <GovernanceHtmlEditor
+          key={editorKey}
+          initialHtml={initialHtml}
+          disabled={busy || importing}
+          onHtmlChange={(value) => {
+            setHtmlBytes(utf8Bytes(value))
+            onHtmlChange(value)
+          }}
+        />}
+        {htmlBytes > maximumHtmlBytes && !templateVersionId && !importFile && <p role="alert">편집한 HTML이 서버 허용 크기를 초과합니다.</p>}
+        {templateVersionId && <p className="callout">선택한 exact Template version을 서버가 복제합니다. 브라우저는 Template HTML을 재작성하지 않습니다.</p>}
+        {importFile && <div className="governance-import-pending"><strong>{importFile.name}</strong><p>Word 문서는 저장할 때 서버에서 변환되므로 편집 preview가 제공되지 않습니다.</p></div>}
+      </main>
     </div>
-    <small>파일을 선택하면 편집기 대신 서버 import·sanitize 경계를 사용합니다. 클라이언트 사전 제한 {formatBytes(maximumImportBytes)}</small>
-    {importFile && !supportedImport(importFile) && <p role="alert">HTML, Markdown 또는 DOCX 파일만 가져올 수 있습니다.</p>}
-    {importFile && importFile.size > maximumImportBytes && <p role="alert">선택한 파일이 서버의 가져오기 허용 크기를 초과합니다.</p>}
-    {!templateVersionId && !importFile && <GovernanceHtmlEditor
-      key={editorKey}
-      initialHtml={initialHtml}
-      disabled={busy}
-      onHtmlChange={(value) => {
-        setHtmlBytes(utf8Bytes(value))
-        onHtmlChange(value)
-      }}
-    />}
-    {htmlBytes > maximumHtmlBytes && !templateVersionId && !importFile && <p role="alert">편집한 HTML이 서버 허용 크기를 초과합니다.</p>}
-    {templateVersionId && <p className="callout">선택한 exact Template version을 서버가 복제합니다. 브라우저는 Template HTML을 재작성하지 않습니다.</p>}
-    {kind === 'DOCUMENT' && <section className="governance-editor-attachment" aria-labelledby="governance-editor-attachment-title">
-      <h3 id="governance-editor-attachment-title">별첨 등록</h3>
-      <p>본문 Object와 구분해 `ref_governance_*` 이름의 별도 불변 Object로 저장합니다.</p>
-      <label>별첨 파일<input
-        type="file"
-        disabled={busy || !attachmentAvailable}
-        onChange={(event) => onAttachmentFile(event.target.files?.[0])}
-      /></label>
-      {!attachmentAvailable && <small>현재 Object Storage capability가 준비되지 않아 별첨을 선택할 수 없습니다.</small>}
-      {attachmentFile && <small>{attachmentFile.name} · {formatBytes(attachmentFile.size)}</small>}
-      {attachmentFile && !attachmentValid && <p role="alert">선택한 별첨이 서버 허용 크기를 초과합니다.</p>}
-    </section>}
   </Dialog>
 }
 

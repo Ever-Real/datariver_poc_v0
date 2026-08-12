@@ -67,6 +67,19 @@ const adapterStateLabels: Record<ChatRouteDecision['adapter_state'], string> = {
   FAILED: '실패',
 }
 
+const routeIntentLabels: Partial<Record<NonNullable<ChatRouteDecision['intent']>, string>> = {
+  EXPLICIT_SELECTION: '사용자 선택',
+  GENERAL_CONVERSATION: '일반 대화',
+  EXACT_METADATA: '정확한 메타데이터 조회',
+  SEMANTIC_DISCOVERY: '의미 기반 탐색',
+  SEMANTIC_SIMILARITY: '유사 자산 탐색',
+  LINEAGE: '계보 조회',
+  IMPACT_ANALYSIS: '영향도 분석',
+  RELATIONSHIP: '관계 탐색',
+  MIXED_DISCOVERY_GRAPH: '탐색 후 관계 분석',
+  AMBIGUOUS: '추가 확인 필요',
+}
+
 interface ChatViewMessage {
   id: string
   role: 'user' | 'assistant'
@@ -649,7 +662,15 @@ export function ChatPage({ client }: { client: ApiClient }) {
                 <section aria-label="서버 라우팅 결정" className="chat-route-summary">
                   <strong><Route size={13} />서버 라우팅</strong>
                   <span>요청 {modeLabels[visibleAssistant.route.requested_mode]} → 선택 {modeLabels[visibleAssistant.route.selected_mode]}</span>
-                  <small>{routeReasonLabels[visibleAssistant.route.reason]} · {adapterStateLabels[visibleAssistant.route.adapter_state]}</small>
+                  <small>
+                    {visibleAssistant.route.intent
+                      ? routeIntentLabels[visibleAssistant.route.intent] ?? routeReasonLabels[visibleAssistant.route.reason]
+                      : routeReasonLabels[visibleAssistant.route.reason]}
+                    {typeof visibleAssistant.route.confidence === 'number'
+                      ? ` · 신뢰도 ${Math.round(visibleAssistant.route.confidence * 100)}%`
+                      : ''}
+                    {' · '}{adapterStateLabels[visibleAssistant.route.adapter_state]}
+                  </small>
                 </section>
               )}
               {providerPolicyUnavailable && (

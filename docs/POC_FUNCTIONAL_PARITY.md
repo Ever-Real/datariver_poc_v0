@@ -12,17 +12,17 @@ authorization, persistence, worker, or provider mutation path ran.
 | Dashboard | Counts, described assets, glossary terms, and schema metrics are aggregated from the complete DataHub scroll inventory; CR counts use POC state | DataHub + POC PostgreSQL/process memory |
 | Global and catalog search | Live suggestions, facets, filters, opaque next/previous cursors, result details, and lineage | DataHub |
 | Resource Tree | Platform → database → schema → table expansion with complete bounded DataHub inventory reconciliation | DataHub |
-| Catalog detail | Human-readable database/schema, profiled rows/size, source created date, paged columns, table/column descriptions/tags/terms, and null-safe absent values | DataHub |
+| Catalog detail | Human-readable database/schema, profiled rows/size, source created date, paged columns, table/column descriptions/tags/terms, null-safe absent values, and Dataset-only lineage with DataHub display names; ghost/sibling placeholders are excluded | DataHub |
 | Search interaction | Detail closes on an outside click; a Resource Tree table re-queries and focuses the matching Search Result row | Browser + DataHub |
 | Registration | Shared searchable Resource Tree, live DataHub detail, typed previews, CR creation, and user-created manual history | DataHub read + POC state commands |
 | Change management | Registration with request attachments, review, changes requested, immutable revision/resubmission, test attachment/result, test approval, final approval, rejection/cancellation, and completion | POC PostgreSQL/process memory; object bytes optionally MinIO |
 | Quality asset history tab | Same searchable Resource Tree and live DataHub columns; no fabricated quality scores, rules, runs, or trends | DataHub read |
-| Chat | AUTO uses a bounded LLM classifier; explicit GENERAL/VECTOR/GRAPH bypass it. VECTOR uses DataHub metadata plus configured embedding/reranking, GRAPH uses bounded DataHub lineage and optional Neo4j knowledge edges; evidence cards preserve their live source type | DataHub/Neo4j + configured LLMs |
+| Chat | AUTO uses a bounded typed LLM decision; explicit GENERAL/VECTOR/GRAPH bypass it. Exact table questions resolve against the live inventory and load DataHub detail/columns before composition. Semantic VECTOR uses DataHub candidates plus configured embedding/reranking, while GRAPH resolves an entity before bounded DataHub lineage and optional Neo4j knowledge edges; evidence cards preserve their live source type | DataHub/Neo4j + configured LLMs |
 | Monitoring | Provider probes plus optional exact-origin Grafana dashboard embed | POC server + Grafana |
 | POC USER/Admin | Registration, Knowledge and live Glossary move under the profile menu; user role is developer/data_steward/viewer/admin; System, assignee and DataHub schema scope records are user-created; a TanStack table shows every current OPEN feature permission | POC PostgreSQL/process memory + DataHub |
 | Knowledge Studio/Registry | No fixture assets; user-created Domain, Draft, direct T-Box edits, live DataHub source selection, A-Box bindings, review/publication and registry reads | POC PostgreSQL/process memory + DataHub; Neo4j remains evidence/projection |
-| Governance documents | No fixture documents; user-created immutable versions support submit, approve/publish or reject, Archive, product blueprints, export/evidence and MinIO attachments when configured | POC PostgreSQL/process memory + MinIO/Neo4j capability gates |
-| Glossary | Terms attached to live DataHub assets and their table counts; no local seed | DataHub |
+| Governance documents | No fixture documents; user-created immutable versions support submit, approve/publish or reject, Archive, product blueprints, export/evidence and MinIO attachments when configured. HTML/Markdown import is allowlist-sanitized into an editable formatted canvas and the saved page uses the same safe HTML contract | POC PostgreSQL/process memory + MinIO/Neo4j capability gates |
+| Glossary | Live DataHub Term definitions, parent GlossaryNode path, honest leaf-term child state, and clickable applied-table counts with a right-side asset accordion; no local seed | DataHub |
 
 ## Workflow limits that are not silently simulated as production
 
@@ -38,6 +38,9 @@ authorization, persistence, worker, or provider mutation path ran.
   service. The POC shows live assets and empty/unknown outcomes instead of invented results.
 - Neo4j is started and probed when configured, but an empty Neo4j database is not seeded with
   synthetic entities. POC Knowledge/Chat records are not production graph-release evidence.
+- The fixed 72-question `frontend/chat-router-benchmark.mjs` dataset is a repeatable evaluation
+  input contract, not a measured target-model accuracy claim. Provider-specific routing accuracy
+  and latency remain Prep/operations evidence.
 - Redis caches only short-lived DataHub inventory/detail responses. Its loss affects latency only.
   pgvector is available for bounded future vector state but does not itself accelerate catalog
   pages. Production still requires the authenticated API, workers, migrations and authorization.

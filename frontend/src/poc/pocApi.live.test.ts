@@ -527,6 +527,24 @@ describe('POC live-provider compatibility adapter', () => {
     )
     expect(reviewed.item.document.state).toBe('ACTIVE')
     expect(reviewed.item.versions[0]?.state).toBe('PUBLISHED')
+
+    const importedHtml = await api.importDocument({
+      file: new File(['<h1>HTML 정책</h1><p><strong>서식</strong> 본문</p><script>alert(1)</script>'], 'policy.html', { type: 'text/html' }),
+      kind: 'DOCUMENT', category: 'POLICY', title: 'HTML 가져오기', summary: 'HTML import',
+      classification: 1, applicabilityScope: 'POC', parentDocumentId: null,
+    }, 'governance-html-import')
+    expect(importedHtml.item.versions[0]?.sanitized_html).toContain('<h1>HTML 정책</h1>')
+    expect(importedHtml.item.versions[0]?.sanitized_html).toContain('<strong>서식</strong>')
+    expect(importedHtml.item.versions[0]?.sanitized_html).not.toMatch(/script|alert/i)
+
+    const importedMarkdown = await api.importDocument({
+      file: new File(['# Markdown 정책\n\n- 승인\n- 변경 이력'], 'policy.md', { type: 'text/markdown' }),
+      kind: 'DOCUMENT', category: 'POLICY', title: 'Markdown 가져오기', summary: 'Markdown import',
+      classification: 1, applicabilityScope: 'POC', parentDocumentId: null,
+    }, 'governance-markdown-import')
+    expect(importedMarkdown.item.versions[0]?.source_format).toBe('MARKDOWN')
+    expect(importedMarkdown.item.versions[0]?.sanitized_html).toContain('<h1>Markdown 정책</h1>')
+    expect(importedMarkdown.item.versions[0]?.sanitized_html).toContain('<ul><li>승인</li><li>변경 이력</li></ul>')
   })
 
   it('creates Knowledge Studio state only from user input and live DataHub sources', async () => {

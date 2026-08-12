@@ -37,9 +37,28 @@ function providerHandler(request, response) {
     if (url.pathname.endsWith('/chat/completions')) {
       const payload = JSON.parse(body.toString('utf8'))
       const systemPrompt = payload.messages?.[0]?.content || ''
-      if (systemPrompt.includes('Classify the user question')) {
+      if (systemPrompt.includes('Classify one untrusted Data Catalog question')) {
         const question = payload.messages?.[1]?.content || ''
-        return sendJson(response, { choices: [{ message: { content: forcedClassifierResponse ?? (/lineage|upstream/i.test(question) ? 'GRAPH' : 'VECTOR') } }] })
+        const graph = /lineage|upstream|impact/i.test(question)
+        const exact = /wafer_events/i.test(question)
+        const decision = graph
+          ? {
+              mode: 'GRAPH', confidence: 0.98, intent: 'LINEAGE',
+              entity_resolution_required: true, graph_traversal_required: true,
+              semantic_retrieval_required: false, fallback_mode: 'VECTOR',
+            }
+          : exact
+            ? {
+                mode: 'VECTOR', confidence: 0.99, intent: 'EXACT_METADATA',
+                entity_resolution_required: true, graph_traversal_required: false,
+                semantic_retrieval_required: false, fallback_mode: 'GENERAL',
+              }
+            : {
+                mode: 'VECTOR', confidence: 0.92, intent: 'SEMANTIC_DISCOVERY',
+                entity_resolution_required: false, graph_traversal_required: false,
+                semantic_retrieval_required: true, fallback_mode: 'GENERAL',
+              }
+        return sendJson(response, { choices: [{ message: { content: forcedClassifierResponse ?? JSON.stringify(decision) } }] })
       }
       return sendJson(response, { choices: [{ message: { content: 'Live provider answer [1]' } }] })
     }
@@ -148,9 +167,50 @@ function providerHandler(request, response) {
           }],
         } } })
       }
+      if (payload.query.includes('DataRiverPocGlossary')) {
+        return sendJson(response, { data: { scrollAcrossEntities: {
+          count: 2,
+          total: 2,
+          nextScrollId: null,
+          searchResults: [
+            { entity: {
+              urn: 'urn:li:glossaryTerm:wafer', type: 'GLOSSARY_TERM', hierarchicalName: 'manufacturing.wafer',
+              properties: { name: 'Wafer', description: 'A thin semiconductor substrate.' },
+              parentNodes: { nodes: [
+                { urn: 'urn:li:glossaryNode:manufacturing', type: 'GLOSSARY_NODE', properties: { name: 'Manufacturing', description: 'Manufacturing vocabulary' } },
+                { urn: 'urn:li:glossaryNode:semiconductor', type: 'GLOSSARY_NODE', properties: { name: 'Semiconductor', description: 'Enterprise semiconductor vocabulary' } },
+              ] },
+            } },
+            { entity: {
+              urn: 'urn:li:glossaryTerm:identifier', type: 'GLOSSARY_TERM', hierarchicalName: 'shared.identifier',
+              properties: { name: 'Identifier', description: 'A value used to identify a record.' },
+              parentNodes: { nodes: [] },
+            } },
+          ],
+        } } })
+      }
       const relationships = payload.variables?.input?.direction === 'UPSTREAM'
-        ? [{ entity: { urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.RAW.source_events,PROD)', type: 'DATASET' } }]
-        : []
+        ? [{ entity: {
+            urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.RAW.source_events,PROD)',
+            type: 'DATASET', name: 'source_events',
+            platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
+            properties: { name: 'source_events', description: 'Raw source events' },
+            editableProperties: { description: null },
+            browsePathV2: { path: [{ name: 'MANUFACTURING' }, { name: 'RAW' }] },
+            domain: null, ownership: { owners: [] }, globalTags: { tags: [] }, glossaryTerms: { terms: [] },
+          } }]
+        : [
+            { entity: {
+              urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.view_f09ab31,PROD)',
+              type: 'DATASET', name: 'wafer_quality_view',
+              platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
+              properties: { name: 'wafer_quality_view', description: 'Published wafer quality view' },
+              editableProperties: { description: null },
+              browsePathV2: { path: [{ name: 'MANUFACTURING' }, { name: 'QUALITY' }] },
+              domain: null, ownership: { owners: [] }, globalTags: { tags: [] }, glossaryTerms: { terms: [] },
+            } },
+            { entity: { urn: 'urn:li:dataJob:(urn:li:dataFlow:view_f09ab31,view_f09ab31)', type: 'DATA_JOB' } },
+          ]
       return sendJson(response, { data: { dataset: { lineage: { total: relationships.length, relationships } } } })
     }
     if (url.pathname === '/db/neo4j/tx/commit') {
@@ -270,6 +330,16 @@ test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
   assert.equal(secondFieldPage.schema_fields_has_more, false)
   const lineage = await (await fetch(`${pocOrigin}/poc-api/datahub/lineage?urn=${urn}`)).json()
   assert.equal(lineage.center_asset_id, catalog.items[0].external_urn)
+  assert.deepEqual(lineage.nodes.map((item) => item.name).sort(), [
+    'source_events', 'wafer_events', 'wafer_quality_view',
+  ])
+  assert.equal(lineage.nodes.some((item) => item.name.includes('view_f09ab31')), false)
+  const lineageRequests = requests
+    .filter((request) => request.path === '/api/graphql' && request.body.includes('DataRiverPocLineage'))
+    .map((request) => JSON.parse(request.body))
+  assert.equal(lineageRequests.length, 2)
+  assert.ok(lineageRequests.every((request) => request.variables.input.separateSiblings === false))
+  assert.ok(lineageRequests.every((request) => request.variables.input.includeGhostEntities === false))
 })
 
 test('keeps provider cursors server-side and aggregates the complete DataHub inventory', async () => {
@@ -288,6 +358,15 @@ test('keeps provider cursors server-side and aggregates the complete DataHub inv
   assert.equal(dashboard.catalog_asset_count, 2)
   const systems = await (await fetch(`${pocOrigin}/poc-api/datahub/systems`)).json()
   assert.deepEqual(systems.items.map((item) => item.id), ['postgres'])
+  const glossary = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary?q=wafer`)).json()
+  assert.equal(glossary.items.length, 1)
+  assert.equal(glossary.items[0].name, 'Wafer')
+  assert.equal(glossary.items[0].description, 'A thin semiconductor substrate.')
+  assert.deepEqual(glossary.items[0].parent_terms.map((item) => item.name), ['Semiconductor', 'Manufacturing'])
+  assert.equal(glossary.items[0].asset_count, 1)
+  assert.equal(glossary.items[0].assets[0].name, 'wafer_events')
+  const technicalGlossary = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary?q=manufacturing_wafer`)).json()
+  assert.equal(technicalGlossary.items[0].name, 'Wafer')
 })
 
 test('runs the fixed embedding, reranking and Chat pipeline', async () => {
@@ -304,6 +383,53 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
   for (const path of ['/embeddings', '/rerank', '/chat/completions']) {
     assert.ok(requests.some((request) => request.path.endsWith(path)))
   }
+  const classifierRequest = [...requests].reverse().find((request) => {
+    if (!request.path.endsWith('/chat/completions')) return false
+    return JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')
+  })
+  assert.equal(JSON.parse(classifierRequest.body).response_format.type, 'json_schema')
+})
+
+test('resolves an exact table name and composes detailed DataHub metadata evidence', async () => {
+  const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'wafer_events 테이블의 컬럼과 설명을 알려줘', mode: 'AUTO' }),
+  })
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.route.selected_mode, 'VECTOR')
+  assert.equal(payload.route.intent, 'EXACT_METADATA')
+  assert.equal(payload.route.semantic_retrieval_required, false)
+  assert.equal(payload.evidence.length, 1)
+  assert.equal(payload.evidence[0].name, 'wafer_events')
+  assert.equal(payload.evidence[0].retrieval_method, 'CATALOG_EXACT')
+  assert.match(payload.evidence[0].description, /wafer_id \(VARCHAR\)/)
+  assert.match(payload.evidence[0].description, /Curated wafer identifier/)
+  assert.match(payload.evidence[0].description, /Wafer ID/)
+  const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
+  assert.equal(classifiersAfter, classifiersBefore)
+})
+
+test('routes an exact Korean relationship question deterministically before the classifier', async () => {
+  const classifiersBefore = requests.filter((request) => request.path.endsWith('/chat/completions')
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'wafer_events 연결 관계를 알려줘', mode: 'AUTO' }),
+  })
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.route.selected_mode, 'GRAPH')
+  assert.equal(payload.route.intent, 'RELATIONSHIP')
+  assert.ok(payload.evidence.some((item) => item.evidence_type === 'DATAHUB_LINEAGE'))
+  const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
+    && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
+  assert.equal(classifiersAfter, classifiersBefore)
 })
 
 test('routes lineage questions through bounded DataHub and Neo4j graph evidence', async () => {

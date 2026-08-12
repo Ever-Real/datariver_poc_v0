@@ -1154,6 +1154,23 @@ export interface ChatRouteDecision {
   selected_mode: ChatMode
   reason: 'EXPLICIT_SELECTION' | 'GRAPH_INTENT' | 'SEMANTIC_INTENT' | 'GENERAL_DEFAULT'
   adapter_state: 'READY' | 'UNAVAILABLE' | 'FAILED'
+  intent?:
+    | 'EXPLICIT_SELECTION'
+    | 'GENERAL_CONVERSATION'
+    | 'EXACT_METADATA'
+    | 'SEMANTIC_DISCOVERY'
+    | 'SEMANTIC_SIMILARITY'
+    | 'LINEAGE'
+    | 'IMPACT_ANALYSIS'
+    | 'RELATIONSHIP'
+    | 'MIXED_DISCOVERY_GRAPH'
+    | 'AMBIGUOUS'
+  confidence?: number
+  entity_resolution_required?: boolean
+  graph_traversal_required?: boolean
+  semantic_retrieval_required?: boolean
+  fallback_mode?: Exclude<ChatMode, 'AUTO'> | null
+  clarification_required?: boolean
 }
 
 export interface ChatWorkflowStep {

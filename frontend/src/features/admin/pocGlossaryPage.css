@@ -1,0 +1,30 @@
+.poc-glossary-workspace { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 12px; margin-top: 10px; }
+.poc-glossary-workspace > .dense-table-frame { max-height: 650px; }
+.poc-glossary-name { display: grid; gap: 3px; }
+.poc-glossary-name strong { color: var(--navy-900); }
+.poc-glossary-name small { overflow: hidden; color: var(--text-500); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.poc-glossary-asset-count { min-width: 36px; border: 1px solid #9ebbc7; border-radius: 999px; padding: 3px 9px; color: var(--blue-700); background: #edf7fa; font-size: 10px; font-weight: 900; }
+.poc-glossary-asset-count:hover, .poc-glossary-asset-count:focus-visible { border-color: var(--blue-700); background: var(--blue-100); }
+.poc-glossary-detail { min-width: 0; align-self: start; overflow: hidden; border: 1px solid var(--line-300); border-radius: 6px; background: #fbfcfc; box-shadow: 0 7px 22px rgba(14, 39, 56, .08); }
+.poc-glossary-detail > header { border-bottom: 1px solid var(--line-300); padding: 15px; background: linear-gradient(120deg, #edf6f8, #fff); }
+.poc-glossary-detail > header h2 { margin: 3px 0 6px; color: var(--navy-900); font-size: 16px; }
+.poc-glossary-detail > header p { margin: 0; color: var(--text-600); font-size: 10px; line-height: 1.55; }
+.poc-glossary-detail dl { margin: 0; border-bottom: 1px solid var(--line-300); }
+.poc-glossary-detail dl div { padding: 10px 14px; }
+.poc-glossary-detail dl div + div { border-top: 1px solid var(--line-200); }
+.poc-glossary-detail dt { color: var(--text-500); font-size: 8px; font-weight: 900; }
+.poc-glossary-detail dd { margin: 4px 0 0; color: var(--text-700); font-size: 10px; line-height: 1.45; }
+.poc-glossary-detail .accordion-item { border: 0; border-radius: 0; }
+.poc-glossary-assets { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.poc-glossary-assets li { display: grid; gap: 3px; border-top: 1px solid var(--line-200); padding: 10px 12px; }
+.poc-glossary-assets li:first-child { border-top: 0; }
+.poc-glossary-assets strong { color: var(--navy-900); font-size: 10px; }
+.poc-glossary-assets span { color: var(--text-600); font-size: 9px; }
+.poc-glossary-assets small { overflow-wrap: anywhere; color: var(--text-500); font-size: 8px; }
+.poc-glossary-empty, .poc-glossary-placeholder { margin: 0; padding: 18px; color: var(--text-500); font-size: 10px; line-height: 1.5; }
+.poc-glossary-placeholder strong { color: var(--navy-900); }
+.poc-glossary-placeholder p { margin: 5px 0 0; }
+
+@media (max-width: 1000px) {
+  .poc-glossary-workspace { grid-template-columns: 1fr; }
+}

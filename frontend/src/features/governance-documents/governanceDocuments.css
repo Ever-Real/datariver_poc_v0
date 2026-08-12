@@ -54,17 +54,38 @@
 .governance-document-attachments li { display: grid; grid-template-columns: minmax(180px, 1fr) 90px minmax(180px, 1fr) 150px 90px 150px auto; align-items: center; gap: 8px; padding: 7px 9px; border-bottom: 1px solid var(--line-200); color: var(--text-600); font-size: 9px; }
 .governance-attachment-input { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; border-top: 1px solid var(--line-300); padding: 9px; background: #f9fbfb; }
 .governance-attachment-input small { color: var(--text-500); }
-.governance-editor-fields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
-.governance-editor-fields textarea { min-height: 72px; }
-.governance-html-editor { min-height: 500px; border: 1px solid var(--line-300); background: #fffdf8; }
-.governance-editor-toolbar { position: sticky; z-index: 1; top: 0; display: flex; flex-wrap: wrap; gap: 3px; border-bottom: 1px solid var(--line-300); padding: 5px; background: #f5f7f7; }
-.governance-editor-toolbar button { min-width: 34px; min-height: 30px; border: 1px solid var(--line-300); color: var(--navy-900); background: #fff; font-size: 10px; font-weight: 900; }
-.governance-editor-surface { min-height: 450px; padding: 24px clamp(16px, 3vw, 48px); overflow-wrap: anywhere; color: var(--text-700); font-size: 12px; line-height: 1.7; outline: none; }
+.governance-editor-layout { min-height: 650px; display: grid; grid-template-columns: minmax(300px, 360px) minmax(0, 1fr); gap: 14px; }
+.governance-editor-sidebar { display: grid; align-content: start; gap: 10px; }
+.governance-editor-card { overflow: hidden; border: 1px solid var(--line-300); border-radius: 6px; background: #fbfcfc; box-shadow: 0 2px 8px rgba(14, 39, 56, .04); }
+.governance-editor-card > header { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line-200); padding: 9px 10px; background: linear-gradient(100deg, #edf5f7, #f9fbfb); }
+.governance-editor-card > header > span { width: 24px; height: 24px; display: grid; place-items: center; flex: 0 0 24px; border-radius: 50%; color: white; background: var(--blue-700); font-size: 8px; font-weight: 900; }
+.governance-editor-card > header div { min-width: 0; display: grid; gap: 2px; }
+.governance-editor-card > header strong { color: var(--navy-900); font-size: 11px; }
+.governance-editor-card > header small { color: var(--text-500); font-size: 8px; line-height: 1.35; }
+.governance-editor-fields { display: grid; grid-template-columns: 1fr; gap: 8px; margin: 0; padding: 10px; }
+.governance-editor-fields textarea { min-height: 68px; resize: vertical; }
+.governance-editor-fields input, .governance-editor-fields select, .governance-editor-fields textarea { width: 100%; border-color: #b9c6cc; background: white; }
+.governance-editor-main { min-width: 0; overflow: hidden; border: 1px solid var(--line-300); border-radius: 6px; background: #fffdf8; box-shadow: 0 8px 24px rgba(14, 39, 56, .08); }
+.governance-editor-main > header { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 12px; border-bottom: 1px solid var(--line-300); padding: 8px 12px; background: linear-gradient(90deg, #f4f8f8, #fff); }
+.governance-editor-main > header h3 { margin: 2px 0 0; color: var(--navy-900); font-size: 13px; }
+.governance-editor-main > header > span { color: var(--text-500); font-size: 9px; font-variant-numeric: tabular-nums; }
+.governance-html-editor { min-height: 596px; border: 0; background: #fffdf8; }
+.governance-editor-toolbar { position: sticky; z-index: 1; top: 0; display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line-300); padding: 7px 10px; background: rgba(245, 248, 248, .96); backdrop-filter: blur(6px); }
+.governance-editor-toolbar button { min-width: 36px; min-height: 31px; border: 1px solid #b6c4cb; border-radius: 4px; color: var(--navy-900); background: #fff; font-size: 10px; font-weight: 900; }
+.governance-editor-toolbar button:hover:not(:disabled) { border-color: var(--blue-700); color: var(--blue-700); background: var(--blue-100); }
+.governance-editor-surface { min-height: 545px; padding: 32px clamp(28px, 5vw, 72px); overflow-wrap: anywhere; color: var(--text-700); font-size: 12px; line-height: 1.75; outline: none; }
 .governance-editor-surface:focus { box-shadow: inset 0 0 0 2px var(--blue-700); }
-.governance-editor-attachment { display: grid; gap: 6px; margin-top: 12px; border: 1px solid var(--line-300); padding: 10px; background: #f8fbfb; }
-.governance-editor-attachment h3, .governance-editor-attachment p { margin: 0; }
-.governance-editor-attachment h3 { color: var(--navy-900); font-size: 11px; }
-.governance-editor-attachment p, .governance-editor-attachment small { color: var(--text-500); font-size: 9px; }
+.governance-file-drop { display: grid; gap: 6px; margin: 10px; border: 1px dashed #90aab5; border-radius: 5px; padding: 10px; color: var(--navy-900); background: #f4fafb; font-size: 9px; font-weight: 900; }
+.governance-file-drop input { width: 100%; color: var(--text-600); font-size: 9px; font-weight: 500; }
+.governance-file-drop small { color: var(--text-500); font-size: 8px; font-weight: 500; }
+.governance-editor-import-card > p { margin: 8px 10px 10px; font-size: 9px; line-height: 1.45; }
+.governance-editor-attachment { display: grid; gap: 7px; margin: 0; padding: 0 0 10px; background: #f8fbfb; }
+.governance-editor-attachment > label, .governance-editor-attachment > small, .governance-editor-attachment > p { margin: 0 10px; }
+.governance-editor-attachment > label { display: grid; gap: 4px; color: var(--text-600); font-size: 9px; font-weight: 800; }
+.governance-editor-attachment > small, .governance-editor-attachment > p { color: var(--text-500); font-size: 8px; }
+.governance-import-pending { margin: 24px; border: 1px dashed var(--line-300); border-radius: 6px; padding: 28px; color: var(--text-600); background: #f8f9f7; text-align: center; }
+.governance-import-pending strong { color: var(--navy-900); }
+.governance-import-pending p { margin: 6px 0 0; font-size: 10px; }
 .governance-viewer-title { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .governance-viewer-title p { margin: 5px 0 0; color: var(--text-500); }
 .governance-viewer-meta { margin: 12px 0; }
@@ -78,12 +99,15 @@
 
 @media (max-width: 1000px) {
   .governance-document-detail-grid { grid-template-columns: 210px minmax(0, 1fr); }
+  .governance-editor-layout { grid-template-columns: 290px minmax(0, 1fr); }
 }
 @media (max-width: 700px) {
   .governance-documents-header, .governance-document-list-panel > header { align-items: stretch; flex-direction: column; }
-  .governance-document-meta, .governance-editor-fields { grid-template-columns: 1fr; }
+  .governance-document-meta { grid-template-columns: 1fr; }
   .governance-document-meta div + div { border-top: 1px solid var(--line-200); border-left: 0; }
   .governance-document-detail-grid { grid-template-columns: 1fr; }
   .governance-version-list { border-right: 0; border-bottom: 1px solid var(--line-300); }
   .governance-document-attachments li { grid-template-columns: minmax(0, 1fr); }
+  .governance-editor-layout { grid-template-columns: 1fr; }
+  .governance-editor-main { min-height: 560px; }
 }

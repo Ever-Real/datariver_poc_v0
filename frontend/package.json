@@ -16,7 +16,7 @@
     "lint": "eslint . --max-warnings=0",
     "test": "vitest run --config vitest.config.ts",
     "test:poc": "vitest run --config vitest.config.ts src/poc/PocApp.test.tsx",
-    "test:poc-server": "node --test poc-server.test.mjs poc-server.providers.test.mjs"
+    "test:poc-server": "node --test poc-server.test.mjs poc-server.providers.test.mjs chat-router-benchmark.test.mjs"
   },
   "dependencies": {
     "@tailwindcss/vite": "4.3.3",
