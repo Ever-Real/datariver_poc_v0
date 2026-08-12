@@ -121,14 +121,16 @@ export function RoleManagementDialog({
 
   useEffect(() => {
     if (!open) return
+    const normalizedQuery = query.trim()
+    if (normalizedQuery === appliedQuery) return
     const timer = window.setTimeout(() => {
-      setAppliedQuery(query.trim())
+      setAppliedQuery(normalizedQuery)
       setCursor(undefined)
       setCursorHistory([])
       setPageNumber(1)
     }, 250)
     return () => window.clearTimeout(timer)
-  }, [open, query])
+  }, [appliedQuery, open, query])
   useEffect(() => {
     if (!open) return
     const controller = new AbortController()

@@ -68,6 +68,7 @@ const response: ChatResponse = {
     domain_id: null,
     owner_department_id: null,
     name: 'orders',
+    asset_kind: 'TABLE',
     description: '주문 원장 [[Dataset:urn:li:dataset:(orders,PROD)]]',
     source_type: 'CATALOG_ASSET',
     source_locator: 'postgres.analytics.orders',

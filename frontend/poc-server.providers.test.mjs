@@ -149,6 +149,7 @@ function providerHandler(request, response) {
           urn: payload.variables.urn,
           type: 'DATASET',
           name: 'wafer_events',
+          subTypes: { typeNames: ['Table'] },
           platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
           properties: {
             name: 'wafer_events', description: 'Live DataHub wafer evidence', created: null,
@@ -381,6 +382,7 @@ test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
   const detail = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}`)).json()
   assert.equal(detail.database_name, 'MANUFACTURING')
   assert.equal(detail.schema_name, 'QUALITY')
+  assert.equal(detail.dataset_kind, 'TABLE')
   assert.equal(detail.schema_fields[0].fieldPath, 'wafer_id')
   assert.equal(detail.schema_fields[0].description, 'Curated wafer identifier')
   assert.equal(detail.schema_fields[0].globalTags.tags[0].tag.name, 'identifier')
@@ -428,6 +430,10 @@ test('keeps provider cursors server-side and aggregates the complete DataHub inv
   assert.equal(root.items[0].asset_count, 2)
   const dashboard = await (await fetch(`${pocOrigin}/poc-api/datahub/dashboard`)).json()
   assert.equal(dashboard.catalog_asset_count, 2)
+  const coverage = await (await fetch(`${pocOrigin}/poc-api/datahub/profile-coverage`)).json()
+  assert.equal(coverage.source, 'DATAHUB_GMS_LIVE')
+  assert.equal(coverage.asset_count, 2)
+  assert.equal(coverage.schema_available, 2)
   const systems = await (await fetch(`${pocOrigin}/poc-api/datahub/systems`)).json()
   assert.deepEqual(systems.items.map((item) => item.id), ['postgres'])
   const glossary = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary?q=wafer`)).json()
@@ -471,6 +477,7 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
     && Array.isArray(JSON.parse(request.body).input)
     && JSON.parse(request.body).input.length === 2)
   assert.ok(catalogBatch, 'the complete two-asset DataHub inventory must be embedded')
+  assert.ok(JSON.parse(catalogBatch.body).input.every((document) => document.includes('Columns (')))
   const classifierRequest = [...requests].reverse().find((request) => {
     if (!request.path.endsWith('/chat/completions')) return false
     return JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')
@@ -519,7 +526,7 @@ test('resolves an exact table name and composes detailed DataHub metadata eviden
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question: 'wafer_events 테이블의 컬럼과 설명을 알려줘', mode: 'AUTO' }),
+    body: JSON.stringify({ question: 'wafer_events 테이블의 목적, 컬럼, 태그와 용어를 설명해줘', mode: 'AUTO' }),
   })
   assert.equal(response.status, 200)
   const payload = await response.json()
@@ -532,6 +539,13 @@ test('resolves an exact table name and composes detailed DataHub metadata eviden
   assert.match(payload.evidence[0].description, /wafer_id \(VARCHAR\)/)
   assert.match(payload.evidence[0].description, /Curated wafer identifier/)
   assert.match(payload.evidence[0].description, /Wafer ID/)
+  assert.equal(payload.evidence[0].dataset_kind, 'TABLE')
+  const composer = [...requests].reverse().find((request) => {
+    if (!request.path.endsWith('/chat/completions')) return false
+    return !JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')
+  })
+  assert.equal(JSON.parse(composer.body).max_tokens, 896)
+  assert.doesNotMatch(JSON.parse(composer.body).messages[0].content, /concisely/i)
   const classifiersAfter = requests.filter((request) => request.path.endsWith('/chat/completions')
     && JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')).length
   assert.equal(classifiersAfter, classifiersBefore)

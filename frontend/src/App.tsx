@@ -247,6 +247,7 @@ export function App() {
 
   const navigateAdmin = useCallback((adminSection: string) => {
     if (adminSection === 'poc-registration') return navigate('registration')
+    if (adminSection === 'poc-quality') return navigate('quality')
     if (adminSection === 'poc-knowledge') return navigate('knowledge')
     if (adminSection === 'poc-glossary') return navigate('glossary')
     const url = new URL(window.location.href)
@@ -326,6 +327,7 @@ export function App() {
   const adminMenuItems: Array<{ id: string; label: string }> = !authenticationEnabled
     ? [
         { id: 'poc-registration', label: '등록관리' },
+        { id: 'poc-quality', label: '품질관리' },
         { id: 'poc-knowledge', label: '지식관리' },
         { id: 'poc-glossary', label: '용어사전' },
         ...(currentAdminContext ? [{ id: 'memberships', label: '관리자메뉴' }] : []),

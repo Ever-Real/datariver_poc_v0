@@ -57,6 +57,9 @@
 | 59 | [Isolated POC Compose state and cache](adr/0115-poc-compose-state-and-cache.md) | pgvector-backed POC adapter state, Redis DataHub cache and npm fallback | Accepted for authentication-free POC only |
 | 60 | [POC Catalog vector and static document presentation](adr/0116-poc-catalog-vector-and-static-document-presentation.md) | Full-inventory incremental Chat retrieval and non-executable imported document styling | Accepted for authentication-free POC only |
 | 61 | [POC live Chat stream and DataHub profile compatibility](adr/0117-poc-live-chat-stream-and-datahub-profile-compatibility.md) | Real SSE workflow, non-blocking vector refresh and allowlisted connector profile variants | Accepted for authentication-free POC only |
+| 62 | [POC complete DataHub Catalog evidence and MCP boundary](adr/0118-poc-complete-datahub-catalog-evidence.md) | Complete table/column/profile vector evidence, compact cards and direct-GMS/MCP decision | Accepted for authentication-free POC only |
+| 63 | [GX, DataHub and DataRiver integration guide](62_GX_DATAHUB_DATARIVER_INTEGRATION_GUIDE.md) | Native profile ingestion, GX Assertion publication, Airflow dispatch and DataRiver result ownership | Operator guide; target runtime gates open |
+| 64 | [Development DataHub profile diagnostic](reviews/2026-08-12_POC_DATAHUB_PROFILE_DIAGNOSTIC.md) | Current GMS aspect/profile inventory and exact external activation gate | Read-only local evidence |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and

@@ -64,7 +64,6 @@ describe('POC compatibility application', () => {
     renderPoc()
     const pages = [
       ['변경관리', '변경 요청과 승인'],
-      ['품질관리', '품질관리'],
       ['모니터링', 'Infrastructure Monitoring'],
       ['거버넌스', '거버넌스'],
       ['Chat', '카탈로그 Chat'],
@@ -80,6 +79,7 @@ describe('POC compatibility application', () => {
     expect(screen.getByRole('menu', { name: '사용자 작업' })).toBeVisible()
     expect(screen.getByText('POC USER')).toBeVisible()
     expect(screen.getByRole('menuitem', { name: '등록관리' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: '품질관리' })).toBeVisible()
     expect(screen.getByRole('menuitem', { name: '지식관리' })).toBeVisible()
     expect(screen.getByRole('menuitem', { name: '용어사전' })).toBeVisible()
     expect(await screen.findByRole('menuitem', { name: '관리자메뉴' })).toBeVisible()

@@ -40,7 +40,7 @@ interface ChangeRequestDetailDialogProps extends AssuranceActions {
   applyReportError?: unknown
   onClose: () => void
   onEdit: () => void
-  onRefresh: () => void
+  onRefresh: () => void | Promise<void>
   onAction: (action: ChangeActionHint, reason?: string) => void
   onDownloadAttachment: (attachment: ChangeRequestAttachment) => void
   onNextAttachmentPage: () => void
@@ -266,6 +266,14 @@ export function ChangeRequestDetailDialog({
     testMutationIntent.current += 1
     testMutationController.current?.abort()
   }, [])
+  useEffect(() => {
+    if (!testSystemId && routedSystems.length > 0) setTestSystemId(routedSystems[0] ?? '')
+  }, [routedSystems, testSystemId])
+  useEffect(() => {
+    if (!testAttachmentId && currentTestAttachments.length > 0) {
+      setTestAttachmentId(currentTestAttachments.at(-1)?.id ?? '')
+    }
+  }, [currentTestAttachments, testAttachmentId])
 
   useEffect(() => {
     if (!open || !value || selectedStage !== 1) return
@@ -364,7 +372,7 @@ export function ChangeRequestDetailDialog({
         || value.version !== changeRequestVersion
       ) return
       setTestSummary('')
-      onRefresh()
+      await onRefresh()
     } catch (next) {
       if (
         !controller.signal.aborted
@@ -400,7 +408,7 @@ export function ChangeRequestDetailDialog({
       description={current ? `요청일 ${eventTime(current.created_at)} · 서버 검증 상태 ${changeStateLabel(current.state)}` : '현재 권한으로 변경 요청을 확인합니다.'}
       onRequestClose={requestClose}
       footer={<>
-        <button type="button" className="button button-secondary" disabled={busy || loading} onClick={onRefresh}>새로고침</button>
+        <button type="button" className="button button-secondary" disabled={busy || loading} onClick={() => { void onRefresh() }}>새로고침</button>
         <button type="button" className="button button-secondary" disabled={busy} onClick={requestClose}>닫기</button>
       </>}
     >
@@ -503,6 +511,7 @@ export function ChangeRequestDetailDialog({
               </div>}
               <ErrorNotice error={testError} />
             </section>
+            {stageHints.some((hint) => hint.disabledReason) && <p className="m-0 text-right text-xs font-bold text-amber-800" role="status">{stageHints.find((hint) => hint.disabledReason)?.disabledReason}</p>}
             <div className="flex flex-wrap justify-end gap-2">{stageHints.map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy || Boolean(hint.disabledReason)} title={hint.disabledReason} onClick={() => onAction(hint)}>{hint.label}</button>)}</div>
           </section>}
 

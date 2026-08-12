@@ -134,6 +134,54 @@ export function createPocStateStore() {
       .map((record) => [record.assetUrn, record.sourceHash]))
   }
 
+  async function catalogEmbeddingProfileCoverage(bindingHash) {
+    await start()
+    if (pool) {
+      const result = await pool.query(`
+        SELECT
+          COALESCE(NULLIF(metadata->>'platform', ''), 'unknown') AS platform,
+          count(*)::int AS asset_count,
+          count(*) FILTER (WHERE (metadata->'quality') ? 'rowCount')::int AS row_count_available,
+          count(*) FILTER (WHERE (metadata->'quality') ? 'sizeInBytes')::int AS size_bytes_available,
+          count(*) FILTER (WHERE NULLIF(metadata->>'created_at', '') IS NOT NULL)::int AS created_at_available,
+          count(*) FILTER (
+            WHERE COALESCE((metadata->>'schema_fields_total')::int, 0) > 0
+          )::int AS schema_available,
+          max(updated_at) AS observed_at
+        FROM poc_catalog_embedding
+        WHERE binding_hash = $1
+        GROUP BY COALESCE(NULLIF(metadata->>'platform', ''), 'unknown')
+        ORDER BY platform
+      `, [bindingHash])
+      return result.rows.map((row) => ({
+        platform: row.platform,
+        asset_count: Number(row.asset_count),
+        row_count_available: Number(row.row_count_available),
+        size_bytes_available: Number(row.size_bytes_available),
+        created_at_available: Number(row.created_at_available),
+        schema_available: Number(row.schema_available),
+        observed_at: row.observed_at instanceof Date ? row.observed_at.toISOString() : row.observed_at,
+      }))
+    }
+    const grouped = new Map()
+    for (const record of memoryCatalogEmbeddings.values()) {
+      if (record.bindingHash !== bindingHash) continue
+      const metadata = record.metadata && typeof record.metadata === 'object' ? record.metadata : {}
+      const platform = typeof metadata.platform === 'string' && metadata.platform ? metadata.platform : 'unknown'
+      const current = grouped.get(platform) || {
+        platform, asset_count: 0, row_count_available: 0, size_bytes_available: 0,
+        created_at_available: 0, schema_available: 0, observed_at: new Date().toISOString(),
+      }
+      current.asset_count += 1
+      if (Number.isInteger(metadata.quality?.rowCount)) current.row_count_available += 1
+      if (Number.isInteger(metadata.quality?.sizeInBytes)) current.size_bytes_available += 1
+      if (metadata.created_at) current.created_at_available += 1
+      if (Number.isInteger(metadata.schema_fields_total) && metadata.schema_fields_total > 0) current.schema_available += 1
+      grouped.set(platform, current)
+    }
+    return [...grouped.values()].sort((left, right) => left.platform.localeCompare(right.platform))
+  }
+
   async function upsertCatalogEmbeddings(records) {
     if (!records.length) return
     await start()
@@ -252,6 +300,7 @@ export function createPocStateStore() {
     cacheSet,
     cacheDelete,
     catalogEmbeddingHashes,
+    catalogEmbeddingProfileCoverage,
     upsertCatalogEmbeddings,
     retainCatalogEmbeddingGeneration,
     deleteCatalogEmbeddingsExceptGeneration,

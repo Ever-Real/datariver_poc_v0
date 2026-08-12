@@ -75,6 +75,10 @@ function responseString(value: unknown, fallback: string): string {
     : fallback
 }
 
+function responseAssetKind(value: unknown): 'TABLE' | 'VIEW' | 'MATERIALIZED_VIEW' {
+  return value === 'VIEW' || value === 'MATERIALIZED_VIEW' ? value : 'TABLE'
+}
+
 async function gatewayRequest<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, {
     ...options,
@@ -240,7 +244,8 @@ let governanceAttachments: GovernanceDocumentAttachment[] = []
 const governanceAttachmentLocations = new Map<string, { upload_id: string; key: string }>()
 const chatMessages = new Map<string, ChatMessage[]>()
 const changeAttachmentUploads = new Map<string, ChangeRequestAttachmentUpload & { file: File }>()
-const changeAttachments = new Map<string, Array<ChangeRequestAttachment & { file: File }>>()
+const changeAttachments = new Map<string, Array<ChangeRequestAttachment & { file?: File }>>()
+const changeAttachmentLocations = new Map<string, { upload_id: string; display_name: string }>()
 const liveAssetDetails = new Map<string, CatalogAssetDetail>()
 const bulkCandidatePreviews = new Map<string, Record<string, unknown>>()
 
@@ -1070,6 +1075,22 @@ class PocApiClient {
         if (Array.isArray(value.changeRecords)) {
           changeRecords = (value.changeRecords as ChangeRequestRecord[]).map(normalizePocChangeRecord)
         }
+        if (Array.isArray(value.changeAttachments)) {
+          changeAttachments.clear()
+          for (const entry of value.changeAttachments) {
+            if (Array.isArray(entry) && typeof entry[0] === 'string' && Array.isArray(entry[1])) {
+              changeAttachments.set(entry[0], entry[1] as ChangeRequestAttachment[])
+            }
+          }
+        }
+        if (Array.isArray(value.changeAttachmentLocations)) {
+          changeAttachmentLocations.clear()
+          for (const entry of value.changeAttachmentLocations) {
+            if (Array.isArray(entry) && typeof entry[0] === 'string' && entry[1] && typeof entry[1] === 'object') {
+              changeAttachmentLocations.set(entry[0], entry[1] as { upload_id: string; display_name: string })
+            }
+          }
+        }
         if (Array.isArray(value.uploadRecords)) uploadRecords = value.uploadRecords as Array<Record<string, unknown>>
         if (Array.isArray(value.manualSubmissionReports)) manualSubmissionReports = value.manualSubmissionReports as Array<Record<string, unknown>>
         if (value.monitoringConfiguration && typeof value.monitoringConfiguration === 'object') {
@@ -1136,6 +1157,11 @@ class PocApiClient {
         value: {
           sequence,
           changeRecords,
+          changeAttachments: [...changeAttachments.entries()].map(([recordId, items]) => [
+            recordId,
+            items.map(({ file: _file, ...item }) => { void _file; return item }),
+          ]),
+          changeAttachmentLocations: [...changeAttachmentLocations.entries()],
           uploadRecords,
           manualSubmissionReports,
           monitoringConfiguration,
@@ -1210,7 +1236,8 @@ class PocApiClient {
           domain_id: responseString(item.domain, '') || null,
           owner_department_id: null,
           name: responseString(item.name, 'DataHub asset'),
-          description: responseString(item.description, '') || null,
+          asset_kind: responseAssetKind(item.dataset_kind),
+          description: responseString(item.provider_description ?? item.description, '') || null,
           source_type: responseString(item.evidence_type, 'CATALOG_ASSET'),
           source_locator: responseString(item.external_urn ?? item.id, ''),
           source_version: responseString(item.source_version, 'datahub-live'),
@@ -1907,7 +1934,14 @@ class PocApiClient {
       const attachment = (changeAttachments.get(record.id) ?? [])
         .find((item) => item.id === decodeURIComponent(attachmentDownload[2] ?? ''))
       if (!attachment) throw new Error('첨부파일을 찾을 수 없습니다.')
-      return { url: URL.createObjectURL(attachment.file) }
+      if (attachment.file) return { url: URL.createObjectURL(attachment.file) }
+      const location = changeAttachmentLocations.get(attachment.id)
+      if (!location) throw new Error('첨부파일 저장 위치를 찾을 수 없습니다. 파일을 현재 회차에 다시 첨부하세요.')
+      const stored = await fetch(`/poc-api/minio/accepted/${encodeURIComponent(location.upload_id)}/${encodeURIComponent(location.display_name)}`, {
+        signal: options.signal,
+      })
+      if (!stored.ok) throw new Error(`MinIO 첨부파일을 불러오지 못했습니다. (${stored.status})`)
+      return { url: URL.createObjectURL(await stored.blob()) }
     }
     const attachmentUploadList = path.match(/^\/change-requests\/([^/]+)\/attachment-uploads$/)
     if (attachmentUploadList && method === 'GET') {
@@ -1930,7 +1964,7 @@ class PocApiClient {
       if (upload.round_id !== record.current_round_id) throw new Error('이전 회차 첨부파일은 현재 회차에 확정할 수 없습니다.')
       if (upload.state !== 'FINALIZED') {
         const attachments = changeAttachments.get(record.id) ?? []
-        attachments.push({
+        const attachment = {
           id: nextId('change-attachment'),
           kind: upload.kind,
           round_id: upload.round_id,
@@ -1941,9 +1975,15 @@ class PocApiClient {
           content_sha256: upload.expected_content_sha256,
           created_at: new Date().toISOString(),
           file: upload.file,
-        })
+        }
+        attachments.push(attachment)
         changeAttachments.set(record.id, attachments)
+        changeAttachmentLocations.set(attachment.id, {
+          upload_id: upload.id,
+          display_name: upload.original_name,
+        })
         upload.state = 'FINALIZED'
+        await this.persistCore()
       }
       return publicAttachmentUpload(upload)
     }
@@ -3058,5 +3098,6 @@ export function resetPocMemory(): void {
   chatMessages.clear()
   changeAttachmentUploads.clear()
   changeAttachments.clear()
+  changeAttachmentLocations.clear()
   liveAssetDetails.clear()
 }

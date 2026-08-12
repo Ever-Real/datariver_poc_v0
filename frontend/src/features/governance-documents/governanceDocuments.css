@@ -70,11 +70,24 @@
 .governance-editor-main > header h3 { margin: 2px 0 0; color: var(--navy-900); font-size: 13px; }
 .governance-editor-main > header > span { color: var(--text-500); font-size: 9px; font-variant-numeric: tabular-nums; }
 .governance-html-editor { min-height: 596px; border: 0; background: #fffdf8; }
-.governance-editor-toolbar { position: sticky; z-index: 1; top: 0; display: flex; flex-wrap: wrap; gap: 4px; border-bottom: 1px solid var(--line-300); padding: 7px 10px; background: rgba(245, 248, 248, .96); backdrop-filter: blur(6px); }
+.governance-editor-toolbar { position: sticky; z-index: 2; top: 0; display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 1px solid var(--line-300); padding: 8px 10px; background: rgba(245, 248, 248, .97); backdrop-filter: blur(6px); }
+.governance-editor-tool-group { display: inline-flex; align-items: center; gap: 3px; border-right: 1px solid var(--line-300); padding-right: 6px; }
+.governance-editor-tool-group:last-child { border-right: 0; padding-right: 0; }
 .governance-editor-toolbar button { min-width: 36px; min-height: 31px; border: 1px solid #b6c4cb; border-radius: 4px; color: var(--navy-900); background: #fff; font-size: 10px; font-weight: 900; }
 .governance-editor-toolbar button:hover:not(:disabled) { border-color: var(--blue-700); color: var(--blue-700); background: var(--blue-100); }
+.governance-editor-toolbar button.active, .governance-editor-toolbar button[aria-pressed="true"] { border-color: var(--blue-700); color: #fff; background: var(--blue-700); }
+.governance-editor-table-tools { flex-basis: 100%; border-top: 1px solid var(--line-200); border-right: 0; padding-top: 6px; padding-right: 0; }
+.governance-editor-content { min-height: 545px; }
 .governance-editor-surface { min-height: 545px; padding: 32px clamp(28px, 5vw, 72px); overflow-wrap: anywhere; color: var(--text-700); font-size: 12px; line-height: 1.75; outline: none; }
 .governance-editor-surface:focus { box-shadow: inset 0 0 0 2px var(--blue-700); }
+.governance-editor-surface p:first-child { margin-top: 0; }
+.governance-editor-surface table { width: 100%; border-collapse: collapse; }
+.governance-editor-surface th, .governance-editor-surface td { min-width: 80px; border: 1px solid var(--line-300); padding: 6px 8px; vertical-align: top; }
+.governance-editor-surface th { color: var(--navy-900); background: #edf4f6; }
+.governance-editor-surface .selectedCell { background: var(--blue-100); }
+.governance-editor-surface .column-resize-handle { width: 3px; position: absolute; top: 0; right: -2px; bottom: -2px; background: var(--blue-700); pointer-events: none; }
+.governance-editor-surface .tableWrapper { overflow-x: auto; }
+.governance-editor-loading { min-height: 545px; display: grid; place-items: center; color: var(--text-500); font-size: 10px; }
 .governance-file-drop { display: grid; gap: 6px; margin: 10px; border: 1px dashed #90aab5; border-radius: 5px; padding: 10px; color: var(--navy-900); background: #f4fafb; font-size: 9px; font-weight: 900; }
 .governance-file-drop input { width: 100%; color: var(--text-600); font-size: 9px; font-weight: 500; }
 .governance-file-drop small { color: var(--text-500); font-size: 8px; font-weight: 500; }

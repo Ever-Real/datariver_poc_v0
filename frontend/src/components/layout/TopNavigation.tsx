@@ -62,7 +62,7 @@ export function TopNavigation({
     ? 'knowledge'
     : page
   const navigationItems = pocMode
-    ? primaryNavigation.filter(({ id }) => id !== 'registration' && id !== 'knowledge')
+    ? primaryNavigation.filter(({ id }) => !['registration', 'quality', 'knowledge'].includes(id))
     : primaryNavigation
 
   return (

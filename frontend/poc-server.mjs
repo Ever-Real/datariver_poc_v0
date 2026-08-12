@@ -42,9 +42,11 @@ const catalogEmbeddingRefreshIntervalMs = 15 * 60 * 1000
 const cursorEntries = new Map()
 let inventorySnapshot
 let hierarchySnapshot
+let embeddingInventorySnapshot
 let catalogEmbeddingSnapshot
 let catalogEmbeddingRefreshPromise
 let catalogEmbeddingRefreshStartedAt = 0
+let catalogEmbeddingLastError
 const bulkPreparations = new Map()
 const bulkTemplatePath = join(sourceDirectory, 'poc-assets/datariver-catalog-metadata-rows.xlsx')
 const catalogMetadataHeaders = [
@@ -105,7 +107,7 @@ function tokenProvider(prefix, urlName, { allowMissingToken = false } = {}) {
 
 const datahub = tokenProvider('DATAHUB_GMS', 'DATAHUB_GMS_URL', { allowMissingToken: true })
 const datahubCacheScope = datahub ? sha256(datahub.url).slice(0, 16) : 'disabled'
-const datahubInventoryCacheKey = `datahub-inventory-v3:${datahubCacheScope}`
+const datahubInventoryCacheKey = `datahub-inventory-v4:${datahubCacheScope}`
 const datahubHierarchyCacheKey = `datahub-hierarchy-v4:${datahubCacheScope}`
 const airflow = credentials('AIRFLOW', 'AIRFLOW_URL')
 const minioUrl = optionalUrl('MINIO_URL')
@@ -308,6 +310,7 @@ query DataRiverPocCatalog($input: ScrollAcrossEntitiesInput!) {
         urn type
         ... on Dataset {
           name
+          subTypes { typeNames }
           platform { urn name }
           properties { name description created customProperties { key value } }
           editableProperties { description }
@@ -349,6 +352,7 @@ query DataRiverPocCatalogInventory($input: ScrollAcrossEntitiesInput!) {
         urn type
         ... on Dataset {
           name
+          subTypes { typeNames }
           platform { urn name }
           properties { name description created customProperties { key value } }
           editableProperties { description }
@@ -368,6 +372,63 @@ query DataRiverPocCatalogInventory($input: ScrollAcrossEntitiesInput!) {
           ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } } }
           globalTags: tags { tags { tag { name properties { name } } } }
           glossaryTerms { terms { term { urn name } } }
+        }
+      }
+    }
+  }
+}`
+
+const datahubEmbeddingInventoryQuery = `
+query DataRiverPocCatalogEmbeddingInventory($input: ScrollAcrossEntitiesInput!) {
+  scrollAcrossEntities(input: $input) {
+    nextScrollId count total
+    searchResults {
+      entity {
+        urn type
+        ... on Dataset {
+          name
+          subTypes { typeNames }
+          platform { urn name }
+          properties { name description created customProperties { key value } }
+          editableProperties { description }
+          browsePathV2 {
+            path {
+              name
+              entity {
+                urn type
+                ... on Container {
+                  properties { name qualifiedName }
+                  subTypes { typeNames }
+                }
+              }
+            }
+          }
+          domain { domain { urn } }
+          ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } type } }
+          globalTags: tags { tags { tag { name properties { name } } } }
+          glossaryTerms { terms { term { urn name } } }
+          schemaMetadata(version: 0) {
+            fields {
+              fieldPath label type nativeDataType description
+              globalTags { tags { tag { urn name properties { name } } } }
+              glossaryTerms { terms { term { urn name } } }
+              schemaFieldEntity {
+                globalTags: tags { tags { tag { urn name properties { name } } } }
+                glossaryTerms { terms { term { urn name } } }
+              }
+            }
+          }
+          editableSchemaMetadata {
+            editableSchemaFieldInfo {
+              fieldPath description
+              globalTags { tags { tag { urn name properties { name } } } }
+              glossaryTerms { terms { term { urn name } } }
+            }
+          }
+          latestFullTableProfile: datasetProfiles(limit: 10) {
+            rowCount columnCount sizeInBytes timestampMillis
+            partitionSpec { type partition }
+          }
         }
       }
     }
@@ -397,6 +458,7 @@ query DataRiverPocAsset($urn: String!) {
     urn type
     ... on Dataset {
       name
+      subTypes { typeNames }
       platform { urn name }
       properties { name description created customProperties { key value } }
       editableProperties { description }
@@ -564,7 +626,7 @@ query DataRiverPocGlossaryAssignments($urn: String!, $input: RelationshipsInput!
   }
 }`
 
-async function datahubGraphql(query, variables) {
+async function datahubGraphql(query, variables, timeoutMs = providerTimeoutMs) {
   if (!datahub) throw Object.assign(new Error('DataHub is not configured.'), { statusCode: 503 })
   const response = await providerFetch(joinProviderUrl(datahub.url, '/api/graphql'), {
     method: 'POST',
@@ -573,6 +635,7 @@ async function datahubGraphql(query, variables) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({ query, variables }),
+    timeoutMs,
   })
   await requireOk(response, 'DataHub')
   const payload = await response.json()
@@ -594,6 +657,7 @@ function datahubAssetCacheKey(urn) {
 async function invalidateDatahubCaches(urn) {
   inventorySnapshot = undefined
   hierarchySnapshot = undefined
+  embeddingInventorySnapshot = undefined
   catalogEmbeddingSnapshot = undefined
   catalogEmbeddingRefreshStartedAt = 0
   await Promise.allSettled([
@@ -870,6 +934,17 @@ function tagNames(entity) {
   return (entity.globalTags?.tags || []).map((item) => item.tag?.properties?.name || item.tag?.name).filter(Boolean)
 }
 
+function datasetKind(entity) {
+  const candidates = [
+    ...(entity.subTypes?.typeNames || []),
+    customProperty(entity, 'datariver.seed.object_kind'),
+    customProperty(entity, 'object_kind'),
+  ].map((value) => String(value || '').trim().toLocaleUpperCase()).filter(Boolean)
+  if (candidates.some((value) => value.includes('MATERIALIZED') && value.includes('VIEW'))) return 'MATERIALIZED_VIEW'
+  if (candidates.some((value) => value.includes('VIEW'))) return 'VIEW'
+  return 'TABLE'
+}
+
 function datahubCreatedAt(properties) {
   const customProperties = new Map((properties?.customProperties || []).flatMap((item) => (
     typeof item?.key === 'string' && typeof item?.value === 'string'
@@ -911,6 +986,7 @@ function datasetAsset(entity) {
     id: entity.urn,
     external_urn: entity.urn,
     asset_type: entity.type || 'DATASET',
+    dataset_kind: datasetKind(entity),
     name: identity.tableName,
     description,
     platform: entity.platform?.name || urnTail(entity.platform?.urn),
@@ -974,7 +1050,14 @@ function cursorValue(token, scope) {
   return entry.value
 }
 
-async function datahubCatalogPage(query, limit, providerCursor, graphqlQuery = datahubSearchQuery) {
+async function datahubCatalogPage(
+  query,
+  limit,
+  providerCursor,
+  graphqlQuery = datahubSearchQuery,
+  assetMapper = datasetAsset,
+  timeoutMs = providerTimeoutMs,
+) {
   const input = {
     types: ['DATASET'],
     query,
@@ -986,9 +1069,9 @@ async function datahubCatalogPage(query, limit, providerCursor, graphqlQuery = d
   if (providerCursor) input.scrollId = providerCursor
   const data = await datahubGraphql(graphqlQuery, {
     input,
-  })
+  }, timeoutMs)
   const page = data.scrollAcrossEntities
-  const items = (page?.searchResults || []).map((item) => datasetAsset(item.entity))
+  const items = (page?.searchResults || []).map((item) => assetMapper(item.entity))
   const nextProviderCursor = typeof page?.nextScrollId === 'string' && page.nextScrollId
     ? page.nextScrollId
     : undefined
@@ -1038,6 +1121,41 @@ async function datahubInventory() {
     return await promise
   } catch (error) {
     inventorySnapshot = undefined
+    throw error
+  }
+}
+
+async function datahubEmbeddingInventory() {
+  const now = Date.now()
+  if (embeddingInventorySnapshot?.expiresAt > now) return embeddingInventorySnapshot.items
+  if (embeddingInventorySnapshot?.promise) return embeddingInventorySnapshot.promise
+  const promise = (async () => {
+    const items = []
+    const observed = new Set()
+    let providerCursor
+    for (let pageNumber = 0; pageNumber < maximumInventoryPages; pageNumber += 1) {
+      const page = await datahubCatalogPage(
+        '*', 250, providerCursor, datahubEmbeddingInventoryQuery, detailedDatasetAsset, 60_000,
+      )
+      for (const item of page.items) {
+        if (!observed.has(item.id)) {
+          observed.add(item.id)
+          items.push(item)
+        }
+      }
+      if (!page.nextProviderCursor) {
+        embeddingInventorySnapshot = { items, expiresAt: Date.now() + datahubInventoryTtlMs }
+        return items
+      }
+      providerCursor = page.nextProviderCursor
+    }
+    throw Object.assign(new Error('DataHub embedding inventory exceeded the configured reconciliation page bound.'), { statusCode: 503 })
+  })()
+  embeddingInventorySnapshot = { promise, expiresAt: 0 }
+  try {
+    return await promise
+  } catch (error) {
+    embeddingInventorySnapshot = undefined
     throw error
   }
 }
@@ -1303,6 +1421,65 @@ async function datahubDashboard() {
   }
 }
 
+async function datahubProfileCoverage() {
+  const bindingHash = catalogEmbeddingBindingHash()
+  if (bindingHash) {
+    const projected = await pocStateStore.catalogEmbeddingProfileCoverage(bindingHash)
+    if (projected.length) {
+      const items = projected.map((item) => ({
+        platform: item.platform,
+        asset_count: item.asset_count,
+        row_count_available: item.row_count_available,
+        size_bytes_available: item.size_bytes_available,
+        created_at_available: item.created_at_available,
+        schema_available: item.schema_available,
+      }))
+      const observedTimes = projected.map((item) => item.observed_at).filter(Boolean).sort()
+      return {
+        observed_at: observedTimes.at(-1) || new Date().toISOString(),
+        source: 'DATAHUB_GMS_VECTOR_PROJECTION',
+        projection_contract: 'POC_DATAHUB_CATALOG_ASSET_V2',
+        asset_count: items.reduce((total, item) => total + item.asset_count, 0),
+        row_count_available: items.reduce((total, item) => total + item.row_count_available, 0),
+        size_bytes_available: items.reduce((total, item) => total + item.size_bytes_available, 0),
+        created_at_available: items.reduce((total, item) => total + item.created_at_available, 0),
+        schema_available: items.reduce((total, item) => total + item.schema_available, 0),
+        items,
+      }
+    }
+  }
+  const assets = await datahubEmbeddingInventory()
+  const byPlatform = new Map()
+  for (const asset of assets) {
+    const platform = asset.platform || 'unknown'
+    const current = byPlatform.get(platform) || {
+      platform,
+      asset_count: 0,
+      row_count_available: 0,
+      size_bytes_available: 0,
+      created_at_available: 0,
+      schema_available: 0,
+    }
+    current.asset_count += 1
+    if (Number.isInteger(asset.quality?.rowCount)) current.row_count_available += 1
+    if (Number.isInteger(asset.quality?.sizeInBytes)) current.size_bytes_available += 1
+    if (asset.created_at) current.created_at_available += 1
+    if (Number.isInteger(asset.schema_fields_total) && asset.schema_fields_total > 0) current.schema_available += 1
+    byPlatform.set(platform, current)
+  }
+  const items = [...byPlatform.values()].sort((left, right) => left.platform.localeCompare(right.platform))
+  return {
+    observed_at: new Date().toISOString(),
+    source: 'DATAHUB_GMS_LIVE',
+    asset_count: assets.length,
+    row_count_available: items.reduce((total, item) => total + item.row_count_available, 0),
+    size_bytes_available: items.reduce((total, item) => total + item.size_bytes_available, 0),
+    created_at_available: items.reduce((total, item) => total + item.created_at_available, 0),
+    schema_available: items.reduce((total, item) => total + item.schema_available, 0),
+    items,
+  }
+}
+
 async function datahubSystems() {
   return {
     items: uniqueValues((await datahubHierarchyInventory()).map((asset) => asset.platform)).map((platform, index) => ({
@@ -1550,14 +1727,9 @@ function datahubProfileQuality(value, properties) {
   return quality
 }
 
-async function datahubAsset(urn, requestedOffset = 0, requestedLimit = 100) {
-  const entity = await datahubEntity(urn)
-  if (!entity) throw Object.assign(new Error('DataHub asset was not found.'), { statusCode: 404 })
+function detailedDatasetAsset(entity) {
   const asset = datasetAsset(entity)
   const fields = datahubSchemaFields(entity)
-  const fieldOffset = Math.max(0, Number.isInteger(requestedOffset) ? requestedOffset : 0)
-  const fieldLimit = Math.min(100, Math.max(1, Number.isInteger(requestedLimit) ? requestedLimit : 100))
-  const pageFields = fields.slice(fieldOffset, fieldOffset + fieldLimit)
   return {
     ...asset,
     ownership: (entity.ownership?.owners || []).map((item) => ({
@@ -1568,20 +1740,39 @@ async function datahubAsset(urn, requestedOffset = 0, requestedLimit = 100) {
       urn: item.term?.urn,
       name: item.term?.name,
     })),
-    schema_fields: pageFields,
+    schema_fields: fields,
     schema_fields_total: fields.length,
     schema_fields_available: fields.length,
     schema_fields_truncated: false,
     schema_fields_total_exact: true,
-    schema_fields_offset: fieldOffset,
-    schema_fields_limit: fieldLimit,
-    schema_fields_has_more: fieldOffset + pageFields.length < fields.length,
-    // Prefer the latest full-table DatasetProfile. Reviewed connector-written
-    // custom properties cover legacy Oracle/Postgres ingestion variants only;
-    // missing observations remain unknown instead of becoming synthetic zeroes.
+    schema_fields_offset: 0,
+    schema_fields_limit: fields.length,
+    schema_fields_has_more: false,
+    // DataHub remains authoritative: absent profile values stay absent.
     quality: datahubProfileQuality(entity.latestFullTableProfile, entity.properties),
     projection_source_version: 'datahub-live-poc',
     source_version: 'datahub-live',
+  }
+}
+
+async function datahubAssetAll(urn) {
+  const entity = await datahubEntity(urn)
+  if (!entity) throw Object.assign(new Error('DataHub asset was not found.'), { statusCode: 404 })
+  return detailedDatasetAsset(entity)
+}
+
+async function datahubAsset(urn, requestedOffset = 0, requestedLimit = 100) {
+  const asset = await datahubAssetAll(urn)
+  const fields = asset.schema_fields
+  const fieldOffset = Math.max(0, Number.isInteger(requestedOffset) ? requestedOffset : 0)
+  const fieldLimit = Math.min(100, Math.max(1, Number.isInteger(requestedLimit) ? requestedLimit : 100))
+  const pageFields = fields.slice(fieldOffset, fieldOffset + fieldLimit)
+  return {
+    ...asset,
+    schema_fields: pageFields,
+    schema_fields_offset: fieldOffset,
+    schema_fields_limit: fieldLimit,
+    schema_fields_has_more: fieldOffset + pageFields.length < fields.length,
   }
 }
 
@@ -1875,8 +2066,9 @@ async function deterministicAutoRoute(question) {
   const dataTarget = /\b(?:table|dataset|column|asset|data)\b|테이블|데이터셋|컬럼|데이터\s*(?:자산)?/iu.test(question)
   const semanticDiscovery = /\b(?:find|recommend|search|similar|related)\b|찾(?:아|기|을|는)?|검색|추천|비슷|유사|관련(?:된|한)?/iu.test(question)
   const definitionOnly = /(?:뜻|의미|정의|용어).*(?:알려|설명)|(?:무슨|어떤)\s*(?:뜻|의미)/u.test(question)
+  const pureDefinition = definitionOnly && !dataTarget
   const greetingOnly = /^\s*(?:안녕(?:하세요)?|반가워|hello|hi|hey)[!?.\s]*$/iu.test(question)
-  if (greetingOnly || definitionOnly) {
+  if (greetingOnly || pureDefinition) {
     return {
       requested_mode: 'AUTO', selected_mode: 'GENERAL', reason: 'GENERAL_DEFAULT', adapter_state: 'READY',
       intent: 'GENERAL_CONVERSATION', confidence: 1, entity_resolution_required: false,
@@ -1884,7 +2076,7 @@ async function deterministicAutoRoute(question) {
       fallback_mode: null, clarification_required: false,
     }
   }
-  if (graphIntent && !definitionOnly) {
+  if (graphIntent && !pureDefinition) {
     const impactIntent = /\bimpact\b|영향|변경하면/iu.test(question)
     const relationshipIntent = /\b(?:relationship|path|dependency|dependencies)\b|연결\s*(?:관계|경로)|의존(?:성|관계)/iu.test(question)
     return {
@@ -1897,7 +2089,7 @@ async function deterministicAutoRoute(question) {
       fallback_mode: 'VECTOR', clarification_required: false,
     }
   }
-  if (semanticDiscovery && dataTarget && !definitionOnly) {
+  if (semanticDiscovery && dataTarget && !pureDefinition) {
     return {
       requested_mode: 'AUTO', selected_mode: 'VECTOR', reason: 'SEMANTIC_INTENT', adapter_state: llm.embedding ? 'READY' : 'UNAVAILABLE',
       intent: /\b(?:similar)\b|비슷|유사/iu.test(question) ? 'SEMANTIC_SIMILARITY' : 'SEMANTIC_DISCOVERY',
@@ -2082,7 +2274,7 @@ async function exactCatalogEvidence(question, limit = 3) {
   const ranked = await rankedExactCatalogAssets(question)
   if (!ranked.length || ranked[0].score < 95) return []
   return Promise.all(ranked.filter(({ score }) => score >= 95).slice(0, limit).map(async ({ asset }) => {
-    const detail = await datahubAsset(asset.external_urn || asset.id, 0, 100)
+    const detail = await datahubAssetAll(asset.external_urn || asset.id)
     return {
       ...detail,
       provider_description: detail.description,
@@ -2126,7 +2318,7 @@ async function rankedExactCatalogAssets(question) {
 }
 
 function catalogDetailEvidence(asset) {
-  const fields = (asset.schema_fields || []).slice(0, 40).map((field) => {
+  const fields = (asset.schema_fields || []).map((field) => {
     const name = field.fieldPath || field.label || 'unnamed_column'
     const type = field.nativeDataType || field.type || 'type unknown'
     const tags = (field.globalTags?.tags || []).map((item) => item.tag?.properties?.name || item.tag?.name).filter(Boolean)
@@ -2135,15 +2327,21 @@ function catalogDetailEvidence(asset) {
   })
   const quality = asset.quality || {}
   return [
-    [asset.platform, asset.database_name, asset.schema_name, asset.name].filter(Boolean).join('.'),
-    asset.description || 'Description is not registered in DataHub.',
+    `Name: ${asset.name}`,
+    `Qualified name: ${[asset.platform, asset.database_name, asset.schema_name, asset.name].filter(Boolean).join('.')}`,
+    `Asset kind: ${asset.dataset_kind || 'TABLE'}`,
+    asset.domain ? `Domain: ${asset.domain}` : '',
+    asset.owner ? `Owner: ${asset.owner}` : '',
+    asset.description ? `Description: ${asset.description}` : 'Description is not registered in DataHub.',
     asset.tags?.length ? `Tags: ${asset.tags.join(', ')}` : '',
     asset.terms?.length ? `Glossary terms: ${asset.terms.join(', ')}` : '',
     Number.isInteger(quality.rowCount) ? `Rows: ${quality.rowCount}` : '',
+    Number.isInteger(quality.columnCount) ? `Profiled columns: ${quality.columnCount}` : '',
     Number.isInteger(quality.sizeInBytes) ? `Size bytes: ${quality.sizeInBytes}` : '',
+    quality.profiledAt ? `Profiled at: ${quality.profiledAt}` : '',
     asset.created_at ? `Created: ${asset.created_at}` : '',
     fields.length ? `Columns (${asset.schema_fields_total} total):\n${fields.join('\n')}` : 'Columns are not registered in DataHub.',
-  ].filter(Boolean).join('\n').slice(0, 16_000)
+  ].filter(Boolean).join('\n')
 }
 
 async function datahubChatEvidence(question, route) {
@@ -2174,24 +2372,12 @@ function catalogEmbeddingBindingHash() {
     source: datahubCacheScope,
     endpoint: llm.embedding.url,
     model: llm.embedding.model,
-    contract: 'POC_DATAHUB_CATALOG_ASSET_V1',
+    contract: 'POC_DATAHUB_CATALOG_ASSET_V2',
   }))
 }
 
 function catalogEmbeddingDocument(asset) {
-  return [
-    `Table: ${asset.name}`,
-    `Qualified name: ${[asset.database_name, asset.schema_name, asset.name].filter(Boolean).join('.')}`,
-    `Platform: ${asset.platform || 'unknown'}`,
-    asset.database_name ? `Database: ${asset.database_name}` : '',
-    asset.schema_name ? `Schema: ${asset.schema_name}` : '',
-    asset.owner ? `Owner: ${asset.owner}` : '',
-    asset.domain ? `Domain: ${asset.domain}` : '',
-    asset.description ? `Description: ${asset.description}` : '',
-    asset.tags?.length ? `Tags: ${asset.tags.join(', ')}` : '',
-    asset.terms?.length ? `Glossary terms: ${asset.terms.join(', ')}` : '',
-    asset.created_at ? `Created: ${asset.created_at}` : '',
-  ].filter(Boolean).join('\n').slice(0, 12_000)
+  return catalogDetailEvidence(asset)
 }
 
 function embeddingVectors(payload, expectedCount) {
@@ -2223,7 +2409,7 @@ async function embedCatalogTexts(texts) {
 async function ensureCatalogEmbeddingIndex() {
   const bindingHash = catalogEmbeddingBindingHash()
   if (!bindingHash) throw new Error('The catalog Embedding projection is not configured.')
-  const inventory = await datahubInventory()
+  const inventory = await datahubEmbeddingInventory()
   const documents = inventory.map((asset) => {
     const contentText = catalogEmbeddingDocument(asset)
     return { asset, contentText, sourceHash: sha256(contentText) }
@@ -2280,7 +2466,10 @@ async function primeCatalogEmbeddingIndex(question, bindingHash) {
     for (const asset of catalog.items) candidates.set(asset.id, asset)
     if (candidates.size >= 20) break
   }
-  const documents = [...candidates.values()].slice(0, 20).map((asset) => {
+  const detailedCandidates = await Promise.all([...candidates.values()].slice(0, 20).map(async (asset) => {
+    try { return await datahubAssetAll(asset.external_urn || asset.id) } catch { return asset }
+  }))
+  const documents = detailedCandidates.map((asset) => {
     const contentText = catalogEmbeddingDocument(asset)
     return { asset, contentText, sourceHash: sha256(contentText) }
   })
@@ -2308,8 +2497,36 @@ function scheduleCatalogEmbeddingRefresh() {
     || now - catalogEmbeddingRefreshStartedAt < catalogEmbeddingRefreshIntervalMs) return
   catalogEmbeddingRefreshStartedAt = now
   catalogEmbeddingRefreshPromise = ensureCatalogEmbeddingIndex()
-    .catch(() => undefined)
+    .then((result) => {
+      catalogEmbeddingLastError = undefined
+      return result
+    })
+    .catch((error) => {
+      catalogEmbeddingLastError = boundedString(error instanceof Error ? error.message : String(error), 500)
+      return undefined
+    })
     .finally(() => { catalogEmbeddingRefreshPromise = undefined })
+}
+
+function catalogEmbeddingStatus() {
+  const configured = Boolean(catalogEmbeddingBindingHash())
+  return {
+    configured,
+    state: !configured
+      ? 'NOT_CONFIGURED'
+      : catalogEmbeddingRefreshPromise || catalogEmbeddingSnapshot?.promise
+        ? 'RECONCILING'
+        : catalogEmbeddingSnapshot?.indexed !== undefined
+          ? 'READY'
+          : catalogEmbeddingLastError
+            ? 'FAILED'
+            : 'NOT_STARTED',
+    contract: 'POC_DATAHUB_CATALOG_ASSET_V2',
+    indexed: catalogEmbeddingSnapshot?.indexed ?? null,
+    refreshed: catalogEmbeddingSnapshot?.refreshed ?? null,
+    generation: catalogEmbeddingSnapshot?.generation ?? null,
+    last_error: catalogEmbeddingLastError ?? null,
+  }
 }
 
 async function semanticCatalogEvidence(question, limit) {
@@ -2327,7 +2544,7 @@ async function semanticCatalogEvidence(question, limit) {
       ? candidate.metadata
       : { id: candidate.assetUrn, external_urn: candidate.assetUrn, name: candidate.assetUrn }
     try {
-      const detail = await datahubAsset(candidate.assetUrn, 0, 100)
+      const detail = await datahubAssetAll(candidate.assetUrn)
       return {
         ...detail,
         provider_description: detail.description,
@@ -2453,9 +2670,9 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow) {
       stream: false,
       reasoning_effort: 'none',
       temperature: 0,
-      max_tokens: 512,
+      max_tokens: 896,
       messages: [
-        { role: 'system', content: 'Answer concisely from the supplied live DataHub metadata and catalog evidence when the selected route requires it. Cite evidence numbers such as [1]. If one exact name resolves to multiple platforms, identify and compare every supplied exact asset instead of silently choosing one. State clearly when live evidence is insufficient. Never invent an asset or relationship. This POC intentionally has no feature-level authorization filter.' },
+        { role: 'system', content: 'Answer in Korean unless the user asks for another language. Give a complete, useful response from the supplied live DataHub metadata and catalog evidence when the selected route requires it. Prefer a short conclusion followed by relevant metadata, columns, quality/profile observations, or comparisons; use roughly 5 to 10 sentences when the evidence supports that detail, but do not pad the answer. Cite evidence numbers such as [1]. If one exact name resolves to multiple platforms, identify and compare every supplied exact asset instead of silently choosing one. State clearly which requested values are absent from live DataHub evidence. Never invent an asset, field, metric, or relationship. This POC intentionally has no feature-level authorization filter.' },
         { role: 'user', content: `Selected route: ${route.selected_mode}\nQuestion: ${question}\n\nLive POC evidence:\n${context || '(no matching live evidence)'}` },
       ],
     }, 60_000)
@@ -2887,6 +3104,8 @@ async function api(request, response, url) {
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/tree') return json(response, 200, await datahubTree(url.searchParams))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/facets') return json(response, 200, await datahubFacets(url.searchParams))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/dashboard') return json(response, 200, await datahubDashboard())
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/profile-coverage') return json(response, 200, await datahubProfileCoverage())
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/vector-index') return json(response, 200, catalogEmbeddingStatus())
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/systems') return json(response, 200, await datahubSystems())
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary') return json(response, 200, await datahubGlossary(url.searchParams))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary/assignments') return json(response, 200, await datahubGlossaryAssignments(url.searchParams))
@@ -3162,6 +3381,7 @@ export async function startPocServer() {
   const port = Number(process.env.POC_SERVER_PORT || process.env.POC_PORT || 39080)
   await new Promise((resolvePromise) => server.listen(port, host, resolvePromise))
   process.stdout.write(`DataRiver POC listening on http://${host}:${port}\n`)
+  if (datahub && llm.embedding) scheduleCatalogEmbeddingRefresh()
   return server
 }
 

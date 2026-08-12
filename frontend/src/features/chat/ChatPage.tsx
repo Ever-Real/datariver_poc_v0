@@ -161,6 +161,12 @@ function evidenceDescriptionForDisplay(description: string | null | undefined): 
   return display || undefined
 }
 
+function evidenceKindLabel(kind: ChatEvidence['asset_kind']): string {
+  if (kind === 'VIEW') return '뷰'
+  if (kind === 'MATERIALIZED_VIEW') return '구체화 뷰'
+  return '테이블'
+}
+
 export function ChatPage({ client }: { client: ApiClient }) {
   const [question, setQuestion] = useState('')
   const [mode, setMode] = useState<ChatMode>('AUTO')
@@ -708,7 +714,7 @@ export function ChatPage({ client }: { client: ApiClient }) {
                           <span className="chat-evidence-rank">#{item.rank}</span>
                           <span className="chat-evidence-copy">
                             <strong>{item.name}</strong>
-                            <small>{item.classification} · {item.source_type}</small>
+                            <small>{evidenceKindLabel(item.asset_kind)}</small>
                             {description && <span>{description}</span>}
                           </span>
                         </button>
