@@ -778,7 +778,7 @@ describe('GovernancePage', () => {
     expect(within(secondDialog).queryByText('late A TEST failure')).not.toBeInTheDocument()
   })
 
-  it('returns attachment pagination to the first bounded page after an upload refresh', async () => {
+  it('keeps attachment footer controls hidden while an upload refreshes the bounded first page', async () => {
     const existing = changeRequest()
     let firstPageReads = 0
     const attachment = (id: string, name: string) => ({
@@ -845,11 +845,7 @@ describe('GovernancePage', () => {
     renderPage(apiClient(request))
     const dialog = await openDetail(existing)
     expect(await within(dialog).findByText('first-page.txt')).toBeInTheDocument()
-    const pagination = within(dialog).getByLabelText('첨부파일 페이지 이동')
-
-    fireEvent.click(within(pagination).getByRole('button', { name: '다음' }))
-    expect(await within(dialog).findByText('second-page.txt')).toBeInTheDocument()
-    expect(within(pagination).getByRole('button', { name: '이전' })).toBeEnabled()
+    expect(within(dialog).queryByLabelText('첨부파일 페이지 이동')).not.toBeInTheDocument()
 
     fireEvent.change(within(dialog).getByLabelText('클릭하여 신규 파일 첨부'), {
       target: { files: [new File(['evidence'], 'evidence.txt', { type: 'text/plain' })] },
@@ -857,8 +853,9 @@ describe('GovernancePage', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: '1개 파일 저장' }))
 
     expect(await within(dialog).findByText('refreshed-first-page.txt')).toBeInTheDocument()
-    expect(within(pagination).getByRole('button', { name: '이전' })).toBeDisabled()
-    expect(within(pagination).getByRole('button', { name: '다음' })).toBeEnabled()
+    expect(within(dialog).queryByRole('button', { name: '미완료 첨부 다시 확인' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: '이전' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: '다음' })).not.toBeInTheDocument()
   })
 
   it('retries a response-lost upload with the same client-generated ID', async () => {
@@ -951,7 +948,7 @@ describe('GovernancePage', () => {
     expect(statusReads).toBe(2)
   })
 
-  it('lets the detail screen finalize a bounded current-round STORED upload', async () => {
+  it('does not expose a manual current-round STORED upload recovery control', async () => {
     const existing = changeRequest()
     const uploadId = '00000000-0000-4000-8000-000000000401'
     let pageReads = 0
@@ -1011,10 +1008,8 @@ describe('GovernancePage', () => {
     renderPage(apiClient(request))
     const dialog = await openDetail(existing)
 
-    fireEvent.click(within(dialog).getByRole('button', { name: '미완료 첨부 다시 확인' }))
-
-    expect(await within(dialog).findByText('recovered.txt')).toBeInTheDocument()
-    expect(request).toHaveBeenCalledWith(
+    expect(within(dialog).queryByRole('button', { name: '미완료 첨부 다시 확인' })).not.toBeInTheDocument()
+    expect(request).not.toHaveBeenCalledWith(
       `${uploadStatus}/finalize`,
       expect.objectContaining({ method: 'POST' }),
     )

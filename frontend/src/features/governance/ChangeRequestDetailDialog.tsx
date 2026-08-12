@@ -201,8 +201,6 @@ export function ChangeRequestDetailDialog({
   attachmentLoading,
   attachmentBusy,
   attachmentError,
-  attachmentHasNext,
-  attachmentHasPrevious,
   applyReport,
   applyReportLoading,
   applyReportError,
@@ -211,10 +209,7 @@ export function ChangeRequestDetailDialog({
   onRefresh,
   onAction,
   onDownloadAttachment,
-  onNextAttachmentPage,
-  onPreviousAttachmentPage,
   onUploadAttachments,
-  onResumePendingAttachments,
   onStepUp,
   onPasswordReauth,
   onEnroll,
@@ -508,7 +503,7 @@ export function ChangeRequestDetailDialog({
               </div>}
               <ErrorNotice error={testError} />
             </section>
-            <div className="flex flex-wrap justify-end gap-2">{stageHints.map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy} onClick={() => onAction(hint)}>{hint.label}</button>)}</div>
+            <div className="flex flex-wrap justify-end gap-2">{stageHints.map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy || Boolean(hint.disabledReason)} title={hint.disabledReason} onClick={() => onAction(hint)}>{hint.label}</button>)}</div>
           </section>}
 
           {selectedStage === 3 && <section className="grid gap-4" aria-labelledby="approval-stage-heading">
@@ -548,32 +543,6 @@ export function ChangeRequestDetailDialog({
             <div className="flex flex-wrap justify-end gap-2">{stageHints.map((hint) => <button key={hint.id} type="button" className={`button ${hint.tone === 'danger' ? 'button-danger' : hint.tone === 'primary' ? '' : 'button-secondary'}`} disabled={busy} onClick={() => onAction(hint)}>{hint.label}</button>)}</div>
           </section>}
           <ErrorNotice error={attachmentError ?? uploadError} />
-          <div className="flex flex-wrap justify-end gap-2" aria-label="첨부파일 페이지 이동">
-            <button
-              type="button"
-              className="button button-secondary"
-              disabled={attachmentBusy || attachmentLoading}
-              onClick={() => void onResumePendingAttachments()}
-            >
-              미완료 첨부 다시 확인
-            </button>
-            <button
-              type="button"
-              className="button button-secondary"
-              disabled={attachmentLoading || !attachmentHasPrevious}
-              onClick={onPreviousAttachmentPage}
-            >
-              이전
-            </button>
-            <button
-              type="button"
-              className="button button-secondary"
-              disabled={attachmentLoading || !attachmentHasNext}
-              onClick={onNextAttachmentPage}
-            >
-              다음
-            </button>
-          </div>
         </>}
       </div>
     </Dialog>

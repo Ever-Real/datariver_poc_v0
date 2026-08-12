@@ -89,6 +89,71 @@ async function gatewayRequest<T>(path: string, options: RequestInit = {}): Promi
   return response.json() as Promise<T>
 }
 
+async function gatewayEventStream<T>(
+  path: string,
+  options: RequestInit,
+  onEvent: ApiEventStreamHandler,
+): Promise<T> {
+  const headers = new Headers(options.headers)
+  headers.set('Accept', 'text/event-stream')
+  headers.set('Content-Type', 'application/json')
+  const response = await fetch(path, { ...options, cache: 'no-store', headers })
+  if (!response.ok) {
+    const problem = await response.json().catch(() => ({})) as { detail?: unknown }
+    throw new Error(typeof problem.detail === 'string'
+      ? problem.detail
+      : `POC provider gateway stream failed (${response.status}).`)
+  }
+  if (!response.body) throw new Error('POC Chat 진행 상태 스트림을 열지 못했습니다.')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let receivedBytes = 0
+  let result: T | undefined
+  let receivedResult = false
+  const parseFrame = (frame: string) => {
+    let event = 'message'
+    const data: string[] = []
+    for (const line of frame.split('\n')) {
+      if (line.startsWith('event:')) event = line.slice(6).trim()
+      if (line.startsWith('data:')) data.push(line.slice(5).trimStart())
+    }
+    if (!data.length) return
+    const parsed = JSON.parse(data.join('\n')) as unknown
+    if (event === 'error') {
+      const detail = parsed && typeof parsed === 'object'
+        ? (parsed as { detail?: unknown }).detail
+        : undefined
+      throw new Error(typeof detail === 'string' ? detail : 'POC Chat provider request failed.')
+    }
+    if (event === 'result') {
+      result = parsed as T
+      receivedResult = true
+      return
+    }
+    onEvent({ event, data: parsed })
+  }
+  try {
+    while (!receivedResult) {
+      const { done, value } = await reader.read()
+      receivedBytes += value?.byteLength ?? 0
+      if (receivedBytes > 8 * 1024 * 1024) throw new Error('POC Chat 스트림 크기 제한을 초과했습니다.')
+      buffer += decoder.decode(value, { stream: !done }).replace(/\r\n?/g, '\n')
+      const frames = buffer.split('\n\n')
+      buffer = done ? '' : (frames.pop() ?? '')
+      for (const frame of frames) {
+        if (frame.trim()) parseFrame(frame)
+        if (receivedResult) break
+      }
+      if (done && !receivedResult) throw new Error('POC Chat 서버가 최종 결과를 반환하지 않았습니다.')
+    }
+  } finally {
+    if (!receivedResult) await reader.cancel().catch(() => undefined)
+    reader.releaseLock()
+  }
+  return result as T
+}
+
 const capabilities = {
   items: [
     ...['DataHub', 'Airflow', 'MinIO', 'LLM Chat', 'LLM Embedding', 'LLM Reranker', 'Neo4j']
@@ -1120,15 +1185,14 @@ class PocApiClient {
       ? body.session_id
       : nextId('chat-session')
     const live = runtimeFlags().llmChat
-      ? gatewayRequest<Pick<ChatResponse, 'answer' | 'route' | 'workflow'> & { evidence: Array<Record<string, unknown>> }>('/poc-api/llm/chat', {
+      ? gatewayEventStream<Pick<ChatResponse, 'answer' | 'route' | 'workflow'> & { evidence: Array<Record<string, unknown>> }>('/poc-api/llm/chat/stream', {
           method: 'POST',
           signal: options.signal,
           body: JSON.stringify({ question, mode }),
-        })
+        }, onEvent)
       : Promise.reject(new Error('검증 불가: LLM Chat 연결을 설정해야 합니다.'))
     return live.then(async (liveResult) => {
       const workflow = liveResult.workflow
-      for (const step of workflow) onEvent({ event: 'workflow', data: { ...step, status: 'IN_PROGRESS' } })
       const requestId = nextId('chat-request')
       const responseId = nextId('chat-response')
       const route = liveResult.route ?? chatRoute(mode)

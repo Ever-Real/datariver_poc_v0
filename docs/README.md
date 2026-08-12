@@ -56,6 +56,7 @@
 | 58 | [Administrator-approved Monitoring frames](adr/0097-administrator-approved-monitoring-frames.md) | persisted Admin approval, sandboxed HTTP(S) frames and target-policy fallback | Accepted; local implementation |
 | 59 | [Isolated POC Compose state and cache](adr/0115-poc-compose-state-and-cache.md) | pgvector-backed POC adapter state, Redis DataHub cache and npm fallback | Accepted for authentication-free POC only |
 | 60 | [POC Catalog vector and static document presentation](adr/0116-poc-catalog-vector-and-static-document-presentation.md) | Full-inventory incremental Chat retrieval and non-executable imported document styling | Accepted for authentication-free POC only |
+| 61 | [POC live Chat stream and DataHub profile compatibility](adr/0117-poc-live-chat-stream-and-datahub-profile-compatibility.md) | Real SSE workflow, non-blocking vector refresh and allowlisted connector profile variants | Accepted for authentication-free POC only |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and

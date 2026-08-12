@@ -32,6 +32,7 @@ export interface ChangeActionHint {
   decision?: 'APPROVED'
   targetState?: ChangeRequestState
   tone?: 'primary' | 'danger' | 'neutral'
+  disabledReason?: string
 }
 
 const transition = (
@@ -57,9 +58,10 @@ const reviewApproval: ChangeActionHint = {
 const testApproval: ChangeActionHint = {
   id: 'approval-test',
   kind: 'APPROVAL',
-  label: '최종 승인 요청',
+  label: '승인 요청',
   stage: 'TEST',
   decision: 'APPROVED',
+  tone: 'primary',
 }
 
 const finalApproval: ChangeActionHint = {
@@ -112,12 +114,16 @@ export function changeActionHints(changeRequest: ChangeRequestRecord): ChangeAct
         && approval.stage === 'TEST'
         && approval.decision === 'APPROVED'
       ))
-      if (testPassed) return [testApproved
-        ? transition('FINAL_REVIEW', '최종 승인 요청', 'primary')
-        : testApproval]
       return [
         transition('CHANGES_REQUESTED', '보완 요청', 'danger'),
-        transition('CANCELLED', '요청 취소', 'danger'),
+        testPassed
+          ? testApproved
+            ? transition('FINAL_REVIEW', '승인 요청', 'primary')
+            : testApproval
+          : {
+              ...testApproval,
+              disabledReason: '현재 회차의 PASSED 테스트 결과를 먼저 기록해야 합니다.',
+            },
       ]
     }
     case 'FINAL_REVIEW':

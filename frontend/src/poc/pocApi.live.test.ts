@@ -188,8 +188,8 @@ function installGatewayMock() {
         deployment_tier: 'SINGLE_NODE_PILOT',
       }))
     }
-    if (url.pathname === '/poc-api/llm/chat') {
-      return Promise.resolve(json({
+    if (url.pathname === '/poc-api/llm/chat/stream') {
+      const result = {
         answer: 'wafer_events는 source_events의 영향을 받습니다. [1]',
         route: {
           requested_mode: 'AUTO',
@@ -214,6 +214,16 @@ function installGatewayMock() {
           extraction_method: 'DATAHUB_GMS_LINEAGE',
           retrieval_method: 'GRAPH',
         }],
+      }
+      const frames = [
+        { event: 'workflow', data: { stage: 'ROUTING', status: 'IN_PROGRESS', detail_code: 'ROUTING_IN_PROGRESS' } },
+        { event: 'workflow', data: { stage: 'ROUTING', status: 'COMPLETED', detail_code: 'GRAPH_ROUTE_SELECTED' } },
+        { event: 'workflow', data: { stage: 'RETRIEVAL', status: 'COMPLETED', detail_code: 'GRAPH_RETRIEVAL_COMPLETED' } },
+        { event: 'result', data: result },
+      ].map((frame) => `event: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`).join('')
+      return Promise.resolve(new Response(frames, {
+        status: 200,
+        headers: { 'Content-Type': 'text/event-stream' },
       }))
     }
     throw new Error(`Unexpected POC gateway request: ${url.pathname}`)

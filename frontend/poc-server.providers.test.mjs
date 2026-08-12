@@ -144,7 +144,13 @@ function providerHandler(request, response) {
           type: 'DATASET',
           name: 'wafer_events',
           platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
-          properties: { name: 'wafer_events', description: 'Live DataHub wafer evidence', created: 1_700_000_000_000 },
+          properties: {
+            name: 'wafer_events', description: 'Live DataHub wafer evidence', created: null,
+            customProperties: [
+              { key: 'size_in_bytes', value: '16,384' },
+              { key: 'created_at', value: '2024-01-02T03:04:05Z' },
+            ],
+          },
           editableProperties: { description: null },
           browsePathV2: { path: [
             { name: 'urn:li:container:database', entity: { urn: 'urn:li:container:database', type: 'CONTAINER', properties: { name: 'urn:li:container:database', qualifiedName: 'MANUFACTURING' }, subTypes: { typeNames: ['Database'] } } },
@@ -172,6 +178,12 @@ function providerHandler(request, response) {
             glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:identifier', name: 'Identifier' } }] },
           }] },
           latestFullTableProfile: [{
+            rowCount: 999_999, columnCount: 2, sizeInBytes: 999_999, timestampMillis: 1_720_000_000_000,
+            partitionSpec: { type: 'QUERY', partition: 'SAMPLE (sample rows 1000)' },
+          }, {
+            rowCount: 4400, columnCount: 2, sizeInBytes: null, timestampMillis: 1_710_000_000_000,
+            partitionSpec: null,
+          }, {
             rowCount: 4200, columnCount: 2, sizeInBytes: 8192, timestampMillis: 1_700_000_000_000,
             partitionSpec: { type: 'FULL_TABLE', partition: 'FULL_TABLE_SNAPSHOT' },
           }],
@@ -369,10 +381,15 @@ test('maps fixed DataHub catalog, detail and lineage contracts', async () => {
   assert.deepEqual(detail.schema_fields[0].globalTags.tags.map((item) => item.tag.name), ['identifier', 'primary-key', 'curated'])
   assert.equal(detail.schema_fields[0].glossaryTerms.terms[0].term.name, 'Wafer ID')
   assert.deepEqual(detail.schema_fields[0].glossaryTerms.terms.map((item) => item.term.name), ['Wafer ID', 'Identifier'])
-  assert.equal(detail.quality.rowCount, 4200)
-  assert.equal(detail.quality.sizeInBytes, 8192)
-  assert.equal(detail.created_at, '2023-11-14T22:13:20.000Z')
-  assert.equal(detail.quality.sizeInBytes, 8192)
+  assert.equal(detail.quality.rowCount, 4400)
+  assert.equal(detail.quality.rowCountSource, 'DATASET_PROFILE_FULL_TABLE')
+  assert.equal(detail.quality.sizeInBytes, 16384)
+  assert.equal(detail.quality.sizeInBytesSource, 'DATASET_PROPERTIES_ALLOWLIST')
+  assert.equal(detail.created_at, '2024-01-02T03:04:05.000Z')
+  const detailQuery = [...requests].reverse().find((request) => (
+    request.path === '/api/graphql' && request.body.includes('DataRiverPocAsset')
+  ))
+  assert.match(detailQuery.body, /datasetProfiles\(limit: 10\)/)
   const secondFieldPage = await (await fetch(`${pocOrigin}/poc-api/datahub/asset?urn=${urn}&field_offset=1&field_limit=1`)).json()
   assert.equal(secondFieldPage.schema_fields[0].fieldPath, 'observed_at')
   assert.equal(secondFieldPage.schema_fields_offset, 1)
@@ -453,6 +470,22 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
     return JSON.parse(request.body).messages?.[0]?.content?.includes('Classify one untrusted Data Catalog question')
   })
   assert.equal(JSON.parse(classifierRequest.body).response_format.type, 'json_schema')
+})
+
+test('streams real Chat workflow stages before the final provider result', async () => {
+  const response = await fetch(`${pocOrigin}/poc-api/llm/chat/stream`, {
+    method: 'POST',
+    headers: { Accept: 'text/event-stream', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'wafer_events 테이블의 컬럼을 알려줘', mode: 'AUTO' }),
+  })
+  assert.equal(response.status, 200)
+  assert.match(response.headers.get('content-type') || '', /^text\/event-stream/)
+  const stream = await response.text()
+  const frames = stream.trim().split(/\n\n+/)
+  assert.match(frames[0], /^event: workflow\ndata: /)
+  assert.match(frames[0], /"stage":"AUTHORIZATION","status":"IN_PROGRESS"/)
+  assert.ok(stream.indexOf('"stage":"ROUTING","status":"IN_PROGRESS"') < stream.indexOf('event: result'))
+  assert.match(frames.at(-1) || '', /^event: result\ndata: /)
 })
 
 test('routes a high-confidence Korean discovery question to the full vector inventory without classifier drift', async () => {

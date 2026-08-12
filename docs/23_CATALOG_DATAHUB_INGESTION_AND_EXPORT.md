@@ -12,8 +12,10 @@ production database has already been changed.
 | Oracle | DataHub `DatasetProfile.rowCount` and `sizeInBytes`; candidate selection uses `ALL_TABLES` or `DBA_TABLES` statistics. | The v1.6 source reads `ALL_OBJECTS` / `DBA_OBJECTS.CREATED` for stored procedures, but does not map that value to a table dataset's `DatasetProperties.created`. | Enable bounded table-level profiling, keep Oracle statistics current, and add the same approved source extension that emits canonical `DatasetProperties.created` for tables. |
 
 DataRiver never converts an unavailable observation to `0` or a guessed date. The
-detail API reads `DatasetProfile` for Rows/Size and `DatasetProperties.created`
-for Created Date. It now also reads both source `properties.description` and
+detail API reads the newest usable non-sample full-table `DatasetProfile` for Rows/Size and
+`DatasetProperties.created` for Created Date. For reviewed legacy connector extensions it also
+accepts only the numeric/date custom-property aliases listed by ADR-0117; typed fields retain
+precedence and every metric reports its source. It now also reads both source `properties.description` and
 governed `editableProperties.description`, preferring the governed value.
 
 ## Recommended profiling recipe
@@ -69,9 +71,9 @@ owner must implement and review one of the following before enabling it:
 
 The timestamp must be the actual table-creation instant in epoch milliseconds,
 must be idempotent, must not overwrite a more authoritative value, and must be
-scoped to the source dataset URN. A custom property alone is not sufficient for
-the current DataRiver detail contract; emit the typed `created` field or make a
-separate reviewed adapter contract change.
+scoped to the source dataset URN. The ADR-0117 POC compatibility adapter can read only its reviewed
+created-date aliases, but the preferred cross-environment contract remains the typed `created`
+field. Any other custom property requires a separate reviewed adapter contract change.
 
 ## Description synchronization
 
@@ -115,7 +117,8 @@ the isolated worker or export directly from the browser.
 - [ ] DataHub run report shows profiling enabled, selected candidates, and no
   unreviewed permission/profile-limit failures.
 - [ ] PostgreSQL and Oracle test datasets expose non-null `rowCount` and
-  `sizeInBytes` in their latest full-table `DatasetProfile`.
+  `sizeInBytes` in their latest usable full-table `DatasetProfile`, or an approved ADR-0117
+  compatibility property with recorded provenance.
 - [ ] The approved Created Date extension emits a non-null
   `DatasetProperties.created` for one table in each source.
 - [ ] A source-only and an `editableProperties`-only description both survive a

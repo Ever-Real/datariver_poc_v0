@@ -305,13 +305,13 @@ export function CatalogDetailPane({
             <div><dt>Owner</dt><dd>{detailText(ownerValues(detail.ownership).join(', ') || detail.owner, detail.ownership_truncated)}</dd></div>
             <div><dt>Rows</dt><dd>{formatObservedValue(detail.quality?.rowCount ?? detail.quality?.rows)
               ? detailText(formatObservedValue(detail.quality?.rowCount ?? detail.quality?.rows))
-              : providerMissing('Profile 미수집', 'DataHub DatasetProfile에 rowCount가 등록되지 않았습니다.')}</dd></div>
+              : providerMissing('Profile 미수집', 'DataHub full-table DatasetProfile 또는 허용된 row-count 속성에 관측값이 없습니다.')}</dd></div>
             <div><dt>Size</dt><dd>{formatObservedValue(detail.quality?.sizeInBytes ?? detail.quality?.size, ' B')
               ? detailText(formatObservedValue(detail.quality?.sizeInBytes ?? detail.quality?.size, ' B'))
-              : providerMissing('Profile 미수집', 'DataHub DatasetProfile에 sizeInBytes가 등록되지 않았습니다.')}</dd></div>
+              : providerMissing('Profile 미수집', 'DataHub full-table DatasetProfile 또는 허용된 byte-size 속성에 관측값이 없습니다.')}</dd></div>
             <div><dt>Created Date</dt><dd>{detail.created_at
               ? detailText(new Date(detail.created_at).toLocaleString())
-              : providerMissing('메타데이터 미등록', 'DataHub DatasetProperties에 created 값이 등록되지 않았습니다.')}</dd></div>
+              : providerMissing('메타데이터 미등록', 'DataHub DatasetProperties의 created 또는 허용된 생성일 속성에 관측값이 없습니다.')}</dd></div>
             <div className="wide"><dt>Description</dt><dd>{detailText(detail.description, detail.description_truncated)}</dd></div>
             <div className="metadata-vocabulary"><dt>Terms</dt><dd><BadgeScroller label="테이블 Terms" values={detail.terms ?? []} truncated={detail.terms_truncated} /></dd></div>
             <div className="metadata-vocabulary"><dt>Tags</dt><dd><BadgeScroller label="테이블 Tags" values={detail.tags} truncated={detail.tags_truncated} /></dd></div>

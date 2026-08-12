@@ -68,7 +68,7 @@ describe('change request presentation', () => {
     })
   })
 
-  it('shows only the final approval request after the current round test is passed and approved', () => {
+  it('keeps only complement and approval request after the current round test is passed and approved', () => {
     const testing = {
       ...changesRequested,
       state: 'TESTING',
@@ -86,11 +86,12 @@ describe('change request presentation', () => {
     } satisfies ChangeRequestRecord
 
     expect(changeActionHints(testing)).toEqual([
-      expect.objectContaining({ label: '최종 승인 요청', targetState: 'FINAL_REVIEW' }),
+      expect.objectContaining({ label: '보완 요청', targetState: 'CHANGES_REQUESTED' }),
+      expect.objectContaining({ label: '승인 요청', targetState: 'FINAL_REVIEW' }),
     ])
   })
 
-  it('offers the same single final approval request when a passed test still needs TEST approval', () => {
+  it('offers complement followed by the TEST approval request when a passed test needs approval', () => {
     const testing = {
       ...changesRequested,
       state: 'TESTING',
@@ -104,7 +105,27 @@ describe('change request presentation', () => {
     } satisfies ChangeRequestRecord
 
     expect(changeActionHints(testing)).toEqual([
-      expect.objectContaining({ label: '최종 승인 요청', kind: 'APPROVAL', stage: 'TEST' }),
+      expect.objectContaining({ label: '보완 요청', targetState: 'CHANGES_REQUESTED' }),
+      expect.objectContaining({ label: '승인 요청', kind: 'APPROVAL', stage: 'TEST' }),
     ])
+  })
+
+  it('shows but disables approval until the current round has a PASSED result', () => {
+    const testing = {
+      ...changesRequested,
+      state: 'TESTING',
+      approvals: [],
+      test_runs: [],
+    } satisfies ChangeRequestRecord
+
+    const hints = changeActionHints(testing)
+    expect(hints).toEqual([
+      expect.objectContaining({ label: '보완 요청', targetState: 'CHANGES_REQUESTED' }),
+      expect.objectContaining({
+        label: '승인 요청',
+        kind: 'APPROVAL',
+      }),
+    ])
+    expect(hints[1]?.disabledReason).toContain('PASSED')
   })
 })
