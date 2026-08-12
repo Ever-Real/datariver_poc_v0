@@ -4,6 +4,7 @@ import type {
   CatalogAssetDetail,
   CatalogSearch,
   ChangeRequestRecord,
+  ClassificationPolicySummary,
   SystemConfigurationEntry,
   SystemConfigurationTestResult,
   WorkspaceMembershipSummary,
@@ -507,6 +508,28 @@ describe('POC live-provider compatibility adapter', () => {
     expect(JSON.stringify(settings)).not.toContain('temporary_password')
     const probe = await client.request<SystemConfigurationTestResult>('/admin/system-configuration/AIRFLOW/test-deployment', { method: 'POST' })
     expect(probe.status).toBe('AVAILABLE')
+  })
+
+  it('renders the existing redacted security-policy contract without fabricated governed records', async () => {
+    const client = useStableApiClient()
+    const summary = await client.request<ClassificationPolicySummary>(
+      '/admin/classification-access/policies/current/summary',
+    )
+    expect(summary).toEqual({
+      state: 'STATIC_FLOOR',
+      rules: [
+        { classification: 'PUBLIC', search_mode: 'ABAC', chat_mode: 'INTERNAL_APPROVED_ONLY' },
+        { classification: 'INTERNAL', search_mode: 'ABAC', chat_mode: 'INTERNAL_APPROVED_ONLY' },
+        { classification: 'CONFIDENTIAL', search_mode: 'ABAC', chat_mode: 'DENY' },
+        { classification: 'RESTRICTED', search_mode: 'DENY', chat_mode: 'DENY' },
+      ],
+    })
+    expect(await client.request('/admin/classification-access/policies/current')).toBeNull()
+    expect(await client.request<{ items: unknown[] }>('/admin/inference/provider-profiles?limit=25'))
+      .toEqual(expect.objectContaining({ items: [] }))
+    expect(await client.request<{ items: unknown[] }>(
+      '/admin/classification-access/restricted-search-grants?limit=25',
+    )).toEqual(expect.objectContaining({ items: [] }))
   })
 
   it('provides open POC governance lifecycle contracts without seeded documents', async () => {

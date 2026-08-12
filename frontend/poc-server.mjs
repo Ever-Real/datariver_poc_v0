@@ -494,6 +494,70 @@ query DataRiverPocGlossary($input: ScrollAcrossEntitiesInput!) {
               ... on GlossaryNode { properties { name description } }
             }
           }
+          tableAssignments: relationships(input: {
+            types: ["TermedWith"]
+            direction: INCOMING
+            start: 0
+            count: 0
+            includeSoftDelete: false
+          }) { total }
+          columnAssignments: relationships(input: {
+            types: ["SchemaFieldWithGlossaryTerm"]
+            direction: INCOMING
+            start: 0
+            count: 0
+            includeSoftDelete: false
+          }) { total }
+        }
+      }
+    }
+  }
+}`
+
+const datahubGlossaryAssignmentsQuery = `
+query DataRiverPocGlossaryAssignments($urn: String!, $input: RelationshipsInput!) {
+  entity(urn: $urn) {
+    urn type
+    ... on GlossaryTerm {
+      relationships(input: $input) {
+        start count total
+        relationships {
+          entity {
+            urn type
+            ... on Dataset {
+              name
+              platform { urn name }
+              properties { name customProperties { key value } }
+              browsePathV2 {
+                path {
+                  name
+                  entity {
+                    urn type
+                    ... on Container {
+                      properties { name qualifiedName }
+                      subTypes { typeNames }
+                    }
+                  }
+                }
+              }
+              glossaryTerms { terms { term { urn name } } }
+              schemaMetadata {
+                fields {
+                  fieldPath
+                  glossaryTerms { terms { term { urn name } } }
+                  schemaFieldEntity {
+                    glossaryTerms { terms { term { urn name } } }
+                  }
+                }
+              }
+              editableSchemaMetadata {
+                editableSchemaFieldInfo {
+                  fieldPath
+                  glossaryTerms { terms { term { urn name } } }
+                }
+              }
+            }
+          }
         }
       }
     }
@@ -1218,25 +1282,77 @@ async function datahubSystems() {
   }
 }
 
+async function datahubGlossaryAssignments(searchParameters) {
+  const urn = boundedString(searchParameters.get('urn'), 4_096).trim()
+  if (!urn.startsWith('urn:li:glossaryTerm:')) {
+    throw Object.assign(new Error('A valid DataHub Glossary Term URN is required.'), { statusCode: 400 })
+  }
+  const targetType = searchParameters.get('target_type')
+  if (!['TABLE', 'COLUMN'].includes(targetType)) {
+    throw Object.assign(new Error('Glossary target_type must be TABLE or COLUMN.'), { statusCode: 400 })
+  }
+  const limit = Math.min(50, Math.max(1, Number(searchParameters.get('limit')) || 25))
+  const start = Math.min(100_000, Math.max(0, Number(searchParameters.get('cursor')) || 0))
+  const relationshipType = targetType === 'TABLE' ? 'TermedWith' : 'SchemaFieldWithGlossaryTerm'
+  const data = await datahubGraphql(datahubGlossaryAssignmentsQuery, {
+    urn,
+    input: {
+      types: [relationshipType], direction: 'INCOMING', start, count: limit,
+      includeSoftDelete: false,
+    },
+  })
+  const relationships = data.entity?.relationships
+  if (!relationships) {
+    throw Object.assign(new Error('DataHub Glossary Term was not found.'), { statusCode: 404 })
+  }
+  const items = []
+  const observed = new Set()
+  const add = (asset, fieldPath) => {
+    const tableQualifiedName = [asset.platform, asset.database_name, asset.schema_name, asset.name]
+      .filter(Boolean).join('.')
+    const id = targetType === 'TABLE'
+      ? `TABLE:${asset.id}`
+      : `COLUMN:${asset.id}:${fieldPath}`
+    if (observed.has(id)) return
+    observed.add(id)
+    items.push({
+      id,
+      target_type: targetType,
+      name: fieldPath || asset.name,
+      table_name: asset.name,
+      field_path: fieldPath || null,
+      qualified_name: [tableQualifiedName, fieldPath].filter(Boolean).join('.'),
+      platform: asset.platform,
+      database_name: asset.database_name,
+      schema_name: asset.schema_name,
+    })
+  }
+  for (const relationship of relationships.relationships || []) {
+    const entity = relationship.entity
+    if (!entity?.urn || entity.type !== 'DATASET') continue
+    const asset = datasetAsset(entity)
+    if (targetType === 'TABLE') {
+      add(asset)
+      continue
+    }
+    for (const field of datahubSchemaFields(entity)) {
+      const applied = (field.glossaryTerms?.terms || []).some((reference) => reference.term?.urn === urn)
+      if (applied) add(asset, field.fieldPath)
+    }
+  }
+  const total = Math.max(0, Number(relationships.total) || 0)
+  const nextOffset = start + limit
+  return {
+    items,
+    total,
+    page: { next_cursor: nextOffset < total ? String(nextOffset) : null, limit },
+  }
+}
+
 async function datahubGlossary(searchParameters) {
   const normalizeGlossarySearch = (value) => boundedString(value, 500)
     .normalize('NFKC').toLocaleLowerCase().replace(/[_.-]+/g, ' ').replace(/\s+/g, ' ').trim()
   const query = normalizeGlossarySearch(searchParameters.get('q'))
-  const assetsByTerm = new Map()
-  for (const asset of await datahubInventory()) {
-    for (const term of asset.term_references || []) {
-      const current = assetsByTerm.get(term.urn) || new Map()
-      current.set(asset.id, {
-        id: asset.id,
-        name: asset.name,
-        qualified_name: [asset.platform, asset.database_name, asset.schema_name, asset.name].filter(Boolean).join('.'),
-        platform: asset.platform,
-        database_name: asset.database_name,
-        schema_name: asset.schema_name,
-      })
-      assetsByTerm.set(term.urn, current)
-    }
-  }
   const terms = []
   const observed = new Set()
   let providerCursor
@@ -1262,8 +1378,8 @@ async function datahubGlossary(searchParameters) {
           ? [{ urn: node.urn, name: node.properties.name, description: node.properties.description || '' }]
           : []
       )).reverse()
-      const assets = [...(assetsByTerm.get(urn)?.values() || [])]
-        .sort((left, right) => left.qualified_name.localeCompare(right.qualified_name))
+      const tableAssetCount = Math.max(0, Number(entity.tableAssignments?.total) || 0)
+      const columnAssetCount = Math.max(0, Number(entity.columnAssignments?.total) || 0)
       terms.push({
         urn,
         name,
@@ -1274,8 +1390,10 @@ async function datahubGlossary(searchParameters) {
         // child terms when the provider model has no term-to-term hierarchy.
         child_terms: [],
         hierarchy_kind: 'LEAF_TERM',
-        asset_count: assets.length,
-        assets,
+        asset_count: tableAssetCount + columnAssetCount,
+        table_asset_count: tableAssetCount,
+        column_asset_count: columnAssetCount,
+        assets: [],
       })
     }
     const nextProviderCursor = typeof page?.nextScrollId === 'string' && page.nextScrollId
@@ -2372,6 +2490,7 @@ async function api(request, response, url) {
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/dashboard') return json(response, 200, await datahubDashboard())
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/systems') return json(response, 200, await datahubSystems())
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary') return json(response, 200, await datahubGlossary(url.searchParams))
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary/assignments') return json(response, 200, await datahubGlossaryAssignments(url.searchParams))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/asset') return json(response, 200, await datahubAsset(
     boundedString(url.searchParams.get('urn'), 4096),
     Number(url.searchParams.get('field_offset') || 0),

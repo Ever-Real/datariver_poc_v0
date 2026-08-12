@@ -127,4 +127,23 @@ describe('POC compatibility application', () => {
     expect(screen.getAllByText('OPEN').length).toBeGreaterThan(0)
     expect(globalThis.fetch).not.toHaveBeenCalled()
   })
+
+  it('opens the existing redacted security-policy view from the administrator menu', async () => {
+    window.history.replaceState(
+      {},
+      '',
+      '/poc.html?page=admin&adminSection=memberships&adminView=policies&adminDetail=classification',
+    )
+    renderPoc()
+
+    expect(await screen.findByRole('tab', { name: '보안정책' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    )
+    expect(await screen.findByRole('table', { name: '현재 유효 분류 정책 요약' })).toBeVisible()
+    expect(screen.getByRole('row', { name: /PUBLIC ABAC INTERNAL_APPROVED_ONLY/ })).toBeVisible()
+    expect(screen.getByRole('row', { name: /RESTRICTED.*DENY DENY/ })).toBeVisible()
+    expect(screen.getByText(/정적 최소 접근 기준/)).toBeVisible()
+    expect(globalThis.fetch).not.toHaveBeenCalled()
+  })
 })

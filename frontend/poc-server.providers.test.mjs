@@ -167,6 +167,37 @@ function providerHandler(request, response) {
           }],
         } } })
       }
+      if (payload.query.includes('DataRiverPocGlossaryAssignments')) {
+        const entity = {
+              urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)',
+              type: 'DATASET', name: 'wafer_events',
+              platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
+              properties: { name: 'wafer_events' },
+              browsePathV2: { path: [{ name: 'MANUFACTURING' }, { name: 'QUALITY' }, { name: 'wafer_events' }] },
+              glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:wafer' } }] },
+              schemaMetadata: { fields: [{
+                fieldPath: 'wafer_id',
+                glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:wafer' } }] },
+                schemaFieldEntity: {
+                  glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:identifier' } }] },
+                },
+              }] },
+              editableSchemaMetadata: { editableSchemaFieldInfo: [{
+                fieldPath: 'wafer_id',
+                glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:identifier' } }] },
+              }] },
+            }
+        return sendJson(response, { data: { entity: {
+          urn: payload.variables.urn,
+          type: 'GLOSSARY_TERM',
+          relationships: {
+            start: payload.variables.input.start,
+            count: 1,
+            total: 1,
+            relationships: [{ entity }],
+          },
+        } } })
+      }
       if (payload.query.includes('DataRiverPocGlossary')) {
         return sendJson(response, { data: { scrollAcrossEntities: {
           count: 2,
@@ -176,6 +207,8 @@ function providerHandler(request, response) {
             { entity: {
               urn: 'urn:li:glossaryTerm:wafer', type: 'GLOSSARY_TERM', hierarchicalName: 'manufacturing.wafer',
               properties: { name: 'Wafer', description: 'A thin semiconductor substrate.' },
+              tableAssignments: { total: 1 },
+              columnAssignments: { total: 1 },
               parentNodes: { nodes: [
                 { urn: 'urn:li:glossaryNode:manufacturing', type: 'GLOSSARY_NODE', properties: { name: 'Manufacturing', description: 'Manufacturing vocabulary' } },
                 { urn: 'urn:li:glossaryNode:semiconductor', type: 'GLOSSARY_NODE', properties: { name: 'Semiconductor', description: 'Enterprise semiconductor vocabulary' } },
@@ -184,6 +217,8 @@ function providerHandler(request, response) {
             { entity: {
               urn: 'urn:li:glossaryTerm:identifier', type: 'GLOSSARY_TERM', hierarchicalName: 'shared.identifier',
               properties: { name: 'Identifier', description: 'A value used to identify a record.' },
+              tableAssignments: { total: 0 },
+              columnAssignments: { total: 1 },
               parentNodes: { nodes: [] },
             } },
           ],
@@ -242,7 +277,9 @@ before(async () => {
   assert.equal(typeof providerAddress, 'object')
   const providerOrigin = `http://127.0.0.1:${providerAddress.port}`
   Object.assign(process.env, {
+    POC_ENV_FILE: 'poc-server.providers.test.env.missing',
     POC_REDIS_URL: '',
+    POC_DATABASE_URL: '',
     POC_POSTGRES_HOST: '',
     DATAHUB_GMS_URL: providerOrigin,
     DATAHUB_GMS_TOKEN: 'datahub-test-token',
@@ -363,8 +400,19 @@ test('keeps provider cursors server-side and aggregates the complete DataHub inv
   assert.equal(glossary.items[0].name, 'Wafer')
   assert.equal(glossary.items[0].description, 'A thin semiconductor substrate.')
   assert.deepEqual(glossary.items[0].parent_terms.map((item) => item.name), ['Semiconductor', 'Manufacturing'])
-  assert.equal(glossary.items[0].asset_count, 1)
-  assert.equal(glossary.items[0].assets[0].name, 'wafer_events')
+  assert.equal(glossary.items[0].asset_count, 2)
+  assert.equal(glossary.items[0].table_asset_count, 1)
+  assert.equal(glossary.items[0].column_asset_count, 1)
+  assert.deepEqual(glossary.items[0].assets, [])
+  const termUrn = encodeURIComponent(glossary.items[0].urn)
+  const tableAssignments = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary/assignments?urn=${termUrn}&target_type=TABLE&limit=25`)).json()
+  assert.equal(tableAssignments.total, 1)
+  assert.equal(tableAssignments.items[0].target_type, 'TABLE')
+  assert.equal(tableAssignments.items[0].table_name, 'wafer_events')
+  const columnAssignments = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary/assignments?urn=${termUrn}&target_type=COLUMN&limit=25`)).json()
+  assert.equal(columnAssignments.total, 1)
+  assert.equal(columnAssignments.items[0].target_type, 'COLUMN')
+  assert.equal(columnAssignments.items[0].field_path, 'wafer_id')
   const technicalGlossary = await (await fetch(`${pocOrigin}/poc-api/datahub/glossary?q=manufacturing_wafer`)).json()
   assert.equal(technicalGlossary.items[0].name, 'Wafer')
 })

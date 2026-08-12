@@ -2,9 +2,11 @@ import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNo
 import {
   flexRender,
   getCoreRowModel,
+  getExpandedRowModel,
   getSortedRowModel,
   useReactTable,
   type ColumnDef,
+  type ExpandedState,
   type SortingState,
 } from '@tanstack/react-table'
 
@@ -13,6 +15,8 @@ interface DenseDataTableProps<T> {
   columns: ColumnDef<T>[]
   data: T[]
   getRowId: (row: T) => string
+  getSubRows?: (row: T) => T[] | undefined
+  initialExpanded?: boolean
   loading?: boolean
   emptyMessage?: string
   selectedRowId?: string
@@ -32,6 +36,8 @@ export function DenseDataTable<T>({
   columns,
   data,
   getRowId,
+  getSubRows,
+  initialExpanded = false,
   loading = false,
   emptyMessage = '표시할 데이터가 없습니다.',
   selectedRowId,
@@ -40,6 +46,7 @@ export function DenseDataTable<T>({
   renderExpandedRow,
 }: DenseDataTableProps<T>) {
   const [sorting, setSorting] = useState<SortingState>([])
+  const [expanded, setExpanded] = useState<ExpandedState>(initialExpanded && getSubRows ? true : {})
   const rowElements = useRef(new Map<string, HTMLTableRowElement>())
   // TanStack Table intentionally exposes stateful callbacks that React Compiler does not memoize.
   // eslint-disable-next-line react-hooks/incompatible-library
@@ -47,9 +54,12 @@ export function DenseDataTable<T>({
     data,
     columns,
     getRowId: (row) => getRowId(row),
-    state: { sorting },
+    getSubRows,
+    state: { sorting, expanded },
     onSortingChange: setSorting,
+    onExpandedChange: setExpanded,
     getCoreRowModel: getCoreRowModel(),
+    getExpandedRowModel: getExpandedRowModel(),
     getSortedRowModel: getSortedRowModel(),
   })
   const columnCount = Math.max(1, table.getVisibleLeafColumns().length)

@@ -9,6 +9,7 @@ import { Dialog } from './Dialog'
 import { TruncatedText } from './TruncatedText'
 
 interface RowValue { id: string; name: string; count: number }
+interface TreeRowValue extends RowValue { children?: TreeRowValue[] }
 const columns: ColumnDef<RowValue>[] = [
   { accessorKey: 'name', header: '이름', cell: (info) => <TruncatedText value={String(info.getValue())} /> },
   { accessorKey: 'count', header: '건수' },
@@ -64,6 +65,36 @@ describe('enterprise UI primitives', () => {
     fireEvent.click(screen.getByRole('button', { name: '이름 정렬: 내림차순' }))
     expect(header).toHaveAttribute('aria-sort', 'none')
     expect(within(table).getAllByRole('row')[1]).toHaveTextContent('Beta')
+  })
+
+  it('renders nested TanStack rows and lets an accessible expander collapse a branch', () => {
+    const treeColumns: ColumnDef<TreeRowValue>[] = [{
+      accessorKey: 'name',
+      header: '이름',
+      cell: ({ row }) => <div style={{ paddingLeft: `${row.depth * 12}px` }}>
+        {row.getCanExpand() && <button
+          type="button"
+          aria-label={`${row.original.name} 하위 행 ${row.getIsExpanded() ? '접기' : '펼치기'}`}
+          aria-expanded={row.getIsExpanded()}
+          onClick={row.getToggleExpandedHandler()}
+        >{row.getIsExpanded() ? '−' : '+'}</button>}
+        {row.original.name}
+      </div>,
+    }]
+    render(<DenseDataTable
+      caption="계층 목록"
+      columns={treeColumns}
+      data={[{ id: 'root', name: 'Root', count: 1, children: [{ id: 'leaf', name: 'Leaf', count: 1 }] }]}
+      getRowId={(row) => row.id}
+      getSubRows={(row) => row.children}
+      initialExpanded
+    />)
+
+    expect(screen.getByRole('row', { name: /Leaf/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Root 하위 행 접기' }))
+    expect(screen.queryByRole('row', { name: /Leaf/ })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Root 하위 행 펼치기' }))
+    expect(screen.getByRole('row', { name: /Leaf/ })).toBeInTheDocument()
   })
 
   it('exposes honest loading and empty table states', () => {

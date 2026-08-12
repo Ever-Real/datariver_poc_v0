@@ -1,6 +1,11 @@
 .poc-glossary-workspace { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 12px; margin-top: 10px; }
 .poc-glossary-workspace > .dense-table-frame { max-height: 650px; }
 .poc-glossary-name { display: grid; gap: 3px; }
+.poc-glossary-tree-name { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.poc-glossary-tree-name .poc-glossary-name { flex: 1; min-width: 0; }
+.poc-glossary-expander, .poc-glossary-expander-placeholder { display: inline-grid; flex: 0 0 20px; width: 20px; height: 20px; place-items: center; }
+.poc-glossary-expander { border: 1px solid var(--line-300); border-radius: 3px; color: var(--navy-900); background: #fff; font-size: 12px; font-weight: 900; }
+.poc-glossary-expander:hover, .poc-glossary-expander:focus-visible { border-color: var(--blue-700); background: var(--blue-100); }
 .poc-glossary-name strong { color: var(--navy-900); }
 .poc-glossary-name small { overflow: hidden; color: var(--text-500); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .poc-glossary-asset-count { min-width: 36px; border: 1px solid #9ebbc7; border-radius: 999px; padding: 3px 9px; color: var(--blue-700); background: #edf7fa; font-size: 10px; font-weight: 900; }
@@ -19,8 +24,10 @@
 .poc-glossary-assets li { display: grid; gap: 3px; border-top: 1px solid var(--line-200); padding: 10px 12px; }
 .poc-glossary-assets li:first-child { border-top: 0; }
 .poc-glossary-assets strong { color: var(--navy-900); font-size: 10px; }
-.poc-glossary-assets span { color: var(--text-600); font-size: 9px; }
+.poc-glossary-assets span { display: flex; align-items: center; gap: 5px; color: var(--text-600); font-size: 9px; }
+.poc-glossary-assets span .badge { font-size: 7px; }
 .poc-glossary-assets small { overflow-wrap: anywhere; color: var(--text-500); font-size: 8px; }
+.poc-glossary-more { margin: 8px 12px 12px; }
 .poc-glossary-empty, .poc-glossary-placeholder { margin: 0; padding: 18px; color: var(--text-500); font-size: 10px; line-height: 1.5; }
 .poc-glossary-placeholder strong { color: var(--navy-900); }
 .poc-glossary-placeholder p { margin: 5px 0 0; }

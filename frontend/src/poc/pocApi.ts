@@ -21,6 +21,7 @@ import type {
   ChatResponse,
   ChatSession,
   CapabilitiesResponse,
+  ClassificationPolicySummary,
   MonitoringConfiguration,
   SystemConfigurationEntry,
   SystemConfigurationTestResult,
@@ -120,6 +121,16 @@ const pocAdminOperations: AdminOperation[] = [
   'RETENTION_POLICY_READ', 'RETENTION_POLICY_MANAGE', 'LEGAL_HOLD_READ', 'LEGAL_HOLD_PLACE',
   'LEGAL_HOLD_RELEASE', 'ERASURE_READ', 'ERASURE_REQUEST', 'ERASURE_APPROVE',
 ]
+
+const pocClassificationPolicySummary: ClassificationPolicySummary = {
+  state: 'STATIC_FLOOR',
+  rules: [
+    { classification: 'PUBLIC', search_mode: 'ABAC', chat_mode: 'INTERNAL_APPROVED_ONLY' },
+    { classification: 'INTERNAL', search_mode: 'ABAC', chat_mode: 'INTERNAL_APPROVED_ONLY' },
+    { classification: 'CONFIDENTIAL', search_mode: 'ABAC', chat_mode: 'DENY' },
+    { classification: 'RESTRICTED', search_mode: 'DENY', chat_mode: 'DENY' },
+  ],
+}
 
 let sequence = 900
 let changeRecords: ChangeRequestRecord[] = []
@@ -1196,6 +1207,19 @@ class PocApiClient {
         'kg.edit', 'governance.read', 'governance.edit', 'chat.query', 'admin.manage',
       ],
     }
+    if (path === '/admin/classification-access/policies/current/summary' && method === 'GET') {
+      return structuredClone(pocClassificationPolicySummary)
+    }
+    if (path === '/admin/classification-access/policies/current' && method === 'GET') return null
+    if (path === '/admin/classification-access/policies' && method === 'GET') {
+      return { items: [], page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) } }
+    }
+    if (path === '/admin/inference/provider-profiles' && method === 'GET') {
+      return { items: [], page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) } }
+    }
+    if (path === '/admin/classification-access/restricted-search-grants' && method === 'GET') {
+      return { items: [], page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) } }
+    }
     if (path === '/capabilities') {
       const providerCapabilities = runtimeFlags().datahub || runtimeFlags().airflow || runtimeFlags().minio
         || runtimeFlags().llmChat || runtimeFlags().neo4j
@@ -1248,6 +1272,11 @@ class PocApiClient {
       return monitoringConfiguration
     }
     if (path === '/catalog/export-capability') return { enabled: false }
+    if (path === '/poc/glossary/assignments') {
+      return runtimeFlags().datahub
+        ? gatewayRequest(`/poc-api/datahub/glossary/assignments?${url.searchParams.toString()}`, { signal: options.signal })
+        : { items: [], total: 0, page: { next_cursor: null, limit: 25 } }
+    }
     if (path === '/poc/glossary') {
       return runtimeFlags().datahub
         ? gatewayRequest(`/poc-api/datahub/glossary?${url.searchParams.toString()}`, { signal: options.signal })
