@@ -19,3 +19,4 @@
 - **Operation Classes Authorized:**
 - **User-Gated Exclusions:**
 - **Recovery Owner:**
+- **Preflight Check Requirements:** Execute cd to assigned worktree, pwd, HEAD, branch, git status. Stop and escalate on mismatch. Do not scan parent/sibling/main checkout.

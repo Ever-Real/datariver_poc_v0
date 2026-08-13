@@ -14,6 +14,7 @@
 - Validation/Audit: Sequential read-only inspection; do not repair findings. Validation and assurance are phases of the same Task candidate unless file isolation requires a separate read-only child.
 - No auto merge, no push/publication of task branches.
 - Notification sessions ([ACTION REQUIRED]) are UI/coordination surfaces, not Git worktrees unless they own files.
+- Preflight Check: Before any Task action, the worker must run `cd` to the exact assigned worktree, `pwd`, `git rev-parse HEAD`, `git branch --show-current`, and `git status`. If there is a mismatch, the worker must stop and notify the Controller. Do not scan parent/sibling/main checkout.
 
 ## Handoff & Cleanup
 - Checkpoint/handoff required for completion.
