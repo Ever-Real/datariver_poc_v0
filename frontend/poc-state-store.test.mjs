@@ -442,6 +442,16 @@ test('reads complete ledger, links, access, core, and current catalog in one rep
       ] }
       if (normalized.includes('FROM poc_change_history_ledger_events')) return { rows: [{ event_identity: 'e'.repeat(64) }] }
       if (normalized.includes('FROM poc_change_history_cr_link_events')) return { rows: [{ link_event_identity: 'f'.repeat(64) }] }
+      if (normalized.includes('FROM poc_change_history_sources')) return { rows: [{
+        source_identity_hash: SOURCE_HASH, provider_name: 'DataHub', provider_version: 'contract-test',
+        schema_contract_hash: SCHEMA_HASH, created_at: '2026-08-13T00:00:00.000Z',
+      }] }
+      if (normalized.includes('FROM poc_change_history_checkpoints')) return { rows: [{
+        source_identity_hash: SOURCE_HASH, topic_contract: 'MetadataChangeLog_Versioned_v1',
+        source_partition: 0, first_exact_offset: 10, next_offset: 11,
+        last_contiguous_event_identity: 'e'.repeat(64), last_source_occurred_at: '2026-08-13T00:00:00.000Z',
+        last_captured_at: '2026-08-13T00:00:01.000Z', version: 2,
+      }] }
       throw new Error(`Unexpected projection SQL: ${normalized}`)
     },
     release() {},
@@ -456,6 +466,8 @@ test('reads complete ledger, links, access, core, and current catalog in one rep
   assert.equal(projection.catalog.version, 4)
   assert.equal(projection.events.length, 1)
   assert.equal(projection.links.length, 1)
+  assert.equal(projection.sources[0].provider_name, 'DataHub')
+  assert.equal(projection.checkpoints[0].first_exact_offset, 10)
   assert.ok(statements.every(({ sql }) => !/\bLIMIT\b/.test(sql)), 'complete projection must not silently truncate')
   assert.equal(statements[0].sql, 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
   assert.equal(statements.at(-1).sql, 'COMMIT')

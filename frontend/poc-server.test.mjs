@@ -660,17 +660,21 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     } },
     catalog: { version: 2, value: {
       projection_version: 1, source_scope: 'disabled', source_generation: 'a'.repeat(64), observed_at: '2026-08-14T00:00:00.000Z',
-      items: [{ id: assetUrn, platform: 'postgres', database_name: 'business_db', schema_name: 'public' }],
+      items: [{ id: assetUrn, name: 'orders', platform: 'postgres', database_name: 'business_db', schema_name: 'public' }],
     } },
     events: [{
       event_identity: eventId, event_hash: '3'.repeat(64), normalized_change_transaction_id: transactionId,
+      source_identity_hash: '9'.repeat(64), topic_contract: 'MetadataChangeLog_Versioned_v1', source_partition: 0, source_offset: 10,
       asset_urn: assetUrn, normalized_entity_key: 'business_db.public.orders', category: 'TECHNICAL_SCHEMA',
       source_aspect: 'schemaMetadata', operation: 'UPDATE', before_data: { nullable: true }, after_data: { nullable: false },
       actor_ref: null, source_occurred_at: '2026-08-11T01:00:00.000Z', detected_at: '2026-08-11T01:00:01.000Z', captured_at: '2026-08-11T01:00:02.000Z',
     }],
     links: [],
+    sources: [{ source_identity_hash: '9'.repeat(64), provider_name: 'DataHub', provider_version: 'contract-test', schema_contract_hash: '8'.repeat(64), created_at: '2026-08-11T00:00:00.000Z' }],
+    checkpoints: [{ source_identity_hash: '9'.repeat(64), topic_contract: 'MetadataChangeLog_Versioned_v1', source_partition: 0, first_exact_offset: 10, next_offset: 11, last_captured_at: '2026-08-11T01:00:02.000Z', version: 2 }],
   }
   let appendCommand
+  const replayCommands = new Map()
   const stateStore = {
     configured: { postgres: true, redis: false },
     async readChangeHistoryProjection({ catalogScope }) {
@@ -678,23 +682,31 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
       return structuredClone(projection)
     },
     async readChangeHistoryCrLinkReplay(command) {
-      if (!projection.links.length) return null
-      if (command.idempotencyKey !== 'link-1' || command.reason !== 'reviewed link') {
+      const stored = replayCommands.get(command.idempotencyKey)
+      if (!stored) return null
+      if (stored.reason !== command.reason || stored.action !== command.action) {
         throw Object.assign(new Error('idempotency conflict'), { code: 'IDEMPOTENCY_CONFLICT', statusCode: 409 })
       }
-      return { linkEventIdentity: '4'.repeat(64), eventHash: '5'.repeat(64), linkVersion: 1, replayed: true }
+      return { ...stored.result, replayed: true }
     },
     async appendChangeHistoryCrLink(command) {
       appendCommand = command
       assert.deepEqual(projection.core.value.changeRecords, [changeRequest])
-      const result = { linkEventIdentity: '4'.repeat(64), eventHash: '5'.repeat(64), linkVersion: 1, replayed: false }
+      const linkVersion = projection.links.length + 1
+      const result = {
+        linkEventIdentity: String(3 + linkVersion).repeat(64),
+        eventHash: String(4 + linkVersion).repeat(64),
+        linkVersion,
+        replayed: false,
+      }
       projection.links.push({
         link_event_identity: result.linkEventIdentity, event_hash: result.eventHash,
-        ledger_event_identity: eventId, link_version: 1, link_kind: 'PRIMARY', action: 'SET_PRIMARY',
-        change_request_id: changeRequest.id, change_request_round: 1, prior_link_hash: null,
+        ledger_event_identity: eventId, link_version: linkVersion, link_kind: command.linkKind, action: command.action,
+        change_request_id: command.changeRequestId, change_request_round: command.changeRequestRound, prior_link_hash: command.priorLinkHash,
         reason: command.reason, policy_hash: command.policyHash, basis_hash: command.basisHash,
         actor_ref: command.actorRef, occurred_at: command.occurredAt, captured_at: command.occurredAt,
       })
+      replayCommands.set(command.idempotencyKey, { ...command, result })
       return result
     },
   }
@@ -706,7 +718,20 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
   try {
     const list = await fetch(`${base}/api/v1/change-history/events`)
     assert.equal(list.status, 200)
-    assert.equal((await list.json()).items[0].system.system_id, 'business-system')
+    const listed = await list.json()
+    assert.equal(listed.total, 1)
+    assert.deepEqual(listed.items[0], {
+      ...listed.items[0],
+      change_type: 'SCHEMA_CHANGE',
+      precision: 'EXACT_MCL',
+      current_stage: 'UNLINKED',
+      allowed_link_actions: ['SET_PRIMARY', 'CLEAR_PRIMARY', 'ADD_CANDIDATE', 'REMOVE_CANDIDATE'],
+      locator: { platform: 'postgres', database_name: 'business_db', schema_name: 'public', asset_name: 'orders' },
+    })
+    assert.equal(listed.items[0].system.system_id, 'business-system')
+    const filtered = await (await fetch(`${base}/api/v1/change-history/events?week_start=2026-08-10&change_type=SCHEMA_CHANGE&operation=UPDATE&platform=postgres&database_name=business_db&schema_name=public&system_id=business-system&assignee_subject_id=steward-subject&link_state=UNLINKED&stage=UNLINKED`)).json()
+    assert.equal(filtered.total, 1)
+    assert.equal((await fetch(`${base}/api/v1/change-history/events?stage=UNKNOWN`)).status, 400)
     const detail = await fetch(`${base}/api/v1/change-history/events/${eventId}`)
     assert.equal(detail.headers.get('etag'), '"0"')
     assert.equal((await detail.json()).assignee.subject_id, 'steward-subject')
@@ -720,6 +745,9 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     assert.equal(linked.headers.get('etag'), `"${'5'.repeat(64)}"`)
     assert.equal(appendCommand.actorRef, 'admin-subject')
     assert.equal(JSON.stringify(projection.core.value.changeRecords), before)
+    const linkHistory = await fetch(`${base}/api/v1/change-history/events/${eventId}/cr-links`)
+    assert.equal(linkHistory.headers.get('etag'), `"${'5'.repeat(64)}"`)
+    assert.equal((await linkHistory.json()).items[0].link_version, 1)
     const replay = await fetch(`${base}/api/v1/change-history/events/${eventId}/cr-link-events`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'link-1', 'If-Match': '"0"' },
@@ -744,6 +772,33 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     assert.equal(summary.received_count, 1)
     assert.equal(summary.total_count, summary.unlinked_count + summary.received_count + summary.recheck_count
       + summary.testing_count + summary.final_review_count + summary.completed_count)
+    const sourceSummary = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
+    assert.equal(sourceSummary.schema_change_count, 1)
+    assert.equal(sourceSummary.metadata_change_count, 0)
+    assert.equal(sourceSummary.event_count, 1)
+    assert.equal(sourceSummary.precision_counts.EXACT_MCL, 1)
+    assert.equal(sourceSummary.sync_status, 'CONTIGUOUS_CAPTURE_RECORDED')
+    assert.equal(sourceSummary.source_generation, 'a'.repeat(64))
+    assert.equal(sourceSummary.ledger_guarantee_from, '2026-08-11T01:00:02.000Z')
+    const addCandidate = await fetch(`${base}/api/v1/change-history/events/${eventId}/cr-link-events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'link-2', 'If-Match': `"${'5'.repeat(64)}"` },
+      body: JSON.stringify({ action: 'ADD_CANDIDATE', change_request_id: changeRequest.id, change_request_round: 1, reason: 'candidate' }),
+    })
+    assert.equal(addCandidate.status, 201)
+    const removeCandidate = await fetch(`${base}/api/v1/change-history/events/${eventId}/cr-link-events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'link-3', 'If-Match': `"${'6'.repeat(64)}"` },
+      body: JSON.stringify({ action: 'REMOVE_CANDIDATE', change_request_id: changeRequest.id, change_request_round: 1, reason: 'remove candidate' }),
+    })
+    assert.equal(removeCandidate.status, 201)
+    const clearPrimary = await fetch(`${base}/api/v1/change-history/events/${eventId}/cr-link-events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'link-4', 'If-Match': `"${'7'.repeat(64)}"` },
+      body: JSON.stringify({ action: 'CLEAR_PRIMARY', change_request_id: changeRequest.id, change_request_round: 1, reason: 'clear primary' }),
+    })
+    assert.equal(clearPrimary.status, 201)
+    assert.equal(JSON.stringify(projection.core.value.changeRecords), before)
     const invalidTuesday = await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-11`)
     assert.equal(invalidTuesday.status, 400)
     assert.equal((await invalidTuesday.json()).code, 'WEEK_START_INVALID')
@@ -797,7 +852,9 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
     }
   }
   const viewerRead = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-history/events`))
-  assert.equal((await viewerRead.result.json()).items.length, 1)
+  const viewerItems = (await viewerRead.result.json()).items
+  assert.equal(viewerItems.length, 1)
+  assert.deepEqual(viewerItems[0].allowed_link_actions, [])
   const viewerWrite = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-link-events`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'k', 'If-Match': '"0"' },
     body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: 'cr-1', change_request_round: 1, reason: 'no' }),
@@ -810,7 +867,9 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
   assert.equal((await hidden.result.json()).items.length, 0)
   steward.access.value.system_assignments = [{ system_id: 'system-1', subject_id: 'role-subject', responsibility: 'DATA_STEWARD', priority: 1, active: true }]
   const visible = await run(steward, (origin) => fetch(`${origin}/api/v1/change-history/events`))
-  assert.equal((await visible.result.json()).items.length, 1)
+  const stewardItems = (await visible.result.json()).items
+  assert.equal(stewardItems.length, 1)
+  assert.deepEqual(stewardItems[0].allowed_link_actions, ['SET_PRIMARY', 'CLEAR_PRIMARY', 'ADD_CANDIDATE', 'REMOVE_CANDIDATE'])
   const mutate = (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-link-events`, {
     method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'assigned-key', 'If-Match': '"0"' },
     body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: 'cr-1', change_request_round: 1, reason: 'assigned' }),

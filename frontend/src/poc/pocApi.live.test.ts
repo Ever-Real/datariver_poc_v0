@@ -296,6 +296,8 @@ describe('POC live-provider compatibility adapter', () => {
     const client = useStableApiClient()
     const list = await client.request<{ path: string }>('/change-history/events?limit=25')
     expect(list.path).toBe('/api/v1/change-history/events?limit=25')
+    const summary = await client.request<{ path: string }>('/change-history/summary?week_start=2026-08-10')
+    expect(summary.path).toBe('/api/v1/change-history/summary?week_start=2026-08-10')
     const mutation = await client.requestWithMeta<{
       path: string
       method: string

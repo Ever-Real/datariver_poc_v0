@@ -743,6 +743,7 @@ export function createPocStateStore({ databasePool } = {}) {
       `, [...CHANGE_HISTORY_ACCESS_SCOPES, normalizedCatalogScope])
       const eventResult = await client.query(`
         SELECT event_identity, event_hash, normalized_change_transaction_id,
+          source_identity_hash, topic_contract, source_partition, source_offset,
           asset_urn, normalized_entity_key, category, source_aspect, operation,
           before_data, after_data, actor_ref, source_occurred_at, detected_at, captured_at
         FROM poc_change_history_ledger_events
@@ -755,6 +756,19 @@ export function createPocStateStore({ databasePool } = {}) {
         FROM poc_change_history_cr_link_events
         ORDER BY ledger_event_identity, link_version
       `)
+      const sourceResult = await client.query(`
+        SELECT source_identity_hash, provider_name, provider_version,
+          schema_contract_hash, created_at
+        FROM poc_change_history_sources
+        ORDER BY source_identity_hash
+      `)
+      const checkpointResult = await client.query(`
+        SELECT source_identity_hash, topic_contract, source_partition,
+          first_exact_offset, next_offset, last_contiguous_event_identity,
+          last_source_occurred_at, last_captured_at, version
+        FROM poc_change_history_checkpoints
+        ORDER BY source_identity_hash, topic_contract, source_partition
+      `)
       await client.query('COMMIT')
       const catalog = stateResult.rows.find((row) => row.scope === normalizedCatalogScope)
       return {
@@ -762,6 +776,8 @@ export function createPocStateStore({ databasePool } = {}) {
         catalog: catalog ? { value: catalog.value, version: Number(catalog.version) } : { value: null, version: 0 },
         events: eventResult.rows,
         links: linkResult.rows,
+        sources: sourceResult.rows,
+        checkpoints: checkpointResult.rows,
       }
     } catch (error) {
       await client.query('ROLLBACK')

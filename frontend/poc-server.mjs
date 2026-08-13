@@ -687,6 +687,10 @@ const changeHistoryActions = new Map([
   ['SET_PRIMARY', 'PRIMARY'], ['CLEAR_PRIMARY', 'PRIMARY'],
   ['ADD_CANDIDATE', 'CANDIDATE'], ['REMOVE_CANDIDATE', 'CANDIDATE'],
 ])
+const changeHistoryCategories = new Set(['TECHNICAL_SCHEMA', 'DOCUMENTATION', 'TAG', 'GLOSSARY_TERM', 'OWNERSHIP'])
+const changeHistoryOperations = new Set(['CREATE', 'UPDATE', 'UPSERT', 'DELETE', 'ADD', 'REMOVE'])
+const changeHistoryPresentationStages = new Set(['UNLINKED', 'RECEIVED', 'RECHECK', 'TESTING', 'FINAL_REVIEW', 'COMPLETED'])
+const changeHistoryPrecisionValues = ['EXACT_TIMELINE', 'EXACT_MCL', 'DRIFT_DETECTED', 'BACKFILLED_BEST_EFFORT', 'INITIAL_BASELINE']
 
 function changeHistoryActiveUser(document, subjectId) {
   if (document.active_subject_id !== subjectId) {
@@ -697,10 +701,14 @@ function changeHistoryActiveUser(document, subjectId) {
   return user
 }
 
-function changeHistoryContext(event, catalog) {
+function changeHistoryCatalogAsset(event, catalog) {
   const matches = catalog.items.filter((item) => item?.id === event.asset_urn)
-  if (matches.length !== 1) return null
-  const asset = matches[0]
+  return matches.length === 1 ? matches[0] : null
+}
+
+function changeHistoryContext(event, catalog) {
+  const asset = changeHistoryCatalogAsset(event, catalog)
+  if (!asset) return null
   if (typeof asset.platform !== 'string' || typeof asset.database_name !== 'string'
     || typeof asset.schema_name !== 'string') return null
   const providerContext = {
@@ -711,6 +719,18 @@ function changeHistoryContext(event, catalog) {
   return providerContext.platform && providerContext.database_name && providerContext.schema_name
     ? providerContext
     : null
+}
+
+function changeHistoryLocator(event, catalog) {
+  const asset = changeHistoryCatalogAsset(event, catalog)
+  const context = asset ? changeHistoryContext(event, catalog) : null
+  if (!asset || !context) return null
+  return {
+    platform: context.platform,
+    database_name: context.database_name,
+    schema_name: context.schema_name,
+    asset_name: typeof asset.name === 'string' && asset.name.trim() ? asset.name.trim() : null,
+  }
 }
 
 function changeHistorySystem(event, document, catalog) {
@@ -765,11 +785,39 @@ function changeHistoryLinkState(links) {
   }
 }
 
+function changeHistoryPrecision(event, projection) {
+  if (event.topic_contract !== 'MetadataChangeLog_Versioned_v1') return null
+  const sources = Array.isArray(projection.sources) ? projection.sources : []
+  const sourceMatches = sources.filter((source) => source.source_identity_hash === event.source_identity_hash
+    && source.provider_name === 'DataHub' && /^[0-9a-f]{64}$/.test(String(source.schema_contract_hash || '')))
+  if (sourceMatches.length !== 1) return null
+  const checkpoints = Array.isArray(projection.checkpoints) ? projection.checkpoints : []
+  const matches = checkpoints.filter((checkpoint) => checkpoint.source_identity_hash === event.source_identity_hash
+    && checkpoint.topic_contract === event.topic_contract
+    && Number(checkpoint.source_partition) === Number(event.source_partition))
+  if (matches.length !== 1) return null
+  const sourceOffset = Number(event.source_offset)
+  const firstExactOffset = Number(matches[0].first_exact_offset)
+  const nextOffset = Number(matches[0].next_offset)
+  return Number.isSafeInteger(sourceOffset) && Number.isSafeInteger(firstExactOffset) && Number.isSafeInteger(nextOffset)
+    && sourceOffset >= firstExactOffset && sourceOffset < nextOffset
+    ? 'EXACT_MCL'
+    : null
+}
+
 function changeHistoryRow(event, projection, document) {
   const system = changeHistorySystem(event, document, projection.catalog.value)
   const assignee = changeHistoryAssignee(system, document)
   const links = projection.links.filter((link) => link.ledger_event_identity === event.event_identity)
-  return { event, system, assignee, links, current: changeHistoryLinkState(links) }
+  return {
+    event,
+    system,
+    assignee,
+    locator: changeHistoryLocator(event, projection.catalog.value),
+    precision: changeHistoryPrecision(event, projection),
+    links,
+    current: changeHistoryLinkState(links),
+  }
 }
 
 function changeHistoryCanRead(row, user, document) {
@@ -780,6 +828,33 @@ function changeHistoryCanRead(row, user, document) {
     && item.system_id === row.system.system_id && item.responsibility === responsibility)
 }
 
+function changeHistoryCrPresentationStage(cr) {
+  if (!cr || cr.active === false || ['REJECTED', 'CANCELLED'].includes(cr.state)) return 'UNLINKED'
+  if (cr.state === 'REGISTERED' || (cr.state === 'IN_REVIEW' && Number(cr.current_round_number) === 1)) return 'RECEIVED'
+  if (cr.state === 'CHANGES_REQUESTED' || (cr.state === 'IN_REVIEW' && Number(cr.current_round_number) > 1)) return 'RECHECK'
+  if (['TESTING', 'APPLY_QUEUED', 'APPLYING', 'APPLY_FAILED'].includes(cr.state)) return 'TESTING'
+  if (cr.state === 'FINAL_REVIEW') return 'FINAL_REVIEW'
+  if (['APPLIED', 'COMPLETED'].includes(cr.state)) return 'COMPLETED'
+  return 'UNLINKED'
+}
+
+function changeHistoryRowPresentationStage(row, core) {
+  return row.current.primary
+    ? changeHistoryCrPresentationStage(changeHistoryCr(core, row.current.primary.change_request_id))
+    : 'UNLINKED'
+}
+
+function changeHistoryAllowedLinkActions(row, user, document) {
+  if (user.role === 'viewer' || row.system.resolution !== 'RESOLVED') return []
+  if (user.role === 'admin') return [...changeHistoryActions.keys()]
+  const responsibility = user.role === 'data_steward' ? 'DATA_STEWARD' : user.role === 'developer' ? 'DEVELOPER' : null
+  if (!responsibility) return []
+  const assigned = document.system_assignments.some((item) => item.active
+    && item.subject_id === user.subject_id && item.system_id === row.system.system_id
+    && item.responsibility === responsibility)
+  return assigned ? [...changeHistoryActions.keys()] : []
+}
+
 function changeHistoryPublicRow(row, detail = false) {
   const event = row.event
   return {
@@ -788,17 +863,44 @@ function changeHistoryPublicRow(row, detail = false) {
     asset_urn: event.asset_urn,
     entity_key: event.normalized_entity_key,
     category: event.category,
+    change_type: event.category === 'TECHNICAL_SCHEMA' && event.source_aspect === 'schemaMetadata'
+      ? 'SCHEMA_CHANGE'
+      : 'METADATA_CHANGE',
     source_aspect: event.source_aspect,
     operation: event.operation,
+    precision: row.precision,
     source_occurred_at: event.source_occurred_at,
     detected_at: event.detected_at,
     captured_at: event.captured_at,
     system: row.system,
+    locator: row.locator,
     assignee: row.assignee,
+    current_stage: row.current_stage,
+    allowed_link_actions: row.allowed_link_actions,
     current_primary: row.current.primary,
     current_candidates: row.current.candidates,
     link_version: row.current.link_version,
     ...(detail ? { before: event.before_data, after: event.after_data } : {}),
+  }
+}
+
+function changeHistoryPublicLinkEvent(link) {
+  return {
+    link_event_identity: link.link_event_identity,
+    event_hash: link.event_hash,
+    ledger_event_identity: link.ledger_event_identity,
+    link_version: Number(link.link_version),
+    link_kind: link.link_kind,
+    action: link.action,
+    change_request_id: link.change_request_id,
+    change_request_round: Number(link.change_request_round),
+    prior_link_hash: link.prior_link_hash,
+    reason: link.reason,
+    policy_hash: link.policy_hash,
+    basis_hash: link.basis_hash,
+    actor_ref: link.actor_ref,
+    occurred_at: link.occurred_at,
+    captured_at: link.captured_at,
   }
 }
 
@@ -891,12 +993,198 @@ function changeHistoryCommandBody(body) {
   return { action, linkKind, changeRequestId, changeRequestRound: body.change_request_round, reason }
 }
 
+function changeHistoryWeekBounds(weekStart) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(weekStart || '')) {
+    throw accessError(400, 'WEEK_START_INVALID', 'week_start must be YYYY-MM-DD.')
+  }
+  const dayMilliseconds = 24 * 60 * 60 * 1000
+  const kstOffsetMilliseconds = 9 * 60 * 60 * 1000
+  const start = new Date(`${weekStart}T00:00:00+09:00`)
+  const kstDayNumber = (start.getTime() + kstOffsetMilliseconds) / dayMilliseconds
+  const kstWeekday = ((kstDayNumber + 3) % 7 + 7) % 7
+  const normalizedKstDate = Number.isFinite(start.getTime())
+    ? new Date(start.getTime() + kstOffsetMilliseconds).toISOString().slice(0, 10)
+    : undefined
+  if (normalizedKstDate !== weekStart || kstWeekday !== 0) {
+    throw accessError(400, 'WEEK_START_INVALID', 'week_start must be a valid KST Monday.')
+  }
+  const end = new Date(start.getTime() + 7 * dayMilliseconds)
+  return {
+    start,
+    end,
+    week_end_exclusive: new Date(end.getTime() + kstOffsetMilliseconds).toISOString().slice(0, 10),
+  }
+}
+
+function changeHistoryTransactionStage(transactionRows, core) {
+  const primaryKeys = new Set(transactionRows.map((row) => row.current.primary && canonicalJson(row.current.primary)).filter(Boolean))
+  if (transactionRows.some((row) => !row.current.primary) || primaryKeys.size !== 1) return 'UNLINKED'
+  const primary = JSON.parse([...primaryKeys][0])
+  return changeHistoryCrPresentationStage(changeHistoryCr(core, primary.change_request_id))
+}
+
+function changeHistoryWeeklySummary(rows, core, document, weekStart) {
+  const bounds = changeHistoryWeekBounds(weekStart)
+  const inWeek = rows.filter((row) => row.event.source_occurred_at
+    && Date.parse(row.event.source_occurred_at) >= bounds.start.getTime()
+    && Date.parse(row.event.source_occurred_at) < bounds.end.getTime())
+  const unknown = new Set(rows.filter((row) => !row.event.source_occurred_at)
+    .map((row) => row.event.normalized_change_transaction_id)).size
+  const transactions = new Map()
+  for (const row of inWeek) {
+    const list = transactions.get(row.event.normalized_change_transaction_id) ?? []
+    list.push(row)
+    transactions.set(row.event.normalized_change_transaction_id, list)
+  }
+  const counts = { unlinked_count: 0, received_count: 0, recheck_count: 0, testing_count: 0, final_review_count: 0, completed_count: 0 }
+  for (const transactionRows of transactions.values()) {
+    const stage = changeHistoryTransactionStage(transactionRows, core)
+    counts[`${stage.toLowerCase()}_count`] += 1
+  }
+  return {
+    week_start: weekStart,
+    week_end_exclusive: bounds.week_end_exclusive,
+    timezone: 'Asia/Seoul',
+    as_of: new Date().toISOString(),
+    policy_version: document.policy.version,
+    policy_hash: canonicalHash(document),
+    count_unit: 'DISTINCT_NORMALIZED_CHANGE_TRANSACTION',
+    total_count: transactions.size,
+    ...counts,
+    time_unknown_count: unknown,
+    inWeek,
+    transactions,
+  }
+}
+
+function changeHistoryFilterValue(parameters, name, maximum = 255) {
+  const raw = parameters.get(name)
+  if (raw === null) return null
+  const value = raw.trim()
+  if (!value || value.length > maximum || hasAccessControlCharacter(value)) {
+    throw accessError(400, 'FILTER_INVALID', `The ${name} change-history filter is invalid.`)
+  }
+  return value
+}
+
+function changeHistoryMaximumTimestamp(values) {
+  const timestamps = values.filter((value) => Number.isFinite(Date.parse(value)))
+    .sort((left, right) => Date.parse(right) - Date.parse(left))
+  return timestamps[0] ?? null
+}
+
+function changeHistoryMinimumTimestamp(values) {
+  const timestamps = values.filter((value) => Number.isFinite(Date.parse(value)))
+    .sort((left, right) => Date.parse(left) - Date.parse(right))
+  return timestamps[0] ?? null
+}
+
+function changeHistorySourceSummary(projection, rows) {
+  const sources = Array.isArray(projection.sources) ? projection.sources : []
+  const referencedSourceIds = new Set(rows.map((row) => row.event.source_identity_hash).filter(Boolean))
+  const relevantSources = referencedSourceIds.size
+    ? sources.filter((source) => referencedSourceIds.has(source.source_identity_hash))
+    : sources
+  if (relevantSources.length === 0) return {
+    capture_state: 'SOURCE_NOT_CONFIGURED', sync_status: 'SOURCE_NOT_CONFIGURED',
+    first_mcl_offsets: null, last_successful_capture_at: null, ledger_guarantee_from: null,
+  }
+  if (relevantSources.length !== 1) return {
+    capture_state: 'SOURCE_AMBIGUOUS', sync_status: 'SOURCE_AMBIGUOUS',
+    first_mcl_offsets: null, last_successful_capture_at: null, ledger_guarantee_from: null,
+  }
+  const source = relevantSources[0]
+  const checkpoints = (Array.isArray(projection.checkpoints) ? projection.checkpoints : [])
+    .filter((checkpoint) => checkpoint.source_identity_hash === source.source_identity_hash)
+  if (!checkpoints.length) return {
+    capture_state: 'CHECKPOINT_NOT_AVAILABLE', sync_status: 'CHECKPOINT_NOT_AVAILABLE',
+    first_mcl_offsets: null, last_successful_capture_at: null, ledger_guarantee_from: null,
+  }
+  const validOffsets = checkpoints.every((checkpoint) => Number.isSafeInteger(Number(checkpoint.source_partition))
+    && Number.isSafeInteger(Number(checkpoint.first_exact_offset))
+    && Number.isSafeInteger(Number(checkpoint.next_offset))
+    && Number(checkpoint.next_offset) >= Number(checkpoint.first_exact_offset))
+  if (!validOffsets) return {
+    capture_state: 'CHECKPOINT_INVALID', sync_status: 'CHECKPOINT_INVALID',
+    first_mcl_offsets: null, last_successful_capture_at: null, ledger_guarantee_from: null,
+  }
+  const advanced = checkpoints.every((checkpoint) => Number(checkpoint.next_offset) > Number(checkpoint.first_exact_offset)
+    && Number.isFinite(Date.parse(checkpoint.last_captured_at)))
+  const firstMclOffsets = checkpoints.map((checkpoint) => ({
+    partition: Number(checkpoint.source_partition),
+    offset: Number(checkpoint.first_exact_offset),
+  })).sort((left, right) => left.partition - right.partition)
+  const exactCapturedAt = rows.filter((row) => row.precision === 'EXACT_MCL').map((row) => row.event.captured_at)
+  return {
+    capture_state: advanced ? 'CONTIGUOUS_CAPTURE_RECORDED' : 'CAPTURE_PENDING',
+    sync_status: advanced ? 'CONTIGUOUS_CAPTURE_RECORDED' : 'CAPTURE_PENDING',
+    first_mcl_offsets: firstMclOffsets,
+    last_successful_capture_at: advanced
+      ? changeHistoryMinimumTimestamp(checkpoints.map((checkpoint) => checkpoint.last_captured_at))
+      : null,
+    ledger_guarantee_from: advanced ? changeHistoryMinimumTimestamp(exactCapturedAt) : null,
+  }
+}
+
+function changeHistorySummary(projection, rows, core, document, weekStart) {
+  const weekly = changeHistoryWeeklySummary(rows, core, document, weekStart)
+  const transactionEntries = [...weekly.transactions.values()]
+  const schemaTransactions = transactionEntries.filter((items) => items.some((row) => row.event.category === 'TECHNICAL_SCHEMA'
+    && row.event.source_aspect === 'schemaMetadata')).length
+  const metadataTransactions = transactionEntries.filter((items) => items.some((row) => !(row.event.category === 'TECHNICAL_SCHEMA'
+    && row.event.source_aspect === 'schemaMetadata'))).length
+  const precisionCounts = Object.fromEntries(changeHistoryPrecisionValues.map((precision) => [precision, 0]))
+  const categoryCounts = Object.fromEntries([...changeHistoryCategories].map((category) => [category, 0]))
+  const operationCounts = Object.fromEntries([...changeHistoryOperations].map((operation) => [operation, 0]))
+  for (const row of weekly.inWeek) {
+    if (row.precision) precisionCounts[row.precision] += 1
+    categoryCounts[row.event.category] += 1
+    operationCounts[row.event.operation] += 1
+  }
+  const source = changeHistorySourceSummary(projection, rows)
+  const occurred = rows.map((row) => row.event.source_occurred_at)
+  const detected = rows.map((row) => row.event.detected_at)
+  const captured = rows.map((row) => row.event.captured_at)
+  const { inWeek: _inWeek, transactions: _transactions, ...weeklyPublic } = weekly
+  void _inWeek
+  void _transactions
+  return {
+    ...weeklyPublic,
+    schema_change_count: schemaTransactions,
+    metadata_change_count: metadataTransactions,
+    event_count: weekly.inWeek.length,
+    distinct_asset_count: new Set(weekly.inWeek.map((row) => row.event.asset_urn)).size,
+    precision_counts: precisionCounts,
+    category_counts: categoryCounts,
+    operation_counts: operationCounts,
+    capture_state: source.capture_state,
+    sync_status: source.sync_status,
+    source_generation: projection.catalog.value.source_generation,
+    source_observed_at: projection.catalog.value.observed_at,
+    source_occurred_at: changeHistoryMaximumTimestamp(occurred),
+    detected_at: changeHistoryMaximumTimestamp(detected),
+    captured_at: changeHistoryMaximumTimestamp(captured),
+    effective_week_start: weekStart,
+    history_available_from: changeHistoryMinimumTimestamp([...occurred, ...detected]),
+    ledger_guarantee_from: source.ledger_guarantee_from,
+    first_exact_capture_at: source.ledger_guarantee_from,
+    first_timeline_checkpoint: null,
+    first_mcl_offsets: source.first_mcl_offsets,
+    last_successful_capture_at: source.last_successful_capture_at,
+  }
+}
+
 async function changeHistoryApi(request, response, url, context) {
   rejectProtectedAccessClaims(request, url, { allowSystemFilter: true })
   const projection = await context.stateStore.readChangeHistoryProjection({ catalogScope: datahubInventoryStateScope })
   const { document, user } = changeHistoryProjectionAuthority(projection, context)
   const rows = projection.events.map((event) => changeHistoryRow(event, projection, document))
     .filter((row) => changeHistoryCanRead(row, user, document))
+    .map((row) => ({
+      ...row,
+      current_stage: changeHistoryRowPresentationStage(row, projection.core.value),
+      allowed_link_actions: changeHistoryAllowedLinkActions(row, user, document),
+    }))
     .sort((left, right) => String(right.event.source_occurred_at || right.event.detected_at).localeCompare(String(left.event.source_occurred_at || left.event.detected_at))
       || right.event.event_identity.localeCompare(left.event.event_identity))
   const eventLinksMatch = url.pathname.match(/^\/api\/v1\/change-history\/events\/([0-9a-f]{64})\/cr-links$/)
@@ -905,20 +1193,45 @@ async function changeHistoryApi(request, response, url, context) {
   const reverseMatch = url.pathname.match(/^\/api\/v1\/change-requests\/([^/]+)\/change-history$/)
 
   if (request.method === 'GET' && url.pathname === '/api/v1/change-history/events') {
-    const allowedCategories = new Set(['TECHNICAL_SCHEMA', 'DOCUMENTATION', 'TAG', 'GLOSSARY_TERM', 'OWNERSHIP'])
-    const category = url.searchParams.get('category')
-    const systemId = url.searchParams.get('system_id')
-    const assigneeId = url.searchParams.get('assignee_subject_id')
-    const linkState = url.searchParams.get('link_state')
-    if ((category && !allowedCategories.has(category)) || (linkState && !['LINKED', 'UNLINKED'].includes(linkState))) {
+    const weekStart = url.searchParams.get('week_start')
+    const bounds = weekStart ? changeHistoryWeekBounds(weekStart) : null
+    const changeType = changeHistoryFilterValue(url.searchParams, 'change_type', 32)
+    const category = changeHistoryFilterValue(url.searchParams, 'category', 32)
+    const operation = changeHistoryFilterValue(url.searchParams, 'operation', 32)
+    const platform = changeHistoryFilterValue(url.searchParams, 'platform', 100)?.toLowerCase() ?? null
+    const databaseName = changeHistoryFilterValue(url.searchParams, 'database_name')
+    const schemaName = changeHistoryFilterValue(url.searchParams, 'schema_name')
+    const systemId = changeHistoryFilterValue(url.searchParams, 'system_id')
+    const assigneeId = changeHistoryFilterValue(url.searchParams, 'assignee_subject_id')
+    const linkState = changeHistoryFilterValue(url.searchParams, 'link_state', 32)
+    const stage = changeHistoryFilterValue(url.searchParams, 'stage', 32)
+    if ((changeType && !['SCHEMA_CHANGE', 'METADATA_CHANGE'].includes(changeType))
+      || (category && !changeHistoryCategories.has(category))
+      || (operation && !changeHistoryOperations.has(operation))
+      || (linkState && !['LINKED', 'UNLINKED'].includes(linkState))
+      || (stage && !changeHistoryPresentationStages.has(stage))) {
       throw accessError(400, 'FILTER_INVALID', 'A change-history filter is invalid.')
     }
-    const filtered = rows.filter((row) => (!category || row.event.category === category)
+    const filtered = rows.filter((row) => (!bounds || (row.event.source_occurred_at
+        && Date.parse(row.event.source_occurred_at) >= bounds.start.getTime()
+        && Date.parse(row.event.source_occurred_at) < bounds.end.getTime()))
+      && (!changeType || (changeType === 'SCHEMA_CHANGE') === (row.event.category === 'TECHNICAL_SCHEMA' && row.event.source_aspect === 'schemaMetadata'))
+      && (!category || row.event.category === category)
+      && (!operation || row.event.operation === operation)
+      && (!platform || row.locator?.platform === platform)
+      && (!databaseName || row.locator?.database_name === databaseName)
+      && (!schemaName || row.locator?.schema_name === schemaName)
       && (!systemId || row.system.system_id === systemId)
       && (!assigneeId || row.assignee.subject_id === assigneeId)
-      && (!linkState || (linkState === 'LINKED') === Boolean(row.current.primary)))
+      && (!linkState || (linkState === 'LINKED') === Boolean(row.current.primary))
+      && (!stage || row.current_stage === stage))
     const page = changeHistoryPage(filtered, url.searchParams, (row) => [String(row.event.source_occurred_at || row.event.detected_at), row.event.event_identity])
-    return json(response, 200, { items: page.items.map((row) => changeHistoryPublicRow(row)), next_cursor: page.next_cursor, limit: page.limit })
+    return json(response, 200, {
+      items: page.items.map((row) => changeHistoryPublicRow(row)),
+      next_cursor: page.next_cursor,
+      limit: page.limit,
+      total: filtered.length,
+    })
   }
   if (request.method === 'GET' && eventMatch) {
     const row = rows.find((item) => item.event.event_identity === eventMatch[1])
@@ -930,7 +1243,13 @@ async function changeHistoryApi(request, response, url, context) {
     if (!row) throw accessError(404, 'CHANGE_HISTORY_EVENT_NOT_FOUND', 'The change-history event was not found.')
     const history = [...row.links].sort((left, right) => Number(right.link_version) - Number(left.link_version))
     const page = changeHistoryPage(history, url.searchParams, (link) => [String(link.occurred_at), String(link.link_event_identity)])
-    return json(response, 200, { current_primary: row.current.primary, current_candidates: row.current.candidates, items: page.items, next_cursor: page.next_cursor, limit: page.limit }, { ETag: row.current.etag })
+    return json(response, 200, {
+      current_primary: row.current.primary,
+      current_candidates: row.current.candidates,
+      items: page.items.map(changeHistoryPublicLinkEvent),
+      next_cursor: page.next_cursor,
+      limit: page.limit,
+    }, { ETag: row.current.etag })
   }
   if (request.method === 'POST' && eventCommandMatch) {
     if (user.role === 'viewer') throw accessError(403, 'CHANGE_HISTORY_MUTATION_FORBIDDEN', 'Viewer access is read-only.')
@@ -1003,51 +1322,24 @@ async function changeHistoryApi(request, response, url, context) {
   }
   if (request.method === 'GET' && url.pathname === '/api/v1/change-history/weekly') {
     const weekStart = url.searchParams.get('week_start')
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(weekStart || '')) throw accessError(400, 'WEEK_START_INVALID', 'week_start must be YYYY-MM-DD.')
-    const dayMilliseconds = 24 * 60 * 60 * 1000
-    const kstOffsetMilliseconds = 9 * 60 * 60 * 1000
-    const start = new Date(`${weekStart}T00:00:00+09:00`)
-    const kstDayNumber = (start.getTime() + kstOffsetMilliseconds) / dayMilliseconds
-    const kstWeekday = ((kstDayNumber + 3) % 7 + 7) % 7
-    const normalizedKstDate = Number.isFinite(start.getTime())
-      ? new Date(start.getTime() + kstOffsetMilliseconds).toISOString().slice(0, 10)
-      : undefined
-    if (normalizedKstDate !== weekStart || kstWeekday !== 0) {
-      throw accessError(400, 'WEEK_START_INVALID', 'week_start must be a valid KST Monday.')
-    }
-    const end = new Date(start.getTime() + 7 * dayMilliseconds)
-    const inWeek = rows.filter((row) => row.event.source_occurred_at && Date.parse(row.event.source_occurred_at) >= start.getTime() && Date.parse(row.event.source_occurred_at) < end.getTime())
-    const unknown = new Set(rows.filter((row) => !row.event.source_occurred_at).map((row) => row.event.normalized_change_transaction_id)).size
-    const transactions = new Map()
-    for (const row of inWeek) {
-      const list = transactions.get(row.event.normalized_change_transaction_id) ?? []
-      list.push(row)
-      transactions.set(row.event.normalized_change_transaction_id, list)
-    }
-    const counts = { unlinked_count: 0, received_count: 0, recheck_count: 0, testing_count: 0, final_review_count: 0, completed_count: 0 }
-    for (const transactionRows of transactions.values()) {
-      const primaryKeys = new Set(transactionRows.map((row) => row.current.primary && canonicalJson(row.current.primary)).filter(Boolean))
-      if (transactionRows.some((row) => !row.current.primary) || primaryKeys.size !== 1) { counts.unlinked_count += 1; continue }
-      const primary = JSON.parse([...primaryKeys][0])
-      const cr = changeHistoryCr(projection.core.value, primary.change_request_id)
-      if (!cr || cr.active === false || ['REJECTED', 'CANCELLED'].includes(cr.state)) { counts.unlinked_count += 1; continue }
-      let stage
-      if (cr.state === 'REGISTERED' || (cr.state === 'IN_REVIEW' && Number(cr.current_round_number) === 1)) stage = 'received_count'
-      else if (cr.state === 'CHANGES_REQUESTED' || (cr.state === 'IN_REVIEW' && Number(cr.current_round_number) > 1)) stage = 'recheck_count'
-      else if (['TESTING', 'APPLY_QUEUED', 'APPLYING', 'APPLY_FAILED'].includes(cr.state)) stage = 'testing_count'
-      else if (cr.state === 'FINAL_REVIEW') stage = 'final_review_count'
-      else if (['APPLIED', 'COMPLETED'].includes(cr.state)) stage = 'completed_count'
-      else stage = 'unlinked_count'
-      counts[stage] += 1
-    }
-    return json(response, 200, {
-      week_start: weekStart,
-      week_end_exclusive: new Date(end.getTime() + kstOffsetMilliseconds).toISOString().slice(0, 10),
-      timezone: 'Asia/Seoul', as_of: new Date().toISOString(),
-      policy_version: document.policy.version, policy_hash: canonicalHash(document),
-      count_unit: 'DISTINCT_NORMALIZED_CHANGE_TRANSACTION', total_count: transactions.size,
-      ...counts, time_unknown_count: unknown,
-    })
+    const { inWeek: _inWeek, transactions: _transactions, ...summary } = changeHistoryWeeklySummary(
+      rows,
+      projection.core.value,
+      document,
+      weekStart,
+    )
+    void _inWeek
+    void _transactions
+    return json(response, 200, summary)
+  }
+  if (request.method === 'GET' && url.pathname === '/api/v1/change-history/summary') {
+    return json(response, 200, changeHistorySummary(
+      projection,
+      rows,
+      projection.core.value,
+      document,
+      url.searchParams.get('week_start'),
+    ))
   }
   return problem(response, 405, 'METHOD_NOT_ALLOWED', 'The change-history route does not support this method.')
 }
@@ -4202,6 +4494,7 @@ async function api(request, response, url, context) {
     return changeHistoryAccess(request, response, url, context)
   }
   if (url.pathname === '/api/v1/change-history/events'
+    || url.pathname === '/api/v1/change-history/summary'
     || url.pathname === '/api/v1/change-history/weekly'
     || /^\/api\/v1\/change-history\/events\//.test(url.pathname)
     || /^\/api\/v1\/change-requests\/[^/]+\/change-history$/.test(url.pathname)) {
