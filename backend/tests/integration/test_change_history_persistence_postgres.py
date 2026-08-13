@@ -182,9 +182,10 @@ async def test_change_history_replay_fence_rls_grants_and_cr_links_on_postgres()
         assert first.replayed is False
         assert replay.replayed is True
 
-        acquired_at = datetime.now(UTC)
         owner_fingerprint = "a" * 64
         lease_token_hash = "b" * 64
+        async with owner.connect() as connection:
+            before_claim = await connection.scalar(text("SELECT clock_timestamp()"))
         lease = await store.acquire_checkpoint_lease(
             workspace_id=workspace_id,
             source_id=source_id,
@@ -193,9 +194,47 @@ async def test_change_history_replay_fence_rls_grants_and_cr_links_on_postgres()
             initial_next_offset=100,
             owner_fingerprint=owner_fingerprint,
             lease_token_hash=lease_token_hash,
-            acquired_at=acquired_at,
-            expires_at=acquired_at + timedelta(minutes=5),
+            lease_duration_seconds=300,
         )
+        async with owner.connect() as connection:
+            after_claim = await connection.scalar(text("SELECT clock_timestamp()"))
+            lease_clock = (
+                (
+                    await connection.execute(
+                        text(
+                            "SELECT lease_acquired_at, lease_expires_at "
+                            "FROM change_history.checkpoints WHERE id = :checkpoint_id"
+                        ),
+                        {"checkpoint_id": lease.checkpoint_id},
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            claim_arguments = await connection.scalar(
+                text(
+                    "SELECT proargnames FROM pg_proc WHERE oid = "
+                    "'change_history.claim_checkpoint_v1(uuid,uuid,text,integer,bigint,text,text,integer)'::regprocedure"
+                )
+            )
+        assert before_claim <= lease_clock["lease_acquired_at"] <= after_claim
+        assert lease_clock["lease_expires_at"] - lease_clock["lease_acquired_at"] == timedelta(
+            minutes=5
+        )
+        assert "p_lease_duration_seconds" in claim_arguments
+        assert "p_acquired_at" not in claim_arguments
+        assert "p_expires_at" not in claim_arguments
+        with pytest.raises(DBAPIError):
+            await store.acquire_checkpoint_lease(
+                workspace_id=workspace_id,
+                source_id=source_id,
+                topic_contract="MetadataChangeLog_Versioned_v1@schema-contract",
+                source_partition=0,
+                initial_next_offset=100,
+                owner_fingerprint="c" * 64,
+                lease_token_hash="d" * 64,
+                lease_duration_seconds=300,
+            )
         advanced = await store.advance_checkpoint(
             workspace_id=workspace_id,
             checkpoint_id=lease.checkpoint_id,

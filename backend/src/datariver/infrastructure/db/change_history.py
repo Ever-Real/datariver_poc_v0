@@ -271,12 +271,11 @@ class SqlChangeHistoryStore:
         initial_next_offset: int,
         owner_fingerprint: str,
         lease_token_hash: str,
-        acquired_at: datetime,
-        expires_at: datetime,
+        lease_duration_seconds: int,
     ) -> CheckpointLease:
         _require_sha256(owner_fingerprint, field="owner_fingerprint")
         _require_sha256(lease_token_hash, field="lease_token_hash")
-        if source_partition < 0 or initial_next_offset < 0 or expires_at <= acquired_at:
+        if source_partition < 0 or initial_next_offset < 0 or lease_duration_seconds <= 0:
             raise ValidationError("Checkpoint lease position or interval is invalid.")
         async with self._session_factory() as session, session.begin():
             await set_security_context(session, workspace_id=workspace_id, subject_id=None)
@@ -287,7 +286,7 @@ class SqlChangeHistoryStore:
                             "SELECT * FROM change_history.claim_checkpoint_v1("
                             ":workspace_id, :source_id, :topic_contract, :source_partition, "
                             ":initial_next_offset, :owner_fingerprint, :lease_token_hash, "
-                            ":acquired_at, :expires_at)"
+                            ":lease_duration_seconds)"
                         ),
                         {
                             "workspace_id": workspace_id,
@@ -297,8 +296,7 @@ class SqlChangeHistoryStore:
                             "initial_next_offset": initial_next_offset,
                             "owner_fingerprint": owner_fingerprint,
                             "lease_token_hash": lease_token_hash,
-                            "acquired_at": acquired_at,
-                            "expires_at": expires_at,
+                            "lease_duration_seconds": lease_duration_seconds,
                         },
                     )
                 )

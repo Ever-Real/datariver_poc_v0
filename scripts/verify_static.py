@@ -1445,6 +1445,16 @@ def verify_change_history_persistence() -> None:
             )
     if "_load_change_history_revision" not in generator:
         raise AssertionError("canonical migration generation omits Change History security SQL")
+    if "p_acquired_at" in migration or "p_expires_at" in migration:
+        raise AssertionError("checkpoint lease SQL must not accept caller-controlled timestamps")
+    for contract in (
+        "lease_now timestamptz := clock_timestamp()",
+        "lease_now + make_interval(secs => p_lease_duration_seconds)",
+        "checkpoint.lease_expires_at > lease_now",
+        "checkpoint.lease_expires_at <= clock_timestamp()",
+    ):
+        if contract not in migration:
+            raise AssertionError(f"checkpoint lease SQL omits DB-clock contract: {contract}")
     grant_statements = re.findall(r"\bGRANT\s+[^;]+;", migration, flags=re.IGNORECASE)
     if any(
         re.search(r"\b(?:UPDATE|DELETE)\b", statement, flags=re.IGNORECASE)

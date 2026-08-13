@@ -1574,7 +1574,7 @@ def build_downgrade() -> ops.DowngradeOps:
         ),
         ops.ExecuteSQLOp(
             "DROP FUNCTION change_history.claim_checkpoint_v1("
-            "uuid, uuid, text, integer, bigint, text, text, timestamptz, timestamptz)"
+            "uuid, uuid, text, integer, bigint, text, text, integer)"
         ),
         ops.ExecuteSQLOp("DROP FUNCTION change_history.guard_cr_link_chain_v1() CASCADE"),
         ops.ExecuteSQLOp("DROP FUNCTION change_history.guard_checkpoint_v1() CASCADE"),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import inspect
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import ModuleType
@@ -14,6 +15,7 @@ from datariver.infrastructure.db import models as _models  # noqa: F401
 from datariver.infrastructure.db.base import Base
 from datariver.infrastructure.db.change_history import (
     NormalizedLedgerEvent,
+    SqlChangeHistoryStore,
     _validate_event,
 )
 from datariver.infrastructure.db.revision import REQUIRED_DATABASE_REVISION
@@ -170,6 +172,23 @@ def test_checkpoint_and_link_contracts_are_fenced_and_append_only() -> None:
     assert "GRANT UPDATE" not in migration._GRANTS_SQL
     assert "REVOKE UPDATE, DELETE ON change_history.sources" in security
     assert "0096 downgrade refuses to delete change-history evidence" in source
+
+
+def test_checkpoint_lease_clock_is_database_authoritative() -> None:
+    migration = _migration()
+    claim_sql = migration._CLAIM_CHECKPOINT_SQL
+    advance_sql = migration._ADVANCE_CHECKPOINT_SQL
+    parameters = inspect.signature(SqlChangeHistoryStore.acquire_checkpoint_lease).parameters
+
+    assert "p_acquired_at" not in claim_sql
+    assert "p_expires_at" not in claim_sql
+    assert "lease_now timestamptz := clock_timestamp()" in claim_sql
+    assert "checkpoint.lease_expires_at > lease_now" in claim_sql
+    assert "lease_now + make_interval(secs => p_lease_duration_seconds)" in claim_sql
+    assert "checkpoint.lease_expires_at <= clock_timestamp()" in advance_sql
+    assert "acquired_at" not in parameters
+    assert "expires_at" not in parameters
+    assert "lease_duration_seconds" in parameters
 
 
 def test_all_change_history_constraints_are_named() -> None:

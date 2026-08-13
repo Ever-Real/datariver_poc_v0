@@ -221,8 +221,7 @@ CREATE FUNCTION change_history.claim_checkpoint_v1(
     p_initial_next_offset bigint,
     p_owner_fingerprint text,
     p_lease_token_hash text,
-    p_acquired_at timestamptz,
-    p_expires_at timestamptz
+    p_lease_duration_seconds integer
 )
 RETURNS TABLE(checkpoint_id uuid, checkpoint_version integer,
               checkpoint_fence bigint, checkpoint_next_offset bigint)
@@ -232,13 +231,14 @@ SET search_path = pg_catalog, change_history
 AS $function$
 DECLARE
     checkpoint change_history.checkpoints%ROWTYPE;
+    lease_now timestamptz := clock_timestamp();
 BEGIN
     IF p_workspace_id IS DISTINCT FROM
        NULLIF(current_setting('app.workspace_id', true), '')::uuid
        OR p_source_partition < 0 OR p_initial_next_offset < 0
        OR p_owner_fingerprint !~ '^[0-9a-f]{64}$'
        OR p_lease_token_hash !~ '^[0-9a-f]{64}$'
-       OR p_expires_at <= p_acquired_at THEN
+       OR p_lease_duration_seconds <= 0 THEN
         RAISE EXCEPTION 'invalid checkpoint lease request' USING ERRCODE = '23514';
     END IF;
 
@@ -248,7 +248,7 @@ BEGIN
     ) VALUES (
         gen_random_uuid(), p_workspace_id, p_source_id, p_topic_contract,
         p_source_partition, p_initial_next_offset, 'READY', 0, 1,
-        p_acquired_at, p_acquired_at
+        lease_now, lease_now
     )
     ON CONFLICT (workspace_id, source_id, topic_contract, source_partition) DO NOTHING;
 
@@ -264,7 +264,7 @@ BEGIN
         RAISE EXCEPTION 'checkpoint initialization offset conflicts with stored evidence'
             USING ERRCODE = '40001';
     END IF;
-    IF checkpoint.lease_expires_at > p_acquired_at
+    IF checkpoint.lease_expires_at > lease_now
        AND checkpoint.lease_token_hash IS DISTINCT FROM p_lease_token_hash THEN
         RAISE EXCEPTION 'checkpoint lease is held by another owner'
             USING ERRCODE = '55P03';
@@ -273,13 +273,13 @@ BEGIN
     UPDATE change_history.checkpoints
     SET lease_owner_fingerprint = p_owner_fingerprint,
         lease_token_hash = p_lease_token_hash,
-        lease_acquired_at = p_acquired_at,
-        lease_expires_at = p_expires_at,
+        lease_acquired_at = lease_now,
+        lease_expires_at = lease_now + make_interval(secs => p_lease_duration_seconds),
         fence_epoch = checkpoint.fence_epoch + 1,
         version = checkpoint.version + 1,
         status = 'ACTIVE',
         last_error_code = NULL,
-        updated_at = p_acquired_at
+        updated_at = lease_now
     WHERE id = checkpoint.id
     RETURNING id, version, fence_epoch, next_offset
     INTO checkpoint_id, checkpoint_version, checkpoint_fence, checkpoint_next_offset;
@@ -331,7 +331,7 @@ BEGIN
        OR checkpoint.next_offset <> p_expected_next_offset
        OR checkpoint.lease_owner_fingerprint IS DISTINCT FROM p_owner_fingerprint
        OR checkpoint.lease_token_hash IS DISTINCT FROM p_lease_token_hash
-       OR checkpoint.lease_expires_at <= p_captured_at THEN
+       OR checkpoint.lease_expires_at <= clock_timestamp() THEN
         RAISE EXCEPTION 'checkpoint version, offset, or lease fence is stale'
             USING ERRCODE = '40001';
     END IF;
@@ -375,7 +375,7 @@ BEGIN
             change_history.checkpoints,
             change_history.cr_link_events FROM datariver_app;
         GRANT EXECUTE ON FUNCTION change_history.claim_checkpoint_v1(
-            uuid, uuid, text, integer, bigint, text, text, timestamptz, timestamptz
+            uuid, uuid, text, integer, bigint, text, text, integer
         ) TO datariver_app;
         GRANT EXECUTE ON FUNCTION change_history.advance_checkpoint_v1(
             uuid, uuid, integer, bigint, bigint, bigint, text, text, text,
@@ -412,7 +412,7 @@ def security_statements() -> tuple[str, ...]:
         _CLAIM_CHECKPOINT_SQL,
         _ADVANCE_CHECKPOINT_SQL,
         "REVOKE ALL ON FUNCTION change_history.claim_checkpoint_v1("
-        "uuid, uuid, text, integer, bigint, text, text, timestamptz, timestamptz) FROM PUBLIC",
+        "uuid, uuid, text, integer, bigint, text, text, integer) FROM PUBLIC",
         "REVOKE ALL ON FUNCTION change_history.advance_checkpoint_v1("
         "uuid, uuid, integer, bigint, bigint, bigint, text, text, text, "
         "timestamptz, timestamptz, boolean) FROM PUBLIC",
@@ -976,7 +976,7 @@ def downgrade() -> None:
         "DROP FUNCTION change_history.advance_checkpoint_v1(uuid, uuid, integer, bigint, bigint, bigint, text, text, text, timestamptz, timestamptz, boolean)"
     )
     op.execute(
-        "DROP FUNCTION change_history.claim_checkpoint_v1(uuid, uuid, text, integer, bigint, text, text, timestamptz, timestamptz)"
+        "DROP FUNCTION change_history.claim_checkpoint_v1(uuid, uuid, text, integer, bigint, text, text, integer)"
     )
     op.drop_table("cr_link_events", schema="change_history")
     op.drop_table("checkpoints", schema="change_history")

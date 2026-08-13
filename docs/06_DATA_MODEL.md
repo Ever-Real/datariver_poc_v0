@@ -538,7 +538,9 @@ All four relations use forced Workspace RLS and tenant-composite foreign keys. `
 no `UPDATE` or `DELETE` privilege on them. It may append source, normalized ledger and governed CR
 link evidence; checkpoint writes are available only through the fixed
 `claim_checkpoint_v1`/`advance_checkpoint_v1` functions, which verify Workspace context, offset,
-optimistic version, lease token and fence. Database triggers independently reject ledger/link
+optimistic version, lease token and fence. Lease acquisition and expiry use the PostgreSQL server
+clock plus a caller-supplied positive duration; callers cannot supply absolute lease timestamps.
+Database triggers independently reject ledger/link
 mutation, source identity replacement, checkpoint decrease/stale advancement and a stale CR-link
 hash chain. A downgrade is reversible only while all four tables are empty; once evidence exists it
 fails before destructive DDL.
