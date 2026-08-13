@@ -1,5 +1,6 @@
-/* global Buffer, fetch, performance, process, setTimeout, structuredClone */
+/* global Buffer, URL, clearTimeout, fetch, performance, process, setTimeout, structuredClone */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import { test } from 'node:test'
 
@@ -42,6 +43,83 @@ async function waitFor(predicate, message) {
   while (!predicate()) {
     if (Date.now() >= deadline) throw new Error(message)
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 10))
+  }
+}
+
+function configureProviderEnvironment(providerOrigin, { embedding = false } = {}) {
+  Object.assign(process.env, {
+    POC_ENV_FILE: 'poc-catalog-performance.test.env.missing',
+    POC_DATABASE_URL: '',
+    POC_POSTGRES_HOST: '',
+    POC_REDIS_URL: '',
+    POC_SERVER_HOST: '127.0.0.1',
+    POC_SERVER_PORT: '0',
+    POC_CHANGE_HISTORY_SCHEDULER_ENABLED: 'false',
+    DATAHUB_GMS_URL: providerOrigin,
+    DATAHUB_GMS_TOKEN: 'performance-test-token',
+    LLM_EMBEDDING_URL: embedding ? `${providerOrigin}/embeddings` : '',
+    LLM_EMBEDDING_MODEL: embedding ? 'performance-embedding-model' : '',
+    LLM_EMBEDDING_TOKEN: embedding ? 'performance-embedding-token' : '',
+    LLM_CHAT_URL: '',
+    LLM_CHAT_MODEL: '',
+    LLM_CHAT_TOKEN: '',
+    LLM_RERANKER_URL: '',
+    LLM_RERANKER_MODEL: '',
+    LLM_RERANKER_TOKEN: '',
+  })
+}
+
+function lifecycleStateStore(initialProjection) {
+  let persisted = initialProjection ? structuredClone(initialProjection) : undefined
+  let closed = false
+  let closeCalls = 0
+  let postCloseUses = 0
+  let writes = 0
+  let embeddingReplacements = 0
+  const guard = () => {
+    if (closed) postCloseUses += 1
+  }
+  return {
+    stateStore: {
+      configured: { postgres: true, redis: true },
+      async read() {
+        guard()
+        return { value: persisted ? structuredClone(persisted) : null, version: writes }
+      },
+      async write(_scope, value) {
+        guard()
+        persisted = structuredClone(value)
+        writes += 1
+        return writes
+      },
+      async cacheGet() { guard(); return undefined },
+      async cacheSet() { guard() },
+      async cacheDelete() { guard() },
+      async catalogEmbeddingActiveGeneration() { guard(); return undefined },
+      async catalogEmbeddingHashes() { guard(); return new Map() },
+      async replaceCatalogEmbeddingGeneration() {
+        guard()
+        embeddingReplacements += 1
+      },
+      async runChangeHistoryScheduler(_options, task) {
+        guard()
+        return task()
+      },
+      async close() {
+        closeCalls += 1
+        closed = true
+      },
+    },
+    observation() {
+      return {
+        persisted: persisted ? structuredClone(persisted) : undefined,
+        closed,
+        closeCalls,
+        postCloseUses,
+        writes,
+        embeddingReplacements,
+      }
+    },
   }
 }
 
@@ -314,4 +392,241 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
     failure_status: 503,
     replacement_items: 1,
   })}\n`)
+})
+
+test('confirms exact-boundary DataHub inventories once and fails unsafe pagination closed', async () => {
+  const boundaryAssets = Array.from({ length: 250 }, (_value, index) => (
+    entity(`boundary_${String(index).padStart(3, '0')}`, `Boundary asset ${index}`)
+  ))
+  let scenario
+  const provider = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    const page = scenario.pages[scenario.requests]
+    scenario.requests += 1
+    await new Promise((resolvePromise) => setTimeout(resolvePromise, 20))
+    if (!page) {
+      response.writeHead(500, { 'Content-Type': 'application/json' })
+      return response.end(JSON.stringify({ error: 'unexpected provider page' }))
+    }
+    if (page.status) {
+      response.writeHead(page.status, { 'Content-Type': 'application/json' })
+      return response.end(JSON.stringify({ error: 'bounded provider failure' }))
+    }
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    return response.end(JSON.stringify({ data: { scrollAcrossEntities: {
+      count: page.items.length,
+      total: page.total,
+      nextScrollId: page.next,
+      searchResults: page.items.map((item) => ({ entity: item })),
+    } } }))
+  })
+  const providerOrigin = await listen(provider)
+  configureProviderEnvironment(providerOrigin)
+
+  const makeStore = () => {
+    let persisted
+    let writes = 0
+    let cacheWrites = 0
+    return {
+      stateStore: {
+        configured: { postgres: true, redis: true },
+        async read() { return { value: persisted ? structuredClone(persisted) : null, version: writes } },
+        async write(_scope, value) {
+          persisted = structuredClone(value)
+          writes += 1
+          return writes
+        },
+        async cacheGet() { return undefined },
+        async cacheSet() { cacheWrites += 1 },
+        async cacheDelete() {},
+      },
+      observation: () => ({ persisted, writes, cacheWrites }),
+    }
+  }
+
+  scenario = {
+    requests: 0,
+    pages: [
+      { items: boundaryAssets, total: 250, next: 'terminal-confirmation' },
+      { items: [], total: 250, next: null },
+    ],
+  }
+  const exactStore = makeStore()
+  const exactModule = await import('./poc-server.mjs?catalog-exact-boundary-confirmation')
+  const exactServer = exactModule.createPocServer({ stateStore: exactStore.stateStore })
+  const exactOrigin = await listen(exactServer)
+  const coldResponses = await Promise.all(Array.from({ length: 6 }, () => (
+    fetch(`${exactOrigin}/poc-api/datahub/catalog?limit=20`)
+  )))
+  assert.deepEqual(coldResponses.map((response) => response.status), Array(6).fill(503))
+  await waitFor(() => exactStore.observation().writes === 1, 'exact-boundary projection did not commit')
+  assert.equal(scenario.requests, 2)
+  assert.equal(exactStore.observation().cacheWrites, 1)
+  const exactResponse = await fetch(`${exactOrigin}/poc-api/datahub/catalog?limit=20`)
+  assert.equal(exactResponse.status, 200)
+  assert.equal((await exactResponse.json()).items.length, 20)
+  assert.equal(exactStore.observation().persisted.items.length, 250)
+  await close(exactServer)
+
+  const unsafeCases = [
+    {
+      name: 'terminal-continuation',
+      pages: [
+        { items: boundaryAssets, total: 250, next: 'terminal-a' },
+        { items: [], total: 250, next: 'terminal-b' },
+      ],
+    },
+    {
+      name: 'terminal-new-asset',
+      pages: [
+        { items: boundaryAssets, total: 250, next: 'terminal-a' },
+        { items: [entity('overflow_asset', 'Unsafe overflow')], total: 250, next: null },
+      ],
+    },
+    {
+      name: 'cursor-cycle',
+      pages: [
+        { items: [boundaryAssets[0]], total: 3, next: 'cycle-a' },
+        { items: [boundaryAssets[1]], total: 3, next: 'cycle-b' },
+        { items: [boundaryAssets[1]], total: 3, next: 'cycle-a' },
+      ],
+    },
+  ]
+  for (const unsafe of unsafeCases) {
+    scenario = { requests: 0, pages: unsafe.pages }
+    const unsafeStore = makeStore()
+    const unsafeModule = await import(`./poc-server.mjs?catalog-${unsafe.name}`)
+    unsafeModule.createPocServer({ stateStore: unsafeStore.stateStore })
+    await assert.rejects(
+      unsafeModule.startDatahubInventoryRefresh(),
+      (error) => error?.statusCode === 502,
+    )
+    assert.equal(unsafeStore.observation().writes, 0, `${unsafe.name} must not commit`)
+  }
+
+  scenario = { requests: 0, pages: [{ status: 502, items: [], total: 0, next: null }] }
+  const retryStore = makeStore()
+  const retryModule = await import('./poc-server.mjs?catalog-cold-retry-suppression')
+  const retryServer = retryModule.createPocServer({ stateStore: retryStore.stateStore })
+  const retryOrigin = await listen(retryServer)
+  assert.equal((await fetch(`${retryOrigin}/poc-api/datahub/catalog?limit=20`)).status, 503)
+  await waitFor(() => scenario.requests === 1, 'initial failed Catalog refresh was not attempted')
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
+  const retryResponses = await Promise.all(Array.from({ length: 4 }, () => (
+    fetch(`${retryOrigin}/poc-api/datahub/catalog?limit=20`)
+  )))
+  assert.deepEqual(retryResponses.map((response) => response.status), Array(4).fill(503))
+  assert.equal(scenario.requests, 1, 'cold polling must respect the failed-refresh retry boundary')
+  assert.equal(retryStore.observation().writes, 0)
+  await close(retryServer)
+  await close(provider)
+})
+
+test('aborts a partial startup inventory refresh before closing the state store', async () => {
+  let providerRequests = 0
+  let abortedRequests = 0
+  const provider = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    providerRequests += 1
+    if (providerRequests === 1) {
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      return response.end(JSON.stringify({ data: { scrollAcrossEntities: {
+        count: 1,
+        total: 2,
+        nextScrollId: 'partial-page-2',
+        searchResults: [{ entity: entity('partial_new', 'Uncommitted partial asset') }],
+      } } }))
+    }
+    response.on('close', () => { abortedRequests += 1 })
+  })
+  const providerOrigin = await listen(provider)
+  configureProviderEnvironment(providerOrigin)
+  const sourceScope = createHash('sha256').update(providerOrigin).digest('hex').slice(0, 16)
+  const lastGood = {
+    projection_version: 1,
+    source_scope: sourceScope,
+    source_generation: 'last-good-generation',
+    observed_at: new Date(Date.now() - 16 * 60 * 1_000).toISOString(),
+    items: [{ id: 'urn:li:dataset:last-good' }],
+  }
+  const store = lifecycleStateStore(lastGood)
+  const module = await import('./poc-server.mjs?catalog-shutdown-partial-refresh')
+  const server = await module.startPocServer({ stateStore: store.stateStore })
+  await waitFor(() => providerRequests === 2, 'startup refresh did not reach the hanging second page')
+
+  const startedAt = performance.now()
+  const firstStop = server.stopPoc()
+  const secondStop = server.stopPoc()
+  assert.strictEqual(firstStop, secondStop)
+  let timeout
+  try {
+    await Promise.race([
+      firstStop,
+      new Promise((_resolve, reject) => {
+        timeout = setTimeout(() => reject(new Error('shutdown exceeded 10 seconds')), 10_000)
+      }),
+    ])
+  } finally {
+    clearTimeout(timeout)
+  }
+  assert.ok(performance.now() - startedAt < 10_000)
+  const observation = store.observation()
+  assert.equal(observation.writes, 0)
+  assert.deepEqual(observation.persisted, lastGood)
+  assert.equal(observation.closeCalls, 1)
+  assert.equal(observation.postCloseUses, 0)
+  assert.equal(observation.closed, true)
+  assert.equal(server.listening, false)
+  await waitFor(() => abortedRequests === 1, 'hanging provider request was not aborted')
+  assert.equal(abortedRequests, 1)
+  await close(provider)
+})
+
+test('aborts embedding work and prevents its timer from relaunching during shutdown', async () => {
+  let embeddingRequests = 0
+  let abortedEmbeddingRequests = 0
+  const provider = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const url = new URL(request.url || '/', 'http://provider.test')
+    if (url.pathname === '/api/graphql') {
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      return response.end(JSON.stringify({ data: { scrollAcrossEntities: {
+        count: 1,
+        total: 1,
+        nextScrollId: null,
+        searchResults: [{ entity: entity('embedding_asset', 'Embedding lifecycle asset') }],
+      } } }))
+    }
+    if (url.pathname === '/embeddings') {
+      embeddingRequests += 1
+      response.on('close', () => { abortedEmbeddingRequests += 1 })
+      return
+    }
+    response.writeHead(404)
+    response.end()
+  })
+  const providerOrigin = await listen(provider)
+  configureProviderEnvironment(providerOrigin, { embedding: true })
+  const store = lifecycleStateStore()
+  const module = await import('./poc-server.mjs?catalog-shutdown-embedding-refresh')
+  const server = await module.startPocServer({ stateStore: store.stateStore })
+  await waitFor(
+    () => store.observation().writes === 1 && embeddingRequests === 1,
+    'embedding refresh did not start after the inventory commit',
+  )
+  await server.stopPoc()
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
+  const observation = store.observation()
+  assert.equal(embeddingRequests, 1, 'the embedding timer must not relaunch after stop')
+  assert.equal(abortedEmbeddingRequests, 1)
+  assert.equal(observation.embeddingReplacements, 0)
+  assert.equal(observation.closeCalls, 1)
+  assert.equal(observation.postCloseUses, 0)
+  assert.equal(server.listening, false)
+  await close(provider)
 })

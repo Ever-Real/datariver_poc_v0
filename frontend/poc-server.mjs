@@ -1,4 +1,4 @@
-/* global AbortSignal, Buffer, URL, URLSearchParams, fetch, process, setTimeout, structuredClone */
+/* global AbortController, AbortSignal, Buffer, URL, URLSearchParams, clearTimeout, fetch, process, setTimeout, structuredClone */
 import { createHmac, createHash, randomUUID } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -63,6 +63,9 @@ let catalogEmbeddingSnapshot
 let catalogEmbeddingRefreshPromise
 let catalogEmbeddingRefreshStartedAt = 0
 let catalogEmbeddingLastError
+let catalogEmbeddingRefreshTimer
+let serverBackgroundAbortController
+let backgroundLaunchesStopped = false
 const bulkPreparations = new Map()
 const bulkTemplatePath = join(sourceDirectory, 'poc-assets/datariver-catalog-metadata-rows.xlsx')
 const catalogMetadataHeaders = [
@@ -1068,10 +1071,13 @@ function llmEndpoint(provider, endpoint) {
 
 async function providerFetch(url, options = {}) {
   const { timeoutMs = providerTimeoutMs, ...fetchOptions } = options
+  const timeoutSignal = AbortSignal.timeout(timeoutMs)
   return fetch(url, {
     ...fetchOptions,
     redirect: 'error',
-    signal: fetchOptions.signal ?? AbortSignal.timeout(timeoutMs),
+    signal: fetchOptions.signal
+      ? AbortSignal.any([fetchOptions.signal, timeoutSignal])
+      : timeoutSignal,
   })
 }
 
@@ -1311,7 +1317,7 @@ query DataRiverPocGlossaryAssignments($urn: String!, $input: RelationshipsInput!
   }
 }`
 
-async function datahubGraphql(query, variables, timeoutMs = providerTimeoutMs) {
+async function datahubGraphql(query, variables, timeoutMs = providerTimeoutMs, signal) {
   if (!datahub) throw Object.assign(new Error('DataHub is not configured.'), { statusCode: 503 })
   const response = await providerFetch(joinProviderUrl(datahub.url, '/api/graphql'), {
     method: 'POST',
@@ -1321,6 +1327,7 @@ async function datahubGraphql(query, variables, timeoutMs = providerTimeoutMs) {
     },
     body: JSON.stringify({ query, variables }),
     timeoutMs,
+    signal,
   })
   await requireOk(response, 'DataHub')
   const payload = await response.json()
@@ -1743,7 +1750,7 @@ function cursorValue(token, scope) {
   return entry.value
 }
 
-async function datahubCatalogPage(providerCursor) {
+async function datahubCatalogPage(providerCursor, signal) {
   const input = {
     types: ['DATASET'],
     query: '*',
@@ -1755,7 +1762,7 @@ async function datahubCatalogPage(providerCursor) {
   if (providerCursor) input.scrollId = providerCursor
   const data = await datahubGraphql(datahubEmbeddingInventoryQuery, {
     input,
-  }, 60_000)
+  }, 60_000, signal)
   const page = data.scrollAcrossEntities
   const items = (page?.searchResults || []).map((item) => detailedDatasetAsset(item.entity))
   const rawNextProviderCursor = page?.nextScrollId
@@ -1770,7 +1777,7 @@ async function datahubCatalogPage(providerCursor) {
   return { items, total: page?.total, nextProviderCursor }
 }
 
-async function datahubInventory() {
+async function datahubInventory({ signal = serverBackgroundAbortController?.signal } = {}) {
   const now = Date.now()
   if (inventorySnapshot?.expiresAt > now) return inventorySnapshot.items
   if (!inventorySnapshot) {
@@ -1779,11 +1786,17 @@ async function datahubInventory() {
   }
   if (inventorySnapshot) {
     if (inventorySnapshot.expiresAt <= now && inventoryRefreshRetryAt <= now) {
-      void startDatahubInventoryRefresh().catch(() => undefined)
+      void startDatahubInventoryRefresh({ signal }).catch(() => undefined)
     }
     return inventorySnapshot.items
   }
-  const refresh = startDatahubInventoryRefresh()
+  if (!inventoryRefreshPromise && inventoryRefreshRetryAt > now) {
+    throw Object.assign(
+      new Error('The Catalog projection refresh recently failed; retry later.'),
+      { statusCode: 503 },
+    )
+  }
+  const refresh = startDatahubInventoryRefresh({ signal })
   if (pocStateStore.configured.postgres) {
     void refresh.catch(() => undefined)
     throw Object.assign(new Error('The PostgreSQL Catalog projection is warming; retry shortly.'), { statusCode: 503 })
@@ -1791,8 +1804,8 @@ async function datahubInventory() {
   return (await refresh).items
 }
 
-async function datahubEmbeddingInventory() {
-  return datahubInventory()
+async function datahubEmbeddingInventory(options) {
+  return datahubInventory(options)
 }
 
 async function datahubHierarchyInventory() {
@@ -1855,15 +1868,38 @@ function datahubInventoryProjection(items) {
   }
 }
 
-export function startDatahubInventoryRefresh() {
+export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortController?.signal } = {}) {
   if (inventoryRefreshPromise) return inventoryRefreshPromise
+  if (backgroundLaunchesStopped) {
+    return Promise.reject(Object.assign(new Error('The POC background lifecycle is stopping.'), { name: 'AbortError' }))
+  }
+  signal?.throwIfAborted()
   inventoryRefreshPromise = (async () => {
     const items = []
     const observed = new Set()
+    const providerCursors = new Set()
     let providerTotal
     let providerCursor
+    let terminalConfirmationPending = false
+    const commit = async () => {
+      signal?.throwIfAborted()
+      const projection = datahubInventoryProjection(items)
+      await pocStateStore.write(datahubInventoryStateScope, projection)
+      inventorySnapshot = inventorySnapshotFrom(projection)
+      inventoryRefreshFailedAt = undefined
+      inventoryRefreshRetryAt = 0
+      try {
+        await pocStateStore.cacheSet(datahubInventoryCacheKey, projection, datahubInventoryTtlMs / 1_000)
+      } catch { /* Redis is optional. */ }
+      if (llm.embedding) {
+        catalogEmbeddingSnapshot = undefined
+        catalogEmbeddingRefreshStartedAt = 0
+        queueCatalogEmbeddingRefresh()
+      }
+      return inventorySnapshot
+    }
     for (let pageNumber = 0; pageNumber < maximumInventoryPages; pageNumber += 1) {
-      const page = await datahubCatalogPage(providerCursor)
+      const page = await datahubCatalogPage(providerCursor, signal)
       if (!Number.isSafeInteger(page.total) || page.total < 0) {
         throw Object.assign(new Error('DataHub returned a malformed inventory total.'), { statusCode: 502 })
       }
@@ -1871,6 +1907,7 @@ export function startDatahubInventoryRefresh() {
       if (page.total !== providerTotal) {
         throw Object.assign(new Error('DataHub changed its inventory total during the scroll.'), { statusCode: 502 })
       }
+      const observedBeforePage = observed.size
       for (const item of page.items) {
         if (typeof item.id !== 'string' || !item.id) {
           throw Object.assign(new Error('DataHub returned an inventory asset without a valid identity.'), { statusCode: 502 })
@@ -1883,28 +1920,29 @@ export function startDatahubInventoryRefresh() {
       if (observed.size > providerTotal) {
         throw Object.assign(new Error('DataHub returned more unique assets than its inventory total.'), { statusCode: 502 })
       }
+      const newUniqueAssets = observed.size - observedBeforePage
+      if (page.nextProviderCursor) {
+        if (providerCursors.has(page.nextProviderCursor)) {
+          throw Object.assign(new Error('DataHub returned a repeated scroll cursor.'), { statusCode: 502 })
+        }
+        providerCursors.add(page.nextProviderCursor)
+      }
+      if (terminalConfirmationPending) {
+        if (newUniqueAssets !== 0 || page.nextProviderCursor) {
+          throw Object.assign(
+            new Error('DataHub returned an invalid terminal inventory confirmation page.'),
+            { statusCode: 502 },
+          )
+        }
+        return commit()
+      }
       if (!page.nextProviderCursor) {
         if (observed.size !== providerTotal) {
           throw Object.assign(new Error('DataHub ended its scroll before the complete unique inventory was observed.'), { statusCode: 502 })
         }
-        const projection = datahubInventoryProjection(items)
-        await pocStateStore.write(datahubInventoryStateScope, projection)
-        inventorySnapshot = inventorySnapshotFrom(projection)
-        inventoryRefreshFailedAt = undefined
-        inventoryRefreshRetryAt = 0
-        try {
-          await pocStateStore.cacheSet(datahubInventoryCacheKey, projection, datahubInventoryTtlMs / 1_000)
-        } catch { /* Redis is optional. */ }
-        if (llm.embedding) {
-          catalogEmbeddingSnapshot = undefined
-          catalogEmbeddingRefreshStartedAt = 0
-          setTimeout(scheduleCatalogEmbeddingRefresh, 0)
-        }
-        return inventorySnapshot
+        return commit()
       }
-      if (observed.size >= providerTotal) {
-        throw Object.assign(new Error('DataHub returned a continuation cursor after its complete inventory.'), { statusCode: 502 })
-      }
+      if (observed.size === providerTotal) terminalConfirmationPending = true
       providerCursor = page.nextProviderCursor
     }
     throw Object.assign(new Error('DataHub inventory exceeded the configured reconciliation page bound.'), { statusCode: 503 })
@@ -2700,13 +2738,14 @@ async function triggerAirflowDag(dagId, body) {
   return response
 }
 
-async function llmRequest(provider, endpoint, body, timeoutMs = providerTimeoutMs) {
+async function llmRequest(provider, endpoint, body, timeoutMs = providerTimeoutMs, signal) {
   if (!provider) throw Object.assign(new Error('The requested LLM stage is not configured.'), { statusCode: 503 })
   const response = await providerFetch(llmEndpoint(provider, endpoint), {
     method: 'POST',
     headers: { Authorization: `Bearer ${provider.token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     timeoutMs,
+    signal,
   })
   await requireOk(response, `LLM ${endpoint}`)
   return response.json()
@@ -3444,18 +3483,19 @@ function embeddingVectors(payload, expectedCount) {
   return vectors
 }
 
-async function embedCatalogTexts(texts) {
+async function embedCatalogTexts(texts, signal) {
   const payload = await llmRequest(llm.embedding, '/embeddings', {
     model: llm.embedding.model,
     input: texts,
-  }, 60_000)
+  }, 60_000, signal)
   return embeddingVectors(payload, texts.length)
 }
 
-async function ensureCatalogEmbeddingIndex() {
+async function ensureCatalogEmbeddingIndex(signal = serverBackgroundAbortController?.signal) {
   const bindingHash = catalogEmbeddingBindingHash()
   if (!bindingHash) throw new Error('The catalog Embedding projection is not configured.')
-  const inventory = await datahubEmbeddingInventory()
+  signal?.throwIfAborted()
+  const inventory = await datahubEmbeddingInventory({ signal })
   const inventoryProjection = inventorySnapshot?.projection
   if (!validDatahubInventory(inventoryProjection)) {
     throw new Error('The current Catalog projection is unavailable for Embedding reconciliation.')
@@ -3483,8 +3523,9 @@ async function ensureCatalogEmbeddingIndex() {
     const changed = documents.filter((item) => hashes.get(item.asset.id) !== item.sourceHash)
     const replacements = []
     for (let offset = 0; offset < changed.length; offset += catalogEmbeddingBatchSize) {
+      signal?.throwIfAborted()
       const batch = changed.slice(offset, offset + catalogEmbeddingBatchSize)
-      const vectors = await embedCatalogTexts(batch.map((item) => item.contentText))
+      const vectors = await embedCatalogTexts(batch.map((item) => item.contentText), signal)
       replacements.push(...batch.map((item, index) => ({
         bindingHash,
         assetUrn: item.asset.id,
@@ -3495,6 +3536,7 @@ async function ensureCatalogEmbeddingIndex() {
         embedding: vectors[index],
       })))
     }
+    signal?.throwIfAborted()
     await pocStateStore.replaceCatalogEmbeddingGeneration(
       bindingHash,
       datahubInventoryStateScope,
@@ -3521,11 +3563,12 @@ async function ensureCatalogEmbeddingIndex() {
 }
 
 function scheduleCatalogEmbeddingRefresh() {
+  const signal = serverBackgroundAbortController?.signal
   const now = Date.now()
-  if (catalogEmbeddingRefreshPromise
+  if (backgroundLaunchesStopped || signal?.aborted || catalogEmbeddingRefreshPromise
     || now - catalogEmbeddingRefreshStartedAt < catalogEmbeddingRefreshIntervalMs) return
   catalogEmbeddingRefreshStartedAt = now
-  catalogEmbeddingRefreshPromise = ensureCatalogEmbeddingIndex()
+  catalogEmbeddingRefreshPromise = ensureCatalogEmbeddingIndex(signal)
     .then((result) => {
       catalogEmbeddingLastError = undefined
       return result
@@ -3535,6 +3578,14 @@ function scheduleCatalogEmbeddingRefresh() {
       return undefined
     })
     .finally(() => { catalogEmbeddingRefreshPromise = undefined })
+}
+
+function queueCatalogEmbeddingRefresh() {
+  if (backgroundLaunchesStopped || catalogEmbeddingRefreshTimer !== undefined) return
+  catalogEmbeddingRefreshTimer = setTimeout(() => {
+    catalogEmbeddingRefreshTimer = undefined
+    scheduleCatalogEmbeddingRefresh()
+  }, 0)
 }
 
 function catalogEmbeddingStatus() {
@@ -4470,6 +4521,9 @@ export function createPocServer({ stateStore, activeSubjectId } = {}) {
 export async function startPocServer({ stateStore } = {}) {
   if (!existsSync(join(staticDirectory, 'poc.html'))) throw new Error('Run npm run build:poc before starting the POC server.')
   if (stateStore) pocStateStore = stateStore
+  serverBackgroundAbortController = new AbortController()
+  backgroundLaunchesStopped = false
+  const backgroundSignal = serverBackgroundAbortController.signal
   const schedulerConfig = loadPocChangeHistorySchedulerConfig()
   let captureMcl
   if (schedulerConfig.enabled) {
@@ -4481,7 +4535,7 @@ export async function startPocServer({ stateStore } = {}) {
     config: schedulerConfig,
     stateStore: pocStateStore,
     captureMcl,
-    reconcileCatalog: () => startDatahubInventoryRefresh(),
+    reconcileCatalog: () => startDatahubInventoryRefresh({ signal: backgroundSignal }),
     onError(error) {
       process.stderr.write(`POC change-history scheduler: ${error instanceof Error ? error.message : String(error)}\n`)
     },
@@ -4492,16 +4546,36 @@ export async function startPocServer({ stateStore } = {}) {
   await new Promise((resolvePromise) => server.listen(port, host, resolvePromise))
   process.stdout.write(`DataRiver POC listening on http://${host}:${port}\n`)
   if (datahub && pocStateStore.configured.postgres) {
-    void datahubInventory().catch(() => undefined)
+    void datahubInventory({ signal: backgroundSignal }).catch(() => undefined)
   }
   if (datahub && llm.embedding) scheduleCatalogEmbeddingRefresh()
   await scheduler.start()
   let stopping
   server.stopPoc = () => {
-    if (!stopping) stopping = (async () => {
-      await scheduler.stop()
-      await pocStateStore.close?.()
-    })()
+    if (!stopping) {
+      backgroundLaunchesStopped = true
+      const serverClosed = server.listening
+        ? new Promise((resolvePromise, reject) => server.close((error) => (
+            error ? reject(error) : resolvePromise()
+          )))
+        : Promise.resolve()
+      if (catalogEmbeddingRefreshTimer !== undefined) {
+        clearTimeout(catalogEmbeddingRefreshTimer)
+        catalogEmbeddingRefreshTimer = undefined
+      }
+      serverBackgroundAbortController.abort()
+      const inventoryBackground = inventoryRefreshPromise
+      const embeddingBackground = catalogEmbeddingRefreshPromise
+      stopping = (async () => {
+        await Promise.allSettled([
+          serverClosed,
+          scheduler.stop(),
+          inventoryBackground,
+          embeddingBackground,
+        ])
+        await pocStateStore.close?.()
+      })()
+    }
     return stopping
   }
   server.triggerChangeHistoryScheduler = (scheduledFor) => scheduler.triggerManual(scheduledFor)
@@ -4516,9 +4590,6 @@ if (resolve(process.argv[1] || '') === resolve(fileURLToPath(import.meta.url))) 
       if (shuttingDown) return
       shuttingDown = true
       await server.stopPoc()
-      await new Promise((resolvePromise, reject) => server.close((error) => (
-        error ? reject(error) : resolvePromise()
-      )))
     }
     process.once('SIGINT', () => { void shutdown() })
     process.once('SIGTERM', () => { void shutdown() })
