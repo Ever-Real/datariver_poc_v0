@@ -29,5 +29,5 @@
 - [ ] PREP/OPS gated
 
 ## Long-term Invariants & Short-term Working Memory
-- Long-term: Canonical PostgreSQL storage, no repeated raw schemas, strict dedup.
-- Short-term: Wait for external NOTI target probe before architecture decisions.
+- Long-term: current/history separation; Timeline > existing MCL > BLOCKED; nightly non-authoritative; UTC storage/KST week/schedule; indefinite normalized retention/no raw schema duplication; deleted asset excluded current/history retained; CR link no auto-transition; no new DB/container/framework; max two mutating.
+- Short-term: discovery base 78e533d; plan commit 8bc8001; T00/T01 done no changes; selected UNDECIDED; next target probe NOTI terminal term_0ab35fd4-b773-4885-b714-3aa2b7715325; G1-G4 not approved.
