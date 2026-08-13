@@ -1,0 +1,233 @@
+{
+  "task": "DEV-INTEGRATION-CHECKPOINT-01",
+  "roles": [
+    "50_QUALITY_VALIDATION",
+    "20_PLATFORM_RELEASE"
+  ],
+  "validated_at": "2026-08-14T04:17:30+09:00",
+  "status": "BLOCKED",
+  "runtime_candidate_sha": "81b20b0404ef50c0c077bdeba32eced4f5976202",
+  "platform_product_sha": "4857b70b1411a6ec78ad9397ee690c41fa59dc7d",
+  "platform_product_ancestor": true,
+  "environment": {
+    "target": "DEV_MAC_ARM64",
+    "os": "macOS 26.5.2",
+    "architecture": "arm64",
+    "node": "v25.9.0",
+    "npm": "11.12.1",
+    "docker_compose": "v5.3.1"
+  },
+  "authorization": {
+    "risk_class": "LOW_RISK",
+    "task_local_runtime_explicitly_approved": true,
+    "product_repair_performed": false,
+    "push_merge_publication_performed": false,
+    "prep_ops_performed": false,
+    "gates": {
+      "G1": "NOT_APPROVED",
+      "G2": "NOT_APPROVED",
+      "G3": "NOT_APPROVED",
+      "G4": "NOT_APPROVED"
+    }
+  },
+  "dependency_reuse": {
+    "package_lock_match": true,
+    "source": "/Users/everreal/orca/workspaces/datariver_poc_v0/dev-checkpoint-01-platform-validation/frontend/node_modules",
+    "method": "temporary_symlink",
+    "removed_after_validation": true,
+    "install_performed": false
+  },
+  "build": {
+    "command": "npm run build:poc",
+    "status": "PASS",
+    "wall_seconds": 12.45,
+    "warnings": [
+      "기존 500 kB 초과 chunk warning"
+    ]
+  },
+  "credentialless_candidate": {
+    "host": "127.0.0.1",
+    "port": 39081,
+    "pid": 46370,
+    "environment_file": "/dev/null",
+    "checks": [
+      { "name": "healthz", "status": "PASS", "http_status": 200, "milliseconds": 4.408 },
+      { "name": "root", "status": "PASS", "http_status": 200, "milliseconds": 1.489, "bytes": 998 },
+      { "name": "capabilities", "status": "PASS", "http_status": 200, "milliseconds": 2.843, "providers_disabled": 7 },
+      { "name": "catalog_unconfigured", "status": "PASS", "http_status": 503, "milliseconds": 2.276 },
+      { "name": "tree_unconfigured", "status": "PASS", "http_status": 503, "milliseconds": 1.292 },
+      { "name": "unknown_api", "status": "PASS", "http_status": 404, "milliseconds": 1.281 },
+      { "name": "root_post", "status": "PASS", "http_status": 405, "milliseconds": 0.9 }
+    ],
+    "visual": {
+      "status": "DONE_WITH_DEBT",
+      "rendered": [
+        "Dashboard",
+        "Search",
+        "Monitoring",
+        "Change Management"
+      ],
+      "console_warning_or_error": false,
+      "header_menu_poc_badge_present": true,
+      "debt": [
+        "Search UI는 POC_EMPTY_CATALOG_V1 0건을 표시했지만 direct Catalog/Tree API는 503",
+        "T07 내장 데이터 변경현황과 detected-change weekly/link UI는 NOT_STARTED"
+      ]
+    },
+    "shutdown": "SIGTERM_GRACEFUL",
+    "port_released": true
+  },
+  "actual_provider_candidate": {
+    "host": "127.0.0.1",
+    "port": 39082,
+    "pid": 47597,
+    "environment_file": "<existing-local-env-redacted>",
+    "health": { "status": "PASS", "http_status": 200, "milliseconds": 3.107 },
+    "capabilities": {
+      "status": "PARTIAL",
+      "http_status": 200,
+      "milliseconds": 96.238,
+      "providers": [
+        { "name": "DataHub", "state": "available", "detail_code": "LIVE", "latency_ms": 3 },
+        { "name": "Airflow", "state": "available", "detail_code": "AIRFLOW_API_V2", "latency_ms": 81 },
+        { "name": "MinIO", "state": "disabled", "detail_code": "NOT_CONFIGURED", "latency_ms": null },
+        { "name": "LLM Chat", "state": "available", "detail_code": "LIVE", "latency_ms": 15 },
+        { "name": "LLM Embedding", "state": "available", "detail_code": "LIVE", "latency_ms": 15 },
+        { "name": "LLM Reranker", "state": "unavailable", "detail_code": "PROBE_FAILED", "latency_ms": 4 },
+        { "name": "Neo4j", "state": "available", "detail_code": "LIVE", "latency_ms": 91 }
+      ],
+      "grafana_embed": "NOT_CONFIGURED"
+    },
+    "catalog": {
+      "status": "BLOCKED",
+      "first_observed_request": { "http_status": 503, "milliseconds": 15.274, "state": "WARMING" },
+      "immediate_retry": { "http_status": 503, "milliseconds": 2.127, "state": "WARMING" },
+      "search": { "http_status": 503, "milliseconds": 2.7 },
+      "tree": { "http_status": 503, "milliseconds": 2.851 },
+      "invalid_search_field": { "http_status": 400, "milliseconds": 1.414 },
+      "bounded_observation_seconds": 383,
+      "final_http_status": 503,
+      "final_request_milliseconds": 12.68,
+      "postgres_current_projection_rows": 0,
+      "redis_inventory_keys": 0,
+      "completed_slow_graphql_requests": 9,
+      "graphql_request_milliseconds": [25529, 23281, 18315, 18666, 25521, 23846, 18535, 19013, 24914],
+      "urn_sort_warning_repeated": true,
+      "current_empty_error_separation": "FAILURE_ONLY; CURRENT_AND_VALID_ZERO_NOT_PROVEN"
+    },
+    "shutdown": {
+      "signal": "SIGTERM",
+      "listener_released": true,
+      "process_drain_approx_seconds": 71,
+      "drain_defect": true,
+      "natural_exit": true,
+      "sigkill_used": false,
+      "port_released": true
+    }
+  },
+  "focused_tests": [
+    {
+      "command": "node --test poc-mcl-capture.test.mjs",
+      "status": "PASS",
+      "passed": 6,
+      "failed": 0,
+      "wall_seconds": 0.59
+    },
+    {
+      "command": "node --test poc-change-history-scheduler.test.mjs",
+      "status": "PASS",
+      "passed": 4,
+      "failed": 0,
+      "wall_seconds": 0.26
+    },
+    {
+      "command": "node --test poc-state-store.test.mjs poc-server.test.mjs",
+      "status": "PASS",
+      "passed": 26,
+      "failed": 0,
+      "wall_seconds": 1.71
+    }
+  ],
+  "fixture_coverage": {
+    "t04_decode_replay_dedup_checkpoint_failure_restart": "PASS",
+    "scheduler_kst_manual_missed_duplicate": "PASS",
+    "t06_admin_steward_developer_viewer_two_system_spoof_zero_effect": "PASS",
+    "t06_link_replay_conflict": "PASS",
+    "t06_unlink_success": "NOT_EXECUTED; 기존 focused fixture에 REMOVE_CANDIDATE/CLEAR_PRIMARY 성공 사례 없음"
+  },
+  "live_read_only": {
+    "postgres": "HEALTHY_ACCEPTING_CONNECTIONS",
+    "redis": "HEALTHY_PONG",
+    "datahub_gms": { "state": "HEALTHY", "http_status": 200, "milliseconds": 1.812 },
+    "kafka": {
+      "state": "HEALTHY",
+      "topic": "MetadataChangeLog_Versioned_v1",
+      "partition": 0,
+      "offset_before": 50904,
+      "offset_after": 50912,
+      "delta": 8,
+      "attribution": "CONCURRENT_EXTERNAL_DRIFT_NOT_ATTRIBUTED_TO_CANDIDATE"
+    },
+    "schema_registry": {
+      "state": "HEALTHY",
+      "http_status": 200,
+      "milliseconds": 24.037,
+      "subject_count": 3,
+      "target_subject_present": true,
+      "target_version": 1,
+      "target_id": 1,
+      "schema_bytes": 8987,
+      "schema_sha256": "d229d56f93936b990625d8f4a3d99750e59150438d29570705f1f1031670d7fe"
+    },
+    "existing_runtime": {
+      "port": 39080,
+      "pid": 45143,
+      "unchanged": true
+    }
+  },
+  "actual_mcl": {
+    "ledger_read_only_counts": {
+      "sources": 0,
+      "ledger_events": 0,
+      "checkpoints": 0,
+      "cr_link_events": 0
+    },
+    "catch_up": "NOT_EXECUTED",
+    "reason": "active subject와 MCL broker/client/group/topic/source/schema/provider/SR binding 및 안전한 기존 fixture가 없고, 실행에는 ledger/checkpoint 또는 Kafka consumer 상태 mutation이 필요함"
+  },
+  "blocking_findings": [
+    {
+      "id": "B-01",
+      "summary": "6분 23초 bounded window 안에 usable Catalog current projection이 생성되지 않아 warm/search/tree/detail/valid-zero 계약을 검증할 수 없음"
+    },
+    {
+      "id": "B-02",
+      "summary": "SIGTERM 후 listener 해제와 process 자연 종료 사이 약 71초 drain 발생"
+    }
+  ],
+  "debt": [
+    "credentialless Search UI 0건과 direct API 503 의미 불일치",
+    "actual LLM Reranker unavailable",
+    "T07 내장 변경현황/weekly/link UI NOT_STARTED",
+    "명시적 unlink 성공 fixture 부재"
+  ],
+  "not_executed": [
+    "actual current/warm Catalog, 정상 Search/Tree/detail 및 valid-zero 분리",
+    "actual MCL append/checkpoint/catch-up/scheduler",
+    "DataHub metadata write, Kafka topic/offset write, provider mutation, arbitrary DB mutation",
+    "cache flush 또는 기존 PID/container/service/network/volume lifecycle",
+    "Linux/amd64, PREP, OPS, TARGET, load/soak, production gate",
+    "제품/test/config repair, push, merge, publication, G1-G4 approval"
+  ],
+  "final_state": {
+    "candidate_pids_stopped": [46370, 47597],
+    "ports_free": [39081, 39082],
+    "existing_port_39080_pid": 45143,
+    "existing_containers_untouched": true,
+    "secret_values_printed": false
+  },
+  "documentation_changed_paths": [
+    ".orchestration/evidence/DEV-INTEGRATION-CHECKPOINT-01.md",
+    ".orchestration/receipts/DEV-INTEGRATION-CHECKPOINT-01.json"
+  ]
+}
