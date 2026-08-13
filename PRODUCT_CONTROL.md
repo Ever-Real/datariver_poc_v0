@@ -71,3 +71,9 @@
 - Evidence freshness, executed commands, and NOT_EXECUTED.
 - Product regression and Mac arm64 to WSL amd64 to Linux amd64 portability boundaries.
 - No merge, push, PREP, or OPS mutation without the corresponding Gate.
+
+## Language Policy
+- 98_EVIDENCE_REPORT user-facing reports, summaries, receipts, and completion messages default to Korean.
+- Preserve exact technical identifiers, Task IDs, role names, Git SHAs, paths, commands, code symbols, and canonical status enums (PASS, FAIL, BLOCKED, NOT_EXECUTED, UNKNOWN, etc.) in original form.
+- Source evidence may remain in original language; summarize in Korean without altering quoted identifiers.
+- Use English only upon explicit user request or external machine-readable contract requirement.

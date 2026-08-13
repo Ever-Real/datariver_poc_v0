@@ -1,5 +1,7 @@
 # EVIDENCE
 
+<!-- Note: 98_EVIDENCE_REPORT narratives default to Korean. Preserve exact technical identifiers and status enums. -->
+
 - **Task or Receipt Identity:**
 - **Exact SHA:**
 - **Result or Evidence SHA:**
