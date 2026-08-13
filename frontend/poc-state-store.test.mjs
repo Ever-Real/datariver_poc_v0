@@ -586,14 +586,15 @@ test('CAS-updates private access with its core projection and fences later gener
   assert.deepEqual((await store.readChangeHistoryAccess()).access.value, accessValue)
 })
 
-test('locks both PostgreSQL poc_state rows before committing an access CAS', async () => {
+test('serializes PostgreSQL core and access writes before missing-row locks and rolls back stale CAS', async () => {
   const statements = []
-  const rows = new Map([['core', { value: { changeRecords: [] }, version: 3 }]])
+  const rows = new Map()
   const client = {
     async query(sql, parameters = []) {
       const normalized = String(sql).replace(/\s+/g, ' ').trim()
-      statements.push(normalized)
+      statements.push({ sql: normalized, parameters })
       if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(normalized)) return { rows: [] }
+      if (normalized.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [] }
       if (normalized.includes('SELECT scope, value, version FROM poc_state') && normalized.includes('FOR UPDATE')) {
         return { rows: [...rows.entries()].map(([scope, row]) => ({ scope, ...row })) }
       }
@@ -614,27 +615,49 @@ test('locks both PostgreSQL poc_state rows before committing an access CAS', asy
       async connect() { return client },
     },
   })
+  const assertTransactionOrder = (start, writePrefix) => {
+    const transaction = statements.slice(start)
+    const beginIndex = transaction.findIndex(({ sql }) => sql === 'BEGIN')
+    const advisoryIndex = transaction.findIndex(({ sql }) => sql.startsWith('SELECT pg_advisory_xact_lock'))
+    const rowSelectIndex = transaction.findIndex(({ sql }) => sql.includes('ORDER BY scope FOR UPDATE'))
+    const writeIndex = transaction.findIndex(({ sql }) => sql.startsWith(writePrefix))
+    assert.ok(beginIndex < advisoryIndex)
+    assert.ok(advisoryIndex < rowSelectIndex)
+    assert.ok(rowSelectIndex < writeIndex)
+    assert.deepEqual(transaction[advisoryIndex].parameters, ['change-history-access-v1'])
+  }
+
+  const coreStart = statements.length
+  assert.equal(await store.write('core', { changeRecords: [] }), 1)
+  assertTransactionOrder(coreStart, "INSERT INTO poc_state (scope, value) VALUES ('core'")
+  rows.clear()
+
   const accessValue = {
     schema_version: 1,
     active_subject_id: 'database-subject',
     users: [{ subject_id: 'database-subject', role: 'admin', active: true, provider_owner_refs: [] }],
     system_assignments: [],
   }
+  const accessStart = statements.length
   assert.deepEqual(await store.writeChangeHistoryAccess({
     expectedAccessVersion: 0,
-    expectedCoreVersion: 3,
+    expectedCoreVersion: 0,
     accessValue,
     coreValue: { changeRecords: [], adminSystems: [] },
-  }), { accessVersion: 1, coreVersion: 4 })
-  assert.ok(statements.includes('BEGIN'))
-  assert.ok(statements.some((sql) => sql.includes('ORDER BY scope FOR UPDATE')))
-  assert.ok(statements.indexOf('COMMIT') > statements.findIndex((sql) => sql.startsWith('INSERT INTO poc_state')))
+  }), { accessVersion: 1, coreVersion: 1 })
+  assertTransactionOrder(accessStart, 'INSERT INTO poc_state (scope, value)')
 
+  const staleStart = statements.length
   await assert.rejects(store.writeChangeHistoryAccess({
     expectedAccessVersion: 0,
-    expectedCoreVersion: 3,
+    expectedCoreVersion: 0,
     accessValue,
     coreValue: { changeRecords: [] },
   }), (error) => error.code === 'ACCESS_VERSION_STALE')
-  assert.equal(statements.at(-1), 'ROLLBACK')
+  const staleTransaction = statements.slice(staleStart)
+  assert.ok(staleTransaction.findIndex(({ sql }) => sql === 'BEGIN')
+    < staleTransaction.findIndex(({ sql }) => sql.startsWith('SELECT pg_advisory_xact_lock')))
+  assert.ok(staleTransaction.findIndex(({ sql }) => sql.startsWith('SELECT pg_advisory_xact_lock'))
+    < staleTransaction.findIndex(({ sql }) => sql.includes('ORDER BY scope FOR UPDATE')))
+  assert.equal(statements.at(-1).sql, 'ROLLBACK')
 })

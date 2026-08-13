@@ -324,6 +324,10 @@ export function createPocStateStore({ databasePool } = {}) {
       const client = await pool.connect()
       try {
         await client.query('BEGIN')
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [CHANGE_HISTORY_ACCESS_SCOPE],
+        )
         const locked = await client.query(`
           SELECT scope, value, version FROM poc_state
           WHERE scope IN ($1, $2)
@@ -384,6 +388,10 @@ export function createPocStateStore({ databasePool } = {}) {
       const client = await pool.connect()
       try {
         await client.query('BEGIN')
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [CHANGE_HISTORY_ACCESS_SCOPE],
+        )
         const locked = await client.query(`
           SELECT scope, value, version FROM poc_state
           WHERE scope IN ($1, $2)
