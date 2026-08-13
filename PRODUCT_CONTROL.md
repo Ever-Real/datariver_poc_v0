@@ -56,7 +56,7 @@
 | 40_DATA_AI_KNOWLEDGE | Catalog/Search/KG/Chat/LLM/DataHub/Airflow | Gemini 3.1 Pro High via Antigravity | ON_DEMAND_TASK_WORKTREE. |
 | 50_QUALITY_VALIDATION | Independent validation/regression/static/runtime | Gemini 3.1 Pro High via Antigravity | ON_DEMAND_TASK_WORKTREE. Repair forbidden. |
 | 60_FRONTEND_UX | Frontend/UI/UX/browser flow | Gemini 3.1 Pro High via Antigravity | ON_DEMAND_TASK_WORKTREE. |
-| 90_ASSURANCE_SECURITY | Fresh independent security/architecture audit | GPT-5.6 Sol High to Max | ON_DEMAND_TASK_WORKTREE. Do not repair findings. |
+| 90_ASSURANCE_SECURITY | Fresh independent security/architecture audit | GPT-5.6 Sol High~XHigh | ON_DEMAND_TASK_WORKTREE. Do not repair findings. |
 | 98_EVIDENCE_REPORT | CURRENT/receipt/evidence ledger | Gemini 3.1 Pro Low via Antigravity | Persistent active. |
 
 ## Task Policy
