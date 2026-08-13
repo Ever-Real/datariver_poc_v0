@@ -1,0 +1,117 @@
+{
+  "task": "CHANGE-HIST-T07B2A-INDEPENDENT-VALIDATION",
+  "role": "50_QUALITY_VALIDATION",
+  "outcome": "PASS_LOCAL_SOURCE",
+  "status": "INDEPENDENT_VALIDATION_PASS_PENDING_T09_AUDIT",
+  "validation_date_kst": "2026-08-14",
+  "starting_head": "c1662a5674cca2f7bda0c77d2acb7206462b82bd",
+  "product_sha": "5493517466334557c9de57bd15f28a43ff73ff4f",
+  "builder_base_sha": "bdd96fb02762aa8d510ec3021a14212a83c4a125",
+  "product_write": "없음",
+  "environment": {
+    "platform": "macOS 26.5.2 arm64",
+    "node": "v25.9.0",
+    "npm": "11.12.1",
+    "initial_node_modules": "없음"
+  },
+  "ancestry": {
+    "product_is_direct_child_of_builder_base": true,
+    "candidate_is_direct_child_of_product": true,
+    "validation_started_clean": true
+  },
+  "product_diff": {
+    "insertions": 748,
+    "deletions": 0,
+    "path_count": 5,
+    "paths": [
+      "frontend/src/features/governance/GovernancePage.tsx",
+      "frontend/src/features/governance/GovernancePage.test.tsx",
+      "frontend/src/features/governance/DetectedChangeCrPanel.tsx",
+      "frontend/src/features/governance/DetectedChangeCrPanel.test.tsx",
+      "frontend/src/features/governance/changeHistoryCr.css"
+    ],
+    "exact_allowlist": "PASS",
+    "dependency_or_lock_change": "없음",
+    "api_type_server_schema_service_change": "없음",
+    "global_css_file_change": "없음",
+    "existing_cr_workflow_change": "없음"
+  },
+  "builder_evidence_diff": {
+    "insertions": 123,
+    "deletions": 0,
+    "path_count": 2,
+    "paths": [
+      ".orchestration/evidence/CHANGE-HIST-T07B2A-WEEKLY-LINK-UI.md",
+      ".orchestration/receipts/CHANGE-HIST-T07B2A-WEEKLY-LINK-UI.json"
+    ],
+    "exact_allowlist": "PASS"
+  },
+  "package_hashes": {
+    "frontend_package_json_sha256": "f331ee0a3314b0b40da9fa309f54181be540240ef310acd8cab67d2512e28f6f",
+    "frontend_package_lock_sha256": "3fdccef423f6b503fa9675f0fa89bccff2b11c064a536344f35c24331407a0ca"
+  },
+  "requirements": {
+    "seven_weekly_filters_exact": "PASS",
+    "unlinked_uses_link_state_only": "PASS",
+    "other_cards_use_exact_stage": "PASS",
+    "server_counts_no_local_aggregation_or_authorization": "PASS",
+    "fresh_event_link_etag_exact_equality_fail_closed": "PASS",
+    "verified_fresh_etag_used_as_if_match": "PASS",
+    "allowed_link_actions_only": "PASS",
+    "authorized_current_round_targets_only": "PASS",
+    "exact_four_commands_and_random_idempotency": "PASS",
+    "no_actor_role_system_time_policy_basis_payload": "PASS",
+    "no_optimistic_state_and_failure_preservation": "PASS",
+    "success_refetches_event_links_weekly_list": "PASS",
+    "viewer_no_actions": "PASS",
+    "loading_error_empty_saving_states": "PASS",
+    "list_detail_abort_and_stale_result_suppression": "PASS_SOURCE_REVIEW",
+    "current_kst_monday_and_kst_display": "PASS",
+    "semantic_accessibility": "PASS_SOURCE_AND_FOCUSED_TEST",
+    "existing_cr_workflow_unchanged": "PASS"
+  },
+  "verification": {
+    "npm_ci_offline_existing_lock": "PASS_368_PACKAGES",
+    "focused_t07b2a_vitest": "PASS_2_FILES_41_TESTS",
+    "full_governance_focused_suite": "PASS_5_FILES_68_TESTS",
+    "additional_governance_prefix_diagnostic": "PASS_10_FILES_91_TESTS_GOVERNANCE_DOCUMENTS_INCLUDED",
+    "lint": "PASS_ZERO_ERRORS_ZERO_WARNINGS",
+    "typecheck": "PASS",
+    "build_poc": "PASS_WITH_EXISTING_500KB_CHUNK_ADVISORY",
+    "diff_check": "PASS",
+    "allowlist_and_package_hash_review": "PASS"
+  },
+  "blocking_findings": [],
+  "nonblocking_debt": [
+    {
+      "id": "D1_COMPONENT_LIFECYCLE_DENSITY",
+      "classification": "유지보수 debt",
+      "summary": "306줄 component가 load/detail/mutation/refetch와 presentation을 함께 보유하고 command 및 성공 refetch에는 별도 AbortController/intent fence가 없다."
+    },
+    {
+      "id": "D2_FOCUSED_COVERAGE_GAPS",
+      "classification": "테스트 coverage debt",
+      "summary": "413줄 test는 list/detail abort signal, 성공 후 refetch 실패의 화면 원자성, refetch 결과의 실제 채택을 직접 exercise하지 않는다."
+    }
+  ],
+  "evidence_paths": [
+    ".orchestration/evidence/CHANGE-HIST-T07B2A-INDEPENDENT-VALIDATION.md",
+    ".orchestration/receipts/CHANGE-HIST-T07B2A-INDEPENDENT-VALIDATION.json"
+  ],
+  "not_executed": [
+    "BROWSER_OR_RUNTIME_SMOKE",
+    "PROVIDER_DB_OR_CONTAINER_PROBE_OR_MUTATION",
+    "FULL_REPOSITORY_TEST_SUITE",
+    "PUSH_MERGE_PREP_OPS_TARGET"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  },
+  "remaining": [
+    "T09_AUDIT",
+    "LIFECYCLE_AND_COVERAGE_DEBT_FOLLOW_UP"
+  ]
+}
