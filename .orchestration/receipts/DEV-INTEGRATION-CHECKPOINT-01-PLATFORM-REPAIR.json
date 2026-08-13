@@ -1,0 +1,70 @@
+{
+  "task": "DEV-INTEGRATION-CHECKPOINT-01-PLATFORM-REPAIR",
+  "role": "20_PLATFORM_RELEASE Builder",
+  "preferred_model": "Gemini 3.1 Pro High via Antigravity",
+  "actual_model": "GPT-5 Codex",
+  "validated_at": "2026-08-14T03:40:36+09:00",
+  "base_sha": "0f1d491120af2abb5149aa0b9be9b2fe124d1818",
+  "product_sha": "4857b70b1411a6ec78ad9397ee690c41fa59dc7d",
+  "status": "REPAIRED_SELF_VALIDATED_PENDING_INDEPENDENT_VALIDATION",
+  "runtime_permission_mechanism": "NOT_SUPPORTED",
+  "product_changed_paths": [
+    "deploy/poc/Dockerfile.example",
+    "deploy/poc/docker-compose.poc.yaml",
+    "deploy/poc/.env.example"
+  ],
+  "documentation_changed_paths": [
+    ".orchestration/evidence/DEV-INTEGRATION-CHECKPOINT-01-PLATFORM-REPAIR.md",
+    ".orchestration/receipts/DEV-INTEGRATION-CHECKPOINT-01-PLATFORM-REPAIR.json"
+  ],
+  "validation": [
+    {
+      "command": "read-only local import/COPY closure check",
+      "status": "PASS",
+      "local_runtime_modules": 4
+    },
+    {
+      "command": "read-only deploy/poc/.env.example and Compose contract check",
+      "status": "PASS",
+      "forwarded_settings": 22,
+      "scheduler_default": "DISABLED",
+      "active_subject_default": "BLANK"
+    },
+    {
+      "command": "docker compose --env-file deploy/poc/.env.example -f deploy/poc/docker-compose.poc.yaml config --quiet",
+      "status": "PASS",
+      "rendered_values_output": false
+    },
+    {
+      "command": "npm run build:poc",
+      "status": "FAIL_ENVIRONMENT",
+      "exit_code": 127,
+      "reason": "node_modules가 없어 tsc executable을 찾을 수 없음; npm dependency 설치 미수행"
+    },
+    {
+      "command": "uv run python scripts/verify_static.py",
+      "status": "PASS"
+    },
+    {
+      "command": "git diff --check and product changed-path allowlist",
+      "status": "PASS"
+    }
+  ],
+  "scope_assertions": {
+    "new_service_container_network_dependency_framework": false,
+    "scheduler_enabled_by_default": false,
+    "credential_or_subject_invented": false,
+    "secret_value_printed": false,
+    "container_runtime_mutation": false
+  },
+  "not_executed": [
+    "Docker image build 및 container/service/network lifecycle",
+    "scheduler와 Kafka/Schema Registry/PostgreSQL/DataHub runtime 연동",
+    "실제 credential 또는 active subject 설정",
+    "Node 22 및 Linux/amd64 PREP/OPS/TARGET 검증",
+    "push/merge/publication",
+    "G1-G4 approval"
+  ],
+  "blockers": [],
+  "remaining_gate": "fresh independent validation"
+}
