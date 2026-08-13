@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "task_id": "DEV-CHECKPOINT-01-REPAIR-01-VALIDATION",
+  "orchestration_task_id": "task_67885994f6d2",
+  "dispatch_id": "ctx_2af154cd322d",
+  "role": "50_QUALITY_VALIDATION",
+  "risk": "R2_INDEPENDENT_VALIDATION",
+  "validated_at": "2026-08-14T05:11:07+09:00",
+  "status": "PASS_LOCAL_SOURCE",
+  "environment": {
+    "name": "DEV_MAC_ARM64_TASK_WORKTREE",
+    "node": "v25.9.0",
+    "npm": "11.12.1"
+  },
+  "git": {
+    "base_sha": "f37be6fdddcc7c15caac6303defc8f6c9a1bd9ff",
+    "product_sha": "639a4830d7db2775b0932c58adb14ac6185f437c",
+    "candidate_sha": "df486d38f80fe58041195d344071335e1fa59edf",
+    "branch": "Ever-Real/dev-checkpoint-01-repair-01-validation",
+    "clean_before_task": true,
+    "clean_before_evidence": true
+  },
+  "paths": {
+    "product_reviewed": [
+      "frontend/poc-server.mjs",
+      "frontend/poc-catalog-performance.test.mjs"
+    ],
+    "prior_evidence_reviewed": [
+      ".orchestration/evidence/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01.md",
+      ".orchestration/receipts/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01.json"
+    ],
+    "documentation_changed": [
+      ".orchestration/evidence/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01-VALIDATION.md",
+      ".orchestration/receipts/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01-VALIDATION.json"
+    ]
+  },
+  "scope_assertions": {
+    "product_source_read_only": true,
+    "only_two_product_paths_in_base_to_product": true,
+    "only_two_evidence_paths_in_product_to_candidate": true,
+    "dependency_lock_deploy_state_store_service_changes": false,
+    "validator_weakening_detected": false,
+    "deployment_specific_product_hardcoding_detected": false,
+    "secret_exposure_detected": false
+  },
+  "static_review": {
+    "B01": {
+      "status": "PASS",
+      "terminal_confirmation_exactly_once": true,
+      "stable_total_required": true,
+      "zero_new_unique_required": true,
+      "no_terminal_continuation_required": true,
+      "all_provider_cursors_cycle_checked": true,
+      "cold_retry_at_suppression": true,
+      "single_refresh_promise": true,
+      "postgres_first_atomic_last_good": true,
+      "valid_zero_preserved": true,
+      "unsafe_pages_write_projection": false
+    },
+    "B02": {
+      "status": "PASS",
+      "timeout_combined_with_lifecycle_abort": true,
+      "inventory_promise_owned": true,
+      "embedding_promise_owned": true,
+      "embedding_timer_owned_and_cleared": true,
+      "idempotent_stop": true,
+      "scheduler_http_inventory_embedding_settle_before_store_close": true,
+      "partial_abort_preserves_last_good": true,
+      "post_close_store_access_detected": false,
+      "force_exit_added": false,
+      "unhandled_rejection_path_detected": false,
+      "active_request_or_module_lifecycle_regression_detected": false
+    }
+  },
+  "validation": [
+    {
+      "command": "npm ci",
+      "status": "PASS",
+      "installed_packages": 368,
+      "audit_vulnerabilities": 0
+    },
+    {
+      "command": "npm run lint",
+      "status": "PASS",
+      "warnings": 0
+    },
+    {
+      "command": "npm run build:poc",
+      "status": "PASS",
+      "note": "existing large chunk warning only"
+    },
+    {
+      "command": "node --test --test-reporter=tap poc-catalog-performance.test.mjs",
+      "status": "PASS_AFTER_REQUIRED_BUILD",
+      "tests": 4,
+      "passed": 4
+    },
+    {
+      "command": "node --test --test-reporter=tap *.test.mjs",
+      "status": "PASS",
+      "tests": 59,
+      "passed": 59
+    },
+    {
+      "command": "npx vitest run --config vitest.config.ts --exclude '**/*.test.mjs'",
+      "status": "PASS",
+      "test_files": 81,
+      "tests": 527,
+      "duration_seconds": 51.16
+    },
+    {
+      "command": "npm test -- --run",
+      "status": "KNOWN_MIXED_RUNNER_COLLISION_EXIT_1",
+      "executions": 1,
+      "reason": "Vitest collects native node:test files as zero-suite/incompatible runner inputs",
+      "repeated_after_user_boundary": false
+    },
+    {
+      "command": "git diff --check and conflict-marker scan",
+      "status": "PASS"
+    }
+  ],
+  "observations": [
+    {
+      "severity": "NON_BLOCKING_HARNESS_PRECONDITION",
+      "detail": "The lifecycle-focused tests require dist-poc/poc.html; before build, two lifecycle cases fail at the explicit startPocServer build precondition. After the required build, the focused suite passes 4/4."
+    },
+    {
+      "severity": "KNOWN_RUNNER_DISCOVERY_ISSUE",
+      "detail": "The mixed npm test command collides with native node:test files. Native Node and Vitest-only suites pass independently."
+    }
+  ],
+  "findings": [],
+  "blockers": [],
+  "not_executed": [
+    "existing 39080 listener/runtime/provider access or mutation",
+    "live DataHub or LLM provider validation or mutation",
+    "container/volume/network lifecycle",
+    "PREP",
+    "OPS",
+    "TARGET",
+    "push",
+    "merge",
+    "rebase",
+    "publication"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  }
+}
