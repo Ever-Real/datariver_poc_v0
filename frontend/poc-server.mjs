@@ -484,8 +484,8 @@ function normalizedAccessAssignments(value, users, systems) {
 function normalizeChangeHistoryAccessDocument(raw, { allowUnresolvedActiveSubject = false } = {}) {
   const document = accessRecord(raw, 'access')
   exactAccessKeys(document, 'access', [
-    'schema_version', 'active_subject_id', 'users', 'systems', 'system_schema_scopes', 'system_assignments',
-  ])
+    'schema_version', 'active_subject_id', 'policy', 'users', 'systems', 'system_schema_scopes', 'system_assignments',
+  ], ['schema_version', 'active_subject_id', 'users', 'systems', 'system_schema_scopes', 'system_assignments'])
   if (document.schema_version !== 1) {
     throw accessError(400, 'ACCESS_DOCUMENT_INVALID', 'access.schema_version must be 1.')
   }
@@ -496,9 +496,18 @@ function normalizeChangeHistoryAccessDocument(raw, { allowUnresolvedActiveSubjec
   if (!allowUnresolvedActiveSubject && !activeUser?.active) {
     throw accessError(400, 'ACCESS_DOCUMENT_INVALID', 'The active subject must reference an active user.')
   }
+  const policy = document.policy === undefined
+    ? { version: 1, priority_order: 'ASCENDING', fallback: ['DATA_STEWARD', 'DEVELOPER', 'DATAHUB_OWNER', 'UNASSIGNED'] }
+    : accessRecord(document.policy, 'access.policy')
+  exactAccessKeys(policy, 'access.policy', ['version', 'priority_order', 'fallback'])
+  if (policy.version !== 1 || policy.priority_order !== 'ASCENDING'
+    || canonicalJson(policy.fallback) !== canonicalJson(['DATA_STEWARD', 'DEVELOPER', 'DATAHUB_OWNER', 'UNASSIGNED'])) {
+    throw accessError(400, 'ACCESS_DOCUMENT_INVALID', 'access.policy must use the reviewed v1 assignment precedence.')
+  }
   return {
     schema_version: 1,
     active_subject_id: activeSubjectId,
+    policy,
     users,
     systems,
     system_schema_scopes: normalizedAccessScopes(document.system_schema_scopes, systems),
@@ -527,9 +536,10 @@ function configuredChangeHistorySubject(injectedSubjectId) {
   }
 }
 
-function rejectProtectedAccessClaims(request, url) {
+function rejectProtectedAccessClaims(request, url, { allowSystemFilter = false } = {}) {
   const header = Object.keys(request.headers).find((key) => protectedAccessHeaders.has(key.toLowerCase()))
-  const query = [...url.searchParams.keys()].find((key) => protectedAccessQueryKeys.has(key.toLowerCase()))
+  const query = [...url.searchParams.keys()].find((key) => protectedAccessQueryKeys.has(key.toLowerCase())
+    && !(allowSystemFilter && key.toLowerCase() === 'system_id'))
   if (header || query) {
     throw accessError(400, 'PROTECTED_CLAIM', 'Browser-supplied identity and authorization claims are forbidden.')
   }
@@ -558,8 +568,8 @@ function changeHistoryDocumentFromSnapshot(snapshot) {
   try {
     const access = accessRecord(snapshot.access.value, 'stored access')
     exactAccessKeys(access, 'stored access', [
-      'schema_version', 'active_subject_id', 'users', 'system_assignments',
-    ])
+      'schema_version', 'active_subject_id', 'policy', 'users', 'system_assignments',
+    ], ['schema_version', 'active_subject_id', 'users', 'system_assignments'])
     const core = snapshot.core.value && typeof snapshot.core.value === 'object' && !Array.isArray(snapshot.core.value)
       ? snapshot.core.value
       : {}
@@ -623,6 +633,7 @@ function privateChangeHistoryAccess(document) {
   return {
     schema_version: document.schema_version,
     active_subject_id: document.active_subject_id,
+    policy: document.policy,
     users: document.users,
     system_assignments: document.system_assignments,
   }
@@ -667,6 +678,368 @@ async function changeHistoryAccess(request, response, url, context) {
     coreValue: changeHistoryAccessCoreProjection(snapshot.core.value, document),
   })
   return json(response, 200, { ...document, version: result.accessVersion }, { ETag: `"${result.accessVersion}"` })
+}
+
+const changeHistoryActions = new Map([
+  ['SET_PRIMARY', 'PRIMARY'], ['CLEAR_PRIMARY', 'PRIMARY'],
+  ['ADD_CANDIDATE', 'CANDIDATE'], ['REMOVE_CANDIDATE', 'CANDIDATE'],
+])
+
+function changeHistoryActiveUser(document, subjectId) {
+  if (document.active_subject_id !== subjectId) {
+    throw accessError(401, 'SUBJECT_UNRESOLVED', 'The configured and stored active subjects do not match.')
+  }
+  const user = document.users.find((item) => item.subject_id === subjectId)
+  if (!user?.active) throw accessError(401, 'SUBJECT_UNRESOLVED', 'The active subject is missing or inactive.')
+  return user
+}
+
+function changeHistoryContext(event, catalog) {
+  const matches = catalog.items.filter((item) => item?.id === event.asset_urn)
+  if (matches.length !== 1) return null
+  const asset = matches[0]
+  if (typeof asset.platform !== 'string' || typeof asset.database_name !== 'string'
+    || typeof asset.schema_name !== 'string') return null
+  const providerContext = {
+    platform: asset.platform.trim().toLowerCase(),
+    database_name: asset.database_name.trim(),
+    schema_name: asset.schema_name.trim(),
+  }
+  return providerContext.platform && providerContext.database_name && providerContext.schema_name
+    ? providerContext
+    : null
+}
+
+function changeHistorySystem(event, document, catalog) {
+  const providerContext = changeHistoryContext(event, catalog)
+  if (!providerContext) return { resolution: 'UNMAPPED', system_id: null, provider_context: null }
+  const activeSystems = new Set(document.systems.filter((system) => system.active).map((system) => system.system_id))
+  const matches = document.system_schema_scopes.filter((scope) => scope.active
+    && activeSystems.has(scope.system_id)
+    && scope.platform === providerContext.platform
+    && scope.database_name === providerContext.database_name
+    && scope.schema_name === providerContext.schema_name)
+  if (matches.length !== 1) {
+    return { resolution: matches.length ? 'AMBIGUOUS' : 'UNMAPPED', system_id: null, provider_context: providerContext }
+  }
+  return { resolution: 'RESOLVED', system_id: matches[0].system_id, provider_context: providerContext }
+}
+
+function changeHistoryAssignee(system, document) {
+  const unassigned = { subject_id: null, responsibility: 'UNASSIGNED', system_id: system.system_id, priority: null, basis: 'CURRENT_POC_PROJECTION' }
+  if (system.resolution !== 'RESOLVED') return unassigned
+  const activeUsers = new Set(document.users.filter((user) => user.active).map((user) => user.subject_id))
+  for (const responsibility of ['DATA_STEWARD', 'DEVELOPER']) {
+    const candidates = document.system_assignments.filter((item) => item.active
+      && item.system_id === system.system_id && item.responsibility === responsibility
+      && activeUsers.has(item.subject_id)).sort((left, right) => left.priority - right.priority)
+    if (!candidates.length) continue
+    const winners = candidates.filter((item) => item.priority === candidates[0].priority)
+    if (winners.length !== 1) return unassigned
+    return { subject_id: winners[0].subject_id, responsibility, system_id: system.system_id, priority: winners[0].priority, basis: 'CURRENT_POC_PROJECTION' }
+  }
+  // The normalized OWNERSHIP payload has no reviewed owner-ref extraction contract yet.
+  // Preserve stored provider_owner_refs for a future bounded adapter, but fail closed today.
+  return unassigned
+}
+
+function changeHistoryLinkState(links) {
+  let primary = null
+  const candidates = new Map()
+  for (const link of [...links].sort((left, right) => Number(left.link_version) - Number(right.link_version))) {
+    const target = { change_request_id: link.change_request_id, change_request_round: Number(link.change_request_round) }
+    if (link.action === 'SET_PRIMARY') primary = target
+    if (link.action === 'CLEAR_PRIMARY' && primary?.change_request_id === link.change_request_id) primary = null
+    if (link.action === 'ADD_CANDIDATE') candidates.set(link.change_request_id, target)
+    if (link.action === 'REMOVE_CANDIDATE') candidates.delete(link.change_request_id)
+  }
+  const latest = links.reduce((current, link) => !current || Number(link.link_version) > Number(current.link_version) ? link : current, null)
+  return {
+    primary,
+    candidates: [...candidates.values()].sort((left, right) => left.change_request_id.localeCompare(right.change_request_id)),
+    etag: latest ? `"${latest.event_hash}"` : '"0"',
+    link_version: Number(latest?.link_version ?? 0),
+  }
+}
+
+function changeHistoryRow(event, projection, document) {
+  const system = changeHistorySystem(event, document, projection.catalog.value)
+  const assignee = changeHistoryAssignee(system, document)
+  const links = projection.links.filter((link) => link.ledger_event_identity === event.event_identity)
+  return { event, system, assignee, links, current: changeHistoryLinkState(links) }
+}
+
+function changeHistoryCanRead(row, user, document) {
+  if (user.role === 'admin' || user.role === 'viewer') return true
+  if (row.system.resolution !== 'RESOLVED') return false
+  const responsibility = user.role === 'data_steward' ? 'DATA_STEWARD' : 'DEVELOPER'
+  return document.system_assignments.some((item) => item.active && item.subject_id === user.subject_id
+    && item.system_id === row.system.system_id && item.responsibility === responsibility)
+}
+
+function changeHistoryPublicRow(row, detail = false) {
+  const event = row.event
+  return {
+    event_id: event.event_identity,
+    transaction_id: event.normalized_change_transaction_id,
+    asset_urn: event.asset_urn,
+    entity_key: event.normalized_entity_key,
+    category: event.category,
+    source_aspect: event.source_aspect,
+    operation: event.operation,
+    source_occurred_at: event.source_occurred_at,
+    detected_at: event.detected_at,
+    captured_at: event.captured_at,
+    system: row.system,
+    assignee: row.assignee,
+    current_primary: row.current.primary,
+    current_candidates: row.current.candidates,
+    link_version: row.current.link_version,
+    ...(detail ? { before: event.before_data, after: event.after_data } : {}),
+  }
+}
+
+function changeHistoryPageParameters(parameters) {
+  const rawLimit = parameters.get('limit') ?? '50'
+  if (!/^\d+$/.test(rawLimit)) throw accessError(400, 'PAGE_INVALID', 'limit must be an integer.')
+  const limit = Number(rawLimit)
+  if (limit < 1 || limit > 100) throw accessError(400, 'PAGE_INVALID', 'limit must be between 1 and 100.')
+  let cursor = null
+  const token = parameters.get('cursor')
+  if (token) {
+    try {
+      const parsed = JSON.parse(Buffer.from(token, 'base64url').toString('utf8'))
+      if (!Array.isArray(parsed) || parsed.length !== 2 || parsed.some((item) => typeof item !== 'string' || item.length > 255)) throw new Error()
+      cursor = parsed
+    } catch { throw accessError(400, 'CURSOR_INVALID', 'The change-history cursor is invalid.') }
+  }
+  return { limit, cursor }
+}
+
+function changeHistoryPage(rows, parameters, keyOf) {
+  const { limit, cursor } = changeHistoryPageParameters(parameters)
+  const visible = cursor ? rows.filter((row) => canonicalJson(keyOf(row)) < canonicalJson(cursor)) : rows
+  const items = visible.slice(0, limit)
+  return {
+    items,
+    next_cursor: visible.length > limit ? Buffer.from(canonicalJson(keyOf(items.at(-1))), 'utf8').toString('base64url') : null,
+    limit,
+  }
+}
+
+function changeHistoryProjectionAuthority(projection, context) {
+  if (context.subject.error) throw context.subject.error
+  if (projection.access.value === null) throw accessError(503, 'ACCESS_NOT_CONFIGURED', 'Change-history access is not provisioned.')
+  if (!validDatahubInventory(projection.catalog?.value)) {
+    throw accessError(503, 'CATALOG_PROJECTION_REQUIRED', 'A complete current PostgreSQL catalog projection is required for System resolution.')
+  }
+  const catalogIds = projection.catalog.value.items.map((item) => item.id)
+  if (new Set(catalogIds).size !== catalogIds.length) {
+    throw accessError(503, 'CATALOG_PROJECTION_INVALID', 'The current catalog projection contains duplicate asset identities.')
+  }
+  const document = changeHistoryDocumentFromSnapshot(projection)
+  return { document, user: changeHistoryActiveUser(document, context.subject.subjectId) }
+}
+
+function changeHistoryCr(core, id) {
+  const records = Array.isArray(core?.changeRecords) ? core.changeRecords : []
+  return records.find((item) => item && item.id === id)
+}
+
+function assertChangeHistoryCrBinding(cr, roundNumber, systemId) {
+  if (!cr || Number(cr.current_round_number) !== roundNumber || typeof cr.current_round_id !== 'string') {
+    throw accessError(409, 'CR_BINDING_DRIFT', 'The change request or current round does not match the command.')
+  }
+  const round = Array.isArray(cr.rounds) ? cr.rounds.find((item) => item?.id === cr.current_round_id) : null
+  const items = Array.isArray(cr.items) ? cr.items : []
+  if (!round || !items.length || round.selected_system_id !== systemId
+    || items.some((item) => item?.routing_system_id !== systemId)) {
+    throw accessError(409, 'CR_BINDING_DRIFT', 'The change request is no longer bound to the event System.')
+  }
+}
+
+function changeHistoryMutationHeaders(request) {
+  const idempotencyKey = request.headers['idempotency-key']
+  if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.length > 200) {
+    throw accessError(428, 'IDEMPOTENCY_KEY_REQUIRED', 'A bounded Idempotency-Key is required.')
+  }
+  const value = request.headers['if-match']
+  if (typeof value !== 'string') throw accessError(428, 'IF_MATCH_REQUIRED', 'If-Match is required.')
+  if (value !== '"0"' && !/^"[0-9a-f]{64}"$/.test(value)) throw accessError(400, 'IF_MATCH_INVALID', 'If-Match must be "0" or a quoted link event hash.')
+  return { idempotencyKey: idempotencyKey.trim(), priorLinkHash: value === '"0"' ? null : value.slice(1, -1) }
+}
+
+function changeHistoryCommandBody(body) {
+  rejectProtectedAccessBodyClaims(body)
+  const keys = Object.keys(body)
+  const allowed = ['action', 'change_request_id', 'change_request_round', 'reason']
+  if (keys.some((key) => !allowed.includes(key)) || allowed.some((key) => !Object.hasOwn(body, key))) {
+    throw accessError(400, 'LINK_COMMAND_INVALID', 'The link command has missing or unknown fields.')
+  }
+  const action = typeof body.action === 'string' ? body.action : ''
+  const linkKind = changeHistoryActions.get(action)
+  const changeRequestId = typeof body.change_request_id === 'string' ? body.change_request_id.trim() : ''
+  const reason = typeof body.reason === 'string' ? body.reason.trim() : ''
+  if (!linkKind || !changeRequestId || changeRequestId.length > 200
+    || !Number.isSafeInteger(body.change_request_round) || body.change_request_round < 1
+    || !reason || reason.length > 2000) {
+    throw accessError(400, 'LINK_COMMAND_INVALID', 'The link command is outside its typed bounds.')
+  }
+  return { action, linkKind, changeRequestId, changeRequestRound: body.change_request_round, reason }
+}
+
+async function changeHistoryApi(request, response, url, context) {
+  rejectProtectedAccessClaims(request, url, { allowSystemFilter: true })
+  const projection = await context.stateStore.readChangeHistoryProjection({ catalogScope: datahubInventoryStateScope })
+  const { document, user } = changeHistoryProjectionAuthority(projection, context)
+  const rows = projection.events.map((event) => changeHistoryRow(event, projection, document))
+    .filter((row) => changeHistoryCanRead(row, user, document))
+    .sort((left, right) => String(right.event.source_occurred_at || right.event.detected_at).localeCompare(String(left.event.source_occurred_at || left.event.detected_at))
+      || right.event.event_identity.localeCompare(left.event.event_identity))
+  const eventLinksMatch = url.pathname.match(/^\/api\/v1\/change-history\/events\/([0-9a-f]{64})\/cr-links$/)
+  const eventCommandMatch = url.pathname.match(/^\/api\/v1\/change-history\/events\/([0-9a-f]{64})\/cr-link-events$/)
+  const eventMatch = url.pathname.match(/^\/api\/v1\/change-history\/events\/([0-9a-f]{64})$/)
+  const reverseMatch = url.pathname.match(/^\/api\/v1\/change-requests\/([^/]+)\/change-history$/)
+
+  if (request.method === 'GET' && url.pathname === '/api/v1/change-history/events') {
+    const allowedCategories = new Set(['TECHNICAL_SCHEMA', 'DOCUMENTATION', 'TAG', 'GLOSSARY_TERM', 'OWNERSHIP'])
+    const category = url.searchParams.get('category')
+    const systemId = url.searchParams.get('system_id')
+    const assigneeId = url.searchParams.get('assignee_subject_id')
+    const linkState = url.searchParams.get('link_state')
+    if ((category && !allowedCategories.has(category)) || (linkState && !['LINKED', 'UNLINKED'].includes(linkState))) {
+      throw accessError(400, 'FILTER_INVALID', 'A change-history filter is invalid.')
+    }
+    const filtered = rows.filter((row) => (!category || row.event.category === category)
+      && (!systemId || row.system.system_id === systemId)
+      && (!assigneeId || row.assignee.subject_id === assigneeId)
+      && (!linkState || (linkState === 'LINKED') === Boolean(row.current.primary)))
+    const page = changeHistoryPage(filtered, url.searchParams, (row) => [String(row.event.source_occurred_at || row.event.detected_at), row.event.event_identity])
+    return json(response, 200, { items: page.items.map((row) => changeHistoryPublicRow(row)), next_cursor: page.next_cursor, limit: page.limit })
+  }
+  if (request.method === 'GET' && eventMatch) {
+    const row = rows.find((item) => item.event.event_identity === eventMatch[1])
+    if (!row) throw accessError(404, 'CHANGE_HISTORY_EVENT_NOT_FOUND', 'The change-history event was not found.')
+    return json(response, 200, changeHistoryPublicRow(row, true), { ETag: row.current.etag })
+  }
+  if (request.method === 'GET' && eventLinksMatch) {
+    const row = rows.find((item) => item.event.event_identity === eventLinksMatch[1])
+    if (!row) throw accessError(404, 'CHANGE_HISTORY_EVENT_NOT_FOUND', 'The change-history event was not found.')
+    const history = [...row.links].sort((left, right) => Number(right.link_version) - Number(left.link_version))
+    const page = changeHistoryPage(history, url.searchParams, (link) => [String(link.occurred_at), String(link.link_event_identity)])
+    return json(response, 200, { current_primary: row.current.primary, current_candidates: row.current.candidates, items: page.items, next_cursor: page.next_cursor, limit: page.limit }, { ETag: row.current.etag })
+  }
+  if (request.method === 'POST' && eventCommandMatch) {
+    if (user.role === 'viewer') throw accessError(403, 'CHANGE_HISTORY_MUTATION_FORBIDDEN', 'Viewer access is read-only.')
+    const row = rows.find((item) => item.event.event_identity === eventCommandMatch[1])
+    if (!row) throw accessError(404, 'CHANGE_HISTORY_EVENT_NOT_FOUND', 'The change-history event was not found.')
+    if (row.system.resolution !== 'RESOLVED') throw accessError(409, 'SYSTEM_MAPPING_UNRESOLVED', 'The event does not resolve to exactly one active business System.')
+    const { idempotencyKey, priorLinkHash } = changeHistoryMutationHeaders(request)
+    const command = changeHistoryCommandBody(await bodyJson(request))
+    const cr = changeHistoryCr(projection.core.value, command.changeRequestId)
+    assertChangeHistoryCrBinding(cr, command.changeRequestRound, row.system.system_id)
+    const replay = await context.stateStore.readChangeHistoryCrLinkReplay?.({
+      idempotencyKey, ledgerEventIdentity: row.event.event_identity, linkKind: command.linkKind,
+      action: command.action, changeRequestId: command.changeRequestId,
+      changeRequestRound: command.changeRequestRound, reason: command.reason,
+    })
+    if (replay) {
+      return json(response, 200, {
+        link_event_identity: replay.linkEventIdentity, event_hash: replay.eventHash,
+        link_version: replay.linkVersion, replayed: true,
+        event_id: row.event.event_identity, change_request_id: command.changeRequestId,
+        change_request_round: command.changeRequestRound, action: command.action,
+      }, { ETag: `"${replay.eventHash}"` })
+    }
+    if (priorLinkHash !== (row.current.etag === '"0"' ? null : row.current.etag.slice(1, -1))) {
+      throw accessError(409, 'LINK_VERSION_STALE', 'The link version is stale.')
+    }
+    if (command.action === 'CLEAR_PRIMARY' && row.current.primary?.change_request_id !== command.changeRequestId) {
+      throw accessError(409, 'LINK_STATE_CONFLICT', 'The requested primary link is not current.')
+    }
+    const candidateIds = new Set(row.current.candidates.map((item) => item.change_request_id))
+    if ((command.action === 'ADD_CANDIDATE' && candidateIds.has(command.changeRequestId))
+      || (command.action === 'REMOVE_CANDIDATE' && !candidateIds.has(command.changeRequestId))) {
+      throw accessError(409, 'LINK_STATE_CONFLICT', 'The requested candidate link state is already current.')
+    }
+    const policyHash = canonicalHash(document)
+    const basis = { subject_id: user.subject_id, role: user.role, system: row.system, assignee: row.assignee, access_version: projection.access.version, core_version: projection.core.version }
+    const result = await context.stateStore.appendChangeHistoryCrLink({
+      ledgerEventIdentity: row.event.event_identity,
+      linkKind: command.linkKind,
+      action: command.action,
+      changeRequestId: command.changeRequestId,
+      changeRequestRound: command.changeRequestRound,
+      priorLinkHash,
+      reason: command.reason,
+      policyHash,
+      basisHash: canonicalHash(basis),
+      actorRef: user.subject_id,
+      occurredAt: new Date().toISOString(),
+      idempotencyKey,
+      expectedAccessVersion: projection.access.version,
+      expectedCoreVersion: projection.core.version,
+      expectedCoreHash: canonicalHash(projection.core.value),
+      expectedCatalogScope: datahubInventoryStateScope,
+      expectedCatalogVersion: projection.catalog.version,
+      expectedCatalogHash: canonicalHash(projection.catalog.value),
+    })
+    return json(response, result.replayed ? 200 : 201, {
+      link_event_identity: result.linkEventIdentity, event_hash: result.eventHash,
+      link_version: result.linkVersion, replayed: result.replayed,
+      event_id: row.event.event_identity, change_request_id: command.changeRequestId,
+      change_request_round: command.changeRequestRound, action: command.action,
+    }, { ETag: `"${result.eventHash}"` })
+  }
+  if (request.method === 'GET' && reverseMatch) {
+    const crId = decodeURIComponent(reverseMatch[1])
+    if (!changeHistoryCr(projection.core.value, crId)) throw accessError(404, 'CHANGE_REQUEST_NOT_FOUND', 'The change request was not found.')
+    const linked = rows.filter((row) => row.links.some((link) => link.change_request_id === crId))
+    const page = changeHistoryPage(linked, url.searchParams, (row) => [String(row.event.source_occurred_at || row.event.detected_at), row.event.event_identity])
+    return json(response, 200, { change_request_id: crId, items: page.items.map((row) => changeHistoryPublicRow(row)), next_cursor: page.next_cursor, limit: page.limit })
+  }
+  if (request.method === 'GET' && url.pathname === '/api/v1/change-history/weekly') {
+    const weekStart = url.searchParams.get('week_start')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(weekStart || '')) throw accessError(400, 'WEEK_START_INVALID', 'week_start must be YYYY-MM-DD.')
+    const start = new Date(`${weekStart}T00:00:00+09:00`)
+    if (!Number.isFinite(start.getTime()) || start.getUTCDay() !== 1 || start.toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }) !== weekStart) {
+      throw accessError(400, 'WEEK_START_INVALID', 'week_start must be a valid KST Monday.')
+    }
+    const end = new Date(start.getTime() + 7 * 86400000)
+    const inWeek = rows.filter((row) => row.event.source_occurred_at && Date.parse(row.event.source_occurred_at) >= start.getTime() && Date.parse(row.event.source_occurred_at) < end.getTime())
+    const unknown = new Set(rows.filter((row) => !row.event.source_occurred_at).map((row) => row.event.normalized_change_transaction_id)).size
+    const transactions = new Map()
+    for (const row of inWeek) {
+      const list = transactions.get(row.event.normalized_change_transaction_id) ?? []
+      list.push(row)
+      transactions.set(row.event.normalized_change_transaction_id, list)
+    }
+    const counts = { unlinked_count: 0, received_count: 0, recheck_count: 0, testing_count: 0, final_review_count: 0, completed_count: 0 }
+    for (const transactionRows of transactions.values()) {
+      const primaryKeys = new Set(transactionRows.map((row) => row.current.primary && canonicalJson(row.current.primary)).filter(Boolean))
+      if (transactionRows.some((row) => !row.current.primary) || primaryKeys.size !== 1) { counts.unlinked_count += 1; continue }
+      const primary = JSON.parse([...primaryKeys][0])
+      const cr = changeHistoryCr(projection.core.value, primary.change_request_id)
+      if (!cr || cr.active === false || ['REJECTED', 'CANCELLED'].includes(cr.state)) { counts.unlinked_count += 1; continue }
+      let stage
+      if (cr.state === 'REGISTERED' || (cr.state === 'IN_REVIEW' && Number(cr.current_round_number) === 1)) stage = 'received_count'
+      else if (cr.state === 'CHANGES_REQUESTED' || (cr.state === 'IN_REVIEW' && Number(cr.current_round_number) > 1)) stage = 'recheck_count'
+      else if (['TESTING', 'APPLY_QUEUED', 'APPLYING', 'APPLY_FAILED'].includes(cr.state)) stage = 'testing_count'
+      else if (cr.state === 'FINAL_REVIEW') stage = 'final_review_count'
+      else if (['APPLIED', 'COMPLETED'].includes(cr.state)) stage = 'completed_count'
+      else stage = 'unlinked_count'
+      counts[stage] += 1
+    }
+    return json(response, 200, {
+      week_start: weekStart,
+      week_end_exclusive: end.toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }),
+      timezone: 'Asia/Seoul', as_of: new Date().toISOString(),
+      policy_version: document.policy.version, policy_hash: canonicalHash(document),
+      count_unit: 'DISTINCT_NORMALIZED_CHANGE_TRANSACTION', total_count: transactions.size,
+      ...counts, time_unknown_count: unknown,
+    })
+  }
+  return problem(response, 405, 'METHOD_NOT_ALLOWED', 'The change-history route does not support this method.')
 }
 
 function joinProviderUrl(base, suffix) {
@@ -3770,6 +4143,12 @@ async function api(request, response, url, context) {
   if (url.pathname === '/api/v1/change-history/access') {
     return changeHistoryAccess(request, response, url, context)
   }
+  if (url.pathname === '/api/v1/change-history/events'
+    || url.pathname === '/api/v1/change-history/weekly'
+    || /^\/api\/v1\/change-history\/events\//.test(url.pathname)
+    || /^\/api\/v1\/change-requests\/[^/]+\/change-history$/.test(url.pathname)) {
+    return changeHistoryApi(request, response, url, context)
+  }
   if (request.method === 'POST' && url.pathname === '/api/v1/registration/bulk-preparations/execute') {
     return json(response, 200, await executeBulkPreparation())
   }
@@ -4066,7 +4445,8 @@ export function createPocServer({ stateStore, activeSubjectId } = {}) {
       }
       if (url.pathname.startsWith('/poc-api/')
         || url.pathname === '/api/v1/registration/bulk-preparations/execute'
-        || url.pathname === '/api/v1/change-history/access') {
+        || url.pathname.startsWith('/api/v1/change-history/')
+        || /^\/api\/v1\/change-requests\/[^/]+\/change-history$/.test(url.pathname)) {
         return await api(request, response, url, accessContext)
       }
       if (!['GET', 'HEAD'].includes(request.method || '')) return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Only static GET/HEAD is supported.')

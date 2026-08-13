@@ -67,6 +67,7 @@ function createDatabaseDouble({ failCheckpointInsertPartition } = {}) {
         }
         return { rows: [] }
       }
+      if (normalized.startsWith('SELECT pg_advisory_xact_lock')) return { rows: [] }
       if (normalized === 'COMMIT') {
         transactionSnapshot = null
         return { rows: [] }
@@ -143,6 +144,9 @@ function createDatabaseDouble({ failCheckpointInsertPartition } = {}) {
         ))
         return { rows: row ? [{ event_hash: row.event_hash }] : [] }
       }
+      if (normalized.startsWith('SELECT event_identity FROM poc_change_history_ledger_events')) {
+        return { rows: ledger.has(parameters[0]) ? [{ event_identity: parameters[0] }] : [] }
+      }
       if (normalized.startsWith('UPDATE poc_change_history_checkpoints')) {
         const key = checkpointKey(parameters)
         if (checkpoints.get(key) !== parameters[6]) return { rows: [] }
@@ -177,6 +181,9 @@ function createDatabaseDouble({ failCheckpointInsertPartition } = {}) {
     async query(sql, parameters = []) {
       const normalized = String(sql).replace(/\s+/g, ' ').trim()
       if (normalized.startsWith('SELECT next_offset FROM poc_change_history_checkpoints')) {
+        return client.query(sql, parameters)
+      }
+      if (normalized.startsWith('SELECT link_event_identity, event_hash, request_hash, link_version')) {
         return client.query(sql, parameters)
       }
       statements.push({ sql: normalized, parameters })
@@ -419,6 +426,41 @@ test('reads the durable resume offset and atomically acknowledges a zero-event s
   assert.equal(await store.readChangeHistoryCheckpoint(checkpoint), 51)
 })
 
+test('reads complete ledger, links, access, core, and current catalog in one repeatable snapshot', async () => {
+  const statements = []
+  const catalogScope = 'catalog-inventory-v1:test-scope'
+  const client = {
+    async query(sql, parameters = []) {
+      const normalized = String(sql).replace(/\s+/g, ' ').trim()
+      statements.push({ sql: normalized, parameters })
+      if (normalized === 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY'
+        || normalized === 'COMMIT' || normalized === 'ROLLBACK') return { rows: [] }
+      if (normalized.startsWith('SELECT scope, value, version FROM poc_state')) return { rows: [
+        { scope: 'change-history-access-v1', value: { schema_version: 1 }, version: 2 },
+        { scope: 'core', value: { changeRecords: [] }, version: 3 },
+        { scope: catalogScope, value: { items: [] }, version: 4 },
+      ] }
+      if (normalized.includes('FROM poc_change_history_ledger_events')) return { rows: [{ event_identity: 'e'.repeat(64) }] }
+      if (normalized.includes('FROM poc_change_history_cr_link_events')) return { rows: [{ link_event_identity: 'f'.repeat(64) }] }
+      throw new Error(`Unexpected projection SQL: ${normalized}`)
+    },
+    release() {},
+  }
+  const store = createPocStateStore({ databasePool: {
+    async query() { return { rows: [] } },
+    async connect() { return client },
+  } })
+  const projection = await store.readChangeHistoryProjection({ catalogScope })
+  assert.equal(projection.access.version, 2)
+  assert.equal(projection.core.version, 3)
+  assert.equal(projection.catalog.version, 4)
+  assert.equal(projection.events.length, 1)
+  assert.equal(projection.links.length, 1)
+  assert.ok(statements.every(({ sql }) => !/\bLIMIT\b/.test(sql)), 'complete projection must not silently truncate')
+  assert.equal(statements[0].sql, 'BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
+  assert.equal(statements.at(-1).sql, 'COMMIT')
+})
+
 test('atomically fixes the initial partition boundary vector and rejects later topology changes', async () => {
   const database = createDatabaseDouble()
   const store = createPocStateStore({ databasePool: database.pool })
@@ -502,10 +544,15 @@ test('appends CR candidate and primary link history with exact replay and stale-
     replayed: false,
   })
   assert.equal((await store.appendChangeHistoryCrLink(candidate)).replayed, true)
+  assert.equal((await store.readChangeHistoryCrLinkReplay(candidate)).replayed, true)
   assert.equal(database.links.length, 1)
 
   await assert.rejects(
     store.appendChangeHistoryCrLink({ ...candidate, reason: 'conflict' }),
+    /idempotency key conflicts/,
+  )
+  await assert.rejects(
+    store.readChangeHistoryCrLinkReplay({ ...candidate, reason: 'conflict' }),
     /idempotency key conflicts/,
   )
   await assert.rejects(

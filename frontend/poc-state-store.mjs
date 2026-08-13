@@ -725,6 +725,52 @@ export function createPocStateStore({ databasePool } = {}) {
     return nextOffset
   }
 
+  async function readChangeHistoryProjection({ catalogScope } = {}) {
+    const normalizedCatalogScope = requireBoundedString(catalogScope, 'catalogScope', 255)
+    await startDatabase()
+    if (!pool) {
+      throw Object.assign(new Error('PostgreSQL is required for durable POC change history.'), {
+        code: 'CHANGE_HISTORY_STORE_REQUIRED',
+        statusCode: 503,
+      })
+    }
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY')
+      const stateResult = await client.query(`
+        SELECT scope, value, version FROM poc_state
+        WHERE scope IN ($1, $2, $3)
+      `, [...CHANGE_HISTORY_ACCESS_SCOPES, normalizedCatalogScope])
+      const eventResult = await client.query(`
+        SELECT event_identity, event_hash, normalized_change_transaction_id,
+          asset_urn, normalized_entity_key, category, source_aspect, operation,
+          before_data, after_data, actor_ref, source_occurred_at, detected_at, captured_at
+        FROM poc_change_history_ledger_events
+        ORDER BY COALESCE(source_occurred_at, detected_at) DESC, event_identity DESC
+      `)
+      const linkResult = await client.query(`
+        SELECT link_event_identity, event_hash, ledger_event_identity, link_version,
+          link_kind, action, change_request_id, change_request_round, prior_link_hash,
+          reason, policy_hash, basis_hash, actor_ref, occurred_at, captured_at
+        FROM poc_change_history_cr_link_events
+        ORDER BY ledger_event_identity, link_version
+      `)
+      await client.query('COMMIT')
+      const catalog = stateResult.rows.find((row) => row.scope === normalizedCatalogScope)
+      return {
+        ...changeHistoryAccessSnapshot(stateResult.rows),
+        catalog: catalog ? { value: catalog.value, version: Number(catalog.version) } : { value: null, version: 0 },
+        events: eventResult.rows,
+        links: linkResult.rows,
+      }
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
   async function initializeChangeHistoryCaptureBoundaries(command) {
     const normalized = normalizeChangeHistoryBoundaries(command)
     await startDatabase()
@@ -960,6 +1006,54 @@ export function createPocStateStore({ databasePool } = {}) {
     const client = await pool.connect()
     try {
       await client.query('BEGIN')
+      if (command.expectedAccessVersion !== undefined || command.expectedCoreVersion !== undefined) {
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [CHANGE_HISTORY_ACCESS_SCOPE],
+        )
+        const normalizedCatalogScope = requireBoundedString(command.expectedCatalogScope, 'expectedCatalogScope', 255)
+        const locked = await client.query(`
+          SELECT scope, value, version FROM poc_state
+          WHERE scope IN ($1, $2, $3)
+          ORDER BY scope
+          FOR UPDATE
+        `, [...CHANGE_HISTORY_ACCESS_SCOPES, normalizedCatalogScope])
+        const snapshot = changeHistoryAccessSnapshot(locked.rows)
+        assertAccessVersions(
+          snapshot,
+          requireNonnegativeInteger(command.expectedAccessVersion, 'expectedAccessVersion'),
+          requireNonnegativeInteger(command.expectedCoreVersion, 'expectedCoreVersion'),
+        )
+        if (sha256(stableJson(snapshot.core.value)) !== requireSha256(command.expectedCoreHash, 'expectedCoreHash')) {
+          throw Object.assign(new Error('The change-request aggregate changed; read it and retry.'), {
+            code: 'CR_BINDING_DRIFT',
+            statusCode: 409,
+          })
+        }
+        const catalog = locked.rows.find((row) => row.scope === normalizedCatalogScope)
+        if (Number(catalog?.version ?? 0) !== requireNonnegativeInteger(command.expectedCatalogVersion, 'expectedCatalogVersion')
+          || sha256(stableJson(catalog?.value ?? null)) !== requireSha256(command.expectedCatalogHash, 'expectedCatalogHash')) {
+          throw Object.assign(new Error('The current catalog projection changed; read it and retry.'), {
+            code: 'SYSTEM_MAPPING_UNRESOLVED',
+            statusCode: 409,
+          })
+        }
+      }
+      const ledgerResult = await client.query(`
+        SELECT event_identity FROM poc_change_history_ledger_events
+        WHERE event_identity = $1
+        FOR UPDATE
+      `, [normalized.ledgerEventIdentity])
+      if (!ledgerResult.rows[0]) {
+        throw Object.assign(new Error('The change-history event was not found.'), {
+          code: 'CHANGE_HISTORY_EVENT_NOT_FOUND',
+          statusCode: 404,
+        })
+      }
+      await client.query(
+        'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+        [`change-history-cr-link:${normalized.requestKeyHash}`],
+      )
       const replayResult = await client.query(`
         SELECT link_event_identity, event_hash, request_hash, link_version
         FROM poc_change_history_cr_link_events
@@ -969,7 +1063,10 @@ export function createPocStateStore({ databasePool } = {}) {
       const replay = replayResult.rows[0]
       if (replay) {
         if (replay.request_hash !== normalized.requestHash) {
-          throw new Error('The POC CR link idempotency key conflicts with another request.')
+          throw Object.assign(new Error('The POC CR link idempotency key conflicts with another request.'), {
+            code: 'IDEMPOTENCY_CONFLICT',
+            statusCode: 409,
+          })
         }
         await client.query('COMMIT')
         return {
@@ -990,7 +1087,10 @@ export function createPocStateStore({ databasePool } = {}) {
       const previous = previousResult.rows[0]
       const previousHash = previous?.event_hash ?? null
       if (previousHash !== normalized.priorLinkHash) {
-        throw new Error('The POC CR link command has a stale prior-link hash.')
+        throw Object.assign(new Error('The POC CR link command has a stale prior-link hash.'), {
+          code: 'LINK_VERSION_STALE',
+          statusCode: 409,
+        })
       }
       const linkVersion = Number(previous?.link_version ?? 0) + 1
       await client.query(`
@@ -1033,6 +1133,40 @@ export function createPocStateStore({ databasePool } = {}) {
       throw error
     } finally {
       client.release()
+    }
+  }
+
+  async function readChangeHistoryCrLinkReplay(command) {
+    const requestKeyHash = sha256(requireBoundedString(command.idempotencyKey, 'idempotencyKey', 200))
+    const requestHash = changeHistoryCrLinkRequestHash({
+      ledgerEventIdentity: requireSha256(command.ledgerEventIdentity, 'ledgerEventIdentity'),
+      linkKind: requireOneOf(command.linkKind, 'linkKind', ['PRIMARY', 'CANDIDATE']),
+      action: requireOneOf(command.action, 'action', ['SET_PRIMARY', 'CLEAR_PRIMARY', 'ADD_CANDIDATE', 'REMOVE_CANDIDATE']),
+      changeRequestId: requireBoundedString(command.changeRequestId, 'changeRequestId', 200),
+      changeRequestRound: requirePositiveInteger(command.changeRequestRound, 'changeRequestRound'),
+      reason: requireBoundedString(command.reason, 'reason', 2000),
+    })
+    await startDatabase()
+    if (!pool) throw Object.assign(new Error('PostgreSQL is required for durable POC change history.'), {
+      code: 'CHANGE_HISTORY_STORE_REQUIRED', statusCode: 503,
+    })
+    const result = await pool.query(`
+      SELECT link_event_identity, event_hash, request_hash, link_version
+      FROM poc_change_history_cr_link_events
+      WHERE request_key_hash = $1
+    `, [requestKeyHash])
+    const replay = result.rows[0]
+    if (!replay) return null
+    if (replay.request_hash !== requestHash) {
+      throw Object.assign(new Error('The POC CR link idempotency key conflicts with another request.'), {
+        code: 'IDEMPOTENCY_CONFLICT', statusCode: 409,
+      })
+    }
+    return {
+      linkEventIdentity: replay.link_event_identity,
+      eventHash: replay.event_hash,
+      linkVersion: Number(replay.link_version),
+      replayed: true,
     }
   }
 
@@ -1119,11 +1253,13 @@ export function createPocStateStore({ databasePool } = {}) {
     replaceCatalogEmbeddingGeneration,
     searchCatalogEmbeddings,
     readChangeHistoryCheckpoint,
+    readChangeHistoryProjection,
     readChangeHistoryAccess,
     writeChangeHistoryAccess,
     initializeChangeHistoryCaptureBoundaries,
     appendChangeHistoryCapture,
     appendChangeHistoryCrLink,
+    readChangeHistoryCrLinkReplay,
     runChangeHistoryScheduler,
     close,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
@@ -1323,7 +1459,7 @@ function normalizeChangeHistoryCrLink(command) {
     occurredAt: requireTimestamp(command.occurredAt, 'occurredAt'),
   }
   const requestKeyHash = sha256(requireBoundedString(command.idempotencyKey, 'idempotencyKey', 200))
-  const requestHash = sha256(stableJson(normalized))
+  const requestHash = changeHistoryCrLinkRequestHash(normalized)
   const eventHash = sha256(stableJson({ ...normalized, requestKeyHash, requestHash }))
   return {
     ...normalized,
@@ -1332,6 +1468,17 @@ function normalizeChangeHistoryCrLink(command) {
     eventHash,
     linkEventIdentity: sha256(stableJson([requestKeyHash, requestHash])),
   }
+}
+
+function changeHistoryCrLinkRequestHash(normalized) {
+  return sha256(stableJson({
+    ledgerEventIdentity: normalized.ledgerEventIdentity,
+    linkKind: normalized.linkKind,
+    action: normalized.action,
+    changeRequestId: normalized.changeRequestId,
+    changeRequestRound: normalized.changeRequestRound,
+    reason: normalized.reason,
+  }))
 }
 
 function normalizeBoundedDocument(value, field) {

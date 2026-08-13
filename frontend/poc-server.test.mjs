@@ -1,4 +1,4 @@
-/* global Buffer, URL, fetch, process */
+/* global Buffer, URL, fetch, process, structuredClone */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { after, before, test } from 'node:test'
@@ -630,4 +630,218 @@ test('accepts the active subject from the dedicated server environment only', as
       error ? reject(error) : resolvePromise()
     )))
   }
+})
+
+test('serves authoritative change-history reads, reverse lookup, weekly aggregation, and zero-effect link commands', async () => {
+  const { createPocServer } = await import('./poc-server.mjs?change-history-api-contract')
+  const eventId = '1'.repeat(64)
+  const transactionId = '2'.repeat(64)
+  const assetUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,business_db.public.orders,PROD)'
+  const changeRequest = {
+    id: 'poc-change-request-1', state: 'IN_REVIEW', current_round_id: 'round-1',
+    current_round_number: 1, version: 7,
+    rounds: [{ id: 'round-1', selected_system_id: 'business-system' }],
+    items: [{ routing_system_id: 'business-system' }], approvals: [], transitions: [],
+  }
+  const projection = {
+    access: { version: 3, value: {
+      schema_version: 1, active_subject_id: 'admin-subject',
+      policy: { version: 1, priority_order: 'ASCENDING', fallback: ['DATA_STEWARD', 'DEVELOPER', 'DATAHUB_OWNER', 'UNASSIGNED'] },
+      users: [
+        { subject_id: 'admin-subject', role: 'admin', active: true, provider_owner_refs: [] },
+        { subject_id: 'steward-subject', role: 'data_steward', active: true, provider_owner_refs: [] },
+      ],
+      system_assignments: [{ system_id: 'business-system', subject_id: 'steward-subject', responsibility: 'DATA_STEWARD', priority: 1, active: true }],
+    } },
+    core: { version: 5, value: {
+      changeRecords: [changeRequest],
+      adminSystems: [{ system_id: 'business-system', code: 'BUSINESS', name: 'Business', description: '', active: true, version: 1 }],
+      adminSystemSchemaScopes: [['business-system', [{ scope_id: 'scope-1', system_id: 'business-system', platform: 'postgres', database_name: 'business_db', schema_name: 'public', active: true, version: 1 }]]],
+    } },
+    catalog: { version: 2, value: {
+      projection_version: 1, source_scope: 'disabled', source_generation: 'a'.repeat(64), observed_at: '2026-08-14T00:00:00.000Z',
+      items: [{ id: assetUrn, platform: 'postgres', database_name: 'business_db', schema_name: 'public' }],
+    } },
+    events: [{
+      event_identity: eventId, event_hash: '3'.repeat(64), normalized_change_transaction_id: transactionId,
+      asset_urn: assetUrn, normalized_entity_key: 'business_db.public.orders', category: 'TECHNICAL_SCHEMA',
+      source_aspect: 'schemaMetadata', operation: 'UPDATE', before_data: { nullable: true }, after_data: { nullable: false },
+      actor_ref: null, source_occurred_at: '2026-08-11T01:00:00.000Z', detected_at: '2026-08-11T01:00:01.000Z', captured_at: '2026-08-11T01:00:02.000Z',
+    }],
+    links: [],
+  }
+  let appendCommand
+  const stateStore = {
+    configured: { postgres: true, redis: false },
+    async readChangeHistoryProjection({ catalogScope }) {
+      assert.equal(catalogScope, 'catalog-inventory-v1:disabled')
+      return structuredClone(projection)
+    },
+    async readChangeHistoryCrLinkReplay(command) {
+      if (!projection.links.length) return null
+      if (command.idempotencyKey !== 'link-1' || command.reason !== 'reviewed link') {
+        throw Object.assign(new Error('idempotency conflict'), { code: 'IDEMPOTENCY_CONFLICT', statusCode: 409 })
+      }
+      return { linkEventIdentity: '4'.repeat(64), eventHash: '5'.repeat(64), linkVersion: 1, replayed: true }
+    },
+    async appendChangeHistoryCrLink(command) {
+      appendCommand = command
+      assert.deepEqual(projection.core.value.changeRecords, [changeRequest])
+      const result = { linkEventIdentity: '4'.repeat(64), eventHash: '5'.repeat(64), linkVersion: 1, replayed: false }
+      projection.links.push({
+        link_event_identity: result.linkEventIdentity, event_hash: result.eventHash,
+        ledger_event_identity: eventId, link_version: 1, link_kind: 'PRIMARY', action: 'SET_PRIMARY',
+        change_request_id: changeRequest.id, change_request_round: 1, prior_link_hash: null,
+        reason: command.reason, policy_hash: command.policyHash, basis_hash: command.basisHash,
+        actor_ref: command.actorRef, occurred_at: command.occurredAt, captured_at: command.occurredAt,
+      })
+      return result
+    },
+  }
+  const server = createPocServer({ stateStore, activeSubjectId: 'admin-subject' })
+  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  const base = `http://127.0.0.1:${address.port}`
+  try {
+    const list = await fetch(`${base}/api/v1/change-history/events`)
+    assert.equal(list.status, 200)
+    assert.equal((await list.json()).items[0].system.system_id, 'business-system')
+    const detail = await fetch(`${base}/api/v1/change-history/events/${eventId}`)
+    assert.equal(detail.headers.get('etag'), '"0"')
+    assert.equal((await detail.json()).assignee.subject_id, 'steward-subject')
+    const before = JSON.stringify(projection.core.value.changeRecords)
+    const linked = await fetch(`${base}/api/v1/change-history/events/${eventId}/cr-link-events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'link-1', 'If-Match': '"0"' },
+      body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: changeRequest.id, change_request_round: 1, reason: 'reviewed link' }),
+    })
+    assert.equal(linked.status, 201)
+    assert.equal(linked.headers.get('etag'), `"${'5'.repeat(64)}"`)
+    assert.equal(appendCommand.actorRef, 'admin-subject')
+    assert.equal(JSON.stringify(projection.core.value.changeRecords), before)
+    const replay = await fetch(`${base}/api/v1/change-history/events/${eventId}/cr-link-events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'link-1', 'If-Match': '"0"' },
+      body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: changeRequest.id, change_request_round: 1, reason: 'reviewed link' }),
+    })
+    assert.equal(replay.status, 200)
+    assert.equal((await replay.json()).replayed, true)
+    const conflict = await fetch(`${base}/api/v1/change-history/events/${eventId}/cr-link-events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'link-1', 'If-Match': `"${'5'.repeat(64)}"` },
+      body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: changeRequest.id, change_request_round: 1, reason: 'different' }),
+    })
+    assert.equal(conflict.status, 409)
+    const reverse = await fetch(`${base}/api/v1/change-requests/${changeRequest.id}/change-history`)
+    assert.equal((await reverse.json()).items.length, 1)
+    const weekly = await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-11`)
+    const summary = await weekly.json()
+    assert.equal(summary.total_count, 1)
+    assert.equal(summary.received_count, 1)
+    assert.equal(summary.total_count, summary.unlinked_count + summary.received_count + summary.recheck_count
+      + summary.testing_count + summary.final_review_count + summary.completed_count)
+    projection.core.value.changeRecords[0].state = 'REJECTED'
+    const rejectedSummary = await (await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-11`)).json()
+    assert.equal(rejectedSummary.unlinked_count, 1)
+    assert.equal(rejectedSummary.received_count, 0)
+    const spoofed = await fetch(`${base}/api/v1/change-history/events`, { headers: { 'X-Subject-Id': 'steward-subject' } })
+    assert.equal(spoofed.status, 400)
+  } finally {
+    server.closeAllConnections()
+    await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()))
+  }
+})
+
+test('prunes assigned-role rows, keeps viewer read-only, and fails closed on stale or unmapped mutations', async () => {
+  const { createPocServer } = await import('./poc-server.mjs?change-history-role-contract')
+  const eventId = '6'.repeat(64)
+  const event = {
+    event_identity: eventId, event_hash: '7'.repeat(64), normalized_change_transaction_id: '8'.repeat(64),
+    asset_urn: 'urn:asset:one', normalized_entity_key: 'one', category: 'TAG', source_aspect: 'globalTags', operation: 'ADD',
+    before_data: {}, after_data: {}, source_occurred_at: '2026-08-11T01:00:00.000Z', detected_at: '2026-08-11T01:00:01.000Z', captured_at: '2026-08-11T01:00:02.000Z',
+  }
+  const baseProjection = {
+    access: { version: 1, value: {
+      schema_version: 1, active_subject_id: 'role-subject',
+      policy: { version: 1, priority_order: 'ASCENDING', fallback: ['DATA_STEWARD', 'DEVELOPER', 'DATAHUB_OWNER', 'UNASSIGNED'] },
+      users: [{ subject_id: 'role-subject', role: 'viewer', active: true, provider_owner_refs: [] }], system_assignments: [],
+    } },
+    core: { version: 1, value: {
+      changeRecords: [{ id: 'cr-1', current_round_id: 'r1', current_round_number: 1, state: 'REGISTERED', rounds: [{ id: 'r1', selected_system_id: 'system-1' }], items: [{ routing_system_id: 'system-1' }] }],
+      adminSystems: [{ system_id: 'system-1', code: 'ONE', name: 'One', active: true, version: 1 }],
+      adminSystemSchemaScopes: [['system-1', [{ scope_id: 's1', system_id: 'system-1', platform: 'postgres', database_name: 'db', schema_name: 'public', active: true, version: 1 }]]],
+    } },
+    catalog: { version: 1, value: { projection_version: 1, source_scope: 'disabled', source_generation: '9'.repeat(64), observed_at: '2026-08-14T00:00:00.000Z', items: [{ id: event.asset_urn, platform: 'postgres', database_name: 'db', schema_name: 'public' }] } },
+    events: [event], links: [],
+  }
+  const run = async (projection, action) => {
+    let appendCalls = 0
+    const stateStore = {
+      configured: { postgres: true, redis: false },
+      async readChangeHistoryProjection() { return structuredClone(projection) },
+      async appendChangeHistoryCrLink() { appendCalls += 1; return { linkEventIdentity: 'a'.repeat(64), eventHash: 'b'.repeat(64), linkVersion: 1, replayed: false } },
+    }
+    const roleServer = createPocServer({ stateStore, activeSubjectId: 'role-subject' })
+    await new Promise((resolvePromise) => roleServer.listen(0, '127.0.0.1', resolvePromise))
+    const address = roleServer.address()
+    try { return { result: await action(`http://127.0.0.1:${address.port}`), appendCalls } } finally {
+      roleServer.closeAllConnections()
+      await new Promise((resolvePromise, reject) => roleServer.close((error) => error ? reject(error) : resolvePromise()))
+    }
+  }
+  const viewerRead = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-history/events`))
+  assert.equal((await viewerRead.result.json()).items.length, 1)
+  const viewerWrite = await run(baseProjection, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-link-events`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'k', 'If-Match': '"0"' },
+    body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: 'cr-1', change_request_round: 1, reason: 'no' }),
+  }))
+  assert.equal(viewerWrite.result.status, 403)
+  assert.equal(viewerWrite.appendCalls, 0)
+  const steward = structuredClone(baseProjection)
+  steward.access.value.users[0].role = 'data_steward'
+  const hidden = await run(steward, (origin) => fetch(`${origin}/api/v1/change-history/events`))
+  assert.equal((await hidden.result.json()).items.length, 0)
+  steward.access.value.system_assignments = [{ system_id: 'system-1', subject_id: 'role-subject', responsibility: 'DATA_STEWARD', priority: 1, active: true }]
+  const visible = await run(steward, (origin) => fetch(`${origin}/api/v1/change-history/events`))
+  assert.equal((await visible.result.json()).items.length, 1)
+  const mutate = (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-link-events`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'assigned-key', 'If-Match': '"0"' },
+    body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: 'cr-1', change_request_round: 1, reason: 'assigned' }),
+  })
+  const stewardMutation = await run(steward, mutate)
+  assert.equal(stewardMutation.result.status, 201)
+  assert.equal(stewardMutation.appendCalls, 1)
+  const developer = structuredClone(steward)
+  developer.access.value.users[0].role = 'developer'
+  assert.equal((await (await run(developer, (origin) => fetch(`${origin}/api/v1/change-history/events`))).result.json()).items.length, 0)
+  developer.access.value.system_assignments[0].responsibility = 'DEVELOPER'
+  assert.equal((await (await run(developer, (origin) => fetch(`${origin}/api/v1/change-history/events`))).result.json()).items.length, 1)
+  const developerMutation = await run(developer, mutate)
+  assert.equal(developerMutation.result.status, 201)
+  assert.equal(developerMutation.appendCalls, 1)
+  const unmapped = structuredClone(steward)
+  unmapped.catalog.value.items = []
+  const rejected = await run(unmapped, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-link-events`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'k', 'If-Match': '"0"' },
+    body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: 'cr-1', change_request_round: 1, reason: 'no' }),
+  }))
+  assert.equal(rejected.result.status, 404, 'assigned roles cannot observe or mutate unmapped rows')
+  assert.equal(rejected.appendCalls, 0)
+  const adminUnmapped = structuredClone(unmapped)
+  adminUnmapped.access.value.users[0].role = 'admin'
+  const adminRejected = await run(adminUnmapped, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-link-events`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'k', 'If-Match': '"0"' },
+    body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: 'cr-1', change_request_round: 1, reason: 'no' }),
+  }))
+  assert.equal(adminRejected.result.status, 409)
+  assert.equal((await adminRejected.result.json()).code, 'SYSTEM_MAPPING_UNRESOLVED')
+  const stale = structuredClone(steward)
+  stale.links = [{ ledger_event_identity: eventId, event_hash: 'c'.repeat(64), link_version: 1, link_event_identity: 'd'.repeat(64), link_kind: 'CANDIDATE', action: 'ADD_CANDIDATE', change_request_id: 'cr-1', change_request_round: 1, occurred_at: '2026-08-11T02:00:00.000Z' }]
+  const staleResponse = await run(stale, (origin) => fetch(`${origin}/api/v1/change-history/events/${eventId}/cr-link-events`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'k', 'If-Match': '"0"' },
+    body: JSON.stringify({ action: 'SET_PRIMARY', change_request_id: 'cr-1', change_request_round: 1, reason: 'no' }),
+  }))
+  assert.equal(staleResponse.result.status, 409)
+  assert.equal(staleResponse.appendCalls, 0)
 })

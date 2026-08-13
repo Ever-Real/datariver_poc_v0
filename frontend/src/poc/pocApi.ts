@@ -93,6 +93,23 @@ async function gatewayRequest<T>(path: string, options: RequestInit = {}): Promi
   return response.json() as Promise<T>
 }
 
+async function gatewayRequestWithMeta<T>(path: string, options: RequestInit = {}): Promise<ApiResponse<T>> {
+  const headers = new Headers(options.headers)
+  if (!headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+  const response = await fetch(path, {
+    ...options,
+    cache: 'no-store',
+    headers,
+  })
+  if (!response.ok) {
+    const problem = await response.json().catch(() => ({})) as { detail?: unknown }
+    throw new Error(typeof problem.detail === 'string'
+      ? problem.detail
+      : `POC provider gateway request failed (${response.status}).`)
+  }
+  return { data: await response.json() as T, etag: response.headers.get('ETag') ?? undefined }
+}
+
 async function gatewayEventStream<T>(
   path: string,
   options: RequestInit,
@@ -1275,6 +1292,12 @@ class PocApiClient {
 
   async requestWithMeta<T>(path: string, options: PocRequestOptions = {}): Promise<ApiResponse<T>> {
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
+    if (path.startsWith('/change-history/') || /^\/change-requests\/[^/]+\/change-history(?:\?|$)/.test(path)) {
+      const headers = new Headers(options.headers)
+      if (options.idempotencyKey) headers.set('Idempotency-Key', options.idempotencyKey)
+      if (options.ifMatch) headers.set('If-Match', options.ifMatch)
+      return gatewayRequestWithMeta<T>(`/api/v1${path}`, { ...options, headers })
+    }
     if (runtimeFlags().pocState) await this.ensureHydrated()
     const value = await this.dispatch(parsedPath(path), options)
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')

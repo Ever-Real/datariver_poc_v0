@@ -69,9 +69,19 @@ function json(value: unknown) {
 }
 
 function installGatewayMock() {
-  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
     const requestUrl = input instanceof Request ? input.url : input.toString()
     const url = new URL(requestUrl, 'https://poc.invalid')
+    if (url.pathname.startsWith('/api/v1/change-history/') || url.pathname.includes('/change-history')) {
+      const headers = new Headers(options?.headers)
+      return Promise.resolve(new Response(JSON.stringify({
+        path: `${url.pathname}${url.search}`,
+        method: options?.method ?? 'GET',
+        body: typeof options?.body === 'string' ? JSON.parse(options.body) as unknown : null,
+        idempotency_key: headers.get('Idempotency-Key'),
+        if_match: headers.get('If-Match'),
+      }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"server-etag"' } }))
+    }
     if (url.pathname === '/poc-api/datahub/catalog') {
       const query = (url.searchParams.get('q') ?? '*').toLocaleLowerCase()
       const matching = query === '*'
@@ -280,6 +290,29 @@ describe('POC live-provider compatibility adapter', () => {
     expect(detail.schema_fields[0]).toMatchObject({ fieldPath: 'wafer_id' })
     expect(detail.schema_fields[0]?.globalTags).toEqual({ tags: [{ tag: { name: 'identifier' } }] })
     expect(detail.schema_fields[0]?.glossaryTerms).toEqual({ terms: [{ term: { name: 'Wafer ID' } }] })
+  })
+
+  it('forwards logical change-history paths and mutation fences to the authoritative Node API', async () => {
+    const client = useStableApiClient()
+    const list = await client.request<{ path: string }>('/change-history/events?limit=25')
+    expect(list.path).toBe('/api/v1/change-history/events?limit=25')
+    const mutation = await client.requestWithMeta<{
+      path: string
+      method: string
+      body: Record<string, unknown>
+      idempotency_key: string
+      if_match: string
+    }>('/change-history/events/abc/cr-link-events', {
+      method: 'POST', idempotencyKey: 'request-key', ifMatch: '"0"',
+      body: JSON.stringify({ action: 'SET_PRIMARY' }),
+    })
+    expect(mutation.data).toMatchObject({
+      path: '/api/v1/change-history/events/abc/cr-link-events', method: 'POST',
+      body: { action: 'SET_PRIMARY' }, idempotency_key: 'request-key', if_match: '"0"',
+    })
+    expect(mutation.etag).toBe('"server-etag"')
+    const reverse = await client.request<{ path: string }>('/change-requests/cr-1/change-history?limit=10')
+    expect(reverse.path).toBe('/api/v1/change-requests/cr-1/change-history?limit=10')
   })
 
   it('creates typed registration previews, CRs and user-generated manual history from live metadata', async () => {
