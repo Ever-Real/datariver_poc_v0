@@ -1,0 +1,32 @@
+{
+  "task": "CHANGE-HIST-T07B2B-CR-REVERSE-HISTORY",
+  "result": "완료",
+  "base_commit": "3b2ad95efdab74be361b3c1663728929ba55ae66",
+  "product_commit": "c87df404645b62e0a79ba41f99486c403ba92abb",
+  "product_paths": [
+    "frontend/src/features/governance/ChangeRequestDetailDialog.tsx",
+    "frontend/src/features/governance/GovernancePage.test.tsx"
+  ],
+  "checks": {
+    "npm_ci_offline": "통과 (취약점 0건)",
+    "governance_test": "통과 (30/30)",
+    "lint": "통과",
+    "typecheck": "통과",
+    "build_poc": "통과",
+    "diff_check": "통과"
+  },
+  "constraints": {
+    "read_only": true,
+    "reverse_history_limit": 50,
+    "stale_response_fence": "AbortController + intent + current-id",
+    "mutation_requests_added": false,
+    "runtime_provider_db_prep_ops_target_touched": false,
+    "push_or_merge_performed": false
+  },
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  }
+}
