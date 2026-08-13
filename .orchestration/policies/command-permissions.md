@@ -45,3 +45,14 @@
 
 ## 9. Invariants
 - Keep no hardcoding/hallucination/architecture destruction; G1-G4 unchanged.
+
+## 10. Orchestration Control & Watch
+- No routine heartbeat/health-check fanout.
+- While any Dispatch is active, coordinator uses event wait windows no longer than 10 minutes; a timeout is a checkpoint, not failure.
+- On timeout or visible Action Required state, inspect that exact Task terminal once and classify the pending operation.
+- Controller may approve only existing policy Class A/B/C or explicitly Task-authorized Class D, one-time/narrow prefix; never blanket allow.
+- True user authority cases (G1-G4, push/merge/publication, credential/security mutation, dependency/system install, destructive action, container/PREP/OPS mutation, or scope expansion) must not be approved by Controller. Create an Orca terminal/session titled [ACTION REQUIRED] <task/gate> under 00_CONTROL_PLANE plus an orchestration question/decision gate; no notification Git branch/worktree is required unless the decision itself owns files.
+- Record Task, requested command/action, reason, risk/gate, exact SHA/environment, safe alternatives, and required user decision without secrets.
+- Close/release notification session after resolution and record receipt.
+- If worker completion signaling fails after work is independently verified, Controller may perform explicit orchestration recovery and record it; do not fabricate completion.
+- Preserve G1-G4 NOT_APPROVED and no product mutation.
