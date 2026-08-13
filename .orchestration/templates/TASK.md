@@ -14,7 +14,11 @@
 - **Validation:**
 - **Audit:**
 - **Gate:**
-- **Command Permission Contract:** LOW_RISK_COMMANDS_PREAPPROVED=TRUE; CONTROLLER_PERMISSION_RECOVERY=ENABLED; MAX_SILENCE_BEFORE_INSPECTION=10m; ROUTINE_HEARTBEAT=DISABLED; USER_GATE_ESCALATION=ACTION_REQUIRED_ONLY; policy: .orchestration/policies/command-permissions.md
+- **Command Permission Contract:** LOW_RISK_COMMANDS_PREAPPROVED=TRUE; CONTROLLER_PERMISSION_RECOVERY=ENABLED; MAX_SILENCE_BEFORE_INSPECTION=10m; ROUTINE_HEARTBEAT=DISABLED; USER_GATE_ESCALATION=ACTION_REQUIRED_ONLY; PERSISTENT_SAFE_APPROVALS=SESSION_NARROW_PREFIX; SINGLE_PRIMITIVE_COMMANDS=TRUE; policy=.orchestration/policies/command-permissions.md
+- **Runtime Launch Mode:**
+- **Session Safe Approval Set:**
+- **Single Primitive Commands Required:** TRUE
+- **Persistent Approval Scope:** SESSION_ONLY
 - **Smoke Result:** [repository location, ls, bounded read, git status, git rev-parse, optional real-Task role validation; runtime_prompt YES/NO; policy_prompt YES/NO; runtime mechanism APPLIED/RUNTIME_PERMISSION_BLOCKED/NOT_SUPPORTED]
 - **Operation Classes Authorized:**
 - **User-Gated Exclusions:**

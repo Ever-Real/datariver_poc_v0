@@ -65,3 +65,18 @@
 - Controller (not user) resolves Class A/B/C and explicit Class D using one-time/narrow approval. No blanket wildcard or dangerously-skip-permissions. Do not claim runtime prompts are eliminated when runtime mechanism is blocked; Controller recovery remains the fallback.
 - Only governed action/scope expansion/G1-G4 creates [ACTION REQUIRED] session + decision gate.
 - All existing active sessions inherit at their next safe checkpoint without interruption; every future session inherits at initialization and every dispatch repeats the compact contract.
+
+## 12. Persistent Safe Approval
+- Controller selects conversation-scoped continuing approval for a narrow operation prefix only when the observed command is a single primitive in Class A/B/C, inside exact worktree/Task, with no secrets.
+- Never persist a command containing shell control/chaining or substitution: semicolon, `&&`, `||`, pipe to another command, write redirection, backticks, command substitution, `eval`, `xargs` mutation.
+- Never infer all future commands beginning with a safe-looking executable are safe. The approved prefix must identify the operation, e.g. `git status`, `git diff`, `git rev-parse`, not `git`.
+- If the runtime prefix is too broad or mutable, approve one-time only.
+- Prefer conversation/session scope. Do not select global/settings.json persistence unless a separate governed project-scoped mechanism is verified safe and authorized.
+- Safe recurring registry: `pwd`; worktree-scoped `ls`; bounded source Read/ListDir/Search/rg; `git status`/`diff`/`diff --check`/`log`/`show`/`rev-parse`/`branch --show-current`/`merge-base`/`ls-files`/`grep`/`worktree list`; exact existing Task validation scripts; role-specific read-only docker/provider probes per Class C.
+- Task-local edit via accept-edits only for explicit mutating builder. Local commit remains explicit Task authorization and one-time, not persistent prefix.
+- Controller should resolve safe prompts without notifying user and without heartbeat. Truly governed operations get ACTION REQUIRED.
+
+## 13. Session Bootstrap
+- Every new session receives role, model/effort, exact worktree/base, task/mutation status, allowed paths, prohibited actions, compact Command Permission Contract, runtime mechanism status, and SESSION_SAFE_APPROVALS.
+- Worker must use single-primitive commands so session approvals remain safe.
+- At first prompt, Controller can choose conversation-level approval for registry operations; record smoke outcome once, no per-command receipt.

@@ -72,6 +72,13 @@
 - Product regression and Mac arm64 to WSL amd64 to Linux amd64 portability boundaries.
 - No merge, push, PREP, or OPS mutation without the corresponding Gate.
 
+## Session and Provider Launch
+- New session initialization must include the SESSION template and session-safe approval set. Builder accept-edits is scoped ergonomics, not authority.
+- Provider Launch:
+  - Antigravity mutating Builder: `agy --model <actual> --effort <actual> --mode accept-edits`
+  - Antigravity read-only/validation/evidence without source edit: normal mode; use plan only if verified not to block required read-only validation.
+  - Never `--dangerously-skip-permissions`. Do not hardcode user-specific executable paths into policy; use symbolic agy command.
+
 ## Language Policy
 - 98_EVIDENCE_REPORT user-facing reports, summaries, receipts, and completion messages default to Korean.
 - Preserve exact technical identifiers, Task IDs, role names, Git SHAs, paths, commands, code symbols, and canonical status enums (PASS, FAIL, BLOCKED, NOT_EXECUTED, UNKNOWN, etc.) in original form.
