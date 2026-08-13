@@ -1,0 +1,90 @@
+{
+  "task": "CHANGE-HIST-T07B1-INDEPENDENT-VALIDATION",
+  "task_id": "task_8e07a0ac4ad5",
+  "dispatch_id": "ctx_126e2af39bff",
+  "role": "50_QUALITY_VALIDATION",
+  "outcome": "PASS_LOCAL_SOURCE",
+  "status": "INDEPENDENT_VALIDATION_PASS_PENDING_T09_AUDIT",
+  "validation_date_kst": "2026-08-14",
+  "starting_head": "2ebcbfaa3905d537c935d671652cc4b6b635adf1",
+  "product_sha": "06aeeedc8142254e2b96e1eaaf67e25da9964362",
+  "builder_base_sha": "fead4c4f6dfe507359be1c9eccb558518ab33787",
+  "product_write": "NONE",
+  "environment": {
+    "platform": "macOS 26.5.2 arm64",
+    "node": "v25.9.0",
+    "npm": "11.12.1"
+  },
+  "product_diff": {
+    "insertions": 1623,
+    "deletions": 17,
+    "paths": [
+      "frontend/src/features/monitoring/MonitoringPage.tsx",
+      "frontend/src/features/monitoring/MonitoringPage.test.tsx",
+      "frontend/src/features/monitoring/DataChangeStatusPanel.tsx",
+      "frontend/src/features/monitoring/DataChangeStatusPanel.test.tsx",
+      "frontend/src/features/monitoring/dataChangeStatus.css"
+    ],
+    "exact_allowlist": "PASS",
+    "dependency_lock_change": "NONE",
+    "server_type_api_schema_service_change": "NONE",
+    "global_style_file_change": "NONE"
+  },
+  "verification": {
+    "npm_ci_offline_existing_lock": "PASS_368_PACKAGES",
+    "focused_monitoring_vitest": "PASS_2_FILES_13_TESTS",
+    "lint": "PASS_ZERO_ERRORS_ZERO_WARNINGS",
+    "typecheck": "PASS",
+    "build_poc": "PASS_WITH_EXISTING_500KB_CHUNK_ADVISORY",
+    "diff_check_base_product": "PASS",
+    "diff_check_base_head": "PASS",
+    "allowlist_hardcoding_secret_suppression_review": "PASS",
+    "focused_poc_app": "PASS_1_FILE_6_TESTS"
+  },
+  "requirements": {
+    "fixed_native_first_default_no_iframe": "PASS",
+    "external_max8_editor_url_sandbox_assurance_regression": "PASS",
+    "validated_change_history_api_only": "PASS",
+    "server_side_filters_no_local_authority": "PASS",
+    "event_and_link_limit_50": "PASS",
+    "zero_error_empty_sync_distinction": "PASS",
+    "current_kst_monday": "PASS",
+    "detected_fallback_visible": "PASS",
+    "safe_text_semantic_diff": "PASS",
+    "stale_abort": "PASS",
+    "read_only_no_cr_mutation": "PASS",
+    "no_deployment_or_identity_hardcoding": "PASS"
+  },
+  "poc_app_diagnostic": {
+    "focused_result": "PASS_6_OF_6",
+    "builder_broad_failure_reproduced": false,
+    "classification": "NONBLOCKING_OUT_OF_ALLOWLIST_STALE_TIMING_SENSITIVE_ZERO_FETCH_EXPECTATION",
+    "complete_suite_claim": "NOT_MADE",
+    "follow_up": "POC_TEST_OWNER_SHOULD_WAIT_FOR_AND_ASSERT_ALLOWED_AUTHORITATIVE_CHANGE_HISTORY_GET"
+  },
+  "overengineering_risk": {
+    "classification": "NONBLOCKING_MAINTAINABILITY_DEBT",
+    "evidence": "678_LINE_COMPONENT_AND_503_LINE_SCOPED_CSS_WITH_MANUAL_12_FILTER_AND_ENUM_LABEL_MAPPINGS",
+    "current_correctness_blocker": false
+  },
+  "evidence_paths": [
+    ".orchestration/evidence/CHANGE-HIST-T07B1-INDEPENDENT-VALIDATION.md",
+    ".orchestration/receipts/CHANGE-HIST-T07B1-INDEPENDENT-VALIDATION.json"
+  ],
+  "not_executed": [
+    "BROWSER_OR_RUNTIME_SMOKE",
+    "PROVIDER_DB_OR_CONTAINER_PROBE_OR_MUTATION",
+    "FULL_FRONTEND_SUITE",
+    "PUSH_MERGE_PREP_OPS_TARGET"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  },
+  "remaining": [
+    "T09_AUDIT",
+    "POC_STATIC_NAVIGATION_EXPECTATION_FIXTURE_FOLLOW_UP"
+  ]
+}
