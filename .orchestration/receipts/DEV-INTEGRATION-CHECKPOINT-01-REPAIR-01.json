@@ -1,0 +1,149 @@
+{
+  "schema_version": 1,
+  "task_id": "DEV-CHECKPOINT-01-REPAIR-01",
+  "orchestration_task_id": "task_7420eba35582",
+  "dispatch_id": "ctx_39ed1292ed2c",
+  "outcome": "SUCCEEDED_LOCAL_CANDIDATE",
+  "recorded_at": "2026-08-14T04:58:49+09:00",
+  "environment": {
+    "name": "DEV_MAC_ARM64_TASK_WORKTREE",
+    "node": "v25.9.0",
+    "npm": "11.12.1"
+  },
+  "git": {
+    "base_sha": "f37be6fdddcc7c15caac6303defc8f6c9a1bd9ff",
+    "product_commit_sha": "639a4830d7db2775b0932c58adb14ac6185f437c",
+    "branch": "Ever-Real/dev-checkpoint-01-repair-01-r1",
+    "worktree": "/Users/everreal/orca/workspaces/datariver_poc_v0/dev-checkpoint-01-repair-01-r1",
+    "clean_before_task": true,
+    "clean_before_evidence": true,
+    "final_clean_state_recorded_by": "worker_done"
+  },
+  "files": {
+    "product": [
+      "frontend/poc-server.mjs",
+      "frontend/poc-catalog-performance.test.mjs"
+    ],
+    "evidence": [
+      ".orchestration/evidence/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01.md",
+      ".orchestration/receipts/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01.json"
+    ]
+  },
+  "repairs": {
+    "B01": {
+      "status": "PASS",
+      "contracts": [
+        "one terminal confirmation page after exact stable total",
+        "stable total and zero new unique assets and no continuation",
+        "all observed provider cursors cycle-checked",
+        "cold retryAt suppression",
+        "single in-process refresh and PostgreSQL-first last-good preserved"
+      ],
+      "focused_observations": {
+        "exact_boundary_assets": 250,
+        "provider_pages": 2,
+        "postgres_writes": 1,
+        "redis_best_effort_writes": 1,
+        "final_http_status": 200,
+        "concurrent_cold_requests": 6,
+        "unsafe_cases": [
+          "terminal_continuation",
+          "terminal_new_asset",
+          "non_immediate_cursor_cycle"
+        ],
+        "unsafe_case_writes": 0,
+        "suppressed_poll_requests": 4,
+        "provider_retries_during_retryAt": 0
+      },
+      "explicit_urn_sort_removed": false,
+      "sort_decision": "No source-confirmed deterministic default ordering was introduced by this task."
+    },
+    "B02": {
+      "status": "PASS",
+      "contracts": [
+        "timeout combined with lifecycle abort",
+        "inventory and embedding promises tracked",
+        "embedding timer tracked and cleared",
+        "idempotent stop",
+        "background settle before state-store close",
+        "no partial commit or post-close store use"
+      ],
+      "focused_observations": {
+        "shutdown_under_seconds": 10,
+        "partial_projection_writes": 0,
+        "last_good_preserved": true,
+        "provider_aborts": 1,
+        "double_stop_same_promise": true,
+        "state_store_close_calls": 1,
+        "post_close_store_uses": 0,
+        "embedding_aborts": 1,
+        "embedding_generation_replacements": 0,
+        "embedding_relaunches_after_stop": 0
+      }
+    }
+  },
+  "validation": [
+    {
+      "command": "npm ci",
+      "status": "PASS",
+      "summary": "368 packages installed from lock; audit 0; lockfile unchanged"
+    },
+    {
+      "command": "npm run build:poc",
+      "status": "PASS",
+      "summary": "build completed; existing large chunk warning only"
+    },
+    {
+      "command": "node --test poc-catalog-performance.test.mjs",
+      "status": "PASS",
+      "tests": 4
+    },
+    {
+      "command": "npm run lint",
+      "status": "PASS",
+      "warnings": 0
+    },
+    {
+      "command": "node --test *.test.mjs",
+      "status": "PASS",
+      "tests": 59
+    },
+    {
+      "command": "npm test -- --run",
+      "status": "MIXED_RUNNER_DISCOVERY_EXIT_1",
+      "product_tests_passed": 527,
+      "product_test_files_passed": 81,
+      "non_vitest_files_rediscovered": 4,
+      "reason": "Node node:test files contain no Vitest suites"
+    },
+    {
+      "command": "npx vitest run --config vitest.config.ts --exclude '**/*.test.mjs'",
+      "status": "PASS",
+      "tests": 527,
+      "test_files": 81
+    },
+    {
+      "command": "git diff --check",
+      "status": "PASS"
+    }
+  ],
+  "not_executed": [
+    "existing 39080 listener/provider runtime access or mutation",
+    "live DataHub or LLM provider validation/mutation",
+    "container/volume/network lifecycle",
+    "state-store or deploy changes",
+    "push",
+    "merge",
+    "rebase",
+    "PREP",
+    "OPS",
+    "TARGET",
+    "publication"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  }
+}
