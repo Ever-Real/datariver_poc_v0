@@ -41,10 +41,6 @@
 | TARGET-RECHECK | 보존 정책·MCL 토픽/파티션·Schema Registry 주제/스키마 재측정 | 보장 가능한 이력 범위 | BLOCKED | 20·50 | R3 | TARGET 읽기 권한 | 현재 TARGET 증적 없음 |
 | PREP | 소스·산출물·체크섬·Node 22·Linux AMD64 검증 | 준비 환경에서 재현 가능한 배포 | BLOCKED | 20 | R3 | T08, G3 | 미실행 |
 | OPS | PREP 승인 산출물의 운영 검증 | 운영 환경 배포 판단 | BLOCKED | 20 | R3 | PREP, G4 | 미실행 |
-| G1 | 통합 변경 승인 판단 | 통합 진행 허용 여부 | BLOCKED | 00 | R3 | T09 | 미승인 |
-| G2 | 외부 변경 승인 판단 | 외부 변경 허용 여부 | BLOCKED | 00 | R3 | T09 | 미승인 |
-| G3 | PREP 진입 승인 판단 | 준비 환경 검증 허용 여부 | BLOCKED | 00 | R3 | T08, T09 | 미승인 |
-| G4 | OPS 진입 승인 판단 | 운영 검증 허용 여부 | BLOCKED | 00 | R3 | PREP, T09 | 미승인 |
 
 ## 실행 체크리스트
 
@@ -60,11 +56,12 @@
 2. `T07`
 3. `T08`
 
-## 게이트
-
-- `G1`: BLOCKED · `G2`: BLOCKED · `G3`: BLOCKED · `G4`: BLOCKED
-- 푸시·병합·TARGET·PREP·OPS·제품 런타임 승인은 부여하지 않는다.
-
 ## 대표 근거
 
 `CHANGE-HIST-T03N-INDEPENDENT-VALIDATION.md`, `CHANGE-HIST-T04-REPAIR-01-REVALIDATION.md`, `CHANGE-HIST-SCHEDULER-REPAIR-01-VALIDATION.md`, `CHANGE-HIST-T05-R3-INDEPENDENT-VALIDATION.md`, `CHANGE-HIST-T06A-REVALIDATION.md`, sibling의 `CHANGE-HIST-T06B-REPAIR-01-REVALIDATION.md`, `DEV-INTEGRATION-CHECKPOINT-01-PLATFORM-VALIDATION.md`, `PROJECT_HANDOFF_RECONCILIATION.md`를 사용했다.
+
+## 게이트
+
+G1: NOT_APPROVED, G2: NOT_APPROVED, G3: NOT_APPROVED, G4: NOT_APPROVED
+
+현재 G1~G4 게이트는 승인되지 않았다.
