@@ -6,6 +6,15 @@ import { createClient } from 'redis'
 
 const { Pool } = pg
 
+const CHANGE_HISTORY_ACCESS_SCOPE = 'change-history-access-v1'
+const CHANGE_HISTORY_ACCESS_SCOPES = [CHANGE_HISTORY_ACCESS_SCOPE, 'core']
+const PROTECTED_CORE_ACCESS_FIELDS = [
+  'adminMemberships',
+  'adminSystems',
+  'adminSystemAssignees',
+  'adminSystemSchemaScopes',
+]
+
 const CHANGE_HISTORY_SCHEMA = [
   `
     CREATE TABLE IF NOT EXISTS poc_change_history_sources (
@@ -295,6 +304,7 @@ export function createPocStateStore({ databasePool } = {}) {
 
   async function write(scope, value) {
     await startDatabase()
+    if (scope === 'core') return writeCoreWithAccessFence(value)
     if (pool) {
       const result = await pool.query(`
         INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
@@ -307,6 +317,115 @@ export function createPocStateStore({ databasePool } = {}) {
     const version = (memory.get(scope)?.version ?? 0) + 1
     memory.set(scope, { value, version })
     return version
+  }
+
+  async function writeCoreWithAccessFence(value) {
+    if (pool) {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        const locked = await client.query(`
+          SELECT scope, value, version FROM poc_state
+          WHERE scope IN ($1, $2)
+          ORDER BY scope
+          FOR UPDATE
+        `, CHANGE_HISTORY_ACCESS_SCOPES)
+        const accessRow = locked.rows.find((row) => row.scope === CHANGE_HISTORY_ACCESS_SCOPE)
+        const coreRow = locked.rows.find((row) => row.scope === 'core')
+        const fencedValue = preserveProtectedCoreAccessFields(value, coreRow?.value, Boolean(accessRow))
+        const result = await client.query(`
+          INSERT INTO poc_state (scope, value) VALUES ('core', $1::jsonb)
+          ON CONFLICT (scope) DO UPDATE
+            SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
+          RETURNING version
+        `, [JSON.stringify(fencedValue)])
+        await client.query('COMMIT')
+        return Number(result.rows[0].version)
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
+    }
+    const accessExists = memory.has(CHANGE_HISTORY_ACCESS_SCOPE)
+    const currentCore = memory.get('core')?.value
+    const fencedValue = preserveProtectedCoreAccessFields(value, currentCore, accessExists)
+    const version = (memory.get('core')?.version ?? 0) + 1
+    memory.set('core', { value: fencedValue, version })
+    return version
+  }
+
+  async function readChangeHistoryAccess() {
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        SELECT scope, value, version FROM poc_state
+        WHERE scope IN ($1, $2)
+      `, CHANGE_HISTORY_ACCESS_SCOPES)
+      return changeHistoryAccessSnapshot(result.rows)
+    }
+    return {
+      access: memory.get(CHANGE_HISTORY_ACCESS_SCOPE) ?? { value: null, version: 0 },
+      core: memory.get('core') ?? { value: null, version: 0 },
+    }
+  }
+
+  async function writeChangeHistoryAccess({
+    expectedAccessVersion,
+    expectedCoreVersion,
+    accessValue,
+    coreValue,
+  }) {
+    requireNonnegativeInteger(expectedAccessVersion, 'expectedAccessVersion')
+    requireNonnegativeInteger(expectedCoreVersion, 'expectedCoreVersion')
+    await startDatabase()
+    if (pool) {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        const locked = await client.query(`
+          SELECT scope, value, version FROM poc_state
+          WHERE scope IN ($1, $2)
+          ORDER BY scope
+          FOR UPDATE
+        `, CHANGE_HISTORY_ACCESS_SCOPES)
+        const current = changeHistoryAccessSnapshot(locked.rows)
+        assertAccessVersions(current, expectedAccessVersion, expectedCoreVersion)
+        const accessWrite = await client.query(`
+          INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
+          ON CONFLICT (scope) DO UPDATE
+            SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
+          RETURNING version
+        `, [CHANGE_HISTORY_ACCESS_SCOPE, JSON.stringify(accessValue)])
+        const coreWrite = await client.query(`
+          INSERT INTO poc_state (scope, value) VALUES ('core', $1::jsonb)
+          ON CONFLICT (scope) DO UPDATE
+            SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
+          RETURNING version
+        `, [JSON.stringify(coreValue)])
+        await client.query('COMMIT')
+        return {
+          accessVersion: Number(accessWrite.rows[0].version),
+          coreVersion: Number(coreWrite.rows[0].version),
+        }
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
+    }
+    const current = {
+      access: memory.get(CHANGE_HISTORY_ACCESS_SCOPE) ?? { value: null, version: 0 },
+      core: memory.get('core') ?? { value: null, version: 0 },
+    }
+    assertAccessVersions(current, expectedAccessVersion, expectedCoreVersion)
+    const accessVersion = current.access.version + 1
+    const coreVersion = current.core.version + 1
+    memory.set(CHANGE_HISTORY_ACCESS_SCOPE, { value: accessValue, version: accessVersion })
+    memory.set('core', { value: coreValue, version: coreVersion })
+    return { accessVersion, coreVersion }
   }
 
   async function cacheGet(key) {
@@ -992,6 +1111,8 @@ export function createPocStateStore({ databasePool } = {}) {
     replaceCatalogEmbeddingGeneration,
     searchCatalogEmbeddings,
     readChangeHistoryCheckpoint,
+    readChangeHistoryAccess,
+    writeChangeHistoryAccess,
     initializeChangeHistoryCaptureBoundaries,
     appendChangeHistoryCapture,
     appendChangeHistoryCrLink,
@@ -999,6 +1120,41 @@ export function createPocStateStore({ databasePool } = {}) {
     close,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
   }
+}
+
+function changeHistoryAccessSnapshot(rows) {
+  const rowByScope = new Map(rows.map((row) => [row.scope, row]))
+  const snapshot = (scope) => {
+    const row = rowByScope.get(scope)
+    return row ? { value: row.value, version: Number(row.version) } : { value: null, version: 0 }
+  }
+  return { access: snapshot(CHANGE_HISTORY_ACCESS_SCOPE), core: snapshot('core') }
+}
+
+function assertAccessVersions(current, expectedAccessVersion, expectedCoreVersion) {
+  if (current.access.version !== expectedAccessVersion || current.core.version !== expectedCoreVersion) {
+    throw Object.assign(new Error('The change-history access state changed; read it and retry.'), {
+      code: 'ACCESS_VERSION_STALE',
+      statusCode: 409,
+    })
+  }
+}
+
+function preserveProtectedCoreAccessFields(value, currentCore, accessExists) {
+  if (!accessExists) return value
+  if (!isPlainObject(value)) {
+    throw Object.assign(new Error('Core state must remain an object after access authority exists.'), {
+      code: 'CORE_ACCESS_FIELDS_PROTECTED',
+      statusCode: 409,
+    })
+  }
+  const next = { ...value }
+  const current = isPlainObject(currentCore) ? currentCore : {}
+  for (const field of PROTECTED_CORE_ACCESS_FIELDS) {
+    if (Object.hasOwn(current, field)) next[field] = current[field]
+    else delete next[field]
+  }
+  return next
 }
 
 function explicitSchedulerTimestamp(value, field = 'scheduledFor') {

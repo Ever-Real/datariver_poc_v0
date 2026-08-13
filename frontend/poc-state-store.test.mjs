@@ -534,3 +534,107 @@ test('rejects raw provider documents and non-UTC evidence before touching Postgr
   })])), /explicit UTC timestamp/)
   assert.equal(database.statements.length, 0)
 })
+
+test('CAS-updates private access with its core projection and fences later generic core writes', async () => {
+  const store = createPocStateStore()
+  const originalChangeRecords = [{ id: 'request-from-core', state: 'IN_REVIEW', version: 7 }]
+  assert.equal(await store.write('core', { changeRecords: originalChangeRecords, sequence: 11 }), 1)
+  const initial = await store.readChangeHistoryAccess()
+  assert.equal(initial.access.version, 0)
+  assert.equal(initial.core.version, 1)
+
+  const accessValue = {
+    schema_version: 1,
+    active_subject_id: 'subject-from-config',
+    users: [{ subject_id: 'subject-from-config', role: 'admin', active: true, provider_owner_refs: [] }],
+    system_assignments: [],
+  }
+  const projectedCore = {
+    ...initial.core.value,
+    adminMemberships: [{ subject_id: 'subject-from-config', subject_active: true }],
+    adminSystems: [{ system_id: 'business-system', active: true }],
+    adminSystemAssignees: [['business-system', []]],
+    adminSystemSchemaScopes: [['business-system', []]],
+  }
+  assert.deepEqual(await store.writeChangeHistoryAccess({
+    expectedAccessVersion: 0,
+    expectedCoreVersion: 1,
+    accessValue,
+    coreValue: projectedCore,
+  }), { accessVersion: 1, coreVersion: 2 })
+
+  await assert.rejects(store.writeChangeHistoryAccess({
+    expectedAccessVersion: 0,
+    expectedCoreVersion: 1,
+    accessValue,
+    coreValue: projectedCore,
+  }), (error) => error.code === 'ACCESS_VERSION_STALE' && error.statusCode === 409)
+
+  await store.write('core', {
+    changeRecords: [{ id: 'request-from-core', state: 'COMPLETED', version: 8 }],
+    sequence: 12,
+    adminMemberships: [],
+    adminSystems: [],
+    adminSystemAssignees: [],
+    adminSystemSchemaScopes: [],
+  })
+  const fenced = await store.read('core')
+  assert.equal(fenced.version, 3)
+  assert.equal(fenced.value.changeRecords[0].state, 'COMPLETED')
+  assert.deepEqual(fenced.value.adminSystems, projectedCore.adminSystems)
+  assert.deepEqual(fenced.value.adminMemberships, projectedCore.adminMemberships)
+  assert.deepEqual((await store.readChangeHistoryAccess()).access.value, accessValue)
+})
+
+test('locks both PostgreSQL poc_state rows before committing an access CAS', async () => {
+  const statements = []
+  const rows = new Map([['core', { value: { changeRecords: [] }, version: 3 }]])
+  const client = {
+    async query(sql, parameters = []) {
+      const normalized = String(sql).replace(/\s+/g, ' ').trim()
+      statements.push(normalized)
+      if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(normalized)) return { rows: [] }
+      if (normalized.includes('SELECT scope, value, version FROM poc_state') && normalized.includes('FOR UPDATE')) {
+        return { rows: [...rows.entries()].map(([scope, row]) => ({ scope, ...row })) }
+      }
+      if (normalized.startsWith('INSERT INTO poc_state (scope, value)')) {
+        const scope = parameters.length === 2 ? parameters[0] : 'core'
+        const value = JSON.parse(parameters.at(-1))
+        const version = (rows.get(scope)?.version ?? 0) + 1
+        rows.set(scope, { value, version })
+        return { rows: [{ version }] }
+      }
+      throw new Error(`Unexpected access CAS SQL: ${normalized}`)
+    },
+    release() {},
+  }
+  const store = createPocStateStore({
+    databasePool: {
+      async query() { return { rows: [] } },
+      async connect() { return client },
+    },
+  })
+  const accessValue = {
+    schema_version: 1,
+    active_subject_id: 'database-subject',
+    users: [{ subject_id: 'database-subject', role: 'admin', active: true, provider_owner_refs: [] }],
+    system_assignments: [],
+  }
+  assert.deepEqual(await store.writeChangeHistoryAccess({
+    expectedAccessVersion: 0,
+    expectedCoreVersion: 3,
+    accessValue,
+    coreValue: { changeRecords: [], adminSystems: [] },
+  }), { accessVersion: 1, coreVersion: 4 })
+  assert.ok(statements.includes('BEGIN'))
+  assert.ok(statements.some((sql) => sql.includes('ORDER BY scope FOR UPDATE')))
+  assert.ok(statements.indexOf('COMMIT') > statements.findIndex((sql) => sql.startsWith('INSERT INTO poc_state')))
+
+  await assert.rejects(store.writeChangeHistoryAccess({
+    expectedAccessVersion: 0,
+    expectedCoreVersion: 3,
+    accessValue,
+    coreValue: { changeRecords: [] },
+  }), (error) => error.code === 'ACCESS_VERSION_STALE')
+  assert.equal(statements.at(-1), 'ROLLBACK')
+})

@@ -410,3 +410,224 @@ test('rejects arbitrary gateway paths and non-allowlisted DAGs', async () => {
   })
   assert.equal(minio.status, 503)
 })
+
+test('fails closed when the server active subject is not configured', async () => {
+  const response = await fetch(new URL('/api/v1/change-history/access', origin))
+  assert.equal(response.status, 503)
+  assert.equal((await response.json()).code, 'ACCESS_NOT_CONFIGURED')
+})
+
+test('makes access state server-authoritative with bootstrap, role, spoof, CAS, and core fences', async () => {
+  const previousSubject = process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
+  delete process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
+  const { createPocStateStore } = await import('./poc-state-store.mjs?access-authority-contract')
+  const { createPocServer } = await import('./poc-server.mjs?access-authority-contract')
+  const stateStore = createPocStateStore()
+  const originalChangeRecords = [{ id: 'change-request-preserved', state: 'IN_REVIEW', current_round_number: 2, version: 9 }]
+  await stateStore.write('core', { sequence: 42, changeRecords: originalChangeRecords })
+
+  const servers = []
+  const listen = async (activeSubjectId, selectedStore = stateStore) => {
+    const authorityServer = createPocServer({ stateStore: selectedStore, activeSubjectId })
+    await new Promise((resolvePromise) => authorityServer.listen(0, '127.0.0.1', resolvePromise))
+    servers.push(authorityServer)
+    const address = authorityServer.address()
+    assert.equal(typeof address, 'object')
+    return `http://127.0.0.1:${address.port}`
+  }
+  const request = (authorityOrigin, options = {}) => fetch(
+    new URL('/api/v1/change-history/access', authorityOrigin),
+    options,
+  )
+  const document = {
+    schema_version: 1,
+    active_subject_id: 'configured-admin',
+    users: [
+      { subject_id: 'configured-admin', role: 'admin', active: true },
+      { subject_id: 'steward-subject', role: 'data_steward', active: true },
+      { subject_id: 'developer-subject', role: 'developer', active: true },
+      { subject_id: 'viewer-subject', role: 'viewer', active: true },
+      { subject_id: 'inactive-subject', role: 'admin', active: false },
+    ],
+    systems: [{
+      system_id: 'business-system', code: 'BUSINESS', name: 'Business System', description: '', active: true,
+    }],
+    system_schema_scopes: [{
+      scope_id: 'business-schema', system_id: 'business-system', platform: ' Postgres ',
+      database_name: 'business_db', schema_name: 'public', active: true,
+    }],
+    system_assignments: [{
+      system_id: 'business-system', subject_id: 'steward-subject', responsibility: 'DATA_STEWARD',
+      priority: 1, active: true,
+    }],
+  }
+
+  try {
+    const adminOrigin = await listen('configured-admin')
+    const put = (authorityOrigin, body, ifMatch = '"0"', headers = {}) => request(authorityOrigin, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'If-Match': ifMatch, ...headers },
+      body: JSON.stringify(body),
+    })
+
+    const mismatch = await put(adminOrigin, { ...document, active_subject_id: 'steward-subject' })
+    assert.equal(mismatch.status, 401)
+    assert.equal((await mismatch.json()).code, 'SUBJECT_UNRESOLVED')
+    const selfAppointedViewer = await put(adminOrigin, {
+      ...document,
+      users: document.users.map((user) => user.subject_id === 'configured-admin'
+        ? { ...user, role: 'viewer' }
+        : user),
+    })
+    assert.equal(selfAppointedViewer.status, 403)
+    assert.equal((await stateStore.readChangeHistoryAccess()).access.value, null)
+
+    const bootstrap = await put(adminOrigin, document)
+    assert.equal(bootstrap.status, 200)
+    assert.equal(bootstrap.headers.get('etag'), '"1"')
+    const bootstrapped = await bootstrap.json()
+    assert.equal(bootstrapped.version, 1)
+    assert.equal(bootstrapped.system_schema_scopes[0].platform, 'postgres')
+    assert.deepEqual((await stateStore.read('core')).value.changeRecords, originalChangeRecords)
+
+    const privateRead = await fetch(new URL('/poc-api/state/change-history-access-v1', adminOrigin))
+    assert.equal(privateRead.status, 404)
+    const spoofed = await request(adminOrigin, { headers: { 'X-Subject-Id': 'viewer-subject' } })
+    assert.equal(spoofed.status, 400)
+    assert.equal((await spoofed.json()).code, 'PROTECTED_CLAIM')
+    const bodySpoof = await put(adminOrigin, { ...document, actor_ref: 'browser-actor' }, '"1"')
+    assert.equal(bodySpoof.status, 400)
+    assert.equal((await bodySpoof.json()).code, 'PROTECTED_CLAIM')
+
+    const stale = await put(adminOrigin, document)
+    assert.equal(stale.status, 409)
+    assert.equal((await stale.json()).code, 'ACCESS_VERSION_STALE')
+    const noMatch = await request(adminOrigin, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(document),
+    })
+    assert.equal(noMatch.status, 428)
+
+    const ambiguous = await put(adminOrigin, {
+      ...document,
+      systems: [...document.systems, {
+        system_id: 'second-system', code: 'SECOND', name: 'Second System', description: '', active: true,
+      }],
+      system_schema_scopes: [...document.system_schema_scopes, {
+        scope_id: 'duplicate-business-schema', system_id: 'second-system', platform: 'postgres',
+        database_name: 'business_db', schema_name: 'public', active: true,
+      }],
+    }, '"1"')
+    assert.equal(ambiguous.status, 400)
+    assert.equal((await ambiguous.json()).code, 'ACCESS_DOCUMENT_INVALID')
+
+    for (const [subjectId, role, active, status] of [
+      ['steward-subject', 'data_steward', true, 403],
+      ['developer-subject', 'developer', true, 403],
+      ['viewer-subject', 'viewer', true, 403],
+      ['inactive-subject', 'admin', false, 401],
+    ]) {
+      const roleStore = createPocStateStore()
+      await roleStore.writeChangeHistoryAccess({
+        expectedAccessVersion: 0,
+        expectedCoreVersion: 0,
+        accessValue: {
+          schema_version: 1,
+          active_subject_id: subjectId,
+          users: [{ subject_id: subjectId, role, active, provider_owner_refs: [] }],
+          system_assignments: [],
+        },
+        coreValue: {
+          adminMemberships: [], adminSystems: [], adminSystemAssignees: [], adminSystemSchemaScopes: [],
+        },
+      })
+      const roleOrigin = await listen(subjectId, roleStore)
+      assert.equal((await request(roleOrigin)).status, status, subjectId)
+      assert.equal((await put(roleOrigin, {
+        schema_version: 1,
+        active_subject_id: subjectId,
+        users: [{ subject_id: subjectId, role, active }],
+        systems: [], system_schema_scopes: [], system_assignments: [],
+      }, '"1"')).status, status, `${subjectId} PUT`)
+    }
+    const unknownOrigin = await listen('unknown-subject')
+    assert.equal((await request(unknownOrigin)).status, 401)
+
+    const genericWrite = await fetch(new URL('/poc-api/state/core', adminOrigin), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: {
+        sequence: 43,
+        changeRecords: [{ ...originalChangeRecords[0], state: 'TESTING' }],
+        adminMemberships: [], adminSystems: [], adminSystemAssignees: [], adminSystemSchemaScopes: [],
+      } }),
+    })
+    assert.equal(genericWrite.status, 200)
+    const afterGeneric = (await stateStore.read('core')).value
+    assert.equal(afterGeneric.changeRecords[0].state, 'TESTING')
+    assert.equal(afterGeneric.adminSystems[0].system_id, 'business-system')
+    assert.equal(afterGeneric.adminMemberships.length, document.users.length)
+
+    const crBeforeAccessUpdate = structuredClone(afterGeneric.changeRecords)
+    const updatedDocument = {
+      ...document,
+      system_assignments: [{ ...document.system_assignments[0], priority: 2 }],
+    }
+    const update = await put(adminOrigin, updatedDocument, '"1"')
+    assert.equal(update.status, 200)
+    assert.equal(update.headers.get('etag'), '"2"')
+    assert.deepEqual((await stateStore.read('core')).value.changeRecords, crBeforeAccessUpdate)
+    assert.equal((await request(adminOrigin)).status, 200)
+
+    const primitiveCore = await fetch(new URL('/poc-api/state/core', adminOrigin), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value: 'browser-replacement' }),
+    })
+    assert.equal(primitiveCore.status, 409)
+    assert.equal((await primitiveCore.json()).code, 'CORE_ACCESS_FIELDS_PROTECTED')
+  } finally {
+    if (previousSubject === undefined) delete process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
+    else process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID = previousSubject
+    for (const authorityServer of servers) {
+      authorityServer.closeAllConnections()
+      await new Promise((resolvePromise, reject) => authorityServer.close((error) => (
+        error ? reject(error) : resolvePromise()
+      )))
+    }
+  }
+})
+
+test('accepts the active subject from the dedicated server environment only', async () => {
+  const previousSubject = process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
+  process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID = 'environment-admin'
+  const { createPocStateStore } = await import('./poc-state-store.mjs?access-environment-contract')
+  const { createPocServer } = await import('./poc-server.mjs?access-environment-contract')
+  const stateStore = createPocStateStore()
+  const environmentServer = createPocServer({ stateStore })
+  delete process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
+  await new Promise((resolvePromise) => environmentServer.listen(0, '127.0.0.1', resolvePromise))
+  const address = environmentServer.address()
+  assert.equal(typeof address, 'object')
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/change-history/access`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json', 'If-Match': '"0"' },
+      body: JSON.stringify({
+        schema_version: 1,
+        active_subject_id: 'environment-admin',
+        users: [{ subject_id: 'environment-admin', role: 'admin', active: true }],
+        systems: [],
+        system_schema_scopes: [],
+        system_assignments: [],
+      }),
+    })
+    assert.equal(response.status, 200)
+  } finally {
+    if (previousSubject === undefined) delete process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
+    else process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID = previousSubject
+    environmentServer.closeAllConnections()
+    await new Promise((resolvePromise, reject) => environmentServer.close((error) => (
+      error ? reject(error) : resolvePromise()
+    )))
+  }
+})

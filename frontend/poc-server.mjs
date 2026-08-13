@@ -227,6 +227,16 @@ const runtimeFlags = Object.freeze({
 })
 let pocStateStore = createPocStateStore()
 const allowedPocStateScopes = new Set(['core', 'knowledge', 'governance'])
+const changeHistoryAccessRoles = new Set(['admin', 'data_steward', 'developer', 'viewer'])
+const changeHistoryResponsibilities = new Set(['DATA_STEWARD', 'DEVELOPER'])
+const protectedAccessHeaders = new Set([
+  'x-subject-id', 'x-subject-role', 'x-role', 'x-system-id', 'x-responsibility',
+  'x-priority', 'x-actor-ref', 'x-policy-hash', 'x-basis-hash', 'x-occurred-at',
+])
+const protectedAccessQueryKeys = new Set([
+  'subject_id', 'active_subject_id', 'role', 'system_id', 'responsibility', 'priority',
+  'actor_ref', 'policy_hash', 'basis_hash', 'occurred_at',
+])
 
 function json(response, status, value, extraHeaders = {}) {
   const body = JSON.stringify(value)
@@ -284,6 +294,372 @@ async function bodyJson(request) {
 
 function boundedString(value, maximum, fallback = '') {
   return typeof value === 'string' && value.length <= maximum ? value : fallback
+}
+
+function accessError(statusCode, code, message) {
+  return Object.assign(new Error(message), { statusCode, code })
+}
+
+function accessRecord(value, field) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `${field} must be an object.`)
+  }
+  return value
+}
+
+function exactAccessKeys(value, field, allowed, required = allowed) {
+  const keys = Object.keys(value)
+  const unknown = keys.find((key) => !allowed.includes(key))
+  const missing = required.find((key) => !Object.hasOwn(value, key))
+  if (unknown || missing) {
+    throw accessError(400, 'ACCESS_DOCUMENT_INVALID', unknown
+      ? `${field}.${unknown} is not allowed.`
+      : `${field}.${missing} is required.`)
+  }
+}
+
+function accessString(value, field, maximum) {
+  if (typeof value !== 'string') {
+    throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `${field} must be a string.`)
+  }
+  const normalized = value.trim()
+  if (!normalized || normalized.length > maximum || /[\u0000-\u001f\u007f]/.test(normalized)) {
+    throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `${field} is outside its bounded string contract.`)
+  }
+  return normalized
+}
+
+function accessOptionalString(value, field, maximum) {
+  if (typeof value !== 'string' || value.length > maximum || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `${field} is outside its bounded string contract.`)
+  }
+  return value.trim()
+}
+
+function accessBoolean(value, field) {
+  if (typeof value !== 'boolean') {
+    throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `${field} must be boolean.`)
+  }
+  return value
+}
+
+function accessPositiveInteger(value, field) {
+  if (!Number.isSafeInteger(value) || value < 1) {
+    throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `${field} must be a positive integer.`)
+  }
+  return value
+}
+
+function accessArray(value, field, maximum) {
+  if (!Array.isArray(value) || value.length > maximum) {
+    throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `${field} must contain at most ${maximum} items.`)
+  }
+  return value
+}
+
+function normalizedAccessUsers(value) {
+  const subjects = new Set()
+  const users = accessArray(value, 'users', 500).map((raw, index) => {
+    const user = accessRecord(raw, `users[${index}]`)
+    exactAccessKeys(user, `users[${index}]`, ['subject_id', 'role', 'active', 'provider_owner_refs'], [
+      'subject_id', 'role', 'active',
+    ])
+    const subjectId = accessString(user.subject_id, `users[${index}].subject_id`, 255)
+    const role = accessString(user.role, `users[${index}].role`, 32)
+    if (!changeHistoryAccessRoles.has(role) || subjects.has(subjectId)) {
+      throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `users[${index}] has a duplicate subject or unknown role.`)
+    }
+    const ownerRefs = accessArray(user.provider_owner_refs ?? [], `users[${index}].provider_owner_refs`, 100)
+      .map((item, ownerIndex) => accessString(item, `users[${index}].provider_owner_refs[${ownerIndex}]`, 1024))
+    if (new Set(ownerRefs).size !== ownerRefs.length) {
+      throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `users[${index}].provider_owner_refs contains duplicates.`)
+    }
+    subjects.add(subjectId)
+    return { subject_id: subjectId, role, active: accessBoolean(user.active, `users[${index}].active`), provider_owner_refs: ownerRefs.sort() }
+  })
+  return users.sort((left, right) => left.subject_id.localeCompare(right.subject_id))
+}
+
+function normalizedAccessSystems(value) {
+  const ids = new Set()
+  const codes = new Set()
+  const systems = accessArray(value, 'systems', 500).map((raw, index) => {
+    const system = accessRecord(raw, `systems[${index}]`)
+    exactAccessKeys(system, `systems[${index}]`, [
+      'system_id', 'code', 'name', 'description', 'active', 'version',
+    ], ['system_id', 'code', 'name', 'active'])
+    const systemId = accessString(system.system_id, `systems[${index}].system_id`, 255)
+    const code = accessString(system.code, `systems[${index}].code`, 100)
+    const normalizedCode = code.toLowerCase()
+    if (ids.has(systemId) || codes.has(normalizedCode)) {
+      throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `systems[${index}] has a duplicate id or code.`)
+    }
+    ids.add(systemId)
+    codes.add(normalizedCode)
+    return {
+      system_id: systemId,
+      code,
+      name: accessString(system.name, `systems[${index}].name`, 255),
+      description: system.description === undefined ? '' : accessOptionalString(system.description, `systems[${index}].description`, 2000),
+      active: accessBoolean(system.active, `systems[${index}].active`),
+      version: system.version === undefined ? 1 : accessPositiveInteger(system.version, `systems[${index}].version`),
+    }
+  })
+  return systems.sort((left, right) => left.system_id.localeCompare(right.system_id))
+}
+
+function normalizedAccessScopes(value, systems) {
+  const systemById = new Map(systems.map((system) => [system.system_id, system]))
+  const ids = new Set()
+  const activeMappings = new Set()
+  const scopes = accessArray(value, 'system_schema_scopes', 2_000).map((raw, index) => {
+    const scope = accessRecord(raw, `system_schema_scopes[${index}]`)
+    exactAccessKeys(scope, `system_schema_scopes[${index}]`, [
+      'scope_id', 'system_id', 'platform', 'database_name', 'schema_name', 'active', 'version',
+    ], ['scope_id', 'system_id', 'platform', 'database_name', 'schema_name', 'active'])
+    const scopeId = accessString(scope.scope_id, `system_schema_scopes[${index}].scope_id`, 255)
+    const systemId = accessString(scope.system_id, `system_schema_scopes[${index}].system_id`, 255)
+    const system = systemById.get(systemId)
+    const platform = accessString(scope.platform, `system_schema_scopes[${index}].platform`, 100).toLowerCase()
+    const databaseName = accessString(scope.database_name, `system_schema_scopes[${index}].database_name`, 255)
+    const schemaName = accessString(scope.schema_name, `system_schema_scopes[${index}].schema_name`, 255)
+    const active = accessBoolean(scope.active, `system_schema_scopes[${index}].active`)
+    const mappingKey = JSON.stringify([platform, databaseName, schemaName])
+    if (ids.has(scopeId) || !system || (active && (!system.active || activeMappings.has(mappingKey)))) {
+      throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `system_schema_scopes[${index}] is duplicate, unmapped, or ambiguous.`)
+    }
+    ids.add(scopeId)
+    if (active) activeMappings.add(mappingKey)
+    return {
+      scope_id: scopeId,
+      system_id: systemId,
+      platform,
+      database_name: databaseName,
+      schema_name: schemaName,
+      active,
+      version: scope.version === undefined ? 1 : accessPositiveInteger(scope.version, `system_schema_scopes[${index}].version`),
+    }
+  })
+  return scopes.sort((left, right) => left.scope_id.localeCompare(right.scope_id))
+}
+
+function normalizedAccessAssignments(value, users, systems) {
+  const userById = new Map(users.map((user) => [user.subject_id, user]))
+  const systemById = new Map(systems.map((system) => [system.system_id, system]))
+  const keys = new Set()
+  const assignments = accessArray(value, 'system_assignments', 2_000).map((raw, index) => {
+    const assignment = accessRecord(raw, `system_assignments[${index}]`)
+    exactAccessKeys(assignment, `system_assignments[${index}]`, [
+      'system_id', 'subject_id', 'responsibility', 'priority', 'active',
+    ])
+    const systemId = accessString(assignment.system_id, `system_assignments[${index}].system_id`, 255)
+    const subjectId = accessString(assignment.subject_id, `system_assignments[${index}].subject_id`, 255)
+    const responsibility = accessString(assignment.responsibility, `system_assignments[${index}].responsibility`, 32)
+    const active = accessBoolean(assignment.active, `system_assignments[${index}].active`)
+    const key = JSON.stringify([systemId, subjectId, responsibility])
+    const user = userById.get(subjectId)
+    const system = systemById.get(systemId)
+    if (!changeHistoryResponsibilities.has(responsibility) || keys.has(key) || !user?.active || !system || (active && !system.active)) {
+      throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `system_assignments[${index}] is duplicate or references an inactive/unknown subject or System.`)
+    }
+    keys.add(key)
+    return {
+      system_id: systemId,
+      subject_id: subjectId,
+      responsibility,
+      priority: accessPositiveInteger(assignment.priority, `system_assignments[${index}].priority`),
+      active,
+    }
+  })
+  return assignments.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+}
+
+function normalizeChangeHistoryAccessDocument(raw, { allowUnresolvedActiveSubject = false } = {}) {
+  const document = accessRecord(raw, 'access')
+  exactAccessKeys(document, 'access', [
+    'schema_version', 'active_subject_id', 'users', 'systems', 'system_schema_scopes', 'system_assignments',
+  ])
+  if (document.schema_version !== 1) {
+    throw accessError(400, 'ACCESS_DOCUMENT_INVALID', 'access.schema_version must be 1.')
+  }
+  const users = normalizedAccessUsers(document.users)
+  const systems = normalizedAccessSystems(document.systems)
+  const activeSubjectId = accessString(document.active_subject_id, 'access.active_subject_id', 255)
+  const activeUser = users.find((user) => user.subject_id === activeSubjectId)
+  if (!allowUnresolvedActiveSubject && !activeUser?.active) {
+    throw accessError(400, 'ACCESS_DOCUMENT_INVALID', 'The active subject must reference an active user.')
+  }
+  return {
+    schema_version: 1,
+    active_subject_id: activeSubjectId,
+    users,
+    systems,
+    system_schema_scopes: normalizedAccessScopes(document.system_schema_scopes, systems),
+    system_assignments: normalizedAccessAssignments(document.system_assignments, users, systems),
+  }
+}
+
+function configuredChangeHistorySubject(injectedSubjectId) {
+  const injectedConfigured = injectedSubjectId !== undefined
+  const environmentSubjectId = process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
+  if (injectedConfigured && typeof injectedSubjectId !== 'string') {
+    return { error: accessError(401, 'SUBJECT_UNRESOLVED', 'The injected active subject is invalid.') }
+  }
+  const injected = typeof injectedSubjectId === 'string' ? injectedSubjectId.trim() : ''
+  const environment = typeof environmentSubjectId === 'string' ? environmentSubjectId.trim() : ''
+  if (!injected && !environment) {
+    return { error: accessError(503, 'ACCESS_NOT_CONFIGURED', 'The server active subject is not configured.') }
+  }
+  if (injected && environment && injected !== environment) {
+    return { error: accessError(401, 'SUBJECT_UNRESOLVED', 'Injected and environment active subjects do not match.') }
+  }
+  try {
+    return { subjectId: accessString(injected || environment, 'server active subject', 255) }
+  } catch {
+    return { error: accessError(401, 'SUBJECT_UNRESOLVED', 'The server active subject is invalid.') }
+  }
+}
+
+function rejectProtectedAccessClaims(request, url) {
+  const header = Object.keys(request.headers).find((key) => protectedAccessHeaders.has(key.toLowerCase()))
+  const query = [...url.searchParams.keys()].find((key) => protectedAccessQueryKeys.has(key.toLowerCase()))
+  if (header || query) {
+    throw accessError(400, 'PROTECTED_CLAIM', 'Browser-supplied identity and authorization claims are forbidden.')
+  }
+}
+
+function rejectProtectedAccessBodyClaims(body) {
+  const alwaysProtected = new Set(['actor', 'actor_ref', 'policy_hash', 'basis_hash', 'occurred_at'])
+  const topLevelProtected = new Set(['subject_id', 'role', 'system_id', 'responsibility', 'priority'])
+  if (Object.keys(body).some((key) => topLevelProtected.has(key.toLowerCase()))) {
+    throw accessError(400, 'PROTECTED_CLAIM', 'Browser-supplied identity and authorization claims are forbidden.')
+  }
+  const visit = (value) => {
+    if (Array.isArray(value)) return value.forEach(visit)
+    if (!value || typeof value !== 'object') return
+    for (const [key, nested] of Object.entries(value)) {
+      if (alwaysProtected.has(key.toLowerCase())) {
+        throw accessError(400, 'PROTECTED_CLAIM', 'Browser-supplied authority evidence is forbidden.')
+      }
+      visit(nested)
+    }
+  }
+  visit(body)
+}
+
+function changeHistoryDocumentFromSnapshot(snapshot) {
+  try {
+    const access = accessRecord(snapshot.access.value, 'stored access')
+    exactAccessKeys(access, 'stored access', [
+      'schema_version', 'active_subject_id', 'users', 'system_assignments',
+    ])
+    const core = snapshot.core.value && typeof snapshot.core.value === 'object' && !Array.isArray(snapshot.core.value)
+      ? snapshot.core.value
+      : {}
+    const groupedScopes = Array.isArray(core.adminSystemSchemaScopes) ? core.adminSystemSchemaScopes : []
+    return normalizeChangeHistoryAccessDocument({
+      ...access,
+      systems: Array.isArray(core.adminSystems) ? core.adminSystems : [],
+      system_schema_scopes: groupedScopes.flatMap((entry) => Array.isArray(entry?.[1]) ? entry[1] : []),
+    }, { allowUnresolvedActiveSubject: true })
+  } catch (error) {
+    if (error?.code === 'ACCESS_DOCUMENT_INVALID') {
+      throw accessError(503, 'ACCESS_STATE_INVALID', 'Stored change-history access state is invalid.')
+    }
+    throw error
+  }
+}
+
+function requireActiveAccessAdmin(document, subjectId) {
+  if (document.active_subject_id !== subjectId) {
+    throw accessError(401, 'SUBJECT_UNRESOLVED', 'The configured and stored active subjects do not match.')
+  }
+  const user = document.users.find((item) => item.subject_id === subjectId)
+  if (!user?.active) throw accessError(401, 'SUBJECT_UNRESOLVED', 'The active subject is missing or inactive.')
+  if (user.role !== 'admin') throw accessError(403, 'ACCESS_ADMIN_REQUIRED', 'An active admin is required.')
+}
+
+function changeHistoryAccessCoreProjection(currentValue, document) {
+  const current = currentValue && typeof currentValue === 'object' && !Array.isArray(currentValue)
+    ? structuredClone(currentValue)
+    : {}
+  const memberships = new Map((Array.isArray(current.adminMemberships) ? current.adminMemberships : [])
+    .filter((item) => item && typeof item === 'object' && typeof item.subject_id === 'string')
+    .map((item) => [item.subject_id, item]))
+  current.adminMemberships = document.users.map((user) => ({
+    ...(memberships.get(user.subject_id) ?? {}),
+    subject_id: user.subject_id,
+    display_name: memberships.get(user.subject_id)?.display_name || user.subject_id,
+    subject_active: user.active,
+    membership_active: user.active,
+    change_history_role: user.role,
+  }))
+  current.adminSystems = document.systems
+  current.adminSystemSchemaScopes = document.systems.map((system) => [
+    system.system_id,
+    document.system_schema_scopes.filter((scope) => scope.system_id === system.system_id),
+  ])
+  current.adminSystemAssignees = document.systems.map((system) => [
+    system.system_id,
+    document.system_assignments.filter((assignment) => assignment.system_id === system.system_id).map((assignment) => ({
+      subject_id: assignment.subject_id,
+      display_name: memberships.get(assignment.subject_id)?.display_name || assignment.subject_id,
+      responsibility: assignment.responsibility,
+      priority: assignment.priority,
+      active: assignment.active,
+    })),
+  ])
+  return current
+}
+
+function privateChangeHistoryAccess(document) {
+  return {
+    schema_version: document.schema_version,
+    active_subject_id: document.active_subject_id,
+    users: document.users,
+    system_assignments: document.system_assignments,
+  }
+}
+
+function accessIfMatch(request) {
+  const value = request.headers['if-match']
+  if (typeof value !== 'string') throw accessError(428, 'IF_MATCH_REQUIRED', 'If-Match is required.')
+  const match = value.match(/^"(0|[1-9]\d*)"$/)
+  const version = match ? Number(match[1]) : Number.NaN
+  if (!Number.isSafeInteger(version)) throw accessError(400, 'IF_MATCH_INVALID', 'If-Match must be a quoted access version.')
+  return version
+}
+
+async function changeHistoryAccess(request, response, url, context) {
+  rejectProtectedAccessClaims(request, url)
+  if (!['GET', 'PUT'].includes(request.method || '')) {
+    return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Change-history access supports only GET and PUT.')
+  }
+  if (context.subject.error) throw context.subject.error
+  const subjectId = context.subject.subjectId
+  const snapshot = await context.stateStore.readChangeHistoryAccess()
+  if (request.method === 'GET') {
+    if (snapshot.access.value === null) throw accessError(503, 'ACCESS_NOT_CONFIGURED', 'Change-history access is not provisioned.')
+    const document = changeHistoryDocumentFromSnapshot(snapshot)
+    requireActiveAccessAdmin(document, subjectId)
+    return json(response, 200, { ...document, version: snapshot.access.version }, { ETag: `"${snapshot.access.version}"` })
+  }
+  const expectedVersion = accessIfMatch(request)
+  if (expectedVersion !== snapshot.access.version) throw accessError(409, 'ACCESS_VERSION_STALE', 'The access version is stale.')
+  if (snapshot.access.value !== null) {
+    requireActiveAccessAdmin(changeHistoryDocumentFromSnapshot(snapshot), subjectId)
+  }
+  const body = await bodyJson(request)
+  rejectProtectedAccessBodyClaims(body)
+  const document = normalizeChangeHistoryAccessDocument(body)
+  requireActiveAccessAdmin(document, subjectId)
+  const result = await context.stateStore.writeChangeHistoryAccess({
+    expectedAccessVersion: snapshot.access.version,
+    expectedCoreVersion: snapshot.core.version,
+    accessValue: privateChangeHistoryAccess(document),
+    coreValue: changeHistoryAccessCoreProjection(snapshot.core.value, document),
+  })
+  return json(response, 200, { ...document, version: result.accessVersion }, { ETag: `"${result.accessVersion}"` })
 }
 
 function joinProviderUrl(base, suffix) {
@@ -3383,18 +3759,21 @@ async function capabilities() {
   }
 }
 
-async function api(request, response, url) {
+async function api(request, response, url, context) {
+  if (url.pathname === '/api/v1/change-history/access') {
+    return changeHistoryAccess(request, response, url, context)
+  }
   if (request.method === 'POST' && url.pathname === '/api/v1/registration/bulk-preparations/execute') {
     return json(response, 200, await executeBulkPreparation())
   }
   const stateMatch = url.pathname.match(/^\/poc-api\/state\/([a-z]+)$/)
   if (stateMatch && allowedPocStateScopes.has(stateMatch[1])) {
     const scope = stateMatch[1]
-    if (request.method === 'GET') return json(response, 200, await pocStateStore.read(scope))
+    if (request.method === 'GET') return json(response, 200, await context.stateStore.read(scope))
     if (request.method === 'PUT') {
       const body = await bodyJson(request)
       if (!Object.hasOwn(body, 'value')) return problem(response, 400, 'STATE_VALUE_REQUIRED', 'A state value is required.')
-      return json(response, 200, { version: await pocStateStore.write(scope, body.value) })
+      return json(response, 200, { version: await context.stateStore.write(scope, body.value) })
     }
     return problem(response, 405, 'METHOD_NOT_ALLOWED', 'POC state supports only GET and PUT.')
   }
@@ -3660,8 +4039,12 @@ function serveStatic(request, response, url) {
   return createReadStream(file).pipe(response)
 }
 
-export function createPocServer({ stateStore } = {}) {
+export function createPocServer({ stateStore, activeSubjectId } = {}) {
   if (stateStore) pocStateStore = stateStore
+  const accessContext = {
+    stateStore: stateStore ?? pocStateStore,
+    subject: configuredChangeHistorySubject(activeSubjectId),
+  }
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url || '/', 'http://poc.invalid')
@@ -3675,15 +4058,17 @@ export function createPocServer({ stateStore } = {}) {
         return response.end(body)
       }
       if (url.pathname.startsWith('/poc-api/')
-        || url.pathname === '/api/v1/registration/bulk-preparations/execute') {
-        return await api(request, response, url)
+        || url.pathname === '/api/v1/registration/bulk-preparations/execute'
+        || url.pathname === '/api/v1/change-history/access') {
+        return await api(request, response, url, accessContext)
       }
       if (!['GET', 'HEAD'].includes(request.method || '')) return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Only static GET/HEAD is supported.')
       return serveStatic(request, response, url)
     } catch (error) {
       if (response.headersSent) return response.end()
       const status = Number(error?.statusCode) || (error instanceof SyntaxError ? 400 : 502)
-      return problem(response, status, 'POC_PROVIDER_ERROR', error instanceof Error ? error.message : 'Provider request failed.')
+      const code = error?.statusCode && typeof error?.code === 'string' ? error.code : 'POC_PROVIDER_ERROR'
+      return problem(response, status, code, error instanceof Error ? error.message : 'Provider request failed.')
     }
   })
 }
