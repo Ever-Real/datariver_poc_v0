@@ -1,0 +1,85 @@
+{
+  "task": "CHANGE-HIST-T06B-REPAIR-01",
+  "role": "30_IDENTITY_ACCESS Builder",
+  "validated_at": "2026-08-14T03:34:32+09:00",
+  "base_sha": "f025fb60d07ddacf0c3ad7bcaa76872539143512",
+  "product_sha": "5521bead52d8b923e772f735352d3046327e7140",
+  "status": "REPAIRED_SELF_VALIDATED_PENDING_INDEPENDENT_VALIDATION",
+  "finding": {
+    "id": "F01",
+    "severity": "BLOCKER",
+    "status": "REPAIRED_LOCAL_SOURCE",
+    "title": "KST 월요일을 거부하고 KST 화요일을 허용",
+    "repair": "고정 KST 달력 날짜 정규화와 Monday-zero day-number 산술로 실제 KST 월요일만 허용"
+  },
+  "product_changed_paths": [
+    "frontend/poc-server.mjs",
+    "frontend/poc-server.test.mjs"
+  ],
+  "documentation_changed_paths": [
+    ".orchestration/evidence/CHANGE-HIST-T06B-REPAIR-01.md",
+    ".orchestration/receipts/CHANGE-HIST-T06B-REPAIR-01.json"
+  ],
+  "product_diff": {
+    "files": 2,
+    "insertions": 18,
+    "deletions": 5
+  },
+  "validation": [
+    {
+      "command": "npm ci --no-audit --no-fund",
+      "status": "PASS",
+      "packages_added": 368,
+      "audit": "NOT_EXECUTED"
+    },
+    {
+      "command": "node --test --test-name-pattern='serves authoritative change-history reads' poc-server.test.mjs",
+      "status": "PASS",
+      "passed": 1,
+      "failed": 0,
+      "cases": [
+        {
+          "week_start": "2026-08-10",
+          "expected_status": 200,
+          "actual_status": 200
+        },
+        {
+          "week_start": "2026-08-11",
+          "expected_status": 400,
+          "actual_status": 400,
+          "code": "WEEK_START_INVALID"
+        }
+      ]
+    },
+    {
+      "command": "npm run build:poc",
+      "status": "PASS",
+      "note": "기존 500 kB 초과 chunk advisory만 출력"
+    },
+    {
+      "command": "npm run test:poc-server",
+      "status": "PASS",
+      "passed": 33,
+      "failed": 0
+    },
+    {
+      "command": "npm run lint",
+      "status": "PASS",
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "command": "git diff --check and changed-path allowlist",
+      "status": "PASS"
+    }
+  ],
+  "not_executed": [
+    "실제 PostgreSQL/DataHub target runtime 통합",
+    "production workload EXPLAIN/load/soak",
+    "PREP/OPS/TARGET 및 active runtime mutation",
+    "push/merge/publication",
+    "G1-G4 approval"
+  ],
+  "blockers": [],
+  "remaining_gate": "fresh independent validation"
+}
