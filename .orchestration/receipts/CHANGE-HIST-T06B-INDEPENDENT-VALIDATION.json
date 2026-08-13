@@ -1,0 +1,128 @@
+{
+  "task": "CHANGE-HIST-T06B-INDEPENDENT-VALIDATION",
+  "role": "50_QUALITY_VALIDATION",
+  "validated_at": "2026-08-14T03:27:31+09:00",
+  "base_sha": "49f7f5c8b1f75e9990a9fb13e4b990b7503d1c61",
+  "product_sha": "e917bf382e79a672d52636d81b22cedb748d1263",
+  "candidate_sha": "cd459585d2c67a825b6d236745ea2a7e51dd49e7",
+  "status": "FAIL_LOCAL_SOURCE_REPAIR_REQUIRED",
+  "product_modified": false,
+  "product_changed_paths": [
+    "frontend/poc-state-store.mjs",
+    "frontend/poc-state-store.test.mjs",
+    "frontend/poc-server.mjs",
+    "frontend/poc-server.test.mjs",
+    "frontend/src/poc/pocApi.ts",
+    "frontend/src/poc/pocApi.live.test.ts"
+  ],
+  "findings": [
+    {
+      "id": "F01",
+      "severity": "BLOCKER",
+      "status": "OPEN",
+      "title": "KST 월요일을 거부하고 KST 화요일을 허용",
+      "evidence": "frontend/poc-server.mjs:1004-1006의 getUTCDay()가 +09:00 local date가 아니라 UTC 요일을 검사한다. HTTP probe에서 2026-08-10은 400, 2026-08-11은 200이었다.",
+      "repair_scope": [
+        "frontend/poc-server.mjs",
+        "frontend/poc-server.test.mjs"
+      ]
+    }
+  ],
+  "validation": [
+    {
+      "command": "npm ci --no-audit --no-fund",
+      "status": "PASS",
+      "packages_added": 368,
+      "audit": "NOT_EXECUTED"
+    },
+    {
+      "command": "node --test poc-state-store.test.mjs poc-server.test.mjs",
+      "phase": "before build:poc in fresh worktree",
+      "status": "FAIL_SETUP_PRECONDITION",
+      "passed": 25,
+      "failed": 1,
+      "cause": "dist-poc absent; root static response was 404"
+    },
+    {
+      "command": "node --test poc-state-store.test.mjs",
+      "status": "PASS",
+      "passed": 12,
+      "failed": 0
+    },
+    {
+      "command": "npm run test:poc-server",
+      "phase": "before build:poc in fresh worktree",
+      "status": "FAIL_SETUP_PRECONDITION",
+      "passed": 32,
+      "failed": 1,
+      "cause": "dist-poc absent; root static response was 404"
+    },
+    {
+      "command": "npx vitest run --config vitest.config.ts src/poc/pocApi.live.test.ts",
+      "status": "PASS",
+      "passed": 14,
+      "failed": 0
+    },
+    {
+      "command": "npm run lint",
+      "status": "PASS",
+      "warnings": 0,
+      "errors": 0
+    },
+    {
+      "command": "npm run build:poc",
+      "status": "PASS",
+      "note": "기존 500 kB 초과 chunk advisory만 출력"
+    },
+    {
+      "command": "node --test poc-state-store.test.mjs poc-server.test.mjs",
+      "phase": "after build:poc",
+      "status": "PASS",
+      "passed": 26,
+      "failed": 0
+    },
+    {
+      "command": "npm run test:poc-server",
+      "phase": "after build:poc",
+      "status": "PASS",
+      "passed": 33,
+      "failed": 0
+    },
+    {
+      "command": "independent Node HTTP KST boundary probe",
+      "status": "FAIL_CONTRACT",
+      "cases": [
+        {
+          "week_start": "2026-08-10",
+          "kst_weekday": "MONDAY",
+          "expected_status": 200,
+          "actual_status": 400
+        },
+        {
+          "week_start": "2026-08-11",
+          "kst_weekday": "TUESDAY",
+          "expected_status": 400,
+          "actual_status": 200
+        }
+      ]
+    },
+    {
+      "command": "git diff --check 49f7f5c8b1f75e9990a9fb13e4b990b7503d1c61 e917bf382e79a672d52636d81b22cedb748d1263",
+      "status": "PASS"
+    },
+    {
+      "command": "git diff --check 49f7f5c8b1f75e9990a9fb13e4b990b7503d1c61 cd459585d2c67a825b6d236745ea2a7e51dd49e7",
+      "status": "PASS"
+    }
+  ],
+  "not_executed": [
+    "실제 PostgreSQL/DataHub target runtime 통합",
+    "production workload EXPLAIN/load/soak",
+    "PREP/OPS/TARGET",
+    "push/merge/publication",
+    "G1-G4 approval"
+  ],
+  "blockers": [
+    "F01"
+  ]
+}
