@@ -567,7 +567,7 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
     assert.equal(afterGeneric.adminSystems[0].system_id, 'business-system')
     assert.equal(afterGeneric.adminMemberships.length, document.users.length)
 
-    const crBeforeAccessUpdate = structuredClone(afterGeneric.changeRecords)
+    const crBeforeAccessUpdate = JSON.parse(JSON.stringify(afterGeneric.changeRecords))
     const updatedDocument = {
       ...document,
       system_assignments: [{ ...document.system_assignments[0], priority: 2 }],

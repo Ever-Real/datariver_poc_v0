@@ -318,19 +318,26 @@ function exactAccessKeys(value, field, allowed, required = allowed) {
   }
 }
 
+function hasAccessControlCharacter(value) {
+  return [...value].some((character) => {
+    const codePoint = character.codePointAt(0)
+    return codePoint <= 0x1f || codePoint === 0x7f
+  })
+}
+
 function accessString(value, field, maximum) {
   if (typeof value !== 'string') {
     throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `${field} must be a string.`)
   }
   const normalized = value.trim()
-  if (!normalized || normalized.length > maximum || /[\u0000-\u001f\u007f]/.test(normalized)) {
+  if (!normalized || normalized.length > maximum || hasAccessControlCharacter(normalized)) {
     throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `${field} is outside its bounded string contract.`)
   }
   return normalized
 }
 
 function accessOptionalString(value, field, maximum) {
-  if (typeof value !== 'string' || value.length > maximum || /[\u0000-\u001f\u007f]/.test(value)) {
+  if (typeof value !== 'string' || value.length > maximum || hasAccessControlCharacter(value)) {
     throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `${field} is outside its bounded string contract.`)
   }
   return value.trim()
