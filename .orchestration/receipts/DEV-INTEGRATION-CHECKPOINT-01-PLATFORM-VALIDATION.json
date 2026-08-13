@@ -1,0 +1,91 @@
+{
+  "task": "DEV-INTEGRATION-CHECKPOINT-01-PLATFORM-VALIDATION",
+  "role": "50_QUALITY_VALIDATION",
+  "validated_at": "2026-08-14T03:46:39+09:00",
+  "base_sha": "0f1d491120af2abb5149aa0b9be9b2fe124d1818",
+  "product_sha": "4857b70b1411a6ec78ad9397ee690c41fa59dc7d",
+  "candidate_sha": "cd1eaf3fbb22bd7caba7f228dd12856e048e2fe2",
+  "status": "INDEPENDENT_VALIDATION_PASS",
+  "runtime_permission_mechanism": "NOT_SUPPORTED",
+  "risk_class": "LOW_RISK",
+  "product_repair_performed": false,
+  "reviewed_product_paths": [
+    "deploy/poc/Dockerfile.example",
+    "deploy/poc/docker-compose.poc.yaml",
+    "deploy/poc/.env.example"
+  ],
+  "documentation_changed_paths": [
+    ".orchestration/evidence/DEV-INTEGRATION-CHECKPOINT-01-PLATFORM-VALIDATION.md",
+    ".orchestration/receipts/DEV-INTEGRATION-CHECKPOINT-01-PLATFORM-VALIDATION.json"
+  ],
+  "validation": [
+    {
+      "command": "fresh npm ci",
+      "working_directory": "frontend",
+      "status": "PASS",
+      "installed_packages": 368,
+      "audit_vulnerabilities": 0
+    },
+    {
+      "command": "npm run build:poc",
+      "working_directory": "frontend",
+      "status": "PASS"
+    },
+    {
+      "command": "read-only local import/COPY closure check",
+      "status": "PASS",
+      "local_runtime_modules": 4,
+      "exact_copy_entries": 4
+    },
+    {
+      "command": "read-only runtime env/.env.example/Compose exact contract check",
+      "status": "PASS",
+      "forwarded_settings": 22,
+      "scheduler_default": "DISABLED",
+      "active_subject_default": "BLANK",
+      "credential_defaults": "BLANK"
+    },
+    {
+      "command": "docker compose --env-file deploy/poc/.env.example -f deploy/poc/docker-compose.poc.yaml config --quiet",
+      "status": "PASS",
+      "rendered_values_output": false
+    },
+    {
+      "command": "uv run python scripts/verify_static.py",
+      "status": "PASS"
+    },
+    {
+      "command": "product path/topology/dependency/sensitive-default check",
+      "status": "PASS",
+      "product_changed_paths": 3,
+      "services": 4,
+      "networks": 1,
+      "dependency_files_changed": 0,
+      "added_sensitive_defaults": "BLANK"
+    },
+    {
+      "command": "git diff --check 0f1d491..4857b70",
+      "status": "PASS"
+    }
+  ],
+  "findings": [],
+  "scope_assertions": {
+    "runtime_import_copy_closure_complete": true,
+    "compose_exact_optional_env_contract": true,
+    "scheduler_enabled_by_default": false,
+    "credential_or_subject_invented": false,
+    "secret_value_printed": false,
+    "new_service_container_network_dependency_framework": false,
+    "container_runtime_mutation": false
+  },
+  "not_executed": [
+    "Docker image build 및 container/service/network lifecycle",
+    "scheduler와 Kafka/Schema Registry/PostgreSQL/DataHub runtime 연동",
+    "실제 credential 또는 active subject 설정",
+    "Node 22 및 Linux/amd64 PREP/OPS/TARGET 검증",
+    "push/merge/publication",
+    "G1-G4 approval"
+  ],
+  "blockers": [],
+  "remaining_gate": "Node 22/Linux amd64 target runtime validation and separately governed PREP/OPS gates"
+}
