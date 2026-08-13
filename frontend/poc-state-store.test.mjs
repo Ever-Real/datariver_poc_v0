@@ -39,20 +39,48 @@ function semanticEvent(overrides = {}) {
   }
 }
 
-function createDatabaseDouble() {
+function createDatabaseDouble({ failCheckpointInsertPartition } = {}) {
   const statements = []
   const sources = new Map()
   const checkpoints = new Map()
   const ledger = new Map()
   const links = []
   let failNextLedgerInsert = false
+  let transactionSnapshot = null
+
+  const restoreMap = (target, snapshot) => {
+    target.clear()
+    for (const [key, value] of snapshot) target.set(key, value)
+  }
 
   const checkpointKey = (parameters) => parameters.slice(0, 3).join(':')
   const client = {
     async query(sql, parameters = []) {
       const normalized = String(sql).replace(/\s+/g, ' ').trim()
       statements.push({ sql: normalized, parameters })
-      if (['BEGIN', 'COMMIT', 'ROLLBACK'].includes(normalized)) return { rows: [] }
+      if (normalized === 'BEGIN') {
+        transactionSnapshot = {
+          sources: new Map(sources),
+          checkpoints: new Map(checkpoints),
+          ledger: new Map(ledger),
+          links: links.map((link) => ({ ...link })),
+        }
+        return { rows: [] }
+      }
+      if (normalized === 'COMMIT') {
+        transactionSnapshot = null
+        return { rows: [] }
+      }
+      if (normalized === 'ROLLBACK') {
+        if (transactionSnapshot) {
+          restoreMap(sources, transactionSnapshot.sources)
+          restoreMap(checkpoints, transactionSnapshot.checkpoints)
+          restoreMap(ledger, transactionSnapshot.ledger)
+          links.splice(0, links.length, ...transactionSnapshot.links)
+        }
+        transactionSnapshot = null
+        return { rows: [] }
+      }
       if (normalized.startsWith('INSERT INTO poc_change_history_sources')) {
         if (sources.has(parameters[0])) return { rows: [] }
         sources.set(parameters[0], {
@@ -65,7 +93,22 @@ function createDatabaseDouble() {
       if (normalized.startsWith('SELECT provider_name, provider_version, schema_contract_hash')) {
         return { rows: sources.has(parameters[0]) ? [sources.get(parameters[0])] : [] }
       }
+      if (normalized.startsWith('SELECT source_partition, next_offset FROM poc_change_history_checkpoints')) {
+        const prefix = `${parameters[0]}:${parameters[1]}:`
+        return {
+          rows: [...checkpoints.entries()]
+            .filter(([key]) => key.startsWith(prefix))
+            .map(([key, nextOffset]) => ({
+              source_partition: Number(key.slice(prefix.length)),
+              next_offset: nextOffset,
+            }))
+            .sort((left, right) => left.source_partition - right.source_partition),
+        }
+      }
       if (normalized.startsWith('INSERT INTO poc_change_history_checkpoints')) {
+        if (parameters[2] === failCheckpointInsertPartition) {
+          throw new Error('simulated boundary insert failure')
+        }
         const key = checkpointKey(parameters)
         if (!checkpoints.has(key)) checkpoints.set(key, Number(parameters[3]))
         return { rows: [] }
@@ -243,6 +286,63 @@ test('reads the durable resume offset and atomically acknowledges a zero-event s
   assert.equal(database.ledger.size, 0)
   assert.equal(database.statements.at(-1).sql, 'COMMIT')
   assert.equal(await store.readChangeHistoryCheckpoint(checkpoint), 51)
+})
+
+test('atomically fixes the initial partition boundary vector and rejects later topology changes', async () => {
+  const database = createDatabaseDouble()
+  const store = createPocStateStore({ databasePool: database.pool })
+  const command = {
+    sourceIdentityHash: SOURCE_HASH,
+    providerName: 'DataHub',
+    providerVersion: 'contract-test',
+    schemaContractHash: SCHEMA_HASH,
+    topicContract: 'MetadataChangeLog_Versioned_v1',
+    partitions: [
+      { partition: 1, boundary: 25 },
+      { partition: 0, boundary: 100 },
+    ],
+  }
+  assert.deepEqual(await store.initializeChangeHistoryCaptureBoundaries(command), [
+    { partition: 0, nextOffset: 100 },
+    { partition: 1, nextOffset: 25 },
+  ])
+  assert.deepEqual([...database.checkpoints.values()].sort((left, right) => left - right), [25, 100])
+
+  assert.deepEqual(await store.initializeChangeHistoryCaptureBoundaries({
+    ...command,
+    partitions: [
+      { partition: 0, boundary: 150 },
+      { partition: 1, boundary: 30 },
+    ],
+  }), [
+    { partition: 0, nextOffset: 100 },
+    { partition: 1, nextOffset: 25 },
+  ])
+  await assert.rejects(store.initializeChangeHistoryCaptureBoundaries({
+    ...command,
+    partitions: [...command.partitions, { partition: 2, boundary: 0 }],
+  }), /partition topology changed/)
+  assert.equal(database.checkpoints.size, 2)
+  assert.equal(database.statements.at(-1).sql, 'ROLLBACK')
+
+  const duplicateDatabase = createDatabaseDouble()
+  const duplicateStore = createPocStateStore({ databasePool: duplicateDatabase.pool })
+  const duplicateResults = await Promise.all([
+    duplicateStore.initializeChangeHistoryCaptureBoundaries(command),
+    duplicateStore.initializeChangeHistoryCaptureBoundaries(command),
+  ])
+  assert.deepEqual(duplicateResults[0], duplicateResults[1])
+  assert.equal(duplicateDatabase.checkpoints.size, 2)
+
+  const failingDatabase = createDatabaseDouble({ failCheckpointInsertPartition: 1 })
+  const failingStore = createPocStateStore({ databasePool: failingDatabase.pool })
+  await assert.rejects(
+    failingStore.initializeChangeHistoryCaptureBoundaries(command),
+    /simulated boundary insert failure/,
+  )
+  assert.equal(failingDatabase.sources.size, 0)
+  assert.equal(failingDatabase.checkpoints.size, 0)
+  assert.equal(failingDatabase.statements.at(-1).sql, 'ROLLBACK')
 })
 
 test('appends CR candidate and primary link history with exact replay and stale-chain rejection', async () => {

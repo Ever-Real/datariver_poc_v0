@@ -598,6 +598,88 @@ export function createPocStateStore({ databasePool } = {}) {
     return nextOffset
   }
 
+  async function initializeChangeHistoryCaptureBoundaries(command) {
+    const normalized = normalizeChangeHistoryBoundaries(command)
+    await startDatabase()
+    if (!pool) throw new Error('PostgreSQL is required for durable POC change history.')
+    const client = await pool.connect()
+    try {
+      await client.query('BEGIN')
+      await client.query(`
+        INSERT INTO poc_change_history_sources (
+          source_identity_hash, provider_name, provider_version, schema_contract_hash
+        ) VALUES ($1, $2, $3, $4)
+        ON CONFLICT DO NOTHING
+      `, [
+        normalized.sourceIdentityHash,
+        normalized.providerName,
+        normalized.providerVersion,
+        normalized.schemaContractHash,
+      ])
+      const sourceResult = await client.query(`
+        SELECT provider_name, provider_version, schema_contract_hash
+        FROM poc_change_history_sources
+        WHERE source_identity_hash = $1
+        FOR UPDATE
+      `, [normalized.sourceIdentityHash])
+      const source = sourceResult.rows[0]
+      if (!source
+        || source.provider_name !== normalized.providerName
+        || source.provider_version !== normalized.providerVersion
+        || source.schema_contract_hash !== normalized.schemaContractHash) {
+        throw new Error('The POC change-history source identity conflicts with stored evidence.')
+      }
+      const storedResult = await client.query(`
+        SELECT source_partition, next_offset
+        FROM poc_change_history_checkpoints
+        WHERE source_identity_hash = $1 AND topic_contract = $2
+        ORDER BY source_partition
+        FOR UPDATE
+      `, [normalized.sourceIdentityHash, normalized.topicContract])
+      let checkpoints
+      if (storedResult.rows.length === 0) {
+        for (const { partition, boundary } of normalized.partitions) {
+          await client.query(`
+            INSERT INTO poc_change_history_checkpoints (
+              source_identity_hash, topic_contract, source_partition,
+              first_exact_offset, next_offset
+            ) VALUES ($1, $2, $3, $4, $4)
+          `, [
+            normalized.sourceIdentityHash,
+            normalized.topicContract,
+            partition,
+            boundary,
+          ])
+        }
+        checkpoints = normalized.partitions.map(({ partition, boundary }) => ({
+          partition,
+          nextOffset: boundary,
+        }))
+      } else {
+        const requestedPartitions = normalized.partitions.map(({ partition }) => partition)
+        const storedPartitions = storedResult.rows.map((row) => Number(row.source_partition))
+        if (storedPartitions.length !== requestedPartitions.length
+          || storedPartitions.some((partition, index) => partition !== requestedPartitions[index])) {
+          throw new Error('The MCL partition topology changed after its durable capture boundary was fixed.')
+        }
+        checkpoints = storedResult.rows.map((row) => {
+          const nextOffset = Number(row.next_offset)
+          if (!Number.isSafeInteger(nextOffset) || nextOffset < 0) {
+            throw new Error('The stored POC change-history checkpoint is invalid.')
+          }
+          return { partition: Number(row.source_partition), nextOffset }
+        })
+      }
+      await client.query('COMMIT')
+      return checkpoints
+    } catch (error) {
+      await client.query('ROLLBACK')
+      throw error
+    } finally {
+      client.release()
+    }
+  }
+
   async function appendChangeHistoryCapture(capture) {
     const normalized = normalizeChangeHistoryCapture(capture)
     await startDatabase()
@@ -839,9 +921,36 @@ export function createPocStateStore({ databasePool } = {}) {
     replaceCatalogEmbeddingGeneration,
     searchCatalogEmbeddings,
     readChangeHistoryCheckpoint,
+    initializeChangeHistoryCaptureBoundaries,
     appendChangeHistoryCapture,
     appendChangeHistoryCrLink,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
+  }
+}
+
+function normalizeChangeHistoryBoundaries(command) {
+  if (!command || typeof command !== 'object') {
+    throw new Error('The POC change-history capture boundary command is invalid.')
+  }
+  if (!Array.isArray(command.partitions)
+    || command.partitions.length < 1
+    || command.partitions.length > 1000) {
+    throw new Error('The POC change-history capture boundary inventory is invalid.')
+  }
+  const partitions = command.partitions.map((item) => ({
+    partition: requireNonnegativeInteger(item?.partition, 'partition'),
+    boundary: requireNonnegativeInteger(item?.boundary, 'boundary'),
+  })).sort((left, right) => left.partition - right.partition)
+  if (new Set(partitions.map(({ partition }) => partition)).size !== partitions.length) {
+    throw new Error('The POC change-history capture boundary inventory contains a duplicate partition.')
+  }
+  return {
+    sourceIdentityHash: requireSha256(command.sourceIdentityHash, 'sourceIdentityHash'),
+    schemaContractHash: requireSha256(command.schemaContractHash, 'schemaContractHash'),
+    providerName: requireBoundedString(command.providerName, 'providerName', 100),
+    providerVersion: requireBoundedString(command.providerVersion, 'providerVersion', 100),
+    topicContract: requireBoundedString(command.topicContract, 'topicContract', 255),
+    partitions,
   }
 }
 

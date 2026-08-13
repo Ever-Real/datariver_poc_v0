@@ -13,6 +13,8 @@ const SUPPORTED_ASPECTS = new Set([
   'ownership',
 ])
 
+const GENERIC_ASPECT_JSON_CONTENT_TYPE = 'application/json'
+
 const STORAGE_CATEGORY_BY_ASPECT = {
   schemaMetadata: 'TECHNICAL_SCHEMA',
   editableSchemaMetadata: 'DOCUMENTATION',
@@ -142,7 +144,7 @@ export function normalizeMclRecord(record, {
 }
 
 async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, clock }) {
-  if (typeof stateStore?.readChangeHistoryCheckpoint !== 'function'
+  if (typeof stateStore?.initializeChangeHistoryCaptureBoundaries !== 'function'
     || typeof stateStore?.appendChangeHistoryCapture !== 'function') {
     throw new Error('The durable POC change-history store is unavailable.')
   }
@@ -157,19 +159,39 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
     if (!Array.isArray(offsets) || offsets.length < 1) {
       throw new Error('The configured MCL topic has no readable partition inventory.')
     }
-    const targets = []
-    let boundedMessageCount = 0
-    for (const offset of offsets) {
+    const watermarks = offsets.map((offset) => {
       const partition = nonnegativeInteger(offset.partition, 'partition')
       const low = kafkaOffset(offset.low, 'low watermark')
       const high = kafkaOffset(offset.high, 'high watermark')
       if (high < low) throw new Error('The Kafka partition watermark range is invalid.')
-      const stored = await stateStore.readChangeHistoryCheckpoint({
-        sourceIdentityHash: config.sourceIdentityHash,
-        topicContract: config.topic,
-        partition,
-      })
-      const resume = stored ?? low
+      return { partition, low, high }
+    }).sort((left, right) => left.partition - right.partition)
+    if (new Set(watermarks.map(({ partition }) => partition)).size !== watermarks.length) {
+      throw new Error('The configured MCL topic returned a duplicate partition inventory.')
+    }
+    const checkpoints = await stateStore.initializeChangeHistoryCaptureBoundaries({
+      sourceIdentityHash: config.sourceIdentityHash,
+      providerName: config.providerName,
+      providerVersion: config.providerVersion,
+      schemaContractHash: config.schemaContractHash,
+      topicContract: config.topic,
+      partitions: watermarks.map(({ partition, high }) => ({ partition, boundary: high })),
+    })
+    if (!Array.isArray(checkpoints) || checkpoints.length !== watermarks.length) {
+      throw new Error('The durable MCL capture boundary inventory is invalid.')
+    }
+    const checkpointByPartition = new Map(checkpoints.map((checkpoint) => [
+      nonnegativeInteger(checkpoint.partition, 'checkpoint partition'),
+      kafkaOffset(checkpoint.nextOffset, 'durable checkpoint'),
+    ]))
+    if (checkpointByPartition.size !== watermarks.length) {
+      throw new Error('The durable MCL capture boundary inventory is invalid.')
+    }
+    const targets = []
+    let boundedMessageCount = 0
+    for (const { partition, low, high } of watermarks) {
+      const resume = checkpointByPartition.get(partition)
+      if (resume === undefined) throw new Error('The durable MCL capture boundary inventory is invalid.')
       if (!Number.isSafeInteger(resume) || resume < low) {
         throw new Error('The durable checkpoint is behind Kafka retention; capture stopped with a history gap.')
       }
@@ -180,7 +202,6 @@ async function runBoundedCapture({ config, stateStore, kafka, schemaRegistry, cl
       }
       targets.push({ partition, low, high, next: resume, processed: 0, ledgerEvents: 0 })
     }
-    targets.sort((left, right) => left.partition - right.partition)
     const pending = new Map(targets.filter((target) => target.next < target.high)
       .map((target) => [target.partition, target]))
     if (pending.size === 0) return captureResult(config.topic, targets)
@@ -425,7 +446,12 @@ function semanticEvent(entityKey, beforeData, afterData, evidence, forcedOperati
 
 function decodeAspectDocument(container, field, maximumBytes) {
   if (container == null) return null
-  let value = isRecordObject(container) && Object.hasOwn(container, 'value') ? container.value : container
+  if (!isRecordObject(container)
+    || !Object.hasOwn(container, 'value')
+    || container.contentType !== GENERIC_ASPECT_JSON_CONTENT_TYPE) {
+    throw new Error(`${field} does not use the supported GenericAspect JSON content type.`)
+  }
+  let value = container.value
   if (Buffer.isBuffer(value) || value instanceof Uint8Array) {
     const bytes = Buffer.from(value)
     if (bytes.length < 2 || bytes.length > maximumBytes) throw new Error(`${field} is outside the byte bound.`)

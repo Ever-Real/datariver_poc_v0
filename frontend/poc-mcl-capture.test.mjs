@@ -101,12 +101,24 @@ function captureConfig(overrides = {}) {
   }
 }
 
-function stateStoreDouble(initial = {}, { failOffset } = {}) {
+function stateStoreDouble(initial = {}, { failOffset, failBoundary = false } = {}) {
   const checkpoints = new Map(Object.entries(initial).map(([partition, offset]) => [Number(partition), offset]))
   const captures = []
   return {
     checkpoints,
     captures,
+    async initializeChangeHistoryCaptureBoundaries({ partitions }) {
+      if (failBoundary) throw new Error('simulated durable boundary failure')
+      const requested = partitions.map(({ partition }) => partition).sort((left, right) => left - right)
+      if (checkpoints.size === 0) {
+        for (const { partition, boundary } of partitions) checkpoints.set(partition, boundary)
+      } else if (checkpoints.size !== requested.length
+        || [...checkpoints.keys()].sort((left, right) => left - right)
+          .some((partition, index) => partition !== requested[index])) {
+        throw new Error('simulated partition topology change')
+      }
+      return requested.map((partition) => ({ partition, nextOffset: checkpoints.get(partition) }))
+    },
     async readChangeHistoryCheckpoint({ partition }) {
       return checkpoints.get(partition) ?? null
     },
@@ -286,6 +298,131 @@ test('fails safe on malformed supported MCL and on DB failure without advancing 
   await assert.rejects(capture.run(), /simulated durable DB failure/)
   assert.equal(store.checkpoints.get(0), 0)
   assert.equal(store.captures.length, 0)
+})
+
+test('persists fresh boundaries before consume and fails closed on retention, topology, or boundary failure', async () => {
+  const nonemptyStore = stateStoreDouble()
+  const nonemptyKafka = kafkaDouble([
+    { partition: 0, low: '0', high: '2', offset: '0' },
+    { partition: 1, low: '0', high: '1', offset: '0' },
+  ], new Map())
+  const nonemptyResult = await createPocMclCapture({
+    config: captureConfig(),
+    stateStore: nonemptyStore,
+    kafka: nonemptyKafka,
+    schemaRegistry: schemaRegistry(),
+  }).run()
+  assert.deepEqual([...nonemptyStore.checkpoints.entries()], [[0, 2], [1, 1]])
+  assert.deepEqual(nonemptyResult.partitions.map((item) => item.nextOffset), [2, 1])
+  assert.equal(nonemptyKafka.state.consumerCreates, 0)
+
+  const emptyKafka = kafkaDouble(
+    [{ partition: 0, low: '100', high: '100', offset: '100' }],
+    new Map(),
+  )
+  const store = stateStoreDouble()
+  const emptyCapture = createPocMclCapture({
+    config: captureConfig(),
+    stateStore: store,
+    kafka: emptyKafka,
+    schemaRegistry: schemaRegistry(),
+  })
+  const emptyResult = await emptyCapture.run()
+  assert.equal(store.checkpoints.get(0), 100)
+  assert.equal(emptyResult.partitions[0].nextOffset, 100)
+  assert.equal(emptyKafka.state.consumerCreates, 0)
+
+  const concurrentStore = stateStoreDouble()
+  const concurrentKafka = [0, 1].map(() => kafkaDouble(
+    [{ partition: 0, low: '100', high: '100', offset: '100' }],
+    new Map(),
+  ))
+  const concurrentResults = await Promise.all(concurrentKafka.map((kafka) => createPocMclCapture({
+    config: captureConfig(),
+    stateStore: concurrentStore,
+    kafka,
+    schemaRegistry: schemaRegistry(),
+  }).run()))
+  assert.deepEqual(concurrentResults.map((result) => result.partitions[0].nextOffset), [100, 100])
+  assert.equal(concurrentStore.checkpoints.get(0), 100)
+  assert.ok(concurrentKafka.every((kafka) => kafka.state.consumerCreates === 0))
+
+  const retainedKafka = kafkaDouble(
+    [{ partition: 0, low: '150', high: '150', offset: '150' }],
+    new Map(),
+  )
+  await assert.rejects(createPocMclCapture({
+    config: captureConfig(),
+    stateStore: store,
+    kafka: retainedKafka,
+    schemaRegistry: schemaRegistry(),
+  }).run(), /behind Kafka retention/)
+  assert.equal(store.checkpoints.get(0), 100)
+  assert.equal(retainedKafka.state.consumerCreates, 0)
+
+  const changedKafka = kafkaDouble([
+    { partition: 0, low: '100', high: '100', offset: '100' },
+    { partition: 1, low: '0', high: '0', offset: '0' },
+  ], new Map())
+  await assert.rejects(createPocMclCapture({
+    config: captureConfig(),
+    stateStore: store,
+    kafka: changedKafka,
+    schemaRegistry: schemaRegistry(),
+  }).run(), /partition topology change/)
+  assert.equal(changedKafka.state.consumerCreates, 0)
+
+  const missingStore = stateStoreDouble({ 0: 100, 1: 0 })
+  const missingKafka = kafkaDouble(
+    [{ partition: 0, low: '100', high: '100', offset: '100' }],
+    new Map(),
+  )
+  await assert.rejects(createPocMclCapture({
+    config: captureConfig(),
+    stateStore: missingStore,
+    kafka: missingKafka,
+    schemaRegistry: schemaRegistry(),
+  }).run(), /partition topology change/)
+  assert.equal(missingKafka.state.consumerCreates, 0)
+
+  const failedStore = stateStoreDouble({}, { failBoundary: true })
+  const failedKafka = kafkaDouble(
+    [{ partition: 0, low: '0', high: '1', offset: '0' }],
+    new Map(),
+  )
+  await assert.rejects(createPocMclCapture({
+    config: captureConfig(),
+    stateStore: failedStore,
+    kafka: failedKafka,
+    schemaRegistry: schemaRegistry(),
+  }).run(), /simulated durable boundary failure/)
+  assert.equal(failedStore.checkpoints.size, 0)
+  assert.equal(failedKafka.state.consumerCreates, 0)
+})
+
+test('accepts only the exact DataHub GenericAspect JSON content type', () => {
+  const record = {
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    aspectName: 'datasetProperties',
+    aspect: {
+      contentType: 'application/json',
+      value: Buffer.from(JSON.stringify({ description: 'bounded' })),
+    },
+    previousAspectValue: null,
+    created: { actor: null, time: null },
+  }
+  assert.equal(normalizeMclRecord(record, {
+    detectedAt: '2026-08-14T01:00:00.000Z',
+  }).supported, true)
+  for (const aspect of [
+    { value: Buffer.from('{}') },
+    { contentType: 'application/avro', value: Buffer.from('{}') },
+    { contentType: 'text/plain', value: Buffer.from('{}') },
+  ]) {
+    assert.throws(() => normalizeMclRecord({ ...record, aspect }, {
+      detectedAt: '2026-08-14T01:00:00.000Z',
+    }), /supported GenericAspect JSON content type/)
+  }
 })
 
 test('contains no raw-payload or credential logging path', () => {
