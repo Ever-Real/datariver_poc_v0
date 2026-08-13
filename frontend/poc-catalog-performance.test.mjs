@@ -234,6 +234,68 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
   assert.equal(postgresReads, 1)
   assert.equal(redisReads, 0, 'valid Redis must not mask the authoritative PostgreSQL projection')
   await close(splitServer)
+
+  let brokenRedisReads = 0
+  const readablePostgresStore = {
+    configured: { postgres: true, redis: true },
+    async read() { return { value: structuredClone(postgresProjection), version: 2 } },
+    async write() { throw new Error('a fresh valid projection must not refresh synchronously') },
+    async cacheGet() {
+      brokenRedisReads += 1
+      throw new Error('Redis unavailable')
+    },
+    async cacheSet() {},
+    async cacheDelete() {},
+  }
+  const readablePostgresModule = await import('./poc-server.mjs?catalog-performance-readable-pg-broken-redis')
+  const readablePostgresServer = readablePostgresModule.createPocServer({ stateStore: readablePostgresStore })
+  const readablePostgresOrigin = await listen(readablePostgresServer)
+  const readablePostgresPayload = await (
+    await fetch(`${readablePostgresOrigin}/poc-api/datahub/catalog?limit=20`)
+  ).json()
+  assert.deepEqual(readablePostgresPayload.items.map((item) => item.name), ['postgres_new'])
+  assert.equal(brokenRedisReads, 0, 'a broken Redis adapter must not hide readable PostgreSQL')
+  await close(readablePostgresServer)
+
+  const failureResponse = async (suffix, failingStore) => {
+    const failureModule = await import(`./poc-server.mjs?catalog-performance-${suffix}`)
+    const failureServer = failureModule.createPocServer({ stateStore: failingStore })
+    const failureOrigin = await listen(failureServer)
+    const response = await fetch(`${failureOrigin}/poc-api/datahub/catalog?limit=20`)
+    assert.equal(response.status, 503)
+    await close(failureServer)
+  }
+  let invalidPostgresRedisReads = 0
+  await failureResponse('invalid-pg-not-masked-by-redis', {
+    configured: { postgres: true, redis: true },
+    async read() { return { value: { projection_version: 1, items: [] }, version: 1 } },
+    async write() { throw new Error('bounded refresh write failure') },
+    async cacheGet() {
+      invalidPostgresRedisReads += 1
+      return structuredClone(redisProjection)
+    },
+    async cacheSet() {},
+    async cacheDelete() {},
+  })
+  assert.equal(invalidPostgresRedisReads, 0, 'invalid authoritative data must fail safe without Redis masking')
+
+  await failureResponse('invalid-redis-fallback', {
+    configured: { postgres: true, redis: true },
+    async read() { throw new Error('PostgreSQL unavailable') },
+    async write() { throw new Error('bounded refresh write failure') },
+    async cacheGet() { return { projection_version: 1, items: [] } },
+    async cacheSet() {},
+    async cacheDelete() {},
+  })
+
+  await failureResponse('both-state-providers-unavailable', {
+    configured: { postgres: true, redis: true },
+    async read() { throw new Error('PostgreSQL unavailable') },
+    async write() { throw new Error('bounded refresh write failure') },
+    async cacheGet() { throw new Error('Redis unavailable') },
+    async cacheSet() {},
+    async cacheDelete() {},
+  })
   await close(provider)
 
   process.stdout.write(`${JSON.stringify({
@@ -249,6 +311,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
     terminal_incomplete_preserved_items: 1,
     valid_zero_items: 0,
     split_success_source: 'POSTGRES_CURRENT_PROJECTION',
+    failure_status: 503,
     replacement_items: 1,
   })}\n`)
 })

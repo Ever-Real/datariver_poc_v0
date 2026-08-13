@@ -13,73 +13,84 @@ export function createPocStateStore({ databasePool } = {}) {
   const memoryCatalogEmbeddings = new Map()
   let pool = databasePool
   let redis
-  let starting
+  let startingDatabase
+  let startingRedis
 
-  async function start() {
-    if (starting) return starting
-    starting = (async () => {
-      if (databaseConfigured) {
-        if (!pool) {
-          pool = new Pool(databaseUrl ? {
-            connectionString: databaseUrl, max: 4, idleTimeoutMillis: 30_000,
-          } : {
-            host: databaseHost,
-            port: Number(process.env.POC_POSTGRES_PORT || 5432),
-            database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
-            user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
-            password: process.env.POC_POSTGRES_PASSWORD || undefined,
-            max: 4,
-            idleTimeoutMillis: 30_000,
-          })
-        }
-        await pool.query(`
-          CREATE TABLE IF NOT EXISTS poc_state (
-            scope text PRIMARY KEY,
-            value jsonb NOT NULL,
-            version bigint NOT NULL DEFAULT 1,
-            updated_at timestamptz NOT NULL DEFAULT now()
-          )
-        `)
-        await pool.query(`
-          CREATE TABLE IF NOT EXISTS poc_catalog_embedding (
-            binding_hash char(64) NOT NULL,
-            asset_urn text NOT NULL,
-            source_hash char(64) NOT NULL,
-            source_generation char(64) NOT NULL,
-            content_text text NOT NULL,
-            metadata jsonb NOT NULL,
-            embedding vector NOT NULL,
-            updated_at timestamptz NOT NULL DEFAULT now(),
-            PRIMARY KEY (binding_hash, asset_urn),
-            CONSTRAINT ck_poc_catalog_embedding_dimension
-              CHECK (vector_dims(embedding) BETWEEN 1 AND 4096)
-          )
-        `)
+  async function startDatabase() {
+    if (!databaseConfigured) return
+    if (startingDatabase) return startingDatabase
+    startingDatabase = (async () => {
+      if (!pool) {
+        pool = new Pool(databaseUrl ? {
+          connectionString: databaseUrl, max: 4, idleTimeoutMillis: 30_000,
+        } : {
+          host: databaseHost,
+          port: Number(process.env.POC_POSTGRES_PORT || 5432),
+          database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
+          user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
+          password: process.env.POC_POSTGRES_PASSWORD || undefined,
+          max: 4,
+          idleTimeoutMillis: 30_000,
+        })
       }
-      if (redisUrl) {
-        redis = createClient({ url: redisUrl })
-        redis.on('error', () => undefined)
-        try {
-          await redis.connect()
-        } catch {
-          redis.destroy()
-          redis = undefined
-        }
-      }
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS poc_state (
+          scope text PRIMARY KEY,
+          value jsonb NOT NULL,
+          version bigint NOT NULL DEFAULT 1,
+          updated_at timestamptz NOT NULL DEFAULT now()
+        )
+      `)
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS poc_catalog_embedding (
+          binding_hash char(64) NOT NULL,
+          asset_urn text NOT NULL,
+          source_hash char(64) NOT NULL,
+          source_generation char(64) NOT NULL,
+          content_text text NOT NULL,
+          metadata jsonb NOT NULL,
+          embedding vector NOT NULL,
+          updated_at timestamptz NOT NULL DEFAULT now(),
+          PRIMARY KEY (binding_hash, asset_urn),
+          CONSTRAINT ck_poc_catalog_embedding_dimension
+            CHECK (vector_dims(embedding) BETWEEN 1 AND 4096)
+        )
+      `)
     })()
     try {
-      await starting
+      await startingDatabase
     } catch (error) {
-      starting = undefined
-      await Promise.allSettled([pool?.end(), redis?.quit()])
-      pool = undefined
-      redis = undefined
+      startingDatabase = undefined
+      if (!databasePool) {
+        await Promise.allSettled([pool?.end()])
+        pool = undefined
+      }
       throw error
     }
   }
 
+  async function startRedis() {
+    if (!redisUrl || redis) return
+    if (startingRedis) return startingRedis
+    startingRedis = (async () => {
+      const client = createClient({ url: redisUrl })
+      client.on('error', () => undefined)
+      try {
+        await client.connect()
+        redis = client
+      } catch {
+        client.destroy()
+      }
+    })()
+    try {
+      await startingRedis
+    } finally {
+      startingRedis = undefined
+    }
+  }
+
   async function read(scope) {
-    await start()
+    await startDatabase()
     if (pool) {
       const result = await pool.query('SELECT value, version FROM poc_state WHERE scope = $1', [scope])
       if (result.rows[0]) return { value: result.rows[0].value, version: Number(result.rows[0].version) }
@@ -88,7 +99,7 @@ export function createPocStateStore({ databasePool } = {}) {
   }
 
   async function write(scope, value) {
-    await start()
+    await startDatabase()
     if (pool) {
       const result = await pool.query(`
         INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
@@ -104,26 +115,26 @@ export function createPocStateStore({ databasePool } = {}) {
   }
 
   async function cacheGet(key) {
-    await start()
+    await startRedis()
     if (!redis) return undefined
     const value = await redis.get(`datariver:poc:cache:${key}`)
     return value ? JSON.parse(value) : undefined
   }
 
   async function cacheSet(key, value, ttlSeconds) {
-    await start()
+    await startRedis()
     if (!redis) return
     await redis.set(`datariver:poc:cache:${key}`, JSON.stringify(value), { EX: ttlSeconds })
   }
 
   async function cacheDelete(key) {
-    await start()
+    await startRedis()
     if (!redis) return
     await redis.del(`datariver:poc:cache:${key}`)
   }
 
   async function catalogEmbeddingHashes(bindingHash) {
-    await start()
+    await startDatabase()
     const sourceGeneration = await catalogEmbeddingActiveGeneration(bindingHash)
     if (!sourceGeneration) return new Map()
     if (pool) {
@@ -140,7 +151,7 @@ export function createPocStateStore({ databasePool } = {}) {
   }
 
   async function catalogEmbeddingProfileCoverage(bindingHash, projectionScope) {
-    await start()
+    await startDatabase()
     const sourceGeneration = await catalogEmbeddingActiveGeneration(bindingHash)
     if (!sourceGeneration) return []
     if (pool) {
@@ -205,7 +216,7 @@ export function createPocStateStore({ databasePool } = {}) {
   }
 
   async function catalogEmbeddingActiveGeneration(bindingHash) {
-    await start()
+    await startDatabase()
     if (pool) {
       const result = await pool.query('SELECT value FROM poc_state WHERE scope = $1', [
         catalogEmbeddingActiveScope(bindingHash),
@@ -233,7 +244,7 @@ export function createPocStateStore({ databasePool } = {}) {
     assetUrns,
   ) {
     for (const record of records) vectorLiteral(record.embedding)
-    await start()
+    await startDatabase()
     const activeValue = {
       projection_version: 1,
       binding_hash: bindingHash,
@@ -322,7 +333,7 @@ export function createPocStateStore({ databasePool } = {}) {
   }
 
   async function searchCatalogEmbeddings(bindingHash, projectionScope, sourceGeneration, embedding, limit) {
-    await start()
+    await startDatabase()
     const boundedLimit = Math.max(1, Math.min(Number(limit) || 1, 20))
     if (pool) {
       const vector = vectorLiteral(embedding)

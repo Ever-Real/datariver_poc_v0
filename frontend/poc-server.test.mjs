@@ -88,6 +88,168 @@ test('persists only fixed allowlisted POC state scopes in the server fallback st
   assert.equal((await fetch(new URL('/poc-api/state/arbitrary', origin))).status, 404)
 })
 
+test('uses the actual Redis adapter after a cold-start PostgreSQL failure', () => {
+  const result = spawnSync(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    String.raw`
+      import assert from 'node:assert/strict'
+      import { createHash } from 'node:crypto'
+      import { createServer as createTcpServer } from 'node:net'
+
+      function parseCommand(buffer) {
+        if (!buffer.length) return undefined
+        assert.equal(buffer[0], 42)
+        let offset = 1
+        const readLine = () => {
+          const end = buffer.indexOf('\r\n', offset)
+          if (end < 0) return undefined
+          const line = buffer.subarray(offset, end).toString('utf8')
+          offset = end + 2
+          return line
+        }
+        const countLine = readLine()
+        if (countLine === undefined) return undefined
+        const count = Number(countLine)
+        const args = []
+        for (let index = 0; index < count; index += 1) {
+          if (offset >= buffer.length) return undefined
+          assert.equal(buffer[offset], 36)
+          offset += 1
+          const lengthLine = readLine()
+          if (lengthLine === undefined) return undefined
+          const length = Number(lengthLine)
+          if (buffer.length < offset + length + 2) return undefined
+          args.push(buffer.subarray(offset, offset + length).toString('utf8'))
+          offset += length
+          assert.equal(buffer.subarray(offset, offset + 2).toString('utf8'), '\r\n')
+          offset += 2
+        }
+        return { args, bytes: offset }
+      }
+
+      const providerUrl = 'http://127.0.0.1:1'
+      const sourceScope = createHash('sha256').update(providerUrl).digest('hex').slice(0, 16)
+      const observedAt = new Date().toISOString()
+      const projection = {
+        projection_version: 1,
+        source_scope: sourceScope,
+        source_generation: 'f'.repeat(64),
+        observed_at: observedAt,
+        items: [{
+          id: 'urn:li:dataset:(urn:li:dataPlatform:postgres,DB.SCHEMA.redis_last_good,PROD)',
+          external_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,DB.SCHEMA.redis_last_good,PROD)',
+          asset_type: 'DATASET',
+          dataset_kind: 'TABLE',
+          name: 'redis_last_good',
+          description: 'bounded Redis fallback',
+          platform: 'postgres',
+          database_name: 'DB',
+          schema_name: 'SCHEMA',
+          owner: 'Unassigned',
+          domain: 'Unassigned',
+          tags: [],
+          terms: [],
+          term_references: [],
+          created_at: null,
+          classification: 'INTERNAL',
+          lifecycle: 'ACTIVE',
+          observed_at: observedAt,
+          matches: [],
+        }],
+      }
+      const encodedProjection = JSON.stringify(projection)
+      let redisConnections = 0
+      let redisGets = 0
+      const redisSockets = new Set()
+      const redisServer = createTcpServer((socket) => {
+        redisConnections += 1
+        redisSockets.add(socket)
+        socket.on('close', () => redisSockets.delete(socket))
+        let buffered = Buffer.alloc(0)
+        socket.on('data', (chunk) => {
+          buffered = Buffer.concat([buffered, chunk])
+          for (;;) {
+            const command = parseCommand(buffered)
+            if (!command) break
+            buffered = buffered.subarray(command.bytes)
+            const name = command.args[0]?.toUpperCase()
+            if (name === 'HELLO') {
+              socket.write('%1\r\n+proto\r\n:3\r\n')
+            } else if (name === 'GET') {
+              redisGets += 1
+              socket.write('$' + Buffer.byteLength(encodedProjection) + '\r\n'
+                + encodedProjection + '\r\n')
+            } else {
+              socket.write('+OK\r\n')
+            }
+          }
+        })
+      })
+
+      try {
+        await new Promise((resolvePromise) => redisServer.listen(0, '127.0.0.1', resolvePromise))
+        const redisAddress = redisServer.address()
+        assert.equal(typeof redisAddress, 'object')
+        Object.assign(process.env, {
+          POC_ENV_FILE: 'poc-state-store.adapter.test.env.missing',
+          POC_DATABASE_URL: '',
+          POC_POSTGRES_HOST: '',
+          POC_REDIS_URL: 'redis://127.0.0.1:' + redisAddress.port,
+          DATAHUB_GMS_URL: providerUrl,
+          DATAHUB_GMS_TOKEN: '',
+        })
+        let postgresQueries = 0
+        const databasePool = {
+          async query() {
+            postgresQueries += 1
+            throw new Error('bounded PostgreSQL startup failure')
+          },
+          async end() {},
+        }
+        const { createPocStateStore } = await import('./poc-state-store.mjs?pg-failure-redis-fallback')
+        const { createPocServer } = await import('./poc-server.mjs?actual-adapter-redis-fallback')
+        const stateStore = createPocStateStore({ databasePool })
+        const pocServer = createPocServer({ stateStore })
+        await new Promise((resolvePromise) => pocServer.listen(0, '127.0.0.1', resolvePromise))
+        const address = pocServer.address()
+        assert.equal(typeof address, 'object')
+        const response = await fetch('http://127.0.0.1:' + address.port + '/poc-api/datahub/catalog?limit=20')
+        const payload = await response.json()
+        assert.equal(response.status, 200)
+        assert.deepEqual(payload.items.map((item) => item.name), ['redis_last_good'])
+        assert.equal(postgresQueries, 1)
+        assert.equal(redisConnections, 1)
+        assert.equal(redisGets, 1)
+        pocServer.closeAllConnections()
+        await new Promise((resolvePromise, reject) => pocServer.close((error) => (
+          error ? reject(error) : resolvePromise()
+        )))
+        for (const socket of redisSockets) socket.destroy()
+        await new Promise((resolvePromise, reject) => redisServer.close((error) => (
+          error ? reject(error) : resolvePromise()
+        )))
+        process.stdout.write(JSON.stringify({ postgresQueries, redisConnections, redisGets }))
+        process.exit(0)
+      } catch (error) {
+        console.error(error)
+        process.exit(1)
+      }
+    `,
+  ], {
+    cwd: new URL('.', import.meta.url),
+    encoding: 'utf8',
+    timeout: 10_000,
+    env: { ...process.env },
+  })
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.deepEqual(JSON.parse(result.stdout), {
+    postgresQueries: 1,
+    redisConnections: 1,
+    redisGets: 1,
+  })
+})
+
 test('atomically fences in-memory Catalog embeddings to the active current generation', async () => {
   const { createPocStateStore } = await import('./poc-state-store.mjs?memory-generation-contract')
   const store = createPocStateStore()
