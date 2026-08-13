@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowDown,
   ArrowUp,
@@ -19,6 +19,9 @@ import { ErrorNotice } from '../../components/ErrorNotice'
 import { Dialog } from '../../components/common/Dialog'
 import { useRovingTabs } from '../../components/common/useRovingTabs'
 import { PageTitle } from '../../components/layout/PageTitle'
+import { DataChangeStatusPanel } from './DataChangeStatusPanel'
+
+const DATA_CHANGE_STATUS_TAB_ID = 'data-change-status'
 
 interface MonitoringDashboardDraft {
   id: string
@@ -42,47 +45,59 @@ export function MonitoringPage({
     items: [],
     version: 0,
   })
-  const [activeId, setActiveId] = useState<string>()
+  const [activeId, setActiveId] = useState(DATA_CHANGE_STATUS_TAB_ID)
   const [error, setError] = useState<unknown>()
   const [loading, setLoading] = useState(true)
   const [editorOpen, setEditorOpen] = useState(false)
   const [drafts, setDrafts] = useState<MonitoringDashboardDraft[]>([])
   const [saving, setSaving] = useState(false)
+  const capabilitiesRequest = useRef<AbortController | null>(null)
 
   const refresh = useCallback(async () => {
+    capabilitiesRequest.current?.abort()
+    const controller = new AbortController()
+    capabilitiesRequest.current = controller
     setError(undefined)
     setLoading(true)
     try {
       const response = await client.request<CapabilitiesResponse>('/capabilities', {
         cache: 'no-store',
+        signal: controller.signal,
       })
+      if (controller.signal.aborted) return
       setConfiguration(response.monitoring_configuration)
       setActiveId((current) => (
-        current && response.monitoring_configuration.items.some((item) => item.id === current)
+        current === DATA_CHANGE_STATUS_TAB_ID
+          || response.monitoring_configuration.items.some((item) => item.id === current)
           ? current
-          : response.monitoring_configuration.items[0]?.id
+          : DATA_CHANGE_STATUS_TAB_ID
       ))
     } catch (next) {
-      setError(next)
+      if (!controller.signal.aborted) setError(next)
     } finally {
-      setLoading(false)
+      if (capabilitiesRequest.current === controller) {
+        capabilitiesRequest.current = null
+        setLoading(false)
+      }
     }
   }, [client])
 
   useEffect(() => {
     void refresh()
+    return () => capabilitiesRequest.current?.abort()
   }, [refresh])
 
   useEffect(() => {
     setActiveId((current) => (
-      current && configuration.items.some((item) => item.id === current)
+      current === DATA_CHANGE_STATUS_TAB_ID
+        || configuration.items.some((item) => item.id === current)
         ? current
-        : configuration.items[0]?.id
+        : DATA_CHANGE_STATUS_TAB_ID
     ))
   }, [configuration.items])
 
   const dashboardIds = useMemo(
-    () => configuration.items.map((item) => item.id),
+    () => [DATA_CHANGE_STATUS_TAB_ID, ...configuration.items.map((item) => item.id)],
     [configuration.items],
   )
   const tabs = useRovingTabs({
@@ -185,6 +200,14 @@ export function MonitoringPage({
       <ErrorNotice error={error} />
       <div className="monitoring-tabs-shell">
         <div className="monitoring-tabs" role="tablist" aria-label="Monitoring dashboards">
+          <button
+            {...tabs.tabProps(DATA_CHANGE_STATUS_TAB_ID)}
+            className={activeId === DATA_CHANGE_STATUS_TAB_ID ? 'active' : ''}
+            onClick={() => setActiveId(DATA_CHANGE_STATUS_TAB_ID)}
+            type="button"
+          >
+            데이터 변경현황
+          </button>
           {configuration.items.map((dashboard) => (
             <button
               {...tabs.tabProps(dashboard.id)}
@@ -219,8 +242,8 @@ export function MonitoringPage({
         </div>
       </div>
       <div
-        {...(activeDashboard ? tabs.panelProps(activeDashboard.id) : {})}
-        className="monitoring-frame"
+        {...tabs.panelProps(activeId)}
+        className={`monitoring-frame${activeId === DATA_CHANGE_STATUS_TAB_ID ? ' data-change-native-frame' : ''}`}
         aria-busy={loading}
       >
         {loading ? (
@@ -228,6 +251,8 @@ export function MonitoringPage({
             <span className="loader" />
             <p>Monitoring Dashboard를 조회하고 있습니다.</p>
           </div>
+        ) : activeId === DATA_CHANGE_STATUS_TAB_ID ? (
+          <DataChangeStatusPanel client={client} />
         ) : activeDashboard ? (
           <MonitoringDashboardPanel dashboard={activeDashboard} />
         ) : (

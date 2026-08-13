@@ -44,22 +44,38 @@ function response(overrides: Partial<CapabilitiesResponse> = {}): CapabilitiesRe
 }
 
 function apiClient(request: (path: string, options?: RequestInit) => Promise<unknown>): ApiClient {
-  return { request } as unknown as ApiClient
+  return {
+    request: (path: string, options?: RequestInit) => {
+      if (path.startsWith('/change-history/summary?')) {
+        const weekStart = new URL(path, 'https://datariver.invalid').searchParams.get('week_start') ?? ''
+        return Promise.resolve(changeHistorySummary(weekStart))
+      }
+      if (path.startsWith('/change-history/events?')) {
+        return Promise.resolve({ items: [], next_cursor: null, limit: 50, total: 0 })
+      }
+      return request(path, options)
+    },
+    requestWithMeta: vi.fn(),
+  } as unknown as ApiClient
 }
 
 describe('MonitoringPage', () => {
-  it('renders server-owned dashboards as accessible tabs without capability cards', async () => {
+  it('renders the fixed native tab first and keeps server-owned dashboards accessible', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/capabilities') return Promise.resolve(response())
       throw new Error(`Unexpected request: ${path}`)
     })
     render(<MonitoringPage client={apiClient(request)} />)
 
-    expect(await screen.findByRole('tab', { name: 'Platform' })).toHaveAttribute(
+    const nativeTab = screen.getByRole('tab', { name: '데이터 변경현황' })
+    expect(nativeTab).toHaveAttribute(
       'aria-selected',
       'true',
     )
+    const platformTab = await screen.findByRole('tab', { name: 'Platform' })
     expect(screen.getByRole('tab', { name: 'DataHub' })).toBeInTheDocument()
+    fireEvent.keyDown(nativeTab, { key: 'ArrowRight' })
+    expect(platformTab).toHaveAttribute('aria-selected', 'true')
     expect(screen.getByRole('link', { name: 'Platform 열기' })).toHaveAttribute(
       'href',
       'https://grafana.example/d/platform',
@@ -104,6 +120,7 @@ describe('MonitoringPage', () => {
     })
     render(<MonitoringPage client={apiClient(request)} />)
 
+    fireEvent.click(await screen.findByRole('tab', { name: 'Vendor status' }))
     const frame = await screen.findByTitle('Vendor status Monitoring Dashboard')
     expect(frame).toHaveAttribute('src', 'https://status.example.com/platform')
     expect(screen.getByText(/Admin이 승인한/)).toBeInTheDocument()
@@ -113,7 +130,7 @@ describe('MonitoringPage', () => {
     )
   })
 
-  it('shows an explicit empty state when no dashboard is configured', async () => {
+  it('keeps the native view available while showing that no external dashboard is configured', async () => {
     const request = vi.fn((path: string): Promise<unknown> => {
       if (path === '/capabilities') {
         return Promise.resolve(response({
@@ -124,8 +141,9 @@ describe('MonitoringPage', () => {
     })
     render(<MonitoringPage client={apiClient(request)} />)
 
-    expect(await screen.findByText('Monitoring Dashboard가 없습니다.')).toBeInTheDocument()
-    expect(screen.getByText('등록된 Dashboard 없음')).toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: '데이터 변경현황' })).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByText('변경 이력이 없습니다.')).toBeInTheDocument()
+    expect(await screen.findByText('등록된 Dashboard 없음')).toBeInTheDocument()
   })
 
   it('allows an authorized administrator to edit and save the ordered tab configuration', async () => {
@@ -156,6 +174,7 @@ describe('MonitoringPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: '탭 수정' }))
     const linkInputs = screen.getAllByLabelText('Dashboard Link')
     expect(linkInputs).toHaveLength(2)
+    expect(screen.queryByDisplayValue('데이터 변경현황')).not.toBeInTheDocument()
     expect(screen.queryByText('Grafana Dashboard URL')).not.toBeInTheDocument()
     const nameInputs = screen.getAllByLabelText('탭 이름')
     fireEvent.change(nameInputs[0]!, { target: { value: 'Core platform' } })
@@ -176,6 +195,7 @@ describe('MonitoringPage', () => {
     expect(updateOptions?.ifMatch).toBe('"3"')
     expect(updateOptions?.body).toContain('"label":"Core platform"')
     expect(updateOptions?.body).toContain('"url":"https://status.example.com/platform"')
+    expect(updateOptions?.body).not.toContain('data-change-status')
     expect(await screen.findByRole('tab', { name: 'Core platform' })).toBeInTheDocument()
   })
 
@@ -199,3 +219,59 @@ describe('MonitoringPage', () => {
     expect(requestAssurance).toHaveBeenCalledOnce()
   })
 })
+
+function changeHistorySummary(weekStart: string) {
+  const weekEnd = new Date(`${weekStart}T00:00:00.000Z`)
+  weekEnd.setUTCDate(weekEnd.getUTCDate() + 7)
+  const timestamp = `${weekStart}T01:00:00.000Z`
+  return {
+    week_start: weekStart,
+    week_end_exclusive: weekEnd.toISOString().slice(0, 10),
+    timezone: 'Asia/Seoul',
+    as_of: timestamp,
+    policy_version: 1,
+    policy_hash: '1'.repeat(64),
+    count_unit: 'DISTINCT_NORMALIZED_CHANGE_TRANSACTION',
+    total_count: 0,
+    unlinked_count: 0,
+    received_count: 0,
+    recheck_count: 0,
+    testing_count: 0,
+    final_review_count: 0,
+    completed_count: 0,
+    time_unknown_count: 0,
+    schema_change_count: 0,
+    metadata_change_count: 0,
+    event_count: 0,
+    distinct_asset_count: 0,
+    precision_counts: {
+      EXACT_TIMELINE: 0,
+      EXACT_MCL: 0,
+      DRIFT_DETECTED: 0,
+      BACKFILLED_BEST_EFFORT: 0,
+      INITIAL_BASELINE: 0,
+    },
+    category_counts: {
+      TECHNICAL_SCHEMA: 0,
+      DOCUMENTATION: 0,
+      TAG: 0,
+      GLOSSARY_TERM: 0,
+      OWNERSHIP: 0,
+    },
+    operation_counts: { CREATE: 0, UPDATE: 0, UPSERT: 0, DELETE: 0, ADD: 0, REMOVE: 0 },
+    capture_state: 'CAPTURE_PENDING',
+    sync_status: 'CAPTURE_PENDING',
+    source_generation: '2'.repeat(64),
+    source_observed_at: timestamp,
+    source_occurred_at: null,
+    detected_at: null,
+    captured_at: null,
+    effective_week_start: weekStart,
+    history_available_from: null,
+    ledger_guarantee_from: null,
+    first_exact_capture_at: null,
+    first_timeline_checkpoint: null,
+    first_mcl_offsets: null,
+    last_successful_capture_at: null,
+  }
+}
