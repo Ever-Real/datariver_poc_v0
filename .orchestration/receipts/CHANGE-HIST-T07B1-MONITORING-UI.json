@@ -1,0 +1,60 @@
+{
+  "task": "CHANGE-HIST-T07B1-MONITORING-UI",
+  "outcome": "IMPLEMENTED_PENDING_INDEPENDENT_VALIDATION",
+  "exact_base_sha": "fead4c4f6dfe507359be1c9eccb558518ab33787",
+  "product_sha": "06aeeedc8142254e2b96e1eaaf67e25da9964362",
+  "environment": {
+    "platform": "macOS arm64",
+    "node": "v25.6.1",
+    "npm": "11.9.0"
+  },
+  "product_paths": [
+    "frontend/src/features/monitoring/MonitoringPage.tsx",
+    "frontend/src/features/monitoring/MonitoringPage.test.tsx",
+    "frontend/src/features/monitoring/DataChangeStatusPanel.tsx",
+    "frontend/src/features/monitoring/DataChangeStatusPanel.test.tsx",
+    "frontend/src/features/monitoring/dataChangeStatus.css"
+  ],
+  "evidence_paths": [
+    ".orchestration/evidence/CHANGE-HIST-T07B1-MONITORING-UI.md",
+    ".orchestration/receipts/CHANGE-HIST-T07B1-MONITORING-UI.json"
+  ],
+  "verification": {
+    "npm_ci_offline_existing_lock": "PASS_368_PACKAGES_LOCK_UNCHANGED",
+    "focused_monitoring_vitest": "PASS_2_FILES_13_TESTS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build_poc": "PASS_WITH_EXISTING_CHUNK_ADVISORY",
+    "diff_check": "PASS",
+    "allowlist": "PASS"
+  },
+  "optional_broad_test": {
+    "command": "npm test",
+    "outcome": "NON_ACCEPTANCE_DIAGNOSTIC_WITH_FAILURE",
+    "passed": "82_FILES_541_TESTS",
+    "failures": [
+      "FOUR_ROOT_NODE_MJS_FILES_COLLECTED_BY_VITEST_AS_NO_SUITE",
+      "POC_STATIC_NAVIGATION_ZERO_FETCH_EXPECTATION_CONFLICTS_WITH_NEW_LIVE_CHANGE_HISTORY_READ"
+    ],
+    "follow_up": "OUT_OF_ALLOWLIST_POC_TEST_OR_FIXTURE_OWNER"
+  },
+  "initial_non_pass_runs": [
+    "DEPENDENCIES_ABSENT_BEFORE_PREAPPROVED_NPM_CI_OFFLINE"
+  ],
+  "not_executed": [
+    "BROWSER_RUNTIME_OR_CREDENTIALLESS_SMOKE",
+    "RUNTIME_OR_PROVIDER_PROBE_OR_MUTATION",
+    "CONTAINER_SERVICE_NETWORK_VOLUME_PROCESS_MUTATION",
+    "PUSH_MERGE_PREP_OPS_TARGET"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  },
+  "remaining": [
+    "FRESH_INDEPENDENT_VALIDATION",
+    "OUT_OF_ALLOWLIST_POC_COMPATIBILITY_EXPECTATION_UPDATE"
+  ]
+}
