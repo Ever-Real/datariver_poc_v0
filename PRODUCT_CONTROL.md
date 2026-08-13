@@ -13,6 +13,7 @@
 - Coordinates the orchestration framework.
 - STRICT PROHIBITION: General product implementation or finding repair.
 - See .orchestration/policies/command-permissions.md for project policy and runtime limitations (e.g., RUNTIME_PERMISSION_BLOCKED).
+- Enforce mandatory COMMAND_PERMISSION_CONTRACT for every session/provider/model.
 
 ## Engineering Invariants
 - Inspect before change.

@@ -13,6 +13,7 @@
 - Allowed paths: Strictly enforced per Task.
 - Validation/Audit: Sequential read-only inspection; do not repair findings. Validation and assurance are phases of the same Task candidate unless file isolation requires a separate read-only child.
 - No auto merge, no push/publication of task branches.
+- Notification sessions ([ACTION REQUIRED]) are UI/coordination surfaces, not Git worktrees unless they own files.
 
 ## Handoff & Cleanup
 - Checkpoint/handoff required for completion.

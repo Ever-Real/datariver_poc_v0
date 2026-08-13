@@ -56,3 +56,12 @@
 - Close/release notification session after resolution and record receipt.
 - If worker completion signaling fails after work is independently verified, Controller may perform explicit orchestration recovery and record it; do not fabricate completion.
 - Preserve G1-G4 NOT_APPROVED and no product mutation.
+
+## 11. Mandatory Permission Contract
+- Permission handling is mandatory for every session and every provider/model (not Antigravity-only).
+- Every session initialization and Task dispatch receives: `COMMAND_PERMISSION_CONTRACT: LOW_RISK_COMMANDS_PREAPPROVED=TRUE; CONTROLLER_PERMISSION_RECOVERY=ENABLED; MAX_SILENCE_BEFORE_INSPECTION=10m; ROUTINE_HEARTBEAT=DISABLED; USER_GATE_ESCALATION=ACTION_REQUIRED_ONLY; policy: .orchestration/policies/command-permissions.md`
+- Before work, record runtime permission mechanism status: APPLIED, RUNTIME_PERMISSION_BLOCKED, or NOT_SUPPORTED. Never infer APPLIED from prompt text.
+- New session smoke test: `pwd`, `ls`, bounded source read, `git status`, `git rev-parse HEAD`, plus one safe role-specific validation only when a real Task requires it. Record runtime_prompt and policy_prompt. No full repo scans.
+- Controller (not user) resolves Class A/B/C and explicit Class D using one-time/narrow approval. No blanket wildcard or dangerously-skip-permissions. Do not claim runtime prompts are eliminated when runtime mechanism is blocked; Controller recovery remains the fallback.
+- Only governed action/scope expansion/G1-G4 creates [ACTION REQUIRED] session + decision gate.
+- All existing active sessions inherit at their next safe checkpoint without interruption; every future session inherits at initialization and every dispatch repeats the compact contract.
