@@ -1,0 +1,115 @@
+{
+  "task": "CHANGE-HIST-T07A-INDEPENDENT-VALIDATION",
+  "task_id": "task_c51784c95a0b",
+  "dispatch_id": "ctx_ed003245c142",
+  "outcome": "FAIL",
+  "validated_at": "2026-08-13T21:30:12Z",
+  "exact_base_sha": "17cf1898b60d03a5056deb5c270214f95a493f1a",
+  "candidate_product_sha": "ef4adbe151901a72d159c8ba565310dc25b4a898",
+  "candidate_parent_sha": "8e6516104de9364157af53e985081da98dae0323",
+  "ancestry": {
+    "candidate_is_direct_parent_of_exact_base": true,
+    "candidate_is_direct_child_of_candidate_parent": true,
+    "validation_started_clean": true
+  },
+  "environment": {
+    "platform": "macOS arm64 26.5.2",
+    "node": "v25.9.0",
+    "npm": "11.12.1"
+  },
+  "product_scope": {
+    "allowed_path_count": 8,
+    "actual_path_count": 8,
+    "dependency_or_lock_changed": false,
+    "schema_or_migration_changed": false,
+    "framework_service_or_container_changed": false,
+    "ui_component_changed": false,
+    "cr_state_contract_changed": false,
+    "deployment_hardcoding_or_secret_found": false,
+    "paths": [
+      "frontend/poc-server.mjs",
+      "frontend/poc-server.test.mjs",
+      "frontend/poc-state-store.mjs",
+      "frontend/poc-state-store.test.mjs",
+      "frontend/src/features/change-history/changeHistoryApi.test.ts",
+      "frontend/src/features/change-history/changeHistoryApi.ts",
+      "frontend/src/features/change-history/types.ts",
+      "frontend/src/poc/pocApi.live.test.ts"
+    ]
+  },
+  "findings": [
+    {
+      "id": "F1_TYPED_TIMESTAMP_FAIL_OPEN",
+      "severity": "BLOCKING",
+      "path": "frontend/src/features/change-history/changeHistoryApi.ts",
+      "line": 394,
+      "summary": "Date.parse-based timestamp validation accepts non-ISO and non-explicit-UTC strings, and page validation does not enforce items.length <= limit."
+    },
+    {
+      "id": "F2_PRECISION_FILTER_MISSING",
+      "severity": "BLOCKING",
+      "paths": [
+        "frontend/poc-server.mjs",
+        "frontend/src/features/change-history/changeHistoryApi.ts",
+        "frontend/src/features/change-history/types.ts"
+      ],
+      "summary": "The ADR-0123 precision event filter family is absent from server parsing, typed filters, and focused coverage."
+    },
+    {
+      "id": "F3_SUMMARY_ROW_COUNT_AMPLIFICATION",
+      "severity": "BLOCKING",
+      "path": "frontend/poc-server.mjs",
+      "line": 1139,
+      "summary": "The builder-added precision/category/operation breakdown has an ambiguous count unit and increments per semantic row, conflicting with the task's distinct normalized transaction contract."
+    },
+    {
+      "id": "F4_LINT_FAILURE",
+      "severity": "BLOCKING",
+      "details": [
+        "frontend/src/features/change-history/changeHistoryApi.test.ts:106:30 @typescript-eslint/no-base-to-string",
+        "frontend/src/features/change-history/changeHistoryApi.ts:362:59 @typescript-eslint/no-unused-vars"
+      ],
+      "worker_reproductions": 2,
+      "control_plane_reproduction": "CONTROL_PLANE_REPRODUCED_FAIL_2_ERRORS_EXIT_1"
+    }
+  ],
+  "verification": {
+    "npm_ci_existing_lock": "PASS_368_PACKAGES_LOCK_UNCHANGED",
+    "pre_root_route_build_poc": "PASS_WITH_EXISTING_CHUNK_ADVISORY",
+    "prescribed_state_and_server_node_runner": "NOT_PASS_ENVIRONMENT_NODE_V25_TEST_RUNNER_HANG",
+    "state_store_isolated": "PASS_12_OF_12",
+    "server_isolated_node_runner": "NOT_PASS_ENVIRONMENT_TIMEOUT_120S",
+    "server_direct_control_plane_cross_check": "PASS_14_OF_14_1_13S",
+    "poc_server_provider_router": "NOT_PASS_ENVIRONMENT_NODE_V25_TEST_RUNNER_HANG",
+    "focused_vitest": "PASS_2_FILES_18_TESTS",
+    "lint_first": "FAIL_2_ERRORS",
+    "lint_worker_rerun": "FAIL_SAME_2_ERRORS",
+    "lint_control_plane_cross_check": "CONTROL_PLANE_REPRODUCED_FAIL_2_ERRORS_EXIT_1",
+    "typecheck": "PASS",
+    "final_build_poc": "PASS_WITH_EXISTING_CHUNK_ADVISORY",
+    "diff_check": "PASS",
+    "allowed_path_hardcoding_secret_review": "PASS"
+  },
+  "package_hashes": {
+    "frontend_package_lock_sha256": "3fdccef423f6b503fa9675f0fa89bccff2b11c064a536344f35c24331407a0ca",
+    "frontend_package_json_sha256": "f331ee0a3314b0b40da9fa309f54181be540240ef310acd8cab67d2512e28f6f"
+  },
+  "not_executed": [
+    "DEV_PROVIDER_RUNTIME",
+    "BROWSER_UI_RUNTIME",
+    "PREP",
+    "OPS",
+    "TARGET",
+    "CONTAINER_NETWORK_PROVIDER_RUNTIME_MUTATION",
+    "PUSH",
+    "MERGE"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  },
+  "evidence_path": ".orchestration/evidence/CHANGE-HIST-T07A-INDEPENDENT-VALIDATION.md",
+  "receipt_path": ".orchestration/receipts/CHANGE-HIST-T07A-INDEPENDENT-VALIDATION.json"
+}
