@@ -1,0 +1,98 @@
+{
+  "task": "CHANGE-HIST-T07A-REPAIR-01",
+  "task_id": "task_cac5144cbf16",
+  "dispatch_id": "ctx_ccb2f0a28025",
+  "role": "40_DATA_AI_KNOWLEDGE Builder",
+  "validated_at": "2026-08-13T22:01:59Z",
+  "exact_base_sha": "8ec867f2cf020a5b2b2af57011353d53123e5321",
+  "candidate_product_sha": "ef4adbe151901a72d159c8ba565310dc25b4a898",
+  "repair_product_sha": "8c20d1da10279f4a5c3b25708ce0e73e89f0d3ca",
+  "status": "PASS_LOCAL_SOURCE_REPAIR_PENDING_INDEPENDENT_VALIDATION",
+  "product_scope": {
+    "allowed_path_count": 5,
+    "actual_path_count": 5,
+    "dependency_or_lock_changed": false,
+    "schema_or_migration_changed": false,
+    "framework_service_container_or_ui_changed": false,
+    "cr_state_contract_changed": false,
+    "deployment_hardcoding_or_secret_found": false,
+    "paths": [
+      "frontend/poc-server.mjs",
+      "frontend/poc-server.test.mjs",
+      "frontend/src/features/change-history/types.ts",
+      "frontend/src/features/change-history/changeHistoryApi.ts",
+      "frontend/src/features/change-history/changeHistoryApi.test.ts"
+    ]
+  },
+  "repairs": [
+    {
+      "id": "F1_TYPED_TIMESTAMP_AND_PAGE_FAIL_OPEN",
+      "status": "REPAIRED_LOCAL_SOURCE",
+      "repair": "Canonical millisecond UTC timestamps plus request/response limit, item-count, total and cursor-progress invariants"
+    },
+    {
+      "id": "F2_PRECISION_FILTER_MISSING",
+      "status": "REPAIRED_LOCAL_SOURCE",
+      "repair": "Closed precision enum in typed filters and server filtering after authorization pruning and before count/page"
+    },
+    {
+      "id": "F3_SUMMARY_ROW_COUNT_AMPLIFICATION",
+      "status": "REPAIRED_LOCAL_SOURCE",
+      "repair": "Per-transaction per-dimension Set counting for precision, category and operation"
+    },
+    {
+      "id": "F4_LINT_FAILURE",
+      "status": "REPAIRED_LOCAL_SOURCE",
+      "repair": "String body narrowing and unused parameter removal without rule suppression"
+    }
+  ],
+  "verification": {
+    "npm_ci_offline_existing_lock": "PASS_368_PACKAGES_LOCK_UNCHANGED",
+    "exact_base_focused_server_same_binary_first": "PASS_1_OF_1_439MS",
+    "exact_base_focused_server_same_binary_repeat": "PASS_1_OF_1_290MS",
+    "repair_candidate_focused_server_same_binary": "PASS_1_OF_1_319MS",
+    "candidate_direct_server_prebuild": "13_OF_14_ROOT_404_DIST_POC_NOT_BUILT",
+    "build_poc": "PASS_WITH_EXISTING_CHUNK_ADVISORY",
+    "candidate_direct_server_postbuild": "PASS_14_OF_14_957MS",
+    "focused_vitest": "PASS_2_FILES_22_TESTS",
+    "lint": "PASS_ZERO_WARNINGS_ZERO_ERRORS",
+    "typecheck": "PASS",
+    "diff_check": "PASS",
+    "allowed_path_hardcoding_secret_review": "PASS",
+    "prescribed_node_v25_9_runner": "NOT_PASS_ENVIRONMENT_RECORDED_BY_INDEPENDENT_VALIDATION",
+    "poc_server_provider_router_runner": "NOT_EXECUTED_AFTER_CONTROL_PLANE_STOP_RETRY_DIRECTION"
+  },
+  "environment": {
+    "platform": "macOS arm64 26.5.2",
+    "verified_node": "v25.6.1",
+    "verified_npm": "11.9.0",
+    "sandbox_runner_note": "Node v25.9.0 and v25.6.1 loopback server calls stalled before output inside the Orca sandbox; the same v25.6.1 binary passed outside that boundary"
+  },
+  "package_hashes": {
+    "frontend_package_json_sha256": "f331ee0a3314b0b40da9fa309f54181be540240ef310acd8cab67d2512e28f6f",
+    "frontend_package_lock_sha256": "3fdccef423f6b503fa9675f0fa89bccff2b11c064a536344f35c24331407a0ca"
+  },
+  "orca_lifecycle": {
+    "status": "DELIVERY_UNAVAILABLE_CONTROL_PLANE_CONFIRMED",
+    "additional_open_health_heartbeat_retries": "STOPPED_BY_CONTROL_PLANE_DIRECTION"
+  },
+  "not_executed": [
+    "DEV_PROVIDER_RUNTIME",
+    "BROWSER_UI_RUNTIME",
+    "PREP",
+    "OPS",
+    "TARGET",
+    "CONTAINER_NETWORK_PROVIDER_RUNTIME_MUTATION",
+    "PUSH",
+    "MERGE"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  },
+  "remaining_gate": "fresh independent validation and prescribed full suite in a supported runner environment",
+  "evidence_path": ".orchestration/evidence/CHANGE-HIST-T07A-REPAIR-01.md",
+  "receipt_path": ".orchestration/receipts/CHANGE-HIST-T07A-REPAIR-01.json"
+}
