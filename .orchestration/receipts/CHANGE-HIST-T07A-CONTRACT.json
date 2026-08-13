@@ -1,0 +1,57 @@
+{
+  "task": "CHANGE-HIST-T07A-CONTRACT",
+  "outcome": "IMPLEMENTED_PENDING_INDEPENDENT_VALIDATION",
+  "exact_base_sha": "8e6516104de9364157af53e985081da98dae0323",
+  "product_sha": "ef4adbe151901a72d159c8ba565310dc25b4a898",
+  "environment": {
+    "platform": "macOS arm64",
+    "node": "v25.9.0",
+    "npm": "11.12.1"
+  },
+  "product_paths": [
+    "frontend/poc-state-store.mjs",
+    "frontend/poc-state-store.test.mjs",
+    "frontend/poc-server.mjs",
+    "frontend/poc-server.test.mjs",
+    "frontend/src/poc/pocApi.live.test.ts",
+    "frontend/src/features/change-history/types.ts",
+    "frontend/src/features/change-history/changeHistoryApi.ts",
+    "frontend/src/features/change-history/changeHistoryApi.test.ts"
+  ],
+  "evidence_paths": [
+    ".orchestration/evidence/CHANGE-HIST-T07A-CONTRACT.md",
+    ".orchestration/receipts/CHANGE-HIST-T07A-CONTRACT.json"
+  ],
+  "verification": {
+    "npm_ci_existing_lock": "PASS_368_PACKAGES_LOCK_UNCHANGED",
+    "state_and_server": "PASS_26_OF_26",
+    "poc_server_provider_router": "PASS_33_OF_33",
+    "focused_vitest": "PASS_2_FILES_18_TESTS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build_poc": "PASS_WITH_EXISTING_CHUNK_ADVISORY",
+    "diff_check": "PASS",
+    "allowlist": "PASS"
+  },
+  "initial_non_pass_runs": [
+    "DEPENDENCIES_ABSENT_BEFORE_PREAPPROVED_NPM_CI",
+    "ROOT_ROUTE_404_BEFORE_REQUIRED_DIST_POC_BUILD_THEN_PASS_26_OF_26"
+  ],
+  "not_executed": [
+    "UI_IMPLEMENTATION",
+    "BROWSER_VALIDATION",
+    "RUNTIME_OR_PROVIDER_PROBE_OR_MUTATION",
+    "CONTAINER_NETWORK_VOLUME_PROCESS_MUTATION",
+    "PUSH_MERGE_PREP_OPS_TARGET"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  },
+  "remaining": [
+    "FRESH_INDEPENDENT_VALIDATION",
+    "T07B_UI_INTEGRATION_AFTER_CONTRACT_ACCEPTANCE"
+  ]
+}
