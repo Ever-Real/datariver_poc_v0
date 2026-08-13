@@ -576,6 +576,28 @@ export function createPocStateStore({ databasePool } = {}) {
       .slice(0, boundedLimit)
   }
 
+  async function readChangeHistoryCheckpoint(query) {
+    if (!query || typeof query !== 'object') {
+      throw new Error('The POC change-history checkpoint query is invalid.')
+    }
+    const sourceIdentityHash = requireSha256(query.sourceIdentityHash, 'sourceIdentityHash')
+    const topicContract = requireBoundedString(query.topicContract, 'topicContract', 255)
+    const partition = requireNonnegativeInteger(query.partition, 'partition')
+    await startDatabase()
+    if (!pool) throw new Error('PostgreSQL is required for durable POC change history.')
+    const result = await pool.query(`
+      SELECT next_offset
+      FROM poc_change_history_checkpoints
+      WHERE source_identity_hash = $1 AND topic_contract = $2 AND source_partition = $3
+    `, [sourceIdentityHash, topicContract, partition])
+    if (!result.rows[0]) return null
+    const nextOffset = Number(result.rows[0].next_offset)
+    if (!Number.isSafeInteger(nextOffset) || nextOffset < 0) {
+      throw new Error('The stored POC change-history checkpoint is invalid.')
+    }
+    return nextOffset
+  }
+
   async function appendChangeHistoryCapture(capture) {
     const normalized = normalizeChangeHistoryCapture(capture)
     await startDatabase()
@@ -689,8 +711,8 @@ export function createPocStateStore({ databasePool } = {}) {
         const advanced = await client.query(`
           UPDATE poc_change_history_checkpoints
           SET next_offset = $4,
-              last_contiguous_event_identity = $5,
-              last_source_occurred_at = $6,
+              last_contiguous_event_identity = COALESCE($5, last_contiguous_event_identity),
+              last_source_occurred_at = COALESCE($6, last_source_occurred_at),
               last_captured_at = clock_timestamp(),
               version = version + 1
           WHERE source_identity_hash = $1 AND topic_contract = $2
@@ -701,8 +723,8 @@ export function createPocStateStore({ databasePool } = {}) {
           normalized.topicContract,
           normalized.partition,
           normalized.offset + 1,
-          lastEvent.eventIdentity,
-          lastEvent.sourceOccurredAt,
+          lastEvent?.eventIdentity ?? null,
+          lastEvent?.sourceOccurredAt ?? null,
           normalized.offset,
         ])
         if (!advanced.rows[0]) throw new Error('The POC change-history checkpoint advance lost its fence.')
@@ -816,6 +838,7 @@ export function createPocStateStore({ databasePool } = {}) {
     catalogEmbeddingActiveGeneration,
     replaceCatalogEmbeddingGeneration,
     searchCatalogEmbeddings,
+    readChangeHistoryCheckpoint,
     appendChangeHistoryCapture,
     appendChangeHistoryCrLink,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
@@ -852,8 +875,8 @@ function normalizeChangeHistoryCapture(capture) {
   const topicContract = requireBoundedString(capture.topicContract, 'topicContract', 255)
   const partition = requireNonnegativeInteger(capture.partition, 'partition')
   const offset = requireNonnegativeInteger(capture.offset, 'offset')
-  if (!Array.isArray(capture.events) || capture.events.length < 1 || capture.events.length > 1000) {
-    throw new Error('The POC change-history capture must contain 1 to 1000 normalized events.')
+  if (!Array.isArray(capture.events) || capture.events.length > 1000) {
+    throw new Error('The POC change-history capture must contain 0 to 1000 normalized events.')
   }
   const sourceEventIdentity = sha256(stableJson([
     sourceIdentityHash, topicContract, partition, offset,

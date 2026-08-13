@@ -1,0 +1,296 @@
+/* global Buffer */
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import test from 'node:test'
+import { URL } from 'node:url'
+
+import { SchemaRegistry, SchemaType } from '@kafkajs/confluent-schema-registry'
+import avro from 'avsc'
+
+import {
+  createPocMclCapture,
+  decodeConfluentMcl,
+  normalizeMclRecord,
+} from './poc-mcl-capture.mjs'
+
+const SOURCE_HASH = 'a'.repeat(64)
+const SCHEMA_HASH = 'b'.repeat(64)
+const TOPIC = 'MetadataChangeLog_Versioned_v1'
+const REGISTRY_ID = 17
+const MCL_SCHEMA = {
+  type: 'record',
+  name: 'MetadataChangeLog',
+  fields: [
+    { name: 'entityUrn', type: 'string' },
+    { name: 'aspectName', type: 'string' },
+    {
+      name: 'aspect',
+      type: ['null', {
+        type: 'record',
+        name: 'GenericAspect',
+        fields: [
+          { name: 'contentType', type: 'string' },
+          { name: 'value', type: 'bytes' },
+        ],
+      }],
+      default: null,
+    },
+    { name: 'previousAspectValue', type: ['null', 'GenericAspect'], default: null },
+    {
+      name: 'created',
+      type: {
+        type: 'record',
+        name: 'AuditStamp',
+        fields: [
+          { name: 'actor', type: ['null', 'string'], default: null },
+          { name: 'time', type: ['null', 'long'], default: null },
+        ],
+      },
+    },
+  ],
+}
+
+function schemaRegistry() {
+  const registry = new SchemaRegistry({ host: 'http://schema-registry.invalid' })
+  registry.cache.setSchema(REGISTRY_ID, SchemaType.AVRO, avro.Type.forSchema(MCL_SCHEMA))
+  return registry
+}
+
+async function framedMcl(overrides = {}) {
+  const registry = schemaRegistry()
+  const record = {
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    aspectName: 'schemaMetadata',
+    aspect: {
+      contentType: 'application/json',
+      value: Buffer.from(JSON.stringify({
+        fields: [
+          { fieldPath: 'id', nativeDataType: 'bigint', nullable: false },
+          { fieldPath: 'name', nativeDataType: 'varchar', nullable: true },
+        ],
+      })),
+    },
+    previousAspectValue: {
+      contentType: 'application/json',
+      value: Buffer.from(JSON.stringify({
+        fields: [{ fieldPath: 'id', nativeDataType: 'integer', nullable: false }],
+      })),
+    },
+    created: { actor: 'urn:li:corpuser:builder', time: 1_786_634_800_000 },
+    ...overrides,
+  }
+  return { registry, buffer: await registry.encode(REGISTRY_ID, record) }
+}
+
+function captureConfig(overrides = {}) {
+  return {
+    brokers: ['kafka.invalid:9092'],
+    clientId: 'datariver-poc-mcl',
+    groupId: 'datariver-poc-mcl-capture',
+    topic: TOPIC,
+    sourceIdentityHash: SOURCE_HASH,
+    schemaContractHash: SCHEMA_HASH,
+    providerName: 'DataHub',
+    providerVersion: 'contract-test',
+    kafkaSsl: false,
+    schemaRegistry: { host: 'http://schema-registry.invalid' },
+    maxMessages: 100,
+    maxRecordBytes: 65_536,
+    timeoutMs: 2000,
+    ...overrides,
+  }
+}
+
+function stateStoreDouble(initial = {}, { failOffset } = {}) {
+  const checkpoints = new Map(Object.entries(initial).map(([partition, offset]) => [Number(partition), offset]))
+  const captures = []
+  return {
+    checkpoints,
+    captures,
+    async readChangeHistoryCheckpoint({ partition }) {
+      return checkpoints.get(partition) ?? null
+    },
+    async appendChangeHistoryCapture(capture) {
+      if (capture.offset === failOffset) throw new Error('simulated durable DB failure')
+      const expected = checkpoints.get(capture.partition) ?? capture.offset
+      if (expected !== capture.offset) throw new Error('simulated checkpoint gap')
+      captures.push(capture)
+      checkpoints.set(capture.partition, capture.offset + 1)
+      return {
+        sourceEventIdentity: 'c'.repeat(64),
+        eventIdentities: capture.events.map((_, index) => String(index).padStart(64, '0')),
+        nextOffset: capture.offset + 1,
+        replayed: false,
+      }
+    },
+  }
+}
+
+function kafkaDouble(partitions, messages) {
+  let consumerCreates = 0
+  const state = { stopped: false, disconnected: false, consumerCreates }
+  return {
+    state,
+    admin() {
+      return {
+        async connect() {},
+        async fetchTopicOffsets(topic) {
+          assert.equal(topic, TOPIC)
+          return partitions
+        },
+        async disconnect() {},
+      }
+    },
+    consumer(options) {
+      consumerCreates += 1
+      state.consumerCreates = consumerCreates
+      assert.equal(options.groupId, 'datariver-poc-mcl-capture')
+      let handler
+      const seeks = new Map()
+      let started = false
+      const groupJoinListeners = new Set()
+      const dispatch = async () => {
+        for (const [partition, offset] of seeks) {
+          for (const message of messages.get(partition) ?? []) {
+            if (Number(message.offset) >= Number(offset)) await handler({ partition, message })
+          }
+        }
+      }
+      return {
+        async connect() {},
+        async subscribe(subscription) {
+          assert.deepEqual(subscription, { topic: TOPIC, fromBeginning: true })
+        },
+        async run(options) {
+          assert.equal(options.autoCommit, false)
+          handler = options.eachMessage
+          for (const listener of groupJoinListeners) listener({})
+        },
+        events: { GROUP_JOIN: 'consumer.group_join' },
+        on(event, listener) {
+          assert.equal(event, 'consumer.group_join')
+          groupJoinListeners.add(listener)
+          return () => groupJoinListeners.delete(listener)
+        },
+        seek({ partition, offset }) {
+          seeks.set(partition, offset)
+          if (!started && seeks.size === partitions.filter((item) => Number(item.high) > 0).length) {
+            started = true
+            dispatch().catch(() => undefined)
+          }
+        },
+        pause() {},
+        async stop() { state.stopped = true },
+        async disconnect() { state.disconnected = true },
+      }
+    },
+  }
+}
+
+test('decodes an actual Confluent-framed Avro MCL and fans one record into bounded schema events', async () => {
+  const { registry, buffer } = await framedMcl()
+  const decoded = await decodeConfluentMcl(buffer, registry, 65_536)
+  const normalized = normalizeMclRecord(decoded, { detectedAt: '2026-08-14T01:00:00.000Z' })
+  assert.equal(buffer[0], 0)
+  assert.equal(buffer.readInt32BE(1), REGISTRY_ID)
+  assert.equal(normalized.normalizedCategory, 'SCHEMA_CHANGE')
+  assert.equal(normalized.events.length, 2)
+  assert.deepEqual(normalized.events.map((event) => [event.entityKey, event.operation]), [
+    ['field:id', 'UPDATE'],
+    ['field:name', 'CREATE'],
+  ])
+  assert.ok(normalized.events.every((event) => event.storageCategory === 'TECHNICAL_SCHEMA'))
+})
+
+test('captures multiple partitions to captured high watermarks and resumes only from durable DB checkpoints', async () => {
+  const schema = await framedMcl()
+  const unsupported = await framedMcl({
+    aspectName: 'status',
+    aspect: { contentType: 'application/json', value: Buffer.from('{not-json') },
+  })
+  const ownership = await framedMcl({
+    aspectName: 'ownership',
+    aspect: {
+      contentType: 'application/json',
+      value: Buffer.from(JSON.stringify({
+        owners: [{ owner: 'urn:li:corpuser:owner', type: 'TECHNICAL_OWNER' }],
+      })),
+    },
+    previousAspectValue: null,
+  })
+  const messages = new Map([
+    [0, [{ offset: '0', value: schema.buffer }, { offset: '1', value: unsupported.buffer }]],
+    [1, [{ offset: '0', value: ownership.buffer }]],
+  ])
+  const kafka = kafkaDouble([
+    { partition: 0, low: '0', high: '2', offset: '0' },
+    { partition: 1, low: '0', high: '1', offset: '0' },
+  ], messages)
+  const store = stateStoreDouble({ 0: 0, 1: 0 })
+  const capture = createPocMclCapture({
+    config: captureConfig(),
+    stateStore: store,
+    kafka,
+    schemaRegistry: schema.registry,
+    clock: () => new Date('2026-08-14T01:00:00.000Z'),
+  })
+  const result = await capture.run()
+  assert.deepEqual(result.partitions.map((item) => [item.partition, item.nextOffset]), [[0, 2], [1, 1]])
+  assert.deepEqual(store.captures.map((item) => [item.partition, item.offset, item.events.length]), [
+    [0, 0, 2],
+    [0, 1, 0],
+    [1, 0, 1],
+  ])
+  assert.equal(kafka.state.stopped, true)
+  assert.equal(kafka.state.disconnected, true)
+
+  const restartKafka = kafkaDouble([
+    { partition: 0, low: '0', high: '2', offset: '0' },
+    { partition: 1, low: '0', high: '1', offset: '0' },
+  ], messages)
+  const restart = createPocMclCapture({
+    config: captureConfig(),
+    stateStore: store,
+    kafka: restartKafka,
+    schemaRegistry: schema.registry,
+  })
+  const restarted = await restart.run()
+  assert.deepEqual(restarted.partitions.map((item) => item.nextOffset), [2, 1])
+  assert.equal(restartKafka.state.consumerCreates, 0)
+  assert.equal(store.captures.length, 3)
+})
+
+test('fails safe on malformed supported MCL and on DB failure without advancing its durable checkpoint', async () => {
+  const malformed = await framedMcl({
+    aspect: { contentType: 'application/json', value: Buffer.from('{not-json') },
+  })
+  const decoded = await decodeConfluentMcl(malformed.buffer, malformed.registry, 65_536)
+  assert.throws(
+    () => normalizeMclRecord(decoded, { detectedAt: '2026-08-14T01:00:00.000Z' }),
+    /not valid bounded JSON/,
+  )
+
+  const valid = await framedMcl()
+  const store = stateStoreDouble({ 0: 0 }, { failOffset: 0 })
+  const kafka = kafkaDouble(
+    [{ partition: 0, low: '0', high: '1', offset: '0' }],
+    new Map([[0, [{ offset: '0', value: valid.buffer }]]]),
+  )
+  const capture = createPocMclCapture({
+    config: captureConfig(),
+    stateStore: store,
+    kafka,
+    schemaRegistry: valid.registry,
+    clock: () => new Date('2026-08-14T01:00:00.000Z'),
+  })
+  await assert.rejects(capture.run(), /simulated durable DB failure/)
+  assert.equal(store.checkpoints.get(0), 0)
+  assert.equal(store.captures.length, 0)
+})
+
+test('contains no raw-payload or credential logging path', () => {
+  const source = readFileSync(new URL('./poc-mcl-capture.mjs', import.meta.url), 'utf8')
+  assert.doesNotMatch(source, /console\.(?:log|info|warn|error)/)
+  assert.doesNotMatch(source, /JSON\.stringify\((?:record|decoded|config)\)/)
+  assert.match(source, /logLevel\.NOTHING/)
+})

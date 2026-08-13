@@ -19,6 +19,7 @@
     "test:poc-server": "node --test poc-server.test.mjs poc-server.providers.test.mjs chat-router-benchmark.test.mjs"
   },
   "dependencies": {
+    "@kafkajs/confluent-schema-registry": "4.1.0",
     "@tailwindcss/vite": "4.3.3",
     "@tanstack/react-query": "^5.101.0",
     "@tanstack/react-table": "8.21.3",
@@ -30,6 +31,7 @@
     "@tiptap/starter-kit": "^3.30.0",
     "@xyflow/react": "12.11.2",
     "hash-wasm": "4.12.0",
+    "kafkajs": "2.2.4",
     "lucide-react": "1.21.0",
     "oidc-client-ts": "3.5.0",
     "pg": "^8.23.0",

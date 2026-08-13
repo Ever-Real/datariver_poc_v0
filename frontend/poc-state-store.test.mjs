@@ -131,8 +131,12 @@ function createDatabaseDouble() {
     release() {},
   }
   const pool = {
-    async query(sql) {
-      statements.push({ sql: String(sql).replace(/\s+/g, ' ').trim(), parameters: [] })
+    async query(sql, parameters = []) {
+      const normalized = String(sql).replace(/\s+/g, ' ').trim()
+      if (normalized.startsWith('SELECT next_offset FROM poc_change_history_checkpoints')) {
+        return client.query(sql, parameters)
+      }
+      statements.push({ sql: normalized, parameters })
       return { rows: [] }
     },
     async connect() { return client },
@@ -220,6 +224,25 @@ test('rolls back and does not advance the checkpoint on a ledger failure or offs
   assert.equal([...database.checkpoints.values()][0], 21)
   assert.equal(database.ledger.size, 1)
   assert.equal(database.statements.at(-1).sql, 'ROLLBACK')
+})
+
+test('reads the durable resume offset and atomically acknowledges a zero-event source record', async () => {
+  const database = createDatabaseDouble()
+  const store = createPocStateStore({ databasePool: database.pool })
+  const checkpoint = {
+    sourceIdentityHash: SOURCE_HASH,
+    topicContract: 'MetadataChangeLog_Versioned_v1',
+    partition: 2,
+  }
+  assert.equal(await store.readChangeHistoryCheckpoint(checkpoint), null)
+
+  const ignored = await store.appendChangeHistoryCapture(capture(50, []))
+  assert.deepEqual(ignored.eventIdentities, [])
+  assert.equal(ignored.nextOffset, 51)
+  assert.equal(ignored.replayed, false)
+  assert.equal(database.ledger.size, 0)
+  assert.equal(database.statements.at(-1).sql, 'COMMIT')
+  assert.equal(await store.readChangeHistoryCheckpoint(checkpoint), 51)
 })
 
 test('appends CR candidate and primary link history with exact replay and stale-chain rejection', async () => {
