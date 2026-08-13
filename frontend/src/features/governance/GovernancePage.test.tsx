@@ -9,6 +9,10 @@ import type {
 } from '../../api/types'
 import { GovernancePage } from './GovernancePage'
 
+vi.mock('./DetectedChangeCrPanel', () => ({
+  DetectedChangeCrPanel: () => <section data-testid="detected-change-cr-panel" />,
+}))
+
 function changeRequest(overrides: Partial<ChangeRequestRecord> = {}): ChangeRequestRecord {
   return {
     id: 'change-1',
@@ -197,6 +201,7 @@ describe('GovernancePage', () => {
     const request = vi.fn((): Promise<unknown> => list.promise)
     renderPage(apiClient(request))
 
+    expect(screen.getByTestId('detected-change-cr-panel')).toBeInTheDocument()
     const loading = screen.getByText('데이터를 불러오는 중입니다.')
     expect(loading.closest('.dense-table-frame')).toHaveAttribute('aria-busy', 'true')
     expect(screen.getByText('현재 조회된 요청 · 페이지당 최대 25건')).toBeInTheDocument()

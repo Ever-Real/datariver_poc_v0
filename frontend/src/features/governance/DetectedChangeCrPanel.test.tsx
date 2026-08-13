@@ -1,0 +1,413 @@
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { ApiClient, RequestOptions } from '../../api/client'
+import type { ChangeRequestSummary } from '../../api/types'
+import type {
+  ChangeHistoryEvent,
+  ChangeHistoryLinkAction,
+  ChangeHistoryLinkPage,
+} from '../change-history/types'
+import { DetectedChangeCrPanel } from './DetectedChangeCrPanel'
+
+const eventId = '1'.repeat(64)
+const transactionId = '2'.repeat(64)
+const linkEtagHash = '3'.repeat(64)
+const commandHash = '4'.repeat(64)
+const timestamp = '2026-08-11T01:00:00.000Z'
+const weekStart = '2026-08-10'
+
+afterEach(() => {
+  vi.restoreAllMocks()
+  vi.useRealTimers()
+})
+
+describe('DetectedChangeCrPanel', () => {
+  it.each([
+    ['전체', {}],
+    ['CR 미연결', { link_state: 'UNLINKED' }],
+    ['접수 완료', { stage: 'RECEIVED' }],
+    ['재검토', { stage: 'RECHECK' }],
+    ['변경 / TEST', { stage: 'TESTING' }],
+    ['완료검토', { stage: 'FINAL_REVIEW' }],
+    ['완료', { stage: 'COMPLETED' }],
+  ])('uses the exact current week and bounded server filter for %s', async (label, expectedFilter) => {
+    setCurrentWeek()
+    const request = vi.fn((path: string) => listResponse(path))
+    render(<DetectedChangeCrPanel client={clientFor(request)} changeRequests={[]} />)
+
+    await screen.findByLabelText('주간 변경 7개 집계')
+    if (label !== '전체') {
+      const filterButton = screen.getByText(label, { selector: '.detected-change-weekly span' }).closest('button')
+      if (!filterButton) throw new Error(`Weekly filter button was not rendered: ${label}`)
+      fireEvent.click(filterButton)
+      await waitFor(() => expect(eventPaths(request)).toHaveLength(2))
+    }
+
+    const url = new URL(eventPaths(request).at(-1)!, 'https://datariver.invalid')
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      limit: '50',
+      week_start: weekStart,
+      ...expectedFilter,
+    })
+    if (label === 'CR 미연결') expect(url.searchParams.has('stage')).toBe(false)
+  })
+
+  it('shows all seven server counts and keeps loading, authorized empty, and failure distinct', async () => {
+    setCurrentWeek()
+    const pending = deferred<ReturnType<typeof weekly>>()
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/change-history/weekly?')) return pending.promise
+      if (path.startsWith('/change-history/events?')) return Promise.resolve(eventPage([]))
+      throw new Error(`Unexpected path: ${path}`)
+    })
+    const view = render(<DetectedChangeCrPanel client={clientFor(request)} changeRequests={[]} />)
+
+    expect(screen.getByRole('status')).toHaveTextContent('변경 이벤트를 불러오는 중입니다.')
+    pending.resolve(weekly())
+    const counts = await screen.findByLabelText('주간 변경 7개 집계')
+    expect(within(counts).getByRole('button', { name: /전체21/ })).toBeInTheDocument()
+    expect(within(counts).getByRole('button', { name: /CR 미연결1/ })).toBeInTheDocument()
+    expect(within(counts).getByRole('button', { name: /접수 완료2/ })).toBeInTheDocument()
+    expect(within(counts).getByRole('button', { name: /재검토3/ })).toBeInTheDocument()
+    expect(within(counts).getByRole('button', { name: /변경 \/ TEST4/ })).toBeInTheDocument()
+    expect(within(counts).getByRole('button', { name: /완료검토5/ })).toBeInTheDocument()
+    expect(within(counts).getByRole('button', { name: /완료6/ })).toBeInTheDocument()
+    expect(screen.getByText('선택한 주간 단계에 조회 가능한 이벤트가 없습니다.')).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+
+    view.unmount()
+    render(<DetectedChangeCrPanel
+      client={clientFor(vi.fn().mockRejectedValue(new Error('주간 원장 조회 실패')))}
+      changeRequests={[]}
+    />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('주간 원장 조회 실패')
+    expect(screen.queryByText('선택한 주간 단계에 조회 가능한 이벤트가 없습니다.')).not.toBeInTheDocument()
+  })
+
+  it('hides every mutation control when the fresh event grants no link actions', async () => {
+    setCurrentWeek()
+    const request = vi.fn((path: string) => listResponse(path, [event()]))
+    const requestWithMeta = detailTransport([])
+    render(<DetectedChangeCrPanel
+      client={clientFor(request, requestWithMeta)}
+      changeRequests={[changeRequest()]}
+    />)
+
+    await openFirstEvent()
+    const linker = await screen.findByLabelText('선택 이벤트 CR 연결')
+    expect(within(linker).getByText('현재 권한과 이벤트 상태에서 허용된 연결 작업이 없습니다.')).toBeInTheDocument()
+    expect(within(linker).queryByRole('combobox')).not.toBeInTheDocument()
+    expect(within(linker).queryByRole('button', { name: '연결 이력 저장' })).not.toBeInTheDocument()
+    expect(within(linker).getByText('event ETag "0" · link ETag "0"')).toBeInTheDocument()
+  })
+
+  it('fails closed when the fresh event and link-history ETags do not identify the same link head', async () => {
+    setCurrentWeek()
+    const request = vi.fn((path: string) => listResponse(path, [event(['SET_PRIMARY'])]))
+    const requestWithMeta = detailTransport(['SET_PRIMARY'], {}, undefined, true)
+    render(<DetectedChangeCrPanel
+      client={clientFor(request, requestWithMeta)}
+      changeRequests={[changeRequest()]}
+    />)
+
+    await clickFirstEvent()
+    expect(await screen.findByRole('alert')).toHaveTextContent('이벤트와 CR 연결 이력의 최신 ETag가 일치하지 않습니다.')
+    expect(screen.queryByLabelText('선택 이벤트 CR 연결')).not.toBeInTheDocument()
+  })
+
+  it.each<{
+    action: ChangeHistoryLinkAction
+    label: string
+    primary: ChangeHistoryLinkPage['current_primary']
+    candidates: ChangeHistoryLinkPage['current_candidates']
+  }>([
+    { action: 'SET_PRIMARY', label: 'Primary 지정', primary: null, candidates: [] },
+    { action: 'CLEAR_PRIMARY', label: 'Primary 해제', primary: target(), candidates: [] },
+    { action: 'ADD_CANDIDATE', label: 'Candidate 추가', primary: null, candidates: [] },
+    { action: 'REMOVE_CANDIDATE', label: 'Candidate 제거', primary: null, candidates: [target()] },
+  ])('sends only the exact $action command and refetches event, links, weekly, and list', async ({ action, label, primary, candidates }) => {
+    setCurrentWeek()
+    vi.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue('00000000-0000-4000-8000-000000000007')
+    const request = vi.fn((path: string) => listResponse(path, [event([action])]))
+    const requestWithMeta = detailTransport([action], { current_primary: primary, current_candidates: candidates })
+    render(<DetectedChangeCrPanel
+      client={clientFor(request, requestWithMeta)}
+      changeRequests={[changeRequest()]}
+    />)
+
+    await openFirstEvent()
+    fireEvent.change(screen.getByLabelText('허용 작업'), { target: { value: action } })
+    expect(await screen.findByRole('option', { name: 'CR-2026-7 · round 3' })).toBeInTheDocument()
+    expect(screen.getByLabelText('현재 round CR 대상')).toHaveValue(JSON.stringify(['cr-7', 3]))
+    fireEvent.change(screen.getByLabelText('연결 사유'), { target: { value: '  승인된 변경 연결  ' } })
+    fireEvent.click(screen.getByRole('button', { name: '연결 이력 저장' }))
+
+    await waitFor(() => expect(postCalls(requestWithMeta)).toHaveLength(1))
+    const [path, options] = postCalls(requestWithMeta)[0]!
+    expect(path).toBe(`/change-history/events/${eventId}/cr-link-events`)
+    expect(options).toEqual(expect.objectContaining({
+      method: 'POST',
+      cache: 'no-store',
+      ifMatch: '"0"',
+      idempotencyKey: '00000000-0000-4000-8000-000000000007',
+    }))
+    const command = jsonBody(options)
+    expect(command).toEqual({
+      action,
+      change_request_id: 'cr-7',
+      change_request_round: 3,
+      reason: '승인된 변경 연결',
+    })
+    expect(Object.keys(command).sort()).toEqual([
+      'action', 'change_request_id', 'change_request_round', 'reason',
+    ])
+    await waitFor(() => {
+      expect(eventPaths(request)).toHaveLength(2)
+      expect(weeklyPaths(request)).toHaveLength(2)
+      expect(detailGetCalls(requestWithMeta)).toHaveLength(4)
+    })
+    expect(screen.getByLabelText('허용 작업')).toHaveValue('')
+    expect(screen.getByLabelText('연결 사유')).toHaveValue('')
+    expect(screen.getByRole('option', { name: label })).toBeInTheDocument()
+  })
+
+  it('keeps the authoritative pre-command state and does not refetch after a stale ETag failure', async () => {
+    setCurrentWeek()
+    vi.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue('00000000-0000-4000-8000-000000000008')
+    const request = vi.fn((path: string) => listResponse(path, [event(['SET_PRIMARY'])]))
+    const requestWithMeta = detailTransport(['SET_PRIMARY'], {}, new Error('최신 link ETag와 일치하지 않습니다.'))
+    render(<DetectedChangeCrPanel
+      client={clientFor(request, requestWithMeta)}
+      changeRequests={[changeRequest()]}
+    />)
+
+    await openFirstEvent()
+    fireEvent.change(screen.getByLabelText('허용 작업'), { target: { value: 'SET_PRIMARY' } })
+    fireEvent.change(screen.getByLabelText('연결 사유'), { target: { value: 'stale command' } })
+    fireEvent.click(screen.getByRole('button', { name: '연결 이력 저장' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('최신 link ETag와 일치하지 않습니다.')
+    expect(screen.getByLabelText('허용 작업')).toHaveValue('SET_PRIMARY')
+    expect(screen.getByLabelText('연결 사유')).toHaveValue('stale command')
+    expect(screen.getAllByText('미연결')).not.toHaveLength(0)
+    expect(eventPaths(request)).toHaveLength(1)
+    expect(weeklyPaths(request)).toHaveLength(1)
+    expect(detailGetCalls(requestWithMeta)).toHaveLength(2)
+  })
+
+  it('offers only authorized summaries at their current rounds, including unlink targets', async () => {
+    setCurrentWeek()
+    const request = vi.fn((path: string) => listResponse(path, [event(['CLEAR_PRIMARY'])]))
+    const requestWithMeta = detailTransport(['CLEAR_PRIMARY'], {
+      current_primary: { change_request_id: 'cr-7', change_request_round: 2 },
+    })
+    render(<DetectedChangeCrPanel
+      client={clientFor(request, requestWithMeta)}
+      changeRequests={[changeRequest({ current_round_number: 3 })]}
+    />)
+
+    await openFirstEvent()
+    fireEvent.change(screen.getByLabelText('허용 작업'), { target: { value: 'CLEAR_PRIMARY' } })
+    expect(await screen.findByText('현재 권한의 CR 목록에서 일치하는 current round 대상을 찾을 수 없습니다.')).toBeInTheDocument()
+    expect(screen.getByLabelText('현재 round CR 대상')).toHaveDisplayValue('선택')
+    expect(screen.getByRole('button', { name: '연결 이력 저장' })).toBeDisabled()
+  })
+})
+
+function setCurrentWeek() {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(new Date('2026-08-14T03:00:00.000Z'))
+}
+
+function clientFor(
+  request: ReturnType<typeof vi.fn>,
+  requestWithMeta: ReturnType<typeof vi.fn> = vi.fn(),
+): ApiClient {
+  return {
+    request: request as unknown as ApiClient['request'],
+    requestWithMeta: requestWithMeta as unknown as ApiClient['requestWithMeta'],
+  } as ApiClient
+}
+
+function listResponse(path: string, items: ChangeHistoryEvent[] = []) {
+  if (path.startsWith('/change-history/weekly?')) return Promise.resolve(weekly())
+  if (path.startsWith('/change-history/events?')) return Promise.resolve(eventPage(items))
+  throw new Error(`Unexpected path: ${path}`)
+}
+
+function weekly() {
+  return {
+    week_start: weekStart,
+    week_end_exclusive: '2026-08-17',
+    timezone: 'Asia/Seoul' as const,
+    as_of: timestamp,
+    policy_version: 1,
+    policy_hash: '5'.repeat(64),
+    count_unit: 'DISTINCT_NORMALIZED_CHANGE_TRANSACTION' as const,
+    total_count: 21,
+    unlinked_count: 1,
+    received_count: 2,
+    recheck_count: 3,
+    testing_count: 4,
+    final_review_count: 5,
+    completed_count: 6,
+    time_unknown_count: 0,
+  }
+}
+
+function eventPage(items: ChangeHistoryEvent[]) {
+  return { items, next_cursor: null, limit: 50, total: items.length }
+}
+
+function event(allowedLinkActions: ChangeHistoryLinkAction[] = []): ChangeHistoryEvent {
+  return {
+    event_id: eventId,
+    transaction_id: transactionId,
+    asset_urn: 'urn:li:dataset:orders',
+    entity_key: 'business.public.orders',
+    category: 'TECHNICAL_SCHEMA',
+    change_type: 'SCHEMA_CHANGE',
+    source_aspect: 'schemaMetadata',
+    operation: 'UPDATE',
+    precision: 'EXACT_MCL',
+    source_occurred_at: timestamp,
+    detected_at: timestamp,
+    captured_at: timestamp,
+    system: {
+      resolution: 'RESOLVED',
+      system_id: 'system-1',
+      provider_context: { platform: 'postgres', database_name: 'business', schema_name: 'public' },
+    },
+    locator: { platform: 'postgres', database_name: 'business', schema_name: 'public', asset_name: 'orders' },
+    assignee: {
+      subject_id: 'steward-1', responsibility: 'DATA_STEWARD', system_id: 'system-1',
+      priority: 1, basis: 'CURRENT_POC_PROJECTION',
+    },
+    current_stage: 'UNLINKED',
+    allowed_link_actions: allowedLinkActions,
+    current_primary: null,
+    current_candidates: [],
+    link_version: 0,
+  }
+}
+
+function target() {
+  return { change_request_id: 'cr-7', change_request_round: 3 }
+}
+
+function detailTransport(
+  allowedLinkActions: ChangeHistoryLinkAction[],
+  links: Partial<Pick<ChangeHistoryLinkPage, 'current_primary' | 'current_candidates'>> = {},
+  postError?: Error,
+  mismatchEtag = false,
+) {
+  let headEtag = '"0"'
+  return vi.fn((path: string, options: RequestOptions = {}) => {
+    if (path.endsWith('/cr-link-events')) {
+      if (postError) return Promise.reject(postError)
+      const body = jsonBody(options) as {
+        action: ChangeHistoryLinkAction
+        change_request_id: string
+        change_request_round: number
+      }
+      headEtag = `"${commandHash}"`
+      return Promise.resolve({
+        data: {
+          link_event_identity: '6'.repeat(64),
+          event_hash: commandHash,
+          link_version: 1,
+          replayed: false,
+          event_id: eventId,
+          change_request_id: body.change_request_id,
+          change_request_round: body.change_request_round,
+          action: body.action,
+        },
+        etag: `"${commandHash}"`,
+      })
+    }
+    if (path === `/change-history/events/${eventId}`) {
+      return Promise.resolve({ data: { ...event(allowedLinkActions), before: {}, after: {} }, etag: headEtag })
+    }
+    if (path.startsWith(`/change-history/events/${eventId}/cr-links?`)) {
+      return Promise.resolve({
+        data: {
+          current_primary: links.current_primary ?? null,
+          current_candidates: links.current_candidates ?? [],
+          items: [],
+          next_cursor: null,
+          limit: 50,
+        },
+        etag: mismatchEtag ? `"${linkEtagHash}"` : headEtag,
+      })
+    }
+    throw new Error(`Unexpected detail path: ${path}`)
+  })
+}
+
+function changeRequest(overrides: Partial<ChangeRequestSummary> = {}): ChangeRequestSummary {
+  return {
+    id: 'cr-7',
+    number: 'CR-2026-7',
+    request_type: 'CATALOG_METADATA',
+    title: 'Authorized target',
+    state: 'REGISTERED',
+    requester_id: 'subject-1',
+    requester_department_id: null,
+    current_round_number: 3,
+    created_at: timestamp,
+    requested_due_date: null,
+    priority: null,
+    urgency: null,
+    classification: 'INTERNAL',
+    version: 1,
+    item_count: 1,
+    first_item: { target_ref: 'urn:li:dataset:orders', aspect_name: 'schemaMetadata', operation: 'UPDATE' },
+    ...overrides,
+  }
+}
+
+async function openFirstEvent() {
+  await clickFirstEvent()
+  await screen.findByLabelText('선택 이벤트 CR 연결')
+}
+
+async function clickFirstEvent() {
+  const asset = await screen.findByText('orders')
+  const row = asset.closest('tr')
+  if (!row) throw new Error('Event row was not rendered')
+  fireEvent.click(within(row).getByRole('button'))
+}
+
+function eventPaths(request: ReturnType<typeof vi.fn>) {
+  return request.mock.calls.map(([path]) => String(path)).filter((path) => path.startsWith('/change-history/events?'))
+}
+
+function weeklyPaths(request: ReturnType<typeof vi.fn>) {
+  return request.mock.calls.map(([path]) => String(path)).filter((path) => path.startsWith('/change-history/weekly?'))
+}
+
+function postCalls(requestWithMeta: ReturnType<typeof vi.fn>): Array<[string, RequestOptions]> {
+  return requestWithMeta.mock.calls
+    .filter(([path]) => String(path).endsWith('/cr-link-events')) as Array<[string, RequestOptions]>
+}
+
+function detailGetCalls(requestWithMeta: ReturnType<typeof vi.fn>) {
+  return requestWithMeta.mock.calls.filter(([path]) => !String(path).endsWith('/cr-link-events'))
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}
+
+function jsonBody(options: RequestOptions): Record<string, unknown> {
+  if (typeof options.body !== 'string') throw new Error('Expected a JSON string request body')
+  const parsed: unknown = JSON.parse(options.body)
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Expected a JSON object request body')
+  }
+  return parsed as Record<string, unknown>
+}

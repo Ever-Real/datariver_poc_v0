@@ -21,6 +21,7 @@ import { PageTitle } from '../../components/layout/PageTitle'
 import { ChangeActionConfirmDialog } from './ChangeActionConfirmDialog'
 import { ChangeRequestCreateDialog } from './ChangeRequestCreateDialog'
 import { ChangeRequestDetailDialog } from './ChangeRequestDetailDialog'
+import { DetectedChangeCrPanel } from './DetectedChangeCrPanel'
 import {
   resumeAttachmentUpload,
   resumeStoredAttachmentUploads,
@@ -833,6 +834,8 @@ export function GovernancePage({
         hardwareWebauthnEnabled={hardwareWebauthnEnabled}
       />
       <ErrorNotice error={listError} />
+
+      <DetectedChangeCrPanel client={client} changeRequests={requests} />
 
       <section className="governance-list-panel panel" aria-labelledby="governance-list-heading">
         <header>
