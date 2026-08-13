@@ -929,8 +929,18 @@ export function createPocStateStore({ databasePool } = {}) {
       if (!locked) return { status: 'locked', scheduledFor }
       const scope = `change-history-scheduler-v1:${lockName}`
       const current = await client.query('SELECT value FROM poc_state WHERE scope = $1', [scope])
-      if (current.rows[0]?.value?.last_successful_schedule === scheduledFor) {
+      const lastSuccessfulSchedule = current.rows.length === 0
+        ? null
+        : explicitSchedulerTimestamp(
+          current.rows[0]?.value?.last_successful_schedule,
+          'stored last_successful_schedule',
+        )
+      if (lastSuccessfulSchedule === scheduledFor) {
         return { status: 'already_completed', scheduledFor }
+      }
+      if (lastSuccessfulSchedule !== null
+        && Date.parse(lastSuccessfulSchedule) > Date.parse(scheduledFor)) {
+        return { status: 'stale', scheduledFor }
       }
       const result = await task()
       const completedAt = new Date().toISOString()
@@ -940,11 +950,18 @@ export function createPocStateStore({ databasePool } = {}) {
         completed_at: completedAt,
         trigger,
       }
-      await client.query(`
+      const receiptWrite = await client.query(`
         INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
         ON CONFLICT (scope) DO UPDATE
           SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
-      `, [scope, JSON.stringify(receipt)])
+          WHERE poc_state.value ->> 'last_successful_schedule' = $3
+            AND (poc_state.value ->> 'last_successful_schedule')::timestamptz < $4::timestamptz
+        RETURNING poc_state.value ->> 'last_successful_schedule' AS last_successful_schedule
+      `, [scope, JSON.stringify(receipt), lastSuccessfulSchedule, scheduledFor])
+      if (receiptWrite.rows.length !== 1
+        || receiptWrite.rows[0]?.last_successful_schedule !== scheduledFor) {
+        throw new Error('The POC change-history scheduler receipt was not advanced.')
+      }
       return { status: 'succeeded', scheduledFor, completedAt, result }
     } finally {
       if (locked) {
@@ -984,13 +1001,13 @@ export function createPocStateStore({ databasePool } = {}) {
   }
 }
 
-function explicitSchedulerTimestamp(value) {
+function explicitSchedulerTimestamp(value, field = 'scheduledFor') {
   if (typeof value !== 'string' || !value.endsWith('Z')) {
-    throw new Error('scheduledFor must be an explicit UTC timestamp.')
+    throw new Error(`${field} must be an explicit UTC timestamp.`)
   }
   const parsed = new Date(value)
   if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) {
-    throw new Error('scheduledFor must be an explicit UTC timestamp.')
+    throw new Error(`${field} must be an explicit UTC timestamp.`)
   }
   return value
 }

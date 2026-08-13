@@ -227,6 +227,8 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
 test('locks singleton scheduling and records success only after the ordered task succeeds', async () => {
   let stored
   let failReceipt = false
+  let omitReceiptWrite = false
+  let receiptQueries = 0
   let unlocked = 0
   let released = 0
   const client = {
@@ -237,9 +239,14 @@ test('locks singleton scheduling and records success only after the ordered task
         return { rows: stored ? [{ value: stored }] : [] }
       }
       if (normalized.startsWith('INSERT INTO poc_state')) {
+        receiptQueries += 1
+        assert.match(normalized, /WHERE poc_state\.value ->> 'last_successful_schedule' = \$3/)
+        assert.match(normalized, /last_successful_schedule'\)::timestamptz < \$4::timestamptz/)
+        assert.match(normalized, /RETURNING poc_state\.value ->> 'last_successful_schedule'/)
         if (failReceipt) throw new Error('receipt write failed')
+        if (omitReceiptWrite) return { rows: [] }
         stored = JSON.parse(parameters[1])
-        return { rows: [] }
+        return { rows: [{ last_successful_schedule: stored.last_successful_schedule }] }
       }
       if (normalized.startsWith('SELECT pg_advisory_unlock')) {
         unlocked += 1
@@ -271,16 +278,81 @@ test('locks singleton scheduling and records success only after the ordered task
   )
   failReceipt = false
   assert.equal(stored, undefined, 'a receipt failure must not mark the schedule successful')
-  const success = await store.runChangeHistoryScheduler(command, async () => ({ ordered: true }))
+  omitReceiptWrite = true
+  await assert.rejects(
+    store.runChangeHistoryScheduler(command, async () => ({ ordered: true })),
+    /receipt was not advanced/,
+  )
+  omitReceiptWrite = false
+  assert.equal(stored, undefined, 'a conditional no-write must not be reported as success')
+  let taskCalls = 0
+  const success = await store.runChangeHistoryScheduler(command, async () => {
+    taskCalls += 1
+    return { ordered: true }
+  })
   assert.equal(success.status, 'succeeded')
   assert.equal(stored.last_successful_schedule, command.scheduledFor)
   assert.equal(stored.trigger, 'scheduled')
-  let replayedTask = false
-  const replay = await store.runChangeHistoryScheduler(command, async () => { replayedTask = true })
+  const receiptQueriesAfterSuccess = receiptQueries
+  const olderCommand = {
+    ...command,
+    scheduledFor: '2026-08-12T15:00:00.000Z',
+    trigger: 'manual',
+  }
+  const stale = await store.runChangeHistoryScheduler(olderCommand, async () => { taskCalls += 1 })
+  assert.deepEqual(stale, { status: 'stale', scheduledFor: olderCommand.scheduledFor })
+  assert.equal(stored.last_successful_schedule, command.scheduledFor)
+  assert.equal(receiptQueries, receiptQueriesAfterSuccess)
+  const replay = await store.runChangeHistoryScheduler(command, async () => { taskCalls += 1 })
   assert.equal(replay.status, 'already_completed')
-  assert.equal(replayedTask, false)
-  assert.equal(unlocked, 4)
-  assert.equal(released, 4)
+  assert.equal(taskCalls, 1, 'newer success, older request, and exact replay run the task once')
+  assert.equal(receiptQueries, receiptQueriesAfterSuccess)
+  assert.equal(unlocked, 6)
+  assert.equal(released, 6)
+})
+
+test('fails closed before scheduler work when the stored receipt boundary is malformed', async () => {
+  let taskCalled = false
+  let receiptQueried = false
+  let unlocked = 0
+  let released = 0
+  const client = {
+    async query(sql) {
+      const normalized = String(sql).replace(/\s+/g, ' ').trim()
+      if (normalized.startsWith('SELECT pg_try_advisory_lock')) return { rows: [{ acquired: true }] }
+      if (normalized === 'SELECT value FROM poc_state WHERE scope = $1') {
+        return { rows: [{ value: { last_successful_schedule: '2026-08-13T15:00:00Z' } }] }
+      }
+      if (normalized.startsWith('INSERT INTO poc_state')) {
+        receiptQueried = true
+        return { rows: [] }
+      }
+      if (normalized.startsWith('SELECT pg_advisory_unlock')) {
+        unlocked += 1
+        return { rows: [{ pg_advisory_unlock: true }] }
+      }
+      throw new Error(`Unexpected scheduler SQL: ${normalized}`)
+    },
+    release() { released += 1 },
+  }
+  const store = createPocStateStore({
+    databasePool: {
+      async query() { return { rows: [] } },
+      async connect() { return client },
+    },
+  })
+  await assert.rejects(
+    store.runChangeHistoryScheduler({
+      lockName: 'scheduler-state-test',
+      scheduledFor: '2026-08-14T15:00:00.000Z',
+      trigger: 'scheduled',
+    }, async () => { taskCalled = true }),
+    /stored last_successful_schedule must be an explicit UTC timestamp/,
+  )
+  assert.equal(taskCalled, false)
+  assert.equal(receiptQueried, false)
+  assert.equal(unlocked, 1)
+  assert.equal(released, 1)
 })
 
 test('atomically inserts, replays, fans out, and advances a partition checkpoint', async () => {
