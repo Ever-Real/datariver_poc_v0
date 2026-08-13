@@ -1,0 +1,119 @@
+{
+  "task": "CHANGE-HIST-T07A-REPAIR-01-REVALIDATION",
+  "task_id": "task_109cde7f894c",
+  "dispatch_id": "ctx_4687756965c1",
+  "role": "50_QUALITY_VALIDATION",
+  "validated_at": "2026-08-14T07:21:25+09:00",
+  "exact_base_sha": "1b79b8160fb3c94606ca4a2ead574e0a41b1e38f",
+  "candidate_product_sha": "8c20d1da10279f4a5c3b25708ce0e73e89f0d3ca",
+  "repair_base_sha": "8ec867f2cf020a5b2b2af57011353d53123e5321",
+  "status": "PASS_LOCAL_SOURCE",
+  "outcome": "INDEPENDENT_REVALIDATION_PASS",
+  "product_write": "FORBIDDEN_AND_NOT_PERFORMED",
+  "ancestry": {
+    "repair_base_is_direct_parent_of_candidate_product": true,
+    "candidate_product_is_direct_parent_of_exact_base": true,
+    "validation_started_at_exact_base": true,
+    "validation_started_clean": true
+  },
+  "product_scope": {
+    "declared_path_count": 5,
+    "actual_path_count": 5,
+    "dependency_or_lock_changed": false,
+    "schema_migration_or_data_model_changed": false,
+    "framework_service_container_or_ui_component_changed": false,
+    "cr_state_revision_approval_or_transition_changed": false,
+    "validation_or_security_weakened": false,
+    "deployment_hardcoding_or_secret_found": false,
+    "paths": [
+      "frontend/poc-server.mjs",
+      "frontend/poc-server.test.mjs",
+      "frontend/src/features/change-history/changeHistoryApi.test.ts",
+      "frontend/src/features/change-history/changeHistoryApi.ts",
+      "frontend/src/features/change-history/types.ts"
+    ]
+  },
+  "candidate_evidence_scope": {
+    "declared_path_count": 2,
+    "actual_path_count": 2,
+    "paths": [
+      ".orchestration/evidence/CHANGE-HIST-T07A-REPAIR-01.md",
+      ".orchestration/receipts/CHANGE-HIST-T07A-REPAIR-01.json"
+    ]
+  },
+  "closures": [
+    {
+      "id": "F1_TYPED_TIMESTAMP_AND_PAGE_FAIL_OPEN",
+      "status": "CLOSED",
+      "evidence": "Canonical millisecond UTC regex plus Date.toISOString round-trip; numeric/date-only/locale/impossible timestamps rejected; response limit/items/total/cursor progress fail closed while valid two-page responses pass."
+    },
+    {
+      "id": "F2_PRECISION_FILTER_MISSING",
+      "status": "CLOSED",
+      "evidence": "Closed precision enum in client type/runtime and server; authorization pruning precedes precision filtering and total/page; hidden steward probe returns total/items 0/0."
+    },
+    {
+      "id": "F3_SUMMARY_ROW_COUNT_AMPLIFICATION",
+      "status": "CLOSED",
+      "evidence": "Visible weekly transaction map and per-transaction precision/category/operation Sets count each dimension value at most once while event_count remains semantic-row based."
+    },
+    {
+      "id": "F4_LINT_FAILURE",
+      "status": "CLOSED",
+      "evidence": "Full eslint . --max-warnings=0 passed with zero errors/warnings and no suppression or relaxed config diff."
+    }
+  ],
+  "regression": {
+    "authoritative_access_and_scope": "PASS",
+    "viewer_read_only": "PASS",
+    "assigned_rows_only": "PASS",
+    "server_derived_actions": "PASS",
+    "cursor_integrity": "PASS",
+    "stale_cas_and_idempotency": "PASS",
+    "cr_zero_effect": "PASS",
+    "external_contracts_unchanged": "PASS"
+  },
+  "verification": {
+    "npm_ci_offline_existing_lock": "PASS_368_PACKAGES_LOCK_UNCHANGED",
+    "pre_server_build_poc": "PASS_WITH_EXISTING_CHUNK_ADVISORY",
+    "node_25_6_1_direct_poc_server": "PASS_14_OF_14_956_868MS",
+    "generic_change_history_pattern_in_sandbox": "NOT_PASS_ENVIRONMENT_67_963S_PENDING_PROMISE_CANCELLED",
+    "exact_focused_node_25_6_1": "PASS_1_OF_1_373_750MS",
+    "focused_vitest_change_history_api_and_poc_api_live": "PASS_2_FILES_22_TESTS",
+    "canonical_timestamp_and_page_probe": "PASS",
+    "precision_visibility_count_probe": "PASS_HIDDEN_0_OF_0_ASSIGNED_1_OF_1_INVALID_400",
+    "lint": "PASS_ZERO_ERRORS_ZERO_WARNINGS",
+    "typecheck": "PASS",
+    "final_build_poc": "PASS_WITH_EXISTING_CHUNK_ADVISORY",
+    "diff_check": "PASS",
+    "allowlist_hardcoding_secret_suppression_review": "PASS"
+  },
+  "environment": {
+    "platform": "macOS arm64 26.5.2",
+    "node": "v25.6.1",
+    "npm": "11.9.0",
+    "known_node_25_9_runner_issue": "NOT_PASS_ENVIRONMENT_REMAINS_SEPARATELY_CLASSIFIED"
+  },
+  "package_hashes": {
+    "frontend_package_json_sha256": "f331ee0a3314b0b40da9fa309f54181be540240ef310acd8cab67d2512e28f6f",
+    "frontend_package_lock_sha256": "3fdccef423f6b503fa9675f0fa89bccff2b11c064a536344f35c24331407a0ca"
+  },
+  "not_executed": [
+    "DEV_PROVIDER_RUNTIME",
+    "BROWSER_UI_RUNTIME",
+    "PREP",
+    "OPS",
+    "TARGET",
+    "CONTAINER_NETWORK_PROVIDER_RUNTIME_MUTATION",
+    "PUSH",
+    "MERGE"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  },
+  "evidence_path": ".orchestration/evidence/CHANGE-HIST-T07A-REPAIR-01-REVALIDATION.md",
+  "receipt_path": ".orchestration/receipts/CHANGE-HIST-T07A-REPAIR-01-REVALIDATION.json"
+}
