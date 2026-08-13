@@ -1,0 +1,203 @@
+{
+  "schema_version": 1,
+  "task_id": "DEV_INTEGRATION_CHECKPOINT_01-R1",
+  "orchestration_task_id": "task_02dab1a0fd51",
+  "dispatch_id": "ctx_6e960c8c27d2",
+  "roles": ["20_PLATFORM_RELEASE", "50_QUALITY_VALIDATION"],
+  "risk": "R2_DEV_LOCAL_RUNTIME_CHECKPOINT",
+  "validated_at": "2026-08-14T05:27:02+09:00",
+  "status": "PASS_WITH_DEBT",
+  "git": {
+    "worktree": "/Users/everreal/orca/workspaces/datariver_poc_v0/dev-integration-checkpoint-01-r1",
+    "branch": "Ever-Real/dev-integration-checkpoint-01-r1",
+    "candidate_sha": "11632c9159ca97e5a7903789bf58cc884e1e7303",
+    "product_sha": "639a4830d7db2775b0932c58adb14ac6185f437c",
+    "product_sha_ancestor": true,
+    "clean_before_task": true,
+    "clean_before_evidence": true
+  },
+  "environment": {
+    "target": "DEV_MAC_ARM64",
+    "os": "macOS 26.5.2",
+    "architecture": "arm64",
+    "node": "v25.9.0",
+    "npm": "11.12.1",
+    "secret_values_printed": false
+  },
+  "dependency_reuse": {
+    "method": "temporary_symlink",
+    "source": "/Users/everreal/orca/workspaces/datariver_poc_v0/dev-checkpoint-01-repair-01-validation/frontend/node_modules",
+    "candidate_lock_sha256": "3fdccef423f6b503fa9675f0fa89bccff2b11c064a536344f35c24331407a0ca",
+    "source_lock_sha256": "3fdccef423f6b503fa9675f0fa89bccff2b11c064a536344f35c24331407a0ca",
+    "lockfiles_match": true,
+    "install_performed": false,
+    "symlink_removed": true
+  },
+  "build": {
+    "command": "npm run build:poc",
+    "status": "PASS",
+    "wall_seconds": 12.45,
+    "warnings": ["existing post-minification chunk larger than 500 kB"],
+    "preliminary_command_error": "temporary symlink path was addressed from the wrong cwd; build did not start and no files changed"
+  },
+  "protected_baseline": {
+    "existing_runtime": {
+      "port": 39080,
+      "pid_before": 45143,
+      "pid_after": 45143,
+      "cwd_before": "/Volumes/SSD_Mac/workspace/datariver_poc_v0/frontend",
+      "cwd_after": "/Volumes/SSD_Mac/workspace/datariver_poc_v0/frontend",
+      "unchanged": true,
+      "http_access_performed": false,
+      "lifecycle_action_performed": false
+    },
+    "containers": {
+      "running_count_before": 19,
+      "running_count_after": 19,
+      "sanitized_identity_state_sha256_before": "c27c9aaf70308863362d82272dec3de614e331f218cf6f6f2c0294103ddc6662",
+      "sanitized_identity_state_sha256_after": "c27c9aaf70308863362d82272dec3de614e331f218cf6f6f2c0294103ddc6662",
+      "unchanged": true,
+      "lifecycle_or_exec_action_performed": false,
+      "full_inspect_or_env_output_performed": false
+    }
+  },
+  "cold_candidate": {
+    "host": "127.0.0.1",
+    "port": 39081,
+    "pid": 91435,
+    "started_at": "2026-08-14T05:19:30+09:00",
+    "environment_file": "<existing-local-env-redacted>",
+    "health": {"http_status": 200, "latency_ms": 2.981, "bytes": 3},
+    "capabilities": {
+      "http_status": 200,
+      "latency_ms": 94.83,
+      "providers": [
+        {"name": "DataHub", "state": "available", "detail_code": "LIVE", "latency_ms": 4},
+        {"name": "Airflow", "state": "available", "detail_code": "AIRFLOW_API_V2", "latency_ms": 3},
+        {"name": "MinIO", "state": "disabled", "detail_code": "NOT_CONFIGURED", "latency_ms": null},
+        {"name": "LLM Chat", "state": "available", "detail_code": "LIVE", "latency_ms": 8},
+        {"name": "LLM Embedding", "state": "available", "detail_code": "LIVE", "latency_ms": 7},
+        {"name": "LLM Reranker", "state": "unavailable", "detail_code": "PROBE_FAILED", "latency_ms": 4},
+        {"name": "Neo4j", "state": "available", "detail_code": "LIVE", "latency_ms": 29}
+      ],
+      "grafana_embed": "NOT_CONFIGURED"
+    },
+    "catalog": {
+      "first_error_observation": {
+        "elapsed_seconds": 96.9,
+        "http_status": 503,
+        "error_code": "POC_PROVIDER_ERROR",
+        "detail": "The PostgreSQL Catalog projection is warming; retry shortly."
+      },
+      "first_success_observation": {
+        "elapsed_seconds": 200.2,
+        "within_8_minute_bound": true,
+        "http_status": 200,
+        "latency_ms": 113.823,
+        "total": 2000,
+        "total_exact": true,
+        "projection_version": 1,
+        "source_generation_prefix": "88c15c4274d4"
+      },
+      "postgres_projection": {
+        "row_count": 1,
+        "row_version": 1,
+        "projection_version": 1,
+        "item_count": 2000
+      },
+      "redis_inventory": {
+        "configured": true,
+        "key_exists": false,
+        "ttl_seconds": -2,
+        "status": "OPTIONAL_CACHE_ABSENT"
+      },
+      "provider_page_evidence": {
+        "page_size": 250,
+        "exact_boundary_items": 2000,
+        "urn_sort_warning_lines": 9,
+        "slow_operation_lines": 8,
+        "slow_operation_ms": [25417, 23457, 18371, 18828, 25588, 23570, 18782, 19249],
+        "terminal_confirmation_inference": "8 data pages plus one empty terminal confirmation request",
+        "raw_logs_or_request_variables_emitted": false
+      },
+      "warm_samples_ms": [101.289, 31.67, 48.51, 82.262, 121.669]
+    },
+    "api": {
+      "valid_zero_search": {"http_status": 200, "latency_ms": 13.307, "total": 0, "total_exact": true, "items": 0},
+      "tree_root": {"http_status": 200, "latency_ms": 2.519, "items": 2, "projection_version": 1},
+      "detail": {"http_status": 200, "latency_ms": 139.125, "asset_identity_sha256_prefix": "371b15e82133", "asset_type": "DATASET", "schema_fields_returned": 10, "schema_fields_total": 14, "source_version": "datahub-live"},
+      "zero_vs_provider_error_separated": true
+    },
+    "shutdown": {
+      "signal": "SIGTERM",
+      "natural_exit": true,
+      "elapsed_seconds": 0.114,
+      "under_10_seconds": true,
+      "force_kill_used": false,
+      "port_released": true
+    }
+  },
+  "warm_restart": {
+    "host": "127.0.0.1",
+    "port": 39081,
+    "pid": 93523,
+    "started_at": "2026-08-14T05:24:54+09:00",
+    "health": {"http_status": 200, "latency_ms": 74.865},
+    "catalog_immediate": {"http_status": 200, "latency_ms": 32.833, "total": 2000, "projection_source": "POSTGRES_CURRENT_PROJECTION", "source_generation_prefix": "88c15c4274d4"},
+    "catalog_after_10_seconds": {"http_status": 200, "latency_ms": 119.133, "total": 2000, "projection_source": "POSTGRES_CURRENT_PROJECTION", "source_generation_prefix": "88c15c4274d4"},
+    "new_inventory_warning_lines": 0,
+    "new_slow_operation_lines": 0,
+    "full_scan_reused": false,
+    "shutdown": {"signal": "SIGTERM", "natural_exit": true, "elapsed_seconds": 0.115, "under_10_seconds": true, "force_kill_used": false, "port_released": true}
+  },
+  "scheduler_mcl": {
+    "scheduler_requested": false,
+    "scheduler_enabled": false,
+    "disabled_reason": "DISABLED",
+    "required_mcl_bindings_present": 0,
+    "required_mcl_bindings_total": 9,
+    "actual_catch_up": "NOT_EXECUTED",
+    "ledger_checkpoint_or_kafka_state_mutated": false
+  },
+  "validation_scope": {
+    "full_local_validation_repeated": false,
+    "focused_regression_repeated": false,
+    "reason": "actual-provider runtime directly proved the repaired completion and shutdown boundaries; the contract says not to repeat full local validation"
+  },
+  "debt": [
+    "optional Redis inventory key absent",
+    "LLM Reranker unavailable / PROBE_FAILED",
+    "MCL and scheduler actual catch-up NOT_EXECUTED because scheduler is disabled and required bindings are absent"
+  ],
+  "blocking_findings": [],
+  "not_executed": [
+    "DataHub metadata mutation",
+    "Kafka read or offset mutation",
+    "Schema Registry, Airflow, or MinIO mutation",
+    "container, network, or volume lifecycle",
+    "existing 39080 HTTP access, termination, or restart",
+    "dependency installation or lockfile mutation",
+    "product, test, or configuration repair",
+    "push, merge, rebase, publication, PREP, OPS, TARGET",
+    "G1, G2, G3, or G4 approval"
+  ],
+  "documentation_changed_paths": [
+    ".orchestration/evidence/DEV-INTEGRATION-CHECKPOINT-01-R1.md",
+    ".orchestration/receipts/DEV-INTEGRATION-CHECKPOINT-01-R1.json"
+  ],
+  "final_state": {
+    "candidate_pids_stopped": [91435, 93523],
+    "candidate_ports_free": [39081],
+    "existing_39080_unchanged": true,
+    "containers_unchanged": true,
+    "temporary_dependency_symlink_removed": true,
+    "product_source_modified": false,
+    "secret_values_printed": false
+  },
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  }
+}
