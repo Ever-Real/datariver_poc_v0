@@ -26,6 +26,8 @@ COPY --from=build /source/frontend/node_modules/ ./node_modules/
 COPY frontend/package.json ./package.json
 COPY frontend/poc-server.mjs ./poc-server.mjs
 COPY frontend/poc-state-store.mjs ./poc-state-store.mjs
+COPY frontend/poc-change-history-scheduler.mjs ./poc-change-history-scheduler.mjs
+COPY frontend/poc-mcl-capture.mjs ./poc-mcl-capture.mjs
 COPY frontend/poc-assets/ ./poc-assets/
 
 ENV POC_SERVER_HOST=0.0.0.0 \
