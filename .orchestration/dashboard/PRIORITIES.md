@@ -7,13 +7,11 @@
 뜻하지 않는다. 상태 값은 `NOT_STARTED`, `IN_PROGRESS`, `IMPLEMENTED`, `VALIDATION_PASS`,
 `RUNTIME_VERIFIED`, `BLOCKED`, `DEFERRED`, `PENDING_AUDIT`만 사용한다.
 
-## 최우선 5개
+## 최우선 3개
 
 1. `T07`: 변경 이력 모니터링과 주간 CR 화면 구현을 시작한다.
-2. `T06B-INDEPENDENT-VALIDATION`: KST 주간 경계 보수를 새 작업트리에서 독립 재검증한다.
-3. `T08`: 카탈로그·이력·권한·화면을 독립 통합 검증한다.
-4. `T09`: 전체 증적과 권위·보존·성능 경계를 감사한다.
-5. `TARGET-RECHECK`: 보존 정책·MCL·Schema Registry의 실제 상태를 재확인한다.
+2. `T08`: 카탈로그·이력·권한·화면을 독립 통합 검증한다.
+3. `T09`: 전체 증적과 권위·보존·성능 경계를 감사한다.
 
 ## 작업 상태
 
@@ -28,7 +26,7 @@
 | SCHEDULER | KST 일일 실행·단일 실행·오래된 작업 차단; `PENDING_T09` | 자동 변경 이력 갱신 | VALIDATION_PASS | 40 | R2 | T04, T09 | 비활성 상태로 실제 따라잡기 실행 미실행 |
 | T05 | 현재상태 투영·원자 교체·삭제·캐시·벡터 세대 차단·성능; `PENDING_T09` | 최신 카탈로그 검색·트리·상세 | RUNTIME_VERIFIED | 40 | R2 | T03N, T09 | DEV 실제 제공자 초기·재시작 경로에서 정확히 2,000건과 검색·트리·상세 확인 |
 | T06A-USER-SYSTEM | 관리자·역할·담당자와 User/System 권위; `PENDING_T09` | 관리자 범위 설정과 담당자별 접근 | VALIDATION_PASS | 30 | R3 | T03N, T09 | 실제 서비스 주체·PostgreSQL 통합 미실행 |
-| T06B-CR | 사건 조회·CR 연결/해제·KST 주간 집계; `PENDING_T09` | CR 연결 이력과 주간 현황 | IMPLEMENTED | 30 | R3 | T06A-USER-SYSTEM, 독립 재검증, T09 | KST 보수 자체 검증만 통과; 실제 PostgreSQL·DataHub 미실행 |
+| T06B-CR | 사건 조회·CR 연결/해제·KST 주간 집계; `PENDING_T09` | CR 연결 이력과 주간 현황 | VALIDATION_PASS | 30 | R3 | T06A-USER-SYSTEM, T09 | 현재 후보 독립 소스 검증의 native Node 전체 59/59 통과; 실제 PostgreSQL·DataHub 미실행 |
 | PLATFORM-REPAIR | Docker `import`/`COPY`·환경 전달·빈 비밀 기본값 보수; `PENDING_T09` | 같은 설정으로 기동 가능한 패키지 | VALIDATION_PASS | 20 | R2 | DEV-INTEGRATION-CHECKPOINT-01-R1, T09 | 정적 설정 검증 완료; 이미지와 컨테이너 변경 미실행 |
 | DEV-INTEGRATION-CHECKPOINT-01-R1 | 제품 SHA를 포함한 실제 제공자 DEV 체크포인트 | T07 착수용 신뢰 기준선 | RUNTIME_VERIFIED | 20·50 | R2 | T03N~T06B, PLATFORM-REPAIR | `PASS_WITH_DEBT`; 초기·재시작 기동과 카탈로그 핵심 경로 확인, 후보 프로세스 종료 |
 | T07 | 변경 이력 내장 모니터링과 CR 주간 화면 구현 | 서비스 안의 이력·주간 대시보드 | NOT_STARTED | 60 | R2 | DEV-INTEGRATION-CHECKPOINT-01-R1 충족 | 저장소 구현 증적 없음; 다음 작업 |
@@ -52,15 +50,16 @@
 - [x] T03 Python 비통합과 T03N Node 소스 검증을 분리했다.
 - [x] T04 MCL과 SCHEDULER의 소스 검증 통과를 실제 런타임 실행과 분리했다.
 - [x] DEV 실제 제공자 체크포인트에서 T05 카탈로그·검색·트리·상세와 재시작 경계를 확인했다.
+- [x] T06B는 현재 후보의 native Node 전체 59/59 독립 검증을 통과했으며 T07 선행 차단 조건이 아니다.
 - [x] 선택형 Redis 인벤토리 키 부재와 LLM Reranker `PROBE_FAILED`를 비차단 기술 부채로 유지했다.
-- [ ] T07을 착수하고 T06B KST 보수를 독립 재검증한 뒤 T08, T09 순서로 진행한다.
+- [ ] T07, T08, T09 순서로 진행한다.
 - [ ] TARGET-RECHECK와 G1~G4 승인 전 PREP·OPS를 실행하지 않는다.
 
 ## 다음 3개
 
 1. `T07`
-2. `T06B-INDEPENDENT-VALIDATION`
-3. `T08`
+2. `T08`
+3. `T09`
 
 ## 대표 근거
 
