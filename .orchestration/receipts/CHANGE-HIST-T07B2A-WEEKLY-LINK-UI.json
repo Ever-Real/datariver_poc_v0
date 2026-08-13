@@ -1,0 +1,51 @@
+{
+  "task": "CHANGE-HIST-T07B2A-WEEKLY-LINK-UI",
+  "outcome": "IMPLEMENTED_PENDING_INDEPENDENT_VALIDATION",
+  "exact_base_sha": "bdd96fb02762aa8d510ec3021a14212a83c4a125",
+  "product_sha": "5493517466334557c9de57bd15f28a43ff73ff4f",
+  "environment": {
+    "platform": "macOS arm64",
+    "node": "v25.9.0",
+    "npm": "11.12.1"
+  },
+  "product_paths": [
+    "frontend/src/features/governance/GovernancePage.tsx",
+    "frontend/src/features/governance/GovernancePage.test.tsx",
+    "frontend/src/features/governance/DetectedChangeCrPanel.tsx",
+    "frontend/src/features/governance/DetectedChangeCrPanel.test.tsx",
+    "frontend/src/features/governance/changeHistoryCr.css"
+  ],
+  "evidence_paths": [
+    ".orchestration/evidence/CHANGE-HIST-T07B2A-WEEKLY-LINK-UI.md",
+    ".orchestration/receipts/CHANGE-HIST-T07B2A-WEEKLY-LINK-UI.json"
+  ],
+  "verification": {
+    "npm_ci_offline_existing_lock": "PASS_368_PACKAGES_LOCK_UNCHANGED",
+    "focused_governance_vitest": "PASS_2_FILES_41_TESTS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build_poc": "PASS_WITH_EXISTING_CHUNK_ADVISORY",
+    "diff_check": "PASS",
+    "allowlist": "PASS"
+  },
+  "initial_non_pass_runs": [
+    "DEPENDENCIES_ABSENT_BEFORE_PREAPPROVED_NPM_CI_OFFLINE"
+  ],
+  "not_executed": [
+    "FULL_REPOSITORY_TEST_SUITE",
+    "BROWSER_RUNTIME_OR_CREDENTIALLESS_SMOKE",
+    "RUNTIME_OR_PROVIDER_PROBE_OR_MUTATION",
+    "CONTAINER_SERVICE_NETWORK_VOLUME_PROCESS_MUTATION",
+    "PUSH_MERGE_PREP_OPS_TARGET"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  },
+  "blockers": [],
+  "remaining": [
+    "FRESH_INDEPENDENT_VALIDATION"
+  ]
+}
