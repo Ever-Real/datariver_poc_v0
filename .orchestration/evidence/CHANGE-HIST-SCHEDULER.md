@@ -1,15 +1,12 @@
-# CHANGE-HIST-SCHEDULER 구현 증적
+# CHANGE-HIST-SCHEDULER 검증 증적
 
 - 기준 SHA: `4eb9ce95ec45515f5954350b27abf2874c0dd9da`
+- 제품 커밋: `660d551059e007850ad41ab2773753fe468cf58c`
 - 검증 런타임: Node `v25.9.0` (Node 22로 오표기하지 않음)
-- 구현: 단일 POC 서버 내부의 KST/IANA 일일 scheduler, startup missed-run catch-up,
-  PostgreSQL session advisory lock singleton, MCL capture 뒤 T05 Catalog reconciliation 순서,
-  두 단계와 receipt write가 모두 성공한 경우에만 성공 boundary 기록, graceful shutdown,
-  경계 검증 수동 trigger, 기본 비활성 및 MCL 설정 누락 시 기존 startup 유지.
 - dependency/framework/service/container 추가: 없음
 - package/lock 변경: 없음 (`npm ci --ignore-scripts`는 기존 exact lockfile 검증 설치에만 사용)
 
-## 실행 증적
+## 실행 결과
 
 - `node --test poc-change-history-scheduler.test.mjs poc-state-store.test.mjs`: PASS, 12/12
 - `npm run lint`: PASS
