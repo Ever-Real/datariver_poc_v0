@@ -6,6 +6,10 @@ import { extname, join, normalize, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
 import { createPocStateStore } from './poc-state-store.mjs'
+import {
+  createPocChangeHistoryScheduler,
+  loadPocChangeHistorySchedulerConfig,
+} from './poc-change-history-scheduler.mjs'
 
 const sourceDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const staticDirectory = join(sourceDirectory, 'dist-poc')
@@ -1088,7 +1092,7 @@ function datahubInventoryProjection(items) {
   }
 }
 
-function startDatahubInventoryRefresh() {
+export function startDatahubInventoryRefresh() {
   if (inventoryRefreshPromise) return inventoryRefreshPromise
   inventoryRefreshPromise = (async () => {
     const items = []
@@ -3684,8 +3688,25 @@ export function createPocServer({ stateStore } = {}) {
   })
 }
 
-export async function startPocServer() {
+export async function startPocServer({ stateStore } = {}) {
   if (!existsSync(join(staticDirectory, 'poc.html'))) throw new Error('Run npm run build:poc before starting the POC server.')
+  if (stateStore) pocStateStore = stateStore
+  const schedulerConfig = loadPocChangeHistorySchedulerConfig()
+  let captureMcl
+  if (schedulerConfig.enabled) {
+    const { createPocMclCapture } = await import('./poc-mcl-capture.mjs')
+    const capture = createPocMclCapture({ stateStore: pocStateStore })
+    captureMcl = () => capture.run()
+  }
+  const scheduler = createPocChangeHistoryScheduler({
+    config: schedulerConfig,
+    stateStore: pocStateStore,
+    captureMcl,
+    reconcileCatalog: () => startDatahubInventoryRefresh(),
+    onError(error) {
+      process.stderr.write(`POC change-history scheduler: ${error instanceof Error ? error.message : String(error)}\n`)
+    },
+  })
   const server = createPocServer()
   const host = process.env.POC_SERVER_HOST?.trim() || '0.0.0.0'
   const port = Number(process.env.POC_SERVER_PORT || process.env.POC_PORT || 39080)
@@ -3695,11 +3716,34 @@ export async function startPocServer() {
     void datahubInventory().catch(() => undefined)
   }
   if (datahub && llm.embedding) scheduleCatalogEmbeddingRefresh()
+  await scheduler.start()
+  let stopping
+  server.stopPoc = () => {
+    if (!stopping) stopping = (async () => {
+      await scheduler.stop()
+      await pocStateStore.close?.()
+    })()
+    return stopping
+  }
+  server.triggerChangeHistoryScheduler = (scheduledFor) => scheduler.triggerManual(scheduledFor)
+  server.on('close', () => { void server.stopPoc() })
   return server
 }
 
 if (resolve(process.argv[1] || '') === resolve(fileURLToPath(import.meta.url))) {
-  startPocServer().catch((error) => {
+  startPocServer().then((server) => {
+    let shuttingDown = false
+    const shutdown = async () => {
+      if (shuttingDown) return
+      shuttingDown = true
+      await server.stopPoc()
+      await new Promise((resolvePromise, reject) => server.close((error) => (
+        error ? reject(error) : resolvePromise()
+      )))
+    }
+    process.once('SIGINT', () => { void shutdown() })
+    process.once('SIGTERM', () => { void shutdown() })
+  }).catch((error) => {
     process.stderr.write(`${error instanceof Error ? error.stack : String(error)}\n`)
     process.exitCode = 1
   })

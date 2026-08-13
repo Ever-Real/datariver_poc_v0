@@ -224,6 +224,65 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   }
 })
 
+test('locks singleton scheduling and records success only after the ordered task succeeds', async () => {
+  let stored
+  let failReceipt = false
+  let unlocked = 0
+  let released = 0
+  const client = {
+    async query(sql, parameters = []) {
+      const normalized = String(sql).replace(/\s+/g, ' ').trim()
+      if (normalized.startsWith('SELECT pg_try_advisory_lock')) return { rows: [{ acquired: true }] }
+      if (normalized === 'SELECT value FROM poc_state WHERE scope = $1') {
+        return { rows: stored ? [{ value: stored }] : [] }
+      }
+      if (normalized.startsWith('INSERT INTO poc_state')) {
+        if (failReceipt) throw new Error('receipt write failed')
+        stored = JSON.parse(parameters[1])
+        return { rows: [] }
+      }
+      if (normalized.startsWith('SELECT pg_advisory_unlock')) {
+        unlocked += 1
+        return { rows: [{ pg_advisory_unlock: true }] }
+      }
+      throw new Error(`Unexpected scheduler SQL: ${normalized}`)
+    },
+    release() { released += 1 },
+  }
+  const pool = {
+    async query() { return { rows: [] } },
+    async connect() { return client },
+  }
+  const store = createPocStateStore({ databasePool: pool })
+  const command = {
+    lockName: 'scheduler-state-test',
+    scheduledFor: '2026-08-13T15:00:00.000Z',
+    trigger: 'scheduled',
+  }
+  await assert.rejects(
+    store.runChangeHistoryScheduler(command, async () => { throw new Error('T05 failed') }),
+    /T05 failed/,
+  )
+  assert.equal(stored, undefined, 'a task failure must not mark the schedule successful')
+  failReceipt = true
+  await assert.rejects(
+    store.runChangeHistoryScheduler(command, async () => ({ ordered: true })),
+    /receipt write failed/,
+  )
+  failReceipt = false
+  assert.equal(stored, undefined, 'a receipt failure must not mark the schedule successful')
+  const success = await store.runChangeHistoryScheduler(command, async () => ({ ordered: true }))
+  assert.equal(success.status, 'succeeded')
+  assert.equal(stored.last_successful_schedule, command.scheduledFor)
+  assert.equal(stored.trigger, 'scheduled')
+  let replayedTask = false
+  const replay = await store.runChangeHistoryScheduler(command, async () => { replayedTask = true })
+  assert.equal(replay.status, 'already_completed')
+  assert.equal(replayedTask, false)
+  assert.equal(unlocked, 4)
+  assert.equal(released, 4)
+})
+
 test('atomically inserts, replays, fans out, and advances a partition checkpoint', async () => {
   const database = createDatabaseDouble()
   const store = createPocStateStore({ databasePool: database.pool })

@@ -909,6 +909,60 @@ export function createPocStateStore({ databasePool } = {}) {
     }
   }
 
+  async function runChangeHistoryScheduler(command, task) {
+    if (!command || typeof command !== 'object' || typeof task !== 'function') {
+      throw new Error('The POC change-history scheduler command is invalid.')
+    }
+    const lockName = requireBoundedString(command.lockName, 'lockName', 255)
+    const scheduledFor = explicitSchedulerTimestamp(command.scheduledFor)
+    const trigger = requireOneOf(command.trigger, 'trigger', ['scheduled', 'manual'])
+    await startDatabase()
+    if (!pool) throw new Error('PostgreSQL is required for the POC change-history scheduler.')
+    const client = await pool.connect()
+    let locked = false
+    try {
+      const lock = await client.query(
+        'SELECT pg_try_advisory_lock(hashtextextended($1, 0)) AS acquired',
+        [lockName],
+      )
+      locked = lock.rows[0]?.acquired === true
+      if (!locked) return { status: 'locked', scheduledFor }
+      const scope = `change-history-scheduler-v1:${lockName}`
+      const current = await client.query('SELECT value FROM poc_state WHERE scope = $1', [scope])
+      if (current.rows[0]?.value?.last_successful_schedule === scheduledFor) {
+        return { status: 'already_completed', scheduledFor }
+      }
+      const result = await task()
+      const completedAt = new Date().toISOString()
+      const receipt = {
+        version: 1,
+        last_successful_schedule: scheduledFor,
+        completed_at: completedAt,
+        trigger,
+      }
+      await client.query(`
+        INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
+        ON CONFLICT (scope) DO UPDATE
+          SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
+      `, [scope, JSON.stringify(receipt)])
+      return { status: 'succeeded', scheduledFor, completedAt, result }
+    } finally {
+      if (locked) {
+        await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [lockName])
+      }
+      client.release()
+    }
+  }
+
+  async function close() {
+    await Promise.allSettled([
+      redis?.isOpen ? redis.quit() : undefined,
+      pool && !databasePool ? pool.end() : undefined,
+    ])
+    redis = undefined
+    if (!databasePool) pool = undefined
+  }
+
   return {
     read,
     write,
@@ -924,8 +978,21 @@ export function createPocStateStore({ databasePool } = {}) {
     initializeChangeHistoryCaptureBoundaries,
     appendChangeHistoryCapture,
     appendChangeHistoryCrLink,
+    runChangeHistoryScheduler,
+    close,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
   }
+}
+
+function explicitSchedulerTimestamp(value) {
+  if (typeof value !== 'string' || !value.endsWith('Z')) {
+    throw new Error('scheduledFor must be an explicit UTC timestamp.')
+  }
+  const parsed = new Date(value)
+  if (!Number.isFinite(parsed.getTime()) || parsed.toISOString() !== value) {
+    throw new Error('scheduledFor must be an explicit UTC timestamp.')
+  }
+  return value
 }
 
 function normalizeChangeHistoryBoundaries(command) {
