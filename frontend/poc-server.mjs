@@ -1001,11 +1001,18 @@ async function changeHistoryApi(request, response, url, context) {
   if (request.method === 'GET' && url.pathname === '/api/v1/change-history/weekly') {
     const weekStart = url.searchParams.get('week_start')
     if (!/^\d{4}-\d{2}-\d{2}$/.test(weekStart || '')) throw accessError(400, 'WEEK_START_INVALID', 'week_start must be YYYY-MM-DD.')
+    const dayMilliseconds = 24 * 60 * 60 * 1000
+    const kstOffsetMilliseconds = 9 * 60 * 60 * 1000
     const start = new Date(`${weekStart}T00:00:00+09:00`)
-    if (!Number.isFinite(start.getTime()) || start.getUTCDay() !== 1 || start.toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }) !== weekStart) {
+    const kstDayNumber = (start.getTime() + kstOffsetMilliseconds) / dayMilliseconds
+    const kstWeekday = ((kstDayNumber + 3) % 7 + 7) % 7
+    const normalizedKstDate = Number.isFinite(start.getTime())
+      ? new Date(start.getTime() + kstOffsetMilliseconds).toISOString().slice(0, 10)
+      : undefined
+    if (normalizedKstDate !== weekStart || kstWeekday !== 0) {
       throw accessError(400, 'WEEK_START_INVALID', 'week_start must be a valid KST Monday.')
     }
-    const end = new Date(start.getTime() + 7 * 86400000)
+    const end = new Date(start.getTime() + 7 * dayMilliseconds)
     const inWeek = rows.filter((row) => row.event.source_occurred_at && Date.parse(row.event.source_occurred_at) >= start.getTime() && Date.parse(row.event.source_occurred_at) < end.getTime())
     const unknown = new Set(rows.filter((row) => !row.event.source_occurred_at).map((row) => row.event.normalized_change_transaction_id)).size
     const transactions = new Map()
@@ -1032,7 +1039,7 @@ async function changeHistoryApi(request, response, url, context) {
     }
     return json(response, 200, {
       week_start: weekStart,
-      week_end_exclusive: end.toLocaleDateString('sv-SE', { timeZone: 'Asia/Seoul' }),
+      week_end_exclusive: new Date(end.getTime() + kstOffsetMilliseconds).toISOString().slice(0, 10),
       timezone: 'Asia/Seoul', as_of: new Date().toISOString(),
       policy_version: document.policy.version, policy_hash: canonicalHash(document),
       count_unit: 'DISTINCT_NORMALIZED_CHANGE_TRANSACTION', total_count: transactions.size,
