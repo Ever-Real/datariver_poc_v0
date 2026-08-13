@@ -455,7 +455,7 @@ test('keeps opaque cursors server-side and aggregates the complete DataHub inven
   const dashboard = await (await fetch(`${pocOrigin}/poc-api/datahub/dashboard`)).json()
   assert.equal(dashboard.catalog_asset_count, 2)
   const coverage = await (await fetch(`${pocOrigin}/poc-api/datahub/profile-coverage`)).json()
-  assert.equal(coverage.source, 'DATAHUB_GMS_LIVE')
+  assert.ok(['DATAHUB_GMS_VECTOR_PROJECTION', 'PROCESS_MEMORY_CURRENT_PROJECTION'].includes(coverage.source))
   assert.equal(coverage.asset_count, 2)
   assert.equal(coverage.schema_available, 2)
   const systems = await (await fetch(`${pocOrigin}/poc-api/datahub/systems`)).json()

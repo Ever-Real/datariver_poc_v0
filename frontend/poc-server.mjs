@@ -1,4 +1,4 @@
-/* global AbortSignal, Buffer, URL, URLSearchParams, fetch, process, structuredClone */
+/* global AbortSignal, Buffer, URL, URLSearchParams, fetch, process, setTimeout, structuredClone */
 import { createHmac, createHash, randomUUID } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
@@ -35,6 +35,7 @@ const allowedDataHubAspects = new Set([
 
 const datahubCursorTtlMs = 5 * 60 * 1000
 const datahubInventoryTtlMs = 15 * 60 * 1000
+const datahubInventoryFailureRetryMs = 60 * 1000
 const maximumCursorEntries = 1_024
 const maximumInventoryPages = 10_002
 const catalogEmbeddingBatchSize = 32
@@ -51,8 +52,9 @@ const maximumChatMemoryTurnAnswerCharacters = 1_300
 const catalogSearchFieldNames = new Set(['SCHEMA', 'TABLE', 'COLUMN', 'TAG', 'TERM', 'DESCRIPTION'])
 const cursorEntries = new Map()
 let inventorySnapshot
-let hierarchySnapshot
-let embeddingInventorySnapshot
+let inventoryRefreshPromise
+let inventoryRefreshFailedAt
+let inventoryRefreshRetryAt = 0
 let catalogEmbeddingSnapshot
 let catalogEmbeddingRefreshPromise
 let catalogEmbeddingRefreshStartedAt = 0
@@ -117,8 +119,8 @@ function tokenProvider(prefix, urlName, { allowMissingToken = false } = {}) {
 
 const datahub = tokenProvider('DATAHUB_GMS', 'DATAHUB_GMS_URL', { allowMissingToken: true })
 const datahubCacheScope = datahub ? sha256(datahub.url).slice(0, 16) : 'disabled'
-const datahubInventoryCacheKey = `datahub-inventory-v4:${datahubCacheScope}`
-const datahubHierarchyCacheKey = `datahub-hierarchy-v4:${datahubCacheScope}`
+const datahubInventoryCacheKey = `datahub-inventory-v5:${datahubCacheScope}`
+const datahubInventoryStateScope = `catalog-inventory-v1:${datahubCacheScope}`
 const airflow = credentials('AIRFLOW', 'AIRFLOW_URL')
 const minioUrl = optionalUrl('MINIO_URL')
 const minioAccessKey = process.env.MINIO_ACCESS_KEY?.trim()
@@ -219,7 +221,7 @@ const runtimeFlags = Object.freeze({
   neo4j: Boolean(neo4j),
   pocState: true,
 })
-const pocStateStore = createPocStateStore()
+let pocStateStore = createPocStateStore()
 const allowedPocStateScopes = new Set(['core', 'knowledge', 'governance'])
 
 function json(response, status, value, extraHeaders = {}) {
@@ -311,83 +313,6 @@ async function requireOk(response, label) {
   return response
 }
 
-const datahubSearchQuery = `
-query DataRiverPocCatalog($input: ScrollAcrossEntitiesInput!) {
-  scrollAcrossEntities(input: $input) {
-    nextScrollId count total
-    searchResults {
-      entity {
-        urn type
-        ... on Dataset {
-          name
-          subTypes { typeNames }
-          platform { urn name }
-          properties { name description created customProperties { key value } }
-          editableProperties { description }
-          browsePathV2 {
-            path {
-              name
-              entity {
-                urn type
-                ... on Container {
-                  properties { name qualifiedName }
-                  subTypes { typeNames }
-                }
-              }
-            }
-          }
-          domain { domain { urn } }
-          ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } } }
-          globalTags: tags { tags { tag { name properties { name } } } }
-          glossaryTerms { terms { term { urn name } } }
-          schemaMetadata {
-            fields {
-              fieldPath label type nativeDataType description
-              globalTags { tags { tag { urn name properties { name } } } }
-              glossaryTerms { terms { term { urn name } } }
-            }
-          }
-        }
-      }
-    }
-  }
-}`
-
-const datahubInventoryQuery = `
-query DataRiverPocCatalogInventory($input: ScrollAcrossEntitiesInput!) {
-  scrollAcrossEntities(input: $input) {
-    nextScrollId count total
-    searchResults {
-      entity {
-        urn type
-        ... on Dataset {
-          name
-          subTypes { typeNames }
-          platform { urn name }
-          properties { name description created customProperties { key value } }
-          editableProperties { description }
-          browsePathV2 {
-            path {
-              name
-              entity {
-                urn type
-                ... on Container {
-                  properties { name qualifiedName }
-                  subTypes { typeNames }
-                }
-              }
-            }
-          }
-          domain { domain { urn } }
-          ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } } }
-          globalTags: tags { tags { tag { name properties { name } } } }
-          glossaryTerms { terms { term { urn name } } }
-        }
-      }
-    }
-  }
-}`
-
 const datahubEmbeddingInventoryQuery = `
 query DataRiverPocCatalogEmbeddingInventory($input: ScrollAcrossEntitiesInput!) {
   scrollAcrossEntities(input: $input) {
@@ -439,23 +364,6 @@ query DataRiverPocCatalogEmbeddingInventory($input: ScrollAcrossEntitiesInput!) 
             rowCount columnCount sizeInBytes timestampMillis
             partitionSpec { type partition }
           }
-        }
-      }
-    }
-  }
-}`
-
-const datahubHierarchyQuery = `
-query DataRiverPocCatalogHierarchy($input: ScrollAcrossEntitiesInput!) {
-  scrollAcrossEntities(input: $input) {
-    nextScrollId count total
-    searchResults {
-      entity {
-        urn type
-        ... on Dataset {
-          name
-          platform { urn name }
-          properties { name customProperties { key value } }
         }
       }
     }
@@ -665,16 +573,14 @@ function datahubAssetCacheKey(urn) {
 }
 
 async function invalidateDatahubCaches(urn) {
-  inventorySnapshot = undefined
-  hierarchySnapshot = undefined
-  embeddingInventorySnapshot = undefined
+  if (inventorySnapshot) inventorySnapshot.expiresAt = 0
   catalogEmbeddingSnapshot = undefined
   catalogEmbeddingRefreshStartedAt = 0
   await Promise.allSettled([
     pocStateStore.cacheDelete(datahubInventoryCacheKey),
-    pocStateStore.cacheDelete(datahubHierarchyCacheKey),
     ...(urn ? [pocStateStore.cacheDelete(datahubAssetCacheKey(urn))] : []),
   ])
+  if (datahub) void startDatahubInventoryRefresh().catch(() => undefined)
 }
 
 function datahubAspectDocument(payload) {
@@ -1019,15 +925,25 @@ function datasetAsset(entity) {
   }
 }
 
-function catalogMeta() {
+function catalogMeta({ projection = false } = {}) {
   const now = new Date().toISOString()
+  const current = projection ? inventorySnapshot?.projection : undefined
   return {
-    observed_at: now,
-    stale_at: null,
+    observed_at: current?.observed_at || now,
+    stale_at: current && inventorySnapshot.expiresAt <= Date.now()
+      ? new Date(inventorySnapshot.expiresAt).toISOString()
+      : null,
     projection_version: 1,
     policy_version: 'POC_LIVE_PROVIDER_V1',
     classification_policy_version: 1,
     authorization_generation: 1,
+    ...(current ? {
+      projection_source: pocStateStore.configured.postgres
+        ? 'POSTGRES_CURRENT_PROJECTION'
+        : 'PROCESS_MEMORY_CURRENT_PROJECTION',
+      source_generation: current.source_generation,
+      refresh_state: inventoryRefreshFailedAt ? 'DEGRADED_LAST_GOOD' : 'CURRENT_OR_REFRESHING',
+    } : {}),
   }
 }
 
@@ -1060,28 +976,21 @@ function cursorValue(token, scope) {
   return entry.value
 }
 
-async function datahubCatalogPage(
-  query,
-  limit,
-  providerCursor,
-  graphqlQuery = datahubSearchQuery,
-  assetMapper = datasetAsset,
-  timeoutMs = providerTimeoutMs,
-) {
+async function datahubCatalogPage(providerCursor) {
   const input = {
     types: ['DATASET'],
-    query,
-    count: limit,
+    query: '*',
+    count: 250,
     keepAlive: '1m',
     sortInput: { sortCriteria: [{ field: 'urn', sortOrder: 'ASCENDING' }] },
     searchFlags: { skipAggregates: true, skipHighlighting: true },
   }
   if (providerCursor) input.scrollId = providerCursor
-  const data = await datahubGraphql(graphqlQuery, {
+  const data = await datahubGraphql(datahubEmbeddingInventoryQuery, {
     input,
-  }, timeoutMs)
+  }, 60_000)
   const page = data.scrollAcrossEntities
-  const items = (page?.searchResults || []).map((item) => assetMapper(item.entity))
+  const items = (page?.searchResults || []).map((item) => detailedDatasetAsset(item.entity))
   const nextProviderCursor = typeof page?.nextScrollId === 'string' && page.nextScrollId
     ? page.nextScrollId
     : undefined
@@ -1094,23 +1003,86 @@ async function datahubCatalogPage(
 async function datahubInventory() {
   const now = Date.now()
   if (inventorySnapshot?.expiresAt > now) return inventorySnapshot.items
-  if (inventorySnapshot?.promise) return inventorySnapshot.promise
+  if (!inventorySnapshot) {
+    const stored = await storedDatahubInventory()
+    if (stored) inventorySnapshot = inventorySnapshotFrom(stored)
+  }
+  if (inventorySnapshot) {
+    if (inventorySnapshot.expiresAt <= now && inventoryRefreshRetryAt <= now) {
+      void startDatahubInventoryRefresh().catch(() => undefined)
+    }
+    return inventorySnapshot.items
+  }
+  const refresh = startDatahubInventoryRefresh()
+  if (pocStateStore.configured.postgres) {
+    void refresh.catch(() => undefined)
+    throw Object.assign(new Error('The PostgreSQL Catalog projection is warming; retry shortly.'), { statusCode: 503 })
+  }
+  return (await refresh).items
+}
+
+async function datahubEmbeddingInventory() {
+  return datahubInventory()
+}
+
+async function datahubHierarchyInventory() {
+  return datahubInventory()
+}
+
+function validDatahubInventory(value) {
+  return value?.projection_version === 1
+    && value.source_scope === datahubCacheScope
+    && typeof value.source_generation === 'string'
+    && Number.isFinite(Date.parse(value.observed_at))
+    && Array.isArray(value.items)
+    && value.items.every((item) => item && typeof item.id === 'string')
+}
+
+function inventorySnapshotFrom(projection) {
+  const observedAt = Date.parse(projection.observed_at)
+  return {
+    items: projection.items,
+    projection,
+    expiresAt: observedAt + datahubInventoryTtlMs,
+  }
+}
+
+async function storedDatahubInventory() {
   try {
     const cached = await pocStateStore.cacheGet(datahubInventoryCacheKey)
-    if (Array.isArray(cached)) {
-      inventorySnapshot = { items: cached, expiresAt: Date.now() + datahubInventoryTtlMs }
-      return cached
-    }
+    if (validDatahubInventory(cached)) return cached
   } catch {
-    // Redis is an optional acceleration layer. Provider reads remain available
-    // when cache startup or a cache operation fails.
+    // Redis is optional; PostgreSQL is the durable current read model.
   }
-  const promise = (async () => {
+  const stored = await pocStateStore.read(datahubInventoryStateScope)
+  return validDatahubInventory(stored.value) ? stored.value : undefined
+}
+
+function datahubInventoryProjection(items) {
+  const sorted = [...items].sort((left, right) => left.id.localeCompare(right.id))
+  const sourceGeneration = sha256(sorted.map((item) => {
+    const generationItem = { ...item }
+    delete generationItem.observed_at
+    delete generationItem.matches
+    return `${item.id}:${canonicalHash(generationItem)}`
+  }).join('\n'))
+  return {
+    projection_version: 1,
+    source_scope: datahubCacheScope,
+    source_generation: sourceGeneration,
+    observed_at: new Date().toISOString(),
+    items: sorted,
+  }
+}
+
+function startDatahubInventoryRefresh() {
+  if (inventoryRefreshPromise) return inventoryRefreshPromise
+  inventoryRefreshPromise = (async () => {
     const items = []
     const observed = new Set()
     let providerCursor
     for (let pageNumber = 0; pageNumber < maximumInventoryPages; pageNumber += 1) {
-      const page = await datahubCatalogPage('*', 250, providerCursor, datahubInventoryQuery)
+      const page = await datahubCatalogPage(providerCursor)
       for (const item of page.items) {
         if (!observed.has(item.id)) {
           observed.add(item.id)
@@ -1118,106 +1090,32 @@ async function datahubInventory() {
         }
       }
       if (!page.nextProviderCursor) {
-        inventorySnapshot = { items, expiresAt: Date.now() + datahubInventoryTtlMs }
-        try { await pocStateStore.cacheSet(datahubInventoryCacheKey, items, datahubInventoryTtlMs / 1_000) } catch { /* optional cache */ }
-        return items
+        const projection = datahubInventoryProjection(items)
+        await pocStateStore.write(datahubInventoryStateScope, projection)
+        inventorySnapshot = inventorySnapshotFrom(projection)
+        inventoryRefreshFailedAt = undefined
+        inventoryRefreshRetryAt = 0
+        try {
+          await pocStateStore.cacheSet(datahubInventoryCacheKey, projection, datahubInventoryTtlMs / 1_000)
+        } catch { /* Redis is optional. */ }
+        if (llm.embedding) {
+          catalogEmbeddingSnapshot = undefined
+          catalogEmbeddingRefreshStartedAt = 0
+          setTimeout(scheduleCatalogEmbeddingRefresh, 0)
+        }
+        return inventorySnapshot
       }
       providerCursor = page.nextProviderCursor
     }
     throw Object.assign(new Error('DataHub inventory exceeded the configured reconciliation page bound.'), { statusCode: 503 })
-  })()
-  inventorySnapshot = { promise, expiresAt: 0 }
-  try {
-    return await promise
-  } catch (error) {
-    inventorySnapshot = undefined
+  })().catch((error) => {
+    inventoryRefreshFailedAt = new Date().toISOString()
+    inventoryRefreshRetryAt = Date.now() + datahubInventoryFailureRetryMs
     throw error
-  }
-}
-
-async function datahubEmbeddingInventory() {
-  const now = Date.now()
-  if (embeddingInventorySnapshot?.expiresAt > now) return embeddingInventorySnapshot.items
-  if (embeddingInventorySnapshot?.promise) return embeddingInventorySnapshot.promise
-  const promise = (async () => {
-    const items = []
-    const observed = new Set()
-    let providerCursor
-    for (let pageNumber = 0; pageNumber < maximumInventoryPages; pageNumber += 1) {
-      const page = await datahubCatalogPage(
-        '*', 250, providerCursor, datahubEmbeddingInventoryQuery, detailedDatasetAsset, 60_000,
-      )
-      for (const item of page.items) {
-        if (!observed.has(item.id)) {
-          observed.add(item.id)
-          items.push(item)
-        }
-      }
-      if (!page.nextProviderCursor) {
-        embeddingInventorySnapshot = { items, expiresAt: Date.now() + datahubInventoryTtlMs }
-        return items
-      }
-      providerCursor = page.nextProviderCursor
-    }
-    throw Object.assign(new Error('DataHub embedding inventory exceeded the configured reconciliation page bound.'), { statusCode: 503 })
-  })()
-  embeddingInventorySnapshot = { promise, expiresAt: 0 }
-  try {
-    return await promise
-  } catch (error) {
-    embeddingInventorySnapshot = undefined
-    throw error
-  }
-}
-
-async function datahubHierarchyInventory() {
-  const now = Date.now()
-  if (inventorySnapshot?.expiresAt > now) return inventorySnapshot.items
-  if (hierarchySnapshot?.expiresAt > now) return hierarchySnapshot.items
-  if (hierarchySnapshot?.promise) return hierarchySnapshot.promise
-  try {
-    const completeInventory = await pocStateStore.cacheGet(datahubInventoryCacheKey)
-    if (Array.isArray(completeInventory)) {
-      inventorySnapshot = { items: completeInventory, expiresAt: Date.now() + datahubInventoryTtlMs }
-      hierarchySnapshot = { items: completeInventory, expiresAt: Date.now() + datahubInventoryTtlMs }
-      return completeInventory
-    }
-    const cached = await pocStateStore.cacheGet(datahubHierarchyCacheKey)
-    if (Array.isArray(cached)) {
-      hierarchySnapshot = { items: cached, expiresAt: Date.now() + datahubInventoryTtlMs }
-      return cached
-    }
-  } catch {
-    // Redis only accelerates this provider-derived hierarchy.
-  }
-  const promise = (async () => {
-    const items = []
-    const observed = new Set()
-    let providerCursor
-    for (let pageNumber = 0; pageNumber < maximumInventoryPages; pageNumber += 1) {
-      const page = await datahubCatalogPage('*', 250, providerCursor, datahubHierarchyQuery)
-      for (const item of page.items) {
-        if (!observed.has(item.id)) {
-          observed.add(item.id)
-          items.push(item)
-        }
-      }
-      if (!page.nextProviderCursor) {
-        hierarchySnapshot = { items, expiresAt: Date.now() + datahubInventoryTtlMs }
-        try { await pocStateStore.cacheSet(datahubHierarchyCacheKey, items, datahubInventoryTtlMs / 1_000) } catch { /* optional cache */ }
-        return items
-      }
-      providerCursor = page.nextProviderCursor
-    }
-    throw Object.assign(new Error('DataHub hierarchy exceeded the configured reconciliation page bound.'), { statusCode: 503 })
-  })()
-  hierarchySnapshot = { promise, expiresAt: 0 }
-  try {
-    return await promise
-  } catch (error) {
-    hierarchySnapshot = undefined
-    throw error
-  }
+  }).finally(() => {
+    inventoryRefreshPromise = undefined
+  })
+  return inventoryRefreshPromise
 }
 
 async function datahubEntity(urn) {
@@ -1352,38 +1250,18 @@ async function datahubCatalog(searchParameters) {
   const requested = Number(searchParameters.get('limit') || 50)
   const limit = Math.min(100, Math.max(1, Number.isFinite(requested) ? requested : 50))
   const filterKeys = ['asset_type', 'platform', 'database', 'schema', 'domain', 'classification', 'lifecycle']
-  const hasExactFilter = filterKeys.some((key) => searchParameters.has(key))
   const fields = catalogSearchFields(searchParameters)
-  if (hasExactFilter || (query !== '' && query !== '*')) {
-    const inventory = fields.includes('COLUMN') && query !== '' && query !== '*'
-      ? await datahubEmbeddingInventory()
-      : await datahubInventory()
-    const allItems = inventory
-      .filter((item) => assetMatches(item, searchParameters, fields))
-      .map((item) => ({ ...item, matches: catalogMatchFragments(item, query, fields) }))
-      .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
-    const scope = parameterScope('catalog-filtered', searchParameters, ['q', ...filterKeys, 'search_fields', 'limit'])
-    const page = offsetPage(allItems, searchParameters, scope, limit)
-    return {
-      ...page,
-      total: allItems.length,
-      total_exact: true,
-      meta: catalogMeta(),
-      match_mode: 'ALL',
-    }
-  }
-  const scope = parameterScope('catalog-provider', searchParameters, ['q', 'search_fields', 'limit'])
-  const providerCursor = cursorValue(searchParameters.get('cursor'), scope)
-  const page = await datahubCatalogPage(query, limit, providerCursor)
+  const allItems = (await datahubInventory())
+    .filter((item) => assetMatches(item, searchParameters, fields))
+    .map((item) => ({ ...item, matches: catalogMatchFragments(item, query, fields) }))
+    .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+  const scope = parameterScope('catalog-projection', searchParameters, ['q', ...filterKeys, 'search_fields', 'limit'])
+  const page = offsetPage(allItems, searchParameters, scope, limit)
   return {
-    items: page.items,
-    page: {
-      next_cursor: page.nextProviderCursor ? issueCursor(scope, page.nextProviderCursor) : null,
-      limit,
-    },
-    total: page.total,
+    ...page,
+    total: allItems.length,
     total_exact: true,
-    meta: catalogMeta(),
+    meta: catalogMeta({ projection: true }),
     match_mode: 'ALL',
   }
 }
@@ -1458,7 +1336,7 @@ async function datahubTree(searchParameters) {
     throw Object.assign(new Error('Unsupported DataHub hierarchy parent kind.'), { statusCode: 400 })
   }
   const scope = parameterScope('catalog-tree', searchParameters, ['parent_kind', 'platform', 'database', 'schema', 'limit'])
-  return { ...offsetPage(items, searchParameters, scope), meta: catalogMeta() }
+  return { ...offsetPage(items, searchParameters, scope), meta: catalogMeta({ projection: true }) }
 }
 
 function facetCounts(values) {
@@ -1485,7 +1363,7 @@ async function datahubFacets(searchParameters) {
     schemas: facetCounts(assets.map((item) => item.schema_name)),
     domains: facetCounts(assets.map((item) => item.domain)),
     lifecycles: facetCounts(assets.map((item) => item.lifecycle)),
-    meta: catalogMeta(),
+    meta: catalogMeta({ projection: true }),
   }
 }
 
@@ -1507,14 +1385,16 @@ async function datahubDashboard() {
     schemaMetrics.set(key, current)
     for (const term of asset.terms || []) glossaryTerms.add(term)
   }
+  const meta = catalogMeta({ projection: true })
   return {
-    observed_at: new Date().toISOString(),
+    observed_at: meta.observed_at,
     changes_by_state: {},
     catalog_asset_count: assets.length,
     catalog_described_asset_count: assets.filter((asset) => asset.description?.trim()).length,
     catalog_glossary_term_count: glossaryTerms.size,
     catalog_schema_metrics: [...schemaMetrics.values()].slice(0, 200),
     catalog_schema_metrics_truncated: schemaMetrics.size > 200,
+    meta,
   }
 }
 
@@ -1565,15 +1445,19 @@ async function datahubProfileCoverage() {
     byPlatform.set(platform, current)
   }
   const items = [...byPlatform.values()].sort((left, right) => left.platform.localeCompare(right.platform))
+  const meta = catalogMeta({ projection: true })
   return {
-    observed_at: new Date().toISOString(),
-    source: 'DATAHUB_GMS_LIVE',
+    observed_at: meta.observed_at,
+    source: pocStateStore.configured.postgres
+      ? 'POSTGRES_CURRENT_PROJECTION'
+      : 'PROCESS_MEMORY_CURRENT_PROJECTION',
     asset_count: assets.length,
     row_count_available: items.reduce((total, item) => total + item.row_count_available, 0),
     size_bytes_available: items.reduce((total, item) => total + item.size_bytes_available, 0),
     created_at_available: items.reduce((total, item) => total + item.created_at_available, 0),
     schema_available: items.reduce((total, item) => total + item.schema_available, 0),
     items,
+    meta,
   }
 }
 
@@ -3746,7 +3630,8 @@ function serveStatic(request, response, url) {
   return createReadStream(file).pipe(response)
 }
 
-export function createPocServer() {
+export function createPocServer({ stateStore } = {}) {
+  if (stateStore) pocStateStore = stateStore
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url || '/', 'http://poc.invalid')
@@ -3780,6 +3665,9 @@ export async function startPocServer() {
   const port = Number(process.env.POC_SERVER_PORT || process.env.POC_PORT || 39080)
   await new Promise((resolvePromise) => server.listen(port, host, resolvePromise))
   process.stdout.write(`DataRiver POC listening on http://${host}:${port}\n`)
+  if (datahub && pocStateStore.configured.postgres) {
+    void datahubInventory().catch(() => undefined)
+  }
   if (datahub && llm.embedding) scheduleCatalogEmbeddingRefresh()
   return server
 }
