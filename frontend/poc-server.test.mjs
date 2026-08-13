@@ -88,7 +88,7 @@ test('persists only fixed allowlisted POC state scopes in the server fallback st
   assert.equal((await fetch(new URL('/poc-api/state/arbitrary', origin))).status, 404)
 })
 
-test('uses the actual Redis adapter after a cold-start PostgreSQL failure', () => {
+test('bounds an unavailable Redis startup and retries after a cold-start PostgreSQL failure', () => {
   const result = spawnSync(process.execPath, [
     '--input-type=module',
     '--eval',
@@ -191,6 +191,9 @@ test('uses the actual Redis adapter after a cold-start PostgreSQL failure', () =
         await new Promise((resolvePromise) => redisServer.listen(0, '127.0.0.1', resolvePromise))
         const redisAddress = redisServer.address()
         assert.equal(typeof redisAddress, 'object')
+        await new Promise((resolvePromise, reject) => redisServer.close((error) => (
+          error ? reject(error) : resolvePromise()
+        )))
         Object.assign(process.env, {
           POC_ENV_FILE: 'poc-state-store.adapter.test.env.missing',
           POC_DATABASE_URL: '',
@@ -214,11 +217,23 @@ test('uses the actual Redis adapter after a cold-start PostgreSQL failure', () =
         await new Promise((resolvePromise) => pocServer.listen(0, '127.0.0.1', resolvePromise))
         const address = pocServer.address()
         assert.equal(typeof address, 'object')
-        const response = await fetch('http://127.0.0.1:' + address.port + '/poc-api/datahub/catalog?limit=20')
-        const payload = await response.json()
-        assert.equal(response.status, 200)
+        const startedAt = performance.now()
+        const unavailableResponse = await fetch(
+          'http://127.0.0.1:' + address.port + '/poc-api/datahub/catalog?limit=20',
+          { signal: AbortSignal.timeout(1500) },
+        )
+        const unavailableMilliseconds = performance.now() - startedAt
+        assert.equal(unavailableResponse.status, 503)
+        assert.ok(unavailableMilliseconds < 1500)
+
+        await new Promise((resolvePromise) => redisServer.listen(redisAddress.port, '127.0.0.1', resolvePromise))
+        const recoveredResponse = await fetch(
+          'http://127.0.0.1:' + address.port + '/poc-api/datahub/catalog?limit=20',
+        )
+        const payload = await recoveredResponse.json()
+        assert.equal(recoveredResponse.status, 200)
         assert.deepEqual(payload.items.map((item) => item.name), ['redis_last_good'])
-        assert.equal(postgresQueries, 1)
+        assert.equal(postgresQueries, 2)
         assert.equal(redisConnections, 1)
         assert.equal(redisGets, 1)
         pocServer.closeAllConnections()
@@ -229,8 +244,13 @@ test('uses the actual Redis adapter after a cold-start PostgreSQL failure', () =
         await new Promise((resolvePromise, reject) => redisServer.close((error) => (
           error ? reject(error) : resolvePromise()
         )))
-        process.stdout.write(JSON.stringify({ postgresQueries, redisConnections, redisGets }))
-        process.exit(0)
+        process.stdout.write(JSON.stringify({
+          unavailableStatus: unavailableResponse.status,
+          unavailableMilliseconds,
+          postgresQueries,
+          redisConnections,
+          redisGets,
+        }))
       } catch (error) {
         console.error(error)
         process.exit(1)
@@ -243,11 +263,15 @@ test('uses the actual Redis adapter after a cold-start PostgreSQL failure', () =
     env: { ...process.env },
   })
   assert.equal(result.status, 0, result.stderr || result.stdout)
-  assert.deepEqual(JSON.parse(result.stdout), {
-    postgresQueries: 1,
+  const observation = JSON.parse(result.stdout)
+  assert.deepEqual(observation, {
+    unavailableStatus: 503,
+    unavailableMilliseconds: observation.unavailableMilliseconds,
+    postgresQueries: 2,
     redisConnections: 1,
     redisGets: 1,
   })
+  assert.ok(observation.unavailableMilliseconds < 1500)
 })
 
 test('atomically fences in-memory Catalog embeddings to the active current generation', async () => {

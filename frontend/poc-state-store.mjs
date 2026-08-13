@@ -73,13 +73,16 @@ export function createPocStateStore({ databasePool } = {}) {
     if (!redisUrl || redis) return
     if (startingRedis) return startingRedis
     startingRedis = (async () => {
-      const client = createClient({ url: redisUrl })
+      const client = createClient({
+        url: redisUrl,
+        socket: { reconnectStrategy: false },
+      })
       client.on('error', () => undefined)
       try {
         await client.connect()
         redis = client
       } catch {
-        client.destroy()
+        if (client.isOpen) client.destroy()
       }
     })()
     try {
