@@ -18,6 +18,8 @@ import { FlowCanvas, type FlowCanvasEdge, type FlowCanvasNode } from '../../comp
 import { GovernedUnavailable } from '../../components/common/GovernedUnavailable'
 import { TruncatedText } from '../../components/common/TruncatedText'
 import { WorkflowStepper, type WorkflowStep } from '../../components/common/WorkflowStepper'
+import { ChangeHistoryApi } from '../change-history/changeHistoryApi'
+import type { ChangeHistoryEvent } from '../change-history/types'
 import { changeActionHints, changeStateLabel, type ChangeActionHint } from './changePresentation'
 
 interface ChangeRequestDetailDialogProps extends AssuranceActions {
@@ -100,6 +102,14 @@ function display(value: string | null | undefined): string {
 function eventTime(value: string): string {
   const parsed = new Date(value)
   return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('ko-KR', { hour12: false })
+}
+
+function changeHistoryTime(value: string): string {
+  const parsed = new Date(value)
+  return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString('ko-KR', {
+    hour12: false,
+    timeZone: 'Asia/Seoul',
+  })
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -232,10 +242,16 @@ export function ChangeRequestDetailDialog({
   const [testSaving, setTestSaving] = useState(false)
   const [testError, setTestError] = useState<unknown>()
   const [testValidationMessage, setTestValidationMessage] = useState<string>()
+  const [reverseHistory, setReverseHistory] = useState<ChangeHistoryEvent[]>([])
+  const [reverseHistoryLoading, setReverseHistoryLoading] = useState(false)
+  const [reverseHistoryError, setReverseHistoryError] = useState<unknown>()
   const busyRef = useRef(busy)
   const uploadIntent = useRef(0)
   const testMutationIntent = useRef(0)
   const testMutationController = useRef<AbortController | undefined>(undefined)
+  const reverseHistoryIntent = useRef(0)
+  const reverseHistoryCurrentId = useRef<string | undefined>(undefined)
+  const changeHistoryApi = useMemo(() => new ChangeHistoryApi(client), [client])
   const visibleError = actionError ?? error
   const hints = useMemo(() => value ? changeActionHints(value) : [], [value])
   const rows = useMemo(() => value ? targetRows(value) : [], [value])
@@ -277,6 +293,45 @@ export function ChangeRequestDetailDialog({
       setTestAttachmentId(currentTestAttachments.at(-1)?.id ?? '')
     }
   }, [currentTestAttachments, testAttachmentId])
+
+  useEffect(() => {
+    const changeRequestId = value?.id
+    const intent = ++reverseHistoryIntent.current
+    reverseHistoryCurrentId.current = open ? changeRequestId : undefined
+    if (!open || !changeRequestId) {
+      setReverseHistory([])
+      setReverseHistoryLoading(false)
+      setReverseHistoryError(undefined)
+      return
+    }
+    const controller = new AbortController()
+    setReverseHistory([])
+    setReverseHistoryLoading(true)
+    setReverseHistoryError(undefined)
+    changeHistoryApi.reverseHistory(changeRequestId, { limit: 50, signal: controller.signal })
+      .then((page) => {
+        if (
+          !controller.signal.aborted
+          && intent === reverseHistoryIntent.current
+          && reverseHistoryCurrentId.current === changeRequestId
+        ) setReverseHistory(page.items.slice(0, 50))
+      })
+      .catch((next) => {
+        if (
+          !controller.signal.aborted
+          && intent === reverseHistoryIntent.current
+          && reverseHistoryCurrentId.current === changeRequestId
+        ) setReverseHistoryError(next)
+      })
+      .finally(() => {
+        if (
+          !controller.signal.aborted
+          && intent === reverseHistoryIntent.current
+          && reverseHistoryCurrentId.current === changeRequestId
+        ) setReverseHistoryLoading(false)
+      })
+    return () => controller.abort()
+  }, [changeHistoryApi, open, value?.id])
 
   useEffect(() => {
     if (!open || !value || selectedStage !== 1) return
@@ -481,6 +536,36 @@ export function ChangeRequestDetailDialog({
 
           <WorkflowStepper steps={steps} currentIndex={activeStage} selectedIndex={selectedStage} onSelect={setSelectedStage} />
           <div className="rounded-enterprise border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] leading-5 text-slate-700" role="note"><strong className="text-navy-900">화면의 명령은 현재 상태를 기준으로 한 힌트입니다.</strong> 서버가 클릭할 때마다 현재 대상 권한, 요청자 분리, 인증 보증과 승인 요건을 다시 판단하며 인증 뒤 작업을 자동 재실행하지 않습니다.</div>
+
+          <section className="rounded-enterprise border border-slate-300 bg-white p-4 shadow-sm" aria-labelledby="reverse-history-heading">
+            <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+              <div>
+                <h3 id="reverse-history-heading" className="m-0 text-xs font-black text-navy-900">연결된 변경 이력</h3>
+                <p className="mb-0 mt-1 text-[11px] text-slate-500">서버가 현재 CR에 연결해 반환한 이력을 최대 50건까지 읽기 전용으로 표시합니다.</p>
+              </div>
+              <span className="text-[10px] text-slate-500">시간대 · KST (Asia/Seoul)</span>
+            </div>
+            {reverseHistoryLoading && <p role="status" className="m-0 text-xs text-slate-500">연결된 변경 이력을 불러오는 중입니다.</p>}
+            <ErrorNotice error={reverseHistoryError} />
+            {!reverseHistoryLoading && !reverseHistoryError && reverseHistory.length === 0 && <p className="m-0 text-xs text-slate-500">현재 권한 범위에서 연결된 변경 이력이 없습니다.</p>}
+            {!reverseHistoryLoading && reverseHistory.length > 0 && <div className="max-h-80 overflow-auto">
+              <table className="w-full table-fixed border-collapse text-left text-xs" aria-label="CR 연결 변경 이력">
+                <thead><tr className="border-b border-slate-300 text-[10px] text-slate-500 uppercase">
+                  <th className="w-40 p-2">발생 시각</th><th className="w-36 p-2">분류 / 작업</th><th className="p-2">자산 / 엔터티</th><th className="w-36 p-2">현재 단계</th><th className="w-52 p-2">현재 Primary</th>
+                </tr></thead>
+                <tbody>{reverseHistory.map((item) => {
+                  const occurredAt = item.source_occurred_at ?? item.detected_at
+                  return <tr className="border-b border-slate-200 align-top" key={item.event_id}>
+                    <td className="p-2"><time dateTime={occurredAt}>{changeHistoryTime(occurredAt)}</time><span className="mt-1 block text-[10px] text-slate-500">{item.source_occurred_at ? 'source_occurred_at' : 'source_occurred_at 없음 · detected_at 대체'}</span></td>
+                    <td className="p-2"><strong>{item.category}</strong><span className="mt-1 block text-slate-600">{item.operation}</span></td>
+                    <td className="p-2"><TruncatedText value={item.asset_urn} /><span className="mt-1 block break-all text-slate-600">{item.entity_key}</span></td>
+                    <td className="p-2"><span className="badge badge-soft">{item.current_stage}</span></td>
+                    <td className="p-2 break-all">{item.current_primary ? `${item.current_primary.change_request_id} · round ${item.current_primary.change_request_round}` : '없음'}</td>
+                  </tr>
+                })}</tbody>
+              </table>
+            </div>}
+          </section>
 
           {selectedStage === 0 && <section className="grid gap-4 lg:grid-cols-[300px_minmax(0,1fr)]" aria-labelledby="request-stage-heading">
             <h3 id="request-stage-heading" className="sr-only">1단계 요청 상세</h3>

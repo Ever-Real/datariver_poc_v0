@@ -7,6 +7,7 @@ import type {
   ChangeRequestSchemaOverview,
   ChangeRequestSummary,
 } from '../../api/types'
+import type { ChangeHistoryEvent } from '../change-history/types'
 import { GovernancePage } from './GovernancePage'
 
 vi.mock('./DetectedChangeCrPanel', () => ({
@@ -177,6 +178,32 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+function reverseEvent(overrides: Partial<ChangeHistoryEvent> = {}): ChangeHistoryEvent {
+  return {
+    event_id: 'a'.repeat(64),
+    transaction_id: 'b'.repeat(64),
+    asset_urn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,engineering.parts,PROD)',
+    entity_key: 'engineering.parts',
+    category: 'DOCUMENTATION',
+    change_type: 'METADATA_CHANGE',
+    source_aspect: 'datasetProperties',
+    operation: 'UPSERT',
+    precision: 'EXACT_MCL',
+    source_occurred_at: null,
+    detected_at: '2026-07-17T03:04:05.000Z',
+    captured_at: '2026-07-17T03:04:06.000Z',
+    system: { resolution: 'RESOLVED', system_id: 'system-1', provider_context: null },
+    locator: { platform: 'postgres', database_name: 'engineering', schema_name: 'public', asset_name: 'parts' },
+    assignee: { subject_id: 'steward-1', responsibility: 'DATA_STEWARD', system_id: 'system-1', priority: 1, basis: 'CURRENT_POC_PROJECTION' },
+    current_stage: 'RECEIVED',
+    allowed_link_actions: [],
+    current_primary: { change_request_id: 'change-1', change_request_round: 1 },
+    current_candidates: [],
+    link_version: 1,
+    ...overrides,
+  }
+}
+
 function renderPage(client: ApiClient, onStepUp = vi.fn(() => Promise.resolve())) {
   return render(<GovernancePage
     client={client}
@@ -193,6 +220,14 @@ async function openDetail(record: ChangeRequestRecord) {
   row.focus()
   fireEvent.keyDown(row, { key: 'Enter' })
   return screen.findByRole('dialog', { name: `${record.number} · ${record.title}` })
+}
+
+async function openDetailAfterRender(
+  request: (path: string, options?: RequestOptions) => Promise<unknown>,
+  record: ChangeRequestRecord,
+) {
+  renderPage(apiClient(request))
+  return openDetail(record)
 }
 
 describe('GovernancePage', () => {
@@ -415,6 +450,119 @@ describe('GovernancePage', () => {
     expect(row).toHaveFocus()
     const detailOptions = request.mock.calls.find(([path]) => path === `/change-requests/${existing.id}`)?.[1]
     expect(detailOptions?.signal).toBeInstanceOf(AbortSignal)
+  })
+
+  it('renders the bounded read-only reverse change history with KST detected-at fallback', async () => {
+    const existing = changeRequest()
+    const event = reverseEvent()
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([existing]))
+      if (path === `/change-requests/${existing.id}`) return Promise.resolve(existing)
+      if (path === `/change-requests/${existing.id}/attachments/page?limit=25`) return Promise.resolve({ items: [], page: { limit: 25, next_cursor: null } })
+      if (path === `/change-requests/${existing.id}/apply-report`) return Promise.reject(new Error('No apply report yet.'))
+      if (path === `/change-requests/${existing.id}/change-history?limit=50`) return Promise.resolve({ change_request_id: existing.id, items: [event], next_cursor: null, limit: 50 })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const dialog = await openDetailAfterRender(request, existing)
+
+    const table = await within(dialog).findByRole('table', { name: 'CR 연결 변경 이력' })
+    expect(within(table).getByText('DOCUMENTATION')).toBeInTheDocument()
+    expect(within(table).getByText('UPSERT')).toBeInTheDocument()
+    expect(within(table).getByText(event.entity_key)).toBeInTheDocument()
+    expect(within(table).getByText('RECEIVED')).toBeInTheDocument()
+    expect(within(table).getByText('change-1 · round 1')).toBeInTheDocument()
+    expect(within(table).getByText('source_occurred_at 없음 · detected_at 대체')).toBeInTheDocument()
+    expect(within(table).getByText(/12시 4분 5초/)).toBeInTheDocument()
+    const historyOptions = request.mock.calls.find(([path]) => path.endsWith('/change-history?limit=50'))?.[1]
+    expect(historyOptions?.signal).toBeInstanceOf(AbortSignal)
+    expect(historyOptions?.cache).toBe('no-store')
+  })
+
+  it('shows an authorized empty reverse history independently from CR detail', async () => {
+    const existing = changeRequest()
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([existing]))
+      if (path === `/change-requests/${existing.id}`) return Promise.resolve(existing)
+      if (path === `/change-requests/${existing.id}/attachments/page?limit=25`) return Promise.resolve({ items: [], page: { limit: 25, next_cursor: null } })
+      if (path === `/change-requests/${existing.id}/apply-report`) return Promise.reject(new Error('No apply report yet.'))
+      if (path === `/change-requests/${existing.id}/change-history?limit=50`) return Promise.resolve({ change_request_id: existing.id, items: [], next_cursor: null, limit: 50 })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const dialog = await openDetailAfterRender(request, existing)
+
+    expect(await within(dialog).findByText('현재 권한 범위에서 연결된 변경 이력이 없습니다.')).toBeInTheDocument()
+    expect(within(dialog).getByText('REQUEST REASON')).toBeInTheDocument()
+  })
+
+  it('keeps reverse-history denial isolated without closing or failing the CR dialog', async () => {
+    const existing = changeRequest()
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([existing]))
+      if (path === `/change-requests/${existing.id}`) return Promise.resolve(existing)
+      if (path === `/change-requests/${existing.id}/attachments/page?limit=25`) return Promise.resolve({ items: [], page: { limit: 25, next_cursor: null } })
+      if (path === `/change-requests/${existing.id}/apply-report`) return Promise.reject(new Error('No apply report yet.'))
+      if (path === `/change-requests/${existing.id}/change-history?limit=50`) return Promise.reject(problem(403, '변경 이력 조회 권한이 없습니다.'))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    const dialog = await openDetailAfterRender(request, existing)
+
+    expect(await within(dialog).findByText('변경 이력 조회 권한이 없습니다.')).toBeInTheDocument()
+    expect(within(dialog).getByText('REQUEST REASON')).toBeInTheDocument()
+    expect(within(dialog).getByRole('button', { name: '닫기' })).toBeEnabled()
+  })
+
+  it('aborts and rejects stale reverse history across close and CR id switch', async () => {
+    const first = changeRequest()
+    const second = changeRequest({ id: 'change-2', number: 'CR-2026-2', title: 'Second governed change' })
+    const staleHistory = deferred<unknown>()
+    let firstHistorySignal: AbortSignal | undefined
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([first, second]))
+      if (path === `/change-requests/${first.id}`) return Promise.resolve(first)
+      if (path === `/change-requests/${second.id}`) return Promise.resolve(second)
+      if (path.endsWith('/attachments/page?limit=25')) return Promise.resolve({ items: [], page: { limit: 25, next_cursor: null } })
+      if (path.endsWith('/apply-report')) return Promise.reject(new Error('No apply report yet.'))
+      if (path === `/change-requests/${first.id}/change-history?limit=50`) {
+        firstHistorySignal = options?.signal ?? undefined
+        return staleHistory.promise
+      }
+      if (path === `/change-requests/${second.id}/change-history?limit=50`) return Promise.resolve({
+        change_request_id: second.id,
+        items: [reverseEvent({ event_id: 'c'.repeat(64), entity_key: 'second.current', current_primary: { change_request_id: second.id, change_request_round: 1 } })],
+        next_cursor: null,
+        limit: 50,
+      })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    renderPage(apiClient(request))
+    const firstDialog = await openDetail(first)
+    await within(firstDialog).findByText('연결된 변경 이력을 불러오는 중입니다.')
+    fireEvent.click(within(firstDialog).getByRole('button', { name: '닫기' }))
+    expect(firstHistorySignal?.aborted).toBe(true)
+
+    const secondDialog = await openDetail(second)
+    expect(await within(secondDialog).findByText('second.current')).toBeInTheDocument()
+    act(() => staleHistory.resolve({ change_request_id: first.id, items: [reverseEvent({ entity_key: 'first.stale' })], next_cursor: null, limit: 50 }))
+    await waitFor(() => expect(within(secondDialog).queryByText('first.stale')).not.toBeInTheDocument())
+    expect(within(secondDialog).getByText('second.current')).toBeInTheDocument()
+  })
+
+  it('never issues a mutation request while loading reverse change history', async () => {
+    const existing = changeRequest()
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      void options
+      if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([existing]))
+      if (path === `/change-requests/${existing.id}`) return Promise.resolve(existing)
+      if (path === `/change-requests/${existing.id}/attachments/page?limit=25`) return Promise.resolve({ items: [], page: { limit: 25, next_cursor: null } })
+      if (path === `/change-requests/${existing.id}/apply-report`) return Promise.reject(new Error('No apply report yet.'))
+      if (path === `/change-requests/${existing.id}/change-history?limit=50`) return Promise.resolve({ change_request_id: existing.id, items: [], next_cursor: null, limit: 50 })
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    await openDetailAfterRender(request, existing)
+    await screen.findByText('현재 권한 범위에서 연결된 변경 이력이 없습니다.')
+
+    expect(request.mock.calls.every(([, options]) => !options?.method || options.method === 'GET')).toBe(true)
   })
 
   it('opens the bounded revision editor only when the server allows it and shows the new round', async () => {
