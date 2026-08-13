@@ -48,6 +48,7 @@ async function waitFor(predicate, message) {
 test('serves PostgreSQL last-good Catalog state without a synchronous provider scan', async () => {
   let providerRequests = 0
   let failSecondPage = false
+  let terminalPageIncomplete = false
   let providerAssets = [
     entity('inspection_results', 'Inspection evidence'),
     entity('wafer_events', 'Wafer evidence'),
@@ -67,7 +68,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
     const payload = { data: { scrollAcrossEntities: {
       count: pageAssets.length,
       total: providerAssets.length,
-      nextScrollId: !secondPage && providerAssets.length > 1 ? 'page-2' : null,
+      nextScrollId: !terminalPageIncomplete && !secondPage && providerAssets.length > 1 ? 'page-2' : null,
       searchResults: pageAssets.map((item) => ({ entity: item })),
     } } }
     response.writeHead(200, { 'Content-Type': 'application/json' })
@@ -163,6 +164,76 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
   assert.deepEqual(replacement.items.map((item) => item.name), ['wafer_events'])
   assert.equal(providerRequests, 0)
   await close(replacementServer)
+
+  const currentItem = structuredClone(persisted.items[0])
+  persisted.observed_at = new Date(Date.now() - 16 * 60 * 1_000).toISOString()
+  providerAssets = [
+    entity('terminal_first', 'First of an incomplete terminal page'),
+    entity('terminal_missing', 'Missing from the terminal page'),
+  ]
+  terminalPageIncomplete = true
+  providerRequests = 0
+  const incompleteModule = await import('./poc-server.mjs?catalog-performance-incomplete-terminal')
+  const incompleteServer = incompleteModule.createPocServer({ stateStore })
+  const incompleteOrigin = await listen(incompleteServer)
+  assert.equal((await fetch(`${incompleteOrigin}/poc-api/datahub/catalog?limit=20`)).status, 200)
+  await waitFor(() => providerRequests === 1, 'incomplete terminal provider page was not observed')
+  await new Promise((resolvePromise) => setTimeout(resolvePromise, 50))
+  assert.equal(writes, 2, 'an incomplete terminal page must not replace the last-good projection')
+  assert.deepEqual(persisted.items.map((item) => item.name), ['wafer_events'])
+  await close(incompleteServer)
+
+  terminalPageIncomplete = false
+  providerAssets = []
+  providerRequests = 0
+  const zeroModule = await import('./poc-server.mjs?catalog-performance-valid-zero-refresh')
+  const zeroServer = zeroModule.createPocServer({ stateStore })
+  const zeroOrigin = await listen(zeroServer)
+  assert.equal((await fetch(`${zeroOrigin}/poc-api/datahub/catalog?limit=20`)).status, 200)
+  await waitFor(() => writes === 3, 'valid empty inventory did not commit')
+  assert.equal(providerRequests, 1)
+  await close(zeroServer)
+
+  providerRequests = 0
+  const zeroStoredModule = await import('./poc-server.mjs?catalog-performance-valid-zero-stored')
+  const zeroStoredServer = zeroStoredModule.createPocServer({ stateStore })
+  const zeroStoredOrigin = await listen(zeroStoredServer)
+  const zeroStored = await (await fetch(`${zeroStoredOrigin}/poc-api/datahub/catalog?limit=20`)).json()
+  assert.deepEqual(zeroStored.items, [])
+  assert.equal(providerRequests, 0)
+  await close(zeroStoredServer)
+
+  const redisProjection = structuredClone(persisted)
+  redisProjection.source_generation = 'redis-stale-generation'
+  redisProjection.items = [{ ...currentItem, name: 'redis_old' }]
+  redisProjection.observed_at = new Date().toISOString()
+  const postgresProjection = structuredClone(redisProjection)
+  postgresProjection.source_generation = 'postgres-current-generation'
+  postgresProjection.items = [{ ...currentItem, name: 'postgres_new' }]
+  let postgresReads = 0
+  let redisReads = 0
+  const splitSuccessStore = {
+    configured: { postgres: true, redis: true },
+    async read() {
+      postgresReads += 1
+      return { value: structuredClone(postgresProjection), version: 2 }
+    },
+    async write() { throw new Error('a fresh valid projection must not refresh synchronously') },
+    async cacheGet() {
+      redisReads += 1
+      return structuredClone(redisProjection)
+    },
+    async cacheSet() {},
+    async cacheDelete() {},
+  }
+  const splitModule = await import('./poc-server.mjs?catalog-performance-postgres-authoritative')
+  const splitServer = splitModule.createPocServer({ stateStore: splitSuccessStore })
+  const splitOrigin = await listen(splitServer)
+  const splitPayload = await (await fetch(`${splitOrigin}/poc-api/datahub/catalog?limit=20`)).json()
+  assert.deepEqual(splitPayload.items.map((item) => item.name), ['postgres_new'])
+  assert.equal(postgresReads, 1)
+  assert.equal(redisReads, 0, 'valid Redis must not mask the authoritative PostgreSQL projection')
+  await close(splitServer)
   await close(provider)
 
   process.stdout.write(`${JSON.stringify({
@@ -175,6 +246,9 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
     warm_payload_bytes: Buffer.byteLength(warmText),
     warm_parse_ms: Number(parseMilliseconds.toFixed(3)),
     partial_failure_preserved_items: 2,
+    terminal_incomplete_preserved_items: 1,
+    valid_zero_items: 0,
+    split_success_source: 'POSTGRES_CURRENT_PROJECTION',
     replacement_items: 1,
   })}\n`)
 })

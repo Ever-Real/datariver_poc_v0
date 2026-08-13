@@ -4,14 +4,14 @@ import { createClient } from 'redis'
 
 const { Pool } = pg
 
-export function createPocStateStore() {
+export function createPocStateStore({ databasePool } = {}) {
   const databaseUrl = process.env.POC_DATABASE_URL?.trim()
   const databaseHost = process.env.POC_POSTGRES_HOST?.trim()
-  const databaseConfigured = Boolean(databaseUrl || databaseHost)
+  const databaseConfigured = Boolean(databasePool || databaseUrl || databaseHost)
   const redisUrl = process.env.POC_REDIS_URL?.trim()
   const memory = new Map()
   const memoryCatalogEmbeddings = new Map()
-  let pool
+  let pool = databasePool
   let redis
   let starting
 
@@ -19,17 +19,19 @@ export function createPocStateStore() {
     if (starting) return starting
     starting = (async () => {
       if (databaseConfigured) {
-        pool = new Pool(databaseUrl ? {
-          connectionString: databaseUrl, max: 4, idleTimeoutMillis: 30_000,
-        } : {
-          host: databaseHost,
-          port: Number(process.env.POC_POSTGRES_PORT || 5432),
-          database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
-          user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
-          password: process.env.POC_POSTGRES_PASSWORD || undefined,
-          max: 4,
-          idleTimeoutMillis: 30_000,
-        })
+        if (!pool) {
+          pool = new Pool(databaseUrl ? {
+            connectionString: databaseUrl, max: 4, idleTimeoutMillis: 30_000,
+          } : {
+            host: databaseHost,
+            port: Number(process.env.POC_POSTGRES_PORT || 5432),
+            database: process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc',
+            user: process.env.POC_POSTGRES_USER?.trim() || 'datariver_poc',
+            password: process.env.POC_POSTGRES_PASSWORD || undefined,
+            max: 4,
+            idleTimeoutMillis: 30_000,
+          })
+        }
         await pool.query(`
           CREATE TABLE IF NOT EXISTS poc_state (
             scope text PRIMARY KEY,
@@ -122,37 +124,52 @@ export function createPocStateStore() {
 
   async function catalogEmbeddingHashes(bindingHash) {
     await start()
+    const sourceGeneration = await catalogEmbeddingActiveGeneration(bindingHash)
+    if (!sourceGeneration) return new Map()
     if (pool) {
       const result = await pool.query(
-        'SELECT asset_urn, source_hash FROM poc_catalog_embedding WHERE binding_hash = $1',
-        [bindingHash],
+        `SELECT asset_urn, source_hash FROM poc_catalog_embedding
+         WHERE binding_hash = $1 AND source_generation = $2`,
+        [bindingHash, sourceGeneration],
       )
       return new Map(result.rows.map((row) => [row.asset_urn, row.source_hash]))
     }
     return new Map([...memoryCatalogEmbeddings.values()]
-      .filter((record) => record.bindingHash === bindingHash)
+      .filter((record) => record.bindingHash === bindingHash && record.sourceGeneration === sourceGeneration)
       .map((record) => [record.assetUrn, record.sourceHash]))
   }
 
-  async function catalogEmbeddingProfileCoverage(bindingHash) {
+  async function catalogEmbeddingProfileCoverage(bindingHash, projectionScope) {
     await start()
+    const sourceGeneration = await catalogEmbeddingActiveGeneration(bindingHash)
+    if (!sourceGeneration) return []
     if (pool) {
       const result = await pool.query(`
         SELECT
-          COALESCE(NULLIF(metadata->>'platform', ''), 'unknown') AS platform,
+          COALESCE(NULLIF(embedding.metadata->>'platform', ''), 'unknown') AS platform,
           count(*)::int AS asset_count,
-          count(*) FILTER (WHERE (metadata->'quality') ? 'rowCount')::int AS row_count_available,
-          count(*) FILTER (WHERE (metadata->'quality') ? 'sizeInBytes')::int AS size_bytes_available,
-          count(*) FILTER (WHERE NULLIF(metadata->>'created_at', '') IS NOT NULL)::int AS created_at_available,
+          count(*) FILTER (WHERE (embedding.metadata->'quality') ? 'rowCount')::int AS row_count_available,
+          count(*) FILTER (WHERE (embedding.metadata->'quality') ? 'sizeInBytes')::int AS size_bytes_available,
+          count(*) FILTER (WHERE NULLIF(embedding.metadata->>'created_at', '') IS NOT NULL)::int AS created_at_available,
           count(*) FILTER (
-            WHERE COALESCE((metadata->>'schema_fields_total')::int, 0) > 0
+            WHERE COALESCE((embedding.metadata->>'schema_fields_total')::int, 0) > 0
           )::int AS schema_available,
-          max(updated_at) AS observed_at
-        FROM poc_catalog_embedding
-        WHERE binding_hash = $1
-        GROUP BY COALESCE(NULLIF(metadata->>'platform', ''), 'unknown')
+          max(embedding.updated_at) AS observed_at
+        FROM poc_catalog_embedding AS embedding
+        JOIN poc_state AS current_projection ON current_projection.scope = $3
+        JOIN poc_state AS active_generation ON active_generation.scope = $4
+        WHERE embedding.binding_hash = $1
+          AND embedding.source_generation = $2
+          AND current_projection.value->>'source_generation' = $2
+          AND active_generation.value->>'source_generation' = $2
+        GROUP BY COALESCE(NULLIF(embedding.metadata->>'platform', ''), 'unknown')
         ORDER BY platform
-      `, [bindingHash])
+      `, [
+        bindingHash,
+        sourceGeneration,
+        projectionScope,
+        catalogEmbeddingActiveScope(bindingHash),
+      ])
       return result.rows.map((row) => ({
         platform: row.platform,
         asset_count: Number(row.asset_count),
@@ -163,9 +180,10 @@ export function createPocStateStore() {
         observed_at: row.observed_at instanceof Date ? row.observed_at.toISOString() : row.observed_at,
       }))
     }
+    if (memory.get(projectionScope)?.value?.source_generation !== sourceGeneration) return []
     const grouped = new Map()
     for (const record of memoryCatalogEmbeddings.values()) {
-      if (record.bindingHash !== bindingHash) continue
+      if (record.bindingHash !== bindingHash || record.sourceGeneration !== sourceGeneration) continue
       const metadata = record.metadata && typeof record.metadata === 'object' ? record.metadata : {}
       const platform = typeof metadata.platform === 'string' && metadata.platform ? metadata.platform : 'unknown'
       const current = grouped.get(platform) || {
@@ -182,13 +200,56 @@ export function createPocStateStore() {
     return [...grouped.values()].sort((left, right) => left.platform.localeCompare(right.platform))
   }
 
-  async function upsertCatalogEmbeddings(records) {
-    if (!records.length) return
+  function catalogEmbeddingActiveScope(bindingHash) {
+    return `catalog-embedding-active-v1:${bindingHash}`
+  }
+
+  async function catalogEmbeddingActiveGeneration(bindingHash) {
     await start()
+    if (pool) {
+      const result = await pool.query('SELECT value FROM poc_state WHERE scope = $1', [
+        catalogEmbeddingActiveScope(bindingHash),
+      ])
+      const value = result.rows[0]?.value
+      return value?.projection_version === 1
+        && value.binding_hash === bindingHash
+        && typeof value.source_generation === 'string'
+        ? value.source_generation
+        : undefined
+    }
+    const value = memory.get(catalogEmbeddingActiveScope(bindingHash))?.value
+    return value?.projection_version === 1
+      && value.binding_hash === bindingHash
+      && typeof value.source_generation === 'string'
+      ? value.source_generation
+      : undefined
+  }
+
+  async function replaceCatalogEmbeddingGeneration(
+    bindingHash,
+    projectionScope,
+    sourceGeneration,
+    records,
+    assetUrns,
+  ) {
+    for (const record of records) vectorLiteral(record.embedding)
+    await start()
+    const activeValue = {
+      projection_version: 1,
+      binding_hash: bindingHash,
+      source_generation: sourceGeneration,
+    }
     if (pool) {
       const client = await pool.connect()
       try {
         await client.query('BEGIN')
+        const projection = await client.query(
+          'SELECT value FROM poc_state WHERE scope = $1 FOR UPDATE',
+          [projectionScope],
+        )
+        if (projection.rows[0]?.value?.source_generation !== sourceGeneration) {
+          throw new Error('The Catalog projection changed while its Embedding generation was being built.')
+        }
         for (const record of records) {
           await client.query(`
             INSERT INTO poc_catalog_embedding (
@@ -212,6 +273,20 @@ export function createPocStateStore() {
             vectorLiteral(record.embedding),
           ])
         }
+        await client.query(`
+          UPDATE poc_catalog_embedding
+          SET source_generation = $2, updated_at = now()
+          WHERE binding_hash = $1 AND asset_urn = ANY($3::text[])
+        `, [bindingHash, sourceGeneration, assetUrns])
+        await client.query(
+          'DELETE FROM poc_catalog_embedding WHERE binding_hash = $1 AND source_generation <> $2',
+          [bindingHash, sourceGeneration],
+        )
+        await client.query(`
+          INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
+          ON CONFLICT (scope) DO UPDATE
+            SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
+        `, [catalogEmbeddingActiveScope(bindingHash), JSON.stringify(activeValue)])
         await client.query('COMMIT')
       } catch (error) {
         await client.query('ROLLBACK')
@@ -221,59 +296,57 @@ export function createPocStateStore() {
       }
       return
     }
+    if (memory.get(projectionScope)?.value?.source_generation !== sourceGeneration) {
+      throw new Error('The Catalog projection changed while its Embedding generation was being built.')
+    }
+    const replacement = new Map(memoryCatalogEmbeddings)
     for (const record of records) {
-      memoryCatalogEmbeddings.set(`${record.bindingHash}:${record.assetUrn}`, structuredClone(record))
-    }
-  }
-
-  async function deleteCatalogEmbeddingsExceptGeneration(bindingHash, sourceGeneration) {
-    await start()
-    if (pool) {
-      await pool.query(
-        'DELETE FROM poc_catalog_embedding WHERE binding_hash = $1 AND source_generation <> $2',
-        [bindingHash, sourceGeneration],
-      )
-      return
-    }
-    for (const [key, record] of memoryCatalogEmbeddings) {
-      if (record.bindingHash === bindingHash && record.sourceGeneration !== sourceGeneration) {
-        memoryCatalogEmbeddings.delete(key)
-      }
-    }
-  }
-
-  async function retainCatalogEmbeddingGeneration(bindingHash, sourceGeneration, assetUrns) {
-    await start()
-    if (pool) {
-      await pool.query(`
-        UPDATE poc_catalog_embedding
-        SET source_generation = $2, updated_at = now()
-        WHERE binding_hash = $1 AND asset_urn = ANY($3::text[])
-      `, [bindingHash, sourceGeneration, assetUrns])
-      return
+      replacement.set(`${record.bindingHash}:${record.assetUrn}`, structuredClone(record))
     }
     const retained = new Set(assetUrns)
-    for (const record of memoryCatalogEmbeddings.values()) {
-      if (record.bindingHash === bindingHash && retained.has(record.assetUrn)) {
+    for (const [key, record] of replacement) {
+      if (record.bindingHash !== bindingHash) continue
+      if (retained.has(record.assetUrn)) {
         record.sourceGeneration = sourceGeneration
+      } else {
+        replacement.delete(key)
       }
     }
+    memoryCatalogEmbeddings.clear()
+    for (const [key, record] of replacement) memoryCatalogEmbeddings.set(key, record)
+    const activeScope = catalogEmbeddingActiveScope(bindingHash)
+    memory.set(activeScope, {
+      value: activeValue,
+      version: (memory.get(activeScope)?.version ?? 0) + 1,
+    })
   }
 
-  async function searchCatalogEmbeddings(bindingHash, embedding, limit) {
+  async function searchCatalogEmbeddings(bindingHash, projectionScope, sourceGeneration, embedding, limit) {
     await start()
     const boundedLimit = Math.max(1, Math.min(Number(limit) || 1, 20))
     if (pool) {
       const vector = vectorLiteral(embedding)
       const result = await pool.query(`
-        SELECT asset_urn, content_text, metadata,
-          1 - (embedding <=> $2::vector) AS similarity
-        FROM poc_catalog_embedding
-        WHERE binding_hash = $1
-          AND vector_dims(embedding) = vector_dims($2::vector)
-        ORDER BY embedding <=> $2::vector, asset_urn
-        LIMIT $3
-      `, [bindingHash, vector, boundedLimit])
+        SELECT catalog_embedding.asset_urn, catalog_embedding.content_text, catalog_embedding.metadata,
+          1 - (catalog_embedding.embedding <=> $5::vector) AS similarity
+        FROM poc_catalog_embedding AS catalog_embedding
+        JOIN poc_state AS current_projection ON current_projection.scope = $3
+        JOIN poc_state AS active_generation ON active_generation.scope = $4
+        WHERE catalog_embedding.binding_hash = $1
+          AND catalog_embedding.source_generation = $2
+          AND current_projection.value->>'source_generation' = $2
+          AND active_generation.value->>'source_generation' = $2
+          AND vector_dims(catalog_embedding.embedding) = vector_dims($5::vector)
+        ORDER BY catalog_embedding.embedding <=> $5::vector, catalog_embedding.asset_urn
+        LIMIT $6
+      `, [
+        bindingHash,
+        sourceGeneration,
+        projectionScope,
+        catalogEmbeddingActiveScope(bindingHash),
+        vector,
+        boundedLimit,
+      ])
       return result.rows.map((row) => ({
         assetUrn: row.asset_urn,
         contentText: row.content_text,
@@ -281,8 +354,12 @@ export function createPocStateStore() {
         similarity: Number(row.similarity),
       }))
     }
+    if (memory.get(projectionScope)?.value?.source_generation !== sourceGeneration
+      || await catalogEmbeddingActiveGeneration(bindingHash) !== sourceGeneration) return []
     return [...memoryCatalogEmbeddings.values()]
-      .filter((record) => record.bindingHash === bindingHash && record.embedding.length === embedding.length)
+      .filter((record) => record.bindingHash === bindingHash
+        && record.sourceGeneration === sourceGeneration
+        && record.embedding.length === embedding.length)
       .map((record) => ({
         assetUrn: record.assetUrn,
         contentText: record.contentText,
@@ -301,9 +378,8 @@ export function createPocStateStore() {
     cacheDelete,
     catalogEmbeddingHashes,
     catalogEmbeddingProfileCoverage,
-    upsertCatalogEmbeddings,
-    retainCatalogEmbeddingGeneration,
-    deleteCatalogEmbeddingsExceptGeneration,
+    catalogEmbeddingActiveGeneration,
+    replaceCatalogEmbeddingGeneration,
     searchCatalogEmbeddings,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
   }

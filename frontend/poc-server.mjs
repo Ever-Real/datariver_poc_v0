@@ -991,13 +991,16 @@ async function datahubCatalogPage(providerCursor) {
   }, 60_000)
   const page = data.scrollAcrossEntities
   const items = (page?.searchResults || []).map((item) => detailedDatasetAsset(item.entity))
-  const nextProviderCursor = typeof page?.nextScrollId === 'string' && page.nextScrollId
-    ? page.nextScrollId
-    : undefined
+  const rawNextProviderCursor = page?.nextScrollId
+  if (rawNextProviderCursor !== null && rawNextProviderCursor !== undefined
+    && (typeof rawNextProviderCursor !== 'string' || !rawNextProviderCursor)) {
+    throw Object.assign(new Error('DataHub returned a malformed scroll cursor.'), { statusCode: 502 })
+  }
+  const nextProviderCursor = rawNextProviderCursor || undefined
   if (nextProviderCursor && nextProviderCursor === providerCursor) {
     throw Object.assign(new Error('DataHub returned a repeated scroll cursor.'), { statusCode: 502 })
   }
-  return { items, total: Number(page?.total ?? items.length), nextProviderCursor }
+  return { items, total: page?.total, nextProviderCursor }
 }
 
 async function datahubInventory() {
@@ -1048,12 +1051,22 @@ function inventorySnapshotFrom(projection) {
 }
 
 async function storedDatahubInventory() {
+  if (pocStateStore.configured.postgres) {
+    try {
+      const stored = await pocStateStore.read(datahubInventoryStateScope)
+      return validDatahubInventory(stored.value) ? stored.value : undefined
+    } catch {
+      // A valid Redis value is only a bounded availability fallback when the
+      // authoritative PostgreSQL projection cannot be read at all.
+    }
+  }
   try {
     const cached = await pocStateStore.cacheGet(datahubInventoryCacheKey)
     if (validDatahubInventory(cached)) return cached
   } catch {
     // Redis is optional; PostgreSQL is the durable current read model.
   }
+  if (pocStateStore.configured.postgres) return undefined
   const stored = await pocStateStore.read(datahubInventoryStateScope)
   return validDatahubInventory(stored.value) ? stored.value : undefined
 }
@@ -1080,16 +1093,33 @@ function startDatahubInventoryRefresh() {
   inventoryRefreshPromise = (async () => {
     const items = []
     const observed = new Set()
+    let providerTotal
     let providerCursor
     for (let pageNumber = 0; pageNumber < maximumInventoryPages; pageNumber += 1) {
       const page = await datahubCatalogPage(providerCursor)
+      if (!Number.isSafeInteger(page.total) || page.total < 0) {
+        throw Object.assign(new Error('DataHub returned a malformed inventory total.'), { statusCode: 502 })
+      }
+      if (providerTotal === undefined) providerTotal = page.total
+      if (page.total !== providerTotal) {
+        throw Object.assign(new Error('DataHub changed its inventory total during the scroll.'), { statusCode: 502 })
+      }
       for (const item of page.items) {
+        if (typeof item.id !== 'string' || !item.id) {
+          throw Object.assign(new Error('DataHub returned an inventory asset without a valid identity.'), { statusCode: 502 })
+        }
         if (!observed.has(item.id)) {
           observed.add(item.id)
           items.push(item)
         }
       }
+      if (observed.size > providerTotal) {
+        throw Object.assign(new Error('DataHub returned more unique assets than its inventory total.'), { statusCode: 502 })
+      }
       if (!page.nextProviderCursor) {
+        if (observed.size !== providerTotal) {
+          throw Object.assign(new Error('DataHub ended its scroll before the complete unique inventory was observed.'), { statusCode: 502 })
+        }
         const projection = datahubInventoryProjection(items)
         await pocStateStore.write(datahubInventoryStateScope, projection)
         inventorySnapshot = inventorySnapshotFrom(projection)
@@ -1104,6 +1134,9 @@ function startDatahubInventoryRefresh() {
           setTimeout(scheduleCatalogEmbeddingRefresh, 0)
         }
         return inventorySnapshot
+      }
+      if (observed.size >= providerTotal) {
+        throw Object.assign(new Error('DataHub returned a continuation cursor after its complete inventory.'), { statusCode: 502 })
       }
       providerCursor = page.nextProviderCursor
     }
@@ -1401,7 +1434,7 @@ async function datahubDashboard() {
 async function datahubProfileCoverage() {
   const bindingHash = catalogEmbeddingBindingHash()
   if (bindingHash) {
-    const projected = await pocStateStore.catalogEmbeddingProfileCoverage(bindingHash)
+    const projected = await pocStateStore.catalogEmbeddingProfileCoverage(bindingHash, datahubInventoryStateScope)
     if (projected.length) {
       const items = projected.map((item) => ({
         platform: item.platform,
@@ -2656,22 +2689,36 @@ async function ensureCatalogEmbeddingIndex() {
   const bindingHash = catalogEmbeddingBindingHash()
   if (!bindingHash) throw new Error('The catalog Embedding projection is not configured.')
   const inventory = await datahubEmbeddingInventory()
+  const inventoryProjection = inventorySnapshot?.projection
+  if (!validDatahubInventory(inventoryProjection)) {
+    throw new Error('The current Catalog projection is unavailable for Embedding reconciliation.')
+  }
   const documents = inventory.map((asset) => {
     const contentText = catalogEmbeddingDocument(asset)
     return { asset, contentText, sourceHash: sha256(contentText) }
   }).sort((left, right) => left.asset.id.localeCompare(right.asset.id))
-  const sourceGeneration = sha256(documents.map((item) => `${item.asset.id}:${item.sourceHash}`).join('\n'))
+  const sourceGeneration = inventoryProjection.source_generation
   if (catalogEmbeddingSnapshot?.generation === sourceGeneration) {
     if (catalogEmbeddingSnapshot.promise) return catalogEmbeddingSnapshot.promise
     return catalogEmbeddingSnapshot
   }
   const promise = (async () => {
+    const activeGeneration = await pocStateStore.catalogEmbeddingActiveGeneration(bindingHash)
+    if (activeGeneration === sourceGeneration) {
+      return {
+        bindingHash,
+        generation: sourceGeneration,
+        indexed: documents.length,
+        refreshed: 0,
+      }
+    }
     const hashes = await pocStateStore.catalogEmbeddingHashes(bindingHash)
     const changed = documents.filter((item) => hashes.get(item.asset.id) !== item.sourceHash)
+    const replacements = []
     for (let offset = 0; offset < changed.length; offset += catalogEmbeddingBatchSize) {
       const batch = changed.slice(offset, offset + catalogEmbeddingBatchSize)
       const vectors = await embedCatalogTexts(batch.map((item) => item.contentText))
-      await pocStateStore.upsertCatalogEmbeddings(batch.map((item, index) => ({
+      replacements.push(...batch.map((item, index) => ({
         bindingHash,
         assetUrn: item.asset.id,
         sourceHash: item.sourceHash,
@@ -2681,12 +2728,13 @@ async function ensureCatalogEmbeddingIndex() {
         embedding: vectors[index],
       })))
     }
-    await pocStateStore.retainCatalogEmbeddingGeneration(
+    await pocStateStore.replaceCatalogEmbeddingGeneration(
       bindingHash,
+      datahubInventoryStateScope,
       sourceGeneration,
+      replacements,
       documents.map((item) => item.asset.id),
     )
-    await pocStateStore.deleteCatalogEmbeddingsExceptGeneration(bindingHash, sourceGeneration)
     return {
       bindingHash,
       generation: sourceGeneration,
@@ -2703,38 +2751,6 @@ async function ensureCatalogEmbeddingIndex() {
     catalogEmbeddingSnapshot = undefined
     throw error
   }
-}
-
-async function primeCatalogEmbeddingIndex(question, bindingHash) {
-  const candidates = new Map()
-  for (const query of chatRetrievalQueries(question)) {
-    const catalog = await datahubCatalog(new URLSearchParams({ q: query, limit: '10' }))
-    for (const asset of catalog.items) candidates.set(asset.id, asset)
-    if (candidates.size >= 20) break
-  }
-  const detailedCandidates = await Promise.all([...candidates.values()].slice(0, 20).map(async (asset) => {
-    try { return await datahubAssetAll(asset.external_urn || asset.id) } catch { return asset }
-  }))
-  const documents = detailedCandidates.map((asset) => {
-    const contentText = catalogEmbeddingDocument(asset)
-    return { asset, contentText, sourceHash: sha256(contentText) }
-  })
-  if (!documents.length) return 0
-  const existing = await pocStateStore.catalogEmbeddingHashes(bindingHash)
-  const changed = documents.filter((item) => existing.get(item.asset.id) !== item.sourceHash)
-  if (changed.length) {
-    const vectors = await embedCatalogTexts(changed.map((item) => item.contentText))
-    await pocStateStore.upsertCatalogEmbeddings(changed.map((item, index) => ({
-      bindingHash,
-      assetUrn: item.asset.id,
-      sourceHash: item.sourceHash,
-      sourceGeneration: 'POC_INCREMENTAL_QUERY_V1',
-      contentText: item.contentText,
-      metadata: item.asset,
-      embedding: vectors[index],
-    })))
-  }
-  return documents.length
 }
 
 function scheduleCatalogEmbeddingRefresh() {
@@ -2779,11 +2795,21 @@ async function semanticCatalogEvidence(question, limit, { summaryOnly = false } 
   const bindingHash = catalogEmbeddingBindingHash()
   if (!bindingHash) throw new Error('The catalog Embedding projection is not configured.')
   const [queryVector] = await embedCatalogTexts([question])
-  let ranked = await pocStateStore.searchCatalogEmbeddings(bindingHash, queryVector, limit)
-  if (!ranked.length) {
-    await primeCatalogEmbeddingIndex(question, bindingHash)
-    ranked = await pocStateStore.searchCatalogEmbeddings(bindingHash, queryVector, limit)
+  await datahubEmbeddingInventory()
+  const currentGeneration = inventorySnapshot?.projection?.source_generation
+  let activeGeneration = await pocStateStore.catalogEmbeddingActiveGeneration(bindingHash)
+  if (!currentGeneration || activeGeneration !== currentGeneration) {
+    await ensureCatalogEmbeddingIndex()
+    activeGeneration = await pocStateStore.catalogEmbeddingActiveGeneration(bindingHash)
   }
+  if (activeGeneration !== currentGeneration) return []
+  const ranked = await pocStateStore.searchCatalogEmbeddings(
+    bindingHash,
+    datahubInventoryStateScope,
+    currentGeneration,
+    queryVector,
+    limit,
+  )
   scheduleCatalogEmbeddingRefresh()
   return Promise.all(ranked.map(async (candidate) => {
     const fallback = candidate.metadata && typeof candidate.metadata === 'object'
