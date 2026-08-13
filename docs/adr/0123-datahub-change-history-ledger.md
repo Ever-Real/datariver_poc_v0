@@ -1,7 +1,8 @@
 # ADR-0123: DataHub 변경 이력 원장과 현재 상태 조정
 
 - Status: Accepted for candidate implementation — `T03_PERSISTENCE_READY`,
-  `T04_BLOCKED_TARGET_RECHECK`, `G1-G4 NOT_APPROVED`
+  `T04_DEV_CONDITIONAL_ON_T03_AND_LIFECYCLE_CONTROLS`,
+  `TARGET_ACTIVATION_BLOCKED_TARGET_RECHECK`, `G1-G4 NOT_APPROVED`
 - Date: 2026-08-13
 - Owners: Architecture, Data Engineering, Security, Application
 - Refines: ADR-0001, ADR-0002, ADR-0003, ADR-0007, ADR-0008, ADR-0010, ADR-0014,
@@ -31,19 +32,23 @@ catch-up이 검증되지 않았다. 두 소스 중 하나를 무조건 정확하
 
 | 증거 | 관찰 또는 확인 결과 | 한계 |
 |---|---|---|
-| `TARGET_USER_OBSERVED` | 타겟 Timeline endpoint와 `TECHNICAL_SCHEMA`, `DOCUMENTATION` 이력이 관찰됨 | controller가 직접 재실행하거나 payload 원문을 검증한 증거가 아님 |
+| `TARGET_USER_OBSERVED` | TARGET DataHub `v1.6.0rc1`의 Timeline endpoint와 `TECHNICAL_SCHEMA`, `DOCUMENTATION` 이력이 관찰됨 | controller가 직접 재실행하거나 payload 원문을 검증한 증거가 아님 |
 | `TARGET_USER_OBSERVED` | `TAG`, `GLOSSARY_TERM`, `OWNERSHIP`은 `NO_EVENT_OBSERVED` | `UNSUPPORTED`를 의미하지 않음 |
 | `TARGET_USER_OBSERVED` | retained aspect history와 높은 version index가 관찰됨 | 타겟의 유효 최대 버전/시간 retention 정책은 `UNKNOWN` |
-| `DEV_OBSERVED` | retention 활성화, MCL topic/partition/offset, Schema Registry와 기존 consumer가 관찰됨 | DEV 증거를 TARGET PASS로 변환하지 않음 |
+| `DEV_OBSERVED` | DEV DataHub `v1.6.0`의 MCL topic 한 partition, Schema Registry subject/schema와 기존 consumer가 관찰됨 | TARGET `v1.6.0rc1`의 schema/topic 호환성 또는 접근성을 증명하지 않음 |
+| `DEV_OBSERVED` | 명시적 partition/offset에서 auto-commit 없이 기존 MCL 한 건을 bounded decode했고 기존 consumer offset은 전후 동일함 | 한 건의 capability 증거이며 모든 category/aspect 또는 연속 capture를 증명하지 않음 |
+| `DEV_OBSERVED` | broker `cleanup.policy=delete`, 명목 retention 168시간, topic retention override 없음, 관찰 offset 범위 `[46325, 50423)` | segment 삭제는 비동기이고 TARGET의 유효 retention/복구 창 증거가 아님 |
+| `DEV_OBSERVED_SOURCE` | native Node web 한 process에는 MCL loop, lock/lease/fence, signal drain과 supervised restart가 구현되지 않음 | 조건부 실행 위치 선택일 뿐 T04 준비 완료 증거가 아님 |
 | `SOURCE_CONFIRMED` | DataHub `v1.6.0rc1` 소스가 Timeline 다섯 category와 durable write 이후 MCL 계약을 설명함 | ADR-0008의 production stable-version/digest gate를 대체하지 않음 |
-| `NOT_EXECUTED_CONTROLLER_CANCELLATION` | DEV MCL payload 실제 decode가 이벤트 반환 전에 취소되고 offset commit은 없었음 | payload shape와 end-to-end 소비는 미검증 |
 
 검토한 공식 자료는 DataHub
 [`timeline.graphql`](https://github.com/datahub-project/datahub/blob/v1.6.0rc1/datahub-graphql-core/src/main/resources/timeline.graphql),
 [`mxe.md`](https://github.com/datahub-project/datahub/blob/v1.6.0rc1/docs/what/mxe.md),
 [`environment-vars.md`](https://github.com/datahub-project/datahub/blob/v1.6.0rc1/docs/deploy/environment-vars.md)이다.
-현재 DEV의 retention 유효 최대 개수, 시간 정책, 고변경 자산의 손실 창, TARGET MCL 접근성은
-`UNKNOWN` 또는 `TARGET_RECHECK_REQUIRED`이다.
+최종 DEV 프로브는 `.orchestration/evidence/CHANGE-HIST-DEV-FINAL-PROBE.md`에 한정한다. DEV DataHub
+`v1.6.0`의 decode와 retention 관찰을 TARGET DataHub `v1.6.0rc1` PASS로 변환하지 않는다. TARGET의
+유효 retention, MCL topic, Schema Registry subject 호환성, 실제 payload decode와 재시작/catch-up은
+모두 `TARGET_RECHECK_REQUIRED`이다.
 
 ## Decision
 
@@ -54,8 +59,9 @@ catch-up이 검증되지 않았다. 두 소스 중 하나를 무조건 정확하
 1. Timeline retained history는 초기 backfill의 source다. 허용된 다섯 category만 고정 typed
    adapter로 읽고, 초기 backfill은 항상 `BACKFILLED_BEST_EFFORT` precision으로 정규화한다.
 2. MCL `MetadataChangeLog_Versioned_v1`은 forward capture의
-   `MCL_PRIMARY_CANDIDATE`다. 타겟 관문을 통과하기 전에는 candidate일 뿐이며 exact라는 표현을
-   API/UI/운영 증거에 사용하지 않는다.
+   `MCL_PRIMARY_CANDIDATE`다. 타겟 관문을 통과한 MCL 사건은 DataRiver append-only ledger에
+   정규화하여 `GUARANTEED_FORWARD` 범위를 형성한다. 관문 전에는 candidate일 뿐이며 exact나
+   forward guarantee 표현을 API/UI/운영 증거에 사용하지 않는다.
 3. Timeline fallback/polling에서 개별 사건의 identity, ordering, actor/time과 target retention
    연속성이 검증된 경우에만 `EXACT_TIMELINE`을 사용한다. 그 밖의 retained 사건은
    `BACKFILLED_BEST_EFFORT`이며 MCL gap이나 retention 손실로 사라진 중간 사건을 합성하거나 exact
@@ -66,6 +72,9 @@ catch-up이 검증되지 않았다. 두 소스 중 하나를 무조건 정확하
 
 precision은 `EXACT_TIMELINE`, `EXACT_MCL`, `DRIFT_DETECTED`, `BACKFILLED_BEST_EFFORT`,
 `INITIAL_BASELINE`의 닫힌 enum이다. 다른 precision 문자열이나 암시적 exact 승격은 금지한다.
+`EXACT_MCL`은 개별 사건의 source precision이고, `GUARANTEED_FORWARD`는 첫 성공 DB checkpoint부터
+연속 검증된 범위를 가리키는 guarantee scope다. `GUARANTEED_FORWARD`를 precision enum에 추가하거나
+Timeline backfill에 적용하지 않는다.
 
 정규화 allowlist는 `TECHNICAL_SCHEMA → schemaMetadata`,
 `DOCUMENTATION → datasetProperties/editableSchemaMetadata`, `TAG → globalTags`,
@@ -100,7 +109,11 @@ consume가 지연되더라도 `B[p]`가 topic retention 안에 계속 남았음�
 - 새 partition, schema incompatibility, offset gap을 건너뛰지 않고 fail closed한다.
 
 첫 exact checkpoint 이전의 행은 사실에 따라 `BACKFILLED_BEST_EFFORT`, `INITIAL_BASELINE` 또는
-`DRIFT_DETECTED`다. 조건을 통과한 이후의 연속 MCL 범위만 `EXACT_MCL`이다.
+`DRIFT_DETECTED`다. 조건을 통과한 이후의 연속 MCL 범위만 사건별 `EXACT_MCL`이다.
+`ledger_guarantee_from`은 미리 읽은 `B[p]`나 consumer 시작 시각이 아니라, 모든 활성 partition의
+초기 연속 transaction이 ledger와 DB `next_offset`에 처음 성공적으로 commit된 MCL checkpoint와
+정확히 같은 경계다. 그 commit 전에는 null이고, 이후 gap 없이 검증된 범위만
+`GUARANTEED_FORWARD`로 보고한다.
 여기서 exact는 “검증된 source offset 범위의 사건이 적어도 한 번 전달되어 deterministic하게 한
 번 materialize된다”는 의미다. provider 전체의 exactly-once delivery, DataHub 외부 writer와의 CAS,
 retention 이전 과거 복원, 미검증 category 지원 또는 무중단 운영을 뜻하지 않는다.
@@ -115,8 +128,11 @@ backfill과 consumer는 같은 source identity를 사용한다. backfill 완료 
 장애 복구는 PostgreSQL `next_offset`에서 시작한다. Kafka group offset은 진단/협조 값이고 DB
 checkpoint가 materialization authority다. 운영자가 임의의 earliest/latest offset reset으로 gap을
 숨길 수 없다. 필요한 offset이 topic retention에서 사라졌거나 partition topology가 바뀌면 해당
-source/partition은 `DEGRADED_GAP` 또는 `TARGET_RECHECK_REQUIRED`가 되고 exact watermark는 마지막
-연속 offset에서 멈춘다.
+source/partition은 `HISTORY_GAP`과 `DEGRADED_GAP` 또는 `TARGET_RECHECK_REQUIRED`가 되고 exact
+watermark는 마지막 연속 offset에서 멈춘다. Timeline retained history로 가능한 범위를
+`BACKFILLED_BEST_EFFORT`로 복구할 수는 있지만, 찾지 못한 중간 사건을 합성하거나 gap을 exact로
+닫지 않는다. 재시작은 DB checkpoint부터 overlap replay와 deterministic dedup을 수행하며 임의
+Kafka offset reset이나 checkpoint 건너뛰기를 허용하지 않는다.
 
 ## Logical Model
 
@@ -161,8 +177,9 @@ server-owned 함수/role만 수행하며 감소, source identity 변경, 다른 
 `effective_week_start`는 정확한 `source_occurred_at`을 KST 주간 계약에 적용할 수 있을 때만 계산하고
 그 밖에는 null로 두어 `time_unknown_count`로 분리한다. `history_available_from`은 현재 보존되어
 권한상 조회 가능한 이력의 가장 이른 경계일 뿐 완전성 보장이 아니며, `ledger_guarantee_from`은
-검증된 연속 exact capture를 보장할 수 있는 경계다. `first_exact_capture_at`은 그 gate 이후 실제 첫
-exact 영속화 시각이고, `first_timeline_checkpoint`는 최초 Timeline backfill checkpoint다.
+첫 성공적으로 commit된 MCL checkpoint와 동일한 검증된 연속 capture 경계다.
+`first_exact_capture_at`은 그 checkpoint transaction의 실제 첫 exact 영속화 시각이고,
+`first_timeline_checkpoint`는 최초 Timeline backfill checkpoint다.
 `first_mcl_offset`은 MCL이 승인·적용된 source의 partition별 vector에만 존재한다.
 `last_successful_capture_at`은
 gap 없이 checkpoint를 전진시킨 마지막 성공 capture 시각이며 reconciliation 성공 시각과 섞지
@@ -224,13 +241,21 @@ embedding을 만들지 않으며 historical vector generation을 무기한 보�
 
 ## Scheduler and Timezone
 
-새 container/service/process를 추가하지 않는다. 현재 Single-node Pilot의 기존 `web` process
-lifecycle과 PostgreSQL/pgvector/Redis topology를 재사용하고, 각 replica에서 같은 controller가
-시작되더라도 PostgreSQL advisory lock과 만료 가능한 durable lease/fence로 한 controller만
-capture/reconciliation을 수행한다. stale lease의 후속 owner는 fence가 일치할 때만 checkpoint를
-전진시킬 수 있다. 기존 Airflow는 다른 업무의 scheduler일 뿐 이 원장의 canonical checkpoint나
-필수 새 dependency가 아니다. 향후 process 분리가 필요하면 측정된 부하/격리 증거와 별도 ADR을
-가진 `FOLLOW_UP`으로 처리한다.
+새 container/service/process를 추가하지 않는다. 최종 DEV 프로브가 선택한 실행 위치는
+`CONDITIONAL_EXISTING_WEB_PROCESS_CONTROLLER`다. DEV에는 native Node web 한 process가 있고 Compose
+web replica는 없었지만, 현재 source에는 MCL loop, singleton lock/lease, signal drain과 supervised
+native restart가 없다. 따라서 consumer를 HTTP server에 무조건 inline으로 넣거나 “현재 한
+process”라는 관찰을 singleton 보장으로 사용하지 않는다.
+
+T04 구현 전 기존 web-process lifecycle 안에 명시적이고 abortable한 background controller를 두고,
+PostgreSQL advisory lock과 만료 가능한 durable lease/fence를 함께 구현해야 한다. 각 replica가 같은
+controller를 시작해도 한 fenced owner만 capture/reconciliation과 checkpoint를 수행하고, stale
+owner는 fence mismatch 뒤 DB transaction이나 checkpoint를 전진시키지 못해야 한다. consumer 오류는
+HTTP process를 blind crash시키지 않도록 격리하며, signal 수신 시 fetch 중단, in-flight transaction
+종결, checkpoint 전진 여부 확정, lease 해제/만료, HTTP/pool 종료 순서의 graceful shutdown과
+restart/catch-up을 검증한다. 기존 Airflow는 다른 업무의 scheduler일 뿐 이 원장의 canonical
+checkpoint가 아니다. 향후 process 분리가 필요하면 측정된 부하/격리 증거와 별도 ADR을 가진
+`FOLLOW_UP`으로 처리한다.
 
 현재 application package에 타겟 Kafka/Avro 계약을 만족하는 client/decoder가 이미 있는지는
 `UNKNOWN`이다. 새 library 또는 lockfile 변경이 필요하면 검토된 버전/라이선스/오프라인 artifact,
@@ -451,10 +476,13 @@ projection은 rebuildable하지만 source identity와 first exact checkpoint를 
 - idempotency/primary-link DB fence와 keyset indexes
 - Ruff, strict mypy, focused pytest, `scripts/verify_static.py`
 
-### T04 exact capture — `BLOCKED_TARGET_RECHECK`
+### T04 DEV capture — T03와 lifecycle controls 이후 조건부 진행
 
+- DEV 구현은 T03 persistence와 advisory lock, durable lease/fence, abortable failure isolation,
+  graceful shutdown controls가 먼저 완료되어야 함
+- TARGET 활성화는 아래 `BLOCKED_TARGET_RECHECK` 관문을 통과하기 전까지 금지
 - 타겟 topic 존재/partition/retention과 독립 consumer group 충돌 없음
-- 타겟 Schema Registry exact schema와 representative five-category payload decode
+- 타겟 Schema Registry exact subject/schema 호환성과 실제 MCL bounded payload decode
 - boundary/first checkpoint, offset continuity, overlap, lag catch-up와 one-/multi-day outage 범위
 - DB-before/after-commit, Kafka commit-loss, restart, duplicate delivery, schema/gap/partition-change
   negative tests
@@ -474,16 +502,20 @@ T08/T09의 독립 검증/감사 전에는 production claim을 하지 않는다.
 
 ## Target Recheck Gate
 
-T04는 다음 타겟 증거가 한 묶음으로 승인될 때까지 `BLOCKED_TARGET_RECHECK`다.
+T04의 TARGET 활성화는 다음 타겟 증거가 한 묶음으로 승인될 때까지
+`BLOCKED_TARGET_RECHECK`다. T03 persistence와 필수 lifecycle controls 뒤의 DEV 구현 가능성은 이
+TARGET 활성화 관문을 통과했다는 뜻이 아니다.
 
-1. 실제 target source identity, approved provider version과 topic/partition inventory
-2. topic retention/earliest-end offset이 승인된 outage와 backfill/catch-up 창을 수용한다는 측정
-3. Schema Registry subject/version 호환성과 실제 representative payload decode
-4. 다섯 category의 실제 event 또는 명시적 `NO_EVENT_OBSERVED` 재확인; unsupported 추론 금지
-5. first exact checkpoint, restart/duplicate/lag/catch-up와 DB/Kafka commit 경계 증거
-6. Timeline actor/time/ordering, retained-history 최대/시간 정책과 overlap 결정 근거
-7. consumer group 충돌 없음, partition 변화/gap/schema mismatch fail-closed 증거
-8. source credential/secret/log/cache/RLS/authorization negative evidence
+1. 실제 TARGET source identity와 approved DataHub version
+2. MCL topic/partition inventory, effective retention과 earliest/end offset이 승인된
+   outage/backfill/catch-up 창을 수용한다는 측정
+3. Schema Registry subject/version 호환성과 auto-commit 없는 실제 TARGET MCL bounded decode
+4. Timeline 대표 category의 실제 event 또는 명시적 `NO_EVENT_OBSERVED`, actor/time/ordering과
+   retained-history 최대/시간 정책 재확인; unsupported 추론 금지
+5. PostgreSQL advisory lock과 durable lease/fence를 통한 한 active owner, consumer group 충돌 없음,
+   failure isolation과 graceful shutdown 증거
+6. first successfully committed MCL checkpoint, restart/duplicate/lag/catch-up, DB/Kafka commit 경계와
+   retention 초과 `HISTORY_GAP` fail-closed 증거
 
 gate 실패 시 Timeline retained backfill/current reconciliation 후보만 남고 exact forward 기능은
 활성화하지 않는다. DEV PASS를 TARGET PASS로 승격하지 않는다.
@@ -518,7 +550,8 @@ eviction/재생성 가능한 projection을 영구 원장이나 checkpoint author
 ## Consequences
 
 - T03 persistence 후보는 target MCL 없이 진행할 수 있지만 integration/release gate는 열리지 않는다.
-- T04 exact capture는 타겟 재검증 전 계속 차단된다.
+- T04 DEV 구현은 T03와 필수 lifecycle controls 뒤에만 진행할 수 있고, TARGET 활성화는 타겟
+  재검증 전 계속 차단된다.
 - current read 성능과 append-only history 보존을 분리하고, deletion 후에도 이력/CR link를 유지한다.
 - exact 범위가 checkpoint 이후로 제한되어 UI/API가 과거 retained history를 과장하지 않는다.
 - 무기한 정규화 ledger는 자동 삭제 위험을 피하지만 workload 측정, backup/restore와 장기 capacity
