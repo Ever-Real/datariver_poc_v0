@@ -18,6 +18,7 @@ evidence or projections, never substitutes for PostgreSQL business truth.
 | `retention` | policy, class rule, Legal Hold, erasure review and archive-only execution evidence |
 | `knowledge`, `assistant` | canonical graph releases/source jobs and retention-bound Chat/citation audits |
 | `sharing` | API product versions, subject-bound grants and atomic invocation/quota/replay evidence |
+| `change_history` | credential-free capture identity, normalized append-only ledger, fenced partition checkpoints and append-only CR link history |
 
 ```mermaid
 erDiagram
@@ -46,6 +47,11 @@ erDiagram
     CHAT_SESSION ||--o{ CHAT_MESSAGE : contains
     CHAT_SESSION ||--o{ ASSISTANT_RUN : executes
     ASSISTANT_RUN ||--o{ EVIDENCE_CITATION : grounds
+    WORKSPACE ||--o{ CHANGE_HISTORY_SOURCE : scopes
+    CHANGE_HISTORY_SOURCE ||--o{ CHANGE_HISTORY_LEDGER_EVENT : captures
+    CHANGE_HISTORY_SOURCE ||--o{ CHANGE_HISTORY_CHECKPOINT : fences
+    CHANGE_HISTORY_LEDGER_EVENT ||--o{ CHANGE_HISTORY_CR_LINK_EVENT : links
+    CHANGE_REQUEST ||--o{ CHANGE_HISTORY_CR_LINK_EVENT : references_only
 ```
 
 The diagram deliberately shows aggregate ownership rather than every compatibility/evidence table.
@@ -513,6 +519,34 @@ All four Assistant tables retain forced workspace RLS. Restrictive `FOR ALL TO d
 policies additionally require the current `app.subject_id` to own the session, directly or through
 the session/run foreign-key chain. The ordinary application role therefore cannot read or write
 another user's history even if an HTTP owner predicate is accidentally omitted.
+
+### DataHub change-history persistence (T03)
+
+Revision `0096` implements only the ADR-0123 persistence foundation. It does not start an MCL
+consumer, decode provider payloads, add reconciliation, expose an API, or change Monitoring/UI.
+There is no separate source-event inbox: semantic fan-out and replay use the ledger uniqueness key
+`(workspace_id, source_id, source_event_identity, deterministic_ordinal)`.
+
+| Table | Key columns and constraints | Purpose |
+|---|---|---|
+| `change_history.sources` | workspace/source identity SHA-256 UQ, positive source generation, provider/version/schema-contract identity, closed capture state, nullable history/exact/MCL watermarks, optimistic version | credential- and endpoint-free identity for one DataHub capture source; source identity fields cannot be rewritten |
+| `change_history.ledger_events` | workspace/event identity UQ, source-event/ordinal UQ, normalized transaction identity, nullable MCL partition/offset, asset/entity/System coordinates, five-category aspect allowlist, closed operation/precision enums, bounded before/after JSON and source metadata, three UTC timestamps, nullable KST week, tombstone | indefinitely retained normalized append-only history; raw `schemaMetadata`, aspect, previous-aspect, payload and arbitrary provider documents are not persisted |
+| `change_history.checkpoints` | source/topic-contract/partition UQ, non-negative first/next offsets, last contiguous event/time, status/error, optimistic version, owner/token SHA-256, lease interval and monotonic fence epoch | PostgreSQL materialization authority; `next_offset` cannot decrease and only the current unexpired lease/fence can advance it |
+| `change_history.cr_link_events` | ledger event plus monotonic link version/hash chain, CR/round composite FK, `PRIMARY/CANDIDATE`, typed link/unlink action, active result, resulting primary CR/round, reason/policy/basis/actor/time | append-only candidate/primary history; every event records the single resulting primary and never changes CR state, round, approval, transition or target binding |
+
+All four relations use forced Workspace RLS and tenant-composite foreign keys. `datariver_app` has
+no `UPDATE` or `DELETE` privilege on them. It may append source, normalized ledger and governed CR
+link evidence; checkpoint writes are available only through the fixed
+`claim_checkpoint_v1`/`advance_checkpoint_v1` functions, which verify Workspace context, offset,
+optimistic version, lease token and fence. Database triggers independently reject ledger/link
+mutation, source identity replacement, checkpoint decrease/stale advancement and a stale CR-link
+hash chain. A downgrade is reversible only while all four tables are empty; once evidence exists it
+fails before destructive DDL.
+
+The ledger keyset indexes are Workspace-first for global and asset history, bounded
+category/precision/System filtering and normalized transaction lookup. CR reverse lookup and
+latest link-version indexes are also Workspace-first. No TTL, expiry, pruning, partition detach or
+delete automation exists for the ledger or CR-link history.
 
 Alembic `0011` adds the classification policy/rule/generation, RESTRICTED grant/event and inference
 profile/generation tables with forced workspace RLS, composite workspace foreign keys, immutable

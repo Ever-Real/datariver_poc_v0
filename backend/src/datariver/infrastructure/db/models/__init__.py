@@ -16,6 +16,12 @@ from datariver.infrastructure.db.models.catalog import (
     CatalogSyncRunModel,
     ColumnProfileMetricModel,
 )
+from datariver.infrastructure.db.models.change_history import (
+    ChangeHistoryCheckpointModel,
+    ChangeHistoryCrLinkEventModel,
+    ChangeHistoryLedgerEventModel,
+    ChangeHistorySourceModel,
+)
 from datariver.infrastructure.db.models.classification_access import (
     ClassificationAccessGenerationModel,
     ClassificationAccessPolicyRuleModel,
@@ -190,6 +196,10 @@ __all__ = [
     "CatalogExportModel",
     "CatalogProjectionWatermarkModel",
     "CatalogSyncRunModel",
+    "ChangeHistoryCheckpointModel",
+    "ChangeHistoryCrLinkEventModel",
+    "ChangeHistoryLedgerEventModel",
+    "ChangeHistorySourceModel",
     "ChangeItemModel",
     "ChangeOperationModel",
     "ChangeRequestAttachmentModel",

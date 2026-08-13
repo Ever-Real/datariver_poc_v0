@@ -506,6 +506,26 @@ def _load_studio_proposal_control_guard_revision() -> ModuleType:
     return module
 
 
+def _load_change_history_revision() -> ModuleType:
+    """Load the T03 append-only ledger and checkpoint security contract."""
+    revision_path = (
+        Path(__file__).resolve().parents[1]
+        / "backend"
+        / "alembic"
+        / "versions"
+        / "0096_change_history_persistence.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "datariver_canonical_change_history_revision",
+        revision_path,
+    )
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load the Change History persistence contract.")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _sql_statements(sql: str) -> tuple[str, ...]:
     return tuple(
         statement.strip() for statement in sql.split(_STATEMENT_BOUNDARY) if statement.strip()
@@ -860,6 +880,10 @@ def build_upgrade() -> ops.UpgradeOps:
         for constraint in _deferred_foreign_keys()
     )
     operations.append(ops.ExecuteSQLOp(_runtime_grants_sql()))
+    change_history = _load_change_history_revision()
+    operations.extend(
+        ops.ExecuteSQLOp(statement) for statement in change_history.security_statements()
+    )
     phase5 = _load_phase5_revision()
     # Workspace RLS is generated generically above. Retain the exact principal
     # assertion, then install the worker-only discovery/locking functions,
@@ -1540,8 +1564,22 @@ def build_downgrade() -> ops.DowngradeOps:
     quality_phase1 = _load_quality_phase1_revision()
     studio_ingestion = _load_studio_ingestion_revision()
     studio_proposal = _load_studio_proposal_revision()
+    _load_change_history_revision()
     _load_knowledge_source_ingress_revision()
     operations: list[ops.MigrateOperation] = [
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION change_history.advance_checkpoint_v1("
+            "uuid, uuid, integer, bigint, bigint, bigint, text, text, text, "
+            "timestamptz, timestamptz, boolean)"
+        ),
+        ops.ExecuteSQLOp(
+            "DROP FUNCTION change_history.claim_checkpoint_v1("
+            "uuid, uuid, text, integer, bigint, text, text, timestamptz, timestamptz)"
+        ),
+        ops.ExecuteSQLOp("DROP FUNCTION change_history.guard_cr_link_chain_v1() CASCADE"),
+        ops.ExecuteSQLOp("DROP FUNCTION change_history.guard_checkpoint_v1() CASCADE"),
+        ops.ExecuteSQLOp("DROP FUNCTION change_history.reject_append_only_mutation_v1() CASCADE"),
+        ops.ExecuteSQLOp("DROP FUNCTION change_history.guard_source_identity_v1() CASCADE"),
         ops.ExecuteSQLOp(
             "DROP TRIGGER IF EXISTS trg_source_analysis_validation_pins "
             "ON knowledge.source_analysis_jobs"

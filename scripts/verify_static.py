@@ -1413,6 +1413,53 @@ def verify_database_roles() -> None:
         raise AssertionError("event pruning must remain disabled until governed archival is ready")
 
 
+def verify_change_history_persistence() -> None:
+    migration = (
+        ROOT / "backend" / "alembic" / "versions" / "0096_change_history_persistence.py"
+    ).read_text(encoding="utf-8")
+    generator = (ROOT / "scripts" / "generate_initial_migration.py").read_text(encoding="utf-8")
+    canonical = (ROOT / "backend" / "alembic" / "versions" / "0001_initial_schema.py").read_text(
+        encoding="utf-8"
+    )
+    required = {
+        "change_history.sources",
+        "change_history.ledger_events",
+        "change_history.checkpoints",
+        "change_history.cr_link_events",
+        "FORCE ROW LEVEL SECURITY",
+        "guard_checkpoint_v1",
+        "guard_cr_link_chain_v1",
+        "reject_append_only_mutation_v1",
+        "claim_checkpoint_v1",
+        "advance_checkpoint_v1",
+        "uq_change_history_ledger_source_event_ordinal",
+    }
+    for label, source in (
+        ("0096 migration", migration),
+        ("canonical initial migration", canonical),
+    ):
+        missing = {value for value in required if value not in source}
+        if missing:
+            raise AssertionError(
+                f"{label} is missing Change History persistence contracts: {sorted(missing)}"
+            )
+    if "_load_change_history_revision" not in generator:
+        raise AssertionError("canonical migration generation omits Change History security SQL")
+    grant_statements = re.findall(r"\bGRANT\s+[^;]+;", migration, flags=re.IGNORECASE)
+    if any(
+        re.search(r"\b(?:UPDATE|DELETE)\b", statement, flags=re.IGNORECASE)
+        and re.search(
+            r"change_history\.(?:ledger_events|cr_link_events)",
+            statement,
+            flags=re.IGNORECASE,
+        )
+        for statement in grant_statements
+    ):
+        raise AssertionError("append-only Change History evidence has mutable runtime grants")
+    if "change_history.source_events" in migration + canonical:
+        raise AssertionError("T03 must not add a redundant source-event inbox")
+
+
 def verify_architecture_imports() -> None:
     source = ROOT / "backend" / "src" / "datariver"
     forbidden = {
@@ -8075,6 +8122,7 @@ def main() -> None:
     verify_browser_storage_boundary()
     verify_ci_supply_chain()
     verify_database_roles()
+    verify_change_history_persistence()
     verify_architecture_imports()
     verify_phase7_source_integrity()
     verify_tenant_referential_integrity()

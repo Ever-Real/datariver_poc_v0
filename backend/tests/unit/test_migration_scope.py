@@ -6,6 +6,7 @@ from datariver.infrastructure.db.migration_scope import (
 
 def test_alembic_reflects_only_canonical_datariver_schemas() -> None:
     assert "knowledge" in MANAGED_DATABASE_SCHEMAS
+    assert "change_history" in MANAGED_DATABASE_SCHEMAS
     assert "semiconductor_seed" not in MANAGED_DATABASE_SCHEMAS
     assert include_managed_database_name("knowledge", "schema", {})
     assert not include_managed_database_name("semiconductor_seed", "schema", {})
