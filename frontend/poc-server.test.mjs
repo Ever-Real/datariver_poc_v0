@@ -729,8 +729,9 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
       locator: { platform: 'postgres', database_name: 'business_db', schema_name: 'public', asset_name: 'orders' },
     })
     assert.equal(listed.items[0].system.system_id, 'business-system')
-    const filtered = await (await fetch(`${base}/api/v1/change-history/events?week_start=2026-08-10&change_type=SCHEMA_CHANGE&operation=UPDATE&platform=postgres&database_name=business_db&schema_name=public&system_id=business-system&assignee_subject_id=steward-subject&link_state=UNLINKED&stage=UNLINKED`)).json()
+    const filtered = await (await fetch(`${base}/api/v1/change-history/events?week_start=2026-08-10&change_type=SCHEMA_CHANGE&category=TECHNICAL_SCHEMA&precision=EXACT_MCL&operation=UPDATE&platform=postgres&database_name=business_db&schema_name=public&system_id=business-system&assignee_subject_id=steward-subject&link_state=UNLINKED&stage=UNLINKED`)).json()
     assert.equal(filtered.total, 1)
+    assert.equal((await fetch(`${base}/api/v1/change-history/events?precision=GUESSED`)).status, 400)
     assert.equal((await fetch(`${base}/api/v1/change-history/events?stage=UNKNOWN`)).status, 400)
     const detail = await fetch(`${base}/api/v1/change-history/events/${eventId}`)
     assert.equal(detail.headers.get('etag'), '"0"')
@@ -763,23 +764,6 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     assert.equal(conflict.status, 409)
     const reverse = await fetch(`${base}/api/v1/change-requests/${changeRequest.id}/change-history`)
     assert.equal((await reverse.json()).items.length, 1)
-    const weekly = await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)
-    assert.equal(weekly.status, 200)
-    const summary = await weekly.json()
-    assert.equal(summary.week_start, '2026-08-10')
-    assert.equal(summary.week_end_exclusive, '2026-08-17')
-    assert.equal(summary.total_count, 1)
-    assert.equal(summary.received_count, 1)
-    assert.equal(summary.total_count, summary.unlinked_count + summary.received_count + summary.recheck_count
-      + summary.testing_count + summary.final_review_count + summary.completed_count)
-    const sourceSummary = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
-    assert.equal(sourceSummary.schema_change_count, 1)
-    assert.equal(sourceSummary.metadata_change_count, 0)
-    assert.equal(sourceSummary.event_count, 1)
-    assert.equal(sourceSummary.precision_counts.EXACT_MCL, 1)
-    assert.equal(sourceSummary.sync_status, 'CONTIGUOUS_CAPTURE_RECORDED')
-    assert.equal(sourceSummary.source_generation, 'a'.repeat(64))
-    assert.equal(sourceSummary.ledger_guarantee_from, '2026-08-11T01:00:02.000Z')
     const addCandidate = await fetch(`${base}/api/v1/change-history/events/${eventId}/cr-link-events`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'Idempotency-Key': 'link-2', 'If-Match': `"${'5'.repeat(64)}"` },
@@ -799,6 +783,78 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     })
     assert.equal(clearPrimary.status, 201)
     assert.equal(JSON.stringify(projection.core.value.changeRecords), before)
+
+    projection.events.push(
+      {
+        ...projection.events[0], event_identity: 'a'.repeat(64), event_hash: 'b'.repeat(64),
+        normalized_entity_key: 'business_db.public.orders.description', category: 'DOCUMENTATION',
+        source_aspect: 'datasetProperties',
+      },
+      {
+        ...projection.events[0], event_identity: 'b'.repeat(64), event_hash: 'c'.repeat(64),
+        normalized_entity_key: 'business_db.public.orders.description-duplicate', category: 'DOCUMENTATION',
+        source_aspect: 'datasetProperties',
+      },
+    )
+    for (const [index, event] of projection.events.entries()) {
+      projection.links.push({
+        ledger_event_identity: event.event_identity,
+        link_event_identity: ['d', 'e', 'f'][index].repeat(64),
+        event_hash: ['a', 'b', 'c'][index].repeat(64),
+        link_version: 10,
+        link_kind: 'PRIMARY',
+        action: 'SET_PRIMARY',
+        change_request_id: changeRequest.id,
+        change_request_round: 1,
+      })
+    }
+
+    const pagedEventIds = []
+    let cursor = null
+    do {
+      const cursorQuery = cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+      const page = await (await fetch(`${base}/api/v1/change-history/events?limit=1${cursorQuery}`)).json()
+      assert.equal(page.total, 3)
+      assert.equal(page.limit, 1)
+      assert.equal(page.items.length, 1)
+      pagedEventIds.push(page.items[0].event_id)
+      assert.notEqual(page.next_cursor, cursor)
+      cursor = page.next_cursor
+    } while (cursor)
+    assert.equal(new Set(pagedEventIds).size, 3)
+
+    const weekly = await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)
+    assert.equal(weekly.status, 200)
+    const summary = await weekly.json()
+    assert.equal(summary.week_start, '2026-08-10')
+    assert.equal(summary.week_end_exclusive, '2026-08-17')
+    assert.equal(summary.total_count, 1)
+    assert.equal(summary.received_count, 1)
+    assert.equal(summary.total_count, summary.unlinked_count + summary.received_count + summary.recheck_count
+      + summary.testing_count + summary.final_review_count + summary.completed_count)
+    const sourceSummary = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
+    assert.equal(sourceSummary.schema_change_count, 1)
+    assert.equal(sourceSummary.metadata_change_count, 1)
+    assert.equal(sourceSummary.event_count, 3)
+    assert.equal(sourceSummary.precision_counts.EXACT_MCL, 1)
+    assert.equal(sourceSummary.category_counts.TECHNICAL_SCHEMA, 1)
+    assert.equal(sourceSummary.category_counts.DOCUMENTATION, 1)
+    assert.equal(sourceSummary.operation_counts.UPDATE, 1)
+    assert.equal(sourceSummary.sync_status, 'CONTIGUOUS_CAPTURE_RECORDED')
+    assert.equal(sourceSummary.source_generation, 'a'.repeat(64))
+    assert.equal(sourceSummary.ledger_guarantee_from, '2026-08-11T01:00:02.000Z')
+
+    projection.core.value.changeRecords[0].current_round_number = 2
+    const resubmittedSummary = await (await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)).json()
+    assert.equal(resubmittedSummary.recheck_count, 1)
+    assert.equal(resubmittedSummary.received_count, 0)
+    projection.core.value.changeRecords[0].state = 'CANCELLED'
+    const cancelledSummary = await (await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)).json()
+    assert.equal(cancelledSummary.unlinked_count, 1)
+    assert.equal(cancelledSummary.recheck_count, 0)
+    projection.core.value.changeRecords[0].state = 'IN_REVIEW'
+    projection.core.value.changeRecords[0].current_round_number = 1
+
     const invalidTuesday = await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-11`)
     assert.equal(invalidTuesday.status, 400)
     assert.equal((await invalidTuesday.json()).code, 'WEEK_START_INVALID')

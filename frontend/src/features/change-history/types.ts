@@ -225,6 +225,7 @@ export interface ChangeHistoryEventFilters {
   weekStart?: string
   changeType?: ChangeHistoryChangeType
   category?: ChangeHistoryCategory
+  precision?: ChangeHistoryPrecision
   operation?: ChangeHistoryOperation
   platform?: string
   databaseName?: string

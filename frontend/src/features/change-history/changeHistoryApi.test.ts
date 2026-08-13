@@ -25,13 +25,14 @@ describe('ChangeHistoryApi', () => {
     })
 
     const page = await api.events({
-      weekStart, changeType: 'SCHEMA_CHANGE', category: 'TECHNICAL_SCHEMA', operation: 'UPDATE',
+      weekStart, changeType: 'SCHEMA_CHANGE', category: 'TECHNICAL_SCHEMA', precision: 'EXACT_MCL', operation: 'UPDATE',
       platform: 'postgres', databaseName: 'business_db', schemaName: 'public',
       systemId: 'system-1', assigneeSubjectId: 'steward-1', linkState: 'UNLINKED',
       stage: 'UNLINKED', limit: 25,
     })
     expect(page.total).toBe(1)
     expect(String(request.mock.calls[0]?.[0])).toContain('week_start=2026-08-10')
+    expect(String(request.mock.calls[0]?.[0])).toContain('precision=EXACT_MCL')
     expect(String(request.mock.calls[0]?.[0])).toContain('stage=UNLINKED')
     expect((await api.weekly(weekStart)).total_count).toBe(1)
     expect((await api.summary(weekStart)).sync_status).toBe('CONTIGUOUS_CAPTURE_RECORDED')
@@ -103,7 +104,60 @@ describe('ChangeHistoryApi', () => {
     ])
     expect(calls[1]?.[0]).toBe('/change-history/access')
     expect(calls[1]?.[1]).toEqual(expect.objectContaining({ method: 'PUT', ifMatch: '"3"' }))
-    expect(JSON.parse(String(calls[1]?.[1].body))).not.toHaveProperty('version')
+    const accessBody = calls[1]?.[1].body
+    expect(typeof accessBody).toBe('string')
+    expect(JSON.parse(typeof accessBody === 'string' ? accessBody : '')).not.toHaveProperty('version')
+  })
+
+  it.each(['1', '2026-08-11', '08/11/2026'])('rejects non-canonical UTC timestamp %s on every response surface', async (malformed) => {
+    const eventApi = new ChangeHistoryApi({
+      request: vi.fn().mockResolvedValue({
+        items: [{ ...event(), detected_at: malformed }], next_cursor: null, limit: 50, total: 1,
+      }),
+      requestWithMeta: vi.fn(),
+    })
+    await expect(eventApi.events()).rejects.toThrow('검증된 계약')
+
+    const weeklyApi = new ChangeHistoryApi({
+      request: vi.fn().mockResolvedValue({ ...weekly(), as_of: malformed }),
+      requestWithMeta: vi.fn(),
+    })
+    await expect(weeklyApi.weekly(weekStart)).rejects.toThrow('검증된 계약')
+
+    const summaryApi = new ChangeHistoryApi({
+      request: vi.fn().mockResolvedValue({ ...summary(), source_observed_at: malformed }),
+      requestWithMeta: vi.fn(),
+    })
+    await expect(summaryApi.summary(weekStart)).rejects.toThrow('검증된 계약')
+
+    const linkApi = new ChangeHistoryApi({
+      request: vi.fn(),
+      requestWithMeta: vi.fn().mockResolvedValue({
+        data: {
+          current_primary: null, current_candidates: [],
+          items: [{ ...linkHistory(), occurred_at: malformed }], next_cursor: null, limit: 50,
+        },
+        etag: `"${eventHash}"`,
+      }),
+    })
+    await expect(linkApi.links(eventId)).rejects.toThrow('검증된 계약')
+  })
+
+  it('fails closed on page overflow, cursor inconsistency, and unsupported precision before transport', async () => {
+    const request = vi.fn().mockResolvedValue({
+      items: [event(), event()], next_cursor: 'next', limit: 1, total: 2,
+    })
+    const api = new ChangeHistoryApi({
+      request,
+      requestWithMeta: vi.fn(),
+    })
+    await expect(api.events({ limit: 1 })).rejects.toThrow('검증된 계약')
+
+    request.mockResolvedValueOnce({ items: [event()], next_cursor: 'next', limit: 2, total: 1 })
+    await expect(api.events({ limit: 2 })).rejects.toThrow('검증된 계약')
+
+    await expect(api.events({ precision: 'GUESSED' as 'EXACT_MCL' })).rejects.toThrow('검증된 계약')
+    expect(request).toHaveBeenCalledTimes(2)
   })
 
   it('fails closed on malformed enums, counts and response ETags', async () => {

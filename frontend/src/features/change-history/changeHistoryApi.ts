@@ -57,11 +57,14 @@ export class ChangeHistoryApi {
   }
 
   async events(filters: ChangeHistoryEventFilters = {}, signal?: AbortSignal): Promise<ChangeHistoryEventPage> {
-    if (!integerBetween(filters.limit ?? 50, 1, 100)) invalid()
-    const parameters = new URLSearchParams({ limit: String(filters.limit ?? 50) })
+    const limit = filters.limit ?? 50
+    if (!integerBetween(limit, 1, 100)
+      || (filters.precision !== undefined && !precisions.has(filters.precision))) invalid()
+    const parameters = new URLSearchParams({ limit: String(limit) })
     setParameter(parameters, 'week_start', filters.weekStart)
     setParameter(parameters, 'change_type', filters.changeType)
     setParameter(parameters, 'category', filters.category)
+    setParameter(parameters, 'precision', filters.precision)
     setParameter(parameters, 'operation', filters.operation)
     setParameter(parameters, 'platform', filters.platform)
     setParameter(parameters, 'database_name', filters.databaseName)
@@ -75,7 +78,7 @@ export class ChangeHistoryApi {
       `/change-history/events?${parameters.toString()}`,
       { cache: 'no-store', signal },
     )
-    assertEventPage(value)
+    assertEventPage(value, limit, filters.cursor)
     return value
   }
 
@@ -95,14 +98,15 @@ export class ChangeHistoryApi {
     options: { cursor?: string; limit?: number; signal?: AbortSignal } = {},
   ): Promise<ApiResponse<ChangeHistoryLinkPage>> {
     assertEventIdentifier(eventId)
-    if (!integerBetween(options.limit ?? 50, 1, 100)) invalid()
-    const parameters = new URLSearchParams({ limit: String(options.limit ?? 50) })
+    const limit = options.limit ?? 50
+    if (!integerBetween(limit, 1, 100)) invalid()
+    const parameters = new URLSearchParams({ limit: String(limit) })
     setParameter(parameters, 'cursor', options.cursor)
     const response = await this.client.requestWithMeta<ChangeHistoryLinkPage>(
       `/change-history/events/${encodeURIComponent(eventId)}/cr-links?${parameters.toString()}`,
       { cache: 'no-store', signal: options.signal },
     )
-    assertLinkPage(response.data)
+    assertLinkPage(response.data, limit, options.cursor)
     assertLinkEtag(response.etag)
     return response
   }
@@ -111,16 +115,17 @@ export class ChangeHistoryApi {
     changeRequestId: string,
     options: { cursor?: string; limit?: number; signal?: AbortSignal } = {},
   ): Promise<ChangeHistoryReversePage> {
-    assertIdentifier(changeRequestId, 200, 'change request id')
-    if (!integerBetween(options.limit ?? 50, 1, 100)) invalid()
-    const parameters = new URLSearchParams({ limit: String(options.limit ?? 50) })
+    assertIdentifier(changeRequestId, 200)
+    const limit = options.limit ?? 50
+    if (!integerBetween(limit, 1, 100)) invalid()
+    const parameters = new URLSearchParams({ limit: String(limit) })
     setParameter(parameters, 'cursor', options.cursor)
     const value = await this.client.request<ChangeHistoryReversePage>(
       `/change-requests/${encodeURIComponent(changeRequestId)}/change-history?${parameters.toString()}`,
       { cache: 'no-store', signal: options.signal },
     )
     if (!isRecord(value) || value.change_request_id !== changeRequestId) invalid()
-    assertPage(value)
+    assertPage(value, limit, options.cursor)
     value.items.forEach((item) => assertEvent(item))
     return value
   }
@@ -185,18 +190,26 @@ function setParameter(parameters: URLSearchParams, name: string, value?: string)
   }
 }
 
-function assertEventPage(value: unknown): asserts value is ChangeHistoryEventPage {
-  assertPage(value, true)
+function assertEventPage(
+  value: unknown,
+  expectedLimit: number,
+  requestedCursor?: string,
+): asserts value is ChangeHistoryEventPage {
+  assertPage(value, expectedLimit, requestedCursor, true)
   value.items.forEach((item) => assertEvent(item))
 }
 
-function assertPage(value: unknown, totalRequired = false): asserts value is {
+function assertPage(value: unknown, expectedLimit: number, requestedCursor?: string, totalRequired = false): asserts value is {
   items: unknown[]; next_cursor: string | null; limit: number; total?: number; [key: string]: unknown
 } {
   if (!isRecord(value) || !Array.isArray(value.items) || value.items.length > 100
-    || !integerBetween(value.limit, 1, 100)
+    || !integerBetween(value.limit, 1, 100) || value.limit !== expectedLimit || value.items.length > value.limit
     || !(value.next_cursor === null || bounded(value.next_cursor, 2_000))
-    || (totalRequired && !nonNegativeInteger(value.total))) invalid()
+    || (value.next_cursor !== null && value.items.length !== value.limit)
+    || (requestedCursor !== undefined && value.next_cursor === requestedCursor)
+    || (totalRequired && (!nonNegativeInteger(value.total) || Number(value.total) < value.items.length))
+    || (totalRequired && requestedCursor === undefined
+      && ((Number(value.total) > value.items.length) !== (value.next_cursor !== null)))) invalid()
 }
 
 function assertEvent(value: unknown, detail = false): asserts value is ChangeHistoryEvent | ChangeHistoryEventDetail {
@@ -293,8 +306,8 @@ function assertCountRecord<T extends string>(value: unknown, allowed: Set<T>) {
     || [...allowed].some((key) => !nonNegativeInteger(value[key]))) invalid()
 }
 
-function assertLinkPage(value: unknown): asserts value is ChangeHistoryLinkPage {
-  assertPage(value)
+function assertLinkPage(value: unknown, expectedLimit: number, requestedCursor?: string): asserts value is ChangeHistoryLinkPage {
+  assertPage(value, expectedLimit, requestedCursor)
   if (!isRecord(value) || !Array.isArray(value.current_candidates) || value.current_candidates.length > 100) invalid()
   assertCrLink(value.current_primary)
   value.current_candidates.forEach(assertCrLink)
@@ -359,7 +372,7 @@ function assertLinkEtag(value: unknown): asserts value is string {
   if (typeof value !== 'string' || !/^"(?:0|[0-9a-f]{64})"$/.test(value)) invalid()
 }
 
-function assertIdentifier(value: string, maximum: number, _label: string) {
+function assertIdentifier(value: string, maximum: number) {
   if (!bounded(value, maximum)) invalid()
 }
 
@@ -392,7 +405,9 @@ function sha(value: unknown): value is string {
 }
 
 function timestamp(value: unknown): value is string {
-  return typeof value === 'string' && value.length <= 40 && Number.isFinite(Date.parse(value))
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false
+  const parsed = new Date(value)
+  return Number.isFinite(parsed.getTime()) && parsed.toISOString() === value
 }
 
 function nullableTimestamp(value: unknown): value is string | null {

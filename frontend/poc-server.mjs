@@ -1136,10 +1136,13 @@ function changeHistorySummary(projection, rows, core, document, weekStart) {
   const precisionCounts = Object.fromEntries(changeHistoryPrecisionValues.map((precision) => [precision, 0]))
   const categoryCounts = Object.fromEntries([...changeHistoryCategories].map((category) => [category, 0]))
   const operationCounts = Object.fromEntries([...changeHistoryOperations].map((operation) => [operation, 0]))
-  for (const row of weekly.inWeek) {
-    if (row.precision) precisionCounts[row.precision] += 1
-    categoryCounts[row.event.category] += 1
-    operationCounts[row.event.operation] += 1
+  for (const transactionRows of transactionEntries) {
+    const transactionPrecisions = new Set(transactionRows.map((row) => row.precision).filter(Boolean))
+    const transactionCategories = new Set(transactionRows.map((row) => row.event.category))
+    const transactionOperations = new Set(transactionRows.map((row) => row.event.operation))
+    for (const precision of transactionPrecisions) precisionCounts[precision] += 1
+    for (const category of transactionCategories) categoryCounts[category] += 1
+    for (const operation of transactionOperations) operationCounts[operation] += 1
   }
   const source = changeHistorySourceSummary(projection, rows)
   const occurred = rows.map((row) => row.event.source_occurred_at)
@@ -1197,6 +1200,7 @@ async function changeHistoryApi(request, response, url, context) {
     const bounds = weekStart ? changeHistoryWeekBounds(weekStart) : null
     const changeType = changeHistoryFilterValue(url.searchParams, 'change_type', 32)
     const category = changeHistoryFilterValue(url.searchParams, 'category', 32)
+    const precision = changeHistoryFilterValue(url.searchParams, 'precision', 32)
     const operation = changeHistoryFilterValue(url.searchParams, 'operation', 32)
     const platform = changeHistoryFilterValue(url.searchParams, 'platform', 100)?.toLowerCase() ?? null
     const databaseName = changeHistoryFilterValue(url.searchParams, 'database_name')
@@ -1207,6 +1211,7 @@ async function changeHistoryApi(request, response, url, context) {
     const stage = changeHistoryFilterValue(url.searchParams, 'stage', 32)
     if ((changeType && !['SCHEMA_CHANGE', 'METADATA_CHANGE'].includes(changeType))
       || (category && !changeHistoryCategories.has(category))
+      || (precision && !changeHistoryPrecisionValues.includes(precision))
       || (operation && !changeHistoryOperations.has(operation))
       || (linkState && !['LINKED', 'UNLINKED'].includes(linkState))
       || (stage && !changeHistoryPresentationStages.has(stage))) {
@@ -1217,6 +1222,7 @@ async function changeHistoryApi(request, response, url, context) {
         && Date.parse(row.event.source_occurred_at) < bounds.end.getTime()))
       && (!changeType || (changeType === 'SCHEMA_CHANGE') === (row.event.category === 'TECHNICAL_SCHEMA' && row.event.source_aspect === 'schemaMetadata'))
       && (!category || row.event.category === category)
+      && (!precision || row.precision === precision)
       && (!operation || row.event.operation === operation)
       && (!platform || row.locator?.platform === platform)
       && (!databaseName || row.locator?.database_name === databaseName)
