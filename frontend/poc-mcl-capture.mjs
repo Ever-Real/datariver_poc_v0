@@ -1,8 +1,14 @@
 /* global process, Buffer, setTimeout, clearTimeout */
-import { Kafka, logLevel } from 'kafkajs'
+import KafkaJs from 'kafkajs'
 import { SchemaRegistry } from '@kafkajs/confluent-schema-registry'
+import SnappyCodec from 'kafkajs-snappy'
 
 import { createPocStateStore } from './poc-state-store.mjs'
+
+const { CompressionCodecs, CompressionTypes, Kafka, logLevel } = KafkaJs
+
+// KafkaJS requires codecs supplied by consumers to be registered before the MCL client connects.
+CompressionCodecs[CompressionTypes.Snappy] = SnappyCodec
 
 const SUPPORTED_ASPECTS = new Set([
   'schemaMetadata',

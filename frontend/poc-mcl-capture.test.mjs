@@ -5,13 +5,17 @@ import test from 'node:test'
 import { URL } from 'node:url'
 
 import { SchemaRegistry, SchemaType } from '@kafkajs/confluent-schema-registry'
+import KafkaJs from 'kafkajs'
 import avro from 'avsc'
+import SnappyCodec from 'kafkajs-snappy'
 
 import {
   createPocMclCapture,
   decodeConfluentMcl,
   normalizeMclRecord,
 } from './poc-mcl-capture.mjs'
+
+const { CompressionCodecs, CompressionTypes } = KafkaJs
 
 const SOURCE_HASH = 'a'.repeat(64)
 const SCHEMA_HASH = 'b'.repeat(64)
@@ -49,6 +53,14 @@ const MCL_SCHEMA = {
     },
   ],
 }
+
+test('registers the pure-JavaScript Snappy codec at the MCL Kafka boundary', async () => {
+  assert.equal(CompressionCodecs[CompressionTypes.Snappy], SnappyCodec)
+  const codec = CompressionCodecs[CompressionTypes.Snappy]()
+  const payload = Buffer.from('bounded MCL Snappy decode')
+  const compressed = await codec.compress({ buffer: payload })
+  assert.deepEqual(await codec.decompress(compressed), payload)
+})
 
 function schemaRegistry() {
   const registry = new SchemaRegistry({ host: 'http://schema-registry.invalid' })
