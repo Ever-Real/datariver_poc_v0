@@ -1,0 +1,137 @@
+{
+  "schema_version": 1,
+  "task_id": "DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01-CATALOG",
+  "role": "40_DATA_AI_KNOWLEDGE",
+  "scope": "B-01_CATALOG_SCROLL_ONLY",
+  "outcome": "SUCCEEDED_LOCAL_CANDIDATE",
+  "recorded_at": "2026-08-14T09:22:07+09:00",
+  "environment": {
+    "name": "DEV_MAC_ARM64_TASK_WORKTREE",
+    "node": "v25.9.0",
+    "npm": "11.12.1"
+  },
+  "git": {
+    "base_sha": "8665f5d67a19fdbc41caf3b77c5c72b7399bbfd4",
+    "product_commit_sha": "4deb4de21e29a8fcec0d08c40682ed93ffe52da9",
+    "branch": "Ever-Real/dev-checkpoint-repair-01-catalog",
+    "clean_before_task": true,
+    "clean_before_evidence": true
+  },
+  "files": {
+    "product": [
+      "frontend/poc-server.mjs",
+      "frontend/poc-catalog-performance.test.mjs",
+      "frontend/poc-server.providers.test.mjs"
+    ],
+    "evidence": [
+      ".orchestration/evidence/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01-CATALOG.md",
+      ".orchestration/receipts/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01-CATALOG.json"
+    ]
+  },
+  "repair": {
+    "stable_provider_total": true,
+    "exact_unique_cardinality": true,
+    "one_terminal_confirmation_page": true,
+    "terminal_raw_hits_required": 0,
+    "terminal_continuation_allowed": false,
+    "terminal_duplicate_hits_allowed": false,
+    "all_observed_cursors_cycle_checked": true,
+    "cold_retry_at_suppression": true,
+    "page_bound_preserved": true,
+    "postgres_first_commit": true,
+    "memory_then_optional_redis": true,
+    "last_good_preserved": true,
+    "valid_zero_preserved": true,
+    "explicit_unsupported_urn_sort_removed": true
+  },
+  "datahub_v1_6_source_contract": {
+    "resolver_url": "https://github.com/datahub-project/datahub/blob/v1.6.0/datahub-graphql-core/src/main/java/com/linkedin/datahub/graphql/resolvers/search/ScrollAcrossEntitiesResolver.java",
+    "ordering_url": "https://github.com/datahub-project/datahub/blob/v1.6.0/metadata-io/src/main/java/com/linkedin/metadata/search/utils/ESUtils.java#L605-L681",
+    "default_ordering": "score descending with URN ascending tie-breaker",
+    "query_shape_assertion_updated": true,
+    "validator_weakened": false
+  },
+  "focused_observations": {
+    "exact_boundary_assets": 250,
+    "provider_calls": 2,
+    "durable_writes": 1,
+    "cache_writes": 1,
+    "unsafe_cases": [
+      "terminal_continuation",
+      "terminal_new_asset",
+      "terminal_duplicate_asset",
+      "non_immediate_cursor_cycle"
+    ],
+    "unsafe_case_http_status": 502,
+    "unsafe_case_durable_writes": 0,
+    "cold_suppressed_poll_requests": 4,
+    "provider_rescans_during_retry_at": 0
+  },
+  "validation": [
+    {
+      "command": "npm ci --offline",
+      "status": "PASS",
+      "installed_packages": 368,
+      "audit_vulnerabilities": 0
+    },
+    {
+      "command": "npm run build:poc",
+      "status": "PASS",
+      "note": "existing large chunk warning only"
+    },
+    {
+      "command": "node --test poc-catalog-performance.test.mjs",
+      "status": "PASS_AFTER_REQUIRED_BUILD",
+      "tests": 4,
+      "passed": 4
+    },
+    {
+      "command": "node --test poc-server.providers.test.mjs",
+      "status": "PASS",
+      "tests": 18,
+      "passed": 18
+    },
+    {
+      "command": "node --test poc-server.test.mjs",
+      "status": "PASS",
+      "tests": 14,
+      "passed": 14
+    },
+    {
+      "command": "node --test *.test.mjs",
+      "status": "PASS",
+      "tests": 59,
+      "passed": 59
+    },
+    {
+      "command": "npm run lint",
+      "status": "PASS",
+      "warnings": 0
+    },
+    {
+      "command": "git diff --check and base-to-product allowlist",
+      "status": "PASS"
+    }
+  ],
+  "findings": [],
+  "blockers": [],
+  "not_executed": [
+    "B-02 or new feature repair",
+    "live DataHub/provider/runtime access or mutation",
+    "existing listener lifecycle",
+    "container/volume/network lifecycle",
+    "PREP",
+    "OPS",
+    "TARGET",
+    "push",
+    "merge",
+    "rebase",
+    "publication"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  }
+}
