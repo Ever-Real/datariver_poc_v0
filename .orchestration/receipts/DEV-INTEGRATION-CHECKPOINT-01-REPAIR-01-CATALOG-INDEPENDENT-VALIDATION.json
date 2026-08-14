@@ -1,0 +1,164 @@
+{
+  "schema_version": 1,
+  "task_id": "DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01-CATALOG-INDEPENDENT-VALIDATION",
+  "role": "50_QUALITY_VALIDATION",
+  "risk": "R2_INDEPENDENT_VALIDATION",
+  "scope": "B-01_CATALOG_SCROLL_ONLY",
+  "validated_at": "2026-08-14T09:29:26+09:00",
+  "status": "PASS_LOCAL_SOURCE",
+  "environment": {
+    "name": "DEV_MAC_ARM64_TASK_WORKTREE",
+    "node": "v25.9.0",
+    "npm": "11.12.1"
+  },
+  "git": {
+    "base_sha": "8665f5d67a19fdbc41caf3b77c5c72b7399bbfd4",
+    "product_sha": "4deb4de21e29a8fcec0d08c40682ed93ffe52da9",
+    "candidate_sha": "e9d744bade52adc740ff96c17025064ecd263b25",
+    "branch": "Ever-Real/dev-checkpoint-repair-01-catalog-validation",
+    "clean_before_task": true,
+    "clean_before_evidence": true
+  },
+  "paths": {
+    "product_reviewed": [
+      "frontend/poc-server.mjs",
+      "frontend/poc-catalog-performance.test.mjs",
+      "frontend/poc-server.providers.test.mjs"
+    ],
+    "prior_evidence_reviewed": [
+      ".orchestration/evidence/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01-CATALOG.md",
+      ".orchestration/receipts/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01-CATALOG.json"
+    ],
+    "documentation_changed": [
+      ".orchestration/evidence/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01-CATALOG-INDEPENDENT-VALIDATION.md",
+      ".orchestration/receipts/DEV-INTEGRATION-CHECKPOINT-01-REPAIR-01-CATALOG-INDEPENDENT-VALIDATION.json"
+    ]
+  },
+  "scope_assertions": {
+    "product_source_read_only": true,
+    "exact_three_product_paths": true,
+    "exact_two_prior_evidence_paths": true,
+    "dependency_lock_service_framework_deploy_changes": false,
+    "B02_changes": false,
+    "validator_weakening_detected": false,
+    "secret_exposure_detected": false
+  },
+  "static_review": {
+    "stable_provider_total": true,
+    "exact_unique_cardinality": true,
+    "one_terminal_confirmation_page": true,
+    "terminal_raw_hits_required": 0,
+    "terminal_continuation_allowed": false,
+    "terminal_duplicate_hits_allowed": false,
+    "all_observed_cursors_cycle_checked": true,
+    "non_immediate_A_B_A_cycle_rejected": true,
+    "cold_retry_at_suppression": true,
+    "single_refresh_promise": true,
+    "page_bound_preserved": true,
+    "postgres_first_commit": true,
+    "memory_then_optional_redis": true,
+    "last_good_preserved": true,
+    "valid_zero_preserved": true,
+    "old_F01_corrected": true
+  },
+  "datahub_v1_6_source_contract": {
+    "resolver_url": "https://github.com/datahub-project/datahub/blob/v1.6.0/datahub-graphql-core/src/main/java/com/linkedin/datahub/graphql/resolvers/search/ScrollAcrossEntitiesResolver.java",
+    "sort_mapping_url": "https://github.com/datahub-project/datahub/blob/v1.6.0/datahub-graphql-core/src/main/java/com/linkedin/datahub/graphql/resolvers/search/SearchUtils.java#L328-L346",
+    "ordering_url": "https://github.com/datahub-project/datahub/blob/v1.6.0/metadata-io/src/main/java/com/linkedin/metadata/search/utils/ESUtils.java#L570-L656",
+    "omitted_sort_input_maps_to_empty_criteria": true,
+    "default_ordering": "score descending with URN ascending tie-breaker",
+    "query_shape_assertion_updated": true,
+    "validator_weakened": false
+  },
+  "focused_observations": {
+    "exact_boundary_assets": 250,
+    "provider_calls": 2,
+    "durable_writes": 1,
+    "cache_writes": 1,
+    "final_http_status": 200,
+    "unsafe_cases": [
+      "terminal_continuation",
+      "terminal_new_asset",
+      "terminal_duplicate_asset",
+      "non_immediate_cursor_cycle"
+    ],
+    "unsafe_case_http_status": 502,
+    "unsafe_case_durable_writes": 0,
+    "cold_suppressed_poll_requests": 4,
+    "provider_rescans_during_retry_at": 0
+  },
+  "validation": [
+    {
+      "command": "npm ci --offline",
+      "status": "PASS",
+      "installed_packages": 368,
+      "audit_vulnerabilities": 0
+    },
+    {
+      "command": "npm run build:poc",
+      "status": "PASS",
+      "note": "required dist precondition; existing large chunk warning only"
+    },
+    {
+      "command": "node --test --test-reporter=tap poc-catalog-performance.test.mjs",
+      "status": "PASS",
+      "tests": 4,
+      "passed": 4
+    },
+    {
+      "command": "node --test --test-reporter=tap poc-server.providers.test.mjs",
+      "status": "PASS",
+      "tests": 18,
+      "passed": 18
+    },
+    {
+      "command": "node --test --test-reporter=tap poc-server.test.mjs",
+      "status": "PASS",
+      "tests": 14,
+      "passed": 14
+    },
+    {
+      "command": "node --test --test-reporter=tap *.test.mjs",
+      "status": "PASS_ISOLATED",
+      "tests": 59,
+      "passed": 59,
+      "cold_response_ms": 28.709
+    },
+    {
+      "command": "npm run lint",
+      "status": "PASS",
+      "warnings": 0
+    },
+    {
+      "command": "ancestry, git diff --check, exact allowlist",
+      "status": "PASS"
+    }
+  ],
+  "observations": [
+    {
+      "severity": "NON_PRODUCT_VALIDATION_LOAD_OBSERVATION",
+      "detail": "A validator-parallel lint/full-Node attempt measured the cold response at 103.150 ms against a <100 ms assertion. After terminating only the leaked task-local test PID, the prescribed isolated full Node run passed 59/59 at 28.709 ms without product or validator changes."
+    }
+  ],
+  "findings": [],
+  "blockers": [],
+  "not_executed": [
+    "B-02 review or repair",
+    "live DataHub/provider/runtime access or mutation",
+    "existing listener lifecycle",
+    "container/volume/network lifecycle",
+    "PREP",
+    "OPS",
+    "TARGET",
+    "push",
+    "merge",
+    "rebase",
+    "publication"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  }
+}
