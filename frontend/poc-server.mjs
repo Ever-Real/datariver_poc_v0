@@ -2054,7 +2054,6 @@ async function datahubCatalogPage(providerCursor, signal) {
     query: '*',
     count: 250,
     keepAlive: '1m',
-    sortInput: { sortCriteria: [{ field: 'urn', sortOrder: 'ASCENDING' }] },
     searchFlags: { skipAggregates: true, skipHighlighting: true },
   }
   if (providerCursor) input.scrollId = providerCursor
@@ -2205,7 +2204,6 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
       if (page.total !== providerTotal) {
         throw Object.assign(new Error('DataHub changed its inventory total during the scroll.'), { statusCode: 502 })
       }
-      const observedBeforePage = observed.size
       for (const item of page.items) {
         if (typeof item.id !== 'string' || !item.id) {
           throw Object.assign(new Error('DataHub returned an inventory asset without a valid identity.'), { statusCode: 502 })
@@ -2218,7 +2216,6 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
       if (observed.size > providerTotal) {
         throw Object.assign(new Error('DataHub returned more unique assets than its inventory total.'), { statusCode: 502 })
       }
-      const newUniqueAssets = observed.size - observedBeforePage
       if (page.nextProviderCursor) {
         if (providerCursors.has(page.nextProviderCursor)) {
           throw Object.assign(new Error('DataHub returned a repeated scroll cursor.'), { statusCode: 502 })
@@ -2226,7 +2223,7 @@ export function startDatahubInventoryRefresh({ signal = serverBackgroundAbortCon
         providerCursors.add(page.nextProviderCursor)
       }
       if (terminalConfirmationPending) {
-        if (newUniqueAssets !== 0 || page.nextProviderCursor) {
+        if (page.items.length !== 0 || page.nextProviderCursor) {
           throw Object.assign(
             new Error('DataHub returned an invalid terminal inventory confirmation page.'),
             { statusCode: 502 },

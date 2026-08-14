@@ -486,6 +486,13 @@ test('confirms exact-boundary DataHub inventories once and fails unsafe paginati
       ],
     },
     {
+      name: 'terminal-duplicate-asset',
+      pages: [
+        { items: boundaryAssets, total: 250, next: 'terminal-a' },
+        { items: [boundaryAssets[0]], total: 250, next: null },
+      ],
+    },
+    {
       name: 'cursor-cycle',
       pages: [
         { items: [boundaryAssets[0]], total: 3, next: 'cycle-a' },
@@ -503,6 +510,7 @@ test('confirms exact-boundary DataHub inventories once and fails unsafe paginati
       unsafeModule.startDatahubInventoryRefresh(),
       (error) => error?.statusCode === 502,
     )
+    assert.equal(scenario.requests, unsafe.pages.length)
     assert.equal(unsafeStore.observation().writes, 0, `${unsafe.name} must not commit`)
   }
 
