@@ -1,0 +1,103 @@
+{
+  "task": "CHANGE-HIST-T07B2B-INDEPENDENT-VALIDATION",
+  "role": "50_QUALITY_VALIDATION",
+  "outcome": "PASS_LOCAL_SOURCE",
+  "status": "INDEPENDENT_VALIDATION_PASS_PENDING_T09_AUDIT",
+  "validation_date_kst": "2026-08-14",
+  "starting_head": "5735efffcc057859bd780ed3d9e86009e5cbdf17",
+  "product_sha": "c87df404645b62e0a79ba41f99486c403ba92abb",
+  "base_sha": "3b2ad95efdab74be361b3c1663728929ba55ae66",
+  "product_write": "없음",
+  "environment": {
+    "platform": "macOS 26.5.2 arm64 (Darwin 25.5.0)",
+    "node": "v25.9.0",
+    "npm": "11.12.1",
+    "initial_node_modules": "없음"
+  },
+  "ancestry": {
+    "product_is_direct_child_of_base": true,
+    "builder_evidence_is_direct_child_of_product": true,
+    "receipt_repair_is_direct_child_of_builder_evidence": true,
+    "validation_started_clean": true
+  },
+  "product_diff": {
+    "insertions": 233,
+    "deletions": 0,
+    "path_count": 2,
+    "paths": [
+      "frontend/src/features/governance/ChangeRequestDetailDialog.tsx",
+      "frontend/src/features/governance/GovernancePage.test.tsx"
+    ],
+    "exact_allowlist": "PASS",
+    "dependency_or_lock_change": "없음",
+    "api_type_server_schema_service_change": "없음",
+    "css_change": "없음"
+  },
+  "builder_evidence_diff": {
+    "final_path_count": 2,
+    "final_paths": [
+      ".orchestration/evidence/CHANGE-HIST-T07B2B-CR-REVERSE-HISTORY.md",
+      ".orchestration/receipts/CHANGE-HIST-T07B2B-CR-REVERSE-HISTORY.json"
+    ],
+    "receipt_repair": "R100 evidence receipt 경로에서 receipts 경로로 rename",
+    "exact_allowlist": "PASS"
+  },
+  "package_hashes": {
+    "frontend_package_json_sha256": "f331ee0a3314b0b40da9fa309f54181be540240ef310acd8cab67d2512e28f6f",
+    "frontend_package_lock_sha256": "3fdccef423f6b503fa9675f0fa89bccff2b11c064a536344f35c24331407a0ca"
+  },
+  "requirements": {
+    "reverse_history_only_for_open_exact_value_id_limit_50": "PASS",
+    "abort_intent_current_id_fence_on_close_or_id_change": "PASS_SOURCE_AND_FOCUSED_TEST",
+    "independent_loading_error_404_empty_states": "PASS_SOURCE_AND_FOCUSED_TEST",
+    "history_failure_cannot_hide_or_fail_cr_dialog": "PASS_SOURCE_AND_FOCUSED_TEST",
+    "kst_source_occurred_or_explicit_detected_fallback": "PASS_SOURCE_AND_FOCUSED_TEST",
+    "bounded_read_only_rows": "PASS",
+    "no_mutation_controls_local_auth_aggregation_provider_fetch": "PASS",
+    "existing_cr_states_transitions_revision_approval_attachments_actions_unchanged": "PASS_SOURCE_AND_EXACT_GOVERNANCE_SUITE",
+    "no_api_type_server_dependencies_css": "PASS",
+    "builder_receipt_rename_repair": "PASS"
+  },
+  "verification": {
+    "npm_ci_offline_existing_lock": "PASS_368_PACKAGES",
+    "exact_governance_suite": "PASS_5_FILES_73_TESTS",
+    "lint": "PASS_ZERO_ERRORS_ZERO_WARNINGS",
+    "typecheck": "PASS",
+    "build_poc": "PASS_WITH_EXISTING_500KB_CHUNK_ADVISORY",
+    "diff_check": "PASS",
+    "allowlist_and_package_hash_review": "PASS"
+  },
+  "blocking_findings": [],
+  "nonblocking_debt": [
+    {
+      "id": "D1_404_DIRECT_COVERAGE",
+      "classification": "테스트 coverage debt",
+      "summary": "일반 403 error 격리는 직접 검증하지만 404 problem의 독립 표시를 별도 case로 실행하지 않는다."
+    },
+    {
+      "id": "D2_SOURCE_OCCURRED_PRECEDENCE_COVERAGE",
+      "classification": "테스트 coverage debt",
+      "summary": "detected_at fallback은 직접 검증하지만 non-null source_occurred_at 우선 선택은 source review로 확인했다."
+    }
+  ],
+  "evidence_paths": [
+    ".orchestration/evidence/CHANGE-HIST-T07B2B-INDEPENDENT-VALIDATION.md",
+    ".orchestration/receipts/CHANGE-HIST-T07B2B-INDEPENDENT-VALIDATION.json"
+  ],
+  "not_executed": [
+    "BROWSER_OR_RUNTIME_SMOKE",
+    "PROVIDER_DB_OR_CONTAINER_PROBE_OR_MUTATION",
+    "FULL_REPOSITORY_TEST_SUITE",
+    "PUSH_MERGE_PREP_OPS_TARGET"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  },
+  "remaining": [
+    "T09_AUDIT",
+    "COVERAGE_DEBT_FOLLOW_UP"
+  ]
+}
