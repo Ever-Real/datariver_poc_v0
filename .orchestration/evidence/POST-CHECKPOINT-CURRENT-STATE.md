@@ -15,7 +15,9 @@ Node `v22.19.0` 컨테이너에서 web health와 PostgreSQL/Redis/Neo4j/DataHub/
 브라우저 warm 재진입은 3.088초였다. current projection은 PostgreSQL/Redis 2,000 asset을 사용했으나
 `DEGRADED_LAST_GOOD` stale 상태다. Tree는 동작했지만 Detail은 DataHub 405에서 POC 502로 실패했다.
 
-T04 MCL과 scheduler는 관련 환경 설정이 없어 실제 실행하지 않았다. T06은 최소 access fixture,
+baseline `deploy/poc/.env`에는 MCL과 scheduler 관련 환경 설정이 없었다. checkpoint 후 active subject는
+환경값과 저장된 fixture로 설정되어 access API 200 및 empty-state API/UI를 확인했지만, MCL과 scheduler는
+실제 실행하지 않았다. T06은 최소 access fixture,
 stored subject 권위, claim spoof 차단과 빈 API를 확인했으나 populated role/action/CR link를 실행하지
 않았다. T07은 native monitoring/weekly/CR empty state를 확인했으나 populated event detail은
 실행하지 않았다.

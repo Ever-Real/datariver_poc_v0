@@ -16,8 +16,8 @@
     "platform_health": "PASS",
     "current_projection": "DEGRADED_LAST_GOOD_STALE",
     "catalog_detail": "FAIL_DATAHUB_405_POC_502",
-    "mcl_capture": "NOT_EXECUTED_CONFIGURATION_MISSING",
-    "scheduler_trigger_catchup": "NOT_EXECUTED_CONFIGURATION_MISSING",
+    "mcl_capture": "NOT_EXECUTED_BASELINE_MCL_KEYS_MISSING_ACTIVE_SUBJECT_FIXTURE_EMPTY_STATE_ONLY",
+    "scheduler_trigger_catchup": "NOT_EXECUTED_SCHEDULER_ENABLE_MISSING_ACTIVE_SUBJECT_FIXTURE_EMPTY_STATE_ONLY",
     "role_scope": "PARTIAL_FIXTURE_ONLY",
     "t07_populated_ui": "NOT_EXECUTED_NO_LEDGER_EVENT"
   },

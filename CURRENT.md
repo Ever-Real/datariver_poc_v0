@@ -16,7 +16,7 @@
 - current projection은 2,000 assets와 PostgreSQL/Redis 경로를 보였지만 `DEGRADED_LAST_GOOD`이며 stale이다.
 - Search HTTP는 초기 `66ms`, warm `29/26ms`였으나 브라우저 첫 진입 `1.171s`, warm 재진입 `3.088s`로 T08 성능 부채가 있다.
 - Resource Tree는 표시되었으나 Catalog Detail은 DataHub 405 → POC 502로 실패했다.
-- MCL 환경키/active subject/scheduler enable이 없어 ledger·checkpoint·replay·dedup·manual trigger·catch-up은 실행하지 않았다.
+- baseline `deploy/poc/.env`에는 MCL 환경키와 scheduler enable이 없었다. 다만 checkpoint 후 active subject는 환경값과 저장된 fixture로 설정되었고, access API 200 및 empty-state API/UI만 검증했다. MCL ledger·checkpoint·replay·dedup·manual trigger·catch-up은 실행하지 않았다.
 - access fixture와 claim spoof 차단은 확인했지만 populated role action, CR link/unlink, reverse history는 실행하지 않았다.
 - Monitoring native 탭, weekly 0건, CR empty state는 확인했지만 populated change detail은 실행하지 않았다.
 

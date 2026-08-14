@@ -22,8 +22,8 @@ Catalog Detail은 DataHub 405/POC 502이다. MCL 설정 부재로 ledger/checkpo
 | T02 | Timeline 백필/MCL 전진 캡처 결정 | 정밀도 표기가 있는 이력 | IMPLEMENTED | 미실행 | 10 | R3 | T09 감사 |
 | T03-PYTHON | Python/Alembic 원장 | 영속 변경 이력 기반 | VALIDATION_PASS | NOT_RUNTIME_INTEGRATED | 40 | R3 | Node 경로 포함 여부 별도 판정 |
 | T03N | Node ledger/checkpoint 영속성 | 재시작 후 이력 보존 | VALIDATION_PASS | 테이블 존재, rows 0 | 40 | R3 | T08 재검증 |
-| T04 | MCL decode·normalize·dedup·checkpoint | 정확한 변경 사건 | VALIDATION_PASS | NOT_EXECUTED_CONFIGURATION_MISSING | 40 | R3 | MCL 설정/fixture 후 재실행 |
-| SCHEDULER | KST 00:00·catch-up·중복 방지 | 자동 동기화 | VALIDATION_PASS | 시간 계산만 확인, trigger 미실행 | 40 | R2 | 설정 후 manual/catch-up |
+| T04 | MCL decode·normalize·dedup·checkpoint | 정확한 변경 사건 | VALIDATION_PASS | baseline MCL 환경키 없음; active subject는 fixture로 설정했으나 MCL 실행 미확인 | 40 | R3 | MCL 설정/fixture 후 재실행 |
+| SCHEDULER | KST 00:00·catch-up·중복 방지 | 자동 동기화 | VALIDATION_PASS | scheduler enable 없음; active subject fixture로 empty-state API/UI만 확인, trigger 미실행 | 40 | R2 | 설정 후 manual/catch-up |
 | T05 | current projection·cache·성능·삭제 처리 | Search/Tree/Detail 최신성 | IMPLEMENTED | 부분 확인; stale/detail 실패 | 40 | R2 | 최소 projection/detail repair 판단 |
 | T06A | user/role/system/담당자 권위 | 관리자·범위 관리 | VALIDATION_PASS | fixture·claim spoof 차단만 확인 | 30 | R3 | positive action 재검증 |
 | T06B | CR link/unlink·reverse history·weekly API | CR 연결·주간 집계 | VALIDATION_PASS | 빈 ledger/empty UI만 확인 | 30 | R3 | event fixture 후 재검증 |
@@ -32,9 +32,9 @@ Catalog Detail은 DataHub 405/POC 502이다. MCL 설정 부재로 ledger/checkpo
 | T09 | fresh assurance audit | 최종 보증·권한·보존 감사 | BLOCKED | T08 미실행 | 90 | R3 | T08 후 |
 | Search / Catalog / Tree / Detail | 현재 검색·트리·상세 및 B-01 projection | 카탈로그 탐색 | BLOCKED | 2,000건·PG/Redis 확인, freshness/detail 실패 | 40·60 | R2 | 별도 최소 repair 검토 |
 | Current metadata sync | DataHub canonical → current projection/cache/vector | 최신 메타데이터 | BLOCKED | `DEGRADED_LAST_GOOD`, stale | 40 | R2 | refresh 원인 조사 |
-| Schema / Metadata Change History | ledger 조회·보존·precision | 변경 이력 | IMPLEMENTED | rows 0, 실제 event 미수집 | 40 | R3 | MCL 설정 후 |
-| MCL capture / checkpoint | bounded Kafka MCL → ledger → checkpoint | 중간 변경 보존 | VALIDATION_PASS | 미실행 | 40 | R3 | configuration/fixture |
-| Scheduler / reconciliation | KST schedule·catch-up·reconciliation | 자동 갱신 | VALIDATION_PASS | boundary 계산만 확인 | 40 | R2 | trigger 실행 |
+| Schema / Metadata Change History | ledger 조회·보존·precision | 변경 이력 | IMPLEMENTED | rows 0, 실제 event 미수집; active subject fixture로 empty-state만 확인 | 40 | R3 | MCL 설정 후 |
+| MCL capture / checkpoint | bounded Kafka MCL → ledger → checkpoint | 중간 변경 보존 | VALIDATION_PASS | baseline MCL 키 없음; active subject fixture 설정 후에도 MCL 미실행 | 40 | R3 | configuration/fixture |
+| Scheduler / reconciliation | KST schedule·catch-up·reconciliation | 자동 갱신 | VALIDATION_PASS | scheduler enable 없음; active subject fixture로 empty-state만 확인, boundary 계산만 실행 | 40 | R2 | trigger 실행 |
 | User / Role 관리 | admin/steward/developer/viewer | 역할 관리 | VALIDATION_PASS | fixture API/claim 보호 확인 | 30 | R3 | populated action |
 | System / 담당자 관리 | assignment·priority·fallback | 시스템 범위·담당자 | VALIDATION_PASS | fixture assignment만 확인 | 30 | R3 | positive scope |
 | CR link/unlink / reverse history | primary/candidate/history | CR 추적 | VALIDATION_PASS | 빈 상태만 확인 | 30 | R3 | event fixture |
