@@ -1,0 +1,78 @@
+{
+  "taskId": "task_d736cad2f3d7",
+  "taskName": "PREP-READINESS-MCL-061C",
+  "startingHead": "29dae9909ffde394d99f80a0d0e53372f26a22b8",
+  "productSha": "061c6c20e5bcdbd65c884ff4b428c0f73ac17276",
+  "schedulerEvidenceOriginalSha": "f6d432e1c8c831455d2cd56b2c0e0fa8625e1dec",
+  "schedulerEvidenceCherryPickSha": "e9bb4431c6388e1aa1e660aeda3f07e9bbfd1926",
+  "outcome": "LOCAL_PREP_CANDIDATE_READY_PREP_TARGET_RECHECK_REQUIRED",
+  "productPathsExact": [
+    "frontend/package.json",
+    "frontend/package-lock.json",
+    "frontend/poc-mcl-capture.mjs",
+    "frontend/poc-mcl-capture.test.mjs"
+  ],
+  "postProductPathsEvidenceOnly": true,
+  "validation": {
+    "freshNpmCiIgnoreScripts": "PASS",
+    "packageLockConsistency": "PASS",
+    "focusedMclTests": "PASS_7_OF_7",
+    "focusedSchedulerTests": "PASS_4_OF_4",
+    "pocBuild": "PASS",
+    "dockerfileCopyClosure": "PASS_MISSING_0",
+    "linuxAmd64DockerBuild": "PASS",
+    "builtNode22SnappyImport": "PASS"
+  },
+  "dependency": {
+    "kafkajsSnappy": "1.1.0",
+    "license": "MIT",
+    "snappyjsResolved": "0.6.1"
+  },
+  "prepContractVariableNamesOnly": [
+    "POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID",
+    "POC_CHANGE_HISTORY_SCHEDULER_ENABLED",
+    "POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE",
+    "POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME",
+    "POC_MCL_KAFKA_BROKERS",
+    "POC_MCL_KAFKA_CLIENT_ID",
+    "POC_MCL_KAFKA_GROUP_ID",
+    "POC_MCL_KAFKA_TOPIC",
+    "POC_MCL_SOURCE_IDENTITY_HASH",
+    "POC_MCL_SCHEMA_CONTRACT_HASH",
+    "POC_MCL_PROVIDER_NAME",
+    "POC_MCL_PROVIDER_VERSION",
+    "POC_MCL_KAFKA_SSL",
+    "POC_MCL_KAFKA_SASL_MECHANISM",
+    "POC_MCL_KAFKA_SASL_USERNAME",
+    "POC_MCL_KAFKA_SASL_PASSWORD",
+    "POC_MCL_SCHEMA_REGISTRY_URL",
+    "POC_MCL_SCHEMA_REGISTRY_USERNAME",
+    "POC_MCL_SCHEMA_REGISTRY_PASSWORD",
+    "POC_MCL_MAX_MESSAGES",
+    "POC_MCL_MAX_RECORD_BYTES",
+    "POC_MCL_TIMEOUT_MS",
+    "POC_SHARED_NETWORK"
+  ],
+  "priorPrepLocalDockerfileDrift": "scheduler and MCL runtime COPY entries were previously absent; task did not access host-local Dockerfile.local",
+  "secretLiteralScan": "PASS_NO_LITERAL_VALUES_RECORDED",
+  "deploymentHardcodingProductDiff": "PASS_NO_ADDED_RUNTIME_ENDPOINT",
+  "taskLocalArtifactsRemoved": [
+    "datariver-prep-readiness-mcl-061c:task_d736cad2f3d7 image",
+    "all task-named --rm containers"
+  ],
+  "notExecuted": [
+    "PREP_RUNTIME",
+    "OPS_RUNTIME",
+    "PUSH",
+    "MERGE",
+    "PUBLICATION",
+    "DEPLOYMENT_MUTATION",
+    "ENV_VALUE_INSPECTION"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  }
+}
