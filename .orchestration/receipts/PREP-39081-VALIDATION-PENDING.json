@@ -1,0 +1,18 @@
+{
+  "taskId": "PREP-39081-VALIDATION-PENDING",
+  "exactBaseSha": "03fcacb933b0d837f3b6b6917c2754cc80e07673",
+  "environment": "PREP_WSL_AMD64",
+  "status": "PREP_CANDIDATE_RUNNING / VALIDATION_PENDING",
+  "drift": "local-only Dockerfile.local omitted runtime COPY for poc-change-history-scheduler.mjs and poc-mcl-capture.mjs; first candidate startup failed; user minimally updated Dockerfile.local and candidate then started successfully",
+  "gates": {
+    "G1_G2": "approved and executed only for published PREP test candidate 03fcacb",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  },
+  "allowedPathsModified": [
+    "CURRENT.md",
+    ".orchestration/dashboard/PRIORITIES.md",
+    ".orchestration/evidence/PREP-39081-VALIDATION-PENDING.md",
+    ".orchestration/receipts/PREP-39081-VALIDATION-PENDING.json"
+  ]
+}

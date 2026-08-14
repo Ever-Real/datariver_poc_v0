@@ -22,41 +22,41 @@ binding은 nonblank `0/9`, scheduler는 disabled이므로 실제 event 기반 T0
 
 ## 작업 상태
 
-| Task | 담당 기능 / 핵심 Action | 사용자가 보는 기능 | 실제 상태 | Runtime 확인 | Owner | Risk | Next |
-|---|---|---|---|---|---|---|---|
-| T00 | 기준선·통제·DAG | 일관된 작업 기준 | IMPLEMENTED | 소스 문서 | 10 | R2 | 감사 전 유지 |
-| T01 | DataHub Timeline/MCL 능력 조사 | 변경 이력 보장 범위 | IMPLEMENTED | TARGET_RECHECK_REQUIRED | 40 | R2 | 릴리스 전 재확인 |
-| T02 | Timeline 백필/MCL 전진 캡처 결정 | 정밀도 표기가 있는 이력 | IMPLEMENTED | 미실행 | 10 | R3 | T09 감사 |
-| T03-PYTHON | Python/Alembic 원장 | 영속 변경 이력 기반 | VALIDATION_PASS | NOT_RUNTIME_INTEGRATED | 40 | R3 | Node 경로 포함 여부 별도 판정 |
-| T03N | Node ledger/checkpoint 영속성 | 재시작 후 이력 보존 | VALIDATION_PASS | 테이블 존재, rows 0 | 40 | R3 | T08 재검증 |
-| T04 | MCL decode·normalize·dedup·checkpoint | 정확한 변경 사건 | VALIDATION_PASS | BLOCKED_RUNTIME: binding 0/9, Kafka protocol 실패, ledger/checkpoint 0 | 40 | R3 | 운영 경계 설정 후 재실행 |
-| SCHEDULER | KST 00:00·catch-up·중복 방지 | 자동 동기화 | VALIDATION_PASS | BLOCKED_RUNTIME: disabled, receipt 0, catch-up 미실행 | 40 | R2 | 설정 후 manual/catch-up |
-| T05 | current projection·cache·성능·삭제 처리 | Search/Tree/Detail 최신성 | IMPLEMENTED | Search/Catalog 범위 PASS_WITH_LIMITATIONS·Node22 RUNTIME_VERIFIED; Redis/upstream 관측 제한 | 40 | R2 | T08 성능/관측 부채 |
-| T06A | user/role/system/담당자 권위 | 관리자·범위 관리 | VALIDATION_PASS | fixture·claim spoof 차단만 확인; populated scope BLOCKED_DEPENDENCY | 30 | R3 | event/role fixture 후 재검증 |
-| T06B | CR link/unlink·reverse history·weekly API | CR 연결·주간 집계 | VALIDATION_PASS | 빈 ledger/empty UI만 확인; 실제 link/weekly/reverse NOT_EXECUTED | 30 | R3 | event fixture 후 재검증 |
-| T07 | Monitoring native·weekly·link UI | 이력 모니터링·CR 화면 | VALIDATION_PASS | native/empty state 확인; populated event/link BLOCKED_DEPENDENCY | 60 | R2 | 체크포인트 해소 후 T08 |
-| T08 | 통합 E2E | 전체 제품 회귀·실제 흐름 | BLOCKED | 체크포인트 선행 | 50 | R3 | runtime blocker 해소 |
-| T09 | fresh assurance audit | 최종 보증·권한·보존 감사 | BLOCKED | T08 미실행 | 90 | R3 | T08 후 |
-| Search / Catalog / Tree / Detail | 현재 검색·트리·상세 및 B-01 projection | 카탈로그 탐색 | RUNTIME_VERIFIED | Node22 읽기 전용 PASS_WITH_LIMITATIONS; 2,000건·검색·Tree·유효 Detail 14/14 확인 | 40·60 | R2 | Redis/upstream 관측은 T08 |
-| Current metadata sync | DataHub canonical → current projection/cache/vector | 최신 메타데이터 | BLOCKED | current projection 읽기는 확인했으나 Redis/upstream 호출·full freshness는 미확인 | 40 | R2 | T08 관측/재검증 |
-| Schema / Metadata Change History | ledger 조회·보존·precision | 변경 이력 | IMPLEMENTED | rows 0, 실제 event 미수집; active subject fixture로 empty-state만 확인 | 40 | R3 | MCL 설정 후 |
-| MCL capture / checkpoint | bounded Kafka MCL → ledger → checkpoint | 중간 변경 보존 | BLOCKED | BLOCKED_RUNTIME: binding 0/9, Kafka protocol 실패, ledger/checkpoint 0 | 40 | R3 | 운영 설정 후 |
-| Scheduler / reconciliation | KST schedule·catch-up·reconciliation | 자동 갱신 | BLOCKED | BLOCKED_RUNTIME: disabled, durable receipt 0, catch-up 미실행 | 40 | R2 | 운영 설정 후 |
-| User / Role 관리 | admin/steward/developer/viewer | 역할 관리 | VALIDATION_PASS | fixture API/claim 보호 확인 | 30 | R3 | populated action |
-| System / 담당자 관리 | assignment·priority·fallback | 시스템 범위·담당자 | VALIDATION_PASS | fixture assignment만 확인 | 30 | R3 | positive scope |
-| CR link/unlink / reverse history | primary/candidate/history | CR 추적 | VALIDATION_PASS | 빈 상태만 확인 | 30 | R3 | event fixture |
-| Weekly Change Summary | server-side 주차 집계 | 주간 변경 표 | VALIDATION_PASS | 0건·7주 표 확인 | 60 | R2 | populated 집계 |
-| Monitoring 데이터 변경현황 | native summary/filter/detail | 변경현황 탭 | VALIDATION_PASS | empty state/필터 확인 | 60 | R2 | populated detail |
-| 기존 Grafana tabs | external monitoring 계약 유지 | 기존 모니터링 | DEFERRED | NOT_CONFIGURED | 20·60 | R2 | T08 |
-| Registration Manual/BULK | DataHub/MinIO/Airflow 변경 | 등록관리 | DEFERRED | 종단 검증 미실행 | 40 | R3 | T08 이후 |
-| Chat GENERAL/VECTOR/GRAPH | 근거 기반 chat·최신 projection | Chat | DEFERRED | 종단 검증 미실행 | 40 | R2 | T08 이후 |
-| Quality | profile/assertion/GX | 품질관리 | DEFERRED | 미실행 | 30 | R3 | 기존 backlog |
-| Governance | 문서 CRUD/version/safe render | 거버넌스 문서 | DEFERRED | 미실행 | 30 | R2 | 기존 backlog |
-| Glossary | term hierarchy/asset assignment | 용어사전 | DEFERRED | 미실행 | 40 | R2 | 기존 backlog |
-| Knowledge | asset/version/graph projection | Knowledge Studio | DEFERRED | 미실행 | 40 | R3 | 기존 backlog |
-| Admin | user/system/permission/security UI | 관리자 메뉴 | DEFERRED | fixture API 일부만 확인 | 30 | R3 | T08 |
-| 전체 E2E | 기존 기능 + Change History | 통합 인수 | BLOCKED | T08 대기 | 50 | R3 | checkpoint 후 |
-| Release / PREP / OPS | artifact/checksum/이관 | 배포 | DEFERRED | 미실행, G1~G4 미승인 | 20 | R3 | T09·승인 후 |
+| Task | 담당 기능 | 사용자 기능 | 구현 상태 | DEV Runtime | PREP Runtime | Next |
+|---|---|---|---|---|---|---|
+| T00 | 기준선·통제·DAG | 일관된 작업 기준 | IMPLEMENTED | 소스 문서 | 39081 running/validation pending | 감사 전 유지 |
+| T01 | DataHub Timeline/MCL 능력 조사 | 변경 이력 보장 범위 | IMPLEMENTED | TARGET_RECHECK_REQUIRED | 39081 running/validation pending | 릴리스 전 재확인 |
+| T02 | Timeline 백필/MCL 전진 캡처 결정 | 정밀도 표기가 있는 이력 | IMPLEMENTED | 미실행 | 39081 running/validation pending | T09 감사 |
+| T03-PYTHON | Python/Alembic 원장 | 영속 변경 이력 기반 | VALIDATION_PASS | NOT_RUNTIME_INTEGRATED | 39081 running/validation pending | Node 경로 포함 여부 별도 판정 |
+| T03N | Node ledger/checkpoint 영속성 | 재시작 후 이력 보존 | VALIDATION_PASS | 테이블 존재, rows 0 | 39081 running/validation pending | T08 재검증 |
+| T04 | MCL decode·normalize·dedup·checkpoint | 정확한 변경 사건 | VALIDATION_PASS | BLOCKED_RUNTIME: binding 0/9, Kafka protocol 실패, ledger/checkpoint 0 | 39081 running/validation pending | 운영 경계 설정 후 재실행 |
+| SCHEDULER | KST 00:00·catch-up·중복 방지 | 자동 동기화 | VALIDATION_PASS | BLOCKED_RUNTIME: disabled, receipt 0, catch-up 미실행 | 39081 running/validation pending | 설정 후 manual/catch-up |
+| T05 | current projection·cache·성능·삭제 처리 | Search/Tree/Detail 최신성 | IMPLEMENTED | Search/Catalog 범위 PASS_WITH_LIMITATIONS·Node22 RUNTIME_VERIFIED; Redis/upstream 관측 제한 | 39081 running/validation pending | T08 성능/관측 부채 |
+| T06A | user/role/system/담당자 권위 | 관리자·범위 관리 | VALIDATION_PASS | fixture·claim spoof 차단만 확인; populated scope BLOCKED_DEPENDENCY | 39081 running/validation pending | event/role fixture 후 재검증 |
+| T06B | CR link/unlink·reverse history·weekly API | CR 연결·주간 집계 | VALIDATION_PASS | 빈 ledger/empty UI만 확인; 실제 link/weekly/reverse NOT_EXECUTED | 39081 running/validation pending | event fixture 후 재검증 |
+| T07 | Monitoring native·weekly·link UI | 이력 모니터링·CR 화면 | VALIDATION_PASS | native/empty state 확인; populated event/link BLOCKED_DEPENDENCY | 39081 running/validation pending | 체크포인트 해소 후 T08 |
+| T08 | 통합 E2E | 전체 제품 회귀·실제 흐름 | BLOCKED | 체크포인트 선행 | 39081 running/validation pending | runtime blocker 해소 |
+| T09 | fresh assurance audit | 최종 보증·권한·보존 감사 | BLOCKED | T08 미실행 | 39081 running/validation pending | T08 후 |
+| Search / Catalog / Tree / Detail | 현재 검색·트리·상세 및 B-01 projection | 카탈로그 탐색 | RUNTIME_VERIFIED | Node22 읽기 전용 PASS_WITH_LIMITATIONS; 2,000건·검색·Tree·유효 Detail 14/14 확인 | 39081 running/validation pending | Redis/upstream 관측은 T08 |
+| Current metadata sync | DataHub canonical → current projection/cache/vector | 최신 메타데이터 | BLOCKED | current projection 읽기는 확인했으나 Redis/upstream 호출·full freshness는 미확인 | 39081 running/validation pending | T08 관측/재검증 |
+| Schema / Metadata Change History | ledger 조회·보존·precision | 변경 이력 | IMPLEMENTED | rows 0, 실제 event 미수집; active subject fixture로 empty-state만 확인 | 39081 running/validation pending | MCL 설정 후 |
+| MCL capture / checkpoint | bounded Kafka MCL → ledger → checkpoint | 중간 변경 보존 | BLOCKED | BLOCKED_RUNTIME: binding 0/9, Kafka protocol 실패, ledger/checkpoint 0 | 39081 running/validation pending | 운영 설정 후 |
+| Scheduler / reconciliation | KST schedule·catch-up·reconciliation | 자동 갱신 | BLOCKED | BLOCKED_RUNTIME: disabled, durable receipt 0, catch-up 미실행 | 39081 running/validation pending | 운영 설정 후 |
+| User / Role 관리 | admin/steward/developer/viewer | 역할 관리 | VALIDATION_PASS | fixture API/claim 보호 확인 | 39081 running/validation pending | populated action |
+| System / 담당자 관리 | assignment·priority·fallback | 시스템 범위·담당자 | VALIDATION_PASS | fixture assignment만 확인 | 39081 running/validation pending | positive scope |
+| CR link/unlink / reverse history | primary/candidate/history | CR 추적 | VALIDATION_PASS | 빈 상태만 확인 | 39081 running/validation pending | event fixture |
+| Weekly Change Summary | server-side 주차 집계 | 주간 변경 표 | VALIDATION_PASS | 0건·7주 표 확인 | 39081 running/validation pending | populated 집계 |
+| Monitoring 데이터 변경현황 | native summary/filter/detail | 변경현황 탭 | VALIDATION_PASS | empty state/필터 확인 | 39081 running/validation pending | populated detail |
+| 기존 Grafana tabs | external monitoring 계약 유지 | 기존 모니터링 | DEFERRED | NOT_CONFIGURED | 39081 running/validation pending | T08 |
+| Registration Manual/BULK | DataHub/MinIO/Airflow 변경 | 등록관리 | DEFERRED | 종단 검증 미실행 | 39081 running/validation pending | T08 이후 |
+| Chat GENERAL/VECTOR/GRAPH | 근거 기반 chat·최신 projection | Chat | DEFERRED | 종단 검증 미실행 | 39081 running/validation pending | T08 이후 |
+| Quality | profile/assertion/GX | 품질관리 | DEFERRED | 미실행 | 39081 running/validation pending | 기존 backlog |
+| Governance | 문서 CRUD/version/safe render | 거버넌스 문서 | DEFERRED | 미실행 | 39081 running/validation pending | 기존 backlog |
+| Glossary | term hierarchy/asset assignment | 용어사전 | DEFERRED | 미실행 | 39081 running/validation pending | 기존 backlog |
+| Knowledge | asset/version/graph projection | Knowledge Studio | DEFERRED | 미실행 | 39081 running/validation pending | 기존 backlog |
+| Admin | user/system/permission/security UI | 관리자 메뉴 | DEFERRED | fixture API 일부만 확인 | 39081 running/validation pending | T08 |
+| 전체 E2E | 기존 기능 + Change History | 통합 인수 | BLOCKED | T08 대기 | 39081 running/validation pending | checkpoint 후 |
+| Release / PREP / OPS | artifact/checksum/이관 | 배포 | DEFERRED | 미실행, G1~G4 미승인 | 39081 running/validation pending | T09·승인 후 |
 
 ## 즉시 우선순위
 
