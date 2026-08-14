@@ -46,4 +46,3 @@ HTTP manual trigger는 제공되지 않아 만들거나 흉내 내지 않았다.
 - 후보 컨테이너와 task-owned `datariver-poc:scheduler-runtime-061c6c2` 이미지는 제거했다.
 - 기존 `datariver-poc-web-1`은 39083에서 healthy였고, Neo4j/pgvector/Redis 및 DataHub GMS/Schema Registry/broker도 모두 unchanged/healthy로 남았다. 기존 39080은 건드리지 않았다.
 - 제품 source, package/lock, metadata, CR, provider data, DataHub/Kafka service, proxy, PREP, OPS, publication은 변경하지 않았다.
-
