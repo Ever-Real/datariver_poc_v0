@@ -9,13 +9,13 @@
 
 ## 결과
 
-- outcome: `failed`
-- verdict: `FAIL_INDEPENDENT_VALIDATION`
-- blocking finding: live `poc_state`에 `change-history-scheduler-v1:*` receipt가 없어 builder의 scheduler runtime PASS를 독립 확인하지 못함.
+- outcome: `succeeded`
+- verdict: `PASS_DEV_RUNTIME_WITH_DEBT`
+- scheduler recheck: live `poc_state` receipt `change-history-scheduler-v1:datariver:poc:change-history-scheduler:v1` version 1, trigger `scheduled`, KST Aug15 00:00 boundary를 read-only 확인. Controller restart read 3회 후 ledger 13, checkpoint partition 0 `next_offset=51864`/version 50 불변 보고를 동일 DB 최종 조회로 대조.
 - source/dependency/build: `PASS` — exact four product paths, `kafkajs-snappy@1.1.0` MIT, `snappyjs@0.6.1` pure JS/no native, fresh npm ci, MCL 7/7, focused scheduler/store/MCL 23/23, lint/typecheck/static/build, build 후 server 33/33, Node22 Docker build.
-- direct ledger proof: unique tag exactly ADD offset `51817` then REMOVE offset `51827`; partition 0, same system actor/time present, `TAG/globalTags/EXACT_MCL`; checkpoint `51815 -> 51846`, version 32.
+- direct ledger proof: unique tag exactly ADD offset `51817` then REMOVE offset `51827`; partition 0, same system actor/time present, `TAG/globalTags/EXACT_MCL`; checkpoint `51815 -> 51864`, version 50.
 - CR: compatible CR 없음, core/access hash 및 version 읽기 전후 동일, link/reverse `NOT_EXECUTED_BLOCKED_TEST_DATA`.
-- access: admin read path 성공; viewer `RUNTIME_SUBJECT_SWITCH_DEBT`, authority mutation 없음.
+- access: admin read path 성공; viewer `RUNTIME_SUBJECT_SWITCH_DEBT`, authority mutation 없음. `DAILY_CLOCK_NOT_OBSERVED`도 debt로 유지.
 - cleanup: temporary validation container/image 제거; 39083 및 support services 보존.
 
 ## 문서 변경
@@ -25,6 +25,6 @@
 
 ## NOT_EXECUTED
 
-- read-only constraint로 fresh capture replay, candidate restart, live scheduler trigger/lock 및 metadata/access/CR mutation
+- 이 작업자의 read-only constraint로 fresh capture replay, candidate restart, live scheduler trigger/lock 및 metadata/access/CR mutation
 - PREP, OPS, publication, T08, T09, merge, push
 - G1/G2/G3/G4: `NOT_APPROVED`
