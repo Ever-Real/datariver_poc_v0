@@ -18,15 +18,23 @@
     "catalog_detail": "PASS_WITH_LIMITATIONS_VALID_ASSET_14_OF_14",
     "mcl_capture": "BLOCKED_RUNTIME_BINDINGS_0_OF_9_KAFKA_PROTOCOL_FAILURE_LEDGER_CHECKPOINT_0",
     "scheduler_trigger_catchup": "BLOCKED_RUNTIME_DISABLED_RECEIPT_0",
-    "role_scope": "BLOCKED_DEPENDENCY_FIXTURE_EMPTY_STATE_ONLY",
+    "role_scope": "INDEPENDENT_PASS_FIXTURE_4_ROLES_2_SYSTEMS_EMPTY_EVENTS",
     "t07_populated_ui": "BLOCKED_DEPENDENCY_NO_LEDGER_EVENT"
   },
   "blockers": [
     "DATAHUB_SELF_LOOP_AND_LOCAL_ENV_RESTART_APPROVAL",
     "KAFKA_ADVERTISED_LISTENER_AND_MCL_CONFIGURATION_APPROVAL",
     "POST_CHECKPOINT_EVENT_FIXTURE_APPROVAL",
-    "CHECKPOINT_ACCESS_FIXTURE_CLEANUP_REQUIRES_DB_APPROVAL"
+    "CHECKPOINT_ACCESS_FIXTURE_CLEANUP_REQUIRES_DB_APPROVAL",
+    "MCL_REQUIRED_BINDINGS_0_OF_9_SCHEDULER_DISABLED"
   ],
+  "security_incident": {
+    "credential_value_recorded": false,
+    "local_orca_terminal_exposure": "YES",
+    "external_publication": "NO",
+    "rotation": "NOT_EXECUTED",
+    "rotation_requires_approval": true
+  },
   "gates": {"G1":"NOT_APPROVED","G2":"NOT_APPROVED","G3":"NOT_APPROVED","G4":"NOT_APPROVED"},
   "not_executed": ["product_repair","b02_repair","t08","t09","push","merge","prep","ops"]
 }

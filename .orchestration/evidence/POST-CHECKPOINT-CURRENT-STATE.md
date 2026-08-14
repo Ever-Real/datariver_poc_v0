@@ -20,6 +20,13 @@ MCL/Scheduler는 `BLOCKED_RUNTIME`이다. MCL binding 0/9, scheduler disabled, K
 실행하지 않았다. T06/T07은 local validation PASS를 유지하지만 실제 event 기반 role scope,
 CR link/unlink, weekly populated aggregate, reverse history는 dependency로 인해 실행하지 않았다.
 
+Fixture 복구 후 active subject가 복구되었고, access API는 4-role/2-system HTTP 200, events는 HTTP
+200 empty, `2026-08-10` KST weekly는 HTTP 200 empty로 독립 검증되었다. MCL required binding은
+nonblank `0/9`, scheduler는 disabled이다.
+
+보안 incident는 credential 값 없이 `local Orca terminal exposure=YES`, `external publication=NO`,
+`rotation=NOT_EXECUTED`로만 기록한다. rotation은 별도 승인 대상이다.
+
 ## 핵심 증거
 
 Node `v22.19.0` 컨테이너에서 web health와 PostgreSQL/Redis/Neo4j/DataHub/Kafka/Schema Registry를

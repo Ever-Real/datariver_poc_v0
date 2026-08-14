@@ -27,6 +27,13 @@
 scheduler disabled, Kafka protocol/admin 실패, ledger/checkpoint 0이며 허용된 metadata mutation도
 실행하지 않았다.
 
+Fixture 복구 후 `39083` Node 22 web은 healthy이며 active subject가 복구되었다. access API는
+4-role/2-system에 HTTP 200, events는 HTTP 200 empty, KST `2026-08-10` weekly도 HTTP 200 empty로
+독립 검증되었다. 실제 event 기반 T06/T07은 여전히 `BLOCKED_DEPENDENCY`/`NOT_EXECUTED`다.
+
+보안 상태: credential 값은 기록하지 않는다. local Orca terminal exposure는 `YES`, external
+publication은 `NO`, rotation은 `NOT_EXECUTED`이며 rotation은 별도 승인이 필요하다.
+
 ## 상태·차단
 
 - T03/T04/SCHEDULER/T05/T06/T07의 `IMPLEMENTED`, `VALIDATION_PASS`, `RUNTIME_VERIFIED`는 [PRIORITIES.md](.orchestration/dashboard/PRIORITIES.md)의 표대로 분리한다.

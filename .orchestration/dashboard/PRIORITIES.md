@@ -14,6 +14,12 @@ scheduler disabled, Kafka protocol/admin 실패, ledger/checkpoint 0으로 `BLOC
 실제 metadata mutation은 실행하지 않았다. B-02는 shutdown/restart blocker가 아니므로 수정하지
 않는다. T08/T09는 체크포인트 전체 해소 전 대기한다.
 
+Fixture 복구 후 `39083`은 healthy이고 active subject가 복구되었다. access/events/weekly API는
+각각 4-role·2-system 200, empty 200, KST 주간 empty 200으로 독립 검증되었다. MCL required
+binding은 nonblank `0/9`, scheduler는 disabled이므로 실제 event 기반 T06/T07은 계속
+`BLOCKED_DEPENDENCY`/`NOT_EXECUTED`다. local Orca terminal credential exposure는 `YES`로 기록하되
+값은 기록하지 않으며, external publication은 `NO`, rotation은 `NOT_EXECUTED`(별도 승인 필요)다.
+
 ## 작업 상태
 
 | Task | 담당 기능 / 핵심 Action | 사용자가 보는 기능 | 실제 상태 | Runtime 확인 | Owner | Risk | Next |
