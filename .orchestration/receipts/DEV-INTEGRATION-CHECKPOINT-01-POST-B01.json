@@ -1,0 +1,71 @@
+{
+  "receipt_id": "DEV-INTEGRATION-CHECKPOINT-01-POST-B01",
+  "environment": "DEV_MAC_ARM64",
+  "candidate_product_sha": "138044ab8f819e3bc86d09a9d4d25d3d421b0141",
+  "product_diff_4deb4de_to_138044a": "NONE",
+  "result": "BLOCKED",
+  "runtime": {
+    "node": "v22.19.0",
+    "web_health": "PASS",
+    "support_containers": "PASS",
+    "shutdown_ms": 620,
+    "shutdown_exit_code": 0,
+    "shutdown_oom_killed": false,
+    "startup_to_healthy_ms": 5607,
+    "b02_repair": "NOT_REQUIRED"
+  },
+  "catalog": {
+    "total": 2000,
+    "projection_source": "POSTGRES_CURRENT_PROJECTION",
+    "initial_http_ms": 66,
+    "warm_http_ms": [29, 26],
+    "refresh_state": "DEGRADED_LAST_GOOD",
+    "observed_at": "2026-08-13T20:22:24.886Z",
+    "detail_provider_result": "DATAHUB_HTTP_405_WRAPPED_AS_502",
+    "browser_first_navigation_ms": 1171,
+    "browser_query_ms": 690,
+    "browser_warm_reentry_ms": 3088
+  },
+  "change_history": {
+    "tables_present": true,
+    "source_count": 0,
+    "ledger_count": 0,
+    "checkpoint_count": 0,
+    "link_count": 0,
+    "mcl_runtime": "NOT_EXECUTED_CONFIGURATION_MISSING",
+    "scheduler": {
+      "enabled": false,
+      "reason": "DISABLED",
+      "time_zone": "Asia/Seoul",
+      "manual_catchup_dedup": "NOT_EXECUTED_CONFIGURATION_MISSING"
+    }
+  },
+  "access": {
+    "fixture": "PERSISTED_DEV_CHECKPOINT_FIXTURE",
+    "official_cleanup": "UNAVAILABLE",
+    "policy_cleanup_blocker": true,
+    "spoofed_client_claim": "REJECTED_400",
+    "role_scope_positive_runtime": "NOT_EXECUTED_NO_LEDGER_EVENT"
+  },
+  "ui": {
+    "monitoring_native": "RUNTIME_VERIFIED_EMPTY_STATE",
+    "weekly_summary": "RUNTIME_VERIFIED_EMPTY_STATE",
+    "reverse_history_empty": "RUNTIME_VERIFIED",
+    "external_tabs": "NOT_EXECUTED"
+  },
+  "not_executed": [
+    "product_source_mutation",
+    "mcl_event_or_datahub_mutation",
+    "database_cleanup_mutation",
+    "push",
+    "merge",
+    "prep_mutation",
+    "ops_mutation"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  }
+}
