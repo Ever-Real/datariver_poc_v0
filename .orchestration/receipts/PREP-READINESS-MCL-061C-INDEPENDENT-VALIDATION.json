@@ -1,0 +1,97 @@
+{
+  "taskId": "task_0b0e770a56d7",
+  "taskName": "PREP-READINESS-MCL-061C-VALIDATION",
+  "dispatchId": "ctx_1d03655f6cf7",
+  "ownerRole": "50_QUALITY_VALIDATION",
+  "exactBaseSha": "0b53d79702a0c2a4f5a83fdf12a22e0a46cd107d",
+  "productSha": "061c6c20e5bcdbd65c884ff4b428c0f73ac17276",
+  "outcome": "PASS_LOCAL_VALIDATION_PREP_TARGET_RECHECK_REQUIRED",
+  "productPathsExact": [
+    "frontend/package.json",
+    "frontend/package-lock.json",
+    "frontend/poc-mcl-capture.mjs",
+    "frontend/poc-mcl-capture.test.mjs"
+  ],
+  "postProductChangesEvidenceReceiptOnly": true,
+  "validation": {
+    "freshNpmCiIgnoreScripts": "PASS_370_PACKAGES_AUDIT_0",
+    "packageLockExactPin": "PASS_KAFKAJS_SNAPPY_1.1.0",
+    "snappyjsResolved": "PASS_0.6.1",
+    "focusedMcl": "PASS_7_OF_7",
+    "focusedScheduler": "PASS_4_OF_4",
+    "dockerfileExampleCopyClosure": "PASS_MISSING_0",
+    "linuxAmd64DockerBuild": "PASS",
+    "node22ImageSnappyImportRoundTrip": "PASS_NODE_22.19.0"
+  },
+  "dependency": {
+    "kafkajsSnappy": {
+      "version": "1.1.0",
+      "license": "MIT",
+      "installScript": false
+    },
+    "snappyjs": {
+      "version": "0.6.1",
+      "license": "MIT",
+      "installScript": false
+    }
+  },
+  "staticReview": {
+    "newDeploymentEndpointHardcoding": "PASS_NONE_IN_PRODUCT_DIFF",
+    "literalSecret": "PASS_NONE_RECORDED_OR_READ",
+    "validatorOrGuardWeakening": "PASS_NONE_FOUND",
+    "dockerfileLocal": "NOT_PRESENT_OR_TRACKED_IN_THIS_CHECKOUT_PRIOR_PREP_DRIFT_RECHECK_REQUIRED"
+  },
+  "prepEnvironmentNetworkDeltaNamesOnly": {
+    "network": "POC_SHARED_NETWORK selects poc-services; default name datariver-poc-services",
+    "scheduler": [
+      "POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID",
+      "POC_CHANGE_HISTORY_SCHEDULER_ENABLED",
+      "POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE",
+      "POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME"
+    ],
+    "mcl": [
+      "POC_MCL_KAFKA_BROKERS",
+      "POC_MCL_KAFKA_CLIENT_ID",
+      "POC_MCL_KAFKA_GROUP_ID",
+      "POC_MCL_KAFKA_TOPIC",
+      "POC_MCL_SOURCE_IDENTITY_HASH",
+      "POC_MCL_SCHEMA_CONTRACT_HASH",
+      "POC_MCL_PROVIDER_NAME",
+      "POC_MCL_PROVIDER_VERSION",
+      "POC_MCL_KAFKA_SSL",
+      "POC_MCL_KAFKA_SASL_MECHANISM",
+      "POC_MCL_KAFKA_SASL_USERNAME",
+      "POC_MCL_KAFKA_SASL_PASSWORD",
+      "POC_MCL_SCHEMA_REGISTRY_URL",
+      "POC_MCL_SCHEMA_REGISTRY_USERNAME",
+      "POC_MCL_SCHEMA_REGISTRY_PASSWORD",
+      "POC_MCL_MAX_MESSAGES",
+      "POC_MCL_MAX_RECORD_BYTES",
+      "POC_MCL_TIMEOUT_MS"
+    ],
+    "valuesInspected": false
+  },
+  "cleanup": {
+    "taskImageRemoved": "datariver-prep-readiness-mcl-061c-validation:task_0b0e770a56d7",
+    "taskContainers": "all --rm; none retained"
+  },
+  "notExecuted": [
+    "PREP_RUNTIME",
+    "OPS_RUNTIME",
+    "COMPOSE_LIFECYCLE",
+    "TARGET_KAFKA_SCHEMA_REGISTRY_CONNECTION",
+    "ENV_VALUE_INSPECTION",
+    "DOCKERFILE_LOCAL_HOST_READ",
+    "SOURCE_REPAIR",
+    "PUSH",
+    "MERGE",
+    "PUBLICATION",
+    "PROVIDER_METADATA_CR_MUTATION"
+  ],
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  }
+}
