@@ -43,6 +43,8 @@
 - image ID: `sha256:0886258646acfaafc935e93264bd41db2a1238e35b3d4947e79c8bd67fda7e52`
 - image platform: `linux/amd64`
 - OCI revision: `8f6fcff39c522ce80c575f1868f398a379148ec4`
+- Compose rendered contract: `PASS` with non-secret placeholders.
+- repository `verify_static.py`: `NOT_EXECUTED_ENVIRONMENT` because the clean evidence worktree lacks PyYAML; dependency installation was not performed. Prior candidate validation evidence remains unchanged and was not weakened.
 - container/PREP/OPS runtime: `NOT_EXECUTED`
 
 ## 폐쇄망 전제

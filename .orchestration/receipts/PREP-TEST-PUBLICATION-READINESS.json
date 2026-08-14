@@ -40,7 +40,9 @@
     "image_id": "sha256:0886258646acfaafc935e93264bd41db2a1238e35b3d4947e79c8bd67fda7e52",
     "oci_revision": "8f6fcff39c522ce80c575f1868f398a379148ec4",
     "npm_ci_ignore_scripts": "PASS",
-    "audit_vulnerabilities": 0
+    "audit_vulnerabilities": 0,
+    "compose_config": "PASS",
+    "verify_static": "NOT_EXECUTED_ENVIRONMENT_PYYAML_MISSING"
   },
   "gates": {
     "G1": "NOT_APPROVED",
