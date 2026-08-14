@@ -14,12 +14,12 @@
     "shutdown_ms": 620,
     "restart_ms": 5607,
     "platform_health": "PASS",
-    "current_projection": "DEGRADED_LAST_GOOD_STALE",
-    "catalog_detail": "FAIL_DATAHUB_405_POC_502",
-    "mcl_capture": "NOT_EXECUTED_BASELINE_MCL_KEYS_MISSING_ACTIVE_SUBJECT_FIXTURE_EMPTY_STATE_ONLY",
-    "scheduler_trigger_catchup": "NOT_EXECUTED_SCHEDULER_ENABLE_MISSING_ACTIVE_SUBJECT_FIXTURE_EMPTY_STATE_ONLY",
-    "role_scope": "PARTIAL_FIXTURE_ONLY",
-    "t07_populated_ui": "NOT_EXECUTED_NO_LEDGER_EVENT"
+    "current_projection": "POSTGRES_CURRENT_PROJECTION_READ_VERIFIED_WITH_LIMITATIONS",
+    "catalog_detail": "PASS_WITH_LIMITATIONS_VALID_ASSET_14_OF_14",
+    "mcl_capture": "BLOCKED_RUNTIME_BINDINGS_0_OF_9_KAFKA_PROTOCOL_FAILURE_LEDGER_CHECKPOINT_0",
+    "scheduler_trigger_catchup": "BLOCKED_RUNTIME_DISABLED_RECEIPT_0",
+    "role_scope": "BLOCKED_DEPENDENCY_FIXTURE_EMPTY_STATE_ONLY",
+    "t07_populated_ui": "BLOCKED_DEPENDENCY_NO_LEDGER_EVENT"
   },
   "blockers": [
     "DATAHUB_SELF_LOOP_AND_LOCAL_ENV_RESTART_APPROVAL",

@@ -8,6 +8,18 @@
 - DEV_INTEGRATION_CHECKPOINT_01: `BLOCKED`
 - B-02: `DEFERRED`, shutdown/restart 실패가 아니므로 repair하지 않음
 
+## 추가 runtime 증거
+
+Search/Catalog 읽기 전용 경로는 Node `v22.19.0`에서 `PASS_WITH_LIMITATIONS` 및 범위 한정
+`RUNTIME_VERIFIED`다. 2,000 items, 검색, Tree, 유효 asset Detail 14/14 field,
+`POSTGRES_CURRENT_PROJECTION`, `stale_at=null`을 확인했다. Redis 내부 사용 여부와 upstream
+DataHub 호출 수는 이 표면에서 확인할 수 없다.
+
+MCL/Scheduler는 `BLOCKED_RUNTIME`이다. MCL binding 0/9, scheduler disabled, Kafka protocol/admin
+실패, ledger/checkpoint 0이며 metadata mutation·MCL decode·checkpoint advance·catch-up은
+실행하지 않았다. T06/T07은 local validation PASS를 유지하지만 실제 event 기반 role scope,
+CR link/unlink, weekly populated aggregate, reverse history는 dependency로 인해 실행하지 않았다.
+
 ## 핵심 증거
 
 Node `v22.19.0` 컨테이너에서 web health와 PostgreSQL/Redis/Neo4j/DataHub/Kafka/Schema Registry를

@@ -20,6 +20,13 @@
 - access fixture와 claim spoof 차단은 확인했지만 populated role action, CR link/unlink, reverse history는 실행하지 않았다.
 - Monitoring native 탭, weekly 0건, CR empty state는 확인했지만 populated change detail은 실행하지 않았다.
 
+추가 후속 runtime 증적에서 Search/Catalog는 Node 22에서 `PASS_WITH_LIMITATIONS` 및 해당 범위
+`RUNTIME_VERIFIED`로 확인되었다. 2,000 items, 검색, Tree, 유효 asset Detail 14/14 field,
+`POSTGRES_CURRENT_PROJECTION`, `stale_at=null`을 확인했다. Redis 내부 사용과 upstream DataHub
+호출 수는 관측 증거가 부족하다. MCL/Scheduler는 `BLOCKED_RUNTIME`이다. MCL binding 0/9,
+scheduler disabled, Kafka protocol/admin 실패, ledger/checkpoint 0이며 허용된 metadata mutation도
+실행하지 않았다.
+
 ## 상태·차단
 
 - T03/T04/SCHEDULER/T05/T06/T07의 `IMPLEMENTED`, `VALIDATION_PASS`, `RUNTIME_VERIFIED`는 [PRIORITIES.md](.orchestration/dashboard/PRIORITIES.md)의 표대로 분리한다.
