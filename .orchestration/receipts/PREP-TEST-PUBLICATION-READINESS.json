@@ -1,0 +1,60 @@
+{
+  "task_id": "PREP-PUBLISH-001",
+  "status": "PASS_FOR_PREP_TEST_PUBLICATION",
+  "candidate_product_sha": "138044ab8f819e3bc86d09a9d4d25d3d421b0141",
+  "candidate_evidence_base_sha": "8f6fcff39c522ce80c575f1868f398a379148ec4",
+  "remote_dev_sha": "af97af3c5c77449398711fbf33638aad1f980499",
+  "product_change_after_candidate": false,
+  "worktree_clean_before_evidence": true,
+  "python_t03": {
+    "source_included": true,
+    "runtime_integrated": false,
+    "docker_image_included": false,
+    "final_disposition_required": true
+  },
+  "security": {
+    "tracked_secret_detected": false,
+    "credential_value_in_candidate_evidence": false,
+    "local_terminal_exposure": true,
+    "external_publication": false,
+    "rotation": "NOT_EXECUTED"
+  },
+  "deployment_delta": {
+    "dockerfile_changed": true,
+    "runtime_copy_additions": [
+      "frontend/poc-change-history-scheduler.mjs",
+      "frontend/poc-mcl-capture.mjs"
+    ],
+    "npm_dependencies_added": [
+      "@kafkajs/confluent-schema-registry@4.1.0",
+      "kafkajs@2.2.4"
+    ],
+    "compose_changed": true,
+    "compose_env_addition_count": 22,
+    "postgres_upgrade_required_for_existing_volume": true,
+    "entrypoint_init_replay_assumed": false,
+    "node_startup_additive_upgrade": true
+  },
+  "linux_amd64_build": {
+    "status": "PASS",
+    "image_id": "sha256:0886258646acfaafc935e93264bd41db2a1238e35b3d4947e79c8bd67fda7e52",
+    "oci_revision": "8f6fcff39c522ce80c575f1868f398a379148ec4",
+    "npm_ci_ignore_scripts": "PASS",
+    "audit_vulnerabilities": 0
+  },
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  },
+  "not_executed": [
+    "local_dev_fast_forward",
+    "push",
+    "PREP_mutation",
+    "OPS_mutation",
+    "T08",
+    "T09",
+    "credential_rotation"
+  ]
+}

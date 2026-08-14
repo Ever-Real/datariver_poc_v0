@@ -74,6 +74,8 @@
 
 ## Session and Provider Launch
 - New session initialization must include the SESSION template and session-safe approval set. Builder accept-edits is scoped ergonomics, not authority.
+- Orca/Antigravity is a supported provider path. Do not assume Gemini or Antigravity is unavailable without an actual failed invocation receipt.
+- For every new Task, launch the Role Matrix preferred model first. Use controlled fallback only after recording the actual launch failure and a clean Task checkpoint; never swap a running mutating Task mid-flight.
 - Provider Launch:
   - Antigravity mutating Builder: `agy --model <actual> --effort <actual> --mode accept-edits`
   - Antigravity read-only/validation/evidence without source edit: normal mode; use plan only if verified not to block required read-only validation.

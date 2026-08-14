@@ -62,4 +62,3 @@
 2. Catalog projection refresh가 `DEGRADED_LAST_GOOD`가 되는 원인 및 Detail의 DataHub 405는 별도 최소 repair Task로 분리한다.
 3. Target/DEV MCL configuration contract와 approved fixture/cleanup 절차가 마련되기 전 exact capture runtime PASS를 주장하지 않는다.
 4. `T08`, `T09`, G1-G4, push, PREP, OPS는 실행하지 않았다.
-
