@@ -1,24 +1,14 @@
-# 현재 우선순위 대시보드 (POST-B01 DEV 체크포인트)
+# 현재 우선순위 대시보드 (PREP-39081)
 
-기준 증적 HEAD는 `0bc06a3351f466b6d8e8674acec8798c6df5a487`이다. 제품 후보는
-`138044ab8f819e3bc86d09a9d4d25d3d421b0141`이며, `4deb4de..138044a` 사이에는 제품 코드 변경이
-없고 `.orchestration/**` 증적만 추가되었다. `VALIDATION_PASS`는 소스/독립 검증 통과,
-`RUNTIME_VERIFIED`는 실제 DEV 런타임에서 해당 범위를 확인했다는 뜻이다. 전체 기능 또는 단계가
-런타임에서 확인되지 않았으면 `RUNTIME_VERIFIED`로 승격하지 않는다.
+기준 증적 HEAD 및 제품 후보는 `03fcacb933b0d837f3b6b6917c2754cc80e07673`이다.
+현재 상태는 PREP RUNNING 및 VALIDATION_PENDING이며, 추가 검증(T08/T09)은 HOLD 상태이다.
+`VALIDATION_PASS`는 소스/독립 검증 통과, `RUNTIME_VERIFIED`는 실제 타겟 런타임에서 범위를 확인했다는 뜻이다.
+전체 기능 또는 단계가 런타임에서 확인되지 않았으면 `RUNTIME_VERIFIED`로 승격하지 않는다.
 
 ## 현재 판정
 
-`DEV_INTEGRATION_CHECKPOINT_01 = BLOCKED`이다. Search/Catalog의 읽기 전용 범위는 Node 22에서
-`PASS_WITH_LIMITATIONS` 및 `RUNTIME_VERIFIED`로 승격되었지만, MCL/Scheduler는 binding 0/9,
-scheduler disabled, Kafka protocol/admin 실패, ledger/checkpoint 0으로 `BLOCKED_RUNTIME`이다.
-실제 metadata mutation은 실행하지 않았다. B-02는 shutdown/restart blocker가 아니므로 수정하지
-않는다. T08/T09는 체크포인트 전체 해소 전 대기한다.
-
-Fixture 복구 후 `39083`은 healthy이고 active subject가 복구되었다. access/events/weekly API는
-각각 4-role·2-system 200, empty 200, KST 주간 empty 200으로 독립 검증되었다. MCL required
-binding은 nonblank `0/9`, scheduler는 disabled이므로 실제 event 기반 T06/T07은 계속
-`BLOCKED_DEPENDENCY`/`NOT_EXECUTED`다. local Orca terminal credential exposure는 `YES`로 기록하되
-값은 기록하지 않으며, external publication은 `NO`, rotation은 `NOT_EXECUTED`(별도 승인 필요)다.
+현재 PREP-39081 후보가 RUNNING 상태이며, 사용자 환경 검증(VALIDATION_PENDING)을 대기 중이다.
+MCL/Scheduler 검증 및 추가 통합/종단 테스트(T08/T09)는 PREP_WSL_AMD64 환경에서의 검증 결과가 반환될 때까지 HOLD 상태로 대기한다.
 
 ## 작업 상태
 
@@ -35,8 +25,8 @@ binding은 nonblank `0/9`, scheduler는 disabled이므로 실제 event 기반 T0
 | T06A | user/role/system/담당자 권위 | 관리자·범위 관리 | VALIDATION_PASS | fixture·claim spoof 차단만 확인; populated scope BLOCKED_DEPENDENCY | 39081 running/validation pending | event/role fixture 후 재검증 |
 | T06B | CR link/unlink·reverse history·weekly API | CR 연결·주간 집계 | VALIDATION_PASS | 빈 ledger/empty UI만 확인; 실제 link/weekly/reverse NOT_EXECUTED | 39081 running/validation pending | event fixture 후 재검증 |
 | T07 | Monitoring native·weekly·link UI | 이력 모니터링·CR 화면 | VALIDATION_PASS | native/empty state 확인; populated event/link BLOCKED_DEPENDENCY | 39081 running/validation pending | 체크포인트 해소 후 T08 |
-| T08 | 통합 E2E | 전체 제품 회귀·실제 흐름 | BLOCKED | 체크포인트 선행 | 39081 running/validation pending | runtime blocker 해소 |
-| T09 | fresh assurance audit | 최종 보증·권한·보존 감사 | BLOCKED | T08 미실행 | 39081 running/validation pending | T08 후 |
+| T08 | 통합 E2E | 전체 제품 회귀·실제 흐름 | HOLD | 체크포인트 선행 | 39081 running/validation pending | 사용자 PREP 결과 후 별도 지시 대기 |
+| T09 | fresh assurance audit | 최종 보증·권한·보존 감사 | HOLD | T08 미실행 | 39081 running/validation pending | T08 후 별도 지시 대기 |
 | Search / Catalog / Tree / Detail | 현재 검색·트리·상세 및 B-01 projection | 카탈로그 탐색 | RUNTIME_VERIFIED | Node22 읽기 전용 PASS_WITH_LIMITATIONS; 2,000건·검색·Tree·유효 Detail 14/14 확인 | 39081 running/validation pending | Redis/upstream 관측은 T08 |
 | Current metadata sync | DataHub canonical → current projection/cache/vector | 최신 메타데이터 | BLOCKED | current projection 읽기는 확인했으나 Redis/upstream 호출·full freshness는 미확인 | 39081 running/validation pending | T08 관측/재검증 |
 | Schema / Metadata Change History | ledger 조회·보존·precision | 변경 이력 | IMPLEMENTED | rows 0, 실제 event 미수집; active subject fixture로 empty-state만 확인 | 39081 running/validation pending | MCL 설정 후 |
@@ -55,15 +45,15 @@ binding은 nonblank `0/9`, scheduler는 disabled이므로 실제 event 기반 T0
 | Glossary | term hierarchy/asset assignment | 용어사전 | DEFERRED | 미실행 | 39081 running/validation pending | 기존 backlog |
 | Knowledge | asset/version/graph projection | Knowledge Studio | DEFERRED | 미실행 | 39081 running/validation pending | 기존 backlog |
 | Admin | user/system/permission/security UI | 관리자 메뉴 | DEFERRED | fixture API 일부만 확인 | 39081 running/validation pending | T08 |
-| 전체 E2E | 기존 기능 + Change History | 통합 인수 | BLOCKED | T08 대기 | 39081 running/validation pending | checkpoint 후 |
-| Release / PREP / OPS | artifact/checksum/이관 | 배포 | DEFERRED | 미실행, G1~G4 미승인 | 39081 running/validation pending | T09·승인 후 |
+| 전체 E2E | 기존 기능 + Change History | 통합 인수 | HOLD | T08 대기 | 39081 running/validation pending | 사용자 PREP 결과 후 별도 지시 대기 |
+| Release / PREP / OPS | artifact/checksum/이관 | 배포 | PREP TEST PUBLISHED | G1/G2로 03fcacb publication 완료 | 39080 유지·39081 running/validation pending | G3/G4 NOT_APPROVED; 교체/OPS 금지 |
 
 ## 즉시 우선순위
 
-1. B-01은 `PASS_LOCAL_SOURCE`로 종료하며 추가 repair하지 않는다.
-2. local `.env`/DataHub self-loop, Kafka listener·MCL 설정, checkpoint fixture cleanup은 별도 승인/NOTI 범위로 유지한다.
-3. 위 runtime blocker 해소 후 같은 coherent candidate로 체크포인트를 재실행한다.
-4. 체크포인트가 PASS 또는 PASS_WITH_DEBT일 때만 T08 → T09로 진행한다.
+1. 사용자가 39081에서 PREP 기본 검증 체크리스트를 수행하고 결과를 반환한다.
+2. 기본 검증 이후에만 PREP MCL/Scheduler 검증을 별도 phase로 준비한다.
+3. `PREP_DEPLOYMENT_DRIFT`는 검증 후 tracked Dockerfile 공통 사용 또는 drift check 중 최소안으로 처리한다.
+4. T08/T09와 추가 publication은 HOLD하며, 39080 교체와 G3/G4는 별도 사용자 승인이 필요하다.
 
 ## 상태 구분 요약
 
@@ -76,4 +66,4 @@ binding은 nonblank `0/9`, scheduler는 disabled이므로 실제 event 기반 T0
 
 ## 게이트
 
-G1 `NOT_APPROVED` · G2 `NOT_APPROVED` · G3 `NOT_APPROVED` · G4 `NOT_APPROVED`
+G1 `APPROVED (03fcacb)` · G2 `APPROVED (03fcacb)` · G3 `NOT_APPROVED` · G4 `NOT_APPROVED`

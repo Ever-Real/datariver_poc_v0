@@ -1,14 +1,33 @@
 {
-  "taskId": "PREP-39081-VALIDATION-PENDING",
+  "taskId": "PREP-39081-VALIDATION-PENDING-REPAIR-01",
   "exactBaseSha": "03fcacb933b0d837f3b6b6917c2754cc80e07673",
+  "publishedSha": "03fcacb933b0d837f3b6b6917c2754cc80e07673",
   "environment": "PREP_WSL_AMD64",
+  "executionActor": "USER_EXECUTED",
+  "evidenceScope": "PREP_USER_REPORTED_EXTERNAL",
+  "agentExecution": "NOT_EXECUTED",
   "status": "PREP_CANDIDATE_RUNNING / VALIDATION_PENDING",
-  "drift": "local-only Dockerfile.local omitted runtime COPY for poc-change-history-scheduler.mjs and poc-mcl-capture.mjs; first candidate startup failed; user minimally updated Dockerfile.local and candidate then started successfully",
+  "existingService": "39080_RUNNING_USER_REPORTED",
+  "candidateService": "39081_RUNNING_USER_REPORTED",
+  "baseValidation": "PENDING_USER_RESULT",
+  "mclSchedulerValidation": "PENDING_AFTER_BASE_VALIDATION",
+  "t08T09": "HOLD",
+  "drift": "PREP_DEPLOYMENT_DRIFT: local-only Dockerfile.local omitted runtime COPY for poc-change-history-scheduler.mjs and poc-mcl-capture.mjs; first candidate startup failed; user minimally updated Dockerfile.local and candidate then started successfully",
   "gates": {
-    "G1_G2": "approved and executed only for published PREP test candidate 03fcacb",
+    "G1": "EXECUTED_FOR_PREP_TEST_PUBLICATION_03fcacb",
+    "G2": "EXECUTED_FOR_PREP_TEST_PUBLICATION_03fcacb",
     "G3": "NOT_APPROVED",
     "G4": "NOT_APPROVED"
   },
+  "notExecuted": [
+    "AGENT_PREP_COMMANDS",
+    "PREP_BASE_VALIDATION",
+    "PREP_MCL_SCHEDULER_VALIDATION",
+    "T08",
+    "T09",
+    "39080_REPLACEMENT",
+    "OPS_MUTATION"
+  ],
   "allowedPathsModified": [
     "CURRENT.md",
     ".orchestration/dashboard/PRIORITIES.md",
