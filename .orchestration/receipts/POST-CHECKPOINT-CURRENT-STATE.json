@@ -1,0 +1,32 @@
+{
+  "schema_version": 1,
+  "receipt_id": "POST-CHECKPOINT-CURRENT-STATE",
+  "recorded_at": "2026-08-14",
+  "status": "BLOCKED",
+  "environment": "DEV_MAC_ARM64",
+  "evidence_sha": "0bc06a3351f466b6d8e8674acec8798c6df5a487",
+  "product_candidate_sha": "138044ab8f819e3bc86d09a9d4d25d3d421b0141",
+  "product_diff_4deb4de_to_138044a": "NONE",
+  "b01": "PASS_LOCAL_SOURCE",
+  "b02": "DEFERRED_NO_REPAIR",
+  "runtime": {
+    "node": "22.19.0",
+    "shutdown_ms": 620,
+    "restart_ms": 5607,
+    "platform_health": "PASS",
+    "current_projection": "DEGRADED_LAST_GOOD_STALE",
+    "catalog_detail": "FAIL_DATAHUB_405_POC_502",
+    "mcl_capture": "NOT_EXECUTED_CONFIGURATION_MISSING",
+    "scheduler_trigger_catchup": "NOT_EXECUTED_CONFIGURATION_MISSING",
+    "role_scope": "PARTIAL_FIXTURE_ONLY",
+    "t07_populated_ui": "NOT_EXECUTED_NO_LEDGER_EVENT"
+  },
+  "blockers": [
+    "DATAHUB_SELF_LOOP_AND_LOCAL_ENV_RESTART_APPROVAL",
+    "KAFKA_ADVERTISED_LISTENER_AND_MCL_CONFIGURATION_APPROVAL",
+    "POST_CHECKPOINT_EVENT_FIXTURE_APPROVAL",
+    "CHECKPOINT_ACCESS_FIXTURE_CLEANUP_REQUIRES_DB_APPROVAL"
+  ],
+  "gates": {"G1":"NOT_APPROVED","G2":"NOT_APPROVED","G3":"NOT_APPROVED","G4":"NOT_APPROVED"},
+  "not_executed": ["product_repair","b02_repair","t08","t09","push","merge","prep","ops"]
+}

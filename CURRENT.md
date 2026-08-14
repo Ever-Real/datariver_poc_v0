@@ -1,56 +1,34 @@
-# CURRENT.md
+# CURRENT.md — POST-B01 DEV 체크포인트
 
-## Repository State
-- Path: /Volumes/SSD_Mac/workspace/datariver_poc_v0
-- Exact SHA: 78e533db6db0352dc0b6d44a557db22a7b05162c (discovery evidence base)
-- Branch: dev
-- Origin dev: af97af3c5c77449398711fbf33638aad1f980499
-- Local Checkpoint Commits: 5628cec, 14e6118, 4c733a1, fe8d229, a9038fc, 78e533d, 8bc8001 (prior plan checkpoint) (No push)
-- Origin main: ABSENT
-- Environment: DEV_MAC_ARM64
-- State: Root clean before this Task. Runtime and product tests NOT_EXECUTED. Product source unchanged.
-- PREP and OPS: UNKNOWN
-- Note: The existing Ever-Real/dev worktree is explicitly user-authorized as the local 00 orchestration parent for the current session and is not a source candidate; no reset/rebase/delete performed.
+## 기준선
 
-## Orchestration State
-- Orca restructuring in progress, historical Run run_e7880cbe956e frozen for new work after CP-WORKTREE-TOPOLOGY-001.
-- Active execution Run: run_fe1ea01316d1
-- Active Product Task: NONE
-- Active Mutating Task: NONE
-- Active Harness Task: NONE
-- Active Validation Task: NONE
-- Active Audit Task: NONE
-- Next executable: TARGET_READ_ONLY_PROBE external NOTI pending (NOTI terminal term_0ab35fd4-b773-4885-b714-3aa2b7715325)
-- Gates: G1 through G4 NOT_APPROVED
-- 98 documentation complete after this correction.
+- repository: `/Volumes/SSD_Mac/workspace/datariver_poc_v0`
+- coherent evidence SHA: `0bc06a3351f466b6d8e8674acec8798c6df5a487`
+- coherent product candidate: `138044ab8f819e3bc86d09a9d4d25d3d421b0141`
+- product diff `4deb4de..138044a`: 없음; `.orchestration/**` 증적만 추가됨
+- environment: `DEV_MAC_ARM64`, Node `v22.19.0` container
+- checkpoint: `BLOCKED`
 
-## Worktree Topology
-- 00_CONTROL_PLANE path /Users/everreal/orca/workspaces/datariver_poc_v0/dev, branch Ever-Real/dev at af97af3..., orchestration-only parent, handle term_fad7860d-0fa4-4760-82fc-79f47b69aa81
-- DEV_INTEGRATION path /Volumes/SSD_Mac/workspace/datariver_poc_v0, branch dev, dev at 8bc8001..., child of 00, canonical base/integration, G1 required
+## 실제 확인
 
-## Evidence and Blockers
-- DEV runtime STATUS_ONLY evidence: native node listens 39080, /healthz and root HTTP 200, Neo4j/pgvector/Redis Compose healthy; this is not product acceptance or provider validation. External DataHub/LLM etc not probed.
-- PLATFORM-RUNTIME-STATUS-001 failed task acceptance for OUT_OF_SCOPE_ARTIFACT_WRITE; 00 independently reverified the inline runtime facts; no repository file modification.
-- product source code unchanged in DEV_INTEGRATION from af97; commits contain harness only.
-- Completed discovery T00/T01.
+- 플랫폼 health, PostgreSQL, Redis, Neo4j, DataHub, Kafka, Schema Registry가 확인되었다.
+- shutdown `620ms`, exit `0`, OOM 없음; healthy restart `5607ms`였다. B-02는 수정하지 않는다.
+- current projection은 2,000 assets와 PostgreSQL/Redis 경로를 보였지만 `DEGRADED_LAST_GOOD`이며 stale이다.
+- Search HTTP는 초기 `66ms`, warm `29/26ms`였으나 브라우저 첫 진입 `1.171s`, warm 재진입 `3.088s`로 T08 성능 부채가 있다.
+- Resource Tree는 표시되었으나 Catalog Detail은 DataHub 405 → POC 502로 실패했다.
+- MCL 환경키/active subject/scheduler enable이 없어 ledger·checkpoint·replay·dedup·manual trigger·catch-up은 실행하지 않았다.
+- access fixture와 claim spoof 차단은 확인했지만 populated role action, CR link/unlink, reverse history는 실행하지 않았다.
+- Monitoring native 탭, weekly 0건, CR empty state는 확인했지만 populated change detail은 실행하지 않았다.
 
-## Documents
-- [.orchestration/evidence/PROJECT_HANDOFF_RECONCILIATION.md](.orchestration/evidence/PROJECT_HANDOFF_RECONCILIATION.md)
-- [.orchestration/checklists/PROJECT_ACCEPTANCE.md](.orchestration/checklists/PROJECT_ACCEPTANCE.md)
-- [.orchestration/dashboard/PRIORITIES.md](.orchestration/dashboard/PRIORITIES.md)
-- [.orchestration/receipts/CP-RECON-001.md](.orchestration/receipts/CP-RECON-001.md)
-- [.orchestration/policies/task-worktrees.md](.orchestration/policies/task-worktrees.md)
-- [.orchestration/receipts/CP-WORKTREE-TOPOLOGY-001.md](.orchestration/receipts/CP-WORKTREE-TOPOLOGY-001.md)
-- [.orchestration/evidence/CHANGE_HISTORY_EXECUTION_PLAN.md](.orchestration/evidence/CHANGE_HISTORY_EXECUTION_PLAN.md)
+## 상태·차단
 
-## Session Inventory
-- 00_CONTROL_PLANE | preferred GPT-5.6 Sol High | actual gpt-5.6-sol | xhigh | term_fad7860d-0fa4-4760-82fc-79f47b69aa81 | persistent active | current task NONE
-- 10_ARCHITECTURE | GPT-5.6 Sol High | gpt-5.6-sol | high | ON_DEMAND_TASK_WORKTREE | NOT_INSTANTIATED (do not repair)
-- 20_PLATFORM_RELEASE | Gemini 3.1 Pro High | Gemini 3.1 Pro High | high | ON_DEMAND_TASK_WORKTREE | NOT_INSTANTIATED
-- 30_IDENTITY_ACCESS | Gemini 3.1 Pro High | Gemini 3.1 Pro High | high | ON_DEMAND_TASK_WORKTREE | NOT_INSTANTIATED
-- 40_DATA_AI_KNOWLEDGE | Gemini 3.1 Pro High | Gemini 3.1 Pro High | high | ON_DEMAND_TASK_WORKTREE | NOT_INSTANTIATED
-- 50_QUALITY_VALIDATION | Gemini 3.1 Pro High | Gemini 3.1 Pro High | high | ON_DEMAND_TASK_WORKTREE | NOT_INSTANTIATED (repair forbidden)
-- 60_FRONTEND_UX | Gemini 3.1 Pro High | Gemini 3.1 Pro High | high | ON_DEMAND_TASK_WORKTREE | NOT_INSTANTIATED
-- 90_ASSURANCE_SECURITY | GPT-5.6 Sol High~XHigh | gpt-5.6-sol | high | ON_DEMAND_TASK_WORKTREE | NOT_INSTANTIATED (do not repair)
-- 98_EVIDENCE_REPORT | Gemini 3.1 Pro Low | Gemini 3.1 Pro Low | low | term_c7014f8f-7603-45c4-9174-4a1d71b41675 | persistent active in DEV_INTEGRATION | current task NONE
-- Note: old 10/20/30/40/50/60/90 terminals closed. Active ASSURANCE-ARCH-SEC-001-R1 actual effort High remains compliant and is not restarted. T00/T01 task terminals closed; on-demand roles not instantiated.
+- T03/T04/SCHEDULER/T05/T06/T07의 `IMPLEMENTED`, `VALIDATION_PASS`, `RUNTIME_VERIFIED`는 [PRIORITIES.md](.orchestration/dashboard/PRIORITIES.md)의 표대로 분리한다.
+- T03 Python은 `NOT_RUNTIME_INTEGRATED`이다.
+- T08/T09는 체크포인트 `BLOCKED`로 대기한다.
+- DataHub self-loop URL/local `.env`와 web 재기동, Kafka advertised listener/MCL configuration, post-checkpoint event fixture는 별도 승인 대상이다.
+- DEV access fixture는 DB에 남아 있으며 cleanup은 별도 DB mutation 승인 없이는 수행하지 않는다.
+- PREP/OPS는 `UNKNOWN`/미실행이며 G1~G4는 모두 `NOT_APPROVED`이다.
+
+## 금지·미실행
+
+제품 추가 수정, B-02 repair, DB cleanup, DataHub/Kafka mutation, push, merge, PREP, OPS, T08, T09는 이 체크포인트에서 수행하지 않았다.
