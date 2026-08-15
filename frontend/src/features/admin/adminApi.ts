@@ -578,6 +578,26 @@ export class AdminApi {
     )
   }
 
+  updateAccessAuthorityUser(
+    subjectId: string,
+    active: boolean,
+    role: 'admin' | 'data_steward' | 'developer' | 'viewer',
+    etag: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<{
+      subject_id: string
+      active: boolean
+      role: string
+      membership_version: number
+    }>(`/admin/workspace-memberships/${encodeURIComponent(subjectId)}/access-authority`, {
+      method: 'PUT',
+      ifMatch: etag,
+      idempotencyKey,
+      body: JSON.stringify({ active, role }),
+    })
+  }
+
   async listFallbackRequestPage({
     state,
     cursor,

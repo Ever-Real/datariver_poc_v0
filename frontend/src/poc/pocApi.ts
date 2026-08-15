@@ -14,6 +14,7 @@ import type {
   ChangeRequestRecord,
   ChangeRequestAttachment,
   ChangeRequestAttachmentUpload,
+  ChangeRequestSchemaOverview,
   ChangeRequestSummary,
   ChangeRequestState,
   ChatMessage,
@@ -37,6 +38,10 @@ import {
   governanceMarkupFromFile,
   sanitizeGovernanceHtml,
 } from '../features/governance-documents/governanceDocumentMarkup'
+import type {
+  ChangeHistoryAccessDocument,
+  ChangeHistoryAccessRole,
+} from '../features/change-history/types'
 import {
   POC_CACHE_SCOPE,
   POC_NOW,
@@ -472,6 +477,77 @@ function changeSummaryOf(record: ChangeRequestRecord): ChangeRequestSummary {
       operation: first?.operation ?? 'UPSERT',
     },
   }
+}
+
+function changeRequestSchemaOverview(): ChangeRequestSchemaOverview[] {
+  const activeMemberships = new Set(adminMemberships
+    .filter((member) => member.subject_active && member.membership_active)
+    .map((member) => member.subject_id))
+  const membershipNames = new Map(adminMemberships.map((member) => [member.subject_id, member.display_name]))
+  const rows = adminSystems.filter((system) => system.active).flatMap((system) => (
+    (adminSystemSchemaScopes.get(system.system_id) ?? []).filter((scope) => scope.active).map((scope) => ({
+      platform: scope.platform,
+      database_name: scope.database_name,
+      schema_name: scope.schema_name,
+      system_id: system.system_id,
+      system_code: system.code,
+      system_name: system.name,
+      assignees: (adminSystemAssignees.get(system.system_id) ?? [])
+        .filter((assignment) => assignment.active && activeMemberships.has(assignment.subject_id))
+        .sort((left, right) => left.priority - right.priority
+          || left.responsibility.localeCompare(right.responsibility)
+          || left.subject_id.localeCompare(right.subject_id))
+        .slice(0, 20)
+        .map((assignment) => ({
+          subject_id: assignment.subject_id,
+          display_name: membershipNames.get(assignment.subject_id) ?? assignment.subject_id,
+          responsibility: assignment.responsibility,
+          priority: assignment.priority,
+        })),
+      pending_count: 0,
+      total_count: 0,
+      received_count: 0,
+      recheck_count: 0,
+      testing_count: 0,
+      final_review_count: 0,
+      completed_count: 0,
+    }))
+  ))
+  const belongsToSchema = (
+    item: ChangeRequestRecord['items'][number],
+    row: ChangeRequestSchemaOverview,
+  ) => {
+    const qualifiedPrefix = `${row.platform}.${row.database_name}.${row.schema_name}.`
+    if (item.target_ref.startsWith(qualifiedPrefix)) return true
+    const dataHubUrn = item.target_asset_id || item.target_ref
+    const match = dataHubUrn.match(/^urn:li:dataset:\(urn:li:dataPlatform:([^,]+),([^,]+),[^,]+\)$/)
+    return match?.[1] === row.platform
+      && match[2]?.startsWith(`${row.database_name}.${row.schema_name}.`) === true
+  }
+  for (const record of changeRecords) {
+    for (const item of record.items) {
+      const row = rows.find((candidate) => (
+        item.target_system_id === candidate.system_id
+        && belongsToSchema(item, candidate)
+      ))
+      if (!row || record.state === 'REJECTED' || record.state === 'CANCELLED') continue
+      row.total_count += 1
+      if (record.state === 'REGISTERED') {
+        row.pending_count += 1
+        row.received_count += 1
+      } else if (record.state === 'IN_REVIEW') {
+        if (record.current_round_number > 1) row.recheck_count += 1
+        else row.received_count += 1
+      } else if (record.state === 'CHANGES_REQUESTED') row.recheck_count += 1
+      else if (['TESTING', 'APPLY_QUEUED', 'APPLYING', 'APPLY_FAILED'].includes(record.state)) row.testing_count += 1
+      else if (record.state === 'FINAL_REVIEW') row.final_review_count += 1
+      else if (record.state === 'APPLIED' || record.state === 'COMPLETED') row.completed_count += 1
+    }
+  }
+  return rows.sort((left, right) => (
+    `${left.platform}\u0000${left.database_name}\u0000${left.schema_name}`
+      .localeCompare(`${right.platform}\u0000${right.database_name}\u0000${right.schema_name}`)
+  ))
 }
 
 function changeAfterDocument(target: Record<string, unknown>): Record<string, unknown> {
@@ -1180,6 +1256,79 @@ function rememberChatTurn(sessionId: string, question: string, answer: string): 
 class PocApiClient {
   private hydration?: Promise<void>
 
+  private applyAccessAuthority(document: ChangeHistoryAccessDocument & { version: number }) {
+    const existingMemberships = new Map(adminMemberships.map((member) => [member.subject_id, member]))
+    const profileRole = (role: ChangeHistoryAccessRole) => (
+      role === 'admin' ? 'ADMIN' as const
+        : role === 'viewer' ? 'VIEWER' as const : 'ENGINEER_STEWARD' as const
+    )
+    adminMemberships = document.users.map((user) => {
+      const existing = existingMemberships.get(user.subject_id)
+      return {
+        ...(existing ?? pocAdminMembership()),
+        subject_id: user.subject_id,
+        display_name: user.display_name ?? existing?.display_name ?? user.subject_id,
+        email: user.email || existing?.email || null,
+        subject_active: user.active,
+        membership_active: user.active,
+        department_id: user.department_id ?? existing?.department_id ?? null,
+        job_function: user.job_function ?? existing?.job_function ?? user.role,
+        membership_version: document.version,
+        change_history_role: user.role,
+        effective_profile_role: profileRole(user.role),
+      }
+    })
+    adminSystems = document.systems.map((system) => ({ ...system }))
+    const displayNames = new Map(adminMemberships.map((member) => [member.subject_id, member.display_name]))
+    adminSystemAssignees.clear()
+    adminSystemSchemaScopes.clear()
+    for (const system of document.systems) {
+      adminSystemAssignees.set(system.system_id, document.system_assignments
+        .filter((assignment) => assignment.system_id === system.system_id)
+        .map((assignment) => ({
+          subject_id: assignment.subject_id,
+          display_name: displayNames.get(assignment.subject_id) ?? assignment.subject_id,
+          responsibility: assignment.responsibility,
+          priority: assignment.priority,
+          active: assignment.active,
+        })))
+      adminSystemSchemaScopes.set(system.system_id, document.system_schema_scopes
+        .filter((scope) => scope.system_id === system.system_id)
+        .map((scope) => ({ ...scope })))
+    }
+  }
+
+  private async readAccessAuthority(): Promise<ChangeHistoryAccessDocument & { version: number }> {
+    const response = await gatewayRequestWithMeta<ChangeHistoryAccessDocument & { version: number }>(
+      '/api/v1/change-history/access',
+    )
+    this.applyAccessAuthority(response.data)
+    return response.data
+  }
+
+  private async mutateAccessAuthority(
+    mutate: (document: ChangeHistoryAccessDocument) => void | Promise<void>,
+    expectedVersion?: number,
+  ): Promise<ChangeHistoryAccessDocument & { version: number }> {
+    const current = await this.readAccessAuthority()
+    if (expectedVersion !== undefined && current.version !== expectedVersion) {
+      throw new Error('Access authority version is stale. Refresh and retry.')
+    }
+    const { version: _version, ...document } = structuredClone(current)
+    void _version
+    await mutate(document)
+    const updated = await gatewayRequest<ChangeHistoryAccessDocument & { version: number }>(
+      '/api/v1/change-history/access',
+      {
+        method: 'PUT',
+        headers: { 'If-Match': `"${current.version}"` },
+        body: JSON.stringify(document),
+      },
+    )
+    this.applyAccessAuthority(updated)
+    return updated
+  }
+
   private ensureHydrated(): Promise<void> {
     if (this.hydration) return this.hydration
     this.hydration = gatewayRequest<{ value: Record<string, unknown> | null }>('/poc-api/state/core')
@@ -1313,7 +1462,11 @@ class PocApiClient {
     if (runtimeFlags().pocState) await this.ensureHydrated()
     const value = await this.dispatch(parsedPath(path), options)
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
-    return { data: value as T, etag: '"1"' }
+    const membershipVersion = /^\/admin\/workspace-memberships\/[^/]+\/(?:access|identity-profile)$/.test(parsedPath(path).pathname)
+      && value && typeof value === 'object' && 'membership_version' in value
+      ? Number(value.membership_version)
+      : 1
+    return { data: value as T, etag: `"${membershipVersion}"` }
   }
 
   requestEventStream<T>(
@@ -2063,7 +2216,7 @@ class PocApiClient {
       const state = url.searchParams.get('state')
       return {
         items: changeRecords.filter((record) => !state || record.state === state).map(changeSummaryOf),
-        overview: [],
+        overview: changeRequestSchemaOverview(),
         overview_truncated: false,
         page: { next_cursor: null, limit: 25 },
       }
@@ -3004,16 +3157,17 @@ class PocApiClient {
       const code = responseString(body.code, '').trim()
       const name = responseString(body.name, '').trim()
       if (!/^[A-Za-z][A-Za-z0-9_-]{1,99}$/.test(code) || !name) throw new Error('유효한 시스템 코드와 이름이 필요합니다.')
-      if (adminSystems.some((item) => item.code.toLocaleLowerCase() === code.toLocaleLowerCase())) throw new Error('이미 등록된 시스템 코드입니다.')
       const system = {
-        system_id: nextId('system'), code, name,
+        system_id: `poc-system-${crypto.randomUUID()}`, code, name,
         description: responseString(body.description, '').trim(),
         active: true, version: 1,
       }
-      adminSystems = [...adminSystems, system]
-      adminSystemAssignees.set(system.system_id, [])
-      adminSystemSchemaScopes.set(system.system_id, [])
-      await this.persistCore()
+      await this.mutateAccessAuthority((document) => {
+        if (document.systems.some((item) => item.code.toLocaleLowerCase() === code.toLocaleLowerCase())) {
+          throw new Error('이미 등록된 시스템 코드입니다.')
+        }
+        document.systems.push(system)
+      })
       return pocSystemEntry(system)
     }
     const systemAssigneePath = path.match(/^\/admin\/systems\/([^/]+)\/assignees$/)
@@ -3047,10 +3201,23 @@ class PocApiClient {
           if (index >= 0) next[index] = assignment
           else next.push(assignment)
         }
-        adminSystemAssignees.set(systemId, next)
-        system.version += 1
-        await this.persistCore()
-        return { system_id: systemId, system_version: system.version, payload_hash: 'a'.repeat(64) }
+        const expectedVersion = Number(options.ifMatch?.replaceAll('"', '') ?? system.version)
+        let systemVersion = system.version
+        await this.mutateAccessAuthority((document) => {
+          const authoritySystem = document.systems.find((item) => item.system_id === systemId)
+          if (!authoritySystem || authoritySystem.version !== expectedVersion) {
+            throw new Error('System authority version is stale. Refresh and retry.')
+          }
+          document.system_assignments = document.system_assignments
+            .filter((assignment) => assignment.system_id !== systemId)
+          document.system_assignments.push(...next.map(({ display_name: _displayName, ...assignment }) => {
+            void _displayName
+            return { system_id: systemId, ...assignment }
+          }))
+          authoritySystem.version += 1
+          systemVersion = authoritySystem.version
+        })
+        return { system_id: systemId, system_version: systemVersion, payload_hash: 'a'.repeat(64) }
       }
     }
     const systemSchemaCandidatePath = path.match(/^\/admin\/systems\/([^/]+)\/schema-scope-candidates$/)
@@ -3097,10 +3264,20 @@ class PocApiClient {
           if (existing) existing.active = true
           else scopes.push({ scope_id: nextId('system-schema'), system_id: systemId, platform: detail.platform ?? '', database_name: detail.database_name ?? '', schema_name: detail.schema_name ?? '', active: true, version: 1 })
         }
-        adminSystemSchemaScopes.set(systemId, scopes)
-        system.version += 1
-        await this.persistCore()
-        return { system_id: systemId, system_version: system.version, payload_hash: 'b'.repeat(64) }
+        const expectedVersion = Number(options.ifMatch?.replaceAll('"', '') ?? system.version)
+        let systemVersion = system.version
+        await this.mutateAccessAuthority((document) => {
+          const authoritySystem = document.systems.find((item) => item.system_id === systemId)
+          if (!authoritySystem || authoritySystem.version !== expectedVersion) {
+            throw new Error('System authority version is stale. Refresh and retry.')
+          }
+          document.system_schema_scopes = document.system_schema_scopes
+            .filter((scope) => scope.system_id !== systemId)
+          document.system_schema_scopes.push(...scopes)
+          authoritySystem.version += 1
+          systemVersion = authoritySystem.version
+        })
+        return { system_id: systemId, system_version: systemVersion, payload_hash: 'b'.repeat(64) }
       }
     }
     if (path === '/admin/workspace-memberships' && method === 'GET') {
@@ -3117,43 +3294,127 @@ class PocApiClient {
     }
     if (path === '/admin/identity-users' && method === 'POST') {
       const body = jsonBody(options)
-      const subjectId = nextId('user')
+      const username = responseString(body.username, '').trim()
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{2,63}$/.test(username)) {
+        throw new Error('유효한 3~64자 사용자명이 필요합니다.')
+      }
+      const subjectId = `poc-user-${crypto.randomUUID()}`
       const firstName = responseString(body.first_name, '')
       const lastName = responseString(body.last_name, '')
-      const displayName = `${firstName} ${lastName}`.trim() || responseString(body.username, 'POC User')
+      const displayName = `${firstName} ${lastName}`.trim() || username
       const jobFunction = ['developer', 'data_steward', 'viewer', 'admin'].includes(String(body.job_function))
         ? String(body.job_function)
         : 'viewer'
-      const effectiveProfileRole = jobFunction === 'admin'
-        ? 'ADMIN' as const
-        : jobFunction === 'viewer' ? 'VIEWER' as const : 'ENGINEER_STEWARD' as const
-      const member: WorkspaceMembershipSummary = {
-        ...pocAdminMembership(),
-        subject_id: subjectId,
-        display_name: displayName,
-        email: responseString(body.email, ''),
-        owned_table_count: 0,
-        change_request_count: 0,
-        joined_at: new Date().toISOString(),
-        department_id: responseString(body.department_id, '') || null,
-        job_function: jobFunction,
-        effective_profile_role: effectiveProfileRole,
-      }
-      adminMemberships = [...adminMemberships, member]
-      await this.persistCore()
+      const role = jobFunction as ChangeHistoryAccessRole
+      const email = responseString(body.email, '').trim()
+      const updated = await this.mutateAccessAuthority((document) => {
+        if (document.users.some((user) => user.username?.toLocaleLowerCase() === username.toLocaleLowerCase()
+          || (email && user.email?.toLocaleLowerCase() === email.toLocaleLowerCase()))) {
+          throw new Error('이미 등록된 사용자명 또는 Email입니다.')
+        }
+        document.users.push({
+          subject_id: subjectId,
+          role,
+          active: true,
+          provider_owner_refs: [],
+          username,
+          display_name: displayName,
+          email,
+          first_name: firstName,
+          last_name: lastName,
+          department_id: responseString(body.department_id, '') || null,
+          job_function: jobFunction,
+        })
+      })
       return {
         subject_id: subjectId,
-        username: responseString(body.username, 'poc.user'),
+        username,
         display_name: displayName,
-        email: member.email,
+        email,
         workspace_id: POC_WORKSPACE_ID,
         role_id: null,
         access_expires_at: new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString(),
         temporary_password_required: false,
+        membership_version: updated.version,
+      }
+    }
+    const memberIdentityProfile = path.match(/^\/admin\/workspace-memberships\/([^/]+)\/identity-profile$/)
+    if (memberIdentityProfile) {
+      const subjectId = decodeURIComponent(memberIdentityProfile[1] ?? '')
+      const document = await this.readAccessAuthority()
+      const user = document.users.find((item) => item.subject_id === subjectId)
+      if (!user) throw new Error('POC 사용자를 찾을 수 없습니다.')
+      if (method === 'GET') return {
+        subject_id: subjectId,
+        username: user.username ?? subjectId,
+        display_name: user.display_name ?? subjectId,
+        email: user.email ?? '',
+        first_name: user.first_name ?? user.display_name ?? subjectId,
+        last_name: user.last_name ?? '',
+        department_id: user.department_id ?? null,
+        job_function: user.job_function ?? user.role,
+        membership_version: document.version,
+        provider_enabled: false,
+        email_verified: false,
+        required_actions: [],
+      }
+      if (method === 'PUT') {
+        const body = jsonBody(options)
+        const expectedVersion = Number(options.ifMatch?.replaceAll('"', ''))
+        const updated = await this.mutateAccessAuthority((authority) => {
+          const target = authority.users.find((item) => item.subject_id === subjectId)
+          if (!target) throw new Error('POC 사용자를 찾을 수 없습니다.')
+          target.email = responseString(body.email, '').trim()
+          target.first_name = responseString(body.first_name, '').trim()
+          target.last_name = responseString(body.last_name, '').trim()
+          target.display_name = `${target.first_name} ${target.last_name}`.trim() || target.username || subjectId
+          target.department_id = responseString(body.department_id, '').trim() || null
+          target.job_function = responseString(body.job_function, '').trim() || null
+        }, expectedVersion)
+        const target = updated.users.find((item) => item.subject_id === subjectId)!
+        return {
+          subject_id: subjectId,
+          username: target.username ?? subjectId,
+          display_name: target.display_name ?? subjectId,
+          email: target.email ?? '',
+          department_id: target.department_id ?? null,
+          job_function: target.job_function ?? null,
+          membership_version: updated.version,
+        }
+      }
+    }
+    const memberAccessAuthority = path.match(/^\/admin\/workspace-memberships\/([^/]+)\/access-authority$/)
+    if (memberAccessAuthority && method === 'PUT') {
+      const subjectId = decodeURIComponent(memberAccessAuthority[1] ?? '')
+      const body = jsonBody(options)
+      const role = responseString(body.role, '') as ChangeHistoryAccessRole
+      const active = body.active
+      if (!['admin', 'data_steward', 'developer', 'viewer'].includes(role) || typeof active !== 'boolean') {
+        throw new Error('유효한 active/role authority update가 필요합니다.')
+      }
+      const expectedVersion = Number(options.ifMatch?.replaceAll('"', ''))
+      const updated = await this.mutateAccessAuthority((document) => {
+        const target = document.users.find((item) => item.subject_id === subjectId)
+        if (!target) throw new Error('POC 사용자를 찾을 수 없습니다.')
+        target.active = active
+        target.role = role
+        const requiredResponsibility = role === 'developer'
+          ? 'DEVELOPER'
+          : role === 'data_steward' ? 'DATA_STEWARD' : null
+        document.system_assignments = document.system_assignments.filter((assignment) => (
+          assignment.subject_id !== subjectId || assignment.responsibility === requiredResponsibility
+        ))
+      }, expectedVersion)
+      return {
+        subject_id: subjectId,
+        active,
+        role,
+        membership_version: updated.version,
       }
     }
     const memberAccess = path.match(/^\/admin\/workspace-memberships\/([^/]+)\/access$/)
     if (memberAccess && method === 'GET') {
+      const document = await this.readAccessAuthority()
       const member = adminMemberships.find((item) => item.subject_id === decodeURIComponent(memberAccess[1] ?? ''))
       if (!member) throw new Error('POC 사용자를 찾을 수 없습니다.')
       return {
@@ -3162,11 +3423,11 @@ class PocApiClient {
         subject_active: member.subject_active,
         department_id: member.department_id,
         job_function: member.job_function,
-        membership_version: member.membership_version,
+        membership_version: document.version,
         access: { active: member.membership_active, clearance: member.clearance, groups: [], allowed_actions: [], denied_actions: [], allowed_system_ids: [], allowed_domain_ids: [] },
-        role_assignment: { status: 'MANUAL', role_id: null, role_version: null, assignment_version: null, membership_version: member.membership_version, access_payload_hash: null, assigned_by: POC_SUBJECT_ID, updated_at: POC_NOW, legacy_markers: ['POC_BROWSER_MEMORY'] },
-        canonical_admin_binding: { status: member.subject_id === POC_SUBJECT_ID ? 'VERIFIED' : 'NONE', role_version: null, catalog_version: 'POC_V1', membership_version: member.membership_version, binding_version: 1, updated_at: POC_NOW },
-        profile_role: { status: 'VERIFIED', tier: member.effective_profile_role === 'UNASSIGNED' || member.effective_profile_role === 'STALE' || member.effective_profile_role === 'REVOKED' ? 'VIEWER' : member.effective_profile_role, policy_version: 'PROFILE_ROLE_POLICY_V1', membership_version: member.membership_version, assignment_version: 1, updated_at: POC_NOW },
+        role_assignment: { status: 'MANUAL', role_id: null, role_version: null, assignment_version: null, membership_version: document.version, access_payload_hash: null, assigned_by: POC_SUBJECT_ID, updated_at: POC_NOW, legacy_markers: ['POC_ACCESS_AUTHORITY'] },
+        canonical_admin_binding: { status: member.change_history_role === 'admin' ? 'VERIFIED' : 'NONE', role_version: null, catalog_version: 'POC_V1', membership_version: document.version, binding_version: 1, updated_at: POC_NOW },
+        profile_role: { status: 'VERIFIED', tier: member.effective_profile_role === 'UNASSIGNED' || member.effective_profile_role === 'STALE' || member.effective_profile_role === 'REVOKED' ? 'VIEWER' : member.effective_profile_role, policy_version: 'PROFILE_ROLE_POLICY_V1', membership_version: document.version, assignment_version: 1, updated_at: POC_NOW },
       }
     }
     if (/^\/admin\/workspace-memberships\/[^/]+\/(change-requests|owned-tables)$/.test(path)) {

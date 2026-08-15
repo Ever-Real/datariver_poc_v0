@@ -11,6 +11,7 @@ import type {
 } from '../api/types'
 import { QualityApi } from '../features/quality/qualityApi'
 import { GovernanceDocumentsApi } from '../features/governance-documents/governanceDocumentsApi'
+import type { ChangeHistoryAccessDocument } from '../features/change-history/types'
 import { resetPocMemory, useStableApiClient } from './pocApi'
 
 const meta = {
@@ -69,9 +70,42 @@ function json(value: unknown) {
 }
 
 function installGatewayMock() {
+  let access: ChangeHistoryAccessDocument & { version: number } = {
+    schema_version: 1,
+    active_subject_id: 'checkpoint-admin',
+    policy: {
+      version: 1,
+      priority_order: 'ASCENDING',
+      fallback: ['DATA_STEWARD', 'DEVELOPER', 'DATAHUB_OWNER', 'UNASSIGNED'],
+    },
+    users: [{
+      subject_id: 'checkpoint-admin', role: 'admin', active: true, provider_owner_refs: [],
+      username: 'checkpoint-admin', display_name: 'Checkpoint Admin', email: 'admin@poc.invalid',
+      first_name: 'Checkpoint', last_name: 'Admin', department_id: null, job_function: 'admin',
+    }],
+    systems: [],
+    system_schema_scopes: [],
+    system_assignments: [],
+    version: 1,
+  }
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
     const requestUrl = input instanceof Request ? input.url : input.toString()
     const url = new URL(requestUrl, 'https://poc.invalid')
+    if (url.pathname === '/api/v1/change-history/access') {
+      if ((options?.method ?? 'GET') === 'PUT') {
+        const headers = new Headers(options?.headers)
+        if (headers.get('If-Match') !== `"${access.version}"`) {
+          return Promise.resolve(new Response(JSON.stringify({ detail: 'stale' }), { status: 409 }))
+        }
+        if (typeof options?.body !== 'string') throw new Error('Expected a JSON access document body')
+        const body = JSON.parse(options.body) as ChangeHistoryAccessDocument
+        access = { ...body, version: access.version + 1 }
+      }
+      return Promise.resolve(new Response(JSON.stringify(access), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: `"${access.version}"` },
+      }))
+    }
     if (url.pathname.startsWith('/api/v1/change-history/') || url.pathname.includes('/change-history')) {
       const headers = new Headers(options?.headers)
       return Promise.resolve(new Response(JSON.stringify({
@@ -365,6 +399,67 @@ describe('POC live-provider compatibility adapter', () => {
     await expect(client.request<CatalogAssetDetail>(
       `/change-requests/targets/${legacy.items[0]!.id}?system_id=snowflake`,
     )).resolves.toMatchObject({ name: 'daily_yield', platform: 'snowflake' })
+  })
+
+  it('fills the ten-column CR overview with initial/resubmitted stages and excludes terminal rejection', async () => {
+    const client = useStableApiClient()
+    const system = await client.request<{ system_id: string }>('/admin/systems', {
+      method: 'POST', body: JSON.stringify({ code: 'OVERVIEW', name: 'Overview System', description: '' }),
+    })
+    await client.request(`/admin/systems/${system.system_id}/schema-scopes`, {
+      method: 'PATCH',
+      body: JSON.stringify({ upsert_asset_ids: [liveAssets[0]!.id] }),
+    })
+    let current = await client.request<ChangeRequestRecord>('/change-requests/intake', {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Overview mapping', system_id: system.system_id, request_date: '2026-08-15',
+        request_department: 'Control Plane', request_reason: 'verify mapping',
+        request_content: 'verify overview', priority: 'NORMAL', urgency: 'NORMAL',
+        security_level: 'INTERNAL', targets: [{ kind: 'EXISTING', asset_id: liveAssets[0]!.id }],
+      }),
+    })
+    const overview = async () => (await client.request<{
+      overview: Array<{
+        total_count: number
+        pending_count: number
+        received_count: number
+        recheck_count: number
+        testing_count: number
+        final_review_count: number
+        completed_count: number
+      }>
+    }>('/change-requests/summaries?limit=25')).overview[0]!
+    await expect(overview()).resolves.toMatchObject({
+      total_count: 1, pending_count: 1, received_count: 1, recheck_count: 0,
+    })
+    current = await client.request<ChangeRequestRecord>(`/change-requests/${current.id}/transitions`, {
+      method: 'POST', body: JSON.stringify({ target_state: 'IN_REVIEW', reason: 'initial review', if_match: current.version }),
+    })
+    await expect(overview()).resolves.toMatchObject({ received_count: 1, recheck_count: 0 })
+    current = await client.request<ChangeRequestRecord>(`/change-requests/${current.id}/transitions`, {
+      method: 'POST', body: JSON.stringify({ target_state: 'CHANGES_REQUESTED', reason: 'repair', if_match: current.version }),
+    })
+    current = await client.request<ChangeRequestRecord>(`/change-requests/${current.id}/revisions`, {
+      method: 'POST',
+      body: JSON.stringify({
+        title: 'Overview mapping resubmitted', system_id: system.system_id,
+        request_reason: 'resubmit', request_content: 'repaired', priority: 'NORMAL', urgency: 'NORMAL',
+        security_level: 'INTERNAL', targets: [{ kind: 'EXISTING', asset_id: liveAssets[0]!.id }],
+        if_match: current.version,
+      }),
+    })
+    current = await client.request<ChangeRequestRecord>(`/change-requests/${current.id}/transitions`, {
+      method: 'POST', body: JSON.stringify({ target_state: 'IN_REVIEW', reason: 'resubmitted review', if_match: current.version }),
+    })
+    await expect(overview()).resolves.toMatchObject({ received_count: 0, recheck_count: 1 })
+    await client.request(`/change-requests/${current.id}/transitions`, {
+      method: 'POST', body: JSON.stringify({ target_state: 'REJECTED', reason: 'terminal rejection', if_match: current.version }),
+    })
+    await expect(overview()).resolves.toMatchObject({
+      total_count: 0, pending_count: 0, received_count: 0, recheck_count: 0,
+      testing_count: 0, final_review_count: 0, completed_count: 0,
+    })
   })
 
   it('forwards logical change-history paths and mutation fences to the authoritative Node API', async () => {
@@ -671,7 +766,11 @@ describe('POC live-provider compatibility adapter', () => {
     ]))
     expect(context.action_vocabulary).toContain('change.edit')
 
-    const provisioned = await client.request<{ temporary_password_required: boolean }>('/admin/identity-users', {
+    const provisioned = await client.request<{
+      subject_id: string
+      temporary_password_required: boolean
+      membership_version: number
+    }>('/admin/identity-users', {
       method: 'POST',
       body: JSON.stringify({
         username: 'poc.viewer', email: 'poc.viewer@poc.invalid',
@@ -685,12 +784,81 @@ describe('POC live-provider compatibility adapter', () => {
       job_function: 'data_steward', effective_profile_role: 'ENGINEER_STEWARD',
     })
 
+    const profile = await client.requestWithMeta<{
+      email: string
+      first_name: string
+      last_name: string
+      membership_version: number
+    }>(`/admin/workspace-memberships/${provisioned.subject_id}/identity-profile`)
+    expect(profile.etag).toBe(`"${provisioned.membership_version}"`)
+    const updatedProfile = await client.request<{
+      email: string
+      display_name: string
+      membership_version: number
+    }>(`/admin/workspace-memberships/${provisioned.subject_id}/identity-profile`, {
+      method: 'PUT', ifMatch: profile.etag,
+      body: JSON.stringify({
+        email: 'updated.viewer@poc.invalid', first_name: 'Updated', last_name: 'Viewer',
+        department_id: null, job_function: 'data_steward',
+      }),
+    })
+    expect(updatedProfile).toMatchObject({
+      email: 'updated.viewer@poc.invalid', display_name: 'Updated Viewer',
+    })
+    const roleUpdate = await client.request<{
+      active: boolean
+      role: string
+      membership_version: number
+    }>(`/admin/workspace-memberships/${provisioned.subject_id}/access-authority`, {
+      method: 'PUT', ifMatch: `"${updatedProfile.membership_version}"`,
+      body: JSON.stringify({ active: true, role: 'developer' }),
+    })
+    expect(roleUpdate).toMatchObject({ active: true, role: 'developer' })
+
     const system = await client.request<{ system_id: string; code: string }>('/admin/systems', {
       method: 'POST', body: JSON.stringify({ code: 'MES', name: 'Manufacturing Execution', description: 'POC system' }),
     })
     expect(system.code).toBe('MES')
     const systems = await client.request<{ items: Array<{ system_id: string }> }>('/admin/systems?limit=25')
     expect(systems.items.map((item) => item.system_id)).toContain(system.system_id)
+    const assignment = await client.request<{ system_version: number }>(`/admin/systems/${system.system_id}/assignees`, {
+      method: 'PATCH', ifMatch: '"1"',
+      body: JSON.stringify({
+        upserts: [{ subject_id: provisioned.subject_id, responsibility: 'DEVELOPER', priority: 2 }],
+        removals: [],
+      }),
+    })
+    expect(assignment.system_version).toBe(2)
+    await expect(client.request<{ items: Array<{ responsibility: string; priority: number }> }>(
+      `/admin/systems/${system.system_id}/assignees`,
+    )).resolves.toMatchObject({ items: [{ responsibility: 'DEVELOPER', priority: 2 }] })
+
+    const latestProfile = await client.requestWithMeta<{ membership_version: number }>(
+      `/admin/workspace-memberships/${provisioned.subject_id}/identity-profile`,
+    )
+    const stewardUpdate = await client.request<{ membership_version: number }>(
+      `/admin/workspace-memberships/${provisioned.subject_id}/access-authority`, {
+        method: 'PUT', ifMatch: latestProfile.etag,
+        body: JSON.stringify({ active: true, role: 'data_steward' }),
+      },
+    )
+    await client.request(`/admin/systems/${system.system_id}/assignees`, {
+      method: 'PATCH', ifMatch: '"2"',
+      body: JSON.stringify({
+        upserts: [{ subject_id: provisioned.subject_id, responsibility: 'DATA_STEWARD', priority: 3 }],
+        removals: [],
+      }),
+    })
+    const inactive = await client.request<{ membership_version: number }>(
+      `/admin/workspace-memberships/${provisioned.subject_id}/access-authority`, {
+        method: 'PUT', ifMatch: `"${stewardUpdate.membership_version + 1}"`,
+        body: JSON.stringify({ active: false, role: 'data_steward' }),
+      },
+    )
+    await expect(client.request(`/admin/workspace-memberships/${provisioned.subject_id}/access-authority`, {
+      method: 'PUT', ifMatch: `"${inactive.membership_version}"`,
+      body: JSON.stringify({ active: true, role: 'viewer' }),
+    })).resolves.toMatchObject({ active: true, role: 'viewer' })
 
     const settings = await client.request<{ items: SystemConfigurationEntry[] }>('/admin/system-configuration')
     expect(settings.items.find((item) => item.system_id === 'DATAHUB_GMS')?.state).toBe('CONFIGURED')

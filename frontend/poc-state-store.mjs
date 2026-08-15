@@ -1,6 +1,8 @@
-/* global process, structuredClone */
+/* global structuredClone */
 import { createHash } from 'node:crypto'
+import process from 'node:process'
 import { TextEncoder } from 'node:util'
+import { URL } from 'node:url'
 import pg from 'pg'
 import { createClient } from 'redis'
 

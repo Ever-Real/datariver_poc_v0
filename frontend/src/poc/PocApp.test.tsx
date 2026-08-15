@@ -92,7 +92,11 @@ describe('POC compatibility application', () => {
     expect(screen.queryByText(/WebAuthn 보안키 등록/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('menuitem', { name: '지식관리' }))
     expect(await screen.findByRole('heading', { name: '지식관리' })).toBeVisible()
-    expect(globalThis.fetch).not.toHaveBeenCalled()
+    const requestedPaths = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => (
+      input instanceof Request ? new URL(input.url).pathname : new URL(input.toString(), 'https://poc.invalid').pathname
+    ))
+    expect(requestedPaths.length).toBeGreaterThan(0)
+    expect(requestedPaths.every((path) => path.startsWith('/api/v1/change-history/'))).toBe(true)
   })
 
   it('fails Chat closed when LLM Chat is not configured', async () => {

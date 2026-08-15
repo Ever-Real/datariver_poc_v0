@@ -65,6 +65,8 @@ export function UserProfileDialog({
   const [profileRolePolicy, setProfileRolePolicy] = useState<ProfileRolePolicy>()
   const [selectedTier, setSelectedTier] = useState<ProfileRolePolicy['items'][number]['tier']>()
   const [selectedClearance, setSelectedClearance] = useState<Classification>('CONFIDENTIAL')
+  const [selectedAuthorityRole, setSelectedAuthorityRole] = useState<'admin' | 'data_steward' | 'developer' | 'viewer'>('viewer')
+  const [selectedActive, setSelectedActive] = useState(true)
   const [accessReason, setAccessReason] = useState('')
   const [changeRequests, setChangeRequests] = useState<MembershipChangeRequestActivity[]>([])
   const [ownedTables, setOwnedTables] = useState<MembershipOwnedTable[]>([])
@@ -85,6 +87,7 @@ export function UserProfileDialog({
   const canReadIdentity = operations.has('IDENTITY_USER_PROFILE_READ')
   const canUpdateIdentity = operations.has('IDENTITY_USER_PROFILE_UPDATE')
   const canResetPassword = operations.has('IDENTITY_USER_PASSWORD_RESET')
+  const canUpdateAuthority = operations.has('MEMBERSHIP_ACCESS_UPDATE')
   const isServiceAccount = member?.job_function === 'SERVICE_ACCOUNT'
   const canAssignProfile = (
     operations.has('MEMBERSHIP_ACCESS_UPDATE')
@@ -117,6 +120,8 @@ export function UserProfileDialog({
       setProfileRolePolicy(nextProfileRolePolicy)
       setSelectedTier(nextAccess.profile_role.tier ?? undefined)
       setSelectedClearance(nextAccess.access.clearance)
+      setSelectedAuthorityRole(member.change_history_role ?? 'viewer')
+      setSelectedActive(member.subject_active && member.membership_active)
       setProfile(nextProfile)
       setChangeRequests(nextChangeRequests.items)
       setOwnedTables(nextOwnedTables.items)
@@ -259,6 +264,33 @@ export function UserProfileDialog({
     })
   }
 
+  const saveAccessAuthority = () => {
+    if (!access || !canUpdateAuthority || !accessReason.trim()) return
+    const unchanged = selectedActive === (member.subject_active && member.membership_active)
+      && selectedAuthorityRole === (member.change_history_role ?? 'viewer')
+    if (unchanged) return
+    const intent = `access-authority:${member.subject_id}:${access.etag}:${selectedActive}:${selectedAuthorityRole}`
+    requestConfirmation({
+      title: `${member.display_name} access authority 변경`,
+      summary: [
+        `${member.change_history_role ?? 'viewer'} → ${selectedAuthorityRole}`,
+        `${member.membership_active ? 'ACTIVE' : 'INACTIVE'} → ${selectedActive ? 'ACTIVE' : 'INACTIVE'}`,
+        accessReason.trim(),
+      ],
+      execute: async () => {
+        await api.updateAccessAuthorityUser(
+          member.subject_id,
+          selectedActive,
+          selectedAuthorityRole,
+          access.etag,
+          keyFor(intent, 'access-authority-user'),
+        )
+        clearKey(intent)
+        await Promise.all([loadDetails(), onUpdated()])
+      },
+    })
+  }
+
   const resetPassword = () => {
     if (
       !profile
@@ -338,6 +370,8 @@ export function UserProfileDialog({
       {!loading && activeTab === 'access' && <section className="grid gap-3" aria-label="데이터 및 화면 접근 관리">
         <p className="callout m-0">프로필 권한은 서비스 기능을, 데이터 조회 등급은 분류된 데이터의 조회 상한을 결정합니다. 두 값은 서로 암묵적으로 변경되지 않습니다.</p>
         <div className="grid gap-3 md:grid-cols-2">
+          <label className="grid gap-1 text-xs font-bold">변경이력 역할<select aria-label="변경이력 역할" value={selectedAuthorityRole} disabled={!canUpdateAuthority} onChange={(event) => setSelectedAuthorityRole(event.target.value as typeof selectedAuthorityRole)}><option value="admin">admin</option><option value="data_steward">data_steward</option><option value="developer">developer</option><option value="viewer">viewer</option></select></label>
+          <label className="grid gap-1 text-xs font-bold">계정 활성 상태<select aria-label="계정 활성 상태" value={selectedActive ? 'ACTIVE' : 'INACTIVE'} disabled={!canUpdateAuthority} onChange={(event) => setSelectedActive(event.target.value === 'ACTIVE')}><option value="ACTIVE">ACTIVE</option><option value="INACTIVE">INACTIVE</option></select></label>
           <label className="grid gap-1 text-xs font-bold">사용자 프로필 권한<select aria-label="사용자 프로필 권한" value={selectedTier ?? ''} disabled={!canAssignProfile || isServiceAccount} onChange={(event) => setSelectedTier(event.target.value as ProfileRolePolicy['items'][number]['tier'])}><option value="" disabled>{access?.profile_role.status === 'UNASSIGNED' ? '전환 필요 (기존 권한)' : '선택'}</option>{profileRolePolicy?.items.map((item) => <option key={item.tier} value={item.tier}>{item.label}</option>)}</select></label>
           <label className="grid gap-1 text-xs font-bold">데이터 조회 등급<select aria-label="데이터 조회 등급" value={selectedClearance} disabled={!canAssignProfile || isServiceAccount || access?.profile_role.tier === 'ADMIN'} onChange={(event) => setSelectedClearance(event.target.value as Classification)}><option value="PUBLIC">Public</option><option value="INTERNAL">Internal</option><option value="CONFIDENTIAL">Confidential (대외비)</option><option value="RESTRICTED">Restricted</option></select></label>
         </div>
@@ -346,7 +380,7 @@ export function UserProfileDialog({
         {member.subject_id === context?.subject_id && <p className="callout m-0">관리자는 자신의 접근 Role을 변경할 수 없습니다. 다른 적격 관리자가 변경해야 합니다.</p>}
         {access?.profile_role.status === 'STALE' && <p className="notice notice-error m-0">프로필 권한 증거가 현재 멤버십과 일치하지 않아 서버가 권한을 차단했습니다. 프로필 권한을 다시 저장해 복구하세요.</p>}
         {access?.profile_role.status === 'UNASSIGNED' && <p className="callout m-0">기존 사용자는 자동 추정하지 않습니다. 명시적으로 프로필 권한을 선택하면 해당 서버 정책으로 전환됩니다.</p>}
-        <div className="action-row"><button type="button" className="button button-secondary" disabled={!canAssignProfile || access?.access.clearance === selectedClearance} onClick={saveClearance}>데이터 조회 등급 저장</button><button type="button" className="button" disabled={!canAssignProfile || !selectedTier || !accessReason.trim() || (access?.profile_role.tier === selectedTier && access?.profile_role.status === 'VERIFIED')} onClick={saveProfileRole}>프로필 권한 저장</button></div>
+        <div className="action-row"><button type="button" className="button button-secondary" disabled={!canUpdateAuthority || !accessReason.trim() || (selectedActive === (member.subject_active && member.membership_active) && selectedAuthorityRole === (member.change_history_role ?? 'viewer'))} onClick={saveAccessAuthority}>계정/역할 저장</button><button type="button" className="button button-secondary" disabled={!canAssignProfile || access?.access.clearance === selectedClearance} onClick={saveClearance}>데이터 조회 등급 저장</button><button type="button" className="button" disabled={!canAssignProfile || !selectedTier || !accessReason.trim() || (access?.profile_role.tier === selectedTier && access?.profile_role.status === 'VERIFIED')} onClick={saveProfileRole}>프로필 권한 저장</button></div>
       </section>}
       {!loading && activeTab === 'activity' && <section className="grid gap-4" aria-label="CR 신청 및 사용자 활동">
         <div>

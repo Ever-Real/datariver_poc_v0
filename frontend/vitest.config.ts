@@ -6,6 +6,6 @@ export default defineConfig({
     setupFiles: './src/test/setup.ts',
     pool: 'threads',
     maxWorkers: 2,
-    exclude: [...configDefaults.exclude, 'poc-server*.test.mjs', 'chat-router-benchmark.test.mjs'],
+    exclude: [...configDefaults.exclude, '**/*.test.mjs'],
   },
 })

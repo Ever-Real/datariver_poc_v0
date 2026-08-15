@@ -1,9 +1,10 @@
-/* global AbortController, AbortSignal, Buffer, URL, URLSearchParams, clearTimeout, fetch, process, setTimeout, structuredClone */
+/* global AbortController, AbortSignal, Buffer, URLSearchParams, clearTimeout, fetch, setTimeout, structuredClone */
 import { createHmac, createHash, randomUUID } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { extname, join, normalize, resolve, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import process from 'node:process'
+import { fileURLToPath, URL } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
 import { createPocStateStore } from './poc-state-store.mjs'
 import {
@@ -371,7 +372,10 @@ function normalizedAccessUsers(value) {
   const subjects = new Set()
   const users = accessArray(value, 'users', 500).map((raw, index) => {
     const user = accessRecord(raw, `users[${index}]`)
-    exactAccessKeys(user, `users[${index}]`, ['subject_id', 'role', 'active', 'provider_owner_refs'], [
+    exactAccessKeys(user, `users[${index}]`, [
+      'subject_id', 'role', 'active', 'provider_owner_refs', 'username', 'display_name', 'email',
+      'first_name', 'last_name', 'department_id', 'job_function',
+    ], [
       'subject_id', 'role', 'active',
     ])
     const subjectId = accessString(user.subject_id, `users[${index}].subject_id`, 255)
@@ -385,7 +389,34 @@ function normalizedAccessUsers(value) {
       throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `users[${index}].provider_owner_refs contains duplicates.`)
     }
     subjects.add(subjectId)
-    return { subject_id: subjectId, role, active: accessBoolean(user.active, `users[${index}].active`), provider_owner_refs: ownerRefs.sort() }
+    return {
+      subject_id: subjectId,
+      role,
+      active: accessBoolean(user.active, `users[${index}].active`),
+      provider_owner_refs: ownerRefs.sort(),
+      ...(user.username === undefined
+        ? {} : { username: accessString(user.username, `users[${index}].username`, 64) }),
+      ...(user.display_name === undefined
+        ? {} : { display_name: accessString(user.display_name, `users[${index}].display_name`, 255) }),
+      ...(user.email === undefined
+        ? {} : { email: accessOptionalString(user.email, `users[${index}].email`, 320) }),
+      ...(user.first_name === undefined
+        ? {} : { first_name: accessOptionalString(user.first_name, `users[${index}].first_name`, 100) }),
+      ...(user.last_name === undefined
+        ? {} : { last_name: accessOptionalString(user.last_name, `users[${index}].last_name`, 100) }),
+      ...(user.department_id === undefined
+        ? {} : {
+            department_id: user.department_id === null
+              ? null
+              : accessOptionalString(user.department_id, `users[${index}].department_id`, 255) || null,
+          }),
+      ...(user.job_function === undefined
+        ? {} : {
+            job_function: user.job_function === null
+              ? null
+              : accessOptionalString(user.job_function, `users[${index}].job_function`, 100) || null,
+          }),
+    }
   })
   return users.sort((left, right) => left.subject_id.localeCompare(right.subject_id))
 }
@@ -596,21 +627,33 @@ function requireActiveAccessAdmin(document, subjectId) {
   if (user.role !== 'admin') throw accessError(403, 'ACCESS_ADMIN_REQUIRED', 'An active admin is required.')
 }
 
-function changeHistoryAccessCoreProjection(currentValue, document) {
+function changeHistoryAccessCoreProjection(currentValue, document, membershipVersion) {
   const current = currentValue && typeof currentValue === 'object' && !Array.isArray(currentValue)
     ? structuredClone(currentValue)
     : {}
   const memberships = new Map((Array.isArray(current.adminMemberships) ? current.adminMemberships : [])
     .filter((item) => item && typeof item === 'object' && typeof item.subject_id === 'string')
     .map((item) => [item.subject_id, item]))
-  current.adminMemberships = document.users.map((user) => ({
-    ...(memberships.get(user.subject_id) ?? {}),
-    subject_id: user.subject_id,
-    display_name: memberships.get(user.subject_id)?.display_name || user.subject_id,
-    subject_active: user.active,
-    membership_active: user.active,
-    change_history_role: user.role,
-  }))
+  const documentUsers = new Map(document.users.map((user) => [user.subject_id, user]))
+  current.adminMemberships = document.users.map((user) => {
+    const existing = memberships.get(user.subject_id) ?? {}
+    const effectiveProfileRole = user.role === 'admin'
+      ? 'ADMIN'
+      : user.role === 'viewer' ? 'VIEWER' : 'ENGINEER_STEWARD'
+    return {
+      ...existing,
+      subject_id: user.subject_id,
+      display_name: user.display_name || existing.display_name || user.subject_id,
+      email: user.email || existing.email || null,
+      job_function: user.job_function ?? existing.job_function ?? user.role,
+      department_id: user.department_id ?? existing.department_id ?? null,
+      effective_profile_role: effectiveProfileRole,
+      membership_version: membershipVersion ?? existing.membership_version ?? 1,
+      subject_active: user.active,
+      membership_active: user.active,
+      change_history_role: user.role,
+    }
+  })
   current.adminSystems = document.systems
   current.adminSystemSchemaScopes = document.systems.map((system) => [
     system.system_id,
@@ -620,7 +663,9 @@ function changeHistoryAccessCoreProjection(currentValue, document) {
     system.system_id,
     document.system_assignments.filter((assignment) => assignment.system_id === system.system_id).map((assignment) => ({
       subject_id: assignment.subject_id,
-      display_name: memberships.get(assignment.subject_id)?.display_name || assignment.subject_id,
+      display_name: documentUsers.get(assignment.subject_id)?.display_name
+        || memberships.get(assignment.subject_id)?.display_name
+        || assignment.subject_id,
       responsibility: assignment.responsibility,
       priority: assignment.priority,
       active: assignment.active,
@@ -675,7 +720,7 @@ async function changeHistoryAccess(request, response, url, context) {
     expectedAccessVersion: snapshot.access.version,
     expectedCoreVersion: snapshot.core.version,
     accessValue: privateChangeHistoryAccess(document),
-    coreValue: changeHistoryAccessCoreProjection(snapshot.core.value, document),
+    coreValue: changeHistoryAccessCoreProjection(snapshot.core.value, document, snapshot.access.version + 1),
   })
   return json(response, 200, { ...document, version: result.accessVersion }, { ETag: `"${result.accessVersion}"` })
 }

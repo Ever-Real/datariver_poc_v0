@@ -344,7 +344,16 @@ function assertAccess(value: unknown): asserts value is ChangeHistoryAccessDocum
     if (!isRecord(item) || !bounded(item.subject_id, 255)
       || !['admin', 'data_steward', 'developer', 'viewer'].includes(String(item.role))
       || typeof item.active !== 'boolean' || !boundedArray(item.provider_owner_refs, 100)
-      || item.provider_owner_refs.some((owner) => !bounded(owner, 1_024))) invalid()
+      || item.provider_owner_refs.some((owner) => !bounded(owner, 1_024))
+      || (Object.hasOwn(item, 'username') && !bounded(item.username, 64))
+      || (Object.hasOwn(item, 'display_name') && !bounded(item.display_name, 255))
+      || (Object.hasOwn(item, 'email') && (typeof item.email !== 'string' || item.email.length > 320))
+      || (Object.hasOwn(item, 'first_name') && (typeof item.first_name !== 'string' || item.first_name.length > 100))
+      || (Object.hasOwn(item, 'last_name') && (typeof item.last_name !== 'string' || item.last_name.length > 100))
+      || (Object.hasOwn(item, 'department_id') && item.department_id !== null
+        && (typeof item.department_id !== 'string' || item.department_id.length > 255))
+      || (Object.hasOwn(item, 'job_function') && item.job_function !== null
+        && (typeof item.job_function !== 'string' || item.job_function.length > 100))) invalid()
   })
   value.systems.forEach((item) => {
     if (!isRecord(item) || !bounded(item.system_id, 255) || !bounded(item.code, 100)

@@ -1346,6 +1346,7 @@ export interface WorkspaceMembershipSummary {
   job_function: string | null
   clearance: Classification
   membership_version: number
+  change_history_role?: 'admin' | 'data_steward' | 'developer' | 'viewer'
   effective_profile_role:
     | 'VIEWER'
     | 'ENGINEER_STEWARD'

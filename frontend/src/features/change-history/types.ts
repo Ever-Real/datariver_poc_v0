@@ -190,6 +190,13 @@ export interface ChangeHistoryAccessDocument {
     role: ChangeHistoryAccessRole
     active: boolean
     provider_owner_refs: string[]
+    username?: string
+    display_name?: string
+    email?: string
+    first_name?: string
+    last_name?: string
+    department_id?: string | null
+    job_function?: string | null
   }>
   systems: Array<{
     system_id: string

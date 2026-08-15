@@ -1,7 +1,9 @@
-/* global Buffer, URL, fetch, process, structuredClone */
+/* global Buffer, fetch, structuredClone */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import process from 'node:process'
 import { after, before, test } from 'node:test'
+import { URL } from 'node:url'
 
 let server
 let origin
@@ -443,7 +445,11 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
     schema_version: 1,
     active_subject_id: 'configured-admin',
     users: [
-      { subject_id: 'configured-admin', role: 'admin', active: true },
+      {
+        subject_id: 'configured-admin', role: 'admin', active: true,
+        username: 'configured.admin', display_name: 'Configured Admin', email: 'admin@poc.invalid',
+        first_name: 'Configured', last_name: 'Admin', department_id: null, job_function: 'admin',
+      },
       { subject_id: 'steward-subject', role: 'data_steward', active: true },
       { subject_id: 'developer-subject', role: 'developer', active: true },
       { subject_id: 'viewer-subject', role: 'viewer', active: true },
@@ -485,6 +491,8 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
     const bootstrapped = await bootstrap.json()
     assert.equal(bootstrapped.version, 1)
     assert.equal(bootstrapped.active_subject_id, 'steward-subject')
+    assert.equal(bootstrapped.users[0].display_name, 'Configured Admin')
+    assert.equal(bootstrapped.users[0].email, 'admin@poc.invalid')
     assert.equal(bootstrapped.system_schema_scopes[0].platform, 'postgres')
     assert.deepEqual((await stateStore.read('core')).value.changeRecords, originalChangeRecords)
     assert.equal((await request(adminOrigin)).status, 200, 'stored active metadata is not runtime identity authority')
@@ -564,16 +572,22 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
     assert.equal(afterGeneric.changeRecords[0].state, 'TESTING')
     assert.equal(afterGeneric.adminSystems[0].system_id, 'business-system')
     assert.equal(afterGeneric.adminMemberships.length, document.users.length)
+    assert.equal(afterGeneric.adminMemberships.find((item) => item.subject_id === 'configured-admin').display_name, 'Configured Admin')
 
     const crBeforeAccessUpdate = JSON.parse(JSON.stringify(afterGeneric.changeRecords))
     const updatedDocument = {
       ...document,
+      users: document.users.map((user) => user.subject_id === 'configured-admin'
+        ? { ...user, display_name: 'Updated Admin', job_function: 'platform_admin' }
+        : user),
       system_assignments: [{ ...document.system_assignments[0], priority: 2 }],
     }
     const update = await put(adminOrigin, updatedDocument, '"1"')
     assert.equal(update.status, 200)
     assert.equal(update.headers.get('etag'), '"2"')
     assert.deepEqual((await stateStore.read('core')).value.changeRecords, crBeforeAccessUpdate)
+    assert.equal((await stateStore.read('core')).value.adminMemberships
+      .find((item) => item.subject_id === 'configured-admin').display_name, 'Updated Admin')
     assert.equal((await request(adminOrigin)).status, 200)
 
     const primitiveCore = await fetch(new URL('/poc-api/state/core', adminOrigin), {
