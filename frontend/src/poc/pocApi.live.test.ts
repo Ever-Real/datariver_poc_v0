@@ -84,9 +84,12 @@ function installGatewayMock() {
     }
     if (url.pathname === '/poc-api/datahub/catalog') {
       const query = (url.searchParams.get('q') ?? '*').toLocaleLowerCase()
-      const matching = query === '*'
-        ? liveAssets
-        : liveAssets.filter((asset) => [asset.name, asset.description].join(' ').toLocaleLowerCase().includes(query))
+      const matching = liveAssets.filter((asset) => (
+        (query === '*' || [asset.name, asset.description].join(' ').toLocaleLowerCase().includes(query))
+        && (!url.searchParams.get('platform') || asset.platform === url.searchParams.get('platform'))
+        && (!url.searchParams.get('database') || asset.database_name === url.searchParams.get('database'))
+        && (!url.searchParams.get('schema') || asset.schema_name === url.searchParams.get('schema'))
+      ))
       const requestedLimit = Number(url.searchParams.get('limit') ?? 100)
       const offset = url.searchParams.get('cursor') === 'opaque-page-2' ? 1 : 0
       const items = matching.slice(offset, offset + requestedLimit)
@@ -290,6 +293,78 @@ describe('POC live-provider compatibility adapter', () => {
     expect(detail.schema_fields[0]).toMatchObject({ fieldPath: 'wafer_id' })
     expect(detail.schema_fields[0]?.globalTags).toEqual({ tags: [{ tag: { name: 'identifier' } }] })
     expect(detail.schema_fields[0]?.glossaryTerms).toEqual({ terms: [{ term: { name: 'Wafer ID' } }] })
+  })
+
+  it('resolves an opaque active System through its exact schema scopes and preserves provider-platform routing', async () => {
+    const client = useStableApiClient()
+    const system = await client.request<{ system_id: string }>('/admin/systems', {
+      method: 'POST',
+      body: JSON.stringify({
+        code: 'FAB', name: 'Fabrication', description: 'Canonical business System',
+      }),
+    })
+    expect(system.system_id).not.toBe('postgres')
+    await client.request(`/admin/systems/${system.system_id}/schema-scopes`, {
+      method: 'PATCH',
+      body: JSON.stringify({ upsert_asset_ids: [liveAssets[0]!.id] }),
+    })
+
+    const controller = new AbortController()
+    const targets = await client.request<CatalogSearch>(
+      `/change-requests/targets?system_id=${system.system_id}&q=wafer&limit=12`,
+      { signal: controller.signal },
+    )
+    expect(targets.items.map((item) => item.name)).toEqual(['wafer_events'])
+    const scopedCatalogCall = vi.mocked(fetch).mock.calls.find(([input]) => {
+      const requestUrl = input instanceof Request ? input.url : input.toString()
+      const url = new URL(requestUrl, 'https://poc.invalid')
+      return url.pathname === '/poc-api/datahub/catalog'
+        && url.searchParams.get('q') === 'wafer'
+        && url.searchParams.get('database') === 'FACTORY'
+    })
+    expect(scopedCatalogCall).toBeDefined()
+    const scopedInput = scopedCatalogCall?.[0]
+    if (!scopedInput) throw new Error('Expected a schema-scoped DataHub catalog request')
+    const scopedUrl = new URL(
+      scopedInput instanceof Request ? scopedInput.url : scopedInput.toString(),
+      'https://poc.invalid',
+    )
+    expect(Object.fromEntries(scopedUrl.searchParams)).toMatchObject({
+      platform: 'postgres', database: 'FACTORY', schema: 'QUALITY',
+    })
+    expect(scopedUrl.searchParams.get('platform')).not.toBe(system.system_id)
+    expect(scopedCatalogCall?.[1]?.signal).toBe(controller.signal)
+
+    const detail = await client.request<CatalogAssetDetail>(
+      `/change-requests/targets/${targets.items[0]!.id}?system_id=${system.system_id}`,
+      { signal: controller.signal },
+    )
+    expect(detail.name).toBe('wafer_events')
+    await expect(client.request(
+      `/change-requests/targets/${liveAssets[1]!.id}?system_id=${system.system_id}`,
+    )).rejects.toThrow('활성 스키마 범위가 일치하지 않습니다')
+
+    const scopes = await client.request<{ items: Array<{ scope_id: string }> }>(
+      `/admin/systems/${system.system_id}/schema-scopes`,
+    )
+    await client.request(`/admin/systems/${system.system_id}/schema-scopes`, {
+      method: 'PATCH',
+      body: JSON.stringify({ deactivate_scope_ids: [scopes.items[0]!.scope_id] }),
+    })
+    await expect(client.request<CatalogSearch>(
+      `/change-requests/targets?system_id=${system.system_id}&q=wafer&limit=12`,
+    )).resolves.toMatchObject({ items: [], total: 0 })
+    await expect(client.request(
+      `/change-requests/targets/${liveAssets[0]!.id}?system_id=${system.system_id}`,
+    )).rejects.toThrow('활성 스키마 범위가 일치하지 않습니다')
+
+    const legacy = await client.request<CatalogSearch>(
+      '/change-requests/targets?system_id=snowflake&q=yield&limit=12',
+    )
+    expect(legacy.items.map((item) => item.name)).toEqual(['daily_yield'])
+    await expect(client.request<CatalogAssetDetail>(
+      `/change-requests/targets/${legacy.items[0]!.id}?system_id=snowflake`,
+    )).resolves.toMatchObject({ name: 'daily_yield', platform: 'snowflake' })
   })
 
   it('forwards logical change-history paths and mutation fences to the authoritative Node API', async () => {

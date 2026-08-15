@@ -284,6 +284,18 @@ function pocSystemEntry(system: typeof adminSystems[number]) {
   return { ...system, assignee_count: assignees.length, assignees }
 }
 
+function changeTargetMatchesSystem(asset: CatalogAsset, systemId: string): boolean {
+  const system = adminSystems.find((item) => item.system_id === systemId)
+  if (!system) return asset.platform === systemId
+  if (!system.active) return false
+  return (adminSystemSchemaScopes.get(systemId) ?? []).some((scope) => (
+    scope.active
+    && scope.platform === asset.platform
+    && scope.database_name === asset.database_name
+    && scope.schema_name === asset.schema_name
+  ))
+}
+
 function knowledgeDraftById(id: string): Record<string, unknown> {
   const draft = knowledgeDrafts.find((item) => item.id === id)
   if (!draft) throw new Error('POC Knowledge Studio Draft를 찾을 수 없습니다.')
@@ -1948,14 +1960,40 @@ class PocApiClient {
     }
     if (path === '/change-requests/targets') {
       const systemId = url.searchParams.get('system_id')
+      const system = systemId
+        ? adminSystems.find((item) => item.system_id === systemId)
+        : undefined
+      const activeScopes = system?.active
+        ? (adminSystemSchemaScopes.get(system.system_id) ?? []).filter((scope) => scope.active)
+        : []
+      const searchParameters = {
+        q: url.searchParams.get('q') ?? '*',
+        limit: url.searchParams.get('limit') ?? '12',
+      }
+      const scopedResults = runtimeFlags().datahub && system
+        ? await Promise.all(activeScopes.map((scope) => liveCatalog(new URLSearchParams({
+            ...searchParameters,
+            platform: scope.platform,
+            database: scope.database_name,
+            schema: scope.schema_name,
+          }), options.signal)))
+        : []
       const result = runtimeFlags().datahub
-        ? await liveCatalog(new URLSearchParams({
-            q: url.searchParams.get('q') ?? '*',
-            limit: url.searchParams.get('limit') ?? '12',
-            ...(systemId ? { platform: systemId } : {}),
-          }), options.signal)
+        ? system
+          ? scopedResults[0] ?? catalogSearch(url, [])
+          : await liveCatalog(new URLSearchParams({
+              ...searchParameters,
+              ...(systemId ? { platform: systemId } : {}),
+            }), options.signal)
         : catalogSearch(url, [])
-      const items = result.items.filter((asset) => !systemId || asset.platform === systemId)
+      const candidates = system
+        ? scopedResults.flatMap((item) => item.items)
+        : result.items
+      const uniqueItems = new Map(candidates.map((asset) => [asset.id, asset]))
+      const items = [...uniqueItems.values()]
+        .filter((asset) => !systemId || changeTargetMatchesSystem(asset, systemId))
+        .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
+        .slice(0, Number(searchParameters.limit))
       return { ...result, items, total: items.length, total_exact: true }
     }
     const changeTarget = path.match(/^\/change-requests\/targets\/(.+)$/)
@@ -1965,6 +2003,10 @@ class PocApiClient {
         const asset = await gatewayRequest<CatalogAssetDetail>(
           `/poc-api/datahub/asset?urn=${encodeURIComponent(assetId)}`, { signal: options.signal },
         )
+        const systemId = url.searchParams.get('system_id')
+        if (systemId && !changeTargetMatchesSystem(asset, systemId)) {
+          throw new Error('관련 시스템과 변경 대상의 활성 스키마 범위가 일치하지 않습니다.')
+        }
         liveAssetDetails.set(assetId, asset)
         return asset
       }
