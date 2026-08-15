@@ -431,7 +431,7 @@ function normalizedAccessScopes(value, systems) {
     const systemId = accessString(scope.system_id, `system_schema_scopes[${index}].system_id`, 255)
     const system = systemById.get(systemId)
     const platform = accessString(scope.platform, `system_schema_scopes[${index}].platform`, 100).toLowerCase()
-    const databaseName = accessOptionalString(scope.database_name, `system_schema_scopes[${index}].database_name`, 255)
+    const databaseName = accessString(scope.database_name, `system_schema_scopes[${index}].database_name`, 255)
     const schemaName = accessString(scope.schema_name, `system_schema_scopes[${index}].schema_name`, 255)
     const active = accessBoolean(scope.active, `system_schema_scopes[${index}].active`)
     const mappingKey = JSON.stringify([platform, databaseName, schemaName])
@@ -716,7 +716,7 @@ function changeHistoryContext(event, catalog) {
     database_name: asset.database_name.trim(),
     schema_name: asset.schema_name.trim(),
   }
-  return providerContext.platform && providerContext.schema_name
+  return providerContext.platform && providerContext.database_name && providerContext.schema_name
     ? providerContext
     : null
 }
