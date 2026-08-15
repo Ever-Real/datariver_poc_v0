@@ -112,6 +112,23 @@ describe('DataChangeStatusPanel', () => {
     expect(screen.getByText('감지 시각 (detected)')).toBeInTheDocument()
   })
 
+  it('renders the generic lifecycle row and sends its closed category filter', async () => {
+    const lifecycle = {
+      ...event(), category: 'LIFECYCLE' as const, change_type: 'METADATA_CHANGE' as const,
+      source_aspect: 'status', operation: 'DELETE' as const, entity_key: 'asset:lifecycle:removed',
+    }
+    const request = vi.fn((path: string) => responseFor(path, {
+      summary: summaryFor(path, { category_counts: { ...summaryFor(path).category_counts, LIFECYCLE: 1 } }),
+      page: eventPage([lifecycle]),
+    }))
+    render(<DataChangeStatusPanel client={clientFor(request)} />)
+    expect(await screen.findByText('수명주기')).toBeInTheDocument()
+    expect(screen.getAllByText('삭제')).toHaveLength(2)
+    fireEvent.change(screen.getByLabelText('카테고리'), { target: { value: 'LIFECYCLE' } })
+    fireEvent.click(screen.getByRole('button', { name: '필터 적용' }))
+    await waitFor(() => expect(eventRequestPaths(request).at(-1)).toContain('category=LIFECYCLE'))
+  })
+
   it('loads authoritative detail and CR link history into the safe semantic drawer', async () => {
     const request = vi.fn((path: string) => responseFor(path, {
       summary: summaryFor(path),
@@ -238,6 +255,7 @@ function summary(weekStart: string, overrides: Record<string, unknown> = {}) {
       TAG: 0,
       GLOSSARY_TERM: 0,
       OWNERSHIP: 0,
+      LIFECYCLE: 0,
     },
     operation_counts: { CREATE: 0, UPDATE: 0, UPSERT: 0, DELETE: 0, ADD: 0, REMOVE: 0 },
     capture_state: 'CAPTURE_PENDING',

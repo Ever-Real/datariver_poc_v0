@@ -823,23 +823,42 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     } while (cursor)
     assert.equal(new Set(pagedEventIds).size, 3)
 
+    const lifecycleEventId = 'c'.repeat(64)
+    projection.events.push({
+      ...projection.events[0], event_identity: lifecycleEventId, event_hash: 'd'.repeat(64),
+      normalized_change_transaction_id: 'e'.repeat(64), normalized_entity_key: 'asset:lifecycle:removed',
+      category: 'LIFECYCLE', source_aspect: 'status', operation: 'DELETE',
+      before_data: { removed: false }, after_data: { removed: true },
+    })
+    const lifecycleList = await (await fetch(`${base}/api/v1/change-history/events?category=LIFECYCLE`)).json()
+    assert.equal(lifecycleList.total, 1)
+    assert.deepEqual(lifecycleList.items[0], {
+      ...lifecycleList.items[0], category: 'LIFECYCLE', change_type: 'METADATA_CHANGE',
+      source_aspect: 'status', operation: 'DELETE', entity_key: 'asset:lifecycle:removed',
+    })
+    const lifecycleDetail = await (await fetch(`${base}/api/v1/change-history/events/${lifecycleEventId}`)).json()
+    assert.deepEqual(lifecycleDetail.before, { removed: false })
+    assert.deepEqual(lifecycleDetail.after, { removed: true })
+
     const weekly = await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)
     assert.equal(weekly.status, 200)
     const summary = await weekly.json()
     assert.equal(summary.week_start, '2026-08-10')
     assert.equal(summary.week_end_exclusive, '2026-08-17')
-    assert.equal(summary.total_count, 1)
+    assert.equal(summary.total_count, 2)
     assert.equal(summary.received_count, 1)
     assert.equal(summary.total_count, summary.unlinked_count + summary.received_count + summary.recheck_count
       + summary.testing_count + summary.final_review_count + summary.completed_count)
     const sourceSummary = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
     assert.equal(sourceSummary.schema_change_count, 1)
-    assert.equal(sourceSummary.metadata_change_count, 1)
-    assert.equal(sourceSummary.event_count, 3)
-    assert.equal(sourceSummary.precision_counts.EXACT_MCL, 1)
+    assert.equal(sourceSummary.metadata_change_count, 2)
+    assert.equal(sourceSummary.event_count, 4)
+    assert.equal(sourceSummary.precision_counts.EXACT_MCL, 2)
     assert.equal(sourceSummary.category_counts.TECHNICAL_SCHEMA, 1)
     assert.equal(sourceSummary.category_counts.DOCUMENTATION, 1)
+    assert.equal(sourceSummary.category_counts.LIFECYCLE, 1)
     assert.equal(sourceSummary.operation_counts.UPDATE, 1)
+    assert.equal(sourceSummary.operation_counts.DELETE, 1)
     assert.equal(sourceSummary.sync_status, 'CONTIGUOUS_CAPTURE_RECORDED')
     assert.equal(sourceSummary.source_generation, 'a'.repeat(64))
     assert.equal(sourceSummary.ledger_guarantee_from, '2026-08-11T01:00:02.000Z')
@@ -850,7 +869,7 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     assert.equal(resubmittedSummary.received_count, 0)
     projection.core.value.changeRecords[0].state = 'CANCELLED'
     const cancelledSummary = await (await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)).json()
-    assert.equal(cancelledSummary.unlinked_count, 1)
+    assert.equal(cancelledSummary.unlinked_count, 2)
     assert.equal(cancelledSummary.recheck_count, 0)
     projection.core.value.changeRecords[0].state = 'IN_REVIEW'
     projection.core.value.changeRecords[0].current_round_number = 1
@@ -860,7 +879,7 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
     assert.equal((await invalidTuesday.json()).code, 'WEEK_START_INVALID')
     projection.core.value.changeRecords[0].state = 'REJECTED'
     const rejectedSummary = await (await fetch(`${base}/api/v1/change-history/weekly?week_start=2026-08-10`)).json()
-    assert.equal(rejectedSummary.unlinked_count, 1)
+    assert.equal(rejectedSummary.unlinked_count, 2)
     assert.equal(rejectedSummary.received_count, 0)
     const spoofed = await fetch(`${base}/api/v1/change-history/events`, { headers: { 'X-Subject-Id': 'steward-subject' } })
     assert.equal(spoofed.status, 400)

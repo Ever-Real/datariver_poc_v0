@@ -4,6 +4,7 @@ export type ChangeHistoryCategory =
   | 'TAG'
   | 'GLOSSARY_TERM'
   | 'OWNERSHIP'
+  | 'LIFECYCLE'
 
 export type ChangeHistoryChangeType = 'SCHEMA_CHANGE' | 'METADATA_CHANGE'
 export type ChangeHistoryOperation = 'CREATE' | 'UPDATE' | 'UPSERT' | 'DELETE' | 'ADD' | 'REMOVE'

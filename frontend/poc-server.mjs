@@ -687,7 +687,7 @@ const changeHistoryActions = new Map([
   ['SET_PRIMARY', 'PRIMARY'], ['CLEAR_PRIMARY', 'PRIMARY'],
   ['ADD_CANDIDATE', 'CANDIDATE'], ['REMOVE_CANDIDATE', 'CANDIDATE'],
 ])
-const changeHistoryCategories = new Set(['TECHNICAL_SCHEMA', 'DOCUMENTATION', 'TAG', 'GLOSSARY_TERM', 'OWNERSHIP'])
+const changeHistoryCategories = new Set(['TECHNICAL_SCHEMA', 'DOCUMENTATION', 'TAG', 'GLOSSARY_TERM', 'OWNERSHIP', 'LIFECYCLE'])
 const changeHistoryOperations = new Set(['CREATE', 'UPDATE', 'UPSERT', 'DELETE', 'ADD', 'REMOVE'])
 const changeHistoryPresentationStages = new Set(['UNLINKED', 'RECEIVED', 'RECHECK', 'TESTING', 'FINAL_REVIEW', 'COMPLETED'])
 const changeHistoryPrecisionValues = ['EXACT_TIMELINE', 'EXACT_MCL', 'DRIFT_DETECTED', 'BACKFILLED_BEST_EFFORT', 'INITIAL_BASELINE']

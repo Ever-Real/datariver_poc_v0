@@ -594,6 +594,59 @@ test('rejects raw provider documents and non-UTC evidence before touching Postgr
   assert.equal(database.statements.length, 0)
 })
 
+test('accepts only the extended field metadata and exact lifecycle category/aspect pairs', async () => {
+  const database = createDatabaseDouble()
+  const store = createPocStateStore({ databasePool: database.pool })
+  const fieldTag = semanticEvent({
+    entityKey: 'field:customer_id:tag_urn:urn:li:tag:curated', category: 'TAG', sourceAspect: 'schemaMetadata',
+    operation: 'ADD', beforeData: null, afterData: { field_path: 'customer_id', tag_urn: 'urn:li:tag:curated' },
+  })
+  const editableTerm = semanticEvent({
+    entityKey: 'field:customer_id:term_urn:urn:li:glossaryTerm:pii', category: 'GLOSSARY_TERM', sourceAspect: 'editableSchemaMetadata',
+    operation: 'ADD', beforeData: null, afterData: { field_path: 'customer_id', term_urn: 'urn:li:glossaryTerm:pii' },
+  })
+  const removed = semanticEvent({
+    entityKey: 'asset:lifecycle:removed', category: 'LIFECYCLE', sourceAspect: 'status', operation: 'DELETE',
+    beforeData: { removed: false }, afterData: { removed: true },
+  })
+  const entityCreated = semanticEvent({
+    entityKey: 'asset:lifecycle:entity', category: 'LIFECYCLE', sourceAspect: 'entity', operation: 'CREATE',
+    beforeData: null, afterData: { entity_type: 'dataset' },
+  })
+  await store.appendChangeHistoryCapture(capture(44, [fieldTag, editableTerm, removed, entityCreated]))
+  await assert.rejects(store.appendChangeHistoryCapture(capture(45, [semanticEvent({
+    category: 'TAG', sourceAspect: 'status', operation: 'ADD', beforeData: null, afterData: { tag_urn: 'urn:li:tag:no' },
+  })])), /sourceAspect is outside its closed vocabulary/)
+  const initSql = readFileSync(new URL('../deploy/poc/postgres-init/001-poc-state.sql', import.meta.url), 'utf8')
+  const startupSql = database.statements.map((entry) => entry.sql).join('\n')
+  for (const contract of [
+    "source_aspect IN ('globalTags', 'schemaMetadata', 'editableSchemaMetadata')",
+    "category = 'LIFECYCLE' AND source_aspect IN ('status', 'entity')",
+    'DROP CONSTRAINT ck_poc_change_history_ledger_category',
+    'CONSTRAINT ck_poc_change_history_ledger_category_v2 CHECK',
+    "WHERE conname = 'ck_poc_change_history_ledger_category_v2'",
+  ]) {
+    assert.ok(initSql.includes(contract), `init SQL: ${contract}`)
+    assert.ok(startupSql.includes(contract), `startup SQL: ${contract}`)
+  }
+  assert.equal(initSql.includes('pg_get_constraintdef'), false, 'the v2 upgrade must not depend on deparsed CHECK text')
+  assert.equal(startupSql.includes('pg_get_constraintdef'), false, 'the runtime upgrade must not depend on deparsed CHECK text')
+  assert.match(initSql, /IF EXISTS \([\s\S]*ck_poc_change_history_ledger_category[\s\S]*DROP CONSTRAINT ck_poc_change_history_ledger_category;[\s\S]*IF NOT EXISTS \([\s\S]*ck_poc_change_history_ledger_category_v2/)
+  assert.match(startupSql, /IF EXISTS \([\s\S]*ck_poc_change_history_ledger_category[\s\S]*DROP CONSTRAINT ck_poc_change_history_ledger_category;[\s\S]*IF NOT EXISTS \([\s\S]*ck_poc_change_history_ledger_category_v2/)
+  const upgradeEffects = (initialConstraintNames) => {
+    const names = new Set(initialConstraintNames)
+    const effects = []
+    if (names.delete('ck_poc_change_history_ledger_category')) effects.push('DROP_OLD')
+    if (!names.has('ck_poc_change_history_ledger_category_v2')) {
+      names.add('ck_poc_change_history_ledger_category_v2')
+      effects.push('ADD_V2')
+    }
+    return effects
+  }
+  assert.deepEqual(upgradeEffects(['ck_poc_change_history_ledger_category']), ['DROP_OLD', 'ADD_V2'])
+  assert.deepEqual(upgradeEffects(['ck_poc_change_history_ledger_category_v2']), [], 'second startup must issue no category CHECK DDL')
+})
+
 test('CAS-updates private access with its core projection and fences later generic core writes', async () => {
   const store = createPocStateStore()
   const originalChangeRecords = [{ id: 'request-from-core', state: 'IN_REVIEW', version: 7 }]

@@ -28,6 +28,7 @@ const categoryOptions: Array<[ChangeHistoryCategory, string]> = [
   ['TAG', '태그'],
   ['GLOSSARY_TERM', '용어'],
   ['OWNERSHIP', '소유권'],
+  ['LIFECYCLE', '수명주기'],
 ]
 const precisionOptions: Array<[ChangeHistoryPrecision, string]> = [
   ['EXACT_TIMELINE', '정확한 Timeline'],

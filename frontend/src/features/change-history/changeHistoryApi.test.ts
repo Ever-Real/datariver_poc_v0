@@ -175,6 +175,24 @@ describe('ChangeHistoryApi', () => {
     })
     await expect(summaryApi.summary(weekStart)).rejects.toThrow('검증된 계약')
   })
+
+  it('decodes exact lifecycle events and requires the lifecycle summary zero-count key', async () => {
+    const lifecycle = {
+      ...event(), category: 'LIFECYCLE', change_type: 'METADATA_CHANGE', source_aspect: 'status', operation: 'DELETE',
+      entity_key: 'asset:lifecycle:removed',
+    }
+    const api = new ChangeHistoryApi({
+      request: vi.fn().mockResolvedValue({ items: [lifecycle], next_cursor: null, limit: 50, total: 1 }),
+      requestWithMeta: vi.fn().mockResolvedValue({ data: { ...lifecycle, before: { removed: false }, after: { removed: true } }, etag: '"0"' }),
+    })
+    expect((await api.events({ category: 'LIFECYCLE' })).items[0]?.source_aspect).toBe('status')
+    expect((await api.event(eventId)).data.after).toEqual({ removed: true })
+    const missingCountApi = new ChangeHistoryApi({
+      request: vi.fn().mockResolvedValue({ ...summary(), category_counts: { ...summary().category_counts, LIFECYCLE: undefined } }),
+      requestWithMeta: vi.fn(),
+    })
+    await expect(missingCountApi.summary(weekStart)).rejects.toThrow('검증된 계약')
+  })
 })
 
 function event() {
@@ -238,7 +256,7 @@ function summary() {
     precision_counts: {
       EXACT_TIMELINE: 0, EXACT_MCL: 1, DRIFT_DETECTED: 0, BACKFILLED_BEST_EFFORT: 0, INITIAL_BASELINE: 0,
     },
-    category_counts: { TECHNICAL_SCHEMA: 1, DOCUMENTATION: 0, TAG: 0, GLOSSARY_TERM: 0, OWNERSHIP: 0 },
+    category_counts: { TECHNICAL_SCHEMA: 1, DOCUMENTATION: 0, TAG: 0, GLOSSARY_TERM: 0, OWNERSHIP: 0, LIFECYCLE: 0 },
     operation_counts: { CREATE: 0, UPDATE: 1, UPSERT: 0, DELETE: 0, ADD: 0, REMOVE: 0 },
     capture_state: 'CONTIGUOUS_CAPTURE_RECORDED',
     sync_status: 'CONTIGUOUS_CAPTURE_RECORDED',

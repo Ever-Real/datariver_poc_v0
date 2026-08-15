@@ -2,6 +2,7 @@
 import KafkaJs from 'kafkajs'
 import { SchemaRegistry } from '@kafkajs/confluent-schema-registry'
 import SnappyCodec from 'kafkajs-snappy'
+import { createHash } from 'node:crypto'
 
 import { createPocStateStore } from './poc-state-store.mjs'
 
@@ -17,6 +18,7 @@ const SUPPORTED_ASPECTS = new Set([
   'globalTags',
   'glossaryTerms',
   'ownership',
+  'status',
 ])
 
 const GENERIC_ASPECT_JSON_CONTENT_TYPE = 'application/json'
@@ -28,6 +30,7 @@ const STORAGE_CATEGORY_BY_ASPECT = {
   globalTags: 'TAG',
   glossaryTerms: 'GLOSSARY_TERM',
   ownership: 'OWNERSHIP',
+  status: 'LIFECYCLE',
 }
 
 export function loadPocMclCaptureConfig(environment = process.env) {
@@ -114,11 +117,17 @@ export function normalizeMclRecord(record, {
   maxItems = 1000,
 } = {}) {
   if (!isRecordObject(record)) throw new Error('The decoded MCL record is invalid.')
-  const aspectName = boundedString(record.aspectName, 'aspectName', 255)
+  const aspectName = typeof record.aspectName === 'string' ? record.aspectName : undefined
+  const assetUrn = boundedString(record.entityUrn, 'entityUrn', 4096)
+  if (aspectName === undefined || aspectName === '') {
+    return normalizeEntityLifecycle(record, assetUrn, detectedAt)
+  }
+  if (aspectName.trim() !== aspectName || aspectName.length > 255) {
+    throw new Error('aspectName is outside its string bound.')
+  }
   if (!SUPPORTED_ASPECTS.has(aspectName)) {
     return { aspectName, normalizedCategory: null, supported: false, events: [] }
   }
-  const assetUrn = boundedString(record.entityUrn, 'entityUrn', 4096)
   const current = decodeAspectDocument(record.aspect, 'aspect', maxDocumentBytes)
   const previous = decodeAspectDocument(record.previousAspectValue, 'previousAspectValue', maxDocumentBytes)
   if (current === null && previous === null) {
@@ -139,13 +148,51 @@ export function normalizeMclRecord(record, {
       ? normalizeEditableSchemaMetadata(current, previous, evidence, maxItems)
       : aspectName === 'datasetProperties'
         ? normalizeDatasetProperties(current, previous, evidence, maxItems)
-        : normalizeCollectionAspect(aspectName, current, previous, evidence, maxItems)
+        : aspectName === 'status'
+          ? normalizeStatus(current, previous, evidence)
+          : normalizeCollectionAspect(aspectName, current, previous, evidence, maxItems)
   if (events.length > maxItems) throw new Error('The supported MCL record exceeds the event fan-out bound.')
   return {
     aspectName,
     normalizedCategory: evidence.normalizedCategory,
     supported: true,
     events,
+  }
+}
+
+function normalizeEntityLifecycle(record, assetUrn, detectedAt) {
+  const entityType = boundedString(record.entityType, 'entityType', 255)
+  const changeType = boundedString(record.changeType, 'changeType', 255)
+  if (entityType !== 'dataset') {
+    throw new Error('Only exact DataHub dataset entity lifecycle records are supported.')
+  }
+  const operation = changeType === 'CREATE' || changeType === 'CREATE_ENTITY'
+    ? 'CREATE'
+    : changeType === 'DELETE' ? 'DELETE' : undefined
+  if (changeType !== 'CREATE' && changeType !== 'CREATE_ENTITY' && changeType !== 'DELETE' && changeType !== 'UPSERT') {
+    throw new Error('The DataHub entity lifecycle changeType is unsupported.')
+  }
+  if (!operation) return { aspectName: null, normalizedCategory: 'METADATA_CHANGE', supported: true, events: [] }
+  const evidence = {
+    assetUrn,
+    sourceAspect: 'entity',
+    actorRef: optionalBoundedString(record.created?.actor, 'created.actor', 1000),
+    sourceOccurredAt: normalizeOccurredAt(record.created?.time),
+    detectedAt: explicitUtcTimestamp(detectedAt, 'detectedAt'),
+    normalizedCategory: 'METADATA_CHANGE',
+    storageCategory: 'LIFECYCLE',
+  }
+  return {
+    aspectName: null,
+    normalizedCategory: evidence.normalizedCategory,
+    supported: true,
+    events: [semanticEvent(
+      'asset:lifecycle:entity',
+      operation === 'DELETE' ? { entity_type: entityType } : null,
+      operation === 'CREATE' ? { entity_type: entityType } : null,
+      evidence,
+      operation,
+    )],
   }
 }
 
@@ -314,14 +361,24 @@ function toPersistenceEvent(event) {
 function normalizeSchemaMetadata(current, previous, evidence, maximum) {
   const currentFields = schemaFieldMap(current, maximum)
   const previousFields = schemaFieldMap(previous, maximum)
-  if (currentFields.size || previousFields.size) return diffMaps(currentFields, previousFields, evidence)
+  if (currentFields.size || previousFields.size) {
+    return [
+      ...diffMaps(currentFields, previousFields, evidence),
+      ...diffFieldMetadata(current, previous, evidence, maximum, 'schemaMetadata'),
+    ]
+  }
   return singletonDiff('schema', schemaSummary(current), schemaSummary(previous), evidence)
 }
 
 function normalizeEditableSchemaMetadata(current, previous, evidence, maximum) {
   const currentFields = editableSchemaFieldMap(current, maximum)
   const previousFields = editableSchemaFieldMap(previous, maximum)
-  if (currentFields.size || previousFields.size) return diffMaps(currentFields, previousFields, evidence)
+  if (currentFields.size || previousFields.size) {
+    return [
+      ...diffMaps(currentFields, previousFields, evidence),
+      ...diffFieldMetadata(current, previous, evidence, maximum, 'editableSchemaMetadata'),
+    ]
+  }
   return singletonDiff(
     'editable-schema',
     current === null ? null : { description: optionalDescription(current.description, 'description', 4096) },
@@ -362,11 +419,70 @@ function schemaFieldMap(document, maximum) {
     result.set(path, {
       field_path: path,
       native_data_type: optionalDocumentString(field.nativeDataType, 'nativeDataType', 500),
+      logical_type: logicalType(field.type),
       description: optionalDescription(field.description, 'description', 4096),
-      nullable: typeof field.nullable === 'boolean' ? field.nullable : null,
+      nullable: nullableValue(field.nullable),
     })
   }
   return result
+}
+
+function diffFieldMetadata(current, previous, evidence, maximum, sourceAspect) {
+  const currentTags = fieldMetadataMap(current, maximum, sourceAspect, 'globalTags')
+  const previousTags = fieldMetadataMap(previous, maximum, sourceAspect, 'globalTags')
+  const currentTerms = fieldMetadataMap(current, maximum, sourceAspect, 'glossaryTerms')
+  const previousTerms = fieldMetadataMap(previous, maximum, sourceAspect, 'glossaryTerms')
+  return [
+    ...diffMetadataMaps(currentTags, previousTags, evidence, sourceAspect, 'TAG', 'tag_urn'),
+    ...diffMetadataMaps(currentTerms, previousTerms, evidence, sourceAspect, 'GLOSSARY_TERM', 'term_urn'),
+  ]
+}
+
+function fieldMetadataMap(document, maximum, sourceAspect, metadataName) {
+  if (document === null) return new Map()
+  const fields = sourceAspect === 'schemaMetadata'
+    ? boundedArray(document.fields, 'schemaMetadata.fields', maximum)
+    : boundedArray(document.editableSchemaFieldInfo, 'editableSchemaFieldInfo', maximum)
+  const result = new Map()
+  for (const field of fields) {
+    if (!isPlainObject(field)) throw new Error(`A ${sourceAspect} field is invalid.`)
+    const path = boundedString(field.fieldPath, `${sourceAspect}.fieldPath`, 900)
+    const items = metadataName === 'globalTags'
+      ? boundedArray(field.globalTags?.tags, `${sourceAspect}.globalTags.tags`, maximum)
+      : boundedArray(field.glossaryTerms?.terms, `${sourceAspect}.glossaryTerms.terms`, maximum)
+    for (const item of items) {
+      if (!isPlainObject(item)) throw new Error(`A ${sourceAspect} ${metadataName} item is invalid.`)
+      const normalized = metadataName === 'globalTags'
+        ? { field_path: path, tag_urn: boundedString(item.tag, `${sourceAspect}.globalTags.tag`, 1000) }
+        : { field_path: path, term_urn: boundedString(item.urn, `${sourceAspect}.glossaryTerms.urn`, 1000) }
+      const key = stableJson(normalized)
+      if (result.has(key)) throw new Error(`A ${sourceAspect} ${metadataName} item is duplicated.`)
+      result.set(key, normalized)
+    }
+  }
+  return result
+}
+
+function diffMetadataMaps(current, previous, evidence, sourceAspect, category, keyName) {
+  const events = []
+  for (const key of [...new Set([...current.keys(), ...previous.keys()])].sort()) {
+    const beforeData = previous.get(key) ?? null
+    const afterData = current.get(key) ?? null
+    if (stableJson(beforeData) === stableJson(afterData)) continue
+    const metadata = afterData ?? beforeData
+    events.push(semanticEvent(
+      fieldMetadataEntityKey(metadata, keyName),
+      beforeData,
+      afterData,
+      { ...evidence, sourceAspect, normalizedCategory: 'METADATA_CHANGE', storageCategory: category },
+      afterData ? 'ADD' : 'REMOVE',
+    ))
+  }
+  return events
+}
+
+function fieldMetadataEntityKey(metadata, keyName) {
+  return `field-metadata:${sha256(stableJson([metadata.field_path, keyName, metadata[keyName]]))}`
 }
 
 function editableSchemaFieldMap(document, maximum) {
@@ -383,6 +499,31 @@ function editableSchemaFieldMap(document, maximum) {
     })
   }
   return result
+}
+
+function normalizeStatus(current, previous, evidence) {
+  if (current === null || previous === null) {
+    if (current !== null) statusRemoved(current)
+    if (previous !== null) statusRemoved(previous)
+    return []
+  }
+  const beforeRemoved = statusRemoved(previous)
+  const afterRemoved = statusRemoved(current)
+  if (beforeRemoved === afterRemoved) return []
+  return [semanticEvent(
+    'asset:lifecycle:removed',
+    { removed: beforeRemoved },
+    { removed: afterRemoved },
+    evidence,
+    afterRemoved ? 'DELETE' : 'CREATE',
+  )]
+}
+
+function statusRemoved(document) {
+  if (!isPlainObject(document) || typeof document.removed !== 'boolean') {
+    throw new Error('status.removed must be an explicit boolean.')
+  }
+  return document.removed
 }
 
 function schemaSummary(document) {
@@ -448,6 +589,25 @@ function semanticEvent(entityKey, beforeData, afterData, evidence, forcedOperati
     sourceOccurredAt: evidence.sourceOccurredAt,
     detectedAt: evidence.detectedAt,
   }
+}
+
+function logicalType(value) {
+  if (!isPlainObject(value)) throw new Error('schemaMetadata.type must be a single supported union discriminator.')
+  const keys = Object.keys(value)
+  const supported = new Set([
+    'BooleanType', 'FixedType', 'StringType', 'BytesType', 'NumberType', 'DateType', 'TimeType',
+    'EnumType', 'NullType', 'MapType', 'ArrayType', 'UnionType', 'RecordType',
+  ])
+  if (keys.length !== 1 || !supported.has(keys[0]) || !isPlainObject(value[keys[0]])) {
+    throw new Error('schemaMetadata.type must be a single supported union discriminator.')
+  }
+  return keys[0]
+}
+
+function nullableValue(value) {
+  if (value === undefined) return false
+  if (typeof value !== 'boolean') throw new Error('schemaMetadata.nullable must be a boolean.')
+  return value
 }
 
 function decodeAspectDocument(container, field, maximumBytes) {
@@ -564,6 +724,10 @@ function stableJson(value) {
     return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`).join(',')}}`
   }
   return JSON.stringify(value)
+}
+
+function sha256(value) {
+  return createHash('sha256').update(value).digest('hex')
 }
 
 function isPlainObject(value) {

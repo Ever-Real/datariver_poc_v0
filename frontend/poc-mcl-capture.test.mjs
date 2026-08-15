@@ -77,15 +77,15 @@ async function framedMcl(overrides = {}) {
       contentType: 'application/json',
       value: Buffer.from(JSON.stringify({
         fields: [
-          { fieldPath: 'id', nativeDataType: 'bigint', nullable: false },
-          { fieldPath: 'name', nativeDataType: 'varchar', nullable: true },
+          { fieldPath: 'id', nativeDataType: 'bigint', type: { NumberType: {} }, nullable: false },
+          { fieldPath: 'name', nativeDataType: 'varchar', type: { StringType: {} }, nullable: true },
         ],
       })),
     },
     previousAspectValue: {
       contentType: 'application/json',
       value: Buffer.from(JSON.stringify({
-        fields: [{ fieldPath: 'id', nativeDataType: 'integer', nullable: false }],
+        fields: [{ fieldPath: 'id', nativeDataType: 'integer', type: { NumberType: {} }, nullable: false }],
       })),
     },
     created: { actor: 'urn:li:corpuser:builder', time: 1_786_634_800_000 },
@@ -229,7 +229,7 @@ test('decodes an actual Confluent-framed Avro MCL and fans one record into bound
 test('captures multiple partitions to captured high watermarks and resumes only from durable DB checkpoints', async () => {
   const schema = await framedMcl()
   const unsupported = await framedMcl({
-    aspectName: 'status',
+    aspectName: 'unsupportedAspect',
     aspect: { contentType: 'application/json', value: Buffer.from('{not-json') },
   })
   const ownership = await framedMcl({
@@ -448,7 +448,7 @@ test('normalizes empty descriptions to null only at MCL description call sites',
     ...base,
     aspectName: 'schemaMetadata',
     aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({
-      fields: [{ fieldPath: 'id', description: '' }],
+      fields: [{ fieldPath: 'id', type: { StringType: {} }, description: '' }],
     })) },
   }, { detectedAt })
   assert.equal(normalizedSchema.events[0].afterData.description, null)
@@ -533,6 +533,121 @@ test('rejects non-string and over-bound MCL descriptions', () => {
   })
   assert.throws(() => normalizeMclRecord(record('x'.repeat(4097)), { detectedAt }), /description is outside its string bound/)
   assert.throws(() => normalizeMclRecord(record(1), { detectedAt }), /description is outside its string bound/)
+})
+
+test('normalizes DataHub v1.6 field metadata as bounded source-aspect tag and term deltas', () => {
+  const detectedAt = '2026-08-15T00:00:00.000Z'
+  const aspect = (value) => ({ contentType: 'application/json', value: Buffer.from(JSON.stringify(value)) })
+  const base = {
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    aspectName: 'schemaMetadata',
+    created: { actor: null, time: null },
+  }
+  const normalized = normalizeMclRecord({
+    ...base,
+    previousAspectValue: aspect({ fields: [{
+      fieldPath: 'customer_id', nativeDataType: 'integer', nullable: false, type: { NumberType: {} },
+      globalTags: { tags: [{ tag: 'urn:li:tag:legacy' }] },
+      glossaryTerms: { terms: [{ urn: 'urn:li:glossaryTerm:legacy' }] },
+    }] }),
+    aspect: aspect({ fields: [{
+      fieldPath: 'customer_id', nativeDataType: 'bigint', nullable: true, type: { StringType: {} },
+      globalTags: { tags: [{ tag: 'urn:li:tag:current' }] },
+      glossaryTerms: { terms: [{ urn: 'urn:li:glossaryTerm:current' }] },
+    }] }),
+  }, { detectedAt })
+  assert.deepEqual(normalized.events.map((event) => [event.storageCategory, event.sourceAspect, event.operation]), [
+    ['TECHNICAL_SCHEMA', 'schemaMetadata', 'UPDATE'],
+    ['TAG', 'schemaMetadata', 'ADD'],
+    ['TAG', 'schemaMetadata', 'REMOVE'],
+    ['GLOSSARY_TERM', 'schemaMetadata', 'ADD'],
+    ['GLOSSARY_TERM', 'schemaMetadata', 'REMOVE'],
+  ])
+  assert.deepEqual(normalized.events[0].afterData, {
+    field_path: 'customer_id', native_data_type: 'bigint', logical_type: 'StringType', description: null, nullable: true,
+  })
+
+  const editable = normalizeMclRecord({
+    ...base,
+    aspectName: 'editableSchemaMetadata',
+    previousAspectValue: aspect({ editableSchemaFieldInfo: [] }),
+    aspect: aspect({ editableSchemaFieldInfo: [{
+      fieldPath: 'customer_id', globalTags: { tags: [{ tag: 'urn:li:tag:curated' }] },
+      glossaryTerms: { terms: [{ urn: 'urn:li:glossaryTerm:pii' }] },
+    }] }),
+  }, { detectedAt })
+  assert.deepEqual(editable.events.map((event) => [event.storageCategory, event.sourceAspect, event.operation]), [
+    ['DOCUMENTATION', 'editableSchemaMetadata', 'CREATE'],
+    ['TAG', 'editableSchemaMetadata', 'ADD'],
+    ['GLOSSARY_TERM', 'editableSchemaMetadata', 'ADD'],
+  ])
+  const bounded = normalizeMclRecord({
+    ...base,
+    previousAspectValue: aspect({ fields: [] }),
+    aspect: aspect({ fields: [{
+      fieldPath: 'p'.repeat(900), nativeDataType: 'text', nullable: false, type: { StringType: {} },
+      globalTags: { tags: [{ tag: `urn:li:tag:${'t'.repeat(989)}` }] },
+    }] }),
+  }, { detectedAt }).events.find((event) => event.storageCategory === 'TAG')
+  assert.match(bounded.entityKey, /^field-metadata:[0-9a-f]{64}$/)
+  assert.ok(bounded.entityKey.length <= 1000)
+  assert.equal(bounded.afterData.field_path.length, 900)
+  assert.equal(bounded.afterData.tag_urn.length, 1000)
+})
+
+test('fails closed for malformed DataHub v1.6 schema field logical, nullable, tag, and term shapes', () => {
+  const detectedAt = '2026-08-15T00:00:00.000Z'
+  const record = (field) => ({
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    aspectName: 'schemaMetadata', previousAspectValue: null, created: { actor: null, time: null },
+    aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({ fields: [field] })) },
+  })
+  const valid = { fieldPath: 'id', nativeDataType: 'bigint', nullable: false, type: { NumberType: {} } }
+  for (const invalid of [
+    { ...valid, type: 'NUMBER' },
+    { ...valid, type: { NumberType: {}, StringType: {} } },
+    { ...valid, type: { UnknownType: {} } },
+    { ...valid, nullable: 'false' },
+    { ...valid, globalTags: { tags: [{ tag: 1 }] } },
+    { ...valid, glossaryTerms: { terms: [{ urn: 1 }] } },
+  ]) assert.throws(() => normalizeMclRecord(record(invalid), { detectedAt }))
+})
+
+test('does not infer field or asset renames and emits only exact status.removed transitions', () => {
+  const detectedAt = '2026-08-15T00:00:00.000Z'
+  const aspect = (value) => ({ contentType: 'application/json', value: Buffer.from(JSON.stringify(value)) })
+  const base = {
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    aspectName: 'schemaMetadata', created: { actor: null, time: null },
+  }
+  const fieldRename = normalizeMclRecord({
+    ...base,
+    previousAspectValue: aspect({ fields: [{ fieldPath: 'old_name', nativeDataType: 'text', nullable: false, type: { StringType: {} } }] }),
+    aspect: aspect({ fields: [{ fieldPath: 'new_name', nativeDataType: 'text', nullable: false, type: { StringType: {} } }] }),
+  }, { detectedAt })
+  assert.deepEqual(fieldRename.events.map((event) => [event.entityKey, event.operation]), [
+    ['field:new_name', 'CREATE'], ['field:old_name', 'DELETE'],
+  ])
+  const status = (previous, current) => normalizeMclRecord({
+    ...base, aspectName: 'status', previousAspectValue: previous == null ? null : aspect(previous), aspect: current == null ? null : aspect(current),
+  }, { detectedAt })
+  assert.deepEqual(status({ removed: false }, { removed: true }).events.map((event) => event.operation), ['DELETE'])
+  assert.deepEqual(status({ removed: true }, { removed: false }).events.map((event) => event.operation), ['CREATE'])
+  assert.deepEqual(status(null, { removed: false }).events, [], 'initial status is not inferred as asset CREATE')
+  assert.deepEqual(status(null, { removed: true }).events, [], 'ambiguous initial tombstone is not synthesized')
+  assert.throws(() => status({ removed: false }, { removed: 'true' }), /status.removed/)
+
+  const entityLifecycle = (changeType) => normalizeMclRecord({
+    entityUrn: base.entityUrn, entityType: 'dataset', changeType, aspectName: '', created: { actor: null, time: null },
+  }, { detectedAt })
+  assert.deepEqual(entityLifecycle('CREATE_ENTITY').events.map((event) => [event.storageCategory, event.sourceAspect, event.operation]), [
+    ['LIFECYCLE', 'entity', 'CREATE'],
+  ])
+  assert.deepEqual(entityLifecycle('DELETE').events.map((event) => event.operation), ['DELETE'])
+  assert.deepEqual(entityLifecycle('UPSERT').events, [], 'entity UPSERT is not inferred as CREATE')
+  assert.throws(() => normalizeMclRecord({
+    entityUrn: base.entityUrn, entityType: 'chart', changeType: 'CREATE', aspectName: '', created: { actor: null, time: null },
+  }, { detectedAt }), /dataset entity lifecycle/)
 })
 
 test('contains no raw-payload or credential logging path', () => {

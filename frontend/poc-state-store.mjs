@@ -67,12 +67,13 @@ const CHANGE_HISTORY_SCHEMA = [
       ),
       CONSTRAINT ck_poc_change_history_ledger_position
         CHECK (source_partition >= 0 AND source_offset >= 0 AND deterministic_ordinal >= 0),
-      CONSTRAINT ck_poc_change_history_ledger_category CHECK (
+      CONSTRAINT ck_poc_change_history_ledger_category_v2 CHECK (
         (category = 'TECHNICAL_SCHEMA' AND source_aspect = 'schemaMetadata')
         OR (category = 'DOCUMENTATION' AND source_aspect IN ('datasetProperties', 'editableSchemaMetadata'))
-        OR (category = 'TAG' AND source_aspect = 'globalTags')
-        OR (category = 'GLOSSARY_TERM' AND source_aspect = 'glossaryTerms')
+        OR (category = 'TAG' AND source_aspect IN ('globalTags', 'schemaMetadata', 'editableSchemaMetadata'))
+        OR (category = 'GLOSSARY_TERM' AND source_aspect IN ('glossaryTerms', 'schemaMetadata', 'editableSchemaMetadata'))
         OR (category = 'OWNERSHIP' AND source_aspect = 'ownership')
+        OR (category = 'LIFECYCLE' AND source_aspect IN ('status', 'entity'))
       ),
       CONSTRAINT ck_poc_change_history_ledger_operation
         CHECK (operation IN ('CREATE', 'UPDATE', 'UPSERT', 'DELETE', 'ADD', 'REMOVE')),
@@ -89,6 +90,35 @@ const CHANGE_HISTORY_SCHEMA = [
           AND NOT jsonb_path_exists(after_data, '$.** ? (@.type() == "object").keyvalue() ? (@.key == "raw" || @.key == "payload" || @.key == "aspect" || @.key == "schemaMetadata" || @.key == "previousAspectValue")')))
       )
     )
+  `,
+  `
+    DO $block$
+    BEGIN
+      IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_poc_change_history_ledger_category'
+          AND conrelid = 'poc_change_history_ledger_events'::regclass
+      ) THEN
+        ALTER TABLE poc_change_history_ledger_events
+          DROP CONSTRAINT ck_poc_change_history_ledger_category;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ck_poc_change_history_ledger_category_v2'
+          AND conrelid = 'poc_change_history_ledger_events'::regclass
+      ) THEN
+        ALTER TABLE poc_change_history_ledger_events
+          ADD CONSTRAINT ck_poc_change_history_ledger_category_v2 CHECK (
+            (category = 'TECHNICAL_SCHEMA' AND source_aspect = 'schemaMetadata')
+            OR (category = 'DOCUMENTATION' AND source_aspect IN ('datasetProperties', 'editableSchemaMetadata'))
+            OR (category = 'TAG' AND source_aspect IN ('globalTags', 'schemaMetadata', 'editableSchemaMetadata'))
+            OR (category = 'GLOSSARY_TERM' AND source_aspect IN ('glossaryTerms', 'schemaMetadata', 'editableSchemaMetadata'))
+            OR (category = 'OWNERSHIP' AND source_aspect = 'ownership')
+            OR (category = 'LIFECYCLE' AND source_aspect IN ('status', 'entity'))
+          );
+      END IF;
+    END
+    $block$
   `,
   `
     CREATE UNIQUE INDEX IF NOT EXISTS uq_poc_change_history_source_position_ordinal
@@ -1425,14 +1455,15 @@ function normalizeChangeHistoryCapture(capture) {
 function normalizeSemanticEvent(event) {
   if (!event || typeof event !== 'object') throw new Error('A normalized change-history event is invalid.')
   const category = requireOneOf(event.category, 'category', [
-    'TECHNICAL_SCHEMA', 'DOCUMENTATION', 'TAG', 'GLOSSARY_TERM', 'OWNERSHIP',
+    'TECHNICAL_SCHEMA', 'DOCUMENTATION', 'TAG', 'GLOSSARY_TERM', 'OWNERSHIP', 'LIFECYCLE',
   ])
   const aspectByCategory = {
     TECHNICAL_SCHEMA: ['schemaMetadata'],
     DOCUMENTATION: ['datasetProperties', 'editableSchemaMetadata'],
-    TAG: ['globalTags'],
-    GLOSSARY_TERM: ['glossaryTerms'],
+    TAG: ['globalTags', 'schemaMetadata', 'editableSchemaMetadata'],
+    GLOSSARY_TERM: ['glossaryTerms', 'schemaMetadata', 'editableSchemaMetadata'],
     OWNERSHIP: ['ownership'],
+    LIFECYCLE: ['status', 'entity'],
   }
   const sourceAspect = requireOneOf(event.sourceAspect, 'sourceAspect', aspectByCategory[category])
   const beforeData = normalizeBoundedDocument(event.beforeData, 'beforeData')

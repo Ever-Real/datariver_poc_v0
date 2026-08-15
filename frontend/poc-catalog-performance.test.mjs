@@ -46,7 +46,7 @@ async function waitFor(predicate, message) {
   }
 }
 
-function configureProviderEnvironment(providerOrigin, { embedding = false } = {}) {
+function configureProviderEnvironment(providerOrigin, { embedding = false, chat = false } = {}) {
   Object.assign(process.env, {
     POC_ENV_FILE: 'poc-catalog-performance.test.env.missing',
     POC_DATABASE_URL: '',
@@ -60,13 +60,67 @@ function configureProviderEnvironment(providerOrigin, { embedding = false } = {}
     LLM_EMBEDDING_URL: embedding ? `${providerOrigin}/embeddings` : '',
     LLM_EMBEDDING_MODEL: embedding ? 'performance-embedding-model' : '',
     LLM_EMBEDDING_TOKEN: embedding ? 'performance-embedding-token' : '',
-    LLM_CHAT_URL: '',
-    LLM_CHAT_MODEL: '',
-    LLM_CHAT_TOKEN: '',
+    LLM_CHAT_URL: chat ? `${providerOrigin}/chat/completions` : '',
+    LLM_CHAT_MODEL: chat ? 'performance-chat-model' : '',
+    LLM_CHAT_TOKEN: chat ? 'performance-chat-token' : '',
     LLM_RERANKER_URL: '',
     LLM_RERANKER_MODEL: '',
     LLM_RERANKER_TOKEN: '',
   })
+}
+
+function reconciliationStateStore() {
+  let persisted
+  let writes = 0
+  let historyWrites = 0
+  const activeGenerations = new Map()
+  const embeddingRows = new Map()
+  return {
+    stateStore: {
+      configured: { postgres: true, redis: true },
+      async read() { return { value: persisted ? structuredClone(persisted) : null, version: writes } },
+      async write(_scope, value) {
+        persisted = structuredClone(value)
+        writes += 1
+        return writes
+      },
+      async cacheGet() { return undefined },
+      async cacheSet() {},
+      async cacheDelete() {},
+      async catalogEmbeddingActiveGeneration(bindingHash) { return activeGenerations.get(bindingHash) },
+      async catalogEmbeddingHashes(bindingHash) {
+        return new Map([...embeddingRows.values()]
+          .filter((row) => row.bindingHash === bindingHash)
+          .map((row) => [row.assetUrn, row.sourceHash]))
+      },
+      async replaceCatalogEmbeddingGeneration(bindingHash, sourceScope, sourceGeneration, replacements, assetUrns) {
+        for (const [key, row] of embeddingRows) {
+          if (row.bindingHash === bindingHash && row.sourceScope === sourceScope) embeddingRows.delete(key)
+        }
+        for (const row of replacements) {
+          if (assetUrns.includes(row.assetUrn)) {
+            embeddingRows.set(`${bindingHash}:${row.assetUrn}`, { ...structuredClone(row), sourceScope })
+          }
+        }
+        activeGenerations.set(bindingHash, sourceGeneration)
+      },
+      async searchCatalogEmbeddings(bindingHash, sourceScope, sourceGeneration, _queryVector, limit) {
+        return [...embeddingRows.values()]
+          .filter((row) => row.bindingHash === bindingHash
+            && row.sourceScope === sourceScope && row.sourceGeneration === sourceGeneration)
+          .sort((left, right) => left.assetUrn.localeCompare(right.assetUrn))
+          .slice(0, limit)
+          .map((row) => ({ ...structuredClone(row), similarity: 1 }))
+      },
+      async appendChangeHistory() { historyWrites += 1 },
+    },
+    markStale() {
+      persisted.observed_at = new Date(Date.now() - 16 * 60 * 1_000).toISOString()
+    },
+    observation() {
+      return { persisted: structuredClone(persisted), writes, historyWrites }
+    },
+  }
 }
 
 function lifecycleStateStore(initialProjection) {
@@ -392,6 +446,114 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
     failure_status: 503,
     replacement_items: 1,
   })}\n`)
+})
+
+test('reconciles deleted and reactivated Catalog URNs across Search, Tree, Chat exact, and vector', async () => {
+  const removed = entity('inspection_results', 'Inspection evidence')
+  const retained = entity('wafer_events', 'Wafer evidence')
+  let providerAssets = [removed, retained]
+  const provider = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const url = new URL(request.url || '/', 'http://provider.test')
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    if (url.pathname === '/embeddings') {
+      const inputs = Array.isArray(body.input) ? body.input : [body.input]
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      return response.end(JSON.stringify({ data: inputs.map((_input, index) => ({ index, embedding: [1, 0] })) }))
+    }
+    if (url.pathname === '/chat/completions') {
+      const schemaName = body.response_format?.json_schema?.name
+      const content = schemaName === 'datariver_chat_route'
+        ? JSON.stringify({
+            mode: 'VECTOR', confidence: 1, intent: 'EXACT_METADATA',
+            entity_resolution_required: true, graph_traversal_required: false,
+            semantic_retrieval_required: false, fallback_mode: 'GENERAL',
+          })
+        : 'current projection evidence [1]'
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      return response.end(JSON.stringify({ choices: [{ message: { content } }] }))
+    }
+    if (url.pathname !== '/api/graphql') {
+      response.writeHead(404)
+      return response.end()
+    }
+    if (body.variables?.urn) {
+      const dataset = providerAssets.find((item) => item.urn === body.variables.urn) || null
+      response.writeHead(200, { 'Content-Type': 'application/json' })
+      return response.end(JSON.stringify({ data: { entity: dataset } }))
+    }
+    const secondPage = body.variables?.input?.scrollId === 'page-2'
+    const pageAssets = secondPage ? providerAssets.slice(1) : providerAssets.slice(0, 1)
+    response.writeHead(200, { 'Content-Type': 'application/json' })
+    return response.end(JSON.stringify({ data: { scrollAcrossEntities: {
+      count: pageAssets.length,
+      total: providerAssets.length,
+      nextScrollId: !secondPage && providerAssets.length > 1 ? 'page-2' : null,
+      searchResults: pageAssets.map((item) => ({ entity: item })),
+    } } }))
+  })
+  const providerOrigin = await listen(provider)
+  configureProviderEnvironment(providerOrigin, { embedding: true, chat: true })
+  const store = reconciliationStateStore()
+
+  const generationA = await import('./poc-server.mjs?catalog-generation-a')
+  const serverA = generationA.createPocServer({ stateStore: store.stateStore })
+  const originA = await listen(serverA)
+  assert.equal((await fetch(`${originA}/poc-api/datahub/catalog?limit=20`)).status, 503)
+  await waitFor(() => store.observation().writes === 1, 'generation A did not commit')
+  await close(serverA)
+
+  store.markStale()
+  providerAssets = [retained]
+  const generationB = await import('./poc-server.mjs?catalog-generation-b')
+  const serverB = generationB.createPocServer({ stateStore: store.stateStore })
+  const originB = await listen(serverB)
+  assert.equal((await (await fetch(`${originB}/poc-api/datahub/catalog?limit=20`)).json()).total, 2)
+  await waitFor(() => store.observation().writes === 2, 'generation B did not replace the projection')
+  const searchB = await (await fetch(`${originB}/poc-api/datahub/catalog?q=inspection_results&limit=20`)).json()
+  assert.deepEqual(searchB.items, [])
+  const treeB = await (await fetch(`${originB}/poc-api/datahub/tree?parent_kind=SCHEMA&platform=postgres&database=MANUFACTURING&schema=QUALITY`)).json()
+  assert.equal(treeB.items.some((item) => item.asset.id === removed.urn), false)
+  const chatExactB = await (await fetch(`${originB}/poc-api/llm/chat`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'inspection_results table metadata', mode: 'AUTO' }),
+  })).json()
+  assert.equal(chatExactB.evidence.some((item) => item.id === removed.urn), false)
+  const chatVectorB = await (await fetch(`${originB}/poc-api/llm/chat`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'find related table assets', mode: 'AUTO' }),
+  })).json()
+  assert.equal(chatVectorB.evidence.some((item) => item.id === removed.urn), false)
+  assert.ok(chatVectorB.evidence.every((item) => item.retrieval_method === 'PGVECTOR_COSINE'))
+  await close(serverB)
+
+  store.markStale()
+  providerAssets = [removed, retained]
+  const generationC = await import('./poc-server.mjs?catalog-generation-c')
+  const serverC = generationC.createPocServer({ stateStore: store.stateStore })
+  const originC = await listen(serverC)
+  assert.equal((await (await fetch(`${originC}/poc-api/datahub/catalog?limit=20`)).json()).total, 1)
+  await waitFor(() => store.observation().writes === 3, 'generation C did not reactivate the same URN')
+  const searchC = await (await fetch(`${originC}/poc-api/datahub/catalog?q=inspection_results&limit=20`)).json()
+  assert.deepEqual(searchC.items.map((item) => item.id), [removed.urn])
+  const treeC = await (await fetch(`${originC}/poc-api/datahub/tree?parent_kind=SCHEMA&platform=postgres&database=MANUFACTURING&schema=QUALITY`)).json()
+  assert.equal(treeC.items.some((item) => item.asset.id === removed.urn), true)
+  const chatExactCResponse = await fetch(`${originC}/poc-api/llm/chat`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'inspection_results table metadata', mode: 'AUTO' }),
+  })
+  const chatExactC = await chatExactCResponse.json()
+  assert.equal(chatExactC.evidence.some((item) => item.id === removed.urn && item.retrieval_method === 'CATALOG_EXACT'), true)
+  const chatVectorC = await (await fetch(`${originC}/poc-api/llm/chat`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question: 'find related table assets', mode: 'AUTO' }),
+  })).json()
+  assert.equal(chatVectorC.evidence.some((item) => item.id === removed.urn && item.retrieval_method === 'PGVECTOR_COSINE'), true)
+  assert.equal(store.observation().historyWrites, 0, 'current inventory reconciliation must not write the history ledger')
+  assert.deepEqual(store.observation().persisted.items.map((item) => item.id).sort(), [removed.urn, retained.urn].sort())
+  await close(serverC)
+  await close(provider)
 })
 
 test('confirms exact-boundary DataHub inventories once and fails unsafe pagination closed', async () => {
