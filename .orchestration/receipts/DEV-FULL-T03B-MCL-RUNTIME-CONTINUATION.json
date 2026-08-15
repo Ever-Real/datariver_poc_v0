@@ -1,0 +1,77 @@
+{
+  "task": "DEV-FULL-T03B-MCL-RUNTIME-CONTINUATION",
+  "recorded_at_utc": "2026-08-15T11:40:08Z",
+  "base_sha": "5ac7d1007a7ec9ac75baab29a7897a6791d3182a",
+  "product_sha": "7bc27171fe91fd0e886aa55e986e18d9f3749ebc",
+  "product_changed": false,
+  "outcome": "MCL_PROOF_COMPLETE_RUNTIME_INCIDENT_BLOCKED",
+  "mcl": {
+    "source_identity_hash": "a2a280e5d04cb3ded4f0a36c6fa7b30216eb20ee30be4f5133bba5d0c1154e34",
+    "topic": "MetadataChangeLog_Versioned_v1",
+    "partition": 0,
+    "first_exact_offset": 52849,
+    "next_offset": 52942,
+    "checkpoint_version": 94,
+    "ledger_count": 33,
+    "rename_synthesized": false,
+    "replay": {
+      "processed_records": 0,
+      "ledger_events": 0,
+      "checkpoint_unchanged": true,
+      "ledger_unchanged": true
+    }
+  },
+  "rename_policy_offsets": {
+    "table_v1_delete": 52925,
+    "table_v2_schema_create": 52935,
+    "table_v1_reactivate": 52939,
+    "table_v2_false_baseline_zero_event": 52940,
+    "table_v2_delete": 52941
+  },
+  "scheduler": {
+    "isolated_receipt_scope": "change-history-scheduler-v1:datariver:poc:change-history-scheduler:v1:dev-full-t03b",
+    "isolated_receipt_version": 1,
+    "scheduled_boundary": "2026-08-14T15:00:00.000Z",
+    "completed_at": "2026-08-15T11:26:18.596Z",
+    "same_day_suppression": "PASS_VERSION_STABLE",
+    "canonical_lock_restored": true,
+    "daily_clock": "DAILY_CLOCK_NOT_OBSERVED"
+  },
+  "current_projection": {
+    "scope": "catalog-inventory-v1:930cf230a739a70c",
+    "version": 2,
+    "asset_count": 2002,
+    "source_generation": "291454153495da07c3d93750e0885b0ea25a1be0c58e79044f863cf9dcf22710",
+    "table_v1_exact_count": 1,
+    "view_v1_exact_count": 1,
+    "table_v2_exact_count": 0,
+    "search_tree_isolation": "PASS",
+    "embedding_runtime": "BLOCKED_PROVIDER_UNAVAILABLE",
+    "embedding_state": "FAILED",
+    "embedding_generation": null,
+    "embedding_last_error": "fetch failed"
+  },
+  "focused_gates": {
+    "mcl": "PASS_14_OF_14",
+    "scheduler": "PASS_4_OF_4",
+    "server": "PASS_14_OF_14",
+    "catalog_last_good_and_lifecycle": "PASS_5_OF_5",
+    "state_store_runtime_double": "PASS_11_OF_11",
+    "state_store_sql_parity": "PASS_15_CONTRACTS",
+    "diff_check": "PASS"
+  },
+  "runtime_incident": {
+    "scope": "poc_state.core",
+    "cause": "state-store test inherited live PostgreSQL environment for its first generic core write",
+    "observed_version": 24,
+    "observed_sequence": 11,
+    "observed_change_record_count": 1,
+    "observed_change_record_id": "request-from-core",
+    "protected_access_fields_preserved": true,
+    "access_row_unchanged": true,
+    "mcl_checkpoint_unchanged": true,
+    "mcl_ledger_unchanged": true,
+    "recovery": "NOT_ATTEMPTED_NO_VERIFIED_PRIOR_VALUE"
+  },
+  "remaining_blocker": "권위 있는 이전 core snapshot을 확보한 별도 통제 복구가 필요함"
+}
