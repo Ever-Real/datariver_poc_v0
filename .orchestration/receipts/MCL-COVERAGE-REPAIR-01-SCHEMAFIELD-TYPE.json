@@ -1,0 +1,57 @@
+{
+  "task": "MCL-COVERAGE-REPAIR-01-SCHEMAFIELD-TYPE",
+  "task_id": "task_db291bef24c2",
+  "dispatch_id": "ctx_a7380ef0ba2d",
+  "role": "40_DATA_AI_KNOWLEDGE Builder",
+  "outcome": "PASS_LOCAL_SOURCE",
+  "status": "IMPLEMENTED_PENDING_PREP_TARGET_RECHECK",
+  "validation_date_kst": "2026-08-15",
+  "exact_base_sha": "042f8a2e3c066407411f9fd196f5ac4ef18f9972",
+  "product_parent_sha": "a9622e06621d39fd97e5197d2d515e9176204148",
+  "product_sha": "4743d29a9e00a103b71f3485cd5baf0ad9cf48d5",
+  "environment": {
+    "node": "v25.9.0"
+  },
+  "product_changed_paths": [
+    "frontend/poc-mcl-capture.mjs",
+    "frontend/poc-mcl-capture.test.mjs"
+  ],
+  "evidence_changed_paths": [
+    ".orchestration/evidence/MCL-COVERAGE-REPAIR-01-SCHEMAFIELD-TYPE.md",
+    ".orchestration/receipts/MCL-COVERAGE-REPAIR-01-SCHEMAFIELD-TYPE.json"
+  ],
+  "semantics": {
+    "schema_field_type": "exact two-level SchemaFieldDataType wrapper and exactly one supported fully-qualified discriminator with plain-object payload",
+    "logical_type_normalization": "13 official v1.6 discriminators normalize to bounded canonical leaf names",
+    "native_data_type": "required strict bounded string, maximum 500, no trim/default",
+    "preserved": [
+      "nullable defaults false",
+      "description empty canonicalization",
+      "fieldPath identity",
+      "tags and terms",
+      "lifecycle",
+      "event ordering and deduplication",
+      "raw aspect non-storage"
+    ]
+  },
+  "validation": {
+    "mcl_and_state_store": "PASS_27_OF_27",
+    "supported_discriminators": "PASS_13_OF_13",
+    "native_data_type_fail_closed": "PASS_missing_empty_non_string_over_bound",
+    "invalid_wrapper_union_fail_closed": "PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build_poc": "PASS_with_existing_chunk_size_advisory",
+    "diff_check_allowlist_package_lock": "PASS"
+  },
+  "not_executed": [
+    "SERVER_CATALOG_FOCUSED_REGRESSION: parser-only repair cannot affect these paths",
+    "DB_KAFKA_DATAHUB_PREP_OPS_RUNTIME_MUTATION: prohibited by task contract",
+    "PUSH_MERGE: prohibited by task contract"
+  ],
+  "target_recheck_required": [
+    "PREP/TARGET DataHub v1.6 MCL capture with official SchemaFieldDataType JSON",
+    "capture, ledger, and checkpoint boundary verification in permitted target runtime"
+  ],
+  "evidence_path": ".orchestration/evidence/MCL-COVERAGE-REPAIR-01-SCHEMAFIELD-TYPE.md"
+}
