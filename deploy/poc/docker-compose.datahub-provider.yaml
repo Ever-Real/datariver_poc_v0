@@ -1,0 +1,11 @@
+name: datariver-poc
+
+services:
+  web:
+    networks:
+      - datahub_external
+
+networks:
+  datahub_external:
+    name: ${DATAHUB_EXTERNAL_NETWORK:-datahub_network}
+    external: true
