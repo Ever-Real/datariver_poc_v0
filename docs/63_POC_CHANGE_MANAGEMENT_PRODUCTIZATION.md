@@ -375,8 +375,8 @@ CR 상태 문자열은 바꾸지 않고 다음 presentation mapping만 사용한
 | `ADM-USR-01` | User 관리 | admin mutation, 그 외 정책상 조회/disabled | `/api/v1/change-history/access` GET/PUT | subject, display name, role, active, owner refs | create/update via ETag/CAS | validation/error/read-only | 4 role과 inactive denial 유지 |
 | `ADM-SYS-01` | System/담당자 관리 | admin mutation | access GET/PUT | System, platform/database/schema scope, assignment, responsibility, priority | System/assignment update via ETag/CAS | ambiguous scope fail closed | admin all-System, assigned role scope, policy order 유지 |
 
-현재 화면 component는 `frontend/src/poc/features/monitoring`, `features/change-history`,
-`features/governance`, `features/admin`에 있다. 표에 없는 subject-switch UI, HTTP manual scheduler trigger,
+현재 화면 component는 `frontend/src/features/monitoring`, `frontend/src/features/change-history`,
+`frontend/src/features/governance`, `frontend/src/features/admin`에 있다. 표에 없는 subject-switch UI, HTTP manual scheduler trigger,
 자동 CR 생성·승인 버튼은 현재 제품에 존재하지 않는다.
 
 ## 11. 배포 계약과 이식성
