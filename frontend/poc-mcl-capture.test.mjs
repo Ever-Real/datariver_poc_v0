@@ -437,6 +437,104 @@ test('accepts only the exact DataHub GenericAspect JSON content type', () => {
   }
 })
 
+test('normalizes empty descriptions to null only at MCL description call sites', () => {
+  const detectedAt = '2026-08-14T01:00:00.000Z'
+  const base = {
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    previousAspectValue: null,
+    created: { actor: null, time: null },
+  }
+  const normalizedSchema = normalizeMclRecord({
+    ...base,
+    aspectName: 'schemaMetadata',
+    aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({
+      fields: [{ fieldPath: 'id', description: '' }],
+    })) },
+  }, { detectedAt })
+  assert.equal(normalizedSchema.events[0].afterData.description, null)
+
+  const normalizedEditableFields = normalizeMclRecord({
+    ...base,
+    aspectName: 'editableSchemaMetadata',
+    aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({
+      editableSchemaFieldInfo: [
+        { fieldPath: 'id', description: '' },
+        { fieldPath: 'name', description: '' },
+      ],
+    })) },
+  }, { detectedAt })
+  assert.deepEqual(normalizedEditableFields.events.map((event) => event.afterData.description), [null, null])
+
+  const normalizedEditableTopLevel = normalizeMclRecord({
+    ...base,
+    aspectName: 'editableSchemaMetadata',
+    aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({ description: '' })) },
+  }, { detectedAt })
+  assert.equal(normalizedEditableTopLevel.events[0].afterData.description, null)
+
+  const normalizedDataset = normalizeMclRecord({
+    ...base,
+    aspectName: 'datasetProperties',
+    aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({ description: '   ' })) },
+  }, { detectedAt })
+  assert.equal(normalizedDataset.events[0].afterData.description, '   ')
+})
+
+test('emits description changes around empty values and treats null and empty as equivalent', () => {
+  const detectedAt = '2026-08-14T01:00:00.000Z'
+  const base = {
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    aspectName: 'editableSchemaMetadata',
+    created: { actor: null, time: null },
+  }
+  const document = (description) => ({
+    contentType: 'application/json',
+    value: Buffer.from(JSON.stringify({
+      editableSchemaFieldInfo: [{ fieldPath: 'id', ...(description === undefined ? {} : { description }) }],
+    })),
+  })
+  const emptyToText = normalizeMclRecord({
+    ...base,
+    aspect: document('documented'),
+    previousAspectValue: document(''),
+  }, { detectedAt })
+  assert.deepEqual(emptyToText.events.map((event) => [event.beforeData.description, event.afterData.description]), [
+    [null, 'documented'],
+  ])
+
+  const textToEmpty = normalizeMclRecord({
+    ...base,
+    aspect: document(''),
+    previousAspectValue: document('documented'),
+  }, { detectedAt })
+  assert.deepEqual(textToEmpty.events.map((event) => [event.beforeData.description, event.afterData.description]), [
+    ['documented', null],
+  ])
+
+  const nullToEmpty = normalizeMclRecord({
+    ...base,
+    aspect: document(''),
+    previousAspectValue: document(undefined),
+  }, { detectedAt })
+  assert.deepEqual(nullToEmpty.events, [])
+})
+
+test('rejects non-string and over-bound MCL descriptions', () => {
+  const detectedAt = '2026-08-14T01:00:00.000Z'
+  const base = {
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    aspectName: 'datasetProperties',
+    previousAspectValue: null,
+    created: { actor: null, time: null },
+  }
+  const record = (description) => ({
+    ...base,
+    aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({ description })) },
+  })
+  assert.throws(() => normalizeMclRecord(record('x'.repeat(4097)), { detectedAt }), /description is outside its string bound/)
+  assert.throws(() => normalizeMclRecord(record(1), { detectedAt }), /description is outside its string bound/)
+})
+
 test('contains no raw-payload or credential logging path', () => {
   const source = readFileSync(new URL('./poc-mcl-capture.mjs', import.meta.url), 'utf8')
   assert.doesNotMatch(source, /console\.(?:log|info|warn|error)/)

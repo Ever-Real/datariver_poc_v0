@@ -324,15 +324,15 @@ function normalizeEditableSchemaMetadata(current, previous, evidence, maximum) {
   if (currentFields.size || previousFields.size) return diffMaps(currentFields, previousFields, evidence)
   return singletonDiff(
     'editable-schema',
-    current === null ? null : { description: optionalDocumentString(current.description, 'description', 4096) },
-    previous === null ? null : { description: optionalDocumentString(previous.description, 'description', 4096) },
+    current === null ? null : { description: optionalDescription(current.description, 'description', 4096) },
+    previous === null ? null : { description: optionalDescription(previous.description, 'description', 4096) },
     evidence,
   )
 }
 
 function normalizeDatasetProperties(current, previous, evidence, maximum) {
   const snapshot = (document) => document === null ? null : {
-    description: optionalDocumentString(document.description, 'description', 4096),
+    description: optionalDescription(document.description, 'description', 4096),
     custom_properties: normalizedStringMap(document.customProperties, maximum),
   }
   return singletonDiff('dataset-properties', snapshot(current), snapshot(previous), evidence)
@@ -362,7 +362,7 @@ function schemaFieldMap(document, maximum) {
     result.set(path, {
       field_path: path,
       native_data_type: optionalDocumentString(field.nativeDataType, 'nativeDataType', 500),
-      description: optionalDocumentString(field.description, 'description', 4096),
+      description: optionalDescription(field.description, 'description', 4096),
       nullable: typeof field.nullable === 'boolean' ? field.nullable : null,
     })
   }
@@ -379,7 +379,7 @@ function editableSchemaFieldMap(document, maximum) {
     if (result.has(path)) throw new Error('An editable schema field path is duplicated.')
     result.set(path, {
       field_path: path,
-      description: optionalDocumentString(field.description, 'description', 4096),
+      description: optionalDescription(field.description, 'description', 4096),
     })
   }
   return result
@@ -589,6 +589,14 @@ function optionalBoundedString(value, field, maximum) {
 
 function optionalDocumentString(value, field, maximum) {
   return value == null ? null : boundedString(value, field, maximum, false)
+}
+
+function optionalDescription(value, field, maximum) {
+  if (value == null || value === '') return null
+  if (typeof value !== 'string' || value.length > maximum) {
+    throw new Error(`${field} is outside its string bound.`)
+  }
+  return value
 }
 
 function boundedSecret(value, field) {
