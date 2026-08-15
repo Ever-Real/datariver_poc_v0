@@ -237,6 +237,7 @@ const CHANGE_HISTORY_SCHEMA = [
 export function createPocStateStore({ databasePool } = {}) {
   const databaseUrl = process.env.POC_DATABASE_URL?.trim()
   const databaseHost = process.env.POC_POSTGRES_HOST?.trim()
+  assertIsolatedTestDatabaseTarget({ databasePool, databaseUrl, databaseHost })
   const databaseConfigured = Boolean(databasePool || databaseUrl || databaseHost)
   const redisUrl = process.env.POC_REDIS_URL?.trim()
   const memory = new Map()
@@ -1310,6 +1311,40 @@ export function createPocStateStore({ databasePool } = {}) {
     close,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
   }
+}
+
+function assertIsolatedTestDatabaseTarget({ databasePool, databaseUrl, databaseHost }) {
+  if (databasePool || (!databaseUrl && !databaseHost) || !nodeUnitTestContext()) return
+  const acknowledged = process.env.POC_TEST_DATABASE_ISOLATED_ACK?.trim() === 'TRUE'
+  const declaredTarget = process.env.POC_TEST_DATABASE_TARGET?.trim()
+  let actualTarget
+  try {
+    if (databaseUrl) {
+      const parsed = new URL(databaseUrl)
+      const database = decodeURIComponent(parsed.pathname.replace(/^\//, ''))
+      actualTarget = `${parsed.hostname}:${parsed.port || '5432'}/${database}`
+    } else {
+      actualTarget = `${databaseHost}:${process.env.POC_POSTGRES_PORT || '5432'}/${process.env.POC_POSTGRES_DB?.trim() || 'datariver_poc'}`
+    }
+  } catch {
+    throw testDatabaseIsolationError()
+  }
+  if (!acknowledged || !declaredTarget || declaredTarget !== actualTarget) {
+    throw testDatabaseIsolationError()
+  }
+}
+
+function nodeUnitTestContext() {
+  return Boolean(process.env.NODE_TEST_CONTEXT)
+    || process.env.NODE_ENV?.trim().toLowerCase() === 'test'
+    || process.execArgv.includes('--test')
+    || process.argv.includes('--test')
+}
+
+function testDatabaseIsolationError() {
+  return Object.assign(new Error(
+    'A Node test cannot use inherited PostgreSQL settings without an explicitly acknowledged isolated target.',
+  ), { code: 'POC_TEST_DATABASE_ISOLATION_REQUIRED' })
 }
 
 function changeHistoryAccessSnapshot(rows) {

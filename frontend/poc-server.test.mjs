@@ -455,6 +455,9 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
     system_schema_scopes: [{
       scope_id: 'business-schema', system_id: 'business-system', platform: ' Postgres ',
       database_name: 'business_db', schema_name: 'public', active: true,
+    }, {
+      scope_id: 'schema-only-dataset', system_id: 'business-system', platform: 'postgres',
+      database_name: '', schema_name: 'datariver_mcl_e2e', active: true,
     }],
     system_assignments: [{
       system_id: 'business-system', subject_id: 'steward-subject', responsibility: 'DATA_STEWARD',
@@ -488,6 +491,8 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
     const bootstrapped = await bootstrap.json()
     assert.equal(bootstrapped.version, 1)
     assert.equal(bootstrapped.system_schema_scopes[0].platform, 'postgres')
+    assert.equal(bootstrapped.system_schema_scopes[1].database_name, '')
+    assert.equal(bootstrapped.system_schema_scopes[1].schema_name, 'datariver_mcl_e2e')
     assert.deepEqual((await stateStore.read('core')).value.changeRecords, originalChangeRecords)
 
     const privateRead = await fetch(new URL('/poc-api/state/change-history-access-v1', adminOrigin))
@@ -906,9 +911,9 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
     core: { version: 1, value: {
       changeRecords: [{ id: 'cr-1', current_round_id: 'r1', current_round_number: 1, state: 'REGISTERED', rounds: [{ id: 'r1', selected_system_id: 'system-1' }], items: [{ routing_system_id: 'system-1' }] }],
       adminSystems: [{ system_id: 'system-1', code: 'ONE', name: 'One', active: true, version: 1 }],
-      adminSystemSchemaScopes: [['system-1', [{ scope_id: 's1', system_id: 'system-1', platform: 'postgres', database_name: 'db', schema_name: 'public', active: true, version: 1 }]]],
+      adminSystemSchemaScopes: [['system-1', [{ scope_id: 's1', system_id: 'system-1', platform: 'postgres', database_name: '', schema_name: 'datariver_mcl_e2e', active: true, version: 1 }]]],
     } },
-    catalog: { version: 1, value: { projection_version: 1, source_scope: 'disabled', source_generation: '9'.repeat(64), observed_at: '2026-08-14T00:00:00.000Z', items: [{ id: event.asset_urn, platform: 'postgres', database_name: 'db', schema_name: 'public' }] } },
+    catalog: { version: 1, value: { projection_version: 1, source_scope: 'disabled', source_generation: '9'.repeat(64), observed_at: '2026-08-14T00:00:00.000Z', items: [{ id: event.asset_urn, platform: 'postgres', database_name: '', schema_name: 'datariver_mcl_e2e' }] } },
     events: [event], links: [],
   }
   const run = async (projection, action) => {

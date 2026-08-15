@@ -10,6 +10,22 @@ const SCHEMA_HASH = 'b'.repeat(64)
 const POLICY_HASH = 'c'.repeat(64)
 const BASIS_HASH = 'd'.repeat(64)
 
+async function withEnvironment(values, action) {
+  const previous = new Map(Object.keys(values).map((key) => [key, process.env[key]]))
+  try {
+    for (const [key, value] of Object.entries(values)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+    return await action()
+  } finally {
+    for (const [key, value] of previous) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
 function capture(offset, events = [semanticEvent()]) {
   return {
     sourceIdentityHash: SOURCE_HASH,
@@ -229,6 +245,54 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     assert.ok(startupSql.includes(contract), contract)
     assert.ok(initSql.includes(contract), contract)
   }
+})
+
+test('refuses inherited PostgreSQL settings in Node tests before a persistent connection is created', async () => {
+  await withEnvironment({
+    NODE_TEST_CONTEXT: 'child-v8',
+    POC_DATABASE_URL: undefined,
+    POC_POSTGRES_HOST: 'persistent-dev-postgres',
+    POC_POSTGRES_PORT: '5432',
+    POC_POSTGRES_DB: 'datariver_poc',
+    POC_TEST_DATABASE_ISOLATED_ACK: undefined,
+    POC_TEST_DATABASE_TARGET: undefined,
+  }, async () => {
+    assert.throws(() => createPocStateStore(), (error) => {
+      assert.equal(error.code, 'POC_TEST_DATABASE_ISOLATION_REQUIRED')
+      return true
+    })
+  })
+})
+
+test('allows explicit database doubles and an acknowledged isolated test target', async () => {
+  await withEnvironment({
+    NODE_TEST_CONTEXT: 'child-v8',
+    POC_DATABASE_URL: undefined,
+    POC_POSTGRES_HOST: 'persistent-dev-postgres',
+    POC_POSTGRES_PORT: '5432',
+    POC_POSTGRES_DB: 'datariver_poc',
+    POC_TEST_DATABASE_ISOLATED_ACK: undefined,
+    POC_TEST_DATABASE_TARGET: undefined,
+  }, async () => {
+    const database = createDatabaseDouble()
+    const store = createPocStateStore({ databasePool: database.pool })
+    assert.deepEqual(await store.read('core'), { value: null, version: 0 })
+    assert.ok(database.statements.length > 0)
+  })
+
+  await withEnvironment({
+    NODE_TEST_CONTEXT: 'child-v8',
+    POC_DATABASE_URL: undefined,
+    POC_POSTGRES_HOST: '127.0.0.1',
+    POC_POSTGRES_PORT: '6543',
+    POC_POSTGRES_DB: 'datariver_poc_isolated_test',
+    POC_TEST_DATABASE_ISOLATED_ACK: 'TRUE',
+    POC_TEST_DATABASE_TARGET: '127.0.0.1:6543/datariver_poc_isolated_test',
+  }, async () => {
+    const store = createPocStateStore()
+    assert.equal(store.configured.postgres, true)
+    await store.close()
+  })
 })
 
 test('locks singleton scheduling and records success only after the ordered task succeeds', async () => {
