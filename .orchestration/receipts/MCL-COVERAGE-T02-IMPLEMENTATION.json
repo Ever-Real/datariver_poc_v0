@@ -1,0 +1,43 @@
+{
+  "task": "MCL-COVERAGE-T02-IMPLEMENTATION",
+  "task_id": "task_6564a8c4a29c",
+  "dispatch_id": "ctx_5709041b2c41",
+  "role": "40_DATA_AI_KNOWLEDGE Builder",
+  "outcome": "PASS_LOCAL_SOURCE",
+  "status": "IMPLEMENTED_PENDING_TARGET_RECHECK",
+  "validation_date_kst": "2026-08-15",
+  "starting_head": "737cee10daaf3af1680e11cdb43b2779d0865756",
+  "product_sha": "a9622e06621d39fd97e5197d2d515e9176204148",
+  "environment": { "node": "v25.9.0", "docker_server": "linux/arm64" },
+  "changed_paths": [
+    "deploy/poc/postgres-init/001-poc-state.sql",
+    "frontend/poc-catalog-performance.test.mjs",
+    "frontend/poc-mcl-capture.mjs",
+    "frontend/poc-mcl-capture.test.mjs",
+    "frontend/poc-server.mjs",
+    "frontend/poc-server.test.mjs",
+    "frontend/poc-state-store.mjs",
+    "frontend/poc-state-store.test.mjs",
+    "frontend/src/features/change-history/changeHistoryApi.test.ts",
+    "frontend/src/features/change-history/changeHistoryApi.ts",
+    "frontend/src/features/change-history/types.ts",
+    "frontend/src/features/monitoring/DataChangeStatusPanel.test.tsx",
+    "frontend/src/features/monitoring/DataChangeStatusPanel.tsx"
+  ],
+  "validation": {
+    "mcl_and_state_store": "PASS_26_OF_26",
+    "poc_server": "PASS_14_OF_14",
+    "catalog_generation_b_c_search_tree_chat_exact_vector": "PASS_1_OF_1",
+    "change_history_api_and_monitoring": "PASS_2_FILES_17_TESTS",
+    "lint_typecheck_build_poc": "PASS",
+    "diff_check_allowlist_package_lock": "PASS"
+  },
+  "pre_existing": ["poc-catalog-performance shutdown tests fail under Node v25.9.0; B/C reconciliation and other catalog projection tests pass."],
+  "not_executed": [
+    "NODE_22_LINUX_AMD64_DOCKER_BUILD: current runtime is Node v25.9.0 and Docker linux/arm64.",
+    "DB_KAFKA_DATAHUB_PREP_OPS_RUNTIME_MUTATION: prohibited by task contract."
+  ],
+  "unsupported": ["non-dataset no-aspect entity lifecycle", "no-aspect UPSERT inferred as create", "ambiguous initial status or lifecycleStage inferred as deletion", "raw aspect persistence", "inferred column or asset rename"],
+  "evidence_path": ".orchestration/evidence/MCL-COVERAGE-T02-IMPLEMENTATION.md",
+  "target_recheck_required": ["Node 22 Linux/AMD64 Docker build", "existing-volume PostgreSQL second-start DDL no-op", "permitted PREP/runtime integration validation"]
+}
