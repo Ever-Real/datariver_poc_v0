@@ -21,6 +21,10 @@ const SOURCE_HASH = 'a'.repeat(64)
 const SCHEMA_HASH = 'b'.repeat(64)
 const TOPIC = 'MetadataChangeLog_Versioned_v1'
 const REGISTRY_ID = 17
+const SCHEMA_FIELD_LOGICAL_TYPES = [
+  'BooleanType', 'FixedType', 'StringType', 'BytesType', 'NumberType', 'DateType', 'TimeType',
+  'EnumType', 'NullType', 'MapType', 'ArrayType', 'UnionType', 'RecordType',
+]
 const MCL_SCHEMA = {
   type: 'record',
   name: 'MetadataChangeLog',
@@ -54,6 +58,10 @@ const MCL_SCHEMA = {
   ],
 }
 
+function schemaFieldType(logicalType) {
+  return { type: { [`com.linkedin.schema.${logicalType}`]: {} } }
+}
+
 test('registers the pure-JavaScript Snappy codec at the MCL Kafka boundary', async () => {
   assert.equal(CompressionCodecs[CompressionTypes.Snappy], SnappyCodec)
   const codec = CompressionCodecs[CompressionTypes.Snappy]()
@@ -77,15 +85,15 @@ async function framedMcl(overrides = {}) {
       contentType: 'application/json',
       value: Buffer.from(JSON.stringify({
         fields: [
-          { fieldPath: 'id', nativeDataType: 'bigint', type: { NumberType: {} }, nullable: false },
-          { fieldPath: 'name', nativeDataType: 'varchar', type: { StringType: {} }, nullable: true },
+          { fieldPath: 'id', nativeDataType: 'bigint', type: schemaFieldType('NumberType'), nullable: false },
+          { fieldPath: 'name', nativeDataType: 'varchar', type: schemaFieldType('StringType'), nullable: true },
         ],
       })),
     },
     previousAspectValue: {
       contentType: 'application/json',
       value: Buffer.from(JSON.stringify({
-        fields: [{ fieldPath: 'id', nativeDataType: 'integer', type: { NumberType: {} }, nullable: false }],
+        fields: [{ fieldPath: 'id', nativeDataType: 'integer', type: schemaFieldType('NumberType'), nullable: false }],
       })),
     },
     created: { actor: 'urn:li:corpuser:builder', time: 1_786_634_800_000 },
@@ -448,7 +456,7 @@ test('normalizes empty descriptions to null only at MCL description call sites',
     ...base,
     aspectName: 'schemaMetadata',
     aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({
-      fields: [{ fieldPath: 'id', type: { StringType: {} }, description: '' }],
+      fields: [{ fieldPath: 'id', nativeDataType: 'varchar', type: schemaFieldType('StringType'), description: '' }],
     })) },
   }, { detectedAt })
   assert.equal(normalizedSchema.events[0].afterData.description, null)
@@ -546,12 +554,12 @@ test('normalizes DataHub v1.6 field metadata as bounded source-aspect tag and te
   const normalized = normalizeMclRecord({
     ...base,
     previousAspectValue: aspect({ fields: [{
-      fieldPath: 'customer_id', nativeDataType: 'integer', nullable: false, type: { NumberType: {} },
+      fieldPath: 'customer_id', nativeDataType: 'integer', nullable: false, type: schemaFieldType('NumberType'),
       globalTags: { tags: [{ tag: 'urn:li:tag:legacy' }] },
       glossaryTerms: { terms: [{ urn: 'urn:li:glossaryTerm:legacy' }] },
     }] }),
     aspect: aspect({ fields: [{
-      fieldPath: 'customer_id', nativeDataType: 'bigint', nullable: true, type: { StringType: {} },
+      fieldPath: 'customer_id', nativeDataType: 'bigint', nullable: true, type: schemaFieldType('StringType'),
       globalTags: { tags: [{ tag: 'urn:li:tag:current' }] },
       glossaryTerms: { terms: [{ urn: 'urn:li:glossaryTerm:current' }] },
     }] }),
@@ -585,7 +593,7 @@ test('normalizes DataHub v1.6 field metadata as bounded source-aspect tag and te
     ...base,
     previousAspectValue: aspect({ fields: [] }),
     aspect: aspect({ fields: [{
-      fieldPath: 'p'.repeat(900), nativeDataType: 'text', nullable: false, type: { StringType: {} },
+      fieldPath: 'p'.repeat(900), nativeDataType: 'text', nullable: false, type: schemaFieldType('StringType'),
       globalTags: { tags: [{ tag: `urn:li:tag:${'t'.repeat(989)}` }] },
     }] }),
   }, { detectedAt }).events.find((event) => event.storageCategory === 'TAG')
@@ -595,18 +603,48 @@ test('normalizes DataHub v1.6 field metadata as bounded source-aspect tag and te
   assert.equal(bounded.afterData.tag_urn.length, 1000)
 })
 
-test('fails closed for malformed DataHub v1.6 schema field logical, nullable, tag, and term shapes', () => {
+test('normalizes every supported DataHub v1.6 SchemaFieldDataType discriminator', () => {
+  const detectedAt = '2026-08-15T00:00:00.000Z'
+  const normalized = normalizeMclRecord({
+    entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
+    aspectName: 'schemaMetadata',
+    previousAspectValue: null,
+    created: { actor: null, time: null },
+    aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({
+      fields: SCHEMA_FIELD_LOGICAL_TYPES.map((logicalType, index) => ({
+        fieldPath: `field_${String(index).padStart(2, '0')}`,
+        nativeDataType: logicalType,
+        type: schemaFieldType(logicalType),
+      })),
+    })) },
+  }, { detectedAt })
+  assert.deepEqual(normalized.events.map((event) => [event.afterData.logical_type, event.afterData.nullable]),
+    SCHEMA_FIELD_LOGICAL_TYPES.map((logicalType) => [logicalType, false]))
+})
+
+test('fails closed for malformed DataHub v1.6 SchemaFieldDataType, nativeDataType, nullable, tag, and term shapes', () => {
   const detectedAt = '2026-08-15T00:00:00.000Z'
   const record = (field) => ({
     entityUrn: 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)',
     aspectName: 'schemaMetadata', previousAspectValue: null, created: { actor: null, time: null },
     aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({ fields: [field] })) },
   })
-  const valid = { fieldPath: 'id', nativeDataType: 'bigint', nullable: false, type: { NumberType: {} } }
+  const valid = { fieldPath: 'id', nativeDataType: 'bigint', nullable: false, type: schemaFieldType('NumberType') }
+  const { nativeDataType, ...withoutNativeDataType } = valid
   for (const invalid of [
     { ...valid, type: 'NUMBER' },
-    { ...valid, type: { NumberType: {}, StringType: {} } },
-    { ...valid, type: { UnknownType: {} } },
+    { ...valid, type: { 'com.linkedin.schema.NumberType': {} } },
+    { ...valid, type: {} },
+    { ...valid, type: { type: {} } },
+    { ...valid, type: { type: { 'com.linkedin.schema.NumberType': {}, 'com.linkedin.schema.StringType': {} } } },
+    { ...valid, type: { type: { 'com.linkedin.schema.UnknownType': {} } } },
+    { ...valid, type: { type: { toString: {} } } },
+    { ...valid, type: { type: { 'com.linkedin.schema.NumberType': null } } },
+    { ...valid, type: { type: { 'com.linkedin.schema.NumberType': {} }, extra: {} } },
+    withoutNativeDataType,
+    { ...valid, nativeDataType: '' },
+    { ...valid, nativeDataType: 1 },
+    { ...valid, nativeDataType: 'x'.repeat(501) },
     { ...valid, nullable: 'false' },
     { ...valid, globalTags: { tags: [{ tag: 1 }] } },
     { ...valid, glossaryTerms: { terms: [{ urn: 1 }] } },
@@ -622,8 +660,8 @@ test('does not infer field or asset renames and emits only exact status.removed 
   }
   const fieldRename = normalizeMclRecord({
     ...base,
-    previousAspectValue: aspect({ fields: [{ fieldPath: 'old_name', nativeDataType: 'text', nullable: false, type: { StringType: {} } }] }),
-    aspect: aspect({ fields: [{ fieldPath: 'new_name', nativeDataType: 'text', nullable: false, type: { StringType: {} } }] }),
+    previousAspectValue: aspect({ fields: [{ fieldPath: 'old_name', nativeDataType: 'text', nullable: false, type: schemaFieldType('StringType') }] }),
+    aspect: aspect({ fields: [{ fieldPath: 'new_name', nativeDataType: 'text', nullable: false, type: schemaFieldType('StringType') }] }),
   }, { detectedAt })
   assert.deepEqual(fieldRename.events.map((event) => [event.entityKey, event.operation]), [
     ['field:new_name', 'CREATE'], ['field:old_name', 'DELETE'],

@@ -22,6 +22,21 @@ const SUPPORTED_ASPECTS = new Set([
 ])
 
 const GENERIC_ASPECT_JSON_CONTENT_TYPE = 'application/json'
+const LOGICAL_TYPE_BY_DATAHUB_DISCRIMINATOR = Object.freeze({
+  'com.linkedin.schema.BooleanType': 'BooleanType',
+  'com.linkedin.schema.FixedType': 'FixedType',
+  'com.linkedin.schema.StringType': 'StringType',
+  'com.linkedin.schema.BytesType': 'BytesType',
+  'com.linkedin.schema.NumberType': 'NumberType',
+  'com.linkedin.schema.DateType': 'DateType',
+  'com.linkedin.schema.TimeType': 'TimeType',
+  'com.linkedin.schema.EnumType': 'EnumType',
+  'com.linkedin.schema.NullType': 'NullType',
+  'com.linkedin.schema.MapType': 'MapType',
+  'com.linkedin.schema.ArrayType': 'ArrayType',
+  'com.linkedin.schema.UnionType': 'UnionType',
+  'com.linkedin.schema.RecordType': 'RecordType',
+})
 
 const STORAGE_CATEGORY_BY_ASPECT = {
   schemaMetadata: 'TECHNICAL_SCHEMA',
@@ -418,7 +433,7 @@ function schemaFieldMap(document, maximum) {
     if (result.has(path)) throw new Error('A schemaMetadata field path is duplicated.')
     result.set(path, {
       field_path: path,
-      native_data_type: optionalDocumentString(field.nativeDataType, 'nativeDataType', 500),
+      native_data_type: boundedString(field.nativeDataType, 'nativeDataType', 500),
       logical_type: logicalType(field.type),
       description: optionalDescription(field.description, 'description', 4096),
       nullable: nullableValue(field.nullable),
@@ -592,16 +607,18 @@ function semanticEvent(entityKey, beforeData, afterData, evidence, forcedOperati
 }
 
 function logicalType(value) {
-  if (!isPlainObject(value)) throw new Error('schemaMetadata.type must be a single supported union discriminator.')
-  const keys = Object.keys(value)
-  const supported = new Set([
-    'BooleanType', 'FixedType', 'StringType', 'BytesType', 'NumberType', 'DateType', 'TimeType',
-    'EnumType', 'NullType', 'MapType', 'ArrayType', 'UnionType', 'RecordType',
-  ])
-  if (keys.length !== 1 || !supported.has(keys[0]) || !isPlainObject(value[keys[0]])) {
+  if (!isPlainObject(value) || Object.keys(value).length !== 1 || !Object.hasOwn(value, 'type')) {
     throw new Error('schemaMetadata.type must be a single supported union discriminator.')
   }
-  return keys[0]
+  const union = value.type
+  if (!isPlainObject(union)) throw new Error('schemaMetadata.type must be a single supported union discriminator.')
+  const keys = Object.keys(union)
+  const discriminator = keys[0]
+  if (keys.length !== 1 || !Object.hasOwn(LOGICAL_TYPE_BY_DATAHUB_DISCRIMINATOR, discriminator)
+    || !isPlainObject(union[discriminator])) {
+    throw new Error('schemaMetadata.type must be a single supported union discriminator.')
+  }
+  return LOGICAL_TYPE_BY_DATAHUB_DISCRIMINATOR[discriminator]
 }
 
 function nullableValue(value) {
