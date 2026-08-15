@@ -1,0 +1,69 @@
+{
+  "task": "MCL-COVERAGE-REPAIR-02-FRESH-VALIDATION",
+  "task_id": "task_1a8d4b259b6c",
+  "role": "50_QUALITY_VALIDATION",
+  "actual_model": "gpt-5.6-sol xhigh controlled fallback",
+  "outcome": "PASS_LOCAL_SOURCE",
+  "status": "VALIDATED_LOCAL_SOURCE",
+  "validation_date_kst": "2026-08-15",
+  "starting_head": "ce491fbe16442b81815cb8e4c03dfb70d65e89c9",
+  "exact_base_sha": "ce491fbe16442b81815cb8e4c03dfb70d65e89c9",
+  "repair_product_sha": "bb69d89751a0f0c95cb7981f7b9bcec56cda2d90",
+  "repair_base_sha": "97255432eee002620d1be2828462ddf1d51ccdf4",
+  "product_write": "NONE",
+  "environment": {
+    "os": "Darwin",
+    "arch": "arm64",
+    "node": "v25.9.0",
+    "npm": "11.12.1"
+  },
+  "permission_contract": {
+    "low_risk_commands_preapproved": true,
+    "evidence_git_add_commit_preapproved": true
+  },
+  "ancestry": {
+    "repair_base_is_direct_parent_of_product": true,
+    "product_is_direct_parent_of_exact_base": true,
+    "linear_chain": "97255432eee002620d1be2828462ddf1d51ccdf4 -> bb69d89751a0f0c95cb7981f7b9bcec56cda2d90 -> ce491fbe16442b81815cb8e4c03dfb70d65e89c9"
+  },
+  "repair_diff": {
+    "changed_paths": [
+      "frontend/poc-mcl-capture.test.mjs"
+    ],
+    "insertions": 2,
+    "deletions": 1,
+    "fixture_summary_ko": "valid 복사본에서 nativeDataType own property를 삭제해 실제 absent negative fixture를 구성하고 기존 assert.throws로 검증한다."
+  },
+  "package_lock": {
+    "changed_in_repair_product": false,
+    "install": "PASS_NPM_CI_370_PACKAGES_371_AUDITED_0_VULNERABILITIES",
+    "package_json_sha256": "d41aa826a203243509e7684eb45a733c7b24a26df0dcf4a0145f05e256d83789",
+    "package_lock_sha256": "534d792566f0e9371ca1c7ca7166acbbdcc801f07146450ff54005b188a28be5",
+    "hashes_unchanged_after_install": true
+  },
+  "validation": {
+    "mcl_and_state_store": "PASS_27_OF_27",
+    "lint": "PASS_EXIT_0_MAX_WARNINGS_0",
+    "typecheck": "PASS_EXIT_0",
+    "exact_diff_fixture_ancestry": "PASS",
+    "package_and_lock": "PASS_UNCHANGED",
+    "diff_check": "PASS",
+    "pre_evidence_worktree": "CLEAN"
+  },
+  "not_executed_by_contract": [
+    "BUILD",
+    "SERVER",
+    "CATALOG",
+    "UI",
+    "DB_KAFKA_DATAHUB_RUNTIME",
+    "PREP",
+    "OPS"
+  ],
+  "prohibited_actions": {
+    "product_or_source_repair": false,
+    "existing_evidence_or_receipt_change": false,
+    "runtime_prep_ops_mutation": false,
+    "push_or_merge": false
+  },
+  "evidence_path": ".orchestration/evidence/MCL-COVERAGE-REPAIR-02-FRESH-VALIDATION.md"
+}
