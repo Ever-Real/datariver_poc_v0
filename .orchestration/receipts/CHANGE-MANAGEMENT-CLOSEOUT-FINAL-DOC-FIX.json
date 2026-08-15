@@ -1,0 +1,51 @@
+{
+  "task_id": "CHANGE_MANAGEMENT_CLOSEOUT_FINAL_DOC_FIX_AND_G1_G2_READINESS",
+  "validated_at": "2026-08-15T16:23:37Z",
+  "outcome": "PASS_STATIC_DOCUMENTATION_CLOSEOUT",
+  "functional_product_sha": "4aea6d19c64253130e00d997c2837b74fac4837d",
+  "runtime_validation_evidence_sha": "313a559bdd9300d3ee2021935d2dbac0319bafd1",
+  "productization_documentation_sha": "a90ef2d1bce368310b0088280dacff2f785ef703",
+  "prior_closeout_evidence_sha": "80b2e4998880f33e9d7b2fc63165eaebcfddf1cb",
+  "origin_dev_sha_observed": "737cee10daaf3af1680e11cdb43b2779d0865756",
+  "product_code_changed": false,
+  "runtime_mutation_performed": false,
+  "contracts": {
+    "kafka_probe_auth": "PASS_AUTHORITATIVE_SSL_SASL_PARSER",
+    "schema_registry_auth": "PASS_ANONYMOUS_AND_OPTIONAL_BASIC_AUTH",
+    "source_identity_exact_reuse": "PASS_SIX_DESCRIPTOR_HASH_EXACT_LOOKUP",
+    "source_image_revision_binding": "PASS_EXACT_HEAD_BUILD_ARG_OCI_READBACK",
+    "compose_base_overlay_separation": "PASS",
+    "scheduler_lock": "PASS_UNIQUE_BETWEEN_LOGICAL_DEPLOYMENTS_STABLE_WITHIN_DEPLOYMENT",
+    "adr_provider_neutrality": "PASS_SOURCE_BOUNDARY_OPAQUE_POSITION_SEMANTIC_STORAGE",
+    "secret_contract": "PASS_CURRENT_ENV_TARGET_SECRET_INJECTION_SEPARATED",
+    "dockerfile_local": "TEMPORARY_DEV_PREP_COMPATIBILITY_BACKLOG_RETIREMENT",
+    "schema_migration": "CURRENT_MANUAL_IDEMPOTENT_SQL_TARGET_VERSIONED_CONTRACT"
+  },
+  "static_validation": {
+    "git_diff_check": "PASS",
+    "markdown_links_paths_fences": "PASS",
+    "bash_fenced_commands": "PASS",
+    "node_heredoc_blocks": "3/3 PASS",
+    "compose_base": "PASS",
+    "compose_datahub_overlay": "PASS",
+    "compose_airflow": "PASS_WITH_NONSECRET_VALIDATION_PLACEHOLDERS",
+    "env_example_variables": 79,
+    "compose_host_variables": 79,
+    "missing_compose_variables": 0,
+    "missing_mcl_source_variables": 0,
+    "actual_secret_found": false,
+    "actual_endpoint_ip_found": false,
+    "product_runtime_path_delta": 0,
+    "runtime_e2e": "NOT_EXECUTED_DOCS_ONLY"
+  },
+  "backlog_updated": true,
+  "publication": {
+    "g1_g2": "READY_FOR_APPROVAL",
+    "g3_g4": "NOT_REQUESTED",
+    "pushed": false
+  },
+  "evidence_path": ".orchestration/evidence/CHANGE-MANAGEMENT-CLOSEOUT-FINAL-DOC-FIX.md",
+  "receipt_path": ".orchestration/receipts/CHANGE-MANAGEMENT-CLOSEOUT-FINAL-DOC-FIX.json",
+  "prep_or_ops_mutated": false,
+  "datariver_v1_accessed": false
+}
