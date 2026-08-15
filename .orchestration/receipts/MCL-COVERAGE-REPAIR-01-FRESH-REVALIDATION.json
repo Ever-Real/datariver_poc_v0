@@ -1,0 +1,105 @@
+{
+  "task": "MCL-COVERAGE-REPAIR-01-FRESH-REVALIDATION",
+  "task_id": "task_0b74c3747d6e",
+  "dispatch_id": "ctx_4afd12bb72b4",
+  "role": "50_QUALITY_VALIDATION",
+  "model": "gpt-5.6-sol High controlled fallback",
+  "outcome": "FAIL_REPAIR_REQUIRED",
+  "status": "TARGET_RECHECK_REQUIRED",
+  "validation_date_kst": "2026-08-15",
+  "starting_head": "91ca594c178169f13270634d876b9e98323e453d",
+  "product_sha": "4743d29a9e00a103b71f3485cd5baf0ad9cf48d5",
+  "repair_base_sha": "042f8a2e3c066407411f9fd196f5ac4ef18f9972",
+  "product_write": "NONE",
+  "environment": {
+    "os": "Darwin",
+    "arch": "arm64",
+    "node": "v25.9.0",
+    "npm": "11.12.1"
+  },
+  "blocking_findings": [
+    {
+      "id": "F-02",
+      "title": "Committed test has an unused destructuring binding that fails lint",
+      "location": "frontend/poc-mcl-capture.test.mjs:633:11",
+      "rule": "no-unused-vars",
+      "reproduction": "CONTROL_PLANE_EXACT_NPM_RUN_LINT_EXIT_1",
+      "disposition": "NOT_REPAIRED_READ_ONLY_VALIDATOR"
+    }
+  ],
+  "f01": {
+    "status": "CLOSED_LOCAL_SOURCE",
+    "primary_contract": {
+      "outer_required_type_member": true,
+      "inner_supported_union_type_count": 13,
+      "nativeDataType_required_string": true,
+      "nullable_default": false
+    },
+    "generic_aspect_fixture": "type.type.com.linkedin.schema.NumberType",
+    "valid_probe": "PASS_CANONICAL_NUMBERTYPE_NULLABLE_FALSE",
+    "fail_closed": [
+      "old one-level shape",
+      "outer missing or extra member",
+      "inner missing, multiple, or unknown discriminator",
+      "prototype names toString, constructor, and __proto__",
+      "null or array payload",
+      "nativeDataType missing, empty, non-string, over 500, or boundary whitespace"
+    ]
+  },
+  "ancestry": {
+    "repair_base_is_direct_parent_of_product": true,
+    "product_is_direct_parent_of_starting_head": true,
+    "product_changed_paths": [
+      "frontend/poc-mcl-capture.mjs",
+      "frontend/poc-mcl-capture.test.mjs"
+    ],
+    "post_product_docs_only": true
+  },
+  "package_lock": {
+    "changed_in_product": false,
+    "package_json_sha256": "d41aa826a203243509e7684eb45a733c7b24a26df0dcf4a0145f05e256d83789",
+    "package_lock_sha256": "534d792566f0e9371ca1c7ca7166acbbdcc801f07146450ff54005b188a28be5",
+    "install": "PASS_NPM_CI_370_PACKAGES_0_VULNERABILITIES_LOCK_UNCHANGED"
+  },
+  "validation": {
+    "mcl_and_state_store": "PASS_27_OF_27",
+    "independent_datahub_shape_and_negative_probe": "PASS",
+    "poc_server": "PASS_14_OF_14_EFFECTIVE_LOCALHOST_RUN",
+    "catalog_current_projection": "PASS_5_OF_5_EFFECTIVE_LOCALHOST_RUN",
+    "change_history_api_and_monitoring": "PASS_2_FILES_17_TESTS",
+    "typecheck": "PASS",
+    "build_poc_before_dist_tests": "PASS_WITH_EXISTING_CHUNK_ADVISORY",
+    "build_poc_final": "PASS_WITH_EXISTING_CHUNK_ADVISORY",
+    "lint": "FAIL_F02_CONTROL_PLANE_EXIT_1",
+    "diff_check_allowlist_package_lock": "PASS",
+    "broad_npm_test": "NOT_EXECUTED_BY_INSTRUCTION"
+  },
+  "coverage_preserved": [
+    "empty description canonicalization",
+    "column tag and term add/remove",
+    "logical, native, nullable, and type change",
+    "field rename exact delete and create",
+    "lifecycle deletion and reactivation",
+    "current projection deletion and reactivation",
+    "ChangeHistory API and Monitoring behavior"
+  ],
+  "docker": {
+    "authoritative_file": "deploy/poc/Dockerfile.example",
+    "status": "NOT_EXECUTED_OPTIONAL_PARSER_ONLY_VALIDATION",
+    "frontend_dockerfile_run": false,
+    "image_imported": false,
+    "service_started": false
+  },
+  "prohibited_actions": {
+    "product_edit": false,
+    "db_kafka_datahub_prep_ops_mutation": false,
+    "container_or_service_start": false,
+    "push_or_merge": false
+  },
+  "evidence_path": ".orchestration/evidence/MCL-COVERAGE-REPAIR-01-FRESH-REVALIDATION.md",
+  "target_recheck_required": [
+    "Repair F-02 without weakening lint or validation.",
+    "Re-run lint and related focused gates on the repaired candidate.",
+    "Validate actual DataHub v1.6 MCL events in the permitted PREP/TARGET runtime."
+  ]
+}
