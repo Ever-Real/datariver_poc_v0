@@ -1,0 +1,44 @@
+{
+  "task": "MCL-COVERAGE-REPAIR-02-LINT",
+  "task_id": "task_8e0e868b2b7f",
+  "role": "40_DATA_AI_KNOWLEDGE Builder",
+  "actual_model": "gpt-5.6-sol xhigh controlled fallback",
+  "outcome": "PASS_LOCAL_SOURCE",
+  "validation_date_kst": "2026-08-15",
+  "exact_base_sha": "97255432eee002620d1be2828462ddf1d51ccdf4",
+  "product_parent_sha": "97255432eee002620d1be2828462ddf1d51ccdf4",
+  "product_sha": "bb69d89751a0f0c95cb7981f7b9bcec56cda2d90",
+  "product_changed_paths": [
+    "frontend/poc-mcl-capture.test.mjs"
+  ],
+  "evidence_changed_paths": [
+    ".orchestration/evidence/MCL-COVERAGE-REPAIR-02-LINT.md",
+    ".orchestration/receipts/MCL-COVERAGE-REPAIR-02-LINT.json"
+  ],
+  "repair": {
+    "summary_ko": "미사용 destructuring binding을 제거하고 복사한 fixture에서 nativeDataType own property를 삭제했다.",
+    "native_data_type_negative_fixture": "실제로 absent",
+    "existing_assertion": "assert.throws 유지",
+    "lint_rule": "no-unused-vars"
+  },
+  "validation": {
+    "dependency_install": "PASS_NPM_CI_370_PACKAGES_0_VULNERABILITIES_LOCK_UNCHANGED",
+    "mcl_and_state_store": "PASS_27_OF_27",
+    "lint": "PASS_EXIT_0_WARNING_0",
+    "typecheck": "PASS_EXIT_0",
+    "diff_check": "PASS",
+    "product_allowlist": "PASS_EXACTLY_FRONTEND_POC_MCL_CAPTURE_TEST_MJS",
+    "package_and_lock_diff": "PASS_UNCHANGED_FROM_EXACT_BASE",
+    "package_json_sha256": "d41aa826a203243509e7684eb45a733c7b24a26df0dcf4a0145f05e256d83789",
+    "package_lock_sha256": "534d792566f0e9371ca1c7ca7166acbbdcc801f07146450ff54005b188a28be5"
+  },
+  "prohibited_actions": {
+    "product_module_or_dependency_change": false,
+    "other_product_file_change": false,
+    "existing_receipt_change": false,
+    "db_kafka_datahub_prep_ops_runtime_mutation": false,
+    "container_or_service_start": false,
+    "push_or_merge": false
+  },
+  "evidence_path": ".orchestration/evidence/MCL-COVERAGE-REPAIR-02-LINT.md"
+}
