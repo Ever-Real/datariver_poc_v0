@@ -26,12 +26,14 @@ Cypher, DAG ID 또는 S3 bucket을 browser가 전달할 수 없습니다.
 | Chat | DataHub + Neo4j + Embedding + Reranker + Chat | live 근거를 고정 pipeline으로 전달 |
 | Knowledge graph snapshot | 함께 실행되는 Neo4j | live 조회만 수행하며 sample graph를 seed하지 않음 |
 | 사용자·System·변경관리 POC 상태 | POC PostgreSQL | 사용자가 만든 항목만 versioned JSONB로 보관 |
+| DataHub 변경 이력 | Kafka MCL + Schema Registry → POC PostgreSQL | bounded normalized ledger/checkpoint와 CR link history를 append-oriented 보관 |
 | 거버넌스 문서·Knowledge Studio 상태 | POC PostgreSQL | 사용자가 만든 Draft·검토·발행 기록만 보관; seed 없음 |
-| DataHub 반복 inventory/detail | POC Redis | 짧은 TTL cache; 장애 시 DataHub live 조회로 fallback |
+| DataHub 반복 inventory/detail | PostgreSQL current projection + POC Redis | Redis는 optional hot cache이며 장애 시 PostgreSQL last-good projection으로 fallback |
 | 품질 control-plane 상태 | 별도 정본 서비스 필요 | fixture 대신 live DataHub 현황과 unavailable 축을 구분 |
 
-Compose의 pgvector PostgreSQL은 무인증 POC adapter 상태만 저장하며 운영 DataRiver schema나
-감사 정본이 아닙니다. Redis는 정확성 정본이 아니고 반복 DataHub 로딩 속도만 개선합니다.
+Compose의 pgvector PostgreSQL은 POC 범위의 access/core/current state와 append-oriented Change History
+원장을 durable volume에 저장합니다. 이는 운영 DataRiver schema, HA 또는 production archive 주장이
+아닙니다. Redis는 정확성 정본이 아니고 반복 DataHub 로딩 속도만 개선합니다.
 Airflow DAG가 기존 DataRiver API를 요구한다면 downstream 단계는 별도 시스템 설정에 따라
 실패할 수 있습니다.
 
@@ -55,6 +57,9 @@ Airflow DAG가 기존 DataRiver API를 요구한다면 downstream 단계는 별�
 - Neo4j: `NEO4J_USERNAME`, `NEO4J_PASSWORD`; image/port는 기본값이 있어 보통 변경 불필요
 - POC 지원 컨테이너: `POC_POSTGRES_PASSWORD`를 반드시 변경합니다. 폐쇄망에서는 로컬에
   적재된 tag를 `POC_PGVECTOR_IMAGE`, `POC_REDIS_IMAGE`, `NEO4J_IMAGE`에 정확히 지정합니다.
+- Change History/MCL: source, checkpoint, Registry hash와 scheduler의 전체 계약은
+  [MCL 운영 Runbook](MCL_CHANGE_HISTORY_RUNBOOK.md)을 사용합니다. Scheduler는 direct capture가
+  성공할 때까지 disabled 상태로 유지합니다.
 
 Bulk XLSX/CSV는 `S3_BUCKET_FILEFOLDER`의
 `bulk-registration/<upload-id>/catalog-metadata-source.xlsx` 또는 `.csv`에만 저장됩니다.
@@ -76,9 +81,10 @@ MONITORING_DASHBOARDS_JSON=[{"id":"platform","label":"Platform","url":"http://gr
 `GRAFANA_EMBED_BASE_URL`과 exact origin이 같아야 하며 Grafana의 `allow_embedding` 및
 사내 인증 정책도 별도로 준비해야 합니다. 조건이 맞지 않는 URL은 링크 탭으로만 표시합니다.
 
-DataHub·Airflow·MinIO·LLM 컨테이너가 별도 Compose project에서 실행 중이면 그 project도
-`POC_SHARED_NETWORK`와 같은 external network에 연결하고 `.env` URL에 container DNS 이름을
-사용합니다. 다른 host에 있다면 사내 IP/DNS URL을 사용합니다.
+같은 host의 DataHub network를 재사용할 때는
+`docker-compose.datahub-provider.yaml` overlay와 `DATAHUB_EXTERNAL_NETWORK`를 사용합니다. 다른
+host의 DataHub·Airflow·MinIO·LLM은 사내 routable IP/DNS URL을 사용합니다. 반복적인 수동
+`docker network connect`를 canonical 절차로 사용하지 않습니다.
 
 ## Prep에서 npm으로 실행
 
@@ -183,7 +189,7 @@ diff -u deploy/poc/Dockerfile.example deploy/poc/Dockerfile.local || true
 ## 주장하지 않는 것
 
 - 실제 사용자 인증, Workspace ABAC/RLS 또는 다중 사용자 격리
-- POC PostgreSQL을 운영 canonical state, durable audit, 정식 migration/backup/rollback으로 보는 주장
+- POC PostgreSQL을 production canonical state, HA archive 또는 무검증 backup/rollback으로 보는 주장
 - 외부 provider의 운영 SLA·권한 적정성·데이터 정합성
 - Airflow DAG downstream DataRiver API 성공
 - production TLS, 인터넷 공개, availability, performance, recovery 또는 security acceptance

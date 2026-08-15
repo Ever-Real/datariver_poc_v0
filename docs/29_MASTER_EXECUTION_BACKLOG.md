@@ -364,6 +364,38 @@ merged, released, or available to the preparation PC until publication actually 
 | R5-ARCH-01 | P2 | Split high-complexity Admin/config/DataHub/catalog/knowledge modules only after behavior tests lock contracts. | `PENDING` |
 | R5-ARCH-02 | P2 | Consolidate duplicate upload/hash/polling state machines and clean only evidenced dead legacy code. | `PENDING` |
 
+## Change Management 제품화 잔여 backlog (2026-08-16)
+
+이 표는 product `4aea6d19c64253130e00d997c2837b74fac4837d`와 evidence
+`313a559bdd9300d3ee2021935d2dbac0319bafd1`의 DEV runtime 결과를 기준으로 한다. PREP/OPS 결과를
+DEV 증거로 승격하지 않는다.
+
+| ID | Priority | Item | Status / acceptance gate |
+|---|---:|---|---|
+| CM-PROD-01 | P1 | `VECTOR_PROVIDER_UNAVAILABLE` 복구와 Chat/vector deleted-current target 재검증 | `TARGET_RECHECK_REQUIRED`; Search/Tree current lifecycle PASS를 되돌리지 않음 |
+| CM-PROD-02 | P1 | PREP targeted recheck: Linux/amd64, Kafka advertised listener, Registry, env/secret, exact boundary/catch-up | `TARGET_RECHECK_REQUIRED` |
+| CM-PROD-03 | P0 | OPS validation/deployment, artifact checksum, backup/restore/rollback, compatible provider/security/HA gate | `NOT_EXECUTED` |
+| CM-PROD-04 | P2 | 실제 KST 00:00 wall-clock 관찰 | `DAILY_CLOCK_NOT_OBSERVED`; startup catch-up/same-day receipt는 DEV verified |
+| CM-PROD-05 | P1 | GX/Quality result와 Quality 메뉴 연계 | `BACKLOG`; 별도 workstream |
+| CM-PROD-06 | P2 | Chat routing/retrieval/response refinement | `BACKLOG`; current/deleted correctness와 분리 |
+| CM-PROD-07 | P2 | Vite production chunk-size warning 해소 | `BACKLOG`; 기능 blocker 아님 |
+| CM-PROD-08 | P1 | POC secret-file/direct secret injection 지원 여부 결정 | `BACKLOG`; 현재 host-local ignored `.env` → container env 계약만 지원 |
+| CM-PROD-09 | P1 | local-only `Dockerfile.local` drift 제거: tracked Dockerfile 공통 사용 또는 release drift check | `BACKLOG`; scheduler/MCL COPY와 lockfile dependency가 필수 |
+| CM-PROD-10 | P1 | legacy `scripts/export_poc_release.sh`의 static/simulated/no-remote bundle을 current live-provider release contract로 교체하거나 명시적으로 retire | `BACKLOG`; 현재 canonical 배포는 tracked Compose build/update runbook |
+| CM-PROD-11 | P1 | DataHub Timeline retained-history initial backfill adapter와 target retention gate 구현 | `BACKLOG`; ADR-0123 계약만 존재하고 current Node runtime에는 미구현 |
+
+### EPIC: MODULAR_PRODUCT_ARCHITECTURE
+
+목표는 feature isolation, 변경 blast-radius 감소, domain portability, 다른 metadata platform adapter와
+배포 단위 안정성이다. 현재 runtime을 대규모 refactor하지 않으며
+[`ADR-0124`](adr/0124-poc-modular-product-architecture.md)의 단계와 gate를 따른다.
+
+- [ ] `change-history`, `change-management`, `access`, `catalog-current`, `monitoring` 논리 port 고정
+- [ ] `adapters/datahub`, `adapters/storage`, `application/http` dependency direction 검증
+- [ ] frontend feature-local API/type 경계 정의
+- [ ] provider-neutral `MetadataChangeProvider`/`CurrentCatalogProvider` conformance tests
+- [ ] 실제 두 번째 provider 요구 또는 측정된 blast-radius evidence 전에는 framework/service 추가 금지
+
 ## Request group 6 — final controlled artifacts
 
 The owner explicitly directed documentation to start after Phase 6E and deferred the remaining

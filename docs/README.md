@@ -63,6 +63,8 @@
 | 65 | [POC Catalog search cardinality and TEST approval](adr/0119-poc-catalog-search-cardinality-and-test-approval.md) | Strict field matches, complete inventory counts, bounded explicit lists and one-click TEST approval | Accepted for authentication-free POC only |
 | 66 | [POC bounded Chat session memory and response focus](adr/0120-poc-bounded-chat-session-memory-and-response-focus.md) | Five-turn compaction, 12,000-character questions, cancellable answer focus and non-blocking reveal | Accepted for authentication-free POC only |
 | 67 | [POC reasoning-model Chat classifier compatibility](adr/0121-poc-reasoning-model-chat-classifier-compatibility.md) | Strict reasoning-disable controls and bounded AUTO classifier output for reasoning-capable providers | Accepted for authentication-free POC only |
+| 68 | [POC Change Management 제품화 기준서](63_POC_CHANGE_MANAGEMENT_PRODUCTIZATION.md) | Change History/CR/access/current 구현, 설정, 화면, 초기화와 운영 계약 | DEV runtime verified; PREP/OPS gates open |
+| 69 | [POC 모듈 경계와 provider 이식성 계획](adr/0124-poc-modular-product-architecture.md) | feature isolation, provider-neutral ports와 단계적 modularization | Proposed backlog plan; no refactor approved |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and

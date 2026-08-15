@@ -39,6 +39,8 @@ Detailed entry points:
 - [Deployment and migration](docs/08_DEPLOYMENT.md), [Mac-to-WSL runbook](docs/26_MAC_TO_WSL_MIGRATION_RUNBOOK.md)
 - [Security/ABAC](docs/07_SECURITY_ABAC.md), [master backlog](docs/29_MASTER_EXECUTION_BACKLOG.md)
 - [Knowledge Studio Phase 6 RC cutover preparation](docs/47_KNOWLEDGE_STUDIO_PHASE6_CUTOVER_PREP.md)
+- [POC Change Management 제품화 기준서](docs/63_POC_CHANGE_MANAGEMENT_PRODUCTIZATION.md)
+- [POC MCL/Change History 운영 runbook](deploy/poc/MCL_CHANGE_HISTORY_RUNBOOK.md)
 
 Remaining WSL/external-provider/browser/load/physical-retention checks are explicit external gates.
 Runtime API/OIDC Origin validation is intentionally deferred as backlog item `R5-FE-04` at P2; the
