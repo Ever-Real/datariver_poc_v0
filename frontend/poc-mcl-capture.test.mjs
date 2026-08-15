@@ -630,7 +630,8 @@ test('fails closed for malformed DataHub v1.6 SchemaFieldDataType, nativeDataTyp
     aspect: { contentType: 'application/json', value: Buffer.from(JSON.stringify({ fields: [field] })) },
   })
   const valid = { fieldPath: 'id', nativeDataType: 'bigint', nullable: false, type: schemaFieldType('NumberType') }
-  const { nativeDataType, ...withoutNativeDataType } = valid
+  const withoutNativeDataType = { ...valid }
+  delete withoutNativeDataType.nativeDataType
   for (const invalid of [
     { ...valid, type: 'NUMBER' },
     { ...valid, type: { 'com.linkedin.schema.NumberType': {} } },
