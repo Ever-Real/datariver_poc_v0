@@ -1,0 +1,61 @@
+{
+  "task_id": "task_87fbc9ea1370",
+  "dispatch_id": "ctx_1630cf2422cc",
+  "run_id": "run_9efe89940363",
+  "outcome": "succeeded",
+  "base_sha": "7b7f427a30332b446b8a90b798def7134f90b6ad",
+  "product_head_sha": "26807e02b2184aa8b8ed9a2cbc01650199d5537d",
+  "commits": {
+    "test_isolation_guard": "ba06c53",
+    "strict_authority_repair": "1fd5142",
+    "server_held_subject": "e19050ccfd8bae4b96bbb532504ba4345b09d002",
+    "role60_product_source": "fe50ac708fd6ac33ef8bb93001e507ceaa339cc1",
+    "role60_product_cherry_pick": "26807e02b2184aa8b8ed9a2cbc01650199d5537d"
+  },
+  "product_paths": [
+    "frontend/poc-state-store.mjs",
+    "frontend/poc-state-store.test.mjs",
+    "frontend/poc-server.mjs",
+    "frontend/poc-server.test.mjs",
+    "frontend/src/poc/pocApi.ts",
+    "frontend/src/poc/pocApi.live.test.ts"
+  ],
+  "verification": {
+    "isolated_state_server_tests": "29/29 PASS",
+    "isolated_server_subject_tests": "14/14 PASS",
+    "integrated_build_poc": "PASS",
+    "live_db_unit_tests": "NOT_RUN",
+    "web_health": "healthy",
+    "image_revision": "26807e02b2184aa8b8ed9a2cbc01650199d5537d"
+  },
+  "runtime_e2e": {
+    "change_request_id": "poc-change-request-901",
+    "change_request_number": "CR-POC-00902",
+    "event_id": "ed7a74822b684450704efa3672a651a99172e1e64e2f4cdc8b9377af3e94ae23",
+    "actions": [
+      "SET_PRIMARY",
+      "CLEAR_PRIMARY",
+      "ADD_CANDIDATE",
+      "REMOVE_CANDIDATE"
+    ],
+    "final_stage": "UNLINKED",
+    "final_link_version": 4,
+    "final_etag": "ea6d42cba2ad1e68257cd2a5ec349c49262562fb44c76d3f8ebe224316a27df2",
+    "weekly_total": 35,
+    "weekly_unlinked": 35
+  },
+  "final_state": {
+    "core_version": 28,
+    "core_sequence": 903,
+    "core_md5": "9d86c9bc09a49af23158c29983b82cfd",
+    "access_version": 3,
+    "access_md5": "74050e15e3a1b89b6d1686fbabeb82ba",
+    "ledger_rows": 46,
+    "ledger_distinct_identities": 46,
+    "ledger_distinct_transactions": 35,
+    "link_rows": 4
+  },
+  "evidence_path": ".orchestration/evidence/DEV-FULL-T04-CORE-ACCESS-CR-E2E.md",
+  "role60_evidence_integrated": false,
+  "pushed": false
+}
