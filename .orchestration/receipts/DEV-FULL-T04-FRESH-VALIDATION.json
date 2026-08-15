@@ -1,0 +1,97 @@
+{
+  "task_id": "task_237a0bbaba16",
+  "dispatch_id": "ctx_cf8687f1e277",
+  "run_id": "run_9efe89940363",
+  "task": "DEV-FULL-T04-FRESH-VALIDATION",
+  "validated_at": "2026-08-15T14:01:51Z",
+  "outcome": "PASS_LOCAL_SOURCE_AND_DEV_EVIDENCE",
+  "base_evidence_sha": "9200984d08bad8dcab51b774d5f889aed07ff0c7",
+  "product_sha": "4aea6d19c64253130e00d997c2837b74fac4837d",
+  "comparison_base_sha": "7b7f427a30332b446b8a90b798def7134f90b6ad",
+  "worktree_started_clean": true,
+  "docs_hold_e7ba19_present": false,
+  "product_diff": {
+    "package_delta": false,
+    "lock_delta": false,
+    "schema_delta": false,
+    "dockerfile_delta": false,
+    "compose_delta": false,
+    "secret_or_credential_hardcoding_found": false,
+    "git_diff_check": "PASS"
+  },
+  "fresh_source_validation": {
+    "persistent_dev_bindings_removed": true,
+    "npm_ci_ignore_scripts": "PASS_LOCK_UNCHANGED",
+    "vitest": "84 files, 568/568 PASS",
+    "node_mjs_files": 7,
+    "node_mjs": "71/71 PASS",
+    "eslint": "PASS",
+    "typecheck": "PASS",
+    "build_poc": "PASS",
+    "build": "PASS",
+    "live_db_unit_tests": "NOT_RUN",
+    "isolation_guard": {
+      "inherited_persistent_target": "REFUSED_BEFORE_POOL",
+      "explicit_pool_double": "ALLOWED",
+      "acknowledged_target": "VALIDATED_WITHOUT_CONNECTION"
+    }
+  },
+  "linux_amd64_build": {
+    "result": "PASS",
+    "image": "datariver-poc:t04-validation-4aea6d1",
+    "image_id": "sha256:b0710116172d8646ac9707b2c60b7bca023e86f0697c4344042b3b1b0b67ad3a",
+    "platform": "linux/amd64",
+    "node_version": "22.19.0",
+    "oci_revision": "4aea6d19c64253130e00d997c2837b74fac4837d",
+    "cmd": ["node", "poc-server.mjs"],
+    "service_started_or_replaced": false
+  },
+  "runtime_fence": {
+    "web_health": "healthy",
+    "web_image_revision": "4aea6d19c64253130e00d997c2837b74fac4837d",
+    "access_version": 10,
+    "access_active_subject": "checkpoint-admin",
+    "access_counts": {"users": 4, "systems": 2, "scopes": 2, "assignments": 2},
+    "access_value_md5": "74050e15e3a1b89b6d1686fbabeb82ba",
+    "core_version": 37,
+    "core_sequence": 903,
+    "core_value_md5": "62436ccb65aa85477c0416603be24689",
+    "change_request": {
+      "id": "poc-change-request-901",
+      "number": "CR-POC-00902",
+      "state": "REGISTERED",
+      "round": 1,
+      "version": 1
+    },
+    "canonical_checkpoint": {"first_exact_offset": 52849, "next_offset": 52942, "version": 94},
+    "secondary_checkpoint": {"first_exact_offset": 51815, "next_offset": 52854, "version": 1040},
+    "ledger_rows": 46,
+    "ledger_distinct_identities": 46,
+    "ledger_distinct_transactions": 35,
+    "frozen_link_rows": 4,
+    "frozen_link_version": 4,
+    "frozen_stage": "UNLINKED",
+    "scheduler_receipt_versions": [1, 1],
+    "overview_columns": 10,
+    "overview_postgres": {
+      "assignees": 1,
+      "total": 1,
+      "unprogressed": 1,
+      "received": 1,
+      "recheck": 0,
+      "testing": 0,
+      "final_review": 0,
+      "completed": 0
+    },
+    "runtime_mutation_performed": false
+  },
+  "nonblocking_debt": [
+    "LLM Embedding/Chat/Reranker capabilities remain unavailable; no provider recovery claim",
+    "Existing Vite chunk-size warning remains"
+  ],
+  "evidence_path": ".orchestration/evidence/DEV-FULL-T04-FRESH-VALIDATION.md",
+  "pushed": false,
+  "prep_or_ops_accessed": false,
+  "datariver_v1_accessed": false,
+  "product_files_modified": []
+}
