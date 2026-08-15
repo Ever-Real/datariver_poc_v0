@@ -1,0 +1,80 @@
+{
+  "task": "MCL-COVERAGE-T03-INDEPENDENT-VALIDATION",
+  "task_id": "task_a3524574c9be",
+  "dispatch_id": "ctx_b3c040f1383c",
+  "role": "50_QUALITY_VALIDATION",
+  "model": "gpt-5.6-sol High controlled fallback",
+  "outcome": "FAIL",
+  "status": "TARGET_RECHECK_REQUIRED",
+  "validation_date_kst": "2026-08-15",
+  "starting_head": "fb78713f749ec4afad14eef9a6f72c2f8cd1108d",
+  "product_sha": "a9622e06621d39fd97e5197d2d515e9176204148",
+  "builder_base_sha": "737cee10daaf3af1680e11cdb43b2779d0865756",
+  "product_write": "NONE",
+  "environment": {
+    "os": "Darwin",
+    "arch": "arm64",
+    "node": "v25.9.0",
+    "npm": "11.12.1",
+    "docker_server": "linux/arm64"
+  },
+  "blocking_findings": [
+    {
+      "id": "F-01",
+      "title": "DataHub v1.6 SchemaFieldDataType two-level union source shape is rejected",
+      "location": "frontend/poc-mcl-capture.mjs:421",
+      "probe_exit": 42,
+      "probe_error": "schemaMetadata.type must be a single supported union discriminator.",
+      "impact": "Valid v1.6 schemaMetadata MCL records fail before persistence/checkpoint advancement; actual column and field metadata coverage is not established.",
+      "secondary_gap": "SchemaField.nativeDataType is required by v1.6 PDL but the candidate accepts a missing value as null."
+    }
+  ],
+  "ancestry": {
+    "builder_base_is_ancestor_of_product": true,
+    "product_is_ancestor_of_head": true,
+    "product_changed_path_count": 13,
+    "head_after_product_is_docs_only": true
+  },
+  "package_lock": {
+    "changed_in_product": false,
+    "package_json_sha256": "d41aa826a203243509e7684eb45a733c7b24a26df0dcf4a0145f05e256d83789",
+    "package_lock_sha256": "534d792566f0e9371ca1c7ca7166acbbdcc801f07146450ff54005b188a28be5",
+    "install": "PASS_NPM_CI_370_PACKAGES_0_VULNERABILITIES"
+  },
+  "validation": {
+    "mcl_and_state_store_synthetic_fixtures": "PASS_26_OF_26_WITH_F01_FIXTURE_GAP",
+    "datahub_v1_6_two_level_type_probe": "FAIL_F01_EXIT_42",
+    "poc_server_after_build": "PASS_14_OF_14",
+    "catalog_generation_b_c_search_tree_chat_exact_vector": "PASS_5_OF_5_FULL_FILE",
+    "change_history_api_and_monitoring": "PASS_2_FILES_17_TESTS",
+    "poc_server_full": "PASS_33_OF_33",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build_poc": "PASS_WITH_EXISTING_CHUNK_ADVISORY",
+    "diff_check_allowlist_package_lock": "PASS",
+    "npm_test": "NON_BLOCKING_REPO_TEST_DEBT_83_FILES_PASS_5_FILES_FAIL_564_TESTS_PASS_1_TEST_FAIL"
+  },
+  "known_or_unrelated_debt": [
+    "Four node:test files are collected by Vitest and reported as No test suite found; their relevant node:test invocations passed separately.",
+    "PocApp.test.tsx has one existing fetch expectation failure; candidate does not change vitest.config.ts, PocApp.test.tsx, or the pre-existing fetch-on-monitoring behavior.",
+    "Known B-02 shutdown failures did not reproduce: poc-catalog-performance.test.mjs passed 5/5 under Node v25.9.0."
+  ],
+  "not_executed": [
+    "AUTHORITATIVE_POC_NODE22_LINUX_AMD64_BUILD_IMPORT: control-plane stopped further build work after F-01 was confirmed.",
+    "EXISTING_VOLUME_POSTGRES_RUNTIME_UPGRADE: runtime DB mutation prohibited.",
+    "DB_KAFKA_DATAHUB_PREP_OPS_RUNTIME_MUTATION: prohibited; PREP remains USER_EXECUTED fixture/contract only."
+  ],
+  "docker": {
+    "frontend_image": "NOT_COMPLETED_NON_AUTHORITATIVE",
+    "frontend_reason": "frontend/Dockerfile is not the authoritative POC image and failed at COPY offline_npm/ because that build input was absent.",
+    "image_imported": false,
+    "service_started": false
+  },
+  "evidence_path": ".orchestration/evidence/MCL-COVERAGE-T03-INDEPENDENT-VALIDATION.md",
+  "target_recheck_required": [
+    "Repair and test the DataHub v1.6 SchemaFieldDataType two-level union shape and required nativeDataType boundary.",
+    "Node 22 Linux/AMD64 authoritative deploy/poc/Dockerfile.example build/import.",
+    "Permitted existing-volume PostgreSQL v2 upgrade and second-start no-category-DDL validation.",
+    "USER_EXECUTED PREP/runtime integration validation."
+  ]
+}
