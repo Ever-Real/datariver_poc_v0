@@ -42,6 +42,10 @@ Airflow DAG가 기존 DataRiver API를 요구한다면 downstream 단계는 별�
 `deploy/poc/.env.example`을 `deploy/poc/.env`로 복사하고 연결할 provider만 채웁니다.
 `.env`는 Git에 포함하지 말고 prep/운영 PC에서 파일 권한을 제한합니다. 값은 Web container의
 서버 측 환경에만 전달되고 Vite bundle이나 runtime JavaScript에는 포함되지 않습니다.
+현재 Node POC Change Management Compose는 Change History credential용 secret-file/Docker secret reader를
+직접 지원하지 않습니다. Root platform 문서의 다른 service용 `secrets/` 계약을 이 POC의
+지원으로 해석하지 않습니다. 현재는 ignored `.env`/deployment environment가 credential까지
+소유하며, non-secret `.env` + secret injection/files 분리는 backlog입니다.
 
 - DataHub: `DATAHUB_GMS_URL`, `DATAHUB_GMS_TOKEN`; 사용자용 링크가 필요할 때만
   `DATAHUB_UI_URL`

@@ -11,7 +11,9 @@ IP, schema 본문은 이 문서나 Git evidence에 기록하지 않는다.
 ## 1. 배포 전 확인
 
 - exact source SHA와 image의 `org.opencontainers.image.revision`이 일치해야 한다.
-- `deploy/poc/Dockerfile.example` 또는 검증된 local Dockerfile에
+- `deploy/poc/Dockerfile.example`이 재현 가능한 배포의 canonical Dockerfile이다. `Dockerfile.local`은
+  host 제약을 위한 임시 DEV/PREP compatibility일 뿐이며 release 정본이 아니다.
+- 선택한 Dockerfile에
   `poc-change-history-scheduler.mjs`와 `poc-mcl-capture.mjs` COPY가 모두 있어야 한다.
 - `frontend/package.json`/lock의 `kafkajs`, `@kafkajs/confluent-schema-registry`,
   `kafkajs-snappy`, `snappyjs` pin을 함께 사용한다.
@@ -21,14 +23,32 @@ IP, schema 본문은 이 문서나 Git evidence에 기록하지 않는다.
   `deploy/poc/docker-compose.datahub-provider.yaml`을 함께 사용한다.
 
 ```bash
-docker compose --env-file deploy/poc/.env \
-  -f deploy/poc/docker-compose.poc.yaml \
-  -f deploy/poc/docker-compose.datahub-provider.yaml \
-  config --quiet
+set -eu
+export POC_SOURCE_COMMIT="$(git rev-parse HEAD)"
+
+# A. DataHub와 같은 Docker host의 existing external network를 쓰는 경우
+compose_files=(
+  -f deploy/poc/docker-compose.poc.yaml
+  -f deploy/poc/docker-compose.datahub-provider.yaml
+)
+
+# B. remote DataHub/Kafka/Registry DNS/TCP endpoint를 쓰는 경우는 위 배열 대신 아래를 선택한다.
+# compose_files=(-f deploy/poc/docker-compose.poc.yaml)
+
+docker compose --env-file deploy/poc/.env "${compose_files[@]}" config --quiet
+docker compose --env-file deploy/poc/.env "${compose_files[@]}" build web
+
+image_id="$(docker compose --env-file deploy/poc/.env "${compose_files[@]}" images -q web)"
+image_revision="$(docker image inspect \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id")"
+test "$POC_SOURCE_COMMIT" = "$image_revision"
+printf 'source/image revision verified: %s\n' "$image_revision"
 ```
 
-DataHub 외부 network를 사용하지 않는 원격 DNS/TCP 배포에서는 base Compose만 사용한다. 새 proxy,
-Kafka, Schema Registry 또는 sidecar를 만들지 않는다.
+shell environment의 `POC_SOURCE_COMMIT`이 `.env`의 `local`/이전 SHA placeholder보다 우선한다.
+따라서 매 build마다 `.env`를 수정하지 않고 `checked-out HEAD = build arg = image revision`을
+증명한다. DataHub 외부 network를 사용하지 않는 원격 DNS/TCP 배포에서는 base Compose만
+사용한다. 새 proxy, Kafka, Schema Registry 또는 sidecar를 만들지 않는다.
 
 ## 2. Kafka listener 계약
 
@@ -56,90 +76,130 @@ KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT
 
 ```bash
 set -eu
-SR_URL=http://DATAHUB_SCHEMA_REGISTRY_HOST:8081
-root_file="$(mktemp)"
-subjects_file="$(mktemp)"
-latest_file="$(mktemp)"
-trap 'rm -f "$root_file" "$subjects_file" "$latest_file"' EXIT
+# 첫 실행은 subject candidate만 출력한다. 확인 후 아래 변수를 설정하고 다시 실행한다.
+export ACTUAL_SCHEMA_SUBJECT="${ACTUAL_SCHEMA_SUBJECT:-}"
+docker compose --env-file deploy/poc/.env \
+  -f deploy/poc/docker-compose.poc.yaml \
+  exec -T -e ACTUAL_SCHEMA_SUBJECT="$ACTUAL_SCHEMA_SUBJECT" web \
+  node --input-type=module - <<'NODE'
+import { createHash } from 'node:crypto'
+import { loadPocMclCaptureConfig } from './poc-mcl-capture.mjs'
 
-curl --fail-with-body --silent --show-error "$SR_URL/" >"$root_file"
-curl --fail-with-body --silent --show-error "$SR_URL/subjects" >"$subjects_file"
-python3 - "$subjects_file" <<'PY'
-import json, sys
-from pathlib import Path
-values = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-print("\n".join(item for item in values if isinstance(item, str) and "MetadataChangeLog" in item))
-PY
+// Registry/source hash를 발견하기 전에도 authoritative parser의 auth/TLS 계약을 재사용한다.
+// 두 probe-only hash는 이 Node process의 cloned environment에만 존재하며 env/DB/log에 저장하지 않는다.
+const probeEnvironment = { ...process.env }
+for (const name of ['POC_MCL_SOURCE_IDENTITY_HASH', 'POC_MCL_SCHEMA_CONTRACT_HASH']) {
+  if (!/^[0-9a-f]{64}$/.test(probeEnvironment[name] ?? '')) probeEnvironment[name] = '0'.repeat(64)
+}
+const config = loadPocMclCaptureConfig(probeEnvironment)
+const base = config.schemaRegistry.host.endsWith('/')
+  ? config.schemaRegistry.host
+  : `${config.schemaRegistry.host}/`
+const headers = { accept: 'application/vnd.schemaregistry.v1+json' }
+if (config.schemaRegistry.auth) {
+  const { username, password } = config.schemaRegistry.auth
+  headers.authorization = `Basic ${Buffer.from(`${username}:${password}`, 'utf8').toString('base64')}`
+}
 
-ACTUAL_SUBJECT=ACTUAL_METADATA_CHANGE_LOG_SUBJECT
-curl --fail-with-body --silent --show-error \
-  "$SR_URL/subjects/$ACTUAL_SUBJECT/versions/latest" >"$latest_file"
-python3 - "$latest_file" <<'PY'
-import hashlib, json, sys
-from pathlib import Path
-data = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
-schema = data.get("schema")
-if not isinstance(schema, str):
-    raise SystemExit("Registry schema is not a string")
-print(json.dumps({
-    "subject": data.get("subject"), "version": data.get("version"),
-    "id": data.get("id"), "schemaType": data.get("schemaType", "AVRO"),
-}, separators=(",", ":")))
-print(hashlib.sha256(schema.encode("utf-8")).hexdigest())
-PY
+async function registryJson(path) {
+  const response = await fetch(new URL(path.replace(/^\//, ''), base), {
+    headers,
+    redirect: 'error',
+  })
+  if (!response.ok) throw new Error(`Schema Registry HTTP ${response.status}`)
+  const body = await response.text()
+  try { return JSON.parse(body) } catch { throw new Error('Schema Registry response is not JSON') }
+}
+
+const subjects = await registryJson('/subjects')
+if (!Array.isArray(subjects)) throw new Error('Schema Registry subjects response is not an array')
+const candidates = subjects.filter((value) => typeof value === 'string' && value.includes('MetadataChangeLog'))
+const subject = process.env.ACTUAL_SCHEMA_SUBJECT?.trim()
+if (!subject) {
+  process.stdout.write(`${JSON.stringify({ subjectCandidates: candidates })}\n`)
+} else {
+  if (!candidates.includes(subject)) throw new Error('ACTUAL_SCHEMA_SUBJECT is not in Registry subjects')
+  const latest = await registryJson(`/subjects/${encodeURIComponent(subject)}/versions/latest`)
+  if (typeof latest.schema !== 'string') throw new Error('Registry schema is not a string')
+  const schemaSha256 = createHash('sha256').update(latest.schema, 'utf8').digest('hex')
+  const configured = process.env.POC_MCL_SCHEMA_CONTRACT_HASH
+  process.stdout.write(`${JSON.stringify({
+    subject,
+    version: latest.version,
+    id: latest.id,
+    schemaType: latest.schemaType ?? 'AVRO',
+    schemaSha256,
+    configuredHashMatches: /^[0-9a-f]{64}$/.test(configured ?? '')
+      ? configured === schemaSha256
+      : null,
+  })}\n`)
+}
+NODE
 ```
 
-HTTP status/body가 JSON인지 확인하기 전에는 hash 명령을 실행하지 않는다. 증거에는 subject, subject
-version, schema ID, schema type, SHA-256만 기록하고 전체 schema 본문은 저장하지 않는다.
+`loadPocMclCaptureConfig()`가 anonymous Registry와 username/password Registry를 같은 방식으로
+해석한다. credential은 process output, shell trace, receipt에 출력하지 않는다. HTTP status/body가
+JSON인지 확인하기 전에는 hash를 승인하지 않는다. 증거에는 subject, subject version,
+schema ID, schema type, SHA-256만 기록하고 전체 schema 본문은 저장하지 않는다.
 
 ## 4. Source identity
 
 `POC_MCL_SOURCE_IDENTITY_HASH`는 DataHub 공식 identifier가 아니라 DataRiver의 환경별 운영 계약이다.
-먼저 현재 환경 DB에서 provider/version/schema contract가 같은 source row를 찾고, 정확히 일치하면
-그 환경 안에서만 재사용한다.
+재사용 판정은 provider/version/schema hash 일부 필드 비교가 아니라 아래 여섯 descriptor 전체의
+candidate hash로 한다.
+
+1. actual provider name/version, Kafka cluster ID/topic, Registry subject/schema hash를 발견한다.
+2. 정해진 순서의 LF-terminated descriptor로 candidate source identity hash를 계산한다.
+3. DB에서 그 `source_identity_hash`를 exact key로 조회한다.
+4. exact row 1건과 provider/version/schema hash가 일치할 때만 같은 logical source로 재사용한다.
+5. 없으면 새 source boundary를 생성한다. 다른 cluster의 checkpoint를 재사용하지 않는다.
+
 PREP에서 row가 없을 때 생성하는 descriptor contract 이름은 `PREP_TEST_SOURCE_IDENTITY_V1`이며,
 OPS canonical identity로 자동 승격하지 않는다.
 
 ```bash
-docker compose --env-file deploy/poc/.env \
-  -f deploy/poc/docker-compose.poc.yaml \
-  exec -T pgvector sh -lc '
-psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
-SELECT source_identity_hash, provider_name, provider_version,
-       schema_contract_hash, created_at
-FROM poc_change_history_sources
-ORDER BY created_at, source_identity_hash;
-"'
-```
-
-row가 없을 때만 실제 환경에서 발견한 값으로 아래 LF-terminated 여섯 줄의 UTF-8 SHA-256을 계산한다.
-순서, 공백, 마지막 LF를 바꾸지 않는다.
-
-```bash
 set -eu
+: "${POC_MCL_PROVIDER_NAME:?actual provider name required}"
 : "${POC_MCL_PROVIDER_VERSION:?actual provider version required}"
 : "${ACTUAL_KAFKA_CLUSTER_ID:?actual cluster id required}"
 : "${POC_MCL_KAFKA_TOPIC:?actual MCL topic required}"
 : "${ACTUAL_SCHEMA_SUBJECT:?actual schema subject required}"
 : "${POC_MCL_SCHEMA_CONTRACT_HASH:?actual schema hash required}"
 
-{
-  printf '%s\n' 'provider_name=DataHub'
+CANDIDATE_SOURCE_IDENTITY_HASH="$({
+  printf 'provider_name=%s\n' "$POC_MCL_PROVIDER_NAME"
   printf 'provider_version=%s\n' "$POC_MCL_PROVIDER_VERSION"
   printf 'kafka_cluster_id=%s\n' "$ACTUAL_KAFKA_CLUSTER_ID"
   printf 'topic=%s\n' "$POC_MCL_KAFKA_TOPIC"
   printf 'schema_subject=%s\n' "$ACTUAL_SCHEMA_SUBJECT"
   printf 'schema_contract_hash=%s\n' "$POC_MCL_SCHEMA_CONTRACT_HASH"
-} | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())'
+} | python3 -c 'import hashlib,sys; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest())')"
+printf '%s\n' "$CANDIDATE_SOURCE_IDENTITY_HASH" | grep -Eq '^[0-9a-f]{64}$'
+
+docker compose --env-file deploy/poc/.env \
+  -f deploy/poc/docker-compose.poc.yaml \
+  exec -T -e CANDIDATE_SOURCE_IDENTITY_HASH="$CANDIDATE_SOURCE_IDENTITY_HASH" \
+  pgvector sh -lc \
+  'exec psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+    -v candidate_hash="$CANDIDATE_SOURCE_IDENTITY_HASH"' <<'SQL'
+SELECT source_identity_hash, provider_name, provider_version,
+       schema_contract_hash, created_at
+FROM poc_change_history_sources
+WHERE source_identity_hash = :'candidate_hash';
+SQL
 ```
 
-DEV, PREP, OPS는 각각 실제 provider tuple로 identity를 만든다. 다른 환경의 hash, first exact offset,
-checkpoint를 복사하지 않는다.
+descriptor 순서, 공백, 마지막 LF를 바꾸지 않는다. DB row는 cluster/topic/subject 원문을
+저장하지 않으므로 승인 증거에 여섯 descriptor와 candidate hash의 binding을 함께 남기되
+credential은 남기지 않는다. DEV, PREP, OPS는 각각 실제 provider contract로 identity를 만든다.
+환경 간 source identity, `first_exact_offset`, `next_offset`, checkpoint를 복사하지 않는다.
 
 ## 5. DB 초기화와 기존 volume 갱신
 
 새 PostgreSQL volume은 `docker-entrypoint-initdb.d/001-poc-state.sql`을 한 번 실행한다. 기존 volume에는
 init hook이 재실행되지 않으므로 application update 전에 아래 idempotent SQL을 명시적으로 적용한다.
+이것은 현재 POC의 수동 additive schema-update 계약이며, versioned migration framework가 구현되었다는
+의미가 아니다. 후속 정본은 backlog `POC_SCHEMA_MIGRATION_CONTRACT`다.
 
 ```bash
 docker compose --env-file deploy/poc/.env \
@@ -173,16 +233,36 @@ Scheduler는 아직 `false`로 둔다. candidate web container에서 다음을 �
 # web container가 실제로 보는 advertised broker와 topic offset을 읽는다.
 docker compose --env-file deploy/poc/.env \
   -f deploy/poc/docker-compose.poc.yaml \
-  -f deploy/poc/docker-compose.datahub-provider.yaml \
   exec -T web node --input-type=module - <<'NODE'
 import { Kafka } from 'kafkajs'
-const brokers = process.env.POC_MCL_KAFKA_BROKERS.split(',').map((value) => value.trim()).filter(Boolean)
-const kafka = new Kafka({ clientId: process.env.POC_MCL_KAFKA_CLIENT_ID, brokers })
+import { loadPocMclCaptureConfig } from './poc-mcl-capture.mjs'
+
+// Hash discovery 전에도 제품의 authoritative Kafka TLS/SASL parser를 그대로 사용한다.
+// probe-only hash는 cloned environment에만 넣고 저장·출력하지 않는다.
+const probeEnvironment = { ...process.env }
+for (const name of ['POC_MCL_SOURCE_IDENTITY_HASH', 'POC_MCL_SCHEMA_CONTRACT_HASH']) {
+  if (!/^[0-9a-f]{64}$/.test(probeEnvironment[name] ?? '')) probeEnvironment[name] = '0'.repeat(64)
+}
+const config = loadPocMclCaptureConfig(probeEnvironment)
+const kafka = new Kafka({
+  clientId: config.clientId,
+  brokers: config.brokers,
+  ssl: config.kafkaSsl,
+  sasl: config.kafkaSasl,
+})
 const admin = kafka.admin()
 try {
   await admin.connect()
-  process.stdout.write(`${JSON.stringify(await admin.describeCluster())}\n`)
-  process.stdout.write(`${JSON.stringify(await admin.fetchTopicOffsets(process.env.POC_MCL_KAFKA_TOPIC))}\n`)
+  const cluster = await admin.describeCluster()
+  const offsets = await admin.fetchTopicOffsets(config.topic)
+  process.stdout.write(`${JSON.stringify({
+    clusterId: cluster.clusterId,
+    controller: cluster.controller,
+    brokers: cluster.brokers.map(({ nodeId, host, port }) => ({ nodeId, host, port })),
+  })}\n`)
+  process.stdout.write(`${JSON.stringify(offsets.map(({ partition, low, high }) => ({
+    partition, low, high,
+  })))}\n`)
 } finally {
   await admin.disconnect()
 }
@@ -201,6 +281,11 @@ curl --fail-with-body --silent --show-error \
   http://127.0.0.1:${POC_PORT:-39080}/api/v1/change-history/access >/dev/null
 ```
 
+이 probe는 `loadPocMclCaptureConfig()`의 brokers/client ID/SSL/SASL 계약을 사용하므로 TLS/SASL
+환경을 anonymous처럼 진단하지 않는다. SASL username/password는 출력하지 않고, 증거에는
+source identity에 필요한 cluster ID, 도달성 판정에 필요한 broker host/port, partition low/high만
+남긴다.
+
 ## 7. Phase B — exact boundary와 canonical bounded capture
 
 metadata를 변경하기 전에 아래 runner를 web container 내부에서 실행한다. runner는 container가 이미
@@ -209,7 +294,6 @@ metadata를 변경하기 전에 아래 runner를 web container 내부에서 실�
 ```bash
 docker compose --env-file deploy/poc/.env \
   -f deploy/poc/docker-compose.poc.yaml \
-  -f deploy/poc/docker-compose.datahub-provider.yaml \
   exec -T web node --input-type=module - <<'NODE'
 import { createPocMclCapture } from './poc-mcl-capture.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
@@ -247,10 +331,14 @@ REMOVE해 원복한 뒤 다시 capture한다.
 ```text
 POC_CHANGE_HISTORY_SCHEDULER_ENABLED=true
 POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE=Asia/Seoul
+POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME=datariver:poc:change-history-scheduler:v1
 ```
 
 startup은 현재 KST day boundary의 missed-run을 시도하고, PostgreSQL advisory lock 아래 capture 후 catalog
 reconciliation 순서로 실행한다. durable receipt가 성공해야 같은 KST 날짜의 restart를 억제한다.
+이 lock name은 logical deployment 간에는 unique해야 하고, 같은 logical deployment의 restart, rebuild,
+application release 사이에서는 stable해야 한다. release마다 random/new namespace를 생성하면
+동일 KST boundary의 exclusive execution/suppression 계약을 우회할 수 있으므로 금지한다.
 실패한 capture는 receipt/checkpoint를 성공 처리하지 않는다. 현재 제품에는 operator용 HTTP manual-trigger
 endpoint가 없다. 실제 자정 timer를 관찰하지 않았으면 `DAILY_CLOCK_NOT_OBSERVED`로 기록한다.
 

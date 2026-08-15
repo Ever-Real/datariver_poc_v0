@@ -68,8 +68,14 @@ parser를 직접 요구하지 않게 한다. adapter는 provider payload를 boun
 ```ts
 interface MetadataChangeProvider {
   describeSource(): Promise<SourceContract>
-  captureBoundary(): Promise<PartitionBoundary[]>
+  captureBoundary(): Promise<SourceBoundary[]>
   readBounded(request: CaptureRequest): Promise<NormalizedChangeBatch>
+}
+
+interface SourceBoundary {
+  source: SourceContract
+  position: OpaqueSourcePosition
+  observedAt: Instant
 }
 
 interface CurrentCatalogProvider {
@@ -79,9 +85,13 @@ interface CurrentCatalogProvider {
 ```
 
 `NormalizedChangeBatch`는 provider-neutral asset identity, category, operation, bounded before/after,
-actor/source time, provider event identity와 partition/offset 같은 opaque source position을 제공한다.
+actor/source time, provider event identity와 opaque source position을 제공한다. `SourceBoundary`는
+provider-specific position을 해석하지 않는 boundary envelope이다. Kafka adapter 내부만 partition,
+low/high watermark, offset을 해석한다. 다른 adapter는 cursor, token, timestamp, revision 또는
+opaque source position을 사용할 수 있다.
 Change History, CR와 Monitoring은 이 normalized event만 소비한다. provider-specific fields는 source
-diagnostic/reference 범위 밖으로 전파하지 않는다.
+diagnostic/evidence용 opaque value로만 보존하고 domain decision, CR stage, authorization 또는
+aggregation에서 해석하지 않는다.
 
 `CurrentCatalogGeneration`은 complete/partial/failure 증거, generation identity와 asset current facts를
 제공한다. complete 증거가 없는 failure/partial result는 deletion 권한을 갖지 않는다.
@@ -90,7 +100,9 @@ diagnostic/reference 범위 밖으로 전파하지 않는다.
 
 1. 현재 behavior/failure/authorization tests를 module contract 기준으로 고정한다.
 2. pure normalization과 current-generation contract를 provider adapter port 뒤로 이동한다.
-3. storage interface를 기존 transaction/CAS/advisory-lock 의미 그대로 추출한다.
+3. storage contract는 exclusive scheduler execution, atomic ledger append + checkpoint advancement, CAS,
+   replay idempotency라는 semantic guarantee로 추출한다. PostgreSQL adapter는 이를 transaction,
+   advisory lock과 unique constraint로 구현할 수 있지만 domain port가 PostgreSQL 용어를 요구하지 않는다.
 4. HTTP와 frontend type을 feature 단위로 이동하되 API/route/UX를 바꾸지 않는다.
 5. 두 번째 provider 요구가 실제 승인될 때 conformance suite와 별도 adapter를 추가한다.
 6. service/container 분리는 measured lifecycle/load/failure isolation evidence와 별도 ADR이 있을 때만

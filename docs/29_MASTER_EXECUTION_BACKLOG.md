@@ -380,11 +380,14 @@ DEV 증거로 승격하지 않는다.
 | CM-PROD-06 | P2 | Chat routing/retrieval/response refinement | `BACKLOG`; current/deleted correctness와 분리 |
 | CM-PROD-07 | P2 | Vite production chunk-size warning 해소 | `BACKLOG`; 기능 blocker 아님 |
 | CM-PROD-08 | P1 | POC secret-file/direct secret injection 지원 여부 결정 | `BACKLOG`; 현재 host-local ignored `.env` → container env 계약만 지원 |
-| CM-PROD-09 | P1 | local-only `Dockerfile.local` drift 제거: tracked Dockerfile 공통 사용 또는 release drift check | `BACKLOG`; scheduler/MCL COPY와 lockfile dependency가 필수 |
+| CM-PROD-09 | P1 | `Dockerfile.local retirement / drift removal`: tracked canonical Dockerfile only로 수렴 | `BACKLOG`; local file은 임시 DEV/PREP compatibility일 뿐이며 scheduler/MCL COPY·package/lock·revision drift 검증 필수 |
 | CM-PROD-10 | P1 | legacy `scripts/export_poc_release.sh`의 static/simulated/no-remote bundle을 current live-provider release contract로 교체하거나 명시적으로 retire | `BACKLOG`; 현재 canonical 배포는 tracked Compose build/update runbook |
 | CM-PROD-11 | P1 | DataHub Timeline retained-history initial backfill adapter와 target retention gate 구현 | `BACKLOG`; ADR-0123 계약만 존재하고 current Node runtime에는 미구현 |
+| CM-PROD-12 | P1 | `REPRODUCIBLE_DEPLOYMENT_ACCEPTANCE`: `git pull → config/secrets → exact-revision build → Compose A/B up → health/smoke` 인수 계약 | `BACKLOG`; tracked Dockerfile, source/image revision equality, no manual network connect, Linux/amd64 PREP/OPS evidence로 닫는다 |
+| CM-PROD-13 | P1 | `POC_SCHEMA_MIGRATION_CONTRACT`: existing-volume schema version, ordered upgrade, read-back, rollback/forward-fix 계약 | `BACKLOG`; 현재는 `001-poc-state.sql` 수동/idempotent 재적용이며 versioned migration framework가 아님 |
+| CM-PROD-14 | P2 | browserless `127.0.0.1:39080` attachment URL fallback 검토/제거 | `BACKLOG`; browser runtime은 `location.origin`을 쓰며 현재 Change Management provider endpoint 계약과는 분리 |
 
-### EPIC: MODULAR_PRODUCT_ARCHITECTURE
+### EPIC: MODULAR_PRODUCT_ARCHITECTURE (`P1`)
 
 목표는 feature isolation, 변경 blast-radius 감소, domain portability, 다른 metadata platform adapter와
 배포 단위 안정성이다. 현재 runtime을 대규모 refactor하지 않으며

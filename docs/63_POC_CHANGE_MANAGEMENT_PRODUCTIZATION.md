@@ -4,8 +4,17 @@
 
 이 문서는 DataRiver POC의 Change History, Change Management, Monitoring, User/System Access와
 Catalog current projection을 신규 환경에서 재현하고 운영하기 위한 현재 구현 기준서다.
-제품 동작 기준은 product SHA `4aea6d19c64253130e00d997c2837b74fac4837d`, 검증 기준은 evidence
-SHA `313a559bdd9300d3ee2021935d2dbac0319bafd1`이다. 두 SHA 사이에는 제품 파일 변경이 없다.
+
+| Lineage 항목 | 목적 | SHA 계약 |
+|---|---|---|
+| Functional Product SHA | 동결한 Change Management/MCL/Access/Monitoring runtime semantics | `4aea6d19c64253130e00d997c2837b74fac4837d` |
+| Runtime Validation Evidence SHA | 위 제품 SHA의 DEV runtime/fresh validation 증거 | `313a559bdd9300d3ee2021935d2dbac0319bafd1` |
+| Productization Documentation SHA | 이 문서·Runbook·sample config·backlog을 마지막으로 변경한 docs commit | matching closeout receipt의 `documentation_sha`; 보정 시작 anchor는 `01047b08d3a4c06c614c691bdd1f4f7219438ed8` |
+| Closeout Validation Evidence SHA | 문서/config/deployment 정적 검증을 담은 evidence/receipt commit | 최종 closeout 보고의 exact evidence SHA; 보정 시작 anchor는 `80b2e4998880f33e9d7b2fc63165eaebcfddf1cb` |
+
+Git commit은 자기 자신의 SHA를 내용에 안정적으로 포함할 수 없으므로, 최종 documentation과
+closeout evidence SHA는 matching receipt와 배포 판정 보고가 정본이다. Functional Product와 Runtime
+Evidence 사이에는 제품 파일 변경이 없다.
 
 상태 표기는 다음 의미로만 사용한다.
 
@@ -113,7 +122,7 @@ canonical이다. 아래 `R/O`는 required/optional, `S`는 secret, `Restart`는 
 | cache/graph | `POC_REDIS_IMAGE`, `POC_REDIS_PORT`, `POC_NEO4J_HTTP_PORT`, `NEO4J_IMAGE`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` | R/O | Compose-owned Redis/Neo4j | password Y | Y |
 | DataHub | `DATAHUB_GMS_URL`, `DATAHUB_GMS_TOKEN`, `DATAHUB_UI_URL` | R/O | container-routable GMS and optional browser link | token Y | Y |
 | Access | `POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID` | O* | registered active user ID; private Change History API에는 사실상 required | N | Y |
-| Scheduler | `POC_CHANGE_HISTORY_SCHEDULER_ENABLED`, `POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE`, `POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME` | R/O | disabled-first, IANA zone, deployment-unique lock | N | Y |
+| Scheduler | `POC_CHANGE_HISTORY_SCHEDULER_ENABLED`, `POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE`, `POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME` | R/O | disabled-first, IANA zone, logical deployment별 unique·release 간 stable lock | N | Y |
 | Kafka/MCL | `POC_MCL_KAFKA_BROKERS`, `POC_MCL_KAFKA_CLIENT_ID`, `POC_MCL_KAFKA_GROUP_ID`, `POC_MCL_KAFKA_TOPIC`, `POC_MCL_SOURCE_IDENTITY_HASH`, `POC_MCL_SCHEMA_CONTRACT_HASH`, `POC_MCL_PROVIDER_NAME`, `POC_MCL_PROVIDER_VERSION` | R when enabled | routable brokers, isolated client/group, actual topic/provider and 64-char hashes | N | Y |
 | Kafka auth | `POC_MCL_KAFKA_SSL`, `POC_MCL_KAFKA_SASL_MECHANISM`, `POC_MCL_KAFKA_SASL_USERNAME`, `POC_MCL_KAFKA_SASL_PASSWORD` | O | target Kafka TLS/SASL contract | user/password Y | Y |
 | Schema Registry | `POC_MCL_SCHEMA_REGISTRY_URL`, `POC_MCL_SCHEMA_REGISTRY_USERNAME`, `POC_MCL_SCHEMA_REGISTRY_PASSWORD` | R/O | actual Registry root and optional auth | user/password Y | Y |
@@ -156,7 +165,7 @@ hash 또는 credential이 아니다. 모든 runtime 변수 변경은 별도 표�
 | `POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID` | C | registered active subject ID | N | Y |
 | `POC_CHANGE_HISTORY_SCHEDULER_ENABLED` | O | `false` until direct capture passes | N | Y |
 | `POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE` | O | IANA zone, `Asia/Seoul` | N | Y |
-| `POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME` | O | deployment-unique lock namespace | N | Y |
+| `POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME` | O | logical deployment 간 unique, 같은 deployment의 restart/rebuild/release 간 stable namespace | N | Y |
 | `POC_MCL_KAFKA_BROKERS` | C | comma-separated routable brokers | N | Y |
 | `POC_MCL_KAFKA_CLIENT_ID` | C | deployment-owned client ID | N | Y |
 | `POC_MCL_KAFKA_GROUP_ID` | C | isolated consumer group | N | Y |
@@ -232,36 +241,55 @@ hash 또는 credential이 아니다. 모든 runtime 변수 변경은 별도 표�
 - `.env`는 Git에 commit하지 않고, 출력·receipt·브라우저·DB ledger에 실제 secret을 넣지 않는다.
 - secret file/injection 개선은 backlog이며 적용 전 현재 environment contract를 바꾸지 않는다.
 
+Root `README.md`의 전체 DataRiver stack은 다른 service에 대해 `secrets/` mount/reference를 설명할 수
+있지만, 그 설명을 현재 Node POC Change Management runtime의 secret-file 지원으로 해석하지
+않는다. 현재 계약은 `ignored .env/deployment environment = non-secret config + credential`이고,
+목표 계약은 `.env = non-secret`, `secret injection/files = credential`이다.
+
 ## 7. 초기화와 운영
 
 ### 7.1 최초 설치
 
 ```bash
+set -eu
 git pull --ff-only origin dev
-git rev-parse HEAD
-cp deploy/poc/.env.example deploy/poc/.env
-# host-local .env에 실제 non-secret config와 secret source를 입력한다.
-docker compose --env-file deploy/poc/.env \
-  -f deploy/poc/docker-compose.poc.yaml \
-  -f deploy/poc/docker-compose.datahub-provider.yaml config --quiet
-docker compose --env-file deploy/poc/.env \
-  -f deploy/poc/docker-compose.poc.yaml \
-  -f deploy/poc/docker-compose.datahub-provider.yaml build web
-docker compose --env-file deploy/poc/.env \
-  -f deploy/poc/docker-compose.poc.yaml \
-  -f deploy/poc/docker-compose.datahub-provider.yaml up -d
+if [ ! -e deploy/poc/.env ]; then
+  cp deploy/poc/.env.example deploy/poc/.env
+fi
+# 현재 POC 계약에서는 ignored .env에 non-secret config와 credential을 입력한다.
+export POC_SOURCE_COMMIT="$(git rev-parse HEAD)"
+
+# A. DataHub와 같은 Docker host/external Docker network를 사용
+compose_files=(
+  -f deploy/poc/docker-compose.poc.yaml
+  -f deploy/poc/docker-compose.datahub-provider.yaml
+)
+# B. remote DataHub/Kafka/Registry DNS/TCP endpoint를 사용하면 위 배열 대신:
+# compose_files=(-f deploy/poc/docker-compose.poc.yaml)
+
+docker compose --env-file deploy/poc/.env "${compose_files[@]}" config --quiet
+docker compose --env-file deploy/poc/.env "${compose_files[@]}" build web
+image_id="$(docker compose --env-file deploy/poc/.env "${compose_files[@]}" images -q web)"
+image_revision="$(docker image inspect \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id")"
+test "$POC_SOURCE_COMMIT" = "$image_revision"
+docker compose --env-file deploy/poc/.env "${compose_files[@]}" up -d
 curl -fsS http://127.0.0.1:39080/healthz
 curl -fsS http://127.0.0.1:39080/poc-api/capabilities
 ```
 
-외부 DataHub network가 필요할 때만 provider overlay를 사용한다. 이 overlay는 이미 존재하는
-`${DATAHUB_EXTERNAL_NETWORK}`를 연결하며 DataHub/Kafka/Registry를 생성하거나 재시작하지 않는다.
+A의 overlay는 이미 존재하는 `${DATAHUB_EXTERNAL_NETWORK}`를 연결하며
+DataHub/Kafka/Registry를 생성하거나 재시작하지 않는다. B에서는 overlay를 붙이지 않는다.
+shell-exported exact SHA가 `.env`의 `POC_SOURCE_COMMIT` placeholder를 override하므로 build마다 `.env`의
+이전 SHA를 수정하지 않는다.
 
 ### 7.2 기존 PostgreSQL volume schema 적용
 
 `docker-entrypoint-initdb.d`는 기존 volume에서 자동 재실행되지 않는다. 백업 뒤 현재 SHA의 SQL을
 기존 `pgvector`에 명시적으로 적용한다. SQL은 `IF NOT EXISTS`/catalog guard를 사용하지만, 성공 로그와
 table/constraint 확인 없이 idempotent 적용을 주장하지 않는다.
+이는 현재 POC의 `001-poc-state.sql` 수동/idempotent 재적용 방식이지 versioned migration
+framework가 아니다. 향후 정본은 backlog `POC_SCHEMA_MIGRATION_CONTRACT`다.
 
 ```bash
 docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml \
@@ -272,14 +300,18 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
 ### 7.3 application-only update
 
 ```bash
+set -eu
 git pull --ff-only origin dev
-git rev-parse HEAD
-docker compose --env-file deploy/poc/.env \
-  -f deploy/poc/docker-compose.poc.yaml \
-  -f deploy/poc/docker-compose.datahub-provider.yaml build web
-docker compose --env-file deploy/poc/.env \
-  -f deploy/poc/docker-compose.poc.yaml \
-  -f deploy/poc/docker-compose.datahub-provider.yaml up -d --no-deps web
+export POC_SOURCE_COMMIT="$(git rev-parse HEAD)"
+# A(same Docker host):
+compose_files=(-f deploy/poc/docker-compose.poc.yaml -f deploy/poc/docker-compose.datahub-provider.yaml)
+# B(remote DNS/TCP)에서는 위 배열 대신:
+# compose_files=(-f deploy/poc/docker-compose.poc.yaml)
+docker compose --env-file deploy/poc/.env "${compose_files[@]}" build web
+image_id="$(docker compose --env-file deploy/poc/.env "${compose_files[@]}" images -q web)"
+test "$POC_SOURCE_COMMIT" = "$(docker image inspect \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id")"
+docker compose --env-file deploy/poc/.env "${compose_files[@]}" up -d --no-deps web
 curl -fsS http://127.0.0.1:39080/healthz
 ```
 
@@ -296,8 +328,16 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
 
 # exact 이전 SHA로 application-only rollback
 git checkout PREVIOUS_APPROVED_SHA
-docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml build web
-docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml up -d --no-deps web
+export POC_SOURCE_COMMIT="$(git rev-parse HEAD)"
+# A(same Docker host):
+compose_files=(-f deploy/poc/docker-compose.poc.yaml -f deploy/poc/docker-compose.datahub-provider.yaml)
+# B(remote DNS/TCP)에서는 위 배열 대신:
+# compose_files=(-f deploy/poc/docker-compose.poc.yaml)
+docker compose --env-file deploy/poc/.env "${compose_files[@]}" build web
+image_id="$(docker compose --env-file deploy/poc/.env "${compose_files[@]}" images -q web)"
+test "$POC_SOURCE_COMMIT" = "$(docker image inspect \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id")"
+docker compose --env-file deploy/poc/.env "${compose_files[@]}" up -d --no-deps web
 ```
 
 rollback은 DB/ledger/checkpoint/source를 삭제하거나 rewind하지 않는다. image tag와 exact SHA를
@@ -307,8 +347,9 @@ receipt에 기록하며, DB contract가 바뀐 release는 별도 backup/rollback
 
 1. DataHub actual version, Kafka cluster/topic/advertised listener, Registry subject/version/ID/hash를
    확인한다.
-2. 동일 provider/version/schema hash의 기존 source row가 있으면 그 identity를 재사용한다. 다른
-   환경의 hash나 offset은 재사용하지 않는다.
+2. provider name/version, Kafka cluster ID/topic, Registry subject/schema hash 여섯 descriptor 전체로
+   candidate source identity hash를 먼저 계산한다. DB에서 그 exact hash row가 있을 때만
+   재사용하며 provider/version/schema hash 일부 일치만으로 선택하지 않는다.
 3. scheduler를 `false`로 두고 runbook의 canonical bounded capture로 first exact boundary를 만든다.
 4. checkpoint와 ledger commit, replay/dedup을 확인한다.
 5. server-held active subject와 access API를 확인한다.
@@ -327,7 +368,9 @@ receipt에 기록하며, DB contract가 바뀐 release는 별도 backup/rollback
 - provider partial/failure는 asset deletion 증거가 아니다. last-good current projection을 유지한다.
 - unit test는 live DEV DB 환경을 상속해서 실행하지 않는다. test isolation guard가 명시적 isolated target과 ack 없이 persistent DB write를 차단한다.
 - 삭제 asset의 current row는 제외해도 Change History와 CR link history는 삭제하지 않는다.
-- `Dockerfile.local`을 쓰면 scheduler/MCL runtime COPY와 current lockfile/dependency를 tracked Dockerfile과 비교한다.
+- tracked `deploy/poc/Dockerfile.example`이 reproducible deployment의 canonical 목표다.
+  `Dockerfile.local`은 host 제약을 위한 임시 DEV/PREP compatibility일 뿐이며 scheduler/MCL COPY와
+  package/lock drift를 매 배포 검증해야 한다. retirement/drift removal은 backlog이다.
 - `scripts/export_poc_release.sh`는 remote가 없는 legacy static/simulated bundle 계약이다. 현재 live-provider
   Change Management의 canonical publication 경로로 사용하지 않으며, 교체 또는 명시적 retirement는 backlog다.
 
@@ -405,8 +448,9 @@ E2E를 반복하지 않고 config render, env/source 대조, link/path, secret/h
 잔여 항목은 [`docs/29_MASTER_EXECUTION_BACKLOG.md`](29_MASTER_EXECUTION_BACKLOG.md)가 canonical이다.
 핵심 target/debt는 `VECTOR_PROVIDER_UNAVAILABLE`, Chat/vector deleted-current target recheck, PREP targeted
 recheck, OPS validation/deployment, `DAILY_CLOCK_NOT_OBSERVED`, GX/Quality integration, Chat refinement,
-Vite chunk-size warning, secret-file injection, `Dockerfile.local` drift와
-`MODULAR_PRODUCT_ARCHITECTURE`다.
+Vite chunk-size warning, secret-file injection, `Dockerfile.local` retirement, legacy export helper,
+Timeline backfill, browserless loopback fallback, `POC_SCHEMA_MIGRATION_CONTRACT`,
+`REPRODUCIBLE_DEPLOYMENT_ACCEPTANCE`와 `MODULAR_PRODUCT_ARCHITECTURE`다.
 
 ## 13. Closeout hardcoding·secret audit
 
