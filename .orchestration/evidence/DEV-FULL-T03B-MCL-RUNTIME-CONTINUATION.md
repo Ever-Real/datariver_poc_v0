@@ -129,4 +129,3 @@ evidence로 사용한다. 제품 diff가 없고 runtime image는 이미 Node 22 
 - MCL checkpoint `52942/version 94`, ledger `33`은 사고 전후 불변이다.
 - 검증된 이전 core JSON이 없어 복구는 `NOT_ATTEMPTED_NO_VERIFIED_PRIOR_VALUE`다. 이 blocker는
   core의 권위 있는 이전 snapshot을 확보한 뒤 별도 통제 작업으로 복구해야 한다.
-
