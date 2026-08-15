@@ -470,9 +470,6 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
       body: JSON.stringify(body),
     })
 
-    const mismatch = await put(adminOrigin, { ...document, active_subject_id: 'steward-subject' })
-    assert.equal(mismatch.status, 401)
-    assert.equal((await mismatch.json()).code, 'SUBJECT_UNRESOLVED')
     const selfAppointedViewer = await put(adminOrigin, {
       ...document,
       users: document.users.map((user) => user.subject_id === 'configured-admin'
@@ -482,13 +479,15 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
     assert.equal(selfAppointedViewer.status, 403)
     assert.equal((await stateStore.readChangeHistoryAccess()).access.value, null)
 
-    const bootstrap = await put(adminOrigin, document)
+    const bootstrap = await put(adminOrigin, { ...document, active_subject_id: 'steward-subject' })
     assert.equal(bootstrap.status, 200)
     assert.equal(bootstrap.headers.get('etag'), '"1"')
     const bootstrapped = await bootstrap.json()
     assert.equal(bootstrapped.version, 1)
+    assert.equal(bootstrapped.active_subject_id, 'steward-subject')
     assert.equal(bootstrapped.system_schema_scopes[0].platform, 'postgres')
     assert.deepEqual((await stateStore.read('core')).value.changeRecords, originalChangeRecords)
+    assert.equal((await request(adminOrigin)).status, 200, 'stored active metadata is not runtime identity authority')
 
     const privateRead = await fetch(new URL('/poc-api/state/change-history-access-v1', adminOrigin))
     assert.equal(privateRead.status, 404)
@@ -531,8 +530,7 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
         expectedAccessVersion: 0,
         expectedCoreVersion: 0,
         accessValue: {
-          schema_version: 1,
-          active_subject_id: subjectId,
+          schema_version: 1, active_subject_id: 'stored-admin',
           users: [{ subject_id: subjectId, role, active, provider_owner_refs: [] }],
           system_assignments: [],
         },
@@ -899,7 +897,7 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
   }
   const baseProjection = {
     access: { version: 1, value: {
-      schema_version: 1, active_subject_id: 'role-subject',
+      schema_version: 1, active_subject_id: 'stored-admin',
       policy: { version: 1, priority_order: 'ASCENDING', fallback: ['DATA_STEWARD', 'DEVELOPER', 'DATAHUB_OWNER', 'UNASSIGNED'] },
       users: [{ subject_id: 'role-subject', role: 'viewer', active: true, provider_owner_refs: [] }], system_assignments: [],
     } },

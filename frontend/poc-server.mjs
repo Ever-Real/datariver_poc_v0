@@ -591,11 +591,8 @@ function changeHistoryDocumentFromSnapshot(snapshot) {
 }
 
 function requireActiveAccessAdmin(document, subjectId) {
-  if (document.active_subject_id !== subjectId) {
-    throw accessError(401, 'SUBJECT_UNRESOLVED', 'The configured and stored active subjects do not match.')
-  }
   const user = document.users.find((item) => item.subject_id === subjectId)
-  if (!user?.active) throw accessError(401, 'SUBJECT_UNRESOLVED', 'The active subject is missing or inactive.')
+  if (!user?.active) throw accessError(401, 'SUBJECT_UNRESOLVED', 'The configured subject is missing or inactive.')
   if (user.role !== 'admin') throw accessError(403, 'ACCESS_ADMIN_REQUIRED', 'An active admin is required.')
 }
 
@@ -693,11 +690,8 @@ const changeHistoryPresentationStages = new Set(['UNLINKED', 'RECEIVED', 'RECHEC
 const changeHistoryPrecisionValues = ['EXACT_TIMELINE', 'EXACT_MCL', 'DRIFT_DETECTED', 'BACKFILLED_BEST_EFFORT', 'INITIAL_BASELINE']
 
 function changeHistoryActiveUser(document, subjectId) {
-  if (document.active_subject_id !== subjectId) {
-    throw accessError(401, 'SUBJECT_UNRESOLVED', 'The configured and stored active subjects do not match.')
-  }
   const user = document.users.find((item) => item.subject_id === subjectId)
-  if (!user?.active) throw accessError(401, 'SUBJECT_UNRESOLVED', 'The active subject is missing or inactive.')
+  if (!user?.active) throw accessError(401, 'SUBJECT_UNRESOLVED', 'The configured subject is missing or inactive.')
   return user
 }
 
