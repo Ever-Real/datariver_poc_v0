@@ -493,8 +493,8 @@ scripts/compose.sh --env-file .env.wsl-preparation \
 
 인증 문제가 있으면 `METADATA_SERVICE_AUTH_ENABLED=false`로 되돌리고 **같은** signing key/salt를
 유지한 채 GMS/Frontend를 재생성한다. 이 rollback은 metadata를 삭제하지 않는다. 변수와 token
-전제조건은 [동봉된 DataHub v1.6 authentication 문서](runtime/datahub-v1.6.0/docs/authentication/README.md)와
-[personal access token 문서](runtime/datahub-v1.6.0/docs/authentication/personal-access-tokens.md)를 따른다.
+전제조건은 대상 환경에 배포된 정확한 DataHub v1.6 버전의 authentication과 personal access
+token 문서를 따른다. 해당 문서가 repository에 동봉되었다고 가정하지 않는다.
 
 ### Case 1 — 기존 DataHub가 이미 운영 중인 경우 (현재 권장 경로)
 
