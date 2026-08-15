@@ -12,7 +12,7 @@ import type {
 import { QualityApi } from '../features/quality/qualityApi'
 import { GovernanceDocumentsApi } from '../features/governance-documents/governanceDocumentsApi'
 import type { ChangeHistoryAccessDocument } from '../features/change-history/types'
-import { resetPocMemory, useStableApiClient } from './pocApi'
+import { isResubmittedReviewForOverview, resetPocMemory, useStableApiClient } from './pocApi'
 
 const meta = {
   observed_at: '2026-08-11T10:00:00.000Z',
@@ -294,6 +294,36 @@ describe('POC live-provider compatibility adapter', () => {
         minio: true,
       }
     installGatewayMock()
+  })
+
+  it('classifies IN_REVIEW resubmission from edited-round or transition evidence', () => {
+    const initial = {
+      state: 'IN_REVIEW' as const,
+      current_round_id: 'round-1',
+      current_round_number: 1,
+      rounds: [{ id: 'round-1', revision_kind: 'INITIAL' as const }],
+      transitions: [{
+        round_id: 'round-1', from_state: 'REGISTERED' as const, to_state: 'IN_REVIEW' as const,
+      }],
+    }
+    expect(isResubmittedReviewForOverview(initial)).toBe(false)
+    expect(isResubmittedReviewForOverview({
+      ...initial,
+      rounds: [{ id: 'round-1', revision_kind: 'EDITED' }],
+    })).toBe(true)
+    expect(isResubmittedReviewForOverview({
+      ...initial,
+      transitions: [
+        { round_id: 'round-1', from_state: 'CHANGES_REQUESTED', to_state: 'REGISTERED' },
+        { round_id: 'round-1', from_state: 'REGISTERED', to_state: 'IN_REVIEW' },
+      ],
+    })).toBe(true)
+    expect(isResubmittedReviewForOverview({
+      ...initial,
+      transitions: [{
+        round_id: 'round-1', from_state: 'CHANGES_REQUESTED', to_state: 'IN_REVIEW',
+      }],
+    })).toBe(true)
   })
 
   afterEach(() => {

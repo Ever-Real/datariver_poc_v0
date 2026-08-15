@@ -479,6 +479,30 @@ function changeSummaryOf(record: ChangeRequestRecord): ChangeRequestSummary {
   }
 }
 
+export function isResubmittedReviewForOverview(record: {
+  state: ChangeRequestState
+  current_round_id: string
+  current_round_number: number
+  rounds: Array<{ id: string; revision_kind: 'LEGACY' | 'INITIAL' | 'EDITED' }>
+  transitions: Array<{
+    round_id: string
+    from_state: ChangeRequestState
+    to_state: ChangeRequestState
+  }>
+}): boolean {
+  if (record.state !== 'IN_REVIEW') return false
+  const currentRound = record.rounds.find((round) => round.id === record.current_round_id)
+  if (record.current_round_number > 1 || currentRound?.revision_kind === 'EDITED') return true
+  const currentTransitions = record.transitions.filter((transition) => (
+    transition.round_id === record.current_round_id
+  ))
+  const enteredReview = currentTransitions.some((transition) => transition.to_state === 'IN_REVIEW')
+  return currentTransitions.some((transition) => (
+    transition.from_state === 'CHANGES_REQUESTED'
+    && (transition.to_state === 'IN_REVIEW' || (transition.to_state === 'REGISTERED' && enteredReview))
+  ))
+}
+
 function changeRequestSchemaOverview(): ChangeRequestSchemaOverview[] {
   const activeMemberships = new Set(adminMemberships
     .filter((member) => member.subject_active && member.membership_active)
@@ -536,7 +560,7 @@ function changeRequestSchemaOverview(): ChangeRequestSchemaOverview[] {
         row.pending_count += 1
         row.received_count += 1
       } else if (record.state === 'IN_REVIEW') {
-        if (record.current_round_number > 1) row.recheck_count += 1
+        if (isResubmittedReviewForOverview(record)) row.recheck_count += 1
         else row.received_count += 1
       } else if (record.state === 'CHANGES_REQUESTED') row.recheck_count += 1
       else if (['TESTING', 'APPLY_QUEUED', 'APPLYING', 'APPLY_FAILED'].includes(record.state)) row.testing_count += 1
