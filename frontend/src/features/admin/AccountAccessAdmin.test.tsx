@@ -71,7 +71,7 @@ describe('AccountAccessAdmin authorization-bound navigation', () => {
     const context: AdminReadContext = {
       subject_id: 'administrator', workspace_id: 'workspace-one', display_name: 'Administrator',
       authentication_assurance: 'PASSWORD', fallback_enabled: false,
-      allowed_operations: ['MEMBERSHIP_ACCESS_READ'], action_vocabulary: ['POC_OPEN_ACCESS_V1'],
+      allowed_operations: ['MEMBERSHIP_ACCESS_READ'], action_vocabulary: ['POC_LOCAL_ACCOUNT_ADMIN_V1'],
     }
     const api = {
       listPocAdminUsers: vi.fn(() => Promise.resolve({

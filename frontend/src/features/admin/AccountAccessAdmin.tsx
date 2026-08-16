@@ -48,7 +48,7 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
   const { context, messages } = props
   const operations = useMemo(() => new Set(context?.allowed_operations ?? []), [context])
   const canReadMemberships = operations.has('MEMBERSHIP_ACCESS_READ')
-  const pocLocalAccounts = context?.action_vocabulary.includes('POC_OPEN_ACCESS_V1') ?? false
+  const pocLocalAccounts = context?.action_vocabulary.includes('POC_LOCAL_ACCOUNT_ADMIN_V1') ?? false
   const canReadRenewals = operations.has('MEMBERSHIP_RENEWAL_READ')
   const [roleManagementOpen, setRoleManagementOpen] = useState(false)
   const [renewalsOpen, setRenewalsOpen] = useState(false)

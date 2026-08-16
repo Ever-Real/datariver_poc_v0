@@ -1702,7 +1702,7 @@ class PocApiClient {
         ? pocAdminOperations
         : [],
       action_vocabulary: presentationAuthorization?.capabilities.includes('admin.manage')
-        ? [...presentationAuthorization.capabilities, 'POC_OPEN_ACCESS_V1']
+        ? [...presentationAuthorization.capabilities, 'POC_LOCAL_ACCOUNT_ADMIN_V1']
         : presentationAuthorization?.capabilities ?? [],
     }
     if (path === '/admin/classification-access/policies/current/summary' && method === 'GET') {

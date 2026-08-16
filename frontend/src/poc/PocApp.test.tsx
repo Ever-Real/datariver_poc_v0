@@ -201,7 +201,7 @@ describe('POC compatibility application', () => {
     expect(await screen.findByRole('heading', { name: /관리자 및 데이터 거버넌스|Administration and data governance/ })).toBeVisible()
     expect(screen.queryByText('WebAuthn 보안키 인증이 필요합니다.')).not.toBeInTheDocument()
     expect(screen.getByRole('heading', { name: '계정/권한' })).toBeVisible()
-    expect(screen.getByRole('button', { name: '사용자 등록' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: '사용자 생성' })).toBeEnabled()
 
     fireEvent.click(screen.getByRole('tab', { name: /시스템 설정|System settings/ }))
     expect(await screen.findByRole('heading', { name: '시스템 설정' })).toBeVisible()
@@ -209,7 +209,7 @@ describe('POC compatibility application', () => {
     expect(screen.queryByRole('tab', { name: /기능별 권한|Feature access/ })).not.toBeInTheDocument()
     expect(screen.queryByRole('table', { name: 'POC 기능별 권한 현황' })).not.toBeInTheDocument()
     expect(screen.queryByText('OPEN')).not.toBeInTheDocument()
-    expect(providerRequestPaths()).toEqual([])
+    expect(providerRequestPaths()).toEqual(['/api/v1/admin/users'])
   })
 
   it('opens the existing redacted security-policy view from the administrator menu', async () => {

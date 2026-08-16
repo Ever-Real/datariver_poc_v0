@@ -39,7 +39,7 @@ function toDraft(values: SystemDirectoryAssignee[]): AssignmentDraft[] {
 
 export function SystemDirectoryAdmin(props: AdminSectionProps) {
   const { api, context, requestConfirmation, keyFor, clearKey, reportError } = props
-  const pocLocalAccounts = context?.action_vocabulary.includes('POC_OPEN_ACCESS_V1') ?? false
+  const pocLocalAccounts = context?.action_vocabulary.includes('POC_LOCAL_ACCOUNT_ADMIN_V1') ?? false
   const [systems, setSystems] = useState<SystemDirectoryEntry[]>([])
   const [systemQuery, setSystemQuery] = useState('')
   const [appliedSystemQuery, setAppliedSystemQuery] = useState('')
