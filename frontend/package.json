@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "poc": "npm run build:poc && node poc-server.mjs",
+    "poc:bootstrap-user": "node poc-bootstrap-local-user.mjs",
     "dev:poc": "vite --config vite.poc.config.ts --mode poc",
     "build": "tsc -b && vite build",
     "build:poc": "tsc -b && vite build --config vite.poc.config.ts --mode poc",

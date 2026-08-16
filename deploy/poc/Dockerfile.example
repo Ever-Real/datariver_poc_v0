@@ -12,11 +12,11 @@ FROM ${NODE_IMAGE}
 
 ARG POC_SOURCE_COMMIT=unrecorded
 LABEL org.opencontainers.image.title="DataRiver 06111 Hybrid POC" \
-      org.opencontainers.image.description="Original DataRiver Web UI with a no-auth server-side provider gateway" \
+      org.opencontainers.image.description="Original DataRiver Web UI with local opaque-session authentication and a server-side provider gateway" \
       org.opencontainers.image.revision="${POC_SOURCE_COMMIT}" \
       io.datariver.release-type="STATIC_POC" \
       io.datariver.source-base="06111ae9d94bb423adbd62d31cc56fc43feafd66" \
-      io.datariver.authentication="NONE" \
+      io.datariver.authentication="LOCAL_OPAQUE_SESSION" \
       io.datariver.canonical-data="NONE" \
       io.datariver.external-integrations="OPTIONAL_LIVE_PROVIDERS"
 
@@ -25,6 +25,9 @@ COPY --from=build /source/frontend/dist-poc/ ./dist-poc/
 COPY --from=build /source/frontend/node_modules/ ./node_modules/
 COPY frontend/package.json ./package.json
 COPY frontend/poc-server.mjs ./poc-server.mjs
+COPY frontend/poc-access-document.mjs ./poc-access-document.mjs
+COPY frontend/poc-bootstrap-local-user.mjs ./poc-bootstrap-local-user.mjs
+COPY frontend/poc-local-auth.mjs ./poc-local-auth.mjs
 COPY frontend/poc-state-store.mjs ./poc-state-store.mjs
 COPY frontend/poc-change-history-scheduler.mjs ./poc-change-history-scheduler.mjs
 COPY frontend/poc-mcl-capture.mjs ./poc-mcl-capture.mjs

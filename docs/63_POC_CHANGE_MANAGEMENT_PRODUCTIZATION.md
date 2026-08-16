@@ -290,6 +290,28 @@ test "$(curl -sS -o /dev/null -w '%{http_code}' \
   http://127.0.0.1:39080/poc-api/capabilities)" = 401
 ```
 
+PostgreSQL schema가 적용된 뒤 operator는 Web/API endpoint가 아니라 실행 중인 local Web container의
+CLI로 human account를 한 명씩 추가한다. 아래 명령의 값은 모두 placeholder이며, account password는
+명령 인자나 environment에 넣지 않고 Compose가 연결한 TTY의 숨김 prompt에 두 번 입력한다.
+
+```bash
+docker compose --env-file '<absolute-poc-env-file>' \
+  -f deploy/poc/docker-compose.poc.yaml exec web \
+  npm run poc:bootstrap-user -- \
+  --subject-id '<stable-subject-id>' \
+  --username '<normalized-username>' \
+  --role '<admin|data_steward|developer|viewer>'
+```
+
+새 subject를 `active_subject_id`로 명시적으로 선택할 때만 `--set-active-subject`를 추가한다. 기존
+System 책임을 함께 만들 때는 `--system-assignment
+'<system-id>:<DATA_STEWARD|DEVELOPER>:<positive-priority>'`를 필요 수만큼 반복한다. 자동화된 local
+operator 환경은 TTY 대신 container 안에서 읽을 수 있는 1-line secret file 경로를
+`--password-file '<container-password-file>'`로 전달할 수 있지만, password 값 자체를 argv,
+environment, log 또는 evidence에 남기지 않는다. 다음 로그인에 password 변경 표시가 필요한
+credential에만 `--must-change-password`를 추가한다. 이 CLI는 기존 user와 core fixture를 보존하고
+access/core version CAS가 stale이면 effect 없이 실패하므로, 현재 snapshot을 확인한 뒤 다시 실행한다.
+
 그 뒤 browser login으로 생성된 HttpOnly session에서 Catalog/Change History smoke를 수행한다.
 password와 session cookie는 shell history, log 또는 evidence에 기록하지 않는다.
 
