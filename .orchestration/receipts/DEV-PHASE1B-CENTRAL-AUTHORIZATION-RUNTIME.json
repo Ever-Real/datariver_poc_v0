@@ -1,0 +1,235 @@
+{
+  "schema_version": 1,
+  "task_id": "DEV-PHASE1B-CENTRAL-AUTHORIZATION-RUNTIME",
+  "product_sha": "e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa",
+  "phase_1a_product_sha": "618b9713059ba7e31b807ceae3b401766a313668",
+  "phase_1a_evidence_sha": "8c1f93a456d0fe51e46987b72d66f563f6467d73",
+  "base_origin_dev": "ef41447a1d470119c1a83280e261d4be411354ef",
+  "observed_at": "2026-08-16T16:16:35+09:00",
+  "environment": "DEV_MAC_ARM64",
+  "status": {
+    "phase_1a": "COMPLETE_RUNTIME_VERIFIED",
+    "phase_1b": "COMPLETE_RUNTIME_VERIFIED",
+    "account_auth_overall": "PARTIAL",
+    "remote_network_probe": "TARGET_RECHECK_REQUIRED",
+    "scheduler_mcl_current_readiness": "TARGET_RECHECK_REQUIRED"
+  },
+  "authority": {
+    "authentication": "local_credential_and_opaque_server_session",
+    "authorization": "change-history-access-v1",
+    "request_scoped": true,
+    "role_or_system_from_credential": false,
+    "role_or_system_from_session_snapshot": false,
+    "role_or_system_from_client": false,
+    "sensitivity_enforced": false
+  },
+  "policy": {
+    "version": "POC_PROFILE_CAPABILITIES_V1",
+    "capability_count": 15,
+    "roles": {
+      "viewer": 6,
+      "developer": 9,
+      "data_steward": 12,
+      "manager": 14,
+      "admin": 15
+    },
+    "manager_source": {
+      "path": "docs/adr/0107-server-managed-profile-role-authority.md",
+      "commit": "f2e2e79c0b3cfcc93aa8afda3c44eb48af70f983",
+      "lines": "18-25,49-52"
+    },
+    "system_scope": {
+      "viewer": "GLOBAL_READ_NO_MUTATION",
+      "developer": "ACTIVE_DEVELOPER_ASSIGNMENTS",
+      "data_steward": "ACTIVE_DATA_STEWARD_ASSIGNMENTS",
+      "manager": "EITHER_ACTIVE_ASSIGNMENT_RESPONSIBILITY",
+      "admin": "GLOBAL_APPLICATION_READ_AND_MUTATION",
+      "ambiguous_or_unresolved_mutation": "DENY"
+    }
+  },
+  "routes": {
+    "total": 49,
+    "unique": 49,
+    "anonymous": 7,
+    "authenticated": 2,
+    "capability_protected": 38,
+    "internal_service": 1,
+    "disabled": 1,
+    "unknown": 0,
+    "dynamic_state_write_policy": "BOUNDED_KEY_DIFF_CAS_CAPABILITY_AND_SYSTEM"
+  },
+  "validation_accounts": {
+    "phase_1a_validation_only_credentials_precheck_enabled": 2,
+    "phase_1b_runtime_roles": [
+      "admin",
+      "viewer",
+      "developer",
+      "data_steward",
+      "manager"
+    ],
+    "credentials_total_final": 7,
+    "credentials_enabled_final": 0,
+    "sessions_total_final": 14,
+    "sessions_active_final": 0,
+    "access_users_preserved": 11,
+    "synthetic_fixture_credentials": 0,
+    "cleanup": "VERSION_GUARDED_CREDENTIAL_DISABLE_AND_SESSION_REVOKE"
+  },
+  "runtime": {
+    "web_health": "PASS",
+    "image_revision": "e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa",
+    "image_id": "sha256:d34e104d377d730b17821d5f11c3701e6d1ad04f664e1f4172949ddbecf7ab2a",
+    "image_architecture": "linux/amd64",
+    "node_version": "22.19.0",
+    "web_host_binding": "127.0.0.1:39083",
+    "airflow_host_binding": "127.0.0.1:18888",
+    "supporting_services_loopback_or_private": true,
+    "anonymous_protected_api": 401,
+    "non_api_spa_fallback": 200,
+    "scheduler_enabled": false,
+    "required_mcl_bindings_configured": 0,
+    "required_mcl_bindings_total": 9
+  },
+  "role_runtime": {
+    "capability_counts": {
+      "admin": 15,
+      "viewer": 6,
+      "developer": 9,
+      "data_steward": 12,
+      "manager": 14
+    },
+    "catalog_visible_counts": {
+      "admin": 2002,
+      "viewer": 2002,
+      "developer": 1000,
+      "data_steward": 999,
+      "manager": 1999
+    },
+    "system_visible_counts": {
+      "admin": 2,
+      "viewer": 2,
+      "developer": 1,
+      "data_steward": 1,
+      "manager": 2
+    },
+    "change_event_counts": {
+      "admin": 46,
+      "viewer": 46,
+      "developer": 0,
+      "data_steward": 13,
+      "manager": 13
+    }
+  },
+  "security": {
+    "anonymous_protected_api": 401,
+    "invalid_session": 401,
+    "inactive_subject": 403,
+    "viewer_mutation": 403,
+    "viewer_admin": 403,
+    "developer_admin": 403,
+    "data_steward_admin": 403,
+    "manager_admin": 403,
+    "system_spoof": "DENIED_WITHOUT_CORE_VERSION_CHANGE",
+    "client_claim_spoof_changes_authority": false,
+    "concurrent_principal_isolation": "PASS",
+    "exact_airflow_service_route": "PASS",
+    "service_token_general_api": 401,
+    "session_fixation": "PASS",
+    "logout_revoke": "PASS",
+    "secret_values_recorded": false,
+    "temporary_secret_capture_removed": true
+  },
+  "frontend": {
+    "viewer_admin_menu_hidden": true,
+    "viewer_direct_admin_redirect": true,
+    "admin_menu_visible": true,
+    "manager_admin_menu_hidden": true,
+    "manager_knowledge_quality_visible": true,
+    "hard_reload_session_persistence": "PASS",
+    "local_storage_is_authority": false,
+    "legacy_authorship_placeholder_debt": "PHASE_1F"
+  },
+  "frozen_invariants": {
+    "sources": 2,
+    "ledger_events": 46,
+    "distinct_event_identities": 46,
+    "distinct_source_positions": 46,
+    "duplicate_source_positions": 0,
+    "cr_link_events": 4,
+    "checkpoints": [
+      {
+        "first_exact_offset": 51815,
+        "next_offset": 52854,
+        "version": 1040
+      },
+      {
+        "first_exact_offset": 52849,
+        "next_offset": 52942,
+        "version": 94
+      }
+    ],
+    "scheduler_receipts": 2,
+    "scheduler_receipt_versions": [
+      1,
+      1
+    ],
+    "append_only_triggers": 2
+  },
+  "tests": {
+    "node_server": {
+      "passed": 60,
+      "failed": 0
+    },
+    "frontend": {
+      "files_passed": 86,
+      "passed": 586,
+      "failed": 0
+    },
+    "authorization_focused": {
+      "passed": 5,
+      "failed": 0
+    },
+    "typecheck": "PASS",
+    "lint": "PASS",
+    "build_poc": "PASS_WITH_EXISTING_CHUNK_WARNING",
+    "compose_base": "PASS",
+    "compose_airflow_overlay": "PASS",
+    "git_diff_check": "PASS",
+    "package_lock_unchanged": true,
+    "secret_scan": "PASS",
+    "hardcoding_scan": "PASS_WITH_PREEXISTING_BROWSERLESS_BACKLOG"
+  },
+  "overengineering": {
+    "new_auth_or_permission_tables": 0,
+    "new_dependencies": 0,
+    "new_services_or_containers": 0,
+    "workspace_oidc_keycloak_used": false,
+    "generic_policy_engine": false
+  },
+  "fresh_validation": {
+    "role": "50_QUALITY_VALIDATION",
+    "model": "gpt-5.6-sol high controlled fallback",
+    "antigravity_retried": false,
+    "initial_finding": "UNNECESSARY_TYPE_ASSERTION_LINT_ERROR",
+    "repair_commit": "e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa",
+    "complete_rerun_at_final_sha": true,
+    "verdict": "PASS_LOCAL_SOURCE_AND_DEV_EVIDENCE"
+  },
+  "remaining": {
+    "phase_1c": "BACKLOG",
+    "phase_1d": "BACKLOG",
+    "phase_1e": "BACKLOG",
+    "phase_1f": "BACKLOG",
+    "remote_network_probe": "TARGET_RECHECK_REQUIRED",
+    "quality_gx_runtime": "BACKLOG",
+    "chat_vector_provider": "TARGET_RECHECK_REQUIRED",
+    "vite_chunk_warning": "BACKLOG",
+    "browserless_loopback_fallback": "BACKLOG"
+  },
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  }
+}

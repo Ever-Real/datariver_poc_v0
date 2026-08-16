@@ -28,6 +28,42 @@ an unsafe bypass, or a historical result from another commit.
 | Current controlled phase | Owner-directed Phase 8 documentation. Phase 6F/6G and Phase 7 implementation/testing are skipped; their uncommitted work was rolled back. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
+## 2026-08-16 Node POC Account/Auth execution
+
+The authoritative Node POC preserves one authentication-to-authorization chain:
+
+```text
+local credential / opaque server session
+→ request-scoped subject_id
+→ change-history-access-v1
+→ central role capability
+→ optional current System scope
+→ feature operation
+```
+
+Product boundary `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa` is validated by
+`.orchestration/evidence/DEV-PHASE1B-CENTRAL-AUTHORIZATION-RUNTIME.md` and its matching receipt.
+The preceding PHASE 1A runtime evidence is commit
+`8c1f93a456d0fe51e46987b72d66f563f6467d73`. These local commits have not been published;
+`origin/dev` remains `ef41447a1d470119c1a83280e261d4be411354ef` until a future G1/G2 approval.
+
+| ID | Canonical status | Current evidence / completion condition |
+|---|---|---|
+| AUTH-1A | `COMPLETE_RUNTIME_VERIFIED` | Local Argon2id credential, hashed opaque session, request principal, access-document authority, CSRF/Origin fence, operator bootstrap, API/SPA boundary and loopback/private-network defaults were verified at Product `618b9713059ba7e31b807ceae3b401766a313668`. |
+| AUTH-1B | `COMPLETE_RUNTIME_VERIFIED` | Exactly 15 centrally versioned capabilities cover five roles. All 49 Node route IDs are classified (`7/2/38/1/1`, unknown `0`), System-bound operations fail closed, direct API/client spoof negatives pass, exact Airflow service isolation is preserved, and frontend menus/direct pages consume server capabilities. No permission DB, dependency, service, OIDC, Keycloak, workspace or policy engine was added. |
+| AUTH-1C | `BACKLOG` | Minimal Admin User Management: human user/credential creation, current role/System/active edit, password reset and session revoke through the existing authorities. No self-registration, workspace or second User/Role store. |
+| AUTH-1D | `BACKLOG` | Add `normal/restricted/credential` sensitivity after capability + System filtering, before retrieval/ranking/aggregation/context assembly, without exposing raw credential values. |
+| AUTH-1E | `BACKLOG` | Retire only proven legacy auth active paths after the replacement remains runtime-verified. Preserve reusable Knowledge/Quality/Chat code, schema history and `UNKNOWN` references. |
+| AUTH-1F | `BACKLOG` | Complete multi-account personal history/draft/Chat-stream isolation, session reset/revoke acceptance, every feature regression and external network acceptance. Bounded legacy authorship placeholders are not authorization authority but remain part of this acceptance. |
+| AUTH-NET | `TARGET_RECHECK_REQUIRED` | DEV Web and supporting owned ports are loopback/private and local inspection passes. A real second-host negative connectivity probe is still required; do not claim public-network isolation from bind inspection alone. |
+| ACCOUNT-AUTH | `PARTIAL` | PHASE 1A and 1B are runtime-verified; 1C–1F and the remote network target remain open. |
+
+The PHASE 1B validation credentials were validation-only: all seven credentials are disabled and all
+sessions revoked after the role/System matrix run. Access users and historical references remain;
+synthetic `checkpoint-*` users have no credential. Current Scheduler/MCL deployment readiness is
+separate: Scheduler is disabled and required MCL bindings are `0/9`, so it remains
+`TARGET_RECHECK_REQUIRED` without mutating the frozen ledger/checkpoints.
+
 ## 2026-08-08 Pilot handoff recovery and inherited-change review
 
 The immediate delivery route is now development Mac source → closed-network amd64 WSL preparation
