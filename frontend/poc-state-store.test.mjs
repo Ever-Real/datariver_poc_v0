@@ -231,6 +231,8 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     'poc_change_history_ledger_events',
     'poc_change_history_checkpoints',
     'poc_change_history_cr_link_events',
+    'poc_local_credentials',
+    'poc_local_sessions',
   ]) {
     assert.match(startupSql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
     assert.match(initSql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
@@ -242,10 +244,56 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     'REFERENCES poc_change_history_ledger_events(event_identity)',
     'trg_poc_change_history_ledger_append_only',
     'trg_poc_change_history_cr_link_append_only',
+    "password_hash LIKE '$argon2id$v=19$%'",
+    'expires_at > created_at',
   ]) {
     assert.ok(startupSql.includes(contract), contract)
     assert.ok(initSql.includes(contract), contract)
   }
+})
+
+test('atomically provisions a credential behind access/core CAS without storing authority in auth rows', async () => {
+  const store = createPocStateStore()
+  const accessValue = {
+    schema_version: 1,
+    active_subject_id: 'subject-one',
+    users: [{ subject_id: 'subject-one', role: 'admin', active: true, provider_owner_refs: [] }],
+    system_assignments: [],
+  }
+  const coreValue = { adminSystems: [], changeRecords: [] }
+  const result = await store.provisionLocalCredential({
+    expectedAccessVersion: 0,
+    expectedCoreVersion: 0,
+    accessValue,
+    coreValue,
+    credential: {
+      subjectId: 'subject-one',
+      usernameNormalized: 'person@example.com',
+      passwordHash: '$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0c2FsdA$YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ',
+      loginEnabled: true,
+      mustChangePassword: true,
+    },
+  })
+  assert.deepEqual(result, { credentialVersion: 1, accessVersion: 1, coreVersion: 1 })
+  assert.deepEqual((await store.readChangeHistoryAccess()).access.value, accessValue)
+  const credential = await store.readLocalCredential('person@example.com')
+  assert.equal(credential.subjectId, 'subject-one')
+  assert.equal(credential.mustChangePassword, true)
+  assert.equal(Object.hasOwn(credential, 'role'), false)
+  await assert.rejects(store.provisionLocalCredential({
+    expectedAccessVersion: 1,
+    expectedCoreVersion: 1,
+    accessValue: { ...accessValue, active_subject_id: 'changed' },
+    coreValue: { changed: true },
+    credential: {
+      subjectId: 'subject-two',
+      usernameNormalized: 'person@example.com',
+      passwordHash: credential.passwordHash,
+      loginEnabled: true,
+      mustChangePassword: false,
+    },
+  }), (error) => error.code === 'CREDENTIAL_EXISTS')
+  assert.deepEqual((await store.readChangeHistoryAccess()).access.value, accessValue)
 })
 
 test('refuses inherited PostgreSQL settings in Node tests before a persistent connection is created', async () => {

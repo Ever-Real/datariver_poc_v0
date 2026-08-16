@@ -20,15 +20,46 @@ function renderPoc() {
   )
 }
 
+const localProfile = {
+  subject: '00000000-0000-4000-8000-000000000111',
+  display_name: 'POC User',
+  email: 'poc.user@local',
+  roles: ['admin'],
+  authentication_assurance: 'PASSWORD',
+  default_workspace_id: '00000000-0000-4000-8000-000000000061',
+  workspace_selection_enabled: false,
+  hardware_webauthn_enabled: false,
+  password_change_supported: false,
+}
+
+function requestPath(input: RequestInfo | URL) {
+  return input instanceof Request
+    ? new URL(input.url).pathname
+    : new URL(String(input), 'https://poc.invalid').pathname
+}
+
+function providerRequestPaths() {
+  return vi.mocked(globalThis.fetch).mock.calls
+    .map(([input]) => requestPath(input))
+    .filter((path) => !path.startsWith('/auth/'))
+}
+
 function navigation() {
-  return screen.getByRole('navigation', { name: '주 메뉴' })
+  return screen.findByRole('navigation', { name: '주 메뉴' })
 }
 
 describe('POC compatibility application', () => {
   beforeEach(() => {
     resetPocMemory()
     window.history.replaceState({}, '', '/poc.html?page=dashboard')
-    vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('POC must not use fetch'))))
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => (
+      requestPath(input) === '/auth/me'
+        ? Promise.resolve(new Response(JSON.stringify(localProfile), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }))
+        : Promise.reject(new Error('POC provider request is not configured'))
+    )))
   })
 
   afterEach(() => {
@@ -39,15 +70,15 @@ describe('POC compatibility application', () => {
     renderPoc()
 
     expect(screen.queryByTestId('poc-banner')).not.toBeInTheDocument()
-    expect(screen.getByLabelText('POC mode')).toHaveTextContent('[poc]')
+    expect(await screen.findByLabelText('POC mode')).toHaveTextContent('[poc]')
     expect(await screen.findByRole('heading', { name: 'Governance Dashboard' })).toBeVisible()
     expect(screen.getByRole('navigation', { name: 'Governance shortcuts' })).toBeVisible()
-    expect(globalThis.fetch).not.toHaveBeenCalled()
+    expect(providerRequestPaths()).toEqual([])
   })
 
   it('keeps the original catalog workspace without showing fixture metadata', async () => {
     renderPoc()
-    fireEvent.click(within(navigation()).getByRole('button', { name: '검색' }))
+    fireEvent.click(within(await navigation()).getByRole('button', { name: '검색' }))
 
     expect(await screen.findByRole('heading', { name: '데이터 카탈로그 검색' })).toBeVisible()
     expect(await screen.findByText('현재 권한 범위에서 표시할 자산이 없습니다.')).toBeVisible()
@@ -57,10 +88,10 @@ describe('POC compatibility application', () => {
 
     const results = screen.getByRole('region', { name: '카탈로그 검색 결과' })
     expect(await within(results).findByText('검색 조건에 맞는 허용 자산이 없습니다.')).toBeVisible()
-    expect(globalThis.fetch).not.toHaveBeenCalled()
+    expect(providerRequestPaths()).toEqual([])
   })
 
-  it('preserves primary pages, moves admin-oriented pages under POC USER, and removes login actions', async () => {
+  it('preserves primary pages and moves admin-oriented pages under the authenticated POC user', async () => {
     renderPoc()
     const pages = [
       ['변경관리', '변경 요청과 승인'],
@@ -70,7 +101,7 @@ describe('POC compatibility application', () => {
     ] as const
 
     for (const [menuName, heading] of pages) {
-      fireEvent.click(within(navigation()).getByRole('button', { name: new RegExp(menuName) }))
+      fireEvent.click(within(await navigation()).getByRole('button', { name: new RegExp(menuName) }))
       expect(await screen.findByRole('heading', { name: heading })).toBeVisible()
       expect(screen.getByLabelText('POC mode')).toHaveTextContent('[poc]')
     }
@@ -87,21 +118,19 @@ describe('POC compatibility application', () => {
     expect(screen.queryByRole('menuitem', { name: '기능별 권한' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '시스템 설정' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '보존·파기 거버넌스' })).not.toBeInTheDocument()
-    expect(screen.queryByRole('menuitem', { name: '나가기' })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '나가기' })).toBeVisible()
     expect(screen.queryByRole('menuitem', { name: '내 프로필' })).not.toBeInTheDocument()
     expect(screen.queryByText(/WebAuthn 보안키 등록/)).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('menuitem', { name: '지식관리' }))
     expect(await screen.findByRole('heading', { name: '지식관리' })).toBeVisible()
-    const requestedPaths = vi.mocked(globalThis.fetch).mock.calls.map(([input]) => (
-      input instanceof Request ? new URL(input.url).pathname : new URL(input.toString(), 'https://poc.invalid').pathname
-    ))
+    const requestedPaths = providerRequestPaths()
     expect(requestedPaths.length).toBeGreaterThan(0)
     expect(requestedPaths.every((path) => path.startsWith('/api/v1/change-history/'))).toBe(true)
   })
 
   it('fails Chat closed when LLM Chat is not configured', async () => {
     renderPoc()
-    fireEvent.click(within(navigation()).getByRole('button', { name: /Chat/ }))
+    fireEvent.click(within(await navigation()).getByRole('button', { name: /Chat/ }))
     await screen.findByRole('heading', { name: '카탈로그 Chat' })
     const input = screen.getByRole('textbox', { name: '카탈로그 질문' })
     fireEvent.change(input, { target: { value: 'wafer 품질 근거를 다시 알려줘' } })
@@ -110,7 +139,7 @@ describe('POC compatibility application', () => {
     expect(await screen.findByText(/검증 불가: LLM Chat 연결을 설정해야 합니다/)).toBeVisible()
     expect(screen.queryByText(/98\.75%/)).not.toBeInTheDocument()
     expect(screen.queryByText(/Synthetic catalog/)).not.toBeInTheDocument()
-    expect(globalThis.fetch).not.toHaveBeenCalled()
+    expect(providerRequestPaths()).toEqual([])
   })
 
   it('shows the bounded POC user and system settings administration surfaces', async () => {
@@ -129,7 +158,7 @@ describe('POC compatibility application', () => {
     fireEvent.click(screen.getByRole('tab', { name: /기능별 권한|Feature access/ }))
     expect(await screen.findByRole('table', { name: 'POC 기능별 권한 현황' })).toBeVisible()
     expect(screen.getAllByText('OPEN').length).toBeGreaterThan(0)
-    expect(globalThis.fetch).not.toHaveBeenCalled()
+    expect(providerRequestPaths()).toEqual([])
   })
 
   it('opens the existing redacted security-policy view from the administrator menu', async () => {
@@ -148,6 +177,6 @@ describe('POC compatibility application', () => {
     expect(screen.getByRole('row', { name: /PUBLIC ABAC INTERNAL_APPROVED_ONLY/ })).toBeVisible()
     expect(screen.getByRole('row', { name: /RESTRICTED.*DENY DENY/ })).toBeVisible()
     expect(screen.getByText(/정적 최소 접근 기준/)).toBeVisible()
-    expect(globalThis.fetch).not.toHaveBeenCalled()
+    expect(providerRequestPaths()).toEqual([])
   })
 })

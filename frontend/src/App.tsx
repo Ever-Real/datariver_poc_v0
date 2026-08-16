@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useState, type FormEvent } from 'react'
 import { ArrowRight, ShieldCheck } from 'lucide-react'
 import { remediationKind } from './api/client'
 import type { AdminOperation, AdminReadContext, CapabilitiesResponse, ExternalSystemLink } from './api/types'
@@ -28,10 +28,28 @@ const QualityPage = lazy(() => import('./features/quality/QualityPage').then((mo
 const RegistrationPage = lazy(() => import('./features/registration/RegistrationPage').then((module) => ({ default: module.RegistrationPage })))
 const SharingPage = lazy(() => import('./features/sharing/SharingPage').then((module) => ({ default: module.SharingPage })))
 
+interface LocalCredentialAuth {
+  isLocalSession: true
+  signInWithCredentials: (username: string, password: string) => Promise<void>
+}
+
+function localCredentialAuth(value: object): LocalCredentialAuth | undefined {
+  const candidate = value as Partial<LocalCredentialAuth>
+  return candidate.isLocalSession === true
+    && typeof candidate.signInWithCredentials === 'function'
+    ? candidate as LocalCredentialAuth
+    : undefined
+}
+
 export function App() {
   const auth = useAuth()
+  const localAuth = localCredentialAuth(auth)
   const runtimeConfig = publicRuntimeConfig()
-  const authenticationEnabled = runtimeConfig.apiBaseUrl !== 'poc-memory-only'
+  const pocMode = runtimeConfig.apiBaseUrl === 'poc-memory-only'
+  const oidcAuthenticationEnabled = !pocMode
+  const authenticationEnabled = oidcAuthenticationEnabled || Boolean(localAuth)
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
   const [page, setPage] = useState<Page>(pageFromLocation)
   const [locationRevision, setLocationRevision] = useState(0)
   const [catalogQuery, setCatalogQuery] = useState(() => new URL(window.location.href).searchParams.get('q') ?? '')
@@ -166,6 +184,7 @@ export function App() {
   ])
 
   useEffect(() => {
+    if (!activeWorkspace || !authenticatedSubject) return
     const currentAdminDecision = (
       adminAccess.workspace === activeWorkspace
       && adminAccess.subject === authenticatedSubject
@@ -265,6 +284,14 @@ export function App() {
     setPage('catalog')
   }, [])
 
+  const submitLocalLogin = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!localAuth || !username.trim() || !password) return
+    const submittedPassword = password
+    setPassword('')
+    void localAuth.signInWithCredentials(username.trim(), submittedPassword)
+  }
+
   if (auth.loading) return <main className="centered"><div className="loader" /><p>인증 상태를 확인하고 있습니다.</p></main>
   if (!auth.user) return (
     <main className="legacy-login-shell">
@@ -276,7 +303,34 @@ export function App() {
         </header>
         {auth.notice && <div className={`notice ${auth.notice.kind === 'ERROR' ? 'notice-error' : ''}`} role="alert"><span>{auth.notice.message}</span></div>}
         <p className="legacy-login-guidance">조직 계정으로 안전하게 로그인합니다. 인증 정보는 DataRiver 브라우저 코드에 저장되지 않습니다.</p>
-        <button className="legacy-login-submit" onClick={() => void auth.signIn()}>Sign In <ArrowRight size={18} aria-hidden="true" /></button>
+        {localAuth ? (
+          <form className="legacy-login-form" onSubmit={submitLocalLogin}>
+            <label htmlFor="local-username">아이디</label>
+            <input
+              id="local-username"
+              name="username"
+              autoComplete="username"
+              value={username}
+              onChange={(event) => setUsername(event.target.value)}
+              required
+            />
+            <label htmlFor="local-password">비밀번호</label>
+            <input
+              id="local-password"
+              name="password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              required
+            />
+            <button className="legacy-login-submit" type="submit" disabled={!username.trim() || !password}>
+              Sign In <ArrowRight size={18} aria-hidden="true" />
+            </button>
+          </form>
+        ) : (
+          <button className="legacy-login-submit" onClick={() => void auth.signIn()}>Sign In <ArrowRight size={18} aria-hidden="true" /></button>
+        )}
         <footer>DATARIVER · SECURE ENVIRONMENT</footer>
       </section>
     </main>
@@ -324,7 +378,7 @@ export function App() {
   const mayReadPolicyGovernance = Boolean(currentAdminContext && policyReadOperations
     .every((operation) => currentAdminContext.allowed_operations.includes(operation)))
   const adminMessages = getAdminMessages()
-  const adminMenuItems: Array<{ id: string; label: string }> = !authenticationEnabled
+  const adminMenuItems: Array<{ id: string; label: string }> = pocMode
     ? [
         { id: 'poc-registration', label: '등록관리' },
         { id: 'poc-quality', label: '품질관리' },
@@ -349,12 +403,12 @@ export function App() {
   return (
     <AppShell
       page={page}
-      pocMode={!authenticationEnabled}
+      pocMode={pocMode}
       client={client}
       workspace={activeWorkspace}
       securityEpoch={auth.securityEpoch}
       workspaceSelectionEnabled={workspaceSelectionEnabled}
-      hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled === true}
+      hardwareWebauthnEnabled={oidcAuthenticationEnabled && auth.profile?.hardware_webauthn_enabled === true}
       deploymentTier={deploymentTier}
       displayName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub}
       email={auth.profile?.email}
@@ -364,11 +418,11 @@ export function App() {
       notice={auth.notice}
       onNavigate={navigate}
       onNavigateAdmin={navigateAdmin}
-      onProfile={authenticationEnabled ? () => navigate('profile') : undefined}
+      onProfile={oidcAuthenticationEnabled ? () => navigate('profile') : undefined}
       onSearch={searchCatalog}
       onWorkspaceChange={saveWorkspace}
-      onPasswordReauth={authenticationEnabled ? () => void auth.beginPasswordReauth() : undefined}
-      onEnrollSecurityKey={authenticationEnabled ? () => void auth.beginWebAuthnEnrollment() : undefined}
+      onPasswordReauth={oidcAuthenticationEnabled ? () => void auth.beginPasswordReauth() : undefined}
+      onEnrollSecurityKey={oidcAuthenticationEnabled ? () => void auth.beginWebAuthnEnrollment() : undefined}
       onSignOut={authenticationEnabled ? () => void auth.signOut() : undefined}
       onClearNotice={auth.clearNotice}
     >
@@ -393,7 +447,7 @@ export function App() {
         />}
         {page === 'registration' && <RegistrationPage client={client} />}
         {page === 'glossary' && <PocGlossaryPage client={client} />}
-        {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={authenticationEnabled && auth.profile?.hardware_webauthn_enabled === true} />}
+        {page === 'change-management' && <GovernancePage client={client} requesterName={auth.profile?.display_name ?? auth.user.profile.name ?? auth.user.profile.sub} requesterEmail={auth.profile?.email} onNavigate={navigate} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={oidcAuthenticationEnabled && auth.profile?.hardware_webauthn_enabled === true} />}
         {page === 'quality' && <QualityPage
           client={client}
           workspaceId={activeWorkspace}
@@ -414,10 +468,10 @@ export function App() {
             locationRevision={locationRevision}
             onNavigate={navigate}
             onOpenStudio={navigateKnowledgeStudio}
-            onStepUp={authenticationEnabled ? auth.beginStepUp : undefined}
-            onPasswordReauth={authenticationEnabled ? auth.beginPasswordReauth : undefined}
-            onEnroll={authenticationEnabled ? auth.beginWebAuthnEnrollment : undefined}
-            hardwareWebauthnEnabled={authenticationEnabled && auth.profile?.hardware_webauthn_enabled === true}
+            onStepUp={oidcAuthenticationEnabled ? auth.beginStepUp : undefined}
+            onPasswordReauth={oidcAuthenticationEnabled ? auth.beginPasswordReauth : undefined}
+            onEnroll={oidcAuthenticationEnabled ? auth.beginWebAuthnEnrollment : undefined}
+            hardwareWebauthnEnabled={oidcAuthenticationEnabled && auth.profile?.hardware_webauthn_enabled === true}
           />
         )}
         {page === 'monitoring' && (
@@ -433,7 +487,7 @@ export function App() {
                 'MONITORING_CONFIGURATION_UPDATE',
               ) ?? false
             }
-            onRequestAdminAssurance={authenticationEnabled
+            onRequestAdminAssurance={oidcAuthenticationEnabled
               ? auth.profile?.hardware_webauthn_enabled === false
                 ? auth.beginPasswordReauth
                 : auth.beginStepUp
@@ -441,8 +495,8 @@ export function App() {
             }
           />
         )}
-        {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} assurance={authenticationEnabled ? { onStepUp: auth.beginStepUp, onPasswordReauth: auth.beginPasswordReauth, onEnroll: auth.beginWebAuthnEnrollment, hardwareWebauthnEnabled: auth.profile?.hardware_webauthn_enabled === true } : undefined} />}
-        {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={authenticationEnabled && auth.profile?.hardware_webauthn_enabled === true} />}
+        {page === 'governance' && <PolicyGovernancePage client={client} mayReadPolicies={mayReadPolicyGovernance} allowedOperations={currentAdminContext?.allowed_operations} assurance={oidcAuthenticationEnabled ? { onStepUp: auth.beginStepUp, onPasswordReauth: auth.beginPasswordReauth, onEnroll: auth.beginWebAuthnEnrollment, hardwareWebauthnEnabled: auth.profile?.hardware_webauthn_enabled === true } : undefined} />}
+        {page === 'sharing' && <SharingPage client={client} onStepUp={auth.beginStepUp} onPasswordReauth={auth.beginPasswordReauth} onEnroll={auth.beginWebAuthnEnrollment} hardwareWebauthnEnabled={oidcAuthenticationEnabled && auth.profile?.hardware_webauthn_enabled === true} />}
         {page === 'chat' && <ChatPage client={client} />}
         {page === 'profile' && auth.profile && <ProfilePage client={client} profile={auth.profile} workspace={activeWorkspace} capabilities={capabilities} externalSystemLinks={externalSystemLinks} onPasswordChange={() => void auth.beginPasswordChange()} onPasswordReauth={() => void auth.beginPasswordReauth()} />}
         {page === 'profile' && !auth.profile && <PageTitle icon="ME" eyebrow="Verified identity profile" title="내 프로필" description="서버에서 검증된 프로필을 불러오지 못했습니다." />}
@@ -453,7 +507,7 @@ export function App() {
             initialContext={cachedAdminContext}
             workspace={activeWorkspace}
             suspended={!currentAdminContext}
-            openAccess={!authenticationEnabled}
+            openAccess={pocMode}
             hardwareWebauthnEnabled={auth.profile?.hardware_webauthn_enabled !== false}
             onStepUp={auth.beginStepUp}
             onPasswordReauth={auth.beginPasswordReauth}

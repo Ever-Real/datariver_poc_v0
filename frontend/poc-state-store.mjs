@@ -236,6 +236,53 @@ const CHANGE_HISTORY_SCHEMA = [
   `,
 ]
 
+const LOCAL_AUTH_SCHEMA = [
+  `
+    CREATE TABLE IF NOT EXISTS poc_local_credentials (
+      subject_id text PRIMARY KEY,
+      username_normalized text NOT NULL UNIQUE,
+      password_hash text NOT NULL,
+      login_enabled boolean NOT NULL DEFAULT true,
+      must_change_password boolean NOT NULL DEFAULT false,
+      failed_attempts integer NOT NULL DEFAULT 0,
+      locked_until timestamptz,
+      version bigint NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      CONSTRAINT ck_poc_local_credential_subject
+        CHECK (char_length(subject_id) BETWEEN 1 AND 255),
+      CONSTRAINT ck_poc_local_credential_username
+        CHECK (username_normalized ~ '^[a-z0-9][a-z0-9._@+\\-]{0,63}$'),
+      CONSTRAINT ck_poc_local_credential_password_hash
+        CHECK (char_length(password_hash) BETWEEN 32 AND 512
+          AND password_hash LIKE '$argon2id$v=19$%'),
+      CONSTRAINT ck_poc_local_credential_attempts
+        CHECK (failed_attempts BETWEEN 0 AND 1000),
+      CONSTRAINT ck_poc_local_credential_version CHECK (version > 0)
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS poc_local_sessions (
+      token_hash char(64) PRIMARY KEY,
+      subject_id text NOT NULL REFERENCES poc_local_credentials(subject_id),
+      created_at timestamptz NOT NULL,
+      expires_at timestamptz NOT NULL,
+      revoked_at timestamptz,
+      CONSTRAINT ck_poc_local_session_hash CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+      CONSTRAINT ck_poc_local_session_lifetime CHECK (expires_at > created_at),
+      CONSTRAINT ck_poc_local_session_revocation CHECK (revoked_at IS NULL OR revoked_at >= created_at)
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS ix_poc_local_sessions_subject
+      ON poc_local_sessions (subject_id)
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS ix_poc_local_sessions_expiry
+      ON poc_local_sessions (expires_at) WHERE revoked_at IS NULL
+  `,
+]
+
 export function createPocStateStore({ databasePool } = {}) {
   const databaseUrl = process.env.POC_DATABASE_URL?.trim()
   const databaseHost = process.env.POC_POSTGRES_HOST?.trim()
@@ -244,6 +291,9 @@ export function createPocStateStore({ databasePool } = {}) {
   const redisUrl = process.env.POC_REDIS_URL?.trim()
   const memory = new Map()
   const memoryCatalogEmbeddings = new Map()
+  const memoryCredentialsBySubject = new Map()
+  const memoryCredentialSubjectByUsername = new Map()
+  const memorySessions = new Map()
   let pool = databasePool
   let redis
   let startingDatabase
@@ -290,6 +340,7 @@ export function createPocStateStore({ databasePool } = {}) {
         )
       `)
       for (const statement of CHANGE_HISTORY_SCHEMA) await pool.query(statement)
+      for (const statement of LOCAL_AUTH_SCHEMA) await pool.query(statement)
     })()
     try {
       await startingDatabase
@@ -467,6 +518,234 @@ export function createPocStateStore({ databasePool } = {}) {
     memory.set(CHANGE_HISTORY_ACCESS_SCOPE, { value: accessValue, version: accessVersion })
     memory.set('core', { value: coreValue, version: coreVersion })
     return { accessVersion, coreVersion }
+  }
+
+  async function readLocalCredential(usernameNormalized) {
+    requireNormalizedUsername(usernameNormalized)
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        SELECT subject_id, username_normalized, password_hash, login_enabled,
+          must_change_password, failed_attempts, locked_until, version
+        FROM poc_local_credentials
+        WHERE username_normalized = $1
+      `, [usernameNormalized])
+      return result.rows[0] ? localCredentialRecord(result.rows[0]) : null
+    }
+    const subjectId = memoryCredentialSubjectByUsername.get(usernameNormalized)
+    const credential = subjectId ? memoryCredentialsBySubject.get(subjectId) : undefined
+    return credential ? structuredClone(credential) : null
+  }
+
+  async function provisionLocalCredential({
+    expectedAccessVersion,
+    expectedCoreVersion,
+    credential,
+    accessValue,
+    coreValue,
+  }) {
+    requireNonnegativeInteger(expectedAccessVersion, 'expectedAccessVersion')
+    requireNonnegativeInteger(expectedCoreVersion, 'expectedCoreVersion')
+    const normalized = normalizeLocalCredential(credential)
+    const writesAccess = accessValue !== undefined || coreValue !== undefined
+    if (writesAccess && (accessValue === undefined || coreValue === undefined)) {
+      throw new Error('accessValue and coreValue must be supplied together.')
+    }
+    await startDatabase()
+    if (pool) {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        await client.query(
+          'SELECT pg_advisory_xact_lock(hashtextextended($1, 0))',
+          [CHANGE_HISTORY_ACCESS_SCOPE],
+        )
+        const locked = await client.query(`
+          SELECT scope, value, version FROM poc_state
+          WHERE scope IN ($1, $2)
+          ORDER BY scope
+          FOR UPDATE
+        `, CHANGE_HISTORY_ACCESS_SCOPES)
+        const current = changeHistoryAccessSnapshot(locked.rows)
+        assertAccessVersions(current, expectedAccessVersion, expectedCoreVersion)
+        const inserted = await client.query(`
+          INSERT INTO poc_local_credentials (
+            subject_id, username_normalized, password_hash, login_enabled, must_change_password
+          ) VALUES ($1, $2, $3, $4, $5)
+          ON CONFLICT DO NOTHING
+          RETURNING version
+        `, [
+          normalized.subjectId,
+          normalized.usernameNormalized,
+          normalized.passwordHash,
+          normalized.loginEnabled,
+          normalized.mustChangePassword,
+        ])
+        if (inserted.rows.length !== 1) throw credentialConflict()
+        let accessVersion = current.access.version
+        let coreVersion = current.core.version
+        if (writesAccess) {
+          const accessWrite = await client.query(`
+            INSERT INTO poc_state (scope, value) VALUES ($1, $2::jsonb)
+            ON CONFLICT (scope) DO UPDATE
+              SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
+            RETURNING version
+          `, [CHANGE_HISTORY_ACCESS_SCOPE, JSON.stringify(accessValue)])
+          const coreWrite = await client.query(`
+            INSERT INTO poc_state (scope, value) VALUES ('core', $1::jsonb)
+            ON CONFLICT (scope) DO UPDATE
+              SET value = EXCLUDED.value, version = poc_state.version + 1, updated_at = now()
+            RETURNING version
+          `, [JSON.stringify(coreValue)])
+          accessVersion = Number(accessWrite.rows[0].version)
+          coreVersion = Number(coreWrite.rows[0].version)
+        }
+        await client.query('COMMIT')
+        return { credentialVersion: Number(inserted.rows[0].version), accessVersion, coreVersion }
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
+    }
+    const current = {
+      access: memory.get(CHANGE_HISTORY_ACCESS_SCOPE) ?? { value: null, version: 0 },
+      core: memory.get('core') ?? { value: null, version: 0 },
+    }
+    assertAccessVersions(current, expectedAccessVersion, expectedCoreVersion)
+    if (memoryCredentialsBySubject.has(normalized.subjectId)
+      || memoryCredentialSubjectByUsername.has(normalized.usernameNormalized)) throw credentialConflict()
+    const record = {
+      ...normalized,
+      failedAttempts: 0,
+      lockedUntil: null,
+      version: 1,
+    }
+    memoryCredentialsBySubject.set(normalized.subjectId, record)
+    memoryCredentialSubjectByUsername.set(normalized.usernameNormalized, normalized.subjectId)
+    let accessVersion = current.access.version
+    let coreVersion = current.core.version
+    if (writesAccess) {
+      accessVersion += 1
+      coreVersion += 1
+      memory.set(CHANGE_HISTORY_ACCESS_SCOPE, { value: accessValue, version: accessVersion })
+      memory.set('core', { value: coreValue, version: coreVersion })
+    }
+    return { credentialVersion: 1, accessVersion, coreVersion }
+  }
+
+  async function insertLocalCredential({ expectedAccessVersion, expectedCoreVersion, ...credential }) {
+    return provisionLocalCredential({ expectedAccessVersion, expectedCoreVersion, credential })
+  }
+
+  async function recordLocalLoginFailure({
+    subjectId,
+    expectedVersion,
+    failedAttempts,
+    lockedUntil,
+  }) {
+    requireBoundedString(subjectId, 'subjectId', 255)
+    requirePositiveInteger(expectedVersion, 'expectedVersion')
+    requireNonnegativeInteger(failedAttempts, 'failedAttempts')
+    if (failedAttempts > 1000) throw new Error('failedAttempts exceeds its bound.')
+    if (lockedUntil !== null) requireTimestamp(lockedUntil, 'lockedUntil')
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        UPDATE poc_local_credentials
+        SET failed_attempts = $3, locked_until = $4, version = version + 1, updated_at = clock_timestamp()
+        WHERE subject_id = $1 AND version = $2
+        RETURNING version
+      `, [subjectId, expectedVersion, failedAttempts, lockedUntil])
+      return result.rows.length === 1
+    }
+    const current = memoryCredentialsBySubject.get(subjectId)
+    if (!current || current.version !== expectedVersion) return false
+    current.failedAttempts = failedAttempts
+    current.lockedUntil = lockedUntil
+    current.version += 1
+    return true
+  }
+
+  async function recordLocalLoginSuccess({ subjectId, expectedVersion }) {
+    requireBoundedString(subjectId, 'subjectId', 255)
+    requirePositiveInteger(expectedVersion, 'expectedVersion')
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        UPDATE poc_local_credentials
+        SET failed_attempts = 0, locked_until = NULL, version = version + 1, updated_at = clock_timestamp()
+        WHERE subject_id = $1 AND version = $2
+        RETURNING version
+      `, [subjectId, expectedVersion])
+      return result.rows.length === 1
+    }
+    const current = memoryCredentialsBySubject.get(subjectId)
+    if (!current || current.version !== expectedVersion) return false
+    current.failedAttempts = 0
+    current.lockedUntil = null
+    current.version += 1
+    return true
+  }
+
+  async function createLocalSession({ tokenHash, subjectId, createdAt, expiresAt }) {
+    requireSha256(tokenHash, 'tokenHash')
+    requireBoundedString(subjectId, 'subjectId', 255)
+    requireTimestamp(createdAt, 'createdAt')
+    requireTimestamp(expiresAt, 'expiresAt')
+    if (Date.parse(expiresAt) <= Date.parse(createdAt)) throw new Error('Session expiry must follow creation.')
+    await startDatabase()
+    if (pool) {
+      await pool.query(`
+        INSERT INTO poc_local_sessions (token_hash, subject_id, created_at, expires_at)
+        VALUES ($1, $2, $3, $4)
+      `, [tokenHash, subjectId, createdAt, expiresAt])
+      return
+    }
+    if (!memoryCredentialsBySubject.has(subjectId)) throw new Error('Session subject has no credential.')
+    if (memorySessions.has(tokenHash)) throw new Error('Session token hash already exists.')
+    memorySessions.set(tokenHash, { tokenHash, subjectId, createdAt, expiresAt, revokedAt: null })
+  }
+
+  async function readLocalSession(tokenHash) {
+    requireSha256(tokenHash, 'tokenHash')
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        SELECT session.token_hash, session.subject_id, session.created_at,
+          session.expires_at, session.revoked_at, credential.must_change_password
+        FROM poc_local_sessions AS session
+        JOIN poc_local_credentials AS credential ON credential.subject_id = session.subject_id
+        WHERE session.token_hash = $1
+      `, [tokenHash])
+      return result.rows[0] ? localSessionRecord(result.rows[0]) : null
+    }
+    const session = memorySessions.get(tokenHash)
+    if (!session) return null
+    return {
+      ...structuredClone(session),
+      mustChangePassword: memoryCredentialsBySubject.get(session.subjectId)?.mustChangePassword === true,
+    }
+  }
+
+  async function revokeLocalSession({ tokenHash, revokedAt }) {
+    requireSha256(tokenHash, 'tokenHash')
+    requireTimestamp(revokedAt, 'revokedAt')
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        UPDATE poc_local_sessions
+        SET revoked_at = COALESCE(revoked_at, $2)
+        WHERE token_hash = $1
+        RETURNING token_hash
+      `, [tokenHash, revokedAt])
+      return result.rows.length === 1
+    }
+    const session = memorySessions.get(tokenHash)
+    if (!session) return false
+    session.revokedAt ??= revokedAt
+    return true
   }
 
   async function cacheGet(key) {
@@ -1305,6 +1584,14 @@ export function createPocStateStore({ databasePool } = {}) {
     readChangeHistoryProjection,
     readChangeHistoryAccess,
     writeChangeHistoryAccess,
+    readLocalCredential,
+    insertLocalCredential,
+    provisionLocalCredential,
+    recordLocalLoginFailure,
+    recordLocalLoginSuccess,
+    createLocalSession,
+    readLocalSession,
+    revokeLocalSession,
     initializeChangeHistoryCaptureBoundaries,
     appendChangeHistoryCapture,
     appendChangeHistoryCrLink,
@@ -1312,6 +1599,72 @@ export function createPocStateStore({ databasePool } = {}) {
     runChangeHistoryScheduler,
     close,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
+  }
+}
+
+function credentialConflict() {
+  return Object.assign(new Error('The local credential subject or username already exists.'), {
+    code: 'CREDENTIAL_EXISTS',
+    statusCode: 409,
+  })
+}
+
+function requireNormalizedUsername(value) {
+  if (typeof value !== 'string' || !/^[a-z0-9][a-z0-9._@+-]{0,63}$/.test(value)) {
+    throw new Error('usernameNormalized is outside its normalized contract.')
+  }
+  return value
+}
+
+function normalizeLocalCredential(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('credential must be an object.')
+  }
+  const subjectId = requireBoundedString(value.subjectId, 'credential.subjectId', 255)
+  const usernameNormalized = requireNormalizedUsername(value.usernameNormalized)
+  const passwordHash = value.passwordHash
+  if (typeof passwordHash !== 'string' || passwordHash.length > 512
+    || !passwordHash.startsWith('$argon2id$v=19$')) {
+    throw new Error('credential.passwordHash must be a bounded Argon2id encoded hash.')
+  }
+  if (typeof value.loginEnabled !== 'boolean' || typeof value.mustChangePassword !== 'boolean') {
+    throw new Error('credential login flags must be boolean.')
+  }
+  return {
+    subjectId,
+    usernameNormalized,
+    passwordHash,
+    loginEnabled: value.loginEnabled,
+    mustChangePassword: value.mustChangePassword,
+  }
+}
+
+function timestampValue(value) {
+  if (value === null || value === undefined) return null
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString()
+}
+
+function localCredentialRecord(row) {
+  return {
+    subjectId: row.subject_id,
+    usernameNormalized: row.username_normalized,
+    passwordHash: row.password_hash,
+    loginEnabled: row.login_enabled,
+    mustChangePassword: row.must_change_password,
+    failedAttempts: Number(row.failed_attempts),
+    lockedUntil: timestampValue(row.locked_until),
+    version: Number(row.version),
+  }
+}
+
+function localSessionRecord(row) {
+  return {
+    tokenHash: row.token_hash,
+    subjectId: row.subject_id,
+    createdAt: timestampValue(row.created_at),
+    expiresAt: timestampValue(row.expires_at),
+    revokedAt: timestampValue(row.revoked_at),
+    mustChangePassword: row.must_change_password === true,
   }
 }
 

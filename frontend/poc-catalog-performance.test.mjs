@@ -38,6 +38,33 @@ async function close(server) {
   )))
 }
 
+function authenticatedPocServer(module, options) {
+  const stateStore = options.stateStore
+  stateStore.readChangeHistoryAccess ??= async () => ({
+    access: {
+      version: 1,
+      value: {
+        schema_version: 1,
+        active_subject_id: 'catalog-performance-subject',
+        users: [{
+          subject_id: 'catalog-performance-subject', role: 'admin', active: true, provider_owner_refs: [],
+        }],
+        system_assignments: [],
+      },
+    },
+    core: { version: 0, value: null },
+  })
+  return module.createPocServer({
+    ...options,
+    authenticator: {
+      async authenticate() {
+        return { subjectId: 'catalog-performance-subject', tokenHash: 'f'.repeat(64) }
+      },
+      assertOrigin() {},
+    },
+  })
+}
+
 async function waitFor(predicate, message) {
   const deadline = Date.now() + 2_000
   while (!predicate()) {
@@ -54,6 +81,7 @@ function configureProviderEnvironment(providerOrigin, { embedding = false, chat 
     POC_REDIS_URL: '',
     POC_SERVER_HOST: '127.0.0.1',
     POC_SERVER_PORT: '0',
+    POC_PUBLIC_ORIGIN: 'http://127.0.0.1:39080',
     POC_CHANGE_HISTORY_SCHEDULER_ENABLED: 'false',
     DATAHUB_GMS_URL: providerOrigin,
     DATAHUB_GMS_TOKEN: 'performance-test-token',
@@ -155,6 +183,12 @@ function lifecycleStateStore(initialProjection) {
         guard()
         embeddingReplacements += 1
       },
+      async readLocalCredential() { guard(); return null },
+      async recordLocalLoginFailure() { guard(); return false },
+      async recordLocalLoginSuccess() { guard(); return false },
+      async createLocalSession() { guard() },
+      async readLocalSession() { guard(); return null },
+      async revokeLocalSession() { guard(); return false },
       async runChangeHistoryScheduler(_options, task) {
         guard()
         return task()
@@ -233,7 +267,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
   })
 
   const coldModule = await import('./poc-server.mjs?catalog-performance-cold')
-  const coldServer = coldModule.createPocServer({ stateStore })
+  const coldServer = authenticatedPocServer(coldModule, { stateStore })
   const coldOrigin = await listen(coldServer)
   const coldStartedAt = performance.now()
   const coldResponse = await fetch(`${coldOrigin}/poc-api/datahub/catalog?q=evidence&limit=20`)
@@ -246,7 +280,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
 
   providerRequests = 0
   const warmModule = await import('./poc-server.mjs?catalog-performance-warm')
-  const warmServer = warmModule.createPocServer({ stateStore })
+  const warmServer = authenticatedPocServer(warmModule, { stateStore })
   const warmOrigin = await listen(warmServer)
   const warmStartedAt = performance.now()
   const warmResponse = await fetch(`${warmOrigin}/poc-api/datahub/catalog?q=evidence&limit=20`)
@@ -265,7 +299,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
   failSecondPage = true
   providerRequests = 0
   const failedModule = await import('./poc-server.mjs?catalog-performance-failed-refresh')
-  const failedServer = failedModule.createPocServer({ stateStore })
+  const failedServer = authenticatedPocServer(failedModule, { stateStore })
   const failedOrigin = await listen(failedServer)
   const failedResponse = await fetch(`${failedOrigin}/poc-api/datahub/catalog?q=evidence&limit=20`)
   assert.equal(failedResponse.status, 200)
@@ -281,7 +315,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
   providerAssets = [providerAssets[1]]
   providerRequests = 0
   const refreshModule = await import('./poc-server.mjs?catalog-performance-generation-refresh')
-  const refreshServer = refreshModule.createPocServer({ stateStore })
+  const refreshServer = authenticatedPocServer(refreshModule, { stateStore })
   const refreshOrigin = await listen(refreshServer)
   assert.equal((await (await fetch(`${refreshOrigin}/poc-api/datahub/catalog?q=evidence&limit=20`)).json()).items.length, 2)
   await waitFor(() => writes === 2, 'replacement Catalog generation did not commit')
@@ -290,7 +324,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
 
   providerRequests = 0
   const replacementModule = await import('./poc-server.mjs?catalog-performance-replacement')
-  const replacementServer = replacementModule.createPocServer({ stateStore })
+  const replacementServer = authenticatedPocServer(replacementModule, { stateStore })
   const replacementOrigin = await listen(replacementServer)
   const replacement = await (await fetch(`${replacementOrigin}/poc-api/datahub/catalog?q=wafer&limit=20`)).json()
   assert.deepEqual(replacement.items.map((item) => item.name), ['wafer_events'])
@@ -306,7 +340,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
   terminalPageIncomplete = true
   providerRequests = 0
   const incompleteModule = await import('./poc-server.mjs?catalog-performance-incomplete-terminal')
-  const incompleteServer = incompleteModule.createPocServer({ stateStore })
+  const incompleteServer = authenticatedPocServer(incompleteModule, { stateStore })
   const incompleteOrigin = await listen(incompleteServer)
   assert.equal((await fetch(`${incompleteOrigin}/poc-api/datahub/catalog?limit=20`)).status, 200)
   await waitFor(() => providerRequests === 1, 'incomplete terminal provider page was not observed')
@@ -319,7 +353,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
   providerAssets = []
   providerRequests = 0
   const zeroModule = await import('./poc-server.mjs?catalog-performance-valid-zero-refresh')
-  const zeroServer = zeroModule.createPocServer({ stateStore })
+  const zeroServer = authenticatedPocServer(zeroModule, { stateStore })
   const zeroOrigin = await listen(zeroServer)
   assert.equal((await fetch(`${zeroOrigin}/poc-api/datahub/catalog?limit=20`)).status, 200)
   await waitFor(() => writes === 3, 'valid empty inventory did not commit')
@@ -328,7 +362,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
 
   providerRequests = 0
   const zeroStoredModule = await import('./poc-server.mjs?catalog-performance-valid-zero-stored')
-  const zeroStoredServer = zeroStoredModule.createPocServer({ stateStore })
+  const zeroStoredServer = authenticatedPocServer(zeroStoredModule, { stateStore })
   const zeroStoredOrigin = await listen(zeroStoredServer)
   const zeroStored = await (await fetch(`${zeroStoredOrigin}/poc-api/datahub/catalog?limit=20`)).json()
   assert.deepEqual(zeroStored.items, [])
@@ -359,7 +393,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
     async cacheDelete() {},
   }
   const splitModule = await import('./poc-server.mjs?catalog-performance-postgres-authoritative')
-  const splitServer = splitModule.createPocServer({ stateStore: splitSuccessStore })
+  const splitServer = authenticatedPocServer(splitModule, { stateStore: splitSuccessStore })
   const splitOrigin = await listen(splitServer)
   const splitPayload = await (await fetch(`${splitOrigin}/poc-api/datahub/catalog?limit=20`)).json()
   assert.deepEqual(splitPayload.items.map((item) => item.name), ['postgres_new'])
@@ -380,7 +414,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
     async cacheDelete() {},
   }
   const readablePostgresModule = await import('./poc-server.mjs?catalog-performance-readable-pg-broken-redis')
-  const readablePostgresServer = readablePostgresModule.createPocServer({ stateStore: readablePostgresStore })
+  const readablePostgresServer = authenticatedPocServer(readablePostgresModule, { stateStore: readablePostgresStore })
   const readablePostgresOrigin = await listen(readablePostgresServer)
   const readablePostgresPayload = await (
     await fetch(`${readablePostgresOrigin}/poc-api/datahub/catalog?limit=20`)
@@ -391,7 +425,7 @@ test('serves PostgreSQL last-good Catalog state without a synchronous provider s
 
   const failureResponse = async (suffix, failingStore) => {
     const failureModule = await import(`./poc-server.mjs?catalog-performance-${suffix}`)
-    const failureServer = failureModule.createPocServer({ stateStore: failingStore })
+    const failureServer = authenticatedPocServer(failureModule, { stateStore: failingStore })
     const failureOrigin = await listen(failureServer)
     const response = await fetch(`${failureOrigin}/poc-api/datahub/catalog?limit=20`)
     assert.equal(response.status, 503)
@@ -498,7 +532,7 @@ test('reconciles deleted and reactivated Catalog URNs across Search, Tree, Chat 
   const store = reconciliationStateStore()
 
   const generationA = await import('./poc-server.mjs?catalog-generation-a')
-  const serverA = generationA.createPocServer({ stateStore: store.stateStore })
+  const serverA = authenticatedPocServer(generationA, { stateStore: store.stateStore })
   const originA = await listen(serverA)
   assert.equal((await fetch(`${originA}/poc-api/datahub/catalog?limit=20`)).status, 503)
   await waitFor(() => store.observation().writes === 1, 'generation A did not commit')
@@ -507,7 +541,7 @@ test('reconciles deleted and reactivated Catalog URNs across Search, Tree, Chat 
   store.markStale()
   providerAssets = [retained]
   const generationB = await import('./poc-server.mjs?catalog-generation-b')
-  const serverB = generationB.createPocServer({ stateStore: store.stateStore })
+  const serverB = authenticatedPocServer(generationB, { stateStore: store.stateStore })
   const originB = await listen(serverB)
   assert.equal((await (await fetch(`${originB}/poc-api/datahub/catalog?limit=20`)).json()).total, 2)
   await waitFor(() => store.observation().writes === 2, 'generation B did not replace the projection')
@@ -531,7 +565,7 @@ test('reconciles deleted and reactivated Catalog URNs across Search, Tree, Chat 
   store.markStale()
   providerAssets = [removed, retained]
   const generationC = await import('./poc-server.mjs?catalog-generation-c')
-  const serverC = generationC.createPocServer({ stateStore: store.stateStore })
+  const serverC = authenticatedPocServer(generationC, { stateStore: store.stateStore })
   const originC = await listen(serverC)
   assert.equal((await (await fetch(`${originC}/poc-api/datahub/catalog?limit=20`)).json()).total, 1)
   await waitFor(() => store.observation().writes === 3, 'generation C did not reactivate the same URN')
@@ -617,7 +651,7 @@ test('confirms exact-boundary DataHub inventories once and fails unsafe paginati
   }
   const exactStore = makeStore()
   const exactModule = await import('./poc-server.mjs?catalog-exact-boundary-confirmation')
-  const exactServer = exactModule.createPocServer({ stateStore: exactStore.stateStore })
+  const exactServer = authenticatedPocServer(exactModule, { stateStore: exactStore.stateStore })
   const exactOrigin = await listen(exactServer)
   const coldResponses = await Promise.all(Array.from({ length: 6 }, () => (
     fetch(`${exactOrigin}/poc-api/datahub/catalog?limit=20`)
@@ -667,7 +701,7 @@ test('confirms exact-boundary DataHub inventories once and fails unsafe paginati
     scenario = { requests: 0, pages: unsafe.pages }
     const unsafeStore = makeStore()
     const unsafeModule = await import(`./poc-server.mjs?catalog-${unsafe.name}`)
-    unsafeModule.createPocServer({ stateStore: unsafeStore.stateStore })
+    authenticatedPocServer(unsafeModule, { stateStore: unsafeStore.stateStore })
     await assert.rejects(
       unsafeModule.startDatahubInventoryRefresh(),
       (error) => error?.statusCode === 502,
@@ -679,7 +713,7 @@ test('confirms exact-boundary DataHub inventories once and fails unsafe paginati
   scenario = { requests: 0, pages: [{ status: 502, items: [], total: 0, next: null }] }
   const retryStore = makeStore()
   const retryModule = await import('./poc-server.mjs?catalog-cold-retry-suppression')
-  const retryServer = retryModule.createPocServer({ stateStore: retryStore.stateStore })
+  const retryServer = authenticatedPocServer(retryModule, { stateStore: retryStore.stateStore })
   const retryOrigin = await listen(retryServer)
   assert.equal((await fetch(`${retryOrigin}/poc-api/datahub/catalog?limit=20`)).status, 503)
   await waitFor(() => scenario.requests === 1, 'initial failed Catalog refresh was not attempted')

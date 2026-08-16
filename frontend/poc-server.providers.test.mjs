@@ -349,8 +349,22 @@ before(async () => {
       { id: 'airflow', label: 'Airflow', url: `${providerOrigin}/dashboards/airflow`, height_px: 720 },
     ]),
   })
+  const { createPocStateStore } = await import('./poc-state-store.mjs?provider-contract-test')
   const module = await import('./poc-server.mjs?provider-contract-test')
-  pocServer = module.createPocServer()
+  const stateStore = createPocStateStore()
+  await stateStore.write('change-history-access-v1', {
+    schema_version: 1,
+    active_subject_id: 'provider-test-subject',
+    users: [{ subject_id: 'provider-test-subject', role: 'admin', active: true, provider_owner_refs: [] }],
+    system_assignments: [],
+  })
+  pocServer = module.createPocServer({
+    stateStore,
+    authenticator: {
+      async authenticate() { return { subjectId: 'provider-test-subject', tokenHash: 'f'.repeat(64) } },
+      assertOrigin() {},
+    },
+  })
   await new Promise((resolvePromise) => pocServer.listen(0, '127.0.0.1', resolvePromise))
   const pocAddress = pocServer.address()
   assert.equal(typeof pocAddress, 'object')

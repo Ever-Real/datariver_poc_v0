@@ -31,7 +31,7 @@ Evidence 사이에는 제품 파일 변경이 없다.
 | Change History | schema/metadata/lifecycle 감사 이력 제공 | normalized ledger | append-oriented ledger, source/checkpoint, KST 주차 | 사건 목록·상세·summary·weekly | 모든 active role 조회, System 범위 적용 | authority/catalog mapping 불명확 시 숨김 또는 409/503 | `COMPLETE_RUNTIME_VERIFIED` (DEV) |
 | Change Management | 감지 사건과 기존 CR을 명시적으로 연결 | 사건, CR, server-held subject | candidate/primary link event를 append-only 저장 | 현재 link와 reverse history | admin 전체, steward/developer assigned System, viewer read-only | stale ETag/CAS·scope 오류는 effect 0 | `COMPLETE_RUNTIME_VERIFIED` (DEV) |
 | Monitoring | 변경 현황을 DataRiver native 화면으로 표시 | summary/events/weekly API | server-side filter·집계 | 기본 `데이터 변경현황` 탭, 외부 dashboard 탭 | 조회 가능한 사건만 표시 | 0건과 provider/sync 장애 분리 | `COMPLETE_RUNTIME_VERIFIED` (DEV) |
-| User/System Access | 사용자·역할·System 책임 범위를 서버가 소유 | access document, active subject env | PostgreSQL access projection과 protected core projection CAS | User/System 관리, action visibility | active server-held subject만 authority | client subject/role/System claim 거부 | `COMPLETE_RUNTIME_VERIFIED` (DEV) |
+| User/System Access | 사용자·역할·System 책임 범위를 서버가 소유 | local opaque session subject, access document | PostgreSQL access projection과 protected core projection CAS | User/System 관리, action visibility | request-scoped session subject와 access document만 authority | anonymous/unknown/inactive 및 client subject/role/System claim 거부 | local auth `IMPLEMENTED_NOT_VERIFIED`; 기존 access semantics `COMPLETE_RUNTIME_VERIFIED` (DEV) |
 | Catalog current | 과거 원장과 분리된 최신 자산 조회 | DataHub current inventory | PostgreSQL current projection, optional Redis hot cache, latest vector generation | Search·Tree·Detail·Chat current context | catalog read 경계 | partial/provider 실패 시 last-good 유지, 삭제 추정 금지 | Search/Tree lifecycle `COMPLETE_RUNTIME_VERIFIED`; vector target recheck |
 | Scheduler | KST 일 경계 capture 후 reconciliation | enabled flag, timezone, MCL contract | web process 내부 bounded job, PostgreSQL advisory lock와 durable receipt | startup catch-up·same-day suppression | 배포 설정 | capture 실패 시 receipt/checkpoint를 성공 처리하지 않음 | startup/catch-up `COMPLETE_RUNTIME_VERIFIED`; 실제 자정 `DAILY_CLOCK_NOT_OBSERVED` |
 | Timeline backfill | retained history를 초기 보충 | DataHub Timeline | 보존된 사실만 `BACKFILLED_BEST_EFFORT` | 초기 historical ledger | server process | retention으로 사라진 사건을 합성하지 않음 | `BACKLOG`; ADR 계약만 있고 runtime 미구현 |
@@ -42,8 +42,10 @@ CR 연결 및 접근 권위의 canonical store다. Redis와 pgvector는 가속/�
 
 ### 2.1 현재 POC runtime 권위 분리
 
-- Node `poc-server.mjs`는 provider gateway, Change History access/events/weekly/link API, server-held
-  active subject, MCL/scheduler와 PostgreSQL transaction을 소유한다.
+- Node `poc-server.mjs`는 provider gateway, Change History access/events/weekly/link API, local
+  credential/session fence, MCL/scheduler와 PostgreSQL transaction을 소유한다. 요청 권위는 opaque
+  session의 `subject_id`를 매 요청 최신 access document에 결합해 계산하며 process-global subject를
+  사용하지 않는다.
 - browser `PocApiClient`는 기존 화면 호환을 위해 다른 core 업무 흐름의 client-side adapter/state
   orchestration을 계속 포함하며 `/poc-api/state/core`로 versioned core JSON을 영속화한다.
 - User/System Change History authority 변경은 `/api/v1/change-history/access`의 ETag/CAS를 거쳐
@@ -53,7 +55,8 @@ CR 연결 및 접근 권위의 canonical store다. Redis와 pgvector는 가속/�
 - DEV host publish와 native Node/Vite listener는 기본적으로 `127.0.0.1`이다. Compose Web은 peer
   container 통신을 위해 Node listener만 container 내부 `0.0.0.0:8080`으로 명시하고, 선택적 Airflow는
   같은 external `datariver-poc-services` network에서 `http://web:8080`을 기본 호출한다. Intranet bind
-  override는 네트워크 opt-in일 뿐 인증 또는 TLS를 제공하지 않는다.
+  현재 local-auth DEV 계약은 loopback HTTP exact origin만 허용한다. 비-loopback target은 별도
+  HTTPS ingress/origin acceptance가 필요하다.
 
 ## 3. 기술 스택
 
@@ -125,14 +128,14 @@ canonical이다. 아래 `R/O`는 required/optional, `S`는 secret, `Restart`는 
 | database | `POC_PGVECTOR_IMAGE`, `POC_POSTGRES_HOST_PORT`, `POC_POSTGRES_DB`, `POC_POSTGRES_USER`, `POC_POSTGRES_PASSWORD` | R | state image/host diagnostic port/database/principal | password Y | Y |
 | cache/graph | `POC_REDIS_IMAGE`, `POC_REDIS_PORT`, `POC_NEO4J_HTTP_PORT`, `NEO4J_IMAGE`, `NEO4J_USERNAME`, `NEO4J_PASSWORD` | R/O | Compose-owned Redis/Neo4j | password Y | Y |
 | DataHub | `DATAHUB_GMS_URL`, `DATAHUB_GMS_TOKEN`, `DATAHUB_UI_URL` | R/O | container-routable GMS and optional browser link | token Y | Y |
-| Access | `POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID` | O* | registered active user ID; private Change History API에는 사실상 required | N | Y |
+| local auth | `POC_PUBLIC_ORIGIN`, `POC_AUTH_SESSION_TTL_SECONDS`, `POC_AUTH_FAILED_ATTEMPT_LIMIT`, `POC_AUTH_LOCK_SECONDS` | R/O | exact cookie/Origin boundary, bounded opaque session and login lock | N | Y |
 | Scheduler | `POC_CHANGE_HISTORY_SCHEDULER_ENABLED`, `POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE`, `POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME` | R/O | disabled-first, IANA zone, logical deployment별 unique·release 간 stable lock | N | Y |
 | Kafka/MCL | `POC_MCL_KAFKA_BROKERS`, `POC_MCL_KAFKA_CLIENT_ID`, `POC_MCL_KAFKA_GROUP_ID`, `POC_MCL_KAFKA_TOPIC`, `POC_MCL_SOURCE_IDENTITY_HASH`, `POC_MCL_SCHEMA_CONTRACT_HASH`, `POC_MCL_PROVIDER_NAME`, `POC_MCL_PROVIDER_VERSION` | R when enabled | routable brokers, isolated client/group, actual topic/provider and 64-char hashes | N | Y |
 | Kafka auth | `POC_MCL_KAFKA_SSL`, `POC_MCL_KAFKA_SASL_MECHANISM`, `POC_MCL_KAFKA_SASL_USERNAME`, `POC_MCL_KAFKA_SASL_PASSWORD` | O | target Kafka TLS/SASL contract | user/password Y | Y |
 | Schema Registry | `POC_MCL_SCHEMA_REGISTRY_URL`, `POC_MCL_SCHEMA_REGISTRY_USERNAME`, `POC_MCL_SCHEMA_REGISTRY_PASSWORD` | R/O | actual Registry root and optional auth | user/password Y | Y |
 | MCL bounds | `POC_MCL_MAX_MESSAGES`, `POC_MCL_MAX_RECORD_BYTES`, `POC_MCL_TIMEOUT_MS` | O | positive bounded capture values | N | Y |
 | Monitoring | `UI_GRAFANA_URL`, `GRAFANA_EMBED_BASE_URL`, `GRAFANA_EMBED_ENABLED`, `GRAFANA_EMBED_EVIDENCE_REFERENCE`, `MONITORING_DASHBOARDS_JSON` | O | optional exact dashboard/link contract | N | Y |
-| Airflow | `AIRFLOW_URL`, `AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD`, `POC_AIRFLOW_IMAGE`, `AIRFLOW_BIND_HOST`, `AIRFLOW_PORT`, `AIRFLOW_DAG_ID`, `AIRFLOW_DATARIVER_URL`, `AIRFLOW_WORKSPACE_ID`, `EXTERNAL_SERVICE_NO_PROXY` | O | optional Bulk preparation integration/runtime | password Y | Y |
+| Airflow | `AIRFLOW_URL`, `AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD`, `POC_AIRFLOW_SERVICE_TOKEN`, `POC_AIRFLOW_IMAGE`, `AIRFLOW_BIND_HOST`, `AIRFLOW_PORT`, `AIRFLOW_DAG_ID`, `AIRFLOW_DATARIVER_URL`, `AIRFLOW_WORKSPACE_ID`, `EXTERNAL_SERVICE_NO_PROXY` | O | optional Bulk preparation integration/runtime; exact callback token is required when POC Airflow starts | password/token Y | Y |
 | MinIO/S3 | `MINIO_URL`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_REGION`, `S3_BUCKET_QUARANTINE`, `S3_BUCKET_ACCEPTED`, `S3_BUCKET_EXPORTS`, `S3_BUCKET_FILEFOLDER`, `S3_BUCKET_INFOSCHEMA` | O | optional object storage contract | keys Y | Y |
 | Chat | `LLM_CHAT_URL`, `LLM_CHAT_MODEL`, `LLM_CHAT_TOKEN`, `LLM_EMBEDDING_URL`, `LLM_EMBEDDING_MODEL`, `LLM_EMBEDDING_TOKEN`, `LLM_RERANKER_URL`, `LLM_RERANKER_MODEL`, `LLM_RERANKER_TOKEN` | O | OpenAI-compatible optional stages | tokens Y | Y |
 | native/test only | `POC_ENV_FILE`, `POC_SERVER_HOST`, `POC_SERVER_PORT`, `POC_DATABASE_URL`, `POC_REDIS_URL`, `POC_TEST_DATABASE_TARGET`, `POC_TEST_DATABASE_ISOLATED_ACK`, `NODE_TEST_CONTEXT` | O | native launch or explicit isolated-test guard; Compose는 service names를 주입 | URL/password may be Y | process restart |
@@ -166,7 +169,10 @@ hash 또는 credential이 아니다. 모든 runtime 변수 변경은 별도 표�
 | `DATAHUB_GMS_URL` | C | container-routable GMS root URL | N | Y |
 | `DATAHUB_GMS_TOKEN` | O | scoped DataHub token source | Y | Y |
 | `DATAHUB_UI_URL` | O | approved browser-visible URL | N | Y |
-| `POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID` | C | registered active subject ID | N | Y |
+| `POC_PUBLIC_ORIGIN` | R | exact browser origin; loopback HTTP or reviewed HTTPS | N | Y |
+| `POC_AUTH_SESSION_TTL_SECONDS` | O | `28800`; bounded 300..86400 | N | Y |
+| `POC_AUTH_FAILED_ATTEMPT_LIMIT` | O | `5`; bounded 3..20 | N | Y |
+| `POC_AUTH_LOCK_SECONDS` | O | `900`; bounded 30..3600 | N | Y |
 | `POC_CHANGE_HISTORY_SCHEDULER_ENABLED` | O | `false` until direct capture passes | N | Y |
 | `POC_CHANGE_HISTORY_SCHEDULER_TIME_ZONE` | O | IANA zone, `Asia/Seoul` | N | Y |
 | `POC_CHANGE_HISTORY_SCHEDULER_LOCK_NAME` | O | logical deployment 간 unique, 같은 deployment의 restart/rebuild/release 간 stable namespace | N | Y |
@@ -196,6 +202,7 @@ hash 또는 credential이 아니다. 모든 runtime 변수 변경은 별도 표�
 | `AIRFLOW_URL` | C | Airflow API root | N | Y |
 | `AIRFLOW_USERNAME` | C | existing Airflow principal | Y | Y |
 | `AIRFLOW_PASSWORD` | C | existing Airflow secret | Y | Y |
+| `POC_AIRFLOW_SERVICE_TOKEN` | C | random 32..512 printable-ASCII secret, only when POC Airflow starts | Y | Y |
 | `POC_AIRFLOW_IMAGE` | O | reviewed Airflow image | N | Y |
 | `AIRFLOW_BIND_HOST` | O | `127.0.0.1`; optional Airflow host bind | N | Y |
 | `AIRFLOW_PORT` | O | host port | N | Y |
@@ -279,8 +286,12 @@ image_revision="$(docker image inspect \
 test "$POC_SOURCE_COMMIT" = "$image_revision"
 docker compose --env-file deploy/poc/.env "${compose_files[@]}" up -d
 curl -fsS http://127.0.0.1:39080/healthz
-curl -fsS http://127.0.0.1:39080/poc-api/capabilities
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
+  http://127.0.0.1:39080/poc-api/capabilities)" = 401
 ```
+
+그 뒤 browser login으로 생성된 HttpOnly session에서 Catalog/Change History smoke를 수행한다.
+password와 session cookie는 shell history, log 또는 evidence에 기록하지 않는다.
 
 A의 overlay는 이미 존재하는 `${DATAHUB_EXTERNAL_NETWORK}`를 연결하며
 DataHub/Kafka/Registry를 생성하거나 재시작하지 않는다. B에서는 overlay를 붙이지 않는다.
@@ -356,7 +367,8 @@ receipt에 기록하며, DB contract가 바뀐 release는 별도 backup/rollback
    재사용하며 provider/version/schema hash 일부 일치만으로 선택하지 않는다.
 3. scheduler를 `false`로 두고 runbook의 canonical bounded capture로 first exact boundary를 만든다.
 4. checkpoint와 ledger commit, replay/dedup을 확인한다.
-5. server-held active subject와 access API를 확인한다.
+5. operator가 만든 credential-backed human subject가 access document의 active user와 exact하게
+   결합되고 anonymous API가 `401`인지 확인한다.
 6. 그 뒤에만 scheduler를 `true`, timezone을 `Asia/Seoul`로 설정해 web을 재시작한다.
 
 상세 명령과 판정 기준은 MCL runbook에만 둔다.
@@ -367,7 +379,7 @@ receipt에 기록하며, DB contract가 바뀐 release는 별도 backup/rollback
 - checkpoint reset, Kafka offset reset, ledger truncate/update는 정상 복구 절차가 아니다.
 - Registry latest 응답의 실제 subject/version/schema ID/schema SHA-256과 DataHub actual version을 함께 기록한다.
 - scheduler enable 전에 Kafka/Registry connectivity와 direct bounded capture를 확인한다.
-- active subject는 등록된 active user여야 하며 client가 subject/role/System을 선택하지 못한다.
+- credential subject는 등록된 active access user여야 하며 client가 subject/role/System을 선택하지 못한다.
 - 기존 volume에 destructive initialization, `docker compose down -v`, DB reset을 사용하지 않는다.
 - provider partial/failure는 asset deletion 증거가 아니다. last-good current projection을 유지한다.
 - unit test는 live DEV DB 환경을 상속해서 실행하지 않는다. test isolation guard가 명시적 isolated target과 ack 없이 persistent DB write를 차단한다.

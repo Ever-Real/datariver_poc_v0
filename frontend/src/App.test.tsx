@@ -31,6 +31,8 @@ interface MutableAuth {
   beginPasswordReauth: () => Promise<void>
   beginPasswordChange: () => Promise<void>
   clearNotice: () => void
+  isLocalSession?: true
+  signInWithCredentials?: (username: string, password: string) => Promise<void>
 }
 
 const appTest = vi.hoisted(() => {
@@ -100,6 +102,8 @@ describe('App authentication-bound Admin orchestration', () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
+    delete appTest.auth.isLocalSession
+    delete appTest.auth.signInWithCredentials
     window.history.replaceState({}, '', `/?page=admin&workspace=${WORKSPACE_ONE}`)
     Object.assign(appTest.auth, {
       user: {
@@ -323,6 +327,29 @@ describe('App authentication-bound Admin orchestration', () => {
     expect(await screen.findByRole('region', {
       name: 'Knowledge workspace route',
     })).toHaveTextContent('knowledge-studio')
+  })
+
+  it('renders the local credential form and clears its controlled password after submit', () => {
+    appTest.auth.user = undefined as unknown as MutableAuth['user']
+    appTest.auth.profile = undefined as unknown as MutableAuth['profile']
+    appTest.auth.isLocalSession = true
+    appTest.auth.signInWithCredentials = vi.fn(() => Promise.resolve(undefined))
+    const setItem = vi.spyOn(Storage.prototype, 'setItem')
+
+    render(<App />)
+
+    const username = screen.getByRole('textbox', { name: '아이디' })
+    const password = screen.getByLabelText('비밀번호')
+    fireEvent.change(username, { target: { value: ' local.operator ' } })
+    fireEvent.change(password, { target: { value: 'memory-only-secret' } })
+    fireEvent.click(screen.getByRole('button', { name: /Sign In/ }))
+
+    expect(appTest.auth.signInWithCredentials).toHaveBeenCalledWith(
+      'local.operator',
+      'memory-only-secret',
+    )
+    expect(password).toHaveValue('')
+    expect(setItem).not.toHaveBeenCalled()
   })
 })
 

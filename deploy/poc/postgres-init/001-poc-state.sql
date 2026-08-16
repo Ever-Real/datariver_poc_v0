@@ -122,6 +122,46 @@ BEGIN
 END
 $block$;
 
+CREATE TABLE IF NOT EXISTS poc_local_credentials (
+  subject_id text PRIMARY KEY,
+  username_normalized text NOT NULL UNIQUE,
+  password_hash text NOT NULL,
+  login_enabled boolean NOT NULL DEFAULT true,
+  must_change_password boolean NOT NULL DEFAULT false,
+  failed_attempts integer NOT NULL DEFAULT 0,
+  locked_until timestamptz,
+  version bigint NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT ck_poc_local_credential_subject
+    CHECK (char_length(subject_id) BETWEEN 1 AND 255),
+  CONSTRAINT ck_poc_local_credential_username
+    CHECK (username_normalized ~ '^[a-z0-9][a-z0-9._@+\-]{0,63}$'),
+  CONSTRAINT ck_poc_local_credential_password_hash
+    CHECK (char_length(password_hash) BETWEEN 32 AND 512
+      AND password_hash LIKE '$argon2id$v=19$%'),
+  CONSTRAINT ck_poc_local_credential_attempts
+    CHECK (failed_attempts BETWEEN 0 AND 1000),
+  CONSTRAINT ck_poc_local_credential_version CHECK (version > 0)
+);
+
+CREATE TABLE IF NOT EXISTS poc_local_sessions (
+  token_hash char(64) PRIMARY KEY,
+  subject_id text NOT NULL REFERENCES poc_local_credentials(subject_id),
+  created_at timestamptz NOT NULL,
+  expires_at timestamptz NOT NULL,
+  revoked_at timestamptz,
+  CONSTRAINT ck_poc_local_session_hash CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  CONSTRAINT ck_poc_local_session_lifetime CHECK (expires_at > created_at),
+  CONSTRAINT ck_poc_local_session_revocation CHECK (revoked_at IS NULL OR revoked_at >= created_at)
+);
+
+CREATE INDEX IF NOT EXISTS ix_poc_local_sessions_subject
+  ON poc_local_sessions (subject_id);
+
+CREATE INDEX IF NOT EXISTS ix_poc_local_sessions_expiry
+  ON poc_local_sessions (expires_at) WHERE revoked_at IS NULL;
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_poc_change_history_source_position_ordinal
   ON poc_change_history_ledger_events (
     source_identity_hash, topic_contract, source_partition, source_offset, deterministic_ordinal

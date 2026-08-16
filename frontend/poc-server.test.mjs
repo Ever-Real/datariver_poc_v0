@@ -8,6 +8,16 @@ import { URL } from 'node:url'
 let server
 let origin
 
+function testAuthenticator(subjectId) {
+  return {
+    async authenticate() { return { subjectId, tokenHash: 'f'.repeat(64) } },
+    assertOrigin() {},
+    clearCookie() { return 'datariver_poc_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' },
+    async logout() {},
+    setCookie(token) { return `datariver_poc_session=${token}; HttpOnly; SameSite=Strict; Path=/` },
+  }
+}
+
 before(async () => {
   Object.assign(process.env, {
     POC_ENV_FILE: 'poc-server.test.env.missing',
@@ -15,8 +25,16 @@ before(async () => {
     POC_POSTGRES_HOST: '',
     POC_REDIS_URL: '',
   })
+  const { createPocStateStore } = await import('./poc-state-store.mjs?fallback-contract-test')
   const { createPocServer } = await import('./poc-server.mjs?fallback-contract-test')
-  server = createPocServer()
+  const stateStore = createPocStateStore()
+  await stateStore.write('change-history-access-v1', {
+    schema_version: 1,
+    active_subject_id: 'test-subject',
+    users: [{ subject_id: 'test-subject', role: 'admin', active: true, provider_owner_refs: [] }],
+    system_assignments: [],
+  })
+  server = createPocServer({ stateStore, authenticator: testAuthenticator('test-subject') })
   await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
   const address = server.address()
   assert.equal(typeof address, 'object')
@@ -221,7 +239,21 @@ test('bounds an unavailable Redis startup and retries after a cold-start Postgre
         const { createPocStateStore } = await import('./poc-state-store.mjs?pg-failure-redis-fallback')
         const { createPocServer } = await import('./poc-server.mjs?actual-adapter-redis-fallback')
         const stateStore = createPocStateStore({ databasePool })
-        const pocServer = createPocServer({ stateStore })
+        stateStore.readChangeHistoryAccess = async () => ({
+          access: { version: 1, value: {
+            schema_version: 1, active_subject_id: 'adapter-test-subject',
+            users: [{ subject_id: 'adapter-test-subject', role: 'admin', active: true, provider_owner_refs: [] }],
+            system_assignments: [],
+          } },
+          core: { version: 0, value: null },
+        })
+        const pocServer = createPocServer({
+          stateStore,
+          authenticator: {
+            async authenticate() { return { subjectId: 'adapter-test-subject', tokenHash: 'f'.repeat(64) } },
+            assertOrigin() {},
+          },
+        })
         await new Promise((resolvePromise) => pocServer.listen(0, '127.0.0.1', resolvePromise))
         const address = pocServer.address()
         assert.equal(typeof address, 'object')
@@ -419,15 +451,23 @@ test('rejects arbitrary gateway paths and non-allowlisted DAGs', async () => {
   assert.equal(minio.status, 503)
 })
 
-test('fails closed when the server active subject is not configured', async () => {
-  const response = await fetch(new URL('/api/v1/change-history/access', origin))
-  assert.equal(response.status, 503)
-  assert.equal((await response.json()).code, 'ACCESS_NOT_CONFIGURED')
+test('fails closed when local authentication is not explicitly constructed', async () => {
+  const { createPocServer } = await import('./poc-server.mjs?missing-authentication-contract')
+  const closedServer = createPocServer()
+  await new Promise((resolvePromise) => closedServer.listen(0, '127.0.0.1', resolvePromise))
+  const address = closedServer.address()
+  assert.equal(typeof address, 'object')
+  try {
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/change-history/access`)
+    assert.equal(response.status, 503)
+    assert.equal((await response.json()).code, 'AUTHENTICATION_NOT_CONFIGURED')
+  } finally {
+    closedServer.closeAllConnections()
+    await new Promise((resolvePromise, reject) => closedServer.close((error) => error ? reject(error) : resolvePromise()))
+  }
 })
 
 test('makes access state server-authoritative with bootstrap, role, spoof, CAS, and core fences', async () => {
-  const previousSubject = process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
-  delete process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
   const { createPocStateStore } = await import('./poc-state-store.mjs?access-authority-contract')
   const { createPocServer } = await import('./poc-server.mjs?access-authority-contract')
   const stateStore = createPocStateStore()
@@ -436,7 +476,10 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
 
   const servers = []
   const listen = async (activeSubjectId, selectedStore = stateStore) => {
-    const authorityServer = createPocServer({ stateStore: selectedStore, activeSubjectId })
+    const authorityServer = createPocServer({
+      stateStore: selectedStore,
+      authenticator: testAuthenticator(activeSubjectId),
+    })
     await new Promise((resolvePromise) => authorityServer.listen(0, '127.0.0.1', resolvePromise))
     servers.push(authorityServer)
     const address = authorityServer.address()
@@ -473,10 +516,18 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
       priority: 1, active: true,
     }],
   }
+  await stateStore.write('change-history-access-v1', {
+    schema_version: 1,
+    active_subject_id: 'configured-admin',
+    users: [{
+      subject_id: 'configured-admin', role: 'admin', active: true, provider_owner_refs: [],
+    }],
+    system_assignments: [],
+  })
 
   try {
     const adminOrigin = await listen('configured-admin')
-    const put = (authorityOrigin, body, ifMatch = '"0"', headers = {}) => request(authorityOrigin, {
+    const put = (authorityOrigin, body, ifMatch = '"1"', headers = {}) => request(authorityOrigin, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json', 'If-Match': ifMatch, ...headers },
       body: JSON.stringify(body),
@@ -489,13 +540,16 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
         : user),
     })
     assert.equal(selfAppointedViewer.status, 403)
-    assert.equal((await stateStore.readChangeHistoryAccess()).access.value, null)
+    assert.equal(
+      (await stateStore.readChangeHistoryAccess()).access.value.users[0].role,
+      'admin',
+    )
 
     const bootstrap = await put(adminOrigin, { ...document, active_subject_id: 'steward-subject' })
     assert.equal(bootstrap.status, 200)
-    assert.equal(bootstrap.headers.get('etag'), '"1"')
+    assert.equal(bootstrap.headers.get('etag'), '"2"')
     const bootstrapped = await bootstrap.json()
-    assert.equal(bootstrapped.version, 1)
+    assert.equal(bootstrapped.version, 2)
     assert.equal(bootstrapped.active_subject_id, 'steward-subject')
     assert.equal(bootstrapped.users[0].display_name, 'Configured Admin')
     assert.equal(bootstrapped.users[0].email, 'admin@poc.invalid')
@@ -508,7 +562,7 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
     const spoofed = await request(adminOrigin, { headers: { 'X-Subject-Id': 'viewer-subject' } })
     assert.equal(spoofed.status, 400)
     assert.equal((await spoofed.json()).code, 'PROTECTED_CLAIM')
-    const bodySpoof = await put(adminOrigin, { ...document, actor_ref: 'browser-actor' }, '"1"')
+    const bodySpoof = await put(adminOrigin, { ...document, actor_ref: 'browser-actor' }, '"2"')
     assert.equal(bodySpoof.status, 400)
     assert.equal((await bodySpoof.json()).code, 'PROTECTED_CLAIM')
 
@@ -529,7 +583,7 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
         scope_id: 'duplicate-business-schema', system_id: 'second-system', platform: 'postgres',
         database_name: 'business_db', schema_name: 'public', active: true,
       }],
-    }, '"1"')
+    }, '"2"')
     assert.equal(ambiguous.status, 400)
     assert.equal((await ambiguous.json()).code, 'ACCESS_DOCUMENT_INVALID')
 
@@ -537,7 +591,7 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
       ['steward-subject', 'data_steward', true, 403],
       ['developer-subject', 'developer', true, 403],
       ['viewer-subject', 'viewer', true, 403],
-      ['inactive-subject', 'admin', false, 401],
+      ['inactive-subject', 'admin', false, 403],
     ]) {
       const roleStore = createPocStateStore()
       await roleStore.writeChangeHistoryAccess({
@@ -562,7 +616,7 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
       }, '"1"')).status, status, `${subjectId} PUT`)
     }
     const unknownOrigin = await listen('unknown-subject')
-    assert.equal((await request(unknownOrigin)).status, 401)
+    assert.equal((await request(unknownOrigin)).status, 403)
 
     const genericWrite = await fetch(new URL('/poc-api/state/core', adminOrigin), {
       method: 'PUT',
@@ -588,9 +642,9 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
         : user),
       system_assignments: [{ ...document.system_assignments[0], priority: 2 }],
     }
-    const update = await put(adminOrigin, updatedDocument, '"1"')
+    const update = await put(adminOrigin, updatedDocument, '"2"')
     assert.equal(update.status, 200)
-    assert.equal(update.headers.get('etag'), '"2"')
+    assert.equal(update.headers.get('etag'), '"3"')
     assert.deepEqual((await stateStore.read('core')).value.changeRecords, crBeforeAccessUpdate)
     assert.equal((await stateStore.read('core')).value.adminMemberships
       .find((item) => item.subject_id === 'configured-admin').display_name, 'Updated Admin')
@@ -604,8 +658,6 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
     assert.equal(primitiveCore.status, 409)
     assert.equal((await primitiveCore.json()).code, 'CORE_ACCESS_FIELDS_PROTECTED')
   } finally {
-    if (previousSubject === undefined) delete process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
-    else process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID = previousSubject
     for (const authorityServer of servers) {
       authorityServer.closeAllConnections()
       await new Promise((resolvePromise, reject) => authorityServer.close((error) => (
@@ -615,30 +667,35 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
   }
 })
 
-test('accepts the active subject from the dedicated server environment only', async () => {
+test('does not use a process-global active subject as request authority', async () => {
   const previousSubject = process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
-  process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID = 'environment-admin'
+  process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID = 'spoofed-environment-admin'
   const { createPocStateStore } = await import('./poc-state-store.mjs?access-environment-contract')
   const { createPocServer } = await import('./poc-server.mjs?access-environment-contract')
   const stateStore = createPocStateStore()
-  const environmentServer = createPocServer({ stateStore })
+  await stateStore.writeChangeHistoryAccess({
+    expectedAccessVersion: 0,
+    expectedCoreVersion: 0,
+    accessValue: {
+      schema_version: 1,
+      active_subject_id: 'stored-metadata-only',
+      users: [{ subject_id: 'request-session-admin', role: 'admin', active: true, provider_owner_refs: [] }],
+      system_assignments: [],
+    },
+    coreValue: {
+      adminMemberships: [], adminSystems: [], adminSystemAssignees: [], adminSystemSchemaScopes: [],
+    },
+  })
+  const environmentServer = createPocServer({
+    stateStore,
+    authenticator: testAuthenticator('request-session-admin'),
+  })
   delete process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
   await new Promise((resolvePromise) => environmentServer.listen(0, '127.0.0.1', resolvePromise))
   const address = environmentServer.address()
   assert.equal(typeof address, 'object')
   try {
-    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/change-history/access`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json', 'If-Match': '"0"' },
-      body: JSON.stringify({
-        schema_version: 1,
-        active_subject_id: 'environment-admin',
-        users: [{ subject_id: 'environment-admin', role: 'admin', active: true }],
-        systems: [],
-        system_schema_scopes: [],
-        system_assignments: [],
-      }),
-    })
+    const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/change-history/access`)
     assert.equal(response.status, 200)
   } finally {
     if (previousSubject === undefined) delete process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
@@ -695,6 +752,9 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
   const replayCommands = new Map()
   const stateStore = {
     configured: { postgres: true, redis: false },
+    async readChangeHistoryAccess() {
+      return { access: structuredClone(projection.access), core: structuredClone(projection.core) }
+    },
     async readChangeHistoryProjection({ catalogScope }) {
       assert.equal(catalogScope, 'catalog-inventory-v1:disabled')
       return structuredClone(projection)
@@ -728,7 +788,10 @@ test('serves authoritative change-history reads, reverse lookup, weekly aggregat
       return result
     },
   }
-  const server = createPocServer({ stateStore, activeSubjectId: 'admin-subject' })
+  const server = createPocServer({
+    stateStore,
+    authenticator: testAuthenticator('admin-subject'),
+  })
   await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
   const address = server.address()
   assert.equal(typeof address, 'object')
@@ -933,10 +996,16 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
     let appendCalls = 0
     const stateStore = {
       configured: { postgres: true, redis: false },
+      async readChangeHistoryAccess() {
+        return { access: structuredClone(projection.access), core: structuredClone(projection.core) }
+      },
       async readChangeHistoryProjection() { return structuredClone(projection) },
       async appendChangeHistoryCrLink() { appendCalls += 1; return { linkEventIdentity: 'a'.repeat(64), eventHash: 'b'.repeat(64), linkVersion: 1, replayed: false } },
     }
-    const roleServer = createPocServer({ stateStore, activeSubjectId: 'role-subject' })
+    const roleServer = createPocServer({
+      stateStore,
+      authenticator: testAuthenticator('role-subject'),
+    })
     await new Promise((resolvePromise) => roleServer.listen(0, '127.0.0.1', resolvePromise))
     const address = roleServer.address()
     try { return { result: await action(`http://127.0.0.1:${address.port}`), appendCalls } } finally {

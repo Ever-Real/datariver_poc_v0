@@ -592,8 +592,14 @@ textarea { min-height: 110px; resize: vertical; }
 .legacy-login-card h1 { margin: 0; font-size: 28px; font-weight: 900; letter-spacing: -.04em; text-transform: uppercase; }
 .legacy-login-card header p, .legacy-login-card footer { margin: 8px 0 0; color: rgba(16, 24, 40, .42); font-size: 10px; font-weight: 800; letter-spacing: .15em; text-align: center; text-transform: uppercase; }
 .legacy-login-guidance { margin: 0; color: rgba(16, 24, 40, .55); font-size: 13px; line-height: 1.6; text-align: center; }
+.legacy-login-form { display: grid; gap: 8px; margin-top: 24px; }
+.legacy-login-form label { color: rgba(16, 24, 40, .72); font-size: 11px; font-weight: 800; letter-spacing: .04em; }
+.legacy-login-form input { width: 100%; min-height: 44px; border: 1px solid rgba(16, 24, 40, .2); border-radius: 2px; padding: 10px 12px; color: #101828; background: #fff; font: inherit; }
+.legacy-login-form input:focus-visible { border-color: #004b87; outline: 2px solid rgba(0, 75, 135, .2); outline-offset: 1px; }
+.legacy-login-form .legacy-login-submit { margin-top: 10px; }
 .legacy-login-submit { display: flex; width: 100%; min-height: 54px; align-items: center; justify-content: center; gap: 12px; margin-top: 26px; border: 0; border-radius: 2px; background: #101828; color: #fff; cursor: pointer; font: inherit; font-size: 13px; font-weight: 900; letter-spacing: .12em; text-transform: uppercase; box-shadow: 0 12px 24px rgba(16, 24, 40, .2); }
 .legacy-login-submit:hover, .legacy-login-submit:focus-visible { background: #293247; }
+.legacy-login-submit:disabled { cursor: not-allowed; opacity: .55; }
 .legacy-login-card footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid rgba(16, 24, 40, .08); }
 .admin-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
 .admin-tabs button { border: 1px solid var(--line-300); border-radius: var(--radius); padding: 6px 10px; color: var(--text-600); background: var(--cream-50); }

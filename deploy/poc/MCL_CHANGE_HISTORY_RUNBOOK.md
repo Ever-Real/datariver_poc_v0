@@ -223,7 +223,7 @@ Scheduler는 아직 `false`로 둔다. candidate web container에서 다음을 �
 4. `MetadataChangeLog_Versioned_v1` partition/high-low watermark 조회
 5. Registry subjects/latest와 schema contract hash 일치
 6. PostgreSQL의 네 change-history table
-7. 등록된 active admin과 `POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID` 일치
+7. access document에 등록된 active admin과 credential-backed server session의 `subject_id` 일치
 8. `GET /api/v1/change-history/access` 200
 
 실패하면 network/listener/contract를 수정한다. 제품 코드에 주소를 하드코딩하거나 proxy/container로
@@ -268,7 +268,7 @@ try {
 }
 NODE
 
-# 네 durable table과 private access endpoint를 확인한다.
+# 네 durable table과 anonymous access fence를 확인한다.
 docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml \
   exec -T pgvector sh -lc "psql -v ON_ERROR_STOP=1 \
   -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" \
@@ -277,9 +277,12 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
   ('poc_change_history_ledger_events'),
   ('poc_change_history_checkpoints'),
   ('poc_change_history_cr_link_events')) AS required(name);\""
-curl --fail-with-body --silent --show-error \
-  http://127.0.0.1:${POC_PORT:-39080}/api/v1/change-history/access >/dev/null
+test "$(curl -sS -o /dev/null -w '%{http_code}' \
+  http://127.0.0.1:${POC_PORT:-39080}/api/v1/change-history/access)" = 401
 ```
+
+그 뒤 Web login으로 생성된 HttpOnly session에서 같은 endpoint의 `200`과 mapped admin subject를
+확인한다. password 또는 session cookie를 runbook/evidence에 복사하지 않는다.
 
 이 probe는 `loadPocMclCaptureConfig()`의 brokers/client ID/SSL/SASL 계약을 사용하므로 TLS/SASL
 환경을 anonymous처럼 진단하지 않는다. SASL username/password는 출력하지 않고, 증거에는
@@ -358,7 +361,7 @@ endpoint가 없다. 실제 자정 timer를 관찰하지 않았으면 `DAILY_CLOC
 | `ECONNREFUSED 127.0.0.1:9092` | external advertised listener가 loopback | DataHub의 `PLAINTEXT_HOST` advertised address를 client-routable IP/DNS로 수정하고 별도 승인된 broker restart |
 | scheduler/MCL `ERR_MODULE_NOT_FOUND` | local Dockerfile drift | 두 runtime `.mjs` COPY와 package/lock을 맞춘 뒤 image rebuild |
 | Registry `JSONDecodeError`/404/401/403 | URL, subject, auth 또는 non-JSON response | `/subjects` HTTP response부터 재확인하고 schema hash 계산 중지 |
-| `The server active subject is not configured` | active subject 누락/불일치 | access document의 등록된 active admin을 설정; 임의 ID 금지 |
+| `A valid local session is required` 또는 `SUBJECT_FORBIDDEN` | session 누락/만료 또는 credential subject가 access document에서 unknown/inactive | operator bootstrap/login과 access document의 exact `subject_id`를 확인; fixture subject 재사용·임의 ID 매핑 금지 |
 | checkpoint가 low watermark보다 뒤 | Kafka retention gap | `HISTORY_GAP`/`BLOCKED_ENVIRONMENT`; offset/checkpoint reset 금지 |
 | bounded capture timeout | network/listener/Registry/codec/malformed record/message bound | 실패 offset 앞에서 checkpoint를 멈추고 원인을 분리 진단 |
 | `description is outside its string bound` | 구버전이 empty editable-field description을 거부 | empty-string normalization repair가 포함된 image로 재배포 후 durable checkpoint에서 replay; offset/ledger reset 금지 |

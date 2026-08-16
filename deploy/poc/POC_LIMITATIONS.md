@@ -106,8 +106,10 @@ npm run poc
 ```
 
 `npm run poc`는 POC build 후 정적 화면과 gateway를 한 프로세스로 실행합니다. 기본 URL은
-`http://127.0.0.1:39080/`이며, 검토된 사내 접근이 필요할 때만 `POC_SERVER_HOST`를 해당
-interface로 명시합니다. 동등한 helper는 `./scripts/run_poc.sh npm`입니다. npm 단독
+`http://127.0.0.1:39080/`이며 `POC_PUBLIC_ORIGIN`도 이 exact origin과 일치해야 합니다.
+현재 local-auth DEV 계약은 loopback HTTP만 허용합니다. 비-loopback 접근은 이 값을 임의로
+완화하지 않고 별도 HTTPS ingress/origin acceptance에서 다룹니다. 동등한 helper는
+`./scripts/run_poc.sh npm`입니다. npm 단독
 모드는 Redis·pgvector·Neo4j 컨테이너를 시작하지 않습니다. 단, `.env`의
 `POC_POSTGRES_*`, `POC_REDIS_URL`, `NEO4J_HTTP_URL`이 이미 실행 중인 지원 서비스의 host
 주소를 가리키면 npm 실행도 PostgreSQL 상태 저장, Redis cache, Neo4j graph를 그대로
@@ -154,7 +156,8 @@ docker compose --env-file deploy/poc/.env \
 ```
 
 `.env`에는 기본 host-local UI를 가리키는 `AIRFLOW_URL=http://127.0.0.1:18888`,
-`AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD`,
+`AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD`, Web과 Airflow에만 주입하는 동일한 random
+`POC_AIRFLOW_SERVICE_TOKEN`,
 `AIRFLOW_DAG_ID=datariver_bulk_registration_prepare`만 연결값으로 지정합니다. DAG는 안전을
 위해 이 검토된 파일 하나만 mount하며 새 POC Airflow 상태에서는 active로 생성됩니다. Web은
 Bulk 파일 검증을 끝낸 경우에만 REST API로 명시 실행합니다. 기존 Airflow state volume에서

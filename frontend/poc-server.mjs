@@ -1,5 +1,5 @@
 /* global AbortController, AbortSignal, Buffer, URLSearchParams, clearTimeout, fetch, setTimeout, structuredClone */
-import { createHmac, createHash, randomUUID } from 'node:crypto'
+import { createHmac, createHash, randomUUID, timingSafeEqual } from 'node:crypto'
 import { createReadStream, existsSync, readFileSync, statSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { extname, join, normalize, resolve, sep } from 'node:path'
@@ -7,6 +7,10 @@ import process from 'node:process'
 import { fileURLToPath, URL } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
 import { createPocStateStore } from './poc-state-store.mjs'
+import {
+  authenticatedPocProfile,
+  createPocLocalAuthenticator,
+} from './poc-local-auth.mjs'
 import {
   createPocChangeHistoryScheduler,
   loadPocChangeHistorySchedulerConfig,
@@ -241,6 +245,7 @@ const protectedAccessQueryKeys = new Set([
   'subject_id', 'active_subject_id', 'role', 'system_id', 'responsibility', 'priority',
   'actor_ref', 'policy_hash', 'basis_hash', 'occurred_at',
 ])
+const stateChangingMethods = new Set(['DELETE', 'PATCH', 'POST', 'PUT'])
 
 function json(response, status, value, extraHeaders = {}) {
   const body = JSON.stringify(value)
@@ -272,6 +277,20 @@ function securityHeaders() {
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
+  }
+}
+
+function unconfiguredPocAuthenticator() {
+  const unavailable = () => {
+    throw accessError(503, 'AUTHENTICATION_NOT_CONFIGURED', 'Local authentication is not configured.')
+  }
+  return {
+    authenticate: unavailable,
+    assertOrigin: unavailable,
+    clearCookie: () => 'datariver_poc_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0',
+    login: unavailable,
+    logout: unavailable,
+    setCookie: unavailable,
   }
 }
 
@@ -549,27 +568,6 @@ function normalizeChangeHistoryAccessDocument(raw, { allowUnresolvedActiveSubjec
   }
 }
 
-function configuredChangeHistorySubject(injectedSubjectId) {
-  const injectedConfigured = injectedSubjectId !== undefined
-  const environmentSubjectId = process.env.POC_CHANGE_HISTORY_ACTIVE_SUBJECT_ID
-  if (injectedConfigured && typeof injectedSubjectId !== 'string') {
-    return { error: accessError(401, 'SUBJECT_UNRESOLVED', 'The injected active subject is invalid.') }
-  }
-  const injected = typeof injectedSubjectId === 'string' ? injectedSubjectId.trim() : ''
-  const environment = typeof environmentSubjectId === 'string' ? environmentSubjectId.trim() : ''
-  if (!injected && !environment) {
-    return { error: accessError(503, 'ACCESS_NOT_CONFIGURED', 'The server active subject is not configured.') }
-  }
-  if (injected && environment && injected !== environment) {
-    return { error: accessError(401, 'SUBJECT_UNRESOLVED', 'Injected and environment active subjects do not match.') }
-  }
-  try {
-    return { subjectId: accessString(injected || environment, 'server active subject', 255) }
-  } catch {
-    return { error: accessError(401, 'SUBJECT_UNRESOLVED', 'The server active subject is invalid.') }
-  }
-}
-
 function rejectProtectedAccessClaims(request, url, { allowSystemFilter = false } = {}) {
   const header = Object.keys(request.headers).find((key) => protectedAccessHeaders.has(key.toLowerCase()))
   const query = [...url.searchParams.keys()].find((key) => protectedAccessQueryKeys.has(key.toLowerCase())
@@ -623,7 +621,7 @@ function changeHistoryDocumentFromSnapshot(snapshot) {
 
 function requireActiveAccessAdmin(document, subjectId) {
   const user = document.users.find((item) => item.subject_id === subjectId)
-  if (!user?.active) throw accessError(401, 'SUBJECT_UNRESOLVED', 'The configured subject is missing or inactive.')
+  if (!user?.active) throw accessError(403, 'SUBJECT_FORBIDDEN', 'The session subject is missing or inactive.')
   if (user.role !== 'admin') throw accessError(403, 'ACCESS_ADMIN_REQUIRED', 'An active admin is required.')
 }
 
@@ -736,7 +734,7 @@ const changeHistoryPrecisionValues = ['EXACT_TIMELINE', 'EXACT_MCL', 'DRIFT_DETE
 
 function changeHistoryActiveUser(document, subjectId) {
   const user = document.users.find((item) => item.subject_id === subjectId)
-  if (!user?.active) throw accessError(401, 'SUBJECT_UNRESOLVED', 'The configured subject is missing or inactive.')
+  if (!user?.active) throw accessError(403, 'SUBJECT_FORBIDDEN', 'The session subject is missing or inactive.')
   return user
 }
 
@@ -4531,6 +4529,84 @@ async function capabilities() {
   }
 }
 
+async function authenticatedRequestContext(baseContext, authentication) {
+  const snapshot = await baseContext.stateStore.readChangeHistoryAccess()
+  if (snapshot.access.value === null) {
+    throw accessError(503, 'ACCESS_NOT_CONFIGURED', 'Change-history access is not provisioned.')
+  }
+  const document = changeHistoryDocumentFromSnapshot(snapshot)
+  const user = changeHistoryActiveUser(document, authentication.subjectId)
+  return {
+    ...baseContext,
+    authentication,
+    subject: { subjectId: authentication.subjectId },
+    accessDocument: document,
+    accessUser: user,
+  }
+}
+
+function exactServiceToken(request, configuredToken) {
+  if (typeof configuredToken !== 'string'
+    || configuredToken.length < 32
+    || configuredToken.length > 512
+    || [...configuredToken].some((character) => {
+      const codePoint = character.codePointAt(0)
+      return codePoint === undefined || codePoint < 0x21 || codePoint > 0x7e
+    })) {
+    throw accessError(503, 'AIRFLOW_SERVICE_AUTH_NOT_CONFIGURED', 'Airflow service authentication is not configured.')
+  }
+  const supplied = request.headers.authorization
+  const expected = `Bearer ${configuredToken}`
+  if (typeof supplied !== 'string') {
+    throw accessError(401, 'SERVICE_AUTHENTICATION_FAILED', 'Valid service authentication is required.')
+  }
+  const suppliedBytes = Buffer.from(supplied, 'utf8')
+  const expectedBytes = Buffer.from(expected, 'utf8')
+  if (suppliedBytes.length !== expectedBytes.length || !timingSafeEqual(suppliedBytes, expectedBytes)) {
+    throw accessError(401, 'SERVICE_AUTHENTICATION_FAILED', 'Valid service authentication is required.')
+  }
+}
+
+async function authRoute(request, response, url, baseContext, authenticator) {
+  if (url.pathname === '/auth/login') {
+    if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Local login supports only POST.')
+    authenticator.assertOrigin(request)
+    const body = await bodyJson(request)
+    if (Object.keys(body).some((key) => !['username', 'password'].includes(key))
+      || !Object.hasOwn(body, 'username') || !Object.hasOwn(body, 'password')) {
+      throw accessError(401, 'AUTHENTICATION_FAILED', 'The username or password is invalid.')
+    }
+    const login = await authenticator.login(body.username, body.password)
+    let context
+    try {
+      context = await authenticatedRequestContext(baseContext, login)
+    } catch (error) {
+      await authenticator.logout(login)
+      throw error
+    }
+    return json(response, 200, authenticatedPocProfile(context.accessUser, {
+      mustChangePassword: login.mustChangePassword,
+    }), { 'Set-Cookie': authenticator.setCookie(login.token) })
+  }
+  if (url.pathname === '/auth/me') {
+    if (request.method !== 'GET') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Session profile supports only GET.')
+    const authentication = await authenticator.authenticate(request)
+    const context = await authenticatedRequestContext(baseContext, authentication)
+    return json(response, 200, authenticatedPocProfile(context.accessUser, {
+      mustChangePassword: authentication.mustChangePassword,
+    }))
+  }
+  if (url.pathname === '/auth/logout') {
+    if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Local logout supports only POST.')
+    authenticator.assertOrigin(request)
+    const authentication = await authenticator.authenticate(request)
+    await authenticatedRequestContext(baseContext, authentication)
+    await authenticator.logout(authentication)
+    return json(response, 200, { ok: true }, { 'Set-Cookie': authenticator.clearCookie() })
+  }
+  return problem(response, 404, 'NOT_FOUND', 'The authentication route does not exist.')
+}
+
 async function api(request, response, url, context) {
   if (url.pathname === '/api/v1/change-history/access') {
     return changeHistoryAccess(request, response, url, context)
@@ -4818,11 +4894,14 @@ function serveStatic(request, response, url) {
   return createReadStream(file).pipe(response)
 }
 
-export function createPocServer({ stateStore, activeSubjectId } = {}) {
+export function createPocServer({
+  stateStore,
+  authenticator = unconfiguredPocAuthenticator(),
+  airflowServiceToken = process.env.POC_AIRFLOW_SERVICE_TOKEN || '',
+} = {}) {
   if (stateStore) pocStateStore = stateStore
-  const accessContext = {
+  const baseContext = {
     stateStore: stateStore ?? pocStateStore,
-    subject: configuredChangeHistorySubject(activeSubjectId),
   }
   return createServer(async (request, response) => {
     try {
@@ -4836,11 +4915,25 @@ export function createPocServer({ stateStore, activeSubjectId } = {}) {
         response.writeHead(200, { 'Cache-Control': 'no-store', 'Content-Type': 'text/javascript; charset=utf-8', ...securityHeaders() })
         return response.end(body)
       }
-      if (url.pathname.startsWith('/poc-api/')
-        || url.pathname === '/api/v1/registration/bulk-preparations/execute'
-        || url.pathname.startsWith('/api/v1/change-history/')
-        || /^\/api\/v1\/change-requests\/[^/]+\/change-history$/.test(url.pathname)) {
-        return await api(request, response, url, accessContext)
+      if (url.pathname === '/auth/login' && ['GET', 'HEAD'].includes(request.method || '')) {
+        return serveStatic(request, response, url)
+      }
+      if (url.pathname === '/auth' || url.pathname.startsWith('/auth/')) {
+        return await authRoute(request, response, url, baseContext, authenticator)
+      }
+      if (url.pathname === '/api/v1/registration/bulk-preparations/execute') {
+        exactServiceToken(request, airflowServiceToken)
+        return await api(request, response, url, baseContext)
+      }
+      if (url.pathname === '/poc-api' || url.pathname.startsWith('/poc-api/')
+        || url.pathname === '/api/v1' || url.pathname.startsWith('/api/v1/')) {
+        const authentication = await authenticator.authenticate(request)
+        const requestContext = await authenticatedRequestContext(baseContext, authentication)
+        rejectProtectedAccessClaims(request, url, {
+          allowSystemFilter: url.pathname.startsWith('/api/v1/change-history/'),
+        })
+        if (stateChangingMethods.has(request.method || '')) authenticator.assertOrigin(request)
+        return await api(request, response, url, requestContext)
       }
       if (!['GET', 'HEAD'].includes(request.method || '')) return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Only static GET/HEAD is supported.')
       return serveStatic(request, response, url)
@@ -4859,7 +4952,9 @@ export function resolvePocServerHost(environment = process.env) {
 
 export async function startPocServer({ stateStore } = {}) {
   if (!existsSync(join(staticDirectory, 'poc.html'))) throw new Error('Run npm run build:poc before starting the POC server.')
+  const serverStateStore = stateStore ?? pocStateStore
   if (stateStore) pocStateStore = stateStore
+  const authenticator = createPocLocalAuthenticator({ stateStore: serverStateStore })
   serverBackgroundAbortController = new AbortController()
   backgroundLaunchesStopped = false
   const backgroundSignal = serverBackgroundAbortController.signal
@@ -4879,7 +4974,7 @@ export async function startPocServer({ stateStore } = {}) {
       process.stderr.write(`POC change-history scheduler: ${error instanceof Error ? error.message : String(error)}\n`)
     },
   })
-  const server = createPocServer()
+  const server = createPocServer({ stateStore: serverStateStore, authenticator })
   const host = resolvePocServerHost()
   const port = Number(process.env.POC_SERVER_PORT || process.env.POC_PORT || 39080)
   await new Promise((resolvePromise) => server.listen(port, host, resolvePromise))
