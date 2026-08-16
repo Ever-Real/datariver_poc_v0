@@ -55,7 +55,7 @@ The preceding PHASE 1A runtime evidence is commit
 | AUTH-1B-R | `PARTIAL` | Read-only gap audit completed at `d3c974f`: keep 15 capabilities and request-time access authority; separate explicit Table grants/security grades from Responsible System. Catalog/local Chat can prefilter, but vector currently post-filters ranked results and Neo4j traverses before local filtering. Completion depends on AUTH-1C-2/1C-3/1C-4 and AUTH-1D. |
 | AUTH-1C-1 | `COMPLETE_RUNTIME_VERIFIED` | Product `60f5f270a56130f2ed96236d9286d0903e3360db`: System name/description update and archive preserve stable identity/history. Exact DataHub `TABLE` URN N:M System pairs use bounded `poc_state` CAS; PATCH synchronously confirms the current provider inventory and rejects deleted/type-changed/unavailable identities before CAS. Backend, Admin UI, runtime and fresh Validator checks passed with zero active validation mappings, credentials or sessions. Evidence: `.orchestration/evidence/DEV-PHASE1C1-TABLE-SYSTEM-RUNTIME.md`. |
 | AUTH-1C-2 | `COMPLETE_RUNTIME_VERIFIED` | Product `f78f30fbcf0a5468ec2ce9893d06825ddd030369`: one exact `(subject_id, table_urn)` domain relation avoids access-CAS bloat; the access document retains Role/System authority and adds only `max_security_grade`. Admin user/grade/grant/Responsible-System/credential/session API and UI, targeted current-Table fail-closed validation, two-user isolation, spoof/401/403/404 negatives, credential cleanup, exact image revision and full regression are DEV-runtime verified. Evidence: `.orchestration/evidence/DEV-PHASE1C2-USER-TABLE-ACCESS-RUNTIME.md`. |
-| AUTH-1C-3 | `BACKLOG` | Fixed Feature/Role/Security matrix over the existing capability keys; no free-form policy key, permission DB or generic engine. |
+| AUTH-1C-3 | `COMPLETE_RUNTIME_VERIFIED` | Product `9df97f4975a990819db655b74b09e709dc6d5aad`: fixed 8-feature × 5-role × 3-grade (120-cell) CAS management policy, exact Admin API/UI, immutable Admin allow and role-ineligible deny, stale-CAS/shape negatives, real browser verification and fresh AGY Validator passed. PHASE 1D enforcement remains explicitly inactive. Evidence: `.orchestration/evidence/DEV-PHASE1C3-SECURITY-HARDENING-RUNTIME.md`. |
 | AUTH-1C-4 | `BACKLOG` | One exact CR `responsible_system`, Table-access-gated create, Developer/Steward workflow actions and independent Developer/Steward/Manager final lanes. Preserve historical schema-routing and approval hashes. |
 | AUTH-1D | `BACKLOG` | Enforce explicit Table grants plus exact severity order `normal < credential < restricted` before search/count/ranking/context/traversal across Catalog, Chat, Change, Monitoring/Governance, Knowledge and Quality. Responsible System is an additional workflow constraint only where the latest policy says so. |
 | AUTH-1E | `BACKLOG` | Retire only proven legacy auth active paths after the replacement remains runtime-verified. Preserve reusable Knowledge/Quality/Chat code, schema history and `UNKNOWN` references. |
@@ -63,8 +63,8 @@ The preceding PHASE 1A runtime evidence is commit
 | AUTH-NET | `TARGET_RECHECK_REQUIRED` | DEV Web and supporting owned ports are loopback/private and local inspection passes. A real second-host negative connectivity probe is still required; do not claim public-network isolation from bind inspection alone. |
 | ACCOUNT-AUTH | `PARTIAL` | PHASE 1A and the PHASE 1B technical baseline are runtime-verified; latest-policy data authorization, 1C–1F and the remote network target remain open. |
 
-The PHASE 1B validation credentials were validation-only: all seven credentials are disabled and all
-sessions revoked after the role/System matrix run. Access users and historical references remain;
+The Account/Auth validation credentials were validation-only: all credentials are disabled and all
+sessions revoked after the current role/System/grade matrix run. Access users and historical references remain;
 synthetic `checkpoint-*` users have no credential. Current Scheduler/MCL deployment readiness is
 separate: Scheduler is disabled and required MCL bindings are `0/9`, so it remains
 `TARGET_RECHECK_REQUIRED` without mutating the frozen ledger/checkpoints.
@@ -433,8 +433,8 @@ evidence, not inferred from this table):
 
 | Slice | Canonical Status | Current boundary / next gate |
 |---|---|---|
-| PHASE 1C-2H | `IMPLEMENTED_NOT_VERIFIED` | canonical grade/current-Table helper, CAS concurrency and password-reset session revocation implemented; current Product runtime/fresh validation pending |
-| PHASE 1C-3 | `IMPLEMENTED_NOT_VERIFIED` | fixed 120-cell management state/API/UI implemented; PHASE 1D enforcement explicitly not active; current Product runtime/fresh validation pending |
+| PHASE 1C-2H | `COMPLETE_RUNTIME_VERIFIED` | Product `9df97f4975a990819db655b74b09e709dc6d5aad`: canonical grade/current-Table helper, concurrent last-Admin CAS invariant, atomic password-reset session revocation, exact-first mapping resolver and fresh runtime/Validator evidence passed |
+| PHASE 1C-3 | `COMPLETE_RUNTIME_VERIFIED` | Product `9df97f4975a990819db655b74b09e709dc6d5aad`: fixed 120-cell management state/API/UI and POC gateway forwarding passed full source tests, DEV runtime, real browser and fresh Validator; PHASE 1D enforcement explicitly not active |
 | PHASE 1C-4 | `BACKLOG` | CR exact responsible-System and three-lane completion approval alignment |
 | PHASE 1D | `BACKLOG` | explicit grant + grade + fixed matrix enforcement before search/ranking/context/traversal |
 
