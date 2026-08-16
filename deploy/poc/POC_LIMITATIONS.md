@@ -6,14 +6,16 @@ POC는 별도 축약 화면을 만들지 않습니다. 원본 `App`과 기존 Da
 변경관리, 품질관리, 지식관리, 모니터링, 거버넌스, Chat 컴포넌트를 그대로 렌더링합니다.
 메뉴, 화면 배치, 탭, 필터, 상세 패널과 UI interaction은 원본과 같습니다.
 
-제거되는 것은 Keycloak/OIDC 로그인, token 갱신, 로그아웃, WebAuthn, step-up 및 비밀번호
-재인증 UI/동작입니다. 원본 상단 메뉴 오른쪽의 작은 `[poc]` 배지가 이 무인증 실행 경계를
-표시합니다.
+Keycloak/OIDC, WebAuthn, step-up 및 외부 Workspace 인증은 현재 Node POC의 startup dependency가
+아닙니다. 대신 POC는 local human credential, opaque server-side session과 HttpOnly cookie를 사용하고,
+매 요청의 `subject_id`를 기존 User/System access document에 다시 결합합니다. `[poc]` 배지는 이
+축약된 local-auth 제품 경계를 표시하며 무인증 실행을 의미하지 않습니다.
 
 기본 DEV 구성은 Web과 선택적 Airflow UI를 `127.0.0.1`에만 공개합니다. 다른 사내 PC에서
 접근시킬 때는 `POC_BIND_HOST` 또는 `AIRFLOW_BIND_HOST`를 검토된 사내 interface로 명시적으로
-바꿔야 합니다. 이 opt-in은 네트워크 도달성만 넓히며 인증·TLS를 추가하지 않습니다. 인터넷
-공개용 구성이 아닙니다.
+바꿔야 합니다. 이 opt-in은 네트워크 도달성만 넓히고 현재 loopback HTTP origin 계약을 충족하지
+않으므로, 별도의 HTTPS ingress/origin/security acceptance 없이 사용하면 안 됩니다. 인터넷 공개용
+구성이 아닙니다.
 
 ## 실제 provider와 POC 상태 저장소의 역할
 

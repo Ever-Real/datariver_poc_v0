@@ -59,6 +59,39 @@ The detailed tables below, SQLAlchemy metadata and deterministic Alembic schema 
 types, PK/FK/UQ/CHECK/index/RLS rules. Backlog tables are explicitly separated and require a new
 migration before use.
 
+### Authoritative DEV Node POC `public` schema
+
+The authoritative Node POC is a deliberately smaller runtime than the SQLAlchemy/FastAPI schema
+described below. The following inventory was read from the actual DEV PostgreSQL catalog on
+2026-08-16. It is the canonical current POC ERD; it does not make FastAPI IAM/Workspace tables a Node
+startup dependency and it does not authorize deleting historical migrations or `UNKNOWN` tables.
+
+| Table | Read by runtime | Written by runtime | Feature | FK/reference | Migration | Classification |
+|---|---|---|---|---|---|---|
+| `poc_state` | yes | yes, ETag/CAS | access/core/governance/knowledge/current receipt documents | scope key; protected access-to-core projection is application-enforced | `deploy/poc/postgres-init/001-poc-state.sql` | `ACTIVE`, state history references required |
+| `poc_catalog_embedding` | yes | yes, fenced generation | current Catalog/vector projection | generation contract in `poc_state` | same idempotent SQL | `ACTIVE` |
+| `poc_change_history_sources` | yes | insert-only operational identity | MCL source identity | parent of checkpoint/ledger | same idempotent SQL | `HISTORY_REQUIRED` |
+| `poc_change_history_checkpoints` | yes | atomic advance with ledger | MCL exact boundary/resume | FK to source | same idempotent SQL | `HISTORY_REQUIRED` |
+| `poc_change_history_ledger_events` | yes | append-only | normalized Change History | FK to source; parent of CR link history | same idempotent SQL | `HISTORY_REQUIRED` |
+| `poc_change_history_cr_link_events` | yes | append-only | candidate/primary/unlink history | FK to ledger event | same idempotent SQL | `HISTORY_REQUIRED` |
+| `poc_local_credentials` | login only | operator bootstrap/reset and bounded lock state | local authentication only; no role/System columns | `subject_id` references the access-document identity by application CAS | same additive idempotent SQL | `ACTIVE` |
+| `poc_local_sessions` | every protected request | login/logout/revoke/expiry lifecycle | opaque server session; token hash only | FK to `poc_local_credentials.subject_id` | same additive idempotent SQL | `ACTIVE` |
+
+```mermaid
+erDiagram
+    POC_STATE ||--o{ POC_LOCAL_CREDENTIALS : binds_subject_by_CAS
+    POC_LOCAL_CREDENTIALS ||--o{ POC_LOCAL_SESSIONS : authenticates
+    POC_CHANGE_HISTORY_SOURCES ||--o{ POC_CHANGE_HISTORY_CHECKPOINTS : fences
+    POC_CHANGE_HISTORY_SOURCES ||--o{ POC_CHANGE_HISTORY_LEDGER_EVENTS : captures
+    POC_CHANGE_HISTORY_LEDGER_EVENTS ||--o{ POC_CHANGE_HISTORY_CR_LINK_EVENTS : links
+    POC_STATE ||--o{ POC_CATALOG_EMBEDDING : selects_generation
+```
+
+The access document remains the only role/System authority. Credential and session rows own only
+authentication material. No current POC table is a deletion candidate in this Phase; migration
+squash, workspace/IAM retirement and whole-schema normalization remain outside the Account/Auth
+replacement slice.
+
 ## Standards
 
 - Application-generated UUIDs (normally UUIDv7) and UTC `TIMESTAMPTZ`.

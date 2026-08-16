@@ -16,12 +16,15 @@ Git commit은 자기 자신의 SHA를 내용에 안정적으로 포함할 수 �
 closeout evidence SHA는 matching receipt와 배포 판정 보고가 정본이다. Functional Product와 Runtime
 Evidence 사이에는 제품 파일 변경이 없다.
 
-상태 표기는 다음 의미로만 사용한다.
+상태 표기는 canonical vocabulary만 사용한다.
 
-- `IMPLEMENTED`: 현재 source에 구현되어 있다.
-- `COMPLETE_RUNTIME_VERIFIED`: 위 기준 SHA의 DEV 실제 runtime과 fresh validation에서 확인했다.
-- `TARGET_RECHECK_REQUIRED`: PREP/OPS의 네트워크, provider, CPU 아키텍처 또는 비밀값으로 재확인해야 한다.
-- `BACKLOG`: 현재 기능 계약이 아니며 후속 작업이다.
+- `BACKLOG`: 구현 시작 전이거나 실행 순서를 기다린다.
+- `PARTIAL`: 일부 기능은 있으나 acceptance criteria가 남았다.
+- `IMPLEMENTED_NOT_VERIFIED`: source/config는 있으나 필요한 runtime evidence가 없다.
+- `COMPLETE_RUNTIME_VERIFIED`: 해당 Product SHA의 실제 DEV runtime과 fresh validation에서 확인했다.
+- `TARGET_RECHECK_REQUIRED`: 다른 target, provider, architecture 또는 wall-clock 검증이 남았다.
+- `BLOCKED`: 외부 dependency, 승인 또는 필수 evidence가 없어 진행할 수 없다.
+- `UNKNOWN`: 현재 source/runtime evidence로 판정할 수 없다.
 
 ## 2. 시스템 목적과 구현 상태
 
@@ -31,7 +34,7 @@ Evidence 사이에는 제품 파일 변경이 없다.
 | Change History | schema/metadata/lifecycle 감사 이력 제공 | normalized ledger | append-oriented ledger, source/checkpoint, KST 주차 | 사건 목록·상세·summary·weekly | 모든 active role 조회, System 범위 적용 | authority/catalog mapping 불명확 시 숨김 또는 409/503 | `COMPLETE_RUNTIME_VERIFIED` (DEV) |
 | Change Management | 감지 사건과 기존 CR을 명시적으로 연결 | 사건, CR, server-held subject | candidate/primary link event를 append-only 저장 | 현재 link와 reverse history | admin 전체, steward/developer assigned System, viewer read-only | stale ETag/CAS·scope 오류는 effect 0 | `COMPLETE_RUNTIME_VERIFIED` (DEV) |
 | Monitoring | 변경 현황을 DataRiver native 화면으로 표시 | summary/events/weekly API | server-side filter·집계 | 기본 `데이터 변경현황` 탭, 외부 dashboard 탭 | 조회 가능한 사건만 표시 | 0건과 provider/sync 장애 분리 | `COMPLETE_RUNTIME_VERIFIED` (DEV) |
-| User/System Access | 사용자·역할·System 책임 범위를 서버가 소유 | local opaque session subject, access document | PostgreSQL access projection과 protected core projection CAS | User/System 관리, action visibility | request-scoped session subject와 access document만 authority | anonymous/unknown/inactive 및 client subject/role/System claim 거부 | local auth `IMPLEMENTED_NOT_VERIFIED`; 기존 access semantics `COMPLETE_RUNTIME_VERIFIED` (DEV) |
+| User/System Access | 사용자·역할·System 책임 범위를 서버가 소유 | local opaque session subject, access document | PostgreSQL access projection과 protected core projection CAS | User/System 관리, action visibility | request-scoped session subject와 access document만 authority | anonymous/unknown/inactive 및 client subject/role/System claim 거부 | local auth fence/bootstrap와 기존 access semantics `COMPLETE_RUNTIME_VERIFIED` (DEV) |
 | Catalog current | 과거 원장과 분리된 최신 자산 조회 | DataHub current inventory | PostgreSQL current projection, optional Redis hot cache, latest vector generation | Search·Tree·Detail·Chat current context | catalog read 경계 | partial/provider 실패 시 last-good 유지, 삭제 추정 금지 | Search/Tree lifecycle `COMPLETE_RUNTIME_VERIFIED`; vector target recheck |
 | Scheduler | KST 일 경계 capture 후 reconciliation | enabled flag, timezone, MCL contract | web process 내부 bounded job, PostgreSQL advisory lock와 durable receipt | startup catch-up·same-day suppression | 배포 설정 | capture 실패 시 receipt/checkpoint를 성공 처리하지 않음 | startup/catch-up `COMPLETE_RUNTIME_VERIFIED`; 실제 자정 `DAILY_CLOCK_NOT_OBSERVED` |
 | Timeline backfill | retained history를 초기 보충 | DataHub Timeline | 보존된 사실만 `BACKFILLED_BEST_EFFORT` | 초기 historical ledger | server process | retention으로 사라진 사건을 합성하지 않음 | `BACKLOG`; ADR 계약만 있고 runtime 미구현 |
@@ -475,8 +478,9 @@ CR 상태 문자열은 바꾸지 않고 다음 presentation mapping만 사용한
 CPU architecture, Docker/Compose, external service compatibility, routable DNS/network, writable/secret
 filesystem, 충돌 없는 ports가 prerequisite다. 모든 환경에서 무조건 동작한다고 주장하지 않는다.
 provider overlay와 POC Airflow의 shared external network를 사용하면 반복적인 `docker network connect`는
-필요 없다. 새 proxy/service/container는 추가하지 않는다. 기본 loopback publish를 사내 interface로
-override하더라도 현재 무인증 POC에 사용자 인증이나 TLS가 생기는 것은 아니다.
+필요 없다. 새 proxy/service/container는 추가하지 않는다. 현재 Node POC는 local session 인증을
+사용하지만, 기본 loopback publish를 사내 interface로 override하는 것만으로 HTTPS ingress와 target
+network acceptance가 생기는 것은 아니다.
 
 ## 12. 검증 상태와 잔여 backlog
 

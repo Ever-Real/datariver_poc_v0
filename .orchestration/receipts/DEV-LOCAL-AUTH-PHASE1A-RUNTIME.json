@@ -1,0 +1,100 @@
+{
+  "schema_version": 1,
+  "task_id": "DEV-LOCAL-AUTH-PHASE1A-RUNTIME",
+  "product_sha": "618b9713059ba7e31b807ceae3b401766a313668",
+  "base_origin_dev": "ef41447a1d470119c1a83280e261d4be411354ef",
+  "observed_at": "2026-08-16T13:24:05+09:00",
+  "environment": "DEV_MAC_ARM64",
+  "status": {
+    "phase_1a_0": "COMPLETE_RUNTIME_VERIFIED",
+    "phase_1a_1": "COMPLETE_RUNTIME_VERIFIED",
+    "phase_1a_2": "COMPLETE_RUNTIME_VERIFIED",
+    "phase_1a_3": "COMPLETE_RUNTIME_VERIFIED",
+    "account_auth_overall": "PARTIAL",
+    "remote_network_probe": "TARGET_RECHECK_REQUIRED"
+  },
+  "authority": {
+    "authentication": "local_credential_and_opaque_server_session",
+    "authorization": "change-history-access-v1",
+    "request_scoped": true,
+    "process_global_subject_used": false,
+    "credential_role_or_system_columns": false,
+    "session_role_or_system_snapshot": false
+  },
+  "storage": {
+    "credentials": 2,
+    "fixture_credentials": 0,
+    "sessions_total": 4,
+    "sessions_revoked": 4,
+    "sessions_active": 0,
+    "access_users": 6,
+    "systems": 2,
+    "assignments": 2,
+    "schema_change": "additive_idempotent_two_auth_tables",
+    "migration_squash": false,
+    "existing_table_drop_or_rename": false
+  },
+  "frozen_invariants": {
+    "sources": 2,
+    "ledger_events": 46,
+    "cr_link_events": 4,
+    "checkpoints": [
+      {"first_exact_offset": 51815, "next_offset": 52854, "version": 1040},
+      {"first_exact_offset": 52849, "next_offset": 52942, "version": 94}
+    ],
+    "scheduler_receipts": 2,
+    "scheduler_receipt_versions": [1, 1]
+  },
+  "runtime": {
+    "web_health": "PASS",
+    "airflow_health": "PASS",
+    "image_revision_matches_product_sha": true,
+    "login_shell_root_assets": "PASS",
+    "scheduler_enabled": false,
+    "required_mcl_bindings_configured": 0,
+    "required_mcl_bindings_total": 9
+  },
+  "tests": {
+    "node_focused": {"passed": 64, "failed": 0},
+    "frontend_focused": {"passed": 21, "failed": 0},
+    "network_pytest": {"passed": 2, "failed": 0},
+    "airflow_unittest": {"passed": 2, "failed": 0},
+    "ruff": "PASS",
+    "lint": "PASS",
+    "typecheck": "PASS",
+    "build_poc": "PASS_WITH_EXISTING_CHUNK_WARNING",
+    "compose_base": "PASS",
+    "compose_airflow_overlay": "PASS",
+    "git_diff_check": "PASS",
+    "package_lock_unchanged": true
+  },
+  "security": {
+    "anonymous_protected_api": 401,
+    "invalid_origin": 403,
+    "inactive_user": 403,
+    "viewer_admin_mutation": 403,
+    "client_spoof_changes_authority": false,
+    "unknown_authenticated_api": 404,
+    "concurrent_principal_isolation": "PASS",
+    "secret_values_recorded": false
+  },
+  "legacy": {
+    "fastapi_keycloak_oidc_workspace_startup_dependency": false,
+    "physical_deletion": false,
+    "frontend_workspace_compatibility_shape": "PHASE_1E_BACKLOG",
+    "manager_role_added": false
+  },
+  "fresh_validation": {
+    "role": "50_QUALITY_VALIDATION",
+    "model": "gpt-5.6-sol high controlled fallback",
+    "antigravity_retried": false,
+    "product_security_verdict": "PASS",
+    "documentation_findings_repaired": true
+  },
+  "gates": {
+    "G1": "NOT_APPROVED",
+    "G2": "NOT_APPROVED",
+    "G3": "NOT_APPROVED",
+    "G4": "NOT_APPROVED"
+  }
+}
