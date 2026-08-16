@@ -1,7 +1,7 @@
 /* global structuredClone */
 
 export const CHANGE_HISTORY_ACCESS_ROLES = Object.freeze([
-  'admin', 'data_steward', 'developer', 'viewer',
+  'admin', 'data_steward', 'developer', 'manager', 'viewer',
 ])
 export const CHANGE_HISTORY_RESPONSIBILITIES = Object.freeze(['DATA_STEWARD', 'DEVELOPER'])
 
@@ -298,7 +298,9 @@ export function changeHistoryAccessCoreProjection(currentValue, document, member
     const existing = memberships.get(user.subject_id) ?? {}
     const effectiveProfileRole = user.role === 'admin'
       ? 'ADMIN'
-      : user.role === 'viewer' ? 'VIEWER' : 'ENGINEER_STEWARD'
+      : user.role === 'manager'
+        ? 'MANAGER'
+        : user.role === 'viewer' ? 'VIEWER' : 'ENGINEER_STEWARD'
     return {
       ...existing,
       subject_id: user.subject_id,

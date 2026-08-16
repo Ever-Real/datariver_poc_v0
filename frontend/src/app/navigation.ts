@@ -1,3 +1,5 @@
+import type { PocCapability } from '../api/types'
+
 export const primaryNavigation = [
   { id: 'catalog', label: '검색', badge: undefined },
   { id: 'registration', label: '등록관리', badge: undefined },
@@ -34,6 +36,37 @@ const pageIds = new Set<Page>([
   'glossary',
   'profile',
 ])
+
+const pocPageCapabilities: Partial<Record<Page, PocCapability>> = {
+  catalog: 'catalog.read',
+  registration: 'catalog.execute',
+  'change-management': 'change.read',
+  quality: 'quality.read',
+  knowledge: 'knowledge.read',
+  'knowledge-chat': 'knowledge.read',
+  'knowledge-instances': 'knowledge.read',
+  'knowledge-profiles': 'knowledge.read',
+  'knowledge-studio': 'knowledge.manage',
+  glossary: 'catalog.manage',
+  monitoring: 'monitoring.read',
+  governance: 'knowledge.read',
+  chat: 'chat.query',
+  admin: 'admin.manage',
+}
+
+export function pocCapabilityForPage(page: Page): PocCapability | undefined {
+  return pocPageCapabilities[page]
+}
+
+export function pocNavigationForCapabilities(
+  capabilities: readonly PocCapability[],
+): typeof primaryNavigation[number][] {
+  const allowed = new Set(capabilities)
+  return primaryNavigation.filter(({ id }) => {
+    const required = pocCapabilityForPage(id)
+    return !required || allowed.has(required)
+  })
+}
 
 export function pageFromLocation(href = window.location.href): Page {
   const candidate = new URL(href).searchParams.get('page')

@@ -104,11 +104,19 @@ test('persists only fixed allowlisted POC state scopes in the server fallback st
   assert.equal((await empty.json()).value, null)
   const stored = await fetch(new URL('/poc-api/state/core', origin), {
     method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'If-Match': '"0"' },
     body: JSON.stringify({ value: { sequence: 901, changeRecords: [] } }),
   })
   assert.equal(stored.status, 200)
   assert.equal((await stored.json()).version, 1)
+  assert.equal(stored.headers.get('etag'), '"1"')
+  const stale = await fetch(new URL('/poc-api/state/core', origin), {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'If-Match': '"0"' },
+    body: JSON.stringify({ value: { sequence: 902, changeRecords: [] } }),
+  })
+  assert.equal(stale.status, 409)
+  assert.equal((await stale.json()).code, 'STATE_VERSION_STALE')
   const reread = await (await fetch(new URL('/poc-api/state/core', origin))).json()
   assert.deepEqual(reread.value, { sequence: 901, changeRecords: [] })
   assert.equal((await fetch(new URL('/poc-api/state/arbitrary', origin))).status, 404)
@@ -620,7 +628,7 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
 
     const genericWrite = await fetch(new URL('/poc-api/state/core', adminOrigin), {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'If-Match': '"2"' },
       body: JSON.stringify({ value: {
         sequence: 43,
         changeRecords: [{ ...originalChangeRecords[0], state: 'TESTING' }],
@@ -652,11 +660,11 @@ test('makes access state server-authoritative with bootstrap, role, spoof, CAS, 
 
     const primitiveCore = await fetch(new URL('/poc-api/state/core', adminOrigin), {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'If-Match': '"4"' },
       body: JSON.stringify({ value: 'browser-replacement' }),
     })
     assert.equal(primitiveCore.status, 409)
-    assert.equal((await primitiveCore.json()).code, 'CORE_ACCESS_FIELDS_PROTECTED')
+    assert.equal((await primitiveCore.json()).code, 'CORE_STATE_INVALID')
   } finally {
     for (const authorityServer of servers) {
       authorityServer.closeAllConnections()

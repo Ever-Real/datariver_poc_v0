@@ -99,6 +99,18 @@ test('binds concurrent browser sessions to current server-side access profiles',
       hardware_webauthn_enabled: false,
       password_change_supported: false,
       must_change_password: false,
+      authorization: {
+        policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+        role: 'admin',
+        capabilities: [
+          'catalog.read', 'catalog.execute', 'catalog.manage', 'chat.query',
+          'change.read', 'change.execute', 'change.manage', 'monitoring.read',
+          'knowledge.read', 'knowledge.manage', 'knowledge.review',
+          'quality.read', 'quality.execute', 'quality.manage', 'admin.manage',
+        ],
+        system_scope: 'GLOBAL',
+        system_ids: [],
+      },
     })
     assert.equal((await second.response.json()).subject, 'subject-two')
     const profiles = await Promise.all([first.cookie, second.cookie].map(async (cookie) => {
@@ -138,7 +150,8 @@ test('binds concurrent browser sessions to current server-side access profiles',
       headers: { 'Content-Type': 'application/json', Cookie: first.cookie, Origin: fixture.origin },
       body: JSON.stringify({ value: { subject_id: 'subject-two', role: 'admin' } }),
     })
-    assert.equal(bodySpoof.status, 200)
+    assert.equal(bodySpoof.status, 403)
+    assert.equal((await bodySpoof.json()).code, 'CAPABILITY_REQUIRED')
     assert.equal((await (await fetch(`${fixture.origin}/auth/me`, {
       headers: { Cookie: first.cookie },
     })).json()).subject, 'subject-one')
@@ -161,6 +174,8 @@ test('enforces anonymous, Origin, JSON 404, inactive-subject, and Airflow-token 
     for (const path of ['/healthz', '/poc-runtime-config.js', '/']) {
       assert.equal((await fetch(`${fixture.origin}${path}`)).status, 200, path)
     }
+    assert.equal((await fetch(`${fixture.origin}/healthz`, { method: 'POST' })).status, 405)
+    assert.equal((await fetch(`${fixture.origin}/poc-runtime-config.js`, { method: 'POST' })).status, 405)
     const loginShell = await fetch(`${fixture.origin}/auth/login`)
     assert.equal(loginShell.status, 200)
     const loginHtml = await loginShell.text()

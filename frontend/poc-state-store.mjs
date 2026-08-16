@@ -403,7 +403,46 @@ export function createPocStateStore({ databasePool } = {}) {
     return version
   }
 
-  async function writeCoreWithAccessFence(value) {
+  async function writeIfVersion(scope, value, expectedVersion) {
+    requireNonnegativeInteger(expectedVersion, 'expectedVersion')
+    await startDatabase()
+    if (scope === 'core') return writeCoreWithAccessFence(value, expectedVersion)
+    if (pool) {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [scope])
+        const selected = await client.query('SELECT version FROM poc_state WHERE scope = $1 FOR UPDATE', [scope])
+        if (Number(selected.rows[0]?.version ?? 0) !== expectedVersion) throw stateVersionConflict()
+        const result = selected.rows.length
+          ? await client.query(`
+              UPDATE poc_state
+              SET value = $2::jsonb, version = version + 1, updated_at = now()
+              WHERE scope = $1
+              RETURNING version
+            `, [scope, JSON.stringify(value)])
+          : await client.query(`
+              INSERT INTO poc_state (scope, value, version)
+              VALUES ($1, $2::jsonb, 1)
+              RETURNING version
+            `, [scope, JSON.stringify(value)])
+        await client.query('COMMIT')
+        return Number(result.rows[0].version)
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
+    }
+    const current = memory.get(scope) ?? { value: null, version: 0 }
+    if (current.version !== expectedVersion) throw stateVersionConflict()
+    const version = current.version + 1
+    memory.set(scope, { value, version })
+    return version
+  }
+
+  async function writeCoreWithAccessFence(value, expectedVersion) {
     if (pool) {
       const client = await pool.connect()
       try {
@@ -420,6 +459,9 @@ export function createPocStateStore({ databasePool } = {}) {
         `, CHANGE_HISTORY_ACCESS_SCOPES)
         const accessRow = locked.rows.find((row) => row.scope === CHANGE_HISTORY_ACCESS_SCOPE)
         const coreRow = locked.rows.find((row) => row.scope === 'core')
+        if (expectedVersion !== undefined && Number(coreRow?.version ?? 0) !== expectedVersion) {
+          throw stateVersionConflict()
+        }
         const fencedValue = preserveProtectedCoreAccessFields(value, coreRow?.value, Boolean(accessRow))
         const result = await client.query(`
           INSERT INTO poc_state (scope, value) VALUES ('core', $1::jsonb)
@@ -437,7 +479,9 @@ export function createPocStateStore({ databasePool } = {}) {
       }
     }
     const accessExists = memory.has(CHANGE_HISTORY_ACCESS_SCOPE)
-    const currentCore = memory.get('core')?.value
+    const currentRecord = memory.get('core') ?? { value: null, version: 0 }
+    if (expectedVersion !== undefined && currentRecord.version !== expectedVersion) throw stateVersionConflict()
+    const currentCore = currentRecord.value
     const fencedValue = preserveProtectedCoreAccessFields(value, currentCore, accessExists)
     const version = (memory.get('core')?.version ?? 0) + 1
     memory.set('core', { value: fencedValue, version })
@@ -746,6 +790,75 @@ export function createPocStateStore({ databasePool } = {}) {
     if (!session) return false
     session.revokedAt ??= revokedAt
     return true
+  }
+
+  async function disableLocalCredential({ usernameNormalized, expectedVersion, disabledAt }) {
+    requireNormalizedUsername(usernameNormalized)
+    requirePositiveInteger(expectedVersion, 'expectedVersion')
+    requireTimestamp(disabledAt, 'disabledAt')
+    await startDatabase()
+    if (pool) {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        const selected = await client.query(`
+          SELECT subject_id, version, login_enabled
+          FROM poc_local_credentials
+          WHERE username_normalized = $1
+          FOR UPDATE
+        `, [usernameNormalized])
+        const current = selected.rows[0]
+        if (!current) {
+          await client.query('ROLLBACK')
+          return null
+        }
+        if (Number(current.version) !== expectedVersion) throw credentialVersionConflict()
+        const updated = await client.query(`
+          UPDATE poc_local_credentials
+          SET login_enabled = false, version = version + 1, updated_at = $3
+          WHERE subject_id = $1 AND version = $2
+          RETURNING subject_id, version, login_enabled
+        `, [current.subject_id, expectedVersion, disabledAt])
+        if (updated.rows.length !== 1) throw credentialVersionConflict()
+        const revoked = await client.query(`
+          UPDATE poc_local_sessions
+          SET revoked_at = COALESCE(revoked_at, $2)
+          WHERE subject_id = $1 AND revoked_at IS NULL
+          RETURNING token_hash
+        `, [current.subject_id, disabledAt])
+        await client.query('COMMIT')
+        return {
+          subjectId: current.subject_id,
+          credentialVersion: Number(updated.rows[0].version),
+          loginEnabled: false,
+          revokedSessionCount: revoked.rows.length,
+        }
+      } catch (error) {
+        await client.query('ROLLBACK')
+        throw error
+      } finally {
+        client.release()
+      }
+    }
+    const subjectId = memoryCredentialSubjectByUsername.get(usernameNormalized)
+    const current = subjectId ? memoryCredentialsBySubject.get(subjectId) : undefined
+    if (!current) return null
+    if (current.version !== expectedVersion) throw credentialVersionConflict()
+    current.loginEnabled = false
+    current.version += 1
+    let revokedSessionCount = 0
+    for (const session of memorySessions.values()) {
+      if (session.subjectId === subjectId && !session.revokedAt) {
+        session.revokedAt = disabledAt
+        revokedSessionCount += 1
+      }
+    }
+    return {
+      subjectId,
+      credentialVersion: current.version,
+      loginEnabled: false,
+      revokedSessionCount,
+    }
   }
 
   async function cacheGet(key) {
@@ -1572,6 +1685,7 @@ export function createPocStateStore({ databasePool } = {}) {
   return {
     read,
     write,
+    writeIfVersion,
     cacheGet,
     cacheSet,
     cacheDelete,
@@ -1592,6 +1706,7 @@ export function createPocStateStore({ databasePool } = {}) {
     createLocalSession,
     readLocalSession,
     revokeLocalSession,
+    disableLocalCredential,
     initializeChangeHistoryCaptureBoundaries,
     appendChangeHistoryCapture,
     appendChangeHistoryCrLink,
@@ -1605,6 +1720,20 @@ export function createPocStateStore({ databasePool } = {}) {
 function credentialConflict() {
   return Object.assign(new Error('The local credential subject or username already exists.'), {
     code: 'CREDENTIAL_EXISTS',
+    statusCode: 409,
+  })
+}
+
+function credentialVersionConflict() {
+  return Object.assign(new Error('The local credential version changed; read it and retry.'), {
+    code: 'CREDENTIAL_VERSION_STALE',
+    statusCode: 409,
+  })
+}
+
+function stateVersionConflict() {
+  return Object.assign(new Error('The POC state version changed; read it and retry.'), {
+    code: 'STATE_VERSION_STALE',
     statusCode: 409,
   })
 }

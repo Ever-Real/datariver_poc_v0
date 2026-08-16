@@ -24,6 +24,9 @@ import type {
   CapabilitiesResponse,
   ClassificationPolicySummary,
   MonitoringConfiguration,
+  PocAuthorization,
+  PocCapability,
+  PocRole,
   SystemConfigurationEntry,
   SystemConfigurationTestResult,
   WorkspaceMembershipSummary,
@@ -72,6 +75,69 @@ function runtimeFlags(): PocRuntimeFlags {
   return (globalThis as typeof globalThis & {
     __DATARIVER_POC_RUNTIME__?: PocRuntimeFlags
   }).__DATARIVER_POC_RUNTIME__ ?? {}
+}
+
+let presentationAuthorization: PocAuthorization | undefined
+let presentationBoundary = ''
+
+export function configurePocAuthorization(
+  authorization: PocAuthorization | undefined,
+  boundary: string,
+): void {
+  if (boundary !== presentationBoundary) {
+    presentationBoundary = boundary
+    resetPocMemory()
+  }
+  presentationAuthorization = authorization
+    ? structuredClone(authorization)
+    : undefined
+}
+
+function requirePocCapability(capability: PocCapability): void {
+  if (!presentationAuthorization?.capabilities.includes(capability)) {
+    throw new Error('현재 계정에는 이 POC 작업 권한이 없습니다.')
+  }
+}
+
+function localDispatchCapability(path: string, method: string): PocCapability | 'AUTHENTICATED' | undefined {
+  if (path === '/admin/me') return 'AUTHENTICATED'
+  if (path === '/capabilities') return 'monitoring.read'
+  if (path.startsWith('/admin/')) return 'admin.manage'
+  if (path === '/poc/glossary' || path.startsWith('/poc/glossary/')) {
+    return method === 'GET' ? 'catalog.read' : 'catalog.manage'
+  }
+  if (path.startsWith('/catalog/') || path === '/catalog') {
+    if (method === 'GET') return 'catalog.read'
+    return /(?:bulk|submissions)(?:\/|$)/.test(path)
+      ? 'catalog.execute'
+      : 'catalog.manage'
+  }
+  if (path === '/registration' || path.startsWith('/registration/') || path.startsWith('/uploads/')) return 'catalog.execute'
+  if (path === '/change-requests' || path.startsWith('/change-requests/') || path.startsWith('/change-history/')) {
+    if (method === 'GET') return 'change.read'
+    return /(?:review|approve|access|assignees)(?:\/|$)/.test(path)
+      ? 'change.manage'
+      : 'change.execute'
+  }
+  if (path === '/quality' || path.startsWith('/quality/')) {
+    if (method === 'GET') return 'quality.read'
+    return /(?:execute|runs)(?:\/|$)/.test(path) ? 'quality.execute' : 'quality.manage'
+  }
+  if (
+    path === '/knowledge'
+    || path.startsWith('/knowledge/')
+    || path === '/governance/documents'
+    || path.startsWith('/governance/documents/')
+  ) {
+    if (method === 'GET') return 'knowledge.read'
+    return /(?:review|publish|archive)(?:\/|$)/.test(path)
+      ? 'knowledge.review'
+      : 'knowledge.manage'
+  }
+  if (path.startsWith('/chat/')) return 'chat.query'
+  if (path.startsWith('/operations/')) return 'monitoring.read'
+  if (path === '/api-products' || path.startsWith('/api-products/')) return 'catalog.read'
+  return undefined
 }
 
 function responseString(value: unknown, fallback: string): string {
@@ -1279,11 +1345,18 @@ function rememberChatTurn(sessionId: string, question: string, answer: string): 
 
 class PocApiClient {
   private hydration?: Promise<void>
+  private coreEtag?: string
+
+  resetSecurityBoundary(): void {
+    this.hydration = undefined
+    this.coreEtag = undefined
+  }
 
   private applyAccessAuthority(document: ChangeHistoryAccessDocument & { version: number }) {
     const existingMemberships = new Map(adminMemberships.map((member) => [member.subject_id, member]))
-    const profileRole = (role: ChangeHistoryAccessRole) => (
+    const profileRole = (role: PocRole) => (
       role === 'admin' ? 'ADMIN' as const
+        : role === 'manager' ? 'MANAGER' as const
         : role === 'viewer' ? 'VIEWER' as const : 'ENGINEER_STEWARD' as const
     )
     adminMemberships = document.users.map((user) => {
@@ -1355,8 +1428,13 @@ class PocApiClient {
 
   private ensureHydrated(): Promise<void> {
     if (this.hydration) return this.hydration
-    this.hydration = gatewayRequest<{ value: Record<string, unknown> | null }>('/poc-api/state/core')
-      .then(({ value }) => {
+    this.hydration = gatewayRequestWithMeta<{
+      value: Record<string, unknown> | null
+      version?: number
+    }>('/poc-api/state/core')
+      .then(({ data, etag }) => {
+        const { value } = data
+        this.coreEtag = etag ?? (Number.isSafeInteger(data.version) ? `"${data.version}"` : undefined)
         if (!value) return
         if (Number.isSafeInteger(value.sequence)) sequence = Number(value.sequence)
         if (Array.isArray(value.changeRecords)) {
@@ -1438,8 +1516,10 @@ class PocApiClient {
 
   private async persistCore(): Promise<void> {
     if (!runtimeFlags().pocState) return
-    await gatewayRequest('/poc-api/state/core', {
+    if (!this.coreEtag) throw new Error('POC core state version is unavailable. Reload and retry.')
+    const response = await gatewayRequestWithMeta<{ version?: number }>('/poc-api/state/core', {
       method: 'PUT',
+      headers: { 'If-Match': this.coreEtag },
       body: JSON.stringify({
         value: {
           sequence,
@@ -1469,6 +1549,9 @@ class PocApiClient {
         },
       }),
     })
+    this.coreEtag = response.etag
+      ?? (Number.isSafeInteger(response.data.version) ? `"${response.data.version}"` : undefined)
+    if (!this.coreEtag) throw new Error('POC core state update omitted its version.')
   }
 
   async request<T>(path: string, options: PocRequestOptions = {}): Promise<T> {
@@ -1477,6 +1560,11 @@ class PocApiClient {
 
   async requestWithMeta<T>(path: string, options: PocRequestOptions = {}): Promise<ApiResponse<T>> {
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
+    const parsed = parsedPath(path)
+    const method = options.method?.toUpperCase() ?? 'GET'
+    const requiredCapability = localDispatchCapability(parsed.pathname, method)
+    if (!requiredCapability) throw new Error('미분류 POC API 경로는 사용할 수 없습니다.')
+    if (requiredCapability !== 'AUTHENTICATED') requirePocCapability(requiredCapability)
     if (path.startsWith('/change-history/') || /^\/change-requests\/[^/]+\/change-history(?:\?|$)/.test(path)) {
       const headers = new Headers(options.headers)
       if (options.idempotencyKey) headers.set('Idempotency-Key', options.idempotencyKey)
@@ -1484,7 +1572,7 @@ class PocApiClient {
       return gatewayRequestWithMeta<T>(`/api/v1${path}`, { ...options, headers })
     }
     if (runtimeFlags().pocState) await this.ensureHydrated()
-    const value = await this.dispatch(parsedPath(path), options)
+    const value = await this.dispatch(parsed, options)
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
     const membershipVersion = /^\/admin\/workspace-memberships\/[^/]+\/(?:access|identity-profile)$/.test(parsedPath(path).pathname)
       && value && typeof value === 'object' && 'membership_version' in value
@@ -1498,6 +1586,7 @@ class PocApiClient {
     options: PocRequestOptions,
     onEvent: ApiEventStreamHandler,
   ): Promise<T> {
+    requirePocCapability('chat.query')
     const body = jsonBody(options)
     const rawQuestion = typeof body.question === 'string' ? body.question : ''
     if (rawQuestion.length > CHAT_QUESTION_MAX_CHARACTERS) {
@@ -1606,12 +1695,10 @@ class PocApiClient {
       display_name: 'POC User',
       authentication_assurance: 'UNKNOWN',
       fallback_enabled: false,
-      allowed_operations: pocAdminOperations,
-      action_vocabulary: [
-        'POC_OPEN_ACCESS_V1', 'catalog.read', 'registration.create', 'change.create',
-        'change.edit', 'change.review', 'change.approve', 'quality.read', 'quality.execute', 'kg.read',
-        'kg.edit', 'governance.read', 'governance.edit', 'chat.query', 'admin.manage',
-      ],
+      allowed_operations: presentationAuthorization?.capabilities.includes('admin.manage')
+        ? pocAdminOperations
+        : [],
+      action_vocabulary: presentationAuthorization?.capabilities ?? [],
     }
     if (path === '/admin/classification-access/policies/current/summary' && method === 'GET') {
       return structuredClone(pocClassificationPolicySummary)
@@ -3059,8 +3146,8 @@ class PocApiClient {
       governanceReviews = [...governanceReviews, {
         review_id: crypto.randomUUID(), workspace_id: POC_WORKSPACE_ID, document_id: documentId,
         document_version_id: versionId, decision, reviewer_id: POC_SUBJECT_ID,
-        reason: responseString(body.reason, ''), policy_decision_id: 'POC_OPEN_SCOPE',
-        authentication_assurance: 'POC_OPEN_SCOPE', created_at: now,
+        reason: responseString(body.reason, ''), policy_decision_id: 'SERVER_CAPABILITY_AND_SYSTEM_SCOPE',
+        authentication_assurance: 'LOCAL_PASSWORD_SESSION', created_at: now,
       }]
       version.state = decision === 'APPROVE' ? 'PUBLISHED' : 'REJECTED'
       version.reviewed_by = POC_SUBJECT_ID; version.reviewed_at = now; version.version += 1
@@ -3326,7 +3413,7 @@ class PocApiClient {
       const firstName = responseString(body.first_name, '')
       const lastName = responseString(body.last_name, '')
       const displayName = `${firstName} ${lastName}`.trim() || username
-      const jobFunction = ['developer', 'data_steward', 'viewer', 'admin'].includes(String(body.job_function))
+      const jobFunction = ['developer', 'data_steward', 'manager', 'viewer', 'admin'].includes(String(body.job_function))
         ? String(body.job_function)
         : 'viewer'
       const role = jobFunction as ChangeHistoryAccessRole
@@ -3411,9 +3498,9 @@ class PocApiClient {
     if (memberAccessAuthority && method === 'PUT') {
       const subjectId = decodeURIComponent(memberAccessAuthority[1] ?? '')
       const body = jsonBody(options)
-      const role = responseString(body.role, '') as ChangeHistoryAccessRole
+      const role = responseString(body.role, '') as PocRole
       const active = body.active
-      if (!['admin', 'data_steward', 'developer', 'viewer'].includes(role) || typeof active !== 'boolean') {
+      if (!['admin', 'data_steward', 'developer', 'manager', 'viewer'].includes(role) || typeof active !== 'boolean') {
         throw new Error('유효한 active/role authority update가 필요합니다.')
       }
       const expectedVersion = Number(options.ifMatch?.replaceAll('"', ''))
@@ -3421,12 +3508,14 @@ class PocApiClient {
         const target = document.users.find((item) => item.subject_id === subjectId)
         if (!target) throw new Error('POC 사용자를 찾을 수 없습니다.')
         target.active = active
-        target.role = role
-        const requiredResponsibility = role === 'developer'
-          ? 'DEVELOPER'
-          : role === 'data_steward' ? 'DATA_STEWARD' : null
+        target.role = role as ChangeHistoryAccessRole
+        const allowedResponsibilities = role === 'manager'
+          ? new Set(['DEVELOPER', 'DATA_STEWARD'])
+          : role === 'developer'
+            ? new Set(['DEVELOPER'])
+            : role === 'data_steward' ? new Set(['DATA_STEWARD']) : new Set()
         document.system_assignments = document.system_assignments.filter((assignment) => (
-          assignment.subject_id !== subjectId || assignment.responsibility === requiredResponsibility
+          assignment.subject_id !== subjectId || allowedResponsibilities.has(assignment.responsibility)
         ))
       }, expectedVersion)
       return {
@@ -3499,7 +3588,7 @@ class PocApiClient {
   }
 }
 
-const pocClient = new PocApiClient() as unknown as ApiClient
+const pocClient = new PocApiClient()
 
 export function useStableApiClient(
   _baseUrl?: string,
@@ -3513,10 +3602,11 @@ export function useStableApiClient(
   void _workspace
   void _renewAccessToken
   void _readSecurityEpoch
-  return pocClient
+  return pocClient as unknown as ApiClient
 }
 
 export function resetPocMemory(): void {
+  pocClient.resetSecurityBoundary()
   sequence = 900
   changeRecords = []
   chatSessions = []

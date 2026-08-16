@@ -12,6 +12,18 @@ const profile = {
   workspace_selection_enabled: false,
   hardware_webauthn_enabled: false,
   password_change_supported: false,
+  authorization: {
+    policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+    role: 'data_steward',
+    capabilities: [
+      'catalog.read', 'catalog.execute', 'catalog.manage', 'chat.query', 'change.read',
+      'change.execute', 'change.manage',
+      'quality.read', 'quality.execute', 'quality.manage', 'knowledge.read',
+      'monitoring.read',
+    ],
+    system_scope: 'ASSIGNED',
+    system_ids: ['system-one'],
+  },
 }
 
 function jsonResponse(value: unknown, status = 200) {
@@ -63,6 +75,51 @@ describe('POC local-session authentication adapter', () => {
     })
     expect(result.current.user).not.toHaveProperty('access_token')
     expect(result.current.profile).toEqual(profile)
+  })
+
+  it('advances the security epoch when hydration changes the server-held subject', async () => {
+    const nextProfile = {
+      ...profile,
+      subject: 'operator-2',
+      display_name: 'Second Operator',
+      authorization: {
+        ...profile.authorization,
+        role: 'manager' as const,
+        capabilities: [
+          ...profile.authorization.capabilities,
+          'knowledge.manage' as const,
+          'knowledge.review' as const,
+        ],
+      },
+    }
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse(profile))
+      .mockResolvedValueOnce(jsonResponse(nextProfile))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useAuth())
+    await waitFor(() => expect(result.current.profile?.subject).toBe('operator-1'))
+
+    await act(() => result.current.renewAccessToken())
+
+    expect(result.current.profile?.subject).toBe('operator-2')
+    expect(result.current.securityEpoch).toBe(1)
+  })
+
+  it('fails closed when the server profile contains an unknown capability', async () => {
+    const invalid = {
+      ...profile,
+      authorization: {
+        ...profile.authorization,
+        capabilities: [...profile.authorization.capabilities, 'admin.from-local-storage'],
+      },
+    }
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(jsonResponse(invalid)))
+
+    const { result } = renderHook(() => useAuth())
+
+    await waitFor(() => expect(result.current.loading).toBe(false))
+    expect(result.current.profile).toBeUndefined()
+    expect(result.current.notice?.kind).toBe('ERROR')
   })
 
   it('logs in with same-origin credentials and sends no client authority or Authorization claims', async () => {

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest'
-import { pageFromLocation, pageUrl } from './navigation'
+import {
+  pageFromLocation,
+  pageUrl,
+  pocCapabilityForPage,
+  pocNavigationForCapabilities,
+} from './navigation'
 
 describe('navigation contract', () => {
   it('rejects unknown pages and preserves only typed destinations', () => {
@@ -27,5 +32,19 @@ describe('navigation contract', () => {
     expect(pageUrl('monitoring', {
       href: 'https://catalog.example/app?page=knowledge-studio&workspace=ws&draft=draft-1&step=tbox&monitorTab=jobs',
     })).toBe('/app?page=monitoring&workspace=ws&monitorTab=jobs')
+  })
+
+  it('derives POC navigation and direct-page requirements from server capabilities', () => {
+    expect(pocNavigationForCapabilities([
+      'catalog.read', 'chat.query', 'change.read', 'quality.read',
+      'knowledge.read', 'monitoring.read',
+    ]).map(({ id }) => id)).toEqual([
+      'catalog', 'change-management', 'quality', 'knowledge', 'monitoring',
+      'governance', 'chat',
+    ])
+    expect(pocCapabilityForPage('registration')).toBe('catalog.execute')
+    expect(pocCapabilityForPage('knowledge-studio')).toBe('knowledge.manage')
+    expect(pocCapabilityForPage('admin')).toBe('admin.manage')
+    expect(pocCapabilityForPage('dashboard')).toBeUndefined()
   })
 })

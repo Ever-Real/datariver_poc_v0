@@ -175,7 +175,7 @@ export interface ChangeHistoryLinkCommandResult {
   action: ChangeHistoryLinkAction
 }
 
-export type ChangeHistoryAccessRole = 'admin' | 'data_steward' | 'developer' | 'viewer'
+export type ChangeHistoryAccessRole = 'admin' | 'data_steward' | 'developer' | 'manager' | 'viewer'
 
 export interface ChangeHistoryAccessDocument {
   schema_version: 1

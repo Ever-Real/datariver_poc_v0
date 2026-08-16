@@ -50,6 +50,34 @@ export interface AuthenticatedProfile {
   workspace_selection_enabled?: boolean
   hardware_webauthn_enabled?: boolean
   password_change_supported?: boolean
+  authorization?: PocAuthorization
+}
+
+export type PocRole = 'viewer' | 'developer' | 'data_steward' | 'manager' | 'admin'
+
+export type PocCapability =
+  | 'catalog.read'
+  | 'catalog.execute'
+  | 'catalog.manage'
+  | 'chat.query'
+  | 'change.read'
+  | 'change.execute'
+  | 'change.manage'
+  | 'quality.read'
+  | 'quality.execute'
+  | 'quality.manage'
+  | 'knowledge.read'
+  | 'knowledge.manage'
+  | 'knowledge.review'
+  | 'monitoring.read'
+  | 'admin.manage'
+
+export interface PocAuthorization {
+  policy_version: 'POC_PROFILE_CAPABILITIES_V1'
+  role: PocRole
+  capabilities: PocCapability[]
+  system_scope: 'GLOBAL' | 'ASSIGNED'
+  system_ids: string[]
 }
 
 export interface CatalogExportCapability {
@@ -1346,7 +1374,7 @@ export interface WorkspaceMembershipSummary {
   job_function: string | null
   clearance: Classification
   membership_version: number
-  change_history_role?: 'admin' | 'data_steward' | 'developer' | 'viewer'
+  change_history_role?: 'admin' | 'data_steward' | 'developer' | 'manager' | 'viewer'
   effective_profile_role:
     | 'VIEWER'
     | 'ENGINEER_STEWARD'

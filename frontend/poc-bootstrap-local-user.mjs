@@ -281,7 +281,7 @@ export async function readBootstrapPasswordFromTty(input = process.stdin, output
 
 export function localHumanBootstrapHelp() {
   return [
-    'Usage: npm run poc:bootstrap-user -- --subject-id <stable-subject-id> --username <normalized-username> --role <admin|data_steward|developer|viewer> [options]',
+    'Usage: npm run poc:bootstrap-user -- --subject-id <stable-subject-id> --username <normalized-username> --role <admin|data_steward|developer|manager|viewer> [options]',
     '',
     'Options:',
     '  --password-file <path>  Read the human password from one bounded file instead of the TTY.',

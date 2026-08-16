@@ -12,7 +12,12 @@ import type {
 import { QualityApi } from '../features/quality/qualityApi'
 import { GovernanceDocumentsApi } from '../features/governance-documents/governanceDocumentsApi'
 import type { ChangeHistoryAccessDocument } from '../features/change-history/types'
-import { isResubmittedReviewForOverview, resetPocMemory, useStableApiClient } from './pocApi'
+import {
+  configurePocAuthorization,
+  isResubmittedReviewForOverview,
+  resetPocMemory,
+  useStableApiClient,
+} from './pocApi'
 
 const meta = {
   observed_at: '2026-08-11T10:00:00.000Z',
@@ -283,6 +288,18 @@ function installGatewayMock() {
 describe('POC live-provider compatibility adapter', () => {
   beforeEach(() => {
     resetPocMemory()
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'admin',
+      capabilities: [
+        'catalog.read', 'catalog.execute', 'catalog.manage', 'chat.query', 'change.read',
+        'change.execute', 'change.manage',
+        'quality.read', 'quality.execute', 'quality.manage', 'knowledge.read',
+        'knowledge.manage', 'knowledge.review', 'monitoring.read', 'admin.manage',
+      ],
+      system_scope: 'GLOBAL',
+      system_ids: [],
+    }, 'live-test-admin')
     ;(globalThis as typeof globalThis & { __DATARIVER_POC_RUNTIME__?: Record<string, boolean> })
       .__DATARIVER_POC_RUNTIME__ = {
         datahub: true,
@@ -324,6 +341,104 @@ describe('POC live-provider compatibility adapter', () => {
         round_id: 'round-1', from_state: 'CHANGES_REQUESTED', to_state: 'IN_REVIEW',
       }],
     })).toBe(true)
+  })
+
+  it('fails viewer mutations closed while keeping read presentation capabilities', async () => {
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'viewer',
+      capabilities: [
+        'catalog.read', 'chat.query', 'change.read', 'quality.read',
+        'knowledge.read', 'monitoring.read',
+      ],
+      system_scope: 'GLOBAL',
+      system_ids: [],
+    }, 'viewer-boundary')
+    const client = useStableApiClient()
+
+    await expect(client.request('/knowledge/domains', {
+      method: 'POST', body: JSON.stringify({ display_name: 'forged write' }),
+    })).rejects.toThrow(/권한/)
+    await expect(client.request<{ items: unknown[] }>('/knowledge/domains'))
+      .resolves.toMatchObject({ items: [] })
+    await expect(client.request('/unclassified-client-route'))
+      .rejects.toThrow(/미분류 POC API/)
+  })
+
+  it('presents manager Knowledge manage/review without inventing Admin authority', async () => {
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'manager',
+      capabilities: [
+        'catalog.read', 'catalog.execute', 'catalog.manage', 'chat.query', 'change.read',
+        'change.execute', 'change.manage',
+        'quality.read', 'quality.execute', 'quality.manage', 'knowledge.read',
+        'knowledge.manage', 'knowledge.review', 'monitoring.read',
+      ],
+      system_scope: 'ASSIGNED',
+      system_ids: ['system-one'],
+    }, 'manager-boundary')
+    const context = await useStableApiClient().request<{
+      allowed_operations: string[]
+      action_vocabulary: string[]
+    }>('/admin/me')
+
+    expect(context.allowed_operations).toEqual([])
+    expect(context.action_vocabulary).toEqual(expect.arrayContaining([
+      'knowledge.manage', 'knowledge.review',
+    ]))
+    expect(context.action_vocabulary).not.toContain('admin.manage')
+  })
+
+  it('resets singleton POC memory when the authenticated subject boundary changes', async () => {
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'manager', capabilities: ['knowledge.read', 'knowledge.manage'],
+      system_scope: 'ASSIGNED', system_ids: ['system-one'],
+    }, 'subject-a:0')
+    const client = useStableApiClient()
+    await client.request('/knowledge/domains', {
+      method: 'POST', body: JSON.stringify({ display_name: 'Subject A private draft' }),
+    })
+    expect((await client.request<{ items: unknown[] }>('/knowledge/domains')).items).toHaveLength(1)
+
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'viewer', capabilities: ['knowledge.read'],
+      system_scope: 'GLOBAL', system_ids: [],
+    }, 'subject-b:1')
+
+    expect((await client.request<{ items: unknown[] }>('/knowledge/domains')).items).toEqual([])
+  })
+
+  it('hydrates core state version and sends exact If-Match on persistence', async () => {
+    ;(globalThis as typeof globalThis & { __DATARIVER_POC_RUNTIME__?: Record<string, boolean> })
+      .__DATARIVER_POC_RUNTIME__ = { pocState: true }
+    let writes = 0
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), 'https://poc.invalid')
+      if (url.pathname !== '/poc-api/state/core') throw new Error(`Unexpected request: ${url.pathname}`)
+      if ((options?.method ?? 'GET') === 'GET') {
+        return Promise.resolve(new Response(JSON.stringify({ value: null, version: 7 }), {
+          status: 200, headers: { 'Content-Type': 'application/json', ETag: '"7"' },
+        }))
+      }
+      writes += 1
+      expect(new Headers(options?.headers).get('If-Match')).toBe('"7"')
+      return Promise.resolve(new Response(JSON.stringify({ version: 8 }), {
+        status: 200, headers: { 'Content-Type': 'application/json', ETag: '"8"' },
+      }))
+    }))
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'manager', capabilities: ['knowledge.read', 'knowledge.manage'],
+      system_scope: 'ASSIGNED', system_ids: ['system-one'],
+    }, 'cas-subject:0')
+
+    await useStableApiClient().request('/knowledge/domains', {
+      method: 'POST', body: JSON.stringify({ display_name: 'CAS draft' }),
+    })
+    expect(writes).toBe(1)
   })
 
   afterEach(() => {
@@ -794,7 +909,7 @@ describe('POC live-provider compatibility adapter', () => {
     expect(context.allowed_operations).toEqual(expect.arrayContaining([
       'IDENTITY_USER_PROVISION', 'MEMBERSHIP_ACCESS_READ', 'SYSTEM_CONFIGURATION_READ',
     ]))
-    expect(context.action_vocabulary).toContain('change.edit')
+    expect(context.action_vocabulary).toContain('change.manage')
 
     const provisioned = await client.request<{
       subject_id: string

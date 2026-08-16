@@ -886,3 +886,14 @@ test('serializes PostgreSQL core and access writes before missing-row locks and 
     < staleTransaction.findIndex(({ sql }) => sql.includes('ORDER BY scope FOR UPDATE')))
   assert.equal(statements.at(-1).sql, 'ROLLBACK')
 })
+
+test('CAS-replaces in-memory core state and rejects a stale retry without changing state', async () => {
+  const store = createPocStateStore()
+  assert.equal(await store.writeIfVersion('core', { sequence: 1 }, 0), 1)
+  await assert.rejects(
+    () => store.writeIfVersion('core', { sequence: 2 }, 0),
+    { code: 'STATE_VERSION_STALE' },
+  )
+  assert.deepEqual(await store.read('core'), { value: { sequence: 1 }, version: 1 })
+  assert.equal(await store.writeIfVersion('core', { sequence: 2 }, 1), 2)
+})

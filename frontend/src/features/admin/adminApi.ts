@@ -581,7 +581,7 @@ export class AdminApi {
   updateAccessAuthorityUser(
     subjectId: string,
     active: boolean,
-    role: 'admin' | 'data_steward' | 'developer' | 'viewer',
+    role: 'admin' | 'data_steward' | 'developer' | 'manager' | 'viewer',
     etag: string,
     idempotencyKey: string,
   ) {

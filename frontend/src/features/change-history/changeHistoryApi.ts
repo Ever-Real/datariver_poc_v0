@@ -342,7 +342,7 @@ function assertAccess(value: unknown): asserts value is ChangeHistoryAccessDocum
     || (Object.hasOwn(value, 'version') && !nonNegativeInteger(value.version))) invalid()
   value.users.forEach((item) => {
     if (!isRecord(item) || !bounded(item.subject_id, 255)
-      || !['admin', 'data_steward', 'developer', 'viewer'].includes(String(item.role))
+      || !['admin', 'data_steward', 'developer', 'manager', 'viewer'].includes(String(item.role))
       || typeof item.active !== 'boolean' || !boundedArray(item.provider_owner_refs, 100)
       || item.provider_owner_refs.some((owner) => !bounded(owner, 1_024))
       || (Object.hasOwn(item, 'username') && !bounded(item.username, 64))

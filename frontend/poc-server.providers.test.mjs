@@ -511,7 +511,7 @@ test('runs the fixed embedding, reranking and Chat pipeline', async () => {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ question: 'wafer metadata evidence', mode: 'AUTO' }),
   })
-  assert.equal(response.status, 200)
+  assert.equal(response.status, 200, await response.clone().text())
   const payload = await response.json()
   assert.equal(payload.answer, 'Live provider answer [1]')
   assert.equal(payload.route.selected_mode, 'VECTOR')

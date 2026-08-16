@@ -30,7 +30,20 @@ const localProfile = {
   workspace_selection_enabled: false,
   hardware_webauthn_enabled: false,
   password_change_supported: false,
+  authorization: {
+    policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+    role: 'admin',
+    capabilities: [
+      'catalog.read', 'catalog.execute', 'catalog.manage', 'chat.query', 'change.read',
+      'change.execute', 'change.manage',
+      'quality.read', 'quality.execute', 'quality.manage', 'knowledge.read',
+      'knowledge.manage', 'knowledge.review', 'monitoring.read', 'admin.manage',
+    ],
+    system_scope: 'GLOBAL',
+    system_ids: [],
+  },
 }
+let activeProfile = localProfile
 
 function requestPath(input: RequestInfo | URL) {
   return input instanceof Request
@@ -51,10 +64,11 @@ function navigation() {
 describe('POC compatibility application', () => {
   beforeEach(() => {
     resetPocMemory()
+    activeProfile = localProfile
     window.history.replaceState({}, '', '/poc.html?page=dashboard')
     vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL) => (
       requestPath(input) === '/auth/me'
-        ? Promise.resolve(new Response(JSON.stringify(localProfile), {
+        ? Promise.resolve(new Response(JSON.stringify(activeProfile), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
           }))
@@ -74,6 +88,43 @@ describe('POC compatibility application', () => {
     expect(await screen.findByRole('heading', { name: 'Governance Dashboard' })).toBeVisible()
     expect(screen.getByRole('navigation', { name: 'Governance shortcuts' })).toBeVisible()
     expect(providerRequestPaths()).toEqual([])
+  })
+
+  it('uses the viewer projection for menus and rejects a forged direct Admin URL', async () => {
+    const storage = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => { storage.set(key, value) },
+      removeItem: (key: string) => { storage.delete(key) },
+      clear: () => { storage.clear() },
+    })
+    window.localStorage.setItem('roles', '["admin"]')
+    activeProfile = {
+      ...localProfile,
+      roles: ['viewer'],
+      authorization: {
+        policy_version: 'POC_PROFILE_CAPABILITIES_V1' as const,
+        role: 'viewer' as const,
+        capabilities: [
+          'catalog.read', 'chat.query', 'change.read', 'quality.read',
+          'knowledge.read', 'monitoring.read',
+        ],
+        system_scope: 'GLOBAL' as const,
+        system_ids: [],
+      },
+    }
+    window.history.replaceState({}, '', '/poc.html?page=admin&adminSection=memberships')
+
+    renderPoc()
+
+    await waitFor(() => expect(new URL(window.location.href).searchParams.get('page')).toBe('dashboard'))
+    const menu = within(await navigation())
+    expect(menu.getByRole('button', { name: '검색' })).toBeVisible()
+    expect(menu.getByRole('button', { name: /품질관리/ })).toBeVisible()
+    expect(menu.queryByRole('button', { name: '등록관리' })).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'POC User 사용자 메뉴' }))
+    expect(screen.queryByRole('menuitem', { name: '관리자메뉴' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '등록관리' })).not.toBeInTheDocument()
   })
 
   it('keeps the original catalog workspace without showing fixture metadata', async () => {
@@ -155,9 +206,9 @@ describe('POC compatibility application', () => {
     fireEvent.click(screen.getByRole('tab', { name: /시스템 설정|System settings/ }))
     expect(await screen.findByRole('heading', { name: '시스템 설정' })).toBeVisible()
     expect(screen.getAllByText('DataHub GMS').length).toBeGreaterThan(0)
-    fireEvent.click(screen.getByRole('tab', { name: /기능별 권한|Feature access/ }))
-    expect(await screen.findByRole('table', { name: 'POC 기능별 권한 현황' })).toBeVisible()
-    expect(screen.getAllByText('OPEN').length).toBeGreaterThan(0)
+    expect(screen.queryByRole('tab', { name: /기능별 권한|Feature access/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: 'POC 기능별 권한 현황' })).not.toBeInTheDocument()
+    expect(screen.queryByText('OPEN')).not.toBeInTheDocument()
     expect(providerRequestPaths()).toEqual([])
   })
 

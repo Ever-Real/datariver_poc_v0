@@ -65,7 +65,7 @@ export function UserProfileDialog({
   const [profileRolePolicy, setProfileRolePolicy] = useState<ProfileRolePolicy>()
   const [selectedTier, setSelectedTier] = useState<ProfileRolePolicy['items'][number]['tier']>()
   const [selectedClearance, setSelectedClearance] = useState<Classification>('CONFIDENTIAL')
-  const [selectedAuthorityRole, setSelectedAuthorityRole] = useState<'admin' | 'data_steward' | 'developer' | 'viewer'>('viewer')
+  const [selectedAuthorityRole, setSelectedAuthorityRole] = useState<'admin' | 'data_steward' | 'developer' | 'manager' | 'viewer'>('viewer')
   const [selectedActive, setSelectedActive] = useState(true)
   const [accessReason, setAccessReason] = useState('')
   const [changeRequests, setChangeRequests] = useState<MembershipChangeRequestActivity[]>([])
@@ -370,7 +370,7 @@ export function UserProfileDialog({
       {!loading && activeTab === 'access' && <section className="grid gap-3" aria-label="데이터 및 화면 접근 관리">
         <p className="callout m-0">프로필 권한은 서비스 기능을, 데이터 조회 등급은 분류된 데이터의 조회 상한을 결정합니다. 두 값은 서로 암묵적으로 변경되지 않습니다.</p>
         <div className="grid gap-3 md:grid-cols-2">
-          <label className="grid gap-1 text-xs font-bold">변경이력 역할<select aria-label="변경이력 역할" value={selectedAuthorityRole} disabled={!canUpdateAuthority} onChange={(event) => setSelectedAuthorityRole(event.target.value as typeof selectedAuthorityRole)}><option value="admin">admin</option><option value="data_steward">data_steward</option><option value="developer">developer</option><option value="viewer">viewer</option></select></label>
+          <label className="grid gap-1 text-xs font-bold">변경이력 역할<select aria-label="변경이력 역할" value={selectedAuthorityRole} disabled={!canUpdateAuthority} onChange={(event) => setSelectedAuthorityRole(event.target.value as typeof selectedAuthorityRole)}><option value="admin">admin</option><option value="data_steward">data_steward</option><option value="developer">developer</option><option value="manager">manager</option><option value="viewer">viewer</option></select></label>
           <label className="grid gap-1 text-xs font-bold">계정 활성 상태<select aria-label="계정 활성 상태" value={selectedActive ? 'ACTIVE' : 'INACTIVE'} disabled={!canUpdateAuthority} onChange={(event) => setSelectedActive(event.target.value === 'ACTIVE')}><option value="ACTIVE">ACTIVE</option><option value="INACTIVE">INACTIVE</option></select></label>
           <label className="grid gap-1 text-xs font-bold">사용자 프로필 권한<select aria-label="사용자 프로필 권한" value={selectedTier ?? ''} disabled={!canAssignProfile || isServiceAccount} onChange={(event) => setSelectedTier(event.target.value as ProfileRolePolicy['items'][number]['tier'])}><option value="" disabled>{access?.profile_role.status === 'UNASSIGNED' ? '전환 필요 (기존 권한)' : '선택'}</option>{profileRolePolicy?.items.map((item) => <option key={item.tier} value={item.tier}>{item.label}</option>)}</select></label>
           <label className="grid gap-1 text-xs font-bold">데이터 조회 등급<select aria-label="데이터 조회 등급" value={selectedClearance} disabled={!canAssignProfile || isServiceAccount || access?.profile_role.tier === 'ADMIN'} onChange={(event) => setSelectedClearance(event.target.value as Classification)}><option value="PUBLIC">Public</option><option value="INTERNAL">Internal</option><option value="CONFIDENTIAL">Confidential (대외비)</option><option value="RESTRICTED">Restricted</option></select></label>

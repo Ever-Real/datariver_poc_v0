@@ -25,8 +25,10 @@ COPY --from=build /source/frontend/dist-poc/ ./dist-poc/
 COPY --from=build /source/frontend/node_modules/ ./node_modules/
 COPY frontend/package.json ./package.json
 COPY frontend/poc-server.mjs ./poc-server.mjs
+COPY frontend/poc-authorization.mjs ./poc-authorization.mjs
 COPY frontend/poc-access-document.mjs ./poc-access-document.mjs
 COPY frontend/poc-bootstrap-local-user.mjs ./poc-bootstrap-local-user.mjs
+COPY frontend/poc-disable-local-credential.mjs ./poc-disable-local-credential.mjs
 COPY frontend/poc-local-auth.mjs ./poc-local-auth.mjs
 COPY frontend/poc-state-store.mjs ./poc-state-store.mjs
 COPY frontend/poc-change-history-scheduler.mjs ./poc-change-history-scheduler.mjs

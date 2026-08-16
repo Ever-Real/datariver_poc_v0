@@ -1,9 +1,15 @@
 import { lazy, Suspense, useCallback, useEffect, useState, type FormEvent } from 'react'
 import { ArrowRight, ShieldCheck } from 'lucide-react'
 import { remediationKind } from './api/client'
-import type { AdminOperation, AdminReadContext, CapabilitiesResponse, ExternalSystemLink } from './api/types'
+import type {
+  AdminOperation,
+  AdminReadContext,
+  CapabilitiesResponse,
+  ExternalSystemLink,
+  PocCapability,
+} from './api/types'
 import { useStableApiClient } from './api/useStableApiClient'
-import { pageFromLocation, pageUrl, type Page } from './app/navigation'
+import { pageFromLocation, pageUrl, pocCapabilityForPage, type Page } from './app/navigation'
 import { defaultWorkspaceSelection, workspaceFromLocation } from './app/workspace'
 import { useAuth } from './auth/AuthProvider'
 import { AppShell } from './components/layout/AppShell'
@@ -32,6 +38,8 @@ interface LocalCredentialAuth {
   isLocalSession: true
   signInWithCredentials: (username: string, password: string) => Promise<void>
 }
+
+const emptyPocCapabilities: readonly PocCapability[] = []
 
 function localCredentialAuth(value: object): LocalCredentialAuth | undefined {
   const candidate = value as Partial<LocalCredentialAuth>
@@ -79,6 +87,13 @@ export function App() {
     ? workspace
     : auth.profile?.default_workspace_id ?? ''
   const authenticatedSubject = auth.profile?.subject ?? ''
+  const pocCapabilities = auth.profile?.authorization?.capabilities ?? emptyPocCapabilities
+  const hasPocCapability = useCallback(
+    (capability: ReturnType<typeof pocCapabilityForPage>) => (
+      !capability || pocCapabilities.includes(capability)
+    ),
+    [pocCapabilities],
+  )
   const client = useStableApiClient(
     runtimeConfig.apiBaseUrl,
     auth.user?.access_token,
@@ -130,7 +145,11 @@ export function App() {
       securityEpoch: auth.securityEpoch,
       authorizationRevision: auth.authorizationRevision,
     }
-    if (!activeWorkspace || !authenticatedSubject) {
+    if (
+      !activeWorkspace
+      || !authenticatedSubject
+      || (pocMode && !pocCapabilities.includes('admin.manage'))
+    ) {
       setAdminAccess({
         ...accessKey, status: 'denied',
       })
@@ -181,6 +200,8 @@ export function App() {
     auth.securityEpoch,
     authenticatedSubject,
     client,
+    pocCapabilities,
+    pocMode,
   ])
 
   useEffect(() => {
@@ -210,11 +231,25 @@ export function App() {
   ])
 
   useEffect(() => {
+    if (
+      !pocMode
+      || !auth.profile?.authorization
+      || hasPocCapability(pocCapabilityForPage(page))
+    ) return
+    const url = new URL(window.location.href)
+    url.searchParams.set('page', 'dashboard')
+    url.searchParams.delete('q')
+    window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
+    setCatalogQuery('')
+    setPage('dashboard')
+  }, [auth.profile?.authorization, hasPocCapability, page, pocMode])
+
+  useEffect(() => {
     let active = true
     setExternalSystemLinks([])
     setCapabilities([])
     setDeploymentTier('SINGLE_NODE_PILOT')
-    if (!activeWorkspace) {
+    if (!activeWorkspace || (pocMode && !pocCapabilities.includes('monitoring.read'))) {
       return () => { active = false }
     }
     void client.request<CapabilitiesResponse>('/capabilities')
@@ -236,12 +271,17 @@ export function App() {
     auth.securityEpoch,
     authenticatedSubject,
     client,
+    pocCapabilities,
+    pocMode,
   ])
 
   useEffect(() => {
     let active = true
     setCatalogExportWorkerEnabled(false)
-    if (!activeWorkspace) return () => { active = false }
+    if (
+      !activeWorkspace
+      || (pocMode && !pocCapabilities.includes('catalog.manage'))
+    ) return () => { active = false }
     void catalogExportCapabilityEnabled(client)
       .then((enabled) => { if (active) setCatalogExportWorkerEnabled(enabled) })
     return () => { active = false }
@@ -250,13 +290,21 @@ export function App() {
     auth.securityEpoch,
     authenticatedSubject,
     client,
+    pocCapabilities,
+    pocMode,
   ])
 
   const navigate = useCallback((next: Page) => {
+    if (pocMode && !hasPocCapability(pocCapabilityForPage(next))) {
+      window.history.replaceState({}, '', pageUrl('dashboard'))
+      setCatalogQuery('')
+      setPage('dashboard')
+      return
+    }
     window.history.pushState({}, '', pageUrl(next))
     setCatalogQuery('')
     setPage(next)
-  }, [])
+  }, [hasPocCapability, pocMode])
 
   const navigateKnowledgeStudio = useCallback((assetId?: string) => {
     window.history.pushState({}, '', knowledgeStudioUrl({ assetId }))
@@ -380,11 +428,21 @@ export function App() {
   const adminMessages = getAdminMessages()
   const adminMenuItems: Array<{ id: string; label: string }> = pocMode
     ? [
-        { id: 'poc-registration', label: '등록관리' },
-        { id: 'poc-quality', label: '품질관리' },
-        { id: 'poc-knowledge', label: '지식관리' },
-        { id: 'poc-glossary', label: '용어사전' },
-        ...(currentAdminContext ? [{ id: 'memberships', label: '관리자메뉴' }] : []),
+        ...(pocCapabilities.includes('catalog.execute') || pocCapabilities.includes('catalog.manage')
+          ? [{ id: 'poc-registration', label: '등록관리' }]
+          : []),
+        ...(pocCapabilities.includes('catalog.manage')
+          ? [{ id: 'poc-glossary', label: '용어사전' }]
+          : []),
+        ...(pocCapabilities.includes('quality.execute') || pocCapabilities.includes('quality.manage')
+          ? [{ id: 'poc-quality', label: '품질관리' }]
+          : []),
+        ...(pocCapabilities.includes('knowledge.manage') || pocCapabilities.includes('knowledge.review')
+          ? [{ id: 'poc-knowledge', label: '지식관리' }]
+          : []),
+        ...(pocCapabilities.includes('admin.manage') && currentAdminContext
+          ? [{ id: 'memberships', label: '관리자메뉴' }]
+          : []),
       ]
     : currentAdminContext
       ? allowedAdminSections(currentAdminContext).map((id) => ({ id, label: adminMessages[id] }))
@@ -415,6 +473,7 @@ export function App() {
       adminMenuItems={adminMenuItems}
       adminContextStatus={currentAdminStatus}
       externalSystemLinks={externalSystemLinks}
+      pocCapabilities={pocCapabilities}
       notice={auth.notice}
       onNavigate={navigate}
       onNavigateAdmin={navigateAdmin}
@@ -478,14 +537,18 @@ export function App() {
           <MonitoringPage
             client={client}
             canManageTabs={
-              currentAdminContext?.allowed_operations.includes(
-                'MONITORING_CONFIGURATION_READ',
-              ) ?? false
+              pocMode
+                ? pocCapabilities.includes('admin.manage')
+                : currentAdminContext?.allowed_operations.includes(
+                    'MONITORING_CONFIGURATION_READ',
+                  ) ?? false
             }
             canUpdateTabs={
-              currentAdminContext?.allowed_operations.includes(
-                'MONITORING_CONFIGURATION_UPDATE',
-              ) ?? false
+              pocMode
+                ? pocCapabilities.includes('admin.manage')
+                : currentAdminContext?.allowed_operations.includes(
+                    'MONITORING_CONFIGURATION_UPDATE',
+                  ) ?? false
             }
             onRequestAdminAssurance={oidcAuthenticationEnabled
               ? auth.profile?.hardware_webauthn_enabled === false

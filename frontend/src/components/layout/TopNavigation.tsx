@@ -1,9 +1,9 @@
 import { useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import type { Page } from '../../app/navigation'
-import type { ExternalSystemLink } from '../../api/types'
+import type { ExternalSystemLink, PocCapability } from '../../api/types'
 import type { ApiClient } from '../../api/client'
-import { primaryNavigation } from '../../app/navigation'
+import { pocNavigationForCapabilities, primaryNavigation } from '../../app/navigation'
 import { GlobalCatalogSearch } from './GlobalCatalogSearch'
 import { ExternalSystemLinks } from './ExternalSystemLinks'
 import { ProfileMenu, type AdminContextStatus, type AdminMenuItem } from './ProfileMenu'
@@ -22,6 +22,7 @@ interface TopNavigationProps {
   adminMenuItems: AdminMenuItem[]
   adminContextStatus?: AdminContextStatus
   externalSystemLinks: ExternalSystemLink[]
+  pocCapabilities?: readonly PocCapability[]
   onNavigate: (page: Page) => void
   onNavigateAdmin: (section: string) => void
   onProfile?: () => void
@@ -45,6 +46,7 @@ export function TopNavigation({
   adminMenuItems,
   adminContextStatus,
   externalSystemLinks,
+  pocCapabilities = [],
   onNavigate,
   onNavigateAdmin,
   onProfile,
@@ -62,7 +64,7 @@ export function TopNavigation({
     ? 'knowledge'
     : page
   const navigationItems = pocMode
-    ? primaryNavigation.filter(({ id }) => !['registration', 'quality', 'knowledge'].includes(id))
+    ? pocNavigationForCapabilities(pocCapabilities)
     : primaryNavigation
 
   return (
