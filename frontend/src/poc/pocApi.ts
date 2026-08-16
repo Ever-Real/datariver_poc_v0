@@ -3508,7 +3508,7 @@ class PocApiClient {
         const target = document.users.find((item) => item.subject_id === subjectId)
         if (!target) throw new Error('POC 사용자를 찾을 수 없습니다.')
         target.active = active
-        target.role = role as ChangeHistoryAccessRole
+        target.role = role
         const allowedResponsibilities = role === 'manager'
           ? new Set(['DEVELOPER', 'DATA_STEWARD'])
           : role === 'developer'
