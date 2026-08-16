@@ -33,6 +33,12 @@ import {
   createPocChangeHistoryScheduler,
   loadPocChangeHistorySchedulerConfig,
 } from './poc-change-history-scheduler.mjs'
+import {
+  POC_TABLE_SYSTEM_MAPPING_SCOPE,
+  applyTableSystemMappingCommand,
+  normalizeTableSystemMappingDocument,
+  tableSystemCandidates,
+} from './poc-table-system-mappings.mjs'
 
 const sourceDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const staticDirectory = join(sourceDirectory, 'dist-poc')
@@ -389,6 +395,15 @@ function stateIfMatch(request) {
   const match = value.match(/^"(0|[1-9]\d*)"$/)
   const version = match ? Number(match[1]) : Number.NaN
   if (!Number.isSafeInteger(version)) throw accessError(400, 'IF_MATCH_INVALID', 'If-Match must be a quoted core state version.')
+  return version
+}
+
+function tableSystemIfMatch(request) {
+  const value = request.headers['if-match']
+  if (typeof value !== 'string') throw accessError(428, 'IF_MATCH_REQUIRED', 'If-Match is required for Table-System mapping changes.')
+  const match = value.match(/^"(0|[1-9]\d*)"$/)
+  const version = match ? Number(match[1]) : Number.NaN
+  if (!Number.isSafeInteger(version)) throw accessError(400, 'IF_MATCH_INVALID', 'If-Match must be a quoted Table-System mapping version.')
   return version
 }
 
@@ -1150,7 +1165,7 @@ query DataRiverPocCatalogEmbeddingInventory($input: ScrollAcrossEntitiesInput!) 
           }
           domain { domain { urn } }
           ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } type } }
-          globalTags: tags { tags { tag { name properties { name } } } }
+          globalTags: tags { tags { tag { urn name properties { name } } } }
           glossaryTerms { terms { term { urn name } } }
           schemaMetadata(version: 0) {
             fields {
@@ -1259,7 +1274,7 @@ query DataRiverPocLineage($urn: String!, $input: LineageInput!) {
             }
             domain { domain { urn } }
             ownership { owners { owner { ... on CorpUser { urn } ... on CorpGroup { urn } } } }
-            globalTags: tags { tags { tag { name properties { name } } } }
+            globalTags: tags { tags { tag { urn name properties { name } } } }
             glossaryTerms { terms { term { urn name } } }
           }
         }
@@ -1657,8 +1672,11 @@ function datasetIdentity(entity) {
   }
 }
 
-function tagNames(entity) {
-  return (entity.globalTags?.tags || []).map((item) => item.tag?.properties?.name || item.tag?.name).filter(Boolean)
+function tagReferences(entity) {
+  return (entity.globalTags?.tags || []).flatMap((item) => {
+    const name = item.tag?.properties?.name || item.tag?.name
+    return name ? [{ urn: item.tag?.urn || null, name }] : []
+  })
 }
 
 function datasetKind(entity) {
@@ -1703,7 +1721,8 @@ function datahubCreatedAt(properties) {
 
 function datasetAsset(entity) {
   const identity = datasetIdentity(entity)
-  const tags = tagNames(entity)
+  const tagReferencesValue = tagReferences(entity)
+  const tags = tagReferencesValue.map((item) => item.name)
   const classificationTag = tags.find((tag) => tag.toUpperCase().startsWith('CLASSIFICATION:'))
   const classification = classificationTag?.split(':').at(-1)?.toUpperCase() || 'INTERNAL'
   const owner = urnTail(entity.ownership?.owners?.[0]?.owner?.urn) || 'DataHub'
@@ -1722,6 +1741,7 @@ function datasetAsset(entity) {
     owner,
     domain,
     tags,
+    tag_references: tagReferencesValue,
     terms: (entity.glossaryTerms?.terms || []).map((item) => item.term?.name).filter(Boolean),
     term_references: (entity.glossaryTerms?.terms || []).flatMap((item) => (
       item.term?.urn && item.term?.name
@@ -4346,7 +4366,73 @@ async function authRoute(request, response, url, baseContext, authenticator) {
   return problem(response, 404, 'NOT_FOUND', 'The authentication route does not exist.')
 }
 
+async function tableSystemMappingApi(request, response, url, context) {
+  const snapshot = await context.stateStore.read(POC_TABLE_SYSTEM_MAPPING_SCOPE)
+  const document = normalizeTableSystemMappingDocument(snapshot.value)
+  const inventory = await datahubInventory()
+  const systems = context.accessDocument.systems || []
+  if (request.method === 'GET') {
+    const requestedLimit = Number(url.searchParams.get('limit') || 2_000)
+    const limit = Number.isSafeInteger(requestedLimit) && requestedLimit >= 1 && requestedLimit <= 2_000
+      ? requestedLimit
+      : 2_000
+    const candidates = tableSystemCandidates({
+      assets: inventory,
+      document,
+      systems,
+      query: boundedString(url.searchParams.get('q'), 500),
+      schema: boundedString(url.searchParams.get('schema'), 500),
+      systemId: boundedString(url.searchParams.get('system_id'), 200),
+      securityGrade: boundedString(url.searchParams.get('security_grade'), 20),
+    })
+    const items = candidates.slice(0, limit)
+    return json(response, 200, {
+      version: snapshot.version,
+      items,
+      total: candidates.length,
+      selection_complete: candidates.length <= limit,
+      schemas: [...new Set(inventory
+        .filter((asset) => asset?.dataset_kind === 'TABLE' && typeof asset.schema_name === 'string')
+        .map((asset) => asset.schema_name))].sort(),
+    }, { ETag: `"${snapshot.version}"` })
+  }
+  if (request.method !== 'PATCH') {
+    return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Table-System mappings support only GET and PATCH.')
+  }
+  const expectedVersion = tableSystemIfMatch(request)
+  if (expectedVersion !== snapshot.version) {
+    throw accessError(409, 'TABLE_SYSTEM_MAPPING_VERSION_STALE', 'The Table-System mapping version is stale.')
+  }
+  const body = await bodyJson(request)
+  rejectProtectedAccessBodyClaims(body)
+  const requestedSystems = Array.isArray(body.system_ids) ? body.system_ids.map(String) : []
+  const activeSystems = new Set(systems.filter((system) => system.active).map((system) => system.system_id))
+  if (requestedSystems.some((systemId) => !activeSystems.has(systemId))) {
+    throw accessError(400, 'TABLE_SYSTEM_SYSTEM_INVALID', 'Every selected System must exist and be active in the current access authority.')
+  }
+  const requestedTables = Array.isArray(body.table_ids) ? body.table_ids.map(String) : []
+  const currentTables = new Set(inventory
+    .filter((asset) => asset?.dataset_kind === 'TABLE')
+    .map((asset) => asset.id))
+  if (requestedTables.some((tableId) => !currentTables.has(tableId))) {
+    throw accessError(400, 'TABLE_SYSTEM_TABLE_INVALID', 'Every selected Table must be a current DataHub TABLE identity.')
+  }
+  const applied = applyTableSystemMappingCommand(document, body, context.principal.subjectId)
+  if (applied.changed === 0) {
+    return json(response, 200, { version: snapshot.version, changed: 0 }, { ETag: `"${snapshot.version}"` })
+  }
+  const version = await context.stateStore.writeIfVersion(
+    POC_TABLE_SYSTEM_MAPPING_SCOPE,
+    applied.document,
+    expectedVersion,
+  )
+  return json(response, 200, { version, changed: applied.changed }, { ETag: `"${version}"` })
+}
+
 async function api(request, response, url, context) {
+  if (url.pathname === '/api/v1/admin/table-system-mappings') {
+    return tableSystemMappingApi(request, response, url, context)
+  }
   if (url.pathname === '/api/v1/change-history/access') {
     return changeHistoryAccess(request, response, url, context)
   }
@@ -4718,7 +4804,8 @@ export function createPocServer({
         const requestContext = await authenticatedRequestContext(baseContext, authentication)
         assertPocRouteAuthorization(resolvePocRoute(request.method, url.pathname), requestContext.principal)
         rejectProtectedAccessClaims(request, url, {
-          allowSystemFilter: url.pathname.startsWith('/api/v1/change-history/'),
+          allowSystemFilter: url.pathname.startsWith('/api/v1/change-history/')
+            || url.pathname === '/api/v1/admin/table-system-mappings',
         })
         if (stateChangingMethods.has(request.method || '')) authenticator.assertOrigin(request)
         return await api(request, response, url, requestContext)

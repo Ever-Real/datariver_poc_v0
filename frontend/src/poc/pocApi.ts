@@ -1565,7 +1565,8 @@ class PocApiClient {
     const requiredCapability = localDispatchCapability(parsed.pathname, method)
     if (!requiredCapability) throw new Error('미분류 POC API 경로는 사용할 수 없습니다.')
     if (requiredCapability !== 'AUTHENTICATED') requirePocCapability(requiredCapability)
-    if (path.startsWith('/change-history/') || /^\/change-requests\/[^/]+\/change-history(?:\?|$)/.test(path)) {
+    if (path.startsWith('/change-history/') || /^\/change-requests\/[^/]+\/change-history(?:\?|$)/.test(path)
+      || parsed.pathname === '/admin/table-system-mappings') {
       const headers = new Headers(options.headers)
       if (options.idempotencyKey) headers.set('Idempotency-Key', options.idempotencyKey)
       if (options.ifMatch) headers.set('If-Match', options.ifMatch)
@@ -3280,6 +3281,45 @@ class PocApiClient {
         document.systems.push(system)
       })
       return pocSystemEntry(system)
+    }
+    const systemDetailPath = path.match(/^\/admin\/systems\/([^/]+)$/)
+    if (systemDetailPath && method === 'PATCH') {
+      const systemId = decodeURIComponent(systemDetailPath[1] ?? '')
+      const body = jsonBody(options)
+      if (Object.keys(body).some((key) => !['name', 'description', 'active'].includes(key))) {
+        throw new Error('지원하지 않는 System 변경 필드가 있습니다.')
+      }
+      const name = responseString(body.name, '').trim()
+      const description = responseString(body.description, '').trim()
+      if (!name || name.length > 255 || description.length > 2000 || typeof body.active !== 'boolean') {
+        throw new Error('유효한 System 이름, 설명, 활성 상태가 필요합니다.')
+      }
+      const expectedVersion = Number(options.ifMatch?.replaceAll('"', ''))
+      let updated: ChangeHistoryAccessDocument['systems'][number] | undefined
+      await this.mutateAccessAuthority((document) => {
+        const system = document.systems.find((item) => item.system_id === systemId)
+        if (!system || !Number.isSafeInteger(expectedVersion) || system.version !== expectedVersion) {
+          throw new Error('System authority version is stale. Refresh and retry.')
+        }
+        system.name = name
+        system.description = description
+        system.active = body.active as boolean
+        system.version += 1
+        if (!system.active) {
+          for (const assignment of document.system_assignments) {
+            if (assignment.system_id === systemId) assignment.active = false
+          }
+          for (const scope of document.system_schema_scopes) {
+            if (scope.system_id === systemId) {
+              scope.active = false
+              scope.version += 1
+            }
+          }
+        }
+        updated = structuredClone(system)
+      })
+      if (!updated) throw new Error('POC 시스템을 찾을 수 없습니다.')
+      return pocSystemEntry(updated)
     }
     const systemAssigneePath = path.match(/^\/admin\/systems\/([^/]+)\/assignees$/)
     if (systemAssigneePath) {

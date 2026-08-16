@@ -77,6 +77,20 @@ startup dependency and it does not authorize deleting historical migrations or `
 | `poc_local_credentials` | login only | operator bootstrap/reset and bounded lock state | local authentication only; no role/System columns | `subject_id` references the access-document identity by application CAS | same additive idempotent SQL | `ACTIVE` |
 | `poc_local_sessions` | every protected request | login/logout/revoke/expiry lifecycle | opaque server session; token hash only | FK to `poc_local_credentials.subject_id` | same additive idempotent SQL | `ACTIVE` |
 
+`poc_state` also owns the bounded `table-system-mappings-v1` document introduced by ADR-0125.
+It is an exact N:M relation between a current DataHub dataset URN (`dataset_kind=TABLE`) and an
+existing access-document System ID. Pair rows retain active/version, authenticated actor,
+server timestamp and bounded reason; the scope is written only through the `admin.manage` exact
+route with `If-Match` CAS. It contains no User, Role, capability, responsibility or security-policy
+authority and therefore does not replace the access document. Archived Systems make their pairs
+ineffective without deleting lifecycle evidence. Legacy `system_schema_scopes` remain historical
+CR-routing compatibility and are not a schema ACL or an inheritance source for this relation.
+
+The Catalog projection retains exact Table tag URN/name references. PHASE 1C-1 displays a derived
+`normal/restricted/credential` grade using exact normalized tag equality only; the grade is not yet
+an authorization selector. Explicit User ↔ Table grants, user maximum grade and retrieval-time
+enforcement remain later PHASE 1C-2/1D work.
+
 ```mermaid
 erDiagram
     POC_STATE ||--o{ POC_LOCAL_CREDENTIALS : binds_subject_by_CAS

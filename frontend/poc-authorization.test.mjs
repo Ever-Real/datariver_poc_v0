@@ -82,13 +82,26 @@ test('accepts manager in the existing access document and projects MANAGER witho
 })
 
 test('covers every named Node API route with no unknown or ambiguous registry entry', () => {
+  assert.equal(POC_ROUTE_REGISTRY.length, 51)
   assert.equal(new Set(POC_ROUTE_REGISTRY.map((entry) => entry.id)).size, POC_ROUTE_REGISTRY.length)
+  assert.deepEqual(Object.fromEntries(['ANONYMOUS', 'AUTHENTICATED', 'CAPABILITY_PROTECTED', 'INTERNAL_SERVICE', 'DISABLED'].map((classification) => [
+    classification,
+    POC_ROUTE_REGISTRY.filter((entry) => entry.authorizationClass === classification).length,
+  ])), {
+    ANONYMOUS: 7,
+    AUTHENTICATED: 2,
+    CAPABILITY_PROTECTED: 40,
+    INTERNAL_SERVICE: 1,
+    DISABLED: 1,
+  })
   const cases = [
     ['GET', '/healthz', 'health.liveness.get'],
     ['HEAD', '/poc-runtime-config.js', 'runtime.config.head'],
     ['GET', '/auth/login', 'auth.login.shell.get'],
     ['GET', '/auth/me', 'auth.me'],
     ['GET', '/api/v1/change-history/events', 'change.events'],
+    ['GET', '/api/v1/admin/table-system-mappings', 'admin.table-system-mappings.read'],
+    ['PATCH', '/api/v1/admin/table-system-mappings', 'admin.table-system-mappings.write'],
     ['POST', `/api/v1/change-history/events/${'a'.repeat(64)}/cr-link-events`, 'change.event.command'],
     ['POST', '/api/v1/registration/bulk-preparations/execute', 'registration.execute.service'],
     ['PUT', '/poc-api/state/core', 'state.write'],

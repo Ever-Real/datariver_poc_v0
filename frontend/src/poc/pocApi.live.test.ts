@@ -1005,6 +1005,25 @@ describe('POC live-provider compatibility adapter', () => {
       body: JSON.stringify({ active: true, role: 'viewer' }),
     })).resolves.toMatchObject({ active: true, role: 'viewer' })
 
+    const archivedSystem = await client.request<{
+      system_id: string
+      name: string
+      active: boolean
+      version: number
+    }>(`/admin/systems/${system.system_id}`, {
+      method: 'PATCH', ifMatch: '"3"',
+      body: JSON.stringify({ name: 'Manufacturing Execution Updated', description: 'Archived POC system', active: false }),
+    })
+    expect(archivedSystem).toMatchObject({
+      system_id: system.system_id,
+      name: 'Manufacturing Execution Updated',
+      active: false,
+      version: 4,
+    })
+    await expect(client.request<{ items: Array<{ active: boolean }> }>(
+      `/admin/systems/${system.system_id}/assignees`,
+    )).resolves.toMatchObject({ items: [] })
+
     const settings = await client.request<{ items: SystemConfigurationEntry[] }>('/admin/system-configuration')
     expect(settings.items.find((item) => item.system_id === 'DATAHUB_GMS')?.state).toBe('CONFIGURED')
     expect(settings.items.find((item) => item.system_id === 'S3_STORAGE')?.environment_template)

@@ -1754,6 +1754,31 @@ export interface SystemSchemaScopeUpdateResult {
   payload_hash: string
 }
 
+export type TableSecurityGrade = 'normal' | 'restricted' | 'credential'
+
+export interface TableSystemMappingCandidate {
+  table_identity: string
+  table_name: string
+  platform: string
+  database_name: string
+  schema_name: string
+  security_grade: TableSecurityGrade
+  system_ids: string[]
+}
+
+export interface TableSystemMappingPage {
+  version: number
+  items: TableSystemMappingCandidate[]
+  total: number
+  selection_complete: boolean
+  schemas: string[]
+}
+
+export interface TableSystemMappingUpdateResult {
+  version: number
+  changed: number
+}
+
 export interface SystemConfigurationEntry {
   system_id: 'PLATFORM_RUNTIME' | 'POSTGRESQL' | 'OIDC_IDENTITY' | 'RETENTION_ARCHIVE' | 'DATAHUB_GMS' | 'DATAHUB_FRONTEND' | 'AIRFLOW' | 'REDIS_CACHE' | 'REDIS_DELIVERY' | 'S3_STORAGE' | 'LLM_CHAT_MODEL' | 'LLM_EMBEDDING' | 'LLM_RERANKER' | 'NEO4J' | 'PROMETHEUS' | 'GRAFANA_DASHBOARD'
   label: string

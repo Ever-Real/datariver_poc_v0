@@ -5,8 +5,8 @@ import type {
   SystemAssigneeUpdate,
   SystemDirectoryAssignee,
   SystemDirectoryEntry,
-  SystemSchemaScope,
-  SystemSchemaScopeCandidate,
+  TableSecurityGrade,
+  TableSystemMappingCandidate,
 } from '../../api/types'
 import { ErrorNotice } from '../../components/ErrorNotice'
 import { DenseDataTable } from '../../components/common/DenseDataTable'
@@ -69,20 +69,27 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   const [createOpen, setCreateOpen] = useState(false)
   const [createForm, setCreateForm] = useState({ code: '', name: '', description: '' })
   const [createValidationError, setCreateValidationError] = useState('')
+  const [editOpen, setEditOpen] = useState(false)
+  const [editForm, setEditForm] = useState({ name: '', description: '' })
   const [schemaOpen, setSchemaOpen] = useState(false)
   const [schemaSystem, setSchemaSystem] = useState<SystemDirectoryEntry>()
-  const [schemaScopes, setSchemaScopes] = useState<SystemSchemaScope[]>([])
-  const [schemaCandidates, setSchemaCandidates] = useState<SystemSchemaScopeCandidate[]>([])
+  const [schemaCandidates, setSchemaCandidates] = useState<TableSystemMappingCandidate[]>([])
   const [schemaSystemVersion, setSchemaSystemVersion] = useState(0)
   const [schemaQuery, setSchemaQuery] = useState('')
   const [appliedSchemaQuery, setAppliedSchemaQuery] = useState('')
-  const [selectedSchemaAssetId, setSelectedSchemaAssetId] = useState('')
-  const [deactivateScopeIds, setDeactivateScopeIds] = useState<Set<string>>(() => new Set())
+  const [schemaFilter, setSchemaFilter] = useState('')
+  const [systemFilter, setSystemFilter] = useState('')
+  const [securityGradeFilter, setSecurityGradeFilter] = useState<TableSecurityGrade | ''>('')
+  const [availableSchemas, setAvailableSchemas] = useState<string[]>([])
+  const [selectedTableIds, setSelectedTableIds] = useState<Set<string>>(() => new Set())
+  const [selectedSystemIds, setSelectedSystemIds] = useState<Set<string>>(() => new Set())
+  const [mappingAction, setMappingAction] = useState<'ASSIGN' | 'REMOVE'>('ASSIGN')
+  const [selectionComplete, setSelectionComplete] = useState(true)
+  const [lastSelectedIndex, setLastSelectedIndex] = useState<number>()
   const [schemaReason, setSchemaReason] = useState('')
   const [schemaLoading, setSchemaLoading] = useState(false)
   const systemGeneration = useRef(0)
   const assigneeGeneration = useRef(0)
-  const schemaGeneration = useRef(0)
   const schemaCandidateGeneration = useRef(0)
   const candidateGeneration = useRef<Record<Responsibility, number>>({
     DEVELOPER: 0,
@@ -164,47 +171,34 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
     }
   }, [api, candidateQueries, reportError])
 
-  const loadSchemaScopes = useCallback(async (signal?: AbortSignal) => {
-    if (!schemaOpen || !schemaSystem) return
-    const generation = ++schemaGeneration.current
-    setSchemaLoading(true)
-    try {
-      const page = await api.listSystemSchemaScopes(schemaSystem.system_id, signal)
-      if (signal?.aborted || generation !== schemaGeneration.current) return
-      setSchemaScopes(page.items)
-      setSchemaSystemVersion(page.system_version)
-      setDeactivateScopeIds(new Set())
-    } catch (next) {
-      if (!signal?.aborted && generation === schemaGeneration.current) {
-        setError(next)
-        reportError(next)
-      }
-    } finally {
-      if (generation === schemaGeneration.current) setSchemaLoading(false)
-    }
-  }, [api, reportError, schemaOpen, schemaSystem])
-
   const loadSchemaCandidates = useCallback(async (signal?: AbortSignal) => {
     if (!schemaOpen || !schemaSystem) return
     const generation = ++schemaCandidateGeneration.current
+    setSchemaLoading(true)
     try {
-      const page = await api.listSystemSchemaScopeCandidates(
-        schemaSystem.system_id,
-        appliedSchemaQuery || undefined,
+      const page = await api.listTableSystemMappings({
+        query: appliedSchemaQuery || undefined,
+        schema: schemaFilter || undefined,
+        systemId: systemFilter || undefined,
+        securityGrade: securityGradeFilter || undefined,
         signal,
-      )
+      })
       if (signal?.aborted || generation !== schemaCandidateGeneration.current) return
       setSchemaCandidates(page.items)
-      setSelectedSchemaAssetId((current) => (
-        current && page.items.some((item) => item.asset_id === current) ? current : ''
-      ))
+      setSchemaSystemVersion(page.version)
+      setAvailableSchemas(page.schemas)
+      setSelectionComplete(page.selection_complete)
+      setSelectedTableIds((current) => new Set([...current].filter((id) => page.items.some((item) => item.table_identity === id))))
+      setLastSelectedIndex(undefined)
     } catch (next) {
       if (!signal?.aborted && generation === schemaCandidateGeneration.current) {
         setError(next)
         reportError(next)
       }
+    } finally {
+      if (generation === schemaCandidateGeneration.current) setSchemaLoading(false)
     }
-  }, [api, appliedSchemaQuery, reportError, schemaOpen, schemaSystem])
+  }, [api, appliedSchemaQuery, reportError, schemaFilter, schemaOpen, schemaSystem, securityGradeFilter, systemFilter])
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -260,14 +254,6 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   }, [schemaQuery])
   useEffect(() => {
     const controller = new AbortController()
-    void loadSchemaScopes(controller.signal)
-    return () => {
-      controller.abort()
-      schemaGeneration.current += 1
-    }
-  }, [loadSchemaScopes])
-  useEffect(() => {
-    const controller = new AbortController()
     const timer = window.setTimeout(
       () => void loadSchemaCandidates(controller.signal),
       appliedSchemaQuery ? 250 : 0,
@@ -320,7 +306,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
       return new Set(priorities).size === priorities.length
     })
   const changed = upserts.length > 0 || removals.length > 0
-  const schemaChanged = Boolean(selectedSchemaAssetId) || deactivateScopeIds.size > 0
+  const schemaChanged = selectedTableIds.size > 0 && selectedSystemIds.size > 0
   const schemaReasonValid = schemaReason.trim().length >= 10 && schemaReason.trim().length <= 1000
 
   const updateDraft = (
@@ -384,29 +370,28 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
       || !schemaChanged
       || !schemaReasonValid
     ) return
-    const upsertAssetIds = selectedSchemaAssetId ? [selectedSchemaAssetId] : []
-    const removedScopeIds = [...deactivateScopeIds].sort()
-    const intent = `system-schema-scopes:${schemaSystem.system_id}:${schemaSystemVersion}:${JSON.stringify({ upsertAssetIds, removedScopeIds, reason: schemaReason.trim() })}`
+    const tableIds = [...selectedTableIds].sort()
+    const systemIds = [...selectedSystemIds].sort()
+    const intent = `table-system-mappings:${schemaSystemVersion}:${JSON.stringify({ mappingAction, tableIds, systemIds, reason: schemaReason.trim() })}`
     requestConfirmation({
-      title: '시스템 스키마 연결 변경',
+      title: 'Table·System 연결 변경',
       summary: [
-        `${schemaSystem.name} (${schemaSystem.code})`,
-        '선택한 테이블이 속한 스키마 전체에 적용됩니다.',
-        `추가·재활성 ${upsertAssetIds.length}건 · 비활성 ${removedScopeIds.length}건`,
+        `Table ${tableIds.length}개 · System ${systemIds.length}개`,
+        `${mappingAction === 'ASSIGN' ? '연결' : '연결 제거'} ${tableIds.length * systemIds.length}개 pair`,
+        '선택한 exact Table에만 적용되며 schema 자동 상속은 없습니다.',
       ],
       execute: async () => {
-        await api.patchSystemSchemaScopes(
-          schemaSystem.system_id,
-          upsertAssetIds,
-          removedScopeIds,
+        await api.patchTableSystemMappings(
+          mappingAction,
+          tableIds,
+          systemIds,
           schemaReason.trim(),
           schemaSystemVersion,
-          keyFor(intent, 'admin-system-schema-scopes'),
         )
         clearKey(intent)
-        setSelectedSchemaAssetId('')
+        setSelectedTableIds(new Set())
         setSchemaReason('')
-        await Promise.all([loadSchemaScopes(), loadSchemaCandidates(), loadSystems()])
+        await Promise.all([loadSchemaCandidates(), loadSystems()])
       },
     })
   }
@@ -414,15 +399,75 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   const openSchemaDirectory = useCallback((system: SystemDirectoryEntry) => {
     setSchemaSystem(system)
     setSchemaOpen(true)
-    setSchemaScopes([])
     setSchemaCandidates([])
     setSchemaSystemVersion(0)
     setSchemaQuery('')
     setAppliedSchemaQuery('')
-    setSelectedSchemaAssetId('')
-    setDeactivateScopeIds(new Set())
+    setSchemaFilter('')
+    setSystemFilter('')
+    setSecurityGradeFilter('')
+    setSelectedTableIds(new Set())
+    setSelectedSystemIds(new Set(system.active ? [system.system_id] : []))
+    setMappingAction('ASSIGN')
+    setLastSelectedIndex(undefined)
     setSchemaReason('')
   }, [])
+
+  const toggleTableSelection = (index: number, checked: boolean, shiftKey: boolean) => {
+    setSelectedTableIds((current) => {
+      const next = new Set(current)
+      const start = shiftKey && lastSelectedIndex !== undefined ? Math.min(lastSelectedIndex, index) : index
+      const end = shiftKey && lastSelectedIndex !== undefined ? Math.max(lastSelectedIndex, index) : index
+      for (let candidateIndex = start; candidateIndex <= end; candidateIndex += 1) {
+        const tableId = schemaCandidates[candidateIndex]?.table_identity
+        if (!tableId) continue
+        if (checked) next.add(tableId)
+        else next.delete(tableId)
+      }
+      return next
+    })
+    setLastSelectedIndex(index)
+  }
+
+  const openSystemEdit = (system: SystemDirectoryEntry) => {
+    setEditForm({ name: system.name, description: system.description })
+    setEditOpen(true)
+  }
+
+  const saveSystemEdit = () => {
+    if (!selected || !editForm.name.trim() || editForm.name.length > 255 || editForm.description.length > 2000) return
+    const payload = { name: editForm.name.trim(), description: editForm.description.trim(), active: selected.active }
+    const intent = `system-update:${selected.system_id}:${selected.version}:${JSON.stringify(payload)}`
+    requestConfirmation({
+      title: 'System 정보 변경',
+      summary: [selected.code, payload.name, 'System 코드는 변경하지 않습니다.'],
+      execute: async () => {
+        await api.updateSystem(selected.system_id, payload, selected.version, keyFor(intent, 'admin-system-update'))
+        clearKey(intent)
+        setEditOpen(false)
+        await loadSystems()
+      },
+    })
+  }
+
+  const changeSystemActive = (system: SystemDirectoryEntry, active: boolean) => {
+    const intent = `system-active:${system.system_id}:${system.version}:${active}`
+    requestConfirmation({
+      title: active ? 'System 재활성' : 'System 아카이브',
+      summary: active
+        ? [`${system.name} (${system.code})`, '기존 exact Table 연결 이력은 보존됩니다.']
+        : [`${system.name} (${system.code})`, '담당자와 legacy schema 연결은 비활성화하고 이력은 보존합니다.', 'exact Table 연결도 삭제하지 않으며 비활성 System에는 효력이 없습니다.'],
+      execute: async () => {
+        await api.updateSystem(system.system_id, {
+          name: system.name,
+          description: system.description,
+          active,
+        }, system.version, keyFor(intent, active ? 'admin-system-reactivate' : 'admin-system-archive'))
+        clearKey(intent)
+        await loadSystems()
+      },
+    })
+  }
 
   const handleDirectoryAction = useCallback((event: MouseEvent<HTMLElement>) => {
     const target = (event.target as HTMLElement).closest<HTMLButtonElement>(
@@ -464,7 +509,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   }
 
   return <section className="panel admin-system-directory" onClickCapture={handleDirectoryAction}>
-    <div className="section-heading"><div><h3>시스템 권한 매핑</h3><p className="muted">시스템과 담당자를 각각 서버 페이지로 읽고, 버전 고정 delta로 변경합니다.</p></div><div className="action-row"><button className="button" disabled={!canUpdate} onClick={() => { setCreateOpen(true); setCreateValidationError('') }} type="button">시스템 추가</button><button className="button button-secondary" onClick={() => void loadSystems()} type="button">새로고침</button></div></div>
+    <div className="section-heading"><div><h3>System Master 및 Table 연결</h3><p className="muted">System 정본과 담당자는 기존 access authority를 사용하고, exact Table 연결은 독립 CAS 버전으로 관리합니다.</p></div><div className="action-row"><button className="button" disabled={!canUpdate} onClick={() => { setCreateOpen(true); setCreateValidationError('') }} type="button">시스템 추가</button><button className="button button-secondary" onClick={() => void loadSystems()} type="button">새로고침</button></div></div>
     <label className="mb-3 block max-w-md text-xs font-bold">시스템 검색<input type="search" value={systemQuery} onChange={(event) => setSystemQuery(event.target.value)} placeholder="시스템명 또는 코드" /></label>
     <DenseDataTable
       caption="워크스페이스 시스템 목록"
@@ -473,7 +518,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
         { accessorKey: 'name', header: '시스템명', size: 170, cell: ({ row }) => <strong>{row.original.name}</strong> },
         { accessorKey: 'description', header: '시스템 설명', size: 260, cell: ({ row }) => row.original.description || '설명 없음' },
         { accessorKey: 'assignee_count', header: '담당자 수', size: 100 },
-        { id: 'schemas', header: '연결 스키마', size: 160, cell: ({ row }) => <button className="button button-secondary" data-schema-system-id={row.original.system_id} type="button">스키마 조회</button> },
+        { id: 'tables', header: 'Table 연결', size: 160, cell: ({ row }) => <button className="button button-secondary" data-schema-system-id={row.original.system_id} type="button">Table 관리</button> },
         { id: 'state', header: '상태', size: 76, cell: ({ row }) => <span className="badge">{row.original.active ? 'ACTIVE' : 'INACTIVE'}</span> },
       ]}
       data={systems}
@@ -542,7 +587,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
           setAssigneePageNumber((current) => current + 1)
         }}
       />}
-      {canUpdate ? <div className="action-row"><button className="button" disabled={!draftValid || !changed} onClick={() => void save()} type="button">변경사항 저장</button><button className="button button-danger" disabled title="시스템 정본 삭제 API와 참조 무결성 검토 계약이 아직 없습니다." type="button">시스템 삭제</button>{!draftValid && <small className="muted">담당자·우선순위가 중복되거나 유효하지 않습니다.</small>}</div> : <p className="callout">서버가 현재 세션에 시스템 담당자 변경 권한을 허용하지 않았습니다.</p>}
+      {canUpdate ? <div className="action-row"><button className="button" disabled={!draftValid || !changed} onClick={() => void save()} type="button">담당자 저장</button><button className="button button-secondary" onClick={() => openSystemEdit(selected)} type="button">System 정보 수정</button><button className={selected.active ? 'button button-danger' : 'button button-secondary'} onClick={() => changeSystemActive(selected, !selected.active)} type="button">{selected.active ? 'System 아카이브' : 'System 재활성'}</button>{!draftValid && <small className="muted">담당자·우선순위가 중복되거나 유효하지 않습니다.</small>}</div> : <p className="callout">서버가 현재 세션에 시스템 담당자 변경 권한을 허용하지 않았습니다.</p>}
     </section>}
     <Dialog open={createOpen} title="시스템 추가" size="medium" onRequestClose={() => setCreateOpen(false)}>
       <form id="system-create-form" onSubmit={handleCreateSubmit} className="grid gap-3">
@@ -562,70 +607,73 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
         </div>
       </form>
     </Dialog>
+    <Dialog open={editOpen} title="System 정보 수정" size="medium" onRequestClose={() => setEditOpen(false)}>
+      <div className="grid gap-3">
+        <p className="callout">System code와 ID는 stable identity이므로 변경하지 않습니다.</p>
+        <label className="block text-sm font-bold">시스템 이름
+          <input className="mt-1 block w-full" maxLength={255} onChange={(event) => setEditForm((current) => ({ ...current, name: event.target.value }))} required type="text" value={editForm.name} />
+        </label>
+        <label className="block text-sm font-bold">설명
+          <textarea className="mt-1 block w-full h-24" maxLength={2000} onChange={(event) => setEditForm((current) => ({ ...current, description: event.target.value }))} value={editForm.description} />
+        </label>
+        <div className="flex justify-end gap-2">
+          <button className="button button-secondary" onClick={() => setEditOpen(false)} type="button">취소</button>
+          <button className="button" disabled={!editForm.name.trim()} onClick={saveSystemEdit} type="button">저장</button>
+        </div>
+      </div>
+    </Dialog>
     <Dialog
       open={schemaOpen}
-      title={`${schemaSystem?.name ?? '시스템'} 스키마 연결`}
+      title="Table ↔ System 연결"
       size="large"
       onRequestClose={() => setSchemaOpen(false)}
     >
       <div className="grid gap-4">
         <div className="callout">
-          선택한 테이블이 속한 <strong>스키마 전체</strong>를 System에 연결합니다.
-          같은 platform·database·schema의 다른 테이블에도 변경관리 대상 경로가 적용됩니다.
-          Catalog 원본의 System 값이나 DataHub 메타데이터는 변경하지 않습니다.
+          선택한 <strong>exact DataHub Table URN</strong>에만 System을 연결합니다.
+          schema 필터와 전체 선택은 현재 검색 결과를 일괄 선택하는 UX이며 새 Table에 자동 상속되지 않습니다.
         </div>
-        <section aria-labelledby="current-schema-scopes-title">
-          <div className="section-heading">
-            <div><h4 id="current-schema-scopes-title">현재 스키마 연결</h4><p className="muted">비활성 이력도 감사 확인을 위해 함께 표시합니다.</p></div>
-            <span className="badge">System v{schemaSystemVersion || schemaSystem?.version || 0}</span>
+        <section aria-labelledby="table-system-candidates-title">
+          <div className="section-heading"><div><h4 id="table-system-candidates-title">현재 Catalog Table 선택</h4><p className="muted">mapping v{schemaSystemVersion} · {schemaCandidates.length.toLocaleString()}개 표시</p></div></div>
+          <div className="grid gap-2 md:grid-cols-4">
+            <label className="text-xs font-bold">Table 검색<input type="search" value={schemaQuery} onChange={(event) => setSchemaQuery(event.target.value)} placeholder="Table, schema 또는 URN" /></label>
+            <label className="text-xs font-bold">Schema<select onChange={(event) => setSchemaFilter(event.target.value)} value={schemaFilter}><option value="">전체</option>{availableSchemas.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
+            <label className="text-xs font-bold">System filter<select onChange={(event) => setSystemFilter(event.target.value)} value={systemFilter}><option value="">전체</option>{systems.filter((system) => system.active).map((system) => <option key={system.system_id} value={system.system_id}>{system.name}</option>)}</select></label>
+            <label className="text-xs font-bold">Security grade<select onChange={(event) => setSecurityGradeFilter(event.target.value as TableSecurityGrade | '')} value={securityGradeFilter}><option value="">전체</option><option value="normal">normal</option><option value="restricted">restricted</option><option value="credential">credential</option></select></label>
+          </div>
+          <div className="my-3 flex flex-wrap items-center gap-2">
+            <button className="button button-secondary button-compact" disabled={!selectionComplete || schemaCandidates.length === 0} onClick={() => setSelectedTableIds(new Set(schemaCandidates.map((item) => item.table_identity)))} type="button">현재 결과 전체 선택</button>
+            <button className="button button-secondary button-compact" disabled={selectedTableIds.size === 0} onClick={() => setSelectedTableIds(new Set())} type="button">선택 해제</button>
+            <span className="muted">선택 {selectedTableIds.size.toLocaleString()}개{!selectionComplete ? ' · 결과가 제한되어 전체 선택 비활성' : ''}</span>
           </div>
           <DenseDataTable
-            caption="현재 시스템 스키마 연결"
+            caption="exact Table-System 연결 후보"
             columns={[
-              { accessorKey: 'platform', header: 'Platform', size: 120 },
-              { accessorKey: 'database_name', header: 'Database', size: 150 },
-              { accessorKey: 'schema_name', header: 'Schema', size: 150 },
-              { id: 'state', header: '상태', size: 90, cell: ({ row }) => <span className="badge">{row.original.active ? 'ACTIVE' : 'INACTIVE'}</span> },
-              { id: 'deactivate', header: '변경', size: 100, cell: ({ row }) => row.original.active ? <label className="flex items-center gap-2 text-xs"><input aria-label={`${row.original.schema_name} 연결 비활성`} checked={deactivateScopeIds.has(row.original.scope_id)} disabled={!canUpdate} onChange={(event) => setDeactivateScopeIds((current) => { const next = new Set(current); if (event.target.checked) next.add(row.original.scope_id); else next.delete(row.original.scope_id); return next })} type="checkbox" />비활성</label> : <span className="muted">이력</span> },
-            ]}
-            data={schemaScopes}
-            emptyMessage="이 System에 연결된 스키마가 없습니다."
-            getRowId={(scope) => scope.scope_id}
-            loading={schemaLoading}
-          />
-        </section>
-        <section aria-labelledby="schema-candidates-title">
-          <div className="section-heading"><div><h4 id="schema-candidates-title">Catalog 테이블로 스키마 선택</h4><p className="muted">서버가 활성 자산의 canonical locator를 확인해 스키마를 결정합니다.</p></div></div>
-          <label className="mb-3 block text-xs font-bold">테이블·스키마 검색<input type="search" value={schemaQuery} onChange={(event) => setSchemaQuery(event.target.value)} placeholder="테이블, platform, database 또는 schema" /></label>
-          <DenseDataTable
-            caption="시스템 스키마 연결 후보"
-            columns={[
-              { id: 'select', header: '선택', size: 64, cell: ({ row }) => {
-                const assignedElsewhere = Boolean(row.original.mapped_system_id && row.original.mapped_system_id !== schemaSystem?.system_id)
-                const alreadyAssigned = row.original.mapped_system_id === schemaSystem?.system_id
-                return <input aria-label={`${row.original.asset_name} 스키마 선택`} checked={selectedSchemaAssetId === row.original.asset_id} disabled={!canUpdate || assignedElsewhere || alreadyAssigned} name="schema-candidate" onChange={() => setSelectedSchemaAssetId(row.original.asset_id)} type="radio" />
-              } },
-              { accessorKey: 'asset_name', header: '테이블', size: 180 },
-              { accessorKey: 'asset_type', header: '유형', size: 80 },
+              { id: 'select', header: '선택', size: 64, cell: ({ row }) => <input aria-label={`${row.original.table_name} Table 선택`} checked={selectedTableIds.has(row.original.table_identity)} disabled={!canUpdate} onClick={(event) => toggleTableSelection(row.index, !selectedTableIds.has(row.original.table_identity), event.shiftKey)} readOnly type="checkbox" /> },
+              { accessorKey: 'table_name', header: 'Table', size: 180 },
               { accessorKey: 'platform', header: 'Platform', size: 110 },
               { accessorKey: 'database_name', header: 'Database', size: 130 },
               { accessorKey: 'schema_name', header: 'Schema', size: 130 },
-              { accessorKey: 'classification', header: '분류', size: 110 },
-              { id: 'mapping', header: '연결 상태', size: 120, cell: ({ row }) => row.original.mapped_system_id === schemaSystem?.system_id ? '현재 System' : row.original.mapped_system_id ? '다른 System' : '미연결' },
+              { accessorKey: 'security_grade', header: 'Security grade', size: 110 },
+              { id: 'mapping', header: '현재 System', size: 220, cell: ({ row }) => row.original.system_ids.length ? row.original.system_ids.map((id) => systems.find((system) => system.system_id === id)?.name ?? id).join(', ') : '미연결' },
             ]}
             data={schemaCandidates}
-            emptyMessage="연결 가능한 활성 테이블·뷰·데이터셋이 없습니다."
-            getRowId={(asset) => asset.asset_id}
+            emptyMessage="현재 조건에 맞는 TABLE이 없습니다."
+            getRowId={(asset) => asset.table_identity}
             loading={schemaLoading}
           />
         </section>
+        <fieldset className="grid gap-2"><legend className="text-sm font-bold">변경 대상 System</legend>
+          <div className="flex flex-wrap gap-3">{systems.filter((system) => system.active).map((system) => <label className="flex items-center gap-2 text-sm" key={system.system_id}><input checked={selectedSystemIds.has(system.system_id)} onChange={(event) => setSelectedSystemIds((current) => { const next = new Set(current); if (event.target.checked) next.add(system.system_id); else next.delete(system.system_id); return next })} type="checkbox" />{system.name} ({system.code})</label>)}</div>
+        </fieldset>
+        <fieldset className="flex gap-4"><legend className="text-sm font-bold">작업</legend><label><input checked={mappingAction === 'ASSIGN'} onChange={() => setMappingAction('ASSIGN')} type="radio" /> 연결</label><label><input checked={mappingAction === 'REMOVE'} onChange={() => setMappingAction('REMOVE')} type="radio" /> 연결 제거</label></fieldset>
         <label className="block text-sm font-bold">변경 사유
-          <textarea className="mt-1 block w-full" maxLength={1000} minLength={10} onChange={(event) => setSchemaReason(event.target.value)} placeholder="스키마 연결 또는 비활성 사유를 10자 이상 입력" rows={3} value={schemaReason} />
+          <textarea className="mt-1 block w-full" maxLength={1000} minLength={10} onChange={(event) => setSchemaReason(event.target.value)} placeholder="exact Table 연결 변경 사유를 10자 이상 입력" rows={3} value={schemaReason} />
         </label>
-        {!canUpdate && <p className="callout">서버가 현재 세션에 시스템 연결 변경 권한을 허용하지 않았습니다.</p>}
+        {!canUpdate && <p className="callout">서버가 현재 세션에 Table·System 연결 변경 권한을 허용하지 않았습니다.</p>}
         <div className="flex justify-end gap-2">
           <button className="button button-secondary" onClick={() => setSchemaOpen(false)} type="button">취소</button>
-          <button aria-label="스키마 연결 변경사항 저장" className="button" disabled={!canUpdate || !schemaChanged || !schemaReasonValid || schemaLoading} onClick={saveSchemaScopes} type="button">변경사항 저장</button>
+          <button aria-label="Table System 연결 변경사항 저장" className="button" disabled={!canUpdate || !schemaChanged || !schemaReasonValid || schemaLoading} onClick={saveSchemaScopes} type="button">변경사항 저장</button>
         </div>
       </div>
     </Dialog>

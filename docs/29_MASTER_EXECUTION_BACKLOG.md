@@ -37,7 +37,8 @@ local credential / opaque server session
 → request-scoped subject_id
 → change-history-access-v1
 → central role capability
-→ optional current System scope
+→ explicit Table grant + security grade (target; not yet enforced)
+→ Responsible System only for workflow features
 → feature operation
 ```
 
@@ -50,13 +51,17 @@ The preceding PHASE 1A runtime evidence is commit
 | ID | Canonical status | Current evidence / completion condition |
 |---|---|---|
 | AUTH-1A | `COMPLETE_RUNTIME_VERIFIED` | Local Argon2id credential, hashed opaque session, request principal, access-document authority, CSRF/Origin fence, operator bootstrap, API/SPA boundary and loopback/private-network defaults were verified at Product `618b9713059ba7e31b807ceae3b401766a313668`. |
-| AUTH-1B | `COMPLETE_RUNTIME_VERIFIED` | Exactly 15 centrally versioned capabilities cover five roles. All 49 Node route IDs are classified (`7/2/38/1/1`, unknown `0`), System-bound operations fail closed, direct API/client spoof negatives pass, exact Airflow service isolation is preserved, and frontend menus/direct pages consume server capabilities. No permission DB, dependency, service, OIDC, Keycloak, workspace or policy engine was added. |
-| AUTH-1C | `BACKLOG` | Minimal Admin User Management: human user/credential creation, current role/System/active edit, password reset and session revoke through the existing authorities. No self-registration, workspace or second User/Role store. |
-| AUTH-1D | `BACKLOG` | Add `normal/restricted/credential` sensitivity after capability + System filtering, before retrieval/ranking/aggregation/context assembly, without exposing raw credential values. |
+| AUTH-1B | `COMPLETE_RUNTIME_VERIFIED` | The technical baseline remains runtime-verified at its historical Product: exactly 15 centrally versioned capabilities, server principal, route classification and client-spoof defenses. PHASE 1B-R found that its Responsible-System-as-data-scope semantics conflict with the latest product policy; the new data policy is therefore not complete. PHASE 1C-1 adds two exact admin routes, making the registry 51 IDs (`7/2/40/1/1`, unknown `0`). |
+| AUTH-1B-R | `PARTIAL` | Read-only gap audit completed at `d3c974f`: keep 15 capabilities and request-time access authority; separate explicit Table grants/security grades from Responsible System. Catalog/local Chat can prefilter, but vector currently post-filters ranked results and Neo4j traverses before local filtering. Completion depends on AUTH-1C-2/1C-3/1C-4 and AUTH-1D. |
+| AUTH-1C-1 | `IMPLEMENTED_NOT_VERIFIED` | System name/description update and archive preserve stable identity/history. Exact DataHub `TABLE` URN N:M System pairs use bounded `poc_state` CAS with current-System/current-Table validation. Admin UI provides search, schema/System/grade filters, multi/Shift/current-result selection and multi-System assign/remove. Runtime evidence against a committed Product SHA is still required before raising this status. |
+| AUTH-1C-2 | `BACKLOG` | Admin human account management, explicit User↔Table grants, user maximum security grade, Responsible System/priority, credential reset and session revoke. Large grants must not bloat the access document or create a second Role/System authority. |
+| AUTH-1C-3 | `BACKLOG` | Fixed Feature/Role/Security matrix over the existing capability keys; no free-form policy key, permission DB or generic engine. |
+| AUTH-1C-4 | `BACKLOG` | One exact CR `responsible_system`, Table-access-gated create, Developer/Steward workflow actions and independent Developer/Steward/Manager final lanes. Preserve historical schema-routing and approval hashes. |
+| AUTH-1D | `BACKLOG` | Enforce explicit Table grants plus exact `normal/restricted/credential` grade before search/count/ranking/context/traversal across Catalog, Chat, Change, Monitoring/Governance, Knowledge and Quality. Responsible System is an additional workflow constraint only where the latest policy says so. |
 | AUTH-1E | `BACKLOG` | Retire only proven legacy auth active paths after the replacement remains runtime-verified. Preserve reusable Knowledge/Quality/Chat code, schema history and `UNKNOWN` references. |
 | AUTH-1F | `BACKLOG` | Complete multi-account personal history/draft/Chat-stream isolation, session reset/revoke acceptance, every feature regression and external network acceptance. Bounded legacy authorship placeholders are not authorization authority but remain part of this acceptance. |
 | AUTH-NET | `TARGET_RECHECK_REQUIRED` | DEV Web and supporting owned ports are loopback/private and local inspection passes. A real second-host negative connectivity probe is still required; do not claim public-network isolation from bind inspection alone. |
-| ACCOUNT-AUTH | `PARTIAL` | PHASE 1A and 1B are runtime-verified; 1C–1F and the remote network target remain open. |
+| ACCOUNT-AUTH | `PARTIAL` | PHASE 1A and the PHASE 1B technical baseline are runtime-verified; latest-policy data authorization, 1C–1F and the remote network target remain open. |
 
 The PHASE 1B validation credentials were validation-only: all seven credentials are disabled and all
 sessions revoked after the role/System matrix run. Access users and historical references remain;

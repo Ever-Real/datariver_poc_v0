@@ -55,6 +55,9 @@ import type {
   SystemSchemaScopeCandidate,
   SystemSchemaScopePage,
   SystemSchemaScopeUpdateResult,
+  TableSecurityGrade,
+  TableSystemMappingPage,
+  TableSystemMappingUpdateResult,
   SystemConfigurationInventory,
   SystemConfigurationTestResult,
 } from '../../api/types'
@@ -138,6 +141,20 @@ export class AdminApi {
   ): Promise<SystemDirectoryEntry> {
     return this.client.request<SystemDirectoryEntry>('/admin/systems', {
       method: 'POST',
+      idempotencyKey,
+      body: JSON.stringify(payload),
+    })
+  }
+
+  updateSystem(
+    systemId: string,
+    payload: { name: string; description: string; active: boolean },
+    version: number,
+    idempotencyKey: string,
+  ): Promise<SystemDirectoryEntry> {
+    return this.client.request<SystemDirectoryEntry>(`/admin/systems/${encodeURIComponent(systemId)}`, {
+      method: 'PATCH',
+      ifMatch: quotedVersion(version),
       idempotencyKey,
       body: JSON.stringify(payload),
     })
@@ -523,6 +540,46 @@ export class AdminApi {
         }),
       },
     )
+  }
+
+  listTableSystemMappings({
+    query,
+    schema,
+    systemId,
+    securityGrade,
+    limit = 2000,
+    signal,
+  }: {
+    query?: string
+    schema?: string
+    systemId?: string
+    securityGrade?: TableSecurityGrade
+    limit?: number
+    signal?: AbortSignal
+  } = {}) {
+    const parameters = new URLSearchParams({ limit: String(limit) })
+    if (query) parameters.set('q', query)
+    if (schema) parameters.set('schema', schema)
+    if (systemId) parameters.set('system_id', systemId)
+    if (securityGrade) parameters.set('security_grade', securityGrade)
+    return this.client.request<TableSystemMappingPage>(
+      `/admin/table-system-mappings?${parameters.toString()}`,
+      { cache: 'no-store', signal },
+    )
+  }
+
+  patchTableSystemMappings(
+    action: 'ASSIGN' | 'REMOVE',
+    tableIds: string[],
+    systemIds: string[],
+    reason: string,
+    version: number,
+  ) {
+    return this.client.request<TableSystemMappingUpdateResult>('/admin/table-system-mappings', {
+      method: 'PATCH',
+      ifMatch: quotedVersion(version),
+      body: JSON.stringify({ action, table_ids: tableIds, system_ids: systemIds, reason }),
+    })
   }
 
   listSystemConfiguration(signal?: AbortSignal) {

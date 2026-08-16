@@ -65,6 +65,7 @@
 | 67 | [POC reasoning-model Chat classifier compatibility](adr/0121-poc-reasoning-model-chat-classifier-compatibility.md) | Strict reasoning-disable controls and bounded AUTO classifier output for reasoning-capable providers | Accepted for authentication-free POC only |
 | 68 | [POC Change Management 제품화 기준서](63_POC_CHANGE_MANAGEMENT_PRODUCTIZATION.md) | Change History/CR/access/current 구현, 설정, 화면, 초기화와 운영 계약 | DEV runtime verified; PREP/OPS gates open |
 | 69 | [POC 모듈 경계와 provider 이식성 계획](adr/0124-poc-modular-product-architecture.md) | feature isolation, provider-neutral ports와 단계적 modularization | Proposed backlog plan; no refactor approved |
+| 70 | [Node POC exact Table ↔ System binding](adr/0125-poc-explicit-table-system-binding.md) | stable System lifecycle, exact DataHub Table N:M CAS and non-inheriting bulk selection | Accepted for PHASE 1C-1 |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and
@@ -101,6 +102,9 @@ Change, Registration, Quality, Knowledge, Chat or export data-use authority. Gov
 schema-wide System routing for Change targets is defined by
 [ADR-0109](adr/0109-governed-system-schema-scope-mapping.md); it reuses the existing scope table
 without changing DataHub, Catalog projection ownership or non-Change readers.
+For new Node POC administration, [ADR-0125](adr/0125-poc-explicit-table-system-binding.md)
+supersedes schema-wide selection with exact DataHub Table URN N:M bindings. ADR-0109 remains
+historical Change Request routing evidence and is not silently rewritten.
 Immutable editable Change Request revisions after a recoverable reviewer request are defined by
 [ADR-0110](adr/0110-editable-change-request-revision-rounds.md); terminal rejection remains
 unchanged and historical rounds, targets, decisions and attachments stay append-only.

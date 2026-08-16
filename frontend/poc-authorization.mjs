@@ -86,6 +86,8 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('auth.logout', 'POST', /^\/auth\/logout$/, 'AUTHENTICATED'),
   route('change.access.read', 'GET', /^\/api\/v1\/change-history\/access$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('change.access.write', 'PUT', /^\/api\/v1\/change-history\/access$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.table-system-mappings.read', 'GET', /^\/api\/v1\/admin\/table-system-mappings$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.table-system-mappings.write', 'PATCH', /^\/api\/v1\/admin\/table-system-mappings$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('change.events', 'GET', /^\/api\/v1\/change-history\/events$/, 'CAPABILITY_PROTECTED', 'change.read'),
   route('change.event', 'GET', /^\/api\/v1\/change-history\/events\/[0-9a-f]{64}$/, 'CAPABILITY_PROTECTED', 'change.read'),
   route('change.event.links', 'GET', /^\/api\/v1\/change-history\/events\/[0-9a-f]{64}\/cr-links$/, 'CAPABILITY_PROTECTED', 'change.read'),

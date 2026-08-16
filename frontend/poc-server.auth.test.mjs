@@ -5,6 +5,7 @@ import test from 'node:test'
 import { createPocLocalAuthenticator, hashPocPassword } from './poc-local-auth.mjs'
 import { createPocServer } from './poc-server.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
+import { changeHistoryAccessCoreProjection, privateChangeHistoryAccess } from './poc-access-document.mjs'
 
 const AIRFLOW_SERVICE_TOKEN = 'airflow-worker-token-1234567890abcdef'
 
@@ -46,6 +47,17 @@ async function serverFixture() {
     expectedCoreVersion: 1,
     subjectId: 'subject-two', usernameNormalized: 'second@example.com', passwordHash: secondHash,
     loginEnabled: true, mustChangePassword: true,
+  })
+  await stateStore.write('catalog-inventory-v1:disabled', {
+    projection_version: 1,
+    source_scope: 'disabled',
+    source_generation: 'a'.repeat(64),
+    observed_at: new Date().toISOString(),
+    items: [
+      { id: 'urn:table:a', external_urn: 'urn:table:a', name: 'table_a', dataset_kind: 'TABLE', platform: 'postgres', database_name: 'db', schema_name: 'schema_a', tags: [] },
+      { id: 'urn:table:b', external_urn: 'urn:table:b', name: 'table_b', dataset_kind: 'TABLE', platform: 'postgres', database_name: 'db', schema_name: 'schema_b', tags: ['restricted'] },
+      { id: 'urn:view:a', external_urn: 'urn:view:a', name: 'view_a', dataset_kind: 'VIEW', platform: 'postgres', database_name: 'db', schema_name: 'schema_a', tags: [] },
+    ],
   })
   const config = {
     publicOrigin: '', secureCookie: false, sessionTtlSeconds: 300, failedAttemptLimit: 3, lockSeconds: 30,
@@ -163,6 +175,104 @@ test('binds concurrent browser sessions to current server-side access profiles',
     assert.deepEqual(await logout.json(), { ok: true })
     assert.match(logout.headers.get('set-cookie'), /Max-Age=0/)
     assert.equal((await fetch(`${fixture.origin}/auth/me`, { headers: { Cookie: first.cookie } })).status, 401)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('fences exact Table-System mappings with admin capability, current identities, Origin, and CAS', async () => {
+  const fixture = await serverFixture()
+  try {
+    const [admin, viewer] = await Promise.all([
+      fixture.login('first@example.com', 'first correct password'),
+      fixture.login('second@example.com', 'second correct password'),
+    ])
+    assert.equal(admin.response.status, 200)
+    assert.equal(viewer.response.status, 200)
+
+    const accessSnapshot = await fixture.stateStore.readChangeHistoryAccess()
+    const updatedAccess = {
+      ...accessSnapshot.access.value,
+      systems: [{ system_id: 'system-a', code: 'SYSTEM-A', name: 'System A', description: '', active: true, version: 1 }],
+      system_schema_scopes: [],
+    }
+    await fixture.stateStore.writeChangeHistoryAccess({
+      expectedAccessVersion: accessSnapshot.access.version,
+      expectedCoreVersion: accessSnapshot.core.version,
+      accessValue: privateChangeHistoryAccess(updatedAccess),
+      coreValue: changeHistoryAccessCoreProjection(
+        accessSnapshot.core.value,
+        updatedAccess,
+        accessSnapshot.access.version + 1,
+      ),
+    })
+
+    const viewerRead = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings`, {
+      headers: { Cookie: viewer.cookie },
+    })
+    const viewerProblem = await viewerRead.json()
+    assert.equal(viewerRead.status, 403, JSON.stringify(viewerProblem))
+    assert.equal(viewerProblem.code, 'CAPABILITY_REQUIRED')
+
+    const initial = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings`, {
+      headers: { Cookie: admin.cookie },
+    })
+    assert.equal(initial.status, 200)
+    assert.equal(initial.headers.get('etag'), '"0"')
+    const initialBody = await initial.json()
+    assert.deepEqual(initialBody.items.map((item) => item.table_identity), ['urn:table:a', 'urn:table:b'])
+    assert.deepEqual(initialBody.items.map((item) => item.security_grade), ['normal', 'restricted'])
+
+    const command = {
+      action: 'ASSIGN', table_ids: ['urn:table:a'], system_ids: ['system-a'], reason: 'assign exact runtime Table',
+    }
+    const csrf = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, 'If-Match': '"0"', Origin: 'http://127.0.0.1:1' },
+      body: JSON.stringify(command),
+    })
+    assert.equal(csrf.status, 403)
+
+    const assigned = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, 'If-Match': '"0"', Origin: fixture.origin },
+      body: JSON.stringify(command),
+    })
+    assert.equal(assigned.status, 200)
+    assert.deepEqual(await assigned.json(), { version: 1, changed: 1 })
+
+    const filtered = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings?system_id=system-a`, {
+      headers: { Cookie: admin.cookie },
+    })
+    assert.equal(filtered.status, 200)
+    assert.deepEqual((await filtered.json()).items.map((item) => item.table_identity), ['urn:table:a'])
+
+    const stale = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, 'If-Match': '"0"', Origin: fixture.origin },
+      body: JSON.stringify(command),
+    })
+    assert.equal(stale.status, 409)
+    assert.equal((await stale.json()).code, 'TABLE_SYSTEM_MAPPING_VERSION_STALE')
+
+    const invalidTable = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, 'If-Match': '"1"', Origin: fixture.origin },
+      body: JSON.stringify({ ...command, table_ids: ['urn:missing'] }),
+    })
+    assert.equal(invalidTable.status, 400)
+    assert.equal((await invalidTable.json()).code, 'TABLE_SYSTEM_TABLE_INVALID')
+
+    const removed = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, 'If-Match': '"1"', Origin: fixture.origin },
+      body: JSON.stringify({ ...command, action: 'REMOVE', reason: 'remove exact runtime Table' }),
+    })
+    assert.equal(removed.status, 200)
+    assert.deepEqual(await removed.json(), { version: 2, changed: 1 })
+    const stored = await fixture.stateStore.read('table-system-mappings-v1')
+    assert.equal(stored.value.bindings[0].active, false)
+    assert.equal(stored.value.bindings[0].version, 2)
   } finally {
     await fixture.close()
   }

@@ -137,7 +137,7 @@ describe('SystemDirectoryAdmin', () => {
     fireEvent.change(screen.getByLabelText('Developer 담당자'), {
       target: { value: replacement.subject_id },
     })
-    fireEvent.click(screen.getByRole('button', { name: '변경사항 저장' }))
+    fireEvent.click(screen.getByRole('button', { name: '담당자 저장' }))
     expect(pending?.title).toBe('시스템 담당자 변경')
     if (!pending) throw new Error('system assignment confirmation was not requested')
     await act(async () => { await pending?.execute() })
@@ -246,13 +246,16 @@ describe('SystemDirectoryAdmin', () => {
     )
   })
 
-  it('selects a Catalog table but submits only its asset ID as a schema-wide mapping', async () => {
+  it('assigns exact TABLE identities to multiple Systems with range and filtered-result selection', async () => {
     const selectedSystem = system(
       '00000000-0000-4000-8000-000000000722', 'FAB', 'Fabrication',
     )
+    const secondSystem = system(
+      '00000000-0000-4000-8000-000000000723', 'CRM', 'Customer',
+    )
     const api = {
       listSystemPage: vi.fn(() => Promise.resolve({
-        items: [selectedSystem], nextCursor: null, limit: 25,
+        items: [selectedSystem, secondSystem], nextCursor: null, limit: 25,
       })),
       listSystemAssigneeCandidates: vi.fn(() => Promise.resolve({
         items: [], nextCursor: null, limit: 25,
@@ -260,27 +263,32 @@ describe('SystemDirectoryAdmin', () => {
       listSystemAssigneePage: vi.fn(() => Promise.resolve({
         system_version: 3, items: [], page: { next_cursor: null, limit: 25 },
       })),
-      listSystemSchemaScopes: vi.fn(() => Promise.resolve({
-        system_version: 3, items: [], page: { next_cursor: null, limit: 100 },
-      })),
-      listSystemSchemaScopeCandidates: vi.fn(() => Promise.resolve({
+      listTableSystemMappings: vi.fn(() => Promise.resolve({
+        version: 3,
         items: [{
-          asset_id: '00000000-0000-4000-8000-000000000799',
-          asset_name: 'capital_project_advanced_package',
-          asset_type: 'TABLE',
+          table_identity: 'urn:li:dataset:(urn:li:dataPlatform:postgres,capital.project_a,PROD)',
+          table_name: 'project_a',
           platform: 'postgres',
           database_name: 'warehouse',
           schema_name: 'capital',
-          classification: 'CONFIDENTIAL',
-          mapped_system_id: null,
+          security_grade: 'normal',
+          system_ids: [],
+        }, {
+          table_identity: 'urn:li:dataset:(urn:li:dataPlatform:postgres,capital.project_b,PROD)',
+          table_name: 'project_b',
+          platform: 'postgres',
+          database_name: 'warehouse',
+          schema_name: 'capital',
+          security_grade: 'restricted',
+          system_ids: [selectedSystem.system_id],
         }],
-        nextCursor: null,
-        limit: 25,
+        total: 2,
+        selection_complete: true,
+        schemas: ['capital'],
       })),
-      patchSystemSchemaScopes: vi.fn(() => Promise.resolve({
-        system_id: selectedSystem.system_id,
-        system_version: 4,
-        payload_hash: 'a'.repeat(64),
+      patchTableSystemMappings: vi.fn(() => Promise.resolve({
+        version: 4,
+        changed: 4,
       })),
     }
     let pending: PendingAdminMutation | undefined
@@ -293,7 +301,7 @@ describe('SystemDirectoryAdmin', () => {
       }}
       messages={getAdminMessages('ko')}
       requestConfirmation={(value) => { pending = value }}
-      keyFor={() => 'schema-idempotency-key'}
+      keyFor={() => 'mapping-idempotency-key'}
       clearKey={vi.fn()} reportError={vi.fn()}
       onStepUp={vi.fn(() => Promise.resolve())}
       onPasswordReauth={vi.fn(() => Promise.resolve())}
@@ -301,34 +309,30 @@ describe('SystemDirectoryAdmin', () => {
     />)
 
     await waitFor(() => expect(api.listSystemAssigneePage).toHaveBeenCalledTimes(1))
-    const schemaButton = await screen.findByRole('button', { name: '스키마 조회' })
+    const [schemaButton] = await screen.findAllByRole('button', { name: 'Table 관리' })
+    if (!schemaButton) throw new Error('Table management button was not rendered')
     fireEvent.click(schemaButton)
-    await waitFor(() => expect(api.listSystemSchemaScopes).toHaveBeenCalledWith(
-      selectedSystem.system_id,
-      expect.anything(),
-    ))
-    const schemaWideLabel = await screen.findByText('스키마 전체')
-    expect(schemaWideLabel.closest('.callout')).toHaveTextContent(
-      '선택한 테이블이 속한 스키마 전체를 System에 연결합니다.',
-    )
-    fireEvent.click(await screen.findByRole('radio', {
-      name: 'capital_project_advanced_package 스키마 선택',
-    }))
+    await waitFor(() => expect(api.listTableSystemMappings).toHaveBeenCalled())
+    expect(await screen.findByText('exact DataHub Table URN')).toBeInTheDocument()
+    fireEvent.click(await screen.findByRole('button', { name: '현재 결과 전체 선택' }))
+    fireEvent.click(screen.getByLabelText(`Customer (${secondSystem.code})`))
     fireEvent.change(screen.getByLabelText('변경 사유'), {
-      target: { value: '변경관리 대상 스키마 연결' },
+      target: { value: '선택한 exact Table 연결' },
     })
-    fireEvent.click(screen.getByRole('button', { name: '스키마 연결 변경사항 저장' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Table System 연결 변경사항 저장' }))
 
-    expect(api.patchSystemSchemaScopes).not.toHaveBeenCalled()
-    expect(pending?.title).toBe('시스템 스키마 연결 변경')
+    expect(api.patchTableSystemMappings).not.toHaveBeenCalled()
+    expect(pending?.title).toBe('Table·System 연결 변경')
     await act(async () => { await pending?.execute() })
-    expect(api.patchSystemSchemaScopes).toHaveBeenCalledWith(
-      selectedSystem.system_id,
-      ['00000000-0000-4000-8000-000000000799'],
-      [],
-      '변경관리 대상 스키마 연결',
+    expect(api.patchTableSystemMappings).toHaveBeenCalledWith(
+      'ASSIGN',
+      [
+        'urn:li:dataset:(urn:li:dataPlatform:postgres,capital.project_a,PROD)',
+        'urn:li:dataset:(urn:li:dataPlatform:postgres,capital.project_b,PROD)',
+      ],
+      [selectedSystem.system_id, secondSystem.system_id],
+      '선택한 exact Table 연결',
       3,
-      'schema-idempotency-key',
     )
   })
 
