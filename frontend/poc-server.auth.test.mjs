@@ -1,4 +1,4 @@
-/* global Buffer, fetch */
+/* global Buffer, fetch, structuredClone */
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
@@ -20,6 +20,13 @@ function accessDocument(users) {
 
 async function serverFixture() {
   const stateStore = createPocStateStore()
+  const providerInventory = [
+    { id: 'urn:table:a', external_urn: 'urn:table:a', name: 'table_a', dataset_kind: 'TABLE', platform: 'postgres', database_name: 'db', schema_name: 'schema_a', tags: [] },
+    { id: 'urn:table:b', external_urn: 'urn:table:b', name: 'table_b', dataset_kind: 'TABLE', platform: 'postgres', database_name: 'db', schema_name: 'schema_b', tags: ['restricted'] },
+    { id: 'urn:view:a', external_urn: 'urn:view:a', name: 'view_a', dataset_kind: 'VIEW', platform: 'postgres', database_name: 'db', schema_name: 'schema_a', tags: [] },
+  ]
+  let currentProviderInventory = providerInventory
+  let currentProviderError
   const users = [
     { subject_id: 'subject-one', role: 'admin', active: true, display_name: 'First Person' },
     { subject_id: 'subject-two', role: 'viewer', active: true, display_name: 'Second Person' },
@@ -53,11 +60,7 @@ async function serverFixture() {
     source_scope: 'disabled',
     source_generation: 'a'.repeat(64),
     observed_at: new Date().toISOString(),
-    items: [
-      { id: 'urn:table:a', external_urn: 'urn:table:a', name: 'table_a', dataset_kind: 'TABLE', platform: 'postgres', database_name: 'db', schema_name: 'schema_a', tags: [] },
-      { id: 'urn:table:b', external_urn: 'urn:table:b', name: 'table_b', dataset_kind: 'TABLE', platform: 'postgres', database_name: 'db', schema_name: 'schema_b', tags: ['restricted'] },
-      { id: 'urn:view:a', external_urn: 'urn:view:a', name: 'view_a', dataset_kind: 'VIEW', platform: 'postgres', database_name: 'db', schema_name: 'schema_a', tags: [] },
-    ],
+    items: providerInventory,
   })
   const config = {
     publicOrigin: '', secureCookie: false, sessionTtlSeconds: 300, failedAttemptLimit: 3, lockSeconds: 30,
@@ -69,7 +72,15 @@ async function serverFixture() {
     randomBytes: () => Buffer.alloc(32, entropy++),
     allowInMemoryStoreForTests: true,
   })
-  const server = createPocServer({ stateStore, authenticator, airflowServiceToken: AIRFLOW_SERVICE_TOKEN })
+  const server = createPocServer({
+    stateStore,
+    authenticator,
+    airflowServiceToken: AIRFLOW_SERVICE_TOKEN,
+    currentDatahubInventory: async () => {
+      if (currentProviderError) throw currentProviderError
+      return structuredClone(currentProviderInventory)
+    },
+  })
   await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
   const address = server.address()
   assert.equal(typeof address, 'object')
@@ -88,7 +99,15 @@ async function serverFixture() {
     const setCookie = response.headers.get('set-cookie')
     return { response, cookie: setCookie?.split(';', 1)[0] }
   }
-  return { close, login, origin, stateStore, users }
+  return {
+    close,
+    login,
+    origin,
+    stateStore,
+    users,
+    setCurrentProviderInventory(value) { currentProviderInventory = value },
+    setCurrentProviderError(value) { currentProviderError = value },
+  }
 }
 
 test('binds concurrent browser sessions to current server-side access profiles', async () => {
@@ -262,6 +281,45 @@ test('fences exact Table-System mappings with admin capability, current identiti
     })
     assert.equal(invalidTable.status, 400)
     assert.equal((await invalidTable.json()).code, 'TABLE_SYSTEM_TABLE_INVALID')
+
+    fixture.setCurrentProviderInventory([
+      { id: 'urn:table:a', dataset_kind: 'VIEW' },
+      { id: 'urn:table:b', dataset_kind: 'TABLE' },
+    ])
+    const changedKind = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, 'If-Match': '"1"', Origin: fixture.origin },
+      body: JSON.stringify({ ...command, action: 'REMOVE', reason: 'reject a type-changed Table' }),
+    })
+    assert.equal(changedKind.status, 400)
+    assert.equal((await changedKind.json()).code, 'TABLE_SYSTEM_TABLE_INVALID')
+    assert.equal((await fixture.stateStore.read('table-system-mappings-v1')).version, 1)
+
+    fixture.setCurrentProviderInventory([{ id: 'urn:table:b', dataset_kind: 'TABLE' }])
+    const deletedTable = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, 'If-Match': '"1"', Origin: fixture.origin },
+      body: JSON.stringify({ ...command, action: 'REMOVE', reason: 'reject a deleted Table identity' }),
+    })
+    assert.equal(deletedTable.status, 400)
+    assert.equal((await deletedTable.json()).code, 'TABLE_SYSTEM_TABLE_INVALID')
+    assert.equal((await fixture.stateStore.read('table-system-mappings-v1')).version, 1)
+
+    fixture.setCurrentProviderError(new Error('provider unavailable'))
+    const providerUnavailable = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, 'If-Match': '"1"', Origin: fixture.origin },
+      body: JSON.stringify({ ...command, action: 'REMOVE', reason: 'reject without provider confirmation' }),
+    })
+    assert.equal(providerUnavailable.status, 503)
+    assert.equal((await providerUnavailable.json()).code, 'TABLE_SYSTEM_CURRENT_TABLES_UNAVAILABLE')
+    assert.equal((await fixture.stateStore.read('table-system-mappings-v1')).version, 1)
+
+    fixture.setCurrentProviderError(undefined)
+    fixture.setCurrentProviderInventory([
+      { id: 'urn:table:a', dataset_kind: 'TABLE' },
+      { id: 'urn:table:b', dataset_kind: 'TABLE' },
+    ])
 
     const removed = await fetch(`${fixture.origin}/api/v1/admin/table-system-mappings`, {
       method: 'PATCH',

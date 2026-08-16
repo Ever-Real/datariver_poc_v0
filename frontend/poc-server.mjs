@@ -1860,6 +1860,13 @@ async function datahubInventory({ signal = serverBackgroundAbortController?.sign
   return (await refresh).items
 }
 
+async function currentDatahubInventory({ signal = serverBackgroundAbortController?.signal } = {}) {
+  if (!datahub) {
+    throw Object.assign(new Error('DataHub is not configured for current Table identity validation.'), { statusCode: 503 })
+  }
+  return (await startDatahubInventoryRefresh({ signal })).items
+}
+
 async function datahubEmbeddingInventory(options) {
   return datahubInventory(options)
 }
@@ -4369,9 +4376,9 @@ async function authRoute(request, response, url, baseContext, authenticator) {
 async function tableSystemMappingApi(request, response, url, context) {
   const snapshot = await context.stateStore.read(POC_TABLE_SYSTEM_MAPPING_SCOPE)
   const document = normalizeTableSystemMappingDocument(snapshot.value)
-  const inventory = await datahubInventory()
   const systems = context.accessDocument.systems || []
   if (request.method === 'GET') {
+    const inventory = await datahubInventory()
     const requestedLimit = Number(url.searchParams.get('limit') || 2_000)
     const limit = Number.isSafeInteger(requestedLimit) && requestedLimit >= 1 && requestedLimit <= 2_000
       ? requestedLimit
@@ -4411,7 +4418,18 @@ async function tableSystemMappingApi(request, response, url, context) {
     throw accessError(400, 'TABLE_SYSTEM_SYSTEM_INVALID', 'Every selected System must exist and be active in the current access authority.')
   }
   const requestedTables = Array.isArray(body.table_ids) ? body.table_ids.map(String) : []
-  const currentTables = new Set(inventory
+  let currentInventory
+  try {
+    currentInventory = await context.currentDatahubInventory()
+    if (!Array.isArray(currentInventory)) throw new Error('DataHub returned an invalid current inventory.')
+  } catch {
+    throw accessError(
+      503,
+      'TABLE_SYSTEM_CURRENT_TABLES_UNAVAILABLE',
+      'Current DataHub Table identities could not be confirmed; no mapping was changed.',
+    )
+  }
+  const currentTables = new Set(currentInventory
     .filter((asset) => asset?.dataset_kind === 'TABLE')
     .map((asset) => asset.id))
   if (requestedTables.some((tableId) => !currentTables.has(tableId))) {
@@ -4764,10 +4782,12 @@ export function createPocServer({
   stateStore,
   authenticator = unconfiguredPocAuthenticator(),
   airflowServiceToken = process.env.POC_AIRFLOW_SERVICE_TOKEN || '',
+  currentDatahubInventory: currentDatahubInventoryProvider = currentDatahubInventory,
 } = {}) {
   if (stateStore) pocStateStore = stateStore
   const baseContext = {
     stateStore: stateStore ?? pocStateStore,
+    currentDatahubInventory: currentDatahubInventoryProvider,
   }
   return createServer(async (request, response) => {
     try {
