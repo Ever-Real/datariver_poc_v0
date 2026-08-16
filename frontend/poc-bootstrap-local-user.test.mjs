@@ -65,22 +65,19 @@ test('additively creates viewer authority and credential while preserving the ac
     username: 'Viewer.Person@example.com',
     role: 'viewer',
     password: 'viewer correct password',
-    assignments: [{ systemId: SYSTEM.system_id, responsibility: 'DATA_STEWARD', priority: 2 }],
+    assignments: [],
   })
   assert.equal(result.activeSubjectId, 'existing-admin')
-  assert.equal(result.assignmentCount, 1)
+  assert.equal(result.assignmentCount, 0)
   const snapshot = await store.readChangeHistoryAccess()
   const document = changeHistoryDocumentFromSnapshot(snapshot)
   assert.equal(document.active_subject_id, before.active_subject_id)
   assert.deepEqual(document.users.find((user) => user.subject_id === 'existing-admin'), before.users[0])
   assert.deepEqual(document.users.find((user) => user.subject_id === 'viewer-subject'), {
     subject_id: 'viewer-subject', username: 'viewer.person@example.com', role: 'viewer',
-    active: true, provider_owner_refs: [],
+    active: true, max_security_grade: 'normal', provider_owner_refs: [],
   })
-  assert.deepEqual(document.system_assignments, [{
-    system_id: SYSTEM.system_id, subject_id: 'viewer-subject',
-    responsibility: 'DATA_STEWARD', priority: 2, active: true,
-  }])
+  assert.deepEqual(document.system_assignments, [])
   assert.deepEqual(snapshot.core.value.fixtureMarker, { preserve: true })
   assert.deepEqual(snapshot.core.value.changeRecords, [{ id: 'fixture-change', state: 'IN_REVIEW' }])
   assert.equal(snapshot.core.value.adminMemberships.find(
@@ -111,7 +108,7 @@ test('creates the initial canonical admin structure and selects it only because 
   const document = changeHistoryDocumentFromSnapshot(snapshot)
   assert.deepEqual(document.users, [{
     subject_id: 'stable-admin-subject', username: 'admin@example.com', role: 'admin',
-    active: true, provider_owner_refs: [],
+    active: true, max_security_grade: 'normal', provider_owner_refs: [],
   }])
   assert.equal(snapshot.core.value.fixtureMarker, 'initial-core')
   assert.equal(snapshot.core.value.adminMemberships[0].effective_profile_role, 'ADMIN')

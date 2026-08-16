@@ -5,6 +5,7 @@ import {
   activeSystemIdsForTable,
   applyTableSystemMappingCommand,
   normalizeTableSystemMappingDocument,
+  securityGradeRank,
   tableSecurityGrade,
   tableSystemCandidates,
 } from './poc-table-system-mappings.mjs'
@@ -56,10 +57,12 @@ test('assigns and removes N:M pairs idempotently while preserving inactive histo
   assert.equal(row.version, 2)
 })
 
-test('derives only exact normalized security tags and gives credential precedence', () => {
+test('derives only exact normalized security tags and gives restricted precedence', () => {
   assert.equal(tableSecurityGrade({ tags: ['not-restricted', 'CLASSIFICATION:RESTRICTED'] }), 'normal')
   assert.equal(tableSecurityGrade({ tags: [' Restricted '] }), 'restricted')
-  assert.equal(tableSecurityGrade({ tags: [{ urn: 'urn:li:tag:credential', name: 'anything' }, 'restricted'] }), 'credential')
+  assert.equal(tableSecurityGrade({ tags: [{ urn: 'urn:li:tag:credential', name: 'anything' }, 'restricted'] }), 'restricted')
+  assert.deepEqual(['normal', 'credential', 'restricted'].map(securityGradeRank), [0, 1, 2])
+  assert.throws(() => securityGradeRank('confidential'), /outside the canonical product policy/)
 })
 
 test('returns TABLE-only candidates with search, schema, System and grade filters', () => {
@@ -75,5 +78,5 @@ test('returns TABLE-only candidates with search, schema, System and grade filter
   assert.deepEqual(tableSystemCandidates({ assets, document: assigned.document, systems, schema: 'schema_a', securityGrade: 'restricted' }).map((item) => item.table_identity), [
     'urn:table:b',
   ])
-  assert.deepEqual(tableSystemCandidates({ assets, document: assigned.document, systems, query: 'table_c' }).map((item) => item.security_grade), ['credential'])
+  assert.deepEqual(tableSystemCandidates({ assets, document: assigned.document, systems, query: 'table_c' }).map((item) => item.security_grade), ['restricted'])
 })

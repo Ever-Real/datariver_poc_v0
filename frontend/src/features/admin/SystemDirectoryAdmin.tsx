@@ -39,6 +39,7 @@ function toDraft(values: SystemDirectoryAssignee[]): AssignmentDraft[] {
 
 export function SystemDirectoryAdmin(props: AdminSectionProps) {
   const { api, context, requestConfirmation, keyFor, clearKey, reportError } = props
+  const pocLocalAccounts = context?.action_vocabulary.includes('POC_OPEN_ACCESS_V1') ?? false
   const [systems, setSystems] = useState<SystemDirectoryEntry[]>([])
   const [systemQuery, setSystemQuery] = useState('')
   const [appliedSystemQuery, setAppliedSystemQuery] = useState('')
@@ -509,7 +510,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
   }
 
   return <section className="panel admin-system-directory" onClickCapture={handleDirectoryAction}>
-    <div className="section-heading"><div><h3>System Master 및 Table 연결</h3><p className="muted">System 정본과 담당자는 기존 access authority를 사용하고, exact Table 연결은 독립 CAS 버전으로 관리합니다.</p></div><div className="action-row"><button className="button" disabled={!canUpdate} onClick={() => { setCreateOpen(true); setCreateValidationError('') }} type="button">시스템 추가</button><button className="button button-secondary" onClick={() => void loadSystems()} type="button">새로고침</button></div></div>
+    <div className="section-heading"><div><h3>System Master 및 Table 연결</h3><p className="muted">System 정본은 기존 access authority를 사용하고, exact Table 연결은 독립 CAS 버전으로 관리합니다.</p></div><div className="action-row"><button className="button" disabled={!canUpdate} onClick={() => { setCreateOpen(true); setCreateValidationError('') }} type="button">시스템 추가</button><button className="button button-secondary" onClick={() => void loadSystems()} type="button">새로고침</button></div></div>
     <label className="mb-3 block max-w-md text-xs font-bold">시스템 검색<input type="search" value={systemQuery} onChange={(event) => setSystemQuery(event.target.value)} placeholder="시스템명 또는 코드" /></label>
     <DenseDataTable
       caption="워크스페이스 시스템 목록"
@@ -550,7 +551,8 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
         setSystemPageNumber((current) => current + 1)
       }}
     />}
-    {selected && <section className="admin-system-assignment" aria-labelledby="system-assignment-title">
+    {selected && pocLocalAccounts && <p className="callout">Responsible System과 priority는 USERS의 사용자 접근 관리에서 role과 함께 변경합니다. 담당 System은 Table read grant가 아닙니다.</p>}
+    {selected && !pocLocalAccounts && <section className="admin-system-assignment" aria-labelledby="system-assignment-title">
       <header><div><span className="eyebrow">{selected.code}</span><h4 id="system-assignment-title">{selected.name} 담당자</h4></div><span className="badge">v{assigneeVersion || selected.version}</span></header>
       <p className="muted">Engineer/Steward, Manager, Admin 프로필만 서버 검색 결과에 포함됩니다. 저장 시 현재 프로필과 활성 멤버십을 다시 검증합니다.</p>
       <div className="admin-system-assignment-grid">
@@ -639,7 +641,7 @@ export function SystemDirectoryAdmin(props: AdminSectionProps) {
             <label className="text-xs font-bold">Table 검색<input type="search" value={schemaQuery} onChange={(event) => setSchemaQuery(event.target.value)} placeholder="Table, schema 또는 URN" /></label>
             <label className="text-xs font-bold">Schema<select onChange={(event) => setSchemaFilter(event.target.value)} value={schemaFilter}><option value="">전체</option>{availableSchemas.map((value) => <option key={value} value={value}>{value}</option>)}</select></label>
             <label className="text-xs font-bold">System filter<select onChange={(event) => setSystemFilter(event.target.value)} value={systemFilter}><option value="">전체</option>{systems.filter((system) => system.active).map((system) => <option key={system.system_id} value={system.system_id}>{system.name}</option>)}</select></label>
-            <label className="text-xs font-bold">Security grade<select onChange={(event) => setSecurityGradeFilter(event.target.value as TableSecurityGrade | '')} value={securityGradeFilter}><option value="">전체</option><option value="normal">normal</option><option value="restricted">restricted</option><option value="credential">credential</option></select></label>
+            <label className="text-xs font-bold">Security grade<select onChange={(event) => setSecurityGradeFilter(event.target.value as TableSecurityGrade | '')} value={securityGradeFilter}><option value="">전체</option><option value="normal">일반</option><option value="credential">대외비</option><option value="restricted">극비</option></select></label>
           </div>
           <div className="my-3 flex flex-wrap items-center gap-2">
             <button className="button button-secondary button-compact" disabled={!selectionComplete || schemaCandidates.length === 0} onClick={() => setSelectedTableIds(new Set(schemaCandidates.map((item) => item.table_identity)))} type="button">현재 결과 전체 선택</button>

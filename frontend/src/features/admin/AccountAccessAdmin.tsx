@@ -14,6 +14,7 @@ import {
 } from './MembershipAdmin'
 import { RoleManagementDialog } from './RoleAccessAdmin'
 import { SystemDirectoryAdmin } from './SystemDirectoryAdmin'
+import { PocAccountAdmin } from './PocAccountAdmin'
 
 type AccessView = 'users' | 'systems' | 'policies' | 'recovery'
 type PolicyView = 'classification' | 'restrictedGrants' | 'providers'
@@ -47,6 +48,7 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
   const { context, messages } = props
   const operations = useMemo(() => new Set(context?.allowed_operations ?? []), [context])
   const canReadMemberships = operations.has('MEMBERSHIP_ACCESS_READ')
+  const pocLocalAccounts = context?.action_vocabulary.includes('POC_OPEN_ACCESS_V1') ?? false
   const canReadRenewals = operations.has('MEMBERSHIP_RENEWAL_READ')
   const [roleManagementOpen, setRoleManagementOpen] = useState(false)
   const [renewalsOpen, setRenewalsOpen] = useState(false)
@@ -105,7 +107,9 @@ export function AccountAccessAdmin(props: AdminSectionProps) {
       {views.map((item) => <button key={item.id} {...accessTabs.tabProps(item.id)} type="button" aria-label={item.label} className={`min-w-36 border border-b-0 px-3 py-1.5 text-left text-[11px] font-black ${view === item.id ? 'border-navy-900 bg-navy-900 text-white' : 'border-slate-300 bg-slate-100 text-slate-600'}`} onClick={() => selectView(item.id)}><span className="block">{item.label}</span><small className="block text-[8px] font-bold leading-3 opacity-75">{item.description}</small></button>)}
     </div>
     {view === 'users' && <section {...accessTabs.panelProps('users')} aria-label="사용자 관리">
-      {canReadMemberships && <MembershipAccessAdmin {...props} onOpenRoleManagement={() => setRoleManagementOpen(true)} onOpenRenewals={canReadRenewals ? () => setRenewalsOpen(true) : undefined} />}
+      {canReadMemberships && (pocLocalAccounts
+        ? <PocAccountAdmin {...props} />
+        : <MembershipAccessAdmin {...props} onOpenRoleManagement={() => setRoleManagementOpen(true)} onOpenRenewals={canReadRenewals ? () => setRenewalsOpen(true) : undefined} />)}
       {!canReadMemberships && canReadRenewals && <button type="button" className="button" onClick={() => setRenewalsOpen(true)}>계정 갱신</button>}
     </section>}
     {view === 'systems' && <section {...accessTabs.panelProps('systems')}><SystemDirectoryAdmin {...props} /></section>}

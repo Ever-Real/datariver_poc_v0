@@ -295,6 +295,7 @@ export function authenticatedPocProfile(user, { mustChangePassword } = {}) {
     subject: user.subject_id,
     display_name: user.display_name || user.subject_id,
     roles: [user.role],
+    max_security_grade: user.max_security_grade ?? 'normal',
     authentication_assurance: 'PASSWORD',
     default_workspace_id: DEFAULT_WORKSPACE_ID,
     workspace_selection_enabled: false,

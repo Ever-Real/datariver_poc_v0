@@ -283,6 +283,35 @@ const LOCAL_AUTH_SCHEMA = [
   `,
 ]
 
+const USER_TABLE_GRANT_SCHEMA = [
+  `
+    CREATE TABLE IF NOT EXISTS poc_user_table_grants (
+      subject_id text NOT NULL,
+      table_urn text NOT NULL,
+      active boolean NOT NULL DEFAULT true,
+      version bigint NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      created_by text NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      updated_by text NOT NULL,
+      PRIMARY KEY (subject_id, table_urn),
+      CONSTRAINT ck_poc_user_table_grant_subject
+        CHECK (char_length(subject_id) BETWEEN 1 AND 255),
+      CONSTRAINT ck_poc_user_table_grant_table
+        CHECK (char_length(table_urn) BETWEEN 20 AND 4096
+          AND table_urn LIKE 'urn:li:dataset:(%'),
+      CONSTRAINT ck_poc_user_table_grant_actor
+        CHECK (char_length(created_by) BETWEEN 1 AND 255
+          AND char_length(updated_by) BETWEEN 1 AND 255),
+      CONSTRAINT ck_poc_user_table_grant_version CHECK (version > 0)
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS ix_poc_user_table_grants_active_table
+      ON poc_user_table_grants (table_urn, subject_id) WHERE active
+  `,
+]
+
 export function createPocStateStore({ databasePool } = {}) {
   const databaseUrl = process.env.POC_DATABASE_URL?.trim()
   const databaseHost = process.env.POC_POSTGRES_HOST?.trim()
@@ -294,6 +323,7 @@ export function createPocStateStore({ databasePool } = {}) {
   const memoryCredentialsBySubject = new Map()
   const memoryCredentialSubjectByUsername = new Map()
   const memorySessions = new Map()
+  const memoryUserTableGrants = new Map()
   let pool = databasePool
   let redis
   let startingDatabase
@@ -341,6 +371,7 @@ export function createPocStateStore({ databasePool } = {}) {
       `)
       for (const statement of CHANGE_HISTORY_SCHEMA) await pool.query(statement)
       for (const statement of LOCAL_AUTH_SCHEMA) await pool.query(statement)
+      for (const statement of USER_TABLE_GRANT_SCHEMA) await pool.query(statement)
     })()
     try {
       await startingDatabase
@@ -859,6 +890,261 @@ export function createPocStateStore({ databasePool } = {}) {
       loginEnabled: false,
       revokedSessionCount,
     }
+  }
+
+  async function listLocalCredentialAdministration() {
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        SELECT credential.subject_id, credential.username_normalized,
+          credential.login_enabled, credential.must_change_password,
+          credential.failed_attempts, credential.locked_until, credential.version,
+          count(session.token_hash) FILTER (
+            WHERE session.revoked_at IS NULL AND session.expires_at > clock_timestamp()
+          ) AS active_session_count
+        FROM poc_local_credentials AS credential
+        LEFT JOIN poc_local_sessions AS session ON session.subject_id = credential.subject_id
+        GROUP BY credential.subject_id, credential.username_normalized,
+          credential.login_enabled, credential.must_change_password,
+          credential.failed_attempts, credential.locked_until, credential.version
+        ORDER BY credential.username_normalized
+      `)
+      return result.rows.map((row) => ({
+        subjectId: row.subject_id,
+        usernameNormalized: row.username_normalized,
+        loginEnabled: row.login_enabled,
+        mustChangePassword: row.must_change_password,
+        failedAttempts: Number(row.failed_attempts),
+        lockedUntil: timestampValue(row.locked_until),
+        version: Number(row.version),
+        activeSessionCount: Number(row.active_session_count),
+      }))
+    }
+    return [...memoryCredentialsBySubject.values()].map((credential) => ({
+      subjectId: credential.subjectId,
+      usernameNormalized: credential.usernameNormalized,
+      loginEnabled: credential.loginEnabled,
+      mustChangePassword: credential.mustChangePassword,
+      failedAttempts: credential.failedAttempts,
+      lockedUntil: credential.lockedUntil,
+      version: credential.version,
+      activeSessionCount: [...memorySessions.values()].filter((session) => (
+        session.subjectId === credential.subjectId && !session.revokedAt && Date.parse(session.expiresAt) > Date.now()
+      )).length,
+    })).sort((left, right) => left.usernameNormalized.localeCompare(right.usernameNormalized))
+  }
+
+  async function administerLocalCredential({
+    subjectId,
+    expectedVersion,
+    usernameNormalized,
+    passwordHash,
+    loginEnabled,
+    mustChangePassword,
+    changedAt,
+  }) {
+    requireBoundedString(subjectId, 'subjectId', 255)
+    requireNonnegativeInteger(expectedVersion, 'expectedVersion')
+    requireNormalizedUsername(usernameNormalized)
+    requireTimestamp(changedAt, 'changedAt')
+    if (typeof loginEnabled !== 'boolean' || typeof mustChangePassword !== 'boolean') {
+      throw new Error('credential login flags must be boolean.')
+    }
+    if (passwordHash !== null && (typeof passwordHash !== 'string' || passwordHash.length > 512
+      || !passwordHash.startsWith('$argon2id$v=19$'))) {
+      throw new Error('passwordHash must be null or a bounded Argon2id encoded hash.')
+    }
+    await startDatabase()
+    if (pool) {
+      const client = await pool.connect()
+      try {
+        await client.query('BEGIN')
+        const selected = await client.query(`
+          SELECT subject_id, version FROM poc_local_credentials WHERE subject_id = $1 FOR UPDATE
+        `, [subjectId])
+        const current = selected.rows[0]
+        if (Number(current?.version ?? 0) !== expectedVersion) throw credentialVersionConflict()
+        let updated
+        if (current) {
+          updated = await client.query(`
+            UPDATE poc_local_credentials
+            SET username_normalized = $3,
+              password_hash = COALESCE($4, password_hash),
+              login_enabled = $5,
+              must_change_password = $6,
+              failed_attempts = CASE WHEN $4 IS NULL THEN failed_attempts ELSE 0 END,
+              locked_until = CASE WHEN $4 IS NULL THEN locked_until ELSE NULL END,
+              version = version + 1,
+              updated_at = $7
+            WHERE subject_id = $1 AND version = $2
+            RETURNING version
+          `, [subjectId, expectedVersion, usernameNormalized, passwordHash, loginEnabled, mustChangePassword, changedAt])
+        } else {
+          if (passwordHash === null) throw new Error('A password hash is required for a new local credential.')
+          updated = await client.query(`
+            INSERT INTO poc_local_credentials (
+              subject_id, username_normalized, password_hash, login_enabled, must_change_password, updated_at
+            ) VALUES ($1, $2, $3, $4, $5, $6)
+            RETURNING version
+          `, [subjectId, usernameNormalized, passwordHash, loginEnabled, mustChangePassword, changedAt])
+        }
+        const shouldRevoke = passwordHash !== null || !loginEnabled
+        const revoked = shouldRevoke ? await client.query(`
+          UPDATE poc_local_sessions
+          SET revoked_at = COALESCE(revoked_at, $2)
+          WHERE subject_id = $1 AND revoked_at IS NULL
+          RETURNING token_hash
+        `, [subjectId, changedAt]) : { rows: [] }
+        await client.query('COMMIT')
+        return {
+          credentialVersion: Number(updated.rows[0].version),
+          revokedSessionCount: revoked.rows.length,
+        }
+      } catch (error) {
+        await client.query('ROLLBACK')
+        if (error?.code === '23505') throw credentialConflict()
+        throw error
+      } finally {
+        client.release()
+      }
+    }
+    const current = memoryCredentialsBySubject.get(subjectId)
+    if ((current?.version ?? 0) !== expectedVersion) throw credentialVersionConflict()
+    if (!current && passwordHash === null) throw new Error('A password hash is required for a new local credential.')
+    const otherSubject = memoryCredentialSubjectByUsername.get(usernameNormalized)
+    if (otherSubject && otherSubject !== subjectId) throw credentialConflict()
+    if (current && current.usernameNormalized !== usernameNormalized) {
+      memoryCredentialSubjectByUsername.delete(current.usernameNormalized)
+    }
+    const next = current ?? {
+      subjectId, failedAttempts: 0, lockedUntil: null, version: 0,
+    }
+    next.usernameNormalized = usernameNormalized
+    next.passwordHash = passwordHash ?? next.passwordHash
+    next.loginEnabled = loginEnabled
+    next.mustChangePassword = mustChangePassword
+    if (passwordHash !== null) {
+      next.failedAttempts = 0
+      next.lockedUntil = null
+    }
+    next.version += 1
+    memoryCredentialsBySubject.set(subjectId, next)
+    memoryCredentialSubjectByUsername.set(usernameNormalized, subjectId)
+    let revokedSessionCount = 0
+    if (passwordHash !== null || !loginEnabled) {
+      for (const session of memorySessions.values()) {
+        if (session.subjectId === subjectId && !session.revokedAt) {
+          session.revokedAt = changedAt
+          revokedSessionCount += 1
+        }
+      }
+    }
+    return { credentialVersion: next.version, revokedSessionCount }
+  }
+
+  async function revokeLocalSessionsForSubject({ subjectId, revokedAt }) {
+    requireBoundedString(subjectId, 'subjectId', 255)
+    requireTimestamp(revokedAt, 'revokedAt')
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        UPDATE poc_local_sessions
+        SET revoked_at = COALESCE(revoked_at, $2)
+        WHERE subject_id = $1 AND revoked_at IS NULL
+        RETURNING token_hash
+      `, [subjectId, revokedAt])
+      return result.rows.length
+    }
+    let changed = 0
+    for (const session of memorySessions.values()) {
+      if (session.subjectId === subjectId && !session.revokedAt) {
+        session.revokedAt = revokedAt
+        changed += 1
+      }
+    }
+    return changed
+  }
+
+  async function listUserTableGrants(subjectId, { includeInactive = false } = {}) {
+    requireBoundedString(subjectId, 'subjectId', 255)
+    await startDatabase()
+    if (pool) {
+      const result = await pool.query(`
+        SELECT subject_id, table_urn, active, version, created_at, created_by, updated_at, updated_by
+        FROM poc_user_table_grants
+        WHERE subject_id = $1 AND ($2::boolean OR active)
+        ORDER BY table_urn
+      `, [subjectId, includeInactive])
+      return result.rows.map(userTableGrantRecord)
+    }
+    return [...memoryUserTableGrants.values()]
+      .filter((row) => row.subjectId === subjectId && (includeInactive || row.active))
+      .sort((left, right) => left.tableUrn.localeCompare(right.tableUrn))
+      .map((row) => structuredClone(row))
+  }
+
+  async function applyUserTableGrantCommand({ subjectId, tableUrns, action, actorSubjectId, changedAt }) {
+    requireBoundedString(subjectId, 'subjectId', 255)
+    requireBoundedString(actorSubjectId, 'actorSubjectId', 255)
+    requireTimestamp(changedAt, 'changedAt')
+    if (!['GRANT', 'REMOVE'].includes(action)) throw new Error('action must be GRANT or REMOVE.')
+    if (!Array.isArray(tableUrns) || tableUrns.length < 1 || tableUrns.length > 2_000
+      || new Set(tableUrns).size !== tableUrns.length) {
+      throw new Error('tableUrns must contain 1-2000 unique current Table identities.')
+    }
+    for (const tableUrn of tableUrns) requireDatasetUrn(tableUrn)
+    await startDatabase()
+    if (pool) {
+      const result = action === 'GRANT'
+        ? await pool.query(`
+            INSERT INTO poc_user_table_grants (
+              subject_id, table_urn, active, created_at, created_by, updated_at, updated_by
+            )
+            SELECT $1, table_urn, true, $4, $3, $4, $3
+            FROM unnest($2::text[]) AS table_urn
+            ON CONFLICT (subject_id, table_urn) DO UPDATE
+              SET active = true,
+                version = poc_user_table_grants.version + 1,
+                updated_at = EXCLUDED.updated_at,
+                updated_by = EXCLUDED.updated_by
+              WHERE NOT poc_user_table_grants.active
+            RETURNING table_urn
+          `, [subjectId, tableUrns, actorSubjectId, changedAt])
+        : await pool.query(`
+            UPDATE poc_user_table_grants
+            SET active = false, version = version + 1, updated_at = $4, updated_by = $3
+            WHERE subject_id = $1 AND table_urn = ANY($2::text[]) AND active
+            RETURNING table_urn
+          `, [subjectId, tableUrns, actorSubjectId, changedAt])
+      return result.rows.length
+    }
+    let changed = 0
+    for (const tableUrn of tableUrns) {
+      const key = `${subjectId}\u0000${tableUrn}`
+      const existing = memoryUserTableGrants.get(key)
+      if (action === 'GRANT' && !existing?.active) {
+        if (existing) {
+          existing.active = true
+          existing.version += 1
+          existing.updatedAt = changedAt
+          existing.updatedBy = actorSubjectId
+        } else {
+          memoryUserTableGrants.set(key, {
+            subjectId, tableUrn, active: true, version: 1,
+            createdAt: changedAt, createdBy: actorSubjectId,
+            updatedAt: changedAt, updatedBy: actorSubjectId,
+          })
+        }
+        changed += 1
+      } else if (action === 'REMOVE' && existing?.active) {
+        existing.active = false
+        existing.version += 1
+        existing.updatedAt = changedAt
+        existing.updatedBy = actorSubjectId
+        changed += 1
+      }
+    }
+    return changed
   }
 
   async function cacheGet(key) {
@@ -1707,6 +1993,11 @@ export function createPocStateStore({ databasePool } = {}) {
     readLocalSession,
     revokeLocalSession,
     disableLocalCredential,
+    listLocalCredentialAdministration,
+    administerLocalCredential,
+    revokeLocalSessionsForSubject,
+    listUserTableGrants,
+    applyUserTableGrantCommand,
     initializeChangeHistoryCaptureBoundaries,
     appendChangeHistoryCapture,
     appendChangeHistoryCrLink,
@@ -1783,6 +2074,25 @@ function localCredentialRecord(row) {
     failedAttempts: Number(row.failed_attempts),
     lockedUntil: timestampValue(row.locked_until),
     version: Number(row.version),
+  }
+}
+
+function requireDatasetUrn(value) {
+  const urn = requireBoundedString(value, 'tableUrn', 4096)
+  if (!urn.startsWith('urn:li:dataset:(')) throw new Error('tableUrn must be a canonical DataHub dataset URN.')
+  return urn
+}
+
+function userTableGrantRecord(row) {
+  return {
+    subjectId: row.subject_id,
+    tableUrn: row.table_urn,
+    active: row.active,
+    version: Number(row.version),
+    createdAt: timestampValue(row.created_at),
+    createdBy: row.created_by,
+    updatedAt: timestampValue(row.updated_at),
+    updatedBy: row.updated_by,
   }
 }
 

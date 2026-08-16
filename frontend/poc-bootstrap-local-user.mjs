@@ -141,6 +141,14 @@ export async function bootstrapLocalHumanAccount({
   if (!CHANGE_HISTORY_ACCESS_ROLES.includes(role)) {
     throw cliError('The requested role is not canonical.')
   }
+  const expectedResponsibility = role === 'developer'
+    ? 'DEVELOPER'
+    : role === 'data_steward'
+      ? 'DATA_STEWARD'
+      : role === 'manager' ? 'MANAGER' : null
+  if (assignments.some((assignment) => assignment.responsibility !== expectedResponsibility)) {
+    throw cliError('Responsible System assignments must match the user role.', 'ASSIGNMENT_ROLE_MISMATCH')
+  }
   const normalizedSubjectId = normalizeStableSubjectId(subjectId)
   const usernameNormalized = normalizePocUsername(username)
   const snapshot = await stateStore.readChangeHistoryAccess()
@@ -158,6 +166,7 @@ export async function bootstrapLocalHumanAccount({
     username: usernameNormalized,
     role,
     active: true,
+    max_security_grade: 'normal',
     provider_owner_refs: [],
   }
   const document = normalizeChangeHistoryAccessDocument({
@@ -286,7 +295,7 @@ export function localHumanBootstrapHelp() {
     'Options:',
     '  --password-file <path>  Read the human password from one bounded file instead of the TTY.',
     '  --env-file <path>       Load the local POC database configuration file.',
-    '  --system-assignment <system-id>:<DATA_STEWARD|DEVELOPER>:<positive-priority>',
+    '  --system-assignment <system-id>:<DATA_STEWARD|DEVELOPER|MANAGER>:<positive-priority>',
     '                           Add one active System assignment; repeat for more.',
     '  --must-change-password   Mark the new credential for a required password change.',
     '  --set-active-subject     Explicitly replace active_subject_id with the new subject.',

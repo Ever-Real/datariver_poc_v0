@@ -3,7 +3,8 @@
 export const POC_TABLE_SYSTEM_MAPPING_SCOPE = 'table-system-mappings-v1'
 export const POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION = 1
 
-const securityGrades = new Set(['normal', 'restricted', 'credential'])
+export const POC_SECURITY_GRADES = Object.freeze(['normal', 'credential', 'restricted'])
+const securityGrades = new Set(POC_SECURITY_GRADES)
 const maximumBindings = 50_000
 const maximumTableIdsPerCommand = 2_000
 const maximumSystemIdsPerCommand = 20
@@ -108,9 +109,15 @@ export function tableSecurityGrade(asset) {
     return [tag.name, tag.urn].filter((item) => typeof item === 'string')
       .map((item) => item.trim().toLocaleLowerCase())
   }))
-  if (normalized.has('credential') || normalized.has('urn:li:tag:credential')) return 'credential'
   if (normalized.has('restricted') || normalized.has('urn:li:tag:restricted')) return 'restricted'
+  if (normalized.has('credential') || normalized.has('urn:li:tag:credential')) return 'credential'
   return 'normal'
+}
+
+export function securityGradeRank(value) {
+  const rank = POC_SECURITY_GRADES.indexOf(value)
+  if (rank < 0) throw mappingError('SECURITY_GRADE_INVALID', 'The security grade is outside the canonical product policy.')
+  return rank
 }
 
 export function activeSystemIdsForTable(document, tableIdentity, activeSystemIds) {

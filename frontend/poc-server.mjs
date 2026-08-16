@@ -13,10 +13,13 @@ import {
   normalizeChangeHistoryAccessDocument,
   privateChangeHistoryAccess,
   requireActiveAccessAdmin,
+  USER_SECURITY_GRADES,
 } from './poc-access-document.mjs'
 import {
   authenticatedPocProfile,
   createPocLocalAuthenticator,
+  hashPocPassword,
+  normalizePocUsername,
 } from './poc-local-auth.mjs'
 import {
   assertAssetMutation,
@@ -1247,6 +1250,18 @@ query DataRiverPocAsset($urn: String!) {
   }
 }`
 
+const datahubCurrentEntitiesQuery = `
+query DataRiverPocCurrentTables($urns: [String!]!) {
+  entities(urns: $urns) {
+    urn type
+    ... on Dataset {
+      subTypes { typeNames }
+      properties { customProperties { key value } }
+      schemaMetadata(version: 0) { name }
+    }
+  }
+}`
+
 const datahubLineageQuery = `
 query DataRiverPocLineage($urn: String!, $input: LineageInput!) {
   dataset(urn: $urn) {
@@ -2028,6 +2043,34 @@ async function datahubEntity(urn) {
     try { await pocStateStore.cacheSet(cacheKey, data.entity, 60) } catch { /* optional cache */ }
   }
   return data.entity
+}
+
+async function currentDatahubTables(tableUrns, { signal } = {}) {
+  if (!Array.isArray(tableUrns) || tableUrns.length < 1 || tableUrns.length > 2_000) {
+    throw new Error('Current Table confirmation requires 1-2000 identities.')
+  }
+  const requested = [...new Set(tableUrns)]
+  if (requested.length !== tableUrns.length) throw new Error('Current Table confirmation identities must be unique.')
+  const confirmed = []
+  for (let offset = 0; offset < requested.length; offset += 250) {
+    const batch = requested.slice(offset, offset + 250)
+    const data = await datahubGraphql(datahubCurrentEntitiesQuery, { urns: batch }, 30_000, signal)
+    if (!Array.isArray(data?.entities) || data.entities.length !== batch.length) {
+      throw new Error('DataHub returned an invalid current entity confirmation.')
+    }
+    data.entities.forEach((entity, index) => {
+      if (!currentDatahubDatasetExists(entity, batch[index])) return
+      confirmed.push({ id: entity.urn, dataset_kind: datasetKind(entity) })
+    })
+  }
+  return confirmed
+}
+
+export function currentDatahubDatasetExists(entity, expectedUrn) {
+  return Boolean(entity
+    && entity.urn === expectedUrn
+    && entity.type === 'DATASET'
+    && (entity.properties !== null || entity.schemaMetadata !== null))
 }
 
 function catalogSearchFields(searchParameters) {
@@ -4332,6 +4375,73 @@ function exactServiceToken(request, configuredToken) {
   }
 }
 
+function exactBodyKeys(body, allowed, required = allowed) {
+  const keys = Object.keys(body)
+  const unknown = keys.find((key) => !allowed.includes(key))
+  const missing = required.find((key) => !Object.hasOwn(body, key))
+  if (unknown || missing) {
+    throw accessError(400, 'ADMIN_INPUT_INVALID', unknown
+      ? `${unknown} is not supported.`
+      : `${missing} is required.`)
+  }
+}
+
+function normalizedSecurityGrade(value) {
+  if (typeof value !== 'string' || !USER_SECURITY_GRADES.includes(value)) {
+    throw accessError(400, 'USER_SECURITY_GRADE_INVALID', 'max_security_grade must be normal, credential, or restricted.')
+  }
+  return value
+}
+
+function assignmentResponsibility(role) {
+  if (role === 'developer') return 'DEVELOPER'
+  if (role === 'data_steward') return 'DATA_STEWARD'
+  if (role === 'manager') return 'MANAGER'
+  return null
+}
+
+function normalizedResponsibleSystems(value, role, document) {
+  if (!Array.isArray(value) || value.length > 500) {
+    throw accessError(400, 'RESPONSIBLE_SYSTEM_INVALID', 'responsible_systems must be a bounded array.')
+  }
+  const responsibility = assignmentResponsibility(role)
+  if (!responsibility && value.length) {
+    throw accessError(400, 'RESPONSIBLE_SYSTEM_INVALID', 'Only developer, data_steward, and manager users may have Responsible Systems.')
+  }
+  const activeSystems = new Set(document.systems.filter((system) => system.active).map((system) => system.system_id))
+  const observed = new Set()
+  return value.map((raw, index) => {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      throw accessError(400, 'RESPONSIBLE_SYSTEM_INVALID', `responsible_systems[${index}] must be an object.`)
+    }
+    exactBodyKeys(raw, ['system_id', 'priority'])
+    const systemId = boundedString(raw.system_id, 255).trim()
+    const priority = Number(raw.priority)
+    if (!activeSystems.has(systemId) || observed.has(systemId)
+      || !Number.isSafeInteger(priority) || priority < 1 || priority > 10_000) {
+      throw accessError(400, 'RESPONSIBLE_SYSTEM_INVALID', 'Responsible Systems must be unique active Systems with a positive priority.')
+    }
+    observed.add(systemId)
+    return { system_id: systemId, responsibility, priority, active: true }
+  })
+}
+
+async function confirmedCurrentTables(context, requestedTables, unavailableCode, invalidCode) {
+  let current
+  try {
+    current = await context.currentDatahubTables(requestedTables)
+    if (!Array.isArray(current)) throw new Error('DataHub returned invalid current entities.')
+  } catch {
+    throw accessError(503, unavailableCode, 'Current DataHub Table identities could not be confirmed; no change was made.')
+  }
+  const currentTables = new Set(current
+    .filter((asset) => asset?.dataset_kind === 'TABLE')
+    .map((asset) => asset.id))
+  if (requestedTables.some((tableId) => !currentTables.has(tableId))) {
+    throw accessError(400, invalidCode, 'Every selected identity must be a current DataHub TABLE.')
+  }
+}
+
 async function authRoute(request, response, url, baseContext, authenticator) {
   if (url.pathname === '/auth/login') {
     if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Local login supports only POST.')
@@ -4371,6 +4481,280 @@ async function authRoute(request, response, url, baseContext, authenticator) {
     return json(response, 200, { ok: true }, { 'Set-Cookie': authenticator.clearCookie() })
   }
   return problem(response, 404, 'NOT_FOUND', 'The authentication route does not exist.')
+}
+
+async function writeAdminAccessDocument(context, snapshot, document) {
+  const normalized = normalizeChangeHistoryAccessDocument(document, { allowUnresolvedActiveSubject: true })
+  return context.stateStore.writeChangeHistoryAccess({
+    expectedAccessVersion: snapshot.access.version,
+    expectedCoreVersion: snapshot.core.version,
+    accessValue: privateChangeHistoryAccess(normalized),
+    coreValue: changeHistoryAccessCoreProjection(snapshot.core.value, normalized, snapshot.access.version + 1),
+  })
+}
+
+function responsibleSystemsForUser(document, user) {
+  const bySystem = new Map()
+  for (const assignment of document.system_assignments) {
+    if (!assignment.active || assignment.subject_id !== user.subject_id) continue
+    const current = bySystem.get(assignment.system_id)
+    if (!current || assignment.priority < current.priority) {
+      bySystem.set(assignment.system_id, {
+        system_id: assignment.system_id,
+        priority: assignment.priority,
+        responsibility: assignment.responsibility,
+      })
+    }
+  }
+  return [...bySystem.values()].sort((left, right) => (
+    left.priority - right.priority || left.system_id.localeCompare(right.system_id)
+  ))
+}
+
+async function adminUsersApi(request, response, url, context) {
+  const snapshot = await context.stateStore.readChangeHistoryAccess()
+  const document = changeHistoryDocumentFromSnapshot(snapshot)
+  requireActiveAccessAdmin(document, context.principal.subjectId)
+  const userMatch = url.pathname.match(/^\/api\/v1\/admin\/users\/([^/]+)$/)
+  const grantsMatch = url.pathname.match(/^\/api\/v1\/admin\/users\/([^/]+)\/table-grants$/)
+  const credentialMatch = url.pathname.match(/^\/api\/v1\/admin\/users\/([^/]+)\/credential$/)
+  const sessionsMatch = url.pathname.match(/^\/api\/v1\/admin\/users\/([^/]+)\/sessions\/revoke$/)
+
+  if (url.pathname === '/api/v1/admin/users' && request.method === 'GET') {
+    const credentials = new Map((await context.stateStore.listLocalCredentialAdministration())
+      .map((item) => [item.subjectId, item]))
+    const items = await Promise.all(document.users.map(async (user) => ({
+      subject_id: user.subject_id,
+      username: user.username ?? credentials.get(user.subject_id)?.usernameNormalized ?? null,
+      display_name: user.display_name ?? user.subject_id,
+      email: user.email ?? null,
+      role: user.role,
+      active: user.active,
+      max_security_grade: user.max_security_grade ?? 'normal',
+      responsible_systems: responsibleSystemsForUser(document, user),
+      table_grant_count: (await context.stateStore.listUserTableGrants(user.subject_id)).length,
+      credential: credentials.has(user.subject_id) ? {
+        username: credentials.get(user.subject_id).usernameNormalized,
+        login_enabled: credentials.get(user.subject_id).loginEnabled,
+        must_change_password: credentials.get(user.subject_id).mustChangePassword,
+        failed_attempts: credentials.get(user.subject_id).failedAttempts,
+        locked_until: credentials.get(user.subject_id).lockedUntil,
+        version: credentials.get(user.subject_id).version,
+        active_session_count: credentials.get(user.subject_id).activeSessionCount,
+      } : null,
+    })))
+    return json(response, 200, {
+      version: snapshot.access.version,
+      items,
+      systems: document.systems.filter((system) => system.active),
+    }, { ETag: `"${snapshot.access.version}"` })
+  }
+
+  if (url.pathname === '/api/v1/admin/users' && request.method === 'POST') {
+    const expectedVersion = accessIfMatch(request)
+    if (expectedVersion !== snapshot.access.version) throw accessError(409, 'ACCESS_VERSION_STALE', 'The access version is stale.')
+    const body = await bodyJson(request)
+    exactBodyKeys(body, [
+      'username', 'password', 'display_name', 'email', 'role', 'max_security_grade',
+      'responsible_systems', 'must_change_password',
+    ])
+    const username = normalizePocUsername(body.username)
+    const displayName = boundedString(body.display_name, 255).trim()
+    const email = boundedString(body.email, 320).trim()
+    const role = boundedString(body.role, 32).trim()
+    if (!displayName || !email || !role || !document.users.every((user) => user.username !== username)
+      || !['admin', 'data_steward', 'developer', 'manager', 'viewer'].includes(role)) {
+      throw accessError(400, 'USER_CREATE_INVALID', 'The new local human user is outside the canonical contract.')
+    }
+    if (typeof body.must_change_password !== 'boolean') {
+      throw accessError(400, 'USER_CREATE_INVALID', 'must_change_password must be boolean.')
+    }
+    const subjectId = randomUUID()
+    const user = {
+      subject_id: subjectId,
+      username,
+      display_name: displayName,
+      email,
+      role,
+      active: true,
+      max_security_grade: normalizedSecurityGrade(body.max_security_grade),
+      provider_owner_refs: [],
+    }
+    const next = structuredClone(document)
+    next.users.push(user)
+    next.system_assignments.push(...normalizedResponsibleSystems(body.responsible_systems, role, next)
+      .map((assignment) => ({ ...assignment, subject_id: subjectId })))
+    const normalized = normalizeChangeHistoryAccessDocument(next, { allowUnresolvedActiveSubject: true })
+    const passwordHash = await hashPocPassword(body.password)
+    const result = await context.stateStore.provisionLocalCredential({
+      expectedAccessVersion: snapshot.access.version,
+      expectedCoreVersion: snapshot.core.version,
+      credential: {
+        subjectId,
+        usernameNormalized: username,
+        passwordHash,
+        loginEnabled: true,
+        mustChangePassword: body.must_change_password,
+      },
+      accessValue: privateChangeHistoryAccess(normalized),
+      coreValue: changeHistoryAccessCoreProjection(snapshot.core.value, normalized, snapshot.access.version + 1),
+    })
+    return json(response, 201, {
+      subject_id: subjectId,
+      access_version: result.accessVersion,
+      credential_version: result.credentialVersion,
+    }, { ETag: `"${result.accessVersion}"` })
+  }
+
+  if (userMatch && request.method === 'PATCH') {
+    const expectedVersion = accessIfMatch(request)
+    if (expectedVersion !== snapshot.access.version) throw accessError(409, 'ACCESS_VERSION_STALE', 'The access version is stale.')
+    const subjectId = decodeURIComponent(userMatch[1])
+    const body = await bodyJson(request)
+    exactBodyKeys(body, ['display_name', 'email', 'role', 'active', 'max_security_grade', 'responsible_systems'])
+    const user = document.users.find((item) => item.subject_id === subjectId)
+    if (!user) throw accessError(404, 'USER_NOT_FOUND', 'The access user was not found.')
+    const role = boundedString(body.role, 32).trim()
+    if (!['admin', 'data_steward', 'developer', 'manager', 'viewer'].includes(role)
+      || typeof body.active !== 'boolean') {
+      throw accessError(400, 'USER_UPDATE_INVALID', 'The requested user authority is invalid.')
+    }
+    if (subjectId === context.principal.subjectId && (!body.active || role !== 'admin')) {
+      throw accessError(409, 'ADMIN_SELF_LOCKOUT_FORBIDDEN', 'The current admin cannot deactivate or demote the current session subject.')
+    }
+    const remainingAdmins = document.users.filter((item) => (
+      item.subject_id !== subjectId && item.active && item.role === 'admin'
+    )).length
+    if ((!body.active || role !== 'admin') && user.active && user.role === 'admin' && remainingAdmins === 0) {
+      throw accessError(409, 'LAST_ADMIN_REQUIRED', 'At least one other active application admin is required.')
+    }
+    user.display_name = boundedString(body.display_name, 255).trim()
+    user.email = boundedString(body.email, 320).trim()
+    if (!user.display_name || !user.email) throw accessError(400, 'USER_UPDATE_INVALID', 'Display name and email are required.')
+    user.role = role
+    user.active = body.active
+    user.max_security_grade = normalizedSecurityGrade(body.max_security_grade)
+    document.system_assignments = document.system_assignments.filter((assignment) => assignment.subject_id !== subjectId)
+    if (user.active) {
+      document.system_assignments.push(...normalizedResponsibleSystems(body.responsible_systems, role, document)
+        .map((assignment) => ({ ...assignment, subject_id: subjectId })))
+    } else if (body.responsible_systems.length) {
+      throw accessError(400, 'RESPONSIBLE_SYSTEM_INVALID', 'Inactive users cannot retain Responsible Systems.')
+    }
+    const result = await writeAdminAccessDocument(context, snapshot, document)
+    const revokedSessionCount = user.active ? 0 : await context.stateStore.revokeLocalSessionsForSubject({
+      subjectId,
+      revokedAt: new Date().toISOString(),
+    })
+    return json(response, 200, {
+      subject_id: subjectId,
+      access_version: result.accessVersion,
+      revoked_session_count: revokedSessionCount,
+    }, { ETag: `"${result.accessVersion}"` })
+  }
+
+  if (grantsMatch) {
+    const subjectId = decodeURIComponent(grantsMatch[1])
+    const user = document.users.find((item) => item.subject_id === subjectId)
+    if (!user) throw accessError(404, 'USER_NOT_FOUND', 'The access user was not found.')
+    if (request.method === 'GET') {
+      const inventory = await datahubInventory()
+      const mappingSnapshot = await context.stateStore.read(POC_TABLE_SYSTEM_MAPPING_SCOPE)
+      const mappingDocument = normalizeTableSystemMappingDocument(mappingSnapshot.value)
+      const grants = new Set((await context.stateStore.listUserTableGrants(subjectId)).map((grant) => grant.tableUrn))
+      const requestedLimit = Number(url.searchParams.get('limit') || 2_000)
+      const limit = Number.isSafeInteger(requestedLimit) && requestedLimit >= 1 && requestedLimit <= 2_000 ? requestedLimit : 2_000
+      let candidates = tableSystemCandidates({
+        assets: inventory,
+        document: mappingDocument,
+        systems: document.systems,
+        query: boundedString(url.searchParams.get('q'), 500),
+        schema: boundedString(url.searchParams.get('schema'), 500),
+        systemId: boundedString(url.searchParams.get('system_id'), 200),
+        securityGrade: boundedString(url.searchParams.get('security_grade'), 20),
+      }).map((item) => ({ ...item, granted: grants.has(item.table_identity) }))
+      const grantedFilter = url.searchParams.get('granted')
+      if (grantedFilter === 'true') candidates = candidates.filter((item) => item.granted)
+      if (grantedFilter === 'false') candidates = candidates.filter((item) => !item.granted)
+      return json(response, 200, {
+        subject_id: subjectId,
+        items: candidates.slice(0, limit),
+        total: candidates.length,
+        selection_complete: candidates.length <= limit,
+        schemas: [...new Set(inventory.filter((asset) => asset?.dataset_kind === 'TABLE').map((asset) => asset.schema_name))].sort(),
+      })
+    }
+    if (request.method === 'PATCH') {
+      const body = await bodyJson(request)
+      exactBodyKeys(body, ['action', 'table_ids'])
+      if (!['GRANT', 'REMOVE'].includes(body.action) || !Array.isArray(body.table_ids)
+        || body.table_ids.length < 1 || body.table_ids.length > 2_000
+        || new Set(body.table_ids).size !== body.table_ids.length
+        || body.table_ids.some((item) => typeof item !== 'string')) {
+        throw accessError(400, 'USER_TABLE_GRANT_INVALID', 'A bounded GRANT or REMOVE command with unique Table identities is required.')
+      }
+      await confirmedCurrentTables(
+        context,
+        body.table_ids,
+        'USER_TABLE_CURRENT_TABLES_UNAVAILABLE',
+        'USER_TABLE_IDENTITY_INVALID',
+      )
+      const changed = await context.stateStore.applyUserTableGrantCommand({
+        subjectId,
+        tableUrns: body.table_ids,
+        action: body.action,
+        actorSubjectId: context.principal.subjectId,
+        changedAt: new Date().toISOString(),
+      })
+      return json(response, 200, { subject_id: subjectId, changed })
+    }
+    return problem(response, 405, 'METHOD_NOT_ALLOWED', 'User Table grants support only GET and PATCH.')
+  }
+
+  if (credentialMatch && request.method === 'PUT') {
+    const subjectId = decodeURIComponent(credentialMatch[1])
+    if (!document.users.some((user) => user.subject_id === subjectId)) {
+      throw accessError(404, 'USER_NOT_FOUND', 'The access user was not found.')
+    }
+    const expectedVersion = accessIfMatch(request)
+    const body = await bodyJson(request)
+    exactBodyKeys(body, ['username', 'password', 'login_enabled', 'must_change_password'], [
+      'username', 'login_enabled', 'must_change_password',
+    ])
+    if (typeof body.login_enabled !== 'boolean' || typeof body.must_change_password !== 'boolean') {
+      throw accessError(400, 'CREDENTIAL_ADMIN_INVALID', 'Credential flags must be boolean.')
+    }
+    const passwordHash = body.password === undefined ? null : await hashPocPassword(body.password)
+    const result = await context.stateStore.administerLocalCredential({
+      subjectId,
+      expectedVersion,
+      usernameNormalized: normalizePocUsername(body.username),
+      passwordHash,
+      loginEnabled: body.login_enabled,
+      mustChangePassword: body.must_change_password,
+      changedAt: new Date().toISOString(),
+    })
+    return json(response, 200, {
+      subject_id: subjectId,
+      credential_version: result.credentialVersion,
+      revoked_session_count: result.revokedSessionCount,
+    }, { ETag: `"${result.credentialVersion}"` })
+  }
+
+  if (sessionsMatch && request.method === 'POST') {
+    const subjectId = decodeURIComponent(sessionsMatch[1])
+    if (!document.users.some((user) => user.subject_id === subjectId)) {
+      throw accessError(404, 'USER_NOT_FOUND', 'The access user was not found.')
+    }
+    exactBodyKeys(await bodyJson(request), [], [])
+    const changed = await context.stateStore.revokeLocalSessionsForSubject({
+      subjectId,
+      revokedAt: new Date().toISOString(),
+    })
+    return json(response, 200, { subject_id: subjectId, revoked_session_count: changed })
+  }
+
+  return problem(response, 405, 'METHOD_NOT_ALLOWED', 'The account administration route does not support this method.')
 }
 
 async function tableSystemMappingApi(request, response, url, context) {
@@ -4418,23 +4802,12 @@ async function tableSystemMappingApi(request, response, url, context) {
     throw accessError(400, 'TABLE_SYSTEM_SYSTEM_INVALID', 'Every selected System must exist and be active in the current access authority.')
   }
   const requestedTables = Array.isArray(body.table_ids) ? body.table_ids.map(String) : []
-  let currentInventory
-  try {
-    currentInventory = await context.currentDatahubInventory()
-    if (!Array.isArray(currentInventory)) throw new Error('DataHub returned an invalid current inventory.')
-  } catch {
-    throw accessError(
-      503,
-      'TABLE_SYSTEM_CURRENT_TABLES_UNAVAILABLE',
-      'Current DataHub Table identities could not be confirmed; no mapping was changed.',
-    )
-  }
-  const currentTables = new Set(currentInventory
-    .filter((asset) => asset?.dataset_kind === 'TABLE')
-    .map((asset) => asset.id))
-  if (requestedTables.some((tableId) => !currentTables.has(tableId))) {
-    throw accessError(400, 'TABLE_SYSTEM_TABLE_INVALID', 'Every selected Table must be a current DataHub TABLE identity.')
-  }
+  await confirmedCurrentTables(
+    context,
+    requestedTables,
+    'TABLE_SYSTEM_CURRENT_TABLES_UNAVAILABLE',
+    'TABLE_SYSTEM_TABLE_INVALID',
+  )
   const applied = applyTableSystemMappingCommand(document, body, context.principal.subjectId)
   if (applied.changed === 0) {
     return json(response, 200, { version: snapshot.version, changed: 0 }, { ETag: `"${snapshot.version}"` })
@@ -4448,6 +4821,9 @@ async function tableSystemMappingApi(request, response, url, context) {
 }
 
 async function api(request, response, url, context) {
+  if (url.pathname === '/api/v1/admin/users' || /^\/api\/v1\/admin\/users\//.test(url.pathname)) {
+    return adminUsersApi(request, response, url, context)
+  }
   if (url.pathname === '/api/v1/admin/table-system-mappings') {
     return tableSystemMappingApi(request, response, url, context)
   }
@@ -4783,11 +5159,13 @@ export function createPocServer({
   authenticator = unconfiguredPocAuthenticator(),
   airflowServiceToken = process.env.POC_AIRFLOW_SERVICE_TOKEN || '',
   currentDatahubInventory: currentDatahubInventoryProvider = currentDatahubInventory,
+  currentDatahubTables: currentDatahubTablesProvider = currentDatahubTables,
 } = {}) {
   if (stateStore) pocStateStore = stateStore
   const baseContext = {
     stateStore: stateStore ?? pocStateStore,
     currentDatahubInventory: currentDatahubInventoryProvider,
+    currentDatahubTables: currentDatahubTablesProvider,
   }
   return createServer(async (request, response) => {
     try {
@@ -4825,7 +5203,8 @@ export function createPocServer({
         assertPocRouteAuthorization(resolvePocRoute(request.method, url.pathname), requestContext.principal)
         rejectProtectedAccessClaims(request, url, {
           allowSystemFilter: url.pathname.startsWith('/api/v1/change-history/')
-            || url.pathname === '/api/v1/admin/table-system-mappings',
+            || url.pathname === '/api/v1/admin/table-system-mappings'
+            || /^\/api\/v1\/admin\/users\/[^/]+\/table-grants$/.test(url.pathname),
         })
         if (stateChangingMethods.has(request.method || '')) authenticator.assertOrigin(request)
         return await api(request, response, url, requestContext)

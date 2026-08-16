@@ -88,6 +88,13 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('change.access.write', 'PUT', /^\/api\/v1\/change-history\/access$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('admin.table-system-mappings.read', 'GET', /^\/api\/v1\/admin\/table-system-mappings$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('admin.table-system-mappings.write', 'PATCH', /^\/api\/v1\/admin\/table-system-mappings$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.users.read', 'GET', /^\/api\/v1\/admin\/users$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.users.create', 'POST', /^\/api\/v1\/admin\/users$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.users.update', 'PATCH', /^\/api\/v1\/admin\/users\/[^/]+$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.user-table-grants.read', 'GET', /^\/api\/v1\/admin\/users\/[^/]+\/table-grants$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.user-table-grants.write', 'PATCH', /^\/api\/v1\/admin\/users\/[^/]+\/table-grants$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.user-credential.write', 'PUT', /^\/api\/v1\/admin\/users\/[^/]+\/credential$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.user-sessions.revoke', 'POST', /^\/api\/v1\/admin\/users\/[^/]+\/sessions\/revoke$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('change.events', 'GET', /^\/api\/v1\/change-history\/events$/, 'CAPABILITY_PROTECTED', 'change.read'),
   route('change.event', 'GET', /^\/api\/v1\/change-history\/events\/[0-9a-f]{64}$/, 'CAPABILITY_PROTECTED', 'change.read'),
   route('change.event.links', 'GET', /^\/api\/v1\/change-history\/events\/[0-9a-f]{64}\/cr-links$/, 'CAPABILITY_PROTECTED', 'change.read'),
@@ -144,7 +151,7 @@ export function buildPocPrincipal({ authentication, accessDocument, accessUser }
   const capabilities = roleCapabilities[accessUser.role]
   if (!capabilities) throw authorizationError(403, 'PROFILE_ROLE_UNSUPPORTED', 'The current profile role is unsupported.')
   const allowedResponsibilities = accessUser.role === 'manager'
-    ? new Set(['DEVELOPER', 'DATA_STEWARD'])
+    ? new Set(['DEVELOPER', 'DATA_STEWARD', 'MANAGER'])
     : accessUser.role === 'developer'
       ? new Set(['DEVELOPER'])
       : accessUser.role === 'data_steward'
@@ -157,6 +164,7 @@ export function buildPocPrincipal({ authentication, accessDocument, accessUser }
   return Object.freeze({
     subjectId: accessUser.subject_id,
     role: accessUser.role,
+    maxSecurityGrade: accessUser.max_security_grade ?? 'normal',
     capabilities: Object.freeze([...capabilities]),
     capabilitySet: new Set(capabilities),
     systemIds,

@@ -1566,7 +1566,9 @@ class PocApiClient {
     if (!requiredCapability) throw new Error('미분류 POC API 경로는 사용할 수 없습니다.')
     if (requiredCapability !== 'AUTHENTICATED') requirePocCapability(requiredCapability)
     if (path.startsWith('/change-history/') || /^\/change-requests\/[^/]+\/change-history(?:\?|$)/.test(path)
-      || parsed.pathname === '/admin/table-system-mappings') {
+      || parsed.pathname === '/admin/table-system-mappings'
+      || parsed.pathname === '/admin/users'
+      || parsed.pathname.startsWith('/admin/users/')) {
       const headers = new Headers(options.headers)
       if (options.idempotencyKey) headers.set('Idempotency-Key', options.idempotencyKey)
       if (options.ifMatch) headers.set('If-Match', options.ifMatch)
@@ -1699,7 +1701,9 @@ class PocApiClient {
       allowed_operations: presentationAuthorization?.capabilities.includes('admin.manage')
         ? pocAdminOperations
         : [],
-      action_vocabulary: presentationAuthorization?.capabilities ?? [],
+      action_vocabulary: presentationAuthorization?.capabilities.includes('admin.manage')
+        ? [...presentationAuthorization.capabilities, 'POC_OPEN_ACCESS_V1']
+        : presentationAuthorization?.capabilities ?? [],
     }
     if (path === '/admin/classification-access/policies/current/summary' && method === 'GET') {
       return structuredClone(pocClassificationPolicySummary)

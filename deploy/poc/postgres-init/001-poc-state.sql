@@ -162,6 +162,30 @@ CREATE INDEX IF NOT EXISTS ix_poc_local_sessions_subject
 CREATE INDEX IF NOT EXISTS ix_poc_local_sessions_expiry
   ON poc_local_sessions (expires_at) WHERE revoked_at IS NULL;
 
+CREATE TABLE IF NOT EXISTS poc_user_table_grants (
+  subject_id text NOT NULL,
+  table_urn text NOT NULL,
+  active boolean NOT NULL DEFAULT true,
+  version bigint NOT NULL DEFAULT 1,
+  created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  created_by text NOT NULL,
+  updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+  updated_by text NOT NULL,
+  PRIMARY KEY (subject_id, table_urn),
+  CONSTRAINT ck_poc_user_table_grant_subject
+    CHECK (char_length(subject_id) BETWEEN 1 AND 255),
+  CONSTRAINT ck_poc_user_table_grant_table
+    CHECK (char_length(table_urn) BETWEEN 20 AND 4096
+      AND table_urn LIKE 'urn:li:dataset:(%'),
+  CONSTRAINT ck_poc_user_table_grant_actor
+    CHECK (char_length(created_by) BETWEEN 1 AND 255
+      AND char_length(updated_by) BETWEEN 1 AND 255),
+  CONSTRAINT ck_poc_user_table_grant_version CHECK (version > 0)
+);
+
+CREATE INDEX IF NOT EXISTS ix_poc_user_table_grants_active_table
+  ON poc_user_table_grants (table_urn, subject_id) WHERE active;
+
 CREATE UNIQUE INDEX IF NOT EXISTS uq_poc_change_history_source_position_ordinal
   ON poc_change_history_ledger_events (
     source_identity_hash, topic_contract, source_partition, source_offset, deterministic_ordinal

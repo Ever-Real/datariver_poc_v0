@@ -66,4 +66,31 @@ describe('AccountAccessAdmin authorization-bound navigation', () => {
     expect(await screen.findByRole('dialog', { name: '계정 갱신' })).toBeInTheDocument()
     expect(screen.getByRole('table', { name: '멤버십 갱신 요청' })).toBeInTheDocument()
   })
+
+  it('uses the exact local-account admin surface in the authoritative POC runtime', async () => {
+    const context: AdminReadContext = {
+      subject_id: 'administrator', workspace_id: 'workspace-one', display_name: 'Administrator',
+      authentication_assurance: 'PASSWORD', fallback_enabled: false,
+      allowed_operations: ['MEMBERSHIP_ACCESS_READ'], action_vocabulary: ['POC_OPEN_ACCESS_V1'],
+    }
+    const api = {
+      listPocAdminUsers: vi.fn(() => Promise.resolve({
+        version: 3,
+        items: [{
+          subject_id: 'user-one', username: 'user.one', display_name: 'User One', email: 'one@example.test',
+          role: 'viewer', active: true, max_security_grade: 'credential', responsible_systems: [],
+          table_grant_count: 2, credential: {
+            username: 'user.one', login_enabled: true, must_change_password: false,
+            failed_attempts: 0, locked_until: null, version: 1, active_session_count: 1,
+          },
+        }],
+        systems: [],
+      })),
+    }
+    renderAccounts(context, api)
+    expect(await screen.findByRole('table', { name: 'DataRiver local human 계정' })).toBeInTheDocument()
+    expect(screen.getByText('대외비')).toBeInTheDocument()
+    expect(screen.queryByRole('table', { name: '워크스페이스 사용자 목록' })).not.toBeInTheDocument()
+    expect(api.listPocAdminUsers).toHaveBeenCalled()
+  })
 })

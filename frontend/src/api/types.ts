@@ -1754,7 +1754,7 @@ export interface SystemSchemaScopeUpdateResult {
   payload_hash: string
 }
 
-export type TableSecurityGrade = 'normal' | 'restricted' | 'credential'
+export type TableSecurityGrade = 'normal' | 'credential' | 'restricted'
 
 export interface TableSystemMappingCandidate {
   table_identity: string
@@ -1777,6 +1777,53 @@ export interface TableSystemMappingPage {
 export interface TableSystemMappingUpdateResult {
   version: number
   changed: number
+}
+
+export interface PocResponsibleSystem {
+  system_id: string
+  priority: number
+  responsibility?: 'DEVELOPER' | 'DATA_STEWARD' | 'MANAGER'
+}
+
+export interface PocAdminCredentialStatus {
+  username: string
+  login_enabled: boolean
+  must_change_password: boolean
+  failed_attempts: number
+  locked_until: string | null
+  version: number
+  active_session_count: number
+}
+
+export interface PocAdminUser {
+  subject_id: string
+  username: string | null
+  display_name: string
+  email: string | null
+  role: 'admin' | 'data_steward' | 'developer' | 'manager' | 'viewer'
+  active: boolean
+  max_security_grade: TableSecurityGrade
+  responsible_systems: PocResponsibleSystem[]
+  table_grant_count: number
+  credential: PocAdminCredentialStatus | null
+}
+
+export interface PocAdminUserPage {
+  version: number
+  items: PocAdminUser[]
+  systems: SystemDirectoryEntry[]
+}
+
+export interface PocUserTableGrantCandidate extends TableSystemMappingCandidate {
+  granted: boolean
+}
+
+export interface PocUserTableGrantPage {
+  subject_id: string
+  items: PocUserTableGrantCandidate[]
+  total: number
+  selection_complete: boolean
+  schemas: string[]
 }
 
 export interface SystemConfigurationEntry {

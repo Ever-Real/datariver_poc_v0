@@ -3,11 +3,27 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import { createPocLocalAuthenticator, hashPocPassword } from './poc-local-auth.mjs'
-import { createPocServer } from './poc-server.mjs'
+import { createPocServer, currentDatahubDatasetExists } from './poc-server.mjs'
 import { createPocStateStore } from './poc-state-store.mjs'
 import { changeHistoryAccessCoreProjection, privateChangeHistoryAccess } from './poc-access-document.mjs'
 
 const AIRFLOW_SERVICE_TOKEN = 'airflow-worker-token-1234567890abcdef'
+const CURRENT_TABLE_URN = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table_c,PROD)'
+
+test('rejects the ghost Dataset shell that DataHub returns for a nonexistent URN', () => {
+  assert.equal(currentDatahubDatasetExists({
+    urn: CURRENT_TABLE_URN,
+    type: 'DATASET',
+    properties: { customProperties: [] },
+    schemaMetadata: null,
+  }, CURRENT_TABLE_URN), true)
+  assert.equal(currentDatahubDatasetExists({
+    urn: CURRENT_TABLE_URN,
+    type: 'DATASET',
+    properties: null,
+    schemaMetadata: null,
+  }, CURRENT_TABLE_URN), false)
+})
 
 function accessDocument(users) {
   return {
@@ -24,6 +40,7 @@ async function serverFixture() {
     { id: 'urn:table:a', external_urn: 'urn:table:a', name: 'table_a', dataset_kind: 'TABLE', platform: 'postgres', database_name: 'db', schema_name: 'schema_a', tags: [] },
     { id: 'urn:table:b', external_urn: 'urn:table:b', name: 'table_b', dataset_kind: 'TABLE', platform: 'postgres', database_name: 'db', schema_name: 'schema_b', tags: ['restricted'] },
     { id: 'urn:view:a', external_urn: 'urn:view:a', name: 'view_a', dataset_kind: 'VIEW', platform: 'postgres', database_name: 'db', schema_name: 'schema_a', tags: [] },
+    { id: CURRENT_TABLE_URN, external_urn: CURRENT_TABLE_URN, name: 'table_c', dataset_kind: 'TABLE', platform: 'postgres', database_name: 'db', schema_name: 'schema_c', tags: ['credential', 'restricted'] },
   ]
   let currentProviderInventory = providerInventory
   let currentProviderError
@@ -80,6 +97,10 @@ async function serverFixture() {
       if (currentProviderError) throw currentProviderError
       return structuredClone(currentProviderInventory)
     },
+    currentDatahubTables: async (tableUrns) => {
+      if (currentProviderError) throw currentProviderError
+      return structuredClone(currentProviderInventory.filter((item) => tableUrns.includes(item.id)))
+    },
   })
   await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
   const address = server.address()
@@ -124,6 +145,7 @@ test('binds concurrent browser sessions to current server-side access profiles',
       subject: 'subject-one',
       display_name: 'First Person',
       roles: ['admin'],
+      max_security_grade: 'normal',
       authentication_assurance: 'PASSWORD',
       default_workspace_id: '00000000-0000-4000-8000-000000000061',
       workspace_selection_enabled: false,
@@ -239,8 +261,8 @@ test('fences exact Table-System mappings with admin capability, current identiti
     assert.equal(initial.status, 200)
     assert.equal(initial.headers.get('etag'), '"0"')
     const initialBody = await initial.json()
-    assert.deepEqual(initialBody.items.map((item) => item.table_identity), ['urn:table:a', 'urn:table:b'])
-    assert.deepEqual(initialBody.items.map((item) => item.security_grade), ['normal', 'restricted'])
+    assert.deepEqual(initialBody.items.map((item) => item.table_identity), ['urn:table:a', 'urn:table:b', CURRENT_TABLE_URN])
+    assert.deepEqual(initialBody.items.map((item) => item.security_grade), ['normal', 'restricted', 'restricted'])
 
     const command = {
       action: 'ASSIGN', table_ids: ['urn:table:a'], system_ids: ['system-a'], reason: 'assign exact runtime Table',
@@ -331,6 +353,143 @@ test('fences exact Table-System mappings with admin capability, current identiti
     const stored = await fixture.stateStore.read('table-system-mappings-v1')
     assert.equal(stored.value.bindings[0].active, false)
     assert.equal(stored.value.bindings[0].version, 2)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('administers local users, security grade, Responsible Systems, explicit Table grants, credentials, and sessions', async () => {
+  const fixture = await serverFixture()
+  try {
+    const [admin, viewer] = await Promise.all([
+      fixture.login('first@example.com', 'first correct password'),
+      fixture.login('second@example.com', 'second correct password'),
+    ])
+    assert.equal(admin.response.status, 200)
+    assert.equal(viewer.response.status, 200)
+
+    const denied = await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: viewer.cookie } })
+    assert.equal(denied.status, 403)
+    assert.equal((await denied.json()).code, 'CAPABILITY_REQUIRED')
+
+    const snapshot = await fixture.stateStore.readChangeHistoryAccess()
+    const document = {
+      ...snapshot.access.value,
+      systems: [{ system_id: 'system-a', code: 'SYSTEM-A', name: 'System A', description: '', active: true, version: 1 }],
+      system_schema_scopes: [],
+    }
+    await fixture.stateStore.writeChangeHistoryAccess({
+      expectedAccessVersion: snapshot.access.version,
+      expectedCoreVersion: snapshot.core.version,
+      accessValue: privateChangeHistoryAccess(document),
+      coreValue: changeHistoryAccessCoreProjection(snapshot.core.value, document, snapshot.access.version + 1),
+    })
+
+    const list = await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: admin.cookie } })
+    assert.equal(list.status, 200)
+    const version = Number(list.headers.get('etag')?.replaceAll('"', ''))
+    const created = await fetch(`${fixture.origin}/api/v1/admin/users`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin, 'If-Match': `"${version}"` },
+      body: JSON.stringify({
+        username: 'developer@example.com', password: 'developer first password',
+        display_name: 'Developer Person', email: 'developer@example.com', role: 'developer',
+        max_security_grade: 'credential', responsible_systems: [{ system_id: 'system-a', priority: 2 }],
+        must_change_password: true,
+      }),
+    })
+    assert.equal(created.status, 201, JSON.stringify(await created.clone().json()))
+    const createdBody = await created.json()
+    assert.match(createdBody.subject_id, /^[0-9a-f-]{36}$/)
+
+    const developerLogin = await fixture.login('developer@example.com', 'developer first password')
+    assert.equal(developerLogin.response.status, 200)
+    const developerProfile = await developerLogin.response.json()
+    assert.equal(developerProfile.subject, createdBody.subject_id)
+    assert.equal(developerProfile.max_security_grade, 'credential')
+    assert.deepEqual(developerProfile.authorization.system_ids, ['system-a'])
+
+    const spoof = await fetch(`${fixture.origin}/api/v1/admin/users`, {
+      headers: { Cookie: developerLogin.cookie, 'X-Subject-Id': 'subject-one' },
+    })
+    assert.equal(spoof.status, 403)
+
+    const grant = async (subjectId, tableIds, action = 'GRANT') => fetch(
+      `${fixture.origin}/api/v1/admin/users/${encodeURIComponent(subjectId)}/table-grants`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin },
+        body: JSON.stringify({ action, table_ids: tableIds }),
+      },
+    )
+    const granted = await grant(createdBody.subject_id, [CURRENT_TABLE_URN])
+    assert.equal(granted.status, 200, JSON.stringify(await granted.clone().json()))
+    assert.equal((await granted.json()).changed, 1)
+    assert.equal((await (await grant(createdBody.subject_id, [CURRENT_TABLE_URN])).json()).changed, 0)
+    assert.equal((await (await grant('subject-two', [CURRENT_TABLE_URN])).json()).changed, 1)
+    assert.equal((await fixture.stateStore.listUserTableGrants(createdBody.subject_id)).length, 1)
+    assert.equal((await fixture.stateStore.listUserTableGrants('subject-two')).length, 1)
+
+    const grantPage = await fetch(
+      `${fixture.origin}/api/v1/admin/users/${encodeURIComponent(createdBody.subject_id)}/table-grants?security_grade=restricted`,
+      { headers: { Cookie: admin.cookie } },
+    )
+    assert.equal(grantPage.status, 200)
+    assert.deepEqual((await grantPage.json()).items.map((item) => [item.table_identity, item.security_grade, item.granted]), [
+      ['urn:table:b', 'restricted', false],
+      [CURRENT_TABLE_URN, 'restricted', true],
+    ])
+
+    const unknown = await grant(createdBody.subject_id, ['urn:li:dataset:(urn:li:dataPlatform:postgres,missing.table,PROD)'])
+    assert.equal(unknown.status, 400)
+    assert.equal((await unknown.json()).code, 'USER_TABLE_IDENTITY_INVALID')
+    fixture.setCurrentProviderError(new Error('provider unavailable'))
+    const unavailable = await grant(createdBody.subject_id, [CURRENT_TABLE_URN], 'REMOVE')
+    assert.equal(unavailable.status, 503)
+    assert.equal((await unavailable.json()).code, 'USER_TABLE_CURRENT_TABLES_UNAVAILABLE')
+    fixture.setCurrentProviderError(undefined)
+
+    const accounts = await (await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: admin.cookie } })).json()
+    const createdAccount = accounts.items.find((item) => item.subject_id === createdBody.subject_id)
+    assert.equal(createdAccount.max_security_grade, 'credential')
+    assert.equal(createdAccount.table_grant_count, 1)
+    assert.deepEqual(createdAccount.responsible_systems.map((item) => [item.system_id, item.priority]), [['system-a', 2]])
+
+    const credentialUpdate = await fetch(`${fixture.origin}/api/v1/admin/users/${createdBody.subject_id}/credential`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin,
+        'If-Match': `"${createdAccount.credential.version}"`,
+      },
+      body: JSON.stringify({
+        username: 'developer@example.com', login_enabled: false, must_change_password: true,
+      }),
+    })
+    assert.equal(credentialUpdate.status, 200)
+    assert.equal((await credentialUpdate.json()).revoked_session_count, 1)
+    assert.equal((await fetch(`${fixture.origin}/auth/me`, { headers: { Cookie: developerLogin.cookie } })).status, 401)
+    assert.equal((await fixture.login('developer@example.com', 'developer first password')).response.status, 401)
+
+    const afterDisable = await (await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: admin.cookie } })).json()
+    const disabled = afterDisable.items.find((item) => item.subject_id === createdBody.subject_id)
+    const reset = await fetch(`${fixture.origin}/api/v1/admin/users/${createdBody.subject_id}/credential`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin,
+        'If-Match': `"${disabled.credential.version}"`,
+      },
+      body: JSON.stringify({
+        username: 'developer@example.com', password: 'developer replacement password',
+        login_enabled: true, must_change_password: false,
+      }),
+    })
+    assert.equal(reset.status, 200)
+    assert.equal((await fixture.login('developer@example.com', 'developer replacement password')).response.status, 200)
+
+    const removed = await grant(createdBody.subject_id, [CURRENT_TABLE_URN], 'REMOVE')
+    assert.equal(removed.status, 200)
+    assert.equal((await removed.json()).changed, 1)
+    assert.equal((await fixture.stateStore.listUserTableGrants(createdBody.subject_id)).length, 0)
   } finally {
     await fixture.close()
   }

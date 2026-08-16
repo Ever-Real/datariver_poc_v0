@@ -60,7 +60,7 @@ selection persists only the selected exact Table URNs; future Tables in the same
 nothing.
 
 Table grade shown in this slice is derived for presentation by exact normalized equality against
-DataHub tag identity/name `restricted` and `credential`, with `credential` precedence and `normal`
+DataHub tag identity/name `restricted` and `credential`, with product severity order `normal < credential < restricted` and `restricted` precedence
 otherwise. Substring matching is forbidden. The current catalog projection now retains Table tag
 URN/name references. Grade and grant enforcement are intentionally deferred to PHASE 1C-2/1D.
 

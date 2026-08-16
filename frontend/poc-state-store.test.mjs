@@ -233,6 +233,7 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     'poc_change_history_cr_link_events',
     'poc_local_credentials',
     'poc_local_sessions',
+    'poc_user_table_grants',
   ]) {
     assert.match(startupSql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
     assert.match(initSql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
@@ -246,10 +247,33 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     'trg_poc_change_history_cr_link_append_only',
     "password_hash LIKE '$argon2id$v=19$%'",
     'expires_at > created_at',
+    'PRIMARY KEY (subject_id, table_urn)',
   ]) {
     assert.ok(startupSql.includes(contract), contract)
     assert.ok(initSql.includes(contract), contract)
   }
+})
+
+test('stores only the explicit User-Table domain relation with idempotent active lifecycle', async () => {
+  const store = createPocStateStore()
+  const tableUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table,PROD)'
+  const input = {
+    subjectId: 'subject-one', tableUrns: [tableUrn], action: 'GRANT',
+    actorSubjectId: 'admin-one', changedAt: '2026-08-16T10:00:00.000Z',
+  }
+  assert.equal(await store.applyUserTableGrantCommand(input), 1)
+  assert.equal(await store.applyUserTableGrantCommand(input), 0)
+  const grants = await store.listUserTableGrants('subject-one')
+  assert.deepEqual(grants.map((grant) => [grant.tableUrn, grant.active, grant.version]), [[tableUrn, true, 1]])
+  assert.equal(Object.hasOwn(grants[0], 'role'), false)
+  assert.equal(Object.hasOwn(grants[0], 'systemId'), false)
+  assert.equal(Object.hasOwn(grants[0], 'securityGrade'), false)
+  assert.equal(await store.applyUserTableGrantCommand({
+    ...input, action: 'REMOVE', changedAt: '2026-08-16T10:01:00.000Z',
+  }), 1)
+  assert.equal((await store.listUserTableGrants('subject-one')).length, 0)
+  assert.deepEqual((await store.listUserTableGrants('subject-one', { includeInactive: true }))
+    .map((grant) => [grant.active, grant.version]), [[false, 2]])
 })
 
 test('atomically provisions a credential behind access/core CAS without storing authority in auth rows', async () => {

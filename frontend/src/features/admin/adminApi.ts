@@ -58,6 +58,9 @@ import type {
   TableSecurityGrade,
   TableSystemMappingPage,
   TableSystemMappingUpdateResult,
+  PocAdminUserPage,
+  PocUserTableGrantPage,
+  PocResponsibleSystem,
   SystemConfigurationInventory,
   SystemConfigurationTestResult,
 } from '../../api/types'
@@ -580,6 +583,86 @@ export class AdminApi {
       ifMatch: quotedVersion(version),
       body: JSON.stringify({ action, table_ids: tableIds, system_ids: systemIds, reason }),
     })
+  }
+
+  listPocAdminUsers(signal?: AbortSignal) {
+    return this.client.request<PocAdminUserPage>('/admin/users', { cache: 'no-store', signal })
+  }
+
+  createPocAdminUser(input: {
+    username: string
+    password: string
+    display_name: string
+    email: string
+    role: 'admin' | 'data_steward' | 'developer' | 'manager' | 'viewer'
+    max_security_grade: TableSecurityGrade
+    responsible_systems: Array<Pick<PocResponsibleSystem, 'system_id' | 'priority'>>
+    must_change_password: boolean
+  }, version: number) {
+    return this.client.request<{ subject_id: string; access_version: number; credential_version: number }>(
+      '/admin/users',
+      { method: 'POST', ifMatch: quotedVersion(version), body: JSON.stringify(input) },
+    )
+  }
+
+  updatePocAdminUser(subjectId: string, input: {
+    display_name: string
+    email: string
+    role: 'admin' | 'data_steward' | 'developer' | 'manager' | 'viewer'
+    active: boolean
+    max_security_grade: TableSecurityGrade
+    responsible_systems: Array<Pick<PocResponsibleSystem, 'system_id' | 'priority'>>
+  }, version: number) {
+    return this.client.request<{ subject_id: string; access_version: number; revoked_session_count: number }>(
+      `/admin/users/${encodeURIComponent(subjectId)}`,
+      { method: 'PATCH', ifMatch: quotedVersion(version), body: JSON.stringify(input) },
+    )
+  }
+
+  listPocUserTableGrants(subjectId: string, filters: {
+    query?: string
+    schema?: string
+    systemId?: string
+    securityGrade?: TableSecurityGrade
+    granted?: boolean
+    signal?: AbortSignal
+  } = {}) {
+    const parameters = new URLSearchParams({ limit: '2000' })
+    if (filters.query) parameters.set('q', filters.query)
+    if (filters.schema) parameters.set('schema', filters.schema)
+    if (filters.systemId) parameters.set('system_id', filters.systemId)
+    if (filters.securityGrade) parameters.set('security_grade', filters.securityGrade)
+    if (filters.granted !== undefined) parameters.set('granted', String(filters.granted))
+    return this.client.request<PocUserTableGrantPage>(
+      `/admin/users/${encodeURIComponent(subjectId)}/table-grants?${parameters.toString()}`,
+      { cache: 'no-store', signal: filters.signal },
+    )
+  }
+
+  patchPocUserTableGrants(subjectId: string, action: 'GRANT' | 'REMOVE', tableIds: string[]) {
+    return this.client.request<{ subject_id: string; changed: number }>(
+      `/admin/users/${encodeURIComponent(subjectId)}/table-grants`,
+      { method: 'PATCH', body: JSON.stringify({ action, table_ids: tableIds }) },
+    )
+  }
+
+  updatePocUserCredential(subjectId: string, input: {
+    username: string
+    password?: string
+    login_enabled: boolean
+    must_change_password: boolean
+  }, version: number) {
+    return this.client.request<{ subject_id: string; credential_version: number; revoked_session_count: number }>(
+      `/admin/users/${encodeURIComponent(subjectId)}/credential`,
+      { method: 'PUT', ifMatch: quotedVersion(version), body: JSON.stringify(input) },
+    )
+  }
+
+  revokePocUserSessions(subjectId: string) {
+    return this.client.request<{ subject_id: string; revoked_session_count: number }>(
+      `/admin/users/${encodeURIComponent(subjectId)}/sessions/revoke`,
+      { method: 'POST', body: JSON.stringify({}) },
+    )
   }
 
   listSystemConfiguration(signal?: AbortSignal) {

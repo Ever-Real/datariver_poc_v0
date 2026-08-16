@@ -76,6 +76,7 @@ startup dependency and it does not authorize deleting historical migrations or `
 | `poc_change_history_cr_link_events` | yes | append-only | candidate/primary/unlink history | FK to ledger event | same idempotent SQL | `HISTORY_REQUIRED` |
 | `poc_local_credentials` | login only | operator bootstrap/reset and bounded lock state | local authentication only; no role/System columns | `subject_id` references the access-document identity by application CAS | same additive idempotent SQL | `ACTIVE` |
 | `poc_local_sessions` | every protected request | login/logout/revoke/expiry lifecycle | opaque server session; token hash only | FK to `poc_local_credentials.subject_id` | same additive idempotent SQL | `ACTIVE` |
+| `poc_user_table_grants` | Admin account access management; PHASE 1D enforcement consumer | exact grant/remove active lifecycle | explicit User ↔ current DataHub Table relation only | `subject_id` and dataset URN are validated against the access document/current provider by the application | same additive idempotent SQL | `ACTIVE` |
 
 `poc_state` also owns the bounded `table-system-mappings-v1` document introduced by ADR-0125.
 It is an exact N:M relation between a current DataHub dataset URN (`dataset_kind=TABLE`) and an
@@ -86,23 +87,28 @@ authority and therefore does not replace the access document. Archived Systems m
 ineffective without deleting lifecycle evidence. Legacy `system_schema_scopes` remain historical
 CR-routing compatibility and are not a schema ACL or an inheritance source for this relation.
 
-The Catalog projection retains exact Table tag URN/name references. PHASE 1C-1 displays a derived
-`normal/restricted/credential` grade using exact normalized tag equality only; the grade is not yet
-an authorization selector. Explicit User ↔ Table grants, user maximum grade and retrieval-time
-enforcement remain later PHASE 1C-2/1D work.
+The Catalog projection retains exact Table tag URN/name references. PHASE 1C-2 derives the strict
+severity order `normal < credential < restricted` using exact normalized tag equality only, with
+`restricted` precedence when both canonical tags exist. Each access-document user has one
+`max_security_grade` scalar (existing users normalize to `normal`). Explicit User ↔ Table grants are
+stored in `poc_user_table_grants`; the relation intentionally has no Role, capability, System, grade,
+deny, schema inheritance or expression columns. Cross-feature retrieval-time enforcement remains
+PHASE 1D so management-state introduction does not empty existing user views prematurely.
 
 ```mermaid
 erDiagram
     POC_STATE ||--o{ POC_LOCAL_CREDENTIALS : binds_subject_by_CAS
     POC_LOCAL_CREDENTIALS ||--o{ POC_LOCAL_SESSIONS : authenticates
+    POC_STATE ||--o{ POC_USER_TABLE_GRANTS : validates_subject
     POC_CHANGE_HISTORY_SOURCES ||--o{ POC_CHANGE_HISTORY_CHECKPOINTS : fences
     POC_CHANGE_HISTORY_SOURCES ||--o{ POC_CHANGE_HISTORY_LEDGER_EVENTS : captures
     POC_CHANGE_HISTORY_LEDGER_EVENTS ||--o{ POC_CHANGE_HISTORY_CR_LINK_EVENTS : links
     POC_STATE ||--o{ POC_CATALOG_EMBEDDING : selects_generation
 ```
 
-The access document remains the only role/System authority. Credential and session rows own only
-authentication material. No current POC table is a deletion candidate in this Phase; migration
+The access document remains the only role/Responsible-System authority and owns user maximum grade.
+Credential and session rows own only authentication material. `poc_user_table_grants` is a bounded
+product-domain relation, not a generic ACL or second IAM. No current POC table is a deletion candidate in this Phase; migration
 squash, workspace/IAM retirement and whole-schema normalization remain outside the Account/Auth
 replacement slice.
 

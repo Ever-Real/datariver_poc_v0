@@ -3,7 +3,8 @@
 export const CHANGE_HISTORY_ACCESS_ROLES = Object.freeze([
   'admin', 'data_steward', 'developer', 'manager', 'viewer',
 ])
-export const CHANGE_HISTORY_RESPONSIBILITIES = Object.freeze(['DATA_STEWARD', 'DEVELOPER'])
+export const CHANGE_HISTORY_RESPONSIBILITIES = Object.freeze(['DATA_STEWARD', 'DEVELOPER', 'MANAGER'])
+export const USER_SECURITY_GRADES = Object.freeze(['normal', 'credential', 'restricted'])
 
 const changeHistoryAccessRoles = new Set(CHANGE_HISTORY_ACCESS_ROLES)
 const changeHistoryResponsibilities = new Set(CHANGE_HISTORY_RESPONSIBILITIES)
@@ -82,7 +83,7 @@ function normalizedAccessUsers(value) {
     const user = accessRecord(raw, `users[${index}]`)
     exactAccessKeys(user, `users[${index}]`, [
       'subject_id', 'role', 'active', 'provider_owner_refs', 'username', 'display_name', 'email',
-      'first_name', 'last_name', 'department_id', 'job_function',
+      'first_name', 'last_name', 'department_id', 'job_function', 'max_security_grade',
     ], [
       'subject_id', 'role', 'active',
     ])
@@ -97,10 +98,19 @@ function normalizedAccessUsers(value) {
       throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `users[${index}].provider_owner_refs contains duplicates.`)
     }
     subjects.add(subjectId)
+    const maximumSecurityGrade = accessString(
+      user.max_security_grade ?? 'normal',
+      `users[${index}].max_security_grade`,
+      20,
+    )
+    if (!USER_SECURITY_GRADES.includes(maximumSecurityGrade)) {
+      throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `users[${index}].max_security_grade is unknown.`)
+    }
     return {
       subject_id: subjectId,
       role,
       active: accessBoolean(user.active, `users[${index}].active`),
+      max_security_grade: maximumSecurityGrade,
       provider_owner_refs: ownerRefs.sort(),
       ...(user.username === undefined
         ? {} : { username: accessString(user.username, `users[${index}].username`, 64) }),
@@ -208,7 +218,8 @@ function normalizedAccessAssignments(value, users, systems) {
     const key = JSON.stringify([systemId, subjectId, responsibility])
     const user = userById.get(subjectId)
     const system = systemById.get(systemId)
-    if (!changeHistoryResponsibilities.has(responsibility) || keys.has(key) || !user?.active || !system || (active && !system.active)) {
+    if (!changeHistoryResponsibilities.has(responsibility) || keys.has(key) || !user?.active || !system
+      || (active && !system.active)) {
       throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `system_assignments[${index}] is duplicate or references an inactive/unknown subject or System.`)
     }
     keys.add(key)

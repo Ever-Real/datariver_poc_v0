@@ -910,6 +910,7 @@ describe('POC live-provider compatibility adapter', () => {
       'IDENTITY_USER_PROVISION', 'MEMBERSHIP_ACCESS_READ', 'SYSTEM_CONFIGURATION_READ',
     ]))
     expect(context.action_vocabulary).toContain('change.manage')
+    expect(context.action_vocabulary).toContain('POC_OPEN_ACCESS_V1')
 
     const provisioned = await client.request<{
       subject_id: string
