@@ -47,7 +47,10 @@ reason          = bounded operator reason
 The scope is not a second IAM or permission authority. It stores no role, capability, user grant,
 responsibility or security policy. Only the exact admin route can write it, with current
 `admin.manage`, same-origin/CSRF checks, current active System validation, current DataHub `TABLE`
-identity validation and `If-Match` CAS. Inactive rows are retained as lifecycle evidence. The
+identity validation and `If-Match` CAS. GET may use the bounded last-good Catalog projection for
+availability, but PATCH synchronously refreshes the provider inventory and fails closed before the
+mapping CAS write when a selected identity is deleted, changes from `TABLE`, or cannot be confirmed.
+Inactive rows are retained as lifecycle evidence. The
 existing `poc_state` transaction/advisory-lock implementation provides the same atomic CAS semantics
 without a new table or migration.
 
@@ -74,8 +77,10 @@ URN/name references. Grade and grant enforcement are intentionally deferred to P
 
 - PHASE 1C-1 can be rolled back by reverting the source/image. The new scope is additive and ignored
   by the prior runtime; exact rows remain recoverable.
-- Whole-document CAS is intentionally bounded. A measured scale/contestion problem may justify a
+- Whole-document CAS is intentionally bounded. A measured scale/contention problem may justify a
   normalized storage adapter later, but it may not become a second System or authorization authority.
+- Current-provider confirmation can make an Admin mapping mutation materially slower than a
+  last-good Catalog read. Any later optimization must retain the no-stale-identity write boundary.
 - PHASE 1C-2 must add explicit User ↔ Table grants and user security grade without putting large
   grant sets into the access document.
 - PHASE 1C-4 must migrate CR responsibility to one exact mapped System while preserving historical
