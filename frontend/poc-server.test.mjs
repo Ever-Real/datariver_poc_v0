@@ -65,6 +65,12 @@ test('allows Compose-only Neo4j credentials when npm mode has no Neo4j URL', () 
   assert.equal(result.status, 0, result.stderr)
 })
 
+test('defaults the native Node listener to loopback and preserves an explicit container override', async () => {
+  const { resolvePocServerHost } = await import('./poc-server.mjs?listener-host-contract-test')
+  assert.equal(resolvePocServerHost({}), '127.0.0.1')
+  assert.equal(resolvePocServerHost({ POC_SERVER_HOST: ' 0.0.0.0 ' }), '0.0.0.0')
+})
+
 test('reports a safe provider capability inventory', async () => {
   const response = await fetch(new URL('/poc-api/capabilities', origin))
   assert.equal(response.status, 200)

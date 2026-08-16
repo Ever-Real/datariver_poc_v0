@@ -4853,6 +4853,10 @@ export function createPocServer({ stateStore, activeSubjectId } = {}) {
   })
 }
 
+export function resolvePocServerHost(environment = process.env) {
+  return environment.POC_SERVER_HOST?.trim() || '127.0.0.1'
+}
+
 export async function startPocServer({ stateStore } = {}) {
   if (!existsSync(join(staticDirectory, 'poc.html'))) throw new Error('Run npm run build:poc before starting the POC server.')
   if (stateStore) pocStateStore = stateStore
@@ -4876,7 +4880,7 @@ export async function startPocServer({ stateStore } = {}) {
     },
   })
   const server = createPocServer()
-  const host = process.env.POC_SERVER_HOST?.trim() || '0.0.0.0'
+  const host = resolvePocServerHost()
   const port = Number(process.env.POC_SERVER_PORT || process.env.POC_PORT || 39080)
   await new Promise((resolvePromise) => server.listen(port, host, resolvePromise))
   process.stdout.write(`DataRiver POC listening on http://${host}:${port}\n`)

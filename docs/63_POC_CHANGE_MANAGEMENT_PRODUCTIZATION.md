@@ -50,6 +50,10 @@ CR 연결 및 접근 권위의 canonical store다. Redis와 pgvector는 가속/�
   protected core projection과 동기화된다. 다른 legacy Admin 기능까지 모두 새 Node domain API로
   이전되었다고 주장하지 않는다.
 - 이 분리는 현재 구현이다. ADR-0124의 feature/application/provider port는 미래 목표이며 미구현이다.
+- DEV host publish와 native Node/Vite listener는 기본적으로 `127.0.0.1`이다. Compose Web은 peer
+  container 통신을 위해 Node listener만 container 내부 `0.0.0.0:8080`으로 명시하고, 선택적 Airflow는
+  같은 external `datariver-poc-services` network에서 `http://web:8080`을 기본 호출한다. Intranet bind
+  override는 네트워크 opt-in일 뿐 인증 또는 TLS를 제공하지 않는다.
 
 ## 3. 기술 스택
 
@@ -141,7 +145,7 @@ hash 또는 credential이 아니다. 모든 runtime 변수 변경은 별도 표�
 
 | Name | R/O | Example/source | Secret | Restart |
 |---|---|---|---|---|
-| `POC_BIND_HOST` | O | `0.0.0.0`; Compose host bind | N | Y |
+| `POC_BIND_HOST` | O | `127.0.0.1`; Compose host bind, intranet exposure is explicit | N | Y |
 | `POC_PORT` | O | `39080`; host port | N | Y |
 | `POC_PLATFORM` | O | `linux/amd64`; target build platform | N | build |
 | `POC_IMAGE_TAG` | O | `local`; deployment-owned tag | N | build |
@@ -193,10 +197,10 @@ hash 또는 credential이 아니다. 모든 runtime 변수 변경은 별도 표�
 | `AIRFLOW_USERNAME` | C | existing Airflow principal | Y | Y |
 | `AIRFLOW_PASSWORD` | C | existing Airflow secret | Y | Y |
 | `POC_AIRFLOW_IMAGE` | O | reviewed Airflow image | N | Y |
-| `AIRFLOW_BIND_HOST` | O | host bind | N | Y |
+| `AIRFLOW_BIND_HOST` | O | `127.0.0.1`; optional Airflow host bind | N | Y |
 | `AIRFLOW_PORT` | O | host port | N | Y |
 | `AIRFLOW_DAG_ID` | O | reviewed Bulk preparation DAG ID | N | Y |
-| `AIRFLOW_DATARIVER_URL` | C | Airflow-to-DataRiver routable URL | N | Y |
+| `AIRFLOW_DATARIVER_URL` | C | `http://web:8080`; overrideable Airflow-to-DataRiver URL | N | Y |
 | `AIRFLOW_WORKSPACE_ID` | O | actual DataRiver Workspace UUID | N | Y |
 | `EXTERNAL_SERVICE_NO_PROXY` | O | comma-separated proxy-bypass hosts | N | Y |
 | `MINIO_URL` | C | S3-compatible root URL | N | Y |
@@ -221,7 +225,7 @@ hash 또는 credential이 아니다. 모든 runtime 변수 변경은 별도 표�
 | `NEO4J_USERNAME` | O | graph principal | Y | Y |
 | `NEO4J_PASSWORD` | R | existing graph secret source | Y | Y |
 | `POC_ENV_FILE` | O | native process env-file path | path may be sensitive | process |
-| `POC_SERVER_HOST`, `POC_SERVER_PORT` | O | native server bind | N | process |
+| `POC_SERVER_HOST`, `POC_SERVER_PORT` | O | native server bind; host defaults to `127.0.0.1` | N | process |
 | `POC_DATABASE_URL` | O | native DB URL alternative | Y | process |
 | `POC_REDIS_URL` | O | native Redis URL | may be Y | process |
 | `POC_TEST_DATABASE_TARGET` | C test-only | isolated DB target descriptor | N | test process |
@@ -436,8 +440,9 @@ CR 상태 문자열은 바꾸지 않고 다음 presentation mapping만 사용한
 
 CPU architecture, Docker/Compose, external service compatibility, routable DNS/network, writable/secret
 filesystem, 충돌 없는 ports가 prerequisite다. 모든 환경에서 무조건 동작한다고 주장하지 않는다.
-provider overlay를 사용하면 반복적인 `docker network connect`는 필요 없다. 새 proxy/service/container는
-추가하지 않는다.
+provider overlay와 POC Airflow의 shared external network를 사용하면 반복적인 `docker network connect`는
+필요 없다. 새 proxy/service/container는 추가하지 않는다. 기본 loopback publish를 사내 interface로
+override하더라도 현재 무인증 POC에 사용자 인증이나 TLS가 생기는 것은 아니다.
 
 ## 12. 검증 상태와 잔여 backlog
 

@@ -10,7 +10,10 @@ POC는 별도 축약 화면을 만들지 않습니다. 원본 `App`과 기존 Da
 재인증 UI/동작입니다. 원본 상단 메뉴 오른쪽의 작은 `[poc]` 배지가 이 무인증 실행 경계를
 표시합니다.
 
-이 구성은 사내망의 다른 PC에 공개하는 POC입니다. 인터넷 공개용 구성이 아닙니다.
+기본 DEV 구성은 Web과 선택적 Airflow UI를 `127.0.0.1`에만 공개합니다. 다른 사내 PC에서
+접근시킬 때는 `POC_BIND_HOST` 또는 `AIRFLOW_BIND_HOST`를 검토된 사내 interface로 명시적으로
+바꿔야 합니다. 이 opt-in은 네트워크 도달성만 넓히며 인증·TLS를 추가하지 않습니다. 인터넷
+공개용 구성이 아닙니다.
 
 ## 실제 provider와 POC 상태 저장소의 역할
 
@@ -103,7 +106,8 @@ npm run poc
 ```
 
 `npm run poc`는 POC build 후 정적 화면과 gateway를 한 프로세스로 실행합니다. 기본 URL은
-`http://<prep-ip>:39080/`입니다. 동등한 helper는 `./scripts/run_poc.sh npm`입니다. npm 단독
+`http://127.0.0.1:39080/`이며, 검토된 사내 접근이 필요할 때만 `POC_SERVER_HOST`를 해당
+interface로 명시합니다. 동등한 helper는 `./scripts/run_poc.sh npm`입니다. npm 단독
 모드는 Redis·pgvector·Neo4j 컨테이너를 시작하지 않습니다. 단, `.env`의
 `POC_POSTGRES_*`, `POC_REDIS_URL`, `NEO4J_HTTP_URL`이 이미 실행 중인 지원 서비스의 host
 주소를 가리키면 npm 실행도 PostgreSQL 상태 저장, Redis cache, Neo4j graph를 그대로
@@ -123,7 +127,8 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
 또는 `./scripts/run_poc.sh docker`를 사용할 수 있습니다. 기본 Docker target은
 `linux/amd64`이고 Web/gateway, Redis, pgvector PostgreSQL, Neo4j를 함께 실행합니다.
 DataHub·Airflow·MinIO·LLM은 이 Compose가 생성하거나 변경하지 않습니다. PostgreSQL,
-Redis, Neo4j 진단 port는 기본적으로 `127.0.0.1`에만 bind되고 Web만 사내망에 공개됩니다.
+Redis, Neo4j 진단 port와 Web publish는 기본적으로 `127.0.0.1`에만 bind됩니다. Web container의
+Node listener만 peer-container 통신을 위해 container 내부 `0.0.0.0:8080`을 유지합니다.
 
 ```bash
 ./scripts/run_poc.sh status
@@ -137,7 +142,9 @@ Redis, Neo4j 진단 port는 기본적으로 `127.0.0.1`에만 bind되고 Web만 
 
 Airflow를 함께 준비해야 할 때도 Web Compose와 분리해 실행합니다. 이 구성은 repository의
 기존 `bulk_registration_prepare.py`, `datariver_bulk_registration.py`,
-`datariver_auth.py` 세 파일만 read-only로 mount하고 예제 DAG는 적재하지 않습니다.
+`datariver_auth.py` 세 파일만 read-only로 mount하고 예제 DAG는 적재하지 않습니다. Web Compose가
+만든 `datariver-poc-services` external network에 연결해 기본적으로 `http://web:8080`을 호출하며,
+별도 host의 Web을 호출해야 할 때만 `AIRFLOW_DATARIVER_URL`을 override합니다.
 
 ```bash
 docker compose --env-file deploy/poc/.env \
@@ -146,7 +153,8 @@ docker compose --env-file deploy/poc/.env \
   -f deploy/poc/docker-compose.airflow.yaml up -d
 ```
 
-`.env`에는 `AIRFLOW_URL=http://<host>:18888`, `AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD`,
+`.env`에는 기본 host-local UI를 가리키는 `AIRFLOW_URL=http://127.0.0.1:18888`,
+`AIRFLOW_USERNAME`, `AIRFLOW_PASSWORD`,
 `AIRFLOW_DAG_ID=datariver_bulk_registration_prepare`만 연결값으로 지정합니다. DAG는 안전을
 위해 이 검토된 파일 하나만 mount하며 새 POC Airflow 상태에서는 active로 생성됩니다. Web은
 Bulk 파일 검증을 끝낸 경우에만 REST API로 명시 실행합니다. 기존 Airflow state volume에서

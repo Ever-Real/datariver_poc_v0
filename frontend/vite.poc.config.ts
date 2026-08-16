@@ -4,8 +4,18 @@ import { defineConfig } from 'vite'
 
 // The POC deliberately has its own entry graph. It neither loads deployment
 // runtime configuration nor defines any OIDC/API build value.
-const workingDirectory = (globalThis as { process?: { cwd?: () => string } }).process?.cwd?.() ?? '.'
+type ProcessLike = {
+  cwd?: () => string
+  env?: Record<string, string | undefined>
+}
+
+const processLike = (globalThis as { process?: ProcessLike }).process
+const workingDirectory = processLike?.cwd?.() ?? '.'
 const pocModule = (name: string) => `${workingDirectory}/src/poc/${name}`
+export const pocDevelopmentHost = (environment: Record<string, string | undefined> = processLike?.env ?? {}) => (
+  environment.POC_SERVER_HOST?.trim() || '127.0.0.1'
+)
+const developmentHost = pocDevelopmentHost()
 const pocDevelopmentIndex = {
   name: 'datariver-poc-development-index',
   transformIndexHtml: {
@@ -45,12 +55,12 @@ export default defineConfig({
     ],
   },
   server: {
-    host: '0.0.0.0',
+    host: developmentHost,
     port: 39080,
     strictPort: true,
   },
   preview: {
-    host: '0.0.0.0',
+    host: developmentHost,
     port: 39080,
     strictPort: true,
   },

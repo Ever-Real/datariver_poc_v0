@@ -16,11 +16,11 @@ services:
       AIRFLOW__API__BASE_URL: http://airflow:8080
       DATARIVER_POC_OPEN_ACCESS: "true"
       DATARIVER_WORKSPACE_ID: ${AIRFLOW_WORKSPACE_ID:-00000000-0000-4000-8000-000000000061}
-      DATARIVER_API_BASE_URL: ${AIRFLOW_DATARIVER_URL:-http://host.docker.internal:39080}
-      NO_PROXY: localhost,127.0.0.1,host.docker.internal,airflow,${EXTERNAL_SERVICE_NO_PROXY:-}
-      no_proxy: localhost,127.0.0.1,host.docker.internal,airflow,${EXTERNAL_SERVICE_NO_PROXY:-}
+      DATARIVER_API_BASE_URL: ${AIRFLOW_DATARIVER_URL:-http://web:8080}
+      NO_PROXY: localhost,127.0.0.1,host.docker.internal,airflow,web,${EXTERNAL_SERVICE_NO_PROXY:-}
+      no_proxy: localhost,127.0.0.1,host.docker.internal,airflow,web,${EXTERNAL_SERVICE_NO_PROXY:-}
     ports:
-      - "${AIRFLOW_BIND_HOST:-0.0.0.0}:${AIRFLOW_PORT:-18888}:8080"
+      - "${AIRFLOW_BIND_HOST:-127.0.0.1}:${AIRFLOW_PORT:-18888}:8080"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     volumes:
@@ -29,6 +29,8 @@ services:
       - ../../infra/airflow/dags/datariver_auth.py:/opt/airflow/dags/datariver_auth.py:ro
       - ./airflow-entrypoint.sh:/opt/datariver/poc-airflow-entrypoint.sh:ro
       - airflow-state:/opt/airflow
+    networks:
+      - poc-services
     healthcheck:
       test: ["CMD", "curl", "--fail", "http://127.0.0.1:8080/api/v2/monitor/health"]
       interval: 15s
@@ -40,6 +42,11 @@ services:
     cpus: 1.0
     security_opt:
       - no-new-privileges:true
+
+networks:
+  poc-services:
+    external: true
+    name: ${POC_SHARED_NETWORK:-datariver-poc-services}
 
 volumes:
   airflow-state:

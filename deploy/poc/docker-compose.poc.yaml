@@ -11,8 +11,11 @@ services:
         POC_SOURCE_COMMIT: ${POC_SOURCE_COMMIT:-local}
         NODE_IMAGE: ${POC_NODE_IMAGE:-node:22.19.0-bookworm-slim}
     ports:
-      - "${POC_BIND_HOST:-0.0.0.0}:${POC_PORT:-39080}:8080"
+      - "${POC_BIND_HOST:-127.0.0.1}:${POC_PORT:-39080}:8080"
     environment:
+      # The host publish defaults to loopback, but peer containers still need
+      # the Node server to listen on every interface inside this container.
+      POC_SERVER_HOST: 0.0.0.0
       DATAHUB_GMS_URL: ${DATAHUB_GMS_URL:-}
       DATAHUB_GMS_TOKEN: ${DATAHUB_GMS_TOKEN:-}
       DATAHUB_UI_URL: ${DATAHUB_UI_URL:-}
