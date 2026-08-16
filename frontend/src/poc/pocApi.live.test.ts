@@ -390,6 +390,38 @@ describe('POC live-provider compatibility adapter', () => {
     expect(context.action_vocabulary).not.toContain('admin.manage')
   })
 
+  it('forwards the fixed feature security policy through the authenticated Node gateway', async () => {
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'admin', capabilities: ['admin.manage'],
+      system_scope: 'GLOBAL', system_ids: [],
+    }, 'feature-security-policy-admin')
+    const request = vi.fn((input: RequestInfo | URL) => {
+      const url = new URL(input instanceof Request ? input.url : String(input), 'https://poc.invalid')
+      expect(url.pathname).toBe('/api/v1/admin/feature-security-policy')
+      return Promise.resolve(new Response(JSON.stringify({
+        version: 0,
+        schema_version: 1,
+        cells: [],
+        updated_at: null,
+        updated_by: null,
+        reason: 'APPROVED_PRODUCT_DEFAULT',
+      }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: '"0"' },
+      }))
+    })
+    vi.stubGlobal('fetch', request)
+
+    const response = await useStableApiClient().requestWithMeta<{ version: number }>(
+      '/admin/feature-security-policy',
+    )
+
+    expect(response.data.version).toBe(0)
+    expect(response.etag).toBe('"0"')
+    expect(request).toHaveBeenCalledTimes(1)
+  })
+
   it('resets singleton POC memory when the authenticated subject boundary changes', async () => {
     configurePocAuthorization({
       policy_version: 'POC_PROFILE_CAPABILITIES_V1',

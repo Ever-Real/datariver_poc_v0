@@ -1567,6 +1567,7 @@ class PocApiClient {
     if (requiredCapability !== 'AUTHENTICATED') requirePocCapability(requiredCapability)
     if (path.startsWith('/change-history/') || /^\/change-requests\/[^/]+\/change-history(?:\?|$)/.test(path)
       || parsed.pathname === '/admin/table-system-mappings'
+      || parsed.pathname === '/admin/feature-security-policy'
       || parsed.pathname === '/admin/users'
       || parsed.pathname.startsWith('/admin/users/')) {
       const headers = new Headers(options.headers)
