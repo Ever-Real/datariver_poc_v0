@@ -190,7 +190,7 @@ export function AdminPage({
       eyebrow={messages.eyebrow}
       title={messages.title}
       description={openAccess
-        ? '현재 POC의 기능 권한은 모두 OPEN이며, provider 준비 상태는 별도 capability로 표시합니다.'
+        ? '현재 POC는 서버 세션의 Role·capability와 System scope를 적용하며, provider 준비 상태는 별도 capability로 표시합니다.'
         : '서버가 허용한 관리 기능만 노출하며 고위험 변경은 보안키 인증과 독립 승인을 요구합니다.'}
       actions={<button className="button button-secondary" onClick={() => void loadContext()}>{messages.refresh}</button>}
     />

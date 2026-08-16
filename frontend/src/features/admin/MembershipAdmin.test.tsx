@@ -202,7 +202,7 @@ describe('MembershipAccessAdmin', () => {
     )
 
     fireEvent.click(await screen.findByRole('button', { name: '사용자 등록' }))
-    expect(await screen.findByText(/Keycloak 계정과 비밀번호는 생성하지 않습니다/)).toBeInTheDocument()
+    expect(await screen.findByText(/interactive login credential을 생성하지 않습니다/)).toBeInTheDocument()
     expect(screen.queryByLabelText('임시 비밀번호')).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('사용자명'), { target: { value: 'poc.viewer' } })
     fireEvent.change(screen.getByLabelText('Email'), { target: { value: 'poc.viewer@example.test' } })
