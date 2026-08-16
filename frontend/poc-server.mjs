@@ -4565,7 +4565,9 @@ function serveStatic(request, response, url) {
     ...securityHeaders(),
   }
   if (extension === '.html') {
-    const body = readFileSync(file, 'utf8').replace('</head>', '  <script src="/poc-runtime-config.js"></script>\n  </head>')
+    const body = readFileSync(file, 'utf8')
+      .replace('<head>', '<head>\n    <base href="/">')
+      .replace('</head>', '  <script src="/poc-runtime-config.js"></script>\n  </head>')
     response.writeHead(200, { ...headers, 'Content-Length': Buffer.byteLength(body) })
     return response.end(request.method === 'HEAD' ? undefined : body)
   }

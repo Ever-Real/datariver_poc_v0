@@ -158,9 +158,14 @@ test('binds concurrent browser sessions to current server-side access profiles',
 test('enforces anonymous, Origin, JSON 404, inactive-subject, and Airflow-token boundaries', async () => {
   const fixture = await serverFixture()
   try {
-    for (const path of ['/healthz', '/poc-runtime-config.js', '/', '/auth/login']) {
+    for (const path of ['/healthz', '/poc-runtime-config.js', '/']) {
       assert.equal((await fetch(`${fixture.origin}${path}`)).status, 200, path)
     }
+    const loginShell = await fetch(`${fixture.origin}/auth/login`)
+    assert.equal(loginShell.status, 200)
+    const loginHtml = await loginShell.text()
+    assert.match(loginHtml, /<base href="\/">/)
+    assert.ok(loginHtml.indexOf('<base href="/">') < loginHtml.indexOf('<script type="module"'))
     assert.equal((await fetch(`${fixture.origin}/auth/me`)).status, 401)
     assert.equal((await fixture.login(
       'first@example.com', 'first correct password', 'http://127.0.0.1:1',
