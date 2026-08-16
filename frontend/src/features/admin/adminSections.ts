@@ -33,7 +33,7 @@ export function allowedAdminSections(context: AdminReadContext): AdminSection[] 
   const allowed = new Set(context.allowed_operations)
   return primarySections.filter((section) => {
     if (section === 'featurePermissions') {
-      return context.action_vocabulary.includes('POC_OPEN_ACCESS_V1')
+      return context.action_vocabulary.includes('POC_LOCAL_ACCOUNT_ADMIN_V1')
     }
     if (section === 'memberships') {
       return [

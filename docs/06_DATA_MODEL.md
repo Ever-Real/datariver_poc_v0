@@ -87,6 +87,13 @@ authority and therefore does not replace the access document. Archived Systems m
 ineffective without deleting lifecycle evidence. Legacy `system_schema_scopes` remain historical
 CR-routing compatibility and are not a schema ACL or an inheritance source for this relation.
 
+`poc_state` also owns the bounded `feature-security-policy-v1` document introduced by ADR-0126.
+It contains one complete fixed `feature × role × security grade → boolean` matrix (8 × 5 × 3 =
+120 cells), a server actor/timestamp, bounded reason and CAS version. Canonical keys are fixed in
+source; Admin cells are immutable Allow and role-ineligible cells immutable Deny. The scope contains
+no User grant, Table identity, System assignment, custom Role, inheritance or expression and is not a
+generic permission database. PHASE 1C-3 manages this state; PHASE 1D owns cross-feature enforcement.
+
 The Catalog projection retains exact Table tag URN/name references. PHASE 1C-2 derives the strict
 severity order `normal < credential < restricted` using exact normalized tag equality only, with
 `restricted` precedence when both canonical tags exist. Each access-document user has one
@@ -94,6 +101,13 @@ severity order `normal < credential < restricted` using exact normalized tag equ
 stored in `poc_user_table_grants`; the relation intentionally has no Role, capability, System, grade,
 deny, schema inheritance or expression columns. Cross-feature retrieval-time enforcement remains
 PHASE 1D so management-state introduction does not empty existing user views prematurely.
+
+The current POC deployment still has two schema-application paths: clean volumes execute
+`deploy/poc/postgres-init/001-poc-state.sql` once, while Node startup performs bounded additive
+`CREATE ... IF NOT EXISTS`; existing volumes require documented manual SQL reapplication. There is no
+ordered/checksummed migration ledger. ADR-0126 therefore keeps `POC_SCHEMA_MIGRATION_CONTRACT`
+`PARTIAL` and reserves numbered migrations plus a minimal checksum ledger for a separate deployment
+slice; no migration squash or schema reset is part of PHASE 1C-3.
 
 ```mermaid
 erDiagram

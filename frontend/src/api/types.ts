@@ -2618,3 +2618,26 @@ export interface QualityIssueSummary {
   occurrence_count: number
   last_observed_at: string
 }
+
+export type PocFeature = 'catalog' | 'registration' | 'change' | 'quality' | 'knowledge' | 'governance' | 'chat' | 'monitoring'
+
+export interface PocFeatureSecurityCell {
+  feature: PocFeature
+  role: PocRole
+  grade: TableSecurityGrade
+  allow: boolean
+}
+
+export interface PocFeatureSecurityPolicy {
+  version: number
+  schema_version: number
+  cells: PocFeatureSecurityCell[]
+  updated_at: string | null
+  updated_by: string | null
+  reason: string
+}
+
+export interface PocFeatureSecurityPolicyUpdate {
+  cells: PocFeatureSecurityCell[]
+  reason: string
+}

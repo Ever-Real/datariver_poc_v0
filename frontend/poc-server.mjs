@@ -11,9 +11,9 @@ import {
   changeHistoryAccessCoreProjection,
   changeHistoryDocumentFromSnapshot,
   normalizeChangeHistoryAccessDocument,
+  normalizeSecurityGrade,
   privateChangeHistoryAccess,
   requireActiveAccessAdmin,
-  USER_SECURITY_GRADES,
 } from './poc-access-document.mjs'
 import {
   authenticatedPocProfile,
@@ -42,6 +42,18 @@ import {
   normalizeTableSystemMappingDocument,
   tableSystemCandidates,
 } from './poc-table-system-mappings.mjs'
+import {
+  currentDatahubDatasetExists,
+  datahubDatasetKind,
+  isCurrentDatahubTable,
+} from './poc-datahub-current-table.mjs'
+import {
+  POC_FEATURE_SECURITY_POLICY_SCOPE,
+  applyFeatureSecurityPolicyUpdate,
+  normalizeFeatureSecurityPolicy,
+} from './poc-feature-security-policy.mjs'
+
+export { currentDatahubDatasetExists } from './poc-datahub-current-table.mjs'
 
 const sourceDirectory = resolve(fileURLToPath(new URL('.', import.meta.url)))
 const staticDirectory = join(sourceDirectory, 'dist-poc')
@@ -407,6 +419,15 @@ function tableSystemIfMatch(request) {
   const match = value.match(/^"(0|[1-9]\d*)"$/)
   const version = match ? Number(match[1]) : Number.NaN
   if (!Number.isSafeInteger(version)) throw accessError(400, 'IF_MATCH_INVALID', 'If-Match must be a quoted Table-System mapping version.')
+  return version
+}
+
+function featureSecurityPolicyIfMatch(request) {
+  const value = request.headers['if-match']
+  if (typeof value !== 'string') throw accessError(428, 'IF_MATCH_REQUIRED', 'If-Match is required for feature security policy changes.')
+  const match = value.match(/^"(0|[1-9]\d*)"$/)
+  const version = match ? Number(match[1]) : Number.NaN
+  if (!Number.isSafeInteger(version)) throw accessError(400, 'IF_MATCH_INVALID', 'If-Match must be a quoted feature security policy version.')
   return version
 }
 
@@ -1694,17 +1715,6 @@ function tagReferences(entity) {
   })
 }
 
-function datasetKind(entity) {
-  const candidates = [
-    ...(entity.subTypes?.typeNames || []),
-    customProperty(entity, 'datariver.seed.object_kind'),
-    customProperty(entity, 'object_kind'),
-  ].map((value) => String(value || '').trim().toLocaleUpperCase()).filter(Boolean)
-  if (candidates.some((value) => value.includes('MATERIALIZED') && value.includes('VIEW'))) return 'MATERIALIZED_VIEW'
-  if (candidates.some((value) => value.includes('VIEW'))) return 'VIEW'
-  return 'TABLE'
-}
-
 function datahubCreatedAt(properties) {
   const customProperties = new Map((properties?.customProperties || []).flatMap((item) => (
     typeof item?.key === 'string' && typeof item?.value === 'string'
@@ -1747,7 +1757,7 @@ function datasetAsset(entity) {
     id: entity.urn,
     external_urn: entity.urn,
     asset_type: entity.type || 'DATASET',
-    dataset_kind: datasetKind(entity),
+    dataset_kind: datahubDatasetKind(entity),
     name: identity.tableName,
     description,
     platform: entity.platform?.name || urnTail(entity.platform?.urn),
@@ -1835,7 +1845,10 @@ async function datahubCatalogPage(providerCursor, signal) {
     input,
   }, 60_000, signal)
   const page = data.scrollAcrossEntities
-  const items = (page?.searchResults || []).map((item) => detailedDatasetAsset(item.entity))
+  const items = (page?.searchResults || [])
+    .map((item) => item?.entity)
+    .filter((entity) => currentDatahubDatasetExists(entity, entity?.urn))
+    .map(detailedDatasetAsset)
   const rawNextProviderCursor = page?.nextScrollId
   if (rawNextProviderCursor !== null && rawNextProviderCursor !== undefined
     && (typeof rawNextProviderCursor !== 'string' || !rawNextProviderCursor)) {
@@ -2059,18 +2072,11 @@ async function currentDatahubTables(tableUrns, { signal } = {}) {
       throw new Error('DataHub returned an invalid current entity confirmation.')
     }
     data.entities.forEach((entity, index) => {
-      if (!currentDatahubDatasetExists(entity, batch[index])) return
-      confirmed.push({ id: entity.urn, dataset_kind: datasetKind(entity) })
+      if (!isCurrentDatahubTable(entity, batch[index])) return
+      confirmed.push({ id: entity.urn, dataset_kind: 'TABLE' })
     })
   }
   return confirmed
-}
-
-export function currentDatahubDatasetExists(entity, expectedUrn) {
-  return Boolean(entity
-    && entity.urn === expectedUrn
-    && entity.type === 'DATASET'
-    && (entity.properties !== null || entity.schemaMetadata !== null))
 }
 
 function catalogSearchFields(searchParameters) {
@@ -4387,10 +4393,11 @@ function exactBodyKeys(body, allowed, required = allowed) {
 }
 
 function normalizedSecurityGrade(value) {
-  if (typeof value !== 'string' || !USER_SECURITY_GRADES.includes(value)) {
-    throw accessError(400, 'USER_SECURITY_GRADE_INVALID', 'max_security_grade must be normal, credential, or restricted.')
-  }
-  return value
+  return normalizeSecurityGrade(
+    value,
+    'USER_SECURITY_GRADE_INVALID',
+    'max_security_grade must be normal, credential, or restricted.',
+  )
 }
 
 function assignmentResponsibility(role) {
@@ -4820,12 +4827,38 @@ async function tableSystemMappingApi(request, response, url, context) {
   return json(response, 200, { version, changed: applied.changed }, { ETag: `"${version}"` })
 }
 
+async function featureSecurityPolicyApi(request, response, context) {
+  const snapshot = await context.stateStore.read(POC_FEATURE_SECURITY_POLICY_SCOPE)
+  const document = normalizeFeatureSecurityPolicy(snapshot.value)
+  if (request.method === 'GET') {
+    return json(response, 200, { version: snapshot.version, ...document }, { ETag: `"${snapshot.version}"` })
+  }
+  if (request.method !== 'PUT') {
+    return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Feature security policy supports only GET and PUT.')
+  }
+  const expectedVersion = featureSecurityPolicyIfMatch(request)
+  if (expectedVersion !== snapshot.version) {
+    throw accessError(409, 'FEATURE_SECURITY_POLICY_VERSION_STALE', 'The feature security policy version is stale.')
+  }
+  const body = await bodyJson(request)
+  const next = applyFeatureSecurityPolicyUpdate(document, body, context.principal.subjectId)
+  const version = await context.stateStore.writeIfVersion(
+    POC_FEATURE_SECURITY_POLICY_SCOPE,
+    next,
+    expectedVersion,
+  )
+  return json(response, 200, { version, ...next }, { ETag: `"${version}"` })
+}
+
 async function api(request, response, url, context) {
   if (url.pathname === '/api/v1/admin/users' || /^\/api\/v1\/admin\/users\//.test(url.pathname)) {
     return adminUsersApi(request, response, url, context)
   }
   if (url.pathname === '/api/v1/admin/table-system-mappings') {
     return tableSystemMappingApi(request, response, url, context)
+  }
+  if (url.pathname === '/api/v1/admin/feature-security-policy') {
+    return featureSecurityPolicyApi(request, response, context)
   }
   if (url.pathname === '/api/v1/change-history/access') {
     return changeHistoryAccess(request, response, url, context)

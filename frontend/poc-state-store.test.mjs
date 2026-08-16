@@ -784,6 +784,64 @@ test('accepts only the extended field metadata and exact lifecycle category/aspe
   assert.deepEqual(upgradeEffects(['ck_poc_change_history_ledger_category_v2']), [], 'second startup must issue no category CHECK DDL')
 })
 
+test('concurrent admin removals are serialized by access CAS and leave one active admin', async () => {
+  const store = createPocStateStore()
+  await store.provisionLocalCredential({
+    expectedAccessVersion: 0,
+    expectedCoreVersion: 0,
+    accessValue: { schema_version: 1, active_subject_id: 'sub1', users: [
+      { subject_id: 'sub1', role: 'admin', active: true },
+      { subject_id: 'sub2', role: 'admin', active: true }
+    ], system_assignments: [] },
+    coreValue: {},
+    credential: { subjectId: 'sub1', usernameNormalized: 'user1', passwordHash: '$argon2id$v=19$m=16,t=2,p=1$a$b', loginEnabled: true, mustChangePassword: false }
+  })
+
+  const remove1 = store.writeChangeHistoryAccess({
+    expectedAccessVersion: 1,
+    expectedCoreVersion: 1,
+    accessValue: { schema_version: 1, active_subject_id: 'sub2', users: [{ subject_id: 'sub2', role: 'admin', active: true }], system_assignments: [] },
+    coreValue: {}
+  })
+  const remove2 = store.writeChangeHistoryAccess({
+    expectedAccessVersion: 1,
+    expectedCoreVersion: 1,
+    accessValue: { schema_version: 1, active_subject_id: 'sub1', users: [{ subject_id: 'sub1', role: 'admin', active: true }], system_assignments: [] },
+    coreValue: {}
+  })
+
+  const results = await Promise.allSettled([remove1, remove2])
+  const fulfilled = results.filter(r => r.status === 'fulfilled')
+  const rejected = results.filter(r => r.status === 'rejected')
+  assert.equal(fulfilled.length, 1)
+  assert.equal(rejected.length, 1)
+  assert.equal(rejected[0].reason.code, 'ACCESS_VERSION_STALE')
+  const final = await store.readChangeHistoryAccess()
+  assert.equal(final.access.value.users.filter((user) => user.active && user.role === 'admin').length, 1)
+})
+
+test('password reset atomically revokes all sessions', async () => {
+  const store = createPocStateStore()
+  await store.provisionLocalCredential({
+    expectedAccessVersion: 0,
+    expectedCoreVersion: 0,
+    accessValue: { schema_version: 1, active_subject_id: 'sub', users: [{ subject_id: 'sub', role: 'admin', active: true }], system_assignments: [] },
+    coreValue: {},
+    credential: { subjectId: 'sub', usernameNormalized: 'user', passwordHash: '$argon2id$v=19$m=16,t=2,p=1$a$b', loginEnabled: true, mustChangePassword: false }
+  })
+  await store.createLocalSession({ tokenHash: 'a'.repeat(64), subjectId: 'sub', createdAt: '2026-08-13T00:00:00Z', expiresAt: '2026-08-14T00:00:00Z' })
+  await store.createLocalSession({ tokenHash: 'b'.repeat(64), subjectId: 'sub', createdAt: '2026-08-13T00:10:00Z', expiresAt: '2026-08-14T00:10:00Z' })
+  assert.equal((await store.readLocalSession('a'.repeat(64))).revokedAt, null)
+  assert.equal((await store.readLocalSession('b'.repeat(64))).revokedAt, null)
+
+  const res = await store.administerLocalCredential({
+    subjectId: 'sub', expectedVersion: 1, usernameNormalized: 'user', passwordHash: '$argon2id$v=19$m=16,t=2,p=1$c$d', loginEnabled: true, mustChangePassword: false, changedAt: '2026-08-13T01:00:00.000Z'
+  })
+  assert.equal(res.revokedSessionCount, 2)
+  assert.equal((await store.readLocalSession('a'.repeat(64))).revokedAt, '2026-08-13T01:00:00.000Z')
+  assert.equal((await store.readLocalSession('b'.repeat(64))).revokedAt, '2026-08-13T01:00:00.000Z')
+})
+
 test('CAS-updates private access with its core projection and fences later generic core writes', async () => {
   const store = createPocStateStore()
   const originalChangeRecords = [{ id: 'request-from-core', state: 'IN_REVIEW', version: 7 }]

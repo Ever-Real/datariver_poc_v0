@@ -63,6 +63,8 @@ import type {
   PocResponsibleSystem,
   SystemConfigurationInventory,
   SystemConfigurationTestResult,
+  PocFeatureSecurityPolicy,
+  PocFeatureSecurityPolicyUpdate,
 } from '../../api/types'
 
 type AdminApiClient = Pick<ApiClient, 'request' | 'requestWithMeta'>
@@ -77,6 +79,10 @@ export interface VersionedIdentityUserProfile extends IdentityUserProfile {
 }
 
 export interface VersionedErasureRequest extends ErasureRequest {
+  etag: string
+}
+
+export interface VersionedPocFeatureSecurityPolicy extends PocFeatureSecurityPolicy {
   etag: string
 }
 
@@ -1239,6 +1245,30 @@ export class AdminApi {
     )
     return versionedErasure(response.data, response.etag)
   }
+
+  async getFeatureSecurityPolicy(signal?: AbortSignal): Promise<VersionedPocFeatureSecurityPolicy> {
+    const response = await this.client.requestWithMeta<PocFeatureSecurityPolicy>(
+      '/admin/feature-security-policy',
+      { signal, cache: 'no-store' },
+    )
+    return versionedFeatureSecurityPolicy(response.data, response.etag)
+  }
+
+  updateFeatureSecurityPolicy(
+    payload: PocFeatureSecurityPolicyUpdate,
+    etag: string,
+    idempotencyKey: string,
+  ) {
+    return this.client.request<PocFeatureSecurityPolicy>(
+      '/admin/feature-security-policy',
+      {
+        method: 'PUT',
+        ifMatch: etag,
+        idempotencyKey,
+        body: JSON.stringify(payload),
+      },
+    )
+  }
 }
 
 export function quotedVersion(version: number): string {
@@ -1250,6 +1280,17 @@ function versionedErasure(value: ErasureRequest, etag?: string): VersionedErasur
   const expected = quotedVersion(value.version)
   if (etag !== expected) {
     throw new Error('파기 요청 버전 ETag를 검증하지 못했습니다. 새로고침 후 다시 시도하세요.')
+  }
+  return { ...value, etag }
+}
+
+function versionedFeatureSecurityPolicy(value: PocFeatureSecurityPolicy, etag?: string): VersionedPocFeatureSecurityPolicy {
+  if (!Number.isInteger(value.version) || value.version < 0) {
+    throw new Error('유효한 보안 정책 버전이 필요합니다.')
+  }
+  const expected = `"${value.version}"`
+  if (etag !== expected) {
+    throw new Error('보안 정책 버전 ETag를 검증하지 못했습니다. 새로고침 후 다시 시도하세요.')
   }
   return { ...value, etag }
 }

@@ -95,6 +95,8 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('admin.user-table-grants.write', 'PATCH', /^\/api\/v1\/admin\/users\/[^/]+\/table-grants$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('admin.user-credential.write', 'PUT', /^\/api\/v1\/admin\/users\/[^/]+\/credential$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('admin.user-sessions.revoke', 'POST', /^\/api\/v1\/admin\/users\/[^/]+\/sessions\/revoke$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.feature-security-policy.read', 'GET', /^\/api\/v1\/admin\/feature-security-policy$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
+  route('admin.feature-security-policy.write', 'PUT', /^\/api\/v1\/admin\/feature-security-policy$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('change.events', 'GET', /^\/api\/v1\/change-history\/events$/, 'CAPABILITY_PROTECTED', 'change.read'),
   route('change.event', 'GET', /^\/api\/v1\/change-history\/events\/[0-9a-f]{64}$/, 'CAPABILITY_PROTECTED', 'change.read'),
   route('change.event.links', 'GET', /^\/api\/v1\/change-history\/events\/[0-9a-f]{64}\/cr-links$/, 'CAPABILITY_PROTECTED', 'change.read'),

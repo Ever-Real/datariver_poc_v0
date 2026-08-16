@@ -206,7 +206,7 @@ describe('POC compatibility application', () => {
     fireEvent.click(screen.getByRole('tab', { name: /시스템 설정|System settings/ }))
     expect(await screen.findByRole('heading', { name: '시스템 설정' })).toBeVisible()
     expect(screen.getAllByText('DataHub GMS').length).toBeGreaterThan(0)
-    expect(screen.queryByRole('tab', { name: /기능별 권한|Feature access/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('tab', { name: /기능별 권한|Feature access/ })).toBeVisible()
     expect(screen.queryByRole('table', { name: 'POC 기능별 권한 현황' })).not.toBeInTheDocument()
     expect(screen.queryByText('OPEN')).not.toBeInTheDocument()
     expect(providerRequestPaths()).toEqual(['/api/v1/admin/users'])

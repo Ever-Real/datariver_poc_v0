@@ -1,9 +1,10 @@
 /* global structuredClone */
+import { securityGradeRank, tagPrecedenceSecurityGrade, SECURITY_GRADES as POC_SECURITY_GRADES } from './poc-access-document.mjs'
 
 export const POC_TABLE_SYSTEM_MAPPING_SCOPE = 'table-system-mappings-v1'
 export const POC_TABLE_SYSTEM_MAPPING_SCHEMA_VERSION = 1
 
-export const POC_SECURITY_GRADES = Object.freeze(['normal', 'credential', 'restricted'])
+export { POC_SECURITY_GRADES }
 const securityGrades = new Set(POC_SECURITY_GRADES)
 const maximumBindings = 50_000
 const maximumTableIdsPerCommand = 2_000
@@ -103,22 +104,10 @@ export function tableSecurityGrade(asset) {
     ...(Array.isArray(asset?.tags) ? asset.tags : []),
     ...(Array.isArray(asset?.tag_references) ? asset.tag_references : []),
   ]
-  const normalized = new Set(tags.flatMap((tag) => {
-    if (typeof tag === 'string') return [tag.trim().toLocaleLowerCase()]
-    if (!tag || typeof tag !== 'object' || Array.isArray(tag)) return []
-    return [tag.name, tag.urn].filter((item) => typeof item === 'string')
-      .map((item) => item.trim().toLocaleLowerCase())
-  }))
-  if (normalized.has('restricted') || normalized.has('urn:li:tag:restricted')) return 'restricted'
-  if (normalized.has('credential') || normalized.has('urn:li:tag:credential')) return 'credential'
-  return 'normal'
+  return tagPrecedenceSecurityGrade(tags)
 }
 
-export function securityGradeRank(value) {
-  const rank = POC_SECURITY_GRADES.indexOf(value)
-  if (rank < 0) throw mappingError('SECURITY_GRADE_INVALID', 'The security grade is outside the canonical product policy.')
-  return rank
-}
+export { securityGradeRank }
 
 export function activeSystemIdsForTable(document, tableIdentity, activeSystemIds) {
   const activeSystems = activeSystemIds instanceof Set ? activeSystemIds : new Set(activeSystemIds || [])
@@ -126,6 +115,35 @@ export function activeSystemIdsForTable(document, tableIdentity, activeSystemIds
     .filter((item) => item.active && item.table_identity === tableIdentity && activeSystems.has(item.system_id))
     .map((item) => item.system_id)
     .sort()
+}
+
+export function resolveTableSystemAuthority({
+  document,
+  tableIdentity,
+  activeSystemIds,
+  legacySystemId = null,
+  allowLegacyFallback = true,
+}) {
+  const normalized = normalizeTableSystemMappingDocument(document)
+  const table = boundedText(tableIdentity, 4_096, 'tableIdentity')
+  const activeSystems = activeSystemIds instanceof Set ? activeSystemIds : new Set(activeSystemIds || [])
+  const exactRows = normalized.bindings.filter((item) => item.table_identity === table)
+  if (exactRows.length) {
+    const systemIds = [...new Set(exactRows
+      .filter((item) => item.active && activeSystems.has(item.system_id))
+      .map((item) => item.system_id))].sort()
+    return {
+      system_ids: systemIds,
+      provenance: 'EXACT',
+      conflict: typeof legacySystemId === 'string' && legacySystemId.length > 0
+        ? systemIds.length !== 1 || systemIds[0] !== legacySystemId
+        : false,
+    }
+  }
+  if (allowLegacyFallback && typeof legacySystemId === 'string' && activeSystems.has(legacySystemId)) {
+    return { system_ids: [legacySystemId], provenance: 'LEGACY_FALLBACK', conflict: false }
+  }
+  return { system_ids: [], provenance: 'NONE', conflict: false }
 }
 
 export function applyTableSystemMappingCommand(document, command, actor, now = new Date().toISOString()) {

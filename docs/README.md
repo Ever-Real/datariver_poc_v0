@@ -66,6 +66,7 @@
 | 68 | [POC Change Management 제품화 기준서](63_POC_CHANGE_MANAGEMENT_PRODUCTIZATION.md) | Change History/CR/access/current 구현, 설정, 화면, 초기화와 운영 계약 | DEV runtime verified; PREP/OPS gates open |
 | 69 | [POC 모듈 경계와 provider 이식성 계획](adr/0124-poc-modular-product-architecture.md) | feature isolation, provider-neutral ports와 단계적 modularization | Proposed backlog plan; no refactor approved |
 | 70 | [Node POC exact Table ↔ System binding](adr/0125-poc-explicit-table-system-binding.md) | stable System lifecycle, exact DataHub Table N:M CAS and non-inheriting bulk selection | Accepted for PHASE 1C-1 |
+| 71 | [Node POC security hardening and fixed feature policy](adr/0126-poc-security-hardening-and-fixed-feature-policy.md) | canonical grade/current-Table predicates, admin/session invariants, exact-first System transition, migration audit, bounded 120-cell policy | Accepted for PHASE 1C-2H/1C-3 management state |
 
 Independent review records: [Data Architect](reviews/2026-07-14_DATA_ARCHITECT_REVIEW.md),
 [Data Engineer/SRE](reviews/2026-07-14_DATA_ENGINEER_REVIEW.md), and
@@ -105,6 +106,10 @@ without changing DataHub, Catalog projection ownership or non-Change readers.
 For new Node POC administration, [ADR-0125](adr/0125-poc-explicit-table-system-binding.md)
 supersedes schema-wide selection with exact DataHub Table URN N:M bindings. ADR-0109 remains
 historical Change Request routing evidence and is not silently rewritten.
+[ADR-0126](adr/0126-poc-security-hardening-and-fixed-feature-policy.md) fixes the canonical
+security-grade/current-Table helpers, exact-first non-union transition, Admin/session invariants,
+schema-migration risk contract, and the bounded 120-cell PHASE 1C-3 management policy. PHASE 1D
+remains responsible for retrieval-time enforcement and existence hiding.
 Immutable editable Change Request revisions after a recoverable reviewer request are defined by
 [ADR-0110](adr/0110-editable-change-request-revision-rounds.md); terminal rejection remains
 unchanged and historical rounds, targets, decisions and attachments stay append-only.

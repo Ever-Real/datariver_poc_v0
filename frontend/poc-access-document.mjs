@@ -4,7 +4,33 @@ export const CHANGE_HISTORY_ACCESS_ROLES = Object.freeze([
   'admin', 'data_steward', 'developer', 'manager', 'viewer',
 ])
 export const CHANGE_HISTORY_RESPONSIBILITIES = Object.freeze(['DATA_STEWARD', 'DEVELOPER', 'MANAGER'])
-export const USER_SECURITY_GRADES = Object.freeze(['normal', 'credential', 'restricted'])
+export const SECURITY_GRADES = Object.freeze(['normal', 'credential', 'restricted'])
+
+export function normalizeSecurityGrade(value, code = 'SECURITY_GRADE_INVALID', message = 'The security grade is invalid.') {
+  if (value === 'restricted' || value === 'credential' || value === 'normal') return value
+  throw Object.assign(new Error(message), { statusCode: 400, code })
+}
+
+export function securityGradeRank(value) {
+  return SECURITY_GRADES.indexOf(normalizeSecurityGrade(value, 'SECURITY_GRADE_INVALID', 'The security grade is outside the canonical product policy.'))
+}
+
+export function compareSecurityGrades(left, right) {
+  return securityGradeRank(left) - securityGradeRank(right)
+}
+
+export function tagPrecedenceSecurityGrade(tags) {
+  if (!Array.isArray(tags)) return 'normal'
+  const normalized = new Set(tags.flatMap((tag) => {
+    if (typeof tag === 'string') return [tag.trim().toLowerCase()]
+    if (!tag || typeof tag !== 'object' || Array.isArray(tag)) return []
+    return [tag.name, tag.urn].filter((item) => typeof item === 'string')
+      .map((item) => item.trim().toLowerCase())
+  }))
+  if (normalized.has('restricted') || normalized.has('urn:li:tag:restricted')) return 'restricted'
+  if (normalized.has('credential') || normalized.has('urn:li:tag:credential')) return 'credential'
+  return 'normal'
+}
 
 const changeHistoryAccessRoles = new Set(CHANGE_HISTORY_ACCESS_ROLES)
 const changeHistoryResponsibilities = new Set(CHANGE_HISTORY_RESPONSIBILITIES)
@@ -98,14 +124,15 @@ function normalizedAccessUsers(value) {
       throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `users[${index}].provider_owner_refs contains duplicates.`)
     }
     subjects.add(subjectId)
-    const maximumSecurityGrade = accessString(
-      user.max_security_grade ?? 'normal',
-      `users[${index}].max_security_grade`,
-      20,
+    const maximumSecurityGrade = normalizeSecurityGrade(
+      accessString(
+        user.max_security_grade ?? 'normal',
+        `users[${index}].max_security_grade`,
+        20,
+      ),
+      'ACCESS_DOCUMENT_INVALID',
+      `users[${index}].max_security_grade is unknown.`,
     )
-    if (!USER_SECURITY_GRADES.includes(maximumSecurityGrade)) {
-      throw accessError(400, 'ACCESS_DOCUMENT_INVALID', `users[${index}].max_security_grade is unknown.`)
-    }
     return {
       subject_id: subjectId,
       role,

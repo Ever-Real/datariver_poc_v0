@@ -425,8 +425,18 @@ DEV 증거로 승격하지 않는다.
 | CM-PROD-10 | P1 | legacy `scripts/export_poc_release.sh`의 static/simulated/no-remote bundle을 current live-provider release contract로 교체하거나 명시적으로 retire | `BACKLOG`; 현재 canonical 배포는 tracked Compose build/update runbook |
 | CM-PROD-11 | P1 | DataHub Timeline retained-history initial backfill adapter와 target retention gate 구현 | `BACKLOG`; ADR-0123 계약만 존재하고 current Node runtime에는 미구현 |
 | CM-PROD-12 | P1 | `REPRODUCIBLE_DEPLOYMENT_ACCEPTANCE`: `git pull → config/secrets → exact-revision build → Compose A/B up → health/smoke` 인수 계약 | `BACKLOG`; tracked Dockerfile, source/image revision equality, no manual network connect, Linux/amd64 PREP/OPS evidence로 닫는다 |
-| CM-PROD-13 | P1 | `POC_SCHEMA_MIGRATION_CONTRACT`: existing-volume schema version, ordered upgrade, read-back, rollback/forward-fix 계약 | `BACKLOG`; 현재는 `001-poc-state.sql` 수동/idempotent 재적용이며 versioned migration framework가 아님 |
+| CM-PROD-13 | P1 | `POC_SCHEMA_MIGRATION_CONTRACT`: existing-volume schema version, ordered upgrade, read-back, rollback/forward-fix 계약 | `PARTIAL`; ADR-0126 audit가 clean-volume init, runtime additive DDL, existing-volume manual apply와 checksum/ledger 부재를 확정했다. 현 `001` 동결과 이후 numbered additive migration을 권장하나 empty/current/repeat/recovery 검증 slice는 미구현 |
 | CM-PROD-14 | P2 | browserless `127.0.0.1:39080` attachment URL fallback 검토/제거 | `BACKLOG`; browser runtime은 `location.origin`을 쓰며 현재 Change Management provider endpoint 계약과는 분리 |
+
+PHASE 1C current account/access status (current Product/Evidence SHA is recorded by the phase
+evidence, not inferred from this table):
+
+| Slice | Canonical Status | Current boundary / next gate |
+|---|---|---|
+| PHASE 1C-2H | `IMPLEMENTED_NOT_VERIFIED` | canonical grade/current-Table helper, CAS concurrency and password-reset session revocation implemented; current Product runtime/fresh validation pending |
+| PHASE 1C-3 | `IMPLEMENTED_NOT_VERIFIED` | fixed 120-cell management state/API/UI implemented; PHASE 1D enforcement explicitly not active; current Product runtime/fresh validation pending |
+| PHASE 1C-4 | `BACKLOG` | CR exact responsible-System and three-lane completion approval alignment |
+| PHASE 1D | `BACKLOG` | explicit grant + grade + fixed matrix enforcement before search/ranking/context/traversal |
 
 ### EPIC: MODULAR_PRODUCT_ARCHITECTURE (`P1`)
 

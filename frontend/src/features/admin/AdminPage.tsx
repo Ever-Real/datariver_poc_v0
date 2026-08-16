@@ -209,7 +209,7 @@ export function AdminPage({
     <ErrorNotice error={error} />
     {activeSection && <div {...primaryTabs.panelProps(activeSection)}>
       {activeSection === 'memberships' && <AccountAccessAdmin {...shared} />}
-      {activeSection === 'featurePermissions' && <PocFeaturePermissionAdmin />}
+      {activeSection === 'featurePermissions' && <PocFeaturePermissionAdmin {...shared} />}
       {activeSection === 'systemSettings' && <SystemConfigurationAdmin {...shared} />}
       {activeSection === 'retention' && <RetentionGovernanceAdmin {...shared} />}
     </div>}

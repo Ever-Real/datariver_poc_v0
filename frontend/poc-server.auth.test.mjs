@@ -495,6 +495,261 @@ test('administers local users, security grade, Responsible Systems, explicit Tab
   }
 })
 
+test('serializes concurrent cross-admin deactivation and preserves one active admin', async () => {
+  const fixture = await serverFixture()
+  try {
+    const first = await fixture.login('first@example.com', 'first correct password')
+    assert.equal(first.response.status, 200)
+    const initial = await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: first.cookie } })
+    const initialVersion = Number(initial.headers.get('etag')?.replaceAll('"', ''))
+    const created = await fetch(`${fixture.origin}/api/v1/admin/users`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json', Cookie: first.cookie, Origin: fixture.origin,
+        'If-Match': `"${initialVersion}"`,
+      },
+      body: JSON.stringify({
+        username: 'concurrent-admin@example.com', password: 'concurrent admin password',
+        display_name: 'Concurrent Admin', email: 'concurrent-admin@example.com', role: 'admin',
+        max_security_grade: 'restricted', responsible_systems: [], must_change_password: false,
+      }),
+    })
+    assert.equal(created.status, 201)
+    const secondSubject = (await created.json()).subject_id
+    const second = await fixture.login('concurrent-admin@example.com', 'concurrent admin password')
+    assert.equal(second.response.status, 200)
+
+    const current = await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: first.cookie } })
+    const expectedVersion = Number(current.headers.get('etag')?.replaceAll('"', ''))
+    const demote = (cookie, subjectId, displayName, email) => fetch(
+      `${fixture.origin}/api/v1/admin/users/${encodeURIComponent(subjectId)}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json', Cookie: cookie, Origin: fixture.origin,
+          'If-Match': `"${expectedVersion}"`,
+        },
+        body: JSON.stringify({
+          display_name: displayName, email, role: 'viewer', active: false,
+          max_security_grade: 'normal', responsible_systems: [],
+        }),
+      },
+    )
+    const results = await Promise.all([
+      demote(first.cookie, secondSubject, 'Concurrent Admin', 'concurrent-admin@example.com'),
+      demote(second.cookie, 'subject-one', 'First Person', 'first@example.com'),
+    ])
+    const statuses = results.map((response) => response.status)
+    assert.equal(results.filter((response) => response.status === 200).length, 1, JSON.stringify(statuses))
+    assert.equal(results.filter((response) => [401, 403, 409].includes(response.status)).length, 1, JSON.stringify(statuses))
+
+    const snapshot = await fixture.stateStore.readChangeHistoryAccess()
+    const activeAdmins = snapshot.access.value.users.filter((user) => user.active && user.role === 'admin')
+    assert.equal(activeAdmins.length, 1)
+    const remaining = activeAdmins[0].subject_id
+    const remainingCookie = remaining === 'subject-one' ? first.cookie : second.cookie
+    const selfLockout = await fetch(`${fixture.origin}/api/v1/admin/users/${encodeURIComponent(remaining)}`, {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json', Cookie: remainingCookie, Origin: fixture.origin,
+        'If-Match': `"${snapshot.access.version}"`,
+      },
+      body: JSON.stringify({
+        display_name: remaining === 'subject-one' ? 'First Person' : 'Concurrent Admin',
+        email: remaining === 'subject-one' ? 'first@example.com' : 'concurrent-admin@example.com',
+        role: 'viewer', active: false, max_security_grade: 'normal', responsible_systems: [],
+      }),
+    })
+    assert.equal(selfLockout.status, 409)
+    assert.equal((await selfLockout.json()).code, 'ADMIN_SELF_LOCKOUT_FORBIDDEN')
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('serializes concurrent cross-admin role downgrades without relying on inactivity', async () => {
+  const fixture = await serverFixture()
+  try {
+    const first = await fixture.login('first@example.com', 'first correct password')
+    const initial = await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: first.cookie } })
+    const initialVersion = Number(initial.headers.get('etag')?.replaceAll('"', ''))
+    const created = await fetch(`${fixture.origin}/api/v1/admin/users`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json', Cookie: first.cookie, Origin: fixture.origin,
+        'If-Match': `"${initialVersion}"`,
+      },
+      body: JSON.stringify({
+        username: 'role-race-admin@example.com', password: 'role race admin password',
+        display_name: 'Role Race Admin', email: 'role-race-admin@example.com', role: 'admin',
+        max_security_grade: 'restricted', responsible_systems: [], must_change_password: false,
+      }),
+    })
+    assert.equal(created.status, 201)
+    const secondSubject = (await created.json()).subject_id
+    const second = await fixture.login('role-race-admin@example.com', 'role race admin password')
+    assert.equal(second.response.status, 200)
+
+    const current = await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: first.cookie } })
+    const expectedVersion = Number(current.headers.get('etag')?.replaceAll('"', ''))
+    const downgrade = (cookie, subjectId, displayName, email) => fetch(
+      `${fixture.origin}/api/v1/admin/users/${encodeURIComponent(subjectId)}`,
+      {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json', Cookie: cookie, Origin: fixture.origin,
+          'If-Match': `"${expectedVersion}"`,
+        },
+        body: JSON.stringify({
+          display_name: displayName, email, role: 'viewer', active: true,
+          max_security_grade: 'normal', responsible_systems: [],
+        }),
+      },
+    )
+    const responses = await Promise.all([
+      downgrade(first.cookie, secondSubject, 'Role Race Admin', 'role-race-admin@example.com'),
+      downgrade(second.cookie, 'subject-one', 'First Person', 'first@example.com'),
+    ])
+    assert.equal(responses.filter((response) => response.status === 200).length, 1)
+    assert.equal(responses.filter((response) => [403, 409].includes(response.status)).length, 1)
+    const snapshot = await fixture.stateStore.readChangeHistoryAccess()
+    assert.equal(snapshot.access.value.users.filter((user) => user.active && user.role === 'admin').length, 1)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('keeps credential disable and access inactivity consistent under concurrent administration', async () => {
+  const fixture = await serverFixture()
+  try {
+    const admin = await fixture.login('first@example.com', 'first correct password')
+    const initial = await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: admin.cookie } })
+    const initialVersion = Number(initial.headers.get('etag')?.replaceAll('"', ''))
+    const created = await fetch(`${fixture.origin}/api/v1/admin/users`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin,
+        'If-Match': `"${initialVersion}"`,
+      },
+      body: JSON.stringify({
+        username: 'disable-race-viewer@example.com', password: 'disable race viewer password',
+        display_name: 'Disable Race Viewer', email: 'disable-race-viewer@example.com', role: 'viewer',
+        max_security_grade: 'normal', responsible_systems: [], must_change_password: false,
+      }),
+    })
+    assert.equal(created.status, 201)
+    const subjectId = (await created.json()).subject_id
+    const viewer = await fixture.login('disable-race-viewer@example.com', 'disable race viewer password')
+    assert.equal(viewer.response.status, 200)
+
+    const current = await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: admin.cookie } })
+    const accessVersion = Number(current.headers.get('etag')?.replaceAll('"', ''))
+    const page = await current.json()
+    const target = page.items.find((item) => item.subject_id === subjectId)
+    assert.ok(target?.credential)
+    const [disabled, inactive] = await Promise.all([
+      fetch(`${fixture.origin}/api/v1/admin/users/${encodeURIComponent(subjectId)}/credential`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin,
+          'If-Match': `"${target.credential.version}"`,
+        },
+        body: JSON.stringify({
+          username: target.credential.username, login_enabled: false, must_change_password: false,
+        }),
+      }),
+      fetch(`${fixture.origin}/api/v1/admin/users/${encodeURIComponent(subjectId)}`, {
+        method: 'PATCH',
+        headers: {
+          'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin,
+          'If-Match': `"${accessVersion}"`,
+        },
+        body: JSON.stringify({
+          display_name: 'Disable Race Viewer', email: 'disable-race-viewer@example.com', role: 'viewer',
+          active: false, max_security_grade: 'normal', responsible_systems: [],
+        }),
+      }),
+    ])
+    assert.equal(disabled.status, 200)
+    assert.equal(inactive.status, 200)
+    assert.equal((await fetch(`${fixture.origin}/auth/me`, { headers: { Cookie: viewer.cookie } })).status, 401)
+    assert.equal((await fixture.login('disable-race-viewer@example.com', 'disable race viewer password')).response.status, 401)
+    const after = await (await fetch(`${fixture.origin}/api/v1/admin/users`, { headers: { Cookie: admin.cookie } })).json()
+    const stored = after.items.find((item) => item.subject_id === subjectId)
+    assert.equal(stored.active, false)
+    assert.equal(stored.credential.login_enabled, false)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('manages only the complete fixed feature-role-grade policy through admin CAS', async () => {
+  const fixture = await serverFixture()
+  try {
+    const [admin, viewer] = await Promise.all([
+      fixture.login('first@example.com', 'first correct password'),
+      fixture.login('second@example.com', 'second correct password'),
+    ])
+    assert.equal(admin.response.status, 200)
+    assert.equal(viewer.response.status, 200)
+    assert.equal((await fetch(`${fixture.origin}/api/v1/admin/feature-security-policy`)).status, 401)
+    assert.equal((await fetch(`${fixture.origin}/api/v1/admin/feature-security-policy`, {
+      headers: { Cookie: viewer.cookie },
+    })).status, 403)
+
+    const initial = await fetch(`${fixture.origin}/api/v1/admin/feature-security-policy`, {
+      headers: { Cookie: admin.cookie },
+    })
+    assert.equal(initial.status, 200)
+    assert.equal(initial.headers.get('etag'), '"0"')
+    const defaultPolicy = await initial.json()
+    assert.equal(defaultPolicy.cells.length, 120)
+    assert.ok(defaultPolicy.cells.filter((cell) => cell.role === 'admin').every((cell) => cell.allow))
+
+    const cells = defaultPolicy.cells.map((cell) => (
+      cell.feature === 'catalog' && cell.role === 'viewer' && cell.grade === 'credential'
+        ? { ...cell, allow: true }
+        : cell
+    ))
+    const invalid = await fetch(`${fixture.origin}/api/v1/admin/feature-security-policy`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin, 'If-Match': '"0"',
+      },
+      body: JSON.stringify({ cells: cells.slice(1), reason: 'reject an incomplete fixed policy' }),
+    })
+    assert.equal(invalid.status, 400)
+    assert.equal((await invalid.json()).code, 'FEATURE_SECURITY_POLICY_INVALID')
+
+    const saved = await fetch(`${fixture.origin}/api/v1/admin/feature-security-policy`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin, 'If-Match': '"0"',
+      },
+      body: JSON.stringify({ cells, reason: 'permit reviewed credential Catalog metadata' }),
+    })
+    assert.equal(saved.status, 200, JSON.stringify(await saved.clone().json()))
+    const savedPolicy = await saved.json()
+    assert.equal(savedPolicy.version, 1)
+    assert.equal(savedPolicy.updated_by, 'subject-one')
+    assert.equal(savedPolicy.cells.find((cell) => (
+      cell.feature === 'catalog' && cell.role === 'viewer' && cell.grade === 'credential'
+    )).allow, true)
+
+    const stale = await fetch(`${fixture.origin}/api/v1/admin/feature-security-policy`, {
+      method: 'PUT',
+      headers: {
+        'Content-Type': 'application/json', Cookie: admin.cookie, Origin: fixture.origin, 'If-Match': '"0"',
+      },
+      body: JSON.stringify({ cells, reason: 'reject a stale complete policy update' }),
+    })
+    assert.equal(stale.status, 409)
+    assert.equal((await stale.json()).code, 'FEATURE_SECURITY_POLICY_VERSION_STALE')
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('enforces anonymous, Origin, JSON 404, inactive-subject, and Airflow-token boundaries', async () => {
   const fixture = await serverFixture()
   try {

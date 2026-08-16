@@ -5,10 +5,15 @@ import {
   activeSystemIdsForTable,
   applyTableSystemMappingCommand,
   normalizeTableSystemMappingDocument,
+  resolveTableSystemAuthority,
   securityGradeRank,
   tableSecurityGrade,
   tableSystemCandidates,
 } from './poc-table-system-mappings.mjs'
+import {
+  normalizeSecurityGrade,
+  compareSecurityGrades,
+} from './poc-access-document.mjs'
 
 const systems = [
   { system_id: 'system-a', active: true },
@@ -57,12 +62,26 @@ test('assigns and removes N:M pairs idempotently while preserving inactive histo
   assert.equal(row.version, 2)
 })
 
-test('derives only exact normalized security tags and gives restricted precedence', () => {
+test('canonical security grade helpers: normalize, rank, compare, tags, invalid', () => {
+  assert.equal(normalizeSecurityGrade('normal'), 'normal')
+  assert.equal(normalizeSecurityGrade('credential'), 'credential')
+  assert.equal(normalizeSecurityGrade('restricted'), 'restricted')
+  assert.throws(() => normalizeSecurityGrade('confidential'), { code: 'SECURITY_GRADE_INVALID' })
+  assert.throws(() => normalizeSecurityGrade(null), { code: 'SECURITY_GRADE_INVALID' })
+  assert.throws(() => normalizeSecurityGrade(undefined), { code: 'SECURITY_GRADE_INVALID' })
+
+  assert.deepEqual(['normal', 'credential', 'restricted'].map(securityGradeRank), [0, 1, 2])
+  assert.throws(() => securityGradeRank('confidential'), { code: 'SECURITY_GRADE_INVALID' })
+
+  assert.ok(compareSecurityGrades('restricted', 'normal') > 0)
+  assert.ok(compareSecurityGrades('normal', 'credential') < 0)
+  assert.equal(compareSecurityGrades('credential', 'credential'), 0)
+  assert.throws(() => compareSecurityGrades('normal', 'invalid'), { code: 'SECURITY_GRADE_INVALID' })
+
   assert.equal(tableSecurityGrade({ tags: ['not-restricted', 'CLASSIFICATION:RESTRICTED'] }), 'normal')
   assert.equal(tableSecurityGrade({ tags: [' Restricted '] }), 'restricted')
   assert.equal(tableSecurityGrade({ tags: [{ urn: 'urn:li:tag:credential', name: 'anything' }, 'restricted'] }), 'restricted')
-  assert.deepEqual(['normal', 'credential', 'restricted'].map(securityGradeRank), [0, 1, 2])
-  assert.throws(() => securityGradeRank('confidential'), /outside the canonical product policy/)
+  assert.equal(tableSecurityGrade({ tags: ['credential'] }), 'credential')
 })
 
 test('returns TABLE-only candidates with search, schema, System and grade filters', () => {
@@ -79,4 +98,32 @@ test('returns TABLE-only candidates with search, schema, System and grade filter
     'urn:table:b',
   ])
   assert.deepEqual(tableSystemCandidates({ assets, document: assigned.document, systems, query: 'table_c' }).map((item) => item.security_grade), ['restricted'])
+})
+
+test('resolves exact authority before legacy fallback without union or dual write', () => {
+  const assigned = applyTableSystemMappingCommand(null, {
+    action: 'ASSIGN', table_ids: ['urn:table:a'], system_ids: ['system-a'], reason: 'exact authority fixture mapping',
+  }, 'admin', '2026-08-16T01:00:00.000Z')
+  assert.deepEqual(resolveTableSystemAuthority({
+    document: assigned.document,
+    tableIdentity: 'urn:table:a',
+    activeSystemIds: new Set(['system-a', 'system-b']),
+    legacySystemId: 'system-b',
+  }), { system_ids: ['system-a'], provenance: 'EXACT', conflict: true })
+  assert.deepEqual(resolveTableSystemAuthority({
+    document: assigned.document,
+    tableIdentity: 'urn:table:b',
+    activeSystemIds: new Set(['system-a', 'system-b']),
+    legacySystemId: 'system-b',
+  }), { system_ids: ['system-b'], provenance: 'LEGACY_FALLBACK', conflict: false })
+
+  const removed = applyTableSystemMappingCommand(assigned.document, {
+    action: 'REMOVE', table_ids: ['urn:table:a'], system_ids: ['system-a'], reason: 'remove exact authority mapping',
+  }, 'admin', '2026-08-16T02:00:00.000Z')
+  assert.deepEqual(resolveTableSystemAuthority({
+    document: removed.document,
+    tableIdentity: 'urn:table:a',
+    activeSystemIds: new Set(['system-a', 'system-b']),
+    legacySystemId: 'system-b',
+  }), { system_ids: [], provenance: 'EXACT', conflict: true })
 })
