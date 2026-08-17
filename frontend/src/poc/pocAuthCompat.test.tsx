@@ -177,6 +177,25 @@ describe('POC local-session authentication adapter', () => {
     })
   })
 
+  it('distinguishes an exact Origin rejection from a credential failure', async () => {
+    const fetchMock = vi.fn((input: RequestInfo | URL) => Promise.resolve(
+      requestPath(input) === '/auth/me'
+        ? jsonResponse({}, 401)
+        : jsonResponse({ code: 'ORIGIN_FORBIDDEN' }, 403),
+    ))
+    vi.stubGlobal('fetch', fetchMock)
+    const { result } = renderHook(() => useAuth())
+    await waitFor(() => expect(result.current.loading).toBe(false))
+
+    await act(() => result.current.signInWithCredentials('operator', 'correct horse'))
+
+    expect(result.current.user).toBeUndefined()
+    expect(result.current.notice).toEqual({
+      kind: 'ERROR',
+      message: '접속 주소가 허용된 DEV 주소와 다릅니다. 안내된 127.0.0.1 주소로 다시 접속하세요.',
+    })
+  })
+
   it('logs out through the server and clears only in-memory session state', async () => {
     const fetchMock = vi.fn((input: RequestInfo | URL, _options?: RequestInit) => {
       void _options

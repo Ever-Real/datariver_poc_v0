@@ -8,6 +8,7 @@ import type {
 import { configurePocAuthorization } from './pocApi'
 
 const genericLoginFailure = '로그인할 수 없습니다. 아이디와 비밀번호를 확인하세요.'
+const originLoginFailure = '접속 주소가 허용된 DEV 주소와 다릅니다. 안내된 127.0.0.1 주소로 다시 접속하세요.'
 const genericSessionFailure = '인증 상태를 확인하지 못했습니다. 다시 시도하세요.'
 
 type JsonRecord = Record<string, unknown>
@@ -176,6 +177,7 @@ export function useAuth() {
   const signInWithCredentials = useCallback(async (username: string, password: string) => {
     setLoading(true)
     setNotice(undefined)
+    let failureMessage = genericLoginFailure
     try {
       const response = await fetch('/auth/login', {
         method: 'POST',
@@ -187,11 +189,17 @@ export function useAuth() {
         },
         body: JSON.stringify({ username, password }),
       })
-      if (!response.ok) throw new Error('Local login failed.')
+      if (!response.ok) {
+        if (response.status === 403) {
+          const problem = await response.clone().json().catch(() => undefined)
+          if (isRecord(problem) && problem.code === 'ORIGIN_FORBIDDEN') failureMessage = originLoginFailure
+        }
+        throw new Error('Local login failed.')
+      }
       applyProfile(await readProfile(response))
     } catch {
       clearSession()
-      if (mounted.current) setNotice({ kind: 'ERROR', message: genericLoginFailure })
+      if (mounted.current) setNotice({ kind: 'ERROR', message: failureMessage })
     } finally {
       if (mounted.current) setLoading(false)
     }

@@ -1,5 +1,6 @@
 /* global Buffer, fetch, structuredClone */
 import assert from 'node:assert/strict'
+import { request as httpRequest } from 'node:http'
 import test from 'node:test'
 
 import { createPocLocalAuthenticator, hashPocPassword } from './poc-local-auth.mjs'
@@ -9,6 +10,24 @@ import { changeHistoryAccessCoreProjection, privateChangeHistoryAccess } from '.
 
 const AIRFLOW_SERVICE_TOKEN = 'airflow-worker-token-1234567890abcdef'
 const CURRENT_TABLE_URN = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.schema.table_c,PROD)'
+
+function getWithHost(url, host) {
+  const target = new URL(url)
+  return new Promise((resolve, reject) => {
+    const request = httpRequest({
+      hostname: '127.0.0.1',
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method: 'GET',
+      headers: { Host: host },
+    }, (response) => {
+      response.resume()
+      response.once('end', () => resolve(response))
+    })
+    request.once('error', reject)
+    request.end()
+  })
+}
 
 test('rejects the ghost Dataset shell that DataHub returns for a nonexistent URN', () => {
   assert.equal(currentDatahubDatasetExists({
@@ -763,6 +782,11 @@ test('enforces anonymous, Origin, JSON 404, inactive-subject, and Airflow-token 
     const loginHtml = await loginShell.text()
     assert.match(loginHtml, /<base href="\/">/)
     assert.ok(loginHtml.indexOf('<base href="/">') < loginHtml.indexOf('<script type="module"'))
+    const canonicalPort = new URL(fixture.origin).port
+    const wrongHostShell = await getWithHost(`${fixture.origin}/?page=admin`, `localhost:${canonicalPort}`)
+    assert.equal(wrongHostShell.statusCode, 307)
+    assert.equal(wrongHostShell.headers.location, `${fixture.origin}/?page=admin`)
+    assert.equal(wrongHostShell.headers['cache-control'], 'no-store')
     assert.equal((await fetch(`${fixture.origin}/auth/me`)).status, 401)
     assert.equal((await fixture.login(
       'first@example.com', 'first correct password', 'http://127.0.0.1:1',

@@ -331,6 +331,21 @@ function securityHeaders() {
   }
 }
 
+function redirectBrowserToCanonicalOrigin(request, response, url, authenticator) {
+  const publicOrigin = authenticator?.config?.publicOrigin
+  if (typeof publicOrigin !== 'string' || !publicOrigin) return false
+  const canonical = new URL(publicOrigin)
+  if (request.headers.host === canonical.host) return false
+  const location = new URL(`${url.pathname}${url.search}`, canonical).toString()
+  response.writeHead(307, {
+    'Cache-Control': 'no-store',
+    Location: location,
+    ...securityHeaders(),
+  })
+  response.end()
+  return true
+}
+
 function unconfiguredPocAuthenticator() {
   const unavailable = () => {
     throw accessError(503, 'AUTHENTICATION_NOT_CONFIGURED', 'Local authentication is not configured.')
@@ -5473,6 +5488,7 @@ export function createPocServer({
         return response.end(request.method === 'HEAD' ? undefined : body)
       }
       if (url.pathname === '/auth/login' && ['GET', 'HEAD'].includes(request.method || '')) {
+        if (redirectBrowserToCanonicalOrigin(request, response, url, authenticator)) return
         return serveStatic(request, response, url)
       }
       if (url.pathname === '/auth' || url.pathname.startsWith('/auth/')) {
@@ -5497,6 +5513,7 @@ export function createPocServer({
         return await api(request, response, url, requestContext)
       }
       if (!['GET', 'HEAD'].includes(request.method || '')) return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Only static GET/HEAD is supported.')
+      if (redirectBrowserToCanonicalOrigin(request, response, url, authenticator)) return
       return serveStatic(request, response, url)
     } catch (error) {
       if (response.headersSent) return response.end()
