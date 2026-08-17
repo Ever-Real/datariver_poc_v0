@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `78448566c9cb461bacafa0afc425572d4fefd0ad`
-- Deployed OCI revision: `78448566c9cb461bacafa0afc425572d4fefd0ad`
+- Current Product SHA: `fd379567a220f1e677deb5225b8e0b36c1d28d8d`
+- Deployed OCI revision: `fd379567a220f1e677deb5225b8e0b36c1d28d8d`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -28,6 +28,8 @@
   `5e600320e08da16c67dcb4c0e4dce76162230f04`
 - Registration server-authoritative apply-report Product:
   `78448566c9cb461bacafa0afc425572d4fefd0ad`
+- Governance policy/standard document management Product:
+  `fd379567a220f1e677deb5225b8e0b36c1d28d8d`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -53,7 +55,7 @@
 - DEV support-service gate: `PARTIAL` overall — Airflow and MinIO are
   `COMPLETE_RUNTIME_VERIFIED` through the existing DEV contracts; GX has an exact 1.19.1 execution
   seam but no implemented/proven result-to-DataHub Assertion E2E. Its missing egress contract is
-  `GX_CANONICAL_RUNTIME_CONTRACT_REQUIRED`, not permission to invent a Quality architecture.
+  `GX_PREP_OPS_CONTRACT_EVIDENCE_REQUIRED`, not permission to invent a Quality architecture.
 - Registration bounded authorization/preparation slice: `COMPLETE_RUNTIME_VERIFIED` — the existing
   MinIO → bulk preparation → Airflow callback → authorized current-Table candidate flow enforces
   role + grant + grade + fixed policy + Responsible System, owner isolation and count/receipt
@@ -64,9 +66,15 @@
   server-authoritative `change.read` projection with exact truthful `NOT_STARTED`, 404 hiding and
   private/no-store, without creating an apply job or provider evidence. Registration overall remains
   `PARTIAL` for the durable preparation/outbox/provider-apply and remaining typed/target-host
-  contracts. Durable restart storage is `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION`.
+  contracts. Durable restart storage is `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION`; the read-only
+  recommendation is to reuse the accepted minimal relational receipt/candidate/provenance contract,
+  not put execution evidence into the global core JSON blob.
+- Governance policy/standard document management: `COMPLETE_RUNTIME_VERIFIED` for active-user read
+  and data_steward/manager/admin create, DRAFT-version update and archive. Viewer/developer mutation,
+  Data Steward lifecycle spoofing and hard delete are denied. This uses existing `change.manage`
+  without giving Data Steward `knowledge.manage` or `knowledge.review`.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
-  unbound Knowledge/Governance and Quality/GX surfaces remain open.
+  unbound Knowledge and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
 - remote-host network acceptance: `TARGET_RECHECK_REQUIRED`
 - Account/Auth core: `COMPLETE_RUNTIME_VERIFIED`; future Registration, Knowledge and Quality
@@ -80,7 +88,7 @@ P1  Account/Auth core                                → completed baseline; fea
 P2  MCL change management / automatic change capture → COMPLETE_RUNTIME_VERIFIED; midnight recheck
 P3  DEV support services: Airflow / MinIO / GX       → Airflow/MinIO complete; GX partial
 P4  Registration management                          → through authoritative NOT_STARTED apply-report complete; actual apply/durability partial
-P5  Governance: policy/standard document management  → mutation policy HOLD
+P5  Governance: policy/standard document management  → read/create/DRAFT-update/archive complete
 P6  Chat: General / Vector / Auto / Graph refinement → preserve current verified baseline
 P7  Knowledge / Quality                              → document current state; user definition required
 P8  Admin                                             → add only minimum feature-required controls
@@ -129,11 +137,11 @@ local credential + opaque server session
 ## Fresh validation
 
 - Independent fresh Node POC Validator at exact Product
-  `78448566c9cb461bacafa0afc425572d4fefd0ad`. Effective model: Gemini 3.1 Pro High;
+  `fd379567a220f1e677deb5225b8e0b36c1d28d8d`. Effective model: Gemini 3.1 Pro High;
   authoritative worktree/branch/HEAD and Node POC authority recorded; no Product files or runtime
   changed. The coordinator separately confirmed the deployed OCI revision matches that Product.
-- Node POC full suite: 106/106 PASS.
-- Frontend full suite: 87 files, 594/594 PASS on the final clean rerun.
+- Node POC full suite: 107/107 PASS.
+- Frontend full suite: 87 files, 595/595 PASS on the final clean rerun.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and
   `git diff --check`: PASS.
 - Exact Product image build/package/deploy: PASS; current Web health `ok` and OCI revision exact.
@@ -245,9 +253,28 @@ local credential + opaque server session
   private/no-store; unknown CRs and unsupported methods are hidden with 404. No apply job, outbox,
   provider mutation or CR transition is synthesized. Preparation remains memory-backed, so canonical
   restart durability/outbox/apply ownership stays `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION`.
+- The read-only durability decision rejects the global `poc_state` core JSON blob for preparation
+  evidence. The recommended approval direction is the already accepted minimal relational
+  preparation/receipt, deterministic candidate and candidate→CR provenance contract; existing CR
+  apply/test remains the sole provider-mutation owner. No schema mutation was performed.
 - Evidence: `.orchestration/evidence/DEV-REGISTRATION-SUPPORT-SERVICES-RUNTIME.md` and
   `.orchestration/evidence/DEV-REGISTRATION-BULK-CANDIDATE-CR-RUNTIME.md` and
-  `.orchestration/evidence/DEV-REGISTRATION-APPLY-REPORT-AUTHORITY.md`.
+  `.orchestration/evidence/DEV-REGISTRATION-APPLY-REPORT-AUTHORITY.md` and
+  `.orchestration/evidence/DEV-GOVERNANCE-DOCUMENT-MANAGEMENT-RUNTIME.md`.
+
+## Governance policy and standard documents
+
+- Product `fd379567...` keeps read open to every active role and reuses existing `change.manage`
+  only for document create, DRAFT-version append/update and archive. It does not apply Table or
+  Responsible-System scope to an unbound policy/standard document.
+- Data Steward does not gain Knowledge manage/review. Direct core CAS rejects non-DRAFT creation,
+  hard delete, review/publication state or pointer spoofing and published-version mutation.
+- Exact runtime passed create/update/archive for Data Steward, Manager and Admin, with Viewer and
+  Developer mutation 403. Data Steward lifecycle spoof and hard delete also returned 403.
+- Three DEV-only acceptance documents remain archived with six DRAFT versions as retained audit
+  history. All five disposable profiles are inactive with disabled credentials and zero sessions;
+  inspection admin was preserved.
+- Evidence: `.orchestration/evidence/DEV-GOVERNANCE-DOCUMENT-MANAGEMENT-RUNTIME.md`.
 
 ## MCL runtime / automatic detection
 
@@ -278,9 +305,9 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `78448566...`; do not start PHASE 1E/1F, migration, legacy
+- Current boundary: preserve Product `fd379567...`; do not start PHASE 1E/1F, migration, legacy
   deletion, GX/Knowledge/Quality Product implementation or another Account/Auth refactor. The
-  durability/outbox/provider-apply gap is now reconciled and requires
-  `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION` before a storage/apply mutation. Governance document
-  mutation stays on policy HOLD; GX Assertion egress lacks a canonical runtime contract; Chat
+  durability/outbox/provider-apply gap has a read-only recommendation and still requires
+  `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION` before a schema/apply mutation. Governance document
+  read/create/update/archive is complete; GX requires exact PREP/OPS contract evidence; Chat
   General/Vector/AUTO stays verified.

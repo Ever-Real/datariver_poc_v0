@@ -24,7 +24,9 @@ IP, schema 본문은 이 문서나 Git evidence에 기록하지 않는다.
 
 ```bash
 set -eu
-export POC_SOURCE_COMMIT="$(git rev-parse HEAD)"
+FULL_PRODUCT_SHA="$(git rev-parse HEAD)"
+test "${#FULL_PRODUCT_SHA}" -eq 40
+case "$FULL_PRODUCT_SHA" in (*[!0-9a-f]*) exit 1;; esac
 
 # A. DataHub와 같은 Docker host의 existing external network를 쓰는 경우
 compose_files=(
@@ -35,18 +37,23 @@ compose_files=(
 # B. remote DataHub/Kafka/Registry DNS/TCP endpoint를 쓰는 경우는 위 배열 대신 아래를 선택한다.
 # compose_files=(-f deploy/poc/docker-compose.poc.yaml)
 
-docker compose --env-file deploy/poc/.env "${compose_files[@]}" config --quiet
-docker compose --env-file deploy/poc/.env "${compose_files[@]}" build web
+POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" config --quiet
+POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" build web
 
-image_id="$(docker compose --env-file deploy/poc/.env "${compose_files[@]}" images -q web)"
+image_ref="$(POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" config --images | awk '/^datariver-poc:/{print; exit}')"
+test -n "$image_ref"
 image_revision="$(docker image inspect \
-  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id")"
-test "$POC_SOURCE_COMMIT" = "$image_revision"
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_ref")"
+test "$FULL_PRODUCT_SHA" = "$image_revision"
 printf 'source/image revision verified: %s\n' "$image_revision"
 ```
 
-shell environment의 `POC_SOURCE_COMMIT`이 `.env`의 `local`/이전 SHA placeholder보다 우선한다.
-따라서 매 build마다 `.env`를 수정하지 않고 `checked-out HEAD = build arg = image revision`을
+`FULL_PRODUCT_SHA`는 수동으로 줄이거나 확장하지 않고 매 build마다 `git rev-parse HEAD`의 40자리
+결과에서만 만든다. 각 Compose 호출에만 동일 값을 build arg로 전달하고, running container가 아니라
+방금 build한 image reference의 OCI label을 직접 읽어 `checked-out HEAD = build arg = image revision`을
 증명한다. DataHub 외부 network를 사용하지 않는 원격 DNS/TCP 배포에서는 base Compose만
 사용한다. 새 proxy, Kafka, Schema Registry 또는 sidecar를 만들지 않는다.
 

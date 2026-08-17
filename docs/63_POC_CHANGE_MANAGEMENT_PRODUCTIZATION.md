@@ -273,9 +273,11 @@ fi
 # 현재 POC 계약에서는 ignored .env에 non-secret config와 credential을 입력한다.
 # POC_SOURCE_COMMIT에는 아래 exact SHA를 기록한 뒤 검증한다. Compose의
 # shell-environment 우선순위가 selected env-file authority를 덮지 않게 export하지 않는다.
-expected_source_commit="$(git rev-parse HEAD)"
+FULL_PRODUCT_SHA="$(git rev-parse HEAD)"
+test "${#FULL_PRODUCT_SHA}" -eq 40
+case "$FULL_PRODUCT_SHA" in (*[!0-9a-f]*) exit 1;; esac
 env_source_commit="$(sed -n 's/^POC_SOURCE_COMMIT=//p' deploy/poc/.env | tail -1)"
-test "$env_source_commit" = "$expected_source_commit"
+test "$env_source_commit" = "$FULL_PRODUCT_SHA"
 unset POC_SOURCE_COMMIT
 
 # A. DataHub와 같은 Docker host/external Docker network를 사용
@@ -286,13 +288,18 @@ compose_files=(
 # B. remote DataHub/Kafka/Registry DNS/TCP endpoint를 사용하면 위 배열 대신:
 # compose_files=(-f deploy/poc/docker-compose.poc.yaml)
 
-docker compose --env-file deploy/poc/.env "${compose_files[@]}" config --quiet
-docker compose --env-file deploy/poc/.env "${compose_files[@]}" build web
-image_id="$(docker compose --env-file deploy/poc/.env "${compose_files[@]}" images -q web)"
+POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" config --quiet
+POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" build web
+image_ref="$(POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" config --images | awk '/^datariver-poc:/{print; exit}')"
+test -n "$image_ref"
 image_revision="$(docker image inspect \
-  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id")"
-test "$expected_source_commit" = "$image_revision"
-docker compose --env-file deploy/poc/.env "${compose_files[@]}" up -d
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_ref")"
+test "$FULL_PRODUCT_SHA" = "$image_revision"
+POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" up -d
 curl -fsS http://127.0.0.1:39080/healthz
 test "$(curl -sS -o /dev/null -w '%{http_code}' \
   http://127.0.0.1:39080/poc-api/capabilities)" = 401
@@ -348,19 +355,25 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
 ```bash
 set -eu
 git pull --ff-only origin dev
-expected_source_commit="$(git rev-parse HEAD)"
+FULL_PRODUCT_SHA="$(git rev-parse HEAD)"
+test "${#FULL_PRODUCT_SHA}" -eq 40
+case "$FULL_PRODUCT_SHA" in (*[!0-9a-f]*) exit 1;; esac
 env_source_commit="$(sed -n 's/^POC_SOURCE_COMMIT=//p' deploy/poc/.env | tail -1)"
-test "$env_source_commit" = "$expected_source_commit"
+test "$env_source_commit" = "$FULL_PRODUCT_SHA"
 unset POC_SOURCE_COMMIT
 # A(same Docker host):
 compose_files=(-f deploy/poc/docker-compose.poc.yaml -f deploy/poc/docker-compose.datahub-provider.yaml)
 # B(remote DNS/TCP)에서는 위 배열 대신:
 # compose_files=(-f deploy/poc/docker-compose.poc.yaml)
-docker compose --env-file deploy/poc/.env "${compose_files[@]}" build web
-image_id="$(docker compose --env-file deploy/poc/.env "${compose_files[@]}" images -q web)"
-test "$expected_source_commit" = "$(docker image inspect \
-  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id")"
-docker compose --env-file deploy/poc/.env "${compose_files[@]}" up -d --no-deps web
+POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" build web
+image_ref="$(POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" config --images | awk '/^datariver-poc:/{print; exit}')"
+test -n "$image_ref"
+test "$FULL_PRODUCT_SHA" = "$(docker image inspect \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_ref")"
+POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" up -d --no-deps web
 curl -fsS http://127.0.0.1:39080/healthz
 ```
 
@@ -377,19 +390,25 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
 
 # exact 이전 SHA로 application-only rollback
 git checkout PREVIOUS_APPROVED_SHA
-expected_source_commit="$(git rev-parse HEAD)"
+FULL_PRODUCT_SHA="$(git rev-parse HEAD)"
+test "${#FULL_PRODUCT_SHA}" -eq 40
+case "$FULL_PRODUCT_SHA" in (*[!0-9a-f]*) exit 1;; esac
 env_source_commit="$(sed -n 's/^POC_SOURCE_COMMIT=//p' deploy/poc/.env | tail -1)"
-test "$env_source_commit" = "$expected_source_commit"
+test "$env_source_commit" = "$FULL_PRODUCT_SHA"
 unset POC_SOURCE_COMMIT
 # A(same Docker host):
 compose_files=(-f deploy/poc/docker-compose.poc.yaml -f deploy/poc/docker-compose.datahub-provider.yaml)
 # B(remote DNS/TCP)에서는 위 배열 대신:
 # compose_files=(-f deploy/poc/docker-compose.poc.yaml)
-docker compose --env-file deploy/poc/.env "${compose_files[@]}" build web
-image_id="$(docker compose --env-file deploy/poc/.env "${compose_files[@]}" images -q web)"
-test "$expected_source_commit" = "$(docker image inspect \
-  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id")"
-docker compose --env-file deploy/poc/.env "${compose_files[@]}" up -d --no-deps web
+POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" build web
+image_ref="$(POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" config --images | awk '/^datariver-poc:/{print; exit}')"
+test -n "$image_ref"
+test "$FULL_PRODUCT_SHA" = "$(docker image inspect \
+  --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_ref")"
+POC_SOURCE_COMMIT="$FULL_PRODUCT_SHA" docker compose --env-file deploy/poc/.env \
+  "${compose_files[@]}" up -d --no-deps web
 ```
 
 rollback은 DB/ledger/checkpoint/source를 삭제하거나 rewind하지 않는다. image tag와 exact SHA를
