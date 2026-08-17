@@ -2,16 +2,20 @@
 
 ## Current baseline
 
-- Current Product SHA: `773cd37e6d48cbba02c999380fe1965a3b9f4e26`
-- Deployed OCI revision: `773cd37e6d48cbba02c999380fe1965a3b9f4e26`
+- Current Product SHA: `2f247107d28716aeba3cfe3fa201fb040ac437e3`
+- Deployed OCI revision: `2f247107d28716aeba3cfe3fa201fb040ac437e3`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
 - PHASE 1C-2 Product: `f78f30fbcf0a5468ec2ce9893d06825ddd030369`
 - PHASE 1C-3 Product: `9df97f4975a990819db655b74b09e709dc6d5aad`
 - PHASE 1C-4 implementation: `65ca6349cc6f3c81a1ef75a48a7bb2b47e5a66c9`
-- PHASE 1C-4 browser-origin hardening/current Product:
+- PHASE 1C-4 browser-origin hardening Product:
   `773cd37e6d48cbba02c999380fe1965a3b9f4e26`
+- PHASE 1D bounded Table enforcement implementation:
+  `805fe1279f38066c57e054b7720295b9495d9b55`
+- PHASE 1D production-image packaging/current Product:
+  `2f247107d28716aeba3cfe3fa201fb040ac437e3`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -24,8 +28,10 @@
 - PHASE 1C-2H hardening: `COMPLETE_RUNTIME_VERIFIED`
 - PHASE 1C-3 fixed feature-role-grade management: `COMPLETE_RUNTIME_VERIFIED`
 - PHASE 1C-4 CR responsible-System/three-lane approval: `COMPLETE_RUNTIME_VERIFIED`
-- PHASE 1D cross-feature data enforcement: `PARTIAL` — read-only surface audit complete; Product
-  mutation/validation is the current slice.
+- PHASE 1D bounded Table enforcement slice: `PARTIAL` — source and representative DEV runtime are
+  verified; external semantic-vector/AUTO and higher-grade canonical runtime remain unverified.
+- PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
+  unbound Knowledge/Governance and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
 - remote-host network acceptance: `TARGET_RECHECK_REQUIRED`
 - overall Account/Auth program: `PARTIAL`
@@ -69,30 +75,43 @@ local credential + opaque server session
 
 ## Fresh validation
 
-- Independent fresh Validator PASS at exact Product
-  `773cd37e6d48cbba02c999380fe1965a3b9f4e26` and matching deployed OCI revision.
-- Node POC full suite: 92/92 PASS.
+- Independent fresh Node POC Validator at exact Product
+  `2f247107d28716aeba3cfe3fa201fb040ac437e3` and matching deployed OCI revision. Effective model:
+  Gemini 3.1 Pro High; authoritative worktree/branch/HEAD recorded; no files or runtime changed.
+- Node POC full suite: 97/97 PASS.
+- Catalog performance/reconciliation: 5/5 PASS.
 - Frontend full suite: 87 files, 592/592 PASS on the final clean rerun.
 - Lint, typecheck, production build, Compose no-interpolate render and `git diff --check`: PASS.
-- Canonical GET 200; noncanonical browser GET 307; wrong-Origin login POST 403.
+- Exact Product image build/package/deploy: PASS; current Web health `ok` and OCI revision exact.
+- Representative runtime: grant/no-grant, Admin, policy, immediate grant/grade/policy changes,
+  direct 404, authorized counts/facets/tree/dashboard, exact AUTO inventory/citations, direct
+  lineage, non-Admin Neo4j fail-closed and unauthorized mutation 403 passed.
+- External Chat/embedding/reranker endpoints returned `NETWORK_ECONNREFUSED`. All current canonical
+  Tables are grade `normal`, so external semantic-vector/AUTO and negative higher-grade runtime
+  PASS are not claimed.
 - Web/Airflow/Neo4j/PostgreSQL/Redis/MinIO host listeners remain loopback-bound. A real second-host
   denial probe is still required.
-- MCL ledger/checkpoint/CR-link/source counts remained 46/2/4/2 through PHASE 1C-4 validation.
+- MCL ledger/checkpoint/CR-link/source counts remained 46/2/4/2.
 
 ## PHASE 1D current slice
 
-- Reuse the existing grants, grade helper, fixed policy, capabilities and exact workflow System
-  mapping. No new auth table, service, dependency or policy framework is required.
-- Replace schema/System-based general data visibility with one bounded request-time Table decision.
-- Enforce before local search/count and vector ranking. Constrain graph/Chat inputs before
-  traversal/context where canonical Table identity is provable.
-- Keep Responsible System out of general Catalog/Monitoring/Governance reads; use it only for
-  Registration/Knowledge/Quality/Change workflow operations.
-- Fail closed for non-Table identities, unresolved current grades, deleted/current-missing assets
-  and graph nodes without proven canonical Table identity.
+- The covered paths now use one request-hydrated Table decision: current principal + active exact
+  grant + maximum grade + fixed feature-role-grade cell. Admin has application data bypass after
+  canonical identity validation; input, TABLE-only mutation, stale-CAS and Origin/CSRF integrity
+  checks are unchanged.
+- General Catalog/Search/Tree/Detail/count/dashboard/profile/metadata Chat visibility no longer
+  uses Responsible System. Grants and fixed policy are hydrated once per request into Sets; there
+  is no session snapshot or per-Table authority/provider query loop.
+- Local results filter before match/sort/page/count. PostgreSQL vector restricts exact allowed URNs
+  before vector ordering; memory filters before cosine/sort; empty non-Admin scope stops early.
+- AUTO exact/inventory/semantic retrieval, reranking input, context and citations use authorized
+  scope. General Chat remains independent of Table access.
+- Direct DataHub lineage authorizes its center and filters neighbors. Non-Admin Neo4j stays empty
+  until canonical Table provenance can be proved before traversal.
 - Provider-side lineage/glossary filtering, deleted-asset grade history, Neo4j identity provenance
   and coarse unbound Knowledge/Governance blobs remain explicit risks; do not claim false runtime
   completeness.
+- Quality/GX authorization seams do not establish an available Quality/GX runtime.
 
 ## Gates
 
@@ -100,5 +119,5 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Next smallest Product slice: PHASE 1D bounded Table decision + Catalog/Search/Vector/Chat
-  enforcement, followed by focused runtime validation.
+- Current stop boundary: preserve Product `2f247107...`; do not start PHASE 1E/1F, GX, migration,
+  legacy deletion or another PHASE 1D Product slice without a new bounded authorization.
