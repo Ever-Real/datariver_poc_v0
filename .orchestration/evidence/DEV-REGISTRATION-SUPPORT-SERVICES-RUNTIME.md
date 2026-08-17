@@ -7,8 +7,10 @@
 - Branch: `Ever-Real/dev-core-t04-validation`
 - Evidence base before the Product change:
   `dd08ca43cd18d3b07bc5a253c1f8616c9c0772e8`
-- Product SHA and deployed OCI revision:
+- Registration authority Product:
   `d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`
+- Current Product SHA and deployed OCI revision:
+  `038b7ffa6b06666985664d480340b9010fe1fdd9`
 - Runtime: authoritative Node POC, healthy at `http://127.0.0.1:39083`
 - No push, G1/G2 publication, PREP/OPS mutation, migration, provider upgrade or destructive
   cleanup was performed.
@@ -110,13 +112,38 @@ cleanup observation was enabled credentials 0, active sessions 0, active users 0
 active grants 0 and active mappings 0 for those identities. Historical rows were not hard-deleted.
 The inspection `admin` account was not used as a dummy and was not reset, disabled or cleaned.
 
+## Manual-metadata provider compatibility and apply receipt
+
+The remaining sparse DataHub v1.6 receipt failure was isolated without changing authorization or
+provider architecture. DataHub can represent an empty `domains` aspect either as an explicit
+empty array or as an absent aspect, and its required `glossaryTerms.auditStamp` is provider-managed.
+The Product now compares only the controlled domain/term state for those two aspects, while:
+
+- explicit absence is distinguished from a malformed present response;
+- malformed or unexpected target-aspect shapes fail closed with 502;
+- `auditStamp` is structurally validated before being excluded from the glossary semantic hash;
+- every other aspect retains the prior full-document exact comparison;
+- the same comparison controls both `ALREADY_MATCHED` and post-write receipt verification.
+
+Two coordinator-owned disposable canonical Tables then exercised the exact deployed Product. The
+first empty request returned 200 with all five aspects `ALREADY_MATCHED`, zero writes and matching
+expected/observed hashes. The second request wrote one disposable description and returned 200
+with `datasetProperties=APPLIED_VERIFIED`, the other four aspects `ALREADY_MATCHED`, one write,
+matching hashes and provider read-back of the description. No business Table was changed.
+
+Both assets were tombstoned without hard deletion. Disposable credentials were disabled, sessions
+revoked and profiles made inactive; active grants, mappings and assignments remained zero. The
+final safe-state read kept inspection Admin active/login-enabled, role `admin`, grade `restricted`,
+failed attempts 0, unlocked, one active session and no Responsible System. MCL stayed 2/2/66/4,
+the current Catalog stayed 2,002 Tables, and Web stayed healthy with the exact Product OCI revision.
+
 ## Regression and build
 
 Final source at the Product SHA passed:
 
 - focused authorization tests: 6/6;
 - focused server tests: 22/22;
-- canonical Node POC suite: 103/103;
+- canonical Node POC suite: 104/104;
 - frontend suite: 87 files, 592/592;
 - lint, typecheck, POC build and production build;
 - Compose base + DataHub-provider overlay render;
@@ -124,7 +151,7 @@ Final source at the Product SHA passed:
 
 An initial ad-hoc wildcard Node invocation inherited the ignored DEV `.env` and produced two false
 test failures. It is not accepted as canonical evidence. The tracked `test:poc-server` command now
-sets a deliberately missing `POC_ENV_FILE`, so its 103-test result is independent of the caller's
+sets a deliberately missing `POC_ENV_FILE`, so its 104-test result is independent of the caller's
 DEV provider configuration. Product runtime semantics were not changed by that isolation.
 
 After the exact image build, Web-only recreation preserved the canonical port and reported a
@@ -137,9 +164,10 @@ counts remained 2/2/66/4.
 ## Independent validation
 
 The first attempted validator was discarded with `WRONG_WORKTREE_PROCESS_CWD` and made no change.
-A fresh Gemini 3.1 Pro High (`high`) validator was then launched from the authoritative worktree.
-It independently recorded the clean branch/HEAD, exact Product SHA, Node POC authority and healthy
-runtime, ran the canonical suite at 103/103 PASS, and made no source or runtime mutation.
+A fresh Gemini 3.1 Pro High (`high`) validator was then launched from the authoritative worktree for
+the current receipt Product. It independently recorded the clean branch/HEAD, exact Product SHA,
+Node POC authority and healthy runtime, reviewed the bounded semantic comparison, ran the canonical
+suite at 104/104 PASS, and made no source or runtime mutation.
 
 ## Canonical status by product surface
 
@@ -149,8 +177,9 @@ runtime, ran the canonical suite at 103/103 PASS, and made no source or runtime 
 | Airflow DEV support | `COMPLETE_RUNTIME_VERIFIED` | PREP/OPS remain untested |
 | MinIO DEV support | `COMPLETE_RUNTIME_VERIFIED` | existing external DEV ownership must stay explicit |
 | GX execution seam | `IMPLEMENTED_NOT_VERIFIED` | DataHub Assertion egress and UI receipt |
-| Registration bounded auth/preparation slice | `COMPLETE_RUNTIME_VERIFIED` | applies only to the covered existing preparation/candidate routes |
-| Registration overall | `PARTIAL` | sparse manual-metadata read-back compatibility and remaining end-to-end apply workflow |
+| Registration auth/preparation slice | `COMPLETE_RUNTIME_VERIFIED` | covered existing preparation/candidate routes |
+| Registration manual-metadata apply | `COMPLETE_RUNTIME_VERIFIED` | empty sparse receipt and one actual disposable description apply |
+| Registration overall | `PARTIAL` | remaining bulk candidate-to-CR/apply workflow acceptance |
 | Governance documents | `HOLD` | `HOLD_GOVERNANCE_DOCUMENT_MUTATION_POLICY` |
 | Chat General / Vector / AUTO | `COMPLETE_RUNTIME_VERIFIED` | preserve current baseline |
 | Chat Graph | `PARTIAL` | exact canonical Neo4j Table provenance |
@@ -165,10 +194,10 @@ authorization redesign.
 
 - `HOLD_GOVERNANCE_DOCUMENT_MUTATION_POLICY`: the exact policy/standard document create/update/
   delete roles are not canonical. Active-user read remains available; no workflow was invented.
-- GX: define and implement the smallest existing-contract result-to-DataHub Assertion egress slice
-  only after the Quality feature boundary is confirmed.
-- Registration: isolate the existing sparse manual-metadata DataHub empty domain/glossary read-back
-  502 as a compatibility repair; do not mix it with authorization or support-service redesign.
+- `GX_CANONICAL_RUNTIME_CONTRACT_REQUIRED`: exact 1.19.1 execution is known, but no canonical
+  result-to-DataHub Assertion egress/GMS receipt contract was found. Do not invent that integration.
+- Registration: keep the verified manual apply path and close only the next existing bulk
+  candidate-to-CR/apply workflow seam when its current canonical contract is explicit.
 - Chat: keep General/Vector/AUTO unchanged; resolve Graph identity in the Knowledge provenance phase.
 
 ## Overengineering check
@@ -182,4 +211,3 @@ new provider versions 0
 new frameworks        0
 new capabilities      0
 ```
-

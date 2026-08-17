@@ -1,7 +1,7 @@
 # DataRiver 현재 제품 우선순위
 
 기준 Product SHA와 배포 OCI revision은
-`d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`로 일치한다. authoritative runtime은 Node POC이며
+`038b7ffa6b06666985664d480340b9010fe1fdd9`로 일치한다. authoritative runtime은 Node POC이며
 DEV Web은 `http://127.0.0.1:39083`에서 healthy다. 아래 상태는 현재 source/runtime 근거이며
 PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
@@ -30,7 +30,7 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 |---|---|---|---|
 | Airflow | `COMPLETE_RUNTIME_VERIFIED` | 3.3.0, exact Registration DAG, loopback, Web binding, actual callback→READY | PREP/OPS 별도 |
 | MinIO | `COMPLETE_RUNTIME_VERIFIED` | 기존 external DEV endpoint, loopback, 5 buckets, Product upload/complete와 object cleanup | 외부 DEV ownership 명시 유지 |
-| GX | `IMPLEMENTED_NOT_VERIFIED` / `PARTIAL` | exact 1.19.1 worker/compiler 실행 seam | result→DataHub Assertion emission과 GMS/UI receipt 미구현 |
+| GX | `IMPLEMENTED_NOT_VERIFIED` / `PARTIAL` | exact 1.19.1 worker/compiler 실행 seam | `GX_CANONICAL_RUNTIME_CONTRACT_REQUIRED`: result→DataHub Assertion/GMS receipt 계약 부재 |
 
 새 service/container/provider/version은 추가하지 않았다. GX 준비와 Quality Product 정의는 서로
 다른 상태로 관리한다.
@@ -40,12 +40,12 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 - 현재 상태: bounded auth/preparation slice `COMPLETE_RUNTIME_VERIFIED`; 전체 `PARTIAL`.
 - 완료: data_steward/manager/admin role gate, current TABLE + grant + grade + fixed Registration
   policy + Responsible System AND, owner isolation, 404 hiding, count/receipt authorization 후 계산,
-  request-time grant/mapping 철회, MinIO→preparation→Airflow callback→READY→candidate 실제 E2E.
-- 남은 작업: sparse manual-metadata empty domain/glossary read-back 502 호환성, 이후 실제 apply
-  workflow의 독립 acceptance.
+  request-time grant/mapping 철회, MinIO→preparation→Airflow callback→READY→candidate 실제 E2E,
+  sparse empty manual metadata와 실제 description apply receipt.
+- 남은 작업: 기존 bulk candidate→CR/apply workflow의 계약 확인과 독립 runtime acceptance.
 - 왜 필요한가: 담당자가 허용된 현재 Table만 안전하게 준비·등록하도록 보장한다.
-- 다음 작업: provider 호환성만 별도 작은 slice로 진단/수정하고 권한 구조를 다시 만들지 않는다.
-- 진행을 막는 문제: 기존 sparse manual-metadata provider receipt compatibility.
+- 다음 작업: 기존 문서·API가 확정한 bulk 후속 단계만 작은 slice로 닫는다.
+- 진행을 막는 문제: bulk candidate 이후 자동 적용/CR 연결의 현재 canonical 범위 확인 필요.
 
 ## 5. 거버넌스 — 정책·표준 문서 등록 및 관리
 
@@ -96,14 +96,15 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
 - 완료: deterministic Web/provider restart, canonical port, exact Product/OCI, loopback binding.
 - 남은 작업: actual KST midnight, MCL DEV binding reproducibility, embedding-generation GC,
-  manual-metadata compatibility, migration contract, Dockerfile drift, Vite chunk, browserless
-  fallback, Timeline backfill, modular architecture, PREP/OPS acceptance.
+  migration contract, Dockerfile drift, Vite chunk, browserless fallback, Timeline backfill,
+  modular architecture, PREP/OPS acceptance.
 - Gate: G1/G2/G3/G4 모두 미승인. push/PREP/OPS mutation 없음.
 
 ## 승인 필요
 
 | Approval ID | 요청 | 위험 | 승인 전 가능한 작업 |
 |---|---|---|---|
+| `GX_CANONICAL_RUNTIME_CONTRACT_REQUIRED` | 최근 PREP/OPS의 exact result→DataHub Assertion egress 계약 또는 사용자 기능범위 제공 | 임의 egress는 Quality architecture와 provider identity를 새로 만들 위험 | Registration 후속 계약 audit, Governance/Chat read-only |
 | `HOLD_GOVERNANCE_DOCUMENT_MUTATION_POLICY` | 정책·표준 문서 생성/수정/삭제 역할 확정 | 임의 정책은 과도하거나 부족한 권한이 됨 | active-user read 유지, Chat/문서/backlog audit |
 | `HOLD_G1_G2_NOT_APPROVED` | merge/push/DEV publication | 원격 계보 변경 | 로컬 DEV 검증과 문서화 |
 | `HOLD_PREP_G3` | PREP mutation/acceptance | 준비 환경 상태 변경 | DEV/read-only discovery |
@@ -112,8 +113,8 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 ## 기술 상태 요약
 
 ```text
-Product / deployed OCI d424d0e49e2f5b763a77cd4f2beb438e5345b0fa
-Node POC tests        103 / 103 PASS
+Product / deployed OCI 038b7ffa6b06666985664d480340b9010fe1fdd9
+Node POC tests        104 / 104 PASS
 Frontend tests        87 files, 592 / 592 PASS
 new tables/dependencies/services/containers/provider versions/frameworks/capabilities = 0
 ```

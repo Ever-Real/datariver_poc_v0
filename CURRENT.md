@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`
-- Deployed OCI revision: `d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`
+- Current Product SHA: `038b7ffa6b06666985664d480340b9010fe1fdd9`
+- Deployed OCI revision: `038b7ffa6b06666985664d480340b9010fe1fdd9`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -22,6 +22,8 @@
   `6c67242756ac3ee8fef0cf6d5d8084daaa857fa5`
 - Registration request-time responsibility Product:
   `d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`
+- Registration manual-metadata receipt Product:
+  `038b7ffa6b06666985664d480340b9010fe1fdd9`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -46,15 +48,16 @@
 - Actual KST 00:00 scheduler observation: `TARGET_RECHECK_REQUIRED`.
 - DEV support-service gate: `PARTIAL` overall — Airflow and MinIO are
   `COMPLETE_RUNTIME_VERIFIED` through the existing DEV contracts; GX has an exact 1.19.1 execution
-  seam but no implemented/proven result-to-DataHub Assertion E2E.
+  seam but no implemented/proven result-to-DataHub Assertion E2E. Its missing egress contract is
+  `GX_CANONICAL_RUNTIME_CONTRACT_REQUIRED`, not permission to invent a Quality architecture.
 - Registration bounded authorization/preparation slice: `COMPLETE_RUNTIME_VERIFIED` — the existing
   MinIO → bulk preparation → Airflow callback → authorized current-Table candidate flow enforces
   role + grant + grade + fixed policy + Responsible System, owner isolation and count/receipt
-  projection. Registration overall remains `PARTIAL` for the apply path and sparse
-  manual-metadata provider compatibility.
+  projection. Sparse manual-metadata receipt compatibility and one actual disposable description
+  apply are also `COMPLETE_RUNTIME_VERIFIED`. Registration overall remains `PARTIAL` only for the
+  remaining bulk candidate-to-CR/apply workflow acceptance.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
-  sparse provider multi-aspect compatibility, unbound Knowledge/Governance and Quality/GX surfaces
-  remain open.
+  unbound Knowledge/Governance and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
 - remote-host network acceptance: `TARGET_RECHECK_REQUIRED`
 - Account/Auth core: `COMPLETE_RUNTIME_VERIFIED`; future Registration, Knowledge and Quality
@@ -67,7 +70,7 @@ P0  PHASE 1D-R deterministic runtime                 → COMPLETE_RUNTIME_VERIFI
 P1  Account/Auth core                                → completed baseline; feature regression only
 P2  MCL change management / automatic change capture → COMPLETE_RUNTIME_VERIFIED; midnight recheck
 P3  DEV support services: Airflow / MinIO / GX       → Airflow/MinIO complete; GX partial
-P4  Registration management                          → bounded auth/preparation complete; overall partial
+P4  Registration management                          → auth/preparation/manual apply complete; overall partial
 P5  Governance: policy/standard document management  → mutation policy HOLD
 P6  Chat: General / Vector / Auto / Graph refinement → preserve current verified baseline
 P7  Knowledge / Quality                              → document current state; user definition required
@@ -117,10 +120,10 @@ local credential + opaque server session
 ## Fresh validation
 
 - Independent fresh Node POC Validator at exact Product
-  `d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`. Effective model: Gemini 3.1 Pro High;
+  `038b7ffa6b06666985664d480340b9010fe1fdd9`. Effective model: Gemini 3.1 Pro High;
   authoritative worktree/branch/HEAD and Node POC authority recorded; no Product files or runtime
   changed. The coordinator separately confirmed the deployed OCI revision matches that Product.
-- Node POC full suite: 103/103 PASS.
+- Node POC full suite: 104/104 PASS.
 - Frontend full suite: 87 files, 592/592 PASS on the final clean rerun.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and
   `git diff --check`: PASS.
@@ -137,9 +140,11 @@ local credential + opaque server session
   resolution, tag precedence, grant/grade/fixed-policy AND, Admin data bypass, live-session grade and
   policy changes, and immediate grant removal. The asset was tag-cleared and tombstoned; all test
   users, credentials, sessions, grants and mappings were cleaned without hard deletion.
-- Sparse disposable `/manual-metadata` writes exposed a separate DataHub empty domain/glossary
-  read-back compatibility 502. It is `PARTIAL`, was not treated as authorization failure, and no
-  business Table was modified to work around it.
+- DataHub empty domain/glossary read-back compatibility is now bounded and fail-closed: explicit
+  absence equals controlled empty state, provider-managed glossary audit stamps are excluded only
+  after structural validation, and all other aspects keep exact full-document comparison. Actual
+  disposable Product requests passed both zero-write `ALREADY_MATCHED` and one-write
+  `APPLIED_VERIFIED`; no business Table was modified.
 - Web/Airflow/Neo4j/PostgreSQL/Redis/MinIO host listeners remain loopback-bound. A real second-host
   denial probe is still required.
 - MCL ledger/checkpoint/CR-link/source counts are 66/2/4/2 after current-source catch-up and a
@@ -216,6 +221,10 @@ local credential + opaque server session
   full-AND candidate visibility, owner isolation, Admin bypass and immediate revocation. All
   disposable credentials, sessions, grants, mappings, assignments, users and exact MinIO objects
   were safely cleaned without deleting history. The inspection Admin was preserved.
+- Product `038b7ffa...` additionally passed sparse empty manual metadata with five
+  `ALREADY_MATCHED` receipts and an actual disposable description apply with one
+  `APPLIED_VERIFIED` receipt. Both disposable Tables were tombstoned and all dummy authority was
+  cleaned; MCL remained 2/2/66/4 and Catalog remained 2,002.
 - Evidence: `.orchestration/evidence/DEV-REGISTRATION-SUPPORT-SERVICES-RUNTIME.md`.
 
 ## MCL runtime / automatic detection
@@ -247,7 +256,8 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `d424d0e49...`; do not start PHASE 1E/1F, migration, legacy
+- Current boundary: preserve Product `038b7ffa...`; do not start PHASE 1E/1F, migration, legacy
   deletion, GX/Knowledge/Quality Product implementation or another Account/Auth refactor. The next
-  smallest Product work is the isolated Registration manual-metadata compatibility gap. Governance
-  document mutation stays on policy HOLD; Chat General/Vector/AUTO stays a verified baseline.
+  smallest Registration work is the current bulk candidate-to-CR/apply workflow acceptance after
+  its existing contract is confirmed. Governance document mutation stays on policy HOLD; GX
+  Assertion egress lacks a canonical runtime contract; Chat General/Vector/AUTO stays verified.
