@@ -5,6 +5,12 @@
 - 범위: Knowledge Registry/Studio UX, T-Box 스키마 초안, A-Box 바인딩 초안과 그 읽기·영속 모델
 - 비범위: DataHub 내부 저장소 변경, Neo4j 직접 조작, 임의 Cypher/SPARQL 실행, 일반 Chat 변경, 다른 메뉴 정보 구조 변경
 
+> 현재 제품 경계 (2026-08-18): `USER_FEATURE_DEFINITION_REQUIRED`. 이 문서는 기존 승인 구상과
+> 구현 현황의 canonical 기록으로 유지하되, 사용자가 목적·CRUD·provenance·enricher·LLM의
+> 다음 범위를 정의하기 전 Product 코드를 확대하지 않는다. 현재 Neo4j에는 exact DataHub
+> Table URN provenance bridge가 입증되지 않았으므로 non-Admin Graph evidence는 fail-closed를
+> 유지하고 임시 identity/Graph ACL을 만들지 않는다.
+
 이 문서는 [온톨로지 참조 노트](reference/00_ONTOLOGY.md), [아키텍처](03_ARCHITECTURE.md),
 [데이터 모델](06_DATA_MODEL.md), [기존 Knowledge UI PRD](20_ENTERPRISE_UI_COMPLETION_PRD.md),
 ADR-0001, ADR-0002, ADR-0004, ADR-0011, ADR-0029, ADR-0039, ADR-0043,

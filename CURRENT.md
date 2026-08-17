@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `6c67242756ac3ee8fef0cf6d5d8084daaa857fa5`
-- Deployed OCI revision: `6c67242756ac3ee8fef0cf6d5d8084daaa857fa5`
+- Current Product SHA: `d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`
+- Deployed OCI revision: `d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -20,6 +20,8 @@
   `91ca4db7ca792566b7765f3366036b1d8bed2869`
 - MCL current-source operational summary/current Product:
   `6c67242756ac3ee8fef0cf6d5d8084daaa857fa5`
+- Registration request-time responsibility Product:
+  `d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -42,8 +44,14 @@
   exact checkpoint/ledger, supported schema/description/lifecycle capture, startup catch-up,
   idempotent replay, same-day scheduler receipt and restart continuation are verified.
 - Actual KST 00:00 scheduler observation: `TARGET_RECHECK_REQUIRED`.
-- DEV support-service gate: `PARTIAL` — Airflow and MinIO are healthy but not bound to the current
-  Web Product; GX has no proven current runtime/assertion E2E contract.
+- DEV support-service gate: `PARTIAL` overall — Airflow and MinIO are
+  `COMPLETE_RUNTIME_VERIFIED` through the existing DEV contracts; GX has an exact 1.19.1 execution
+  seam but no implemented/proven result-to-DataHub Assertion E2E.
+- Registration bounded authorization/preparation slice: `COMPLETE_RUNTIME_VERIFIED` — the existing
+  MinIO → bulk preparation → Airflow callback → authorized current-Table candidate flow enforces
+  role + grant + grade + fixed policy + Responsible System, owner isolation and count/receipt
+  projection. Registration overall remains `PARTIAL` for the apply path and sparse
+  manual-metadata provider compatibility.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   sparse provider multi-aspect compatibility, unbound Knowledge/Governance and Quality/GX surfaces
   remain open.
@@ -58,9 +66,9 @@
 P0  PHASE 1D-R deterministic runtime                 → COMPLETE_RUNTIME_VERIFIED
 P1  Account/Auth core                                → completed baseline; feature regression only
 P2  MCL change management / automatic change capture → COMPLETE_RUNTIME_VERIFIED; midnight recheck
-P3  DEV support services: Airflow / MinIO / GX       → PARTIAL; next bounded readiness gate
-P4  Registration management                          → after support-service gate
-P5  Governance: policy/standard document management  → existing design first
+P3  DEV support services: Airflow / MinIO / GX       → Airflow/MinIO complete; GX partial
+P4  Registration management                          → bounded auth/preparation complete; overall partial
+P5  Governance: policy/standard document management  → mutation policy HOLD
 P6  Chat: General / Vector / Auto / Graph refinement → preserve current verified baseline
 P7  Knowledge / Quality                              → document current state; user definition required
 P8  Admin                                             → add only minimum feature-required controls
@@ -109,14 +117,13 @@ local credential + opaque server session
 ## Fresh validation
 
 - Independent fresh Node POC Validator at exact Product
-  `6c67242756ac3ee8fef0cf6d5d8084daaa857fa5` and matching deployed OCI revision. Effective model:
-  Gemini 3.1 Pro High; authoritative worktree/branch/HEAD recorded; no Product files or runtime
-  changed.
-- Node POC full suite: 102/102 PASS.
-- Focused Python restart/config suite: 21/21 PASS.
+  `d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`. Effective model: Gemini 3.1 Pro High;
+  authoritative worktree/branch/HEAD and Node POC authority recorded; no Product files or runtime
+  changed. The coordinator separately confirmed the deployed OCI revision matches that Product.
+- Node POC full suite: 103/103 PASS.
 - Frontend full suite: 87 files, 592/592 PASS on the final clean rerun.
-- Lint, typecheck, production build, POC image build, Compose render, Bash syntax, Ruff, Mypy and
-  `git diff --check`: PASS. Shellcheck was unavailable and is not reported as PASS.
+- Lint, typecheck, POC/production build, exact POC image build, Compose render and
+  `git diff --check`: PASS.
 - Exact Product image build/package/deploy: PASS; current Web health `ok` and OCI revision exact.
 - Representative runtime: grant/no-grant, Admin, policy, immediate grant/grade/policy changes,
   direct 404, authorized counts/facets/tree/dashboard, exact AUTO inventory/citations, direct
@@ -189,6 +196,28 @@ local credential + opaque server session
   `.orchestration/evidence/DEV-PHASE1D-AUTONOMOUS-PROVIDER-GRADE-E2E.md` and
   `.orchestration/evidence/DEV-PHASE1D-R-DETERMINISTIC-RESTART.md`.
 
+## DEV support services and Registration
+
+- Airflow 3.3.0 and the existing `datariver_bulk_registration_prepare` DAG are bound through the
+  supported DEV configuration and actual Product callback. MinIO uses the existing external DEV
+  endpoint/secret contract and passed part/complete/object-cleanup runtime acceptance. Neither was
+  added to the base Product as a new mandatory service.
+- GX remains exact-version source/runtime seam evidence only: `great-expectations==1.19.1` is
+  present, but result-to-DataHub Assertion emission and a GMS/UI receipt are not implemented or
+  runtime-verified. Quality Product completion is not inferred from the seam.
+- Registration human routes allow only data_steward, manager and admin. Non-Admin Table operations
+  require a current canonical TABLE, active exact grant, grade, fixed Registration policy and an
+  exact active Table↔System mapping currently assigned to the principal. Admin data bypass still
+  requires valid current TABLE identity.
+- Bulk preparation is owner-scoped for non-Admin and hidden with 404 from other users. Current
+  Table/mapping authority is rehydrated per request; candidates are filtered before pagination,
+  count and receipt hashes. Immediate grant and mapping removal are reflected without a new login.
+- Exact Product runtime passed MinIO upload, preparation create, actual Airflow callback to READY,
+  full-AND candidate visibility, owner isolation, Admin bypass and immediate revocation. All
+  disposable credentials, sessions, grants, mappings, assignments, users and exact MinIO objects
+  were safely cleaned without deleting history. The inspection Admin was preserved.
+- Evidence: `.orchestration/evidence/DEV-REGISTRATION-SUPPORT-SERVICES-RUNTIME.md`.
+
 ## MCL runtime / automatic detection
 
 - Product `6c672427...` preserves the existing two historical sources/checkpoints and scopes only
@@ -206,9 +235,10 @@ local credential + opaque server session
 - Final runtime summary is `CONTIGUOUS_CAPTURE_RECORDED`; Web is healthy at 39083 and the deployed
   OCI revision matches the Product SHA exactly. Actual KST 00:00 passage was not observed and stays
   `TARGET_RECHECK_REQUIRED`.
-- Read-only support audit: Airflow 3.3.0 and MinIO are healthy on loopback, but current Web bindings
-  are absent; MinIO is owned by another workspace Compose. GX has no running/proven current
-  runtime and no checkpoint→result→DataHub assertion E2E. Support gate remains `PARTIAL`.
+- Current support result: Airflow 3.3.0 and MinIO are healthy on loopback and bound to the Web
+  Product through supported existing DEV contracts. MinIO's external DEV ownership remains
+  explicit. GX has no result→DataHub Assertion E2E, so the aggregate support gate remains
+  `PARTIAL` even though Airflow and MinIO are complete.
 - Evidence: `.orchestration/evidence/DEV-MCL-RUNTIME-AUTOMATIC-DETECTION.md`.
 
 ## Gates
@@ -217,7 +247,7 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `6c672427...`; do not start PHASE 1E/1F, migration, legacy
+- Current boundary: preserve Product `d424d0e49...`; do not start PHASE 1E/1F, migration, legacy
   deletion, GX/Knowledge/Quality Product implementation or another Account/Auth refactor. The next
-  Product priority is the bounded DEV support-service gate for current Airflow/MinIO bindings and
-  the canonical GX contract; Registration mutation waits for that readiness gate.
+  smallest Product work is the isolated Registration manual-metadata compatibility gap. Governance
+  document mutation stays on policy HOLD; Chat General/Vector/AUTO stays a verified baseline.

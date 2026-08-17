@@ -6,6 +6,12 @@
 - 비적용 범위: Task 2 거버넌스 문서, GX Data Docs, MinIO 결과 저장, Oracle 실행,
   DataHub 품질 Aspect write-back
 
+> 현재 제품 경계 (2026-08-18): Quality Product는 `USER_FEATURE_DEFINITION_REQUIRED`다.
+> DEV에서 확인된 `great-expectations==1.19.1` worker/compiler 실행 seam과 사용자가 원하는
+> 품질관리 제품기능은 별도 상태다. result→DataHub Assertion emission 및 GMS/UI receipt는
+> 구현·runtime 검증되지 않았으므로 GX readiness는 `IMPLEMENTED_NOT_VERIFIED` / `PARTIAL`로
+> 유지한다. 이 상태를 이유로 Quality 코드를 확대하거나 fake Assertion PASS를 만들지 않는다.
+
 이 문서는 Task 1의 승인된 설계를 실행 가능한 요구사항과 phase gate로 고정한다. Phase 0은
 문서·계약, Phase 1은 Quality 도메인/권한/데이터베이스 control plane, Phase 2는 DataHub
 Profile projection, Phase 3은 GX worker와 Airflow dispatch, Phase 4는 인간용 권한 축소

@@ -1,54 +1,119 @@
-# 현재 우선순위 대시보드 — PHASE 1A Local Account / Server Session
+# DataRiver 현재 제품 우선순위
 
-기준 Product SHA는 `618b9713059ba7e31b807ceae3b401766a313668`, published origin/dev는
-`ef41447a1d470119c1a83280e261d4be411354ef`이다. 구현, fresh validation과 실제 DEV runtime을
-구분하며 PREP/OPS 결과를 추정하지 않는다. Account/Auth 상태는 canonical vocabulary만 사용한다.
+기준 Product SHA와 배포 OCI revision은
+`d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`로 일치한다. authoritative runtime은 Node POC이며
+DEV Web은 `http://127.0.0.1:39083`에서 healthy다. 아래 상태는 현재 source/runtime 근거이며
+PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
-| Task | 담당 기능 | 사용자 기능 | 구현 상태 | DEV Runtime | PREP Runtime | Next |
-|---|---|---|---|---|---|---|
-| PHASE 1A | local credential·opaque session·request principal·operator bootstrap | local login/logout | `COMPLETE_RUNTIME_VERIFIED` | 401/403/Origin/spoof/concurrency/restart/browser shell verified | `TARGET_RECHECK_REQUIRED` | G1/G2 전 publication 금지 |
-| PHASE 1A-1 | loopback/private-network containment | DEV local browser access | `COMPLETE_RUNTIME_VERIFIED` | Web/Airflow/owned support ports loopback | `TARGET_RECHECK_REQUIRED` | remote-host negative probe |
-| PHASE 1B | central capability/System route coverage | feature별 일관된 권한 | `BACKLOG` | 미실행 | `TARGET_RECHECK_REQUIRED` | route inventory에 capability fence 연결 |
-| PHASE 1C | full Admin account management | user/role/System/reset/revoke | `PARTIAL` | operator bootstrap만 verified | `TARGET_RECHECK_REQUIRED` | 최소 Admin API/UI slice |
-| PHASE 1D | normal/restricted/credential sensitivity | 조회·retrieval 데이터 경계 | `BACKLOG` | 미실행 | `TARGET_RECHECK_REQUIRED` | policy 확정 후 동일 backend fence 적용 |
-| PHASE 1E | legacy auth active-path retirement | local auth 단일 runtime | `BACKLOG` | reusable/historical source 보존 | `TARGET_RECHECK_REQUIRED` | replacement acceptance 뒤 작은 retirement |
-| PHASE 1F | full account isolation/security acceptance | 두 사용자 동시 전체 기능 | `BACKLOG` | 1A request isolation만 verified | `TARGET_RECHECK_REQUIRED` | 1B~1E 이후 전체 matrix |
-| T00–T02 | discovery·capture architecture | 보장 범위와 current/history 분리 | `COMPLETE_RUNTIME_VERIFIED` | architecture contract verified against DEV evidence | `TARGET_RECHECK_REQUIRED` | target provider/retention 재확인 |
-| T03N | Node ledger/source/checkpoint/link persistence | 재시작 후 변경 이력 보존 | `COMPLETE_RUNTIME_VERIFIED` | DEV durable restart verified | `TARGET_RECHECK_REQUIRED` | 기존 volume SQL apply 검증 |
-| T03-PYTHON | Python/Alembic prototype | 현재 POC 사용자 기능 없음 | `PARTIAL` | Node POC runtime에 미통합 | `TARGET_RECHECK_REQUIRED` | release disposition 유지 |
-| T04 | MCL decode·normalize·dedup·checkpoint | 중간 변경 사건 | `COMPLETE_RUNTIME_VERIFIED` | DEV runtime verified | `TARGET_RECHECK_REQUIRED` | Kafka/SR/env/exact boundary recheck |
-| Scheduler | KST 00:00·catch-up·singleton receipt | 자동 capture/reconcile | `COMPLETE_RUNTIME_VERIFIED` | startup/catch-up verified; `DAILY_CLOCK_NOT_OBSERVED` | `TARGET_RECHECK_REQUIRED` | actual midnight 관찰 backlog |
-| T05 | current projection/cache/성능/lifecycle | Search/Tree/Detail 최신성 | `COMPLETE_RUNTIME_VERIFIED` | Search/Tree/lifecycle verified; vector provider debt | `TARGET_RECHECK_REQUIRED` | vector/current target recheck |
-| T06 | user/role/System 권위·CR API | 권한별 CR link/weekly | `COMPLETE_RUNTIME_VERIFIED` | DEV runtime verified | `TARGET_RECHECK_REQUIRED` | target server-held subject 재확인 |
-| T07 | Monitoring·weekly·link/reverse UI | 데이터 변경현황·CR STATUS OVERVIEW | `COMPLETE_RUNTIME_VERIFIED` | DEV runtime verified | `TARGET_RECHECK_REQUIRED` | target browser smoke |
-| T08 | 기존 제품 전체 통합 E2E | 전체 회귀 | `BACKLOG` | 현재 Auth slice 범위 밖 | `TARGET_RECHECK_REQUIRED` | 별도 승인 후 수행 |
-| T09 | fresh assurance audit | 최종 보증 | `BACKLOG` | 현재 Auth slice 범위 밖 | `TARGET_RECHECK_REQUIRED` | T08 이후 별도 승인 |
-| Search / Catalog / Tree / Detail | current metadata 조회 | 카탈로그 탐색 | `COMPLETE_RUNTIME_VERIFIED` | DEV runtime verified | `TARGET_RECHECK_REQUIRED` | provider latency/Detail target smoke |
-| Current metadata sync | DataHub current → PG/Redis/vector | 최신 자산·삭제·재활성화 | `PARTIAL` | PG/Redis lifecycle verified; vector debt | `TARGET_RECHECK_REQUIRED` | vector provider 복구 후 재검증 |
-| Schema / Metadata Change History | schema/metadata/lifecycle ledger | 변경 이력 | `COMPLETE_RUNTIME_VERIFIED` | DEV runtime verified | `TARGET_RECHECK_REQUIRED` | target MCL 1건 |
-| MCL capture / checkpoint | bounded Kafka → ledger → checkpoint | 중간 변경 보존 | `COMPLETE_RUNTIME_VERIFIED` | DEV runtime verified | `TARGET_RECHECK_REQUIRED` | target topic/retention/schema |
-| Existing User / Role access | CRUD·active·4 roles | access-document 사용자 관리 | `COMPLETE_RUNTIME_VERIFIED` | DEV access semantics verified | `TARGET_RECHECK_REQUIRED` | PHASE 1C credential 관리와 구분 |
-| System / 담당자 관리 | schema scope·assignment·responsibility·priority | 시스템/담당자 | `COMPLETE_RUNTIME_VERIFIED` | DEV runtime verified | `TARGET_RECHECK_REQUIRED` | target assignment smoke |
-| CR link/unlink / reverse history | primary/candidate/SET·CLEAR history | CR 추적 | `COMPLETE_RUNTIME_VERIFIED` | DEV runtime verified | `TARGET_RECHECK_REQUIRED` | target compatible CR smoke |
-| Weekly / CR STATUS OVERVIEW | schema/System/owner/stage 집계 | 변경관리 상단 요약 | `COMPLETE_RUNTIME_VERIFIED` | DEV runtime verified | `TARGET_RECHECK_REQUIRED` | target KST boundary smoke |
-| Monitoring 데이터 변경현황 | native summary/filter/detail | 변경현황 기본 탭 | `COMPLETE_RUNTIME_VERIFIED` | DEV runtime verified | `TARGET_RECHECK_REQUIRED` | target populated-event smoke |
-| 기존 Grafana tabs | external dashboard 유지 | 외부 모니터링 | `PARTIAL` | config regression covered; DEV not configured | `TARGET_RECHECK_REQUIRED` | target CSP/embed 검증 |
-| Registration Manual/BULK | 기존 등록 workflow | 등록관리 | `PARTIAL` | historical evidence only | `TARGET_RECHECK_REQUIRED` | T08 backlog |
-| Chat GENERAL/VECTOR/GRAPH | 기존 Chat/current correctness | Chat | `PARTIAL` | Search/Tree current verified; `VECTOR_PROVIDER_UNAVAILABLE` | `TARGET_RECHECK_REQUIRED` | CHAT-REFINEMENT backlog |
-| Quality / GX | 기존 Quality 및 GX 연계 | 품질관리 | `PARTIAL` | 현재 Node POC/GX actual E2E 미완료 | `TARGET_RECHECK_REQUIRED` | QUALITY-GX-INTEGRATION |
-| Governance / Glossary / Knowledge | 기존 기능 | 거버넌스·용어·Knowledge | `PARTIAL` | historical evidence only | `TARGET_RECHECK_REQUIRED` | T08 backlog |
-| Deployment productization | config·runbook·architecture·screen/process spec | 재현 가능한 운영 | `COMPLETE_RUNTIME_VERIFIED` | current Auth Compose/config/docs static gate verified | `TARGET_RECHECK_REQUIRED` | target deployment acceptance |
-| Release / PREP / OPS | publication·target validation | 배포 | `IMPLEMENTED_NOT_VERIFIED` | unpublished Product SHA; origin/dev=`ef41447a` | `TARGET_RECHECK_REQUIRED` | G1/G2 승인 전 push 금지 |
+## 1. 계정 및 접근권한
 
-## Backlog
+- 현재 상태: `COMPLETE_RUNTIME_VERIFIED` — 핵심 구조 완료.
+- 완료: 로그인/서버 세션, User/Role, 정확한 Table grant, 보안등급, 고정 기능정책, System 담당,
+  CR 3-lane, Catalog/검색/Vector/AUTO 권한 필터.
+- 남은 작업: 각 새 제품기능에서 기존 helper를 연결하고 negative/regression test만 추가.
+- 다음 작업: Account/Auth 자체를 더 확장하지 않는다.
+- 진행을 막는 문제: 없음. Graph/GX 등은 해당 기능의 별도 gap이다.
 
-- `VECTOR_PROVIDER_UNAVAILABLE`, Chat/vector deleted-current target recheck
-- PREP targeted recheck와 OPS validation/deployment
-- `DAILY_CLOCK_NOT_OBSERVED`
-- GX/Quality integration, Chat refinement, Vite chunk-size warning
-- secret-file injection, `Dockerfile.local` drift
-- `MODULAR_PRODUCT_ARCHITECTURE` — ADR-0124에 따라 실제 요구와 contract tests 이후 단계화
+## 2. 변경관리 / MCL 자동감지
 
-## Gates
+- 현재 상태: `COMPLETE_RUNTIME_VERIFIED` — current source 자동감지 기준선 유지.
+- 완료: source/checkpoint/exact ledger, catch-up, replay idempotency, schema/metadata/lifecycle capture,
+  scheduler startup/catch-up, Monitoring current-source 상태. 현재 source/checkpoint/ledger/CR-link는
+  2/2/66/4다.
+- 남은 작업: `ACTUAL_KST_MIDNIGHT`, `MCL_DEV_BINDING_REPRODUCIBILITY`.
+- 다음 작업: core mutation 없이 실제 KST 00:00 target acceptance만 별도 관찰.
+- 진행을 막는 문제: 실제 자정 wall-clock 미관찰(`TARGET_RECHECK_REQUIRED`).
 
-G1 `NOT_APPROVED` · G2 `NOT_APPROVED` · G3 `NOT_APPROVED` · G4 `NOT_APPROVED`
+## 3. 개발용 지원서비스
+
+| 서비스 | 현재 상태 | 완료 | 남은 작업 / blocker |
+|---|---|---|---|
+| Airflow | `COMPLETE_RUNTIME_VERIFIED` | 3.3.0, exact Registration DAG, loopback, Web binding, actual callback→READY | PREP/OPS 별도 |
+| MinIO | `COMPLETE_RUNTIME_VERIFIED` | 기존 external DEV endpoint, loopback, 5 buckets, Product upload/complete와 object cleanup | 외부 DEV ownership 명시 유지 |
+| GX | `IMPLEMENTED_NOT_VERIFIED` / `PARTIAL` | exact 1.19.1 worker/compiler 실행 seam | result→DataHub Assertion emission과 GMS/UI receipt 미구현 |
+
+새 service/container/provider/version은 추가하지 않았다. GX 준비와 Quality Product 정의는 서로
+다른 상태로 관리한다.
+
+## 4. 등록관리
+
+- 현재 상태: bounded auth/preparation slice `COMPLETE_RUNTIME_VERIFIED`; 전체 `PARTIAL`.
+- 완료: data_steward/manager/admin role gate, current TABLE + grant + grade + fixed Registration
+  policy + Responsible System AND, owner isolation, 404 hiding, count/receipt authorization 후 계산,
+  request-time grant/mapping 철회, MinIO→preparation→Airflow callback→READY→candidate 실제 E2E.
+- 남은 작업: sparse manual-metadata empty domain/glossary read-back 502 호환성, 이후 실제 apply
+  workflow의 독립 acceptance.
+- 왜 필요한가: 담당자가 허용된 현재 Table만 안전하게 준비·등록하도록 보장한다.
+- 다음 작업: provider 호환성만 별도 작은 slice로 진단/수정하고 권한 구조를 다시 만들지 않는다.
+- 진행을 막는 문제: 기존 sparse manual-metadata provider receipt compatibility.
+
+## 5. 거버넌스 — 정책·표준 문서 등록 및 관리
+
+- 현재 상태: 조회 기준선 유지, mutation policy `HOLD`.
+- 완료: 모든 active user 메뉴 read와 기존 coarse state/source 감사.
+- 남은 작업: 정책·표준 문서 생성/수정/삭제 가능 역할 확정 및 최소 feature-level enforcement.
+- 왜 필요한가: 조직의 최신 정책·표준을 등록하고 조회하기 위해 필요하다.
+- 다음 작업: `HOLD_GOVERNANCE_DOCUMENT_MUTATION_POLICY` 결정 후 기존 state에 최소 연결.
+- 진행을 막는 문제: 정확한 manage-role Source of Truth 부재. 문서를 Table에 억지로 연결하거나
+  generic resource ACL을 만들지 않는다.
+
+## 6. Chat / 검색
+
+- 현재 상태: General/Vector/AUTO `COMPLETE_RUNTIME_VERIFIED`; Graph `PARTIAL`.
+- 완료: provider/embedding/reranker, authorized URN pre-ranking, authorized route/context/citation,
+  empty scope `NO_LIVE_EVIDENCE`, General Chat의 metadata 비강제.
+- 남은 작업: Graph exact DataHub Table URN provenance, provider traversal/total leakage audit,
+  bounded latency/refinement.
+- 다음 작업: 현재 verified path를 유지하고 Graph identity는 Knowledge provenance 단계에서 해결.
+- 진행을 막는 문제: Neo4j canonical identity bridge 부재.
+
+## 7. 지식관리 — 사용자 추가 기능 정의 대기
+
+- 현재 상태: `USER_FEATURE_DEFINITION_REQUIRED`.
+- 완료: 기존 Registry/Studio/UI/API/PostgreSQL/Neo4j/DataHub 구상은 canonical PRD에 유지.
+- 남은 작업: 목적, CRUD, provenance, deterministic/LLM enricher의 사용자 범위 결정.
+- 다음 작업: 정의 전 Product 코드 확대 금지.
+- 진행을 막는 문제: exact Neo4j Table identity 미입증; non-Admin Graph fail-closed 유지.
+
+## 8. 품질관리 — 사용자 추가 기능 정의 대기 / GX 준비
+
+- 현재 상태: Quality Product `USER_FEATURE_DEFINITION_REQUIRED`; GX `PARTIAL`.
+- 완료: 기존 Quality UI/control-plane 구상, exact GX version과 worker/compiler seam.
+- 남은 작업: 사용자 제품기능 정의, result→DataHub Assertion emission, GMS/UI assertion E2E.
+- 다음 작업: fake result 없이 canonical PRD를 유지하고 정의 후 작은 slice로 진행.
+- 진행을 막는 문제: Quality 정의와 Assertion egress 부재.
+
+## 9. Admin
+
+- 현재 상태: `COMPLETE_RUNTIME_VERIFIED`.
+- 완료: User/Role/active/grade/grant, Responsible System/priority, credential/session, System master,
+  Table↔System, 고정 feature policy.
+- 남은 작업: 실제 제품기능에 필요한 최소 설정만 추가.
+- 다음 작업: custom role, generic permission console, workspace/tenant/workflow builder 금지.
+- 진행을 막는 문제: 없음. inspection Admin은 validation dummy가 아니다.
+
+## 10. 배포·운영·기술 Backlog
+
+- 완료: deterministic Web/provider restart, canonical port, exact Product/OCI, loopback binding.
+- 남은 작업: actual KST midnight, MCL DEV binding reproducibility, embedding-generation GC,
+  manual-metadata compatibility, migration contract, Dockerfile drift, Vite chunk, browserless
+  fallback, Timeline backfill, modular architecture, PREP/OPS acceptance.
+- Gate: G1/G2/G3/G4 모두 미승인. push/PREP/OPS mutation 없음.
+
+## 승인 필요
+
+| Approval ID | 요청 | 위험 | 승인 전 가능한 작업 |
+|---|---|---|---|
+| `HOLD_GOVERNANCE_DOCUMENT_MUTATION_POLICY` | 정책·표준 문서 생성/수정/삭제 역할 확정 | 임의 정책은 과도하거나 부족한 권한이 됨 | active-user read 유지, Chat/문서/backlog audit |
+| `HOLD_G1_G2_NOT_APPROVED` | merge/push/DEV publication | 원격 계보 변경 | 로컬 DEV 검증과 문서화 |
+| `HOLD_PREP_G3` | PREP mutation/acceptance | 준비 환경 상태 변경 | DEV/read-only discovery |
+| `HOLD_OPS_G4` | OPS mutation/acceptance | 운영 영향 | DEV/read-only discovery |
+
+## 기술 상태 요약
+
+```text
+Product / deployed OCI d424d0e49e2f5b763a77cd4f2beb438e5345b0fa
+Node POC tests        103 / 103 PASS
+Frontend tests        87 files, 592 / 592 PASS
+new tables/dependencies/services/containers/provider versions/frameworks/capabilities = 0
+```
