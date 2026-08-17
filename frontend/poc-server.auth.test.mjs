@@ -1,4 +1,4 @@
-/* global Buffer, fetch, structuredClone */
+/* global Buffer, URL, fetch, structuredClone */
 import assert from 'node:assert/strict'
 import { request as httpRequest } from 'node:http'
 import test from 'node:test'

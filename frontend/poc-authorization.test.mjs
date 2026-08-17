@@ -17,6 +17,7 @@ import {
   changeHistoryAccessCoreProjection,
   normalizeChangeHistoryAccessDocument,
 } from './poc-access-document.mjs'
+import { approvedDefaultFeatureSecurityPolicy } from './poc-feature-security-policy.mjs'
 
 const accessDocument = {
   systems: [
@@ -35,11 +36,13 @@ const accessDocument = {
   ],
 }
 
-function principal(subjectId, role) {
+function principal(subjectId, role, { grants = [], maxSecurityGrade = 'normal', policy = approvedDefaultFeatureSecurityPolicy() } = {}) {
   return buildPocPrincipal({
     authentication: { subjectId },
     accessDocument,
-    accessUser: { subject_id: subjectId, role, active: true },
+    accessUser: { subject_id: subjectId, role, active: true, max_security_grade: maxSecurityGrade },
+    userTableGrants: grants.map((tableUrn) => ({ tableUrn, active: true })),
+    featureSecurityPolicy: policy,
   })
 }
 
@@ -118,23 +121,29 @@ test('covers every named Node API route with no unknown or ambiguous registry en
   assert.throws(() => assertPocRouteAuthorization(null, principal('admin', 'admin')), { code: 'NOT_FOUND' })
 })
 
-test('enforces capability and current System scope without accepting client authority', () => {
-  const developer = principal('developer', 'developer')
+test('enforces capability plus current Table grant, grade and policy without using Responsible System for general reads', () => {
+  const tableA = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.a.table_a,PROD)'
+  const tableB = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.b.table_b,PROD)'
+  const unknown = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.unknown.table_c,PROD)'
+  const developer = principal('developer', 'developer', { grants: [tableB] })
   assert.doesNotThrow(() => assertPocRouteAuthorization(resolvePocRoute('GET', '/poc-api/datahub/catalog'), developer))
   assert.throws(
     () => assertPocRouteAuthorization(resolvePocRoute('POST', '/poc-api/datahub/manual-metadata'), developer),
     { code: 'CAPABILITY_REQUIRED' },
   )
   const assets = [
-    { id: 'a', platform: 'postgres', database_name: 'db', schema_name: 'a' },
-    { id: 'b', platform: 'postgres', database_name: 'db', schema_name: 'b' },
-    { id: 'unknown', platform: 'postgres', database_name: 'db', schema_name: 'unknown' },
+    { id: tableA, dataset_kind: 'TABLE', security_grade: 'normal', platform: 'postgres', database_name: 'db', schema_name: 'a' },
+    { id: tableB, dataset_kind: 'TABLE', security_grade: 'normal', platform: 'postgres', database_name: 'db', schema_name: 'b' },
+    { id: unknown, dataset_kind: 'TABLE', security_grade: 'normal', platform: 'postgres', database_name: 'db', schema_name: 'unknown' },
   ]
-  assert.deepEqual(filterAssetsForPrincipal(developer, assets).map((item) => item.id), ['a'])
-  assert.doesNotThrow(() => assertAssetMutation(developer, assets[0]))
-  assert.throws(() => assertAssetMutation(developer, assets[1]), { code: 'SYSTEM_SCOPE_FORBIDDEN' })
-  assert.throws(() => assertAssetMutation(developer, assets[2]), { code: 'SYSTEM_SCOPE_UNRESOLVED' })
-  assert.deepEqual(filterAssetsForPrincipal(principal('viewer', 'viewer'), assets), assets)
+  assert.deepEqual(filterAssetsForPrincipal(developer, assets).map((item) => item.id), [tableB])
+  assert.doesNotThrow(() => assertAssetMutation(developer, assets[1]))
+  assert.throws(() => assertAssetMutation(developer, assets[0]), { code: 'TABLE_DATA_FORBIDDEN' })
+  assert.throws(() => assertAssetMutation(developer, assets[2]), { code: 'TABLE_DATA_FORBIDDEN' })
+  assert.deepEqual(
+    filterAssetsForPrincipal(principal('viewer', 'viewer', { grants: [tableA] }), assets).map((item) => item.id),
+    [tableA],
+  )
 })
 
 test('filters non-admin core access data and authorizes an exact bounded top-level CAS diff', () => {

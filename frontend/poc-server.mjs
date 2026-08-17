@@ -30,6 +30,7 @@ import {
   canReadAsset,
   filterAssetsForPrincipal,
   filterCoreStateForPrincipal,
+  getAllowedTableUrnsScope,
   resolvePocRoute,
 } from './poc-authorization.mjs'
 import {
@@ -63,6 +64,7 @@ import {
 import {
   POC_FEATURE_SECURITY_POLICY_SCOPE,
   applyFeatureSecurityPolicyUpdate,
+  approvedDefaultFeatureSecurityPolicy,
   featureSecurityAllowed,
   normalizeFeatureSecurityPolicy,
 } from './poc-feature-security-policy.mjs'
@@ -2229,14 +2231,14 @@ function offsetPage(items, searchParameters, scope, defaultLimit = 100) {
   }
 }
 
-async function datahubCatalog(searchParameters, principal) {
+async function datahubCatalog(searchParameters, principal, feature = 'catalog') {
   const query = boundedString(searchParameters.get('q'), 500, '*') || '*'
   const requested = Number(searchParameters.get('limit') || 50)
   const limit = Math.min(100, Math.max(1, Number.isFinite(requested) ? requested : 50))
   const filterKeys = ['asset_type', 'platform', 'database', 'schema', 'domain', 'classification', 'lifecycle']
   const fields = catalogSearchFields(searchParameters)
   const inventory = await datahubInventory()
-  const allItems = (principal ? filterAssetsForPrincipal(principal, inventory) : inventory)
+  const allItems = (principal ? filterAssetsForPrincipal(principal, inventory, feature) : inventory)
     .filter((item) => assetMatches(item, searchParameters, fields))
     .map((item) => ({ ...item, matches: catalogMatchFragments(item, query, fields) }))
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
@@ -2354,7 +2356,7 @@ async function datahubFacets(searchParameters, principal) {
 }
 
 async function datahubDashboard(principal) {
-  const assets = filterAssetsForPrincipal(principal, await datahubInventory())
+  const assets = filterAssetsForPrincipal(principal, await datahubInventory(), 'monitoring')
   const schemaMetrics = new Map()
   const glossaryTerms = new Set()
   for (const asset of assets) {
@@ -2386,7 +2388,7 @@ async function datahubDashboard(principal) {
 
 async function datahubProfileCoverage(principal) {
   const bindingHash = catalogEmbeddingBindingHash()
-  if (bindingHash && principal.globalSystemRead) {
+  if (bindingHash && principal.role === 'admin') {
     const projected = await pocStateStore.catalogEmbeddingProfileCoverage(bindingHash, datahubInventoryStateScope)
     if (projected.length) {
       const items = projected.map((item) => ({
@@ -2411,7 +2413,7 @@ async function datahubProfileCoverage(principal) {
       }
     }
   }
-  const assets = filterAssetsForPrincipal(principal, await datahubEmbeddingInventory())
+  const assets = filterAssetsForPrincipal(principal, await datahubEmbeddingInventory(), 'quality')
   const byPlatform = new Map()
   for (const asset of assets) {
     const platform = asset.platform || 'unknown'
@@ -2507,7 +2509,7 @@ async function datahubGlossaryAssignments(searchParameters, principal) {
     const entity = relationship.entity
     if (!entity?.urn || entity.type !== 'DATASET') continue
     const asset = datasetAsset(entity)
-    if (!canReadAsset(principal, asset)) continue
+    if (!canReadAsset(principal, asset, 'governance')) continue
     if (targetType === 'TABLE') {
       add(asset)
       continue
@@ -2517,16 +2519,18 @@ async function datahubGlossaryAssignments(searchParameters, principal) {
       if (applied) add(asset, field.fieldPath)
     }
   }
-  const total = Math.max(0, Number(relationships.total) || 0)
+  const total = principal.role === 'admin'
+    ? Math.max(0, Number(relationships.total) || 0)
+    : items.length
   const nextOffset = start + limit
   return {
     items,
     total,
-    page: { next_cursor: nextOffset < total ? String(nextOffset) : null, limit },
+    page: { next_cursor: principal.role === 'admin' && nextOffset < total ? String(nextOffset) : null, limit },
   }
 }
 
-async function datahubGlossary(searchParameters) {
+async function datahubGlossary(searchParameters, principal) {
   const normalizeGlossarySearch = (value) => boundedString(value, 500)
     .normalize('NFKC').toLocaleLowerCase().replace(/[_.-]+/g, ' ').replace(/\s+/g, ' ').trim()
   const query = normalizeGlossarySearch(searchParameters.get('q'))
@@ -2555,8 +2559,12 @@ async function datahubGlossary(searchParameters) {
           ? [{ urn: node.urn, name: node.properties.name, description: node.properties.description || '' }]
           : []
       )).reverse()
-      const tableAssetCount = Math.max(0, Number(entity.tableAssignments?.total) || 0)
-      const columnAssetCount = Math.max(0, Number(entity.columnAssignments?.total) || 0)
+      const tableAssetCount = principal.role === 'admin'
+        ? Math.max(0, Number(entity.tableAssignments?.total) || 0)
+        : 0
+      const columnAssetCount = principal.role === 'admin'
+        ? Math.max(0, Number(entity.columnAssignments?.total) || 0)
+        : 0
       terms.push({
         urn,
         name,
@@ -2746,6 +2754,10 @@ async function datahubAsset(urn, requestedOffset = 0, requestedLimit = 100) {
 }
 
 async function datahubLineage(urn, principal) {
+  const center = await datahubAsset(urn)
+  if (!canReadAsset(principal, center, 'catalog')) {
+    throw accessError(404, 'CATALOG_ASSET_NOT_FOUND', 'The DataHub asset was not found in the current Table scope.')
+  }
   const directions = await Promise.all(['UPSTREAM', 'DOWNSTREAM'].map(async (direction) => {
     const data = await datahubGraphql(datahubLineageQuery, {
       urn,
@@ -2765,10 +2777,6 @@ async function datahubLineage(urn, principal) {
       relationships: data.dataset?.lineage?.relationships || [],
     }
   }))
-  const center = await datahubAsset(urn)
-  if (!canReadAsset(principal, center)) {
-    throw accessError(404, 'CATALOG_ASSET_NOT_FOUND', 'The DataHub asset was not found in the current System scope.')
-  }
   const nodes = new Map([[urn, center]])
   const edges = []
   const edgeIds = new Set()
@@ -2781,7 +2789,7 @@ async function datahubLineage(urn, principal) {
       // rather than by a synthetic view_<hash> placeholder node.
       if (!relatedUrn || relatedUrn === urn || entity?.type !== 'DATASET') continue
       const relatedAsset = datasetAsset(entity)
-      if (!canReadAsset(principal, relatedAsset)) continue
+      if (!canReadAsset(principal, relatedAsset, 'catalog')) continue
       if (!nodes.has(relatedUrn)) nodes.set(relatedUrn, relatedAsset)
       const edge = group.direction === 'UPSTREAM'
         ? { source_asset_id: relatedUrn, target_asset_id: urn }
@@ -2799,7 +2807,9 @@ async function datahubLineage(urn, principal) {
     edges,
     direction: 'BOTH',
     depth: 1,
-    truncated: directions.some((group) => group.total > group.relationships.length),
+    truncated: principal.role === 'admin'
+      ? directions.some((group) => group.total > group.relationships.length)
+      : false,
     meta: catalogMeta(),
   }
 }
@@ -3046,7 +3056,7 @@ async function compactChatMemory(memory) {
   }
 }
 
-async function chatRoute(question, requestedMode) {
+async function chatRoute(question, requestedMode, principal) {
   let selectedMode = requestedMode
   let reason = 'EXPLICIT_SELECTION'
   let intent = 'EXPLICIT_SELECTION'
@@ -3057,7 +3067,7 @@ async function chatRoute(question, requestedMode) {
   let fallbackMode = null
   let clarificationRequired = false
   if (requestedMode === 'AUTO') {
-    const deterministic = await deterministicAutoRoute(question)
+    const deterministic = await deterministicAutoRoute(question, principal)
     if (deterministic) return deterministic
     try {
       const classification = await llmRequest(llm.chat, '/chat/completions', {
@@ -3179,7 +3189,7 @@ function parseChatRouteDecision(value) {
   return parsed
 }
 
-async function deterministicAutoRoute(question) {
+async function deterministicAutoRoute(question, principal) {
   const graphIntent = /\b(?:upstream|downstream|lineage|dependency|dependencies|impact|relationship|path)\b|계보|영향(?:도|받|범위|분석)?|연결\s*(?:관계|경로)|의존(?:성|관계)|어디에서\s*(?:생성|만들)|변경하면/iu.test(question)
   const dataTarget = /\b(?:table|dataset|column|asset|data)\b|테이블|데이터셋|컬럼|데이터\s*(?:자산)?/iu.test(question)
   const semanticDiscovery = /\b(?:find|recommend|search|similar|related)\b|찾(?:아|기|을|는)?|검색|추천|비슷|유사|관련(?:된|한)?/iu.test(question)
@@ -3224,7 +3234,7 @@ async function deterministicAutoRoute(question) {
     }
   }
   if (!datahub) return null
-  const exact = await rankedExactCatalogAssets(question)
+  const exact = await rankedExactCatalogAssets(question, principal, 'chat')
   if (!exact.length || exact[0].score < 95) return null
   return {
     requested_mode: 'AUTO', selected_mode: 'VECTOR', reason: 'SEMANTIC_INTENT', adapter_state: 'READY',
@@ -3235,6 +3245,7 @@ async function deterministicAutoRoute(question) {
 }
 
 async function datahubLineageEvidence(asset, principal) {
+  if (!canReadAsset(principal, asset, 'chat')) return null
   const directions = await Promise.all(['UPSTREAM', 'DOWNSTREAM'].map(async (direction) => {
     const data = await datahubGraphql(datahubLineageQuery, {
       urn: asset.external_urn || asset.id,
@@ -3247,7 +3258,7 @@ async function datahubLineageEvidence(asset, principal) {
     return (data.dataset?.lineage?.relationships || []).flatMap((relationship) => {
       if (!relationship.entity?.urn || relationship.entity.type !== 'DATASET') return []
       const relatedAsset = datasetAsset(relationship.entity)
-      if (!canReadAsset(principal, relatedAsset)) return []
+      if (!canReadAsset(principal, relatedAsset, 'chat')) return []
       return [{ direction, urn: relationship.entity.urn, type: relationship.entity.type, name: relatedAsset.name }]
     })
   }))
@@ -3396,10 +3407,11 @@ function catalogIdentityValues(asset) {
 }
 
 async function exactCatalogEvidence(question, limit = 3, principal) {
-  const ranked = await rankedExactCatalogAssets(question, principal)
+  const ranked = await rankedExactCatalogAssets(question, principal, 'chat')
   if (!ranked.length || ranked[0].score < 95) return []
-  return Promise.all(ranked.filter(({ score }) => score >= 95).slice(0, limit).map(async ({ asset }) => {
+  const evidence = await Promise.all(ranked.filter(({ score }) => score >= 95).slice(0, limit).map(async ({ asset }) => {
     const detail = await datahubAssetAll(asset.external_urn || asset.id)
+    if (!canReadAsset(principal, detail, 'chat')) return null
     return {
       ...detail,
       provider_description: detail.description,
@@ -3409,14 +3421,15 @@ async function exactCatalogEvidence(question, limit = 3, principal) {
       description: catalogDetailEvidence(detail),
     }
   }))
+  return evidence.filter(Boolean)
 }
 
-async function rankedExactCatalogAssets(question, principal) {
+async function rankedExactCatalogAssets(question, principal, feature = 'catalog') {
   const identifiers = questionCatalogIdentifiers(question)
   if (!identifiers.length) return []
   const candidates = new Map()
   for (const identifier of identifiers.slice(0, 4)) {
-    const catalog = await datahubCatalog(new URLSearchParams({ q: identifier, limit: '20' }), principal)
+    const catalog = await datahubCatalog(new URLSearchParams({ q: identifier, limit: '20' }), principal, feature)
     for (const asset of catalog.items) candidates.set(asset.id, asset)
   }
   const rank = (assets) => assets.flatMap((asset) => {
@@ -3438,7 +3451,7 @@ async function rankedExactCatalogAssets(question, principal) {
   // bounded, cached catalog projection, so use it as the authoritative exact
   // identity fallback before considering semantic candidates.
   const inventory = await datahubInventory()
-  for (const asset of principal ? filterAssetsForPrincipal(principal, inventory) : inventory) {
+  for (const asset of principal ? filterAssetsForPrincipal(principal, inventory, feature) : inventory) {
     candidates.set(asset.id, asset)
   }
   ranked = rank([...candidates.values()])
@@ -3527,7 +3540,7 @@ async function datahubInventoryEvidence(question, principal) {
   const request = catalogInventoryRequest(question)
   if (!request) return { request: undefined, evidence: [] }
   const completeInventory = await datahubInventory()
-  const inventory = filterAssetsForPrincipal(principal, completeInventory)
+  const inventory = filterAssetsForPrincipal(principal, completeInventory, 'chat')
     .filter((asset) => request.kind === 'DATASET'
       || (request.kind === 'VIEW'
         ? ['VIEW', 'MATERIALIZED_VIEW'].includes(asset.dataset_kind)
@@ -3604,7 +3617,7 @@ async function datahubChatEvidence(question, route, evidenceLimit, principal) {
   const results = new Map()
   for (const query of chatRetrievalQueries(question)) {
     const catalog = await datahubCatalog(
-      new URLSearchParams({ q: query, limit: String(evidenceLimit) }), principal,
+      new URLSearchParams({ q: query, limit: String(evidenceLimit) }), principal, 'chat',
     )
     for (const item of catalog.items) results.set(item.id, item)
     if (results.size >= evidenceLimit) break
@@ -3749,8 +3762,9 @@ function queueCatalogEmbeddingRefresh() {
   }, 0)
 }
 
-function catalogEmbeddingStatus() {
+function catalogEmbeddingStatus(principal) {
   const configured = Boolean(catalogEmbeddingBindingHash())
+  const mayInspectGlobalProjection = principal.role === 'admin'
   return {
     configured,
     state: !configured
@@ -3763,9 +3777,9 @@ function catalogEmbeddingStatus() {
             ? 'FAILED'
             : 'NOT_STARTED',
     contract: 'POC_DATAHUB_CATALOG_ASSET_V2',
-    indexed: catalogEmbeddingSnapshot?.indexed ?? null,
-    refreshed: catalogEmbeddingSnapshot?.refreshed ?? null,
-    generation: catalogEmbeddingSnapshot?.generation ?? null,
+    indexed: mayInspectGlobalProjection ? catalogEmbeddingSnapshot?.indexed ?? null : null,
+    refreshed: mayInspectGlobalProjection ? catalogEmbeddingSnapshot?.refreshed ?? null : null,
+    generation: mayInspectGlobalProjection ? catalogEmbeddingSnapshot?.generation ?? null : null,
     last_error: catalogEmbeddingLastError ?? null,
   }
 }
@@ -3773,8 +3787,11 @@ function catalogEmbeddingStatus() {
 async function semanticCatalogEvidence(question, limit, { summaryOnly = false } = {}, principal) {
   const bindingHash = catalogEmbeddingBindingHash()
   if (!bindingHash) throw new Error('The catalog Embedding projection is not configured.')
+  if (principal.role !== 'admin' && principal.activeTableGrantUrns.size === 0) return []
+  const inventory = await datahubEmbeddingInventory()
+  const allowedUrnsScope = getAllowedTableUrnsScope(principal, inventory, 'chat')
+  if (allowedUrnsScope !== 'ADMIN_UNRESTRICTED' && allowedUrnsScope.size === 0) return []
   const [queryVector] = await embedCatalogTexts([question])
-  await datahubEmbeddingInventory()
   const currentGeneration = inventorySnapshot?.projection?.source_generation
   let activeGeneration = await pocStateStore.catalogEmbeddingActiveGeneration(bindingHash)
   if (!currentGeneration || activeGeneration !== currentGeneration) {
@@ -3788,13 +3805,14 @@ async function semanticCatalogEvidence(question, limit, { summaryOnly = false } 
     currentGeneration,
     queryVector,
     Math.max(limit * 10, 50),
+    allowedUrnsScope
   )
   scheduleCatalogEmbeddingRefresh()
   const visibleRanked = ranked.filter((candidate) => {
     const fallback = candidate.metadata && typeof candidate.metadata === 'object'
       ? candidate.metadata
       : { id: candidate.assetUrn, external_urn: candidate.assetUrn, name: candidate.assetUrn }
-    return canReadAsset(principal, fallback)
+    return canReadAsset(principal, fallback, 'chat')
   }).slice(0, limit)
   return Promise.all(visibleRanked.map(async (candidate) => {
     const fallback = candidate.metadata && typeof candidate.metadata === 'object'
@@ -3813,6 +3831,7 @@ async function semanticCatalogEvidence(question, limit, { summaryOnly = false } 
     }
     try {
       const detail = await datahubAssetAll(candidate.assetUrn)
+      if (!canReadAsset(principal, detail, 'chat')) return null
       return {
         ...detail,
         provider_description: detail.description,
@@ -3833,7 +3852,7 @@ async function semanticCatalogEvidence(question, limit, { summaryOnly = false } 
         description: candidate.contentText,
       }
     }
-  }))
+  })).then((items) => items.filter(Boolean))
 }
 
 async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, principal) {
@@ -3845,7 +3864,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
   progress('BUDGET_RESERVATION', 'SKIPPED', 'POC_NO_DURABLE_BUDGET')
   progress('ROUTING', 'IN_PROGRESS', 'ROUTING_IN_PROGRESS')
   const resolvedQuestion = await contextualizeChatQuestion(question, memory)
-  const route = await chatRoute(resolvedQuestion, requestedMode)
+  const route = await chatRoute(resolvedQuestion, requestedMode, principal)
   progress('ROUTING', 'COMPLETED', `${route.selected_mode}_ROUTE_SELECTED`)
   if (route.adapter_state !== 'READY') {
     throw Object.assign(new Error(`${route.selected_mode} Chat route is not configured.`), { statusCode: 503 })
@@ -3887,12 +3906,13 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
     evidence = filterAssetsForPrincipal(
       principal,
       await Promise.all(evidence.slice(0, candidateLimit).map((item) => datahubLineageEvidence(item, principal))),
+      'chat',
     )
   }
   if (route.selected_mode === 'GRAPH') {
     try {
-      if (!principal.globalSystemRead) {
-        graphProviderState = 'FILTERED_BY_SYSTEM_SCOPE'
+      if (principal.role !== 'admin') {
+        graphProviderState = 'FILTERED_BY_TABLE_SCOPE'
       } else {
         const graphEvidence = await neo4jEvidence(resolvedQuestion)
         evidence = [...evidence, ...graphEvidence].slice(0, 8)
@@ -4378,12 +4398,23 @@ async function authenticatedRequestContext(baseContext, authentication) {
   }
   const document = changeHistoryDocumentFromSnapshot(snapshot)
   const user = changeHistoryActiveUser(document, authentication.subjectId)
+
+  const userTableGrants = typeof baseContext.stateStore.listUserTableGrants === 'function'
+    ? await baseContext.stateStore.listUserTableGrants(authentication.subjectId)
+    : []
+  const policySnapshot = typeof baseContext.stateStore.readFeatureSecurityPolicy === 'function'
+    ? await baseContext.stateStore.readFeatureSecurityPolicy()
+    : { value: null, version: 0 }
+  const featureSecurityPolicy = policySnapshot?.value ? normalizeFeatureSecurityPolicy(policySnapshot.value) : approvedDefaultFeatureSecurityPolicy()
+
   const context = {
     ...baseContext,
     authentication,
     subject: { subjectId: authentication.subjectId },
     accessDocument: document,
     accessUser: user,
+    userTableGrants,
+    featureSecurityPolicy,
   }
   return { ...context, principal: buildPocPrincipal(context) }
 }
@@ -5179,9 +5210,9 @@ async function api(request, response, url, context) {
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/facets') return json(response, 200, await datahubFacets(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/dashboard') return json(response, 200, await datahubDashboard(context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/profile-coverage') return json(response, 200, await datahubProfileCoverage(context.principal))
-  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/vector-index') return json(response, 200, catalogEmbeddingStatus())
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/vector-index') return json(response, 200, catalogEmbeddingStatus(context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/systems') return json(response, 200, await datahubSystems(context.principal))
-  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary') return json(response, 200, await datahubGlossary(url.searchParams))
+  if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary') return json(response, 200, await datahubGlossary(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/glossary/assignments') return json(response, 200, await datahubGlossaryAssignments(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/asset') {
     const asset = await datahubAsset(
@@ -5189,8 +5220,8 @@ async function api(request, response, url, context) {
       Number(url.searchParams.get('field_offset') || 0),
       Number(url.searchParams.get('field_limit') || 100),
     )
-    if (!canReadAsset(context.principal, asset)) {
-      throw accessError(404, 'CATALOG_ASSET_NOT_FOUND', 'The DataHub asset was not found in the current System scope.')
+    if (!canReadAsset(context.principal, asset, 'catalog')) {
+      throw accessError(404, 'CATALOG_ASSET_NOT_FOUND', 'The DataHub asset was not found in the current Table scope.')
     }
     return json(response, 200, asset)
   }
@@ -5276,7 +5307,9 @@ async function api(request, response, url, context) {
     const requested = Number(url.searchParams.get('limit') || 20)
     const limit = Math.min(50, Math.max(1, Number.isInteger(requested) ? requested : 20))
     const offset = Math.max(0, Number(url.searchParams.get('cursor') || 0))
-    const visibleCandidates = entry.candidates.filter((candidate) => canReadAsset(context.principal, candidate.current_target))
+    const visibleCandidates = entry.candidates.filter((candidate) => (
+      canReadAsset(context.principal, candidate.current_target, 'registration')
+    ))
     const items = visibleCandidates.slice(offset, offset + limit)
       .map((candidate) => Object.fromEntries(Object.entries(candidate).filter(([key]) => key !== 'row')))
     return json(response, 200, {
@@ -5293,7 +5326,7 @@ async function api(request, response, url, context) {
     if (!entry || entry.preparation.id !== bulkPreview[2] || !candidate) {
       return problem(response, 404, 'BULK_CANDIDATE_NOT_FOUND', 'The bulk candidate was not found.')
     }
-    if (!canReadAsset(context.principal, candidate.current_target)) {
+    if (!canReadAsset(context.principal, candidate.current_target, 'registration')) {
       return problem(response, 404, 'BULK_CANDIDATE_NOT_FOUND', 'The bulk candidate was not found.')
     }
     return json(response, 200, await bulkCandidatePreview(entry, candidate))
@@ -5410,7 +5443,7 @@ async function api(request, response, url, context) {
     return response.end(object)
   }
   if (request.method === 'GET' && url.pathname === '/poc-api/neo4j/graph') {
-    return json(response, 200, context.principal.globalSystemRead ? await neo4jGraph() : { nodes: [], edges: [] })
+    return json(response, 200, context.principal.role === 'admin' ? await neo4jGraph() : { nodes: [], edges: [] })
   }
   return problem(response, 404, 'NOT_FOUND', 'The POC gateway route does not exist.')
 }

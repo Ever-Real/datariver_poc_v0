@@ -191,7 +191,7 @@ export function useAuth() {
       })
       if (!response.ok) {
         if (response.status === 403) {
-          const problem = await response.clone().json().catch(() => undefined)
+          const problem: unknown = await response.clone().json().catch(() => undefined)
           if (isRecord(problem) && problem.code === 'ORIGIN_FORBIDDEN') failureMessage = originLoginFailure
         }
         throw new Error('Local login failed.')

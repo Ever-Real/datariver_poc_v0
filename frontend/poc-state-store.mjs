@@ -417,6 +417,10 @@ export function createPocStateStore({ databasePool } = {}) {
     return memory.has(scope) ? memory.get(scope) : { value: null, version: 0 }
   }
 
+  async function readFeatureSecurityPolicy() {
+    return read('feature-security-policy-v1')
+  }
+
   async function write(scope, value) {
     await startDatabase()
     if (scope === 'core') return writeCoreWithAccessFence(value)
@@ -1365,11 +1369,14 @@ export function createPocStateStore({ databasePool } = {}) {
     })
   }
 
-  async function searchCatalogEmbeddings(bindingHash, projectionScope, sourceGeneration, embedding, limit) {
+  async function searchCatalogEmbeddings(bindingHash, projectionScope, sourceGeneration, embedding, limit, allowedUrnsScope) {
+    if (allowedUrnsScope !== 'ADMIN_UNRESTRICTED' && (!allowedUrnsScope || allowedUrnsScope.size === 0)) return []
     await startDatabase()
     const boundedLimit = Math.max(1, Math.min(Number(limit) || 1, 20))
     if (pool) {
       const vector = vectorLiteral(embedding)
+      const isRestricted = allowedUrnsScope !== 'ADMIN_UNRESTRICTED'
+      const urnList = isRestricted ? [...allowedUrnsScope] : []
       const result = await pool.query(`
         SELECT catalog_embedding.asset_urn, catalog_embedding.content_text, catalog_embedding.metadata,
           1 - (catalog_embedding.embedding <=> $5::vector) AS similarity
@@ -1381,15 +1388,13 @@ export function createPocStateStore({ databasePool } = {}) {
           AND current_projection.value->>'source_generation' = $2
           AND active_generation.value->>'source_generation' = $2
           AND vector_dims(catalog_embedding.embedding) = vector_dims($5::vector)
+          ${isRestricted ? 'AND catalog_embedding.asset_urn = ANY($7::text[])' : ''}
         ORDER BY catalog_embedding.embedding <=> $5::vector, catalog_embedding.asset_urn
         LIMIT $6
-      `, [
-        bindingHash,
-        sourceGeneration,
-        projectionScope,
-        catalogEmbeddingActiveScope(bindingHash),
-        vector,
-        boundedLimit,
+      `, isRestricted ? [
+        bindingHash, sourceGeneration, projectionScope, catalogEmbeddingActiveScope(bindingHash), vector, boundedLimit, urnList
+      ] : [
+        bindingHash, sourceGeneration, projectionScope, catalogEmbeddingActiveScope(bindingHash), vector, boundedLimit
       ])
       return result.rows.map((row) => ({
         assetUrn: row.asset_urn,
@@ -1403,7 +1408,8 @@ export function createPocStateStore({ databasePool } = {}) {
     return [...memoryCatalogEmbeddings.values()]
       .filter((record) => record.bindingHash === bindingHash
         && record.sourceGeneration === sourceGeneration
-        && record.embedding.length === embedding.length)
+        && record.embedding.length === embedding.length
+        && (allowedUrnsScope === 'ADMIN_UNRESTRICTED' || allowedUrnsScope.has(record.assetUrn)))
       .map((record) => ({
         assetUrn: record.assetUrn,
         contentText: record.contentText,
@@ -1413,7 +1419,6 @@ export function createPocStateStore({ databasePool } = {}) {
       .sort((left, right) => right.similarity - left.similarity || left.assetUrn.localeCompare(right.assetUrn))
       .slice(0, boundedLimit)
   }
-
   async function readChangeHistoryCheckpoint(query) {
     if (!query || typeof query !== 'object') {
       throw new Error('The POC change-history checkpoint query is invalid.')
@@ -1970,6 +1975,7 @@ export function createPocStateStore({ databasePool } = {}) {
 
   return {
     read,
+    readFeatureSecurityPolicy,
     write,
     writeIfVersion,
     cacheGet,

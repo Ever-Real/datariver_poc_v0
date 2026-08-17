@@ -255,6 +255,8 @@ test('bounds an unavailable Redis startup and retries after a cold-start Postgre
           } },
           core: { version: 0, value: null },
         })
+        stateStore.listUserTableGrants = async () => []
+        stateStore.readFeatureSecurityPolicy = async () => ({ value: null, version: 0 })
         const pocServer = createPocServer({
           stateStore,
           authenticator: {
@@ -346,7 +348,7 @@ test('atomically fences in-memory Catalog embeddings to the active current gener
   ], ['asset-a', 'asset-b'])
   assert.equal(await store.catalogEmbeddingActiveGeneration(bindingHash), firstGeneration)
   assert.deepEqual(
-    (await store.searchCatalogEmbeddings(bindingHash, projectionScope, firstGeneration, [1, 0], 5))
+    (await store.searchCatalogEmbeddings(bindingHash, projectionScope, firstGeneration, [1, 0], 5, 'ADMIN_UNRESTRICTED'))
       .map((item) => item.assetUrn),
     ['asset-a', 'asset-b'],
   )
@@ -361,7 +363,7 @@ test('atomically fences in-memory Catalog embeddings to the active current gener
   )
   assert.equal(await store.catalogEmbeddingActiveGeneration(bindingHash), firstGeneration)
   assert.deepEqual(await store.searchCatalogEmbeddings(
-    bindingHash, projectionScope, secondGeneration, [1, 0], 5,
+    bindingHash, projectionScope, secondGeneration, [1, 0], 5, 'ADMIN_UNRESTRICTED'
   ), [])
 
   await store.replaceCatalogEmbeddingGeneration(bindingHash, projectionScope, secondGeneration, [
@@ -369,12 +371,12 @@ test('atomically fences in-memory Catalog embeddings to the active current gener
   ], ['asset-b'])
   assert.equal(await store.catalogEmbeddingActiveGeneration(bindingHash), secondGeneration)
   assert.deepEqual(
-    (await store.searchCatalogEmbeddings(bindingHash, projectionScope, secondGeneration, [0, 1], 5))
+    (await store.searchCatalogEmbeddings(bindingHash, projectionScope, secondGeneration, [0, 1], 5, 'ADMIN_UNRESTRICTED'))
       .map((item) => item.assetUrn),
     ['asset-b'],
   )
   assert.deepEqual(await store.searchCatalogEmbeddings(
-    bindingHash, projectionScope, firstGeneration, [1, 0], 5,
+    bindingHash, projectionScope, firstGeneration, [1, 0], 5, 'ADMIN_UNRESTRICTED'
   ), [])
 })
 
@@ -428,7 +430,7 @@ test('commits the PostgreSQL Embedding generation and active pointer in one fenc
   assert.ok(transactionSql.indexOf('COMMIT') > transactionSql.findIndex((sql) => sql.startsWith('INSERT INTO poc_state')))
 
   const ranked = await store.searchCatalogEmbeddings(
-    bindingHash, projectionScope, sourceGeneration, [1, 0], 5,
+    bindingHash, projectionScope, sourceGeneration, [1, 0], 5, 'ADMIN_UNRESTRICTED'
   )
   assert.deepEqual(ranked.map((item) => item.assetUrn), ['asset-current'])
   const search = statements.findLast((entry) => entry.sql.includes('ORDER BY catalog_embedding.embedding <=>'))
@@ -440,6 +442,30 @@ test('commits the PostgreSQL Embedding generation and active pointer in one fenc
     `catalog-embedding-active-v1:${bindingHash}`,
     '[1,0]',
     5,
+  ])
+
+  const searchesBeforeEmptyScope = statements.filter((entry) => entry.sql.includes('FROM poc_catalog_embedding')).length
+  assert.deepEqual(await store.searchCatalogEmbeddings(
+    bindingHash, projectionScope, sourceGeneration, [1, 0], 5, new Set(),
+  ), [])
+  assert.equal(
+    statements.filter((entry) => entry.sql.includes('FROM poc_catalog_embedding')).length,
+    searchesBeforeEmptyScope,
+  )
+
+  await store.searchCatalogEmbeddings(
+    bindingHash, projectionScope, sourceGeneration, [1, 0], 5, new Set(['asset-current']),
+  )
+  const restrictedSearch = statements.findLast((entry) => entry.sql.includes('FROM poc_catalog_embedding'))
+  assert.ok(restrictedSearch.sql.indexOf('asset_urn = ANY($7::text[])') < restrictedSearch.sql.indexOf('ORDER BY'))
+  assert.deepEqual(restrictedSearch.parameters, [
+    bindingHash,
+    sourceGeneration,
+    projectionScope,
+    `catalog-embedding-active-v1:${bindingHash}`,
+    '[1,0]',
+    5,
+    ['asset-current'],
   ])
 })
 

@@ -1,7 +1,13 @@
-/* global Buffer, URL, fetch, process */
+/* global Buffer, URL, fetch, process, structuredClone */
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { after, before, test } from 'node:test'
+import {
+  changeHistoryAccessCoreProjection,
+  normalizeChangeHistoryAccessDocument,
+  privateChangeHistoryAccess,
+} from './poc-access-document.mjs'
+import { approvedDefaultFeatureSecurityPolicy } from './poc-feature-security-policy.mjs'
 
 const requests = []
 const objects = new Map()
@@ -133,7 +139,7 @@ function providerHandler(request, response) {
               browsePathV2: { path: [{ name: 'MANUFACTURING' }, { name: 'QUALITY' }, { name: 'wafer_events' }] },
               domain: { domain: { urn: 'urn:li:domain:manufacturing' } },
               ownership: { owners: [{ owner: { urn: 'urn:li:corpuser:yield' } }] },
-              globalTags: { tags: [{ tag: { name: 'gold' } }] },
+              globalTags: { tags: [{ tag: { name: 'gold' } }, { tag: { name: 'credential' } }] },
               glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:wafer', name: 'Wafer' } }] },
               schemaMetadata: { fields: [{ fieldPath: 'wafer_id' }] },
             } },
@@ -175,7 +181,7 @@ function providerHandler(request, response) {
           ] },
           domain: null,
           ownership: { owners: [] },
-          globalTags: { tags: [] },
+          globalTags: { tags: [{ tag: { name: 'credential' } }] },
           glossaryTerms: { terms: [] },
           schemaMetadata: { fields: [
             {
@@ -837,4 +843,149 @@ test('reads a fixed Neo4j graph contract without accepting Cypher from the brows
   assert.equal(graph.edges[0].edge_type, 'HAS_INSPECTION')
   const arbitrary = await fetch(`${pocOrigin}/poc-api/neo4j/query`, { method: 'POST', body: '{}' })
   assert.equal(arbitrary.status, 404)
+})
+
+test('enforces request-time Table scope before counts, vector Chat and graph evidence for a non-admin', async () => {
+  const waferUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)'
+  const inspectionUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.inspection_results,PROD)'
+  const subjectId = 'table-scope-developer'
+  const { createPocStateStore } = await import('./poc-state-store.mjs?provider-table-scope-test')
+  const { createPocServer } = await import('./poc-server.mjs?provider-table-scope-test')
+  const stateStore = createPocStateStore()
+  const accessDocument = (maxSecurityGrade) => ({
+    schema_version: 1,
+    active_subject_id: subjectId,
+    users: [{
+      subject_id: subjectId,
+      role: 'developer',
+      active: true,
+      max_security_grade: maxSecurityGrade,
+      provider_owner_refs: [],
+    }],
+    systems: [{ system_id: 'quality-system', code: 'QUALITY', name: 'Quality', active: true }],
+    system_schema_scopes: [{
+      scope_id: 'quality-schema', system_id: 'quality-system', platform: 'postgres',
+      database_name: 'MANUFACTURING', schema_name: 'QUALITY', active: true,
+    }],
+    system_assignments: [{
+      system_id: 'quality-system', subject_id: subjectId, responsibility: 'DEVELOPER', priority: 1, active: true,
+    }],
+  })
+  const allowedPolicy = approvedDefaultFeatureSecurityPolicy()
+  const credentialFeatures = new Set(['catalog', 'chat', 'monitoring', 'governance'])
+  for (const cell of allowedPolicy.cells) {
+    if (cell.role === 'developer' && cell.grade === 'credential' && credentialFeatures.has(cell.feature)) {
+      cell.allow = true
+    }
+  }
+  const writeAccess = async (maximumGrade) => {
+    const document = normalizeChangeHistoryAccessDocument(accessDocument(maximumGrade))
+    const snapshot = await stateStore.readChangeHistoryAccess()
+    await stateStore.writeChangeHistoryAccess({
+      expectedAccessVersion: snapshot.access.version,
+      expectedCoreVersion: snapshot.core.version,
+      accessValue: privateChangeHistoryAccess(document),
+      coreValue: changeHistoryAccessCoreProjection(snapshot.core.value, document, snapshot.access.version + 1),
+    })
+  }
+
+  await writeAccess('credential')
+  await stateStore.write('feature-security-policy-v1', allowedPolicy)
+  await stateStore.applyUserTableGrantCommand({
+    subjectId,
+    tableUrns: [waferUrn],
+    action: 'GRANT',
+    actorSubjectId: 'test-admin',
+    changedAt: '2026-08-17T03:00:00.000Z',
+  })
+  const server = createPocServer({
+    stateStore,
+    authenticator: {
+      async authenticate() { return { subjectId, tokenHash: 'e'.repeat(64) } },
+      assertOrigin() {},
+    },
+  })
+  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+  const address = server.address()
+  assert.equal(typeof address, 'object')
+  const origin = `http://127.0.0.1:${address.port}`
+  const getJson = async (path) => {
+    const response = await fetch(`${origin}${path}`)
+    assert.equal(response.status, 200, await response.clone().text())
+    return response.json()
+  }
+
+  try {
+    const catalog = await getJson('/poc-api/datahub/catalog?limit=20')
+    assert.equal(catalog.total, 1)
+    assert.deepEqual(catalog.items.map((item) => item.id), [waferUrn])
+    const facets = await getJson('/poc-api/datahub/facets')
+    assert.deepEqual(facets.platforms, [{ value: 'postgres', count: 1 }])
+    const tree = await getJson('/poc-api/datahub/tree?parent_kind=ROOT')
+    assert.equal(tree.items[0].asset_count, 1)
+    const dashboard = await getJson('/poc-api/datahub/dashboard')
+    assert.equal(dashboard.catalog_asset_count, 1)
+    const coverage = await getJson('/poc-api/datahub/profile-coverage')
+    assert.equal(coverage.asset_count, 0)
+    const vectorStatus = await getJson('/poc-api/datahub/vector-index')
+    assert.equal(vectorStatus.indexed, null)
+    assert.equal(vectorStatus.refreshed, null)
+    assert.equal(vectorStatus.generation, null)
+
+    const hiddenDetail = await fetch(`${origin}/poc-api/datahub/asset?urn=${encodeURIComponent(inspectionUrn)}`)
+    assert.equal(hiddenDetail.status, 404)
+    const graph = await getJson('/poc-api/neo4j/graph')
+    assert.deepEqual(graph, { nodes: [], edges: [] })
+
+    const unauthorizedAuto = await fetch(`${origin}/poc-api/llm/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'inspection_results 테이블의 목적과 컬럼을 설명해줘', mode: 'AUTO' }),
+    })
+    assert.equal(unauthorizedAuto.status, 200, await unauthorizedAuto.clone().text())
+    const unauthorizedAutoPayload = await unauthorizedAuto.json()
+    assert.ok(unauthorizedAutoPayload.evidence.every((item) => item.id !== inspectionUrn && item.name !== 'inspection_results'))
+    assert.doesNotMatch(JSON.stringify(unauthorizedAutoPayload), /MANUFACTURING\.QUALITY\.inspection_results/)
+
+    const deniedPolicy = structuredClone(allowedPolicy)
+    deniedPolicy.cells.find((cell) => (
+      cell.feature === 'catalog' && cell.role === 'developer' && cell.grade === 'credential'
+    )).allow = false
+    await stateStore.write('feature-security-policy-v1', deniedPolicy)
+    assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 0)
+    await stateStore.write('feature-security-policy-v1', allowedPolicy)
+    assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 1)
+
+    await writeAccess('normal')
+    assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 0)
+    await writeAccess('credential')
+    assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 1)
+
+    await stateStore.applyUserTableGrantCommand({
+      subjectId,
+      tableUrns: [waferUrn],
+      action: 'REMOVE',
+      actorSubjectId: 'test-admin',
+      changedAt: '2026-08-17T03:01:00.000Z',
+    })
+    assert.equal((await getJson('/poc-api/datahub/catalog?limit=20')).total, 0)
+    const requestsBeforeEmptyChat = requests.length
+    const emptyChat = await fetch(`${origin}/poc-api/llm/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: '비슷한 inspection_results 테이블을 찾아줘', mode: 'AUTO' }),
+    })
+    assert.equal(emptyChat.status, 200, await emptyChat.clone().text())
+    assert.deepEqual((await emptyChat.json()).evidence, [])
+    assert.equal(requests.slice(requestsBeforeEmptyChat).some((request) => {
+      if (!request.path.endsWith('/embeddings')) return false
+      return JSON.parse(request.body).input === '비슷한 inspection_results 테이블을 찾아줘'
+    }), false)
+  } finally {
+    server.closeAllConnections()
+    await new Promise((resolvePromise, reject) => server.close((error) => (
+      error ? reject(error) : resolvePromise()
+    )))
+    await stateStore.close()
+  }
 })

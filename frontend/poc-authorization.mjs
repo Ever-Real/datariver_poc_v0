@@ -1,5 +1,12 @@
 /* global structuredClone */
 
+import {
+  evaluateTableDataAccess,
+  isCanonicalDatahubDatasetUrn,
+  tablePolicyCellKey,
+} from './poc-table-data-access.mjs'
+import { tableSecurityGrade } from './poc-table-system-mappings.mjs'
+
 export const POC_AUTHORIZATION_POLICY_VERSION = 'POC_PROFILE_CAPABILITIES_V1'
 
 export const POC_CAPABILITIES = Object.freeze([
@@ -149,7 +156,7 @@ export function resolvePocRoute(method, pathname) {
   return matches[0] ?? null
 }
 
-export function buildPocPrincipal({ authentication, accessDocument, accessUser }) {
+export function buildPocPrincipal({ authentication, accessDocument, accessUser, userTableGrants = [], featureSecurityPolicy = null }) {
   if (!authentication || authentication.subjectId !== accessUser?.subject_id || !accessUser.active) {
     throw authorizationError(403, 'SUBJECT_FORBIDDEN', 'The current authenticated subject is not active.')
   }
@@ -166,16 +173,24 @@ export function buildPocPrincipal({ authentication, accessDocument, accessUser }
     .filter((item) => item.active && item.subject_id === accessUser.subject_id
       && allowedResponsibilities.has(item.responsibility))
     .map((item) => item.system_id))
+  const activeTableGrantUrns = new Set(userTableGrants
+    .filter((item) => item?.active === true && isCanonicalDatahubDatasetUrn(item.tableUrn))
+    .map((item) => item.tableUrn))
+  const allowedFeatureSecurityCells = new Set((featureSecurityPolicy?.cells || [])
+    .filter((cell) => cell?.allow === true)
+    .map((cell) => tablePolicyCellKey(cell.feature, cell.role, cell.grade)))
   return Object.freeze({
     subjectId: accessUser.subject_id,
     role: accessUser.role,
-    maxSecurityGrade: accessUser.max_security_grade ?? 'normal',
+    maxSecurityGrade: accessUser.max_security_grade ?? null,
     capabilities: Object.freeze([...capabilities]),
     capabilitySet: new Set(capabilities),
     systemIds,
     globalSystemRead: accessUser.role === 'admin' || accessUser.role === 'viewer',
     globalSystemMutation: accessUser.role === 'admin',
     accessDocument,
+    activeTableGrantUrns,
+    allowedFeatureSecurityCells,
   })
 }
 
@@ -220,24 +235,43 @@ export function assetSystemResolution(asset, accessDocument) {
     : { resolution: matches.length > 1 ? 'AMBIGUOUS' : 'UNRESOLVED', systemId: null }
 }
 
-export function canReadAsset(principal, asset) {
-  if (principal.globalSystemRead) return true
-  const resolved = assetSystemResolution(asset, principal.accessDocument)
-  return resolved.resolution === 'RESOLVED' && principal.systemIds.has(resolved.systemId)
-}
-
-export function filterAssetsForPrincipal(principal, assets) {
-  return (Array.isArray(assets) ? assets : []).filter((asset) => canReadAsset(principal, asset))
-}
-
-export function assertAssetMutation(principal, asset) {
-  if (principal.globalSystemMutation) return
-  const resolved = assetSystemResolution(asset, principal.accessDocument)
-  if (resolved.resolution !== 'RESOLVED') {
-    throw authorizationError(403, 'SYSTEM_SCOPE_UNRESOLVED', 'The mutation target does not resolve to one active System.')
+function currentAssetSecurityGrade(asset) {
+  if (Object.hasOwn(asset || {}, 'security_grade')) {
+    return ['normal', 'credential', 'restricted'].includes(asset.security_grade) ? asset.security_grade : null
   }
-  if (!principal.systemIds.has(resolved.systemId)) {
-    throw authorizationError(403, 'SYSTEM_SCOPE_FORBIDDEN', 'The mutation target is outside the current System assignment.')
+  if (Array.isArray(asset?.tags) || Array.isArray(asset?.tag_references)) return tableSecurityGrade(asset)
+  return null
+}
+
+export function canReadAsset(principal, asset, feature = 'catalog') {
+  if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return false
+  const tableUrn = asset.id || asset.urn
+  if (!isCanonicalDatahubDatasetUrn(tableUrn)) return false
+  if (principal.role === 'admin') return true
+  if (asset.dataset_kind !== 'TABLE') return false
+  return evaluateTableDataAccess(principal, tableUrn, currentAssetSecurityGrade(asset), feature)
+}
+
+export function filterAssetsForPrincipal(principal, assets, feature = 'catalog') {
+  return (Array.isArray(assets) ? assets : []).filter((asset) => canReadAsset(principal, asset, feature))
+}
+
+export function getAllowedTableUrnsScope(principal, assets, feature = 'catalog') {
+  if (principal.role === 'admin') return 'ADMIN_UNRESTRICTED'
+  const allowed = new Set()
+  for (const asset of (Array.isArray(assets) ? assets : [])) {
+    if (asset && asset.dataset_kind === 'TABLE' && canReadAsset(principal, asset, feature)) {
+      allowed.add(asset.id || asset.urn)
+    }
+  }
+  return allowed
+}
+
+export function assertAssetMutation(principal, asset, feature = 'catalog') {
+  const tableUrn = asset?.id || asset?.urn
+  if (asset?.dataset_kind !== 'TABLE'
+    || !evaluateTableDataAccess(principal, tableUrn, currentAssetSecurityGrade(asset), feature)) {
+    throw authorizationError(403, 'TABLE_DATA_FORBIDDEN', 'The current Table is outside the request-time data scope.')
   }
 }
 
