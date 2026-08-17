@@ -28,11 +28,12 @@
 - PHASE 1C-2H hardening: `COMPLETE_RUNTIME_VERIFIED`
 - PHASE 1C-3 fixed feature-role-grade management: `COMPLETE_RUNTIME_VERIFIED`
 - PHASE 1C-4 CR responsible-System/three-lane approval: `COMPLETE_RUNTIME_VERIFIED`
-- PHASE 1D bounded Table enforcement slice: `PARTIAL` — source and representative DEV runtime are
-  verified. Provider URL drift is diagnosed/repaired and direct contracts are healthy, but actual
-  DataHub-bound semantic-vector/AUTO and higher-grade canonical runtime remain unverified.
+- PHASE 1D bounded Table enforcement slice: `COMPLETE_RUNTIME_VERIFIED` — local read/count/detail,
+  request-time AND, no-N+1 hydration, higher-grade canonical Table enforcement and bounded actual
+  Product Vector/AUTO/context/citation/General Chat paths are verified at the current Product.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
-  unbound Knowledge/Governance and Quality/GX surfaces remain open.
+  sparse provider multi-aspect compatibility, unbound Knowledge/Governance and Quality/GX surfaces
+  remain open.
 - PHASE 1E/1F: `BACKLOG`
 - remote-host network acceptance: `TARGET_RECHECK_REQUIRED`
 - overall Account/Auth program: `PARTIAL`
@@ -87,13 +88,17 @@ local credential + opaque server session
 - Representative runtime: grant/no-grant, Admin, policy, immediate grant/grade/policy changes,
   direct 404, authorized counts/facets/tree/dashboard, exact AUTO inventory/citations, direct
   lineage, non-Admin Neo4j fail-closed and unauthorized mutation 403 passed.
-- The former Chat/embedding/reranker `ECONNREFUSED` was container-loopback configuration drift, not
-  Table authorization. The existing DEV contracts now return direct 200 responses with the expected
-  shapes; no provider, version or service architecture was added. The Web runtime still lacks the
-  DataHub URL/token binding, so actual DataHub-bound semantic-vector/AUTO Product E2E is not claimed.
-- All 1,002 current canonical Tables remain grade `normal`; exact `credential` and `restricted` tag
-  relationships each have zero current Tables. Negative higher-grade runtime therefore remains
-  `SECURITY_GRADE_RUNTIME_SAMPLE_REQUIRED`, not PASS.
+- The former provider refusals were binding/runtime drift, not Table authorization. The existing
+  DataHub, Chat, embedding and reranker contracts are bound in the current DEV Web runtime; direct
+  probes and actual Product General/Vector/AUTO composition passed. The current 2,002-row embedding
+  generation is active. No provider, model, version or service architecture was added.
+- A DEV-only disposable canonical Table lifecycle verified exact `normal → credential → restricted`
+  resolution, tag precedence, grant/grade/fixed-policy AND, Admin data bypass, live-session grade and
+  policy changes, and immediate grant removal. The asset was tag-cleared and tombstoned; all test
+  users, credentials, sessions, grants and mappings were cleaned without hard deletion.
+- Sparse disposable `/manual-metadata` writes exposed a separate DataHub empty domain/glossary
+  read-back compatibility 502. It is `PARTIAL`, was not treated as authorization failure, and no
+  business Table was modified to work around it.
 - Web/Airflow/Neo4j/PostgreSQL/Redis/MinIO host listeners remain loopback-bound. A real second-host
   denial probe is still required.
 - MCL ledger/checkpoint/CR-link/source counts remained 46/2/4/2.
@@ -132,8 +137,17 @@ local credential + opaque server session
 - Table-bound Governance/Registration seams are source-verified. Unbound Knowledge/Governance
   resources remain `PARTIAL`; Quality authorization seams are source-verified while GX runtime is
   `BLOCKED`.
-- Closeout evidence:
-  `.orchestration/evidence/DEV-PHASE1D-CLOSEOUT-GAP-REDUCTION.md`.
+- Current DEV Product runtime additionally verifies PostgreSQL pre-ranking, metadata AUTO,
+  authorization-filtered context/citation, General Chat without forced Table scope, and a canonical
+  higher-grade Table matrix. Immediate grant removal produced empty Catalog/vector evidence.
+- Neo4j runtime still has no exact DataHub Table URN property or PostgreSQL identity bridge;
+  classification is `NEEDS_KNOWLEDGE_PHASE`, with non-Admin graph kept fail-closed before traversal.
+- Existing provider bindings and the reranker batch correction are current runtime configuration;
+  a future unreviewed recreate/restart could lose them, so deterministic restart receipt remains an
+  operational evidence risk rather than a new Product architecture task.
+- Evidence:
+  `.orchestration/evidence/DEV-PHASE1D-CLOSEOUT-GAP-REDUCTION.md` and
+  `.orchestration/evidence/DEV-PHASE1D-AUTONOMOUS-PROVIDER-GRADE-E2E.md`.
 
 ## Gates
 
@@ -143,5 +157,5 @@ local credential + opaque server session
 - G4 OPS mutation: `NOT_APPROVED`
 - Current stop boundary: preserve Product `2f247107...`; do not start PHASE 1E/1F, GX, migration,
   legacy deletion or another PHASE 1D Product slice without a new bounded authorization. The next
-  smallest gate is reviewed DEV DataHub binding plus an approved disposable higher-grade canonical
-  TABLE lifecycle; it is not authorized by this closeout.
+  smallest Product-independent work is deterministic DEV provider restart/recreate evidence and
+  sparse empty-aspect provider compatibility characterization.
