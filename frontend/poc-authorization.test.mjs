@@ -89,7 +89,7 @@ test('accepts manager in the existing access document and projects MANAGER witho
 })
 
 test('covers every named Node API route with no unknown or ambiguous registry entry', () => {
-  assert.equal(POC_ROUTE_REGISTRY.length, 63)
+  assert.equal(POC_ROUTE_REGISTRY.length, 64)
   assert.equal(new Set(POC_ROUTE_REGISTRY.map((entry) => entry.id)).size, POC_ROUTE_REGISTRY.length)
   assert.deepEqual(Object.fromEntries(['ANONYMOUS', 'AUTHENTICATED', 'CAPABILITY_PROTECTED', 'INTERNAL_SERVICE', 'DISABLED'].map((classification) => [
     classification,
@@ -97,7 +97,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
   ])), {
     ANONYMOUS: 7,
     AUTHENTICATED: 2,
-    CAPABILITY_PROTECTED: 52,
+    CAPABILITY_PROTECTED: 53,
     INTERNAL_SERVICE: 1,
     DISABLED: 1,
   })
@@ -114,7 +114,9 @@ test('covers every named Node API route with no unknown or ambiguous registry en
     ['GET', '/api/v1/admin/feature-security-policy', 'admin.feature-security-policy.read'],
     ['PUT', '/api/v1/admin/feature-security-policy', 'admin.feature-security-policy.write'],
     ['POST', `/api/v1/change-history/events/${'a'.repeat(64)}/cr-link-events`, 'change.event.command'],
+    ['POST', '/poc-api/bulk/uploads/abc/preparations/def/metadata-candidates/ghi/change-request', 'catalog.bulk.candidate-cr'],
     ['POST', '/api/v1/registration/bulk-preparations/execute', 'registration.execute.service'],
+
     ['PUT', '/poc-api/state/core', 'state.write'],
     ['GET', '/poc-api/datahub/asset', 'catalog.asset'],
     ['POST', '/poc-api/llm/chat/stream', 'chat.stream'],
@@ -164,8 +166,11 @@ test('filters non-admin core access data and authorizes an exact bounded top-lev
     adminSystems: [{ system_id: 'system-a' }, { system_id: 'system-b' }],
     adminSystemAssignees: [['system-a', [{ subject_id: 'developer' }]], ['system-b', [{ subject_id: 'admin' }]]],
     adminSystemSchemaScopes: [['system-a', [{}]], ['system-b', [{}]]],
+    bulkRegistrationCandidateBindings: [{ idempotency_key_hash: 'a'.repeat(64) }],
   }
   const filtered = filterCoreStateForPrincipal(developer, current)
+  assert.equal(Object.hasOwn(filtered, 'bulkRegistrationCandidateBindings'), false)
+  assert.equal(Object.hasOwn(filterCoreStateForPrincipal(principal('admin', 'admin'), current), 'bulkRegistrationCandidateBindings'), false)
   assert.deepEqual(filtered.changeRecords.map((item) => item.id), ['a'])
   assert.deepEqual(filtered.changeAttachments.map((entry) => entry[0]), ['a'])
   assert.deepEqual(filtered.adminMemberships, [{ subject_id: 'developer' }])
@@ -175,6 +180,7 @@ test('filters non-admin core access data and authorizes an exact bounded top-lev
   assert.deepEqual(authorized.changedKeys, ['changeRecords', 'sequence'])
   assert.deepEqual(authorized.value.changeRecords.map((item) => item.id), ['a', 'b'])
   assert.deepEqual(authorized.value.changeAttachments.map((entry) => entry[0]), ['a', 'b'])
+  assert.deepEqual(authorized.value.bulkRegistrationCandidateBindings, current.bulkRegistrationCandidateBindings)
   assert.throws(
     () => authorizeCoreReplacement(developer, current, { ...proposed, changeRecords: [{ id: 'b', selected_system_id: 'system-b', state: 'TESTING' }] }),
     { code: 'SYSTEM_SCOPE_UNRESOLVED' },
@@ -209,6 +215,12 @@ test('enforces Registration-only asset mutation seam', () => {
   const malformedAsset = { ...validAsset, security_grade: undefined }
 
   const dev = principal('developer', 'developer', { grants: [tableUrn] })
+  assert.throws(
+    () => assertPocRouteAuthorization(resolvePocRoute(
+      'POST', '/poc-api/bulk/uploads/u/preparations/p/metadata-candidates/c/change-request',
+    ), dev),
+    { code: 'ROLE_FORBIDDEN' },
+  )
   const managerSysTable = principal('manager', 'manager', { grants: [tableUrn] })
   const stewardNoSys = principal('steward', 'data_steward', { grants: [tableUrn] })
 

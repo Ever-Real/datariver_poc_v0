@@ -349,7 +349,6 @@ const changeAttachmentUploads = new Map<string, ChangeRequestAttachmentUpload & 
 const changeAttachments = new Map<string, Array<ChangeRequestAttachment & { file?: File }>>()
 const changeAttachmentLocations = new Map<string, { upload_id: string; display_name: string }>()
 const liveAssetDetails = new Map<string, CatalogAssetDetail>()
-const bulkCandidatePreviews = new Map<string, Record<string, unknown>>()
 
 function pocSystemEntry(system: typeof adminSystems[number]) {
   const assignees = adminSystemAssignees.get(system.system_id) ?? []
@@ -2087,49 +2086,20 @@ class PocApiClient {
     }
     const bulkCandidatePreviewPath = path.match(/^\/uploads\/([^/]+)\/preparations\/([^/]+)\/metadata-candidates\/([^/]+)\/preview$/)
     if (bulkCandidatePreviewPath && method === 'GET') {
-      const preview = await gatewayRequest<Record<string, unknown>>(
+      return gatewayRequest<Record<string, unknown>>(
         `/poc-api/bulk/uploads/${encodeURIComponent(bulkCandidatePreviewPath[1] ?? '')}/preparations/${encodeURIComponent(bulkCandidatePreviewPath[2] ?? '')}/metadata-candidates/${encodeURIComponent(bulkCandidatePreviewPath[3] ?? '')}/preview`,
         { signal: options.signal },
       )
-      bulkCandidatePreviews.set(bulkCandidatePreviewPath[3] ?? '', preview)
-      return preview
     }
     const bulkCandidateChangePath = path.match(/^\/uploads\/([^/]+)\/preparations\/([^/]+)\/metadata-candidates\/([^/]+)\/change-request$/)
     if (bulkCandidateChangePath && method === 'POST') {
-      const preview = bulkCandidatePreviews.get(bulkCandidateChangePath[3] ?? '')
-      if (!preview) throw new Error('변경요청 전에 bulk 후보 미리보기를 다시 확인하세요.')
-      const body = jsonBody(options)
-      const targetAssetId = responseString(preview.target_asset_id, '')
-      const detail = await gatewayRequest<CatalogAssetDetail>(
-        `/poc-api/datahub/asset?urn=${encodeURIComponent(targetAssetId)}`,
-        { signal: options.signal },
+      const headers: Record<string, string> = {}
+      if (options.idempotencyKey) headers['Idempotency-Key'] = options.idempotencyKey
+      if (options.ifMatch) headers['If-Match'] = options.ifMatch
+      return gatewayRequest(
+        `/poc-api/bulk/uploads/${encodeURIComponent(bulkCandidateChangePath[1] ?? '')}/preparations/${encodeURIComponent(bulkCandidateChangePath[2] ?? '')}/metadata-candidates/${encodeURIComponent(bulkCandidateChangePath[3] ?? '')}/change-request`,
+        { method: 'POST', body: options.body, headers, signal: options.signal },
       )
-      const target: Record<string, unknown> = { kind: 'EXISTING', asset_id: targetAssetId }
-      const sample = Array.isArray(preview.description_change_sample)
-        ? preview.description_change_sample[0] as Record<string, unknown> | undefined
-        : undefined
-      if (preview.record_kind === 'TABLE_DESCRIPTION') target.description = sample?.proposed_description ?? ''
-      if (preview.record_kind === 'COLUMN_DESCRIPTION') target.columns = [{
-        field_path: sample?.field_path,
-        description: sample?.proposed_description ?? '',
-        requested_change: responseString(body.reason, ''),
-      }]
-      const record = createChangeRequest({
-        title: responseString(body.title, `${detail.name} bulk metadata 변경`),
-        system_id: detail.platform,
-        request_reason: responseString(body.reason, ''),
-        request_content: responseString(body.reason, ''),
-        priority: 'NORMAL', urgency: 'NORMAL', security_level: detail.classification,
-        targets: [target],
-      })
-      if (preview.record_kind === 'COLUMN_DESCRIPTION') record.items[0]!.aspect_name = 'schemaMetadata'
-      else if (preview.record_kind === 'TABLE_DESCRIPTION') record.items[0]!.aspect_name = 'datasetProperties'
-      else {
-        record.items[0]!.aspect_name = preview.record_kind === 'DATASET_DOMAIN' ? 'domains'
-          : preview.record_kind === 'DATASET_TERM' ? 'glossaryTerms' : 'globalTags'
-      }
-      await this.persistCore()
-      return { id: record.id, number: record.number, request_type: 'BULK_CATALOG_METADATA', state: record.state }
     }
     if (path === '/registration/manual-submissions' && method === 'POST') {
       const body = jsonBody(options)

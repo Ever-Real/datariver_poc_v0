@@ -136,6 +136,7 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('catalog.bulk.list', 'GET', /^\/poc-api\/bulk\/uploads\/[a-zA-Z0-9_-]+\/preparations$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
   route('catalog.bulk.candidates', 'GET', /^\/poc-api\/bulk\/uploads\/[a-zA-Z0-9_-]+\/preparations\/[^/]+\/metadata-candidates$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
   route('catalog.bulk.preview', 'GET', /^\/poc-api\/bulk\/uploads\/[a-zA-Z0-9_-]+\/preparations\/[^/]+\/metadata-candidates\/[^/]+\/preview$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
+  route('catalog.bulk.candidate-cr', 'POST', /^\/poc-api\/bulk\/uploads\/[a-zA-Z0-9_-]+\/preparations\/[^/]+\/metadata-candidates\/[^/]+\/change-request$/, 'CAPABILITY_PROTECTED', 'catalog.execute', { scopedMutation: true }),
   route('chat.query', 'POST', /^\/poc-api\/llm\/chat$/, 'CAPABILITY_PROTECTED', 'chat.query'),
   route('chat.compact', 'POST', /^\/poc-api\/llm\/chat\/compact$/, 'CAPABILITY_PROTECTED', 'chat.query'),
   route('chat.stream', 'POST', /^\/poc-api\/llm\/chat\/stream$/, 'CAPABILITY_PROTECTED', 'chat.query'),
@@ -218,6 +219,7 @@ export function assertPocRouteAuthorization(routeEntry, principal) {
     'catalog.template.xlsx', 'catalog.template.csv',
     'provider.minio.part', 'provider.minio.complete', 'provider.minio.accepted',
     'catalog.bulk.create', 'catalog.bulk.list', 'catalog.bulk.candidates', 'catalog.bulk.preview',
+    'catalog.bulk.candidate-cr',
     'catalog.manual-metadata'
   ])
   if (registrationRoutes.has(routeEntry.id) && !['admin', 'manager', 'data_steward'].includes(principal.role)) {
@@ -330,9 +332,11 @@ function filterSystemRecords(principal, values) {
 }
 
 export function filterCoreStateForPrincipal(principal, value) {
-  if (value === null || principal.role === 'admin') return value
+  if (value === null) return value
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null
   const filtered = structuredClone(value)
+  delete filtered.bulkRegistrationCandidateBindings
+  if (principal.role === 'admin') return filtered
   if (Array.isArray(filtered.changeRecords)) filtered.changeRecords = filterSystemRecords(principal, filtered.changeRecords)
   const visibleChangeIds = new Set((Array.isArray(filtered.changeRecords) ? filtered.changeRecords : [])
     .map((item) => item?.id).filter((id) => typeof id === 'string'))

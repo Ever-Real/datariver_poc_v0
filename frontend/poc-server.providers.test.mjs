@@ -8,6 +8,7 @@ import {
   privateChangeHistoryAccess,
 } from './poc-access-document.mjs'
 import { approvedDefaultFeatureSecurityPolicy } from './poc-feature-security-policy.mjs'
+import { applyTableSystemMappingCommand } from './poc-table-system-mappings.mjs'
 
 const requests = []
 const objects = new Map()
@@ -91,6 +92,16 @@ function providerHandler(request, response) {
     }
     if (url.pathname === '/api/graphql') {
       const payload = JSON.parse(body.toString('utf8'))
+      if (payload.query.includes('DataRiverPocCurrentTables')) {
+        return sendJson(response, { data: { entities: payload.variables.urns.map((urn) => ({
+          urn,
+          type: 'DATASET',
+          subTypes: { typeNames: ['Table'] },
+          properties: { customProperties: [] },
+          schemaMetadata: { name: 'wafer_events' },
+          globalTags: { tags: [{ tag: { urn: 'urn:li:tag:credential', name: 'credential' } }] },
+        })) } })
+      }
       if (payload.query.includes('DataRiverPocCatalog')) {
         if (hideExactFromTextSearch && payload.variables.input.query !== '*') {
           return sendJson(response, { data: { scrollAcrossEntities: {
@@ -835,6 +846,201 @@ test('triggers only the fixed Airflow DAG and proxies a bounded MinIO upload', a
     body: JSON.stringify({ part_count: 'not-a-number' }),
   })
   assert.equal(invalid.status, 400)
+})
+
+test('binds one READY metadata candidate to one server-authored CR with current authority and replay fencing', async () => {
+  const waferUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)'
+  const subjectId = 'bulk-registration-steward'
+  const outsiderId = 'bulk-registration-outsider'
+  const adminId = 'bulk-registration-admin'
+  const serviceToken = 'bulk-registration-service-token-1234567890'
+  const { createPocStateStore } = await import('./poc-state-store.mjs?bulk-candidate-cr-test')
+  const { createPocServer } = await import('./poc-server.mjs?bulk-candidate-cr-test')
+  const stateStore = createPocStateStore()
+  const document = normalizeChangeHistoryAccessDocument({
+    schema_version: 1,
+    active_subject_id: subjectId,
+    users: [
+      { subject_id: subjectId, role: 'data_steward', active: true, max_security_grade: 'restricted', provider_owner_refs: [] },
+      { subject_id: outsiderId, role: 'data_steward', active: true, max_security_grade: 'restricted', provider_owner_refs: [] },
+      { subject_id: adminId, role: 'admin', active: true, max_security_grade: 'restricted', provider_owner_refs: [] },
+    ],
+    systems: [{ system_id: 'quality-system', code: 'QUALITY', name: 'Quality', active: true }],
+    system_schema_scopes: [{
+      scope_id: 'quality-schema', system_id: 'quality-system', platform: 'postgres',
+      database_name: 'MANUFACTURING', schema_name: 'QUALITY', active: true,
+    }],
+    system_assignments: [
+      { system_id: 'quality-system', subject_id: subjectId, responsibility: 'DATA_STEWARD', priority: 1, active: true },
+      { system_id: 'quality-system', subject_id: outsiderId, responsibility: 'DATA_STEWARD', priority: 1, active: true },
+    ],
+  })
+  const accessSnapshot = await stateStore.readChangeHistoryAccess()
+  await stateStore.writeChangeHistoryAccess({
+    expectedAccessVersion: accessSnapshot.access.version,
+    expectedCoreVersion: accessSnapshot.core.version,
+    accessValue: privateChangeHistoryAccess(document),
+    coreValue: changeHistoryAccessCoreProjection(accessSnapshot.core.value, document, 1),
+  })
+  const policy = approvedDefaultFeatureSecurityPolicy()
+  policy.cells.find((cell) => (
+    cell.feature === 'registration' && cell.role === 'data_steward' && cell.grade === 'credential'
+  )).allow = true
+  await stateStore.write('feature-security-policy-v1', policy)
+  const mapping = applyTableSystemMappingCommand(null, {
+    action: 'ASSIGN', table_ids: [waferUrn], system_ids: ['quality-system'],
+    reason: 'Bind the disposable bulk Registration test Table.',
+  }, 'bulk-registration-test-admin', '2026-08-18T00:00:00.000Z')
+  await stateStore.write('table-system-mappings-v1', mapping.document)
+  for (const userId of [subjectId, outsiderId]) {
+    await stateStore.applyUserTableGrantCommand({
+      subjectId: userId, tableUrns: [waferUrn], action: 'GRANT',
+      actorSubjectId: 'bulk-registration-test-admin', changedAt: '2026-08-18T00:00:00.000Z',
+    })
+  }
+
+  const servers = []
+  const originFor = async (actorId) => {
+    const server = createPocServer({
+      stateStore,
+      airflowServiceToken: serviceToken,
+      authenticator: {
+        async authenticate() { return { subjectId: actorId, tokenHash: 'd'.repeat(64) } },
+        assertOrigin() {},
+      },
+    })
+    await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+    servers.push(server)
+    return `http://127.0.0.1:${server.address().port}`
+  }
+  const ownerOrigin = await originFor(subjectId)
+  const outsiderOrigin = await originFor(outsiderId)
+  const adminOrigin = await originFor(adminId)
+  const uploadId = 'bulk-candidate-cr-test'
+  const csv = Buffer.from([
+    'record_kind,asset_id,platform,database_name,schema_name,table_name,field_path,operation,value_text,controlled_ref',
+    `TABLE_DESCRIPTION,"${waferUrn}",postgres,MANUFACTURING,QUALITY,wafer_events,,SET,Governed bulk description,`,
+    '',
+  ].join('\n'))
+  const postCandidate = (origin, preparationId, candidateId, headers, body = {
+    title: 'Governed bulk metadata change', reason: 'Create one governed CR from one READY candidate.',
+  }) => fetch(`${origin}/poc-api/bulk/uploads/${uploadId}/preparations/${preparationId}/metadata-candidates/${candidateId}/change-request`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body),
+  })
+  const providerWritesBefore = requests.filter((request) => request.method !== 'GET'
+    && request.path.startsWith('/aspects')).length
+
+  try {
+    const part = await fetch(`${ownerOrigin}/poc-api/minio/uploads/${uploadId}/parts/1`, {
+      method: 'PUT', headers: { 'Content-Type': 'text/csv' }, body: csv,
+    })
+    assert.equal(part.status, 200, await part.clone().text())
+    const complete = await fetch(`${ownerOrigin}/poc-api/minio/uploads/${uploadId}/complete`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ part_count: 1, display_name: 'metadata.csv', content_type: 'text/csv', target_bucket: 'filefolder' }),
+    })
+    assert.equal(complete.status, 200, await complete.clone().text())
+    const stored = await complete.json()
+    const queued = await fetch(`${ownerOrigin}/poc-api/bulk/preparations`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        upload_id: uploadId, content_profile: 'CATALOG_METADATA_ROWS_CSV_V1',
+        source_sha256: stored.sha256, object_bucket: stored.bucket, object_key: stored.key,
+      }),
+    })
+    assert.equal(queued.status, 202, await queued.clone().text())
+    const preparation = await queued.json()
+    const executed = await fetch(`${ownerOrigin}/api/v1/registration/bulk-preparations/execute`, {
+      method: 'POST', headers: { Authorization: `Bearer ${serviceToken}` },
+    })
+    assert.equal(executed.status, 200, await executed.clone().text())
+    assert.equal((await executed.json()).state, 'READY')
+
+    const candidatesResponse = await fetch(`${ownerOrigin}/poc-api/bulk/uploads/${uploadId}/preparations/${preparation.id}/metadata-candidates`)
+    assert.equal(candidatesResponse.status, 200, await candidatesResponse.clone().text())
+    const candidates = await candidatesResponse.json()
+    assert.equal(candidates.items.length, 1)
+    const candidateId = candidates.items[0].id
+    const previewResponse = await fetch(`${ownerOrigin}/poc-api/bulk/uploads/${uploadId}/preparations/${preparation.id}/metadata-candidates/${candidateId}/preview`)
+    assert.equal(previewResponse.status, 200, await previewResponse.clone().text())
+    const preview = await previewResponse.json()
+
+    assert.equal((await postCandidate(ownerOrigin, preparation.id, candidateId, {
+      'Idempotency-Key': 'bulk-candidate-command-1',
+    })).status, 428)
+    assert.equal((await postCandidate(ownerOrigin, preparation.id, candidateId, {
+      'Idempotency-Key': 'bulk-candidate-command-1', 'If-Match': 'not-an-etag',
+    })).status, 400)
+    assert.equal((await postCandidate(ownerOrigin, preparation.id, candidateId, {
+      'Idempotency-Key': 'bulk-candidate-command-1', 'If-Match': `"${'0'.repeat(64)}"`,
+    })).status, 412)
+    assert.equal((await postCandidate(outsiderOrigin, preparation.id, candidateId, {
+      'Idempotency-Key': 'bulk-candidate-command-1', 'If-Match': preview.preview_etag,
+    })).status, 404)
+
+    await stateStore.applyUserTableGrantCommand({
+      subjectId, tableUrns: [waferUrn], action: 'REMOVE', actorSubjectId: adminId,
+      changedAt: '2026-08-18T00:01:00.000Z',
+    })
+    assert.equal((await postCandidate(ownerOrigin, preparation.id, candidateId, {
+      'Idempotency-Key': 'bulk-candidate-command-1', 'If-Match': preview.preview_etag,
+    })).status, 404)
+    await stateStore.applyUserTableGrantCommand({
+      subjectId, tableUrns: [waferUrn], action: 'GRANT', actorSubjectId: adminId,
+      changedAt: '2026-08-18T00:02:00.000Z',
+    })
+
+    const removedMapping = applyTableSystemMappingCommand(mapping.document, {
+      action: 'REMOVE', table_ids: [waferUrn], system_ids: ['quality-system'],
+      reason: 'Exercise immediate Registration mapping revocation.',
+    }, adminId, '2026-08-18T00:03:00.000Z')
+    await stateStore.write('table-system-mappings-v1', removedMapping.document)
+    assert.equal((await postCandidate(ownerOrigin, preparation.id, candidateId, {
+      'Idempotency-Key': 'bulk-candidate-command-1', 'If-Match': preview.preview_etag,
+    })).status, 404)
+    const adminWithoutMapping = await postCandidate(adminOrigin, preparation.id, candidateId, {
+      'Idempotency-Key': 'bulk-candidate-command-1', 'If-Match': preview.preview_etag,
+    })
+    assert.equal(adminWithoutMapping.status, 403)
+    assert.equal((await adminWithoutMapping.json()).code, 'MAPPING_INTEGRITY_VIOLATION')
+    const restoredMapping = applyTableSystemMappingCommand(removedMapping.document, {
+      action: 'ASSIGN', table_ids: [waferUrn], system_ids: ['quality-system'],
+      reason: 'Restore the Registration test mapping after revocation.',
+    }, adminId, '2026-08-18T00:04:00.000Z')
+    await stateStore.write('table-system-mappings-v1', restoredMapping.document)
+
+    const createdResponse = await postCandidate(ownerOrigin, preparation.id, candidateId, {
+      'Idempotency-Key': 'bulk-candidate-command-1', 'If-Match': preview.preview_etag,
+    })
+    assert.equal(createdResponse.status, 201, await createdResponse.clone().text())
+    const created = await createdResponse.json()
+    assert.equal(created.request_type, 'BULK_CATALOG_METADATA')
+    const replayResponse = await postCandidate(ownerOrigin, preparation.id, candidateId, {
+      'Idempotency-Key': 'bulk-candidate-command-1', 'If-Match': preview.preview_etag,
+    })
+    assert.equal(replayResponse.status, 200, await replayResponse.clone().text())
+    assert.equal((await replayResponse.json()).id, created.id)
+    assert.equal((await postCandidate(ownerOrigin, preparation.id, candidateId, {
+      'Idempotency-Key': 'bulk-candidate-command-1', 'If-Match': preview.preview_etag,
+    }, { title: 'Changed command', reason: 'The same key must not authorize a changed command.' })).status, 409)
+    assert.equal((await postCandidate(ownerOrigin, preparation.id, candidateId, {
+      'Idempotency-Key': 'bulk-candidate-command-2', 'If-Match': preview.preview_etag,
+    })).status, 409)
+
+    const persisted = await stateStore.read('core')
+    assert.equal(persisted.value.changeRecords.filter((record) => record.id === created.id).length, 1)
+    assert.equal(persisted.value.bulkRegistrationCandidateBindings.length, 1)
+    const publicCore = await (await fetch(`${adminOrigin}/poc-api/state/core`)).json()
+    assert.equal(Object.hasOwn(publicCore.value, 'bulkRegistrationCandidateBindings'), false)
+    assert.equal(requests.filter((request) => request.method !== 'GET'
+      && request.path.startsWith('/aspects')).length, providerWritesBefore)
+  } finally {
+    await Promise.all(servers.map(async (server) => {
+      server.closeAllConnections()
+      await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()))
+    }))
+    await stateStore.close()
+  }
 })
 
 test('reads a fixed Neo4j graph contract without accepting Cypher from the browser', async () => {

@@ -5099,6 +5099,232 @@ function crChangeDocument(value) {
   return structuredClone(value)
 }
 
+async function bulkCandidateChangeRequestApi(request, response, url, context) {
+  rejectProtectedAccessClaims(request, url)
+  if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'CR create supports POST only.')
+
+  const match = url.pathname.match(/^\/poc-api\/bulk\/uploads\/([a-zA-Z0-9_-]+)\/preparations\/([^/]+)\/metadata-candidates\/([^/]+)\/change-request$/)
+  const uploadId = match[1]
+  const prepId = match[2]
+  const candidateId = match[3]
+
+  const entry = bulkPreparations.get(uploadId)
+  if (!entry || entry.preparation.id !== prepId || entry.preparation.state !== 'READY' || !entry.receipt || !canReadBulkPreparation(context.principal, entry)) {
+    return problem(response, 404, 'BULK_CANDIDATE_NOT_READY', 'Bulk candidate not ready or not found.')
+  }
+  const candidate = entry.candidates.find((item) => item.id === candidateId)
+  if (!candidate) return problem(response, 404, 'BULK_CANDIDATE_NOT_FOUND', 'Candidate not found.')
+
+  const visibleCandidates = await visibleRegistrationCandidates(entry, context, [candidate])
+  if (visibleCandidates.length !== 1) return problem(response, 404, 'BULK_CANDIDATE_NOT_FOUND', 'Candidate not found.')
+
+  const preview = await bulkCandidatePreview(entry, candidate)
+  const expectedEtag = request.headers['if-match']
+  if (!expectedEtag) return problem(response, 428, 'PRECONDITION_REQUIRED', 'If-Match header is required.')
+  if (typeof expectedEtag !== 'string' || !/^"[0-9a-f]{64}"$/.test(expectedEtag)) {
+    return problem(response, 400, 'PRECONDITION_INVALID', 'If-Match must be one quoted SHA-256 preview ETag.')
+  }
+  if (expectedEtag !== preview.preview_etag) {
+    return problem(response, 412, 'PRECONDITION_FAILED', 'The bulk candidate preview is stale.')
+  }
+
+  const idempotencyKeyHeader = request.headers['idempotency-key']
+  if (typeof idempotencyKeyHeader !== 'string' || !idempotencyKeyHeader.trim() || idempotencyKeyHeader.length > 200 || hasAccessControlCharacter(idempotencyKeyHeader)) {
+    return problem(response, 428, 'PRECONDITION_REQUIRED', 'Idempotency-Key is required and bounded.')
+  }
+  const idempotencyKey = idempotencyKeyHeader.trim()
+
+  const body = await bodyJson(request)
+  exactCrBodyKeys(body, ['title', 'reason'])
+  const title = crBoundedText(body.title, 'title', 500)
+  const reason = crBoundedText(body.reason, 'reason', 2_000)
+
+  const tableUrn = preview.target_asset_id
+  const tableGrade = visibleCandidates[0].current_target.security_grade
+  const aspectName = preview.record_kind === 'COLUMN_DESCRIPTION' ? 'schemaMetadata'
+    : preview.record_kind === 'TABLE_DESCRIPTION' ? 'datasetProperties'
+      : preview.record_kind === 'DATASET_DOMAIN' ? 'domains'
+        : preview.record_kind === 'DATASET_TERM' ? 'glossaryTerms' : 'globalTags'
+
+  const mappingSnapshot = await context.stateStore.read(POC_TABLE_SYSTEM_MAPPING_SCOPE)
+  const activeSystemIds = new Set((context.accessDocument.systems ?? []).filter((s) => s?.active).map((s) => s.system_id))
+  const mappedSystemIds = new Set(activeSystemIdsForTable(mappingSnapshot.value, tableUrn, activeSystemIds))
+
+  if (mappedSystemIds.size !== 1) {
+    return problem(response, 403, 'MAPPING_INTEGRITY_VIOLATION', 'A single active Table-to-System mapping is required.')
+  }
+  const resolvedSystemId = [...mappedSystemIds][0]
+
+  const requestHash = canonicalHash({
+    actor: context.principal.subjectId,
+    uploadId,
+    preparationId: prepId,
+    receiptHash: entry.receipt.receipt_hash,
+    candidateId,
+    candidateHash: candidate.candidate_hash,
+    previewEtag: expectedEtag,
+    aspectName,
+    beforeHash: preview.before_hash,
+    afterHash: preview.after_hash,
+    sourceVersion: preview.source_version,
+    tableGrade,
+    resolvedSystemId,
+    title,
+    reason,
+  })
+  const idempotencyHash = canonicalHash(idempotencyKey)
+
+  let attempts = 0
+  while (attempts++ < 10) {
+    const snapshot = await context.stateStore.read('core')
+    const core = snapshot.value ?? {}
+    const bindings = Array.isArray(core.bulkRegistrationCandidateBindings) ? core.bulkRegistrationCandidateBindings : []
+
+    const existingByKey = bindings.find(b => b.idempotency_key_hash === idempotencyHash)
+    if (existingByKey) {
+      if (existingByKey.request_hash !== requestHash || existingByKey.candidate_id !== candidateId) {
+        return problem(response, 409, 'CONFLICT', 'Idempotency key collision with different request.')
+      }
+      const existingCr = core.changeRecords?.find(cr => cr.id === existingByKey.change_request_id)
+      if (existingCr) {
+        return json(response, 200, { id: existingCr.id, number: existingCr.number, request_type: existingCr.request_type, state: existingCr.state }, { ETag: `"${snapshot.version}"` })
+      }
+      return problem(response, 409, 'CONFLICT', 'Idempotency collision with missing CR.')
+    }
+
+    const existingByCandidate = bindings.find((binding) => (
+      binding.upload_id === uploadId
+      && binding.preparation_id === prepId
+      && binding.candidate_id === candidateId
+      && binding.idempotency_key_hash !== idempotencyHash
+    ))
+    if (existingByCandidate) {
+      return problem(response, 409, 'CONFLICT', 'Candidate already bound to a different change request.')
+    }
+
+    const roundId = randomUUID()
+    const occurredAt = new Date().toISOString()
+    const crId = randomUUID()
+
+    const target = { kind: 'EXISTING', asset_id: tableUrn }
+    const sample = Array.isArray(preview.description_change_sample) ? preview.description_change_sample[0] : undefined
+    if (preview.record_kind === 'TABLE_DESCRIPTION') target.description = sample?.proposed_description ?? ''
+    if (preview.record_kind === 'COLUMN_DESCRIPTION') target.columns = [{
+      field_path: sample?.field_path,
+      description: sample?.proposed_description ?? '',
+      requested_change: reason,
+    }]
+
+    const changeDocument = { targets: [target] }
+
+    const newCr = {
+      id: crId,
+      number: `CR-${crId.slice(0, 8).toUpperCase()}`,
+      request_type: 'BULK_CATALOG_METADATA',
+      title,
+      description: reason,
+      state: 'REGISTERED',
+      requester_id: context.principal.subjectId,
+      requester_department_id: null,
+      current_round_id: roundId,
+      current_round_number: 1,
+      revision_allowed: false,
+      created_at: occurredAt,
+      requested_due_date: null,
+      priority: 'NORMAL',
+      urgency: 'NORMAL',
+      classification: tableGrade,
+      version: 1,
+      items: [{
+        id: randomUUID(),
+        target_type: 'DATASET',
+        target_ref: tableUrn,
+        aspect_name: aspectName,
+        operation: 'UPSERT',
+        after_document: changeDocument,
+        target_asset_id: tableUrn,
+        target_asset_type: 'DATASET',
+        target_system_id: resolvedSystemId,
+        target_domain_id: null,
+        target_owner_department_id: null,
+        target_classification: tableGrade,
+        target_lifecycle: 'ACTIVE',
+        target_source_version: preview.source_version || 'poc-bulk',
+        target_observed_at: occurredAt,
+        target_binding_hash: canonicalHash({
+          table_urn: tableUrn,
+          responsible_system_id: resolvedSystemId,
+          security_grade: tableGrade,
+          aspect_name: aspectName,
+          before_hash: preview.before_hash,
+          after_hash: preview.after_hash,
+          receipt_hash: entry.receipt.receipt_hash,
+          candidate_hash: candidate.candidate_hash,
+        }),
+        routing_system_id: resolvedSystemId,
+      }],
+      approvals: [],
+      transitions: [],
+      approval_lanes: [],
+      test_runs: [],
+      rounds: [{
+        id: roundId, round_number: 1,
+        submitted_by: context.principal.subjectId,
+        submitted_at: occurredAt,
+        closed_at: null,
+        evidence_hash: canonicalHash({
+          table_urn: tableUrn,
+          responsible_system_id: resolvedSystemId,
+          title,
+          description: reason,
+          change_document: changeDocument,
+          aspect_name: aspectName,
+          before_hash: preview.before_hash,
+          after_hash: preview.after_hash,
+          receipt_hash: entry.receipt.receipt_hash,
+          candidate_hash: candidate.candidate_hash,
+        }),
+        revision_kind: 'INITIAL',
+        title,
+        request_date: null,
+        request_department: '',
+        request_reason: reason.slice(0, 2_000),
+        request_content: reason,
+        requested_due_date: null,
+        priority: 'NORMAL',
+        urgency: 'NORMAL',
+        classification: tableGrade,
+        selected_system_id: resolvedSystemId,
+      }],
+    }
+
+    const newBinding = {
+      idempotency_key_hash: idempotencyHash,
+      request_hash: requestHash,
+      upload_id: uploadId,
+      preparation_id: prepId,
+      receipt_hash: entry.receipt.receipt_hash,
+      candidate_id: candidateId,
+      candidate_hash: candidate.candidate_hash,
+      change_request_id: crId,
+      created_at: occurredAt,
+    }
+
+    const changeRecords = Array.isArray(core.changeRecords) ? [...core.changeRecords, newCr] : [newCr]
+    const updatedBindings = [...bindings, newBinding]
+    const updatedCore = { ...core, changeRecords, bulkRegistrationCandidateBindings: updatedBindings, sequence: (typeof core.sequence === 'number' ? core.sequence : 0) + 1 }
+
+    try {
+      const newVersion = await context.stateStore.writeIfVersion('core', updatedCore, snapshot.version)
+      return json(response, 201, { id: newCr.id, number: newCr.number, request_type: newCr.request_type, state: newCr.state }, { ETag: `"${newVersion}"` })
+    } catch (err) {
+      if (err.code === 'STATE_VERSION_STALE') continue
+      throw err
+    }
+  }
+  return problem(response, 409, 'STATE_VERSION_STALE', 'The core state version is stale.')
+}
+
 // CR intake: POST /poc-api/change-requests — any active role with change.read.
 async function crCreateApi(request, response, url, context) {
   rejectProtectedAccessClaims(request, url)
@@ -5321,6 +5547,9 @@ async function api(request, response, url, context) {
   }
   if (request.method === 'POST' && url.pathname === '/api/v1/registration/bulk-preparations/execute') {
     return json(response, 200, await executeBulkPreparation())
+  }
+  if (request.method === 'POST' && /^\/poc-api\/bulk\/uploads\/[a-zA-Z0-9_-]+\/preparations\/[^/]+\/metadata-candidates\/[^/]+\/change-request$/.test(url.pathname)) {
+    return bulkCandidateChangeRequestApi(request, response, url, context)
   }
   if (request.method === 'POST' && url.pathname === '/poc-api/change-requests') {
     return crCreateApi(request, response, url, context)

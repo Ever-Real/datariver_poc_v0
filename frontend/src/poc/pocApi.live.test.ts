@@ -121,6 +121,16 @@ function installGatewayMock() {
         if_match: headers.get('If-Match'),
       }), { status: 200, headers: { 'Content-Type': 'application/json', ETag: '"server-etag"' } }))
     }
+    if (/^\/poc-api\/bulk\/uploads\/[^/]+\/preparations\/[^/]+\/metadata-candidates\/[^/]+\/change-request$/.test(url.pathname)) {
+      const headers = new Headers(options?.headers)
+      return Promise.resolve(json({
+        path: url.pathname,
+        method: options?.method ?? 'GET',
+        body: typeof options?.body === 'string' ? JSON.parse(options.body) as unknown : null,
+        idempotency_key: headers.get('Idempotency-Key'),
+        if_match: headers.get('If-Match'),
+      }))
+    }
     if (url.pathname === '/poc-api/datahub/catalog') {
       const query = (url.searchParams.get('q') ?? '*').toLocaleLowerCase()
       const matching = liveAssets.filter((asset) => (
@@ -662,6 +672,29 @@ describe('POC live-provider compatibility adapter', () => {
     expect(mutation.etag).toBe('"server-etag"')
     const reverse = await client.request<{ path: string }>('/change-requests/cr-1/change-history?limit=10')
     expect(reverse.path).toBe('/api/v1/change-requests/cr-1/change-history?limit=10')
+  })
+
+  it('proxies a bulk candidate command with its preview and idempotency fences', async () => {
+    const client = useStableApiClient()
+    const response = await client.request<{
+      path: string
+      method: string
+      body: Record<string, string>
+      idempotency_key: string
+      if_match: string
+    }>('/uploads/upload-1/preparations/preparation-1/metadata-candidates/candidate-1/change-request', {
+      method: 'POST',
+      idempotencyKey: 'bulk-command-1',
+      ifMatch: `"${'a'.repeat(64)}"`,
+      body: JSON.stringify({ title: 'Governed bulk metadata', reason: 'Create one governed CR.' }),
+    })
+    expect(response).toEqual({
+      path: '/poc-api/bulk/uploads/upload-1/preparations/preparation-1/metadata-candidates/candidate-1/change-request',
+      method: 'POST',
+      body: { title: 'Governed bulk metadata', reason: 'Create one governed CR.' },
+      idempotency_key: 'bulk-command-1',
+      if_match: `"${'a'.repeat(64)}"`,
+    })
   })
 
   it('creates typed registration previews, CRs and user-generated manual history from live metadata', async () => {
