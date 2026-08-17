@@ -1,3 +1,5 @@
+/* global structuredClone */
+
 import assert from 'node:assert/strict'
 import test from 'node:test'
 
@@ -5,10 +7,12 @@ import {
   POC_CAPABILITIES,
   POC_ROUTE_REGISTRY,
   assertAssetMutation,
+  assertRegistrationAssetMutation,
   assertPocRouteAuthorization,
   authorizationProjection,
   authorizeCoreReplacement,
   buildPocPrincipal,
+  canReadRegistrationAsset,
   filterAssetsForPrincipal,
   filterCoreStateForPrincipal,
   resolvePocRoute,
@@ -195,4 +199,67 @@ test('filters non-admin core access data and authorizes an exact bounded top-lev
     () => authorizeCoreReplacement(principal('admin', 'admin'), current, { ...current, unknown: true }),
     { code: 'CORE_DIFF_INVALID' },
   )
+})
+
+test('enforces Registration-only asset mutation seam', () => {
+  const tableUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.a.table_test,PROD)'
+  const validAsset = { id: tableUrn, dataset_kind: 'TABLE', security_grade: 'normal', platform: 'postgres', database_name: 'db', schema_name: 'a' }
+  const restrictedAsset = { ...validAsset, security_grade: 'restricted' }
+  const viewAsset = { ...validAsset, dataset_kind: 'VIEW' }
+  const malformedAsset = { ...validAsset, security_grade: undefined }
+
+  const dev = principal('developer', 'developer', { grants: [tableUrn] })
+  const managerSysTable = principal('manager', 'manager', { grants: [tableUrn] })
+  const stewardNoSys = principal('steward', 'data_steward', { grants: [tableUrn] })
+
+  const activeSystems = new Set(['system-a'])
+  const emptySystems = new Set()
+
+  for (const route of POC_ROUTE_REGISTRY.filter((entry) => [
+    'catalog.template.xlsx', 'catalog.template.csv',
+    'provider.minio.part', 'provider.minio.complete', 'provider.minio.accepted',
+    'catalog.bulk.create', 'catalog.bulk.list', 'catalog.bulk.candidates', 'catalog.bulk.preview',
+    'catalog.manual-metadata',
+  ].includes(entry.id))) {
+    if (route.capability) dev.capabilitySet.add(route.capability)
+    assert.throws(() => assertPocRouteAuthorization(route, dev), { code: 'ROLE_FORBIDDEN' })
+  }
+
+  assert.ok(!canReadRegistrationAsset(dev, validAsset, activeSystems))
+  assert.throws(() => assertRegistrationAssetMutation(dev, validAsset, activeSystems), { code: 'TABLE_DATA_FORBIDDEN' })
+
+  assert.ok(!canReadRegistrationAsset(stewardNoSys, validAsset, activeSystems))
+  assert.throws(() => assertRegistrationAssetMutation(stewardNoSys, validAsset, activeSystems), { code: 'TABLE_DATA_FORBIDDEN' })
+
+  const managerNoTable = principal('manager', 'manager')
+  assert.ok(!canReadRegistrationAsset(managerNoTable, validAsset, activeSystems))
+  assert.throws(() => assertRegistrationAssetMutation(managerNoTable, validAsset, activeSystems), { code: 'TABLE_DATA_FORBIDDEN' })
+
+  assert.ok(canReadRegistrationAsset(managerSysTable, validAsset, activeSystems))
+  assert.doesNotThrow(() => assertRegistrationAssetMutation(managerSysTable, validAsset, activeSystems))
+
+  assert.ok(!canReadRegistrationAsset(managerSysTable, restrictedAsset, activeSystems))
+  const deniedPolicy = structuredClone(approvedDefaultFeatureSecurityPolicy())
+  deniedPolicy.cells.find((cell) => (
+    cell.feature === 'registration' && cell.role === 'manager' && cell.grade === 'normal'
+  )).allow = false
+  const managerPolicyDenied = principal('manager', 'manager', { grants: [tableUrn], policy: deniedPolicy })
+  assert.ok(!canReadRegistrationAsset(managerPolicyDenied, validAsset, activeSystems))
+
+  const admin = principal('admin', 'admin')
+  assert.ok(canReadRegistrationAsset(admin, validAsset, activeSystems))
+  assert.doesNotThrow(() => assertRegistrationAssetMutation(admin, validAsset, activeSystems))
+
+  assert.ok(!canReadRegistrationAsset(admin, malformedAsset, activeSystems))
+  assert.throws(() => assertRegistrationAssetMutation(admin, malformedAsset, activeSystems), { code: 'TABLE_DATA_FORBIDDEN' })
+
+  assert.ok(!canReadRegistrationAsset(managerSysTable, validAsset, emptySystems))
+  assert.throws(() => assertRegistrationAssetMutation(managerSysTable, validAsset, emptySystems), { code: 'TABLE_DATA_FORBIDDEN' })
+
+  const otherSystems = new Set(['system-c'])
+  assert.ok(!canReadRegistrationAsset(managerSysTable, validAsset, otherSystems))
+  assert.throws(() => assertRegistrationAssetMutation(managerSysTable, validAsset, otherSystems), { code: 'TABLE_DATA_FORBIDDEN' })
+
+  assert.ok(!canReadRegistrationAsset(admin, viewAsset, activeSystems))
+  assert.throws(() => assertRegistrationAssetMutation(admin, viewAsset, activeSystems), { code: 'TABLE_DATA_FORBIDDEN' })
 })

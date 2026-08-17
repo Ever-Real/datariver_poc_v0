@@ -214,6 +214,15 @@ export function assertPocRouteAuthorization(routeEntry, principal) {
     && !principal.capabilitySet.has(routeEntry.capability)) {
     throw authorizationError(403, 'CAPABILITY_REQUIRED', `${routeEntry.capability} is required.`)
   }
+  const registrationRoutes = new Set([
+    'catalog.template.xlsx', 'catalog.template.csv',
+    'provider.minio.part', 'provider.minio.complete', 'provider.minio.accepted',
+    'catalog.bulk.create', 'catalog.bulk.list', 'catalog.bulk.candidates', 'catalog.bulk.preview',
+    'catalog.manual-metadata'
+  ])
+  if (registrationRoutes.has(routeEntry.id) && !['admin', 'manager', 'data_steward'].includes(principal.role)) {
+    throw authorizationError(403, 'ROLE_FORBIDDEN', 'Registration routes require the data_steward, manager, or admin role.')
+  }
 }
 
 export function assetSystemResolution(asset, accessDocument) {
@@ -272,6 +281,29 @@ export function assertAssetMutation(principal, asset, feature = 'catalog') {
   if (asset?.dataset_kind !== 'TABLE'
     || !evaluateTableDataAccess(principal, tableUrn, currentAssetSecurityGrade(asset), feature)) {
     throw authorizationError(403, 'TABLE_DATA_FORBIDDEN', 'The current Table is outside the request-time data scope.')
+  }
+}
+
+export function canReadRegistrationAsset(principal, asset, activeSystemIdsForCurrentTable) {
+  if (!asset || typeof asset !== 'object' || Array.isArray(asset)) return false
+  const tableUrn = asset.id || asset.urn
+  if (!isCanonicalDatahubDatasetUrn(tableUrn)) return false
+  if (asset.dataset_kind !== 'TABLE') return false
+  const grade = currentAssetSecurityGrade(asset)
+  if (!grade) return false
+  if (principal.role === 'admin') return true
+  if (principal.role !== 'data_steward' && principal.role !== 'manager') return false
+  if (!evaluateTableDataAccess(principal, tableUrn, grade, 'registration')) return false
+  if (!activeSystemIdsForCurrentTable || !(activeSystemIdsForCurrentTable instanceof Set) || activeSystemIdsForCurrentTable.size === 0) return false
+  for (const systemId of activeSystemIdsForCurrentTable) {
+    if (principal.systemIds.has(systemId)) return true
+  }
+  return false
+}
+
+export function assertRegistrationAssetMutation(principal, asset, activeSystemIdsForCurrentTable) {
+  if (!canReadRegistrationAsset(principal, asset, activeSystemIdsForCurrentTable)) {
+    throw authorizationError(403, 'TABLE_DATA_FORBIDDEN', 'The current Table is outside the Registration data scope.')
   }
 }
 

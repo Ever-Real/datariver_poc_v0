@@ -22,12 +22,13 @@ import {
   normalizePocUsername,
 } from './poc-local-auth.mjs'
 import {
-  assertAssetMutation,
   assertPocRouteAuthorization,
+  assertRegistrationAssetMutation,
   authorizationProjection,
   authorizeCoreReplacement,
   buildPocPrincipal,
   canReadAsset,
+  canReadRegistrationAsset,
   filterAssetsForPrincipal,
   filterCoreStateForPrincipal,
   getAllowedTableUrnsScope,
@@ -4188,6 +4189,8 @@ async function compileBulkCandidates(bytes, profile) {
   if (rows.length < 2 || rows.length > 10_001 || JSON.stringify(rows[0]) !== JSON.stringify(catalogMetadataHeaders)) {
     throw Object.assign(new Error('The bulk metadata file header or row count is invalid.'), { statusCode: 400 })
   }
+  const inventoryItems = await datahubInventory()
+  const inventoryById = new Map(inventoryItems.map((item) => [item.id, item]))
   const candidates = []
   for (const [index, values] of rows.slice(1).entries()) {
     if (values.length !== catalogMetadataHeaders.length) {
@@ -4201,12 +4204,19 @@ async function compileBulkCandidates(bytes, profile) {
     if (!/^urn:li:dataset:\(.+\)$/.test(row.asset_id)) {
       throw Object.assign(new Error(`Bulk row ${index + 2} requires a live DataHub dataset URN.`), { statusCode: 400 })
     }
-    const detail = await datahubAsset(row.asset_id)
+    const detail = inventoryById.get(row.asset_id)
+    if (!detail) {
+      throw Object.assign(new Error(`Bulk row ${index + 2} asset is not found in the current inventory.`), { statusCode: 409 })
+    }
+    if (detail.dataset_kind !== 'TABLE') {
+      throw Object.assign(new Error(`Bulk row ${index + 2} asset must be a TABLE.`), { statusCode: 409 })
+    }
     const identity = [detail.platform, detail.database_name, detail.schema_name, detail.name]
     if (JSON.stringify(identity) !== JSON.stringify([row.platform, row.database_name, row.schema_name, row.table_name])) {
       throw Object.assign(new Error(`Bulk row ${index + 2} identity does not match DataHub.`), { statusCode: 409 })
     }
-    if (row.record_kind === 'COLUMN_DESCRIPTION' && !detail.schema_fields.some((field) => field.fieldPath === row.field_path)) {
+    if (row.record_kind === 'COLUMN_DESCRIPTION'
+      && !(detail.schema_fields || []).some((field) => field.fieldPath === row.field_path)) {
       throw Object.assign(new Error(`Bulk row ${index + 2} column does not exist in DataHub.`), { statusCode: 409 })
     }
     if (['DATASET_DOMAIN', 'DATASET_TERM', 'DATASET_TAG'].includes(row.record_kind)) {
@@ -4234,6 +4244,7 @@ async function compileBulkCandidates(bytes, profile) {
       current_target: {
         id: detail.id, asset_type: 'DATASET', name: detail.name, platform: detail.platform,
         database_name: detail.database_name, schema_name: detail.schema_name,
+        dataset_kind: detail.dataset_kind, security_grade: tableSecurityGrade(detail),
         classification: detail.classification, lifecycle: 'ACTIVE', source_version: detail.source_version,
         observed_at: detail.observed_at,
       },
@@ -4241,6 +4252,57 @@ async function compileBulkCandidates(bytes, profile) {
     })
   }
   return candidates
+}
+
+function canReadBulkPreparation(principal, entry) {
+  return principal.role === 'admin' || entry?.creatorSubjectId === principal.subjectId
+}
+
+function bulkPreparationProjection(preparation, visibleCandidateCount) {
+  const projection = { ...preparation }
+  if (preparation.state === 'READY' && Number.isInteger(visibleCandidateCount)) {
+    projection.rows_processed = visibleCandidateCount
+    projection.total_rows = visibleCandidateCount
+  }
+  return projection
+}
+
+async function currentRegistrationCandidates(context, candidates) {
+  const urns = [...new Set(candidates.map((candidate) => candidate.current_target.id))]
+  if (urns.length === 0) return []
+  const current = []
+  try {
+    for (let offset = 0; offset < urns.length; offset += 2_000) {
+      current.push(...await context.currentDatahubTables(urns.slice(offset, offset + 2_000)))
+    }
+  } catch {
+    throw accessError(503, 'REGISTRATION_CURRENT_TABLES_UNAVAILABLE', 'Current DataHub Table confirmation is unavailable.')
+  }
+  const currentById = new Map(current.map((asset) => [asset.id, asset]))
+  return candidates.flatMap((candidate) => {
+    const target = currentById.get(candidate.current_target.id)
+    return target ? [{
+      ...candidate,
+      current_target: { ...candidate.current_target, ...target },
+    }] : []
+  })
+}
+
+async function visibleRegistrationCandidates(entry, context, candidates = entry.candidates) {
+  const currentCandidates = await currentRegistrationCandidates(context, candidates)
+  if (context.principal.role === 'admin') {
+    return currentCandidates.filter((candidate) => (
+      canReadRegistrationAsset(context.principal, candidate.current_target, new Set())
+    ))
+  }
+  const mappingSnapshot = await context.stateStore.read(POC_TABLE_SYSTEM_MAPPING_SCOPE)
+  const activeSystemIds = new Set((context.accessDocument.systems ?? [])
+    .filter((system) => system.active)
+    .map((system) => system.system_id))
+  return currentCandidates.filter((candidate) => {
+    const mapped = activeSystemIdsForTable(mappingSnapshot.value, candidate.current_target.id, activeSystemIds)
+    return canReadRegistrationAsset(context.principal, candidate.current_target, new Set(mapped))
+  })
 }
 
 async function executeBulkPreparation() {
@@ -5259,7 +5321,29 @@ async function api(request, response, url, context) {
   if (request.method === 'POST' && url.pathname === '/poc-api/datahub/manual-metadata') {
     const body = await bodyJson(request)
     const target = await datahubAssetAll(boundedString(body.asset_id, 4096))
-    assertAssetMutation(context.principal, target)
+    let currentTargets
+    try {
+      currentTargets = await context.currentDatahubTables([target.id || target.urn])
+    } catch {
+      throw accessError(503, 'REGISTRATION_CURRENT_TABLES_UNAVAILABLE', 'Current DataHub Table confirmation is unavailable.')
+    }
+    const currentTarget = currentTargets.find((asset) => asset.id === (target.id || target.urn))
+    const authorizedTarget = currentTarget
+      ? { ...target, ...currentTarget }
+      : { ...target, dataset_kind: undefined, security_grade: undefined }
+    let mappedSystemIds = new Set()
+    if (context.principal.role !== 'admin') {
+      const mappingSnapshot = await context.stateStore.read(POC_TABLE_SYSTEM_MAPPING_SCOPE)
+      const activeSystemIds = new Set((context.accessDocument.systems ?? [])
+        .filter((system) => system.active)
+        .map((system) => system.system_id))
+      mappedSystemIds = new Set(activeSystemIdsForTable(
+        mappingSnapshot.value,
+        target.id || target.urn,
+        activeSystemIds,
+      ))
+    }
+    assertRegistrationAssetMutation(context.principal, authorizedTarget, mappedSystemIds)
     return json(response, 200, await applyManualMetadata(body))
   }
   if (request.method === 'GET' && url.pathname === '/poc-api/templates/catalog-metadata.xlsx') {
@@ -5303,7 +5387,15 @@ async function api(request, response, url, context) {
       return problem(response, 400, 'BULK_PREPARATION_INVALID', 'The bulk preparation receipt is invalid.')
     }
     const existing = bulkPreparations.get(uploadId)
-    if (existing) return json(response, 200, existing.preparation)
+    if (existing) {
+      if (!canReadBulkPreparation(context.principal, existing)) {
+        return problem(response, 404, 'BULK_PREPARATION_NOT_FOUND', 'The bulk preparation was not found.')
+      }
+      const visibleCandidates = existing.preparation.state === 'READY'
+        ? await visibleRegistrationCandidates(existing, context)
+        : []
+      return json(response, 200, bulkPreparationProjection(existing.preparation, visibleCandidates.length))
+    }
     const now = new Date().toISOString()
     const preparation = {
       id: randomUUID(), upload_id: uploadId, content_profile: profile,
@@ -5312,36 +5404,58 @@ async function api(request, response, url, context) {
       rows_processed: 0, total_rows: null, last_error_code: null,
       created_at: now, updated_at: now, version: 1,
     }
-    bulkPreparations.set(uploadId, { preparation, objectKey, candidates: [], receipt: null })
+    bulkPreparations.set(uploadId, {
+      preparation,
+      creatorSubjectId: context.principal.subjectId,
+      objectKey,
+      candidates: [],
+      receipt: null,
+    })
     const run = await triggerAirflowDag(bulkRegistrationDagId, {
       dag_run_id: `poc-bulk-${uploadId}-${Date.now()}`,
       conf: { poc: true, upload_id: uploadId },
     })
-    return json(response, 202, { ...preparation, airflow: await run.json() })
+    return json(response, 202, { ...bulkPreparationProjection(preparation), airflow: await run.json() })
   }
   const bulkList = url.pathname.match(/^\/poc-api\/bulk\/uploads\/([a-zA-Z0-9_-]+)\/preparations$/)
   if (request.method === 'GET' && bulkList) {
     const entry = bulkPreparations.get(bulkList[1])
-    return json(response, 200, { items: entry ? [entry.preparation] : [] })
+    if (entry && !canReadBulkPreparation(context.principal, entry)) {
+      return problem(response, 404, 'BULK_PREPARATION_NOT_FOUND', 'The bulk preparation was not found.')
+    }
+    const visibleCandidates = entry?.preparation.state === 'READY'
+      ? await visibleRegistrationCandidates(entry, context)
+      : []
+    return json(response, 200, {
+      items: entry ? [bulkPreparationProjection(entry.preparation, visibleCandidates.length)] : [],
+    })
   }
   const bulkCandidates = url.pathname.match(/^\/poc-api\/bulk\/uploads\/([a-zA-Z0-9_-]+)\/preparations\/([^/]+)\/metadata-candidates$/)
   if (request.method === 'GET' && bulkCandidates) {
     const entry = bulkPreparations.get(bulkCandidates[1])
-    if (!entry || entry.preparation.id !== bulkCandidates[2] || entry.preparation.state !== 'READY' || !entry.receipt) {
+    if (!entry || entry.preparation.id !== bulkCandidates[2]
+      || entry.preparation.state !== 'READY' || !entry.receipt
+      || !canReadBulkPreparation(context.principal, entry)) {
       return problem(response, 404, 'BULK_CANDIDATES_NOT_READY', 'Bulk candidates are not ready.')
     }
     const requested = Number(url.searchParams.get('limit') || 20)
     const limit = Math.min(50, Math.max(1, Number.isInteger(requested) ? requested : 20))
     const offset = Math.max(0, Number(url.searchParams.get('cursor') || 0))
-    const visibleCandidates = entry.candidates.filter((candidate) => (
-      canReadAsset(context.principal, candidate.current_target, 'registration')
-    ))
+    const visibleCandidates = await visibleRegistrationCandidates(entry, context)
     const items = visibleCandidates.slice(offset, offset + limit)
       .map((candidate) => Object.fromEntries(Object.entries(candidate).filter(([key]) => key !== 'row')))
+    const rootHash = canonicalHash(visibleCandidates.map((item) => item.candidate_hash))
+    const receipt = {
+      ...entry.receipt,
+      item_count: visibleCandidates.length,
+      candidate_count: visibleCandidates.length,
+      candidate_root_hash: rootHash,
+      receipt_hash: canonicalHash([entry.preparation.id, rootHash]),
+    }
     return json(response, 200, {
       items,
       page: { limit, ...(offset + items.length < visibleCandidates.length ? { next_cursor: String(offset + items.length) } : {}) },
-      receipt: entry.receipt,
+      receipt,
       meta: { projection_version: 1, policy_version: 'POC_LIVE_PROVIDER_V1', classification_policy_version: 1, authorization_generation: 1 },
     })
   }
@@ -5349,13 +5463,15 @@ async function api(request, response, url, context) {
   if (request.method === 'GET' && bulkPreview) {
     const entry = bulkPreparations.get(bulkPreview[1])
     const candidate = entry?.candidates.find((item) => item.id === bulkPreview[3])
-    if (!entry || entry.preparation.id !== bulkPreview[2] || !candidate) {
+    if (!entry || entry.preparation.id !== bulkPreview[2] || !candidate
+      || !canReadBulkPreparation(context.principal, entry)) {
       return problem(response, 404, 'BULK_CANDIDATE_NOT_FOUND', 'The bulk candidate was not found.')
     }
-    if (!canReadAsset(context.principal, candidate.current_target, 'registration')) {
+    const visibleCandidates = await visibleRegistrationCandidates(entry, context, [candidate])
+    if (visibleCandidates.length !== 1) {
       return problem(response, 404, 'BULK_CANDIDATE_NOT_FOUND', 'The bulk candidate was not found.')
     }
-    return json(response, 200, await bulkCandidatePreview(entry, candidate))
+    return json(response, 200, await bulkCandidatePreview(entry, visibleCandidates[0]))
   }
   if (request.method === 'POST' && url.pathname === '/poc-api/llm/chat') {
     const body = await bodyJson(request)
