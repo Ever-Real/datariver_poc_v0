@@ -142,6 +142,39 @@ Node listener만 peer-container 통신을 위해 container 내부 `0.0.0.0:8080`
 
 `stop`은 컨테이너와 network만 중지하며 Neo4j·pgvector named volume은 삭제하지 않습니다.
 
+#### Web-only 재빌드 (애플리케이션 코드 변경 시)
+
+Postgres·Neo4j·Redis·Airflow를 재시작하지 않고 `web` 컨테이너만 다시 빌드하고 교체합니다.
+
+```bash
+./scripts/run_poc.sh web-restart
+```
+
+이 작업은 지원 서비스 데이터를 보존하며, 코드 변경만 빠르게 반영할 때 사용합니다.
+`start` 또는 `docker`가 처음 전체 스택을 시작한 후에만 유효합니다.
+
+#### 로컬 reranker 재시작 (Mac DEV 전용)
+
+`.env` 파일에서 `LOCAL_LLAMA_CPP_RERANKER_MODEL`과 `LLAMA_ARG_UBATCH`를 읽어 llama-server를 재시작합니다. 셸 환경의 동일 키는 무시하고 `.env` 파일 값만 사용합니다.
+
+```bash
+./scripts/run_poc.sh reranker-restart
+```
+
+`LLAMA_ARG_UBATCH=1024`는 현재 DEV의 대표 metadata reranking 요청에서 확인된 값이며, 관리자는 공식 `--ubatch-size` 옵션으로 전달합니다. `reranker-restart`는 이 값을 `.env`에 명시하도록 요구하며 빈 값이나 누락을 허용하지 않습니다.
+
+#### DataHub 토큰 없는 DEV GMS 연결 (DEV 전용)
+
+인증이 비활성화된 로컬 GMS 인스턴스를 사용할 때만 `.env`에 다음을 추가합니다.
+
+```dotenv
+POC_DATAHUB_ALLOW_NO_TOKEN=true
+DATAHUB_GMS_URL=http://host.docker.internal:8080
+DATAHUB_GMS_TOKEN=
+```
+
+`POC_DATAHUB_ALLOW_NO_TOKEN=true`는 PREP이나 OPS에서 절대 설정하지 않습니다. PREP·OPS 배포는 항상 `DATAHUB_GMS_TOKEN`을 설정하며, 이 플래그는 무관합니다. 기본값은 `false`(fail-closed)이며 Compose가 `.env` 파일에서 이 값을 컨테이너에 주입합니다.
+
 ### 별도 Airflow POC 실행
 
 Airflow를 함께 준비해야 할 때도 Web Compose와 분리해 실행합니다. 이 구성은 repository의

@@ -271,7 +271,12 @@ if [ ! -e deploy/poc/.env ]; then
   cp deploy/poc/.env.example deploy/poc/.env
 fi
 # 현재 POC 계약에서는 ignored .env에 non-secret config와 credential을 입력한다.
-export POC_SOURCE_COMMIT="$(git rev-parse HEAD)"
+# POC_SOURCE_COMMIT에는 아래 exact SHA를 기록한 뒤 검증한다. Compose의
+# shell-environment 우선순위가 selected env-file authority를 덮지 않게 export하지 않는다.
+expected_source_commit="$(git rev-parse HEAD)"
+env_source_commit="$(sed -n 's/^POC_SOURCE_COMMIT=//p' deploy/poc/.env | tail -1)"
+test "$env_source_commit" = "$expected_source_commit"
+unset POC_SOURCE_COMMIT
 
 # A. DataHub와 같은 Docker host/external Docker network를 사용
 compose_files=(
@@ -286,7 +291,7 @@ docker compose --env-file deploy/poc/.env "${compose_files[@]}" build web
 image_id="$(docker compose --env-file deploy/poc/.env "${compose_files[@]}" images -q web)"
 image_revision="$(docker image inspect \
   --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id")"
-test "$POC_SOURCE_COMMIT" = "$image_revision"
+test "$expected_source_commit" = "$image_revision"
 docker compose --env-file deploy/poc/.env "${compose_files[@]}" up -d
 curl -fsS http://127.0.0.1:39080/healthz
 test "$(curl -sS -o /dev/null -w '%{http_code}' \
@@ -320,8 +325,9 @@ password와 session cookie는 shell history, log 또는 evidence에 기록하지
 
 A의 overlay는 이미 존재하는 `${DATAHUB_EXTERNAL_NETWORK}`를 연결하며
 DataHub/Kafka/Registry를 생성하거나 재시작하지 않는다. B에서는 overlay를 붙이지 않는다.
-shell-exported exact SHA가 `.env`의 `POC_SOURCE_COMMIT` placeholder를 override하므로 build마다 `.env`의
-이전 SHA를 수정하지 않는다.
+exact SHA는 build마다 ignored `.env`의 `POC_SOURCE_COMMIT`에 기록한다. shell export로 이를 override하지
+않는다. 기본 POC의 bounded Web rebuild/recreate에는 selected env file의 key를 shell environment에서
+제외하는 `./scripts/run_poc.sh web-restart`를 우선 사용한다.
 
 ### 7.2 기존 PostgreSQL volume schema 적용
 
@@ -342,14 +348,17 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
 ```bash
 set -eu
 git pull --ff-only origin dev
-export POC_SOURCE_COMMIT="$(git rev-parse HEAD)"
+expected_source_commit="$(git rev-parse HEAD)"
+env_source_commit="$(sed -n 's/^POC_SOURCE_COMMIT=//p' deploy/poc/.env | tail -1)"
+test "$env_source_commit" = "$expected_source_commit"
+unset POC_SOURCE_COMMIT
 # A(same Docker host):
 compose_files=(-f deploy/poc/docker-compose.poc.yaml -f deploy/poc/docker-compose.datahub-provider.yaml)
 # B(remote DNS/TCP)에서는 위 배열 대신:
 # compose_files=(-f deploy/poc/docker-compose.poc.yaml)
 docker compose --env-file deploy/poc/.env "${compose_files[@]}" build web
 image_id="$(docker compose --env-file deploy/poc/.env "${compose_files[@]}" images -q web)"
-test "$POC_SOURCE_COMMIT" = "$(docker image inspect \
+test "$expected_source_commit" = "$(docker image inspect \
   --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id")"
 docker compose --env-file deploy/poc/.env "${compose_files[@]}" up -d --no-deps web
 curl -fsS http://127.0.0.1:39080/healthz
@@ -368,14 +377,17 @@ docker compose --env-file deploy/poc/.env -f deploy/poc/docker-compose.poc.yaml 
 
 # exact 이전 SHA로 application-only rollback
 git checkout PREVIOUS_APPROVED_SHA
-export POC_SOURCE_COMMIT="$(git rev-parse HEAD)"
+expected_source_commit="$(git rev-parse HEAD)"
+env_source_commit="$(sed -n 's/^POC_SOURCE_COMMIT=//p' deploy/poc/.env | tail -1)"
+test "$env_source_commit" = "$expected_source_commit"
+unset POC_SOURCE_COMMIT
 # A(same Docker host):
 compose_files=(-f deploy/poc/docker-compose.poc.yaml -f deploy/poc/docker-compose.datahub-provider.yaml)
 # B(remote DNS/TCP)에서는 위 배열 대신:
 # compose_files=(-f deploy/poc/docker-compose.poc.yaml)
 docker compose --env-file deploy/poc/.env "${compose_files[@]}" build web
 image_id="$(docker compose --env-file deploy/poc/.env "${compose_files[@]}" images -q web)"
-test "$POC_SOURCE_COMMIT" = "$(docker image inspect \
+test "$expected_source_commit" = "$(docker image inspect \
   --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$image_id")"
 docker compose --env-file deploy/poc/.env "${compose_files[@]}" up -d --no-deps web
 ```

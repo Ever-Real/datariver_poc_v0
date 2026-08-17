@@ -28,6 +28,11 @@ LISTEN_HOST = "127.0.0.1"
 LISTEN_PORT = 11435
 MODEL_IDENTITY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}")
 MODEL_BLOB = re.compile(r"sha256-[0-9a-f]{64}")
+# Bounded ubatch range accepted by this manager. The installed llama-server exposes
+# --ubatch-size and the matching LLAMA_ARG_UBATCH environment variable.
+# 1024 is the confirmed stable DEV value; 512 is the llama.cpp default.
+UBATCH_MIN = 64
+UBATCH_MAX = 4096
 
 
 class ServiceError(RuntimeError):
@@ -55,6 +60,30 @@ def _required_model(value: object) -> str:
         raise ServiceError(
             "An exact installed reranker model must be selected with --model or "
             "LOCAL_LLAMA_CPP_RERANKER_MODEL."
+        )
+    return value
+
+
+def _resolve_ubatch() -> int:
+    """Read LLAMA_ARG_UBATCH from the environment, validate, and return as int.
+
+    run_poc.sh injects this from the selected env file to prevent shell-env drift.
+    When absent (legacy or direct invocation), the llama.cpp default of 512 is used
+    so that existing processes are not invalidated on first probe-only calls.
+    """
+    raw = os.environ.get("LLAMA_ARG_UBATCH", "").strip()
+    if not raw:
+        return 512  # llama.cpp compiled default; safe for legacy state transition
+    try:
+        value = int(raw)
+    except ValueError as error:
+        raise ServiceError(
+            f"LLAMA_ARG_UBATCH must be an integer between {UBATCH_MIN} and {UBATCH_MAX}."
+        ) from error
+    if not UBATCH_MIN <= value <= UBATCH_MAX:
+        raise ServiceError(
+            f"LLAMA_ARG_UBATCH={value} is out of the supported range "
+            f"[{UBATCH_MIN}, {UBATCH_MAX}]."
         )
     return value
 
@@ -115,7 +144,7 @@ def _read_pid() -> int | None:
     return value if value > 1 else None
 
 
-def _read_managed_state() -> tuple[str, Path] | None:
+def _read_managed_state() -> tuple[str, Path, int | None] | None:
     if not STATE_FILE.is_file() or STATE_FILE.is_symlink():
         return None
     try:
@@ -142,7 +171,17 @@ def _read_managed_state() -> tuple[str, Path] | None:
         or not any(resolved.is_relative_to(root) for root in _model_store_roots())
     ):
         return None
-    return model, resolved
+    # Legacy state files written before ubatch support have no "ubatch" key and
+    # launched llama-server without an explicit CLI option. Preserve that distinction
+    # so the old process can be ownership-checked and stopped once before replacement.
+    raw_ubatch = payload.get("ubatch")
+    if raw_ubatch is None:
+        return model, resolved, None
+    if not isinstance(raw_ubatch, int) or isinstance(raw_ubatch, bool):
+        return None
+    if not UBATCH_MIN <= raw_ubatch <= UBATCH_MAX:
+        return None
+    return model, resolved, raw_ubatch
 
 
 def _read_managed_model() -> str | None:
@@ -164,7 +203,13 @@ def _process_command(pid: int) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
-def _owned_process(pid: int, *, model: str, model_blob: Path) -> bool:
+def _owned_process(
+    pid: int,
+    *,
+    model: str,
+    model_blob: Path,
+    ubatch: int | None,
+) -> bool:
     command = _process_command(pid)
     try:
         arguments = shlex.split(command)
@@ -186,6 +231,19 @@ def _owned_process(pid: int, *, model: str, model_blob: Path) -> bool:
         index = indexes[0]
         if index + 1 >= len(arguments) or arguments[index + 1] != expected:
             return False
+    ubatch_indexes = [
+        index for index, value in enumerate(arguments) if value == "--ubatch-size"
+    ]
+    if ubatch is None:
+        if ubatch_indexes or "-ub" in arguments:
+            return False
+    elif (
+        len(ubatch_indexes) != 1
+        or ubatch_indexes[0] + 1 >= len(arguments)
+        or arguments[ubatch_indexes[0] + 1] != str(ubatch)
+        or "-ub" in arguments
+    ):
+        return False
     return arguments.count("--reranking") == 1 and arguments.count("--no-webui") == 1
 
 
@@ -255,7 +313,7 @@ def _prepare_runtime_directory() -> None:
             raise ServiceError("A local reranker managed file cannot be a symbolic link.")
 
 
-def _write_managed_state(*, model: str, model_blob: Path) -> None:
+def _write_managed_state(*, model: str, model_blob: Path, ubatch: int) -> None:
     STATE_FILE.write_text(
         json.dumps(
             {
@@ -264,6 +322,7 @@ def _write_managed_state(*, model: str, model_blob: Path) -> None:
                 "model_blob": os.fspath(model_blob),
                 "port": LISTEN_PORT,
                 "reranking": True,
+                "ubatch": ubatch,
             },
             sort_keys=True,
         )
@@ -284,8 +343,8 @@ def _stop_owned_process() -> bool:
     state = _read_managed_state()
     if state is None:
         raise ServiceError("The recorded local reranker state is invalid.")
-    model, model_blob = state
-    if not _owned_process(pid, model=model, model_blob=model_blob):
+    model, model_blob, ubatch = state
+    if not _owned_process(pid, model=model, model_blob=model_blob, ubatch=ubatch):
         raise ServiceError("The recorded PID is not the managed llama-server process.")
     try:
         os.kill(pid, signal.SIGTERM)
@@ -307,14 +366,15 @@ def _stop_owned_process() -> bool:
 def _start(model: str) -> dict[str, object]:
     if sys.platform != "darwin":
         raise ServiceError("The local llama.cpp reranker service is supported only on macOS.")
+    ubatch = _resolve_ubatch()
     _prepare_runtime_directory()
     model_blob = _resolve_model_blob(model)
     pid = _read_pid()
     if pid is not None:
-        if not _owned_process(pid, model=model, model_blob=model_blob):
+        if not _owned_process(pid, model=model, model_blob=model_blob, ubatch=ubatch):
             _stop_owned_process()
         else:
-            _write_managed_state(model=model, model_blob=model_blob)
+            _write_managed_state(model=model, model_blob=model_blob, ubatch=ubatch)
             return _probe(model)
     llama_server = shutil.which("llama-server")
     if llama_server is None:
@@ -332,6 +392,8 @@ def _start(model: str) -> dict[str, object]:
         LISTEN_HOST,
         "--port",
         str(LISTEN_PORT),
+        "--ubatch-size",
+        str(ubatch),
         "--no-webui",
     )
     with STDOUT_FILE.open("ab") as stdout, STDERR_FILE.open("ab") as stderr:
@@ -345,7 +407,7 @@ def _start(model: str) -> dict[str, object]:
         )
     PID_FILE.write_text(f"{process.pid}\n", encoding="utf-8")
     PID_FILE.chmod(0o600)
-    _write_managed_state(model=model, model_blob=model_blob)
+    _write_managed_state(model=model, model_blob=model_blob, ubatch=ubatch)
     last_error: ServiceError | None = None
     for _attempt in range(120):
         if process.poll() is not None:
@@ -387,8 +449,8 @@ def main() -> int:
             return 1
         if pid is None or state is None:
             raise ServiceError("The local reranker PID/state pair is incomplete.")
-        managed_model, model_blob = state
-        if not _owned_process(pid, model=managed_model, model_blob=model_blob):
+        managed_model, model_blob, ubatch = state
+        if not _owned_process(pid, model=managed_model, model_blob=model_blob, ubatch=ubatch):
             raise ServiceError("The recorded PID is not the managed llama-server process.")
         model = _required_model(arguments.model or managed_model)
         if model != managed_model:

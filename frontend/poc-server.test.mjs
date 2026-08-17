@@ -83,6 +83,47 @@ test('allows Compose-only Neo4j credentials when npm mode has no Neo4j URL', () 
   assert.equal(result.status, 0, result.stderr)
 })
 
+test('DataHub GMS URL without token is rejected when POC_DATAHUB_ALLOW_NO_TOKEN is not set', () => {
+  // Default is fail-closed: a URL without a token must throw at startup.
+  const result = spawnSync(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    "await import('./poc-server.mjs?datahub-no-token-fail-closed')",
+  ], {
+    cwd: new URL('.', import.meta.url),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      DATAHUB_GMS_URL: 'http://127.0.0.1:18080',
+      DATAHUB_GMS_TOKEN: '',
+      POC_DATAHUB_ALLOW_NO_TOKEN: 'false',
+    },
+  })
+  assert.notEqual(result.status, 0, 'expected startup to fail without a token')
+  assert.match(result.stderr, /DATAHUB_GMS_TOKEN/)
+})
+
+test('DataHub GMS URL without token is accepted when POC_DATAHUB_ALLOW_NO_TOKEN=true', () => {
+  // DEV-local explicit opt-in for an auth-disabled local GMS.
+  const result = spawnSync(process.execPath, [
+    '--input-type=module',
+    '--eval',
+    "await import('./poc-server.mjs?datahub-no-token-permitted')",
+  ], {
+    cwd: new URL('.', import.meta.url),
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      DATAHUB_GMS_URL: 'http://127.0.0.1:18080',
+      DATAHUB_GMS_TOKEN: '',
+      POC_DATAHUB_ALLOW_NO_TOKEN: 'true',
+    },
+  })
+  assert.equal(result.status, 0, result.stderr)
+})
+
+
+
 test('defaults the native Node listener to loopback and preserves an explicit container override', async () => {
   const { resolvePocServerHost } = await import('./poc-server.mjs?listener-host-contract-test')
   assert.equal(resolvePocServerHost({}), '127.0.0.1')
@@ -235,6 +276,7 @@ test('bounds an unavailable Redis startup and retries after a cold-start Postgre
           POC_REDIS_URL: 'redis://127.0.0.1:' + redisAddress.port,
           DATAHUB_GMS_URL: providerUrl,
           DATAHUB_GMS_TOKEN: '',
+          POC_DATAHUB_ALLOW_NO_TOKEN: 'true',
         })
         let postgresQueries = 0
         const databasePool = {

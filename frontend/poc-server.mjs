@@ -184,7 +184,13 @@ function tokenProvider(prefix, urlName, { allowMissingToken = false } = {}) {
   return url ? { url, token } : undefined
 }
 
-const datahub = tokenProvider('DATAHUB_GMS', 'DATAHUB_GMS_URL', { allowMissingToken: true })
+// POC_DATAHUB_ALLOW_NO_TOKEN=true is a DEV-only explicit opt-in that permits a locally
+// auth-disabled GMS to run without a token. It must not be set in PREP or OPS environments.
+// Omitting or setting it to false (the default) enforces fail-closed: a GMS URL without a
+// token is rejected at startup. PREP/OPS deployments always set DATAHUB_GMS_TOKEN so this
+// flag is irrelevant in those environments and their secret-file contract is unchanged.
+const datahubAllowNoToken = enabled('POC_DATAHUB_ALLOW_NO_TOKEN')
+const datahub = tokenProvider('DATAHUB_GMS', 'DATAHUB_GMS_URL', { allowMissingToken: datahubAllowNoToken })
 const datahubCacheScope = datahub ? sha256(datahub.url).slice(0, 16) : 'disabled'
 const datahubInventoryCacheKey = `datahub-inventory-v5:${datahubCacheScope}`
 const datahubInventoryStateScope = `catalog-inventory-v1:${datahubCacheScope}`
