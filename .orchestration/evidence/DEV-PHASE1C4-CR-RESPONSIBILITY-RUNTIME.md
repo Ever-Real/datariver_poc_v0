@@ -2,9 +2,11 @@
 
 ## Identity and scope
 
-- Fresh observation: `2026-08-17T10:24:44+09:00` (`Asia/Seoul`)
-- Product SHA: `65ca6349cc6f3c81a1ef75a48a7bb2b47e5a66c9`
-- Deployed OCI revision: `65ca6349cc6f3c81a1ef75a48a7bb2b47e5a66c9`
+- Fresh observation: `2026-08-17T10:59:11+09:00` (`Asia/Seoul`)
+- Product SHA: `773cd37e6d48cbba02c999380fe1965a3b9f4e26`
+- PHASE 1C-4 implementation commit: `65ca6349cc6f3c81a1ef75a48a7bb2b47e5a66c9`
+- Browser-origin hardening commit: `773cd37e6d48cbba02c999380fe1965a3b9f4e26`
+- Deployed OCI revision: `773cd37e6d48cbba02c999380fe1965a3b9f4e26`
 - Runtime: `datariver-poc-web-1`, image `datariver-poc:local`, health `healthy`
 - Environment: authoritative local DEV only; PREP/OPS were not read or mutated
 - Git/release: no push, merge, publication, G1/G2/G3/G4, migration, schema change or legacy deletion
@@ -28,6 +30,9 @@ provider readiness.
   No historical or wrong-runtime PASS was reused.
 - Fresh independent Node POC validation: recorded below after direct source/runtime recheck; no
   Product or DEV data mutation was delegated to the Validator.
+- The final fresh Validator checked the exact Product SHA
+  `773cd37e6d48cbba02c999380fe1965a3b9f4e26`, a clean worktree, the exact deployed OCI revision,
+  local/deployed checksums, current Node sources and live DEV HTTP behavior. It returned PASS.
 
 ## Implemented authorization contract
 
@@ -88,7 +93,11 @@ policy, exact Table-to-System mapping and request-time principal.
 | Command / probe | Fresh result |
 |---|---|
 | `npm run test:poc-server` | PASS — 92/92 Node tests |
-| `npm test` | PASS — 87 files, 591 tests |
+| `npm test` | PASS — 87 files, 592/592 tests on the final clean rerun |
+| `node --test poc-server.auth.test.mjs` | PASS — 9/9 focused auth/origin tests |
+| focused browser auth adapter | PASS — 10/10 tests |
+| fresh Validator focused Node tests | PASS — 46/46 |
+| fresh Validator focused frontend tests | PASS — 3 files, 37/37 |
 | `npm run lint` | PASS |
 | `npm run typecheck` | PASS |
 | `npm run build:poc` | PASS; existing `>500 kB` advisory remains |
@@ -101,6 +110,29 @@ policy, exact Table-to-System mapping and request-time principal.
 Focused Node tests cover current Table/grant/grade/policy/exact mapping create, wrong System,
 priority-independent actions, Manager lane, Admin denial, actor spoof, legacy reads, stale CAS,
 concurrent same-lane writers and exactly-once completion.
+
+The first full frontend attempt encountered one unrelated Governance timing failure. The same test
+passed in isolation, and the final clean full-suite rerun passed all 592 tests. No historical PASS
+was substituted for the final rerun.
+
+## Browser login root cause and hardening
+
+- The same frozen inspection credential succeeded through the actual Orca browser at the canonical
+  DEV origin `http://127.0.0.1:39083`: login POST 200, browser cookie persistence, `/auth/me` 200,
+  Admin menu/page visibility and hard-reload persistence all passed.
+- The same credential failed only when the browser opened `http://localhost:39083`: the server
+  correctly returned `403 ORIGIN_FORBIDDEN`, because `localhost` and `127.0.0.1` are different
+  origins and the canonical public origin is exact.
+- The credential was not reset. Origin, CSRF, cookie and password controls were not weakened.
+- Noncanonical browser GET/HEAD requests now return a no-store 307 redirect to the configured
+  canonical public origin while preserving path/query. State-changing requests are never
+  redirected; a wrong-Origin login POST remains 403.
+- The SPA now explains exact `ORIGIN_FORBIDDEN` failures with the configured DEV address instead of
+  mislabeling them as a credential failure. Other login errors retain the generic response.
+- Final live probes: canonical GET 200, noncanonical GET 307, wrong-Origin login POST 403. The
+  current deployed OCI revision exactly matches the Product SHA.
+- Status is `SERVER_VERIFIED` and `BROWSER_FLOW_VERIFIED`; the user's own successful retry remains
+  `USER_CONFIRMATION_PENDING` and is not inferred from an active session.
 
 ## DEV representative runtime matrix
 
@@ -127,14 +159,17 @@ disabled, sessions revoked, active grants removed and temporary exact mappings r
   is explicitly excluded from validation cleanup.
 - The plaintext temporary password was handed to the user once outside this evidence and was
   removed from external secret files. It is not recoverable from Git, this evidence or the dashboard.
+- A final read-only database observation confirmed `failed_attempts=0`, no active lock and one
+  non-revoked unexpired session. That session was not revoked because the inspection account is not
+  a validation dummy; its owner cannot be inferred from the row alone.
 
 ## Sanitized final DEV observation
 
 - local credentials: 63 historical rows; 1 enabled (inspection Admin)
-- local sessions: 94 historical rows; 0 active
+- local sessions: 97 historical rows; 1 active at the final read-only observation
 - User-to-Table grants: 20 historical rows; 0 active
 - exact Table-to-System mappings: version 6; 0 active
-- access/core versions: 114 / 152
+- access document version: 114
 - core Change Requests: 2 (including the retained completed validation CR)
 - MCL ledger/checkpoints/CR links/sources: 46 / 2 / 4 / 2, unchanged
 - feature policy: version 6; fixed 120 cells, unchanged
@@ -162,6 +197,9 @@ disabled, sessions revoked, active grants removed and temporary exact mappings r
 - Historical CRs remain compatibility-read-only on the new server command boundary. A separate
   conversion contract would require explicit product approval; history was not rewritten here.
 - Existing Vite chunk-size, provider/vector/GX and reproducible deployment backlogs are unchanged.
+- During final validation, explicitly identified multi-hour/day-old orphan Node test processes were
+  terminated without touching Product/container processes. The final full suite then completed on
+  one clean coordinator run.
 
 ## Canonical status
 

@@ -42,8 +42,8 @@ local credential / opaque server session
 → feature operation
 ```
 
-Product boundary `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa` is validated by
-`.orchestration/evidence/DEV-PHASE1B-CENTRAL-AUTHORIZATION-RUNTIME.md` and its matching receipt.
+Current Product boundary `773cd37e6d48cbba02c999380fe1965a3b9f4e26` is validated through
+`.orchestration/evidence/DEV-PHASE1C4-CR-RESPONSIBILITY-RUNTIME.md` and the preceding phase evidence.
 The preceding PHASE 1A runtime evidence is commit
 `8c1f93a456d0fe51e46987b72d66f563f6467d73`. These local commits have not been published;
 `origin/dev` remains `ef41447a1d470119c1a83280e261d4be411354ef` until a future G1/G2 approval.
@@ -56,16 +56,17 @@ The preceding PHASE 1A runtime evidence is commit
 | AUTH-1C-1 | `COMPLETE_RUNTIME_VERIFIED` | Product `60f5f270a56130f2ed96236d9286d0903e3360db`: System name/description update and archive preserve stable identity/history. Exact DataHub `TABLE` URN N:M System pairs use bounded `poc_state` CAS; PATCH synchronously confirms the current provider inventory and rejects deleted/type-changed/unavailable identities before CAS. Backend, Admin UI, runtime and fresh Validator checks passed with zero active validation mappings, credentials or sessions. Evidence: `.orchestration/evidence/DEV-PHASE1C1-TABLE-SYSTEM-RUNTIME.md`. |
 | AUTH-1C-2 | `COMPLETE_RUNTIME_VERIFIED` | Product `f78f30fbcf0a5468ec2ce9893d06825ddd030369`: one exact `(subject_id, table_urn)` domain relation avoids access-CAS bloat; the access document retains Role/System authority and adds only `max_security_grade`. Admin user/grade/grant/Responsible-System/credential/session API and UI, targeted current-Table fail-closed validation, two-user isolation, spoof/401/403/404 negatives, credential cleanup, exact image revision and full regression are DEV-runtime verified. Evidence: `.orchestration/evidence/DEV-PHASE1C2-USER-TABLE-ACCESS-RUNTIME.md`. |
 | AUTH-1C-3 | `COMPLETE_RUNTIME_VERIFIED` | Product `9df97f4975a990819db655b74b09e709dc6d5aad`: fixed 8-feature × 5-role × 3-grade (120-cell) CAS management policy, exact Admin API/UI, immutable Admin allow and role-ineligible deny, stale-CAS/shape negatives, real browser verification and fresh AGY Validator passed. PHASE 1D enforcement remains explicitly inactive. Evidence: `.orchestration/evidence/DEV-PHASE1C3-SECURITY-HARDENING-RUNTIME.md`. |
-| AUTH-1C-4 | `BACKLOG` | Read-only gap discovery is complete at Product `9df97f4975a990819db655b74b09e709dc6d5aad`: the current CR lifecycle is browser-side and persists through the coarse core-state CAS gateway, uses a compatibility actor and represents final authorities in one approval record. The next bounded mutation is a request-principal server command seam with one exact `responsible_system`, Table-access-gated create, Developer/Steward workflow actions and independent Developer/Steward/Manager final lanes. Preserve historical schema-routing and approval hashes. Evidence: `.orchestration/evidence/DEV-PHASE1C4-1D-READONLY-DISCOVERY.md`. |
-| AUTH-1D | `BACKLOG` | Read-only enforcement discovery is complete at Product `9df97f4975a990819db655b74b09e709dc6d5aad`. Catalog local search/tree/count have reusable pre-filter seams, but the decision still uses legacy Responsible-System scope; vector filters after ranking, Neo4j traverses before authorization, and browser/core-backed features need server Table-reference validation. Enforce explicit Table grant + exact order `normal < credential < restricted` + fixed matrix before search/count/ranking/context/traversal. Evidence: `.orchestration/evidence/DEV-PHASE1C4-1D-READONLY-DISCOVERY.md`. |
+| AUTH-1C-4 | `COMPLETE_RUNTIME_VERIFIED` | Product `773cd37e6d48cbba02c999380fe1965a3b9f4e26`: request-principal CR commands now require a current exact Table, explicit grant/grade/fixed Change policy for non-Admin creation, one exact responsible System, current Developer/Data Steward workflow assignment and independent Developer/Data Steward/Manager final lanes. Admin cannot silently satisfy a lane; concurrent completion uses the existing core CAS; legacy CRs remain read-compatible and mutation-protected. The same Product also redirects noncanonical browser GETs to the configured DEV origin without weakening wrong-Origin mutation denial. Evidence: `.orchestration/evidence/DEV-PHASE1C4-CR-RESPONSIBILITY-RUNTIME.md`. |
+| AUTH-1D | `PARTIAL` | Fresh read-only enforcement audit is complete against the PHASE 1C-4 source. Existing grants, grade helper, fixed 120-cell policy and 15 capabilities are reusable. General Catalog visibility still incorrectly uses Responsible-System/schema scope; vector still filters after ranking; Neo4j traverses before authorization; deleted assets, provider counts and unbound Knowledge/Governance blobs have explicit fail-closed/provenance gaps. Current bounded mutation is one request-time Table decision plus Catalog/Search/Vector/Chat prefiltering, with no new table/framework. |
 | AUTH-1E | `BACKLOG` | Retire only proven legacy auth active paths after the replacement remains runtime-verified. Preserve reusable Knowledge/Quality/Chat code, schema history and `UNKNOWN` references. |
 | AUTH-1F | `BACKLOG` | Complete multi-account personal history/draft/Chat-stream isolation, session reset/revoke acceptance, every feature regression and external network acceptance. Bounded legacy authorship placeholders are not authorization authority but remain part of this acceptance. |
 | AUTH-NET | `TARGET_RECHECK_REQUIRED` | DEV Web and supporting owned ports are loopback/private and local inspection passes. A real second-host negative connectivity probe is still required; do not claim public-network isolation from bind inspection alone. |
 | ACCOUNT-AUTH | `PARTIAL` | PHASE 1A and the PHASE 1B technical baseline are runtime-verified; latest-policy data authorization, 1C–1F and the remote network target remain open. |
 
-The Account/Auth validation credentials were validation-only: all credentials are disabled and all
-sessions revoked after the current role/System/grade matrix run. Access users and historical references remain;
-synthetic `checkpoint-*` users have no credential. Current Scheduler/MCL deployment readiness is
+Account/Auth validation credentials were disabled and their sessions revoked after each matrix run.
+The separate DEV inspection `admin` credential remains intentionally enabled, active and excluded
+from validation cleanup. Access users and historical references remain; synthetic `checkpoint-*`
+users have no credential. Current Scheduler/MCL deployment readiness is
 separate: Scheduler is disabled and required MCL bindings are `0/9`, so it remains
 `TARGET_RECHECK_REQUIRED` without mutating the frozen ledger/checkpoints.
 
@@ -435,8 +436,8 @@ evidence, not inferred from this table):
 |---|---|---|
 | PHASE 1C-2H | `COMPLETE_RUNTIME_VERIFIED` | Product `9df97f4975a990819db655b74b09e709dc6d5aad`: canonical grade/current-Table helper, concurrent last-Admin CAS invariant, atomic password-reset session revocation, exact-first mapping resolver and fresh runtime/Validator evidence passed |
 | PHASE 1C-3 | `COMPLETE_RUNTIME_VERIFIED` | Product `9df97f4975a990819db655b74b09e709dc6d5aad`: fixed 120-cell management state/API/UI and POC gateway forwarding passed full source tests, DEV runtime, real browser and fresh Validator; PHASE 1D enforcement explicitly not active |
-| PHASE 1C-4 | `BACKLOG` | Read-only gap discovery complete; current browser/core lifecycle requires a bounded request-principal server command seam, exact responsible-System and three-lane completion approval alignment. Product mutation is held at the phase boundary. |
-| PHASE 1D | `BACKLOG` | Read-only surface discovery complete; explicit grant + grade + fixed matrix must be enforced before search/ranking/context/traversal, including vector SQL and Neo4j. Product mutation is held at the phase boundary. |
+| PHASE 1C-4 | `COMPLETE_RUNTIME_VERIFIED` | Product `773cd37e6d48cbba02c999380fe1965a3b9f4e26`: exact responsible-System, request-principal workflow commands, independent three-lane completion, concurrency/legacy-read compatibility and canonical browser-origin hardening passed source, DEV runtime, browser and fresh Validator gates. |
+| PHASE 1D | `PARTIAL` | Fresh source audit complete. The approved current Product slice is a bounded Table decision plus Catalog/Search/Vector/Chat pre-retrieval enforcement; provider/graph/deleted-grade and coarse core-document limits remain explicit risks. |
 
 ### EPIC: MODULAR_PRODUCT_ARCHITECTURE (`P1`)
 
