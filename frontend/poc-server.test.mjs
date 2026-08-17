@@ -46,6 +46,67 @@ after(async () => {
   await new Promise((resolvePromise, reject) => server.close((error) => error ? reject(error) : resolvePromise()))
 })
 
+test('normalizes only controlled DataHub manual-metadata read-back fields', async () => {
+  const { manualMetadataAspectComparableDocument } = await import('./poc-server.mjs?manual-metadata-readback-contract')
+  const auditStamp = { actor: 'urn:li:corpuser:datahub', time: 1 }
+
+  assert.deepEqual(
+    manualMetadataAspectComparableDocument('domains', {}, { observed: true, absent: true }),
+    { domains: [] },
+  )
+  assert.deepEqual(
+    manualMetadataAspectComparableDocument('domains', { domains: [] }, { observed: true }),
+    { domains: [] },
+  )
+  assert.deepEqual(
+    manualMetadataAspectComparableDocument('glossaryTerms', {}, { observed: true, absent: true }),
+    { terms: [] },
+  )
+  assert.deepEqual(
+    manualMetadataAspectComparableDocument('glossaryTerms', { terms: [], auditStamp }, { observed: true }),
+    { terms: [] },
+  )
+  const controlledTerms = { terms: [{ urn: 'urn:li:glossaryTerm:controlled' }] }
+  assert.deepEqual(
+    manualMetadataAspectComparableDocument('glossaryTerms', {
+      ...controlledTerms,
+      auditStamp: { ...auditStamp, time: 2 },
+    }, { observed: true }),
+    manualMetadataAspectComparableDocument('glossaryTerms', controlledTerms),
+  )
+
+  for (const [aspectName, document, options] of [
+    ['domains', {}, { observed: true }],
+    ['domains', { domains: [], unexpected: true }, { observed: true }],
+    ['glossaryTerms', { terms: [] }, { observed: true }],
+    ['glossaryTerms', { terms: 'invalid', auditStamp }, { observed: true }],
+    ['glossaryTerms', { terms: [], auditStamp, unexpected: true }, { observed: true }],
+    ['glossaryTerms', { terms: [], auditStamp: { actor: 'invalid', time: 1 } }, { observed: true }],
+  ]) {
+    assert.throws(
+      () => manualMetadataAspectComparableDocument(aspectName, document, options),
+      { statusCode: 502, detailCode: 'DATAHUB_READBACK_MALFORMED' },
+    )
+  }
+
+  const otherAspect = { description: 'controlled', auditStamp }
+  assert.deepEqual(
+    manualMetadataAspectComparableDocument('datasetProperties', otherAspect, { observed: true }),
+    otherAspect,
+  )
+  assert.notStrictEqual(
+    manualMetadataAspectComparableDocument('datasetProperties', otherAspect, { observed: true }),
+    otherAspect,
+  )
+  assert.notDeepEqual(
+    manualMetadataAspectComparableDocument('datasetProperties', otherAspect, { observed: true }),
+    manualMetadataAspectComparableDocument('datasetProperties', {
+      ...otherAspect,
+      auditStamp: { ...auditStamp, time: 2 },
+    }, { observed: true }),
+  )
+})
+
 test('serves the POC at the root with the runtime boundary', async () => {
   const response = await fetch(origin)
   assert.equal(response.status, 200)

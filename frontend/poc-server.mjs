@@ -1527,6 +1527,65 @@ function canonicalHash(value) {
   return sha256(canonicalJson(value))
 }
 
+function malformedDatahubReadback(aspectName) {
+  return Object.assign(new Error(`DataHub ${aspectName} read-back is malformed.`), {
+    statusCode: 502,
+    detailCode: 'DATAHUB_READBACK_MALFORMED',
+  })
+}
+
+function plainDocument(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const prototype = Object.getPrototypeOf(value)
+  return prototype === Object.prototype || prototype === null
+}
+
+function validAuditStamp(value) {
+  if (!plainDocument(value)) return false
+  const allowedKeys = new Set(['actor', 'time', 'impersonator', 'message'])
+  if (Object.keys(value).some((key) => !allowedKeys.has(key))) return false
+  if (typeof value.actor !== 'string' || !value.actor.startsWith('urn:li:')) return false
+  if (!Number.isSafeInteger(value.time) || value.time < 0) return false
+  return ['impersonator', 'message'].every((key) => (
+    !(key in value) || value[key] === null || typeof value[key] === 'string'
+  ))
+}
+
+export function manualMetadataAspectComparableDocument(aspectName, document, {
+  observed = false,
+  absent = false,
+} = {}) {
+  if (!plainDocument(document)) throw malformedDatahubReadback(aspectName)
+  if (absent) {
+    if (!observed || Object.keys(document).length !== 0) throw malformedDatahubReadback(aspectName)
+    if (aspectName === 'domains') return { domains: [] }
+    if (aspectName === 'glossaryTerms') return { terms: [] }
+    return structuredClone(document)
+  }
+  if (aspectName === 'domains') {
+    const keys = Object.keys(document)
+    if (keys.length !== 1 || keys[0] !== 'domains' || !Array.isArray(document.domains)) {
+      throw malformedDatahubReadback(aspectName)
+    }
+    return structuredClone(document)
+  }
+  if (aspectName === 'glossaryTerms') {
+    const keys = Object.keys(document)
+    if (!keys.includes('terms') || !Array.isArray(document.terms)
+        || keys.some((key) => key !== 'terms' && key !== 'auditStamp')
+        || ('auditStamp' in document && !validAuditStamp(document.auditStamp))
+        || (observed && !('auditStamp' in document))) {
+      throw malformedDatahubReadback(aspectName)
+    }
+    return { terms: structuredClone(document.terms) }
+  }
+  return structuredClone(document)
+}
+
+function manualMetadataAspectHash(aspectName, document, options) {
+  return canonicalHash(manualMetadataAspectComparableDocument(aspectName, document, options))
+}
+
 async function datahubReadAspect(urn, aspectName) {
   if (!datahub || !allowedDataHubAspects.has(aspectName)) {
     throw Object.assign(new Error('DataHub aspect is not configured or allowlisted.'), { statusCode: 503 })
@@ -1575,7 +1634,12 @@ async function datahubApplyAspect(urn, aspectName, document, idempotencyKey) {
   await requireOk(response, `DataHub ${aspectName} write`)
   const confirmation = await response.json().catch(() => ({}))
   const observed = await datahubReadAspect(urn, aspectName)
-  if (canonicalHash(observed.document) !== canonicalHash(document)) {
+  const expectedHash = manualMetadataAspectHash(aspectName, document)
+  const observedHash = manualMetadataAspectHash(aspectName, observed.document, {
+    observed: true,
+    absent: observed.version === 'absent',
+  })
+  if (observedHash !== expectedHash) {
     throw Object.assign(new Error(`DataHub ${aspectName} read-back did not match the applied document.`), {
       statusCode: 502,
       detailCode: 'DATAHUB_READBACK_MISMATCH',
@@ -1583,8 +1647,8 @@ async function datahubApplyAspect(urn, aspectName, document, idempotencyKey) {
   }
   await invalidateDatahubCaches(urn)
   return {
-    expected_hash: canonicalHash(document),
-    observed_hash: canonicalHash(observed.document),
+    expected_hash: expectedHash,
+    observed_hash: observedHash,
     provider_version: observed.version,
     provider_response_hash: sha256(JSON.stringify(confirmation)),
   }
@@ -1675,9 +1739,13 @@ async function applyManualMetadata(body) {
   const reports = []
   for (const [index, [aspectName, mutate]] of aspectInputs.entries()) {
     const current = await datahubReadAspect(urn, aspectName)
-    const beforeHash = canonicalHash(current.document)
+    const beforeHash = manualMetadataAspectHash(aspectName, current.document, {
+      observed: true,
+      absent: current.version === 'absent',
+    })
     const expected = await mutate(structuredClone(current.document))
-    if (beforeHash === canonicalHash(expected)) {
+    const expectedHash = manualMetadataAspectHash(aspectName, expected)
+    if (beforeHash === expectedHash) {
       reports.push({
         aspect_name: aspectName, aspect_ordinal: index + 1,
         outcome: 'ALREADY_MATCHED', before_hash: beforeHash,
