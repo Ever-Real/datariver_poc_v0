@@ -29,7 +29,8 @@
 - PHASE 1C-3 fixed feature-role-grade management: `COMPLETE_RUNTIME_VERIFIED`
 - PHASE 1C-4 CR responsible-System/three-lane approval: `COMPLETE_RUNTIME_VERIFIED`
 - PHASE 1D bounded Table enforcement slice: `PARTIAL` — source and representative DEV runtime are
-  verified; external semantic-vector/AUTO and higher-grade canonical runtime remain unverified.
+  verified. Provider URL drift is diagnosed/repaired and direct contracts are healthy, but actual
+  DataHub-bound semantic-vector/AUTO and higher-grade canonical runtime remain unverified.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge/Governance and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
@@ -86,9 +87,13 @@ local credential + opaque server session
 - Representative runtime: grant/no-grant, Admin, policy, immediate grant/grade/policy changes,
   direct 404, authorized counts/facets/tree/dashboard, exact AUTO inventory/citations, direct
   lineage, non-Admin Neo4j fail-closed and unauthorized mutation 403 passed.
-- External Chat/embedding/reranker endpoints returned `NETWORK_ECONNREFUSED`. All current canonical
-  Tables are grade `normal`, so external semantic-vector/AUTO and negative higher-grade runtime
-  PASS are not claimed.
+- The former Chat/embedding/reranker `ECONNREFUSED` was container-loopback configuration drift, not
+  Table authorization. The existing DEV contracts now return direct 200 responses with the expected
+  shapes; no provider, version or service architecture was added. The Web runtime still lacks the
+  DataHub URL/token binding, so actual DataHub-bound semantic-vector/AUTO Product E2E is not claimed.
+- All 1,002 current canonical Tables remain grade `normal`; exact `credential` and `restricted` tag
+  relationships each have zero current Tables. Negative higher-grade runtime therefore remains
+  `SECURITY_GRADE_RUNTIME_SAMPLE_REQUIRED`, not PASS.
 - Web/Airflow/Neo4j/PostgreSQL/Redis/MinIO host listeners remain loopback-bound. A real second-host
   denial probe is still required.
 - MCL ledger/checkpoint/CR-link/source counts remained 46/2/4/2.
@@ -113,6 +118,23 @@ local credential + opaque server session
   completeness.
 - Quality/GX authorization seams do not establish an available Quality/GX runtime.
 
+## PHASE 1D closeout / gap reduction
+
+- Surface-level reclassification at the unchanged Product confirms local
+  Catalog/Search/Tree/Detail/autocomplete/facet/count/dashboard/Monitoring and memory-vector
+  enforcement as `COMPLETE_RUNTIME_VERIFIED`. This does not promote PHASE 1D overall.
+- Ephemeral request instrumentation at 10, 100 and the current 1,002 Tables observed one access
+  read, one grant read, one policy read and one local projection read per request, with zero
+  per-Table provider calls. Authorization lookup count is not O(Table count).
+- Neo4j has no stable exact DataHub Table URN property or PostgreSQL↔Neo4j identity map. Non-Admin
+  graph evidence remains fail-closed; canonical pre-traversal provenance is `BLOCKED` and belongs
+  in a separate Phase 4-aligned identity slice.
+- Table-bound Governance/Registration seams are source-verified. Unbound Knowledge/Governance
+  resources remain `PARTIAL`; Quality authorization seams are source-verified while GX runtime is
+  `BLOCKED`.
+- Closeout evidence:
+  `.orchestration/evidence/DEV-PHASE1D-CLOSEOUT-GAP-REDUCTION.md`.
+
 ## Gates
 
 - G1 SOURCE_MERGE: `NOT_APPROVED`
@@ -120,4 +142,6 @@ local credential + opaque server session
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
 - Current stop boundary: preserve Product `2f247107...`; do not start PHASE 1E/1F, GX, migration,
-  legacy deletion or another PHASE 1D Product slice without a new bounded authorization.
+  legacy deletion or another PHASE 1D Product slice without a new bounded authorization. The next
+  smallest gate is reviewed DEV DataHub binding plus an approved disposable higher-grade canonical
+  TABLE lifecycle; it is not authorized by this closeout.
