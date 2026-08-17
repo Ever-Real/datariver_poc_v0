@@ -680,9 +680,21 @@ export interface ChangeRequestRecord {
     occurred_at: string
     round_id: string
     authorities: Array<{
-      kind: 'SYSTEM_DEVELOPER' | 'SYSTEM_DATA_STEWARD' | 'GLOBAL_ADMIN'
+      kind: 'SYSTEM_DEVELOPER' | 'SYSTEM_DATA_STEWARD' | 'SYSTEM_MANAGER' | 'GLOBAL_ADMIN'
       system_id: string | null
     }>
+  }>
+  approval_lanes?: Array<{
+    id: string
+    stage: 'REVIEW' | 'TEST' | 'FINAL'
+    lane_kind: 'DEVELOPER' | 'DATA_STEWARD' | 'MANAGER'
+    decision: 'APPROVED'
+    actor_subject_id: string
+    actor_role: 'developer' | 'data_steward' | 'manager'
+    responsible_system_id: string
+    reason: string
+    occurred_at: string
+    round_id: string
   }>
   transitions: Array<{
     id: string

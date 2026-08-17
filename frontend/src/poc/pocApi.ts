@@ -113,6 +113,7 @@ function localDispatchCapability(path: string, method: string): PocCapability | 
       : 'catalog.manage'
   }
   if (path === '/registration' || path.startsWith('/registration/') || path.startsWith('/uploads/')) return 'catalog.execute'
+  if (path === '/change-requests/intake' && method === 'POST') return 'change.read'
   if (path === '/change-requests' || path.startsWith('/change-requests/') || path.startsWith('/change-history/')) {
     if (method === 'GET') return 'change.read'
     return /(?:review|approve|access|assignees)(?:\/|$)/.test(path)
@@ -2317,14 +2318,43 @@ class PocApiClient {
       return asset
     }
     if (path === '/change-requests/intake' && method === 'POST') {
-      const created = createChangeRequest(jsonBody(options))
-      await this.persistCore()
+      if (!runtimeFlags().pocState) {
+        const created = createChangeRequest(jsonBody(options))
+        await this.persistCore()
+        return created
+      }
+      const requestBody = jsonBody(options)
+      const targets = Array.isArray(requestBody.targets)
+        ? requestBody.targets.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object' && !Array.isArray(item))
+        : []
+      if (targets.length !== 1 || targets[0]?.kind !== 'EXISTING' || typeof targets[0]?.asset_id !== 'string') {
+        throw new Error('새 권한 경계에서는 현재 DataHub Table 한 개를 선택해 변경 요청을 등록해야 합니다.')
+      }
+      if (!this.coreEtag) throw new Error('POC core state version is unavailable. Reload and retry.')
+      const payload = {
+        table_urn: targets[0].asset_id,
+        responsible_system_id: requestBody.system_id,
+        title: requestBody.title,
+        description: requestBody.request_content,
+        change_document: changeAfterDocument(targets[0]),
+      }
+      const response = await gatewayRequestWithMeta<{ version: number; change_request: ChangeRequestRecord }>('/poc-api/change-requests', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+        headers: { 'If-Match': this.coreEtag },
+      })
+      const created = response.data.change_request
+      changeRecords.push(created)
+      this.coreEtag = response.etag ?? `"${response.data.version}"`
       return created
     }
     const revisionCommand = path.match(/^\/change-requests\/([^/]+)\/revisions$/)
     if (revisionCommand && method === 'POST') {
       const record = changeRecordById(decodeURIComponent(revisionCommand[1] ?? ''))
       requireCurrentVersion(record, options)
+      if (Array.isArray(record.approval_lanes)) {
+        throw new Error('서버 권한형 변경 요청의 재제출은 후속 호환성 slice에서 지원됩니다.')
+      }
       const revised = reviseChangeRequest(record, jsonBody(options))
       await this.persistCore()
       return { ...revised }
@@ -2441,6 +2471,37 @@ class PocApiClient {
       const record = changeRecordById(changeRequestId)
       requireCurrentVersion(record, options)
       const body = jsonBody(options)
+      if (Array.isArray(record.approval_lanes)) {
+        if (command === 'complete-intake') {
+          throw new Error('서버 권한형 변경 요청은 세 승인 lane 충족 시 자동 완료됩니다.')
+        }
+        if (!this.coreEtag) throw new Error('POC core state version is unavailable. Reload and retry.')
+        const serverBody = command === 'transitions'
+          ? { command: 'transition', target_state: body.target_state, reason: body.reason }
+          : command === 'approvals'
+            ? body.stage === 'FINAL'
+              ? { command: 'final-lane', decision: body.decision, reason: body.reason }
+              : { command: 'workflow-approval', stage: body.stage, decision: body.decision, reason: body.reason }
+            : {
+                command: 'test-run',
+                attachment_id: body.attachment_id,
+                state: body.state,
+                bounded_summary: body.bounded_summary,
+              }
+        const response = await gatewayRequestWithMeta<{ version: number; change_request: ChangeRequestRecord }>(
+          `/poc-api/change-requests/${encodeURIComponent(changeRequestId)}/commands`,
+          {
+            method: 'POST',
+            body: JSON.stringify(serverBody),
+            headers: { 'If-Match': this.coreEtag },
+          },
+        )
+        const updated = response.data.change_request
+        const index = changeRecords.findIndex((item) => item.id === changeRequestId)
+        if (index >= 0) changeRecords[index] = updated
+        this.coreEtag = response.etag ?? `"${response.data.version}"`
+        return { ...updated }
+      }
       const now = new Date().toISOString()
       if (command === 'approvals') {
         const stage = responseString(body.stage, 'REVIEW') as 'REVIEW' | 'TEST' | 'FINAL'

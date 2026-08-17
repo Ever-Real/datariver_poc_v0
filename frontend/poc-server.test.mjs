@@ -1080,3 +1080,219 @@ test('prunes assigned-role rows, keeps viewer read-only, and fails closed on sta
   assert.equal(staleResponse.result.status, 409)
   assert.equal(staleResponse.appendCalls, 0)
 })
+
+test('creates a CR for a viewer through exact current Table, grant, grade, policy, and mapping checks', async () => {
+  const { createPocStateStore } = await import('./poc-state-store.mjs?cr-create-contract-test')
+  const { createPocServer } = await import('./poc-server.mjs?cr-create-contract-test')
+  const { applyTableSystemMappingCommand } = await import('./poc-table-system-mappings.mjs')
+  const {
+    changeHistoryAccessCoreProjection,
+    normalizeChangeHistoryAccessDocument,
+    privateChangeHistoryAccess,
+  } = await import('./poc-access-document.mjs')
+  const stateStore = createPocStateStore()
+  const tableUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.a.valid_table,PROD)'
+  const unavailableUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,db.a.unavailable_table,PROD)'
+  const changedAt = '2026-08-17T00:00:00.000Z'
+  const accessDocument = normalizeChangeHistoryAccessDocument({
+    schema_version: 1,
+    active_subject_id: 'viewer-subject',
+    users: [{
+      subject_id: 'viewer-subject', role: 'viewer', active: true,
+      max_security_grade: 'normal', provider_owner_refs: [],
+    }],
+    systems: [{ system_id: 'system-a', code: 'A', name: 'System A', active: true }],
+    system_schema_scopes: [],
+    system_assignments: [],
+  })
+  await stateStore.writeChangeHistoryAccess({
+    expectedAccessVersion: 0,
+    expectedCoreVersion: 0,
+    accessValue: privateChangeHistoryAccess(accessDocument),
+    coreValue: changeHistoryAccessCoreProjection(null, accessDocument, 1),
+  })
+  const mappingResult = applyTableSystemMappingCommand(null, {
+    action: 'ASSIGN', table_ids: [tableUrn], system_ids: ['system-a'],
+    reason: 'CR server contract test mapping',
+  }, 'admin-subject', changedAt)
+  await stateStore.write('table-system-mappings-v1', mappingResult.document)
+  await stateStore.applyUserTableGrantCommand({
+    subjectId: 'viewer-subject', tableUrns: [tableUrn], action: 'GRANT',
+    actorSubjectId: 'admin-subject', changedAt,
+  })
+  const currentDatahubTables = async (urns) => {
+    if (urns.includes(unavailableUrn)) throw new Error('provider unavailable')
+    return urns.includes(tableUrn)
+      ? [{ id: tableUrn, dataset_kind: 'TABLE', security_grade: 'normal' }]
+      : []
+  }
+  const testServer = createPocServer({
+    stateStore,
+    authenticator: testAuthenticator('viewer-subject'),
+    currentDatahubTables,
+  })
+  await new Promise((resolvePromise) => testServer.listen(0, '127.0.0.1', resolvePromise))
+  const address = testServer.address()
+  const testOrigin = `http://127.0.0.1:${address.port}`
+  const request = (body, version = 1) => fetch(`${testOrigin}/poc-api/change-requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'If-Match': `"${version}"` },
+    body: JSON.stringify(body),
+  })
+  const validBody = {
+    table_urn: tableUrn,
+    responsible_system_id: 'system-a',
+    title: 'Bounded table change',
+    description: 'The viewer is allowed to register this accessible Table change.',
+    change_document: { requested: { description: 'updated' } },
+  }
+  try {
+    const invalid = await request({ ...validBody, table_urn: `${tableUrn}-missing` })
+    const invalidBody = await invalid.json()
+    assert.equal(invalid.status, 400, JSON.stringify(invalidBody))
+    assert.equal(invalidBody.code, 'CR_TABLE_INVALID')
+
+    const unavailable = await request({ ...validBody, table_urn: unavailableUrn })
+    assert.equal(unavailable.status, 503)
+    assert.equal((await unavailable.json()).code, 'PROVIDER_UNAVAILABLE')
+
+    const spoofed = await request({ ...validBody, role: 'admin' })
+    assert.equal(spoofed.status, 400)
+    assert.equal((await spoofed.json()).code, 'PROTECTED_CLAIM')
+
+    const created = await request(validBody)
+    assert.equal(created.status, 201)
+    assert.equal(created.headers.get('etag'), '"2"')
+    const createdBody = await created.json()
+    const record = createdBody.change_request
+    assert.equal(record.requester_id, 'viewer-subject')
+    assert.equal(record.rounds[0].selected_system_id, 'system-a')
+    assert.equal(record.items.length, 1)
+    assert.equal(record.items[0].target_asset_id, tableUrn)
+    assert.equal(record.items[0].routing_system_id, 'system-a')
+    assert.equal(record.items[0].operation, 'UPSERT')
+    assert.deepEqual(record.items[0].after_document, validBody.change_document)
+    assert.deepEqual(record.approval_lanes, [])
+    assert.equal(record.items[0].target_binding_hash.length, 64)
+    assert.equal(record.rounds[0].evidence_hash.length, 64)
+
+    const stale = await request(validBody)
+    assert.equal(stale.status, 409)
+    assert.equal((await stale.json()).code, 'STATE_VERSION_STALE')
+    const persisted = await stateStore.read('core')
+    assert.equal(persisted.version, 2)
+    assert.equal(persisted.value.changeRecords.length, 1)
+  } finally {
+    testServer.closeAllConnections()
+    await new Promise((resolvePromise, reject) => testServer.close((error) => error ? reject(error) : resolvePromise()))
+  }
+})
+
+test('enforces responsible-System actors and atomically completes three independent final lanes', async () => {
+  const { createPocStateStore } = await import('./poc-state-store.mjs?cr-lanes-contract-test')
+  const { createPocServer } = await import('./poc-server.mjs?cr-lanes-contract-test')
+  const {
+    changeHistoryAccessCoreProjection,
+    normalizeChangeHistoryAccessDocument,
+    privateChangeHistoryAccess,
+  } = await import('./poc-access-document.mjs')
+  const stateStore = createPocStateStore()
+  const users = [
+    ['developer-one', 'developer'],
+    ['developer-two', 'developer'],
+    ['developer-wrong', 'developer'],
+    ['steward-one', 'data_steward'],
+    ['manager-one', 'manager'],
+    ['admin-one', 'admin'],
+  ].map(([subject_id, role]) => ({
+    subject_id, role, active: true, max_security_grade: 'restricted', provider_owner_refs: [],
+  }))
+  const accessDocument = normalizeChangeHistoryAccessDocument({
+    schema_version: 1,
+    active_subject_id: 'admin-one',
+    users,
+    systems: [
+      { system_id: 'system-a', code: 'A', name: 'System A', active: true },
+      { system_id: 'system-b', code: 'B', name: 'System B', active: true },
+    ],
+    system_schema_scopes: [],
+    system_assignments: [
+      { subject_id: 'developer-one', system_id: 'system-a', responsibility: 'DEVELOPER', priority: 1, active: true },
+      { subject_id: 'developer-two', system_id: 'system-a', responsibility: 'DEVELOPER', priority: 2, active: true },
+      { subject_id: 'developer-wrong', system_id: 'system-b', responsibility: 'DEVELOPER', priority: 1, active: true },
+      { subject_id: 'steward-one', system_id: 'system-a', responsibility: 'DATA_STEWARD', priority: 1, active: true },
+      { subject_id: 'manager-one', system_id: 'system-a', responsibility: 'MANAGER', priority: 1, active: true },
+    ],
+  })
+  await stateStore.writeChangeHistoryAccess({
+    expectedAccessVersion: 0,
+    expectedCoreVersion: 0,
+    accessValue: privateChangeHistoryAccess(accessDocument),
+    coreValue: changeHistoryAccessCoreProjection(null, accessDocument, 1),
+  })
+  const cr = {
+    id: 'cr-three-lanes', number: 'CR-THREE', request_type: 'CHANGE_INTAKE',
+    title: 'Three lanes', description: 'Three lane integration contract', state: 'FINAL_REVIEW',
+    requester_id: 'viewer-one', requester_department_id: null,
+    current_round_id: 'round-one', current_round_number: 1, revision_allowed: false,
+    created_at: '2026-08-17T00:00:00.000Z', requested_due_date: null,
+    priority: null, urgency: null, classification: 'normal', version: 1,
+    items: [{ target_system_id: 'system-a', routing_system_id: 'system-a' }],
+    approvals: [], approval_lanes: [], transitions: [], test_runs: [],
+    rounds: [{ id: 'round-one', selected_system_id: 'system-a' }],
+  }
+  await stateStore.write('core', { sequence: 1, changeRecords: [cr], changeAttachments: [] })
+
+  const actors = new Map()
+  const originFor = async (subjectId) => {
+    const actorServer = createPocServer({ stateStore, authenticator: testAuthenticator(subjectId) })
+    await new Promise((resolvePromise) => actorServer.listen(0, '127.0.0.1', resolvePromise))
+    const address = actorServer.address()
+    actors.set(subjectId, actorServer)
+    return `http://127.0.0.1:${address.port}`
+  }
+  const command = async (origin, version, body) => fetch(`${origin}/poc-api/change-requests/${cr.id}/commands`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'If-Match': `"${version}"` },
+    body: JSON.stringify(body),
+  })
+  try {
+    const [developerTwo, wrongDeveloper, steward, manager, admin] = await Promise.all([
+      originFor('developer-two'), originFor('developer-wrong'), originFor('steward-one'),
+      originFor('manager-one'), originFor('admin-one'),
+    ])
+    const wrong = await command(wrongDeveloper, 2, { command: 'final-lane', decision: 'APPROVED', reason: 'Wrong System must fail.' })
+    const wrongBody = await wrong.json()
+    assert.equal(wrong.status, 403, JSON.stringify(wrongBody))
+    assert.equal(wrongBody.code, 'CR_SYSTEM_FORBIDDEN')
+    const adminDenied = await command(admin, 2, { command: 'final-lane', decision: 'APPROVED', reason: 'Admin is not a workflow lane.' })
+    assert.equal(adminDenied.status, 403)
+    assert.equal((await adminDenied.json()).code, 'CR_ADMIN_LANE_DENIED')
+
+    const developerApproval = await command(developerTwo, 2, { command: 'final-lane', decision: 'APPROVED', reason: 'Priority two is still authorized.' })
+    assert.equal(developerApproval.status, 200)
+    assert.equal((await developerApproval.json()).change_request.state, 'FINAL_REVIEW')
+    const stewardApproval = await command(steward, 3, { command: 'final-lane', decision: 'APPROVED', reason: 'Steward lane approved.' })
+    assert.equal(stewardApproval.status, 200)
+    assert.equal((await stewardApproval.json()).change_request.state, 'FINAL_REVIEW')
+
+    const concurrent = await Promise.all([
+      command(manager, 4, { command: 'final-lane', decision: 'APPROVED', reason: 'Manager lane concurrent request one.' }),
+      command(manager, 4, { command: 'final-lane', decision: 'APPROVED', reason: 'Manager lane concurrent request two.' }),
+    ])
+    assert.equal(concurrent.filter((response) => response.status === 200).length, 1)
+    assert.equal(concurrent.filter((response) => response.status === 409).length, 1)
+    const persisted = await stateStore.read('core')
+    const finalCr = persisted.value.changeRecords[0]
+    assert.equal(finalCr.state, 'COMPLETED')
+    assert.deepEqual(finalCr.approval_lanes.filter((lane) => lane.stage === 'FINAL')
+      .map((lane) => lane.lane_kind).sort(), ['DATA_STEWARD', 'DEVELOPER', 'MANAGER'])
+    assert.equal(finalCr.transitions.filter((transition) => transition.to_state === 'COMPLETED').length, 1)
+    assert.equal(persisted.version, 5)
+  } finally {
+    await Promise.all([...actors.values()].map(async (actorServer) => {
+      actorServer.closeAllConnections()
+      await new Promise((resolvePromise, reject) => actorServer.close((error) => error ? reject(error) : resolvePromise()))
+    }))
+  }
+})

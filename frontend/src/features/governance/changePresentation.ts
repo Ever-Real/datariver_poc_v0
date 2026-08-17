@@ -127,7 +127,7 @@ export function changeActionHints(changeRequest: ChangeRequestRecord): ChangeAct
       return [
         finalApproval,
         ...(changeRequest.request_type === 'CHANGE_INTAKE'
-          ? [intakeCompletion]
+          ? Array.isArray(changeRequest.approval_lanes) ? [] : [intakeCompletion]
           : [transition('APPLY_QUEUED', '적용 대기열 등록', 'primary')]),
         transition('CHANGES_REQUESTED', '보완 요청', 'danger'),
         transition('REJECTED', '반려', 'danger'),

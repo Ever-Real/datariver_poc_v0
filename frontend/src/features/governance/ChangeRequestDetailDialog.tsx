@@ -71,14 +71,18 @@ function finalAuthorityRows(value: ChangeRequestRecord) {
   const rows: Array<{
     key: string
     label: string
-    kind: 'SYSTEM_DEVELOPER' | 'SYSTEM_DATA_STEWARD' | 'GLOBAL_ADMIN'
+    kind: 'SYSTEM_DEVELOPER' | 'SYSTEM_DATA_STEWARD' | 'SYSTEM_MANAGER' | 'GLOBAL_ADMIN'
     systemId: string | null
   }> = [
     ...systems.flatMap((systemId) => ([
     { key: `${systemId}:developer`, label: `Developer · ${systemId}`, kind: 'SYSTEM_DEVELOPER' as const, systemId },
     { key: `${systemId}:steward`, label: `Data Steward · ${systemId}`, kind: 'SYSTEM_DATA_STEWARD' as const, systemId },
     ])),
-    { key: 'global-admin', label: '전역 Admin', kind: 'GLOBAL_ADMIN' as const, systemId: null },
+    ...(Array.isArray(value.approval_lanes)
+      ? systems.map((systemId) => ({
+          key: `${systemId}:manager`, label: `Manager · ${systemId}`, kind: 'SYSTEM_MANAGER' as const, systemId,
+        }))
+      : [{ key: 'global-admin', label: '전역 Admin', kind: 'GLOBAL_ADMIN' as const, systemId: null }]),
   ]
   return rows.map((row) => ({
     ...row,

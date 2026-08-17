@@ -38,10 +38,23 @@ import {
 } from './poc-change-history-scheduler.mjs'
 import {
   POC_TABLE_SYSTEM_MAPPING_SCOPE,
+  activeSystemIdsForTable,
   applyTableSystemMappingCommand,
   normalizeTableSystemMappingDocument,
+  securityGradeRank,
+  tableSecurityGrade,
   tableSystemCandidates,
 } from './poc-table-system-mappings.mjs'
+import {
+  applyFinalLane,
+  applyTestRun,
+  applyTransition,
+  applyWorkflowLane,
+  assertCrTableAccess,
+  assertCrWorkflowAction,
+  crResponsibleSystemId,
+  resolveNewCrResponsibleSystem,
+} from './poc-cr-lifecycle.mjs'
 import {
   currentDatahubDatasetExists,
   datahubDatasetKind,
@@ -50,6 +63,7 @@ import {
 import {
   POC_FEATURE_SECURITY_POLICY_SCOPE,
   applyFeatureSecurityPolicyUpdate,
+  featureSecurityAllowed,
   normalizeFeatureSecurityPolicy,
 } from './poc-feature-security-policy.mjs'
 
@@ -1279,6 +1293,9 @@ query DataRiverPocCurrentTables($urns: [String!]!) {
       subTypes { typeNames }
       properties { customProperties { key value } }
       schemaMetadata(version: 0) { name }
+      globalTags: tags {
+        tags { tag { urn name properties { name } } }
+      }
     }
   }
 }`
@@ -2073,7 +2090,11 @@ async function currentDatahubTables(tableUrns, { signal } = {}) {
     }
     data.entities.forEach((entity, index) => {
       if (!isCurrentDatahubTable(entity, batch[index])) return
-      confirmed.push({ id: entity.urn, dataset_kind: 'TABLE' })
+      confirmed.push({
+        id: entity.urn,
+        dataset_kind: 'TABLE',
+        security_grade: tableSecurityGrade({ tag_references: tagReferences(entity) }),
+      })
     })
   }
   return confirmed
@@ -4842,12 +4863,238 @@ async function featureSecurityPolicyApi(request, response, context) {
   }
   const body = await bodyJson(request)
   const next = applyFeatureSecurityPolicyUpdate(document, body, context.principal.subjectId)
-  const version = await context.stateStore.writeIfVersion(
-    POC_FEATURE_SECURITY_POLICY_SCOPE,
-    next,
-    expectedVersion,
-  )
+  const version = await context.stateStore.writeIfVersion(POC_FEATURE_SECURITY_POLICY_SCOPE, next, expectedVersion)
   return json(response, 200, { version, ...next }, { ETag: `"${version}"` })
+}
+
+function crNextId() { return randomUUID() }
+
+function exactCrBodyKeys(body, allowed, required = allowed) {
+  const keys = Object.keys(body)
+  const unknown = keys.find((key) => !allowed.includes(key))
+  const missing = required.find((key) => !Object.hasOwn(body, key))
+  if (unknown || missing) {
+    throw accessError(400, 'CR_INPUT_INVALID', unknown
+      ? `${unknown} is not supported.`
+      : `${missing} is required.`)
+  }
+}
+
+function crBoundedText(value, field, maximum) {
+  if (typeof value !== 'string' || !value.trim() || value.length > maximum || hasAccessControlCharacter(value)) {
+    throw accessError(400, 'CR_INPUT_INVALID', `${field} is required and must contain at most ${maximum} characters.`)
+  }
+  return value.trim()
+}
+
+function crChangeDocument(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw accessError(400, 'CR_INPUT_INVALID', 'change_document must be an object.')
+  }
+  if (Buffer.byteLength(JSON.stringify(value)) > 65_536) {
+    throw accessError(400, 'CR_INPUT_INVALID', 'change_document is too large.')
+  }
+  return structuredClone(value)
+}
+
+// CR intake: POST /poc-api/change-requests — any active role with change.read.
+async function crCreateApi(request, response, url, context) {
+  rejectProtectedAccessClaims(request, url)
+  if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'CR create supports POST only.')
+  const body = await bodyJson(request)
+  rejectProtectedAccessBodyClaims(body)
+  exactCrBodyKeys(body, ['table_urn', 'responsible_system_id', 'title', 'description', 'change_document'])
+  const tableUrn = crBoundedText(body.table_urn, 'table_urn', 4_096)
+  const requestedSystemId = crBoundedText(body.responsible_system_id, 'responsible_system_id', 200)
+  const title = crBoundedText(body.title, 'title', 500)
+  const description = crBoundedText(body.description, 'description', 10_000)
+  const changeDocument = crChangeDocument(body.change_document)
+
+  // Table access: grant + grade + feature policy cell.
+  const grantedSet = new Set((await context.stateStore.listUserTableGrants(context.principal.subjectId)).map((g) => g.tableUrn))
+  const mappingSnapshot = await context.stateStore.read(POC_TABLE_SYSTEM_MAPPING_SCOPE)
+  const mappingDocument = normalizeTableSystemMappingDocument(mappingSnapshot.value)
+  const policySnapshot = await context.stateStore.read(POC_FEATURE_SECURITY_POLICY_SCOPE)
+  const featurePolicyDocument = normalizeFeatureSecurityPolicy(policySnapshot.value)
+  let tables
+  try {
+    tables = await context.currentDatahubTables([tableUrn])
+  } catch {
+    return problem(response, 503, 'PROVIDER_UNAVAILABLE', 'DataHub is unavailable.')
+  }
+  const asset = tables.find((item) => item?.id === tableUrn)
+  if (!asset || asset.dataset_kind !== 'TABLE' || typeof asset.security_grade !== 'string') {
+    return problem(response, 400, 'CR_TABLE_INVALID', 'Target must be an active TABLE with a defined security grade.')
+  }
+  const tableGrade = asset.security_grade
+  assertCrTableAccess({ principal: context.principal, tableUrn, tableGrade, grantedTableUrns: grantedSet, featurePolicyDocument, featureSecurityAllowed, securityGradeRank })
+
+  // Exact Table-System resolution.
+  const activeSystemIds = new Set((context.accessDocument.systems ?? []).filter((s) => s?.active).map((s) => s.system_id))
+  const resolvedSystemId = resolveNewCrResponsibleSystem({ tableUrn, requestedSystemId, mappingDocument, activeSystemIds, activeSystemIdsForTable })
+
+  // Build and CAS-write the new CR into core.
+  const snapshot = await context.stateStore.read('core')
+  const expectedVersion = stateIfMatch(request)
+  if (snapshot.version !== expectedVersion) return problem(response, 409, 'STATE_VERSION_STALE', 'The core state version is stale.')
+  const core = snapshot.value ?? {}
+  const roundId = randomUUID()
+  const occurredAt = new Date().toISOString()
+  const crId = randomUUID()
+  const newCr = {
+    id: crId,
+    number: `CR-${crId.slice(0, 8).toUpperCase()}`,
+    request_type: 'CHANGE_INTAKE',
+    title,
+    description,
+    state: 'REGISTERED',
+    requester_id: context.principal.subjectId,
+    requester_department_id: null,
+    current_round_id: roundId,
+    current_round_number: 1,
+    revision_allowed: false,
+    created_at: occurredAt,
+    requested_due_date: null,
+    priority: null,
+    urgency: null,
+    classification: tableGrade,
+    version: 1,
+    items: [{
+      id: randomUUID(),
+      target_type: 'DATASET',
+      target_ref: tableUrn,
+      aspect_name: 'datasetProperties',
+      operation: 'UPSERT',
+      after_document: changeDocument,
+      target_asset_id: tableUrn,
+      target_asset_type: 'DATASET',
+      target_system_id: resolvedSystemId,
+      target_domain_id: null,
+      target_owner_department_id: null,
+      target_classification: tableGrade,
+      target_lifecycle: 'ACTIVE',
+      target_source_version: 'poc-manual',
+      target_observed_at: occurredAt,
+      target_binding_hash: canonicalHash({ table_urn: tableUrn, responsible_system_id: resolvedSystemId, security_grade: tableGrade }),
+      routing_system_id: resolvedSystemId,
+    }],
+    approvals: [],
+    transitions: [],
+    approval_lanes: [],
+    test_runs: [],
+    rounds: [{
+      id: roundId, round_number: 1,
+      submitted_by: context.principal.subjectId,
+      submitted_at: occurredAt,
+      closed_at: null,
+      evidence_hash: canonicalHash({ table_urn: tableUrn, responsible_system_id: resolvedSystemId, title, description, change_document: changeDocument }),
+      revision_kind: 'INITIAL',
+      title,
+      request_date: null,
+      request_department: '',
+      request_reason: description.slice(0, 2_000),
+      request_content: description,
+      requested_due_date: null,
+      priority: null,
+      urgency: null,
+      classification: tableGrade,
+      selected_system_id: resolvedSystemId,
+    }],
+  }
+  const changeRecords = Array.isArray(core.changeRecords) ? [...core.changeRecords, newCr] : [newCr]
+  const updatedCore = { ...core, changeRecords, sequence: (typeof core.sequence === 'number' ? core.sequence : 0) + 1 }
+  const newVersion = await context.stateStore.writeIfVersion('core', updatedCore, expectedVersion)
+  return json(response, 201, { version: newVersion, change_request: newCr }, { ETag: `"${newVersion}"` })
+}
+
+// CR command (lifecycle mutations): POST /poc-api/change-requests/:id/commands
+// CR read: GET /poc-api/change-requests/:id
+async function crCommandApi(request, response, url, context) {
+  const isCommandPath = /^\/poc-api\/change-requests\/[^/]+\/commands$/.test(url.pathname)
+  const crId = decodeURIComponent(url.pathname.replace(/^\/poc-api\/change-requests\//, '').replace(/\/commands$/, ''))
+  if (!crId || crId.length > 200) return problem(response, 400, 'CR_ID_INVALID', 'Change request id is invalid.')
+  rejectProtectedAccessClaims(request, url)
+
+  const snapshot = await context.stateStore.read('core')
+  const core = snapshot.value ?? {}
+  const changeRecords = Array.isArray(core.changeRecords) ? core.changeRecords : []
+  const cr = changeRecords.find((r) => r?.id === crId)
+
+  // GET remains capability-protected. Responsible System governs workflow actions, not read access.
+  if (request.method === 'GET') {
+    if (!cr) return problem(response, 404, 'CR_NOT_FOUND', 'The change request was not found.')
+    return json(response, 200, { change_request: cr })
+  }
+
+  if (!isCommandPath) return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Use POST /commands for mutations.')
+  if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'CR commands require POST.')
+  if (!cr) return problem(response, 404, 'CR_NOT_FOUND', 'The change request was not found.')
+  const body = await bodyJson(request)
+  rejectProtectedAccessBodyClaims(body)
+
+  if (!Array.isArray(cr.approval_lanes)) {
+    return problem(response, 409, 'CR_LEGACY_COMPATIBILITY_ONLY', 'This historical change request remains on the legacy read path.')
+  }
+
+  const command = typeof body.command === 'string' ? body.command : ''
+  const reason = typeof body.reason === 'string' ? body.reason : ''
+  const occurredAt = new Date().toISOString()
+  const responsibleSystemId = crResponsibleSystemId(cr)
+  if (!responsibleSystemId) return problem(response, 409, 'CR_SYSTEM_UNRESOLVED', 'This change request has no resolved responsible System.')
+
+  const expectedVersion = stateIfMatch(request)
+  if (snapshot.version !== expectedVersion) return problem(response, 409, 'STATE_VERSION_STALE', 'The core state version is stale.')
+  const updatedCore = structuredClone(core)
+  const updatedRecords = updatedCore.changeRecords
+  const crIndex = updatedRecords.findIndex((r) => r?.id === crId)
+  const crClone = updatedRecords[crIndex]
+
+  let result
+  if (command === 'transition') {
+    exactCrBodyKeys(body, ['command', 'target_state', 'reason'])
+    // Requires developer/data_steward assigned to responsible System.
+    assertCrWorkflowAction({ principal: context.principal, responsibleSystemId, crId })
+    const targetState = typeof body.target_state === 'string' ? body.target_state : ''
+    result = applyTransition({ cr: crClone, targetState, reason, principal: context.principal, occurredAt, nextId: crNextId })
+  } else if (command === 'workflow-approval') {
+    exactCrBodyKeys(body, ['command', 'stage', 'decision', 'reason'])
+    // Requires developer/data_steward assigned to responsible System.
+    assertCrWorkflowAction({ principal: context.principal, responsibleSystemId, crId })
+    const stage = typeof body.stage === 'string' ? body.stage : ''
+    if (!['REVIEW', 'TEST'].includes(stage)) return problem(response, 400, 'CR_COMMAND_INVALID', 'stage must be REVIEW or TEST.')
+    const decision = body.decision
+    result = applyWorkflowLane({ cr: crClone, stage, principal: context.principal, responsibleSystemId, decision, reason, occurredAt, nextId: crNextId })
+  } else if (command === 'final-lane') {
+    exactCrBodyKeys(body, ['command', 'decision', 'reason'])
+    // assertFinalLaneAccess (inside applyFinalLane) enforces role-to-lane mapping.
+    // Manager is a valid FINAL lane — do NOT call assertCrWorkflowAction here.
+    const decision = body.decision
+    result = applyFinalLane({ cr: crClone, principal: context.principal, responsibleSystemId, decision, reason, occurredAt, nextId: crNextId })
+    // Fix 3: when all 3 lanes satisfied, append the COMPLETED transition immediately.
+    if (!result.idempotent && result.allSatisfied) {
+      applyTransition({ cr: crClone, targetState: 'COMPLETED', reason: 'All three FINAL lanes approved.', principal: context.principal, occurredAt, nextId: crNextId })
+    }
+  } else if (command === 'test-run') {
+    exactCrBodyKeys(body, ['command', 'attachment_id', 'state', 'bounded_summary'])
+    assertCrWorkflowAction({ principal: context.principal, responsibleSystemId, crId })
+    const attachmentId = typeof body.attachment_id === 'string' ? body.attachment_id : ''
+    const runState = body.state
+    const boundedSummary = body.bounded_summary
+    const changeAttachments = new Map(Array.isArray(core.changeAttachments) ? core.changeAttachments : [])
+    result = applyTestRun({ cr: crClone, attachmentId, state: runState, boundedSummary, principal: context.principal, responsibleSystemId, occurredAt, nextId: crNextId, changeAttachments })
+  } else {
+    return problem(response, 400, 'CR_COMMAND_INVALID', `Unknown command: ${command}. Supported: transition, workflow-approval, final-lane, test-run.`)
+  }
+
+  if (result.idempotent) {
+    return json(response, 200, { version: snapshot.version, idempotent: true, change_request: crClone }, { ETag: `"${snapshot.version}"` })
+  }
+
+  crClone.version = Number.isSafeInteger(crClone.version) ? crClone.version + 1 : 1
+  updatedRecords[crIndex] = crClone
+  updatedCore.sequence = (typeof core.sequence === 'number' ? core.sequence : 0) + 1
+  const newVersion = await context.stateStore.writeIfVersion('core', updatedCore, expectedVersion)
+  return json(response, 200, { version: newVersion, change_request: crClone }, { ETag: `"${newVersion}"` })
 }
 
 async function api(request, response, url, context) {
@@ -4872,6 +5119,13 @@ async function api(request, response, url, context) {
   }
   if (request.method === 'POST' && url.pathname === '/api/v1/registration/bulk-preparations/execute') {
     return json(response, 200, await executeBulkPreparation())
+  }
+  if (request.method === 'POST' && url.pathname === '/poc-api/change-requests') {
+    return crCreateApi(request, response, url, context)
+  }
+  if (/^\/poc-api\/change-requests\/[^/]+$/.test(url.pathname)
+    || /^\/poc-api\/change-requests\/[^/]+\/commands$/.test(url.pathname)) {
+    return crCommandApi(request, response, url, context)
   }
   const stateMatch = url.pathname.match(/^\/poc-api\/state\/([a-z]+)$/)
   if (stateMatch && allowedPocStateScopes.has(stateMatch[1])) {
