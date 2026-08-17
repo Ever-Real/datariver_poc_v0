@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `5e600320e08da16c67dcb4c0e4dce76162230f04`
-- Deployed OCI revision: `5e600320e08da16c67dcb4c0e4dce76162230f04`
+- Current Product SHA: `78448566c9cb461bacafa0afc425572d4fefd0ad`
+- Deployed OCI revision: `78448566c9cb461bacafa0afc425572d4fefd0ad`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -26,6 +26,8 @@
   `038b7ffa6b06666985664d480340b9010fe1fdd9`
 - Registration READY candidate-to-governed-CR Product:
   `5e600320e08da16c67dcb4c0e4dce76162230f04`
+- Registration server-authoritative apply-report Product:
+  `78448566c9cb461bacafa0afc425572d4fefd0ad`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -58,8 +60,11 @@
   projection. Sparse manual-metadata receipt compatibility and one actual disposable description
   apply are also `COMPLETE_RUNTIME_VERIFIED`. One READY metadata candidate now creates exactly one
   server-authored governed CR with current authority, ETag/idempotency and CAS fencing; the exact
-  runtime proved zero provider writes. Registration overall remains `PARTIAL` for the durable
-  preparation/outbox/provider-apply and remaining typed/target-host contracts.
+  runtime proved zero provider writes. Product `78448566...` additionally makes apply-report a
+  server-authoritative `change.read` projection with exact truthful `NOT_STARTED`, 404 hiding and
+  private/no-store, without creating an apply job or provider evidence. Registration overall remains
+  `PARTIAL` for the durable preparation/outbox/provider-apply and remaining typed/target-host
+  contracts. Durable restart storage is `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION`.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge/Governance and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
@@ -74,7 +79,7 @@ P0  PHASE 1D-R deterministic runtime                 → COMPLETE_RUNTIME_VERIFI
 P1  Account/Auth core                                → completed baseline; feature regression only
 P2  MCL change management / automatic change capture → COMPLETE_RUNTIME_VERIFIED; midnight recheck
 P3  DEV support services: Airflow / MinIO / GX       → Airflow/MinIO complete; GX partial
-P4  Registration management                          → auth/preparation/manual apply/candidate-to-CR complete; overall partial
+P4  Registration management                          → through authoritative NOT_STARTED apply-report complete; actual apply/durability partial
 P5  Governance: policy/standard document management  → mutation policy HOLD
 P6  Chat: General / Vector / Auto / Graph refinement → preserve current verified baseline
 P7  Knowledge / Quality                              → document current state; user definition required
@@ -124,11 +129,11 @@ local credential + opaque server session
 ## Fresh validation
 
 - Independent fresh Node POC Validator at exact Product
-  `5e600320e08da16c67dcb4c0e4dce76162230f04`. Effective model: Gemini 3.1 Pro High;
+  `78448566c9cb461bacafa0afc425572d4fefd0ad`. Effective model: Gemini 3.1 Pro High;
   authoritative worktree/branch/HEAD and Node POC authority recorded; no Product files or runtime
   changed. The coordinator separately confirmed the deployed OCI revision matches that Product.
-- Node POC full suite: 105/105 PASS.
-- Frontend full suite: 87 files, 593/593 PASS on the final clean rerun.
+- Node POC full suite: 106/106 PASS.
+- Frontend full suite: 87 files, 594/594 PASS on the final clean rerun.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and
   `git diff --check`: PASS.
 - Exact Product image build/package/deploy: PASS; current Web health `ok` and OCI revision exact.
@@ -235,8 +240,14 @@ local credential + opaque server session
   changed/sibling commands returned 409. DataHub remained byte-fingerprint unchanged. Disposable
   credential/session/grant/mapping/assignment and exact MinIO objects were cleaned, while the CR
   and opaque internal binding remain immutable history.
+- Product `78448566...` moves apply-report authority from browser-local construction to an exact
+  server `change.read` route. Existing CRs return the canonical truthful `NOT_STARTED` schema with
+  private/no-store; unknown CRs and unsupported methods are hidden with 404. No apply job, outbox,
+  provider mutation or CR transition is synthesized. Preparation remains memory-backed, so canonical
+  restart durability/outbox/apply ownership stays `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION`.
 - Evidence: `.orchestration/evidence/DEV-REGISTRATION-SUPPORT-SERVICES-RUNTIME.md` and
-  `.orchestration/evidence/DEV-REGISTRATION-BULK-CANDIDATE-CR-RUNTIME.md`.
+  `.orchestration/evidence/DEV-REGISTRATION-BULK-CANDIDATE-CR-RUNTIME.md` and
+  `.orchestration/evidence/DEV-REGISTRATION-APPLY-REPORT-AUTHORITY.md`.
 
 ## MCL runtime / automatic detection
 
@@ -267,8 +278,9 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `5e600320...`; do not start PHASE 1E/1F, migration, legacy
-  deletion, GX/Knowledge/Quality Product implementation or another Account/Auth refactor. The next
-  smallest Registration work is a read-only durability/outbox/provider-apply gap reconciliation
-  after the bounded candidate-to-CR slice. Governance document mutation stays on policy HOLD; GX
-  Assertion egress lacks a canonical runtime contract; Chat General/Vector/AUTO stays verified.
+- Current boundary: preserve Product `78448566...`; do not start PHASE 1E/1F, migration, legacy
+  deletion, GX/Knowledge/Quality Product implementation or another Account/Auth refactor. The
+  durability/outbox/provider-apply gap is now reconciled and requires
+  `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION` before a storage/apply mutation. Governance document
+  mutation stays on policy HOLD; GX Assertion egress lacks a canonical runtime contract; Chat
+  General/Vector/AUTO stays verified.

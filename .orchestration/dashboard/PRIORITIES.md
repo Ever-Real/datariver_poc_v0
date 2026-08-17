@@ -1,7 +1,7 @@
 # DataRiver 현재 제품 우선순위
 
 기준 Product SHA와 배포 OCI revision은
-`5e600320e08da16c67dcb4c0e4dce76162230f04`로 일치한다. authoritative runtime은 Node POC이며
+`78448566c9cb461bacafa0afc425572d4fefd0ad`로 일치한다. authoritative runtime은 Node POC이며
 DEV Web은 `http://127.0.0.1:39083`에서 healthy다. 아래 상태는 현재 source/runtime 근거이며
 PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
@@ -37,18 +37,28 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
 ## 4. 등록관리
 
-- 현재 상태: auth/preparation/manual apply/candidate-to-CR slice `COMPLETE_RUNTIME_VERIFIED`;
+- 현재 상태: auth/preparation/manual apply/candidate-to-CR/apply-report slice `COMPLETE_RUNTIME_VERIFIED`;
   전체 `PARTIAL`.
 - 완료: data_steward/manager/admin role gate, current TABLE + grant + grade + fixed Registration
   policy + Responsible System AND, owner isolation, 404 hiding, count/receipt authorization 후 계산,
   request-time grant/mapping 철회, MinIO→preparation→Airflow callback→READY→candidate 실제 E2E,
   sparse empty manual metadata와 실제 description apply receipt, READY candidate→서버 작성 CR
-  exactly-once, ETag/idempotency/CAS, provider write 0.
+  exactly-once, ETag/idempotency/CAS, provider write 0, 서버 권한의 정확한 `NOT_STARTED`
+  apply-report와 private/no-store.
+- 단계별 상태:
+  - 업로드/준비: 완료(재시작 복구는 HOLD)
+  - Airflow 처리: 완료
+  - 후보/미리보기: 완료
+  - 변경요청 생성: 완료
+  - 변경요청 승인: 기존 3-lane 기준선 완료
+  - 실제 적용: 시작 안 됨 / 일부
+  - 적용 결과: 서버의 truthful `NOT_STARTED` 조회 완료
+  - 재시작 복구: `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION`
 - 남은 작업: durable preparation/outbox/provider-apply와 typed 전체 surface/target acceptance.
 - 왜 필요한가: 담당자가 허용된 현재 Table만 안전하게 준비·등록하도록 보장한다.
-- 다음 작업: POC와 canonical typed-bulk 계약의 durability/outbox/apply 차이를 먼저 읽기 전용으로
-  대조하고, 새 구조 없이 닫을 수 있는 최소 slice만 결정한다.
-- 진행을 막는 문제: bounded candidate-to-CR blocker 없음; Registration 전체는 durable
+- 다음 작업: durable receipt/candidate/outbox/apply ownership과 최소 schema를 사용자 결정 후
+  기존 CR apply 계약에 연결한다.
+- 진행을 막는 문제: `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION`; Registration 전체는 durable
   preparation/outbox/provider-apply와 target gate 때문에 `PARTIAL`.
 
 ## 5. 거버넌스 — 정책·표준 문서 등록 및 관리
@@ -108,6 +118,7 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
 | Approval ID | 요청 | 위험 | 승인 전 가능한 작업 |
 |---|---|---|---|
+| `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION` | preparation receipt/candidate/outbox/apply의 최소 durable schema·retention·소유권 결정 | 근거 없이 table/queue/worker를 만들면 두 번째 workflow가 됨 | GX/Governance/Chat read-only, 기존 Registration 회귀검증 |
 | `GX_CANONICAL_RUNTIME_CONTRACT_REQUIRED` | 최근 PREP/OPS의 exact result→DataHub Assertion egress 계약 또는 사용자 기능범위 제공 | 임의 egress는 Quality architecture와 provider identity를 새로 만들 위험 | Registration 후속 계약 audit, Governance/Chat read-only |
 | `HOLD_GOVERNANCE_DOCUMENT_MUTATION_POLICY` | 정책·표준 문서 생성/수정/삭제 역할 확정 | 임의 정책은 과도하거나 부족한 권한이 됨 | active-user read 유지, Chat/문서/backlog audit |
 | `HOLD_G1_G2_NOT_APPROVED` | merge/push/DEV publication | 원격 계보 변경 | 로컬 DEV 검증과 문서화 |
@@ -117,8 +128,8 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 ## 기술 상태 요약
 
 ```text
-Product / deployed OCI 5e600320e08da16c67dcb4c0e4dce76162230f04
-Node POC tests        105 / 105 PASS
-Frontend tests        87 files, 593 / 593 PASS
-new tables/dependencies/services/containers/provider versions/frameworks/capabilities = 0
+Product / deployed OCI 78448566c9cb461bacafa0afc425572d4fefd0ad
+Node POC tests        106 / 106 PASS
+Frontend tests        87 files, 594 / 594 PASS
+new tables/dependencies/services/containers/queues/workers/frameworks/capabilities = 0
 ```
