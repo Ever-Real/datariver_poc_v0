@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `038b7ffa6b06666985664d480340b9010fe1fdd9`
-- Deployed OCI revision: `038b7ffa6b06666985664d480340b9010fe1fdd9`
+- Current Product SHA: `5e600320e08da16c67dcb4c0e4dce76162230f04`
+- Deployed OCI revision: `5e600320e08da16c67dcb4c0e4dce76162230f04`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -24,6 +24,8 @@
   `d424d0e49e2f5b763a77cd4f2beb438e5345b0fa`
 - Registration manual-metadata receipt Product:
   `038b7ffa6b06666985664d480340b9010fe1fdd9`
+- Registration READY candidate-to-governed-CR Product:
+  `5e600320e08da16c67dcb4c0e4dce76162230f04`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -54,8 +56,10 @@
   MinIO → bulk preparation → Airflow callback → authorized current-Table candidate flow enforces
   role + grant + grade + fixed policy + Responsible System, owner isolation and count/receipt
   projection. Sparse manual-metadata receipt compatibility and one actual disposable description
-  apply are also `COMPLETE_RUNTIME_VERIFIED`. Registration overall remains `PARTIAL` only for the
-  remaining bulk candidate-to-CR/apply workflow acceptance.
+  apply are also `COMPLETE_RUNTIME_VERIFIED`. One READY metadata candidate now creates exactly one
+  server-authored governed CR with current authority, ETag/idempotency and CAS fencing; the exact
+  runtime proved zero provider writes. Registration overall remains `PARTIAL` for the durable
+  preparation/outbox/provider-apply and remaining typed/target-host contracts.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge/Governance and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
@@ -70,7 +74,7 @@ P0  PHASE 1D-R deterministic runtime                 → COMPLETE_RUNTIME_VERIFI
 P1  Account/Auth core                                → completed baseline; feature regression only
 P2  MCL change management / automatic change capture → COMPLETE_RUNTIME_VERIFIED; midnight recheck
 P3  DEV support services: Airflow / MinIO / GX       → Airflow/MinIO complete; GX partial
-P4  Registration management                          → auth/preparation/manual apply complete; overall partial
+P4  Registration management                          → auth/preparation/manual apply/candidate-to-CR complete; overall partial
 P5  Governance: policy/standard document management  → mutation policy HOLD
 P6  Chat: General / Vector / Auto / Graph refinement → preserve current verified baseline
 P7  Knowledge / Quality                              → document current state; user definition required
@@ -120,11 +124,11 @@ local credential + opaque server session
 ## Fresh validation
 
 - Independent fresh Node POC Validator at exact Product
-  `038b7ffa6b06666985664d480340b9010fe1fdd9`. Effective model: Gemini 3.1 Pro High;
+  `5e600320e08da16c67dcb4c0e4dce76162230f04`. Effective model: Gemini 3.1 Pro High;
   authoritative worktree/branch/HEAD and Node POC authority recorded; no Product files or runtime
   changed. The coordinator separately confirmed the deployed OCI revision matches that Product.
-- Node POC full suite: 104/104 PASS.
-- Frontend full suite: 87 files, 592/592 PASS on the final clean rerun.
+- Node POC full suite: 105/105 PASS.
+- Frontend full suite: 87 files, 593/593 PASS on the final clean rerun.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and
   `git diff --check`: PASS.
 - Exact Product image build/package/deploy: PASS; current Web health `ok` and OCI revision exact.
@@ -225,7 +229,14 @@ local credential + opaque server session
   `ALREADY_MATCHED` receipts and an actual disposable description apply with one
   `APPLIED_VERIFIED` receipt. Both disposable Tables were tombstoned and all dummy authority was
   cleaned; MCL remained 2/2/66/4 and Catalog remained 2,002.
-- Evidence: `.orchestration/evidence/DEV-REGISTRATION-SUPPORT-SERVICES-RUNTIME.md`.
+- Product `5e600320...` binds one READY metadata candidate to exactly one server-authored governed
+  CR. Runtime grant and mapping removal hid the candidate and denied creation immediately;
+  missing/malformed/stale ETags returned 428/400/412, exact replay returned the original CR and
+  changed/sibling commands returned 409. DataHub remained byte-fingerprint unchanged. Disposable
+  credential/session/grant/mapping/assignment and exact MinIO objects were cleaned, while the CR
+  and opaque internal binding remain immutable history.
+- Evidence: `.orchestration/evidence/DEV-REGISTRATION-SUPPORT-SERVICES-RUNTIME.md` and
+  `.orchestration/evidence/DEV-REGISTRATION-BULK-CANDIDATE-CR-RUNTIME.md`.
 
 ## MCL runtime / automatic detection
 
@@ -256,8 +267,8 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `038b7ffa...`; do not start PHASE 1E/1F, migration, legacy
+- Current boundary: preserve Product `5e600320...`; do not start PHASE 1E/1F, migration, legacy
   deletion, GX/Knowledge/Quality Product implementation or another Account/Auth refactor. The next
-  smallest Registration work is the current bulk candidate-to-CR/apply workflow acceptance after
-  its existing contract is confirmed. Governance document mutation stays on policy HOLD; GX
+  smallest Registration work is a read-only durability/outbox/provider-apply gap reconciliation
+  after the bounded candidate-to-CR slice. Governance document mutation stays on policy HOLD; GX
   Assertion egress lacks a canonical runtime contract; Chat General/Vector/AUTO stays verified.

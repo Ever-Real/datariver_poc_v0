@@ -1,7 +1,7 @@
 # DataRiver 현재 제품 우선순위
 
 기준 Product SHA와 배포 OCI revision은
-`038b7ffa6b06666985664d480340b9010fe1fdd9`로 일치한다. authoritative runtime은 Node POC이며
+`5e600320e08da16c67dcb4c0e4dce76162230f04`로 일치한다. authoritative runtime은 Node POC이며
 DEV Web은 `http://127.0.0.1:39083`에서 healthy다. 아래 상태는 현재 source/runtime 근거이며
 PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
@@ -37,15 +37,19 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
 ## 4. 등록관리
 
-- 현재 상태: bounded auth/preparation slice `COMPLETE_RUNTIME_VERIFIED`; 전체 `PARTIAL`.
+- 현재 상태: auth/preparation/manual apply/candidate-to-CR slice `COMPLETE_RUNTIME_VERIFIED`;
+  전체 `PARTIAL`.
 - 완료: data_steward/manager/admin role gate, current TABLE + grant + grade + fixed Registration
   policy + Responsible System AND, owner isolation, 404 hiding, count/receipt authorization 후 계산,
   request-time grant/mapping 철회, MinIO→preparation→Airflow callback→READY→candidate 실제 E2E,
-  sparse empty manual metadata와 실제 description apply receipt.
-- 남은 작업: 기존 bulk candidate→CR/apply workflow의 계약 확인과 독립 runtime acceptance.
+  sparse empty manual metadata와 실제 description apply receipt, READY candidate→서버 작성 CR
+  exactly-once, ETag/idempotency/CAS, provider write 0.
+- 남은 작업: durable preparation/outbox/provider-apply와 typed 전체 surface/target acceptance.
 - 왜 필요한가: 담당자가 허용된 현재 Table만 안전하게 준비·등록하도록 보장한다.
-- 다음 작업: 기존 문서·API가 확정한 bulk 후속 단계만 작은 slice로 닫는다.
-- 진행을 막는 문제: bulk candidate 이후 자동 적용/CR 연결의 현재 canonical 범위 확인 필요.
+- 다음 작업: POC와 canonical typed-bulk 계약의 durability/outbox/apply 차이를 먼저 읽기 전용으로
+  대조하고, 새 구조 없이 닫을 수 있는 최소 slice만 결정한다.
+- 진행을 막는 문제: bounded candidate-to-CR blocker 없음; Registration 전체는 durable
+  preparation/outbox/provider-apply와 target gate 때문에 `PARTIAL`.
 
 ## 5. 거버넌스 — 정책·표준 문서 등록 및 관리
 
@@ -113,8 +117,8 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 ## 기술 상태 요약
 
 ```text
-Product / deployed OCI 038b7ffa6b06666985664d480340b9010fe1fdd9
-Node POC tests        104 / 104 PASS
-Frontend tests        87 files, 592 / 592 PASS
+Product / deployed OCI 5e600320e08da16c67dcb4c0e4dce76162230f04
+Node POC tests        105 / 105 PASS
+Frontend tests        87 files, 593 / 593 PASS
 new tables/dependencies/services/containers/provider versions/frameworks/capabilities = 0
 ```
