@@ -58,7 +58,10 @@ test('keeps one bounded server-owned capability matrix with ADR-0107 manager inh
   ])
   assert.ok(principal('developer', 'developer').capabilitySet.has('change.execute'))
   assert.ok(!principal('developer', 'developer').capabilitySet.has('change.manage'))
-  assert.ok(principal('steward', 'data_steward').capabilitySet.has('catalog.manage'))
+  const steward = principal('steward', 'data_steward')
+  assert.ok(steward.capabilitySet.has('catalog.manage'))
+  assert.ok(steward.capabilitySet.has('change.manage'))
+  assert.ok(!steward.capabilitySet.has('knowledge.manage'))
   const manager = principal('manager', 'manager')
   assert.ok(manager.capabilitySet.has('catalog.manage'))
   assert.ok(manager.capabilitySet.has('knowledge.manage'))
@@ -275,4 +278,118 @@ test('enforces Registration-only asset mutation seam', () => {
 
   assert.ok(!canReadRegistrationAsset(admin, viewAsset, activeSystems))
   assert.throws(() => assertRegistrationAssetMutation(admin, viewAsset, activeSystems), { code: 'TABLE_DATA_FORBIDDEN' })
+})
+
+test('limits Governance document management to change.manage without widening Knowledge authority', () => {
+  const steward = principal('steward', 'data_steward')
+  const manager = principal('manager', 'manager')
+  const viewer = principal('viewer', 'viewer')
+  const developer = principal('developer', 'developer')
+
+  const current = {
+    adminMemberships: [],
+    adminSystems: [],
+    adminSystemAssignees: [],
+    adminSystemSchemaScopes: [],
+    changeRecords: [],
+    changeAttachments: [],
+    changeAttachmentLocations: [],
+    governanceDocuments: [
+      { document_id: 'doc-1', state: 'DRAFT', current_published_version_id: null, current_version_number: null, title: 'Draft' },
+      { document_id: 'doc-2', state: 'ACTIVE', current_published_version_id: 'v-2', current_version_number: 2, title: 'Active' },
+    ],
+    governanceVersions: [
+      { version_id: 'v-1', document_id: 'doc-1', state: 'DRAFT', submitted_at: null, reviewed_by: null, reviewed_at: null, published_at: null, title: 'Draft' },
+      { version_id: 'v-2', document_id: 'doc-2', state: 'PUBLISHED', submitted_at: 'before', reviewed_by: 'reviewer', reviewed_at: 'then', published_at: 'now', title: 'Published' },
+    ],
+  }
+
+  assert.doesNotThrow(() => authorizeCoreReplacement(steward, current, {
+    ...current,
+    governanceDocuments: [...current.governanceDocuments, {
+      document_id: 'doc-3', state: 'DRAFT', current_published_version_id: null, current_version_number: null,
+    }],
+  }))
+
+  assert.throws(() => authorizeCoreReplacement(steward, current, {
+    ...current,
+    governanceDocuments: [current.governanceDocuments[0]],
+  }), { code: 'GOVERNANCE_HARD_DELETE_FORBIDDEN' })
+
+  assert.throws(() => authorizeCoreReplacement(steward, current, {
+    ...current,
+    governanceDocuments: [...current.governanceDocuments, {
+      document_id: 'doc-3', state: 'ACTIVE', current_published_version_id: null, current_version_number: null,
+    }],
+  }), { code: 'GOVERNANCE_LIFECYCLE_FORBIDDEN' })
+
+  assert.throws(() => authorizeCoreReplacement(steward, current, {
+    ...current,
+    governanceDocuments: [
+      { document_id: 'doc-1', state: 'DRAFT', current_published_version_id: 'v-1' },
+      current.governanceDocuments[1]
+    ],
+  }), { code: 'GOVERNANCE_LIFECYCLE_FORBIDDEN' })
+
+  assert.throws(() => authorizeCoreReplacement(steward, current, {
+    ...current,
+    governanceDocuments: [
+      { ...current.governanceDocuments[0], state: 'ACTIVE' },
+      current.governanceDocuments[1],
+    ],
+  }), { code: 'GOVERNANCE_LIFECYCLE_FORBIDDEN' })
+
+  assert.doesNotThrow(() => authorizeCoreReplacement(steward, current, {
+    ...current,
+    governanceDocuments: [
+      current.governanceDocuments[0],
+      { ...current.governanceDocuments[1], state: 'ARCHIVED' },
+    ],
+  }))
+
+  assert.doesNotThrow(() => authorizeCoreReplacement(steward, current, {
+    ...current,
+    governanceVersions: [...current.governanceVersions, {
+      version_id: 'v-3', document_id: 'doc-1', state: 'DRAFT', submitted_at: null,
+      reviewed_by: null, reviewed_at: null, published_at: null, title: 'New draft',
+    }],
+  }))
+
+  assert.throws(() => authorizeCoreReplacement(steward, current, {
+    ...current,
+    governanceVersions: [
+      { ...current.governanceVersions[0], state: 'IN_REVIEW', submitted_at: 'now' },
+      current.governanceVersions[1],
+    ],
+  }), { code: 'GOVERNANCE_LIFECYCLE_FORBIDDEN' })
+
+  assert.throws(() => authorizeCoreReplacement(steward, current, {
+    ...current,
+    governanceVersions: [
+      current.governanceVersions[0],
+      { ...current.governanceVersions[1], title: 'Tampered publication' },
+    ],
+  }), { code: 'GOVERNANCE_VERSION_IMMUTABLE' })
+
+  assert.doesNotThrow(() => authorizeCoreReplacement(manager, current, {
+    ...current,
+    governanceDocuments: [
+      { ...current.governanceDocuments[0], state: 'ACTIVE', current_published_version_id: 'v-1', current_version_number: 1 },
+      current.governanceDocuments[1],
+    ],
+  }))
+
+  assert.throws(() => authorizeCoreReplacement(viewer, current, {
+    ...current,
+    governanceDocuments: [...current.governanceDocuments, {
+      document_id: 'doc-3', state: 'DRAFT', current_published_version_id: null, current_version_number: null,
+    }],
+  }), { code: 'CAPABILITY_REQUIRED' })
+
+  assert.throws(() => authorizeCoreReplacement(developer, current, {
+    ...current,
+    governanceDocuments: [...current.governanceDocuments, {
+      document_id: 'doc-3', state: 'DRAFT', current_published_version_id: null, current_version_number: null,
+    }],
+  }), { code: 'CAPABILITY_REQUIRED' })
 })

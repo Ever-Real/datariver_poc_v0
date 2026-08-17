@@ -125,16 +125,18 @@ function localDispatchCapability(path: string, method: string): PocCapability | 
     if (method === 'GET') return 'quality.read'
     return /(?:execute|runs)(?:\/|$)/.test(path) ? 'quality.execute' : 'quality.manage'
   }
-  if (
-    path === '/knowledge'
-    || path.startsWith('/knowledge/')
-    || path === '/governance/documents'
-    || path.startsWith('/governance/documents/')
-  ) {
+  if (path === '/governance/documents' || path.startsWith('/governance/documents/')) {
     if (method === 'GET') return 'knowledge.read'
-    return /(?:review|publish|archive)(?:\/|$)/.test(path)
-      ? 'knowledge.review'
-      : 'knowledge.manage'
+    if (/\/reviews(?:\/|$)/.test(path)) return 'knowledge.review'
+    if (/\/archive(?:\/|$)/.test(path)
+      || path === '/governance/documents'
+      || path === '/governance/documents/imports'
+      || /\/versions$/.test(path)) return 'change.manage'
+    return 'knowledge.manage'
+  }
+  if (path === '/knowledge' || path.startsWith('/knowledge/')) {
+    if (method === 'GET') return 'knowledge.read'
+    return /(?:review|publish|archive)(?:\/|$)/.test(path) ? 'knowledge.review' : 'knowledge.manage'
   }
   if (path.startsWith('/chat/')) return 'chat.query'
   if (path.startsWith('/operations/')) return 'monitoring.read'
@@ -408,11 +410,17 @@ function knowledgeAssetSummary(draft: Record<string, unknown>, release: Record<s
 
 function governanceActions(document: GovernanceDocumentSummary) {
   if (document.state === 'ARCHIVED') return ['read', 'download_attachment'] satisfies GovernanceDocumentSummary['allowed_actions']
-  const actions: GovernanceDocumentSummary['allowed_actions'] = [
-    'read', 'create_version', 'submit', 'review', 'publish', 'archive',
-    'add_attachment', 'download_attachment',
-  ]
-  if (document.kind === 'TEMPLATE') actions.push('instantiate_template')
+  const actions: GovernanceDocumentSummary['allowed_actions'] = ['read', 'download_attachment']
+  if (presentationAuthorization?.capabilities.includes('change.manage')) {
+    actions.push('create_version', 'archive')
+    if (document.kind === 'TEMPLATE') actions.push('instantiate_template')
+  }
+  if (presentationAuthorization?.capabilities.includes('knowledge.manage')) {
+    actions.push('submit', 'add_attachment')
+  }
+  if (presentationAuthorization?.capabilities.includes('knowledge.review')) {
+    actions.push('review', 'publish')
+  }
   return actions
 }
 
@@ -3011,6 +3019,10 @@ class PocApiClient {
 
     if (path === '/governance/documents/capability') {
       const window = authorizationWindow()
+      const capabilityAxis = (id: string, capability: PocCapability) => {
+        const available = Boolean(presentationAuthorization?.capabilities.includes(capability))
+        return { id, state: available ? 'AVAILABLE' : 'DENIED', reason_code: available ? null : 'CAPABILITY_REQUIRED' }
+      }
       const providerAxis = (id: string, configured: boolean) => ({
         id,
         state: configured ? 'AVAILABLE' : 'UNAVAILABLE',
@@ -3022,8 +3034,13 @@ class PocApiClient {
         valid_until: window.authorization_valid_until,
         cache_scope: POC_CACHE_SCOPE,
         axes: [
-          ...['read', 'create', 'edit', 'review', 'publish', 'archive', 'template_manage']
-            .map((id) => ({ id, state: 'AVAILABLE', reason_code: null })),
+          capabilityAxis('read', 'knowledge.read'),
+          capabilityAxis('create', 'change.manage'),
+          capabilityAxis('edit', 'change.manage'),
+          capabilityAxis('review', 'knowledge.review'),
+          capabilityAxis('publish', 'knowledge.review'),
+          capabilityAxis('archive', 'change.manage'),
+          capabilityAxis('template_manage', 'change.manage'),
           providerAxis('artifact_storage', Boolean(runtimeFlags().minio)),
           providerAxis('knowledge_projection', Boolean(runtimeFlags().neo4j)),
         ],

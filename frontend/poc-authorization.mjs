@@ -66,8 +66,8 @@ const coreCapabilityByKey = Object.freeze({
   knowledgeReleases: 'knowledge.manage',
   knowledgeDraftBlocks: 'knowledge.manage',
   knowledgeDraftBindings: 'knowledge.manage',
-  governanceDocuments: 'knowledge.manage',
-  governanceVersions: 'knowledge.manage',
+  governanceDocuments: 'change.manage',
+  governanceVersions: 'change.manage',
   governanceReviews: 'knowledge.review',
   governanceAttachments: 'knowledge.manage',
   governanceAttachmentLocations: 'knowledge.manage',
@@ -366,6 +366,72 @@ function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
+function governanceRecordId(key, record) {
+  return key === 'governanceDocuments' ? record?.document_id : record?.version_id
+}
+
+function validateGovernanceManageReplacement(key, currentRecords, proposedRecords) {
+  if (!Array.isArray(proposedRecords)) {
+    throw authorizationError(409, 'GOVERNANCE_STATE_INVALID', `core.${key} must be an array.`)
+  }
+  const currentById = new Map()
+  for (const record of Array.isArray(currentRecords) ? currentRecords : []) {
+    const id = governanceRecordId(key, record)
+    if (typeof id !== 'string' || !id || currentById.has(id)) {
+      throw authorizationError(409, 'GOVERNANCE_STATE_INVALID', `core.${key} contains an invalid identity.`)
+    }
+    currentById.set(id, record)
+  }
+  const proposedById = new Map()
+  for (const record of proposedRecords) {
+    const id = governanceRecordId(key, record)
+    if (!record || typeof record !== 'object' || typeof id !== 'string' || !id || proposedById.has(id)) {
+      throw authorizationError(409, 'GOVERNANCE_STATE_INVALID', `core.${key} contains an invalid identity.`)
+    }
+    proposedById.set(id, record)
+  }
+  if ([...currentById.keys()].some((id) => !proposedById.has(id))) {
+    throw authorizationError(403, 'GOVERNANCE_HARD_DELETE_FORBIDDEN', 'Governance documents and versions must be archived instead of deleted.')
+  }
+  for (const [id, record] of proposedById) {
+    const prior = currentById.get(id)
+    if (!prior) {
+      if (record.state !== 'DRAFT') {
+        throw authorizationError(403, 'GOVERNANCE_LIFECYCLE_FORBIDDEN', 'New governance documents and versions must start as DRAFT.')
+      }
+      if (key === 'governanceDocuments'
+        && (record.current_published_version_id != null || record.current_version_number != null)) {
+        throw authorizationError(403, 'GOVERNANCE_LIFECYCLE_FORBIDDEN', 'A new governance document cannot claim a published version.')
+      }
+      if (key === 'governanceVersions'
+        && [record.submitted_at, record.reviewed_by, record.reviewed_at, record.published_at].some((value) => value != null)) {
+        throw authorizationError(403, 'GOVERNANCE_LIFECYCLE_FORBIDDEN', 'A new governance version cannot claim review or publication evidence.')
+      }
+      continue
+    }
+    if (key === 'governanceDocuments') {
+      if (record.state !== prior.state && record.state !== 'ARCHIVED') {
+        throw authorizationError(403, 'GOVERNANCE_LIFECYCLE_FORBIDDEN', 'Document review and publication state requires knowledge.review.')
+      }
+      if (record.current_published_version_id !== prior.current_published_version_id
+        || record.current_version_number !== prior.current_version_number) {
+        throw authorizationError(403, 'GOVERNANCE_LIFECYCLE_FORBIDDEN', 'Published document pointers require knowledge.review.')
+      }
+      continue
+    }
+    if (!sameJson(record, prior) && prior.state !== 'DRAFT') {
+      throw authorizationError(403, 'GOVERNANCE_VERSION_IMMUTABLE', 'Only DRAFT governance versions can be edited without knowledge.review.')
+    }
+    if (record.state !== prior.state
+      || record.submitted_at !== prior.submitted_at
+      || record.reviewed_by !== prior.reviewed_by
+      || record.reviewed_at !== prior.reviewed_at
+      || record.published_at !== prior.published_at) {
+      throw authorizationError(403, 'GOVERNANCE_LIFECYCLE_FORBIDDEN', 'Version review and publication state requires knowledge.review.')
+    }
+  }
+}
+
 export function authorizeCoreReplacement(principal, currentValue, proposedValue) {
   if (!proposedValue || typeof proposedValue !== 'object' || Array.isArray(proposedValue)) {
     throw authorizationError(409, 'CORE_STATE_INVALID', 'Core state must be a JSON object.')
@@ -417,6 +483,9 @@ export function authorizeCoreReplacement(principal, currentValue, proposedValue)
       if (invalid) {
         throw authorizationError(403, 'SYSTEM_SCOPE_UNRESOLVED', `core.${key} contains a Change record outside the current System scope.`)
       }
+    }
+    if (['governanceDocuments', 'governanceVersions'].includes(key) && !principal.capabilitySet.has('knowledge.review')) {
+      validateGovernanceManageReplacement(key, visibleCurrent[key], proposedValue[key])
     }
     if (!principal.globalSystemRead && ['changeRecords', 'changeAttachments', 'changeAttachmentLocations'].includes(key)) {
       const visibleIds = new Set((Array.isArray(visibleCurrent.changeRecords) ? visibleCurrent.changeRecords : [])

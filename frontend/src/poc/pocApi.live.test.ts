@@ -1182,6 +1182,63 @@ describe('POC live-provider compatibility adapter', () => {
     expect(importedMarkdown.item.versions[0]?.sanitized_html).toContain('<ul><li>승인</li><li>변경 이력</li></ul>')
   })
 
+  it('gives stewards bounded Governance document management without Knowledge manage/review', async () => {
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'data_steward',
+      capabilities: ['knowledge.read', 'change.manage'],
+      system_scope: 'ASSIGNED',
+      system_ids: [],
+    }, 'governance-steward')
+    const api = new GovernanceDocumentsApi(useStableApiClient())
+    const capability = await api.capability()
+    const states = new Map(capability.axes.map((axis) => [axis.id, axis.state]))
+    expect(states.get('read')).toBe('AVAILABLE')
+    expect(states.get('create')).toBe('AVAILABLE')
+    expect(states.get('edit')).toBe('AVAILABLE')
+    expect(states.get('archive')).toBe('AVAILABLE')
+    expect(states.get('review')).toBe('DENIED')
+    expect(states.get('publish')).toBe('DENIED')
+
+    const created = await api.createDocument({
+      kind: 'DOCUMENT', category: 'POLICY', title: 'Steward 정책', summary: '최소 문서 관리',
+      classification: 1, applicability_scope: 'DEV', sanitized_html: '<p>초안</p>',
+      source_template_version_id: null, parent_document_id: null,
+    }, 'governance-steward-create')
+    expect(created.item.document.allowed_actions).toEqual(expect.arrayContaining(['read', 'create_version', 'archive']))
+    expect(created.item.document.allowed_actions).not.toEqual(expect.arrayContaining(['submit', 'review', 'publish', 'add_attachment']))
+    await expect(api.submitVersion(
+      created.item.document.document_id,
+      created.item.versions[0]!.version_id,
+      created.item.document.version,
+      'governance-steward-submit',
+    )).rejects.toThrow(/권한/)
+    const archived = await api.archiveDocument(
+      created.item.document.document_id,
+      created.item.document.version,
+      'DEV cleanup',
+      'governance-steward-archive',
+    )
+    expect(archived.item.document.state).toBe('ARCHIVED')
+
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'developer',
+      capabilities: ['knowledge.read', 'change.execute'],
+      system_scope: 'ASSIGNED',
+      system_ids: [],
+    }, 'governance-developer')
+    const readOnlyApi = new GovernanceDocumentsApi(useStableApiClient())
+    const readOnlyCapability = await readOnlyApi.capability()
+    expect(readOnlyCapability.axes.find((axis) => axis.id === 'read')?.state).toBe('AVAILABLE')
+    expect(readOnlyCapability.axes.find((axis) => axis.id === 'create')?.state).toBe('DENIED')
+    await expect(readOnlyApi.createDocument({
+      kind: 'DOCUMENT', category: 'POLICY', title: 'Forbidden', summary: '', classification: 1,
+      applicability_scope: '', sanitized_html: '<p>deny</p>', source_template_version_id: null,
+      parent_document_id: null,
+    }, 'governance-developer-create')).rejects.toThrow(/권한/)
+  })
+
   it('creates Knowledge Studio state only from user input and live DataHub sources', async () => {
     const client = useStableApiClient()
     expect((await client.request<{ items: unknown[] }>('/knowledge/domains')).items).toEqual([])
