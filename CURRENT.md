@@ -1,9 +1,9 @@
-# CURRENT.md — DataRiver Node POC Account / Access
+# CURRENT.md — DataRiver Node POC product status
 
 ## Current baseline
 
-- Current Product SHA: `2f247107d28716aeba3cfe3fa201fb040ac437e3`
-- Deployed OCI revision: `2f247107d28716aeba3cfe3fa201fb040ac437e3`
+- Current Product SHA: `91ca4db7ca792566b7765f3366036b1d8bed2869`
+- Deployed OCI revision: `91ca4db7ca792566b7765f3366036b1d8bed2869`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -14,8 +14,10 @@
   `773cd37e6d48cbba02c999380fe1965a3b9f4e26`
 - PHASE 1D bounded Table enforcement implementation:
   `805fe1279f38066c57e054b7720295b9495d9b55`
-- PHASE 1D production-image packaging/current Product:
+- PHASE 1D production-image packaging:
   `2f247107d28716aeba3cfe3fa201fb040ac437e3`
+- PHASE 1D-R deterministic provider restart/current Product:
+  `91ca4db7ca792566b7765f3366036b1d8bed2869`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -31,12 +33,33 @@
 - PHASE 1D bounded Table enforcement slice: `COMPLETE_RUNTIME_VERIFIED` — local read/count/detail,
   request-time AND, no-N+1 hydration, higher-grade canonical Table enforcement and bounded actual
   Product Vector/AUTO/context/citation/General Chat paths are verified at the current Product.
+- PHASE 1D-R deterministic provider restart: `COMPLETE_RUNTIME_VERIFIED` — tracked configuration
+  plus the supported ignored DEV configuration/secret boundary reproduces Web 39083, DataHub,
+  Chat, embedding and reranking after clean restart.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   sparse provider multi-aspect compatibility, unbound Knowledge/Governance and Quality/GX surfaces
   remain open.
 - PHASE 1E/1F: `BACKLOG`
 - remote-host network acceptance: `TARGET_RECHECK_REQUIRED`
-- overall Account/Auth program: `PARTIAL`
+- Account/Auth core: `COMPLETE_RUNTIME_VERIFIED`; future Registration, Knowledge and Quality
+  integrations own their feature-specific authorization acceptance.
+
+## Product execution priority
+
+```text
+P0  PHASE 1D-R deterministic runtime                 → COMPLETE_RUNTIME_VERIFIED
+P1  Account/Auth core                                → completed baseline; feature regression only
+P2  MCL change management / automatic change capture → next Product slice
+P3  DEV support services: Airflow / MinIO / GX       → current-state audit, then bounded readiness
+P4  Registration management                          → after support-service gate
+P5  Governance: policy/standard document management  → existing design first
+P6  Chat: General / Vector / Auto / Graph refinement → preserve current verified baseline
+P7  Knowledge / Quality                              → document current state; user definition required
+P8  Admin                                             → add only minimum feature-required controls
+```
+
+Engineering Phase numbers remain for lineage and dependencies. They do not override this
+user-facing product order.
 
 ## Current authority
 
@@ -78,20 +101,22 @@ local credential + opaque server session
 ## Fresh validation
 
 - Independent fresh Node POC Validator at exact Product
-  `2f247107d28716aeba3cfe3fa201fb040ac437e3` and matching deployed OCI revision. Effective model:
+  `91ca4db7ca792566b7765f3366036b1d8bed2869` and matching deployed OCI revision. Effective model:
   Gemini 3.1 Pro High; authoritative worktree/branch/HEAD recorded; no files or runtime changed.
-- Node POC full suite: 97/97 PASS.
-- Catalog performance/reconciliation: 5/5 PASS.
+- Node POC full suite: 99/99 PASS.
+- Focused Python restart/config suite: 21/21 PASS.
 - Frontend full suite: 87 files, 592/592 PASS on the final clean rerun.
-- Lint, typecheck, production build, Compose no-interpolate render and `git diff --check`: PASS.
+- Lint, typecheck, production build, POC image build, Compose render, Bash syntax, Ruff, Mypy and
+  `git diff --check`: PASS. Shellcheck was unavailable and is not reported as PASS.
 - Exact Product image build/package/deploy: PASS; current Web health `ok` and OCI revision exact.
 - Representative runtime: grant/no-grant, Admin, policy, immediate grant/grade/policy changes,
   direct 404, authorized counts/facets/tree/dashboard, exact AUTO inventory/citations, direct
   lineage, non-Admin Neo4j fail-closed and unauthorized mutation 403 passed.
 - The former provider refusals were binding/runtime drift, not Table authorization. The existing
-  DataHub, Chat, embedding and reranker contracts are bound in the current DEV Web runtime; direct
-  probes and actual Product General/Vector/AUTO composition passed. The current 2,002-row embedding
-  generation is active. No provider, model, version or service architecture was added.
+  DataHub, Chat, embedding and reranker contracts now survive clean supported restart from the
+  selected configuration. Direct probes and actual Product General/Vector/AUTO composition passed.
+  The current 2,002-row embedding generation is active. No provider, model, version or service
+  architecture was added.
 - A DEV-only disposable canonical Table lifecycle verified exact `normal → credential → restricted`
   resolution, tag precedence, grant/grade/fixed-policy AND, Admin data bypass, live-session grade and
   policy changes, and immediate grant removal. The asset was tag-cleared and tombstoned; all test
@@ -142,12 +167,16 @@ local credential + opaque server session
   higher-grade Table matrix. Immediate grant removal produced empty Catalog/vector evidence.
 - Neo4j runtime still has no exact DataHub Table URN property or PostgreSQL identity bridge;
   classification is `NEEDS_KNOWLEDGE_PHASE`, with non-Admin graph kept fail-closed before traversal.
-- Existing provider bindings and the reranker batch correction are current runtime configuration;
-  a future unreviewed recreate/restart could lose them, so deterministic restart receipt remains an
-  operational evidence risk rather than a new Product architecture task.
+- PHASE 1D-R closed the provider restart risk at Product `91ca4db7...`: the selected ignored DEV
+  environment is the single Compose/runtime input, DataHub missing-token behavior is explicit and
+  DEV-local, Web-only recreate preserves 39083, and the existing reranker manager restores and
+  verifies UBATCH 1,024. Clean restart plus General/Vector/AUTO runtime E2E passed.
+- Embedding retention remains a separate `UNBOUNDED_ACCUMULATION_RISK`: three bindings/generations
+  retain 6,002 rows total, while the active generation has 2,002 rows. No deletion was performed.
 - Evidence:
   `.orchestration/evidence/DEV-PHASE1D-CLOSEOUT-GAP-REDUCTION.md` and
-  `.orchestration/evidence/DEV-PHASE1D-AUTONOMOUS-PROVIDER-GRADE-E2E.md`.
+  `.orchestration/evidence/DEV-PHASE1D-AUTONOMOUS-PROVIDER-GRADE-E2E.md` and
+  `.orchestration/evidence/DEV-PHASE1D-R-DETERMINISTIC-RESTART.md`.
 
 ## Gates
 
@@ -155,7 +184,7 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current stop boundary: preserve Product `2f247107...`; do not start PHASE 1E/1F, GX, migration,
-  legacy deletion or another PHASE 1D Product slice without a new bounded authorization. The next
-  smallest Product-independent work is deterministic DEV provider restart/recreate evidence and
-  sparse empty-aspect provider compatibility characterization.
+- Current boundary: preserve Product `91ca4db7...`; do not start PHASE 1E/1F, migration, legacy
+  deletion, GX/Knowledge/Quality Product implementation or another Account/Auth refactor. Next,
+  audit current MCL and Airflow/MinIO/GX source/runtime read-only, then implement only the smallest
+  existing-contract MCL runtime/automatic-detection activation slice.

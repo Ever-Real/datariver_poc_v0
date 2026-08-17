@@ -25,7 +25,7 @@ an unsafe bypass, or a historical result from another commit.
 | Created | 2026-07-23, Asia/Seoul |
 | Branch / Phase 6E entry base / current published implementation | `dev` / `dba1186` / verified by the stable publication workflow |
 | Remote comparison | `dev-publish` requires local `dev` and `origin/dev` to resolve to the same exact commit after every publication |
-| Current controlled phase | Owner-directed Phase 8 documentation. Phase 6F/6G and Phase 7 implementation/testing are skipped; their uncommitted work was rolled back. |
+| Current controlled phase | Product `91ca4db7ca792566b7765f3366036b1d8bed2869`: PHASE 1D-R deterministic provider restart complete; next controlled Product priority is current-state MCL runtime/automatic-detection activation. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## 2026-08-16 Node POC Account/Auth execution
@@ -37,13 +37,13 @@ local credential / opaque server session
 → request-scoped subject_id
 → change-history-access-v1
 → central role capability
-→ explicit Table grant + security grade (target; not yet enforced)
+→ explicit Table grant + security grade + fixed feature policy
 → Responsible System only for workflow features
 → feature operation
 ```
 
-Current Product boundary `2f247107d28716aeba3cfe3fa201fb040ac437e3` is validated through
-`.orchestration/evidence/DEV-PHASE1D-TABLE-ENFORCEMENT-SLICE-RUNTIME.md` and the preceding phase
+Current Product boundary `91ca4db7ca792566b7765f3366036b1d8bed2869` is validated through
+`.orchestration/evidence/DEV-PHASE1D-R-DETERMINISTIC-RESTART.md` and the preceding PHASE 1D
 evidence.
 The preceding PHASE 1A runtime evidence is commit
 `8c1f93a456d0fe51e46987b72d66f563f6467d73`. These local commits have not been published;
@@ -52,24 +52,58 @@ The preceding PHASE 1A runtime evidence is commit
 | ID | Canonical status | Current evidence / completion condition |
 |---|---|---|
 | AUTH-1A | `COMPLETE_RUNTIME_VERIFIED` | Local Argon2id credential, hashed opaque session, request principal, access-document authority, CSRF/Origin fence, operator bootstrap, API/SPA boundary and loopback/private-network defaults were verified at Product `618b9713059ba7e31b807ceae3b401766a313668`. |
-| AUTH-1B | `COMPLETE_RUNTIME_VERIFIED` | The technical baseline remains runtime-verified at its historical Product: exactly 15 centrally versioned capabilities, server principal, route classification and client-spoof defenses. PHASE 1B-R found that its Responsible-System-as-data-scope semantics conflict with the latest product policy; the new data policy is therefore not complete. PHASE 1C-1 adds two exact admin routes, making the registry 51 IDs (`7/2/40/1/1`, unknown `0`). |
-| AUTH-1B-R | `PARTIAL` | The current Node POC keeps 15 capabilities and request-time access authority while separating explicit Table grants/security grades from Responsible System. The bounded AUTH-1D slice now prefilters covered Catalog/Chat/vector paths; Neo4j provenance, provider-wide traversal/totals and coarse unbound documents remain open under AUTH-1D. |
+| AUTH-1B | `COMPLETE_RUNTIME_VERIFIED` | Exactly 15 centrally versioned capabilities, server principal, route classification and client-spoof defenses remain the technical baseline. The former Responsible-System-as-general-data-scope behavior was replaced by explicit Table grant + grade + fixed policy on covered reads; Responsible System remains business/workflow scope only. PHASE 1C-1 added two exact Admin routes, making the registry 51 IDs (`7/2/40/1/1`, unknown `0`). |
+| AUTH-1B-R | `COMPLETE_RUNTIME_VERIFIED` core | The current Node POC keeps exactly 15 capabilities and request-time access authority while separating explicit Table grants/security grades from Responsible System. Covered Catalog/Chat/vector paths prefilter correctly; remaining Neo4j, provider-traversal and unbound-resource gaps are owned by those feature surfaces, not a reason to redesign the core authorization chain. |
 | AUTH-1C-1 | `COMPLETE_RUNTIME_VERIFIED` | Product `60f5f270a56130f2ed96236d9286d0903e3360db`: System name/description update and archive preserve stable identity/history. Exact DataHub `TABLE` URN N:M System pairs use bounded `poc_state` CAS; PATCH synchronously confirms the current provider inventory and rejects deleted/type-changed/unavailable identities before CAS. Backend, Admin UI, runtime and fresh Validator checks passed with zero active validation mappings, credentials or sessions. Evidence: `.orchestration/evidence/DEV-PHASE1C1-TABLE-SYSTEM-RUNTIME.md`. |
 | AUTH-1C-2 | `COMPLETE_RUNTIME_VERIFIED` | Product `f78f30fbcf0a5468ec2ce9893d06825ddd030369`: one exact `(subject_id, table_urn)` domain relation avoids access-CAS bloat; the access document retains Role/System authority and adds only `max_security_grade`. Admin user/grade/grant/Responsible-System/credential/session API and UI, targeted current-Table fail-closed validation, two-user isolation, spoof/401/403/404 negatives, credential cleanup, exact image revision and full regression are DEV-runtime verified. Evidence: `.orchestration/evidence/DEV-PHASE1C2-USER-TABLE-ACCESS-RUNTIME.md`. |
 | AUTH-1C-3 | `COMPLETE_RUNTIME_VERIFIED` | Product `9df97f4975a990819db655b74b09e709dc6d5aad`: fixed 8-feature × 5-role × 3-grade (120-cell) CAS management policy, exact Admin API/UI, immutable Admin allow and role-ineligible deny, stale-CAS/shape negatives, real browser verification and fresh AGY Validator passed. PHASE 1D enforcement remains explicitly inactive. Evidence: `.orchestration/evidence/DEV-PHASE1C3-SECURITY-HARDENING-RUNTIME.md`. |
 | AUTH-1C-4 | `COMPLETE_RUNTIME_VERIFIED` | Product `773cd37e6d48cbba02c999380fe1965a3b9f4e26`: request-principal CR commands now require a current exact Table, explicit grant/grade/fixed Change policy for non-Admin creation, one exact responsible System, current Developer/Data Steward workflow assignment and independent Developer/Data Steward/Manager final lanes. Admin cannot silently satisfy a lane; concurrent completion uses the existing core CAS; legacy CRs remain read-compatible and mutation-protected. The same Product also redirects noncanonical browser GETs to the configured DEV origin without weakening wrong-Origin mutation denial. Evidence: `.orchestration/evidence/DEV-PHASE1C4-CR-RESPONSIBILITY-RUNTIME.md`. |
-| AUTH-1D | `PARTIAL` | Product `2f247107d28716aeba3cfe3fa201fb040ac437e3`: the bounded Table-enforcement slice is `COMPLETE_RUNTIME_VERIFIED`. It hydrates current grants/policy once/request, applies exact grant + grade + fixed cell before covered reads, excludes Responsible System from general visibility, prefilters local counts and PG/memory ranking, hides Detail with 404 and rejects unauthorized mutation with 403. Fresh 10/100/1,002 instrumentation remained constant-count. Existing DEV DataHub/Chat/embedding/reranker bindings now pass direct and actual Product General/Vector/AUTO/context/citation runtime; a disposable canonical Table passed normal/credential/restricted, precedence, Admin, live grade/policy and immediate-removal E2E with full cleanup. Overall AUTH-1D remains `PARTIAL`: sparse empty-aspect manual-metadata compatibility, provider traversal/totals, Neo4j canonical URN provenance, deleted grade, unbound Knowledge/Governance and Quality/GX remain open. Evidence: `.orchestration/evidence/DEV-PHASE1D-TABLE-ENFORCEMENT-SLICE-RUNTIME.md`, `.orchestration/evidence/DEV-PHASE1D-CLOSEOUT-GAP-REDUCTION.md`, `.orchestration/evidence/DEV-PHASE1D-AUTONOMOUS-PROVIDER-GRADE-E2E.md`. |
+| AUTH-1D | `PARTIAL` overall; core surfaces complete | Product `91ca4db7ca792566b7765f3366036b1d8bed2869`: the bounded Table-enforcement and deterministic provider-restart slices are `COMPLETE_RUNTIME_VERIFIED`. Request-time grant + grade + fixed-cell AND, no-N+1 hydration, local count/detail hiding, PG/memory pre-ranking and Product General/Vector/AUTO/reranking/context/citation survive clean supported restart. Overall AUTH-1D remains `PARTIAL` only for named feature-owned gaps: sparse manual-metadata compatibility, provider traversal/totals, Neo4j canonical provenance, deleted grade, unbound resources and Quality/GX. Evidence includes `.orchestration/evidence/DEV-PHASE1D-R-DETERMINISTIC-RESTART.md`. |
 | AUTH-1E | `BACKLOG` | Retire only proven legacy auth active paths after the replacement remains runtime-verified. Preserve reusable Knowledge/Quality/Chat code, schema history and `UNKNOWN` references. |
 | AUTH-1F | `BACKLOG` | Complete multi-account personal history/draft/Chat-stream isolation, session reset/revoke acceptance, every feature regression and external network acceptance. Bounded legacy authorship placeholders are not authorization authority but remain part of this acceptance. |
 | AUTH-NET | `TARGET_RECHECK_REQUIRED` | DEV Web and supporting owned ports are loopback/private and local inspection passes. A real second-host negative connectivity probe is still required; do not claim public-network isolation from bind inspection alone. |
-| ACCOUNT-AUTH | `PARTIAL` | PHASE 1A and the PHASE 1B technical baseline are runtime-verified; latest-policy data authorization, 1C–1F and the remote network target remain open. |
+| ACCOUNT-AUTH | `COMPLETE_RUNTIME_VERIFIED` core | Local account/session, central capability, exact Table grants, security grade, fixed feature policy, Responsible-System workflow scope, CR three-lane approval and covered data reads are the completed baseline. AUTH-1E/1F and external-network acceptance remain separate later gates; feature-specific integrations are accepted with each feature. |
 
 Account/Auth validation credentials were disabled and their sessions revoked after each matrix run.
 The separate DEV inspection `admin` credential remains intentionally enabled, active and excluded
 from validation cleanup. Access users and historical references remain; synthetic `checkpoint-*`
-users have no credential. Current Scheduler/MCL deployment readiness is
-separate: Scheduler is disabled and required MCL bindings are `0/9`, so it remains
-`TARGET_RECHECK_REQUIRED` without mutating the frozen ledger/checkpoints.
+users have no credential. Scheduler/MCL deployment readiness is separate and must now be refreshed
+from current source/runtime; the historical disabled/`0/9` observation is not reused as current
+evidence and frozen ledger/checkpoints must not be reset.
+
+## 2026-08-17 Product priority realignment
+
+Engineering Phase identifiers remain historical/dependency labels. Execution and the external
+Korean dashboard use this user-facing order:
+
+| Priority | Product area | Current boundary |
+|---|---|---|
+| P0 | PHASE 1D-R deterministic runtime | `COMPLETE_RUNTIME_VERIFIED` at Product `91ca4db7...` |
+| P1 | Account / feature / data access | Core completed; add negative/regression acceptance when each feature integrates |
+| P2 | MCL change management / automatic detection | Next: current runtime/source audit, then smallest existing-contract activation slice |
+| P3 | DEV support services | Audit Airflow, MinIO and exact PREP/OPS-derived GX contract; avoid base-Compose hard coupling |
+| P4 | Registration | Reverse-engineer current UI/API/Airflow/MinIO/security before mutation |
+| P5 | Governance — policy/standard documents | Existing state first; read open, manage policy only from source of truth or explicit decision |
+| P6 | Chat | Preserve verified General/Vector/AUTO; refine routing, latency and safe Graph only |
+| P7 | Knowledge / Quality | Canonical current-state documents; `USER_FEATURE_DEFINITION_REQUIRED` before Product expansion |
+| P8 | Admin | Minimum controls required by real features only; no generic IAM/configuration console |
+
+Controlled execution DAG:
+
+```text
+1D-R closeout
+→ MCL runtime / automatic detection
+→ DEV support services (Airflow / MinIO / GX)
+→ Registration
+→ Governance
+→ Chat refinement
+→ Knowledge / Quality briefing
+→ AUTH-1E legacy retirement / AUTH-1F final isolation
+→ remaining deployment backlog
+```
+
+Conflict-free read-only audits may run in parallel. Product mutations remain one coherent bounded
+slice with exact file ownership and fresh Product/deployed evidence.
 
 ## 2026-08-08 Pilot handoff recovery and inherited-change review
 
@@ -438,7 +472,7 @@ evidence, not inferred from this table):
 | PHASE 1C-2H | `COMPLETE_RUNTIME_VERIFIED` | Product `9df97f4975a990819db655b74b09e709dc6d5aad`: canonical grade/current-Table helper, concurrent last-Admin CAS invariant, atomic password-reset session revocation, exact-first mapping resolver and fresh runtime/Validator evidence passed |
 | PHASE 1C-3 | `COMPLETE_RUNTIME_VERIFIED` | Product `9df97f4975a990819db655b74b09e709dc6d5aad`: fixed 120-cell management state/API/UI and POC gateway forwarding passed full source tests, DEV runtime, real browser and fresh Validator; PHASE 1D enforcement explicitly not active |
 | PHASE 1C-4 | `COMPLETE_RUNTIME_VERIFIED` | Product `773cd37e6d48cbba02c999380fe1965a3b9f4e26`: exact responsible-System, request-principal workflow commands, independent three-lane completion, concurrency/legacy-read compatibility and canonical browser-origin hardening passed source, DEV runtime, browser and fresh Validator gates. |
-| PHASE 1D | `PARTIAL` | Product `2f247107d28716aeba3cfe3fa201fb040ac437e3`: the bounded local enforcement slice, canonical higher-grade Table matrix, PostgreSQL/memory pre-ranking and bounded Product General/Vector/AUTO/context/citation paths are `COMPLETE_RUNTIME_VERIFIED`; request hydration remains constant-count rather than per-Table. Provider-wide traversal/totals, sparse empty-aspect manual-metadata compatibility, Neo4j URN provenance, deleted-grade history, unbound Knowledge/Governance and Quality/GX remain `PARTIAL`/`BLOCKED`. Current provider binding is runtime configuration and still needs deterministic restart evidence. Do not promote overall 1D or start another Product slice without authorization. |
+| PHASE 1D | `PARTIAL` overall | Product `91ca4db7ca792566b7765f3366036b1d8bed2869`: bounded local enforcement, canonical higher-grade Table matrix, PostgreSQL/memory pre-ranking, Product General/Vector/AUTO/context/citation and PHASE 1D-R deterministic provider restart are `COMPLETE_RUNTIME_VERIFIED`; request hydration remains constant-count rather than per-Table. Provider-wide traversal/totals, sparse manual-metadata compatibility, Neo4j URN provenance, deleted-grade history, unbound Knowledge/Governance and Quality/GX retain their named `PARTIAL`/`BLOCKED` states. Account/Auth core is a completed baseline; do not falsely promote those surfaces or keep expanding core auth ahead of their owning product features. |
 
 ### EPIC: MODULAR_PRODUCT_ARCHITECTURE (`P1`)
 
