@@ -89,7 +89,7 @@ test('accepts manager in the existing access document and projects MANAGER witho
 })
 
 test('covers every named Node API route with no unknown or ambiguous registry entry', () => {
-  assert.equal(POC_ROUTE_REGISTRY.length, 64)
+  assert.equal(POC_ROUTE_REGISTRY.length, 65)
   assert.equal(new Set(POC_ROUTE_REGISTRY.map((entry) => entry.id)).size, POC_ROUTE_REGISTRY.length)
   assert.deepEqual(Object.fromEntries(['ANONYMOUS', 'AUTHENTICATED', 'CAPABILITY_PROTECTED', 'INTERNAL_SERVICE', 'DISABLED'].map((classification) => [
     classification,
@@ -97,7 +97,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
   ])), {
     ANONYMOUS: 7,
     AUTHENTICATED: 2,
-    CAPABILITY_PROTECTED: 53,
+    CAPABILITY_PROTECTED: 54,
     INTERNAL_SERVICE: 1,
     DISABLED: 1,
   })
@@ -114,6 +114,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
     ['GET', '/api/v1/admin/feature-security-policy', 'admin.feature-security-policy.read'],
     ['PUT', '/api/v1/admin/feature-security-policy', 'admin.feature-security-policy.write'],
     ['POST', `/api/v1/change-history/events/${'a'.repeat(64)}/cr-link-events`, 'change.event.command'],
+    ['GET', '/poc-api/change-requests/abc/apply-report', 'change.cr.apply-report'],
     ['POST', '/poc-api/bulk/uploads/abc/preparations/def/metadata-candidates/ghi/change-request', 'catalog.bulk.candidate-cr'],
     ['POST', '/api/v1/registration/bulk-preparations/execute', 'registration.execute.service'],
 

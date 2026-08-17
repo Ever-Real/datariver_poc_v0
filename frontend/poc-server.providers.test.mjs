@@ -1195,3 +1195,92 @@ test('enforces request-time Table scope before counts, vector Chat and graph evi
     await stateStore.close()
   }
 })
+
+test('provides a canonical authorized NOT_STARTED apply-report projection without mutating server state', async () => {
+  const { createPocStateStore } = await import('./poc-state-store.mjs')
+  const { createPocServer } = await import('./poc-server.mjs')
+  const {
+    normalizeChangeHistoryAccessDocument,
+    privateChangeHistoryAccess,
+    changeHistoryAccessCoreProjection,
+  } = await import('./poc-access-document.mjs')
+  const stateStore = createPocStateStore()
+
+  const document = normalizeChangeHistoryAccessDocument({
+    schema_version: 1,
+    active_subject_id: 'admin',
+    policy: {
+      version: 1,
+      priority_order: 'ASCENDING',
+      fallback: ['DATA_STEWARD', 'DEVELOPER', 'DATAHUB_OWNER', 'UNASSIGNED'],
+    },
+    users: [{
+      subject_id: 'admin', role: 'admin', active: true, provider_owner_refs: [],
+      username: 'admin', display_name: 'Admin', email: 'admin@test.invalid',
+      first_name: 'Admin', last_name: 'Admin', department_id: null, job_function: 'admin',
+      max_security_grade: 'restricted',
+    }],
+    systems: [],
+    system_schema_scopes: [],
+    system_assignments: [],
+  })
+  const snapshot = await stateStore.readChangeHistoryAccess()
+  await stateStore.writeChangeHistoryAccess({
+    expectedAccessVersion: snapshot.access.version,
+    expectedCoreVersion: snapshot.core.version,
+    accessValue: privateChangeHistoryAccess(document),
+    coreValue: changeHistoryAccessCoreProjection(snapshot.core.value, document, snapshot.access.version + 1),
+  })
+
+  const currentCore = await stateStore.read('core')
+  await stateStore.write('core', {
+    ...currentCore.value,
+    changeRecords: [{ id: 'test-cr-1', state: 'TESTING', items: [] }],
+  })
+
+  const server = createPocServer({
+    stateStore,
+    authenticator: {
+      async authenticate() { return { subjectId: 'admin', tokenHash: 'e'.repeat(64) } },
+      assertOrigin() {},
+    },
+  })
+  await new Promise((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+  const origin = `http://127.0.0.1:${server.address().port}`
+
+  try {
+    const missing = await fetch(`${origin}/poc-api/change-requests/unknown/apply-report`)
+    assert.equal(missing.status, 404)
+
+    const method = await fetch(`${origin}/poc-api/change-requests/test-cr-1/apply-report`, { method: 'POST' })
+    assert.equal(method.status, 404)
+
+    const beforeSuccess = await stateStore.read('core')
+    const success = await fetch(`${origin}/poc-api/change-requests/test-cr-1/apply-report`)
+    assert.equal(success.status, 200)
+    assert.equal(success.headers.get('cache-control'), 'private, no-store')
+
+    const payload = await success.json()
+    assert.deepEqual(payload, {
+      change_request_id: 'test-cr-1',
+      job_id: null,
+      state: 'NOT_STARTED',
+      attempt_count: 0,
+      last_error_code: null,
+      expected_hash: null,
+      observed_hash: null,
+      reconciled: false,
+      created_at: null,
+      updated_at: null,
+      items: [],
+      attempts: [],
+    })
+    assert.deepEqual(await stateStore.read('core'), beforeSuccess)
+  } finally {
+    server.closeAllConnections()
+    await new Promise((resolvePromise, reject) => server.close((error) => (
+      error ? reject(error) : resolvePromise()
+    )))
+    await stateStore.close()
+  }
+})

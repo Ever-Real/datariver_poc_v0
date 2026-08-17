@@ -23,6 +23,7 @@ import type {
   ChatSession,
   CapabilitiesResponse,
   ClassificationPolicySummary,
+  GovernanceApplyReport,
   MonitoringConfiguration,
   PocAuthorization,
   PocCapability,
@@ -2420,19 +2421,24 @@ class PocApiClient {
       if (!upload || upload.change_request_id !== record.id) throw new Error('첨부파일 업로드를 찾을 수 없습니다.')
       return publicAttachmentUpload(upload)
     }
-    if (/^\/change-requests\/[^/]+\/apply-report$/.test(path)) return {
-      change_request_id: path.split('/')[2] ?? '',
-      job_id: null,
-      state: 'NOT_STARTED',
-      attempt_count: 0,
-      last_error_code: null,
-      expected_hash: null,
-      observed_hash: null,
-      reconciled: false,
-      created_at: null,
-      updated_at: null,
-      items: [],
-      attempts: [],
+    if (method === 'GET' && /^\/change-requests\/[^/]+\/apply-report$/.test(path)) {
+      if (runtimeFlags().pocState) {
+        return gatewayRequest<GovernanceApplyReport>(`/poc-api${path}`, { signal: options.signal })
+      }
+      return {
+        change_request_id: path.split('/')[2] ?? '',
+        job_id: null,
+        state: 'NOT_STARTED',
+        attempt_count: 0,
+        last_error_code: null,
+        expected_hash: null,
+        observed_hash: null,
+        reconciled: false,
+        created_at: null,
+        updated_at: null,
+        items: [],
+        attempts: [],
+      }
     }
     const changeCommand = path.match(/^\/change-requests\/([^/]+)\/(transitions|approvals|complete-intake|test-runs)$/)
     if (changeCommand && method === 'POST') {

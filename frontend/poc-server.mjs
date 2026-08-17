@@ -5437,6 +5437,39 @@ async function crCreateApi(request, response, url, context) {
 
 // CR command (lifecycle mutations): POST /poc-api/change-requests/:id/commands
 // CR read: GET /poc-api/change-requests/:id
+async function applyReportApi(request, response, url, context) {
+  if (request.method !== 'GET') {
+    return problem(response, 405, 'METHOD_NOT_ALLOWED', 'The apply-report route supports only GET.')
+  }
+  const match = url.pathname.match(/^\/poc-api\/change-requests\/([^/]+)\/apply-report$/)
+  if (!match) return problem(response, 400, 'CR_ID_INVALID', 'Change request id is invalid.')
+  const crId = decodeURIComponent(match[1])
+  if (!crId || crId.length > 200) return problem(response, 400, 'CR_ID_INVALID', 'Change request id is invalid.')
+  rejectProtectedAccessClaims(request, url)
+
+  const snapshot = await context.stateStore.read('core')
+  const core = snapshot.value ?? {}
+  const changeRecords = Array.isArray(core.changeRecords) ? core.changeRecords : []
+  const cr = changeRecords.find((r) => r?.id === crId)
+
+  if (!cr) return problem(response, 404, 'CR_NOT_FOUND', 'The change request was not found.')
+
+  return json(response, 200, {
+    change_request_id: cr.id,
+    job_id: null,
+    state: 'NOT_STARTED',
+    attempt_count: 0,
+    last_error_code: null,
+    expected_hash: null,
+    observed_hash: null,
+    reconciled: false,
+    created_at: null,
+    updated_at: null,
+    items: [],
+    attempts: [],
+  }, { 'Cache-Control': 'private, no-store' })
+}
+
 async function crCommandApi(request, response, url, context) {
   const isCommandPath = /^\/poc-api\/change-requests\/[^/]+\/commands$/.test(url.pathname)
   const crId = decodeURIComponent(url.pathname.replace(/^\/poc-api\/change-requests\//, '').replace(/\/commands$/, ''))
@@ -5553,6 +5586,9 @@ async function api(request, response, url, context) {
   }
   if (request.method === 'POST' && url.pathname === '/poc-api/change-requests') {
     return crCreateApi(request, response, url, context)
+  }
+  if (/^\/poc-api\/change-requests\/[^/]+\/apply-report$/.test(url.pathname)) {
+    return applyReportApi(request, response, url, context)
   }
   if (/^\/poc-api\/change-requests\/[^/]+$/.test(url.pathname)
     || /^\/poc-api\/change-requests\/[^/]+\/commands$/.test(url.pathname)) {

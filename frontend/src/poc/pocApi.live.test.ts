@@ -232,6 +232,22 @@ function installGatewayMock() {
           })),
       }))
     }
+    if (/^\/poc-api\/change-requests\/[^/]+\/apply-report$/.test(url.pathname)) {
+      return Promise.resolve(json({
+        change_request_id: decodeURIComponent(url.pathname.split('/')[3] ?? ''),
+        job_id: null,
+        state: 'NOT_STARTED',
+        attempt_count: 0,
+        last_error_code: null,
+        expected_hash: null,
+        observed_hash: null,
+        reconciled: false,
+        created_at: null,
+        updated_at: null,
+        items: [],
+        attempts: [],
+      }))
+    }
     if (/^\/poc-api\/minio\/uploads\/[^/]+\/parts\/1$/.test(url.pathname)) {
       return Promise.resolve(new Response(null, { status: 200, headers: { ETag: '"poc-etag"' } }))
     }
@@ -1183,5 +1199,14 @@ describe('POC live-provider compatibility adapter', () => {
     expect(draft.state).toBe('DRAFT')
     const sources = await client.request<{ items: Array<{ id: string }> }>(`/knowledge/studio/drafts/${draft.id}/tbox/catalog-sources?q=wafer`)
     expect(sources.items[0]?.id).toBe(liveAssets[0]!.id)
+  })
+
+  it('proxies the apply-report route to the live POC server', async () => {
+    const client = useStableApiClient()
+    const response = await client.request<{ change_request_id: string; state: string }>(
+      '/change-requests/proxy-test-1/apply-report'
+    )
+    expect(response.change_request_id).toBe('proxy-test-1')
+    expect(response.state).toBe('NOT_STARTED')
   })
 })

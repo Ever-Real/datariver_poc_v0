@@ -114,6 +114,7 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('change.cr.create', 'POST', /^\/poc-api\/change-requests$/, 'CAPABILITY_PROTECTED', 'change.read', { scopedMutation: true }),
   route('change.cr.read', 'GET', /^\/poc-api\/change-requests\/[^/]+$/, 'CAPABILITY_PROTECTED', 'change.read'),
   route('change.cr.command', 'POST', /^\/poc-api\/change-requests\/[^/]+\/commands$/, 'CAPABILITY_PROTECTED', 'change.execute', { scopedMutation: true }),
+  route('change.cr.apply-report', 'GET', /^\/poc-api\/change-requests\/[^/]+\/apply-report$/, 'CAPABILITY_PROTECTED', 'change.read'),
   route('registration.execute.service', 'POST', /^\/api\/v1\/registration\/bulk-preparations\/execute$/, 'INTERNAL_SERVICE'),
   route('state.read', 'GET', /^\/poc-api\/state\/(core|knowledge|governance)$/, 'CAPABILITY_PROTECTED', 'catalog.read'),
   route('state.write', 'PUT', /^\/poc-api\/state\/(core|knowledge|governance)$/, 'CAPABILITY_PROTECTED', null),
