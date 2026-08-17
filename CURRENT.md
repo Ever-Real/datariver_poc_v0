@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `91ca4db7ca792566b7765f3366036b1d8bed2869`
-- Deployed OCI revision: `91ca4db7ca792566b7765f3366036b1d8bed2869`
+- Current Product SHA: `6c67242756ac3ee8fef0cf6d5d8084daaa857fa5`
+- Deployed OCI revision: `6c67242756ac3ee8fef0cf6d5d8084daaa857fa5`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -18,6 +18,8 @@
   `2f247107d28716aeba3cfe3fa201fb040ac437e3`
 - PHASE 1D-R deterministic provider restart/current Product:
   `91ca4db7ca792566b7765f3366036b1d8bed2869`
+- MCL current-source operational summary/current Product:
+  `6c67242756ac3ee8fef0cf6d5d8084daaa857fa5`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -36,6 +38,12 @@
 - PHASE 1D-R deterministic provider restart: `COMPLETE_RUNTIME_VERIFIED` — tracked configuration
   plus the supported ignored DEV configuration/secret boundary reproduces Web 39083, DataHub,
   Chat, embedding and reranking after clean restart.
+- MCL runtime / automatic detection: `COMPLETE_RUNTIME_VERIFIED` — current DataHub/Kafka source,
+  exact checkpoint/ledger, supported schema/description/lifecycle capture, startup catch-up,
+  idempotent replay, same-day scheduler receipt and restart continuation are verified.
+- Actual KST 00:00 scheduler observation: `TARGET_RECHECK_REQUIRED`.
+- DEV support-service gate: `PARTIAL` — Airflow and MinIO are healthy but not bound to the current
+  Web Product; GX has no proven current runtime/assertion E2E contract.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   sparse provider multi-aspect compatibility, unbound Knowledge/Governance and Quality/GX surfaces
   remain open.
@@ -49,8 +57,8 @@
 ```text
 P0  PHASE 1D-R deterministic runtime                 → COMPLETE_RUNTIME_VERIFIED
 P1  Account/Auth core                                → completed baseline; feature regression only
-P2  MCL change management / automatic change capture → next Product slice
-P3  DEV support services: Airflow / MinIO / GX       → current-state audit, then bounded readiness
+P2  MCL change management / automatic change capture → COMPLETE_RUNTIME_VERIFIED; midnight recheck
+P3  DEV support services: Airflow / MinIO / GX       → PARTIAL; next bounded readiness gate
 P4  Registration management                          → after support-service gate
 P5  Governance: policy/standard document management  → existing design first
 P6  Chat: General / Vector / Auto / Graph refinement → preserve current verified baseline
@@ -101,9 +109,10 @@ local credential + opaque server session
 ## Fresh validation
 
 - Independent fresh Node POC Validator at exact Product
-  `91ca4db7ca792566b7765f3366036b1d8bed2869` and matching deployed OCI revision. Effective model:
-  Gemini 3.1 Pro High; authoritative worktree/branch/HEAD recorded; no files or runtime changed.
-- Node POC full suite: 99/99 PASS.
+  `6c67242756ac3ee8fef0cf6d5d8084daaa857fa5` and matching deployed OCI revision. Effective model:
+  Gemini 3.1 Pro High; authoritative worktree/branch/HEAD recorded; no Product files or runtime
+  changed.
+- Node POC full suite: 102/102 PASS.
 - Focused Python restart/config suite: 21/21 PASS.
 - Frontend full suite: 87 files, 592/592 PASS on the final clean rerun.
 - Lint, typecheck, production build, POC image build, Compose render, Bash syntax, Ruff, Mypy and
@@ -126,7 +135,9 @@ local credential + opaque server session
   business Table was modified to work around it.
 - Web/Airflow/Neo4j/PostgreSQL/Redis/MinIO host listeners remain loopback-bound. A real second-host
   denial probe is still required.
-- MCL ledger/checkpoint/CR-link/source counts remained 46/2/4/2.
+- MCL ledger/checkpoint/CR-link/source counts are 66/2/4/2 after current-source catch-up and a
+  supported disposable schema/description/lifecycle event lifecycle. Duplicate exact source
+  positions remain 0.
 
 ## PHASE 1D current slice
 
@@ -178,13 +189,35 @@ local credential + opaque server session
   `.orchestration/evidence/DEV-PHASE1D-AUTONOMOUS-PROVIDER-GRADE-E2E.md` and
   `.orchestration/evidence/DEV-PHASE1D-R-DETERMINISTIC-RESTART.md`.
 
+## MCL runtime / automatic detection
+
+- Product `6c672427...` preserves the existing two historical sources/checkpoints and scopes only
+  operational capture/sync/ledger-guarantee status to the exactly configured current source.
+  Historical event lists/counts remain readable and unfiltered by source.
+- The current source caught up from checkpoint offset 52,942 to 55,596. Exact deterministic
+  ledger count advanced from 46 to 66; an immediate replay appended zero, and duplicate exact
+  source positions remain zero.
+- A DEV-only disposable Dataset produced five supported normalized changes: documentation create
+  and update, schema field create and add, and lifecycle delete. It remains a tombstone/history
+  record; no hard delete or destructive offset reset occurred.
+- Scheduler startup captured changes, reconciled the current 2,002-asset Catalog and wrote receipt
+  version 2. Same-configuration Web restart preserved ledger 66, checkpoint offset/version
+  55,596/2,748, receipt 2 and Catalog version 39.
+- Final runtime summary is `CONTIGUOUS_CAPTURE_RECORDED`; Web is healthy at 39083 and the deployed
+  OCI revision matches the Product SHA exactly. Actual KST 00:00 passage was not observed and stays
+  `TARGET_RECHECK_REQUIRED`.
+- Read-only support audit: Airflow 3.3.0 and MinIO are healthy on loopback, but current Web bindings
+  are absent; MinIO is owned by another workspace Compose. GX has no running/proven current
+  runtime and no checkpoint→result→DataHub assertion E2E. Support gate remains `PARTIAL`.
+- Evidence: `.orchestration/evidence/DEV-MCL-RUNTIME-AUTOMATIC-DETECTION.md`.
+
 ## Gates
 
 - G1 SOURCE_MERGE: `NOT_APPROVED`
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `91ca4db7...`; do not start PHASE 1E/1F, migration, legacy
-  deletion, GX/Knowledge/Quality Product implementation or another Account/Auth refactor. Next,
-  audit current MCL and Airflow/MinIO/GX source/runtime read-only, then implement only the smallest
-  existing-contract MCL runtime/automatic-detection activation slice.
+- Current boundary: preserve Product `6c672427...`; do not start PHASE 1E/1F, migration, legacy
+  deletion, GX/Knowledge/Quality Product implementation or another Account/Auth refactor. The next
+  Product priority is the bounded DEV support-service gate for current Airflow/MinIO bindings and
+  the canonical GX contract; Registration mutation waits for that readiness gate.
