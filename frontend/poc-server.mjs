@@ -888,12 +888,28 @@ function changeHistoryMinimumTimestamp(values) {
   return timestamps[0] ?? null
 }
 
-function changeHistorySourceSummary(projection, rows) {
+function changeHistorySourceSummary(projection, rows, configuredHash) {
   const sources = Array.isArray(projection.sources) ? projection.sources : []
-  const referencedSourceIds = new Set(rows.map((row) => row.event.source_identity_hash).filter(Boolean))
-  const relevantSources = referencedSourceIds.size
-    ? sources.filter((source) => referencedSourceIds.has(source.source_identity_hash))
-    : sources
+  let effectiveRows = rows
+  let relevantSources
+  if (configuredHash != null) {
+    // Syntactically-valid configured source hash: use it exclusively for operational status.
+    // Fail closed if it does not match any stored source.
+    const configuredSources = sources.filter((source) => source.source_identity_hash === configuredHash)
+    if (configuredSources.length !== 1) return {
+      capture_state: 'SOURCE_NOT_CONFIGURED', sync_status: 'SOURCE_NOT_CONFIGURED',
+      first_mcl_offsets: null, last_successful_capture_at: null, ledger_guarantee_from: null,
+    }
+    const configuredSource = configuredSources[0]
+    relevantSources = [configuredSource]
+    effectiveRows = rows.filter((row) => row.event.source_identity_hash === configuredHash)
+  } else {
+    // Fallback: derive sources from all historical rows (preserves SOURCE_AMBIGUOUS behaviour).
+    const referencedSourceIds = new Set(rows.map((row) => row.event.source_identity_hash).filter(Boolean))
+    relevantSources = referencedSourceIds.size
+      ? sources.filter((source) => referencedSourceIds.has(source.source_identity_hash))
+      : sources
+  }
   if (relevantSources.length === 0) return {
     capture_state: 'SOURCE_NOT_CONFIGURED', sync_status: 'SOURCE_NOT_CONFIGURED',
     first_mcl_offsets: null, last_successful_capture_at: null, ledger_guarantee_from: null,
@@ -923,7 +939,7 @@ function changeHistorySourceSummary(projection, rows) {
     partition: Number(checkpoint.source_partition),
     offset: Number(checkpoint.first_exact_offset),
   })).sort((left, right) => left.partition - right.partition)
-  const exactCapturedAt = rows.filter((row) => row.precision === 'EXACT_MCL').map((row) => row.event.captured_at)
+  const exactCapturedAt = effectiveRows.filter((row) => row.precision === 'EXACT_MCL').map((row) => row.event.captured_at)
   return {
     capture_state: advanced ? 'CONTIGUOUS_CAPTURE_RECORDED' : 'CAPTURE_PENDING',
     sync_status: advanced ? 'CONTIGUOUS_CAPTURE_RECORDED' : 'CAPTURE_PENDING',
@@ -953,7 +969,11 @@ function changeHistorySummary(projection, rows, core, document, weekStart) {
     for (const category of transactionCategories) categoryCounts[category] += 1
     for (const operation of transactionOperations) operationCounts[operation] += 1
   }
-  const source = changeHistorySourceSummary(projection, rows)
+  const rawConfiguredHash = process.env.POC_MCL_SOURCE_IDENTITY_HASH?.trim()
+  const configuredHash = (rawConfiguredHash && /^[0-9a-f]{64}$/i.test(rawConfiguredHash))
+    ? rawConfiguredHash.toLowerCase()
+    : null
+  const source = changeHistorySourceSummary(projection, rows, configuredHash)
   const occurred = rows.map((row) => row.event.source_occurred_at)
   const detected = rows.map((row) => row.event.detected_at)
   const captured = rows.map((row) => row.event.captured_at)

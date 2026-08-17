@@ -1364,3 +1364,174 @@ test('enforces responsible-System actors and atomically completes three independ
     }))
   }
 })
+
+// ---------------------------------------------------------------------------
+// Focused MCL configured-source summary tests
+// ---------------------------------------------------------------------------
+
+function makeChangeHistoryProjection({ sourceHashes, configuredCheckpointHash }) {
+  // Use the exact known-valid catalog/access/core shapes from the existing passing test
+  // (same URN format, same admin policy shape, same catalog fields) to pass validDatahubInventory.
+  const assetUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,business_db.public.orders,PROD)'
+  const sources = sourceHashes.map((h, i) => ({
+    source_identity_hash: h, provider_name: 'DataHub',
+    provider_version: `v${i}`, schema_contract_hash: '8'.repeat(64),
+    created_at: `2026-0${i + 1}-01T00:00:00.000Z`,
+  }))
+  const events = sourceHashes.map((h, i) => ({
+    event_identity: String(i).repeat(64), event_hash: String(i + 1).repeat(64),
+    normalized_change_transaction_id: String(i + 2).repeat(64),
+    source_identity_hash: h, topic_contract: 'MetadataChangeLog_Versioned_v1',
+    source_partition: 0, source_offset: 10,
+    asset_urn: assetUrn, normalized_entity_key: 'business_db.public.orders',
+    category: 'TECHNICAL_SCHEMA', source_aspect: 'schemaMetadata',
+    operation: 'UPDATE', before_data: { nullable: true }, after_data: { nullable: false },
+    actor_ref: null,
+    source_occurred_at: `2026-0${i + 1}-11T01:00:00.000Z`,
+    detected_at: `2026-0${i + 1}-11T01:00:01.000Z`,
+    captured_at: `2026-0${i + 1}-11T01:00:02.000Z`,
+  }))
+  // Only supply a checkpoint for the configuredCheckpointHash source (so it can resolve).
+  const checkpoints = configuredCheckpointHash ? [{
+    source_identity_hash: configuredCheckpointHash,
+    topic_contract: 'MetadataChangeLog_Versioned_v1',
+    source_partition: 0, first_exact_offset: 10, next_offset: 11,
+    last_captured_at: '2026-01-11T01:00:02.000Z', version: 1,
+  }] : []
+  return {
+    access: { version: 1, value: {
+      schema_version: 1, active_subject_id: 'admin-sub',
+      policy: { version: 1, priority_order: 'ASCENDING', fallback: ['DATA_STEWARD', 'DEVELOPER', 'DATAHUB_OWNER', 'UNASSIGNED'] },
+      users: [{ subject_id: 'admin-sub', role: 'admin', active: true, provider_owner_refs: [] }],
+      system_assignments: [],
+    } },
+    core: { version: 1, value: {
+      changeRecords: [],
+      adminSystems: [{ system_id: 'biz-system', code: 'BIZ', name: 'Biz', description: '', active: true, version: 1 }],
+      adminSystemSchemaScopes: [['biz-system', [{ scope_id: 'scope-1', system_id: 'biz-system', platform: 'postgres', database_name: 'business_db', schema_name: 'public', active: true, version: 1 }]]],
+    } },
+    catalog: { version: 2, value: {
+      projection_version: 1, source_scope: 'disabled',
+      source_generation: 'a'.repeat(64), observed_at: '2026-08-14T00:00:00.000Z',
+      items: [{ id: assetUrn, name: 'orders', platform: 'postgres', database_name: 'business_db', schema_name: 'public' }],
+    } },
+    events,
+    links: [],
+    sources,
+    checkpoints,
+  }
+}
+
+test('configured current source among two resolves operational status and preserves full event history', async () => {
+  const sourceA = '9'.repeat(64)
+  const sourceB = '8'.repeat(64)
+  const { createPocServer } = await import('./poc-server.mjs?mcl-configured-source-among-two')
+  const projection = makeChangeHistoryProjection({ sourceHashes: [sourceA, sourceB], configuredCheckpointHash: sourceA })
+  const stateStore = {
+    configured: { postgres: true, redis: false },
+    async readChangeHistoryAccess() { return { access: structuredClone(projection.access), core: structuredClone(projection.core) } },
+    async readChangeHistoryProjection() { return structuredClone(projection) },
+  }
+  const saved = process.env.POC_MCL_SOURCE_IDENTITY_HASH
+  try {
+    process.env.POC_MCL_SOURCE_IDENTITY_HASH = sourceA
+    const srv = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub') })
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+    const base = `http://127.0.0.1:${srv.address().port}`
+    try {
+      // Summary: configured source resolves, no SOURCE_AMBIGUOUS
+      const sumRes = await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)
+      assert.equal(sumRes.status, 200)
+      const sum = await sumRes.json()
+      assert.equal(sum.sync_status, 'CONTIGUOUS_CAPTURE_RECORDED',
+        `expected CONTIGUOUS_CAPTURE_RECORDED, got ${sum.sync_status}`)
+      assert.notEqual(sum.sync_status, 'SOURCE_AMBIGUOUS')
+      // ledger_guarantee_from comes from sourceA's EXACT_MCL row only
+      assert.equal(sum.ledger_guarantee_from, '2026-01-11T01:00:02.000Z')
+      // Event list/count must include ALL events from both sources
+      const listRes = await fetch(`${base}/api/v1/change-history/events`)
+      assert.equal(listRes.status, 200)
+      const list = await listRes.json()
+      assert.equal(list.total, 2, `expected 2 events (both sources), got ${list.total}`)
+    } finally {
+      srv.closeAllConnections()
+      await new Promise((resolve, reject) => srv.close((e) => e ? reject(e) : resolve()))
+    }
+  } finally {
+    if (saved === undefined) delete process.env.POC_MCL_SOURCE_IDENTITY_HASH
+    else process.env.POC_MCL_SOURCE_IDENTITY_HASH = saved
+  }
+})
+
+test('missing or syntactically invalid configured source falls back to SOURCE_AMBIGUOUS with two stored sources', async () => {
+  const sourceA = '9'.repeat(64)
+  const sourceB = '8'.repeat(64)
+  const { createPocServer } = await import('./poc-server.mjs?mcl-missing-configured-source')
+  const projection = makeChangeHistoryProjection({ sourceHashes: [sourceA, sourceB], configuredCheckpointHash: sourceA })
+  const stateStore = {
+    configured: { postgres: true, redis: false },
+    async readChangeHistoryAccess() { return { access: structuredClone(projection.access), core: structuredClone(projection.core) } },
+    async readChangeHistoryProjection() { return structuredClone(projection) },
+  }
+  const saved = process.env.POC_MCL_SOURCE_IDENTITY_HASH
+  try {
+    // No env var set — must fall back to ambiguous
+    delete process.env.POC_MCL_SOURCE_IDENTITY_HASH
+    const srv = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub') })
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+    const base = `http://127.0.0.1:${srv.address().port}`
+    try {
+      const sum1 = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
+      assert.equal(sum1.sync_status, 'SOURCE_AMBIGUOUS', `unset: expected SOURCE_AMBIGUOUS, got ${sum1.sync_status}`)
+
+      // Syntactically invalid value (not 64 hex chars) — same fallback
+      process.env.POC_MCL_SOURCE_IDENTITY_HASH = 'not-a-hash'
+      const sum2 = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
+      assert.equal(sum2.sync_status, 'SOURCE_AMBIGUOUS', `invalid: expected SOURCE_AMBIGUOUS, got ${sum2.sync_status}`)
+
+      // Event count still returns both events
+      const list = await (await fetch(`${base}/api/v1/change-history/events`)).json()
+      assert.equal(list.total, 2)
+    } finally {
+      srv.closeAllConnections()
+      await new Promise((resolve, reject) => srv.close((e) => e ? reject(e) : resolve()))
+    }
+  } finally {
+    if (saved === undefined) delete process.env.POC_MCL_SOURCE_IDENTITY_HASH
+    else process.env.POC_MCL_SOURCE_IDENTITY_HASH = saved
+  }
+})
+
+test('configured source hash matching no stored source fails closed with SOURCE_NOT_CONFIGURED', async () => {
+  const sourceA = '9'.repeat(64)
+  const unknownHash = '7'.repeat(64)
+  const { createPocServer } = await import('./poc-server.mjs?mcl-configured-source-not-found')
+  const projection = makeChangeHistoryProjection({ sourceHashes: [sourceA], configuredCheckpointHash: sourceA })
+  const stateStore = {
+    configured: { postgres: true, redis: false },
+    async readChangeHistoryAccess() { return { access: structuredClone(projection.access), core: structuredClone(projection.core) } },
+    async readChangeHistoryProjection() { return structuredClone(projection) },
+  }
+  const saved = process.env.POC_MCL_SOURCE_IDENTITY_HASH
+  try {
+    process.env.POC_MCL_SOURCE_IDENTITY_HASH = unknownHash
+    const srv = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub') })
+    await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+    const base = `http://127.0.0.1:${srv.address().port}`
+    try {
+      const sum = await (await fetch(`${base}/api/v1/change-history/summary?week_start=2026-08-10`)).json()
+      assert.equal(sum.sync_status, 'SOURCE_NOT_CONFIGURED', `expected SOURCE_NOT_CONFIGURED, got ${sum.sync_status}`)
+      assert.equal(sum.capture_state, 'SOURCE_NOT_CONFIGURED')
+      assert.equal(sum.ledger_guarantee_from, null)
+      // Events are still all returned
+      const list = await (await fetch(`${base}/api/v1/change-history/events`)).json()
+      assert.equal(list.total, 1)
+    } finally {
+      srv.closeAllConnections()
+      await new Promise((resolve, reject) => srv.close((e) => e ? reject(e) : resolve()))
+    }
+  } finally {
+    if (saved === undefined) delete process.env.POC_MCL_SOURCE_IDENTITY_HASH
+    else process.env.POC_MCL_SOURCE_IDENTITY_HASH = saved
+  }
+})
