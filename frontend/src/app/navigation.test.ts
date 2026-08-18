@@ -43,7 +43,7 @@ describe('navigation contract', () => {
       'catalog', 'change-management', 'monitoring',
       'governance', 'chat',
     ])
-    expect(pocCapabilityForPage('registration')).toBe('catalog.execute')
+    expect(pocCapabilityForPage('registration')).toBe('catalog.read')
     expect(pocCapabilityForPage('knowledge-studio')).toBe('knowledge.manage')
     expect(pocCapabilityForPage('admin')).toBe('admin.manage')
     expect(pocCapabilityForPage('dashboard')).toBeUndefined()
@@ -57,8 +57,10 @@ describe('navigation contract', () => {
       .toEqual(['catalog'])
     expect(pocNavigationForCapabilities(managerCapabilities, 'admin').map(({ id }) => id))
       .toEqual(['catalog'])
-    expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'manager')).toBe(false)
+    expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'manager')).toBe(true)
     expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'data_steward')).toBe(true)
     expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'admin')).toBe(true)
+    expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'viewer')).toBe(false)
+    expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'developer')).toBe(false)
   })
 })

@@ -11,6 +11,7 @@ import { PageTitle } from '../../components/layout/PageTitle'
 import { CatalogResourceTree } from '../catalog/CatalogResourceTree'
 import { RegistrationBulkWorkbench } from './RegistrationBulkWorkbench'
 import { RegistrationManualWorkbench } from './RegistrationManualWorkbench'
+import { RegistrationRecentPanel } from './RegistrationRecentPanel'
 
 type RegistrationMode = 'MANUAL' | 'BULK'
 
@@ -146,76 +147,90 @@ export function RegistrationPage({ client }: { client: ApiClient }) {
         </>
       ) : !capability ? (
         <p role="status">등록 권한 확인 중…</p>
-      ) : !capability.eligible ? (
+      ) : !capability.can_view_registration ? (
         <GovernedUnavailable
-          title="등록 작업 권한이 없습니다"
-          description="활성 상태의 Admin 또는 Data Steward만 Manual/Bulk 등록과 변경요청 생성을 수행할 수 있습니다."
+          title="등록관리 접근 권한이 없습니다"
+          description="활성 상태의 Data Steward, Manager 또는 Admin만 등록 상태를 조회할 수 있습니다."
         />
       ) : (
-        <>
-      <div className="registration-mode-tabs" role="tablist" aria-label="등록 방식">
-        <button
-          type="button"
-          role="tab"
-          id="registration-manual-tab"
-          aria-controls="registration-manual-panel"
-          aria-selected={mode === 'MANUAL'}
-          tabIndex={mode === 'MANUAL' ? 0 : -1}
-          className={mode === 'MANUAL' ? 'active' : ''}
-          onClick={() => setMode('MANUAL')}
-          title="단건 검토"
-        ><PencilLine size={13} />MANUAL</button>
-        <button
-          type="button"
-          role="tab"
-          id="registration-bulk-tab"
-          aria-controls="registration-bulk-panel"
-          aria-selected={mode === 'BULK'}
-          tabIndex={mode === 'BULK' ? 0 : -1}
-          className={mode === 'BULK' ? 'active' : ''}
-          onClick={() => setMode('BULK')}
-          title="일괄 등록"
-        ><UploadCloud size={13} />BULK</button>
-      </div>
+        <div className="registration-workspace-shell">
+          <div className="registration-workspace-main">
+            {capability.eligible ? (
+              <>
+                <div className="registration-mode-tabs" role="tablist" aria-label="등록 방식">
+                  <button
+                    type="button"
+                    role="tab"
+                    id="registration-manual-tab"
+                    aria-controls="registration-manual-panel"
+                    aria-selected={mode === 'MANUAL'}
+                    tabIndex={mode === 'MANUAL' ? 0 : -1}
+                    className={mode === 'MANUAL' ? 'active' : ''}
+                    onClick={() => setMode('MANUAL')}
+                    title="단건 검토"
+                  ><PencilLine size={13} />MANUAL</button>
+                  <button
+                    type="button"
+                    role="tab"
+                    id="registration-bulk-tab"
+                    aria-controls="registration-bulk-panel"
+                    aria-selected={mode === 'BULK'}
+                    tabIndex={mode === 'BULK' ? 0 : -1}
+                    className={mode === 'BULK' ? 'active' : ''}
+                    onClick={() => setMode('BULK')}
+                    title="일괄 등록"
+                  ><UploadCloud size={13} />BULK</button>
+                </div>
 
-      {mode === 'MANUAL' ? (
-        <div className="registration-manual-workbench" id="registration-manual-panel" role="tabpanel" aria-labelledby="registration-manual-tab">
-          <CatalogResourceTree
-            client={client}
-            selectedAssetId={selectedAssetId}
-            searchable
-            searchIdPrefix="registration-resource"
-            searchLabel="등록 대상 자산 검색"
-            onSelectAsset={(assetId) => {
-              setSelectedAssetDetail(undefined)
-              setSelectedAssetId(assetId)
-              setFieldOffset(0)
-              snapshotRef.current = undefined
-            }}
-          />
-          <div>
-            <RegistrationManualWorkbench
-              client={client}
-              asset={selectedAssetDetail}
-              loading={loadingDetail}
-              canViewWorkspaceHistory={capability.can_view_workspace_history}
-              onClose={() => setSelectedAssetId(undefined)}
-              onPreviousFieldPage={() => {
-                setFieldOffset((current) => Math.max(0, current - MANUAL_FIELD_PAGE_SIZE))
-              }}
-              onNextFieldPage={() => {
-                setFieldOffset((current) => current + MANUAL_FIELD_PAGE_SIZE)
-              }}
-            />
-            <ErrorNotice error={detailError} />
+                {mode === 'MANUAL' ? (
+                  <div className="registration-manual-workbench" id="registration-manual-panel" role="tabpanel" aria-labelledby="registration-manual-tab">
+                    <CatalogResourceTree
+                      client={client}
+                      selectedAssetId={selectedAssetId}
+                      searchable
+                      searchIdPrefix="registration-resource"
+                      searchLabel="등록 대상 자산 검색"
+                      onSelectAsset={(assetId) => {
+                        setSelectedAssetDetail(undefined)
+                        setSelectedAssetId(assetId)
+                        setFieldOffset(0)
+                        snapshotRef.current = undefined
+                      }}
+                    />
+                    <div>
+                      <RegistrationManualWorkbench
+                        client={client}
+                        asset={selectedAssetDetail}
+                        loading={loadingDetail}
+                        onClose={() => setSelectedAssetId(undefined)}
+                        onPreviousFieldPage={() => {
+                          setFieldOffset((current) => Math.max(0, current - MANUAL_FIELD_PAGE_SIZE))
+                        }}
+                        onNextFieldPage={() => {
+                          setFieldOffset((current) => current + MANUAL_FIELD_PAGE_SIZE)
+                        }}
+                      />
+                      <ErrorNotice error={detailError} />
+                    </div>
+                  </div>
+                ) : (
+                  <div id="registration-bulk-panel" role="tabpanel" aria-labelledby="registration-bulk-tab">
+                    <RegistrationBulkWorkbench client={client} />
+                  </div>
+                )}
+              </>
+            ) : (
+              <GovernedUnavailable
+                title="등록관리 조회 전용"
+                description="Manager는 접근 가능한 대상의 준비·성공·실패 상태를 확인할 수 있지만 Manual/Bulk 실행과 변경요청 생성은 할 수 없습니다."
+              />
+            )}
           </div>
+          <RegistrationRecentPanel
+            client={client}
+            canViewWorkspaceHistory={capability.can_view_workspace_history}
+          />
         </div>
-      ) : (
-        <div id="registration-bulk-panel" role="tabpanel" aria-labelledby="registration-bulk-tab">
-          <RegistrationBulkWorkbench client={client} />
-        </div>
-      )}
-        </>
       )}
     </section>
   )

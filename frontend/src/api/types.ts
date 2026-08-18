@@ -220,6 +220,8 @@ export interface ManualMetadataSubmission {
   source_version: string
   provider_source_version: string
   created_at: string
+  created_by?: string
+  asset_id?: string
   version: number
 }
 
@@ -418,6 +420,8 @@ export interface UploadRecord {
   recommended_part_size_bytes: number
   validation_summary: Record<string, unknown>
   last_error_code: string | null
+  created_at?: string
+  created_by?: string
 }
 
 export interface UploadPreparation {
@@ -769,9 +773,11 @@ export interface GovernanceApplyReport {
 
 export interface RegistrationOperatorCapability {
   eligible: boolean
+  can_view_registration: boolean
   can_view_workspace_history: boolean
   reason_code:
     | 'ELIGIBLE'
+    | 'READ_ONLY'
     | 'ACTIVE_HUMAN_ADMIN_OR_DATA_STEWARD_REQUIRED'
   allowed_roles: ['ADMIN', 'DATA_STEWARD']
 }

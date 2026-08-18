@@ -243,6 +243,21 @@ test('enforces Registration-only asset mutation seam', () => {
     assert.throws(() => assertPocRouteAuthorization(route, dev), { code: 'ROLE_FORBIDDEN' })
   }
 
+  for (const route of POC_ROUTE_REGISTRY.filter((entry) => [
+    'catalog.bulk.list',
+  ].includes(entry.id))) {
+    if (route.capability) managerSysTable.capabilitySet.add(route.capability)
+    assert.doesNotThrow(() => assertPocRouteAuthorization(route, managerSysTable))
+  }
+  for (const route of POC_ROUTE_REGISTRY.filter((entry) => [
+    'catalog.bulk.create', 'catalog.bulk.candidate-cr', 'catalog.manual-metadata',
+    'catalog.template.xlsx', 'catalog.template.csv', 'catalog.bulk.candidates',
+    'catalog.bulk.preview', 'provider.minio.part', 'provider.minio.complete',
+  ].includes(entry.id))) {
+    if (route.capability) managerSysTable.capabilitySet.add(route.capability)
+    assert.throws(() => assertPocRouteAuthorization(route, managerSysTable), { code: 'ROLE_FORBIDDEN' })
+  }
+
   assert.ok(!canReadRegistrationAsset(dev, validAsset, activeSystems))
   assert.throws(() => assertRegistrationAssetMutation(dev, validAsset, activeSystems), { code: 'TABLE_DATA_FORBIDDEN' })
 

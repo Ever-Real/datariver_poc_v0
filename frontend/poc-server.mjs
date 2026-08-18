@@ -2334,12 +2334,20 @@ async function datahubCatalog(searchParameters, principal, feature = 'catalog') 
   const limit = Math.min(100, Math.max(1, Number.isFinite(requested) ? requested : 50))
   const filterKeys = ['asset_type', 'platform', 'database', 'schema', 'domain', 'classification', 'lifecycle']
   const fields = catalogSearchFields(searchParameters)
+  const requestedUrns = searchParameters.getAll('urn')
+  if (requestedUrns.length > 100 || requestedUrns.some((urn) => (
+    !urn.startsWith('urn:li:dataset:') || urn.length > 4_096
+  ))) {
+    throw Object.assign(new Error('Catalog exact URN scope is invalid.'), { statusCode: 400 })
+  }
+  const exactUrns = new Set(requestedUrns)
   const inventory = await datahubInventory()
   const allItems = (principal ? filterAssetsForPrincipal(principal, inventory, feature) : inventory)
+    .filter((item) => !exactUrns.size || exactUrns.has(item.id))
     .filter((item) => assetMatches(item, searchParameters, fields))
     .map((item) => ({ ...item, matches: catalogMatchFragments(item, query, fields) }))
     .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id))
-  const scope = parameterScope('catalog-projection', searchParameters, ['q', ...filterKeys, 'search_fields', 'limit'])
+  const scope = `${parameterScope('catalog-projection', searchParameters, ['q', ...filterKeys, 'search_fields', 'limit'])}:urns=${sha256([...exactUrns].sort().join('\n'))}`
   const page = offsetPage(allItems, searchParameters, scope, limit)
   return {
     ...page,

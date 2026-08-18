@@ -111,15 +111,47 @@ function isRegistrationOperator(): boolean {
 }
 
 function isRegistrationOperatorPath(path: string, method: string): boolean {
+  if (method === 'GET') return false
   if (path === '/registration' || path.startsWith('/registration/')) return true
   if (path === '/uploads' || path.startsWith('/uploads/')) return path !== '/uploads/operator-capability'
   if (method !== 'POST') return false
   return /^\/catalog\/assets\/[^/]+\/(?:description|column-description|controlled-metadata)-(?:previews|change-requests)$/.test(path)
 }
 
+function isRegistrationReaderPath(path: string, method: string): boolean {
+  if (method !== 'GET') return false
+  if (path === '/registration' || path.startsWith('/registration/')) return true
+  if (path === '/uploads' || path.startsWith('/uploads/')) return true
+  return false
+}
+
+function isRegistrationManagerHistoryPath(path: string): boolean {
+  if (path === '/uploads/operator-capability' || path === '/uploads') return true
+  if (/^\/uploads\/[^/]+$/.test(path)) return true
+  if (/^\/uploads\/[^/]+\/preparations$/.test(path)) return true
+  if (path === '/registration/manual-submissions') return true
+  if (/^\/registration\/manual-submissions\/[^/]+$/.test(path)) return true
+  return false
+}
+
+function isRegistrationReader(): boolean {
+  return presentationAuthorization?.role === 'data_steward'
+    || presentationAuthorization?.role === 'admin'
+    || presentationAuthorization?.role === 'manager'
+}
+
 function requireRegistrationOperator(): void {
   if (!isRegistrationOperator()) {
     throw new Error('등록관리는 Data Steward 또는 Admin 역할만 수행할 수 있습니다.')
+  }
+}
+
+function requireRegistrationReader(path: string): void {
+  if (!isRegistrationReader()) {
+    throw new Error('등록관리는 Data Steward, Manager 또는 Admin 역할만 접근할 수 있습니다.')
+  }
+  if (presentationAuthorization?.role === 'manager' && !isRegistrationManagerHistoryPath(path)) {
+    throw new Error('Manager는 등록 실행이력과 준비·결과 상태만 조회할 수 있습니다.')
   }
 }
 
@@ -136,7 +168,9 @@ function localDispatchCapability(path: string, method: string): PocCapability | 
       ? 'catalog.execute'
       : 'catalog.manage'
   }
-  if (path === '/registration' || path.startsWith('/registration/') || path === '/uploads' || path.startsWith('/uploads/')) return 'catalog.execute'
+  if (path === '/registration' || path.startsWith('/registration/') || path === '/uploads' || path.startsWith('/uploads/')) {
+    return method === 'GET' ? 'catalog.read' : 'catalog.execute'
+  }
   if (path === '/change-requests/intake' && method === 'POST') return 'change.read'
   if (path === '/change-requests' || path.startsWith('/change-requests/') || path.startsWith('/change-history/')) {
     if (method === 'GET') return 'change.read'
@@ -1029,6 +1063,8 @@ function createUploadRecord(body: Record<string, unknown>, contentProfile?: stri
     recommended_part_size_bytes: 8 * 1024 * 1024,
     validation_summary: {},
     last_error_code: null,
+    created_at: now.toISOString(),
+    created_by: presentationSubjectId,
   }
   uploadRecords.unshift(record)
   return record
@@ -1211,6 +1247,47 @@ async function liveCatalog(
   return gatewayRequest<CatalogSearch>(`/poc-api/datahub/catalog?${parameters.toString()}`, {
     ...(signal ? { signal } : {}),
   })
+}
+
+async function managerVisibleRegistrationUrns(
+  urns: string[],
+  signal?: AbortSignal,
+): Promise<Set<string>> {
+  const exactUrns = [...new Set(urns.filter((urn) => urn.startsWith('urn:li:dataset:')))].slice(0, 100)
+  if (!exactUrns.length || !runtimeFlags().datahub) return new Set()
+  const parameters = new URLSearchParams({ q: '*', limit: '100' })
+  exactUrns.forEach((urn) => parameters.append('urn', urn))
+  const result = await gatewayRequest<CatalogSearch>(
+    `/poc-api/datahub/catalog?${parameters.toString()}`,
+    { ...(signal ? { signal } : {}) },
+  )
+  return new Set(result.items.map((item) => item.id))
+}
+
+function managerUploadHistoryProjection(record: Record<string, unknown>): Record<string, unknown> {
+  const validation = record.validation_summary && typeof record.validation_summary === 'object'
+    ? record.validation_summary as Record<string, unknown>
+    : {}
+  return {
+    id: record.id,
+    display_name: 'Bulk 실행',
+    state: record.state,
+    size_bytes: 0,
+    content_type: 'application/octet-stream',
+    sha256: '',
+    content_profile: record.content_profile,
+    classification: '',
+    version: record.version,
+    expires_at: record.expires_at,
+    recommended_part_size_bytes: 0,
+    created_at: record.created_at,
+    created_by: record.created_by,
+    last_error_code: record.last_error_code,
+    validation_summary: {
+      status: validation.status,
+      rows: validation.rows,
+    },
+  }
 }
 
 function chatRoute(mode: ChatMode) {
@@ -1620,6 +1697,7 @@ class PocApiClient {
     if (!requiredCapability) throw new Error('미분류 POC API 경로는 사용할 수 없습니다.')
     if (requiredCapability !== 'AUTHENTICATED') requirePocCapability(requiredCapability)
     if (isRegistrationOperatorPath(parsed.pathname, method)) requireRegistrationOperator()
+    if (isRegistrationReaderPath(parsed.pathname, method)) requireRegistrationReader(parsed.pathname)
     if (path.startsWith('/change-history/') || /^\/change-requests\/[^/]+\/change-history(?:\?|$)/.test(path)
       || parsed.pathname === '/admin/table-system-mappings'
       || parsed.pathname === '/admin/feature-security-policy'
@@ -2050,8 +2128,11 @@ class PocApiClient {
     }
     if (path === '/uploads/operator-capability') return {
       eligible: isRegistrationOperator(),
-      can_view_workspace_history: isRegistrationOperator(),
-      reason_code: isRegistrationOperator() ? 'ELIGIBLE' : 'ROLE_FORBIDDEN',
+      can_view_registration: isRegistrationReader(),
+      can_view_workspace_history: isRegistrationReader(),
+      reason_code: isRegistrationOperator()
+        ? 'ELIGIBLE'
+        : isRegistrationReader() ? 'READ_ONLY' : 'ACTIVE_HUMAN_ADMIN_OR_DATA_STEWARD_REQUIRED',
       allowed_roles: ['ADMIN', 'DATA_STEWARD'],
     }
     const knowledgeUploadCollection = path.match(/^\/knowledge\/graphs\/[^/]+\/source-uploads$/)
@@ -2061,7 +2142,11 @@ class PocApiClient {
       await this.persistCore()
       return record
     }
-    if (path === '/uploads' && method === 'GET') return { items: uploadRecords }
+    if (path === '/uploads' && method === 'GET') return {
+      items: presentationAuthorization?.role === 'manager'
+        ? uploadRecords.map(managerUploadHistoryProjection)
+        : uploadRecords,
+    }
     const uploadPart = path.match(/^\/uploads\/([^/]+)\/parts$/)
       ?? path.match(/^\/knowledge\/graphs\/[^/]+\/source-uploads\/([^/]+)\/parts$/)
     if (uploadPart && method === 'POST') {
@@ -2112,14 +2197,31 @@ class PocApiClient {
     if (uploadDetail && method === 'GET') {
       const record = uploadById(uploadDetail[1] ?? '')
       if (!record) throw new Error('업로드를 찾을 수 없습니다.')
-      return record
+      return presentationAuthorization?.role === 'manager'
+        ? managerUploadHistoryProjection(record)
+        : record
     }
     const preparationCollection = path.match(/^\/uploads\/([^/]+)\/preparations$/)
     if (preparationCollection && method === 'GET') {
-      return gatewayRequest(
+      const result = await gatewayRequest<{ items?: Array<Record<string, unknown>> }>(
         `/poc-api/bulk/uploads/${encodeURIComponent(preparationCollection[1] ?? '')}/preparations`,
         { signal: options.signal },
       )
+      if (presentationAuthorization?.role !== 'manager') return result
+      return {
+        items: (result.items ?? []).map((item) => ({
+          id: item.id,
+          upload_id: item.upload_id,
+          state: item.state,
+          attempts: item.attempts,
+          rows_processed: item.rows_processed,
+          total_rows: item.total_rows,
+          last_error_code: item.last_error_code,
+          created_at: item.created_at,
+          updated_at: item.updated_at,
+          version: item.version,
+        })),
+      }
     }
     if (preparationCollection && method === 'POST') {
       const record = uploadById(preparationCollection[1] ?? '')
@@ -2198,6 +2300,8 @@ class PocApiClient {
         source_version: responseString(body.source_version, 'datahub-live-poc'),
         provider_source_version: responseString(body.provider_source_version, 'datahub-live'),
         created_at: now,
+        created_by: presentationSubjectId,
+        asset_id: responseString(body.asset_id, ''),
         updated_at: now,
         applied_at: now,
         attempts: 1,
@@ -2226,9 +2330,26 @@ class PocApiClient {
       return submission
     }
     if (path === '/registration/manual-submissions' && method === 'GET') {
-      const limit = Number(url.searchParams.get('limit') ?? 25)
+      const requestedLimit = Number(url.searchParams.get('limit') ?? 25)
+      const limit = Math.min(100, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : 25))
+      const items = manualSubmissionReports.slice(0, limit).flatMap((item) => (
+        item.submission && typeof item.submission === 'object'
+          ? [item.submission as Record<string, unknown>]
+          : []
+      ))
+      const visibleItems = presentationAuthorization?.role === 'manager'
+        ? items.filter((item) => typeof item.asset_id === 'string' && item.asset_id.startsWith('urn:li:dataset:'))
+        : items
+      const visibleUrns = presentationAuthorization?.role === 'manager'
+        ? await managerVisibleRegistrationUrns(
+            visibleItems.map((item) => item.asset_id as string),
+            options.signal ?? undefined,
+          )
+        : undefined
       return {
-        items: manualSubmissionReports.slice(0, limit).map((item) => item.submission),
+        items: visibleUrns
+          ? visibleItems.filter((item) => visibleUrns.has(item.asset_id as string))
+          : visibleItems,
         page: { next_cursor: null, limit },
       }
     }
@@ -2238,6 +2359,12 @@ class PocApiClient {
         (item.submission as { id?: unknown } | undefined)?.id === decodeURIComponent(manualSubmission[1] ?? '')
       ))
       if (!report) throw new Error('Manual 실행 이력을 찾을 수 없습니다.')
+      if (presentationAuthorization?.role === 'manager') {
+        const urn = (report.submission as { asset_id?: unknown }).asset_id
+        if (typeof urn !== 'string' || !(await managerVisibleRegistrationUrns([urn], options.signal ?? undefined)).has(urn)) {
+          throw new Error('Manual 실행 이력을 찾을 수 없습니다.')
+        }
+      }
       return report
     }
 

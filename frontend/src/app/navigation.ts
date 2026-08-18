@@ -42,7 +42,7 @@ const pageIds = new Set<Page>([
 
 const pocPageCapabilities: Partial<Record<Page, PocCapability>> = {
   catalog: 'catalog.read',
-  registration: 'catalog.execute',
+  registration: 'catalog.read',
   'change-management': 'change.read',
   quality: 'quality.read',
   knowledge: 'knowledge.read',
@@ -62,7 +62,9 @@ export function pocCapabilityForPage(page: Page): PocCapability | undefined {
 }
 
 export function pocRoleAllowsPage(page: Page, role: PocRole | undefined): boolean {
-  if (page === 'registration') return role === 'data_steward' || role === 'admin'
+  if (page === 'registration') {
+    return role === 'data_steward' || role === 'manager' || role === 'admin'
+  }
   return true
 }
 

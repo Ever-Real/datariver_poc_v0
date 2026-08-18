@@ -464,7 +464,7 @@ describe('POC live-provider compatibility adapter', () => {
     expect(context.action_vocabulary).not.toContain('admin.manage')
   })
 
-  it('preserves manager Catalog capabilities but denies every Registration operator entry point', async () => {
+  it('preserves manager Catalog capabilities, allows Registration reads, but denies Registration mutations', async () => {
     configurePocAuthorization({
       policy_version: 'POC_PROFILE_CAPABILITIES_V1',
       role: 'manager',
@@ -474,15 +474,39 @@ describe('POC live-provider compatibility adapter', () => {
     }, 'manager-registration-boundary')
     const client = useStableApiClient()
 
-    await expect(client.request<{ eligible: boolean; reason_code: string }>('/uploads/operator-capability'))
-      .resolves.toMatchObject({ eligible: false, reason_code: 'ROLE_FORBIDDEN' })
-    await expect(client.request('/uploads')).rejects.toThrow(/Data Steward 또는 Admin/)
-    await expect(client.request('/registration/manual-submissions')).rejects.toThrow(/Data Steward 또는 Admin/)
+    await expect(client.request<{ eligible: boolean; can_view_registration: boolean; reason_code: string }>('/uploads/operator-capability'))
+      .resolves.toMatchObject({
+        eligible: false,
+        can_view_registration: true,
+        reason_code: 'READ_ONLY',
+      })
+    await expect(client.request('/uploads')).resolves.toHaveProperty('items')
+    await expect(client.request('/registration/manual-submissions')).resolves.toHaveProperty('items')
+    await expect(client.request('/uploads/upload-1/preparations/preparation-1/metadata-candidates'))
+      .rejects.toThrow(/Manager는 등록 실행이력/)
     await expect(client.request(`/catalog/assets/${liveAssets[0]!.id}/description-previews`, {
       method: 'POST', body: JSON.stringify({ description: 'forged manager registration write' }),
     })).rejects.toThrow(/Data Steward 또는 Admin/)
     await expect(client.request<CatalogSearch>('/catalog/assets?q=*&limit=1'))
       .resolves.toMatchObject({ items: [expect.objectContaining({ name: 'wafer_events' })] })
+  })
+
+  it('denies Registration reads and mutations to viewer despite Catalog read access', async () => {
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'viewer',
+      capabilities: ['catalog.read'],
+      system_scope: 'ASSIGNED',
+      system_ids: [],
+    }, 'viewer-registration-boundary')
+    const client = useStableApiClient()
+
+    await expect(client.request('/uploads/operator-capability')).rejects.toThrow(/Data Steward, Manager 또는 Admin/)
+    await expect(client.request('/uploads')).rejects.toThrow(/Data Steward, Manager 또는 Admin/)
+    await expect(client.request('/registration/manual-submissions')).rejects.toThrow(/Data Steward, Manager 또는 Admin/)
+    await expect(client.request('/registration/manual-submissions', {
+      method: 'POST', body: JSON.stringify({}),
+    })).rejects.toThrow(/권한|Data Steward 또는 Admin/)
   })
 
   it('keeps the Registration adapter available to Data Steward', async () => {
@@ -494,8 +518,12 @@ describe('POC live-provider compatibility adapter', () => {
       system_ids: ['system-one'],
     }, 'steward-registration-boundary')
 
-    await expect(useStableApiClient().request<{ eligible: boolean; reason_code: string }>('/uploads/operator-capability'))
-      .resolves.toMatchObject({ eligible: true, reason_code: 'ELIGIBLE' })
+    await expect(useStableApiClient().request<{ eligible: boolean; can_view_registration: boolean; reason_code: string }>('/uploads/operator-capability'))
+      .resolves.toMatchObject({
+        eligible: true,
+        can_view_registration: true,
+        reason_code: 'ELIGIBLE',
+      })
   })
 
   it('forwards the fixed feature security policy through the authenticated Node gateway', async () => {

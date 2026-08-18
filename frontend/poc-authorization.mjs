@@ -226,8 +226,13 @@ export function assertPocRouteAuthorization(routeEntry, principal) {
     'catalog.bulk.candidate-cr',
     'catalog.manual-metadata'
   ])
-  if (registrationRoutes.has(routeEntry.id) && !['admin', 'data_steward'].includes(principal.role)) {
-    throw authorizationError(403, 'ROLE_FORBIDDEN', 'Registration routes require the data_steward or admin role.')
+  if (registrationRoutes.has(routeEntry.id)) {
+    const mayRead = ['admin', 'data_steward'].includes(principal.role)
+      || (principal.role === 'manager' && routeEntry.id === 'catalog.bulk.list')
+    const mayMutate = ['admin', 'data_steward'].includes(principal.role)
+    if ((routeEntry.method === 'GET' && !mayRead) || (routeEntry.method !== 'GET' && !mayMutate)) {
+      throw authorizationError(403, 'ROLE_FORBIDDEN', 'Registration mutations require the data_steward or admin role; manager reads are limited to execution status.')
+    }
   }
 }
 

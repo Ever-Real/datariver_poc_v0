@@ -11,6 +11,7 @@ import type {
 import { loadAssetDetailPage, RegistrationPage } from './RegistrationPage'
 import { supportedContentType } from './RegistrationBulkWorkbench'
 import { RegistrationManualWorkbench } from './RegistrationManualWorkbench'
+import { RegistrationRecentPanel } from './RegistrationRecentPanel'
 
 const emptyTree = {
   items: [],
@@ -26,6 +27,7 @@ function clientWith(
   request: (path: string, options?: RequestOptions) => Promise<unknown>,
   capability: RegistrationOperatorCapability = {
     eligible: true,
+    can_view_registration: true,
     can_view_workspace_history: true,
     reason_code: 'ELIGIBLE',
     allowed_roles: ['ADMIN', 'DATA_STEWARD'],
@@ -37,13 +39,18 @@ function clientWith(
     blob: new Blob(),
     filename: 'download',
   }),
+  includeRecentRequests = false,
 ): ApiClient {
   return {
-    request: vi.fn((path: string, options?: RequestOptions) => (
-      path === '/uploads/operator-capability'
-        ? Promise.resolve(capability)
-        : request(path, options)
-    )),
+    request: vi.fn((path: string, options?: RequestOptions) => {
+      if (path === '/uploads/operator-capability') return Promise.resolve(capability)
+      if (!includeRecentRequests && (
+        path === '/registration/manual-submissions?scope=workspace&limit=100'
+        || path === '/registration/manual-submissions?scope=mine&limit=100'
+        || path === '/uploads?limit=100'
+      )) return Promise.resolve({ items: [], page: { limit: 100 } })
+      return request(path, options)
+    }),
     download: vi.fn(download),
   } as unknown as ApiClient
 }
@@ -135,79 +142,167 @@ afterEach(() => {
 })
 
 describe('Registration workbench', () => {
-  it('does not render registration reads or mutations for an ineligible identity', async () => {
-    const request = vi.fn(() => Promise.reject(
-      new Error('ineligible clients must not reach registration resources'),
-    ))
+  it('shows manager registration history as read-only without mutation controls', async () => {
+    const request = vi.fn((path: string) => {
+      if (path.startsWith('/registration/manual-submissions')) return Promise.resolve({ items: [] })
+      if (path.startsWith('/uploads')) return Promise.resolve({ items: [] })
+      return Promise.resolve(emptyTree)
+    })
 
     render(<RegistrationPage client={clientWith(request, {
       eligible: false,
+      can_view_registration: true,
+      can_view_workspace_history: true,
+      reason_code: 'READ_ONLY',
+      allowed_roles: ['ADMIN', 'DATA_STEWARD'],
+    })} />)
+
+    expect(await screen.findByText('등록관리 조회 전용')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: '최근 실행' })).toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /MANUAL/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('tab', { name: /BULK/ })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /SAVE|검증 업로드 시작/ })).not.toBeInTheDocument()
+  })
+
+  it('does not issue registration history reads for an identity outside the reader roles', async () => {
+    const request = vi.fn(() => Promise.resolve(emptyTree))
+
+    render(<RegistrationPage client={clientWith(request, {
+      eligible: false,
+      can_view_registration: false,
       can_view_workspace_history: false,
       reason_code: 'ACTIVE_HUMAN_ADMIN_OR_DATA_STEWARD_REQUIRED',
       allowed_roles: ['ADMIN', 'DATA_STEWARD'],
     })} />)
 
-    expect(await screen.findByText('등록 작업 권한이 없습니다')).toBeInTheDocument()
-    expect(screen.queryByRole('tab', { name: /MANUAL/ })).not.toBeInTheDocument()
-    expect(screen.queryByRole('tab', { name: /BULK/ })).not.toBeInTheDocument()
+    expect(await screen.findByText('등록관리 접근 권한이 없습니다')).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: '최근 실행' })).not.toBeInTheDocument()
     expect(request).not.toHaveBeenCalled()
   })
 
-  it('lets an administrator request workspace Manual history through the server scope', async () => {
-    const request = vi.fn((path: string, options?: RequestOptions) => {
-      void options
-      return Promise.resolve(
-        path.startsWith('/registration/manual-submissions')
-          ? { items: [], page: { limit: 25 } }
-          : emptyTree,
-      )
+  it('filters unified recent runs and loads detail only for the selected receipt', async () => {
+    const now = new Date().toISOString()
+    const request = vi.fn((path: string, _options?: RequestOptions) => {
+      void _options
+      if (path === '/registration/manual-submissions?scope=workspace&limit=100') return Promise.resolve({
+        items: [{
+          id: 'manual-1', state: 'APPLIED', serial_number: 8, row_count: 1,
+          source_version: 'projection-1', provider_source_version: 'provider-1',
+          created_at: now, created_by: 'steward-one', asset_id: 'asset-wafer', version: 1,
+          updated_at: now, applied_at: now, attempts: 1, next_attempt_at: null,
+          last_error_code: null,
+        }],
+        page: { limit: 100 },
+      })
+      if (path === '/uploads?limit=100') return Promise.resolve({ items: [{
+        ...uploadRecord('ACCEPTED', 'bulk-catalog.csv'),
+        created_at: now,
+        created_by: 'admin-one',
+      }] })
+      if (path === '/registration/manual-submissions/manual-1') return Promise.resolve({
+        submission: {
+          id: 'manual-1', state: 'APPLIED', serial_number: 8, row_count: 1,
+          source_version: 'projection-1', provider_source_version: 'provider-1',
+          created_at: now, created_by: 'steward-one', asset_id: 'asset-wafer', version: 1,
+          updated_at: now, applied_at: now, attempts: 1, next_attempt_at: null,
+          last_error_code: null,
+        },
+        attempts: [],
+      })
+      if (path === '/uploads/upload-1/preparations?limit=20') return Promise.resolve({
+        items: [{ ...preparationRecord('READY'), rows_processed: 2, total_rows: 2 }],
+      })
+      return Promise.resolve(emptyTree)
     })
 
-    render(<RegistrationManualWorkbench
-      client={clientWith(request)}
-      asset={{
-        id: 'asset-history',
-        external_urn: 'urn:li:dataset:history',
-        asset_type: 'DATASET',
-        name: 'history',
-        description: null,
-        platform: 'postgres',
-        database_name: 'warehouse',
-        schema_name: 'public',
-        domain: null,
-        tags: [],
-        terms: [],
-        classification: 'INTERNAL',
-        lifecycle: 'ACTIVE',
-        observed_at: '2026-01-01T00:00:00Z',
-        matches: [],
-        ownership: [],
-        glossary_terms: [],
-        quality: {},
-        projection_source_version: 'projection-1',
-        source_version: 'provider-1',
-        schema_fields: [],
-        schema_fields_total: 0,
-        schema_fields_available: 0,
-        schema_fields_truncated: false,
-        schema_fields_total_exact: true,
-        schema_fields_offset: 0,
-        schema_fields_limit: 0,
-        schema_fields_has_more: false,
-      }}
-      loading={false}
-      canViewWorkspaceHistory
-      onClose={() => undefined}
-    />)
+    render(<RegistrationPage client={clientWith(
+      request,
+      undefined,
+      undefined,
+      true,
+    )} />)
 
-    fireEvent.change(await screen.findByLabelText('Manual 실행 조회 범위'), {
-      target: { value: 'workspace' },
-    })
-    await waitFor(() => expect(request.mock.calls.some(([path, options]) => (
-      path === '/registration/manual-submissions?scope=workspace&limit=25'
-      && options?.signal instanceof AbortSignal
-    ))).toBe(true))
+    expect(await screen.findByText('asset-wafer')).toBeInTheDocument()
+    expect(screen.getByText('bulk-catalog.csv')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('실행 유형 필터'), { target: { value: 'MANUAL' } })
+    expect(screen.getByText('asset-wafer')).toBeInTheDocument()
+    expect(screen.queryByText('bulk-catalog.csv')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /asset-wafer/ }))
+    expect(await screen.findByText('아직 적용 영수증이 없습니다.')).toBeInTheDocument()
+    const detailCall = request.mock.calls.find(([path]) => (
+      path === '/registration/manual-submissions/manual-1'
+    ))
+    expect(detailCall?.[1]?.signal).toBeInstanceOf(AbortSignal)
+    expect(request).not.toHaveBeenCalledWith(
+      '/uploads/upload-1/preparations?limit=20',
+      expect.anything(),
+    )
   })
+
+  it('keeps the current Manual poll alive while an older unified receipt opens', async () => {
+    const now = new Date().toISOString()
+    const status = (id: string, serialNumber: number, state: 'QUEUED' | 'APPLIED') => ({
+      id,
+      state,
+      serial_number: serialNumber,
+      row_count: 2,
+      source_version: 'projection-polling',
+      provider_source_version: 'a'.repeat(64),
+      created_at: now,
+      created_by: 'steward-one',
+      asset_id: manualAsset().id,
+      updated_at: now,
+      applied_at: state === 'APPLIED' ? now : null,
+      attempts: state === 'APPLIED' ? 1 : 0,
+      next_attempt_at: null,
+      last_error_code: null,
+      version: state === 'APPLIED' ? 2 : 1,
+    })
+    const historySubmission = status('submission-history', 41, 'APPLIED')
+    const currentQueued = status('submission-current', 42, 'QUEUED')
+    const currentApplied = status('submission-current', 42, 'APPLIED')
+    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
+      if (path === '/registration/manual-submissions?scope=workspace&limit=100') {
+        return Promise.resolve({ items: [historySubmission], page: { limit: 100 } })
+      }
+      if (path === '/uploads?limit=100') return Promise.resolve({ items: [] })
+      if (path === '/registration/manual-submissions' && options?.method === 'POST') {
+        return Promise.resolve(currentQueued)
+      }
+      if (path === '/registration/manual-submissions/submission-history') {
+        return Promise.resolve({ submission: historySubmission, attempts: [] })
+      }
+      if (path === '/registration/manual-submissions/submission-current') {
+        return Promise.resolve({ submission: currentApplied, attempts: [] })
+      }
+      return Promise.resolve({ items: [] })
+    })
+    const client = clientWith(request, undefined, undefined, true)
+
+    render(<>
+      <RegistrationManualWorkbench
+        client={client}
+        asset={manualAsset()}
+        loading={false}
+        onClose={vi.fn()}
+      />
+      <RegistrationRecentPanel client={client} canViewWorkspaceHistory />
+    </>)
+
+    expect(await screen.findByRole('button', { name: /asset-polling.*steward-one.*APPLIED/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'SAVE' }))
+    expect(await screen.findByText(/제출 #42.*상태: QUEUED/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /asset-polling.*steward-one.*APPLIED/ }))
+    expect(await screen.findByRole('heading', { name: '실행 결과' })).toBeInTheDocument()
+
+    expect(await screen.findByText(/제출 #42.*상태: APPLIED/, {}, { timeout: 2_500 })).toBeInTheDocument()
+    const currentPoll = request.mock.calls.find(([path]) => (
+      path === '/registration/manual-submissions/submission-current'
+    ))
+    expect(currentPoll?.[1]?.signal).toBeInstanceOf(AbortSignal)
+    expect(currentPoll?.[1]?.signal?.aborted).toBe(false)
+  })
+
 
   it('accepts PDF as a format-only Knowledge source media type', () => {
     expect(supportedContentType({ name: 'semiconductor-outlook.pdf', type: '' }))
@@ -224,6 +319,7 @@ describe('Registration workbench', () => {
     render(<RegistrationPage client={clientWith(request)} />)
 
     expect(await screen.findByRole('tab', { name: /MANUAL/ })).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('heading', { name: '최근 실행' })).toBeInTheDocument()
     expect(screen.getByText('GOVERNED')).toBeInTheDocument()
     expect(screen.getByText(/Resource Tree에서 테이블을 선택하세요/)).toBeInTheDocument()
     expect(screen.getByText('Metadata Registration')).toBeInTheDocument()
@@ -922,68 +1018,6 @@ describe('Registration workbench', () => {
     ))).toBe(false)
   })
 
-  it('keeps the current Manual submission poll alive while an older history report opens', async () => {
-    const status = (
-      id: string,
-      serialNumber: number,
-      state: 'QUEUED' | 'APPLIED',
-    ) => ({
-      id,
-      state,
-      serial_number: serialNumber,
-      row_count: 2,
-      source_version: 'projection-polling',
-      provider_source_version: 'a'.repeat(64),
-      created_at: '2026-01-01T00:00:00Z',
-      updated_at: '2026-01-01T00:00:01Z',
-      applied_at: state === 'APPLIED' ? '2026-01-01T00:00:02Z' : null,
-      attempts: state === 'APPLIED' ? 1 : 0,
-      next_attempt_at: null,
-      last_error_code: null,
-      version: state === 'APPLIED' ? 2 : 1,
-    })
-    const historySubmission = status('submission-history', 41, 'APPLIED')
-    const currentQueued = status('submission-current', 42, 'QUEUED')
-    const currentApplied = status('submission-current', 42, 'APPLIED')
-    const request = vi.fn((path: string, options?: RequestOptions): Promise<unknown> => {
-      if (path.startsWith('/registration/manual-submissions?')) {
-        return Promise.resolve({
-          items: [historySubmission],
-          page: { limit: 25, next_cursor: null },
-        })
-      }
-      if (path === '/registration/manual-submissions' && options?.method === 'POST') {
-        return Promise.resolve(currentQueued)
-      }
-      if (path === '/registration/manual-submissions/submission-history') {
-        return Promise.resolve({ submission: historySubmission, attempts: [] })
-      }
-      if (path === '/registration/manual-submissions/submission-current') {
-        return Promise.resolve({ submission: currentApplied, attempts: [] })
-      }
-      throw new Error(`unexpected request: ${path}`)
-    })
-
-    render(<RegistrationManualWorkbench
-      client={clientWith(request)}
-      asset={manualAsset()}
-      loading={false}
-      onClose={vi.fn()}
-    />)
-    expect(await screen.findByRole('button', { name: '#41' })).toBeInTheDocument()
-
-    fireEvent.click(screen.getByRole('button', { name: 'SAVE' }))
-    expect(await screen.findByText(/제출 #42.*상태: QUEUED/)).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: '#41' }))
-    expect(await screen.findByRole('heading', { name: '제출 #41 적용 증거' })).toBeInTheDocument()
-
-    expect(await screen.findByText(/제출 #42.*상태: APPLIED/, {}, { timeout: 2_500 })).toBeInTheDocument()
-    const currentPoll = request.mock.calls.find(([path]) => (
-      path === '/registration/manual-submissions/submission-current'
-    ))
-    expect(currentPoll?.[1]?.signal).toBeInstanceOf(AbortSignal)
-    expect(currentPoll?.[1]?.signal?.aborted).toBe(false)
-  })
 
   it('stops bulk preparation polling while the browser is hidden', async () => {
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden')
