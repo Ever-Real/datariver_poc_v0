@@ -213,6 +213,21 @@ test('filters non-admin core access data and authorizes an exact bounded top-lev
     () => authorizeCoreReplacement(principal('admin', 'admin'), current, { ...current, unknown: true }),
     { code: 'CORE_DIFF_INVALID' },
   )
+  const admin = principal('admin', 'admin')
+  const knowledgeProposalState = authorizeCoreReplacement(admin, current, {
+    ...filterCoreStateForPrincipal(admin, current),
+    knowledgeProposalJobs: [{ id: 'job-1', state: 'SUCCEEDED' }],
+    knowledgeTBoxProposals: [{ id: 'proposal-1', state: 'READY' }],
+  })
+  assert.deepEqual(knowledgeProposalState.changedKeys, ['knowledgeProposalJobs', 'knowledgeTBoxProposals'])
+  assert.throws(
+    () => authorizeCoreReplacement(principal('viewer', 'viewer'), current, {
+      ...filterCoreStateForPrincipal(principal('viewer', 'viewer'), current),
+      knowledgeProposalJobs: [{ id: 'job-1' }],
+      knowledgeTBoxProposals: [],
+    }),
+    { code: 'CAPABILITY_REQUIRED' },
+  )
 })
 
 test('enforces Registration-only asset mutation seam', () => {

@@ -67,6 +67,8 @@ const coreCapabilityByKey = Object.freeze({
   knowledgeDraftBlocks: 'knowledge.manage',
   knowledgeDraftBindings: 'knowledge.manage',
   knowledgeIngestionJobs: 'knowledge.manage',
+  knowledgeProposalJobs: 'knowledge.manage',
+  knowledgeTBoxProposals: 'knowledge.manage',
   governanceDocuments: 'change.manage',
   governanceVersions: 'change.manage',
   governanceReviews: 'knowledge.review',
