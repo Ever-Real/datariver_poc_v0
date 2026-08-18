@@ -816,7 +816,18 @@ test('bypasses the classifier for explicit Chat routes and fails malformed AUTO 
     body: JSON.stringify({ question: 'Explain governance in general', mode: 'GENERAL' }),
   })
   assert.equal(explicit.status, 200)
-  assert.equal((await explicit.json()).route.selected_mode, 'GENERAL')
+  const explicitPayload = await explicit.json()
+  assert.equal(explicitPayload.route.selected_mode, 'GENERAL')
+  assert.ok(explicitPayload.workflow.some((item) => (
+    item.stage === 'RETRIEVAL'
+    && item.status === 'SKIPPED'
+    && item.detail_code === 'RETRIEVAL_NOT_EXECUTED'
+  )))
+  assert.ok(explicitPayload.workflow.some((item) => item.detail_code === 'NO_INTERNAL_CITATIONS_GENERAL_ANSWER'))
+  const generalCompletion = requests.filter((request) => request.path.endsWith('/chat/completions')).at(-1)
+  const generalCompletionPayload = JSON.parse(generalCompletion.body)
+  assert.match(generalCompletionPayload.messages[0].content, /GENERAL route: answer useful general-knowledge/)
+  assert.doesNotMatch(generalCompletionPayload.messages[1].content, /Live POC evidence|no matching live evidence/)
   assert.equal(requests.filter((request) => request.path.endsWith('/chat/completions')).length, before + 1)
 
   forcedClassifierResponse = 'VECTOR because metadata'

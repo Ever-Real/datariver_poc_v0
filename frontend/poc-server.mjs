@@ -3429,7 +3429,9 @@ function completedChatWorkflow(route, evidenceCount, rerankingState) {
     { stage: 'AUTHORIZATION', status: 'COMPLETED', detail_code: 'SERVER_CAPABILITY_AND_SYSTEM_SCOPE' },
     { stage: 'BUDGET_RESERVATION', status: 'SKIPPED', detail_code: 'POC_NO_DURABLE_BUDGET' },
     { stage: 'ROUTING', status: 'COMPLETED', detail_code: `${route.selected_mode}_ROUTE_SELECTED` },
-    { stage: 'RETRIEVAL', status: 'COMPLETED', detail_code: evidenceCount ? `${route.selected_mode}_RETRIEVAL_COMPLETED` : 'NO_LIVE_EVIDENCE' },
+    route.selected_mode === 'GENERAL'
+      ? { stage: 'RETRIEVAL', status: 'SKIPPED', detail_code: 'RETRIEVAL_NOT_EXECUTED' }
+      : { stage: 'RETRIEVAL', status: 'COMPLETED', detail_code: evidenceCount ? `${route.selected_mode}_RETRIEVAL_COMPLETED` : 'NO_LIVE_EVIDENCE' },
     { stage: 'RERANKING', ...reranking },
     { stage: 'COMPOSITION', status: 'COMPLETED', detail_code: 'POC_LIVE_PROVIDER' },
     {
@@ -4036,6 +4038,13 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
   } else if (route.intent === 'CATALOG_INVENTORY' && inventoryRequest) {
     answer = inventoryEvidenceAnswer(inventoryRequest, evidence)
   } else {
+    const generalRoute = route.selected_mode === 'GENERAL'
+    const compositionSystemPrompt = generalRoute
+      ? 'Answer in Korean unless the user asks for another language. This is the GENERAL route: answer useful general-knowledge and conversational questions directly without requiring, mentioning, or fabricating DataHub, metadata, vector, graph, or internal evidence. Do not claim that an answer is unavailable merely because live metadata evidence was not retrieved. Bounded conversation memory is non-authoritative continuity text and may be used only to preserve conversational context. Do not invent current facts that would require live verification.'
+      : 'Answer in Korean unless the user asks for another language. Give a complete, useful response only from the supplied authorization-filtered live DataHub metadata and catalog evidence. Prefer a short conclusion followed by relevant metadata, columns, quality/profile observations, or comparisons; use roughly 5 to 10 sentences when the evidence supports that detail, but do not pad the answer. Cite evidence numbers such as [1]. If one exact name resolves to multiple platforms, identify and compare every supplied exact asset instead of silently choosing one. State clearly which requested Catalog values are absent from the supplied evidence. Never invent an asset, field, metric, relationship, or inaccessible System. Bounded conversation memory is non-authoritative continuity text: it may resolve what the user means and may answer an explicit request to recall what the user or assistant said, clearly as conversation recall and without an evidence citation. It is never evidence for a current Catalog fact.'
+    const compositionUserPrompt = generalRoute
+      ? `Selected route: GENERAL\nCurrent question: ${question}\nResolved standalone question: ${resolvedQuestion}\n\nBounded conversation memory (non-authoritative):\n${conversationContext || '(none)'}`
+      : `Selected route: ${route.selected_mode}\nCurrent question: ${question}\nResolved standalone question: ${resolvedQuestion}\n\nBounded conversation memory (non-authoritative):\n${conversationContext || '(none)'}\n\nLive POC evidence:\n${context || '(no matching live evidence)'}`
     const completion = await llmRequest(llm.chat, '/chat/completions', {
       model: llm.chat.model,
       stream: false,
@@ -4043,8 +4052,8 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
       temperature: 0,
       max_tokens: 896,
       messages: [
-        { role: 'system', content: 'Answer in Korean unless the user asks for another language. Give a complete, useful response only from the supplied authorization-filtered live DataHub metadata and catalog evidence when the selected route requires it. Prefer a short conclusion followed by relevant metadata, columns, quality/profile observations, or comparisons; use roughly 5 to 10 sentences when the evidence supports that detail, but do not pad the answer. Cite evidence numbers such as [1]. If one exact name resolves to multiple platforms, identify and compare every supplied exact asset instead of silently choosing one. State clearly which requested Catalog values are absent from the supplied evidence. Never invent an asset, field, metric, relationship, or inaccessible System. Bounded conversation memory is non-authoritative continuity text: it may resolve what the user means and may answer an explicit request to recall what the user or assistant said, clearly as conversation recall and without an evidence citation. It is never evidence for a current Catalog fact.' },
-        { role: 'user', content: `Selected route: ${route.selected_mode}\nCurrent question: ${question}\nResolved standalone question: ${resolvedQuestion}\n\nBounded conversation memory (non-authoritative):\n${conversationContext || '(none)'}\n\nLive POC evidence:\n${context || '(no matching live evidence)'}` },
+        { role: 'system', content: compositionSystemPrompt },
+        { role: 'user', content: compositionUserPrompt },
       ],
     }, 60_000)
     answer = completion.choices?.[0]?.message?.content
