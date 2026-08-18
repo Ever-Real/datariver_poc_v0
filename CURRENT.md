@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `fd379567a220f1e677deb5225b8e0b36c1d28d8d`
-- Deployed OCI revision: `fd379567a220f1e677deb5225b8e0b36c1d28d8d`
+- Current Product SHA: `536c02f61476a35ad653cac041a3d8b76cbdf5a1`
+- Deployed OCI revision: `536c02f61476a35ad653cac041a3d8b76cbdf5a1`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -30,6 +30,8 @@
   `78448566c9cb461bacafa0afc425572d4fefd0ad`
 - Governance policy/standard document management Product:
   `fd379567a220f1e677deb5225b8e0b36c1d28d8d`
+- Menu topology/Registration role boundary Product:
+  `536c02f61476a35ad653cac041a3d8b76cbdf5a1`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -73,6 +75,13 @@
   and data_steward/manager/admin create, DRAFT-version update and archive. Viewer/developer mutation,
   Data Steward lifecycle spoofing and hard delete are denied. This uses existing `change.manage`
   without giving Data Steward `knowledge.manage` or `knowledge.review`.
+- Canonical top-level menu and independent Change/Monitoring/Registration routes:
+  `COMPLETE_RUNTIME_VERIFIED`. Registration mutation is limited to data_steward/admin at navigation,
+  page, server route and local adapter boundaries; Manager keeps Catalog access.
+- Knowledge K0 existing-implementation audit: `COMPLETE_SOURCE_RUNTIME_AUDIT`; Knowledge overall is
+  `PARTIAL`. Current Node runtime has zero Assets/drafts/releases/bindings, no proven Knowledge
+  Neo4j projection, no Knowledge Chat server handler and no MCP route/server/test. K1 exact
+  DataHub Table/Column URN ↔ Knowledge entity ↔ Neo4j identity/provenance is the next single gate.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
@@ -83,15 +92,16 @@
 ## Product execution priority
 
 ```text
-P0  PHASE 1D-R deterministic runtime                 → COMPLETE_RUNTIME_VERIFIED
-P1  Account/Auth core                                → completed baseline; feature regression only
-P2  MCL change management / automatic change capture → COMPLETE_RUNTIME_VERIFIED; midnight recheck
-P3  DEV support services: Airflow / MinIO / GX       → Airflow/MinIO complete; GX partial
-P4  Registration management                          → through authoritative NOT_STARTED apply-report complete; actual apply/durability partial
-P5  Governance: policy/standard document management  → read/create/DRAFT-update/archive complete
-P6  Chat: General / Vector / Auto / Graph refinement → preserve current verified baseline
-P7  Knowledge / Quality                              → document current state; user definition required
-P8  Admin                                             → add only minimum feature-required controls
+1  Admin — 접근관리                         → completed baseline
+2  검색                                    → completed local/Vector authorization baseline
+3  변경관리                                → Change History / CR completed baseline
+4  모니터링                                → independent authorized read baseline
+5  등록관리                                → steward/admin only; overall PARTIAL
+6  거버넌스 — 정책·표준 문서 관리          → bounded CRUD/archive complete
+7  Chat                                    → General/Vector/AUTO complete; Graph partial
+8  지식관리                                → K0 audited; K1 identity/provenance next
+9  품질관리                                → USER_FEATURE_DEFINITION_REQUIRED
+기술 Backlog                              → support/deployment details only
 ```
 
 Engineering Phase numbers remain for lineage and dependencies. They do not override this
@@ -137,11 +147,12 @@ local credential + opaque server session
 ## Fresh validation
 
 - Independent fresh Node POC Validator at exact Product
-  `fd379567a220f1e677deb5225b8e0b36c1d28d8d`. Effective model: Gemini 3.1 Pro High;
+  `536c02f61476a35ad653cac041a3d8b76cbdf5a1`. Effective model: Gemini 3.1 Pro High;
   authoritative worktree/branch/HEAD and Node POC authority recorded; no Product files or runtime
   changed. The coordinator separately confirmed the deployed OCI revision matches that Product.
 - Node POC full suite: 107/107 PASS.
-- Frontend full suite: 87 files, 595/595 PASS on the final clean rerun.
+- Frontend full suite: 87 files, 599/599 PASS on the final single-worker rerun. The validator's
+  first parallel 595/599 timing run was rejected, not reused as completion evidence.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and
   `git diff --check`: PASS.
 - Exact Product image build/package/deploy: PASS; current Web health `ok` and OCI revision exact.
@@ -227,7 +238,7 @@ local credential + opaque server session
 - GX remains exact-version source/runtime seam evidence only: `great-expectations==1.19.1` is
   present, but result-to-DataHub Assertion emission and a GMS/UI receipt are not implemented or
   runtime-verified. Quality Product completion is not inferred from the seam.
-- Registration human routes allow only data_steward, manager and admin. Non-Admin Table operations
+- Registration human routes allow only data_steward and admin. Non-Admin Table operations
   require a current canonical TABLE, active exact grant, grade, fixed Registration policy and an
   exact active Table↔System mapping currently assigned to the principal. Admin data bypass still
   requires valid current TABLE identity.
@@ -276,6 +287,27 @@ local credential + opaque server session
   inspection admin was preserved.
 - Evidence: `.orchestration/evidence/DEV-GOVERNANCE-DOCUMENT-MANAGEMENT-RUNTIME.md`.
 
+## Menu topology and Knowledge K0 audit
+
+- Product `536c02f...` aligns one exact primary menu source to Admin, Search, Change Management,
+  Monitoring, Registration, Governance, Chat, Knowledge and Quality while retaining existing route
+  and deep-link identities. Change, Monitoring and Registration remain independent pages.
+- Registration page/route/adapter authorization now denies Manager and allows only Data Steward and
+  Admin. The persisted-policy compatibility projection is limited to historical
+  `registration + manager + allow`; normal policy validation and updates remain strict.
+- Exact runtime passed Manager Registration 403 plus Catalog 200 and Data Steward Registration 200.
+  Both disposable accounts were disabled/inactivated with zero sessions; inspection Admin remains
+  preserved with one active session.
+- Knowledge K0 found substantial Registry/Studio/Chat UI and local coarse-state code but zero
+  current Node Assets, drafts, releases, blocks or bindings. There is no current Knowledge Neo4j
+  projection receipt, Knowledge Chat server handler or MCP route/server/test.
+- Historical Python Knowledge models are reusable design input only and are not current Node POC
+  proof. Non-Admin graph remains fail-closed.
+- Next single slice: K1 read-only exact DataHub Table/Column URN ↔ Knowledge entity ↔ Neo4j
+  identity/provenance gate. No graph write, Knowledge storage migration, Main Chat routing or MCP
+  implementation starts before that gate.
+- Evidence: `.orchestration/evidence/DEV-MENU-REGISTRATION-KNOWLEDGE-K0-RUNTIME.md`.
+
 ## MCL runtime / automatic detection
 
 - Product `6c672427...` preserves the existing two historical sources/checkpoints and scopes only
@@ -305,8 +337,9 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `fd379567...`; do not start PHASE 1E/1F, migration, legacy
-  deletion, GX/Knowledge/Quality Product implementation or another Account/Auth refactor. The
+- Current boundary: preserve Product `536c02f...`; do not start PHASE 1E/1F, migration, legacy
+  deletion, GX/Knowledge/Quality Product mutation or another Account/Auth refactor. K1 Knowledge
+  identity/provenance remains read-only discovery until its gate is explicitly closed. The
   durability/outbox/provider-apply gap has a read-only recommendation and still requires
   `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION` before a schema/apply mutation. Governance document
   read/create/update/archive is complete; GX requires exact PREP/OPS contract evidence; Chat
