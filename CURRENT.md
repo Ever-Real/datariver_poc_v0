@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `691b889af35fbbe49b5e2850420f877aebf5ca56`
-- Deployed OCI revision: `691b889af35fbbe49b5e2850420f877aebf5ca56`
+- Current Product SHA: `8dc782a6b8d03ee90b935593294728d2244b03a5`
+- Deployed OCI revision: `8dc782a6b8d03ee90b935593294728d2244b03a5`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -38,6 +38,8 @@
   `b0bb9f0aafc2391f80be0e24eccdfc1d5568bffc`
 - Registration Manager read-only history/UX Product:
   `691b889af35fbbe49b5e2850420f877aebf5ca56`
+- Quality primary-tab parity Product:
+  `8dc782a6b8d03ee90b935593294728d2244b03a5`
 - Knowledge K1 exact identity/provenance Product:
   `afb95a45c45ae065223faa39c53278884c935f37`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
@@ -93,6 +95,10 @@
   Manager can read only currently authorized execution history through one capped exact-URN batch;
   candidate and mutation routes remain 403. Manual/Bulk share one recent-run panel, and the Manual
   workbench keeps actions reachable at desktop and 390px. Registration overall remains `PARTIAL`.
+- Quality primary-tab Governance-style parity: `COMPLETE_RUNTIME_VERIFIED`. The three existing
+  Quality tabs share the exact Governance tab primitive while retaining Quality roving-keyboard,
+  URL/deep-link, panel layout and authorization behavior. Quality Product scope remains
+  `USER_FEATURE_DEFINITION_REQUIRED`; GX was not implemented by this UI-only slice.
 - Knowledge K0 existing-implementation audit: `COMPLETE_SOURCE_RUNTIME_AUDIT`.
 - Knowledge K1 exact identity/provenance: `COMPLETE_RUNTIME_VERIFIED`. The current Node Product
   preserves exact provider Table and Column URNs, derives a deterministic graph/release-pinned
@@ -172,13 +178,12 @@ local credential + opaque server session
 ## Fresh validation
 
 - Current Product and deployed OCI are the exact same 40-character revision
-  `691b889af35fbbe49b5e2850420f877aebf5ca56`. A fresh independent Node POC Validator using Gemini
+  `8dc782a6b8d03ee90b935593294728d2244b03a5`. A fresh independent Node POC Validator using Gemini
   3.1 Pro High (High) returned `PASS` after recording the exact worktree/branch/HEAD, Node POC
-  authority, `/healthz=ok`, exact OCI equality and rerunning 101 current focused tests. Its first
-  inaccurate attempt was discarded and contributes no evidence. Legacy FastAPI and secret-bearing
-  environment dumps were not used.
+  authority, `/healthz=ok`, exact OCI equality and rerunning the current Quality 18/18 focused
+  tests. Legacy FastAPI and secret-bearing environment dumps were not used.
 - Node POC full suite: 108/108 PASS.
-- Frontend full suite: 87 files, 605/605 PASS on the final single-worker rerun. Four movable
+- Frontend full suite: 87 files, 606/606 PASS on the final single-worker rerun. Four movable
   parallel navigation/timeout failures are recorded as `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS`;
   parallel partial results were rejected and are not completion evidence.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and
@@ -365,6 +370,24 @@ local credential + opaque server session
   `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS`; the final current-source single-worker suite is 600/600.
 - Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K1-IDENTITY-PROVENANCE-RUNTIME.md`.
 
+## Post-K1 Quality tab parity
+
+- Product `8dc782a6...` reuses the existing Governance primary-tab classes for the three Quality top
+  tabs. Quality keeps its existing tab panel layout class, roving keyboard navigation, URL state and
+  authorization/data behavior.
+- Desktop computed style matched Governance exactly. At 390px, the document did not overflow and
+  the tab strip retained bounded horizontal scrolling with all actions reachable.
+- Quality functionality and GX remain unchanged. Evidence:
+  `.orchestration/evidence/DEV-POST-K1-QUALITY-TAB-PARITY-RUNTIME.md`.
+
+## User feedback backlog
+
+- `CHANGE_MONITORING_LEDGER_SURFACE_RELOCATION`: move the authoritative
+  `data-change-status-panel` presentation into Change Management and remove overlapping Change
+  summary content. Before Product mutation, map the current component and independent Monitoring
+  route consumers so the existing server projection remains single-source and no duplicate client
+  state/API is introduced. The user explicitly requested backlog-only treatment for now.
+
 ## MCL runtime / automatic detection
 
 - Product `6c672427...` preserves the existing two historical sources/checkpoints and scopes only
@@ -394,10 +417,10 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `691b889a...`; do not start PHASE 1E/1F, migration, legacy
+- Current boundary: preserve Product `8dc782a6...`; do not start PHASE 1E/1F, migration, legacy
   deletion, GX/Quality Product mutation or another Account/Auth refactor. Knowledge K1 is closed;
-  the next single Product slice is Quality tab style parity only, followed by the bounded Chat
-  Router audit before K2 Registry/Asset/version lifecycle with browser acceptance. The
+  the next single step is the bounded Chat Router audit before K2 Registry/Asset/version lifecycle
+  with browser acceptance. The
   durability/outbox/provider-apply gap has a read-only recommendation and still requires
   `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION` before a schema/apply mutation. Governance document
   read/create/update/archive is complete; GX requires exact PREP/OPS contract evidence; Chat
