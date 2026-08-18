@@ -479,6 +479,19 @@ local credential + opaque server session
   authoritative Node Product only through a bounded fixed-function facade. Starting that runtime
   is gated by `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`.
 
+## Knowledge K6 entry audit
+
+- The existing Knowledge Chat page has the intended separate conversation UI, Asset/release/start
+  node controls, bounded hop/direction inputs and cited graph evidence presentation. Its current
+  tests inject fixture responses and are not runtime proof.
+- The authoritative Node route registry resolves graph list, release list, release snapshot and
+  release GraphRAG paths as `NO_ROUTE`; only the existing general Chat route is active. Historical
+  FastAPI GraphRAG code is not a current runtime authority.
+- K1 source identities and K2 lifecycle records are reusable, but there is no verified K5 instance
+  Release to retrieve. K6 therefore remains `NOT_STARTED_DEPENDENCY_GATE`; it must not use generic
+  Neo4j traversal or general Chat as a substitute. Evidence:
+  `.orchestration/evidence/DEV-KNOWLEDGE-K6-ENTRY-AUDIT.md`.
+
 ## Post-K1 Quality tab parity
 
 - Product `8dc782a6...` reuses the existing Governance primary-tab classes for the three Quality top

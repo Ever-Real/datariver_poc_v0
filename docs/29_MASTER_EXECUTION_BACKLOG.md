@@ -139,6 +139,12 @@ claim/lease/fence/source-pin/attempt/Changeset authority. The recommended path, 
 Product. This approval does not authorize a new schema/framework, legacy FastAPI authority,
 PREP/OPS mutation or business-data testing.
 
+The K6 read-only entry audit found a reusable separate Knowledge Chat UI and historical bounded
+GraphRAG implementation, but all four graph/release/snapshot/graphrag paths resolve to `NO_ROUTE`
+in the authoritative Node Product. K1 source identities are not K5 instance evidence and general
+Chat or generic Neo4j cannot substitute. K6 remains `NOT_STARTED_DEPENDENCY_GATE` until K5 has a
+verified instance Release/projection; no K6 Product mutation was opened.
+
 ### Knowledge K2 audit/backlog receipts
 
 | ID | Status | Current decision |
