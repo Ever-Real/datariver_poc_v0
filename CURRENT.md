@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `afb95a45c45ae065223faa39c53278884c935f37`
-- Deployed OCI revision: `afb95a45c45ae065223faa39c53278884c935f37`
+- Current Product SHA: `691b889af35fbbe49b5e2850420f877aebf5ca56`
+- Deployed OCI revision: `691b889af35fbbe49b5e2850420f877aebf5ca56`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -32,6 +32,12 @@
   `fd379567a220f1e677deb5225b8e0b36c1d28d8d`
 - Menu topology/Registration role boundary Product:
   `536c02f61476a35ad653cac041a3d8b76cbdf5a1`
+- Post-K1 menu/profile deep-link Product:
+  `1eb4d5ba53078882c4ef7d7b31b28f233d9e0e30`
+- Change/Monitoring combined-summary Product:
+  `b0bb9f0aafc2391f80be0e24eccdfc1d5568bffc`
+- Registration Manager read-only history/UX Product:
+  `691b889af35fbbe49b5e2850420f877aebf5ca56`
 - Knowledge K1 exact identity/provenance Product:
   `afb95a45c45ae065223faa39c53278884c935f37`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
@@ -80,6 +86,13 @@
 - Canonical top-level menu and independent Change/Monitoring/Registration routes:
   `COMPLETE_RUNTIME_VERIFIED`. Registration mutation is limited to data_steward/admin at navigation,
   page, server route and local adapter boundaries; Manager keeps Catalog access.
+- Post-K1 Change/Monitoring presentation: `COMPLETE_RUNTIME_VERIFIED`. The Change page combines its
+  existing CR status and detected-change linkage under `CR 및 감지 변경 현황` and links to the
+  unchanged independent Monitoring route without duplicating backend or client state.
+- Registration Manager read-only history/recent-run/workbench UX: `COMPLETE_RUNTIME_VERIFIED`.
+  Manager can read only currently authorized execution history through one capped exact-URN batch;
+  candidate and mutation routes remain 403. Manual/Bulk share one recent-run panel, and the Manual
+  workbench keeps actions reachable at desktop and 390px. Registration overall remains `PARTIAL`.
 - Knowledge K0 existing-implementation audit: `COMPLETE_SOURCE_RUNTIME_AUDIT`.
 - Knowledge K1 exact identity/provenance: `COMPLETE_RUNTIME_VERIFIED`. The current Node Product
   preserves exact provider Table and Column URNs, derives a deterministic graph/release-pinned
@@ -150,21 +163,22 @@ local credential + opaque server session
   denied. Origin/CSRF/cookie controls were not relaxed.
 - Agent browser flow is verified through login, `/auth/me`, Admin menu/page and hard reload. User
   browser confirmation remains pending; an active session is not treated as confirmation.
-- Knowledge K1 independent-review validation logged the inspection browser out while switching to a
-  disposable reviewer. The inspection account remains active/login-enabled, unlocked, failed
-  attempts 0, role `admin`, grade `restricted`, with no Responsible System or Table grant, but its
-  former session was revoked and the current active-session count is 0. This guard deviation must
-  not be repaired by password reset, credential reconstruction or synthetic session creation.
+- Knowledge K1 independent-review validation previously logged the inspection browser out while
+  switching to a disposable reviewer. The inspection account remains active/login-enabled,
+  unlocked, failed attempts 0, role `admin`, grade `restricted`, with no Responsible System or Table
+  grant. A current user-owned inspection session now exists; Registration validation preserved it.
+  No validation cleanup may revoke or reconstruct it.
 
 ## Fresh validation
 
-- Current Knowledge K1 Product and deployed OCI are the exact same 40-character revision
-  `afb95a45c45ae065223faa39c53278884c935f37`. An independent fresh Node POC Validator using Gemini
-  3.1 Pro High (High) returned `PASS` against this authoritative worktree/runtime after inspecting
-  the current Node source/OCI boundary and rerunning the 600-test frontend suite. Legacy FastAPI and
-  secret-bearing environment dumps were not used.
+- Current Product and deployed OCI are the exact same 40-character revision
+  `691b889af35fbbe49b5e2850420f877aebf5ca56`. A fresh independent Node POC Validator using Gemini
+  3.1 Pro High (High) returned `PASS` after recording the exact worktree/branch/HEAD, Node POC
+  authority, `/healthz=ok`, exact OCI equality and rerunning 101 current focused tests. Its first
+  inaccurate attempt was discarded and contributes no evidence. Legacy FastAPI and secret-bearing
+  environment dumps were not used.
 - Node POC full suite: 108/108 PASS.
-- Frontend full suite: 87 files, 600/600 PASS on the final single-worker rerun. Four movable
+- Frontend full suite: 87 files, 605/605 PASS on the final single-worker rerun. Four movable
   parallel navigation/timeout failures are recorded as `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS`;
   parallel partial results were rejected and are not completion evidence.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and
@@ -282,10 +296,15 @@ local credential + opaque server session
   evidence. The recommended approval direction is the already accepted minimal relational
   preparation/receipt, deterministic candidate and candidate→CR provenance contract; existing CR
   apply/test remains the sole provider-mutation owner. No schema mutation was performed.
+- Product `691b889a...` adds only the bounded Manager read-only execution-history UX. Manager history
+  uses one capped exact-URN request, then server request-time Table authorization and exact filtering
+  before matching/counting; candidate and mutation routes remain 403. Data Steward/Admin retain the
+  mutation workbench, Manual/Bulk share one recent-run panel, and 390px browser acceptance passed.
 - Evidence: `.orchestration/evidence/DEV-REGISTRATION-SUPPORT-SERVICES-RUNTIME.md` and
   `.orchestration/evidence/DEV-REGISTRATION-BULK-CANDIDATE-CR-RUNTIME.md` and
   `.orchestration/evidence/DEV-REGISTRATION-APPLY-REPORT-AUTHORITY.md` and
-  `.orchestration/evidence/DEV-GOVERNANCE-DOCUMENT-MANAGEMENT-RUNTIME.md`.
+  `.orchestration/evidence/DEV-GOVERNANCE-DOCUMENT-MANAGEMENT-RUNTIME.md` and
+  `.orchestration/evidence/DEV-POST-K1-REGISTRATION-UX-RUNTIME.md`.
 
 ## Governance policy and standard documents
 
@@ -375,9 +394,10 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `afb95a45...`; do not start PHASE 1E/1F, migration, legacy
+- Current boundary: preserve Product `691b889a...`; do not start PHASE 1E/1F, migration, legacy
   deletion, GX/Quality Product mutation or another Account/Auth refactor. Knowledge K1 is closed;
-  the next single Product slice is K2 Registry/Asset/version lifecycle with browser acceptance. The
+  the next single Product slice is Quality tab style parity only, followed by the bounded Chat
+  Router audit before K2 Registry/Asset/version lifecycle with browser acceptance. The
   durability/outbox/provider-apply gap has a read-only recommendation and still requires
   `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION` before a schema/apply mutation. Governance document
   read/create/update/archive is complete; GX requires exact PREP/OPS contract evidence; Chat
