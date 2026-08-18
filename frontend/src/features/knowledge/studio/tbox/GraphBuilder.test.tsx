@@ -2025,4 +2025,62 @@ describe('GraphBuilder', () => {
       'true',
     )
   })
+
+  it('preserves the editor and presents a localized stale-CAS conflict', async () => {
+    const classElement = {
+      stable_element_id: 'class:person',
+      kind: 'CLASS',
+      canonical_name: 'Person',
+      display_name: 'Person',
+      aliases: [],
+      vector_index_enabled: false,
+      locked_by_later_block: false,
+      block_id: blockId,
+      ordinal: 0,
+      version: 1,
+      layout_x: 0,
+      layout_y: 0,
+    }
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`) && !init?.method) {
+        return Promise.resolve(json(tbox([classElement])))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/blocks/${blockId}/operations`)) {
+        return Promise.resolve(new Response(JSON.stringify({
+          type: 'about:blank',
+          title: 'Precondition Failed',
+          status: 412,
+          detail: 'The core state version is stale.',
+          code: 'STALE_VERSION',
+          request_id: 'request-stale',
+        }), {
+          status: 412,
+          headers: { 'Content-Type': 'application/problem+json' },
+        }))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    fireEvent.click(screen.getByRole('button', { name: 'T-Box 저장' }))
+
+    expect(await screen.findByText(/다른 세션의 변경사항과 충돌했습니다/)).toHaveTextContent(
+      '현재 편집 내용은 보존됩니다.',
+    )
+    expect(screen.getByText('Person')).toBeInTheDocument()
+  })
 })

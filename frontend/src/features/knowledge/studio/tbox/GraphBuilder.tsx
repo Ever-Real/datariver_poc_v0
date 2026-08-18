@@ -49,7 +49,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react'
-import type { ApiClient } from '../../../../api/client'
+import { ApiError, type ApiClient } from '../../../../api/client'
 import { DenseDataTable } from '../../../../components/common/DenseDataTable'
 import { Dialog } from '../../../../components/common/Dialog'
 import {
@@ -2588,7 +2588,11 @@ export function GraphBuilder({
       setStatus(`Typed T-Box 저장 완료 · version ${response.data.draft.version}`)
       return true
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'T-Box 저장에 실패했습니다.')
+      if (error instanceof ApiError && error.problem.status === 412) {
+        setStatus('다른 세션의 변경사항과 충돌했습니다. 현재 편집 내용은 보존됩니다. 최신 Draft를 다시 불러온 뒤 저장하세요.')
+      } else {
+        setStatus(error instanceof Error ? error.message : 'T-Box 저장에 실패했습니다.')
+      }
       return false
     } finally {
       setWorking(false)
