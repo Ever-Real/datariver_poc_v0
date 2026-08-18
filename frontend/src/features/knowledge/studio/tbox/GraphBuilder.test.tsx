@@ -2050,12 +2050,12 @@ describe('GraphBuilder', () => {
         return Promise.resolve(new Response(JSON.stringify({
           type: 'about:blank',
           title: 'Precondition Failed',
-          status: 412,
+          status: 409,
           detail: 'The core state version is stale.',
-          code: 'STALE_VERSION',
+          code: 'STATE_VERSION_STALE',
           request_id: 'request-stale',
         }), {
-          status: 412,
+          status: 409,
           headers: { 'Content-Type': 'application/problem+json' },
         }))
       }
