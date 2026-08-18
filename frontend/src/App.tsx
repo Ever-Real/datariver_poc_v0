@@ -61,6 +61,7 @@ export function App() {
   const [password, setPassword] = useState('')
   const [page, setPage] = useState<Page>(pageFromLocation)
   const [locationRevision, setLocationRevision] = useState(0)
+  const [adminRouteRevision, setAdminRouteRevision] = useState(0)
   const [catalogQuery, setCatalogQuery] = useState(() => new URL(window.location.href).searchParams.get('q') ?? '')
   // The URL keeps the selected tenant across reloads without trusting it for
   // authorization; every request still binds it to server-side membership/RLS.
@@ -334,6 +335,7 @@ export function App() {
     url.searchParams.delete('q')
     window.history.pushState({}, '', `${url.pathname}${url.search}${url.hash}`)
     setCatalogQuery('')
+    setAdminRouteRevision((current) => current + 1)
     setPage('admin')
   }, [navigate])
 
@@ -579,7 +581,7 @@ export function App() {
         {page === 'profile' && !auth.profile && <PageTitle icon="ME" eyebrow="Verified identity profile" title="내 프로필" description="서버에서 검증된 프로필을 불러오지 못했습니다." />}
         {page === 'admin' && cachedAdminContext && (
           <AdminPage
-            key={adminContextKey}
+            key={`${adminContextKey}|${adminRouteRevision}`}
             client={client}
             initialContext={cachedAdminContext}
             workspace={activeWorkspace}

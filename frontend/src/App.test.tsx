@@ -55,13 +55,17 @@ vi.mock('./api/useStableApiClient', () => ({
 vi.mock('./components/layout/AppShell', () => ({
   AppShell: ({
     adminContextStatus,
+    onNavigateAdmin,
     children,
   }: {
     adminContextStatus?: string
+    onNavigateAdmin?: (section: string) => void
     children: ReactNode
   }) => (
     <div>
       <span data-testid="admin-status">{adminContextStatus}</span>
+      <button type="button" onClick={() => onNavigateAdmin?.('systems')}>Open systems admin</button>
+      <button type="button" onClick={() => onNavigateAdmin?.('metadataLogs')}>Open metadata logs</button>
       {children}
     </div>
   ),
@@ -77,6 +81,7 @@ vi.mock('./features/admin/AdminPage', () => ({
   }) => (
     <section data-testid="admin-page" hidden={suspended}>
       <span>{initialContext.display_name}</span>
+      <span data-testid="admin-route">{new URL(window.location.href).searchParams.toString()}</span>
       <input aria-label="Admin draft" defaultValue="" />
     </section>
   ),
@@ -132,6 +137,32 @@ describe('App authentication-bound Admin orchestration', () => {
       beginPasswordReauth: vi.fn().mockResolvedValue(undefined),
       beginPasswordChange: vi.fn().mockResolvedValue(undefined),
       clearNotice: vi.fn(),
+    })
+  })
+
+  it('remounts the Admin surface for profile-menu deep links within the current page', async () => {
+    appTest.request.mockImplementation((path: string) => {
+      if (path === '/admin/me') return Promise.resolve(adminContext())
+      if (path === '/capabilities') {
+        return Promise.resolve({
+          items: [], external_system_links: [], grafana_embed: { state: 'DISABLED' },
+          deployment_tier: 'SINGLE_NODE_PILOT',
+        })
+      }
+      if (path === '/catalog/export-capability') return Promise.resolve({ enabled: false })
+      throw new Error(`unexpected request: ${path}`)
+    })
+
+    render(<App />)
+    await waitFor(() => expect(screen.getByTestId('admin-page')).toBeVisible())
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open systems admin' }))
+    await waitFor(() => expect(screen.getByTestId('admin-route')).toHaveTextContent('adminView=systems'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open metadata logs' }))
+    await waitFor(() => {
+      expect(screen.getByTestId('admin-route')).toHaveTextContent('adminSection=auditLogs')
+      expect(screen.getByTestId('admin-route')).toHaveTextContent('adminView=metadata')
     })
   })
 
