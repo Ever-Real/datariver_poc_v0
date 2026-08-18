@@ -2862,7 +2862,18 @@ class PocApiClient {
       if (!draft.name || !/^[a-z][a-z0-9_]{2,99}$/.test(draft.endpoint_alias)) throw new Error('Knowledge Asset 이름과 유효한 endpoint alias가 필요합니다.')
       if (knowledgeDrafts.some((item) => item.endpoint_alias === draft.endpoint_alias && !['DISCARDED', 'PUBLISHED'].includes(String(item.state)))) throw new Error('동일한 endpoint alias의 Draft가 이미 있습니다.')
       knowledgeDrafts = [...knowledgeDrafts, draft]
-      knowledgeDraftBlocks.set(draft.id, [])
+      knowledgeDraftBlocks.set(draft.id, [{
+        id: crypto.randomUUID(),
+        kind: 'DIRECT',
+        title: 'Direct Definition',
+        weight: 0,
+        ordinal: 0,
+        collapsed: false,
+        version: 1,
+        elements: [],
+        created_at: now,
+        updated_at: now,
+      }])
       knowledgeDraftBindings.set(draft.id, [])
       await this.persistCore()
       return draft

@@ -1340,6 +1340,10 @@ describe('POC live-provider compatibility adapter', () => {
       }),
     })
     expect(draft.state).toBe('DRAFT')
+    const tbox = await client.request<{ blocks: Array<{ kind: string }> }>(
+      `/knowledge/studio/drafts/${draft.id}/tbox`,
+    )
+    expect(tbox.blocks).toEqual([expect.objectContaining({ kind: 'DIRECT' })])
     const sources = await client.request<{ items: Array<{ id: string }> }>(`/knowledge/studio/drafts/${draft.id}/tbox/catalog-sources?q=wafer`)
     expect(sources.items[0]?.id).toBe(liveAssets[0]!.id)
   })
