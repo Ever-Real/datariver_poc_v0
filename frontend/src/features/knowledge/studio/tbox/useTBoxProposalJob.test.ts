@@ -87,7 +87,7 @@ function upload(state: 'INITIATED' | 'ACCEPTED') {
     size_bytes: 2,
     content_type: 'application/json',
     sha256: '0'.repeat(64),
-    classification: 'INTERNAL',
+    classification: 'normal',
     content_profile: 'KNOWLEDGE_STUDIO_DOCUMENT_V1',
     expires_at: '2026-07-31T03:00:00Z',
     version: state === 'ACCEPTED' ? 5 : 1,

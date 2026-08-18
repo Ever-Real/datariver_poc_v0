@@ -159,6 +159,35 @@ function installGatewayMock() {
         if_match: headers.get('If-Match'),
       }))
     }
+    if (url.pathname === '/poc-api/knowledge/catalog') {
+      const query = (url.searchParams.get('q') ?? '*').toLocaleLowerCase()
+      const matching = liveAssets.filter((asset) => (
+        query === '*' || [asset.name, asset.description].join(' ').toLocaleLowerCase().includes(query)
+      ))
+      return Promise.resolve(json({
+        items: matching.map((asset) => ({
+          id: asset.id,
+          name: asset.name,
+          asset_type: 'TABLE',
+          platform: asset.platform,
+          database_name: asset.database_name,
+          schema_name: asset.schema_name,
+          classification: asset.id.includes('daily_yield') ? 'restricted' : 'normal',
+          source_version: 'datahub-live',
+          projection_source_version: 'datahub-live-poc',
+          field_paths: [],
+          fields_truncated: false,
+          domain: asset.domain,
+          tags: asset.tags,
+          glossary_terms: asset.terms,
+          description: asset.description,
+          description_truncated: false,
+          field_metadata: [],
+          selection_fingerprint: null,
+        })),
+        page: { next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) },
+      }))
+    }
     if (url.pathname === '/poc-api/datahub/catalog') {
       const query = (url.searchParams.get('q') ?? '*').toLocaleLowerCase()
       const matching = liveAssets.filter((asset) => (
@@ -214,6 +243,44 @@ function installGatewayMock() {
       return Promise.resolve(json({
         items: liveAssets.map((asset) => ({ id: asset.platform, name: asset.platform })),
         page: { next_cursor: null, limit: 100 },
+      }))
+    }
+    if (url.pathname === '/poc-api/knowledge/catalog/asset') {
+      const asset = liveAssets.find((item) => item.id === url.searchParams.get('urn')) ?? liveAssets[0]!
+      const fieldUrn = `urn:li:schemaField:(${asset.id},wafer_id)`
+      return Promise.resolve(json({
+        dataset: {
+          id: asset.id,
+          name: asset.name,
+          asset_type: 'TABLE',
+          platform: asset.platform,
+          database_name: asset.database_name,
+          schema_name: asset.schema_name,
+          classification: asset.id.includes('daily_yield') ? 'restricted' : 'normal',
+          source_version: 'datahub-live',
+          projection_source_version: 'datahub-live-poc',
+          field_paths: ['wafer_id'],
+          fields_truncated: false,
+          domain: asset.domain,
+          tags: asset.tags,
+          glossary_terms: asset.terms,
+          description: asset.description,
+          description_truncated: false,
+          field_metadata: [{
+            field_path: 'wafer_id',
+            field_urn: fieldUrn,
+            field_type: null,
+            native_data_type: 'VARCHAR',
+            description: 'Wafer identifier',
+            description_truncated: false,
+            tags: ['identifier'],
+            tags_truncated: false,
+            glossary_terms: ['Wafer ID'],
+            terms_truncated: false,
+          }],
+          selection_fingerprint: 'f'.repeat(64),
+        },
+        observed_at: meta.observed_at,
       }))
     }
     if (url.pathname === '/poc-api/datahub/asset') {
@@ -1067,7 +1134,7 @@ describe('POC live-provider compatibility adapter', () => {
       memory: { recent_turns: unknown[] }
     }
     expect(compactBody.memory.recent_turns).toHaveLength(5)
-    await new Promise((resolve) => window.setTimeout(resolve, 0))
+    await new Promise((resolve) => setTimeout(resolve, 0))
 
     await client.requestEventStream(
       '/chat/query/stream',
@@ -1724,5 +1791,136 @@ describe('POC live-provider compatibility adapter', () => {
     )
     expect(response.change_request_id).toBe('proxy-test-1')
     expect(response.state).toBe('NOT_STARTED')
+  })
+
+  it('creates and applies a Catalog T-Box proposal job without external LLM/A-Box dependencies', async () => {
+    ;(globalThis as typeof globalThis & { __DATARIVER_POC_RUNTIME__?: Record<string, boolean> })
+      .__DATARIVER_POC_RUNTIME__ = { datahub: true, pocState: true }
+    configureKnowledgeActor('k4-admin', 1, ['knowledge.manage', 'knowledge.read'])
+    const client = useStableApiClient()
+
+    const domain = await client.request<{ id: string; source_version: string }>('/knowledge/domains', {
+      method: 'POST', body: JSON.stringify({ display_name: 'Test Domain' }),
+    })
+    const draftRes = await client.requestWithMeta<KnowledgeStudioDraft>('/knowledge/studio/drafts', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'Catalog Proposal Draft',
+        endpoint_alias: 'catalog_proposal_draft',
+        domain_id: domain.id,
+        domain_source_version: domain.source_version,
+        classification: 'normal',
+      }),
+    })
+    const draftId = draftRes.data.id
+    const tbox = await client.request<{ blocks: Array<{ id: string }> }>(
+      `/knowledge/studio/drafts/${draftId}/tbox`,
+    )
+    const blockId = tbox.blocks[0]!.id
+    const assetId = 'urn:li:dataset:(urn:li:dataPlatform:postgres,FACTORY.QUALITY.wafer_events,PROD)'
+    const columnUrn = `urn:li:schemaField:(${assetId},wafer_id)`
+    const jobPath = `/knowledge/studio/drafts/${draftId}/tbox/proposal-jobs`
+    const jobBody = JSON.stringify({
+      input_kind: 'CATALOG_SCHEMA',
+      asset_id: assetId,
+      selected_field_paths: ['wafer_id'],
+      expected_selection_fingerprint: 'f'.repeat(64),
+      target_block_id: blockId,
+      mode: 'MERGE_INTO_CURRENT',
+    })
+    await expect(client.request(jobPath, {
+      method: 'POST',
+      ifMatch: draftRes.etag,
+      body: JSON.stringify({ ...JSON.parse(jobBody), expected_selection_fingerprint: '0'.repeat(64) }),
+    })).rejects.toThrow(/변경되었습니다/)
+    await expect(client.request(jobPath, {
+      method: 'POST',
+      ifMatch: draftRes.etag,
+      body: JSON.stringify({
+        ...JSON.parse(jobBody),
+        asset_id: liveAssets[1]!.id,
+      }),
+    })).rejects.toThrow(/보안등급/)
+    const jobRes = await client.request<{
+      id: string
+      state: string
+      stage: string
+      result_proposal_id: string
+    }>(jobPath, {
+      method: 'POST',
+      ifMatch: draftRes.etag,
+      idempotencyKey: 'k4-catalog-job',
+      body: jobBody,
+    })
+    expect(jobRes.state).toBe('SUCCEEDED')
+    expect(jobRes.stage).toBe('COMPLETED')
+    const replay = await client.request<{ id: string }>(jobPath, {
+      method: 'POST',
+      ifMatch: draftRes.etag,
+      idempotencyKey: 'k4-catalog-job',
+      body: jobBody,
+    })
+    expect(replay.id).toBe(jobRes.id)
+    const proposalId = jobRes.result_proposal_id
+    const proposalRes = await client.request<{
+      state: string
+      elements: Array<{ kind: string; metadata_reference_urn: string }>
+      source_reference: {
+        table_urn: string
+        selected_column_urns: string[]
+        pipeline_evidence: { cypher_execution: boolean }
+      }
+    }>(`/knowledge/studio/drafts/${draftId}/tbox/proposals/${proposalId}`)
+    expect(proposalRes.state).toBe('READY')
+    expect(proposalRes.elements.map((item) => item.kind)).toEqual(['CLASS', 'PROPERTY'])
+    expect(proposalRes.elements.map((item) => item.metadata_reference_urn)).toEqual([assetId, columnUrn])
+    expect(proposalRes.source_reference).toMatchObject({
+      table_urn: assetId,
+      selected_column_urns: [columnUrn],
+      pipeline_evidence: { cypher_execution: false },
+    })
+    const ingestionPath = `/knowledge/studio/drafts/${draftId}/abox/ingestions`
+    expect((await client.request<{ items: unknown[] }>(ingestionPath)).items).toEqual([])
+    const applyPath = `/knowledge/studio/drafts/${draftId}/tbox/proposals/${proposalId}/apply`
+    const applyBody = JSON.stringify({
+      merge_strategy: 'RESOLVE',
+      element_overrides: [],
+      resolutions: [],
+      excluded_stable_element_ids: [],
+    })
+    await expect(client.request(applyPath, {
+      method: 'POST', ifMatch: '"0"', idempotencyKey: 'k4-apply', body: applyBody,
+    })).rejects.toThrow(/변경되었습니다/)
+    const applyRes = await client.request<{
+      draft: { version: number }
+      blocks: Array<{ elements: Array<{ canonical_name: string; kind: string; metadata_reference_urn: string }> }>
+    }>(applyPath, {
+      method: 'POST',
+      ifMatch: draftRes.etag,
+      idempotencyKey: 'k4-apply',
+      body: applyBody,
+    })
+    expect(applyRes.blocks[0]!.elements.map((item) => item.kind)).toEqual(['CLASS', 'PROPERTY'])
+    expect(applyRes.blocks[0]!.elements[1]).toMatchObject({
+      canonical_name: 'wafer_id', metadata_reference_urn: columnUrn,
+    })
+    expect((await client.request<{ items: unknown[] }>(ingestionPath)).items).toEqual([])
+
+    const reloaded = await client.request<{
+      blocks: Array<{ elements: Array<{ stable_element_id: string }> }>
+    }>(`/knowledge/studio/drafts/${draftId}/tbox`)
+    expect(reloaded.blocks[0]!.elements).toHaveLength(2)
+    expect(reloaded.blocks[0]!.elements.every((item) => item.stable_element_id.length > 0)).toBe(true)
+    const persisted = await (await fetch('/poc-api/state/core')).json() as {
+      value: { knowledgeTBoxProposals: Array<{ id: string; state: string }> }
+    }
+    expect(persisted.value.knowledgeTBoxProposals).toContainEqual(
+      expect.objectContaining({ id: proposalId, state: 'APPLIED' }),
+    )
+
+    configureKnowledgeActor('k4-reader', 1, ['knowledge.read'])
+    await expect(client.request(jobPath, {
+      method: 'POST', ifMatch: `"${applyRes.draft.version}"`, body: jobBody,
+    })).rejects.toThrow(/권한/)
   })
 })

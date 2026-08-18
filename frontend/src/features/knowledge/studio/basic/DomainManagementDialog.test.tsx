@@ -154,7 +154,7 @@ describe('DomainManagementDialog', () => {
       name: '반도체 지식그래프',
       graph_type: 'DOMAIN',
       status: 'PUBLISHED',
-      classification: 'INTERNAL',
+      classification: 'normal',
       domain_id: domains[0]!.id,
       domain_name: domains[0]!.display_name,
       creator_name: 'DataRiver Administrator',

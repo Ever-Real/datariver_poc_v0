@@ -13,7 +13,7 @@ const value: KnowledgeStudioBasicInformation = {
   endpoint_aliases: ['enterprise_ontology'],
   domain_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3af',
   domain_source_version: 'domain-v1',
-  classification: 'INTERNAL',
+  classification: 'normal',
 }
 
 describe('BasicInformationStep', () => {

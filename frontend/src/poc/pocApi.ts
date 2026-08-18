@@ -388,6 +388,8 @@ let knowledgeReleases: Array<Record<string, unknown>> = []
 const knowledgeDraftBlocks = new Map<string, Array<Record<string, unknown>>>()
 const knowledgeDraftBindings = new Map<string, Array<Record<string, unknown>>>()
 let knowledgeIngestionJobs: Array<Record<string, unknown>> = []
+let knowledgeProposalJobs: Array<Record<string, unknown>> = []
+let knowledgeTBoxProposals: Array<Record<string, unknown>> = []
 let governanceDocuments: GovernanceDocumentSummary[] = []
 let governanceVersions: GovernanceDocumentVersion[] = []
 let governanceReviews: GovernanceDocumentReview[] = []
@@ -411,6 +413,105 @@ const changeAttachmentUploads = new Map<string, ChangeRequestAttachmentUpload & 
 const changeAttachments = new Map<string, Array<ChangeRequestAttachment & { file?: File }>>()
 const changeAttachmentLocations = new Map<string, { upload_id: string; display_name: string }>()
 const liveAssetDetails = new Map<string, CatalogAssetDetail>()
+
+type CanonicalKnowledgeGrade = 'normal' | 'credential' | 'restricted'
+
+interface KnowledgeCatalogField {
+  field_path: string
+  field_urn: string | null
+  field_type?: string | null
+  native_data_type?: string | null
+  description?: string | null
+  description_truncated: boolean
+  tags: string[]
+  tags_truncated: boolean
+  glossary_terms: string[]
+  terms_truncated: boolean
+}
+
+interface KnowledgeCatalogDataset {
+  id: string
+  name: string
+  asset_type: 'TABLE'
+  platform?: string
+  database_name?: string
+  schema_name?: string
+  classification: CanonicalKnowledgeGrade
+  source_version: string
+  projection_source_version: string
+  field_paths: string[]
+  fields_truncated: boolean
+  domain?: string | null
+  tags: string[]
+  glossary_terms: string[]
+  description?: string | null
+  description_truncated: boolean
+  field_metadata: KnowledgeCatalogField[]
+  selection_fingerprint: string | null
+}
+
+interface KnowledgeCatalogDetail {
+  dataset: KnowledgeCatalogDataset
+  observed_at: string
+}
+
+function canonicalKnowledgeGrade(value: unknown, fallback: CanonicalKnowledgeGrade = 'normal'): CanonicalKnowledgeGrade {
+  if (value === undefined || value === null || value === '') return fallback
+  if (typeof value !== 'string') {
+    throw new Error('Knowledge 보안등급은 문자열이어야 합니다.')
+  }
+  switch (value.trim().toLocaleLowerCase()) {
+    case 'public':
+    case 'internal':
+    case 'normal':
+      return 'normal'
+    case 'confidential':
+    case 'credential':
+      return 'credential'
+    case 'restricted':
+      return 'restricted'
+    default:
+      throw new Error('Knowledge 보안등급은 normal, credential, restricted 중 하나여야 합니다.')
+  }
+}
+
+function knowledgeGradeRank(value: unknown): number {
+  return { normal: 0, credential: 1, restricted: 2 }[canonicalKnowledgeGrade(value)]
+}
+
+function isCanonicalDatasetUrn(value: unknown): value is string {
+  return typeof value === 'string'
+    && value.length <= 4_096
+    && value.startsWith('urn:li:dataset:(')
+    && value.endsWith(')')
+}
+
+function isCanonicalSchemaFieldUrn(value: unknown, tableUrn: string): value is string {
+  return typeof value === 'string'
+    && value.length <= 8_192
+    && value.startsWith(`urn:li:schemaField:(${tableUrn},`)
+    && value.endsWith(')')
+}
+
+function knowledgePropertyDataType(nativeType: unknown): string {
+  const value = typeof nativeType === 'string' ? nativeType.toLocaleUpperCase() : ''
+  if (/BOOL/.test(value)) return 'BOOLEAN'
+  if (/TIMESTAMP|DATETIME/.test(value)) return 'DATETIME'
+  if (/\bDATE\b/.test(value)) return 'DATE'
+  if (/FLOAT|DOUBLE|DECIMAL|NUMERIC|REAL/.test(value)) return 'FLOAT'
+  if (/INT|LONG|SHORT|BYTE/.test(value)) return 'INTEGER'
+  if (/TEXT/.test(value)) return 'TEXT'
+  return 'STRING'
+}
+
+function knowledgeCanonicalName(value: unknown, fallback: string): string {
+  const normalized = (typeof value === 'string' ? value : '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .toLocaleLowerCase()
+  return (normalized || fallback).slice(0, 255)
+}
 
 function pocSystemEntry(system: typeof adminSystems[number]) {
   const assignees = adminSystemAssignees.get(system.system_id) ?? []
@@ -443,7 +544,11 @@ function knowledgeDraftById(id: string): Record<string, unknown> {
 }
 
 function knowledgeTBox(draftId: string) {
-  return { draft: knowledgeDraftById(draftId), blocks: knowledgeDraftBlocks.get(draftId) ?? [] }
+  const draft = knowledgeDraftById(draftId)
+  return {
+    draft: { ...draft, classification: canonicalKnowledgeGrade(draft.classification) },
+    blocks: knowledgeDraftBlocks.get(draftId) ?? [],
+  }
 }
 
 function requestIfMatch(options: PocRequestOptions): string | undefined {
@@ -595,7 +700,7 @@ function knowledgeAssetSummary(draft: Record<string, unknown>, release: Record<s
     display_version: knowledgeDraftDisplayVersion(draft),
     graph_type: 'CURATED_KNOWLEDGE',
     status,
-    classification: draft.classification,
+    classification: canonicalKnowledgeGrade(draft.classification),
     domain_id: draft.domain_id,
     domain_name: knowledgeDomains.find((domain) => domain.id === draft.domain_id)?.display_name ?? null,
     creator_name: String(draft.asset_creator_id ?? draft.author_id), creator_email: null,
@@ -1726,6 +1831,8 @@ class PocApiClient {
         if (Array.isArray(value.knowledgeDrafts)) knowledgeDrafts = value.knowledgeDrafts as Array<Record<string, unknown>>
         if (Array.isArray(value.knowledgeReleases)) knowledgeReleases = value.knowledgeReleases as Array<Record<string, unknown>>
         if (Array.isArray(value.knowledgeIngestionJobs)) knowledgeIngestionJobs = value.knowledgeIngestionJobs as Array<Record<string, unknown>>
+        if (Array.isArray(value.knowledgeProposalJobs)) knowledgeProposalJobs = value.knowledgeProposalJobs as Array<Record<string, unknown>>
+        if (Array.isArray(value.knowledgeTBoxProposals)) knowledgeTBoxProposals = value.knowledgeTBoxProposals as Array<Record<string, unknown>>
         if (Array.isArray(value.governanceDocuments)) governanceDocuments = value.governanceDocuments as GovernanceDocumentSummary[]
         if (Array.isArray(value.governanceVersions)) governanceVersions = value.governanceVersions as GovernanceDocumentVersion[]
         if (Array.isArray(value.governanceReviews)) governanceReviews = value.governanceReviews as GovernanceDocumentReview[]
@@ -1800,6 +1907,8 @@ class PocApiClient {
           knowledgeDrafts,
           knowledgeReleases,
           knowledgeIngestionJobs,
+          knowledgeProposalJobs,
+          knowledgeTBoxProposals,
           knowledgeDraftBlocks: [...knowledgeDraftBlocks.entries()],
           knowledgeDraftBindings: [...knowledgeDraftBindings.entries()],
           governanceDocuments,
@@ -3088,7 +3197,7 @@ class PocApiClient {
       const source = knowledgeDrafts.find((item) => item.materialized_graph_id === graphId && item.state === 'PUBLISHED')
       if (!source) throw new Error('편집할 게시 지식 자산을 찾을 수 없습니다.')
       const existing = knowledgeDrafts.find((item) => item.materialized_graph_id === graphId && item.kind === 'EDIT' && item.state === 'DRAFT')
-      if (existing) return existing
+      if (existing) return { ...existing, classification: canonicalKnowledgeGrade(existing.classification) }
       const now = new Date().toISOString()
       const draft = {
         ...source, id: crypto.randomUUID(), author_id: presentationSubjectId, kind: 'EDIT', state: 'DRAFT',
@@ -3103,7 +3212,10 @@ class PocApiClient {
       knowledgeDraftBlocks.set(String(draft.id), structuredClone(knowledgeDraftBlocks.get(String(source.id)) ?? []))
       knowledgeDraftBindings.set(String(draft.id), structuredClone(knowledgeDraftBindings.get(String(source.id)) ?? []))
       await this.persistCore()
-      return draft
+      return {
+        ...draft,
+        classification: canonicalKnowledgeGrade((draft as Record<string, unknown>).classification),
+      }
     }
     if (path === '/knowledge/studio/drafts/resumable') {
       const alias = url.searchParams.get('endpoint_alias') ?? ''
@@ -3116,7 +3228,7 @@ class PocApiClient {
         code: 'KNOWLEDGE_RESUMABLE_DRAFT_NOT_FOUND',
         request_id: 'poc-local',
       })
-      return draft
+      return { ...draft, classification: canonicalKnowledgeGrade(draft.classification) }
     }
     if (path === '/knowledge/studio/drafts' && method === 'POST') {
       const body = jsonBody(options)
@@ -3129,7 +3241,7 @@ class PocApiClient {
         description: responseString(body.description, '').trim(),
         endpoint_aliases: Array.isArray(body.endpoint_aliases) ? body.endpoint_aliases : [body.endpoint_alias],
         domain_id: body.domain_id, domain_source_version: body.domain_source_version,
-        classification: body.classification ?? 'INTERNAL', last_autosaved_at: now,
+        classification: canonicalKnowledgeGrade(body.classification), last_autosaved_at: now,
         version: 1, created_at: now, updated_at: now,
         asset_creator_id: presentationSubjectId, asset_created_at: now, updated_by: presentationSubjectId,
       }
@@ -3155,7 +3267,7 @@ class PocApiClient {
     const knowledgeDraftPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)$/)
     if (knowledgeDraftPath) {
       const draft = knowledgeDraftById(decodeURIComponent(knowledgeDraftPath[1] ?? ''))
-      if (method === 'GET') return draft
+      if (method === 'GET') return { ...draft, classification: canonicalKnowledgeGrade(draft.classification) }
       if (method === 'PATCH') {
         requireDraftVersion(draft, options)
         if (draft.state !== 'DRAFT') throw new Error('현재 Draft는 수정할 수 없습니다.')
@@ -3168,14 +3280,16 @@ class PocApiClient {
           endpoint_aliases: Array.isArray(body.endpoint_aliases) ? body.endpoint_aliases : draft.endpoint_aliases,
           domain_id: body.domain_id ?? draft.domain_id,
           domain_source_version: body.domain_source_version ?? draft.domain_source_version,
-          classification: body.classification ?? draft.classification,
+          classification: body.classification === undefined
+            ? canonicalKnowledgeGrade(draft.classification)
+            : canonicalKnowledgeGrade(body.classification),
           version: Number(draft.version) + 1,
           updated_at: now,
           last_autosaved_at: now,
           updated_by: presentationSubjectId,
         })
         await this.persistCore()
-        return draft
+        return { ...draft, classification: canonicalKnowledgeGrade(draft.classification) }
       }
     }
     const draftAdvancePath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/advance$/)
@@ -3304,6 +3418,352 @@ class PocApiClient {
       await this.persistCore()
       return knowledgeTBox(draftId)
     }
+    const proposalJobsPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/tbox\/proposal-jobs$/)
+    if (proposalJobsPath) {
+      const draftId = decodeURIComponent(proposalJobsPath[1] ?? '')
+      const draft = knowledgeDraftById(draftId)
+      if (method === 'GET') {
+        const items = knowledgeProposalJobs.filter((item) => item.draft_id === draftId).reverse()
+        return { items, page: { next_cursor: null, limit: 20 } }
+      }
+      if (method === 'POST') {
+        requireDraftVersion(draft, options)
+        if (draft.state !== 'DRAFT') throw new Error('현재 Draft에는 Proposal을 생성할 수 없습니다.')
+        const body = jsonBody(options)
+        if (body.input_kind !== 'CATALOG_SCHEMA') {
+          throw new Error('현재 POC는 Catalog Table T-Box Proposal만 지원합니다.')
+        }
+        const mode = body.mode === 'APPEND_LAYER' ? 'APPEND_LAYER' : 'MERGE_INTO_CURRENT'
+        const targetBlockId = responseString(body.target_block_id, '') || null
+        const currentBlocks = knowledgeDraftBlocks.get(draftId) ?? []
+        if (mode === 'MERGE_INTO_CURRENT'
+          && (!targetBlockId || !currentBlocks.some((block) => block.id === targetBlockId))) {
+          throw new Error('Proposal을 적용할 현재 T-Box Layer가 필요합니다.')
+        }
+        const assetId = responseString(body.asset_id, '').trim()
+        if (!isCanonicalDatasetUrn(assetId)) throw new Error('현재 canonical Table URN이 필요합니다.')
+        const selectedFieldPaths = Array.isArray(body.selected_field_paths)
+          ? body.selected_field_paths.map((item) => responseString(item, '').trim()).filter(Boolean)
+          : []
+        if (selectedFieldPaths.length < 1 || selectedFieldPaths.length > 100
+          || new Set(selectedFieldPaths).size !== selectedFieldPaths.length) {
+          throw new Error('Catalog Column은 중복 없이 1개 이상 100개 이하로 선택하세요.')
+        }
+        const expectedFingerprint = responseString(body.expected_selection_fingerprint, '').trim()
+        if (!/^[a-f0-9]{64}$/.test(expectedFingerprint)) {
+          throw new Error('Catalog 선택 fingerprint가 유효하지 않습니다.')
+        }
+        const idempotencyKey = responseString(options.idempotencyKey, '').trim()
+        if (idempotencyKey) {
+          const replay = knowledgeProposalJobs.find((item) => (
+            item.draft_id === draftId && item.idempotency_key === idempotencyKey
+          ))
+          if (replay) return replay
+        }
+        const detailResponse = await gatewayRequest<KnowledgeCatalogDetail>(
+          `/poc-api/knowledge/catalog/asset?urn=${encodeURIComponent(assetId)}`,
+          { signal: options.signal },
+        )
+        const detail = detailResponse.dataset
+        if (detail.asset_type !== 'TABLE' || detail.id !== assetId) {
+          throw new Error('현재 canonical Table만 T-Box Source로 사용할 수 있습니다.')
+        }
+        if (knowledgeGradeRank(draft.classification) < knowledgeGradeRank(detail.classification)) {
+          throw new Error('Knowledge Asset 보안등급은 Source Table보다 낮을 수 없습니다.')
+        }
+        if (detail.selection_fingerprint !== expectedFingerprint) {
+          throw new Error('Catalog metadata가 변경되었습니다. Table과 Column을 다시 선택하세요.')
+        }
+        const fieldsByPath = new Map(detail.field_metadata.map((field) => [field.field_path, field]))
+        const selectedFields = selectedFieldPaths.map((fieldPath) => {
+          const field = fieldsByPath.get(fieldPath)
+          if (!field || !isCanonicalSchemaFieldUrn(field.field_urn, assetId)) {
+            throw new Error('선택한 Column의 exact DataHub URN을 확인할 수 없습니다.')
+          }
+          return field
+        })
+        const requestIdentity = await sha256(JSON.stringify({
+          contract_version: 'KNOWLEDGE_CATALOG_TBOX_PROPOSAL_V1',
+          draft_id: draftId,
+          draft_version: draft.version,
+          asset_id: assetId,
+          selected_field_paths: selectedFieldPaths,
+          selection_fingerprint: expectedFingerprint,
+          mode,
+          target_block_id: targetBlockId,
+        }))
+        const existing = knowledgeProposalJobs.find((item) => item.request_identity === requestIdentity)
+        if (existing) return existing
+        const classIdentity = (await sha256(`class\u0000${assetId}`)).slice(0, 40)
+        const classId = `catalog-class:${classIdentity}`
+        const className = knowledgeCanonicalName(detail.name, 'catalog_table')
+        const elements: Array<Record<string, unknown>> = [{
+          stable_element_id: classId,
+          kind: 'CLASS',
+          canonical_name: className,
+          display_name: detail.name,
+          description: detail.description ?? '',
+          parent_stable_element_id: null,
+          ordinal: 0,
+          version: 1,
+          aliases: [],
+          vector_index_enabled: false,
+          locked_by_later_block: false,
+          metadata_reference_id: assetId,
+          metadata_reference_urn: assetId,
+          provenance_source: 'CATALOG_PROPOSAL',
+        }]
+        for (const [index, field] of selectedFields.entries()) {
+          const fieldUrn = field.field_urn as string
+          const propertyIdentity = (await sha256(`property\u0000${fieldUrn}`)).slice(0, 40)
+          elements.push({
+            stable_element_id: `catalog-property:${propertyIdentity}`,
+            kind: 'PROPERTY',
+            canonical_name: knowledgeCanonicalName(field.field_path, `column_${index + 1}`),
+            display_name: field.field_path.split('.').at(-1) || field.field_path,
+            description: field.description ?? '',
+            parent_stable_element_id: classId,
+            data_type: knowledgePropertyDataType(field.native_data_type ?? field.field_type),
+            nullable: true,
+            value_cardinality: 'SINGLE',
+            ordinal: index + 1,
+            version: 1,
+            aliases: [...new Set([...field.glossary_terms, ...field.tags])].slice(0, 50),
+            vector_index_enabled: false,
+            locked_by_later_block: false,
+            metadata_reference_id: fieldUrn,
+            metadata_reference_urn: fieldUrn,
+            provenance_source: 'CATALOG_PROPOSAL',
+          })
+        }
+        validateKnowledgeTBoxElements(elements)
+        const now = new Date().toISOString()
+        const proposalId = `catalog-proposal:${requestIdentity.slice(0, 40)}`
+        const sourceReference = {
+          type: 'CATALOG_PROPOSAL',
+          source_type: 'CATALOG_PROPOSAL',
+          asset_id: assetId,
+          table_urn: assetId,
+          selected_field_paths: selectedFieldPaths,
+          selected_column_urns: selectedFields.map((field) => field.field_urn),
+          selection_fingerprint: expectedFingerprint,
+          source_version: detail.source_version,
+          projection_source_version: detail.projection_source_version,
+          security_grade: canonicalKnowledgeGrade(detail.classification),
+          pipeline_evidence: {
+            typed_schema_parse: 'PASSED',
+            deterministic_correction_passes: 1,
+            aggregate_validation_passes: 1,
+            cypher_execution: false,
+          },
+        }
+        const evidenceHash = await sha256(JSON.stringify({ elements, source_reference: sourceReference }))
+        const proposal = {
+          id: proposalId,
+          draft_id: draftId,
+          target_block_id: targetBlockId,
+          state: 'READY',
+          mode,
+          merge_strategy: 'RESOLVE',
+          base_draft_version: Number(draft.version),
+          prompt: `Catalog Table: ${detail.name}`,
+          elements,
+          conflicts: [],
+          source_reference: sourceReference,
+          request_identity: requestIdentity,
+          version: 1,
+          created_at: now,
+          updated_at: now,
+        }
+        const job = {
+          id: `catalog-job:${requestIdentity.slice(0, 40)}`,
+          draft_id: draftId,
+          input_kind: 'CATALOG_SCHEMA',
+          mode,
+          target_block_id: targetBlockId,
+          state: 'SUCCEEDED',
+          stage: 'COMPLETED',
+          progress_percent: 100,
+          attempt_count: 1,
+          maximum_attempts: 1,
+          last_failure_code: null,
+          version: 1,
+          created_at: now,
+          updated_at: now,
+          completed_at: now,
+          result_proposal_id: proposalId,
+          result_evidence_hash: evidenceHash,
+          supersedes_job_id: null,
+          request_identity: requestIdentity,
+          idempotency_key: idempotencyKey || null,
+        }
+        const previousJobs = knowledgeProposalJobs
+        const previousProposals = knowledgeTBoxProposals
+        knowledgeProposalJobs = [...knowledgeProposalJobs, job]
+        knowledgeTBoxProposals = [...knowledgeTBoxProposals, proposal]
+        try {
+          await this.persistCore()
+        } catch (error) {
+          knowledgeProposalJobs = previousJobs
+          knowledgeTBoxProposals = previousProposals
+          throw error
+        }
+        return job
+      }
+    }
+
+    const proposalJobDetailPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/tbox\/proposal-jobs\/([^/]+)$/)
+    if (proposalJobDetailPath && method === 'GET') {
+      const draftId = decodeURIComponent(proposalJobDetailPath[1] ?? '')
+      const jobId = decodeURIComponent(proposalJobDetailPath[2] ?? '')
+      const job = knowledgeProposalJobs.find((j) => j.id === jobId && j.draft_id === draftId)
+      if (!job) throw new Error('Proposal job not found')
+      return job
+    }
+
+    const proposalsPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/tbox\/proposals$/)
+    if (proposalsPath && method === 'GET') {
+      const draftId = decodeURIComponent(proposalsPath[1] ?? '')
+      const items = knowledgeTBoxProposals.filter((p) => p.draft_id === draftId)
+      return { items, page: { next_cursor: null, limit: 20 } }
+    }
+
+    const proposalDetailPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/tbox\/proposals\/([^/]+)$/)
+    if (proposalDetailPath && method === 'GET') {
+      const draftId = decodeURIComponent(proposalDetailPath[1] ?? '')
+      const proposalId = decodeURIComponent(proposalDetailPath[2] ?? '')
+      const proposal = knowledgeTBoxProposals.find((p) => p.id === proposalId && p.draft_id === draftId)
+      if (!proposal) throw new Error('Proposal not found')
+      return proposal
+    }
+
+    const proposalApplyPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/tbox\/proposals\/([^/]+)\/apply$/)
+    if (proposalApplyPath && method === 'POST') {
+      const draftId = decodeURIComponent(proposalApplyPath[1] ?? '')
+      const proposalId = decodeURIComponent(proposalApplyPath[2] ?? '')
+      const draft = knowledgeDraftById(draftId)
+      requireDraftVersion(draft, options)
+      if (draft.state !== 'DRAFT') throw new Error('현재 Draft에는 Proposal을 적용할 수 없습니다.')
+      const proposal = knowledgeTBoxProposals.find((p) => p.id === proposalId && p.draft_id === draftId)
+      if (!proposal) throw new Error('Proposal not found')
+      const replayKey = responseString(options.idempotencyKey, '').trim()
+      if (proposal.state === 'APPLIED' && replayKey && proposal.applied_idempotency_key === replayKey) {
+        return knowledgeTBox(draftId)
+      }
+      if (proposal.state !== 'READY') throw new Error('Proposal은 READY 상태에서만 적용할 수 있습니다.')
+      if (Number(proposal.base_draft_version) !== Number(draft.version)) {
+        throw new Error('Proposal 생성 이후 Draft가 변경되었습니다. Proposal을 다시 생성하세요.')
+      }
+      const sourceReference = proposal.source_reference && typeof proposal.source_reference === 'object'
+        ? proposal.source_reference as Record<string, unknown>
+        : {}
+      const assetId = responseString(sourceReference.asset_id, '')
+      const detailResponse = await gatewayRequest<KnowledgeCatalogDetail>(
+        `/poc-api/knowledge/catalog/asset?urn=${encodeURIComponent(assetId)}`,
+        { signal: options.signal },
+      )
+      if (detailResponse.dataset.selection_fingerprint !== sourceReference.selection_fingerprint) {
+        throw new Error('Catalog metadata가 변경되었습니다. Proposal을 다시 생성하세요.')
+      }
+
+      const body = jsonBody(options)
+      const blocks = structuredClone(knowledgeDraftBlocks.get(draftId) ?? [])
+      let blockId = responseString(proposal.target_block_id, '')
+      if (proposal.mode === 'APPEND_LAYER') {
+        blockId = `catalog-block:${String(proposal.request_identity).slice(0, 40)}`
+        blocks.push({
+          id: blockId,
+          kind: 'CATALOG_METADATA',
+          title: 'Catalog Table Proposal',
+          weight: blocks.length,
+          ordinal: blocks.length,
+          collapsed: false,
+          version: 1,
+          elements: [],
+          source_reference: structuredClone(sourceReference),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        })
+      }
+      const block = blocks.find((b) => b.id === blockId)
+      if (!block) throw new Error('Proposal 대상 T-Box Layer를 찾을 수 없습니다.')
+
+      const elements = Array.isArray(block.elements)
+        ? block.elements.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+          .map((item) => ({ ...item }))
+        : []
+      const excluded = new Set(Array.isArray(body.excluded_stable_element_ids) ? body.excluded_stable_element_ids : [])
+      const overridesMap = new Map((Array.isArray(body.element_overrides) ? body.element_overrides : [])
+        .filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+        .map((item) => [String(item.stable_element_id), item]))
+
+      const proposalElements = Array.isArray(proposal.elements)
+        ? proposal.elements.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === 'object')
+        : []
+      for (const el of proposalElements) {
+        if (excluded.has(String(el.stable_element_id))) continue
+        const override = overridesMap.get(String(el.stable_element_id))
+        const finalEl: Record<string, unknown> = { ...el, block_id: blockId }
+        if (override) {
+          if (override.canonical_name) finalEl.canonical_name = responseString(override.canonical_name, '')
+          if (override.display_name) finalEl.display_name = responseString(override.display_name, '')
+          if (override.data_type) finalEl.data_type = responseString(override.data_type, '')
+        }
+        const existingIdx = elements.findIndex(e => e.stable_element_id === finalEl.stable_element_id)
+        if (existingIdx >= 0) elements[existingIdx] = finalEl
+        else elements.push(finalEl)
+      }
+
+      const now = new Date().toISOString()
+      block.elements = elements
+      block.version = Number(block.version) + 1
+      block.updated_at = now
+      block.source_reference = structuredClone(sourceReference)
+      const effectiveElements = new Map<string, Record<string, unknown>>()
+      for (const candidateBlock of [...blocks].sort((left, right) => (
+        Number(left.weight) - Number(right.weight) || Number(left.ordinal) - Number(right.ordinal)
+      ))) {
+        for (const element of Array.isArray(candidateBlock.elements)
+          ? candidateBlock.elements as Array<Record<string, unknown>>
+          : []) {
+          const stableId = responseString(element.stable_element_id, '')
+          if (stableId) effectiveElements.set(stableId, element)
+        }
+      }
+      validateKnowledgeTBoxElements([...effectiveElements.values()])
+      const nextDraft = {
+        ...draft,
+        version: Number(draft.version) + 1,
+        updated_at: now,
+        updated_by: presentationSubjectId,
+      }
+      const nextProposal = {
+        ...proposal,
+        state: 'APPLIED',
+        applied_at: now,
+        applied_idempotency_key: replayKey || null,
+        version: Number(proposal.version) + 1,
+        updated_at: now,
+      }
+      const draftIndex = knowledgeDrafts.findIndex((item) => item.id === draftId)
+      const proposalIndex = knowledgeTBoxProposals.findIndex((item) => item.id === proposalId)
+      const previousDraft = knowledgeDrafts[draftIndex]!
+      const previousBlocks = knowledgeDraftBlocks.get(draftId) ?? []
+      const previousProposal = knowledgeTBoxProposals[proposalIndex]!
+      knowledgeDrafts[draftIndex] = nextDraft
+      knowledgeDraftBlocks.set(draftId, blocks)
+      knowledgeTBoxProposals[proposalIndex] = nextProposal
+      try {
+        await this.persistCore()
+      } catch (error) {
+        knowledgeDrafts[draftIndex] = previousDraft
+        knowledgeDraftBlocks.set(draftId, previousBlocks)
+        knowledgeTBoxProposals[proposalIndex] = previousProposal
+        throw error
+      }
+      return knowledgeTBox(draftId)
+    }
+
     const aboxPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/abox$/)
     if (aboxPath && method === 'GET') {
       const draftId = decodeURIComponent(aboxPath[1] ?? '')
@@ -3345,23 +3805,26 @@ class PocApiClient {
     const catalogSourcesPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/(?:tbox\/catalog-sources|abox\/sources)$/)
     if (catalogSourcesPath && method === 'GET') {
       knowledgeDraftById(decodeURIComponent(catalogSourcesPath[1] ?? ''))
-      const result = runtimeFlags().datahub
-        ? await liveCatalog(new URLSearchParams({ q: url.searchParams.get('q') || '*', limit: url.searchParams.get('limit') || '25' }), options.signal)
-        : { items: [], page: { next_cursor: null, limit: 25 } }
-      return { items: result.items.map((asset) => ({ id: asset.id, name: asset.name, asset_type: 'DATASET', platform: asset.platform, database_name: asset.database_name, schema_name: asset.schema_name, classification: asset.classification, source_version: 'datahub-live', projection_source_version: 'datahub-live-poc', field_paths: [], fields_truncated: false, domain: asset.domain, tags: asset.tags, glossary_terms: asset.terms, description: asset.description, description_truncated: false, field_metadata: [], selection_fingerprint: null })), page: result.page }
+      if (!runtimeFlags().datahub) return { items: [], page: { next_cursor: null, limit: 25 } }
+      const parameters = new URLSearchParams()
+      for (const key of ['q', 'limit', 'cursor', 'platform', 'database', 'schema', 'domain', 'classification']) {
+        const value = url.searchParams.get(key)
+        if (value) parameters.set(key, value)
+      }
+      if (!parameters.has('q')) parameters.set('q', '*')
+      if (!parameters.has('limit')) parameters.set('limit', '25')
+      return gatewayRequest<{ items: KnowledgeCatalogDataset[]; page: { next_cursor?: string; limit: number } }>(
+        `/poc-api/knowledge/catalog?${parameters.toString()}`,
+        { signal: options.signal },
+      )
     }
     const catalogSourceDetailPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/(?:tbox\/catalog-sources|abox\/sources)\/(.+)$/)
     if (catalogSourceDetailPath && method === 'GET') {
       knowledgeDraftById(decodeURIComponent(catalogSourceDetailPath[1] ?? ''))
-      const detail = await gatewayRequest<CatalogAssetDetail>(`/poc-api/datahub/asset?urn=${encodeURIComponent(decodeURIComponent(catalogSourceDetailPath[2] ?? ''))}`, { signal: options.signal })
-      const fieldMetadata = detail.schema_fields.map((field) => ({
-        field_path: responseString(field.fieldPath ?? field.field_path, ''), field_type: field.type ?? null,
-        native_data_type: field.nativeDataType ?? field.native_data_type ?? null,
-        description: field.description ?? null, description_truncated: false,
-        tags: Array.isArray(field.tags) ? field.tags.map(String) : [], tags_truncated: false,
-        glossary_terms: Array.isArray(field.terms) ? field.terms.map(String) : [], terms_truncated: false,
-      }))
-      return { dataset: { id: detail.id, name: detail.name, asset_type: 'DATASET', platform: detail.platform, database_name: detail.database_name, schema_name: detail.schema_name, classification: detail.classification, source_version: detail.source_version, projection_source_version: detail.projection_source_version, field_paths: fieldMetadata.map((field) => field.field_path), fields_truncated: detail.schema_fields_truncated, domain: detail.domain, tags: detail.tags, glossary_terms: detail.terms, description: detail.description, description_truncated: false, field_metadata: fieldMetadata, selection_fingerprint: null }, observed_at: new Date().toISOString() }
+      return gatewayRequest<KnowledgeCatalogDetail>(
+        `/poc-api/knowledge/catalog/asset?urn=${encodeURIComponent(decodeURIComponent(catalogSourceDetailPath[2] ?? ''))}`,
+        { signal: options.signal },
+      )
     }
     const preflightPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/abox\/preflight$/)
     if (preflightPath && method === 'POST') {
@@ -4281,6 +4744,8 @@ export function resetPocMemory(): void {
   knowledgeDrafts = []
   knowledgeReleases = []
   knowledgeIngestionJobs = []
+  knowledgeProposalJobs = []
+  knowledgeTBoxProposals = []
   knowledgeDraftBlocks.clear()
   knowledgeDraftBindings.clear()
   governanceDocuments = []

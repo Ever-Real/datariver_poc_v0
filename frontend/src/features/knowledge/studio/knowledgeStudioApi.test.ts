@@ -50,7 +50,7 @@ const payload: KnowledgeStudioBasicInformation = {
   endpoint_aliases: ['semiconductor_materials', 'materials_kg'],
   domain_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3af',
   domain_source_version: 'domain-v3',
-  classification: 'INTERNAL',
+  classification: 'normal',
 }
 
 function draftResponse(version: number): Record<string, unknown> {
@@ -94,7 +94,7 @@ describe('Knowledge Studio API', () => {
     vi.stubGlobal('fetch', fetchMock)
     const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
 
-    await listKnowledgeStudioDomains(client, 'INTERNAL')
+    await listKnowledgeStudioDomains(client, 'normal')
     await createKnowledgeStudioDraft(client, payload, 'create-key')
     await autosaveKnowledgeStudioDraft(
       client,
@@ -111,7 +111,7 @@ describe('Knowledge Studio API', () => {
     )
 
     expect(requestUrl(fetchMock.mock.calls[0]?.[0])).toContain(
-      '/knowledge/domains?classification=INTERNAL&limit=100',
+      '/knowledge/domains?classification=normal&limit=100',
     )
     const createHeaders = new Headers(fetchMock.mock.calls[1]?.[1]?.headers)
     expect(createHeaders.get('Idempotency-Key')).toBe('create-key')
@@ -186,7 +186,7 @@ describe('Knowledge Studio API', () => {
       size_bytes: 12,
       content_type: 'text/csv',
       sha256: 'a'.repeat(64),
-      classification: 'INTERNAL',
+      classification: 'normal',
       content_profile: 'KNOWLEDGE_STUDIO_DOCUMENT_V1',
       expires_at: '2026-07-31T03:00:00Z',
       version: 1,
@@ -482,7 +482,7 @@ describe('Knowledge Studio API', () => {
       graph_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d0',
       graph_name: 'Enterprise glossary',
       graph_slug: 'enterprise-glossary',
-      classification: 'INTERNAL',
+      classification: 'normal',
       domain_name: 'Data Governance',
       studio_release_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3d1',
       release_no: 7,

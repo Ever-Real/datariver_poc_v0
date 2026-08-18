@@ -56,7 +56,7 @@ function draft(version: number, name = '서버 그래프', currentStep = 'BASIC'
     endpoint_alias: 'semiconductor_materials',
     domain_id: domainId,
     domain_source_version: 'domain-v3',
-    classification: 'INTERNAL',
+    classification: 'normal',
     last_autosaved_at: '2026-07-28T01:00:00Z',
     version,
     created_at: '2026-07-28T01:00:00Z',

@@ -1092,6 +1092,49 @@ test('reads a fixed Neo4j graph contract without accepting Cypher from the brows
   assert.equal(arbitrary.status, 404)
 })
 
+test('serves a Knowledge-scoped canonical Table catalog with exact Column identity', async () => {
+  const tableUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)'
+  const columnUrn = `urn:li:schemaField:(${tableUrn},wafer_id)`
+  forceKnowledgeNonTable = false
+  omitKnowledgeColumnUrn = false
+  try {
+    const searchResponse = await fetch(`${pocOrigin}/poc-api/knowledge/catalog?q=wafer&limit=10`)
+    assert.equal(searchResponse.status, 200, await searchResponse.clone().text())
+    const search = await searchResponse.json()
+    assert.equal(search.items.length, 1)
+    assert.equal(search.items[0].id, tableUrn)
+    assert.equal(search.items[0].asset_type, 'TABLE')
+    assert.equal(search.items[0].classification, 'credential')
+
+    const detailResponse = await fetch(
+      `${pocOrigin}/poc-api/knowledge/catalog/asset?urn=${encodeURIComponent(tableUrn)}`,
+    )
+    assert.equal(detailResponse.status, 200, await detailResponse.clone().text())
+    const detail = await detailResponse.json()
+    assert.equal(detail.dataset.id, tableUrn)
+    assert.equal(detail.dataset.field_metadata[0].field_urn, columnUrn)
+    assert.match(detail.dataset.selection_fingerprint, /^[a-f0-9]{64}$/)
+
+    omitKnowledgeColumnUrn = true
+    const unresolvedColumnResponse = await fetch(
+      `${pocOrigin}/poc-api/knowledge/catalog/asset?urn=${encodeURIComponent(tableUrn)}`,
+    )
+    assert.equal(unresolvedColumnResponse.status, 200)
+    assert.equal((await unresolvedColumnResponse.json()).dataset.field_metadata[0].field_urn, null)
+    omitKnowledgeColumnUrn = false
+
+    forceKnowledgeNonTable = true
+    const nonTableResponse = await fetch(
+      `${pocOrigin}/poc-api/knowledge/catalog/asset?urn=${encodeURIComponent(tableUrn)}`,
+    )
+    assert.equal(nonTableResponse.status, 404)
+    assert.equal((await nonTableResponse.json()).code, 'KNOWLEDGE_CATALOG_TABLE_NOT_FOUND')
+  } finally {
+    forceKnowledgeNonTable = false
+    omitKnowledgeColumnUrn = false
+  }
+})
+
 test('projects release-pinned DataHub Table and Column identities idempotently and fails closed', async () => {
   const tableUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)'
   const columnUrn = `urn:li:schemaField:(${tableUrn},wafer_id)`
@@ -1199,6 +1242,13 @@ test('projects release-pinned DataHub Table and Column identities idempotently a
       }],
       system_assignments: [],
     })
+    const hiddenCatalogResponse = await fetch(`${pocOrigin}/poc-api/knowledge/catalog?q=wafer&limit=10`)
+    assert.equal(hiddenCatalogResponse.status, 200)
+    assert.equal((await hiddenCatalogResponse.json()).items.length, 0)
+    const hiddenDetailResponse = await fetch(
+      `${pocOrigin}/poc-api/knowledge/catalog/asset?urn=${encodeURIComponent(tableUrn)}`,
+    )
+    assert.equal(hiddenDetailResponse.status, 404)
     const writesBeforeDenied = requests.filter((item) => (
       item.path === '/db/neo4j/tx/commit' && item.body.includes('UNWIND $entities AS entity')
     )).length

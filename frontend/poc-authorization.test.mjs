@@ -92,7 +92,7 @@ test('accepts manager in the existing access document and projects MANAGER witho
 })
 
 test('covers every named Node API route with no unknown or ambiguous registry entry', () => {
-  assert.equal(POC_ROUTE_REGISTRY.length, 67)
+  assert.equal(POC_ROUTE_REGISTRY.length, 69)
   assert.equal(new Set(POC_ROUTE_REGISTRY.map((entry) => entry.id)).size, POC_ROUTE_REGISTRY.length)
   assert.deepEqual(Object.fromEntries(['ANONYMOUS', 'AUTHENTICATED', 'CAPABILITY_PROTECTED', 'INTERNAL_SERVICE', 'DISABLED'].map((classification) => [
     classification,
@@ -100,7 +100,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
   ])), {
     ANONYMOUS: 7,
     AUTHENTICATED: 2,
-    CAPABILITY_PROTECTED: 56,
+    CAPABILITY_PROTECTED: 58,
     INTERNAL_SERVICE: 1,
     DISABLED: 1,
   })
@@ -113,6 +113,8 @@ test('covers every named Node API route with no unknown or ambiguous registry en
     ['GET', '/api/v1/admin/table-system-mappings', 'admin.table-system-mappings.read'],
     ['PATCH', '/api/v1/admin/table-system-mappings', 'admin.table-system-mappings.write'],
     ['GET', '/api/v1/admin/users', 'admin.users.read'],
+    ['GET', '/poc-api/knowledge/catalog', 'knowledge.catalog.search'],
+    ['GET', '/poc-api/knowledge/catalog/asset', 'knowledge.catalog.detail'],
     ['PATCH', '/api/v1/admin/users/subject/table-grants', 'admin.user-table-grants.write'],
     ['GET', '/api/v1/admin/feature-security-policy', 'admin.feature-security-policy.read'],
     ['PUT', '/api/v1/admin/feature-security-policy', 'admin.feature-security-policy.write'],

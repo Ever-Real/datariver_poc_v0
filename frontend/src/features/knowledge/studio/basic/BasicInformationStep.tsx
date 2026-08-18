@@ -7,10 +7,9 @@ import type {
 } from '../knowledgeStudioApi'
 
 const classifications: KnowledgeClassification[] = [
-  'PUBLIC',
-  'INTERNAL',
-  'CONFIDENTIAL',
-  'RESTRICTED',
+  'normal',
+  'credential',
+  'restricted',
 ]
 
 export function endpointAliasError(value: string): string | undefined {

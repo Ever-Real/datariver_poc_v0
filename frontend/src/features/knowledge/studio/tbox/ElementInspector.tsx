@@ -74,7 +74,10 @@ export function ElementInspector({
   const block = element.block_id
     ? blocks.find((item) => item.id === element.block_id)
     : undefined
-  const sourceLabel = block ? sourceLabels[block.kind] : '사용자 직접 정의'
+  const catalogSourced = element.metadata_reference_urn?.startsWith('urn:li:') === true
+  const sourceLabel = catalogSourced
+    ? 'DataHub Catalog 제안'
+    : block ? sourceLabels[block.kind] : '사용자 직접 정의'
   const aiSuggested = block?.kind === 'LLM_ASSISTANT'
 
   return (

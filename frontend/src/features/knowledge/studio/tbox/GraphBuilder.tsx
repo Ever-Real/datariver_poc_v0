@@ -2730,9 +2730,10 @@ export function GraphBuilder({
       setProposalExcluded(new Set())
       setProposalOverrides({})
       setAssistantPrompt('')
-      setStatus('LLM Proposal을 Typed T-Box에 반영했습니다.')
+      const isCatalogProposal = selected.source_reference?.type === 'CATALOG_PROPOSAL'
+      setStatus(`${isCatalogProposal ? 'Catalog' : 'LLM'} Proposal을 Typed T-Box에 반영했습니다.`)
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'LLM Proposal 반영에 실패했습니다.')
+      setStatus(error instanceof Error ? error.message : 'T-Box Proposal 반영에 실패했습니다.')
     } finally {
       setWorking(false)
     }
@@ -3999,8 +4000,8 @@ export function GraphBuilder({
             </button>
           </form>
           <p className="m-0 text-[10px] leading-4 text-slate-500">
-            상단 카탈로그 검색과 동일한 검색 정본을 사용하며, 현재 Draft 보안등급 이하의
-            Dataset·Table·View만 T-Box 입력 후보로 표시합니다.
+            현재 요청의 Table 권한·보안등급·Knowledge 정책을 모두 통과한 canonical Table만
+            입력 후보로 표시합니다. Draft 등급은 Source Table 이상이어야 합니다.
           </p>
           {catalogNextCursor && (
             <button
@@ -4047,7 +4048,7 @@ export function GraphBuilder({
             />
             <section className="min-w-0 rounded border border-slate-200 p-3">
               <h4 className="m-0 text-xs font-black text-navy-900">
-                {selectedCatalog?.name ?? 'Dataset을 선택하세요'}
+                {selectedCatalog?.name ?? 'Table을 선택하세요'}
               </h4>
               {selectedCatalog && (
                 <>

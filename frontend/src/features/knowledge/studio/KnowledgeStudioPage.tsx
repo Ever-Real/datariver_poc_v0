@@ -42,7 +42,7 @@ const EMPTY_BASIC_INFORMATION: KnowledgeStudioBasicInformation = {
   endpoint_aliases: [],
   domain_id: '',
   domain_source_version: '',
-  classification: 'INTERNAL',
+  classification: 'normal',
 }
 
 function fingerprint(value: KnowledgeStudioBasicInformation): string {

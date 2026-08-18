@@ -2328,7 +2328,7 @@ function offsetPage(items, searchParameters, scope, defaultLimit = 100) {
   }
 }
 
-async function datahubCatalog(searchParameters, principal, feature = 'catalog') {
+async function datahubCatalog(searchParameters, principal, feature = 'catalog', { tableOnly = false } = {}) {
   const query = boundedString(searchParameters.get('q'), 500, '*') || '*'
   const requested = Number(searchParameters.get('limit') || 50)
   const limit = Math.min(100, Math.max(1, Number.isFinite(requested) ? requested : 50))
@@ -2343,6 +2343,7 @@ async function datahubCatalog(searchParameters, principal, feature = 'catalog') 
   const exactUrns = new Set(requestedUrns)
   const inventory = await datahubInventory()
   const allItems = (principal ? filterAssetsForPrincipal(principal, inventory, feature) : inventory)
+    .filter((item) => !tableOnly || item.dataset_kind === 'TABLE')
     .filter((item) => !exactUrns.size || exactUrns.has(item.id))
     .filter((item) => assetMatches(item, searchParameters, fields))
     .map((item) => ({ ...item, matches: catalogMatchFragments(item, query, fields) }))
@@ -2858,6 +2859,89 @@ async function datahubAsset(urn, requestedOffset = 0, requestedLimit = 100) {
     schema_fields_limit: fieldLimit,
     schema_fields_has_more: fieldOffset + pageFields.length < fields.length,
   }
+}
+
+function knowledgeCatalogField(field) {
+  const fieldPath = typeof field?.fieldPath === 'string' ? field.fieldPath : ''
+  return {
+    field_path: fieldPath,
+    field_urn: isCanonicalDatahubSchemaFieldUrn(field?.urn, field?.table_urn)
+      ? field.urn
+      : null,
+    field_type: field?.type ?? null,
+    native_data_type: field?.nativeDataType ?? null,
+    description: field?.description ?? null,
+    description_truncated: false,
+    tags: (field?.globalTags?.tags || []).map((item) => item?.tag?.name).filter(Boolean),
+    tags_truncated: false,
+    glossary_terms: (field?.glossaryTerms?.terms || []).map((item) => item?.term?.name).filter(Boolean),
+    terms_truncated: false,
+  }
+}
+
+function knowledgeCatalogDataset(asset, { detail = false } = {}) {
+  const tableUrn = asset?.id || asset?.urn
+  if (asset?.dataset_kind !== 'TABLE' || !isCanonicalDatahubDatasetUrn(tableUrn)) {
+    throw accessError(404, 'KNOWLEDGE_CATALOG_TABLE_NOT_FOUND', 'The Knowledge Catalog Table was not found.')
+  }
+  const securityGrade = tableSecurityGrade(asset)
+  const fields = detail
+    ? (Array.isArray(asset.schema_fields) ? asset.schema_fields : []).map((field) => ({ ...field, table_urn: tableUrn }))
+    : []
+  const fieldMetadata = fields.map(knowledgeCatalogField)
+  const selectionFingerprint = detail ? canonicalHash({
+    contract_version: 'KNOWLEDGE_CATALOG_SELECTION_V1',
+    table_urn: tableUrn,
+    security_grade: securityGrade,
+    source_version: asset.source_version || 'datahub-live',
+    projection_source_version: asset.projection_source_version || 'datahub-live-poc',
+    fields: fieldMetadata.map((field) => ({
+      field_path: field.field_path,
+      field_urn: field.field_urn,
+      field_type: field.field_type,
+      native_data_type: field.native_data_type,
+      description: field.description,
+      tags: field.tags,
+      glossary_terms: field.glossary_terms,
+    })),
+  }) : null
+  return {
+    id: tableUrn,
+    name: asset.name,
+    asset_type: 'TABLE',
+    platform: asset.platform,
+    database_name: asset.database_name,
+    schema_name: asset.schema_name,
+    classification: securityGrade,
+    source_version: asset.source_version || 'datahub-live',
+    projection_source_version: asset.projection_source_version || 'datahub-live-poc',
+    field_paths: fieldMetadata.map((field) => field.field_path),
+    fields_truncated: Boolean(asset.schema_fields_truncated),
+    domain: asset.domain || null,
+    tags: Array.isArray(asset.tags) ? asset.tags : [],
+    glossary_terms: Array.isArray(asset.terms) ? asset.terms : [],
+    description: asset.description || null,
+    description_truncated: Boolean(asset.description_truncated),
+    field_metadata: fieldMetadata,
+    selection_fingerprint: selectionFingerprint,
+  }
+}
+
+async function knowledgeCatalogSearch(searchParameters, principal) {
+  const page = await datahubCatalog(searchParameters, principal, 'knowledge', { tableOnly: true })
+  return { ...page, items: page.items.map((asset) => knowledgeCatalogDataset(asset)) }
+}
+
+async function knowledgeCatalogDetail(searchParameters, principal) {
+  const urn = boundedString(searchParameters.get('urn'), 4_096).trim()
+  if (!isCanonicalDatahubDatasetUrn(urn)) {
+    throw accessError(404, 'KNOWLEDGE_CATALOG_TABLE_NOT_FOUND', 'The Knowledge Catalog Table was not found.')
+  }
+  const asset = await datahubAssetAll(urn)
+  if (asset.dataset_kind !== 'TABLE' || !canReadAsset(principal, asset, 'knowledge')) {
+    throw accessError(404, 'KNOWLEDGE_CATALOG_TABLE_NOT_FOUND', 'The Knowledge Catalog Table was not found.')
+  }
+  return { dataset: knowledgeCatalogDataset(asset, { detail: true }), observed_at: new Date().toISOString() }
 }
 
 async function datahubLineage(urn, principal) {
@@ -5947,6 +6031,12 @@ async function api(request, response, url, context) {
     return problem(response, 405, 'METHOD_NOT_ALLOWED', 'POC state supports only GET and PUT.')
   }
   if (request.method === 'GET' && url.pathname === '/poc-api/capabilities') return json(response, 200, await capabilities())
+  if (request.method === 'GET' && url.pathname === '/poc-api/knowledge/catalog') {
+    return json(response, 200, await knowledgeCatalogSearch(url.searchParams, context.principal))
+  }
+  if (request.method === 'GET' && url.pathname === '/poc-api/knowledge/catalog/asset') {
+    return json(response, 200, await knowledgeCatalogDetail(url.searchParams, context.principal))
+  }
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/catalog') return json(response, 200, await datahubCatalog(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/tree') return json(response, 200, await datahubTree(url.searchParams, context.principal))
   if (request.method === 'GET' && url.pathname === '/poc-api/datahub/facets') return json(response, 200, await datahubFacets(url.searchParams, context.principal))

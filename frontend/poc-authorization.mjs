@@ -144,6 +144,8 @@ export const POC_ROUTE_REGISTRY = Object.freeze([
   route('chat.stream', 'POST', /^\/poc-api\/llm\/chat\/stream$/, 'CAPABILITY_PROTECTED', 'chat.query'),
   route('knowledge.projections.create', 'POST', /^\/poc-api\/knowledge\/projections$/, 'CAPABILITY_PROTECTED', 'knowledge.manage', { scopedMutation: true }),
   route('knowledge.projections.list', 'GET', /^\/poc-api\/knowledge\/projections$/, 'CAPABILITY_PROTECTED', 'knowledge.manage'),
+  route('knowledge.catalog.search', 'GET', /^\/poc-api\/knowledge\/catalog$/, 'CAPABILITY_PROTECTED', 'knowledge.read'),
+  route('knowledge.catalog.detail', 'GET', /^\/poc-api\/knowledge\/catalog\/asset$/, 'CAPABILITY_PROTECTED', 'knowledge.read'),
   route('provider.airflow', 'POST', /^\/poc-api\/airflow\/dags\/[^/]+\/runs$/, 'CAPABILITY_PROTECTED', 'admin.manage'),
   route('provider.minio.part', 'PUT', /^\/poc-api\/minio\/uploads\/[a-zA-Z0-9_-]+\/parts\/\d+$/, 'CAPABILITY_PROTECTED', 'catalog.execute', { scopedMutation: true }),
   route('provider.minio.complete', 'POST', /^\/poc-api\/minio\/uploads\/[a-zA-Z0-9_-]+\/complete$/, 'CAPABILITY_PROTECTED', 'catalog.execute', { scopedMutation: true }),

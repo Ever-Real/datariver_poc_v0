@@ -1,6 +1,6 @@
 import type { ApiClient, ApiResponse } from '../../../api/client'
 
-export type KnowledgeClassification = 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
+export type KnowledgeClassification = 'normal' | 'credential' | 'restricted'
 
 export interface KnowledgeStudioBasicInformation {
   name: string
@@ -385,6 +385,7 @@ export interface KnowledgeStudioSourceDataset {
 
 export interface KnowledgeStudioCatalogFieldMetadata {
   field_path: string
+  field_urn?: string | null
   field_type?: string | null
   native_data_type?: string | null
   description?: string | null
