@@ -1615,6 +1615,7 @@ export function GraphBuilder({
   const [loadError, setLoadError] = useState('')
   const [loadSequence, setLoadSequence] = useState(0)
   const [working, setWorking] = useState(false)
+  const [canvasLocked, setCanvasLocked] = useState(false)
   const [showBlockMenu, setShowBlockMenu] = useState(false)
   const [assistantPrompt, setAssistantPrompt] = useState('')
   const [assistantOpen, setAssistantOpen] = useState(false)
@@ -2406,11 +2407,14 @@ export function GraphBuilder({
   }, [elements, locked, selectedBlockId, syncCanvasAndEditor, working])
 
   const handleNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
-    const removals = changes.filter((change) => change.type === 'remove')
+    const allowedChanges = canvasLocked
+      ? changes.filter((change) => change.type !== 'position' && change.type !== 'remove')
+      : changes
+    const removals = allowedChanges.filter((change) => change.type === 'remove')
     for (const change of removals) deleteElement(change.id)
-    applyNodeChanges(changes.filter((change) => change.type !== 'remove'))
+    applyNodeChanges(allowedChanges.filter((change) => change.type !== 'remove'))
     const positions = new Map(
-      changes.flatMap((change) => (
+      allowedChanges.flatMap((change) => (
         change.type === 'position' && change.position
           ? [[change.id, change.position] as const]
           : []
@@ -2426,7 +2430,7 @@ export function GraphBuilder({
         ? { ...item, layout_x: position.x, layout_y: position.y }
         : item
     }))
-  }, [applyNodeChanges, deleteElement])
+  }, [applyNodeChanges, canvasLocked, deleteElement])
 
   const handleEdgesChange = useCallback((changes: EdgeChange<SchemaEdge>[]) => {
     const removals = changes.filter((change) => change.type === 'remove')
@@ -3383,11 +3387,21 @@ export function GraphBuilder({
                     onDeleteRelationship={deleteRelationship}
                   />
                   <div className="relative min-h-[520px] overflow-hidden rounded-enterprise border border-slate-700 bg-[#0b1d31]">
-                    <header className="absolute left-3 top-3 z-10 rounded border border-slate-600 bg-[#10253d]/95 px-3 py-2 text-xs font-black text-slate-100 shadow">
+                    <header className="absolute left-3 right-3 top-3 z-10 flex items-center justify-between gap-2 rounded border border-slate-600 bg-[#10253d]/95 px-3 py-2 text-xs font-black text-slate-100 shadow">
                       <span className="flex items-center gap-2">
                         <GitBranch size={14} aria-hidden="true" />
                         TBoxGraphCanvas · Class schema
                       </span>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded border border-slate-500 bg-slate-900/70 px-2 py-1 text-[10px] text-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                        aria-pressed={canvasLocked}
+                        disabled={locked || working}
+                        onClick={() => setCanvasLocked((value) => !value)}
+                      >
+                        <LockKeyhole size={12} aria-hidden="true" />
+                        {canvasLocked ? '캔버스 잠금 해제' : '캔버스 잠금'}
+                      </button>
                     </header>
                     {classes.length === 0 && (
                       <div className="pointer-events-none absolute inset-0 z-10 grid place-items-center p-8 text-center">
@@ -3529,9 +3543,10 @@ export function GraphBuilder({
                         setSelectedElementId('')
                         setOpenEditor('')
                       }}
-                      nodesDraggable={!locked && !working}
-                      nodesConnectable={!locked && !working}
-                      edgesReconnectable={!locked && !working}
+                      nodesDraggable={!locked && !working && !canvasLocked}
+                      nodesConnectable={!locked && !working && !canvasLocked}
+                      edgesReconnectable={!locked && !working && !canvasLocked}
+                      elementsSelectable={!canvasLocked}
                       connectionMode={ConnectionMode.Loose}
                       connectionLineStyle={{
                         stroke: '#67e8f9',
@@ -3551,7 +3566,7 @@ export function GraphBuilder({
                         gap={20}
                         size={1}
                       />
-                      <Controls showInteractive={!locked && !working} />
+                      <Controls showInteractive={false} />
                       {classes.length > 0 && (
                         <MiniMap
                           pannable

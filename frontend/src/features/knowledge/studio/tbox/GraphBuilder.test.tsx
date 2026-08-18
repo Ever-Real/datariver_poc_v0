@@ -1991,4 +1991,38 @@ describe('GraphBuilder', () => {
     expect(screen.getByRole('button', { name: 'T-Box 저장' })).toBeDisabled()
     expect(screen.getByRole('button', { name: 'T-Box 저장 후 A-Box로 이동' })).toBeDisabled()
   })
+
+  it('exposes a controlled canvas lock instead of the React Flow internal toggle', async () => {
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`) && !init?.method) {
+        return Promise.resolve(json(tbox()))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    expect(screen.queryByRole('button', { name: 'Toggle Interactivity' })).not.toBeInTheDocument()
+
+    const lockButton = screen.getByRole('button', { name: '캔버스 잠금' })
+    expect(lockButton).toHaveAttribute('aria-pressed', 'false')
+    fireEvent.click(lockButton)
+    expect(screen.getByRole('button', { name: '캔버스 잠금 해제' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+  })
 })
