@@ -25,7 +25,7 @@ an unsafe bypass, or a historical result from another commit.
 | Created | 2026-07-23, Asia/Seoul |
 | Branch / Phase 6E entry base / current published implementation | `dev` / `dba1186` / verified by the stable publication workflow |
 | Remote comparison | `dev-publish` requires local `dev` and `origin/dev` to resolve to the same exact commit after every publication |
-| Current controlled phase | Product `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`: completed baselines remain verified; Chat Router and Knowledge K1/K2 remain frozen. K3 typed T-Box editing passed actual desktop/mobile browser lifecycle through semantic warnings, save/reload, lock, stale CAS and retained discard. Knowledge overall stays `PARTIAL`; the bounded grade compatibility check is the K4 Source Proposal entry gate. Registration durability and GX assertion egress remain held/blocked as named. |
+| Current controlled phase | Product `fca4535cab544560bd06486dc363e6df0c6df27f`: completed baselines remain verified. K4 closes the canonical-grade compatibility gate and actual Catalog Table → typed T-Box Source Proposal browser lifecycle with exact Dataset/SchemaField provenance and zero A-Box/Neo4j growth. Knowledge overall stays `PARTIAL`; K5 A-Box Enricher / Projection is next. Registration durability and GX assertion egress remain held/blocked as named. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## 2026-08-16 Node POC Account/Auth execution
@@ -62,6 +62,8 @@ Knowledge K2 Registry/Asset/version runtime is recorded in
 `.orchestration/evidence/DEV-KNOWLEDGE-K2-REGISTRY-VERSION-RUNTIME.md`.
 Knowledge K3 minimal T-Box Builder runtime is recorded in
 `.orchestration/evidence/DEV-KNOWLEDGE-K3-TBOX-BUILDER-RUNTIME.md`.
+Knowledge K4 Catalog Source Proposal runtime is recorded in
+`.orchestration/evidence/DEV-KNOWLEDGE-K4-SOURCE-PROPOSAL-RUNTIME.md`.
 The preceding PHASE 1A runtime evidence is commit
 `8c1f93a456d0fe51e46987b72d66f563f6467d73`. These local commits have not been published;
 `origin/dev` remains `ef41447a1d470119c1a83280e261d4be411354ef` until a future G1/G2 approval.
@@ -102,7 +104,7 @@ services remain technical detail rather than a top-level Product menu.
 | 5 | 등록관리 | mutation data_steward/admin only; provider apply/durability `PARTIAL` |
 | 6 | 거버넌스 — 정책·표준 문서 관리 | bounded read/create/DRAFT-update/archive complete |
 | 7 | Chat | General/Vector/AUTO and pre-K7 DataHub-lineage Graph complete; fallback execution/K7 partial |
-| 8 | 지식관리 | K0 audit, K1 identity/provenance, K2 Registry/version and K3 T-Box runtime complete; K4 Source Proposal next |
+| 8 | 지식관리 | K0 audit, K1 identity/provenance, K2 Registry/version, K3 T-Box and K4 Source Proposal runtime complete; K5 A-Box next |
 | 9 | 품질관리 | `USER_FEATURE_DEFINITION_REQUIRED`; GX technical gate separate |
 | — | 기술 Backlog | support services, deployment and target gates |
 
@@ -123,9 +125,9 @@ the Registry renders the exact eight user columns and actual browser E2E passed 
 save/reload, authenticated actor display, independent publish, one Active maximum, Active→new Draft,
 history, soft archive, Chat exclusion and Viewer/direct-route negatives. Product `01e02acb...`
 closes K3 typed T-Box editing with actual browser save/reload, semantic warnings, lock, stale CAS,
-desktop/mobile and retained discard evidence. K4 through K9 remain separate later slices. The
-current legacy Knowledge classification labels are tracked as
-`KNOWLEDGE_SECURITY_GRADE_CANONICAL_REALIGNMENT`; K2 did not silently migrate them.
+desktop/mobile and retained discard evidence. Product `fca4535c...` closes K4 canonical grade
+compatibility and Catalog Source Proposal with exact Dataset/SchemaField provenance, reload and
+zero A-Box/Neo4j growth. K5 through K9 remain separate later slices.
 
 ### Knowledge K2 audit/backlog receipts
 
@@ -134,7 +136,7 @@ current legacy Knowledge classification labels are tracked as
 | `NODE_TEST_COUNT_108_TO_107_RECONCILIATION` | `CLOSED_AUDIT` | Same twelve-file script, no skip/TODO; Product `601a7ec...` consolidated two obsolete Graph contracts into one stronger DataHub-lineage-only/no-generic-Neo4j test. |
 | `NODE_PROVIDER_PROBE_PARALLEL_FLAKINESS` | `BACKLOG_NON_BLOCKING` | Two parallel-only `ECONNRESET` receipts; focused and serialized runs pass. No test framework/provider redesign. |
 | `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS` | `BACKLOG_NON_BLOCKING` | Stable current evidence is the 87-file single-worker suite; address only as a small independent test slice. |
-| `KNOWLEDGE_SECURITY_GRADE_CANONICAL_REALIGNMENT` | `BACKLOG_RISK` | Replace the legacy Knowledge classification vocabulary with the canonical `normal < credential < restricted` boundary in an explicit bounded slice; do not infer or hardcode a migration. |
+| `KNOWLEDGE_SECURITY_GRADE_CANONICAL_REALIGNMENT` | `CLOSED_IN_K4` | Current Knowledge UX/enforcement uses `normal < credential < restricted`; legacy values map read-compatibly without rewriting history. |
 
 ## 2026-08-17 Product priority realignment
 
@@ -150,7 +152,7 @@ Korean dashboard use this user-facing order:
 | P4 | Registration | Authorization/preparation, manual-metadata apply, one READY candidate-to-governed-CR command and authoritative `NOT_STARTED` apply-report `COMPLETE_RUNTIME_VERIFIED`; mutation roles are data_steward/admin only; overall `PARTIAL` for durable preparation/outbox/provider-apply, remaining typed surfaces and target gates; accepted minimal relational direction awaits schema approval |
 | P5 | Governance — policy/standard documents | `COMPLETE_RUNTIME_VERIFIED` for active-user read and data_steward/manager/admin create, DRAFT-version update and archive; viewer/developer mutation denied |
 | P6 | Chat | General/Vector/AUTO and the pre-K7 DataHub-lineage-only Graph boundary are runtime-verified; actual fallback execution and K7 authorized Knowledge routing remain `PARTIAL` |
-| P7 | Knowledge / Quality | Knowledge K0, K1, K2 Registry/version and K3 T-Box are runtime-verified; K4 Source Proposal is next after the grade compatibility gate. Quality remains `USER_FEATURE_DEFINITION_REQUIRED` |
+| P7 | Knowledge / Quality | Knowledge K0 through K4 Source Proposal are runtime-verified; K5 A-Box Enricher / Projection is next. Quality remains `USER_FEATURE_DEFINITION_REQUIRED` |
 | P8 | Admin | Minimum controls required by real features only; no generic IAM/configuration console |
 
 Controlled execution DAG:

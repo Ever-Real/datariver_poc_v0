@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`
-- Deployed OCI revision: `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`
+- Current Product SHA: `fca4535cab544560bd06486dc363e6df0c6df27f`
+- Deployed OCI revision: `fca4535cab544560bd06486dc363e6df0c6df27f`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -50,6 +50,8 @@
   `68af3d5895a9ee553bff94e17c7a7d6cea47704a`
 - Knowledge K3 minimal T-Box Builder Product:
   `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`
+- Knowledge K4 Catalog Source Proposal Product:
+  `fca4535cab544560bd06486dc363e6df0c6df27f`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -132,7 +134,13 @@
   datatype/cardinality, semantic validation, explicit canvas lock, save/reload and stale-CAS UX.
   Actual desktop/mobile browser E2E passed, arbitrary Cypher stayed non-executable, and the
   disposable Draft was retained as `DISCARDED` history. Knowledge overall remains `PARTIAL`; the
-  canonical grade compatibility check is the K4 entry gate.
+  canonical grade compatibility check was closed in K4.
+- Knowledge K4 Catalog Source Proposal: `COMPLETE_RUNTIME_VERIFIED`. The Node Product filters
+  canonical Table candidates before match/page/count with request-time grant + canonical grade +
+  fixed Knowledge policy, preserves exact Dataset/SchemaField URNs and applies deterministic typed
+  Class/Property proposals to the existing Draft/CAS state. Browser create→preview→apply→save→hard
+  reload passed; Neo4j remained 5 nodes / 3 edges before and after, so A-Box growth was zero.
+  Knowledge overall remains `PARTIAL`; K5 A-Box Enricher / Projection is next.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
@@ -150,7 +158,7 @@
 5  등록관리                                → steward/admin only; overall PARTIAL
 6  거버넌스 — 정책·표준 문서 관리          → bounded CRUD/archive complete
 7  Chat                                    → General/Vector/AUTO and pre-K7 DataHub lineage complete; fallback/K7 partial
-8  지식관리                                → K0/K1/K2/K3 runtime complete; K4 source proposal next
+8  지식관리                                → K0/K1/K2/K3/K4 runtime complete; K5 A-Box next
 9  품질관리                                → USER_FEATURE_DEFINITION_REQUIRED
 기술 Backlog                              → support/deployment details only
 ```
@@ -197,21 +205,21 @@ local credential + opaque server session
 - Knowledge K1 independent-review validation previously logged the inspection browser out while
   switching to a disposable reviewer. The inspection account remains active/login-enabled,
   unlocked, failed attempts 0, role `admin`, grade `restricted`, with no Responsible System or Table
-  grant. A current user-owned inspection session now exists; Registration validation preserved it.
-  No validation cleanup may revoke or reconstruct it.
+  grant. K4 validation did not change the account or credential; the current read-only observation
+  is zero active inspection-admin sessions. No validation cleanup may revoke or reconstruct it.
 
 ## Fresh validation
 
 - Current Product and deployed OCI are the exact same 40-character revision
-  `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`. A fresh independent Gemini 3.1 Pro High (High)
-  read-only Node POC Validator returned `PASS` for K3 after checking the authoritative root/HEAD,
-  focused 27/27 and Node 107/107. The coordinator independently verified the exact OCI revision
-  label and actual browser runtime; legacy FastAPI and secret-bearing environment dumps are not
-  accepted.
-- Node POC full stable serialized suite: 107/107 PASS. Two default-concurrency runs hit an isolated
+  `fca4535cab544560bd06486dc363e6df0c6df27f`. A fresh independent Gemini 3.1 Pro High (High)
+  read-only Node POC Validator returned `PASS` for K4 after checking the authoritative root/HEAD,
+  exact OCI label, `/healthz`, K4 source boundaries and Node 108/108. The coordinator independently
+  verified the exact browser Proposal/apply/reload lifecycle and Neo4j non-mutation; legacy FastAPI
+  and secret-bearing environment dumps are not accepted.
+- Node POC full stable serialized suite: 108/108 PASS. Two historical default-concurrency runs hit an isolated
   safe provider-capability `ECONNRESET`; the exact test passed alone and failed parallel results
   were rejected.
-- Frontend full suite: 87 files, 616/616 PASS on the final single-worker rerun. Four movable
+- Frontend full suite: 87 files, 617/617 PASS on the final single-worker rerun. Four movable
   parallel navigation/timeout failures are recorded as `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS`;
   parallel partial results were rejected and are not completion evidence.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and
@@ -431,6 +439,18 @@ local credential + opaque server session
   reload, two-tab stale CAS, desktop/mobile layout and Product-UI discard of the disposable Draft.
 - Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K3-TBOX-BUILDER-RUNTIME.md`.
 
+## Knowledge K4 Catalog Source Proposal
+
+- Product `fca4535c...` closes the bounded grade-compatibility gate and adds only current Catalog
+  Table → typed T-Box proposal/apply behavior. Legacy labels remain read-compatible; current UX and
+  enforcement use `normal < credential < restricted`.
+- Actual browser E2E passed request-time authorized Catalog search, exact Table/two-Column selection,
+  typed Class/Property preview, exact DataHub provenance, Draft apply, save and hard reload.
+- Neo4j stayed at 5 nodes / 3 edges before and after, the disposable Draft was Product-UI
+  `DISCARDED`, no-grant Viewer mutation/direct-Draft access was denied, and all disposable sessions
+  were revoked without changing the inspection admin.
+- Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K4-SOURCE-PROPOSAL-RUNTIME.md`.
+
 ## Post-K1 Quality tab parity
 
 - Product `8dc782a6...` reuses the existing Governance primary-tab classes for the three Quality top
@@ -450,8 +470,8 @@ local credential + opaque server session
   state/API is introduced. The user explicitly requested backlog-only treatment for now.
 - `NODE_PROVIDER_PROBE_PARALLEL_FLAKINESS`: two provider capability probes can reset only under
   parallel execution; focused/serialized evidence passes. Do not redesign tests/providers for it.
-- `KNOWLEDGE_SECURITY_GRADE_CANONICAL_REALIGNMENT`: align Knowledge Asset classification UX and
-  request-time enforcement with `normal < credential < restricted` as the bounded K4 entry gate.
+- `KNOWLEDGE_SECURITY_GRADE_CANONICAL_REALIGNMENT`: `CLOSED_IN_K4`; current UX/enforcement is
+  canonical and legacy values are mapped read-compatibly without history rewrite.
 
 ## MCL runtime / automatic detection
 
