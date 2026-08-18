@@ -18,6 +18,7 @@ import {
 } from './qualityLocation'
 import { QualityStatus, dateTimeText } from './QualityShared'
 import { useQualityAuthorizationLease } from './useQualityAuthorizationLease'
+import '../governance-documents/governanceDocuments.css'
 
 const qualityTabs = [
   { id: 'dashboard', label: '품질 대시보드' },
@@ -112,7 +113,7 @@ export function QualityPage({
         <QualityStatus value="AVAILABLE" />
         <span>최근 확인 {dateTimeText(lease.capability.observed_at)}</span>
       </section>
-      <nav className="quality-tabs quality-tabs-simple" role="tablist" aria-label="품질관리 영역">
+      <nav className="governance-primary-tabs" role="tablist" aria-label="품질관리 영역">
         {qualityTabs.map((tab) => <button
           key={tab.id}
           {...tabs.tabProps(tab.id)}
@@ -123,7 +124,7 @@ export function QualityPage({
           {tab.label}
         </button>)}
       </nav>
-      <div className="quality-tab-panel" {...tabs.panelProps(location.tab)}>
+      <div className="quality-tab-panel governance-primary-panel" {...tabs.panelProps(location.tab)}>
         {location.tab === 'dashboard' && <QualityDashboardTab
           api={api}
           boundary={lease.boundary}

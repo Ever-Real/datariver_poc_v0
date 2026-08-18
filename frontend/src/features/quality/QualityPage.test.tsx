@@ -124,6 +124,42 @@ describe('QualityPage', () => {
     })
   })
 
+  it('uses the governance primary-tab primitive and preserves URL state during keyboard roving', async () => {
+    window.history.replaceState({}, '', '/?page=quality&workspace=workspace-one&qualityTab=dashboard')
+    const fetchMock = vi.fn((input: string | URL | Request) => {
+      const url = requestUrl(input)
+      if (url.pathname.endsWith('/quality/capability')) return Promise.resolve(json(capability('AVAILABLE')))
+      if (url.pathname.endsWith('/quality/dashboard')) return Promise.resolve(json(qualityDashboard()))
+      if (url.pathname.endsWith('/quality/assets')) return Promise.resolve(json(emptyPage()))
+      if (url.pathname.endsWith('/catalog/tree/nodes')) return Promise.resolve(json(treePage()))
+      return Promise.reject(new Error(`unexpected request: ${url.href}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    renderPage()
+
+    const tabs = await screen.findByRole('tablist', { name: '품질관리 영역' })
+    expect(tabs).toHaveClass('governance-primary-tabs')
+    expect(screen.getByRole('tabpanel')).toHaveClass('quality-tab-panel', 'governance-primary-panel')
+
+    const tabButtons = within(tabs).getAllByRole('tab')
+    expect(tabButtons).toHaveLength(3)
+    const dashboardTab = within(tabs).getByRole('tab', { name: '품질 대시보드' })
+    const assetsTab = within(tabs).getByRole('tab', { name: '자산별 품질 현황 및 이력' })
+    const templatesTab = within(tabs).getByRole('tab', { name: '공통 룰셋 관리' })
+    expect(dashboardTab).toBeInTheDocument()
+    expect(assetsTab).toBeInTheDocument()
+    expect(templatesTab).toBeInTheDocument()
+
+    expect(dashboardTab).toHaveClass('active')
+    expect(assetsTab).not.toHaveClass('active')
+
+    fireEvent.keyDown(dashboardTab, { key: 'ArrowRight' })
+    expect(assetsTab).toHaveClass('active')
+    expect(dashboardTab).not.toHaveClass('active')
+
+    expect(window.location.search).toContain('qualityTab=assets')
+  })
+
   it('keeps a valid authorization lease and selected asset requests across focus events', async () => {
     window.history.replaceState(
       {},
