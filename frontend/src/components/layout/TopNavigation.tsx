@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { ChevronLeft, ChevronRight } from 'lucide-react'
 import type { Page } from '../../app/navigation'
-import type { ExternalSystemLink, PocCapability } from '../../api/types'
+import type { ExternalSystemLink, PocCapability, PocRole } from '../../api/types'
 import type { ApiClient } from '../../api/client'
 import { pocNavigationForCapabilities, primaryNavigation } from '../../app/navigation'
 import { GlobalCatalogSearch } from './GlobalCatalogSearch'
@@ -23,6 +23,7 @@ interface TopNavigationProps {
   adminContextStatus?: AdminContextStatus
   externalSystemLinks: ExternalSystemLink[]
   pocCapabilities?: readonly PocCapability[]
+  pocRole?: PocRole
   onNavigate: (page: Page) => void
   onNavigateAdmin: (section: string) => void
   onProfile?: () => void
@@ -47,6 +48,7 @@ export function TopNavigation({
   adminContextStatus,
   externalSystemLinks,
   pocCapabilities = [],
+  pocRole,
   onNavigate,
   onNavigateAdmin,
   onProfile,
@@ -63,9 +65,13 @@ export function TopNavigation({
     || page === 'knowledge-studio'
     ? 'knowledge'
     : page
-  const navigationItems = pocMode
-    ? pocNavigationForCapabilities(pocCapabilities)
+  const hasAdminAuthority = pocMode
+    ? pocCapabilities.includes('admin.manage')
+    : adminContextStatus === 'allowed' || adminContextStatus === 'reauth_required'
+  const navigationItems = (pocMode
+    ? pocNavigationForCapabilities(pocCapabilities, pocRole)
     : primaryNavigation
+  ).filter((item) => item.id !== 'admin' || hasAdminAuthority)
 
   return (
     <header className="top-navigation">

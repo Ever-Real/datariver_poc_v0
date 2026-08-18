@@ -38,13 +38,23 @@ describe('navigation contract', () => {
     expect(pocNavigationForCapabilities([
       'catalog.read', 'chat.query', 'change.read', 'quality.read',
       'knowledge.read', 'monitoring.read',
-    ]).map(({ id }) => id)).toEqual([
-      'catalog', 'change-management', 'quality', 'knowledge', 'monitoring',
-      'governance', 'chat',
+    ], 'viewer').map(({ id }) => id)).toEqual([
+      'catalog', 'change-management', 'monitoring',
+      'governance', 'chat', 'knowledge', 'quality',
     ])
     expect(pocCapabilityForPage('registration')).toBe('catalog.execute')
     expect(pocCapabilityForPage('knowledge-studio')).toBe('knowledge.manage')
     expect(pocCapabilityForPage('admin')).toBe('admin.manage')
     expect(pocCapabilityForPage('dashboard')).toBeUndefined()
+  })
+
+  it('keeps manager Catalog authority while limiting Registration to steward and admin roles', () => {
+    const managerCapabilities = ['catalog.read', 'catalog.execute', 'catalog.manage'] as const
+    expect(pocNavigationForCapabilities(managerCapabilities, 'manager').map(({ id }) => id))
+      .toEqual(['catalog'])
+    expect(pocNavigationForCapabilities(managerCapabilities, 'data_steward').map(({ id }) => id))
+      .toEqual(['catalog', 'registration'])
+    expect(pocNavigationForCapabilities(managerCapabilities, 'admin').map(({ id }) => id))
+      .toEqual(['catalog', 'registration'])
   })
 })

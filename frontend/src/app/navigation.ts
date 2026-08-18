@@ -1,14 +1,15 @@
-import type { PocCapability } from '../api/types'
+import type { PocCapability, PocRole } from '../api/types'
 
 export const primaryNavigation = [
+  { id: 'admin', label: 'Admin — 접근관리', badge: undefined },
   { id: 'catalog', label: '검색', badge: undefined },
-  { id: 'registration', label: '등록관리', badge: undefined },
   { id: 'change-management', label: '변경관리', badge: undefined },
-  { id: 'quality', label: '품질관리', badge: 'Beta' },
-  { id: 'knowledge', label: '지식관리', badge: undefined },
   { id: 'monitoring', label: '모니터링', badge: undefined },
-  { id: 'governance', label: '거버넌스', badge: undefined },
+  { id: 'registration', label: '등록관리', badge: undefined },
+  { id: 'governance', label: '거버넌스 — 정책·표준 문서 관리', badge: undefined },
   { id: 'chat', label: 'Chat', badge: 'Beta' },
+  { id: 'knowledge', label: '지식관리', badge: undefined },
+  { id: 'quality', label: '품질관리', badge: 'Beta' },
 ] as const
 
 export type PrimaryPage = typeof primaryNavigation[number]['id']
@@ -58,14 +59,25 @@ export function pocCapabilityForPage(page: Page): PocCapability | undefined {
   return pocPageCapabilities[page]
 }
 
+export function pocRoleAllowsPage(page: Page, role: PocRole | undefined): boolean {
+  if (page === 'registration') return role === 'data_steward' || role === 'admin'
+  return true
+}
+
+export function pocAuthorizationAllowsPage(
+  page: Page,
+  capabilities: readonly PocCapability[],
+  role: PocRole | undefined,
+): boolean {
+  const required = pocCapabilityForPage(page)
+  return pocRoleAllowsPage(page, role) && (!required || capabilities.includes(required))
+}
+
 export function pocNavigationForCapabilities(
   capabilities: readonly PocCapability[],
+  role?: PocRole,
 ): typeof primaryNavigation[number][] {
-  const allowed = new Set(capabilities)
-  return primaryNavigation.filter(({ id }) => {
-    const required = pocCapabilityForPage(id)
-    return !required || allowed.has(required)
-  })
+  return primaryNavigation.filter(({ id }) => pocAuthorizationAllowsPage(id, capabilities, role))
 }
 
 export function pageFromLocation(href = window.location.href): Page {

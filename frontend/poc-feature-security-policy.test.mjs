@@ -10,6 +10,7 @@ import {
   featureAvailableForRole,
   featureSecurityAllowed,
   normalizeFeatureSecurityPolicy,
+  normalizePersistedFeatureSecurityPolicy,
 } from './poc-feature-security-policy.mjs'
 
 test('defines and exhaustively evaluates exactly 120 fixed feature-role-grade cells', () => {
@@ -47,14 +48,31 @@ test('accepts only one complete fixed shape and preserves immutable role/admin i
     ...policy,
     cells: policy.cells.map((cell) => cell.role === 'admin' ? { ...cell, allow: false } : cell),
   }), { code: 'FEATURE_SECURITY_ADMIN_INVARIANT' })
-  assert.throws(() => normalizeFeatureSecurityPolicy({
+  const invalidPolicy = {
     ...policy,
     cells: policy.cells.map((cell) => (
       cell.feature === 'quality' && cell.role === 'viewer' && cell.grade === 'normal'
         ? { ...cell, allow: true }
         : cell
     )),
-  }), { code: 'FEATURE_SECURITY_ROLE_INVARIANT' })
+  }
+  assert.throws(() => normalizeFeatureSecurityPolicy(invalidPolicy), { code: 'FEATURE_SECURITY_ROLE_INVARIANT' })
+  assert.throws(() => normalizePersistedFeatureSecurityPolicy(invalidPolicy), { code: 'FEATURE_SECURITY_ROLE_INVARIANT' })
+  const legacyManagerRegistrationPolicy = {
+    ...policy,
+    cells: policy.cells.map((cell) => (
+      cell.feature === 'registration' && cell.role === 'manager'
+        ? { ...cell, allow: true }
+        : cell
+    )),
+  }
+  assert.throws(() => normalizeFeatureSecurityPolicy(legacyManagerRegistrationPolicy), { code: 'FEATURE_SECURITY_ROLE_INVARIANT' })
+  const projected = normalizePersistedFeatureSecurityPolicy(legacyManagerRegistrationPolicy)
+  assert.equal(
+    projected.cells.find((c) => c.feature === 'registration' && c.role === 'manager' && c.grade === 'normal').allow,
+    false,
+  )
+  assert.throws(() => applyFeatureSecurityPolicyUpdate(policy, { cells: legacyManagerRegistrationPolicy.cells, reason: 'a'.repeat(10) }, 'test'), { code: 'FEATURE_SECURITY_ROLE_INVARIANT' })
 })
 
 test('applies a bounded server-attributed update without accepting free-form keys', () => {

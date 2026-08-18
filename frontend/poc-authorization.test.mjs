@@ -251,16 +251,21 @@ test('enforces Registration-only asset mutation seam', () => {
   assert.ok(!canReadRegistrationAsset(managerNoTable, validAsset, activeSystems))
   assert.throws(() => assertRegistrationAssetMutation(managerNoTable, validAsset, activeSystems), { code: 'TABLE_DATA_FORBIDDEN' })
 
-  assert.ok(canReadRegistrationAsset(managerSysTable, validAsset, activeSystems))
-  assert.doesNotThrow(() => assertRegistrationAssetMutation(managerSysTable, validAsset, activeSystems))
+  assert.ok(!canReadRegistrationAsset(managerSysTable, validAsset, activeSystems))
+  assert.throws(() => assertRegistrationAssetMutation(managerSysTable, validAsset, activeSystems), { code: 'TABLE_DATA_FORBIDDEN' })
 
-  assert.ok(!canReadRegistrationAsset(managerSysTable, restrictedAsset, activeSystems))
+  const stewardSysTable = principal('steward', 'data_steward', { grants: [tableUrn] })
+  const stewardSystems = new Set(['system-b'])
+  assert.ok(canReadRegistrationAsset(stewardSysTable, validAsset, stewardSystems))
+  assert.doesNotThrow(() => assertRegistrationAssetMutation(stewardSysTable, validAsset, stewardSystems))
+
+  assert.ok(!canReadRegistrationAsset(stewardSysTable, restrictedAsset, stewardSystems))
   const deniedPolicy = structuredClone(approvedDefaultFeatureSecurityPolicy())
   deniedPolicy.cells.find((cell) => (
-    cell.feature === 'registration' && cell.role === 'manager' && cell.grade === 'normal'
+    cell.feature === 'registration' && cell.role === 'data_steward' && cell.grade === 'normal'
   )).allow = false
-  const managerPolicyDenied = principal('manager', 'manager', { grants: [tableUrn], policy: deniedPolicy })
-  assert.ok(!canReadRegistrationAsset(managerPolicyDenied, validAsset, activeSystems))
+  const stewardPolicyDenied = principal('steward', 'data_steward', { grants: [tableUrn], policy: deniedPolicy })
+  assert.ok(!canReadRegistrationAsset(stewardPolicyDenied, validAsset, stewardSystems))
 
   const admin = principal('admin', 'admin')
   assert.ok(canReadRegistrationAsset(admin, validAsset, activeSystems))

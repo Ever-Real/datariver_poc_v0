@@ -28,13 +28,15 @@ export const SECURITY_GRADES: Record<string, string> = {
   restricted: '극비',
 }
 
-const GOVERNED_FEATURES = new Set(['registration', 'knowledge', 'quality'])
 const GOVERNED_ROLES = new Set(['data_steward', 'manager', 'admin'])
 
 // Display-only mirror of the fixed backend vocabulary. The server validates
 // every submitted cell and remains the authorization authority.
 function featureAvailableForRole(feature: string, role: string) {
-  return !GOVERNED_FEATURES.has(feature) || GOVERNED_ROLES.has(role)
+  if (role === 'admin') return true
+  if (feature === 'registration') return role === 'data_steward'
+  if (['knowledge', 'quality'].includes(feature)) return GOVERNED_ROLES.has(role)
+  return true
 }
 
 export interface PocFeaturePermissionAdminProps {

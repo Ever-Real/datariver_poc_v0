@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 import type { AuthNotice } from '../../auth/AuthProvider'
-import type { ExternalSystemLink, PocCapability } from '../../api/types'
+import type { ExternalSystemLink, PocCapability, PocRole } from '../../api/types'
 import type { ApiClient } from '../../api/client'
 import type { Page } from '../../app/navigation'
 import { TopNavigation } from './TopNavigation'
@@ -21,6 +21,7 @@ interface AppShellProps {
   adminContextStatus?: AdminContextStatus
   externalSystemLinks: ExternalSystemLink[]
   pocCapabilities?: readonly PocCapability[]
+  pocRole?: PocRole
   notice?: AuthNotice
   children: ReactNode
   onNavigate: (page: Page) => void
@@ -49,6 +50,7 @@ export function AppShell({
   adminContextStatus,
   externalSystemLinks,
   pocCapabilities,
+  pocRole,
   notice,
   children,
   onNavigate,
@@ -80,6 +82,7 @@ export function AppShell({
         adminContextStatus={adminContextStatus}
         externalSystemLinks={externalSystemLinks}
         pocCapabilities={pocCapabilities}
+        pocRole={pocRole}
         onNavigate={onNavigate}
         onNavigateAdmin={onNavigateAdmin}
         onProfile={onProfile}

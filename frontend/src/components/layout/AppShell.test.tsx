@@ -433,7 +433,7 @@ describe('application shell contracts', () => {
     expect(within(navigation).getByRole('button', { name: '등록관리' })).toBeInTheDocument()
     expect(within(navigation).getByRole('button', { name: /품질관리.*Beta/ })).toBeInTheDocument()
     expect(within(navigation).getByRole('button', { name: '모니터링' })).toBeInTheDocument()
-    expect(within(navigation).getByRole('button', { name: '거버넌스' })).toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: '거버넌스 — 정책·표준 문서 관리' })).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: '변경관리' }))
     expect(onNavigate).toHaveBeenCalledWith('change-management')
     fireEvent.click(screen.getByRole('button', { name: 'User 사용자 메뉴' }))
@@ -447,5 +447,30 @@ describe('application shell contracts', () => {
     expect(screen.getByText(/Environment: Single-node Pilot/)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'DataHub' })).toHaveAttribute('href', 'https://datahub.example.com')
     expect(screen.getByRole('link', { name: 'DataHub' })).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+
+  it('hides Registration from a POC manager without removing manager Catalog authority', () => {
+    render(
+      <TopNavigation
+        page="catalog"
+        pocMode
+        pocRole="manager"
+        pocCapabilities={['catalog.read', 'catalog.execute', 'catalog.manage', 'monitoring.read']}
+        workspace="workspace-one"
+        deploymentTier="SINGLE_NODE_PILOT"
+        displayName="Manager"
+        adminMenuItems={[]}
+        externalSystemLinks={[]}
+        onNavigate={vi.fn()}
+        onNavigateAdmin={vi.fn()}
+        onSearch={vi.fn()}
+        onWorkspaceChange={vi.fn()}
+      />,
+    )
+
+    const navigation = screen.getByRole('navigation', { name: '주 메뉴' })
+    expect(within(navigation).getByRole('button', { name: '검색' })).toBeInTheDocument()
+    expect(within(navigation).queryByRole('button', { name: '등록관리' })).not.toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: '모니터링' })).toBeInTheDocument()
   })
 })

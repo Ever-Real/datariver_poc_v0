@@ -67,7 +67,7 @@ import {
   applyFeatureSecurityPolicyUpdate,
   approvedDefaultFeatureSecurityPolicy,
   featureSecurityAllowed,
-  normalizeFeatureSecurityPolicy,
+  normalizePersistedFeatureSecurityPolicy,
 } from './poc-feature-security-policy.mjs'
 
 export { currentDatahubDatasetExists } from './poc-datahub-current-table.mjs'
@@ -4561,7 +4561,7 @@ async function authenticatedRequestContext(baseContext, authentication) {
   const policySnapshot = typeof baseContext.stateStore.readFeatureSecurityPolicy === 'function'
     ? await baseContext.stateStore.readFeatureSecurityPolicy()
     : { value: null, version: 0 }
-  const featureSecurityPolicy = policySnapshot?.value ? normalizeFeatureSecurityPolicy(policySnapshot.value) : approvedDefaultFeatureSecurityPolicy()
+  const featureSecurityPolicy = policySnapshot?.value ? normalizePersistedFeatureSecurityPolicy(policySnapshot.value) : approvedDefaultFeatureSecurityPolicy()
 
   const context = {
     ...baseContext,
@@ -5052,7 +5052,7 @@ async function tableSystemMappingApi(request, response, url, context) {
 
 async function featureSecurityPolicyApi(request, response, context) {
   const snapshot = await context.stateStore.read(POC_FEATURE_SECURITY_POLICY_SCOPE)
-  const document = normalizeFeatureSecurityPolicy(snapshot.value)
+  const document = normalizePersistedFeatureSecurityPolicy(snapshot.value)
   if (request.method === 'GET') {
     return json(response, 200, { version: snapshot.version, ...document }, { ETag: `"${snapshot.version}"` })
   }
@@ -5343,7 +5343,7 @@ async function crCreateApi(request, response, url, context) {
   const mappingSnapshot = await context.stateStore.read(POC_TABLE_SYSTEM_MAPPING_SCOPE)
   const mappingDocument = normalizeTableSystemMappingDocument(mappingSnapshot.value)
   const policySnapshot = await context.stateStore.read(POC_FEATURE_SECURITY_POLICY_SCOPE)
-  const featurePolicyDocument = normalizeFeatureSecurityPolicy(policySnapshot.value)
+  const featurePolicyDocument = normalizePersistedFeatureSecurityPolicy(policySnapshot.value)
   let tables
   try {
     tables = await context.currentDatahubTables([tableUrn])

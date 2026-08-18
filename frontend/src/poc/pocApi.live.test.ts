@@ -416,6 +416,40 @@ describe('POC live-provider compatibility adapter', () => {
     expect(context.action_vocabulary).not.toContain('admin.manage')
   })
 
+  it('preserves manager Catalog capabilities but denies every Registration operator entry point', async () => {
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'manager',
+      capabilities: ['catalog.read', 'catalog.execute', 'catalog.manage'],
+      system_scope: 'ASSIGNED',
+      system_ids: ['system-one'],
+    }, 'manager-registration-boundary')
+    const client = useStableApiClient()
+
+    await expect(client.request<{ eligible: boolean; reason_code: string }>('/uploads/operator-capability'))
+      .resolves.toMatchObject({ eligible: false, reason_code: 'ROLE_FORBIDDEN' })
+    await expect(client.request('/uploads')).rejects.toThrow(/Data Steward 또는 Admin/)
+    await expect(client.request('/registration/manual-submissions')).rejects.toThrow(/Data Steward 또는 Admin/)
+    await expect(client.request(`/catalog/assets/${liveAssets[0]!.id}/description-previews`, {
+      method: 'POST', body: JSON.stringify({ description: 'forged manager registration write' }),
+    })).rejects.toThrow(/Data Steward 또는 Admin/)
+    await expect(client.request<CatalogSearch>('/catalog/assets?q=*&limit=1'))
+      .resolves.toMatchObject({ items: [expect.objectContaining({ name: 'wafer_events' })] })
+  })
+
+  it('keeps the Registration adapter available to Data Steward', async () => {
+    configurePocAuthorization({
+      policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+      role: 'data_steward',
+      capabilities: ['catalog.read', 'catalog.execute', 'catalog.manage'],
+      system_scope: 'ASSIGNED',
+      system_ids: ['system-one'],
+    }, 'steward-registration-boundary')
+
+    await expect(useStableApiClient().request<{ eligible: boolean; reason_code: string }>('/uploads/operator-capability'))
+      .resolves.toMatchObject({ eligible: true, reason_code: 'ELIGIBLE' })
+  })
+
   it('forwards the fixed feature security policy through the authenticated Node gateway', async () => {
     configurePocAuthorization({
       policy_version: 'POC_PROFILE_CAPABILITIES_V1',

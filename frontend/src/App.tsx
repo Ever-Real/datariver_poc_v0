@@ -7,9 +7,10 @@ import type {
   CapabilitiesResponse,
   ExternalSystemLink,
   PocCapability,
+  PocRole,
 } from './api/types'
 import { useStableApiClient } from './api/useStableApiClient'
-import { pageFromLocation, pageUrl, pocCapabilityForPage, type Page } from './app/navigation'
+import { pageFromLocation, pageUrl, pocAuthorizationAllowsPage, type Page } from './app/navigation'
 import { defaultWorkspaceSelection, workspaceFromLocation } from './app/workspace'
 import { useAuth } from './auth/AuthProvider'
 import { AppShell } from './components/layout/AppShell'
@@ -87,12 +88,11 @@ export function App() {
     ? workspace
     : auth.profile?.default_workspace_id ?? ''
   const authenticatedSubject = auth.profile?.subject ?? ''
+  const pocRole: PocRole | undefined = auth.profile?.authorization?.role
   const pocCapabilities = auth.profile?.authorization?.capabilities ?? emptyPocCapabilities
-  const hasPocCapability = useCallback(
-    (capability: ReturnType<typeof pocCapabilityForPage>) => (
-      !capability || pocCapabilities.includes(capability)
-    ),
-    [pocCapabilities],
+  const hasPocPageAccess = useCallback(
+    (candidate: Page) => pocAuthorizationAllowsPage(candidate, pocCapabilities, pocRole),
+    [pocCapabilities, pocRole],
   )
   const client = useStableApiClient(
     runtimeConfig.apiBaseUrl,
@@ -234,7 +234,7 @@ export function App() {
     if (
       !pocMode
       || !auth.profile?.authorization
-      || hasPocCapability(pocCapabilityForPage(page))
+      || hasPocPageAccess(page)
     ) return
     const url = new URL(window.location.href)
     url.searchParams.set('page', 'dashboard')
@@ -242,7 +242,7 @@ export function App() {
     window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`)
     setCatalogQuery('')
     setPage('dashboard')
-  }, [auth.profile?.authorization, hasPocCapability, page, pocMode])
+  }, [auth.profile?.authorization, hasPocPageAccess, page, pocMode])
 
   useEffect(() => {
     let active = true
@@ -295,7 +295,7 @@ export function App() {
   ])
 
   const navigate = useCallback((next: Page) => {
-    if (pocMode && !hasPocCapability(pocCapabilityForPage(next))) {
+    if (pocMode && !hasPocPageAccess(next)) {
       window.history.replaceState({}, '', pageUrl('dashboard'))
       setCatalogQuery('')
       setPage('dashboard')
@@ -304,7 +304,7 @@ export function App() {
     window.history.pushState({}, '', pageUrl(next))
     setCatalogQuery('')
     setPage(next)
-  }, [hasPocCapability, pocMode])
+  }, [hasPocPageAccess, pocMode])
 
   const navigateKnowledgeStudio = useCallback((assetId?: string) => {
     window.history.pushState({}, '', knowledgeStudioUrl({ assetId }))
@@ -428,7 +428,8 @@ export function App() {
   const adminMessages = getAdminMessages()
   const adminMenuItems: Array<{ id: string; label: string }> = pocMode
     ? [
-        ...(pocCapabilities.includes('catalog.execute') || pocCapabilities.includes('catalog.manage')
+        ...((pocRole === 'data_steward' || pocRole === 'admin')
+          && (pocCapabilities.includes('catalog.execute') || pocCapabilities.includes('catalog.manage'))
           ? [{ id: 'poc-registration', label: '등록관리' }]
           : []),
         ...(pocCapabilities.includes('catalog.manage')
@@ -474,6 +475,7 @@ export function App() {
       adminContextStatus={currentAdminStatus}
       externalSystemLinks={externalSystemLinks}
       pocCapabilities={pocCapabilities}
+      pocRole={pocRole}
       notice={auth.notice}
       onNavigate={navigate}
       onNavigateAdmin={navigateAdmin}

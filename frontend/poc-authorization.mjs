@@ -223,8 +223,8 @@ export function assertPocRouteAuthorization(routeEntry, principal) {
     'catalog.bulk.candidate-cr',
     'catalog.manual-metadata'
   ])
-  if (registrationRoutes.has(routeEntry.id) && !['admin', 'manager', 'data_steward'].includes(principal.role)) {
-    throw authorizationError(403, 'ROLE_FORBIDDEN', 'Registration routes require the data_steward, manager, or admin role.')
+  if (registrationRoutes.has(routeEntry.id) && !['admin', 'data_steward'].includes(principal.role)) {
+    throw authorizationError(403, 'ROLE_FORBIDDEN', 'Registration routes require the data_steward or admin role.')
   }
 }
 
@@ -295,7 +295,7 @@ export function canReadRegistrationAsset(principal, asset, activeSystemIdsForCur
   const grade = currentAssetSecurityGrade(asset)
   if (!grade) return false
   if (principal.role === 'admin') return true
-  if (principal.role !== 'data_steward' && principal.role !== 'manager') return false
+  if (principal.role !== 'data_steward') return false
   if (!evaluateTableDataAccess(principal, tableUrn, grade, 'registration')) return false
   if (!activeSystemIdsForCurrentTable || !(activeSystemIdsForCurrentTable instanceof Set) || activeSystemIdsForCurrentTable.size === 0) return false
   for (const systemId of activeSystemIdsForCurrentTable) {

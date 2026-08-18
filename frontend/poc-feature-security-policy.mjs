@@ -66,7 +66,8 @@ export function featureAvailableForRole(feature, role) {
     throw policyError('FEATURE_SECURITY_POLICY_INVALID', 'The feature or role is not canonical.')
   }
   if (role === 'admin') return true
-  if (['registration', 'knowledge', 'quality'].includes(feature)) return governedRoles.has(role)
+  if (feature === 'registration') return role === 'data_steward'
+  if (['knowledge', 'quality'].includes(feature)) return governedRoles.has(role)
   return true
 }
 
@@ -93,7 +94,7 @@ export function approvedDefaultFeatureSecurityPolicy() {
   }
 }
 
-function normalizeCells(value) {
+function normalizeCells(value, { projectLegacyManagerRegistration = false } = {}) {
   const expectedCount = POC_DATA_SECURITY_FEATURES.length
     * POC_FEATURE_SECURITY_ROLES.length
     * POC_FEATURE_SECURITY_GRADES.length
@@ -118,6 +119,9 @@ function normalizeCells(value) {
       throw policyError('FEATURE_SECURITY_ADMIN_INVARIANT', 'The application admin data row is immutable Allow.')
     }
     if (!featureAvailableForRole(feature, role) && raw.allow) {
+      if (projectLegacyManagerRegistration && feature === 'registration' && role === 'manager') {
+        return { feature, role, grade, allow: false }
+      }
       throw policyError('FEATURE_SECURITY_ROLE_INVARIANT', 'A role-ineligible feature row must remain Deny.')
     }
     return { feature, role, grade, allow: raw.allow }
@@ -130,7 +134,7 @@ function normalizeCells(value) {
   ))
 }
 
-export function normalizeFeatureSecurityPolicy(value) {
+function normalizeFeatureSecurityPolicyDocument(value, options = {}) {
   if (value === null || value === undefined) return approvedDefaultFeatureSecurityPolicy()
   exactKeys(value, ['schema_version', 'cells', 'updated_at', 'updated_by', 'reason'], 'feature security policy')
   if (value.schema_version !== POC_FEATURE_SECURITY_POLICY_SCHEMA_VERSION) {
@@ -143,11 +147,21 @@ export function normalizeFeatureSecurityPolicy(value) {
   }
   return {
     schema_version: POC_FEATURE_SECURITY_POLICY_SCHEMA_VERSION,
-    cells: normalizeCells(value.cells),
+    cells: normalizeCells(value.cells, options),
     updated_at: updatedAt,
     updated_by: updatedBy,
     reason: boundedText(value.reason, 1_000, 'reason'),
   }
+}
+
+export function normalizeFeatureSecurityPolicy(value) {
+  return normalizeFeatureSecurityPolicyDocument(value)
+}
+
+// One bounded read-time compatibility path for the policy shape that existed
+// before Registration mutation was narrowed from manager to data_steward/admin.
+export function normalizePersistedFeatureSecurityPolicy(value) {
+  return normalizeFeatureSecurityPolicyDocument(value, { projectLegacyManagerRegistration: true })
 }
 
 export function applyFeatureSecurityPolicyUpdate(current, command, actor, now = new Date().toISOString()) {

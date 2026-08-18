@@ -100,6 +100,24 @@ function requirePocCapability(capability: PocCapability): void {
   }
 }
 
+function isRegistrationOperator(): boolean {
+  return presentationAuthorization?.role === 'data_steward'
+    || presentationAuthorization?.role === 'admin'
+}
+
+function isRegistrationOperatorPath(path: string, method: string): boolean {
+  if (path === '/registration' || path.startsWith('/registration/')) return true
+  if (path === '/uploads' || path.startsWith('/uploads/')) return path !== '/uploads/operator-capability'
+  if (method !== 'POST') return false
+  return /^\/catalog\/assets\/[^/]+\/(?:description|column-description|controlled-metadata)-(?:previews|change-requests)$/.test(path)
+}
+
+function requireRegistrationOperator(): void {
+  if (!isRegistrationOperator()) {
+    throw new Error('등록관리는 Data Steward 또는 Admin 역할만 수행할 수 있습니다.')
+  }
+}
+
 function localDispatchCapability(path: string, method: string): PocCapability | 'AUTHENTICATED' | undefined {
   if (path === '/admin/me') return 'AUTHENTICATED'
   if (path === '/capabilities') return 'monitoring.read'
@@ -113,7 +131,7 @@ function localDispatchCapability(path: string, method: string): PocCapability | 
       ? 'catalog.execute'
       : 'catalog.manage'
   }
-  if (path === '/registration' || path.startsWith('/registration/') || path.startsWith('/uploads/')) return 'catalog.execute'
+  if (path === '/registration' || path.startsWith('/registration/') || path === '/uploads' || path.startsWith('/uploads/')) return 'catalog.execute'
   if (path === '/change-requests/intake' && method === 'POST') return 'change.read'
   if (path === '/change-requests' || path.startsWith('/change-requests/') || path.startsWith('/change-history/')) {
     if (method === 'GET') return 'change.read'
@@ -1574,6 +1592,7 @@ class PocApiClient {
     const requiredCapability = localDispatchCapability(parsed.pathname, method)
     if (!requiredCapability) throw new Error('미분류 POC API 경로는 사용할 수 없습니다.')
     if (requiredCapability !== 'AUTHENTICATED') requirePocCapability(requiredCapability)
+    if (isRegistrationOperatorPath(parsed.pathname, method)) requireRegistrationOperator()
     if (path.startsWith('/change-history/') || /^\/change-requests\/[^/]+\/change-history(?:\?|$)/.test(path)
       || parsed.pathname === '/admin/table-system-mappings'
       || parsed.pathname === '/admin/feature-security-policy'
@@ -2002,7 +2021,12 @@ class PocApiClient {
       }
       throw new Error(`DataHub 상세를 사용할 수 없는 자산입니다: ${assetId}`)
     }
-    if (path === '/uploads/operator-capability') return { eligible: true, can_view_workspace_history: true, reason_code: 'ELIGIBLE', allowed_roles: ['ADMIN', 'DATA_STEWARD'] }
+    if (path === '/uploads/operator-capability') return {
+      eligible: isRegistrationOperator(),
+      can_view_workspace_history: isRegistrationOperator(),
+      reason_code: isRegistrationOperator() ? 'ELIGIBLE' : 'ROLE_FORBIDDEN',
+      allowed_roles: ['ADMIN', 'DATA_STEWARD'],
+    }
     const knowledgeUploadCollection = path.match(/^\/knowledge\/graphs\/[^/]+\/source-uploads$/)
     if ((path === '/uploads' || knowledgeUploadCollection) && method === 'POST') {
       if (!runtimeFlags().minio) throw new Error('파일 업로드에는 MinIO 설정이 필요합니다.')
