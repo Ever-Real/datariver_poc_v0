@@ -597,6 +597,205 @@ describe('GraphBuilder', () => {
     expect(JSON.stringify(savedBody)).not.toContain('Class__')
   })
 
+  it('updates ElementInspector properties and serializes correctly on save', async () => {
+    let savedBody: Record<string, unknown> | undefined
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`) && !init?.method) {
+        return Promise.resolve(json(tbox([
+          {
+            stable_element_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c0',
+            kind: 'CLASS',
+            canonical_name: 'Person',
+            display_name: 'Person',
+            aliases: [],
+            vector_index_enabled: false,
+            locked_by_later_block: false,
+            block_id: blockId,
+            ordinal: 0,
+            version: 1,
+            layout_x: 0,
+            layout_y: 0,
+          },
+          {
+            stable_element_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c1',
+            kind: 'PROPERTY',
+            canonical_name: 'age',
+            display_name: 'age',
+            parent_stable_element_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c0',
+            data_type: 'INTEGER',
+            value_cardinality: 'SINGLE',
+            nullable: true,
+            aliases: [],
+            vector_index_enabled: false,
+            locked_by_later_block: false,
+            block_id: blockId,
+            ordinal: 1,
+            version: 1,
+          }
+        ])))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/blocks/${blockId}/operations`)) {
+        savedBody = JSON.parse(init!.body as string) as Record<string, unknown>
+        return Promise.resolve(json(tbox(), '"3"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+
+    fireEvent.click(screen.getByText('Person'))
+    const aliasesInput = await screen.findByLabelText('동의어 (Aliases) - 쉼표로 구분')
+    fireEvent.change(aliasesInput, { target: { value: 'Human, Individual' } })
+
+    const displayInput = await screen.findByLabelText('표시 이름 (Display Name)')
+    fireEvent.change(displayInput, { target: { value: '사람' } })
+
+    fireEvent.click(screen.getByRole('button', { name: 'T-Box 저장' }))
+    await waitFor(() => expect(savedBody).toBeDefined())
+
+    const operations = savedBody?.operations
+    expect(Array.isArray(operations)).toBe(true)
+    const classOp = (operations as Array<{
+      stable_element_id: string
+      element: Record<string, unknown>
+    }>).find((operation) => (
+      operation.stable_element_id === '019fa57b-52de-74c0-9f5e-06ae7b1bf3c0'
+    ))
+    expect(classOp?.element.aliases).toEqual(['Human', 'Individual'])
+    expect(classOp?.element.display_name).toEqual('사람')
+  })
+
+  it('edits bounded Relation shape and relation-owned Property fields', async () => {
+    let savedBody: Record<string, unknown> | undefined
+    const relationId = 'relation:owns'
+    const classA = {
+      stable_element_id: 'class:person',
+      kind: 'CLASS',
+      canonical_name: 'Person',
+      display_name: 'Person',
+      aliases: [],
+      vector_index_enabled: false,
+      locked_by_later_block: false,
+      block_id: blockId,
+      ordinal: 0,
+      version: 1,
+      layout_x: 0,
+      layout_y: 0,
+    }
+    const classB = {
+      ...classA,
+      stable_element_id: 'class:asset',
+      canonical_name: 'Asset',
+      display_name: 'Asset',
+      ordinal: 1,
+      layout_x: 280,
+    }
+    const relation = {
+      stable_element_id: relationId,
+      kind: 'RELATION',
+      canonical_name: 'OWNS',
+      display_name: 'Owns',
+      source_stable_element_id: classA.stable_element_id,
+      target_stable_element_id: classB.stable_element_id,
+      direction: 'DIRECTED',
+      cardinality: 'ONE_TO_MANY',
+      aliases: [],
+      vector_index_enabled: false,
+      locked_by_later_block: false,
+      block_id: blockId,
+      ordinal: 2,
+      version: 1,
+    }
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`) && !init?.method) {
+        return Promise.resolve(json(tbox([classA, classB, relation])))
+      }
+      if (path.endsWith(`/drafts/${draftId}/tbox/blocks/${blockId}/operations`)) {
+        savedBody = JSON.parse(init!.body as string) as Record<string, unknown>
+        return Promise.resolve(json(tbox([classA, classB, relation]), '"3"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+    expect(within(screen.getByLabelText('T-Box 그래프 캔버스')).getByText('No. 1'))
+      .toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Person → Asset' }))
+
+    expect(await screen.findByText('Relation 속성')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('방향 (Direction)'), {
+      target: { value: 'BIDIRECTED' },
+    })
+    fireEvent.change(screen.getByLabelText('카디널리티 (Cardinality)'), {
+      target: { value: 'MANY_TO_MANY' },
+    })
+    fireEvent.change(screen.getByLabelText('동의어 (Aliases) - 쉼표로 구분'), {
+      target: { value: 'possesses, controls' },
+    })
+    fireEvent.change(screen.getByLabelText('새 Relation Property 이름'), {
+      target: { value: 'confidence' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Relation Property 추가' }))
+
+    expect(await screen.findByText('Property 속성')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('값 개수 (Value Cardinality)'), {
+      target: { value: 'MULTI' },
+    })
+    fireEvent.click(screen.getByLabelText('필수 항목 (Required)'))
+    fireEvent.change(screen.getByLabelText('단위 (Unit)'), {
+      target: { value: 'ratio' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'T-Box 저장' }))
+
+    await waitFor(() => expect(savedBody).toBeDefined())
+    const operations = savedBody?.operations as Array<{
+      stable_element_id: string
+      element: Record<string, unknown>
+    }>
+    expect(operations.find((item) => item.stable_element_id === relationId)?.element)
+      .toMatchObject({
+        direction: 'BIDIRECTED',
+        cardinality: 'MANY_TO_MANY',
+        aliases: ['possesses', 'controls'],
+      })
+    expect(operations.find((item) => item.element.canonical_name === 'confidence')?.element)
+      .toMatchObject({
+        owner_relation_stable_element_id: relationId,
+        data_type: 'STRING',
+        value_cardinality: 'MULTI',
+        nullable: false,
+        unit: 'ratio',
+      })
+  })
+
   it('does not advance to A-Box when the fenced T-Box save fails', async () => {
     const onContinue = vi.fn()
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
@@ -1251,7 +1450,7 @@ describe('GraphBuilder', () => {
     expect(screen.getByLabelText('T-Box 블록 목록')).toBeInTheDocument()
     const workspace = screen.getByRole('article', { name: 'T-Box 단일 작업공간' })
     const layout = within(workspace).getByTestId('tbox-shared-workspace-layout')
-    expect(layout).toHaveClass('xl:grid-cols-[240px_minmax(0,1fr)_180px]')
+    expect(layout).toHaveClass('xl:grid-cols-[240px_minmax(0,1fr)_180px_320px]')
     expect(within(workspace).getByLabelText('T-Box 블록')).toHaveClass(
       'xl:col-start-3',
       'xl:row-start-1',
@@ -1732,5 +1931,64 @@ describe('GraphBuilder', () => {
       tbox_hash: release.tbox_hash,
       mode: 'APPEND_LAYER',
     })
+  })
+
+  it('presents inheritance-cycle warning and disables save on invalid schema', async () => {
+    const classA = {
+      stable_element_id: 'class:a',
+      kind: 'CLASS',
+      canonical_name: 'A',
+      display_name: 'A',
+      parent_stable_element_id: 'class:b',
+      aliases: [],
+      vector_index_enabled: false,
+      locked_by_later_block: false,
+      block_id: blockId,
+      ordinal: 0,
+      version: 1,
+      layout_x: 0,
+      layout_y: 0,
+    }
+    const classB = {
+      stable_element_id: 'class:b',
+      kind: 'CLASS',
+      canonical_name: 'B',
+      display_name: 'B',
+      parent_stable_element_id: 'class:a',
+      aliases: [],
+      vector_index_enabled: false,
+      locked_by_later_block: false,
+      block_id: blockId,
+      ordinal: 1,
+      version: 1,
+      layout_x: 100,
+      layout_y: 100,
+    }
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith(`/drafts/${draftId}/tbox`) && !init?.method) {
+        return Promise.resolve(json(tbox([classA, classB])))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${init?.method ?? 'GET'} ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    render(
+      <GraphBuilder
+        client={client}
+        draftId={draftId}
+        etag='"2"'
+        busy={false}
+        onDraftUpdate={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+
+    await screen.findByText(/Typed T-Box Draft를 불러왔습니다/)
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Class 상속 순환이 감지되었습니다.')
+    expect(screen.getByRole('button', { name: 'T-Box 저장' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'T-Box 저장 후 A-Box로 이동' })).toBeDisabled()
   })
 })

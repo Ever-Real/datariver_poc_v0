@@ -45,6 +45,7 @@ import {
   Plus,
   Save,
   Search,
+  Sparkles,
   Trash2,
   X,
 } from 'lucide-react'
@@ -71,6 +72,7 @@ import {
   deleteKnowledgeStudioTBoxBlock,
   getKnowledgeStudioTBoxCatalogSource,
   getKnowledgeStudioTBox,
+  knowledgeStudioPropertyDataTypes,
   searchKnowledgeStudioTBoxCatalogSources,
   searchKnowledgeStudioTBoxAssetReleases,
   newKnowledgeStudioIdempotencyKey,
@@ -86,6 +88,7 @@ import {
   type KnowledgeStudioSourceDataset,
 } from '../knowledgeStudioApi'
 import { useTBoxProposalJob } from './useTBoxProposalJob'
+import { ElementInspector } from './ElementInspector'
 
 interface SchemaNodeData extends Record<string, unknown> {
   label: string
@@ -98,13 +101,15 @@ interface SchemaNodeData extends Record<string, unknown> {
   canStartConnection: boolean
   canReceiveConnection: boolean
   blockLabel: string
-  properties: Array<{ id: string; label: string; dataType: string }>
+  properties: Array<{ id: string; label: string; dataType: string; aiSuggested: boolean }>
+  aiSuggested: boolean
   onToggleEditor: () => void
   onRename: (value: string) => void
   onDelete: () => void
   onAddProperty: (value: string) => void
   onUpdateProperty: (id: string, value: string, dataType: string) => void
   onDeleteProperty: (id: string) => void
+  onSelectProperty: (id: string) => void
 }
 
 type SchemaNode = Node<SchemaNodeData, 'schemaClass'>
@@ -128,6 +133,7 @@ interface SchemaEdgeData extends Record<string, unknown> {
   relation: string
   hierarchy?: boolean
   editable: boolean
+  aiSuggested?: boolean
   onRename?: (value: string) => void
   onDelete?: () => void
 }
@@ -165,13 +171,110 @@ const proposalBlockLabels: Record<ProposalBlockKind, string> = {
   LLM_ASSISTANT: 'LLM Assistant',
 }
 
-const propertyDataTypes = ['STRING', 'TEXT', 'INTEGER', 'FLOAT', 'BOOLEAN', 'DATE', 'DATETIME']
+interface TBoxValidationWarning {
+  elementId?: string
+  message: string
+}
+
+function validateTBoxElements(
+  elements: KnowledgeStudioTBoxElement[],
+): TBoxValidationWarning[] {
+  const warnings: TBoxValidationWarning[] = []
+  const byId = new Map<string, KnowledgeStudioTBoxElement>()
+  const names = new Map<string, string>()
+  for (const element of elements) {
+    if (byId.has(element.stable_element_id)) {
+      warnings.push({
+        elementId: element.stable_element_id,
+        message: '동일한 stable ID가 두 번 사용되었습니다.',
+      })
+    }
+    byId.set(element.stable_element_id, element)
+    const nameKey = `${element.kind}:${element.canonical_name.toLocaleLowerCase()}`
+    if (names.has(nameKey)) {
+      warnings.push({
+        elementId: element.stable_element_id,
+        message: '같은 종류에서 canonical name이 중복됩니다.',
+      })
+    }
+    names.set(nameKey, element.stable_element_id)
+  }
+
+  const relationKeys = new Set<string>()
+  for (const element of elements) {
+    if (element.kind === 'CLASS') {
+      const parent = element.parent_stable_element_id
+      if (parent && byId.get(parent)?.kind !== 'CLASS') {
+        warnings.push({ elementId: element.stable_element_id, message: '부모 Class가 존재하지 않습니다.' })
+      }
+      const visited = new Set<string>()
+      let cursor: string | undefined = element.stable_element_id
+      while (cursor) {
+        if (visited.has(cursor)) {
+          warnings.push({ elementId: element.stable_element_id, message: 'Class 상속 순환이 감지되었습니다.' })
+          break
+        }
+        visited.add(cursor)
+        cursor = byId.get(cursor)?.parent_stable_element_id
+      }
+      continue
+    }
+    if (element.kind === 'PROPERTY') {
+      const ownerId = element.parent_stable_element_id
+        ?? element.owner_relation_stable_element_id
+      const owner = ownerId ? byId.get(ownerId) : undefined
+      const ownerKind = element.parent_stable_element_id ? 'CLASS' : 'RELATION'
+      if (!owner || owner.kind !== ownerKind) {
+        warnings.push({ elementId: element.stable_element_id, message: 'Property 소유 Class/Relation이 유효하지 않습니다.' })
+      }
+      if (!knowledgeStudioPropertyDataTypes.includes(
+        (element.data_type ?? '') as typeof knowledgeStudioPropertyDataTypes[number],
+      )) {
+        warnings.push({ elementId: element.stable_element_id, message: '지원하지 않는 Property datatype입니다.' })
+      }
+      if (!['SINGLE', 'MULTI'].includes(element.value_cardinality ?? 'SINGLE')) {
+        warnings.push({ elementId: element.stable_element_id, message: 'Property 값 cardinality가 유효하지 않습니다.' })
+      }
+      continue
+    }
+    const source = byId.get(element.source_stable_element_id ?? '')
+    const target = byId.get(element.target_stable_element_id ?? '')
+    if (source?.kind !== 'CLASS' || target?.kind !== 'CLASS') {
+      warnings.push({ elementId: element.stable_element_id, message: 'Relation Domain/Range Class가 유효하지 않습니다.' })
+    }
+    if (!['DIRECTED', 'BIDIRECTED', 'UNDIRECTED'].includes(element.direction ?? 'DIRECTED')) {
+      warnings.push({ elementId: element.stable_element_id, message: 'Relation direction이 유효하지 않습니다.' })
+    }
+    if (![
+      'UNSPECIFIED',
+      'ONE_TO_ONE',
+      'ONE_TO_MANY',
+      'MANY_TO_ONE',
+      'MANY_TO_MANY',
+    ].includes(element.cardinality ?? 'UNSPECIFIED')) {
+      warnings.push({ elementId: element.stable_element_id, message: 'Relation cardinality가 유효하지 않습니다.' })
+    }
+    const relationKey = [
+      element.canonical_name.toLocaleLowerCase(),
+      element.source_stable_element_id,
+      element.target_stable_element_id,
+    ].join(':')
+    if (relationKeys.has(relationKey)) {
+      warnings.push({ elementId: element.stable_element_id, message: '동일한 Relation이 중복됩니다.' })
+    }
+    relationKeys.add(relationKey)
+  }
+  return warnings
+}
+
 interface PropertyRowProps {
   classLabel: string
-  property: { id: string; label: string; dataType: string }
+  property: { id: string; label: string; dataType: string; aiSuggested: boolean }
   disabled: boolean
   onUpdate: (id: string, value: string, dataType: string) => void
   onDelete: (id: string) => void
+  onSelect: (id: string) => void
+  aiSuggested: boolean
 }
 
 function PropertyRow({
@@ -180,6 +283,8 @@ function PropertyRow({
   disabled,
   onUpdate,
   onDelete,
+  onSelect,
+  aiSuggested,
 }: PropertyRowProps) {
   const [name, setName] = useState(property.label)
   const [dataType, setDataType] = useState(property.dataType)
@@ -201,7 +306,15 @@ function PropertyRow({
   }
 
   return (
-    <li className="grid grid-cols-[minmax(0,1fr)_78px_24px] items-center gap-1">
+    <li className="grid grid-cols-[24px_minmax(0,1fr)_78px_24px] items-center gap-1">
+      <button
+        type="button"
+        className="rounded p-1 text-cyan-700 hover:bg-cyan-50"
+        aria-label={`${classLabel} ${property.label} Property 상세 편집`}
+        onClick={() => onSelect(property.id)}
+      >
+        {aiSuggested ? <Sparkles size={11} aria-label="AI 제안 요소" /> : <Pencil size={11} aria-hidden="true" />}
+      </button>
       <input
         aria-label={`${classLabel} ${property.label} Property 이름`}
         className="input min-w-0 py-1 text-[10px]"
@@ -229,7 +342,7 @@ function PropertyRow({
           onUpdate(property.id, schemaIdentifier(name, 'Property') || property.label, value)
         }}
       >
-        {propertyDataTypes.map((value) => <option key={value}>{value}</option>)}
+        {knowledgeStudioPropertyDataTypes.map((value) => <option key={value}>{value}</option>)}
       </select>
       <button
         type="button"
@@ -266,6 +379,15 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
       <span className="absolute -left-2 -top-2 rounded-full border border-sky-200 bg-sky-500 px-2 py-0.5 text-[9px] font-black text-white shadow">
         No. {data.ordinal}
       </span>
+      {data.aiSuggested && (
+        <span
+          className="absolute -right-2 -top-2 rounded-full border border-violet-200 bg-violet-600 p-1 text-white"
+          title="AI 제안 요소"
+          aria-label="AI 제안 요소"
+        >
+          <Sparkles size={9} aria-hidden="true" />
+        </span>
+      )}
       {data.locked && (
         <span
           className="absolute -right-2 -top-2 rounded-full border border-amber-200 bg-amber-500 p-1 text-white"
@@ -466,6 +588,8 @@ function SchemaClassNode({ data, selected }: NodeProps<SchemaNode>) {
                     disabled={!data.editable}
                     onUpdate={data.onUpdateProperty}
                     onDelete={data.onDeleteProperty}
+                    onSelect={data.onSelectProperty}
+                    aiSuggested={property.aiSuggested}
                   />
                 ))}
               </ul>
@@ -610,7 +734,10 @@ function EditableSchemaEdge({
               }}
             />
           ) : (
-            <span className="max-w-32 truncate">{data?.relation}</span>
+            <span className="flex max-w-32 items-center gap-1 truncate">
+              {data?.aiSuggested && <Sparkles size={9} aria-label="AI 제안 요소" />}
+              {data?.relation}
+            </span>
           )}
           {(hovered || selected) && (
             <>
@@ -1219,6 +1346,7 @@ function flowGraph(
       canStartConnection: connectableInActiveView,
       canReceiveConnection: connectableInActiveView,
       blockLabel: block?.title ?? '현재 블록',
+      aiSuggested: block?.kind === 'LLM_ASSISTANT',
       properties: elements
         .filter(
           (property) => property.kind === 'PROPERTY'
@@ -1228,6 +1356,9 @@ function flowGraph(
           id: property.stable_element_id,
           label: property.display_name,
           dataType: property.data_type ?? 'STRING',
+          aiSuggested: property.block_id
+            ? blockById.get(property.block_id)?.kind === 'LLM_ASSISTANT'
+            : false,
         })),
       onRename: () => undefined,
       onDelete: () => undefined,
@@ -1235,6 +1366,7 @@ function flowGraph(
       onToggleEditor: () => undefined,
       onUpdateProperty: () => undefined,
       onDeleteProperty: () => undefined,
+      onSelectProperty: () => undefined,
     },
     draggable: editable,
     connectable: true,
@@ -1256,6 +1388,9 @@ function flowGraph(
         data: {
           relation: item.canonical_name,
           editable: item.block_id === editableBlockId,
+          aiSuggested: item.block_id
+            ? blockById.get(item.block_id)?.kind === 'LLM_ASSISTANT'
+            : false,
         },
         markerEnd: { type: MarkerType.ArrowClosed, color: '#7dd3fc' },
         sourceHandle: handles.sourceHandle,
@@ -1300,11 +1435,15 @@ function elementPayload(
     canonical_name: item.canonical_name,
     display_name: item.display_name,
     parent_stable_element_id: item.parent_stable_element_id,
+    owner_relation_stable_element_id: item.owner_relation_stable_element_id,
     hierarchy_relation: item.hierarchy_relation,
     source_stable_element_id: item.source_stable_element_id,
     target_stable_element_id: item.target_stable_element_id,
     data_type: item.data_type,
     nullable: item.nullable,
+    value_cardinality: item.value_cardinality,
+    direction: item.direction,
+    cardinality: item.cardinality,
     definition: item.definition,
     aliases: item.aliases,
     unit: item.unit,
@@ -1515,6 +1654,7 @@ export function GraphBuilder({
   >('MERGE_INTO_CURRENT')
   const [documentProposalError, setDocumentProposalError] = useState('')
   const [validationPhase, setValidationPhase] = useState<'CHECKING' | 'VALID' | 'INVALID'>('VALID')
+  const semanticWarnings = useMemo(() => validateTBoxElements(elements), [elements])
   const [blockPendingDelete, setBlockPendingDelete] = useState<KnowledgeStudioTBoxBlock>()
   const [conflictActions, setConflictActions] = useState<Record<string, 'KEEP_ORIGINAL' | 'ACCEPT_PROPOSAL'>>({})
   const setSessionBlock = useKnowledgeStudioSessionStore((state) => state.setBlock)
@@ -1931,14 +2071,14 @@ export function GraphBuilder({
   ])
 
   useEffect(() => {
-    if (editorError) {
+    if (editorError || semanticWarnings.length > 0) {
       setValidationPhase('INVALID')
       return
     }
     setValidationPhase('CHECKING')
     const timeout = window.setTimeout(() => setValidationPhase('VALID'), 220)
     return () => window.clearTimeout(timeout)
-  }, [editorError, editorText])
+  }, [editorError, editorText, semanticWarnings.length])
 
   const syncCanvasAndEditor = useCallback((next: KnowledgeStudioTBoxElement[]) => {
     const positions = new Map(nodePositionsRef.current)
@@ -2088,10 +2228,6 @@ export function GraphBuilder({
         version: prior?.version ?? 1,
       }
     })
-    const nextProperties = elements.filter(
-      (item) => item.kind === 'PROPERTY'
-        && Boolean(item.parent_stable_element_id && classIds.has(item.parent_stable_element_id)),
-    )
     const nextRelations = parsed.edges
       .filter((item) => !hierarchyEdgeIds.has(item.id))
       .map((item): KnowledgeStudioTBoxElement => {
@@ -2103,6 +2239,8 @@ export function GraphBuilder({
         display_name: prior?.display_name ?? item.relation,
         source_stable_element_id: item.source,
         target_stable_element_id: item.target,
+        direction: prior?.direction ?? 'DIRECTED',
+        cardinality: prior?.cardinality ?? 'UNSPECIFIED',
         aliases: prior?.aliases ?? [],
         vector_index_enabled: false,
         metadata_reference_id: prior?.metadata_reference_id,
@@ -2113,6 +2251,20 @@ export function GraphBuilder({
         version: prior?.version ?? 1,
       }
     })
+    const relationIds = new Set(nextRelations.map((item) => item.stable_element_id))
+    const nextProperties = elements.filter(
+      (item) => item.kind === 'PROPERTY'
+        && (
+          Boolean(
+            item.parent_stable_element_id
+            && classIds.has(item.parent_stable_element_id),
+          )
+          || Boolean(
+            item.owner_relation_stable_element_id
+            && relationIds.has(item.owner_relation_stable_element_id),
+          )
+        ),
+    )
     const next = [...nextClasses, ...nextProperties, ...nextRelations]
     const graph = flowGraph(next, selectedBlockId, record?.blocks ?? [], selectedElementId)
     nodePositionsRef.current = new Map(
@@ -2185,6 +2337,8 @@ export function GraphBuilder({
       display_name: 'RELATED_TO',
       source_stable_element_id: connection.source,
       target_stable_element_id: connection.target,
+      direction: 'DIRECTED',
+      cardinality: 'UNSPECIFIED',
       aliases: [],
       vector_index_enabled: false,
       locked_by_later_block: false,
@@ -2207,13 +2361,14 @@ export function GraphBuilder({
       && item.block_id !== selectedBlockId
       && (
         item.parent_stable_element_id === target.stable_element_id
+        || item.owner_relation_stable_element_id === target.stable_element_id
         || item.source_stable_element_id === target.stable_element_id
         || item.target_stable_element_id === target.stable_element_id
       )
     ))
     if (externalDependants.length > 0) {
       setStatus(
-        '후속 블록이 참조하는 Class입니다. 참조 블록을 먼저 정리해야 합니다.',
+        '후속 블록이 참조하는 요소입니다. 참조 블록을 먼저 정리해야 합니다.',
       )
       return
     }
@@ -2227,6 +2382,22 @@ export function GraphBuilder({
             || item.source_stable_element_id === target.stable_element_id
             || item.target_stable_element_id === target.stable_element_id
           )
+        ) removed.add(item.stable_element_id)
+      }
+      for (const item of elements) {
+        if (
+          item.kind === 'PROPERTY'
+          && item.owner_relation_stable_element_id
+          && removed.has(item.owner_relation_stable_element_id)
+          && (item.block_id === selectedBlockId || item.block_id === undefined)
+        ) removed.add(item.stable_element_id)
+      }
+    } else if (target.kind === 'RELATION') {
+      for (const item of elements) {
+        if (
+          item.kind === 'PROPERTY'
+          && item.owner_relation_stable_element_id === target.stable_element_id
+          && (item.block_id === selectedBlockId || item.block_id === undefined)
         ) removed.add(item.stable_element_id)
       }
     }
@@ -2284,15 +2455,15 @@ export function GraphBuilder({
     }
   }, [deleteElement, elements, setEdges, syncCanvasAndEditor])
 
-  const addProperty = (classId: string, rawName: string) => {
-    const classElement = elements.find((item) => item.stable_element_id === classId)
+  const addProperty = (ownerId: string, rawName: string) => {
+    const owner = elements.find((item) => item.stable_element_id === ownerId)
     if (
-      classElement?.kind !== 'CLASS'
+      (owner?.kind !== 'CLASS' && owner?.kind !== 'RELATION')
       || (
-        classElement.block_id !== selectedBlockId
-        && classElement.block_id !== undefined
+        owner.block_id !== selectedBlockId
+        && owner.block_id !== undefined
       )
-      || classElement.locked_by_later_block
+      || owner.locked_by_later_block
       || locked
       || working
     ) return
@@ -2300,7 +2471,10 @@ export function GraphBuilder({
     if (!name) return
     if (elements.some(
       (item) => item.kind === 'PROPERTY'
-        && item.parent_stable_element_id === classId
+        && (
+          item.parent_stable_element_id === ownerId
+          || item.owner_relation_stable_element_id === ownerId
+        )
         && item.canonical_name.toLowerCase() === name.toLowerCase(),
     )) {
       setStatus(`Property '${name}'은(는) 이미 존재합니다.`)
@@ -2311,9 +2485,11 @@ export function GraphBuilder({
       kind: 'PROPERTY',
       canonical_name: name,
       display_name: name,
-      parent_stable_element_id: classId,
+      parent_stable_element_id: owner.kind === 'CLASS' ? ownerId : undefined,
+      owner_relation_stable_element_id: owner.kind === 'RELATION' ? ownerId : undefined,
       data_type: 'STRING',
       nullable: true,
+      value_cardinality: 'SINGLE',
       aliases: [],
       vector_index_enabled: false,
       locked_by_later_block: false,
@@ -2321,7 +2497,7 @@ export function GraphBuilder({
       version: 1,
     }
     syncCanvasAndEditor([...elements, property])
-    setSelectedElementId(classId)
+    setSelectedElementId(property.stable_element_id)
   }
 
   const updateProperty = (
@@ -2334,7 +2510,9 @@ export function GraphBuilder({
     if (
       property?.kind !== 'PROPERTY'
       || !name
-      || !propertyDataTypes.includes(dataType)
+      || !knowledgeStudioPropertyDataTypes.includes(
+        dataType as typeof knowledgeStudioPropertyDataTypes[number],
+      )
       || locked
       || working
     ) return
@@ -2342,6 +2520,8 @@ export function GraphBuilder({
       (item) => item.kind === 'PROPERTY'
         && item.stable_element_id !== propertyId
         && item.parent_stable_element_id === property.parent_stable_element_id
+        && item.owner_relation_stable_element_id
+          === property.owner_relation_stable_element_id
         && item.canonical_name.toLocaleLowerCase() === name.toLocaleLowerCase(),
     )) {
       setStatus(`Property '${name}'은(는) 이미 존재합니다.`)
@@ -2359,6 +2539,10 @@ export function GraphBuilder({
 
   const save = async (): Promise<boolean> => {
     if (!selectedBlock || editorError || locked || working) return false
+    if (semanticWarnings.length > 0) {
+      setStatus(`T-Box 검증 경고 ${semanticWarnings.length}건을 먼저 해결하세요.`)
+      return false
+    }
     const positioned = elements.map((item) => {
       const node = nodes.find((candidate) => candidate.id === item.stable_element_id)
       return node ? { ...item, layout_x: node.position.x, layout_y: node.position.y } : item
@@ -3023,7 +3207,11 @@ export function GraphBuilder({
             id: property.stable_element_id,
             label: property.display_name,
             dataType: property.data_type ?? 'STRING',
-        })),
+            aiSuggested: property.block_id
+              ? (record?.blocks ?? []).find((block) => block.id === property.block_id)?.kind
+                === 'LLM_ASSISTANT'
+              : false,
+          })),
         onToggleEditor: () => {
           setSelectedElementId(item.stable_element_id)
           setOpenEditor(
@@ -3052,6 +3240,10 @@ export function GraphBuilder({
         onAddProperty: (value) => addProperty(item.stable_element_id, value),
         onUpdateProperty: updateProperty,
         onDeleteProperty: deleteElement,
+        onSelectProperty: (propertyId) => {
+          setSelectedElementId(propertyId)
+          setOpenEditor('')
+        },
       },
     }
   })
@@ -3124,7 +3316,7 @@ export function GraphBuilder({
             <button
               type="button"
               className="button button-secondary"
-              disabled={locked || working || Boolean(editorError)}
+              disabled={locked || working || Boolean(editorError) || semanticWarnings.length > 0}
               onClick={() => void save()}
             >
               <Save size={14} aria-hidden="true" />
@@ -3133,7 +3325,7 @@ export function GraphBuilder({
             <button
               type="button"
               className="button"
-              disabled={busy || working || locked || Boolean(editorError) || elements.length === 0}
+              disabled={busy || working || locked || Boolean(editorError) || semanticWarnings.length > 0 || elements.length === 0}
               onClick={() => void saveAndContinue()}
             >
               저장 후 Data Enricher
@@ -3173,7 +3365,7 @@ export function GraphBuilder({
             </span>
           </div>
           <div
-            className="grid min-h-[520px] gap-3 xl:grid-cols-[240px_minmax(0,1fr)_180px]"
+            className="grid min-h-[520px] gap-3 xl:grid-cols-[240px_minmax(0,1fr)_180px_320px]"
             data-testid="tbox-shared-workspace-layout"
           >
                   <ClassHierarchyTree
@@ -3291,7 +3483,7 @@ export function GraphBuilder({
                                       }))
                                     }}
                                   >
-                                    {propertyDataTypes.map((value) => (
+                                    {knowledgeStudioPropertyDataTypes.map((value) => (
                                       <option key={value}>{value}</option>
                                     ))}
                                   </select>
@@ -3372,6 +3564,25 @@ export function GraphBuilder({
                       )}
                     </ReactFlow>
                   </div>
+                  <ElementInspector
+                    element={elements.find((item) => (
+                      item.stable_element_id === selectedElementId
+                    ))}
+                    elements={elements}
+                    blocks={record.blocks}
+                    warnings={semanticWarnings
+                      .filter((warning) => !selectedElementId || warning.elementId === selectedElementId)
+                      .map((warning) => warning.message)}
+                    locked={locked}
+                    working={working}
+                    onUpdate={updateElement}
+                    onDelete={deleteElement}
+                    onAddProperty={addProperty}
+                    onSelect={(elementId) => {
+                      setSelectedElementId(elementId)
+                      setOpenEditor('')
+                    }}
+                  />
                 <section className="order-4 flex min-h-0 flex-col rounded-enterprise border border-slate-700 bg-[#081525] xl:col-span-3 xl:row-start-2">
                   <header className="flex items-center justify-between border-b border-slate-700 px-3 py-2 text-xs font-black text-slate-100">
                     <span>SchemaCypherEditor · safe CREATE subset · 실행되지 않음</span>
@@ -3589,7 +3800,7 @@ export function GraphBuilder({
         <button
           type="button"
           className="button"
-          disabled={busy || working || locked || Boolean(editorError) || elements.length === 0}
+          disabled={busy || working || locked || Boolean(editorError) || semanticWarnings.length > 0 || elements.length === 0}
           onClick={() => void saveAndContinue()}
         >
           <Save size={14} aria-hidden="true" />

@@ -99,11 +99,15 @@ export interface KnowledgeStudioTBoxElement {
   canonical_name: string
   display_name: string
   parent_stable_element_id?: string
+  owner_relation_stable_element_id?: string
   hierarchy_relation?: string
   source_stable_element_id?: string
   target_stable_element_id?: string
   data_type?: string
   nullable?: boolean
+  value_cardinality?: 'SINGLE' | 'MULTI'
+  direction?: 'DIRECTED' | 'BIDIRECTED' | 'UNDIRECTED'
+  cardinality?: 'UNSPECIFIED' | 'ONE_TO_ONE' | 'ONE_TO_MANY' | 'MANY_TO_ONE' | 'MANY_TO_MANY'
   ordinal: number
   version: number
   block_id?: string
@@ -117,6 +121,16 @@ export interface KnowledgeStudioTBoxElement {
   layout_x?: number
   layout_y?: number
 }
+
+export const knowledgeStudioPropertyDataTypes = [
+  'STRING',
+  'TEXT',
+  'INTEGER',
+  'FLOAT',
+  'BOOLEAN',
+  'DATE',
+  'DATETIME',
+] as const
 
 export type KnowledgeStudioTBoxBlockKind =
   | 'DIRECT'

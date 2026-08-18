@@ -456,6 +456,109 @@ function requireDraftVersion(draft: Record<string, unknown>, options: PocRequest
   if (ifMatch && ifMatch !== String(draft.version)) throw new Error('데이터가 변경되었습니다.')
 }
 
+const tboxPropertyDataTypes = new Set([
+  'STRING', 'TEXT', 'INTEGER', 'FLOAT', 'BOOLEAN', 'DATE', 'DATETIME',
+])
+const tboxValueCardinalities = new Set(['SINGLE', 'MULTI'])
+const tboxRelationDirections = new Set(['DIRECTED', 'BIDIRECTED', 'UNDIRECTED'])
+const tboxRelationCardinalities = new Set([
+  'UNSPECIFIED', 'ONE_TO_ONE', 'ONE_TO_MANY', 'MANY_TO_ONE', 'MANY_TO_MANY',
+])
+
+function validateKnowledgeTBoxElements(elements: Array<Record<string, unknown>>): void {
+  if (elements.length > 500) throw new Error('T-Box 요소는 최대 500개까지 저장할 수 있습니다.')
+  const byId = new Map<string, Record<string, unknown>>()
+  const names = new Set<string>()
+  for (const element of elements) {
+    const id = responseString(element.stable_element_id, '')
+    const kind = responseString(element.kind, '')
+    const name = responseString(element.canonical_name, '')
+    if (!id || id.length > 128 || byId.has(id)) {
+      throw new Error('T-Box stable ID가 없거나 중복되었습니다.')
+    }
+    if (!['CLASS', 'PROPERTY', 'RELATION'].includes(kind) || !name || name.length > 255) {
+      throw new Error('T-Box 요소 종류 또는 이름이 유효하지 않습니다.')
+    }
+    const nameIdentity = `${kind}:${name.toLocaleLowerCase()}`
+    if (names.has(nameIdentity)) throw new Error('같은 종류의 T-Box 이름이 중복되었습니다.')
+    if (!Array.isArray(element.aliases)
+      || element.aliases.length > 50
+      || element.aliases.some((alias) => typeof alias !== 'string' || alias.length > 255)) {
+      throw new Error('T-Box 동의어가 유효하지 않습니다.')
+    }
+    byId.set(id, element)
+    names.add(nameIdentity)
+  }
+
+  const relationIdentities = new Set<string>()
+  for (const element of elements) {
+    const id = String(element.stable_element_id)
+    const kind = String(element.kind)
+    if (kind === 'CLASS') {
+      const parent = element.parent_stable_element_id
+      if (parent !== undefined
+        && parent !== null
+        && (typeof parent !== 'string' || byId.get(parent)?.kind !== 'CLASS')) {
+        throw new Error('부모 Class가 존재하지 않습니다.')
+      }
+      const visited = new Set<string>()
+      let cursor: string | undefined = id
+      while (cursor) {
+        if (visited.has(cursor)) throw new Error('Class 상속 순환은 허용되지 않습니다.')
+        visited.add(cursor)
+        const current = byId.get(cursor)
+        cursor = typeof current?.parent_stable_element_id === 'string'
+          ? current.parent_stable_element_id
+          : undefined
+      }
+      continue
+    }
+    if (kind === 'PROPERTY') {
+      const classOwner = typeof element.parent_stable_element_id === 'string'
+        ? element.parent_stable_element_id
+        : undefined
+      const relationOwner = typeof element.owner_relation_stable_element_id === 'string'
+        ? element.owner_relation_stable_element_id
+        : undefined
+      if (Boolean(classOwner) === Boolean(relationOwner)) {
+        throw new Error('Property는 Class 또는 Relation 소유자 하나만 가져야 합니다.')
+      }
+      const owner = byId.get(classOwner ?? relationOwner ?? '')
+      if (owner?.kind !== (classOwner ? 'CLASS' : 'RELATION')) {
+        throw new Error('Property 소유 Class 또는 Relation이 존재하지 않습니다.')
+      }
+      if (!tboxPropertyDataTypes.has(String(element.data_type))) {
+        throw new Error('지원하지 않는 Property 데이터 타입입니다.')
+      }
+      if (typeof element.nullable !== 'boolean') {
+        throw new Error('Property 필수 여부가 유효하지 않습니다.')
+      }
+      const valueCardinality = element.value_cardinality ?? 'SINGLE'
+      if (typeof valueCardinality !== 'string'
+        || !tboxValueCardinalities.has(valueCardinality)) {
+        throw new Error('Property 값 개수가 유효하지 않습니다.')
+      }
+      continue
+    }
+    const source = responseString(element.source_stable_element_id, '')
+    const target = responseString(element.target_stable_element_id, '')
+    if (byId.get(source)?.kind !== 'CLASS' || byId.get(target)?.kind !== 'CLASS') {
+      throw new Error('Relation Domain/Range Class가 존재하지 않습니다.')
+    }
+    const direction = element.direction ?? 'DIRECTED'
+    const cardinality = element.cardinality ?? 'UNSPECIFIED'
+    if (typeof direction !== 'string'
+      || typeof cardinality !== 'string'
+      || !tboxRelationDirections.has(direction)
+      || !tboxRelationCardinalities.has(cardinality)) {
+      throw new Error('Relation 방향 또는 cardinality가 유효하지 않습니다.')
+    }
+    const relationIdentity = `${String(element.canonical_name).toLocaleLowerCase()}:${source}:${target}`
+    if (relationIdentities.has(relationIdentity)) throw new Error('동일한 Relation이 중복되었습니다.')
+    relationIdentities.add(relationIdentity)
+  }
+}
+
 function knowledgeDraftDisplayVersion(draft: Record<string, unknown>): number {
   const release = knowledgeReleases.find((item) => item.id === draft.published_studio_release_id)
   if (release) return Number(release.release_no)
@@ -3108,31 +3211,82 @@ class PocApiClient {
       const draftId = decodeURIComponent(tboxBlockOperationPath[1] ?? '')
       const blockId = decodeURIComponent(tboxBlockOperationPath[2] ?? '')
       const draft = knowledgeDraftById(draftId)
+      requireDraftVersion(draft, options)
       const block = (knowledgeDraftBlocks.get(draftId) ?? []).find((item) => item.id === blockId)
       if (!block) throw new Error('POC T-Box Layer를 찾을 수 없습니다.')
-      const elements = Array.isArray(block.elements) ? block.elements as Array<Record<string, unknown>> : []
+      const elements = structuredClone(
+        Array.isArray(block.elements) ? block.elements as Array<Record<string, unknown>> : [],
+      )
       const operations = jsonBody(options).operations
       for (const raw of Array.isArray(operations) ? operations : []) {
-        if (!raw || typeof raw !== 'object') continue
+        if (!raw || typeof raw !== 'object') throw new Error('T-Box 작업 형식이 유효하지 않습니다.')
         const operation = raw as Record<string, unknown>
         const stableId = responseString(operation.stable_element_id, '')
+        if (!stableId) throw new Error('T-Box 작업 stable ID가 필요합니다.')
         const index = elements.findIndex((item) => item.stable_element_id === stableId)
         if (operation.operation === 'DELETE_ELEMENT') {
           if (index >= 0) elements.splice(index, 1)
         } else if (operation.operation === 'SET_LAYOUT' && index >= 0) {
+          if (!Number.isFinite(operation.layout_x) || !Number.isFinite(operation.layout_y)) {
+            throw new Error('T-Box 위치 값이 유효하지 않습니다.')
+          }
           Object.assign(elements[index]!, { layout_x: operation.layout_x, layout_y: operation.layout_y, version: Number(elements[index]!.version) + 1 })
         } else if (operation.operation === 'UPSERT_ELEMENT' && operation.element && typeof operation.element === 'object') {
-          const value = { ...(operation.element as Record<string, unknown>), stable_element_id: stableId, ordinal: index >= 0 ? elements[index]!.ordinal : elements.length, version: index >= 0 ? Number(elements[index]!.version) + 1 : 1, block_id: blockId, locked_by_later_block: false }
+          const input = operation.element as Record<string, unknown>
+          if (input.stable_element_id !== undefined && input.stable_element_id !== stableId) {
+            throw new Error('T-Box 작업과 요소 stable ID가 일치하지 않습니다.')
+          }
+          const value = {
+            ...input,
+            aliases: Array.isArray(input.aliases) ? input.aliases : [],
+            vector_index_enabled: input.vector_index_enabled === true,
+            stable_element_id: stableId,
+            ordinal: index >= 0 ? elements[index]!.ordinal : elements.length,
+            version: index >= 0 ? Number(elements[index]!.version) + 1 : 1,
+            block_id: blockId,
+            locked_by_later_block: false,
+          }
           if (index >= 0) elements[index] = value
           else elements.push(value)
+        } else throw new Error('지원하지 않는 T-Box 작업입니다.')
+      }
+      const effectiveElements = new Map<string, Record<string, unknown>>()
+      for (const candidateBlock of [...(knowledgeDraftBlocks.get(draftId) ?? [])]
+        .sort((left, right) => (
+          Number(left.weight) - Number(right.weight)
+          || Number(left.ordinal) - Number(right.ordinal)
+        ))) {
+        const candidateElements = candidateBlock.id === blockId
+          ? elements
+          : Array.isArray(candidateBlock.elements)
+            ? candidateBlock.elements as Array<Record<string, unknown>>
+            : []
+        for (const element of candidateElements) {
+          const stableId = responseString(element.stable_element_id, '')
+          if (stableId) effectiveElements.set(stableId, element)
         }
       }
+      validateKnowledgeTBoxElements([...effectiveElements.values()])
+      const previousElements = block.elements
+      const previousBlockVersion = block.version
+      const previousBlockUpdatedAt = block.updated_at
+      const previousDraftVersion = draft.version
+      const previousDraftUpdatedAt = draft.updated_at
       block.elements = elements
       block.version = Number(block.version) + 1
       block.updated_at = new Date().toISOString()
       draft.version = Number(draft.version) + 1
       draft.updated_at = block.updated_at
-      await this.persistCore()
+      try {
+        await this.persistCore()
+      } catch (error) {
+        block.elements = previousElements
+        block.version = previousBlockVersion
+        block.updated_at = previousBlockUpdatedAt
+        draft.version = previousDraftVersion
+        draft.updated_at = previousDraftUpdatedAt
+        throw error
+      }
       return knowledgeTBox(draftId)
     }
     const tboxBlockPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/tbox\/blocks\/([^/]+)$/)

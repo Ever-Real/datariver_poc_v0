@@ -1484,6 +1484,140 @@ describe('POC live-provider compatibility adapter', () => {
     expect(reloaded.items[0]?.result_evidence_hash).toBe('a'.repeat(64))
   })
 
+  it('persists and validates the bounded K3 T-Box shape with draft fencing', async () => {
+    ;(globalThis as typeof globalThis & { __DATARIVER_POC_RUNTIME__?: Record<string, boolean> })
+      .__DATARIVER_POC_RUNTIME__ = { pocState: true }
+    let client = useStableApiClient()
+    const domain = await client.request<{ id: string; source_version: string }>('/knowledge/domains', {
+      method: 'POST', body: JSON.stringify({ display_name: 'K3 Test Domain' }),
+    })
+    const draft = await client.request<{ id: string; version: number }>('/knowledge/studio/drafts', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'K3 Test Asset',
+        endpoint_alias: 'k3_test_asset',
+        domain_id: domain.id,
+        domain_source_version: domain.source_version,
+        classification: 'INTERNAL',
+      }),
+    })
+    const initial = await client.request<{
+      blocks: Array<{ id: string }>
+    }>(`/knowledge/studio/drafts/${draft.id}/tbox`)
+    const blockId = initial.blocks[0]!.id
+    const operations = [
+      {
+        operation: 'UPSERT_ELEMENT',
+        stable_element_id: 'class:person',
+        element: {
+          stable_element_id: 'class:person', kind: 'CLASS', canonical_name: 'Person',
+          display_name: 'Person', aliases: ['Human'], vector_index_enabled: false,
+        },
+      },
+      {
+        operation: 'UPSERT_ELEMENT',
+        stable_element_id: 'class:asset',
+        element: {
+          stable_element_id: 'class:asset', kind: 'CLASS', canonical_name: 'Asset',
+          display_name: 'Asset', parent_stable_element_id: 'class:person',
+          aliases: [], vector_index_enabled: false,
+        },
+      },
+      {
+        operation: 'UPSERT_ELEMENT',
+        stable_element_id: 'relation:owns',
+        element: {
+          stable_element_id: 'relation:owns', kind: 'RELATION', canonical_name: 'OWNS',
+          display_name: 'Owns', source_stable_element_id: 'class:person',
+          target_stable_element_id: 'class:asset', direction: 'BIDIRECTED',
+          cardinality: 'MANY_TO_MANY', aliases: ['possesses'], vector_index_enabled: false,
+        },
+      },
+      {
+        operation: 'UPSERT_ELEMENT',
+        stable_element_id: 'property:owns:confidence',
+        element: {
+          stable_element_id: 'property:owns:confidence', kind: 'PROPERTY',
+          canonical_name: 'confidence', display_name: 'Confidence',
+          owner_relation_stable_element_id: 'relation:owns', data_type: 'FLOAT',
+          nullable: false, value_cardinality: 'SINGLE', unit: 'ratio',
+          aliases: [], vector_index_enabled: false,
+        },
+      },
+    ]
+    const saved = await client.request<{
+      draft: { version: number }
+      blocks: Array<{ elements: Array<Record<string, unknown>> }>
+    }>(`/knowledge/studio/drafts/${draft.id}/tbox/blocks/${blockId}/operations`, {
+      method: 'POST',
+      ifMatch: `"${draft.version}"`,
+      body: JSON.stringify({ operations }),
+    })
+    expect(saved.draft.version).toBe(2)
+    expect(saved.blocks[0]!.elements.find((item) => item.stable_element_id === 'relation:owns'))
+      .toMatchObject({ direction: 'BIDIRECTED', cardinality: 'MANY_TO_MANY' })
+
+    const layered = await client.request<{
+      draft: { version: number }
+      blocks: Array<{ id: string }>
+    }>(`/knowledge/studio/drafts/${draft.id}/tbox/blocks`, {
+      method: 'POST', body: JSON.stringify({ kind: 'DIRECT', title: 'K3 Layer 2', weight: 10 }),
+    })
+    const secondBlockId = layered.blocks.at(-1)!.id
+    const layeredSaved = await client.request<{
+      draft: { version: number }
+    }>(`/knowledge/studio/drafts/${draft.id}/tbox/blocks/${secondBlockId}/operations`, {
+      method: 'POST',
+      ifMatch: `"${layered.draft.version}"`,
+      body: JSON.stringify({
+        operations: [{
+          operation: 'UPSERT_ELEMENT',
+          stable_element_id: 'relation:layered',
+          element: {
+            stable_element_id: 'relation:layered', kind: 'RELATION',
+            canonical_name: 'LAYERED', display_name: 'Layered',
+            source_stable_element_id: 'class:person', target_stable_element_id: 'class:asset',
+            direction: 'DIRECTED', cardinality: 'ONE_TO_MANY', aliases: [],
+            vector_index_enabled: false,
+          },
+        }],
+      }),
+    })
+    expect(layeredSaved.draft.version).toBe(4)
+
+    configureKnowledgeActor('k3-reloader', 1)
+    client = useStableApiClient()
+    const reloaded = await client.request<{
+      blocks: Array<{ elements: Array<Record<string, unknown>> }>
+    }>(`/knowledge/studio/drafts/${draft.id}/tbox`)
+    expect(reloaded.blocks[0]!.elements.find((item) => (
+      item.stable_element_id === 'property:owns:confidence'
+    ))).toMatchObject({
+      owner_relation_stable_element_id: 'relation:owns',
+      data_type: 'FLOAT',
+      value_cardinality: 'SINGLE',
+      unit: 'ratio',
+    })
+
+    await expect(client.request(
+      `/knowledge/studio/drafts/${draft.id}/tbox/blocks/${blockId}/operations`,
+      { method: 'POST', ifMatch: '"3"', body: JSON.stringify({ operations }) },
+    )).rejects.toThrow('데이터가 변경되었습니다.')
+    const invalid = structuredClone(operations)
+    ;(invalid[3]!.element as Record<string, unknown>).data_type = 'EXECUTABLE'
+    await expect(client.request(
+      `/knowledge/studio/drafts/${draft.id}/tbox/blocks/${blockId}/operations`,
+      { method: 'POST', ifMatch: '"4"', body: JSON.stringify({ operations: invalid }) },
+    )).rejects.toThrow('지원하지 않는 Property 데이터 타입')
+
+    configureKnowledgeActor('k3-read-only', 1, ['knowledge.read'])
+    client = useStableApiClient()
+    await expect(client.request(
+      `/knowledge/studio/drafts/${draft.id}/tbox/blocks/${blockId}/operations`,
+      { method: 'POST', ifMatch: '"4"', body: JSON.stringify({ operations }) },
+    )).rejects.toThrow(/권한/)
+  })
+
   it('manages K2 knowledge asset lifecycle: drafts, publish constraints, edit, and archive', async () => {
     ;(globalThis as typeof globalThis & { __DATARIVER_POC_RUNTIME__?: Record<string, boolean> })
       .__DATARIVER_POC_RUNTIME__ = { pocState: true }
