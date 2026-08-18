@@ -15,9 +15,14 @@ const objects = new Map()
 let forcedClassifierResponse
 let failNeo4j
 let hideExactFromTextSearch
+let omitKnowledgeColumnUrn
+let forceKnowledgeNonTable
 let providerServer
 let pocServer
 let pocOrigin
+let providerStateStore
+const knowledgeNeo4jNodes = new Map()
+const knowledgeNeo4jEdges = new Map()
 
 async function readBody(request) {
   const chunks = []
@@ -176,7 +181,7 @@ function providerHandler(request, response) {
           urn: payload.variables.urn,
           type: 'DATASET',
           name: 'wafer_events',
-          subTypes: { typeNames: ['Table'] },
+          subTypes: { typeNames: [forceKnowledgeNonTable ? 'View' : 'Table'] },
           platform: { urn: 'urn:li:dataPlatform:postgres', name: 'postgres' },
           properties: {
             name: 'wafer_events', description: 'Live DataHub wafer evidence', created: null,
@@ -200,6 +205,10 @@ function providerHandler(request, response) {
               globalTags: { tags: [{ tag: { urn: 'urn:li:tag:identifier', name: 'identifier' } }] },
               glossaryTerms: { terms: [{ term: { urn: 'urn:li:glossaryTerm:waferId', name: 'Wafer ID' } }] },
               schemaFieldEntity: {
+                urn: omitKnowledgeColumnUrn
+                  ? null
+                  : `urn:li:schemaField:(${payload.variables.urn},wafer_id)`,
+                type: omitKnowledgeColumnUrn ? null : 'SCHEMA_FIELD',
                 globalTags: { tags: [{ tag: { urn: 'urn:li:tag:primary-key', name: 'primary-key' } }] },
                 glossaryTerms: { terms: [] },
               },
@@ -306,6 +315,34 @@ function providerHandler(request, response) {
     }
     if (url.pathname === '/db/neo4j/tx/commit') {
       if (failNeo4j) return sendJson(response, { errors: [{ code: 'Neo.ClientError.Security.Unauthorized' }] }, 401)
+      const payload = JSON.parse(body.toString('utf8'))
+      const query = payload.statements?.[0]?.statement || ''
+      const parameters = payload.statements?.[0]?.parameters || {}
+      if (query.includes('UNWIND $entities AS entity')) {
+        for (const entity of parameters.entities || []) knowledgeNeo4jNodes.set(entity.id, structuredClone(entity))
+        return sendJson(response, { errors: [], results: [{ data: [{ row: [(parameters.entities || []).length] }] }] })
+      }
+      if (query.includes('UNWIND $relations AS relationInput')) {
+        for (const relation of parameters.relations || []) {
+          knowledgeNeo4jEdges.set(
+            `${parameters.studioReleaseId}\u0000${relation.source_id}\u0000${relation.target_id}`,
+            structuredClone(relation),
+          )
+        }
+        return sendJson(response, { errors: [], results: [{ data: [{ row: [(parameters.relations || []).length] }] }] })
+      }
+      if (query.includes('WITH node.id AS identity, count(node) AS copies')) {
+        const nodes = [...knowledgeNeo4jNodes.values()].filter((node) => (
+          node.knowledge_graph_id === parameters.graphId
+          && node.knowledge_release_id === parameters.studioReleaseId
+        ))
+        return sendJson(response, { errors: [], results: [{ data: [{ row: [nodes.length, 0] }] }] })
+      }
+      if (query.includes('RETURN count(relation)')) {
+        const prefix = `${parameters.studioReleaseId}\u0000`
+        const count = [...knowledgeNeo4jEdges.keys()].filter((identity) => identity.startsWith(prefix)).length
+        return sendJson(response, { errors: [], results: [{ data: [{ row: [count] }] }] })
+      }
       return sendJson(response, { errors: [], results: [{ data: [
         { row: ['wafer', 'Wafer', 'CLASS', 'HAS_INSPECTION', 'inspection', 'Inspection', 'CLASS'] },
       ] }] })
@@ -368,15 +405,15 @@ before(async () => {
   })
   const { createPocStateStore } = await import('./poc-state-store.mjs?provider-contract-test')
   const module = await import('./poc-server.mjs?provider-contract-test')
-  const stateStore = createPocStateStore()
-  await stateStore.write('change-history-access-v1', {
+  providerStateStore = createPocStateStore()
+  await providerStateStore.write('change-history-access-v1', {
     schema_version: 1,
     active_subject_id: 'provider-test-subject',
     users: [{ subject_id: 'provider-test-subject', role: 'admin', active: true, provider_owner_refs: [] }],
     system_assignments: [],
   })
   pocServer = module.createPocServer({
-    stateStore,
+    stateStore: providerStateStore,
     authenticator: {
       async authenticate() { return { subjectId: 'provider-test-subject', tokenHash: 'f'.repeat(64) } },
       assertOrigin() {},
@@ -395,6 +432,7 @@ after(async () => {
     new Promise((resolvePromise, reject) => pocServer.close((error) => error ? reject(error) : resolvePromise())),
     new Promise((resolvePromise, reject) => providerServer.close((error) => error ? reject(error) : resolvePromise())),
   ])
+  await providerStateStore.close()
 })
 
 test('publishes only enabled flags while all provider probes pass', async () => {
@@ -1049,6 +1087,136 @@ test('reads a fixed Neo4j graph contract without accepting Cypher from the brows
   assert.equal(graph.edges[0].edge_type, 'HAS_INSPECTION')
   const arbitrary = await fetch(`${pocOrigin}/poc-api/neo4j/query`, { method: 'POST', body: '{}' })
   assert.equal(arbitrary.status, 404)
+})
+
+test('projects release-pinned DataHub Table and Column identities idempotently and fails closed', async () => {
+  const tableUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)'
+  const columnUrn = `urn:li:schemaField:(${tableUrn},wafer_id)`
+  const draftId = 'knowledge-k1-disposable-draft'
+  const graphId = 'knowledge-k1-disposable-graph'
+  const releaseId = 'knowledge-k1-disposable-release'
+  const stableElementId = 'knowledge-k1-wafer-class'
+  const coreSnapshot = await providerStateStore.read('core')
+  const accessSnapshot = await providerStateStore.read('change-history-access-v1')
+  const policySnapshot = await providerStateStore.read('feature-security-policy-v1')
+  knowledgeNeo4jNodes.clear()
+  knowledgeNeo4jEdges.clear()
+  omitKnowledgeColumnUrn = false
+  forceKnowledgeNonTable = false
+  await providerStateStore.write('core', {
+    ...(coreSnapshot.value || {}),
+    knowledgeDrafts: [{
+      id: draftId,
+      state: 'PUBLISHED',
+      materialized_graph_id: graphId,
+      published_studio_release_id: releaseId,
+    }],
+    knowledgeReleases: [{ id: releaseId, graph_id: graphId, state: 'ACTIVE' }],
+    knowledgeDraftBlocks: [[draftId, [{
+      id: 'knowledge-k1-tbox-block',
+      elements: [{ stable_element_id: stableElementId, kind: 'CLASS' }],
+    }]]],
+    knowledgeDraftBindings: [[draftId, [{
+      id: 'knowledge-k1-binding',
+      source_asset_id: tableUrn,
+      target_stable_element_id: stableElementId,
+      rules: [{ source_field_path: 'wafer_id', target_stable_element_id: stableElementId }],
+    }]]],
+  })
+  const createProjection = () => fetch(`${pocOrigin}/poc-api/knowledge/projections`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ draft_id: draftId }),
+  })
+  try {
+    const firstResponse = await createProjection()
+    assert.equal(firstResponse.status, 201, await firstResponse.clone().text())
+    const first = await firstResponse.json()
+    assert.equal(first.contract_version, 'KNOWLEDGE_PROJECTION_RECEIPT_V1')
+    assert.equal(first.studio_release_id, releaseId)
+    assert.equal(first.node_count, 2)
+    assert.equal(first.edge_count, 1)
+    assert.equal(first.duplicate_count, 0)
+    assert.deepEqual(first.provenance.map((item) => item.external_urn).sort(), [columnUrn, tableUrn].sort())
+    assert.ok(first.provenance.every((item) => item.source_type === 'DATAHUB_SYNC'))
+
+    const reloadResponse = await fetch(
+      `${pocOrigin}/poc-api/knowledge/projections?draft_id=${encodeURIComponent(draftId)}`,
+    )
+    assert.equal(reloadResponse.status, 200, await reloadResponse.clone().text())
+    const reload = await reloadResponse.json()
+    assert.equal(reload.items.length, 1)
+    assert.equal(reload.items[0].result_evidence_hash, first.result_evidence_hash)
+
+    const secondResponse = await createProjection()
+    assert.equal(secondResponse.status, 201, await secondResponse.clone().text())
+    const second = await secondResponse.json()
+    assert.equal(second.id, first.id)
+    assert.equal(second.result_evidence_hash, first.result_evidence_hash)
+    assert.equal(second.duplicate_count, 0)
+    assert.deepEqual(
+      second.provenance.map((item) => item.knowledge_entity_id).sort(),
+      first.provenance.map((item) => item.knowledge_entity_id).sort(),
+    )
+    assert.equal(knowledgeNeo4jNodes.size, 2)
+    assert.equal(knowledgeNeo4jEdges.size, 1)
+
+    const writesBeforeMissingColumn = requests.filter((item) => (
+      item.path === '/db/neo4j/tx/commit' && item.body.includes('UNWIND $entities AS entity')
+    )).length
+    omitKnowledgeColumnUrn = true
+    const missingColumnResponse = await createProjection()
+    assert.equal(missingColumnResponse.status, 409)
+    assert.equal((await missingColumnResponse.json()).code, 'KNOWLEDGE_COLUMN_IDENTITY_UNRESOLVED')
+    assert.equal(requests.filter((item) => (
+      item.path === '/db/neo4j/tx/commit' && item.body.includes('UNWIND $entities AS entity')
+    )).length, writesBeforeMissingColumn)
+    omitKnowledgeColumnUrn = false
+
+    forceKnowledgeNonTable = true
+    const nonTableResponse = await createProjection()
+    assert.equal(nonTableResponse.status, 409)
+    assert.equal((await nonTableResponse.json()).code, 'KNOWLEDGE_CURRENT_TABLE_REQUIRED')
+    forceKnowledgeNonTable = false
+
+    const allowedPolicy = approvedDefaultFeatureSecurityPolicy()
+    allowedPolicy.cells.find((cell) => (
+      cell.feature === 'knowledge' && cell.role === 'manager' && cell.grade === 'credential'
+    )).allow = true
+    await providerStateStore.write('feature-security-policy-v1', allowedPolicy)
+    await providerStateStore.write('change-history-access-v1', {
+      schema_version: 1,
+      active_subject_id: 'provider-test-subject',
+      users: [{
+        subject_id: 'provider-test-subject',
+        role: 'manager',
+        active: true,
+        max_security_grade: 'restricted',
+        provider_owner_refs: [],
+      }],
+      system_assignments: [],
+    })
+    const writesBeforeDenied = requests.filter((item) => (
+      item.path === '/db/neo4j/tx/commit' && item.body.includes('UNWIND $entities AS entity')
+    )).length
+    const deniedResponse = await createProjection()
+    assert.equal(deniedResponse.status, 403)
+    assert.equal((await deniedResponse.json()).code, 'KNOWLEDGE_TABLE_FORBIDDEN')
+    assert.equal(requests.filter((item) => (
+      item.path === '/db/neo4j/tx/commit' && item.body.includes('UNWIND $entities AS entity')
+    )).length, writesBeforeDenied)
+  } finally {
+    omitKnowledgeColumnUrn = false
+    forceKnowledgeNonTable = false
+    knowledgeNeo4jNodes.clear()
+    knowledgeNeo4jEdges.clear()
+    await providerStateStore.write('core', coreSnapshot.value || {})
+    await providerStateStore.write('change-history-access-v1', accessSnapshot.value)
+    await providerStateStore.write(
+      'feature-security-policy-v1',
+      policySnapshot.value || approvedDefaultFeatureSecurityPolicy(),
+    )
+  }
 })
 
 test('enforces request-time Table scope before counts, vector Chat and graph evidence for a non-admin', async () => {

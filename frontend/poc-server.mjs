@@ -62,6 +62,7 @@ import {
   datahubDatasetKind,
   isCurrentDatahubTable,
 } from './poc-datahub-current-table.mjs'
+import { isCanonicalDatahubDatasetUrn } from './poc-table-data-access.mjs'
 import {
   POC_FEATURE_SECURITY_POLICY_SCOPE,
   applyFeatureSecurityPolicyUpdate,
@@ -1309,6 +1310,7 @@ query DataRiverPocAsset($urn: String!) {
           globalTags { tags { tag { urn name properties { name } } } }
           glossaryTerms { terms { term { urn name } } }
           schemaFieldEntity {
+            urn type
             globalTags: tags { tags { tag { urn name properties { name } } } }
             glossaryTerms { terms { term { urn name } } }
           }
@@ -2722,6 +2724,8 @@ function datahubSchemaFields(entity) {
     const fieldEntity = base.schemaFieldEntity || {}
     return {
       fieldPath,
+      urn: fieldEntity.type === 'SCHEMA_FIELD' && typeof fieldEntity.urn === 'string' ? fieldEntity.urn : undefined,
+      entityType: fieldEntity.type === 'SCHEMA_FIELD' ? fieldEntity.type : undefined,
       label: base.label || null,
       type: base.type || null,
       nativeDataType: base.nativeDataType || null,
@@ -4482,6 +4486,347 @@ async function neo4jGraph() {
   return { nodes: [...nodes.values()], edges }
 }
 
+const knowledgeSourceIdentityContract = 'KNOWLEDGE_SOURCE_IDENTITY_V1'
+const knowledgeProjectionReceiptContract = 'KNOWLEDGE_PROJECTION_RECEIPT_V1'
+
+function knowledgeProjectionError(statusCode, code, message) {
+  return accessError(statusCode, code, message)
+}
+
+function isCanonicalDatahubSchemaFieldUrn(value, tableUrn) {
+  return typeof value === 'string'
+    && value.length <= 8192
+    && value.startsWith(`urn:li:schemaField:(${tableUrn},`)
+    && value.endsWith(')')
+}
+
+function knowledgeSourceEntityId(graphId, studioReleaseId, externalUrn) {
+  return `knowledge:${canonicalHash({
+    contract_version: knowledgeSourceIdentityContract,
+    graph_id: graphId,
+    studio_release_id: studioReleaseId,
+    external_urn: externalUrn,
+  })}`
+}
+
+function requiredKnowledgeIdentity(value, code, message) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw knowledgeProjectionError(409, code, message)
+  }
+  return value.trim()
+}
+
+async function knowledgeProjectionScope(context, draftIdValue) {
+  const draftId = requiredKnowledgeIdentity(
+    draftIdValue, 'KNOWLEDGE_DRAFT_ID_REQUIRED', 'A Knowledge Studio draft identity is required.',
+  )
+  const snapshot = await context.stateStore.read('core')
+  const core = snapshot.value && typeof snapshot.value === 'object' && !Array.isArray(snapshot.value)
+    ? snapshot.value
+    : {}
+  const draft = (Array.isArray(core.knowledgeDrafts) ? core.knowledgeDrafts : [])
+    .find((item) => item?.id === draftId)
+  if (!draft) throw knowledgeProjectionError(404, 'KNOWLEDGE_DRAFT_NOT_FOUND', 'The Knowledge Studio draft was not found.')
+  if (draft.state !== 'PUBLISHED') {
+    throw knowledgeProjectionError(409, 'KNOWLEDGE_DRAFT_NOT_PUBLISHED', 'Only a published Knowledge Studio draft can be projected.')
+  }
+  const graphId = requiredKnowledgeIdentity(
+    draft.materialized_graph_id, 'KNOWLEDGE_GRAPH_ID_REQUIRED', 'The published draft has no canonical graph identity.',
+  )
+  const studioReleaseId = requiredKnowledgeIdentity(
+    draft.published_studio_release_id,
+    'KNOWLEDGE_RELEASE_ID_REQUIRED',
+    'The published draft has no pinned Studio release identity.',
+  )
+  const release = (Array.isArray(core.knowledgeReleases) ? core.knowledgeReleases : [])
+    .find((item) => item?.id === studioReleaseId && item?.graph_id === graphId && item?.state === 'ACTIVE')
+  if (!release) {
+    throw knowledgeProjectionError(409, 'KNOWLEDGE_RELEASE_INVALID', 'The pinned active Studio release was not found.')
+  }
+  const draftBlockEntry = (Array.isArray(core.knowledgeDraftBlocks) ? core.knowledgeDraftBlocks : [])
+    .find((entry) => Array.isArray(entry) && entry[0] === draftId)
+  const targetStableElementIds = new Set(
+    (Array.isArray(draftBlockEntry?.[1]) ? draftBlockEntry[1] : [])
+      .flatMap((block) => Array.isArray(block?.elements) ? block.elements : [])
+      .map((element) => element?.stable_element_id)
+      .filter((identity) => typeof identity === 'string' && identity),
+  )
+  if (!targetStableElementIds.size) {
+    throw knowledgeProjectionError(409, 'KNOWLEDGE_TBOX_REQUIRED', 'The pinned Knowledge draft has no typed T-Box identity.')
+  }
+  const bindingEntry = (Array.isArray(core.knowledgeDraftBindings) ? core.knowledgeDraftBindings : [])
+    .find((entry) => Array.isArray(entry) && entry[0] === draftId)
+  const bindings = Array.isArray(bindingEntry?.[1]) ? bindingEntry[1] : []
+  if (!bindings.length) {
+    throw knowledgeProjectionError(409, 'KNOWLEDGE_BINDING_REQUIRED', 'At least one current Table binding is required.')
+  }
+
+  const sourceBindings = new Map()
+  for (const binding of bindings) {
+    if (!binding || typeof binding !== 'object' || Array.isArray(binding)) {
+      throw knowledgeProjectionError(409, 'KNOWLEDGE_BINDING_INVALID', 'A Knowledge binding is malformed.')
+    }
+    const tableUrn = requiredKnowledgeIdentity(
+      binding.source_asset_id, 'KNOWLEDGE_TABLE_URN_REQUIRED', 'A Knowledge binding has no Table URN.',
+    )
+    if (!isCanonicalDatahubDatasetUrn(tableUrn)) {
+      throw knowledgeProjectionError(409, 'KNOWLEDGE_TABLE_URN_INVALID', 'A Knowledge binding has a noncanonical Table URN.')
+    }
+    const targetStableElementId = requiredKnowledgeIdentity(
+      binding.target_stable_element_id,
+      'KNOWLEDGE_TARGET_ID_REQUIRED',
+      'A Knowledge binding has no stable target identity.',
+    )
+    if (!targetStableElementIds.has(targetStableElementId)) {
+      throw knowledgeProjectionError(409, 'KNOWLEDGE_TARGET_INVALID', 'A Knowledge binding targets an unknown T-Box identity.')
+    }
+    const rules = Array.isArray(binding.rules) ? binding.rules : []
+    if (!rules.length) {
+      throw knowledgeProjectionError(409, 'KNOWLEDGE_MAPPING_RULE_REQUIRED', 'A Knowledge binding has no mapping rule.')
+    }
+    const collected = sourceBindings.get(tableUrn) ?? []
+    collected.push({ targetStableElementId, rules })
+    sourceBindings.set(tableUrn, collected)
+  }
+
+  const observedAt = new Date().toISOString()
+  const entitiesById = new Map()
+  const relationsById = new Map()
+  for (const [tableUrn, tableBindings] of sourceBindings) {
+    const table = await datahubAssetAll(tableUrn)
+    if (table.dataset_kind !== 'TABLE' || !isCanonicalDatahubDatasetUrn(table.id || table.urn)) {
+      throw knowledgeProjectionError(
+        409, 'KNOWLEDGE_CURRENT_TABLE_REQUIRED', 'The bound identity is not a current canonical DataHub Table.',
+      )
+    }
+    if (!canReadAsset(context.principal, table, 'knowledge')) {
+      throw knowledgeProjectionError(403, 'KNOWLEDGE_TABLE_FORBIDDEN', 'The bound Table is outside the current Knowledge data scope.')
+    }
+    const tableId = knowledgeSourceEntityId(graphId, studioReleaseId, tableUrn)
+    const tableTargetIds = [...new Set(tableBindings.map((item) => item.targetStableElementId))].sort()
+    entitiesById.set(tableId, {
+      id: tableId,
+      name: table.name || tableUrn,
+      external_urn: tableUrn,
+      entity_kind: 'TABLE',
+      parent_table_urn: null,
+      source_type: 'DATAHUB_SYNC',
+      knowledge_graph_id: graphId,
+      knowledge_release_id: studioReleaseId,
+      knowledge_identity_contract: knowledgeSourceIdentityContract,
+      target_stable_element_ids: tableTargetIds,
+      observed_at: observedAt,
+    })
+    const fieldsByPath = new Map((Array.isArray(table.schema_fields) ? table.schema_fields : [])
+      .filter((field) => typeof field?.fieldPath === 'string' && field.fieldPath)
+      .map((field) => [field.fieldPath, field]))
+    const columnTargets = new Map()
+    for (const binding of tableBindings) {
+      for (const rule of binding.rules) {
+        const fieldPath = requiredKnowledgeIdentity(
+          rule?.source_field_path,
+          'KNOWLEDGE_SOURCE_FIELD_REQUIRED',
+          'A Knowledge mapping rule has no source field path.',
+        )
+        const field = fieldsByPath.get(fieldPath)
+        if (!field || field.entityType !== 'SCHEMA_FIELD'
+          || !isCanonicalDatahubSchemaFieldUrn(field.urn, tableUrn)) {
+          throw knowledgeProjectionError(
+            409,
+            'KNOWLEDGE_COLUMN_IDENTITY_UNRESOLVED',
+            'The mapped DataHub Column has no exact current schemaFieldEntity URN.',
+          )
+        }
+        const ruleTargetStableElementId = requiredKnowledgeIdentity(
+          rule.target_stable_element_id,
+          'KNOWLEDGE_TARGET_ID_REQUIRED',
+          'A Knowledge mapping rule has no stable target identity.',
+        )
+        if (!targetStableElementIds.has(ruleTargetStableElementId)) {
+          throw knowledgeProjectionError(409, 'KNOWLEDGE_TARGET_INVALID', 'A Knowledge mapping rule targets an unknown T-Box identity.')
+        }
+        const targets = columnTargets.get(fieldPath) ?? new Set()
+        targets.add(ruleTargetStableElementId)
+        columnTargets.set(fieldPath, targets)
+      }
+    }
+    for (const [fieldPath, targetIds] of columnTargets) {
+      const field = fieldsByPath.get(fieldPath)
+      const columnId = knowledgeSourceEntityId(graphId, studioReleaseId, field.urn)
+      entitiesById.set(columnId, {
+        id: columnId,
+        name: field.label || fieldPath,
+        external_urn: field.urn,
+        entity_kind: 'COLUMN',
+        parent_table_urn: tableUrn,
+        source_type: 'DATAHUB_SYNC',
+        knowledge_graph_id: graphId,
+        knowledge_release_id: studioReleaseId,
+        knowledge_identity_contract: knowledgeSourceIdentityContract,
+        target_stable_element_ids: [...targetIds].sort(),
+        observed_at: observedAt,
+      })
+      const relationId = `${tableId}\u0000${columnId}`
+      relationsById.set(relationId, { source_id: tableId, target_id: columnId })
+    }
+  }
+  return Object.freeze({
+    draftId,
+    graphId,
+    studioReleaseId,
+    observedAt,
+    entities: Object.freeze([...entitiesById.values()]),
+    relations: Object.freeze([...relationsById.values()]),
+  })
+}
+
+async function knowledgeProjectionAudit(scope) {
+  const nodeRows = await neo4jQuery(`
+    MATCH (node:KnowledgeSourceEntity {
+      knowledge_graph_id: $graphId,
+      knowledge_release_id: $studioReleaseId
+    })
+    WITH node.id AS identity, count(node) AS copies
+    RETURN sum(copies), sum(CASE WHEN copies > 1 THEN copies - 1 ELSE 0 END)
+  `, { graphId: scope.graphId, studioReleaseId: scope.studioReleaseId })
+  const edgeRows = await neo4jQuery(`
+    MATCH (source:KnowledgeSourceEntity)-[relation:HAS_COLUMN {
+      knowledge_release_id: $studioReleaseId
+    }]->(target:KnowledgeSourceEntity)
+    WHERE source.knowledge_graph_id = $graphId
+      AND target.knowledge_graph_id = $graphId
+      AND source.knowledge_release_id = $studioReleaseId
+      AND target.knowledge_release_id = $studioReleaseId
+    RETURN count(relation)
+  `, { graphId: scope.graphId, studioReleaseId: scope.studioReleaseId })
+  return {
+    nodeCount: Number(nodeRows[0]?.row?.[0] || 0),
+    duplicateCount: Number(nodeRows[0]?.row?.[1] || 0),
+    edgeCount: Number(edgeRows[0]?.row?.[0] || 0),
+  }
+}
+
+async function writeKnowledgeProjection(scope) {
+  await neo4jQuery(`
+    UNWIND $entities AS entity
+    MERGE (node:KnowledgeSourceEntity {id: entity.id})
+    ON CREATE SET node.created_at = $observedAt
+    SET node.name = entity.name,
+        node.external_urn = entity.external_urn,
+        node.entity_kind = entity.entity_kind,
+        node.parent_table_urn = entity.parent_table_urn,
+        node.source_type = entity.source_type,
+        node.knowledge_graph_id = entity.knowledge_graph_id,
+        node.knowledge_release_id = entity.knowledge_release_id,
+        node.knowledge_identity_contract = entity.knowledge_identity_contract,
+        node.target_stable_element_ids = entity.target_stable_element_ids,
+        node.observed_at = entity.observed_at
+    RETURN count(node)
+  `, { entities: scope.entities, observedAt: scope.observedAt })
+  if (scope.relations.length) {
+    await neo4jQuery(`
+      UNWIND $relations AS relationInput
+      MATCH (source:KnowledgeSourceEntity {id: relationInput.source_id})
+      MATCH (target:KnowledgeSourceEntity {id: relationInput.target_id})
+      MERGE (source)-[relation:HAS_COLUMN {
+        knowledge_release_id: $studioReleaseId
+      }]->(target)
+      SET relation.source_type = 'DATAHUB_SYNC',
+          relation.observed_at = $observedAt
+      RETURN count(relation)
+    `, {
+      relations: scope.relations,
+      studioReleaseId: scope.studioReleaseId,
+      observedAt: scope.observedAt,
+    })
+  }
+  return knowledgeProjectionAudit(scope)
+}
+
+function assertKnowledgeProjectionAudit(scope, audit) {
+  if (audit.duplicateCount !== 0) {
+    throw knowledgeProjectionError(409, 'KNOWLEDGE_IDENTITY_DUPLICATE', 'The Knowledge projection contains duplicate identities.')
+  }
+  if (audit.nodeCount !== scope.entities.length || audit.edgeCount !== scope.relations.length) {
+    throw knowledgeProjectionError(502, 'KNOWLEDGE_PROJECTION_INCOMPLETE', 'Neo4j does not contain the complete bounded projection.')
+  }
+}
+
+function knowledgeProjectionReceipt(scope, audit, principal) {
+  const provenance = scope.entities.map((entity) => ({
+    knowledge_entity_id: entity.id,
+    external_urn: entity.external_urn,
+    entity_kind: entity.entity_kind,
+    parent_table_urn: entity.parent_table_urn,
+    source_type: entity.source_type,
+    target_stable_element_ids: entity.target_stable_element_ids,
+  }))
+  const evidenceHash = canonicalHash({
+    contract_version: knowledgeProjectionReceiptContract,
+    graph_id: scope.graphId,
+    studio_release_id: scope.studioReleaseId,
+    node_count: audit.nodeCount,
+    edge_count: audit.edgeCount,
+    duplicate_count: audit.duplicateCount,
+    provenance,
+  })
+  return {
+    contract_version: knowledgeProjectionReceiptContract,
+    id: `knowledge-projection:${canonicalHash({
+      contract_version: knowledgeProjectionReceiptContract,
+      draft_id: scope.draftId,
+      graph_id: scope.graphId,
+      studio_release_id: scope.studioReleaseId,
+    })}`,
+    draft_id: scope.draftId,
+    graph_id: scope.graphId,
+    studio_release_id: scope.studioReleaseId,
+    requested_by: principal.subjectId,
+    state: 'SUCCESS',
+    progress_percent: 100,
+    current_stage: 'NEO4J_PROJECTION',
+    vector_target_count: 0,
+    attempt_count: 1,
+    maximum_attempts: 1,
+    result_changeset_id: null,
+    result_evidence_hash: evidenceHash,
+    error_code: null,
+    allowed_actions: [],
+    version: 1,
+    created_at: scope.observedAt,
+    updated_at: scope.observedAt,
+    started_at: scope.observedAt,
+    finished_at: scope.observedAt,
+    node_count: audit.nodeCount,
+    edge_count: audit.edgeCount,
+    duplicate_count: audit.duplicateCount,
+    provenance,
+  }
+}
+
+async function knowledgeProjectionApi(request, response, url, context) {
+  const draftId = request.method === 'GET'
+    ? boundedString(url.searchParams.get('draft_id'), 255)
+    : boundedString((await bodyJson(request)).draft_id, 255)
+  const scope = await knowledgeProjectionScope(context, draftId)
+  if (request.method === 'GET') {
+    const audit = await knowledgeProjectionAudit(scope)
+    if (audit.nodeCount > 0 || audit.edgeCount > 0 || audit.duplicateCount > 0) {
+      assertKnowledgeProjectionAudit(scope, audit)
+    }
+    const items = audit.nodeCount > 0
+      ? [knowledgeProjectionReceipt(scope, audit, context.principal)]
+      : []
+    return json(response, 200, { items, page: { limit: 100 } })
+  }
+  if (request.method !== 'POST') {
+    return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Knowledge projection supports only GET and POST.')
+  }
+  const audit = await writeKnowledgeProjection(scope)
+  assertKnowledgeProjectionAudit(scope, audit)
+  return json(response, 201, knowledgeProjectionReceipt(scope, audit, context.principal))
+}
+
 async function providerState(name, enabled, probe) {
   if (!enabled) return { name, state: 'disabled', observed_at: new Date().toISOString(), latency_ms: null, detail_code: 'NOT_CONFIGURED' }
   const started = Date.now()
@@ -5917,6 +6262,10 @@ async function api(request, response, url, context) {
     })
     return response.end(object)
   }
+  if (url.pathname === '/poc-api/knowledge/projections') {
+    return knowledgeProjectionApi(request, response, url, context)
+  }
+
   if (request.method === 'GET' && url.pathname === '/poc-api/neo4j/graph') {
     return json(response, 200, context.principal.role === 'admin' ? await neo4jGraph() : { nodes: [], edges: [] })
   }

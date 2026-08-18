@@ -347,6 +347,7 @@ let knowledgeDrafts: Array<Record<string, unknown>> = []
 let knowledgeReleases: Array<Record<string, unknown>> = []
 const knowledgeDraftBlocks = new Map<string, Array<Record<string, unknown>>>()
 const knowledgeDraftBindings = new Map<string, Array<Record<string, unknown>>>()
+let knowledgeIngestionJobs: Array<Record<string, unknown>> = []
 let governanceDocuments: GovernanceDocumentSummary[] = []
 let governanceVersions: GovernanceDocumentVersion[] = []
 let governanceReviews: GovernanceDocumentReview[] = []
@@ -399,8 +400,19 @@ function knowledgeTBox(draftId: string) {
 }
 
 function knowledgeAssetSummary(draft: Record<string, unknown>, release: Record<string, unknown>) {
-  const blocks = knowledgeDraftBlocks.get(String(draft.id)) ?? []
+  const draftId = String(draft.id)
+  const blocks = knowledgeDraftBlocks.get(draftId) ?? []
   const elements = blocks.flatMap((block) => Array.isArray(block.elements) ? block.elements as Array<Record<string, unknown>> : [])
+  const bindings = knowledgeDraftBindings.get(draftId) ?? []
+  const sources = new Set(bindings
+    .map((item) => item.source_asset_id)
+    .filter((identity) => typeof identity === 'string' && identity)).size
+  const jobs = knowledgeIngestionJobs
+    .filter((job) => job.draft_id === draftId)
+    .sort((left, right) => responseString(right.updated_at, '').localeCompare(responseString(left.updated_at, '')))
+  const latestJob = jobs[0]
+  const projectionState = latestJob?.state === 'SUCCESS' ? 'SHADOW_VERIFIED' : latestJob?.state ?? null
+
   return {
     id: draft.materialized_graph_id,
     slug: draft.endpoint_alias,
@@ -417,8 +429,9 @@ function knowledgeAssetSummary(draft: Record<string, unknown>, release: Record<s
     class_count: elements.filter((item) => item.kind === 'CLASS').length,
     property_count: elements.filter((item) => item.kind === 'PROPERTY').length,
     relationship_count: elements.filter((item) => item.kind === 'RELATION').length,
-    binding_count: 0, source_count: 0, node_count: 0, edge_count: 0,
-    projection_state: null,
+    binding_count: bindings.length, source_count: sources,
+    node_count: Number(latestJob?.node_count ?? 0), edge_count: Number(latestJob?.edge_count ?? 0),
+    projection_state: projectionState,
     created_at: draft.created_at,
     updated_at: draft.updated_at,
     version: draft.version,
@@ -1493,6 +1506,7 @@ class PocApiClient {
         if (Array.isArray(value.knowledgeDomains)) knowledgeDomains = value.knowledgeDomains as Array<Record<string, unknown>>
         if (Array.isArray(value.knowledgeDrafts)) knowledgeDrafts = value.knowledgeDrafts as Array<Record<string, unknown>>
         if (Array.isArray(value.knowledgeReleases)) knowledgeReleases = value.knowledgeReleases as Array<Record<string, unknown>>
+        if (Array.isArray(value.knowledgeIngestionJobs)) knowledgeIngestionJobs = value.knowledgeIngestionJobs as Array<Record<string, unknown>>
         if (Array.isArray(value.governanceDocuments)) governanceDocuments = value.governanceDocuments as GovernanceDocumentSummary[]
         if (Array.isArray(value.governanceVersions)) governanceVersions = value.governanceVersions as GovernanceDocumentVersion[]
         if (Array.isArray(value.governanceReviews)) governanceReviews = value.governanceReviews as GovernanceDocumentReview[]
@@ -1566,6 +1580,7 @@ class PocApiClient {
           knowledgeDomains,
           knowledgeDrafts,
           knowledgeReleases,
+          knowledgeIngestionJobs,
           knowledgeDraftBlocks: [...knowledgeDraftBlocks.entries()],
           knowledgeDraftBindings: [...knowledgeDraftBindings.entries()],
           governanceDocuments,
@@ -2984,6 +2999,40 @@ class PocApiClient {
       const draft = knowledgeDraftById(decodeURIComponent(preflightPath[1] ?? ''))
       return { status: 'PASS', valid: true, draft_version: draft.version, checked_at: new Date().toISOString(), receipt_id: crypto.randomUUID(), contract_hash: 'e'.repeat(64), evidence: [] }
     }
+    const ingestionsPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/abox\/ingestions$/)
+    if (ingestionsPath && method === 'GET') {
+      const draftId = decodeURIComponent(ingestionsPath[1] ?? '')
+      const draft = knowledgeDraftById(draftId)
+      const localItems = knowledgeIngestionJobs.filter((job) => job.draft_id === draftId)
+      if (draft.state !== 'PUBLISHED') return { items: localItems, page: { limit: 100 } }
+      const serverResponse = await gatewayRequest<{
+        items: Array<Record<string, unknown>>
+        page: { limit: number }
+      }>(`/poc-api/knowledge/projections?draft_id=${encodeURIComponent(draftId)}`, {
+        signal: options.signal,
+      })
+      const merged = new Map(localItems.map((item) => [String(item.id), item]))
+      for (const item of serverResponse.items) merged.set(String(item.id), { ...merged.get(String(item.id)), ...item })
+      return { items: [...merged.values()], page: { limit: 100 } }
+    }
+    if (ingestionsPath && method === 'POST') {
+      const draftId = decodeURIComponent(ingestionsPath[1] ?? '')
+      knowledgeDraftById(draftId)
+      const receipt = await gatewayRequest<Record<string, unknown>>(`/poc-api/knowledge/projections`, {
+        method: 'POST',
+        body: JSON.stringify({ draft_id: draftId }),
+        headers: options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : undefined,
+        signal: options.signal,
+      })
+      const { provenance: _provenance, ...persistedReceipt } = receipt
+      void _provenance
+      knowledgeIngestionJobs = [
+        persistedReceipt,
+        ...knowledgeIngestionJobs.filter((item) => item.id !== persistedReceipt.id),
+      ]
+      await this.persistCore()
+      return receipt
+    }
     const draftLifecyclePath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/(submit-review|discard|publish)$/)
     if (draftLifecyclePath && method === 'POST') {
       const draft = knowledgeDraftById(decodeURIComponent(draftLifecyclePath[1] ?? ''))
@@ -3023,7 +3072,35 @@ class PocApiClient {
       const asset = knowledgeAssetSummary(pair.draft, pair.release)
       const blocks = knowledgeDraftBlocks.get(String(pair.draft.id)) ?? []
       const elements = blocks.flatMap((block) => Array.isArray(block.elements) ? block.elements as Array<Record<string, unknown>> : [])
-      if (knowledgeRegistryPath[2] === 'detail') return { asset, schema_elements: elements.map((item) => ({ stable_element_id: item.stable_element_id, kind: item.kind, display_name: item.display_name, canonical_name: item.canonical_name, parent_stable_element_id: item.parent_stable_element_id ?? null, data_type: item.data_type ?? null, source_stable_element_id: item.source_stable_element_id ?? null, target_stable_element_id: item.target_stable_element_id ?? null })), bindings: [], projections: [] }
+      if (knowledgeRegistryPath[2] === 'detail') {
+        const bindings = knowledgeDraftBindings.get(String(pair.draft.id)) ?? []
+        const jobs = knowledgeIngestionJobs.filter((item) => item.draft_id === pair.draft.id)
+        return {
+          asset,
+          schema_elements: elements.map((item) => ({ stable_element_id: item.stable_element_id, kind: item.kind, display_name: item.display_name, canonical_name: item.canonical_name, parent_stable_element_id: item.parent_stable_element_id ?? null, data_type: item.data_type ?? null, source_stable_element_id: item.source_stable_element_id ?? null, target_stable_element_id: item.target_stable_element_id ?? null })),
+          bindings: bindings.map((binding) => ({
+            id: binding.id,
+            target_stable_element_id: binding.target_stable_element_id,
+            source_reference_id: binding.source_reference_id,
+            source_kind: 'DATAHUB_TABLE',
+            source_name: binding.source_name,
+            source_version: binding.source_version,
+            mapping_rule_count: Array.isArray(binding.rules) ? binding.rules.length : 0,
+            mapping_rules: Array.isArray(binding.rules) ? binding.rules : [],
+          })),
+          projections: jobs.map((job) => ({
+            id: job.id,
+            release_id: job.studio_release_id,
+            adapter: 'NEO4J_DATAHUB_IDENTITY_V1',
+            state: job.state === 'SUCCESS' ? 'SHADOW_VERIFIED' : job.state,
+            node_count: Number(job.node_count ?? 0),
+            edge_count: Number(job.edge_count ?? 0),
+            verified_at: job.finished_at ?? null,
+            error_code: job.error_code ?? null,
+            updated_at: job.updated_at,
+          })),
+        }
+      }
       return { items: [{ id: pair.release.id, kind: 'STUDIO_RELEASE', version_label: `T v${responseString(pair.release.release_no, '1')}`, title: responseString(pair.draft.name, 'POC knowledge asset'), status: 'ACTIVE', author_id: POC_SUBJECT_ID, author_name: 'POC User', author_email: 'poc.user@local', reviewed_by: POC_SUBJECT_ID, reviewer_name: 'POC User', reviewer_email: 'poc.user@local', published_by: POC_SUBJECT_ID, publisher_name: 'POC User', publisher_email: 'poc.user@local', created_at: pair.release.published_at, is_current: true, studio_release_id: pair.release.id, instance_release_id: null, changeset_id: null, content_hash: pair.release.contract_hash, node_count: 0, edge_count: 0 }], next_cursor: null, limit: 50 }
     }
     const graphReleasesPath = path.match(/^\/knowledge\/graphs\/([^/]+)\/releases$/)
@@ -3743,6 +3820,7 @@ export function resetPocMemory(): void {
   knowledgeDomains = []
   knowledgeDrafts = []
   knowledgeReleases = []
+  knowledgeIngestionJobs = []
   knowledgeDraftBlocks.clear()
   knowledgeDraftBindings.clear()
   governanceDocuments = []

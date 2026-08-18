@@ -75,6 +75,7 @@ function json(value: unknown) {
 }
 
 function installGatewayMock() {
+  let knowledgeProjectionReceipt: Record<string, unknown> | null = null
   let access: ChangeHistoryAccessDocument & { version: number } = {
     schema_version: 1,
     active_subject_id: 'checkpoint-admin',
@@ -246,6 +247,53 @@ function installGatewayMock() {
         updated_at: null,
         items: [],
         attempts: [],
+      }))
+    }
+    if (url.pathname === '/poc-api/knowledge/projections') {
+      if ((options?.method ?? 'GET') === 'POST') {
+        const body = JSON.parse(typeof options?.body === 'string' ? options.body : '{}') as { draft_id?: string }
+        knowledgeProjectionReceipt = {
+          contract_version: 'KNOWLEDGE_PROJECTION_RECEIPT_V1',
+          id: `knowledge-projection:${body.draft_id}`,
+          draft_id: body.draft_id,
+          graph_id: 'knowledge-k1-graph',
+          studio_release_id: 'knowledge-k1-release',
+          requested_by: 'live-test-admin',
+          state: 'SUCCESS',
+          progress_percent: 100,
+          current_stage: 'NEO4J_PROJECTION',
+          vector_target_count: 0,
+          attempt_count: 1,
+          maximum_attempts: 1,
+          result_changeset_id: null,
+          result_evidence_hash: 'a'.repeat(64),
+          error_code: null,
+          allowed_actions: [],
+          version: 1,
+          created_at: meta.observed_at,
+          updated_at: meta.observed_at,
+          started_at: meta.observed_at,
+          finished_at: meta.observed_at,
+          node_count: 2,
+          edge_count: 1,
+          duplicate_count: 0,
+          provenance: [{
+            knowledge_entity_id: 'knowledge:table',
+            external_urn: liveAssets[0]!.id,
+            entity_kind: 'TABLE',
+            parent_table_urn: null,
+            source_type: 'DATAHUB_SYNC',
+            target_stable_element_ids: ['wafer-class'],
+          }],
+        }
+        return Promise.resolve(new Response(JSON.stringify(knowledgeProjectionReceipt), {
+          status: 201,
+          headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      return Promise.resolve(json({
+        items: knowledgeProjectionReceipt ? [knowledgeProjectionReceipt] : [],
+        page: { limit: 100 },
       }))
     }
     if (/^\/poc-api\/minio\/uploads\/[^/]+\/parts\/1$/.test(url.pathname)) {
@@ -1290,6 +1338,67 @@ describe('POC live-provider compatibility adapter', () => {
     expect(draft.state).toBe('DRAFT')
     const sources = await client.request<{ items: Array<{ id: string }> }>(`/knowledge/studio/drafts/${draft.id}/tbox/catalog-sources?q=wafer`)
     expect(sources.items[0]?.id).toBe(liveAssets[0]!.id)
+  })
+
+  it('projects a published Knowledge draft through the bounded K1 gateway receipt', async () => {
+    const client = useStableApiClient()
+    const domain = await client.request<{ id: string; source_version: string }>('/knowledge/domains', {
+      method: 'POST', body: JSON.stringify({ display_name: 'K1 Disposable Domain' }),
+    })
+    const draft = await client.request<{ id: string }>('/knowledge/studio/drafts', {
+      method: 'POST',
+      body: JSON.stringify({
+        name: 'K1 Disposable Asset',
+        endpoint_alias: 'k1_disposable_asset',
+        endpoint_aliases: ['k1_disposable_asset'],
+        domain_id: domain.id,
+        domain_source_version: domain.source_version,
+        classification: 'INTERNAL',
+      }),
+    })
+    const tbox = await client.request<{
+      blocks: Array<{ id: string }>
+    }>(`/knowledge/studio/drafts/${draft.id}/tbox/blocks`, {
+      method: 'POST', body: JSON.stringify({ kind: 'DIRECT', title: 'K1 typed layer' }),
+    })
+    const blockId = tbox.blocks[0]!.id
+    await client.request(`/knowledge/studio/drafts/${draft.id}/tbox/blocks/${blockId}/operations`, {
+      method: 'POST',
+      body: JSON.stringify({ operations: [{
+        operation: 'UPSERT_ELEMENT',
+        stable_element_id: 'wafer-class',
+        element: { kind: 'CLASS', canonical_name: 'wafer', display_name: 'Wafer' },
+      }] }),
+    })
+    await client.request(`/knowledge/studio/drafts/${draft.id}/abox/bindings/wafer-class`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        source_asset_id: liveAssets[0]!.id,
+        rules: [{ source_field_path: 'wafer_id', target_stable_element_id: 'wafer-class' }],
+      }),
+    })
+    await client.request(`/knowledge/studio/drafts/${draft.id}/publish`, {
+      method: 'POST', body: JSON.stringify({ review_reason: 'K1 focused adapter verification' }),
+    })
+
+    const created = await client.request<{
+      state: string
+      node_count: number
+      duplicate_count: number
+      provenance: Array<{ source_type: string }>
+    }>(`/knowledge/studio/drafts/${draft.id}/abox/ingestions`, {
+      method: 'POST',
+      body: JSON.stringify({}),
+      idempotencyKey: 'knowledge-k1-projection',
+    })
+    expect(created).toMatchObject({ state: 'SUCCESS', node_count: 2, duplicate_count: 0 })
+    expect(created.provenance[0]?.source_type).toBe('DATAHUB_SYNC')
+
+    const reloaded = await client.request<{
+      items: Array<{ id: string; result_evidence_hash: string }>
+    }>(`/knowledge/studio/drafts/${draft.id}/abox/ingestions`)
+    expect(reloaded.items).toHaveLength(1)
+    expect(reloaded.items[0]?.result_evidence_hash).toBe('a'.repeat(64))
   })
 
   it('proxies the apply-report route to the live POC server', async () => {
