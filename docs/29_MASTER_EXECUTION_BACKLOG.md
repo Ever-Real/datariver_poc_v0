@@ -25,7 +25,7 @@ an unsafe bypass, or a historical result from another commit.
 | Created | 2026-07-23, Asia/Seoul |
 | Branch / Phase 6E entry base / current published implementation | `dev` / `dba1186` / verified by the stable publication workflow |
 | Remote comparison | `dev-publish` requires local `dev` and `origin/dev` to resolve to the same exact commit after every publication |
-| Current controlled phase | Product `cc15ebce4181ad7a72dae641eb52d4696ab8e686`: completed baselines remain verified; pre-K7 Main Chat Graph is bounded to authorized DataHub lineage for every role and General answers without metadata retrieval. Chat stays PARTIAL for actual fallback execution and K7 Knowledge Asset routing. Knowledge K1 remains frozen complete and K2 Registry/Asset/version lifecycle is next; Registration durability and GX assertion egress remain held/blocked as named. |
+| Current controlled phase | Product `68af3d5895a9ee553bff94e17c7a7d6cea47704a`: completed baselines remain verified; Chat Router and Knowledge K1 remain frozen. Knowledge K2 Registry/Asset/version passed actual browser lifecycle through Draft save/reload, independent publish, Active→new Draft, history, archive and authorization negatives. Knowledge overall stays `PARTIAL`; K3 is next and K4+ are not started. Registration durability and GX assertion egress remain held/blocked as named. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## 2026-08-16 Node POC Account/Auth execution
@@ -42,7 +42,7 @@ local credential / opaque server session
 → feature operation
 ```
 
-Current Product boundary `cc15ebce4181ad7a72dae641eb52d4696ab8e686` preserves the PHASE 1D-R
+Current Product boundary `68af3d5895a9ee553bff94e17c7a7d6cea47704a` preserves the PHASE 1D-R
 baseline and is validated through `.orchestration/evidence/DEV-MCL-RUNTIME-AUTOMATIC-DETECTION.md`,
 `.orchestration/evidence/DEV-PHASE1D-R-DETERMINISTIC-RESTART.md` and the preceding PHASE 1D
 evidence. The current Registration/support-service acceptance is recorded in
@@ -58,6 +58,8 @@ The canonical menu, Registration role boundary and Knowledge K0 audit are record
 `.orchestration/evidence/DEV-MENU-REGISTRATION-KNOWLEDGE-K0-RUNTIME.md`.
 Knowledge K1 exact identity/provenance is recorded in
 `.orchestration/evidence/DEV-KNOWLEDGE-K1-IDENTITY-PROVENANCE-RUNTIME.md`.
+Knowledge K2 Registry/Asset/version runtime is recorded in
+`.orchestration/evidence/DEV-KNOWLEDGE-K2-REGISTRY-VERSION-RUNTIME.md`.
 The preceding PHASE 1A runtime evidence is commit
 `8c1f93a456d0fe51e46987b72d66f563f6467d73`. These local commits have not been published;
 `origin/dev` remains `ef41447a1d470119c1a83280e261d4be411354ef` until a future G1/G2 approval.
@@ -98,7 +100,7 @@ services remain technical detail rather than a top-level Product menu.
 | 5 | 등록관리 | mutation data_steward/admin only; provider apply/durability `PARTIAL` |
 | 6 | 거버넌스 — 정책·표준 문서 관리 | bounded read/create/DRAFT-update/archive complete |
 | 7 | Chat | General/Vector/AUTO and pre-K7 DataHub-lineage Graph complete; fallback execution/K7 partial |
-| 8 | 지식관리 | K0 audit complete; K1 exact identity/provenance runtime complete; K2 Registry/Asset/version lifecycle next |
+| 8 | 지식관리 | K0 audit, K1 exact identity/provenance and K2 Registry/Asset/version runtime complete; K3 T-Box next |
 | 9 | 품질관리 | `USER_FEATURE_DEFINITION_REQUIRED`; GX technical gate separate |
 | — | 기술 Backlog | support services, deployment and target gates |
 
@@ -114,8 +116,21 @@ Knowledge code is a reusable design source, not current runtime proof. Product `
 closes K1 only: exact provider Table/Column URNs are pinned to graph/release-scoped deterministic
 Knowledge identities and written through a fixed parameterized Neo4j projection. Actual browser
 E2E produced 2 nodes, 1 edge and duplicate 0 after rerun, exact `DATAHUB_SYNC` provenance and
-no-grant 403. Non-Admin unrelated graph remains fail-closed. K2 lifecycle, Knowledge Chat, Main Chat,
-MCP and default system assets remain separate later slices.
+no-grant 403. Non-Admin unrelated graph remains fail-closed. Product `68af3d58...` closes K2 only:
+the Registry renders the exact eight user columns and actual browser E2E passed create, Draft
+save/reload, authenticated actor display, independent publish, one Active maximum, Active→new Draft,
+history, soft archive, Chat exclusion and Viewer/direct-route negatives. K3 through K9 remain
+separate later slices. The current legacy Knowledge classification labels are tracked as
+`KNOWLEDGE_SECURITY_GRADE_CANONICAL_REALIGNMENT`; K2 did not silently migrate them.
+
+### Knowledge K2 audit/backlog receipts
+
+| ID | Status | Current decision |
+|---|---|---|
+| `NODE_TEST_COUNT_108_TO_107_RECONCILIATION` | `CLOSED_AUDIT` | Same twelve-file script, no skip/TODO; Product `601a7ec...` consolidated two obsolete Graph contracts into one stronger DataHub-lineage-only/no-generic-Neo4j test. |
+| `NODE_PROVIDER_PROBE_PARALLEL_FLAKINESS` | `BACKLOG_NON_BLOCKING` | Two parallel-only `ECONNRESET` receipts; focused and serialized runs pass. No test framework/provider redesign. |
+| `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS` | `BACKLOG_NON_BLOCKING` | Stable current evidence is the 87-file single-worker suite; address only as a small independent test slice. |
+| `KNOWLEDGE_SECURITY_GRADE_CANONICAL_REALIGNMENT` | `BACKLOG_RISK` | Replace the legacy Knowledge classification vocabulary with the canonical `normal < credential < restricted` boundary in an explicit bounded slice; do not infer or hardcode a migration. |
 
 ## 2026-08-17 Product priority realignment
 
@@ -131,7 +146,7 @@ Korean dashboard use this user-facing order:
 | P4 | Registration | Authorization/preparation, manual-metadata apply, one READY candidate-to-governed-CR command and authoritative `NOT_STARTED` apply-report `COMPLETE_RUNTIME_VERIFIED`; mutation roles are data_steward/admin only; overall `PARTIAL` for durable preparation/outbox/provider-apply, remaining typed surfaces and target gates; accepted minimal relational direction awaits schema approval |
 | P5 | Governance — policy/standard documents | `COMPLETE_RUNTIME_VERIFIED` for active-user read and data_steward/manager/admin create, DRAFT-version update and archive; viewer/developer mutation denied |
 | P6 | Chat | General/Vector/AUTO and the pre-K7 DataHub-lineage-only Graph boundary are runtime-verified; actual fallback execution and K7 authorized Knowledge routing remain `PARTIAL` |
-| P7 | Knowledge / Quality | Knowledge K0 audited and K1 exact identity/provenance runtime-verified; K2 Registry/Asset/version next. Quality remains `USER_FEATURE_DEFINITION_REQUIRED` |
+| P7 | Knowledge / Quality | Knowledge K0, K1 and K2 Registry/Asset/version are runtime-verified; K3 T-Box is next and K4+ remain unopened. Quality remains `USER_FEATURE_DEFINITION_REQUIRED` |
 | P8 | Admin | Minimum controls required by real features only; no generic IAM/configuration console |
 
 Controlled execution DAG:

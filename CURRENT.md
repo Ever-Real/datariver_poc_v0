@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `cc15ebce4181ad7a72dae641eb52d4696ab8e686`
-- Deployed OCI revision: `cc15ebce4181ad7a72dae641eb52d4696ab8e686`
+- Current Product SHA: `68af3d5895a9ee553bff94e17c7a7d6cea47704a`
+- Deployed OCI revision: `68af3d5895a9ee553bff94e17c7a7d6cea47704a`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -46,6 +46,8 @@
   `cc15ebce4181ad7a72dae641eb52d4696ab8e686`
 - Knowledge K1 exact identity/provenance Product:
   `afb95a45c45ae065223faa39c53278884c935f37`
+- Knowledge K2 Registry/Asset/Version Product:
+  `68af3d5895a9ee553bff94e17c7a7d6cea47704a`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -115,8 +117,14 @@
   projection, and revalidates current Knowledge Table scope before every write. One actual browser
   Asset lifecycle produced 2 nodes, 1 edge and duplicate 0 after rerun; exact `DATAHUB_SYNC`
   provenance and no-grant 403 were verified. Knowledge overall remains `PARTIAL`; K2 Registry/
-  Asset/version lifecycle is next, while Knowledge Chat, Main Chat routing, MCP and default system
-  assets remain unstarted.
+  Asset/version lifecycle is now also `COMPLETE_RUNTIME_VERIFIED`, while K3 through K9 remain
+  separate later slices.
+- Knowledge K2 Registry/Asset/Version: `COMPLETE_RUNTIME_VERIFIED` for the current Node lifecycle.
+  Exact list columns, meaningful empty/read-only state, authenticated creator/editor, ETag/CAS
+  Draft save/reload, independent review publication, one Active maximum, Active→new Draft edit,
+  immutable history and soft archive passed actual browser E2E. The archived disposable Asset is
+  excluded from Knowledge Chat and direct mutation UI is denied to a Viewer. Knowledge overall
+  remains `PARTIAL`; K3 T-Box is the next Product slice and K4 through K9 were not started.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
@@ -134,7 +142,7 @@
 5  등록관리                                → steward/admin only; overall PARTIAL
 6  거버넌스 — 정책·표준 문서 관리          → bounded CRUD/archive complete
 7  Chat                                    → General/Vector/AUTO and pre-K7 DataHub lineage complete; fallback/K7 partial
-8  지식관리                                → K0 audited; K1 runtime complete; K2 Registry/version next
+8  지식관리                                → K0/K1/K2 runtime complete; K3 T-Box next
 9  품질관리                                → USER_FEATURE_DEFINITION_REQUIRED
 기술 Backlog                              → support/deployment details only
 ```
@@ -187,14 +195,15 @@ local credential + opaque server session
 ## Fresh validation
 
 - Current Product and deployed OCI are the exact same 40-character revision
-  `cc15ebce4181ad7a72dae641eb52d4696ab8e686`. A fresh independent Node POC Validator using Gemini
-  3.1 Pro High (High) returned `PASS` after recording the exact worktree/branch/HEAD, Node POC
-  authority, `/healthz=ok`, exact OCI equality and rerunning provider 21/21 plus Chat UI 22/22.
-  Legacy FastAPI and secret-bearing environment dumps were not used.
+  `68af3d5895a9ee553bff94e17c7a7d6cea47704a`. A fresh independent Gemini 3.1 Pro High (High)
+  Node POC Validator returned `PASS` after safe label-only OCI inspection, canonical `/healthz`,
+  current-source K2 contract review and Node 107/107. The earlier validator dispatch that attempted
+  full `docker inspect` was fenced and discarded. Legacy FastAPI and secret-bearing environment
+  dumps are not accepted.
 - Node POC full stable serialized suite: 107/107 PASS. Two default-concurrency runs hit an isolated
   safe provider-capability `ECONNRESET`; the exact test passed alone and failed parallel results
   were rejected.
-- Frontend full suite: 87 files, 607/607 PASS on the final single-worker rerun. Four movable
+- Frontend full suite: 87 files, 610/610 PASS on the final single-worker rerun. Four movable
   parallel navigation/timeout failures are recorded as `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS`;
   parallel partial results were rejected and are not completion evidence.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and
@@ -381,6 +390,28 @@ local credential + opaque server session
   `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS`; the final current-source single-worker suite is 600/600.
 - Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K1-IDENTITY-PROVENANCE-RUNTIME.md`.
 
+## Knowledge K2 Registry / Asset / Version
+
+- Product `68af3d58...` groups Drafts and releases under the canonical Asset identity and renders
+  exactly `No / 지식그래프명 / Version+badge / 설명 / 최근 수정일 / 생성자 / 최근 수정자 / 편집`.
+- Actual browser E2E passed create, Draft save, hard reload, authenticated creator/editor,
+  independent publish, `v1 ACTIVE`, Active edit to `v2 DRAFT` while preserving v1, version history,
+  soft archive, Viewer read-only/direct-route negatives and desktop/mobile presentation.
+- Archived Assets are excluded from Knowledge Chat. The disposable K2 evidence Asset remains
+  archived history; K1 evidence and Neo4j projection were not changed.
+- All exact disposable reviewer/viewer sessions are revoked and subjects inactive. Inspection
+  Admin remains active/login-enabled/admin/restricted with failed attempts 0 and no lock; validation
+  cleanup did not change its credential.
+- Node 108→107 is a reconciled normal inventory change: Product `601a7ec...` consolidated two
+  pre-K7 Graph tests into one stricter DataHub-lineage-only/no-generic-Neo4j assertion. The same
+  twelve-file script has no skip/TODO. Two parallel-only provider resets are tracked as
+  `NODE_PROVIDER_PROBE_PARALLEL_FLAKINESS`; focused and serialized runs pass and K2 is not blocked.
+- The current Knowledge Studio grade vocabulary still uses legacy
+  `PUBLIC/INTERNAL/CONFIDENTIAL/RESTRICTED` labels. Canonical DataRiver grade UX/enforcement
+  alignment is tracked as `KNOWLEDGE_SECURITY_GRADE_CANONICAL_REALIGNMENT`; no silent migration was
+  included in K2.
+- Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K2-REGISTRY-VERSION-RUNTIME.md`.
+
 ## Post-K1 Quality tab parity
 
 - Product `8dc782a6...` reuses the existing Governance primary-tab classes for the three Quality top
@@ -398,6 +429,10 @@ local credential + opaque server session
   summary content. Before Product mutation, map the current component and independent Monitoring
   route consumers so the existing server projection remains single-source and no duplicate client
   state/API is introduced. The user explicitly requested backlog-only treatment for now.
+- `NODE_PROVIDER_PROBE_PARALLEL_FLAKINESS`: two provider capability probes can reset only under
+  parallel execution; focused/serialized evidence passes. Do not redesign tests/providers for it.
+- `KNOWLEDGE_SECURITY_GRADE_CANONICAL_REALIGNMENT`: align Knowledge Asset classification UX and
+  request-time enforcement with `normal < credential < restricted` in a bounded future slice.
 
 ## MCL runtime / automatic detection
 
@@ -428,10 +463,10 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `8dc782a6...`; do not start PHASE 1E/1F, migration, legacy
-  deletion, GX/Quality Product mutation or another Account/Auth refactor. Knowledge K1 is closed;
-  the next single step is the bounded Chat Router audit before K2 Registry/Asset/version lifecycle
-  with browser acceptance. The
+- Current boundary: preserve Product `68af3d58...`; do not start PHASE 1E/1F, migration, legacy
+  deletion, GX/Quality Product mutation or another Account/Auth refactor. Knowledge K1 and Chat
+  Router remain frozen; K2 Registry/Asset/version is closed with browser acceptance. The next
+  proposed Product slice is bounded K3 T-Box UX, without starting K4+. The
   durability/outbox/provider-apply gap has a read-only recommendation and still requires
   `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION` before a schema/apply mutation. Governance document
   read/create/update/archive is complete; GX requires exact PREP/OPS contract evidence; Chat

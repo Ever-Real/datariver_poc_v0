@@ -1,7 +1,7 @@
 # DataRiver 현재 제품 우선순위
 
 기준 Product SHA와 배포 OCI revision은
-`78448566c9cb461bacafa0afc425572d4fefd0ad`로 일치한다. authoritative runtime은 Node POC이며
+`68af3d5895a9ee553bff94e17c7a7d6cea47704a`로 일치한다. authoritative runtime은 Node POC이며
 DEV Web은 `http://127.0.0.1:39083`에서 healthy다. 아래 상태는 현재 source/runtime 근거이며
 PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
@@ -39,7 +39,7 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
 - 현재 상태: auth/preparation/manual apply/candidate-to-CR/apply-report slice `COMPLETE_RUNTIME_VERIFIED`;
   전체 `PARTIAL`.
-- 완료: data_steward/manager/admin role gate, current TABLE + grant + grade + fixed Registration
+- 완료: data_steward/admin mutation role gate, Manager read-only history, current TABLE + grant + grade + fixed Registration
   policy + Responsible System AND, owner isolation, 404 hiding, count/receipt authorization 후 계산,
   request-time grant/mapping 철회, MinIO→preparation→Airflow callback→READY→candidate 실제 E2E,
   sparse empty manual metadata와 실제 description apply receipt, READY candidate→서버 작성 CR
@@ -63,31 +63,34 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
 ## 5. 거버넌스 — 정책·표준 문서 등록 및 관리
 
-- 현재 상태: 조회 기준선 유지, mutation policy `HOLD`.
-- 완료: 모든 active user 메뉴 read와 기존 coarse state/source 감사.
-- 남은 작업: 정책·표준 문서 생성/수정/삭제 가능 역할 확정 및 최소 feature-level enforcement.
+- 현재 상태: `COMPLETE_RUNTIME_VERIFIED`.
+- 완료: 모든 active user read와 data_steward/manager/admin create, DRAFT update, archive; viewer/developer mutation 403.
+- 남은 작업: 추가 검색·workflow는 명시적 사용자 요구가 있을 때만 별도 정의.
 - 왜 필요한가: 조직의 최신 정책·표준을 등록하고 조회하기 위해 필요하다.
-- 다음 작업: `HOLD_GOVERNANCE_DOCUMENT_MUTATION_POLICY` 결정 후 기존 state에 최소 연결.
-- 진행을 막는 문제: 정확한 manage-role Source of Truth 부재. 문서를 Table에 억지로 연결하거나
-  generic resource ACL을 만들지 않는다.
+- 다음 작업: 현재 완료 기준선을 유지한다.
+- 진행을 막는 문제: 없음. 문서를 Table에 억지로 연결하거나 generic resource ACL을 만들지 않는다.
 
 ## 6. Chat / 검색
 
-- 현재 상태: General/Vector/AUTO `COMPLETE_RUNTIME_VERIFIED`; Graph `PARTIAL`.
+- 현재 상태: General/Vector/AUTO와 pre-K7 DataHub-lineage Graph `COMPLETE_RUNTIME_VERIFIED`;
+  actual fallback 실행과 K7 Knowledge routing은 `PARTIAL`.
 - 완료: provider/embedding/reranker, authorized URN pre-ranking, authorized route/context/citation,
   empty scope `NO_LIVE_EVIDENCE`, General Chat의 metadata 비강제.
-- 남은 작업: Graph exact DataHub Table URN provenance, provider traversal/total leakage audit,
-  bounded latency/refinement.
-- 다음 작업: 현재 verified path를 유지하고 Graph identity는 Knowledge provenance 단계에서 해결.
-- 진행을 막는 문제: Neo4j canonical identity bridge 부재.
+- 남은 작업: actual unresolved-lineage fallback, K7 authorized Knowledge Asset routing,
+  provider traversal/total leakage와 bounded latency/refinement.
+- 다음 작업: 현재 verified path를 유지하고 K2~K6 이후 K7 bounded usage profile에서만 Knowledge를 연결.
+- 진행을 막는 문제: Knowledge route는 K7 dependency이며 현재 pre-K7 Chat을 막지 않는다.
 
-## 7. 지식관리 — 사용자 추가 기능 정의 대기
+## 7. 지식관리
 
-- 현재 상태: `USER_FEATURE_DEFINITION_REQUIRED`.
-- 완료: 기존 Registry/Studio/UI/API/PostgreSQL/Neo4j/DataHub 구상은 canonical PRD에 유지.
-- 남은 작업: 목적, CRUD, provenance, deterministic/LLM enricher의 사용자 범위 결정.
-- 다음 작업: 정의 전 Product 코드 확대 금지.
-- 진행을 막는 문제: exact Neo4j Table identity 미입증; non-Admin Graph fail-closed 유지.
+- 현재 상태: `PARTIAL`; K0/K1/K2 `COMPLETE_RUNTIME_VERIFIED`.
+- 완료: source/runtime audit, exact Table/Column URN identity/provenance, fixed Neo4j projection,
+  Registry의 정확한 8개 컬럼, Draft save/reload, authenticated actor, independent publish,
+  Active→new Draft, history, soft archive, Viewer/direct-route negative와 desktop/mobile E2E.
+- 남은 작업: K3 T-Box, K4 source proposal, K5 A-Box, K6 Knowledge Chat, K7 Main Chat, K8 MCP,
+  K9 Default Assets. Legacy Knowledge grade vocabulary realignment도 별도 bounded risk다.
+- 다음 작업: K1/Chat Router를 열지 않고 K3 T-Box 단일 slice를 제안한다.
+- 진행을 막는 문제: Knowledge 전체는 `PARTIAL`; K3+는 아직 시작하지 않았다.
 
 ## 8. 품질관리 — 사용자 추가 기능 정의 대기 / GX 준비
 
@@ -120,7 +123,6 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 |---|---|---|---|
 | `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION` | preparation receipt/candidate/outbox/apply의 최소 durable schema·retention·소유권 결정 | 근거 없이 table/queue/worker를 만들면 두 번째 workflow가 됨 | GX/Governance/Chat read-only, 기존 Registration 회귀검증 |
 | `GX_CANONICAL_RUNTIME_CONTRACT_REQUIRED` | 최근 PREP/OPS의 exact result→DataHub Assertion egress 계약 또는 사용자 기능범위 제공 | 임의 egress는 Quality architecture와 provider identity를 새로 만들 위험 | Registration 후속 계약 audit, Governance/Chat read-only |
-| `HOLD_GOVERNANCE_DOCUMENT_MUTATION_POLICY` | 정책·표준 문서 생성/수정/삭제 역할 확정 | 임의 정책은 과도하거나 부족한 권한이 됨 | active-user read 유지, Chat/문서/backlog audit |
 | `HOLD_G1_G2_NOT_APPROVED` | merge/push/DEV publication | 원격 계보 변경 | 로컬 DEV 검증과 문서화 |
 | `HOLD_PREP_G3` | PREP mutation/acceptance | 준비 환경 상태 변경 | DEV/read-only discovery |
 | `HOLD_OPS_G4` | OPS mutation/acceptance | 운영 영향 | DEV/read-only discovery |
@@ -128,8 +130,8 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 ## 기술 상태 요약
 
 ```text
-Product / deployed OCI 78448566c9cb461bacafa0afc425572d4fefd0ad
-Node POC tests        106 / 106 PASS
-Frontend tests        87 files, 594 / 594 PASS
+Product / deployed OCI 68af3d5895a9ee553bff94e17c7a7d6cea47704a
+Node POC tests        107 / 107 PASS
+Frontend tests        87 files, 610 / 610 PASS
 new tables/dependencies/services/containers/queues/workers/frameworks/capabilities = 0
 ```
