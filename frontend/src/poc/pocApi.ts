@@ -81,6 +81,7 @@ function runtimeFlags(): PocRuntimeFlags {
 
 let presentationAuthorization: PocAuthorization | undefined
 let presentationBoundary = ''
+let presentationSubjectId = POC_SUBJECT_ID
 
 export function configurePocAuthorization(
   authorization: PocAuthorization | undefined,
@@ -90,6 +91,9 @@ export function configurePocAuthorization(
     presentationBoundary = boundary
     resetPocMemory()
   }
+  presentationSubjectId = authorization && boundary.split('|')[0]
+    ? boundary.split('|')[0]!
+    : POC_SUBJECT_ID
   presentationAuthorization = authorization
     ? structuredClone(authorization)
     : undefined
@@ -2784,7 +2788,7 @@ class PocApiClient {
       if (!displayName) throw new Error('Domain 표시명이 필요합니다.')
       const domain = {
         id: crypto.randomUUID(), display_name: displayName, source_version: 'd'.repeat(64),
-        created_by: POC_SUBJECT_ID, creator_display_name: 'POC User', creator_email: 'poc.user@local',
+        created_by: presentationSubjectId, creator_display_name: 'POC User', creator_email: 'poc.user@local',
         asset_count: 0, lifecycle: 'ACTIVE', version: 1, created_at: now, updated_at: now, managed: true,
       }
       knowledgeDomains = [...knowledgeDomains, domain]
@@ -2822,7 +2826,7 @@ class PocApiClient {
       if (existing) return existing
       const now = new Date().toISOString()
       const draft = {
-        ...source, id: crypto.randomUUID(), author_id: POC_SUBJECT_ID, kind: 'EDIT', state: 'DRAFT',
+        ...source, id: crypto.randomUUID(), author_id: presentationSubjectId, kind: 'EDIT', state: 'DRAFT',
         current_step: 'TBOX', last_autosaved_at: now, version: 1, created_at: now, updated_at: now,
         reviewed_by: undefined, reviewed_at: undefined, review_reason: undefined,
         published_by: undefined, published_at: undefined, published_studio_release_id: undefined,
@@ -2852,7 +2856,7 @@ class PocApiClient {
       if (!domain) throw new Error('활성 Knowledge Domain을 선택하세요.')
       const now = new Date().toISOString()
       const draft = {
-        id: crypto.randomUUID(), author_id: POC_SUBJECT_ID, kind: 'CREATE', state: 'DRAFT', current_step: 'BASIC',
+        id: crypto.randomUUID(), author_id: presentationSubjectId, kind: 'CREATE', state: 'DRAFT', current_step: 'BASIC',
         name: responseString(body.name, '').trim(), endpoint_alias: responseString(body.endpoint_alias, '').trim(),
         endpoint_aliases: Array.isArray(body.endpoint_aliases) ? body.endpoint_aliases : [body.endpoint_alias],
         domain_id: body.domain_id, domain_source_version: body.domain_source_version,
@@ -3078,8 +3082,8 @@ class PocApiClient {
         return draft
       }
       const graphId = responseString(draft.materialized_graph_id, crypto.randomUUID())
-      const release = { id: crypto.randomUUID(), graph_id: graphId, ontology_version_id: crypto.randomUUID(), release_no: 1, state: 'ACTIVE', contract_version: 'KNOWLEDGE_STUDIO_RELEASE_V1', contract_hash: 'f'.repeat(64), tbox_hash: 'a'.repeat(64), abox_hash: 'b'.repeat(64), reviewed_by: POC_SUBJECT_ID, published_by: POC_SUBJECT_ID, published_at: now }
-      Object.assign(draft, { state: 'PUBLISHED', reviewed_by: POC_SUBJECT_ID, reviewed_at: now, review_reason: responseString(jsonBody(options).review_reason, 'POC open review'), published_by: POC_SUBJECT_ID, published_at: now, materialized_graph_id: graphId, materialized_ontology_version_id: release.ontology_version_id, published_studio_release_id: release.id })
+      const release = { id: crypto.randomUUID(), graph_id: graphId, ontology_version_id: crypto.randomUUID(), release_no: 1, state: 'ACTIVE', contract_version: 'KNOWLEDGE_STUDIO_RELEASE_V1', contract_hash: 'f'.repeat(64), tbox_hash: 'a'.repeat(64), abox_hash: 'b'.repeat(64), reviewed_by: presentationSubjectId, published_by: presentationSubjectId, published_at: now }
+      Object.assign(draft, { state: 'PUBLISHED', reviewed_by: presentationSubjectId, reviewed_at: now, review_reason: responseString(jsonBody(options).review_reason, 'POC open review'), published_by: presentationSubjectId, published_at: now, materialized_graph_id: graphId, materialized_ontology_version_id: release.ontology_version_id, published_studio_release_id: release.id })
       knowledgeReleases = [...knowledgeReleases, release]
       await this.persistCore()
       return { draft, release }
@@ -3088,7 +3092,7 @@ class PocApiClient {
       const release = knowledgeReleases.find((item) => item.id === draft.published_studio_release_id)
       return release ? [{ draft, release }] : []
     })
-    if (path === '/knowledge/graphs') return publishedPairs.map(({ draft, release }) => ({ id: draft.materialized_graph_id, slug: draft.endpoint_alias, name: draft.name, graph_type: 'CURATED_KNOWLEDGE', status: 'ACTIVE', classification: draft.classification, domain_id: draft.domain_id, domain_source_version: draft.domain_source_version, domain_name: knowledgeDomains.find((item) => item.id === draft.domain_id)?.display_name, active_release_id: release.id, created_by: POC_SUBJECT_ID, updated_by: POC_SUBJECT_ID, created_at: draft.created_at, updated_at: draft.updated_at, version: draft.version }))
+    if (path === '/knowledge/graphs') return publishedPairs.map(({ draft, release }) => ({ id: draft.materialized_graph_id, slug: draft.endpoint_alias, name: draft.name, graph_type: 'CURATED_KNOWLEDGE', status: 'ACTIVE', classification: draft.classification, domain_id: draft.domain_id, domain_source_version: draft.domain_source_version, domain_name: knowledgeDomains.find((item) => item.id === draft.domain_id)?.display_name, active_release_id: release.id, created_by: draft.author_id, updated_by: draft.published_by, created_at: draft.created_at, updated_at: draft.updated_at, version: draft.version }))
     if (path === '/knowledge/registry/assets') return { items: publishedPairs.map(({ draft, release }) => knowledgeAssetSummary(draft, release)), next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) }
     const knowledgeRegistryPath = path.match(/^\/knowledge\/registry\/assets\/([^/]+)\/(detail|versions)$/)
     if (knowledgeRegistryPath) {
@@ -3127,7 +3131,7 @@ class PocApiClient {
           })),
         }
       }
-      return { items: [{ id: pair.release.id, kind: 'STUDIO_RELEASE', version_label: `T v${responseString(pair.release.release_no, '1')}`, title: responseString(pair.draft.name, 'POC knowledge asset'), status: 'ACTIVE', author_id: POC_SUBJECT_ID, author_name: 'POC User', author_email: 'poc.user@local', reviewed_by: POC_SUBJECT_ID, reviewer_name: 'POC User', reviewer_email: 'poc.user@local', published_by: POC_SUBJECT_ID, publisher_name: 'POC User', publisher_email: 'poc.user@local', created_at: pair.release.published_at, is_current: true, studio_release_id: pair.release.id, instance_release_id: null, changeset_id: null, content_hash: pair.release.contract_hash, node_count: 0, edge_count: 0 }], next_cursor: null, limit: 50 }
+      return { items: [{ id: pair.release.id, kind: 'STUDIO_RELEASE', version_label: `T v${responseString(pair.release.release_no, '1')}`, title: responseString(pair.draft.name, 'POC knowledge asset'), status: 'ACTIVE', author_id: pair.draft.author_id, author_name: 'POC User', author_email: 'poc.user@local', reviewed_by: pair.release.reviewed_by, reviewer_name: 'POC User', reviewer_email: 'poc.user@local', published_by: pair.release.published_by, publisher_name: 'POC User', publisher_email: 'poc.user@local', created_at: pair.release.published_at, is_current: true, studio_release_id: pair.release.id, instance_release_id: null, changeset_id: null, content_hash: pair.release.contract_hash, node_count: 0, edge_count: 0 }], next_cursor: null, limit: 50 }
     }
     const graphReleasesPath = path.match(/^\/knowledge\/graphs\/([^/]+)\/releases$/)
     if (graphReleasesPath) {

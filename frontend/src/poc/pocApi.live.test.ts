@@ -1331,7 +1331,7 @@ describe('POC live-provider compatibility adapter', () => {
     const domain = await client.request<{ id: string; source_version: string }>('/knowledge/domains', {
       method: 'POST', body: JSON.stringify({ display_name: 'Manufacturing' }),
     })
-    const draft = await client.request<{ id: string; state: string }>('/knowledge/studio/drafts', {
+    const draft = await client.request<{ id: string; state: string; author_id: string }>('/knowledge/studio/drafts', {
       method: 'POST',
       body: JSON.stringify({
         name: 'Manufacturing ontology', endpoint_alias: 'manufacturing_ontology',
@@ -1340,6 +1340,7 @@ describe('POC live-provider compatibility adapter', () => {
       }),
     })
     expect(draft.state).toBe('DRAFT')
+    expect(draft.author_id).toBe('live-test-admin')
     const tbox = await client.request<{ blocks: Array<{ kind: string }> }>(
       `/knowledge/studio/drafts/${draft.id}/tbox`,
     )
