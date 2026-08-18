@@ -1324,6 +1324,10 @@ describe('POC live-provider compatibility adapter', () => {
   it('creates Knowledge Studio state only from user input and live DataHub sources', async () => {
     const client = useStableApiClient()
     expect((await client.request<{ items: unknown[] }>('/knowledge/domains')).items).toEqual([])
+    await expect(client.request('/knowledge/studio/drafts/resumable?endpoint_alias=missing'))
+      .rejects.toMatchObject({
+        problem: { status: 404, code: 'KNOWLEDGE_RESUMABLE_DRAFT_NOT_FOUND' },
+      })
     const domain = await client.request<{ id: string; source_version: string }>('/knowledge/domains', {
       method: 'POST', body: JSON.stringify({ display_name: 'Manufacturing' }),
     })

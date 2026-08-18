@@ -4,6 +4,7 @@ import type {
   ApiEventStreamHandler,
   ApiResponse,
 } from '../api/client'
+import { ApiError } from '../api/client'
 import { sha256 } from 'hash-wasm'
 import type {
   AdminOperation,
@@ -391,7 +392,14 @@ function changeTargetMatchesSystem(asset: CatalogAsset, systemId: string): boole
 
 function knowledgeDraftById(id: string): Record<string, unknown> {
   const draft = knowledgeDrafts.find((item) => item.id === id)
-  if (!draft) throw new Error('POC Knowledge Studio Draft를 찾을 수 없습니다.')
+  if (!draft) throw new ApiError({
+    type: 'about:blank',
+    title: 'Knowledge Studio Draft not found',
+    status: 404,
+    detail: 'POC Knowledge Studio Draft를 찾을 수 없습니다.',
+    code: 'KNOWLEDGE_DRAFT_NOT_FOUND',
+    request_id: 'poc-local',
+  })
   return draft
 }
 
@@ -2828,7 +2836,14 @@ class PocApiClient {
     if (path === '/knowledge/studio/drafts/resumable') {
       const alias = url.searchParams.get('endpoint_alias') ?? ''
       const draft = knowledgeDrafts.find((item) => item.endpoint_alias === alias && item.state === 'DRAFT')
-      if (!draft) throw new Error('A resumable Knowledge Studio draft does not exist.')
+      if (!draft) throw new ApiError({
+        type: 'about:blank',
+        title: 'Resumable Knowledge Studio Draft not found',
+        status: 404,
+        detail: 'A resumable Knowledge Studio draft does not exist.',
+        code: 'KNOWLEDGE_RESUMABLE_DRAFT_NOT_FOUND',
+        request_id: 'poc-local',
+      })
       return draft
     }
     if (path === '/knowledge/studio/drafts' && method === 'POST') {
