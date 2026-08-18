@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `68af3d5895a9ee553bff94e17c7a7d6cea47704a`
-- Deployed OCI revision: `68af3d5895a9ee553bff94e17c7a7d6cea47704a`
+- Current Product SHA: `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`
+- Deployed OCI revision: `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -48,6 +48,8 @@
   `afb95a45c45ae065223faa39c53278884c935f37`
 - Knowledge K2 Registry/Asset/Version Product:
   `68af3d5895a9ee553bff94e17c7a7d6cea47704a`
+- Knowledge K3 minimal T-Box Builder Product:
+  `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -124,7 +126,13 @@
   Draft save/reload, independent review publication, one Active maximum, Active→new Draft edit,
   immutable history and soft archive passed actual browser E2E. The archived disposable Asset is
   excluded from Knowledge Chat and direct mutation UI is denied to a Viewer. Knowledge overall
-  remains `PARTIAL`; K3 T-Box is the next Product slice and K4 through K9 were not started.
+  remains `PARTIAL`; K3 is now also complete while K4 through K9 remain separate slices.
+- Knowledge K3 minimal T-Box Builder: `COMPLETE_RUNTIME_VERIFIED`. The existing XYFlow Draft editor
+  now supports typed Class/Relation/Property create, edit, delete and drag; hierarchy, bounded
+  datatype/cardinality, semantic validation, explicit canvas lock, save/reload and stale-CAS UX.
+  Actual desktop/mobile browser E2E passed, arbitrary Cypher stayed non-executable, and the
+  disposable Draft was retained as `DISCARDED` history. Knowledge overall remains `PARTIAL`; the
+  canonical grade compatibility check is the K4 entry gate.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
@@ -142,7 +150,7 @@
 5  등록관리                                → steward/admin only; overall PARTIAL
 6  거버넌스 — 정책·표준 문서 관리          → bounded CRUD/archive complete
 7  Chat                                    → General/Vector/AUTO and pre-K7 DataHub lineage complete; fallback/K7 partial
-8  지식관리                                → K0/K1/K2 runtime complete; K3 T-Box next
+8  지식관리                                → K0/K1/K2/K3 runtime complete; K4 source proposal next
 9  품질관리                                → USER_FEATURE_DEFINITION_REQUIRED
 기술 Backlog                              → support/deployment details only
 ```
@@ -195,15 +203,15 @@ local credential + opaque server session
 ## Fresh validation
 
 - Current Product and deployed OCI are the exact same 40-character revision
-  `68af3d5895a9ee553bff94e17c7a7d6cea47704a`. A fresh independent Gemini 3.1 Pro High (High)
-  Node POC Validator returned `PASS` after safe label-only OCI inspection, canonical `/healthz`,
-  current-source K2 contract review and Node 107/107. The earlier validator dispatch that attempted
-  full `docker inspect` was fenced and discarded. Legacy FastAPI and secret-bearing environment
-  dumps are not accepted.
+  `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`. A fresh independent Gemini 3.1 Pro High (High)
+  read-only Node POC Validator returned `PASS` for K3 after checking the authoritative root/HEAD,
+  focused 27/27 and Node 107/107. The coordinator independently verified the exact OCI revision
+  label and actual browser runtime; legacy FastAPI and secret-bearing environment dumps are not
+  accepted.
 - Node POC full stable serialized suite: 107/107 PASS. Two default-concurrency runs hit an isolated
   safe provider-capability `ECONNRESET`; the exact test passed alone and failed parallel results
   were rejected.
-- Frontend full suite: 87 files, 610/610 PASS on the final single-worker rerun. Four movable
+- Frontend full suite: 87 files, 616/616 PASS on the final single-worker rerun. Four movable
   parallel navigation/timeout failures are recorded as `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS`;
   parallel partial results were rejected and are not completion evidence.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and
@@ -412,6 +420,17 @@ local credential + opaque server session
   included in K2.
 - Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K2-REGISTRY-VERSION-RUNTIME.md`.
 
+## Knowledge K3 minimal T-Box Builder
+
+- Product `01e02acb...` extends the existing XYFlow Draft editor without a new graph framework or
+  persistence subsystem. Typed Classes, Relations and owner-scoped properties preserve identity,
+  aliases, hierarchy, Domain/Range, direction, cardinality, datatype, unit and required/multi state.
+- Focused validation rejects duplicate/dangling/cyclic or unsupported semantics. The bounded Cypher
+  representation is never executed directly.
+- Actual browser E2E passed create/edit/delete, drag, lock/unlock, validation warnings, save, hard
+  reload, two-tab stale CAS, desktop/mobile layout and Product-UI discard of the disposable Draft.
+- Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K3-TBOX-BUILDER-RUNTIME.md`.
+
 ## Post-K1 Quality tab parity
 
 - Product `8dc782a6...` reuses the existing Governance primary-tab classes for the three Quality top
@@ -432,7 +451,7 @@ local credential + opaque server session
 - `NODE_PROVIDER_PROBE_PARALLEL_FLAKINESS`: two provider capability probes can reset only under
   parallel execution; focused/serialized evidence passes. Do not redesign tests/providers for it.
 - `KNOWLEDGE_SECURITY_GRADE_CANONICAL_REALIGNMENT`: align Knowledge Asset classification UX and
-  request-time enforcement with `normal < credential < restricted` in a bounded future slice.
+  request-time enforcement with `normal < credential < restricted` as the bounded K4 entry gate.
 
 ## MCL runtime / automatic detection
 
@@ -463,10 +482,11 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `68af3d58...`; do not start PHASE 1E/1F, migration, legacy
+- Current boundary: preserve Product `01e02acb...`; do not start PHASE 1E/1F, migration, legacy
   deletion, GX/Quality Product mutation or another Account/Auth refactor. Knowledge K1 and Chat
-  Router remain frozen; K2 Registry/Asset/version is closed with browser acceptance. The next
-  proposed Product slice is bounded K3 T-Box UX, without starting K4+. The
+  Router remain frozen; K2 Registry/Asset/version and K3 T-Box Builder are closed with browser
+  acceptance. The next Product slice is bounded K4 Source Proposal after its grade compatibility
+  gate. The
   durability/outbox/provider-apply gap has a read-only recommendation and still requires
   `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION` before a schema/apply mutation. Governance document
   read/create/update/archive is complete; GX requires exact PREP/OPS contract evidence; Chat

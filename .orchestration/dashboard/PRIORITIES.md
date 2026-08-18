@@ -1,7 +1,7 @@
 # DataRiver 현재 제품 우선순위
 
 기준 Product SHA와 배포 OCI revision은
-`68af3d5895a9ee553bff94e17c7a7d6cea47704a`로 일치한다. authoritative runtime은 Node POC이며
+`01e02acb9c75d52e11ff5fbb61c09e88146cfa49`로 일치한다. authoritative runtime은 Node POC이며
 DEV Web은 `http://127.0.0.1:39083`에서 healthy다. 아래 상태는 현재 source/runtime 근거이며
 PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
@@ -83,14 +83,15 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
 ## 7. 지식관리
 
-- 현재 상태: `PARTIAL`; K0/K1/K2 `COMPLETE_RUNTIME_VERIFIED`.
+- 현재 상태: `PARTIAL`; K0/K1/K2/K3 `COMPLETE_RUNTIME_VERIFIED`.
 - 완료: source/runtime audit, exact Table/Column URN identity/provenance, fixed Neo4j projection,
   Registry의 정확한 8개 컬럼, Draft save/reload, authenticated actor, independent publish,
-  Active→new Draft, history, soft archive, Viewer/direct-route negative와 desktop/mobile E2E.
-- 남은 작업: K3 T-Box, K4 source proposal, K5 A-Box, K6 Knowledge Chat, K7 Main Chat, K8 MCP,
+  Active→new Draft, history, soft archive, Viewer/direct-route negative와 desktop/mobile E2E,
+  typed T-Box Class/Relation/Property 편집·검증·save/reload·lock·stale CAS.
+- 남은 작업: K4 source proposal, K5 A-Box, K6 Knowledge Chat, K7 Main Chat, K8 MCP,
   K9 Default Assets. Legacy Knowledge grade vocabulary realignment도 별도 bounded risk다.
-- 다음 작업: K1/Chat Router를 열지 않고 K3 T-Box 단일 slice를 제안한다.
-- 진행을 막는 문제: Knowledge 전체는 `PARTIAL`; K3+는 아직 시작하지 않았다.
+- 다음 작업: canonical security-grade compatibility gate 후 K4 Source Proposal 단일 slice.
+- 진행을 막는 문제: Knowledge 전체는 `PARTIAL`; K4+는 아직 완료되지 않았다.
 
 ## 8. 품질관리 — 사용자 추가 기능 정의 대기 / GX 준비
 
