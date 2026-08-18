@@ -22,6 +22,8 @@ export function KnowledgePage({ client, onNavigate }: { client: ApiClient; onNav
           client={client}
           onCreate={() => onNavigate('knowledge-studio')}
           onEdit={() => onNavigate('knowledge-studio')}
+          canManage
+          canArchive
         />
       </div>
     </KnowledgeWorkspaceLayout>

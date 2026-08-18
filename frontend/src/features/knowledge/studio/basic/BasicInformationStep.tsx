@@ -159,6 +159,18 @@ export function BasicInformationStep({
           />
           <small className="font-normal text-slate-500">레지스트리와 검색에 표시되는 이름입니다.</small>
         </label>
+        <label className="grid gap-1 text-xs font-black text-navy-900 md:col-span-2">
+          설명
+          <textarea
+            aria-label="지식 그래프 설명"
+            maxLength={2_000}
+            rows={3}
+            value={value.description ?? ''}
+            onChange={(event) => onChange({ ...value, description: event.target.value })}
+            placeholder="이 지식 그래프의 목적과 다루는 범위를 설명하세요."
+          />
+          <small className="font-normal text-slate-500">레지스트리 목록과 상세 화면에 표시됩니다.</small>
+        </label>
         <label className="grid gap-1 text-xs font-black text-navy-900">
           <span className="flex items-center gap-1">
             API Endpoint 별칭

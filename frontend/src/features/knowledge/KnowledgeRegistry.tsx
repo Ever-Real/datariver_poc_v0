@@ -63,10 +63,14 @@ export function KnowledgeRegistry({
   client,
   onCreate,
   onEdit,
+  canManage = false,
+  canArchive = false,
 }: {
   client: ApiClient
   onCreate: () => void
-  onEdit: (assetId: string) => void
+  onEdit: (assetId: string, status: string) => void
+  canManage?: boolean
+  canArchive?: boolean
 }) {
   const registryRootRef = useRef<HTMLDivElement>(null)
   const resizeRef = useRef<{ startX: number; startWidth: number } | undefined>(undefined)
@@ -288,85 +292,111 @@ export function KnowledgeRegistry({
 
   const columns = useMemo<ColumnDef<KnowledgeAssetSummary>[]>(() => [
     {
-      accessorKey: 'id',
-      header: 'ID',
-      size: 250,
+      id: 'ordinal',
+      header: 'No',
+      size: 60,
       enableSorting: false,
-      cell: ({ row }) => <code className="text-[10px]">{row.original.id}</code>,
+      cell: ({ row }) => row.index + 1,
     },
     {
       accessorKey: 'name',
-      header: 'Name',
+      header: '지식그래프명',
       size: 220,
       enableSorting: false,
       cell: ({ row }) => <strong>{row.original.name}</strong>,
     },
     {
-      id: 'domain',
-      header: 'Domain',
-      size: 170,
-      enableSorting: false,
-      accessorFn: (graph) => graph.domain_name ?? '기록 없음 (legacy)',
-    },
-    {
-      accessorKey: 'status',
-      header: 'Status',
-      size: 110,
-      enableSorting: false,
-      cell: ({ row }) => <span className="badge badge-soft">{row.original.status}</span>,
-    },
-    {
-      id: 'schema',
-      header: 'Schema / Instance',
+      id: 'version',
+      header: 'Version',
       size: 140,
+      enableSorting: false,
+      cell: ({ row }) => {
+        const status = row.original.status
+        let badgeColor = 'bg-slate-100 text-slate-800'
+        if (status === 'ACTIVE') badgeColor = 'bg-emerald-100 text-emerald-800'
+        if (status === 'DRAFT') badgeColor = 'bg-amber-100 text-amber-800'
+        if (status === 'ARCHIVED') badgeColor = 'bg-slate-200 text-slate-600'
+        return (
+          <div className="flex items-center gap-2">
+            <span>v{row.original.display_version ?? row.original.version}</span>
+            <span className={`rounded-sm px-1.5 py-0.5 text-[9px] font-bold ${badgeColor}`}>
+              {status}
+            </span>
+          </div>
+        )
+      },
+    },
+    {
+      id: 'description',
+      header: '설명',
+      size: 250,
+      enableSorting: false,
       cell: ({ row }) => (
-        <span>
-          T v{row.original.active_studio_release_no ?? '—'}
-          {' · '}A v{row.original.active_release_no ?? '—'}
+        <span className="truncate block w-full" title={row.original.description ?? ''}>
+          {row.original.description ?? '—'}
         </span>
       ),
     },
     {
-      id: 'topology',
-      header: 'Class / Relation',
-      size: 130,
-      cell: ({ row }) => `${row.original.class_count} / ${row.original.relationship_count}`,
+      id: 'updated_at',
+      header: '최근 수정일',
+      size: 160,
+      enableSorting: false,
+      cell: ({ row }) => localTime(row.original.updated_at),
     },
     {
-      id: 'instances',
-      header: 'Nodes / Edges',
-      size: 130,
-      cell: ({ row }) => `${row.original.node_count} / ${row.original.edge_count}`,
+      id: 'creator',
+      header: '생성자',
+      size: 140,
+      enableSorting: false,
+      cell: ({ row }) => <span className="truncate block w-full">{actorLabel(row.original.creator_name, row.original.creator_email, null)}</span>,
+    },
+    {
+      id: 'editor',
+      header: '최근 수정자',
+      size: 140,
+      enableSorting: false,
+      cell: ({ row }) => <span className="truncate block w-full">{actorLabel(row.original.editor_name, row.original.editor_email, null)}</span>,
     },
     {
       id: 'actions',
-      header: 'Actions',
-      size: 120,
+      header: '편집',
+      size: 100,
       enableSorting: false,
       cell: ({ row }) => (
         <div className="flex gap-1" onClick={(event) => event.stopPropagation()}>
-          <button
-            type="button"
-            className="button button-secondary"
-            title="Knowledge Studio에서 편집"
-            aria-label={`${row.original.name} 에셋 편집`}
-            onClick={() => onEdit(row.original.id)}
-          >
-            <Edit3 size={13} />
-          </button>
-          <button
-            type="button"
-            className="button button-secondary"
-            title="지식 에셋 아카이빙"
-            aria-label={`${row.original.name} 에셋 삭제`}
-            onClick={() => setArchiveTarget(row.original)}
-          >
-            <Trash2 size={13} />
-          </button>
+          {canManage && row.original.status !== 'ARCHIVED' && (
+            <button
+              type="button"
+              className="button button-secondary"
+              title="Knowledge Studio에서 편집"
+              aria-label={`${row.original.name} 에셋 편집`}
+              onClick={() => onEdit(
+                row.original.status === 'DRAFT'
+                  ? row.original.draft_id ?? row.original.id
+                  : row.original.id,
+                row.original.status,
+              )}
+            >
+              <Edit3 size={13} />
+            </button>
+          )}
+          {canArchive && row.original.status !== 'ARCHIVED' && row.original.active_studio_release_id && (
+            <button
+              type="button"
+              className="button button-secondary"
+              title="지식 에셋 아카이빙"
+              aria-label={`${row.original.name} 에셋 아카이빙`}
+              onClick={() => setArchiveTarget(row.original)}
+            >
+              <Trash2 size={13} />
+            </button>
+          )}
+          {!canManage && !canArchive && <span className="text-[10px] text-slate-500">읽기 전용</span>}
         </div>
       ),
     },
-  ], [onEdit])
+  ], [canArchive, canManage, onEdit])
 
   const toggleSection = (itemId: string) => {
     setExpandedSections((current) => {
@@ -478,55 +508,78 @@ export function KnowledgeRegistry({
             >
               검색
             </button>
-            <button className="button" type="button" onClick={onCreate}>
-              <Plus size={14} /> 에셋 추가
-            </button>
+            {canManage && (
+              <button className="button" type="button" onClick={onCreate}>
+                <Plus size={14} /> 에셋 추가
+              </button>
+            )}
           </div>
         </header>
         <ErrorNotice error={error} />
         <div className="grid gap-4">
-          <DenseDataTable
-            caption="지식 에셋 목록"
-            columns={columns}
-            data={assets}
-            getRowId={(asset) => asset.id}
-            loading={loading}
-            selectedRowId={selectedId}
-            onRowActivate={(asset) => setSelectedId(asset.id)}
-          />
-          <div className="flex justify-end gap-2">
-            <button
-              type="button"
-              className="button button-secondary"
-              disabled={loading || cursorHistory.length === 0}
-              onClick={() => {
-                const next = [...cursorHistory]
-                setPageCursor(next.pop() ?? null)
-                setCursorHistory(next)
-              }}
-            >
-              이전
-            </button>
-            <button
-              type="button"
-              className="button button-secondary"
-              disabled={loading || !nextCursor}
-              onClick={() => {
-                if (!nextCursor) return
-                setCursorHistory((current) => [...current, pageCursor])
-                setPageCursor(nextCursor)
-              }}
-            >
-              다음
-            </button>
-          </div>
-          {!selected && (
-            <div className="grid min-h-36 place-items-center rounded-enterprise border border-dashed border-slate-300 bg-slate-50 text-center text-xs text-slate-500">
-              <div>
-                <Network className="mx-auto mb-2" />
-                <p>에셋을 선택하면 우측 상세 패널을 엽니다.</p>
-              </div>
+          {assets.length === 0 && !loading ? (
+            <div className="flex flex-col items-center justify-center rounded-enterprise border border-dashed border-slate-300 bg-slate-50 py-12 text-center px-4">
+              <Network size={32} className="text-slate-400 mb-3" />
+              <h3 className="text-sm font-bold text-navy-900 mb-1">등록된 지식 에셋이 없습니다</h3>
+              <p className="max-w-md text-xs text-slate-500 mb-4">
+                지식 레지스트리는 기업의 도메인 지식을 관리하는 곳입니다. 새로운 에셋을 생성하여 DRAFT 버전을 만들고, 검토를 거쳐 활성화(ACTIVE)하세요.
+                <br />
+                활성화된 에셋을 직접 수정하면 새로운 DRAFT 버전이 생성되며, 기존 ACTIVE 버전은 유지됩니다. (최대 1개 활성 허용)
+              </p>
+              {canManage ? (
+                <button className="button button-primary" type="button" onClick={onCreate}>
+                  <Plus size={14} /> 에셋 추가 시작하기
+                </button>
+              ) : (
+                <p className="m-0 text-xs font-semibold text-slate-600">현재 계정은 레지스트리를 조회할 수 있지만 새 Asset을 만들 수 없습니다.</p>
+              )}
             </div>
+          ) : (
+            <>
+              <DenseDataTable
+                caption="지식 에셋 목록"
+                columns={columns}
+                data={assets}
+                getRowId={(asset) => asset.id}
+                loading={loading}
+                selectedRowId={selectedId}
+                onRowActivate={(asset) => setSelectedId(asset.id)}
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  disabled={loading || cursorHistory.length === 0}
+                  onClick={() => {
+                    const next = [...cursorHistory]
+                    setPageCursor(next.pop() ?? null)
+                    setCursorHistory(next)
+                  }}
+                >
+                  이전
+                </button>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  disabled={loading || !nextCursor}
+                  onClick={() => {
+                    if (!nextCursor) return
+                    setCursorHistory((current) => [...current, pageCursor])
+                    setPageCursor(nextCursor)
+                  }}
+                >
+                  다음
+                </button>
+              </div>
+              {!selected && (
+                <div className="grid min-h-36 place-items-center rounded-enterprise border border-dashed border-slate-300 bg-slate-50 text-center text-xs text-slate-500">
+                  <div>
+                    <Network className="mx-auto mb-2" />
+                    <p>에셋을 선택하면 우측 상세 패널을 엽니다.</p>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </div>
       </section>
@@ -575,39 +628,46 @@ export function KnowledgeRegistry({
             <div className="grid gap-4">
               <dl className="grid grid-cols-2 gap-3 rounded-enterprise border border-slate-200 bg-slate-50 p-4 text-xs md:grid-cols-3">
                 <div>
+                  <dt className="text-[10px] font-black text-slate-500">ID</dt>
+                  <dd className="m-0 break-all">{selected.id}</dd>
+                </div>
+                <div>
                   <dt className="text-[10px] font-black text-slate-500">Domain</dt>
-                  <dd className="m-0">{selected.domain_name ?? '기록 없음 (legacy)'}</dd>
+                  <dd className="m-0 break-all">{selected.domain_name ?? '기록 없음 (legacy)'}</dd>
                 </div>
                 <div>
-                  <dt className="text-[10px] font-black text-slate-500">Nodes</dt>
-                  <dd className="m-0">{focusedRelease?.node_count ?? selected.node_count}</dd>
+                  <dt className="text-[10px] font-black text-slate-500">보안 분류</dt>
+                  <dd className="m-0">{selected.classification}</dd>
                 </div>
                 <div>
-                  <dt className="text-[10px] font-black text-slate-500">Edges</dt>
-                  <dd className="m-0">{focusedRelease?.edge_count ?? selected.edge_count}</dd>
+                  <dt className="text-[10px] font-black text-slate-500">Status</dt>
+                  <dd className="m-0">{selected.status}</dd>
                 </div>
                 <div>
-                  <dt className="text-[10px] font-black text-slate-500">Focused version</dt>
+                  <dt className="text-[10px] font-black text-slate-500">Current Version</dt>
                   <dd className="m-0">
-                    {focusedRelease ? `Release v${focusedRelease.release_no}` : '—'}
+                    {focusedRelease ? `Release v${focusedRelease.release_no}` : `v${selected.display_version ?? selected.version}`}
                   </dd>
+                </div>
+                <div>
+                  <dt className="text-[10px] font-black text-slate-500">Nodes / Edges</dt>
+                  <dd className="m-0">{focusedRelease?.node_count ?? selected.node_count} / {focusedRelease?.edge_count ?? selected.edge_count}</dd>
                 </div>
                 <div>
                   <dt className="text-[10px] font-black text-slate-500">Creator</dt>
                   <dd className="m-0 break-all">
-                    {focusedRelease?.publisher_name
-                      ?? focusedRelease?.publisher_email
-                      ?? focusedRelease?.published_by
-                      ?? selected.creator_name
-                      ?? selected.creator_email
-                      ?? '—'}
+                    {actorLabel(selected.creator_name, selected.creator_email, null)}
                   </dd>
                 </div>
                 <div>
-                  <dt className="text-[10px] font-black text-slate-500">Created At</dt>
-                  <dd className="m-0">
-                    {localTime(focusedRelease?.published_at ?? selected.created_at)}
+                  <dt className="text-[10px] font-black text-slate-500">Editor</dt>
+                  <dd className="m-0 break-all">
+                    {actorLabel(selected.editor_name, selected.editor_email, null)}
                   </dd>
+                </div>
+                <div className="col-span-2 md:col-span-3">
+                  <dt className="text-[10px] font-black text-slate-500">Description</dt>
+                  <dd className="m-0">{selected.description ?? '설명이 없습니다.'}</dd>
                 </div>
               </dl>
               <AccordionItem

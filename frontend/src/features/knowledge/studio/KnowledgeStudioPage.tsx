@@ -37,6 +37,7 @@ const DEFAULT_DOMAIN_REQUEST_TIMEOUT_MS = 10_000
 
 const EMPTY_BASIC_INFORMATION: KnowledgeStudioBasicInformation = {
   name: '',
+  description: '',
   endpoint_alias: '',
   endpoint_aliases: [],
   domain_id: '',
@@ -51,6 +52,7 @@ function fingerprint(value: KnowledgeStudioBasicInformation): string {
 function draftBasicInformation(draft: KnowledgeStudioDraft): KnowledgeStudioBasicInformation {
   return {
     name: draft.name,
+    description: draft.description ?? '',
     endpoint_alias: draft.endpoint_alias,
     endpoint_aliases: draft.endpoint_aliases ?? [draft.endpoint_alias],
     domain_id: draft.domain_id,

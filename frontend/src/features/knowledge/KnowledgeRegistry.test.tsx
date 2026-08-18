@@ -15,8 +15,10 @@ const asset: KnowledgeAssetSummary = {
   id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c0',
   slug: 'finance-terms',
   name: 'Finance Terms',
+  description: '재무 용어 지식 그래프',
+  display_version: 3,
   graph_type: 'DOMAIN',
-  status: 'PUBLISHED',
+  status: 'ACTIVE',
   classification: 'INTERNAL',
   domain_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c1',
   domain_name: 'Finance',
@@ -222,12 +224,19 @@ describe('KnowledgeRegistry', () => {
         client={client}
         onCreate={vi.fn()}
         onEdit={onEdit}
+        canManage
+        canArchive
       />,
     )
 
     await screen.findByText('Finance Terms')
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'No', '지식그래프명', 'Version', '설명', '최근 수정일', '생성자', '최근 수정자', '편집',
+    ])
+    expect(screen.getByText('재무 용어 지식 그래프')).toBeInTheDocument()
+    expect(screen.getByText('v3')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Finance Terms 에셋 편집' }))
-    expect(onEdit).toHaveBeenCalledWith(asset.id)
+    expect(onEdit).toHaveBeenCalledWith(asset.id, asset.status)
 
     fireEvent.click(screen.getByText('Finance Terms'))
     const drawer = await screen.findByRole('complementary', {
@@ -246,7 +255,7 @@ describe('KnowledgeRegistry', () => {
     expect(within(drawer).getByText('Release v1')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: '에셋 상세 닫기' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Finance Terms 에셋 삭제' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Finance Terms 에셋 아카이빙' }))
     const dialog = await screen.findByRole('dialog', { name: '지식 자산 아카이빙' })
     expect(within(dialog).getByText(/정말 이 지식 자산을 삭제\/아카이빙/)).toBeInTheDocument()
     fireEvent.click(within(dialog).getByRole('button', { name: '아카이빙' }))
@@ -259,5 +268,22 @@ describe('KnowledgeRegistry', () => {
       }),
     ))
     await waitFor(() => expect(graphReads).toBe(2))
+  })
+
+  it('shows an actionable empty state only to Knowledge managers', async () => {
+    const client = {
+      request: vi.fn().mockResolvedValue({ items: [], next_cursor: null, limit: 25 }),
+    } as unknown as ApiClient
+    const { rerender } = render(
+      <KnowledgeRegistry client={client} onCreate={vi.fn()} onEdit={vi.fn()} />,
+    )
+    expect(await screen.findByText('등록된 지식 에셋이 없습니다')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /에셋 추가 시작하기/ })).not.toBeInTheDocument()
+    expect(screen.getByText(/현재 계정은 레지스트리를 조회할 수 있지만/)).toBeInTheDocument()
+
+    rerender(
+      <KnowledgeRegistry client={client} onCreate={vi.fn()} onEdit={vi.fn()} canManage />,
+    )
+    expect(await screen.findByRole('button', { name: /에셋 추가 시작하기/ })).toBeInTheDocument()
   })
 })

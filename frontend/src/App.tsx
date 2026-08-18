@@ -307,8 +307,10 @@ export function App() {
     setPage(next)
   }, [hasPocPageAccess, pocMode])
 
-  const navigateKnowledgeStudio = useCallback((assetId?: string) => {
-    window.history.pushState({}, '', knowledgeStudioUrl({ assetId }))
+  const navigateKnowledgeStudio = useCallback((assetId?: string, status?: string) => {
+    window.history.pushState({}, '', knowledgeStudioUrl(
+      status === 'DRAFT' ? { draftId: assetId } : { assetId },
+    ))
     setCatalogQuery('')
     setPage('knowledge-studio')
   }, [])
@@ -541,6 +543,8 @@ export function App() {
             workspaceId={activeWorkspace}
             subjectId={authenticatedSubject}
             locationRevision={locationRevision}
+            canManage={pocCapabilities.includes('knowledge.manage')}
+            canReview={pocCapabilities.includes('knowledge.review')}
             onNavigate={navigate}
             onOpenStudio={navigateKnowledgeStudio}
             onStepUp={oidcAuthenticationEnabled ? auth.beginStepUp : undefined}

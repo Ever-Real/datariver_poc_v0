@@ -4,6 +4,7 @@ export type KnowledgeClassification = 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | '
 
 export interface KnowledgeStudioBasicInformation {
   name: string
+  description?: string
   endpoint_alias: string
   endpoint_aliases?: string[]
   domain_id: string

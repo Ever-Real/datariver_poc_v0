@@ -25,6 +25,7 @@ import type {
   CapabilitiesResponse,
   ClassificationPolicySummary,
   GovernanceApplyReport,
+  KnowledgeAssetVersionHistoryItem,
   MonitoringConfiguration,
   PocAuthorization,
   PocCapability,
@@ -445,7 +446,28 @@ function knowledgeTBox(draftId: string) {
   return { draft: knowledgeDraftById(draftId), blocks: knowledgeDraftBlocks.get(draftId) ?? [] }
 }
 
-function knowledgeAssetSummary(draft: Record<string, unknown>, release: Record<string, unknown>) {
+function requestIfMatch(options: PocRequestOptions): string | undefined {
+  if (options.ifMatch) return options.ifMatch.replace(/"/g, '')
+  return new Headers(options.headers).get('If-Match')?.replace(/"/g, '')
+}
+
+function requireDraftVersion(draft: Record<string, unknown>, options: PocRequestOptions): void {
+  const ifMatch = requestIfMatch(options)
+  if (ifMatch && ifMatch !== String(draft.version)) throw new Error('데이터가 변경되었습니다.')
+}
+
+function knowledgeDraftDisplayVersion(draft: Record<string, unknown>): number {
+  const release = knowledgeReleases.find((item) => item.id === draft.published_studio_release_id)
+  if (release) return Number(release.release_no)
+  const graphId = draft.materialized_graph_id
+  if (!graphId) return 1
+  const latestRelease = knowledgeReleases
+    .filter((item) => item.graph_id === graphId)
+    .reduce((latest, item) => Math.max(latest, Number(item.release_no) || 0), 0)
+  return latestRelease + 1
+}
+
+function knowledgeAssetSummary(draft: Record<string, unknown>, release: Record<string, unknown> | undefined) {
   const draftId = String(draft.id)
   const blocks = knowledgeDraftBlocks.get(draftId) ?? []
   const elements = blocks.flatMap((block) => Array.isArray(block.elements) ? block.elements as Array<Record<string, unknown>> : [])
@@ -459,18 +481,23 @@ function knowledgeAssetSummary(draft: Record<string, unknown>, release: Record<s
   const latestJob = jobs[0]
   const projectionState = latestJob?.state === 'SUCCESS' ? 'SHADOW_VERIFIED' : latestJob?.state ?? null
 
+  const status = draft.state === 'PUBLISHED' ? 'ACTIVE' : draft.state === 'ARCHIVED' ? 'ARCHIVED' : 'DRAFT'
+
   return {
-    id: draft.materialized_graph_id,
+    id: String(draft.materialized_graph_id ?? draft.id),
+    draft_id: String(draft.id),
     slug: draft.endpoint_alias,
     name: draft.name,
+    description: draft.description ?? null,
+    display_version: knowledgeDraftDisplayVersion(draft),
     graph_type: 'CURATED_KNOWLEDGE',
-    status: 'ACTIVE',
+    status,
     classification: draft.classification,
     domain_id: draft.domain_id,
     domain_name: knowledgeDomains.find((domain) => domain.id === draft.domain_id)?.display_name ?? null,
-    creator_name: 'POC User', creator_email: 'poc.user@local',
-    editor_name: 'POC User', editor_email: 'poc.user@local',
-    active_studio_release_id: release.id, active_studio_release_no: release.release_no,
+    creator_name: String(draft.asset_creator_id ?? draft.author_id), creator_email: null,
+    editor_name: String(draft.updated_by ?? draft.published_by ?? draft.author_id), editor_email: null,
+    active_studio_release_id: release?.id ?? null, active_studio_release_no: release?.release_no ?? null,
     active_release_id: null, active_release_no: null,
     class_count: elements.filter((item) => item.kind === 'CLASS').length,
     property_count: elements.filter((item) => item.kind === 'PROPERTY').length,
@@ -478,7 +505,7 @@ function knowledgeAssetSummary(draft: Record<string, unknown>, release: Record<s
     binding_count: bindings.length, source_count: sources,
     node_count: Number(latestJob?.node_count ?? 0), edge_count: Number(latestJob?.edge_count ?? 0),
     projection_state: projectionState,
-    created_at: draft.created_at,
+    created_at: draft.asset_created_at ?? draft.created_at,
     updated_at: draft.updated_at,
     version: draft.version,
     delivery_policy: null,
@@ -1711,10 +1738,18 @@ class PocApiClient {
     if (runtimeFlags().pocState) await this.ensureHydrated()
     const value = await this.dispatch(parsed, options)
     if (options.signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError')
+    const knowledgeVersion = parsed.pathname.startsWith('/knowledge/')
+      && value && typeof value === 'object'
+      ? Number('draft' in value && value.draft && typeof value.draft === 'object'
+        ? (value.draft as Record<string, unknown>).version
+        : 'version' in value
+          ? value.version
+          : NaN)
+      : NaN
     const membershipVersion = /^\/admin\/workspace-memberships\/[^/]+\/(?:access|identity-profile)$/.test(parsedPath(path).pathname)
       && value && typeof value === 'object' && 'membership_version' in value
       ? Number(value.membership_version)
-      : 1
+      : Number.isSafeInteger(knowledgeVersion) ? knowledgeVersion : 1
     return { data: value as T, etag: `"${membershipVersion}"` }
   }
 
@@ -2955,6 +2990,9 @@ class PocApiClient {
       const draft = {
         ...source, id: crypto.randomUUID(), author_id: presentationSubjectId, kind: 'EDIT', state: 'DRAFT',
         current_step: 'TBOX', last_autosaved_at: now, version: 1, created_at: now, updated_at: now,
+        asset_creator_id: source.asset_creator_id ?? source.author_id,
+        asset_created_at: source.asset_created_at ?? source.created_at,
+        updated_by: presentationSubjectId,
         reviewed_by: undefined, reviewed_at: undefined, review_reason: undefined,
         published_by: undefined, published_at: undefined, published_studio_release_id: undefined,
       }
@@ -2985,10 +3023,12 @@ class PocApiClient {
       const draft = {
         id: crypto.randomUUID(), author_id: presentationSubjectId, kind: 'CREATE', state: 'DRAFT', current_step: 'BASIC',
         name: responseString(body.name, '').trim(), endpoint_alias: responseString(body.endpoint_alias, '').trim(),
+        description: responseString(body.description, '').trim(),
         endpoint_aliases: Array.isArray(body.endpoint_aliases) ? body.endpoint_aliases : [body.endpoint_alias],
         domain_id: body.domain_id, domain_source_version: body.domain_source_version,
         classification: body.classification ?? 'INTERNAL', last_autosaved_at: now,
         version: 1, created_at: now, updated_at: now,
+        asset_creator_id: presentationSubjectId, asset_created_at: now, updated_by: presentationSubjectId,
       }
       if (!draft.name || !/^[a-z][a-z0-9_]{2,99}$/.test(draft.endpoint_alias)) throw new Error('Knowledge Asset 이름과 유효한 endpoint alias가 필요합니다.')
       if (knowledgeDrafts.some((item) => item.endpoint_alias === draft.endpoint_alias && !['DISCARDED', 'PUBLISHED'].includes(String(item.state)))) throw new Error('동일한 endpoint alias의 Draft가 이미 있습니다.')
@@ -3014,7 +3054,23 @@ class PocApiClient {
       const draft = knowledgeDraftById(decodeURIComponent(knowledgeDraftPath[1] ?? ''))
       if (method === 'GET') return draft
       if (method === 'PATCH') {
-        Object.assign(draft, jsonBody(options), { version: Number(draft.version) + 1, updated_at: new Date().toISOString(), last_autosaved_at: new Date().toISOString() })
+        requireDraftVersion(draft, options)
+        if (draft.state !== 'DRAFT') throw new Error('현재 Draft는 수정할 수 없습니다.')
+        const body = jsonBody(options)
+        const now = new Date().toISOString()
+        Object.assign(draft, {
+          name: responseString(body.name, String(draft.name)).trim(),
+          description: responseString(body.description, responseString(draft.description, '')).trim(),
+          endpoint_alias: responseString(body.endpoint_alias, String(draft.endpoint_alias)).trim(),
+          endpoint_aliases: Array.isArray(body.endpoint_aliases) ? body.endpoint_aliases : draft.endpoint_aliases,
+          domain_id: body.domain_id ?? draft.domain_id,
+          domain_source_version: body.domain_source_version ?? draft.domain_source_version,
+          classification: body.classification ?? draft.classification,
+          version: Number(draft.version) + 1,
+          updated_at: now,
+          last_autosaved_at: now,
+          updated_by: presentationSubjectId,
+        })
         await this.persistCore()
         return draft
       }
@@ -3022,10 +3078,12 @@ class PocApiClient {
     const draftAdvancePath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/advance$/)
     if (draftAdvancePath && method === 'POST') {
       const draft = knowledgeDraftById(decodeURIComponent(draftAdvancePath[1] ?? ''))
+      requireDraftVersion(draft, options)
       const target = jsonBody(options).target_step
       draft.current_step = target === 'ABOX' ? 'ABOX' : 'TBOX'
       draft.version = Number(draft.version) + 1
       draft.updated_at = new Date().toISOString()
+      draft.updated_by = presentationSubjectId
       await this.persistCore()
       return draft
     }
@@ -3195,8 +3253,13 @@ class PocApiClient {
       const draft = knowledgeDraftById(decodeURIComponent(draftLifecyclePath[1] ?? ''))
       const action = draftLifecyclePath[2]
       const now = new Date().toISOString()
+      requireDraftVersion(draft, options)
+      if (action === 'publish' && draft.author_id === presentationSubjectId) {
+        throw new Error('작성자는 직접 승인/발행할 수 없습니다.')
+      }
       draft.version = Number(draft.version) + 1
       draft.updated_at = now
+      draft.updated_by = presentationSubjectId
       if (action === 'submit-review') {
         draft.state = 'REVIEW'
         draft.submitted_preflight_check_id = crypto.randomUUID()
@@ -3209,29 +3272,60 @@ class PocApiClient {
         return draft
       }
       const graphId = responseString(draft.materialized_graph_id, crypto.randomUUID())
-      const release = { id: crypto.randomUUID(), graph_id: graphId, ontology_version_id: crypto.randomUUID(), release_no: 1, state: 'ACTIVE', contract_version: 'KNOWLEDGE_STUDIO_RELEASE_V1', contract_hash: 'f'.repeat(64), tbox_hash: 'a'.repeat(64), abox_hash: 'b'.repeat(64), reviewed_by: presentationSubjectId, published_by: presentationSubjectId, published_at: now }
+      const releaseNo = knowledgeReleases
+        .filter((item) => item.graph_id === graphId)
+        .reduce((latest, item) => Math.max(latest, Number(item.release_no) || 0), 0) + 1
+      for (const prior of knowledgeDrafts) {
+        if (prior !== draft && prior.materialized_graph_id === graphId && prior.state === 'PUBLISHED') {
+          prior.state = 'SUPERSEDED'
+          prior.updated_at = now
+        }
+      }
+      const release = { id: crypto.randomUUID(), graph_id: graphId, ontology_version_id: crypto.randomUUID(), release_no: releaseNo, state: 'ACTIVE', contract_version: 'KNOWLEDGE_STUDIO_RELEASE_V1', contract_hash: 'f'.repeat(64), tbox_hash: 'a'.repeat(64), abox_hash: 'b'.repeat(64), reviewed_by: presentationSubjectId, published_by: presentationSubjectId, published_at: now }
       Object.assign(draft, { state: 'PUBLISHED', reviewed_by: presentationSubjectId, reviewed_at: now, review_reason: responseString(jsonBody(options).review_reason, 'POC open review'), published_by: presentationSubjectId, published_at: now, materialized_graph_id: graphId, materialized_ontology_version_id: release.ontology_version_id, published_studio_release_id: release.id })
       knowledgeReleases = [...knowledgeReleases, release]
       await this.persistCore()
       return { draft, release }
     }
-    const publishedPairs = knowledgeDrafts.flatMap((draft) => {
-      const release = knowledgeReleases.find((item) => item.id === draft.published_studio_release_id)
-      return release ? [{ draft, release }] : []
-    })
-    if (path === '/knowledge/graphs') return publishedPairs.map(({ draft, release }) => ({ id: draft.materialized_graph_id, slug: draft.endpoint_alias, name: draft.name, graph_type: 'CURATED_KNOWLEDGE', status: 'ACTIVE', classification: draft.classification, domain_id: draft.domain_id, domain_source_version: draft.domain_source_version, domain_name: knowledgeDomains.find((item) => item.id === draft.domain_id)?.display_name, active_release_id: release.id, created_by: draft.author_id, updated_by: draft.published_by, created_at: draft.created_at, updated_at: draft.updated_at, version: draft.version }))
-    if (path === '/knowledge/registry/assets') return { items: publishedPairs.map(({ draft, release }) => knowledgeAssetSummary(draft, release)), next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) }
+    const groupedAssets = new Map<string, { editableDraft: Record<string, unknown> | undefined, publishedDraft: Record<string, unknown> | undefined, release: Record<string, unknown> | undefined }>()
+    for (const draft of knowledgeDrafts) {
+      if (draft.state === 'DISCARDED' || draft.state === 'SUPERSEDED') continue
+      const groupId = String(draft.materialized_graph_id ?? draft.id)
+      let group = groupedAssets.get(groupId)
+      if (!group) {
+        group = { editableDraft: undefined, publishedDraft: undefined, release: undefined }
+        groupedAssets.set(groupId, group)
+      }
+      if (draft.state === 'PUBLISHED' || draft.state === 'ARCHIVED') {
+        if (!group.publishedDraft || Number(draft.version) > Number(group.publishedDraft.version)) {
+          group.publishedDraft = draft
+          group.release = knowledgeReleases.find((item) => item.id === draft.published_studio_release_id)
+        }
+      } else {
+        if (!group.editableDraft || new Date(String(draft.updated_at)).getTime() > new Date(String(group.editableDraft.updated_at)).getTime()) {
+          group.editableDraft = draft
+        }
+      }
+    }
+    const assetPairs = Array.from(groupedAssets.values())
+
+    if (path === '/knowledge/graphs') return assetPairs.filter((p) => p.publishedDraft && p.publishedDraft.state === 'PUBLISHED').map(({ publishedDraft: draft, release }) => ({ id: draft!.materialized_graph_id, slug: draft!.endpoint_alias, name: draft!.name, graph_type: 'CURATED_KNOWLEDGE', status: 'ACTIVE', classification: draft!.classification, domain_id: draft!.domain_id, domain_source_version: draft!.domain_source_version, domain_name: knowledgeDomains.find((item) => item.id === draft!.domain_id)?.display_name, active_release_id: release?.id, created_by: draft!.author_id, updated_by: draft!.published_by, created_at: draft!.created_at, updated_at: draft!.updated_at, version: draft!.version }))
+    if (path === '/knowledge/registry/assets') return { items: assetPairs.map(({ editableDraft, publishedDraft, release }) => knowledgeAssetSummary(editableDraft ?? publishedDraft!, release)), next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) }
     const knowledgeRegistryPath = path.match(/^\/knowledge\/registry\/assets\/([^/]+)\/(detail|versions)$/)
     if (knowledgeRegistryPath) {
       const graphId = decodeURIComponent(knowledgeRegistryPath[1] ?? '')
-      const pair = publishedPairs.find(({ draft }) => draft.materialized_graph_id === graphId)
+      const pair = assetPairs.find((g) => {
+        const d = g.editableDraft ?? g.publishedDraft
+        return d && String(d.materialized_graph_id ?? d.id) === graphId
+      })
       if (!pair) throw new Error('등록된 지식 자산이 없습니다.')
-      const asset = knowledgeAssetSummary(pair.draft, pair.release)
-      const blocks = knowledgeDraftBlocks.get(String(pair.draft.id)) ?? []
+      const targetDraft = pair.editableDraft ?? pair.publishedDraft!
+      const asset = knowledgeAssetSummary(targetDraft, pair.release)
+      const blocks = knowledgeDraftBlocks.get(String(targetDraft.id)) ?? []
       const elements = blocks.flatMap((block) => Array.isArray(block.elements) ? block.elements as Array<Record<string, unknown>> : [])
       if (knowledgeRegistryPath[2] === 'detail') {
-        const bindings = knowledgeDraftBindings.get(String(pair.draft.id)) ?? []
-        const jobs = knowledgeIngestionJobs.filter((item) => item.draft_id === pair.draft.id)
+        const bindings = knowledgeDraftBindings.get(String(targetDraft.id)) ?? []
+        const jobs = knowledgeIngestionJobs.filter((item) => item.draft_id === targetDraft.id)
         return {
           asset,
           schema_elements: elements.map((item) => ({ stable_element_id: item.stable_element_id, kind: item.kind, display_name: item.display_name, canonical_name: item.canonical_name, parent_stable_element_id: item.parent_stable_element_id ?? null, data_type: item.data_type ?? null, source_stable_element_id: item.source_stable_element_id ?? null, target_stable_element_id: item.target_stable_element_id ?? null })),
@@ -3258,7 +3352,62 @@ class PocApiClient {
           })),
         }
       }
-      return { items: [{ id: pair.release.id, kind: 'STUDIO_RELEASE', version_label: `T v${responseString(pair.release.release_no, '1')}`, title: responseString(pair.draft.name, 'POC knowledge asset'), status: 'ACTIVE', author_id: pair.draft.author_id, author_name: 'POC User', author_email: 'poc.user@local', reviewed_by: pair.release.reviewed_by, reviewer_name: 'POC User', reviewer_email: 'poc.user@local', published_by: pair.release.published_by, publisher_name: 'POC User', publisher_email: 'poc.user@local', created_at: pair.release.published_at, is_current: true, studio_release_id: pair.release.id, instance_release_id: null, changeset_id: null, content_hash: pair.release.contract_hash, node_count: 0, edge_count: 0 }], next_cursor: null, limit: 50 }
+      const historyItems: KnowledgeAssetVersionHistoryItem[] = []
+      const draftsForGraph = knowledgeDrafts.filter(d => (d.materialized_graph_id ?? d.id) === graphId)
+      for (const draft of draftsForGraph) {
+        if (draft.state === 'DISCARDED') continue
+        const release = knowledgeReleases.find((item) => item.id === draft.published_studio_release_id)
+        const isPublished = Boolean(draft.published_studio_release_id && release)
+        historyItems.push({
+          id: isPublished && release ? String(release.id) : String(draft.id),
+          kind: 'STUDIO_RELEASE',
+          version_label: isPublished && release ? `T v${responseString(release.release_no, '1')}` : `DRAFT v${knowledgeDraftDisplayVersion(draft)}`,
+          title: responseString(draft.name, 'POC knowledge asset'),
+          status: draft.state === 'PUBLISHED' ? 'ACTIVE' : draft.state === 'ARCHIVED' ? 'ARCHIVED' : draft.state === 'SUPERSEDED' ? 'SUPERSEDED' : 'DRAFT',
+          author_id: String(draft.author_id),
+          author_name: String(draft.author_id), author_email: null,
+          reviewed_by: isPublished && release ? String(release.reviewed_by) : null,
+          reviewer_name: isPublished && release ? String(release.reviewed_by) : null,
+          reviewer_email: null,
+          published_by: isPublished && release ? String(release.published_by) : null,
+          publisher_name: isPublished && release ? String(release.published_by) : null,
+          publisher_email: null,
+          created_at: String(isPublished && release ? release.published_at : draft.updated_at),
+          is_current: false,
+          studio_release_id: isPublished && release ? String(release.id) : null,
+          instance_release_id: null, changeset_id: null,
+          content_hash: isPublished && release ? String(release.contract_hash) : null,
+          node_count: 0, edge_count: 0,
+        })
+      }
+      historyItems.sort((a, b) => new Date(String(b.created_at)).getTime() - new Date(String(a.created_at)).getTime())
+      if (historyItems.length > 0) historyItems[0]!.is_current = true
+      return { items: historyItems, next_cursor: null, limit: 50 }
+    }
+    const graphArchivePath = path.match(/^\/knowledge\/graphs\/([^/]+)\/archive$/)
+    if (graphArchivePath && method === 'POST') {
+      const graphId = decodeURIComponent(graphArchivePath[1] ?? '')
+      const drafts = knowledgeDrafts.filter((item) => String(item.materialized_graph_id ?? item.id) === graphId)
+      if (!drafts.length) throw new Error('지식 자산을 찾을 수 없습니다.')
+      const activeDraft = drafts.find(d => d.state === 'PUBLISHED')
+      if (!activeDraft) throw new Error('활성화된 지식 자산이 없습니다.')
+      const visibleDraft = drafts
+        .filter((draft) => !['DISCARDED', 'SUPERSEDED'].includes(String(draft.state)))
+        .sort((left, right) => String(right.updated_at).localeCompare(String(left.updated_at)))[0] ?? activeDraft
+      requireDraftVersion(visibleDraft, options)
+      activeDraft.state = 'ARCHIVED'
+      activeDraft.version = Number(activeDraft.version) + 1
+      activeDraft.updated_at = new Date().toISOString()
+      activeDraft.updated_by = presentationSubjectId
+      for (const d of drafts) {
+        if (d.state === 'DRAFT' || d.state === 'REVIEW') {
+          d.state = 'DISCARDED'
+          d.updated_at = activeDraft.updated_at
+        }
+      }
+      await this.persistCore()
+      const release = knowledgeReleases.find((item) => item.id === activeDraft.published_studio_release_id)
+      return knowledgeAssetSummary(activeDraft, release)
     }
     const graphReleasesPath = path.match(/^\/knowledge\/graphs\/([^/]+)\/releases$/)
     if (graphReleasesPath) {

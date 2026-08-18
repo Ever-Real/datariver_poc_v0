@@ -8,6 +8,7 @@ import {
 
 const value: KnowledgeStudioBasicInformation = {
   name: 'Enterprise ontology',
+  description: 'Enterprise knowledge asset',
   endpoint_alias: 'enterprise_ontology',
   endpoint_aliases: ['enterprise_ontology'],
   domain_id: '019fa57b-52de-74c0-9f5e-06ae7b1bf3af',
@@ -88,6 +89,31 @@ describe('BasicInformationStep', () => {
     expect(onChange).toHaveBeenLastCalledWith(expect.objectContaining({
       endpoint_alias: 'enterprise_ontology',
       endpoint_aliases: ['enterprise_ontology', 'catalog_ontology'],
+    }))
+  })
+
+  it('keeps the user-visible asset description in the basic-information contract', () => {
+    const onChange = vi.fn()
+    render(
+      <BasicInformationStep
+        value={value}
+        domains={[]}
+        domainsLoading={false}
+        domainQuery=""
+        busy={false}
+        saveStatus="준비됨"
+        onChange={onChange}
+        onDomainQueryChange={vi.fn()}
+        onCreateDomain={vi.fn().mockResolvedValue(undefined)}
+        onSave={vi.fn()}
+        onContinue={vi.fn()}
+      />,
+    )
+    fireEvent.change(screen.getByLabelText('지식 그래프 설명'), {
+      target: { value: 'Updated description' },
+    })
+    expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
+      description: 'Updated description',
     }))
   })
 })

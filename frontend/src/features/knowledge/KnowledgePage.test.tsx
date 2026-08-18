@@ -29,7 +29,7 @@ describe('KnowledgePage', () => {
     expect(informationMenu).not.toHaveClass('ml-5')
     expect(screen.queryByRole('button', { name: /인스턴스 관리/ })).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByRole('button', { name: /에셋 추가/ }))
+    fireEvent.click(screen.getByRole('button', { name: /^에셋 추가$/ }))
     expect(onNavigate).toHaveBeenCalledWith('knowledge-studio')
 
     fireEvent.click(screen.getByRole('button', { name: /Chat Test/ }))

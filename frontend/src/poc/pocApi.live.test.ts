@@ -5,10 +5,18 @@ import type {
   CatalogSearch,
   ChangeRequestRecord,
   ClassificationPolicySummary,
+  KnowledgeAssetOperationalDetail,
+  KnowledgeAssetPage,
+  KnowledgeAssetVersionHistoryPage,
+  KnowledgeGraph,
   SystemConfigurationEntry,
   SystemConfigurationTestResult,
   WorkspaceMembershipSummary,
 } from '../api/types'
+import type {
+  KnowledgeStudioDraft,
+  KnowledgeStudioRelease,
+} from '../features/knowledge/studio/knowledgeStudioApi'
 import { QualityApi } from '../features/quality/qualityApi'
 import { GovernanceDocumentsApi } from '../features/governance-documents/governanceDocumentsApi'
 import type { ChangeHistoryAccessDocument } from '../features/change-history/types'
@@ -76,6 +84,8 @@ function json(value: unknown) {
 
 function installGatewayMock() {
   let knowledgeProjectionReceipt: Record<string, unknown> | null = null
+  let coreState: Record<string, unknown> | null = null
+  let coreVersion = 1
   let access: ChangeHistoryAccessDocument & { version: number } = {
     schema_version: 1,
     active_subject_id: 'checkpoint-admin',
@@ -97,6 +107,23 @@ function installGatewayMock() {
   vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, options?: RequestInit) => {
     const requestUrl = input instanceof Request ? input.url : input.toString()
     const url = new URL(requestUrl, 'https://poc.invalid')
+    if (url.pathname === '/poc-api/state/core') {
+      if ((options?.method ?? 'GET') === 'PUT') {
+        if (new Headers(options?.headers).get('If-Match') !== `"${coreVersion}"`) {
+          return Promise.resolve(new Response(JSON.stringify({ detail: 'stale' }), {
+            status: 409,
+            headers: { 'Content-Type': 'application/json' },
+          }))
+        }
+        if (typeof options?.body !== 'string') throw new Error('Expected core state JSON')
+        coreState = (JSON.parse(options.body) as { value: Record<string, unknown> }).value
+        coreVersion += 1
+      }
+      return Promise.resolve(new Response(JSON.stringify({ value: coreState, version: coreVersion }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json', ETag: `"${coreVersion}"` },
+      }))
+    }
     if (url.pathname === '/api/v1/change-history/access') {
       if ((options?.method ?? 'GET') === 'PUT') {
         const headers = new Headers(options?.headers)
@@ -357,6 +384,22 @@ function installGatewayMock() {
     }
     throw new Error(`Unexpected POC gateway request: ${url.pathname}`)
   }))
+}
+
+function configureKnowledgeActor(
+  subjectId: string,
+  boundaryRevision: number,
+  capabilities: Array<'knowledge.read' | 'knowledge.manage' | 'knowledge.review'> = [
+    'knowledge.read', 'knowledge.manage', 'knowledge.review',
+  ],
+) {
+  configurePocAuthorization({
+    policy_version: 'POC_PROFILE_CAPABILITIES_V1',
+    role: capabilities.length === 1 ? 'viewer' : 'admin',
+    capabilities,
+    system_scope: 'GLOBAL',
+    system_ids: [],
+  }, `${subjectId}|${boundaryRevision}`)
 }
 
 describe('POC live-provider compatibility adapter', () => {
@@ -1378,6 +1421,8 @@ describe('POC live-provider compatibility adapter', () => {
   })
 
   it('projects a published Knowledge draft through the bounded K1 gateway receipt', async () => {
+    ;(globalThis as typeof globalThis & { __DATARIVER_POC_RUNTIME__?: Record<string, boolean> })
+      .__DATARIVER_POC_RUNTIME__ = { pocState: true }
     const client = useStableApiClient()
     const domain = await client.request<{ id: string; source_version: string }>('/knowledge/domains', {
       method: 'POST', body: JSON.stringify({ display_name: 'K1 Disposable Domain' }),
@@ -1414,6 +1459,7 @@ describe('POC live-provider compatibility adapter', () => {
         rules: [{ source_field_path: 'wafer_id', target_stable_element_id: 'wafer-class' }],
       }),
     })
+    configureKnowledgeActor('k1-independent-reviewer', 1)
     await client.request(`/knowledge/studio/drafts/${draft.id}/publish`, {
       method: 'POST', body: JSON.stringify({ review_reason: 'K1 focused adapter verification' }),
     })
@@ -1436,6 +1482,105 @@ describe('POC live-provider compatibility adapter', () => {
     }>(`/knowledge/studio/drafts/${draft.id}/abox/ingestions`)
     expect(reloaded.items).toHaveLength(1)
     expect(reloaded.items[0]?.result_evidence_hash).toBe('a'.repeat(64))
+  })
+
+  it('manages K2 knowledge asset lifecycle: drafts, publish constraints, edit, and archive', async () => {
+    ;(globalThis as typeof globalThis & { __DATARIVER_POC_RUNTIME__?: Record<string, boolean> })
+      .__DATARIVER_POC_RUNTIME__ = { pocState: true }
+    const client = useStableApiClient()
+
+    const domain = await client.request<{ id: string; source_version: string }>('/knowledge/domains', {
+      method: 'POST', body: JSON.stringify({ display_name: 'K2 Test Domain' }),
+    })
+
+    const draft = await client.request<{ id: string; version: number; materialized_graph_id?: string; endpoint_alias: string }>('/knowledge/studio/drafts', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'K2 Test Asset', endpoint_alias: 'k2_test_asset', domain_id: domain.id, domain_source_version: domain.source_version, classification: 'INTERNAL' })
+    })
+
+    // Pre-publish registry
+    let registry = await client.request<KnowledgeAssetPage>('/knowledge/registry/assets')
+    let asset = registry.items.find((item) => item.id === draft.id)
+    expect(asset).toBeDefined()
+    expect(asset?.status).toBe('DRAFT')
+
+    // Pre-publish detail
+    const detailRes = await client.request<KnowledgeAssetOperationalDetail>(`/knowledge/registry/assets/${draft.id}/detail`)
+    expect(detailRes.asset.status).toBe('DRAFT')
+
+    await expect(client.request(`/knowledge/studio/drafts/${draft.id}/publish`, {
+      method: 'POST', body: JSON.stringify({ review_reason: 'test' }), ifMatch: `"${draft.version}"`,
+    })).rejects.toThrow('작성자는 직접 승인/발행할 수 없습니다.')
+
+    configureKnowledgeActor('k2-independent-reviewer', 1)
+    const publishRes = await client.request<{ draft: KnowledgeStudioDraft; release: KnowledgeStudioRelease }>(`/knowledge/studio/drafts/${draft.id}/publish`, {
+      method: 'POST', body: JSON.stringify({ review_reason: 'approved' }), ifMatch: `"${draft.version}"`,
+    })
+
+    const graphId = publishRes.draft.materialized_graph_id
+    expect(graphId).toBeDefined()
+
+    registry = await client.request<KnowledgeAssetPage>('/knowledge/registry/assets')
+    asset = registry.items.find((item) => item.id === graphId)
+    expect(asset).toBeDefined()
+    expect(asset?.status).toBe('ACTIVE')
+    expect(asset?.creator_name).toBe('live-test-admin')
+    expect(asset?.editor_name).toBe('k2-independent-reviewer')
+    expect(asset?.display_version).toBe(1)
+
+    let graphs = await client.request<KnowledgeGraph[]>('/knowledge/graphs')
+    expect(graphs.find((graph) => graph.id === graphId)).toBeDefined()
+
+    configureKnowledgeActor('k2-editor', 1)
+    const editDraft = await client.request<{ id: string; version: number }>(`/knowledge/studio/drafts/from-asset/${graphId}`, {
+      method: 'POST'
+    })
+    expect(editDraft.id).not.toBe(draft.id)
+
+    registry = await client.request<KnowledgeAssetPage>('/knowledge/registry/assets')
+    asset = registry.items.find((item) => item.id === graphId)
+    expect(asset?.status).toBe('DRAFT')
+    expect(asset?.draft_id).toBe(editDraft.id)
+    expect(asset?.display_version).toBe(2)
+    expect(asset?.creator_name).toBe('live-test-admin')
+    expect(asset?.editor_name).toBe('k2-editor')
+
+    const initialEditVersion = editDraft.version
+    const savedEdit = await client.request<{ version: number; author_id: string }>(`/knowledge/studio/drafts/${editDraft.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ description: 'K2 edited description', author_id: 'forged-author' }),
+      ifMatch: `"${initialEditVersion}"`,
+    })
+    expect(savedEdit.author_id).toBe('k2-editor')
+    await expect(client.request(`/knowledge/studio/drafts/${editDraft.id}`, {
+      method: 'PATCH', body: JSON.stringify({ description: 'stale write' }), ifMatch: `"${initialEditVersion}"`,
+    })).rejects.toThrow('데이터가 변경되었습니다.')
+
+    // ACTIVE remains in /knowledge/graphs during edit Draft
+    graphs = await client.request<KnowledgeGraph[]>('/knowledge/graphs')
+    expect(graphs.find((graph) => graph.id === graphId)).toBeDefined()
+
+    const versions = await client.request<KnowledgeAssetVersionHistoryPage>(`/knowledge/registry/assets/${graphId}/versions`)
+    expect(versions.items.length).toBeGreaterThanOrEqual(2)
+
+    configureKnowledgeActor('k2-read-only', 1, ['knowledge.read'])
+    await expect(client.request(`/knowledge/graphs/${graphId}/archive`, {
+      method: 'POST', ifMatch: `"${savedEdit.version}"`,
+    })).rejects.toThrow(/권한/)
+
+    configureKnowledgeActor('k2-independent-reviewer', 2)
+    await expect(client.request(`/knowledge/graphs/${graphId}/archive`, {
+      method: 'POST', ifMatch: `"0"`,
+    })).rejects.toThrow('데이터가 변경되었습니다.')
+
+    const archived = await client.request<{ status: string }>(`/knowledge/graphs/${graphId}/archive`, {
+      method: 'POST', ifMatch: `"${savedEdit.version}"`,
+    })
+    expect(archived.status).toBe('ARCHIVED')
+
+    registry = await client.request<KnowledgeAssetPage>('/knowledge/registry/assets')
+    asset = registry.items.find((item) => item.id === graphId)
+    expect(asset?.status).toBe('ARCHIVED')
   })
 
   it('proxies the apply-report route to the live POC server', async () => {

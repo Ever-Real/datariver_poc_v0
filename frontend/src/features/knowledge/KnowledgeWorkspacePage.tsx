@@ -24,8 +24,10 @@ interface KnowledgeWorkspacePageProps {
   workspaceId: string
   subjectId: string
   locationRevision: number
+  canManage: boolean
+  canReview: boolean
   onNavigate: (page: Page) => void
-  onOpenStudio: (assetId?: string) => void
+  onOpenStudio: (assetId?: string, status?: string) => void
   onStepUp?: () => Promise<void>
   onPasswordReauth?: () => Promise<void>
   onEnroll?: () => Promise<void>
@@ -46,6 +48,8 @@ export function KnowledgeWorkspacePage({
   workspaceId,
   subjectId,
   locationRevision,
+  canManage,
+  canReview,
   onNavigate,
   onOpenStudio,
   onStepUp,
@@ -90,6 +94,8 @@ export function KnowledgeWorkspacePage({
               client={client}
               onCreate={() => onOpenStudio()}
               onEdit={onOpenStudio}
+              canManage={canManage}
+              canArchive={canReview}
             />
           </div>
         )}

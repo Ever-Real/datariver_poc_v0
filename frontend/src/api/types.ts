@@ -1067,8 +1067,11 @@ export interface KnowledgeDeliveryPolicy {
 
 export interface KnowledgeAssetSummary {
   id: string
+  draft_id?: string
   slug: string
   name: string
+  description?: string | null
+  display_version?: number
   graph_type: string
   status: string
   classification: 'PUBLIC' | 'INTERNAL' | 'CONFIDENTIAL' | 'RESTRICTED'
