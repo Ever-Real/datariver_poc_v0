@@ -127,6 +127,11 @@ The succeeding validator used a separate idle Gemini plan terminal and delivered
 `worker_done`. Because it was a reused low-level terminal rather than a supervised worker-start
 resource, `worker-release` correctly reported no supervised Dispatch resource to release.
 
+During the external dashboard edit, one provisional Evidence value was manually expanded from the
+abbreviated commit instead of being read from Git. It was rejected before dashboard validation.
+`git rev-parse HEAD` was then run and the dashboard was corrected to the exact 40-character Evidence
+SHA. This affected neither the Product image nor the already verified Product/OCI equality.
+
 ## AGY usage
 
 | Task | Requested | Effective | Result |
