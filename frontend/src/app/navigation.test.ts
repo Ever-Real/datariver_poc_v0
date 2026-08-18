@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   pageFromLocation,
   pageUrl,
+  pocAuthorizationAllowsPage,
   pocCapabilityForPage,
   pocNavigationForCapabilities,
 } from './navigation'
@@ -40,7 +41,7 @@ describe('navigation contract', () => {
       'knowledge.read', 'monitoring.read',
     ], 'viewer').map(({ id }) => id)).toEqual([
       'catalog', 'change-management', 'monitoring',
-      'governance', 'chat', 'knowledge', 'quality',
+      'governance', 'chat',
     ])
     expect(pocCapabilityForPage('registration')).toBe('catalog.execute')
     expect(pocCapabilityForPage('knowledge-studio')).toBe('knowledge.manage')
@@ -48,13 +49,16 @@ describe('navigation contract', () => {
     expect(pocCapabilityForPage('dashboard')).toBeUndefined()
   })
 
-  it('keeps manager Catalog authority while limiting Registration to steward and admin roles', () => {
+  it('keeps Registration out of top navigation while preserving its direct-page role gate', () => {
     const managerCapabilities = ['catalog.read', 'catalog.execute', 'catalog.manage'] as const
     expect(pocNavigationForCapabilities(managerCapabilities, 'manager').map(({ id }) => id))
       .toEqual(['catalog'])
     expect(pocNavigationForCapabilities(managerCapabilities, 'data_steward').map(({ id }) => id))
-      .toEqual(['catalog', 'registration'])
+      .toEqual(['catalog'])
     expect(pocNavigationForCapabilities(managerCapabilities, 'admin').map(({ id }) => id))
-      .toEqual(['catalog', 'registration'])
+      .toEqual(['catalog'])
+    expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'manager')).toBe(false)
+    expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'data_steward')).toBe(true)
+    expect(pocAuthorizationAllowsPage('registration', managerCapabilities, 'admin')).toBe(true)
   })
 })

@@ -1,15 +1,11 @@
 import type { PocCapability, PocRole } from '../api/types'
 
 export const primaryNavigation = [
-  { id: 'admin', label: 'Admin — 접근관리', badge: undefined },
   { id: 'catalog', label: '검색', badge: undefined },
   { id: 'change-management', label: '변경관리', badge: undefined },
   { id: 'monitoring', label: '모니터링', badge: undefined },
-  { id: 'registration', label: '등록관리', badge: undefined },
-  { id: 'governance', label: '거버넌스 — 정책·표준 문서 관리', badge: undefined },
+  { id: 'governance', label: '거버넌스', badge: undefined },
   { id: 'chat', label: 'Chat', badge: 'Beta' },
-  { id: 'knowledge', label: '지식관리', badge: undefined },
-  { id: 'quality', label: '품질관리', badge: 'Beta' },
 ] as const
 
 export type PrimaryPage = typeof primaryNavigation[number]['id']
@@ -18,6 +14,9 @@ export type Page =
   | 'dashboard'
   | 'sharing'
   | 'admin'
+  | 'registration'
+  | 'knowledge'
+  | 'quality'
   | 'knowledge-chat'
   | 'knowledge-instances'
   | 'knowledge-profiles'
@@ -30,6 +29,9 @@ const pageIds = new Set<Page>([
   'dashboard',
   'sharing',
   'admin',
+  'registration',
+  'knowledge',
+  'quality',
   'knowledge-chat',
   'knowledge-instances',
   'knowledge-profiles',

@@ -49,17 +49,19 @@ describe('AdminPage', () => {
     expect(screen.queryByText(subjectId)).not.toBeInTheDocument()
   })
 
-  it('renders exactly the three primary administration tabs and keeps USERS focused on the user table', async () => {
+  it('renders exactly the five primary administration tabs and keeps USERS focused on the user table', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(json({
       items: [], page: { next_cursor: null, limit: 25 },
     }))))
     renderPage()
 
     const tabs = screen.getByRole('tablist', { name: 'Administration and data governance' })
-    expect(within(tabs).getAllByRole('tab')).toHaveLength(3)
+    expect(within(tabs).getAllByRole('tab')).toHaveLength(5)
     expect(within(tabs).getByRole('tab', { name: 'Accounts & access' })).toBeInTheDocument()
     expect(within(tabs).getByRole('tab', { name: 'System settings' })).toBeInTheDocument()
     expect(within(tabs).getByRole('tab', { name: 'Retention & erasure governance' })).toBeInTheDocument()
+    expect(within(tabs).getByRole('tab', { name: 'Audit/Log review' })).toBeInTheDocument()
+    expect(within(tabs).getByRole('tab', { name: 'Terminology dictionary' })).toBeInTheDocument()
     expect(await screen.findByRole('table', { name: '워크스페이스 사용자 목록' })).toBeInTheDocument()
     expect(screen.queryByText('세부 Access 문서 (고급)')).not.toBeInTheDocument()
     expect(screen.queryByRole('heading', { name: 'Role 정의 및 사용자 할당' })).not.toBeInTheDocument()

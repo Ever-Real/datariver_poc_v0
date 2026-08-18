@@ -9,6 +9,7 @@ import { PageTitle } from '../../components/layout/PageTitle'
 import { AdminApi } from './adminApi'
 import { AccountAccessAdmin } from './AccountAccessAdmin'
 import { AdminMutationConfirmDialog, type PendingAdminMutation } from './AdminMutationConfirmDialog'
+import { AuditLogsAdmin, DictionaryAdmin } from './AdminReadOnlySurfaces'
 import { RetentionGovernanceAdmin } from './RetentionGovernanceAdmin'
 import { SystemConfigurationAdmin } from './SystemConfigurationAdmin'
 import { PocFeaturePermissionAdmin } from './PocFeaturePermissionAdmin'
@@ -212,6 +213,8 @@ export function AdminPage({
       {activeSection === 'featurePermissions' && <PocFeaturePermissionAdmin {...shared} />}
       {activeSection === 'systemSettings' && <SystemConfigurationAdmin {...shared} />}
       {activeSection === 'retention' && <RetentionGovernanceAdmin {...shared} />}
+      {activeSection === 'auditLogs' && <AuditLogsAdmin />}
+      {activeSection === 'dictionary' && <DictionaryAdmin client={client} />}
     </div>}
     <GovernedUnavailable
       compact

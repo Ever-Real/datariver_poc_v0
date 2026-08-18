@@ -120,11 +120,39 @@ describe('POC compatibility application', () => {
     await waitFor(() => expect(new URL(window.location.href).searchParams.get('page')).toBe('dashboard'))
     const menu = within(await navigation())
     expect(menu.getByRole('button', { name: '검색' })).toBeVisible()
-    expect(menu.getByRole('button', { name: /품질관리/ })).toBeVisible()
+    expect(menu.queryByRole('button', { name: /품질관리/ })).not.toBeInTheDocument()
     expect(menu.queryByRole('button', { name: '등록관리' })).not.toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'POC User 사용자 메뉴' }))
+    expect(screen.getByRole('menuitem', { name: '내 프로필' })).toBeVisible()
     expect(screen.queryByRole('menuitem', { name: '관리자메뉴' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '등록관리' })).not.toBeInTheDocument()
+  })
+
+  it('shows product workspaces but not Admin entries in the manager profile menu', async () => {
+    activeProfile = {
+      ...localProfile,
+      roles: ['manager'],
+      authorization: {
+        policy_version: 'POC_PROFILE_CAPABILITIES_V1' as const,
+        role: 'manager' as const,
+        capabilities: [
+          'catalog.read', 'chat.query', 'change.read', 'quality.read',
+          'knowledge.read', 'monitoring.read',
+        ],
+        system_scope: 'ASSIGNED' as const,
+        system_ids: [],
+      },
+    }
+
+    renderPoc()
+
+    fireEvent.click(await screen.findByRole('button', { name: 'POC User 사용자 메뉴' }))
+    expect(screen.getByRole('menuitem', { name: '내 프로필' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: '등록관리' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: '지식관리' })).toBeVisible()
+    expect(screen.getByRole('menuitem', { name: '품질관리' })).toBeVisible()
+    expect(screen.queryByRole('menuitem', { name: 'Admin — 접근관리' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('menuitem', { name: '사용자 관리' })).not.toBeInTheDocument()
   })
 
   it('keeps the original catalog workspace without showing fixture metadata', async () => {
@@ -160,19 +188,16 @@ describe('POC compatibility application', () => {
     fireEvent.click(screen.getByRole('button', { name: 'POC User 사용자 메뉴' }))
     expect(screen.getByRole('menu', { name: '사용자 작업' })).toBeVisible()
     expect(screen.getByText('POC USER')).toBeVisible()
-    expect(await screen.findByRole('menuitem', { name: '관리자메뉴' })).toBeVisible()
+    expect(await screen.findByRole('menuitem', { name: 'Admin — 접근관리' })).toBeVisible()
     expect(screen.queryByRole('menuitem', { name: '계정/권한' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '기능별 권한' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '시스템 설정' })).not.toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '보존·파기 거버넌스' })).not.toBeInTheDocument()
     expect(screen.getByRole('menuitem', { name: '나가기' })).toBeVisible()
-    expect(screen.queryByRole('menuitem', { name: '내 프로필' })).not.toBeInTheDocument()
+    expect(screen.getByRole('menuitem', { name: '내 프로필' })).toBeVisible()
     expect(screen.queryByText(/WebAuthn 보안키 등록/)).not.toBeInTheDocument()
-    fireEvent.click(within(await navigation()).getByRole('button', { name: '지식관리' }))
-    expect(await screen.findByRole('heading', { name: '지식관리' })).toBeVisible()
-    const requestedPaths = providerRequestPaths()
-    expect(requestedPaths.length).toBeGreaterThan(0)
-    expect(requestedPaths.every((path) => path.startsWith('/api/v1/change-history/'))).toBe(true)
+    fireEvent.click(screen.getByRole('menuitem', { name: '지식관리' }))
+    await waitFor(() => expect(new URL(window.location.href).searchParams.get('page')).toBe('knowledge'))
   })
 
   it('fails Chat closed when LLM Chat is not configured', async () => {

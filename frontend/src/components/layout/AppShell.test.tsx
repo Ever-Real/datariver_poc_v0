@@ -268,7 +268,7 @@ describe('application shell contracts', () => {
     }
 
     expect(allowedAdminSections(context)).toEqual([
-      'memberships', 'systemSettings', 'retention',
+      'memberships', 'systemSettings', 'retention', 'auditLogs', 'dictionary'
     ])
   })
 
@@ -428,12 +428,16 @@ describe('application shell contracts', () => {
       />,
     )
     const navigation = screen.getByRole('navigation', { name: '주 메뉴' })
+    expect(Array.from(navigation.querySelectorAll('.primary-navigation-track > button'))
+      .map((button) => button.textContent)).toEqual([
+        '검색', '변경관리', '모니터링', '거버넌스', 'ChatBeta',
+      ])
     expect(navigation).not.toHaveTextContent('관리자')
-    expect(within(navigation).getByRole('button', { name: '검색' })).toHaveAttribute('aria-current', 'page')
-    expect(within(navigation).getByRole('button', { name: '등록관리' })).toBeInTheDocument()
-    expect(within(navigation).getByRole('button', { name: /품질관리.*Beta/ })).toBeInTheDocument()
-    expect(within(navigation).getByRole('button', { name: '모니터링' })).toBeInTheDocument()
-    expect(within(navigation).getByRole('button', { name: '거버넌스 — 정책·표준 문서 관리' })).toBeVisible()
+    expect(within(navigation).getByRole('button', { name: '검색' })).toHaveClass('active')
+    expect(within(navigation).queryByRole('button', { name: '등록관리' })).not.toBeInTheDocument()
+    expect(within(navigation).queryByRole('button', { name: /품질관리.*Beta/ })).not.toBeInTheDocument()
+    expect(within(navigation).getByRole('button', { name: '모니터링' })).toBeVisible()
+    expect(within(navigation).getByRole('button', { name: '거버넌스' })).toBeVisible()
     fireEvent.click(screen.getByRole('button', { name: '변경관리' }))
     expect(onNavigate).toHaveBeenCalledWith('change-management')
     fireEvent.click(screen.getByRole('button', { name: 'User 사용자 메뉴' }))

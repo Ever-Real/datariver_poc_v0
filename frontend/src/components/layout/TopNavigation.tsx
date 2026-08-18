@@ -65,13 +65,10 @@ export function TopNavigation({
     || page === 'knowledge-studio'
     ? 'knowledge'
     : page
-  const hasAdminAuthority = pocMode
-    ? pocCapabilities.includes('admin.manage')
-    : adminContextStatus === 'allowed' || adminContextStatus === 'reauth_required'
   const navigationItems = (pocMode
     ? pocNavigationForCapabilities(pocCapabilities, pocRole)
     : primaryNavigation
-  ).filter((item) => item.id !== 'admin' || hasAdminAuthority)
+  )
 
   return (
     <header className="top-navigation">

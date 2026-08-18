@@ -317,9 +317,20 @@ export function App() {
     if (adminSection === 'poc-quality') return navigate('quality')
     if (adminSection === 'poc-knowledge') return navigate('knowledge')
     if (adminSection === 'poc-glossary') return navigate('glossary')
+
+    let section = adminSection
+    let view: string | undefined
+
+    if (adminSection === 'users') { section = 'memberships'; view = 'users' }
+    if (adminSection === 'systems') { section = 'memberships'; view = 'systems' }
+    if (adminSection === 'metadataLogs') { section = 'auditLogs'; view = 'metadata' }
+    if (adminSection === 'securityLogs') { section = 'auditLogs'; view = 'security' }
+
     const url = new URL(window.location.href)
     url.searchParams.set('page', 'admin')
-    url.searchParams.set('adminSection', adminSection)
+    url.searchParams.set('adminSection', section)
+    if (view) url.searchParams.set('adminView', view)
+    else url.searchParams.delete('adminView')
     url.searchParams.delete('q')
     window.history.pushState({}, '', `${url.pathname}${url.search}${url.hash}`)
     setCatalogQuery('')
@@ -428,21 +439,22 @@ export function App() {
   const adminMessages = getAdminMessages()
   const adminMenuItems: Array<{ id: string; label: string }> = pocMode
     ? [
-        ...((pocRole === 'data_steward' || pocRole === 'admin')
-          && (pocCapabilities.includes('catalog.execute') || pocCapabilities.includes('catalog.manage'))
-          ? [{ id: 'poc-registration', label: '등록관리' }]
+        ...((pocRole === 'data_steward' || pocRole === 'manager' || pocRole === 'admin')
+          ? [
+              { id: 'poc-registration', label: '등록관리' },
+              { id: 'poc-knowledge', label: '지식관리' },
+              { id: 'poc-quality', label: '품질관리' },
+            ]
           : []),
-        ...(pocCapabilities.includes('catalog.manage')
-          ? [{ id: 'poc-glossary', label: '용어사전' }]
-          : []),
-        ...(pocCapabilities.includes('quality.execute') || pocCapabilities.includes('quality.manage')
-          ? [{ id: 'poc-quality', label: '품질관리' }]
-          : []),
-        ...(pocCapabilities.includes('knowledge.manage') || pocCapabilities.includes('knowledge.review')
-          ? [{ id: 'poc-knowledge', label: '지식관리' }]
-          : []),
-        ...(pocCapabilities.includes('admin.manage') && currentAdminContext
-          ? [{ id: 'memberships', label: '관리자메뉴' }]
+        ...(pocRole === 'admin'
+          ? [
+              { id: 'memberships', label: 'Admin — 접근관리' },
+              { id: 'users', label: '사용자 관리' },
+              { id: 'systems', label: 'System 관리' },
+              { id: 'metadataLogs', label: '메타데이터 변경 로그' },
+              { id: 'securityLogs', label: '시스템 보안 로그' },
+              { id: 'dictionary', label: '용어사전' },
+            ]
           : []),
       ]
     : currentAdminContext
@@ -479,7 +491,7 @@ export function App() {
       notice={auth.notice}
       onNavigate={navigate}
       onNavigateAdmin={navigateAdmin}
-      onProfile={oidcAuthenticationEnabled ? () => navigate('profile') : undefined}
+      onProfile={() => navigate('profile')}
       onSearch={searchCatalog}
       onWorkspaceChange={saveWorkspace}
       onPasswordReauth={oidcAuthenticationEnabled ? () => void auth.beginPasswordReauth() : undefined}
