@@ -140,7 +140,13 @@
   fixed Knowledge policy, preserves exact Dataset/SchemaField URNs and applies deterministic typed
   Class/Property proposals to the existing Draft/CAS state. Browser create→preview→apply→save→hard
   reload passed; Neo4j remained 5 nodes / 3 edges before and after, so A-Box growth was zero.
-  Knowledge overall remains `PARTIAL`; K5 A-Box Enricher / Projection is next.
+  Knowledge overall remains `PARTIAL`.
+- Knowledge K5 A-Box Enricher / Projection entry gate:
+  `HOLD_KNOWLEDGE_ABOX_PERSISTENCE_DECISION`. Existing Draft/release/CAS, bindings and K1
+  parameterized identity projection are reusable, but the authoritative Node POC has no approved
+  physical source-row reader. Current DEV also has no Knowledge Studio source manifest/secret root
+  or running ingestion worker. DataHub metadata cannot be fabricated into A-Box rows, so no K5
+  mutation was started and K6 remains `NOT_STARTED` by dependency gate.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
@@ -158,7 +164,7 @@
 5  등록관리                                → steward/admin only; overall PARTIAL
 6  거버넌스 — 정책·표준 문서 관리          → bounded CRUD/archive complete
 7  Chat                                    → General/Vector/AUTO and pre-K7 DataHub lineage complete; fallback/K7 partial
-8  지식관리                                → K0/K1/K2/K3/K4 runtime complete; K5 A-Box next
+8  지식관리                                → K0~K4 complete; K5 source-reader/persistence decision HOLD
 9  품질관리                                → USER_FEATURE_DEFINITION_REQUIRED
 기술 Backlog                              → support/deployment details only
 ```
@@ -450,6 +456,18 @@ local credential + opaque server session
   `DISCARDED`, no-grant Viewer mutation/direct-Draft access was denied, and all disposable sessions
   were revoked without changing the inspection admin.
 - Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K4-SOURCE-PROPOSAL-RUNTIME.md`.
+
+## Knowledge K5 A-Box entry gate
+
+- Existing typed bindings, Draft/release/CAS and the K1 release-pinned parameterized Neo4j
+  projection are reusable seams, but K1 writes source Table/Column identities rather than physical
+  row instances.
+- The current Node runtime has no approved bounded row reader; DEV has no source manifest/secret
+  root and no running Knowledge Studio ingestion worker. The repository contract requires these
+  inputs to fail closed instead of inventing sample rows.
+- K5 is therefore `HOLD_KNOWLEDGE_ABOX_PERSISTENCE_DECISION`; no Product mutation, legacy FastAPI
+  activation or K6 mutation was performed. Evidence:
+  `.orchestration/evidence/DEV-KNOWLEDGE-K5-ABOX-ENTRY-GATE-AUDIT.md`.
 
 ## Post-K1 Quality tab parity
 
