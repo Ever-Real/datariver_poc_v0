@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `536c02f61476a35ad653cac041a3d8b76cbdf5a1`
-- Deployed OCI revision: `536c02f61476a35ad653cac041a3d8b76cbdf5a1`
+- Current Product SHA: `afb95a45c45ae065223faa39c53278884c935f37`
+- Deployed OCI revision: `afb95a45c45ae065223faa39c53278884c935f37`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -32,6 +32,8 @@
   `fd379567a220f1e677deb5225b8e0b36c1d28d8d`
 - Menu topology/Registration role boundary Product:
   `536c02f61476a35ad653cac041a3d8b76cbdf5a1`
+- Knowledge K1 exact identity/provenance Product:
+  `afb95a45c45ae065223faa39c53278884c935f37`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -78,10 +80,15 @@
 - Canonical top-level menu and independent Change/Monitoring/Registration routes:
   `COMPLETE_RUNTIME_VERIFIED`. Registration mutation is limited to data_steward/admin at navigation,
   page, server route and local adapter boundaries; Manager keeps Catalog access.
-- Knowledge K0 existing-implementation audit: `COMPLETE_SOURCE_RUNTIME_AUDIT`; Knowledge overall is
-  `PARTIAL`. Current Node runtime has zero Assets/drafts/releases/bindings, no proven Knowledge
-  Neo4j projection, no Knowledge Chat server handler and no MCP route/server/test. K1 exact
-  DataHub Table/Column URN ↔ Knowledge entity ↔ Neo4j identity/provenance is the next single gate.
+- Knowledge K0 existing-implementation audit: `COMPLETE_SOURCE_RUNTIME_AUDIT`.
+- Knowledge K1 exact identity/provenance: `COMPLETE_RUNTIME_VERIFIED`. The current Node Product
+  preserves exact provider Table and Column URNs, derives a deterministic graph/release-pinned
+  Knowledge identity, performs only a fixed parameterized `KnowledgeSourceEntity`/`HAS_COLUMN`
+  projection, and revalidates current Knowledge Table scope before every write. One actual browser
+  Asset lifecycle produced 2 nodes, 1 edge and duplicate 0 after rerun; exact `DATAHUB_SYNC`
+  provenance and no-grant 403 were verified. Knowledge overall remains `PARTIAL`; K2 Registry/
+  Asset/version lifecycle is next, while Knowledge Chat, Main Chat routing, MCP and default system
+  assets remain unstarted.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
@@ -99,7 +106,7 @@
 5  등록관리                                → steward/admin only; overall PARTIAL
 6  거버넌스 — 정책·표준 문서 관리          → bounded CRUD/archive complete
 7  Chat                                    → General/Vector/AUTO complete; Graph partial
-8  지식관리                                → K0 audited; K1 identity/provenance next
+8  지식관리                                → K0 audited; K1 runtime complete; K2 Registry/version next
 9  품질관리                                → USER_FEATURE_DEFINITION_REQUIRED
 기술 Backlog                              → support/deployment details only
 ```
@@ -143,16 +150,23 @@ local credential + opaque server session
   denied. Origin/CSRF/cookie controls were not relaxed.
 - Agent browser flow is verified through login, `/auth/me`, Admin menu/page and hard reload. User
   browser confirmation remains pending; an active session is not treated as confirmation.
+- Knowledge K1 independent-review validation logged the inspection browser out while switching to a
+  disposable reviewer. The inspection account remains active/login-enabled, unlocked, failed
+  attempts 0, role `admin`, grade `restricted`, with no Responsible System or Table grant, but its
+  former session was revoked and the current active-session count is 0. This guard deviation must
+  not be repaired by password reset, credential reconstruction or synthetic session creation.
 
 ## Fresh validation
 
-- Independent fresh Node POC Validator at exact Product
-  `536c02f61476a35ad653cac041a3d8b76cbdf5a1`. Effective model: Gemini 3.1 Pro High;
-  authoritative worktree/branch/HEAD and Node POC authority recorded; no Product files or runtime
-  changed. The coordinator separately confirmed the deployed OCI revision matches that Product.
-- Node POC full suite: 107/107 PASS.
-- Frontend full suite: 87 files, 599/599 PASS on the final single-worker rerun. The validator's
-  first parallel 595/599 timing run was rejected, not reused as completion evidence.
+- Current Knowledge K1 Product and deployed OCI are the exact same 40-character revision
+  `afb95a45c45ae065223faa39c53278884c935f37`. An independent fresh Node POC Validator using Gemini
+  3.1 Pro High (High) returned `PASS` against this authoritative worktree/runtime after inspecting
+  the current Node source/OCI boundary and rerunning the 600-test frontend suite. Legacy FastAPI and
+  secret-bearing environment dumps were not used.
+- Node POC full suite: 108/108 PASS.
+- Frontend full suite: 87 files, 600/600 PASS on the final single-worker rerun. Four movable
+  parallel navigation/timeout failures are recorded as `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS`;
+  parallel partial results were rejected and are not completion evidence.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and
   `git diff --check`: PASS.
 - Exact Product image build/package/deploy: PASS; current Web health `ok` and OCI revision exact.
@@ -308,6 +322,30 @@ local credential + opaque server session
   implementation starts before that gate.
 - Evidence: `.orchestration/evidence/DEV-MENU-REGISTRATION-KNOWLEDGE-K0-RUNTIME.md`.
 
+## Knowledge K1 exact identity/provenance
+
+- Product `afb95a45...` preserves the exact provider Table dataset URN and exact provider-returned
+  Column schemaFieldEntity URN. It creates only deterministic graph/release/external-URN-pinned
+  `KnowledgeSourceEntity` identities and the fixed `HAS_COLUMN` projection.
+- An actual browser-created DEV Asset passed create, T-Box Class editing, exact Catalog binding,
+  save/reload, Pre-flight, independent REVIEW/Publish and two Neo4j projection executions.
+  Runtime receipt: 2 nodes, 1 edge, duplicate 0; provenance contains exact TABLE/COLUMN URNs with
+  `DATAHUB_SYNC`.
+- A no-grant Manager request reached the current Knowledge data-scope guard and returned 403
+  `KNOWLEDGE_TABLE_FORBIDDEN`; Neo4j remained 2/1/0.
+- Disposable reviewer/negative users are inactive, login-disabled, have zero sessions/grants/
+  assignments. The explicitly labelled DEV evidence Asset remains ACTIVE because the current Node
+  Registry archive path is a K2 gap; no hard delete or direct graph cleanup was substituted.
+- The inspection admin account/credential remains intact, but its browser session was revoked by a
+  reviewer-switch logout during validation. This closeout deviation is recorded; password reset or
+  session reconstruction is forbidden.
+- One unused candidate credential for a not-yet-created disposable reviewer was rendered in a tool
+  DOM snapshot, immediately canceled and never used. Its replacement followed the memory-only path;
+  no literal secret is retained in Product, Evidence or Dashboard.
+- Frontend parallel timing instability is tracked as
+  `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS`; the final current-source single-worker suite is 600/600.
+- Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K1-IDENTITY-PROVENANCE-RUNTIME.md`.
+
 ## MCL runtime / automatic detection
 
 - Product `6c672427...` preserves the existing two historical sources/checkpoints and scopes only
@@ -337,9 +375,9 @@ local credential + opaque server session
 - G2 DEV_PUBLISH: `NOT_APPROVED`
 - G3 PREP mutation: `NOT_APPROVED`
 - G4 OPS mutation: `NOT_APPROVED`
-- Current boundary: preserve Product `536c02f...`; do not start PHASE 1E/1F, migration, legacy
-  deletion, GX/Knowledge/Quality Product mutation or another Account/Auth refactor. K1 Knowledge
-  identity/provenance remains read-only discovery until its gate is explicitly closed. The
+- Current boundary: preserve Product `afb95a45...`; do not start PHASE 1E/1F, migration, legacy
+  deletion, GX/Quality Product mutation or another Account/Auth refactor. Knowledge K1 is closed;
+  the next single Product slice is K2 Registry/Asset/version lifecycle with browser acceptance. The
   durability/outbox/provider-apply gap has a read-only recommendation and still requires
   `HOLD_REGISTRATION_DURABLE_STORAGE_DECISION` before a schema/apply mutation. Governance document
   read/create/update/archive is complete; GX requires exact PREP/OPS contract evidence; Chat

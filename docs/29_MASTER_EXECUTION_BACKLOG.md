@@ -25,7 +25,7 @@ an unsafe bypass, or a historical result from another commit.
 | Created | 2026-07-23, Asia/Seoul |
 | Branch / Phase 6E entry base / current published implementation | `dev` / `dba1186` / verified by the stable publication workflow |
 | Remote comparison | `dev-publish` requires local `dev` and `origin/dev` to resolve to the same exact commit after every publication |
-| Current controlled phase | Product `536c02f61476a35ad653cac041a3d8b76cbdf5a1`: canonical menu order and independent Change/Monitoring/Registration routes are runtime-verified; Registration mutation is data_steward/admin only. Knowledge K0 is audited and K1 exact identity/provenance is next. Registration durability and GX assertion egress remain held/blocked as named. |
+| Current controlled phase | Product `afb95a45c45ae065223faa39c53278884c935f37`: canonical menu and completed baselines remain verified; Knowledge K1 exact provider Table/Column URN → release-pinned entity → bounded Neo4j projection is runtime-verified at 2 nodes/1 edge/duplicate 0 with no-grant 403. Knowledge overall stays PARTIAL and K2 Registry/Asset/version lifecycle is next. Registration durability and GX assertion egress remain held/blocked as named. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## 2026-08-16 Node POC Account/Auth execution
@@ -42,7 +42,7 @@ local credential / opaque server session
 → feature operation
 ```
 
-Current Product boundary `536c02f61476a35ad653cac041a3d8b76cbdf5a1` preserves the PHASE 1D-R
+Current Product boundary `afb95a45c45ae065223faa39c53278884c935f37` preserves the PHASE 1D-R
 baseline and is validated through `.orchestration/evidence/DEV-MCL-RUNTIME-AUTOMATIC-DETECTION.md`,
 `.orchestration/evidence/DEV-PHASE1D-R-DETERMINISTIC-RESTART.md` and the preceding PHASE 1D
 evidence. The current Registration/support-service acceptance is recorded in
@@ -56,6 +56,8 @@ recovery are recorded in
 `.orchestration/evidence/DEV-GOVERNANCE-DOCUMENT-MANAGEMENT-RUNTIME.md`.
 The canonical menu, Registration role boundary and Knowledge K0 audit are recorded in
 `.orchestration/evidence/DEV-MENU-REGISTRATION-KNOWLEDGE-K0-RUNTIME.md`.
+Knowledge K1 exact identity/provenance is recorded in
+`.orchestration/evidence/DEV-KNOWLEDGE-K1-IDENTITY-PROVENANCE-RUNTIME.md`.
 The preceding PHASE 1A runtime evidence is commit
 `8c1f93a456d0fe51e46987b72d66f563f6467d73`. These local commits have not been published;
 `origin/dev` remains `ef41447a1d470119c1a83280e261d4be411354ef` until a future G1/G2 approval.
@@ -69,7 +71,7 @@ The preceding PHASE 1A runtime evidence is commit
 | AUTH-1C-2 | `COMPLETE_RUNTIME_VERIFIED` | Product `f78f30fbcf0a5468ec2ce9893d06825ddd030369`: one exact `(subject_id, table_urn)` domain relation avoids access-CAS bloat; the access document retains Role/System authority and adds only `max_security_grade`. Admin user/grade/grant/Responsible-System/credential/session API and UI, targeted current-Table fail-closed validation, two-user isolation, spoof/401/403/404 negatives, credential cleanup, exact image revision and full regression are DEV-runtime verified. Evidence: `.orchestration/evidence/DEV-PHASE1C2-USER-TABLE-ACCESS-RUNTIME.md`. |
 | AUTH-1C-3 | `COMPLETE_RUNTIME_VERIFIED` | Product `9df97f4975a990819db655b74b09e709dc6d5aad`: fixed 8-feature × 5-role × 3-grade (120-cell) CAS management policy, exact Admin API/UI, immutable Admin allow and role-ineligible deny, stale-CAS/shape negatives, real browser verification and fresh AGY Validator passed. PHASE 1D enforcement remains explicitly inactive. Evidence: `.orchestration/evidence/DEV-PHASE1C3-SECURITY-HARDENING-RUNTIME.md`. |
 | AUTH-1C-4 | `COMPLETE_RUNTIME_VERIFIED` | Product `773cd37e6d48cbba02c999380fe1965a3b9f4e26`: request-principal CR commands now require a current exact Table, explicit grant/grade/fixed Change policy for non-Admin creation, one exact responsible System, current Developer/Data Steward workflow assignment and independent Developer/Data Steward/Manager final lanes. Admin cannot silently satisfy a lane; concurrent completion uses the existing core CAS; legacy CRs remain read-compatible and mutation-protected. The same Product also redirects noncanonical browser GETs to the configured DEV origin without weakening wrong-Origin mutation denial. Evidence: `.orchestration/evidence/DEV-PHASE1C4-CR-RESPONSIBILITY-RUNTIME.md`. |
-| AUTH-1D | `PARTIAL` overall; core surfaces complete | Product `91ca4db7ca792566b7765f3366036b1d8bed2869` froze deterministic provider restart; Product `536c02f61476a35ad653cac041a3d8b76cbdf5a1` preserves the Registration/Table, Governance and Chat regression baseline while limiting Registration mutation to data_steward/admin without a new capability. Request-time grant + grade + fixed-cell AND, no-N+1 hydration, local count/detail hiding, PG/memory pre-ranking and Product General/Vector/AUTO/reranking/context/citation remain `COMPLETE_RUNTIME_VERIFIED`. Overall AUTH-1D remains `PARTIAL` only for named feature-owned gaps: provider traversal/totals, Neo4j canonical provenance, deleted grade, unbound Knowledge and Quality/GX. |
+| AUTH-1D | `PARTIAL` overall; core surfaces complete | Product `91ca4db7ca792566b7765f3366036b1d8bed2869` froze deterministic provider restart; Product `afb95a45c45ae065223faa39c53278884c935f37` preserves the Registration/Table, Governance and Chat regression baseline and closes only the bounded Knowledge K1 exact-identity projection. Request-time grant + grade + fixed-cell AND, no-N+1 hydration, local count/detail hiding, PG/memory pre-ranking and Product General/Vector/AUTO/reranking/context/citation remain `COMPLETE_RUNTIME_VERIFIED`. Overall AUTH-1D remains `PARTIAL` for provider traversal/totals, deleted grade, unbound resources and Quality/GX; K1 does not make unrestricted Graph routes complete. |
 | AUTH-1E | `BACKLOG` | Retire only proven legacy auth active paths after the replacement remains runtime-verified. Preserve reusable Knowledge/Quality/Chat code, schema history and `UNKNOWN` references. |
 | AUTH-1F | `BACKLOG` | Complete multi-account personal history/draft/Chat-stream isolation, session reset/revoke acceptance, every feature regression and external network acceptance. Bounded legacy authorship placeholders are not authorization authority but remain part of this acceptance. |
 | AUTH-NET | `TARGET_RECHECK_REQUIRED` | DEV Web and supporting owned ports are loopback/private and local inspection passes. A real second-host negative connectivity probe is still required; do not claim public-network isolation from bind inspection alone. |
@@ -96,15 +98,18 @@ services remain technical detail rather than a top-level Product menu.
 | 5 | 등록관리 | mutation data_steward/admin only; provider apply/durability `PARTIAL` |
 | 6 | 거버넌스 — 정책·표준 문서 관리 | bounded read/create/DRAFT-update/archive complete |
 | 7 | Chat | General/Vector/AUTO complete; safe Graph partial |
-| 8 | 지식관리 | K0 audit complete; K1 exact identity/provenance next |
+| 8 | 지식관리 | K0 audit complete; K1 exact identity/provenance runtime complete; K2 Registry/Asset/version lifecycle next |
 | 9 | 품질관리 | `USER_FEATURE_DEFINITION_REQUIRED`; GX technical gate separate |
 | — | 기술 Backlog | support services, deployment and target gates |
 
 Knowledge K0 found zero current Node Assets/drafts/releases/bindings, no verified Knowledge Neo4j
 projection, no current Knowledge Chat server handler and no MCP route/server/test. Historical Python
-Knowledge code is a reusable design source, not current runtime proof. K1 is strictly the read-only
-DataHub Table/Column URN ↔ Knowledge entity ↔ Neo4j identity/provenance gate; non-Admin graph stays
-fail-closed and no graph write, storage migration, Main Chat integration or MCP work precedes it.
+Knowledge code is a reusable design source, not current runtime proof. Product `afb95a45...` now
+closes K1 only: exact provider Table/Column URNs are pinned to graph/release-scoped deterministic
+Knowledge identities and written through a fixed parameterized Neo4j projection. Actual browser
+E2E produced 2 nodes, 1 edge and duplicate 0 after rerun, exact `DATAHUB_SYNC` provenance and
+no-grant 403. Non-Admin unrelated graph remains fail-closed. K2 lifecycle, Knowledge Chat, Main Chat,
+MCP and default system assets remain separate later slices.
 
 ## 2026-08-17 Product priority realignment
 
@@ -120,7 +125,7 @@ Korean dashboard use this user-facing order:
 | P4 | Registration | Authorization/preparation, manual-metadata apply, one READY candidate-to-governed-CR command and authoritative `NOT_STARTED` apply-report `COMPLETE_RUNTIME_VERIFIED`; mutation roles are data_steward/admin only; overall `PARTIAL` for durable preparation/outbox/provider-apply, remaining typed surfaces and target gates; accepted minimal relational direction awaits schema approval |
 | P5 | Governance — policy/standard documents | `COMPLETE_RUNTIME_VERIFIED` for active-user read and data_steward/manager/admin create, DRAFT-version update and archive; viewer/developer mutation denied |
 | P6 | Chat | Preserve verified General/Vector/AUTO; refine routing, latency and safe Graph only |
-| P7 | Knowledge / Quality | Knowledge K0 current implementation audited and K1 identity/provenance next; Quality remains `USER_FEATURE_DEFINITION_REQUIRED` |
+| P7 | Knowledge / Quality | Knowledge K0 audited and K1 exact identity/provenance runtime-verified; K2 Registry/Asset/version next. Quality remains `USER_FEATURE_DEFINITION_REQUIRED` |
 | P8 | Admin | Minimum controls required by real features only; no generic IAM/configuration console |
 
 Controlled execution DAG:
