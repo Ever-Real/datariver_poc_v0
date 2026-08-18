@@ -1,9 +1,9 @@
 # DEV Knowledge K3 minimal T-Box Builder runtime evidence
 
-Date: 2026-08-19 KST  
-Authoritative runtime: Node POC  
-Authoritative worktree: `/Users/everreal/orca/workspaces/datariver_poc_v0/dev-core-t04-validation`  
-Product SHA: `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`  
+Date: 2026-08-19 KST
+Authoritative runtime: Node POC
+Authoritative worktree: `/Users/everreal/orca/workspaces/datariver_poc_v0/dev-core-t04-validation`
+Product SHA: `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`
 Deployed OCI revision: `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`
 
 ## Scope and status
