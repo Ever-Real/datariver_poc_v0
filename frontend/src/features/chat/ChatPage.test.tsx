@@ -146,6 +146,16 @@ describe('ChatPage', () => {
     vi.restoreAllMocks()
   })
 
+  it('describes General as retrieval-free and pre-K7 Graph as DataHub lineage only', async () => {
+    const { client } = chatClient()
+    render(<ChatPage client={client} />)
+    await screen.findByText('주문 데이터')
+
+    fireEvent.click(screen.getByRole('button', { name: '검색 경로' }))
+    expect(screen.getByText('메타데이터를 검색하지 않고 일반 질문에 답변합니다.')).toBeInTheDocument()
+    expect(screen.getByText('현재는 인가된 DataHub lineage만 탐색합니다.')).toBeInTheDocument()
+  })
+
   it('sends the selected route on Enter and renders only server-returned workflow and ranked evidence', async () => {
     const { client, requestEventStream } = chatClient()
     render(<ChatPage client={client} />)

@@ -13,7 +13,6 @@ import { applyTableSystemMappingCommand } from './poc-table-system-mappings.mjs'
 const requests = []
 const objects = new Map()
 let forcedClassifierResponse
-let failNeo4j
 let hideExactFromTextSearch
 let omitKnowledgeColumnUrn
 let forceKnowledgeNonTable
@@ -314,7 +313,6 @@ function providerHandler(request, response) {
       return sendJson(response, { data: { dataset: { lineage: { total: relationships.length, relationships } } } })
     }
     if (url.pathname === '/db/neo4j/tx/commit') {
-      if (failNeo4j) return sendJson(response, { errors: [{ code: 'Neo.ClientError.Security.Unauthorized' }] }, 401)
       const payload = JSON.parse(body.toString('utf8'))
       const query = payload.statements?.[0]?.statement || ''
       const parameters = payload.statements?.[0]?.parameters || {}
@@ -783,7 +781,11 @@ test('resolves an exact graph asset from the cached provider inventory when Data
   }
 })
 
-test('routes lineage questions through bounded DataHub and Neo4j graph evidence', async () => {
+test('routes lineage questions through DataHub lineage only without generic Neo4j evidence', async () => {
+  const genericNeo4jReadsBefore = requests.filter((request) => (
+    request.path === '/db/neo4j/tx/commit'
+    && request.body.includes('MATCH (source)-[relation]->(target)')
+  )).length
   const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -794,27 +796,17 @@ test('routes lineage questions through bounded DataHub and Neo4j graph evidence'
   assert.equal(payload.route.selected_mode, 'GRAPH')
   assert.equal(payload.route.reason, 'GRAPH_INTENT')
   assert.ok(payload.evidence.some((item) => item.evidence_type === 'DATAHUB_LINEAGE'))
-  assert.ok(payload.evidence.some((item) => item.evidence_type === 'KNOWLEDGE_GRAPH'))
+  assert.ok(payload.evidence.every((item) => item.evidence_type !== 'KNOWLEDGE_GRAPH'))
   const lineage = payload.evidence.find((item) => item.evidence_type === 'DATAHUB_LINEAGE')
   assert.match(lineage.description, /Upstream datasets: source_events/)
   assert.match(lineage.description, /Downstream datasets: wafer_quality_view/)
   assert.doesNotMatch(lineage.description, /view_f09ab31/)
   assert.doesNotMatch(lineage.description, /Columns \(/)
-})
-
-test('keeps DataHub lineage answers available when optional Neo4j is unavailable', async () => {
-  failNeo4j = true
-  const response = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question: 'Show upstream lineage impact', mode: 'GRAPH' }),
-  })
-  failNeo4j = false
-  assert.equal(response.status, 200)
-  const payload = await response.json()
-  assert.ok(payload.evidence.some((item) => item.evidence_type === 'DATAHUB_LINEAGE'))
-  assert.ok(payload.evidence.every((item) => item.evidence_type !== 'KNOWLEDGE_GRAPH'))
-  assert.ok(payload.workflow.some((item) => item.detail_code === 'NEO4J_UNAVAILABLE_DATAHUB_LINEAGE_USED'))
+  assert.ok(payload.workflow.some((item) => item.detail_code === 'DATAHUB_LINEAGE_EVIDENCE_BOUND'))
+  assert.equal(requests.filter((request) => (
+    request.path === '/db/neo4j/tx/commit'
+    && request.body.includes('MATCH (source)-[relation]->(target)')
+  )).length, genericNeo4jReadsBefore)
 })
 
 test('bypasses the classifier for explicit Chat routes and fails malformed AUTO routes closed', async () => {

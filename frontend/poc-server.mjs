@@ -3235,7 +3235,7 @@ async function chatRoute(question, requestedMode, principal) {
   }
   const ready = selectedMode === 'VECTOR'
     ? Boolean(datahub && (['CATALOG_INVENTORY', 'EXACT_METADATA'].includes(intent) || llm.embedding))
-    : selectedMode === 'GRAPH' ? Boolean(datahub || neo4j) : true
+    : selectedMode === 'GRAPH' ? Boolean(datahub) : true
   return {
     requested_mode: requestedMode,
     selected_mode: selectedMode,
@@ -3323,7 +3323,7 @@ async function deterministicAutoRoute(question, principal) {
     const impactIntent = /\bimpact\b|영향|변경하면/iu.test(question)
     const relationshipIntent = /\b(?:relationship|path|dependency|dependencies)\b|연결\s*(?:관계|경로)|의존(?:성|관계)/iu.test(question)
     return {
-      requested_mode: 'AUTO', selected_mode: 'GRAPH', reason: 'GRAPH_INTENT', adapter_state: datahub || neo4j ? 'READY' : 'UNAVAILABLE',
+      requested_mode: 'AUTO', selected_mode: 'GRAPH', reason: 'GRAPH_INTENT', adapter_state: datahub ? 'READY' : 'UNAVAILABLE',
       intent: semanticDiscovery && dataTarget
         ? 'MIXED_DISCOVERY_GRAPH'
         : impactIntent ? 'IMPACT_ANALYSIS' : relationshipIntent ? 'RELATIONSHIP' : 'LINEAGE',
@@ -3396,10 +3396,8 @@ async function datahubLineageEvidence(asset, principal) {
 function graphEvidenceAnswer(evidence) {
   const lineage = evidence.map((item, index) => ({ item, index }))
     .filter(({ item }) => item.evidence_type === 'DATAHUB_LINEAGE')
-  const knowledge = evidence.map((item, index) => ({ item, index }))
-    .filter(({ item }) => item.evidence_type === 'KNOWLEDGE_GRAPH')
-  if (!lineage.length && !knowledge.length) {
-    return '실시간 DataHub 및 Neo4j 근거에서 질문과 일치하는 계보 관계를 찾지 못했습니다.'
+  if (!lineage.length) {
+    return '실시간 DataHub lineage 근거에서 질문과 일치하는 계보 관계를 찾지 못했습니다.'
   }
   const lines = []
   if (lineage.length && !lineage.some(({ item }) => item.entity_resolution_method === 'CATALOG_EXACT')) {
@@ -3418,39 +3416,10 @@ function graphEvidenceAnswer(evidence) {
       `  - Downstream: ${downstream.length ? downstream.join(', ') : 'DataHub에서 반환된 관계 없음'}`,
     )
   }
-  if (knowledge.length) {
-    lines.push('Neo4j 지식 그래프에서 함께 확인된 관계:')
-    for (const { item, index } of knowledge) lines.push(`- ${item.name} (${item.description}) [${index + 1}]`)
-  }
   return lines.join('\n')
 }
 
-async function neo4jEvidence(question) {
-  if (!neo4j) return []
-  const graph = await neo4jGraph()
-  const tokens = question.toLocaleLowerCase().split(/[^\p{L}\p{N}_]+/u).filter((value) => value.length > 1)
-  const nodes = new Map(graph.nodes.map((node) => [node.id, node]))
-  const ranked = graph.edges.map((edge) => {
-    const source = nodes.get(edge.source_id)
-    const target = nodes.get(edge.target_id)
-    const text = `${source?.name || ''} ${edge.edge_type} ${target?.name || ''}`.toLocaleLowerCase()
-    return { edge, source, target, score: tokens.filter((token) => text.includes(token)).length }
-  }).sort((left, right) => right.score - left.score).slice(0, 5)
-  return ranked.flatMap(({ edge, source, target }) => source && target ? [{
-    id: `neo4j:${edge.id}`,
-    external_urn: `neo4j://${edge.id}`,
-    name: `${source.name} → ${target.name}`,
-    description: `${edge.edge_type} · ${source.entity_type} → ${target.entity_type}`,
-    classification: 'INTERNAL',
-    lifecycle: 'ACTIVE',
-    source_version: 'neo4j-live',
-    evidence_type: 'KNOWLEDGE_GRAPH',
-    extraction_method: 'NEO4J_FIXED_GRAPH_QUERY',
-    retrieval_method: 'GRAPH',
-  }] : [])
-}
-
-function completedChatWorkflow(route, evidenceCount, rerankingState, graphProviderState = 'NOT_USED') {
+function completedChatWorkflow(route, evidenceCount, rerankingState) {
   const reranking = rerankingState === 'COMPLETED'
     ? { status: 'COMPLETED', detail_code: 'RERANKING_COMPLETED' }
     : rerankingState === 'FAILED_OPEN'
@@ -3461,12 +3430,14 @@ function completedChatWorkflow(route, evidenceCount, rerankingState, graphProvid
     { stage: 'BUDGET_RESERVATION', status: 'SKIPPED', detail_code: 'POC_NO_DURABLE_BUDGET' },
     { stage: 'ROUTING', status: 'COMPLETED', detail_code: `${route.selected_mode}_ROUTE_SELECTED` },
     { stage: 'RETRIEVAL', status: 'COMPLETED', detail_code: evidenceCount ? `${route.selected_mode}_RETRIEVAL_COMPLETED` : 'NO_LIVE_EVIDENCE' },
-    ...(graphProviderState === 'FAILED_OPEN' ? [{
-      stage: 'GRAPH_PROVIDER', status: 'SKIPPED', detail_code: 'NEO4J_UNAVAILABLE_DATAHUB_LINEAGE_USED',
-    }] : []),
     { stage: 'RERANKING', ...reranking },
     { stage: 'COMPOSITION', status: 'COMPLETED', detail_code: 'POC_LIVE_PROVIDER' },
-    { stage: 'CITATION_VALIDATION', status: 'COMPLETED', detail_code: 'DATAHUB_NEO4J_EVIDENCE_BOUND' },
+    {
+      stage: 'CITATION_VALIDATION', status: 'COMPLETED',
+      detail_code: route.selected_mode === 'GRAPH'
+        ? 'DATAHUB_LINEAGE_EVIDENCE_BOUND'
+        : evidenceCount ? 'AUTHORIZED_DATAHUB_EVIDENCE_BOUND' : 'NO_INTERNAL_CITATIONS_GENERAL_ANSWER',
+    },
     { stage: 'PERSISTENCE', status: 'SKIPPED', detail_code: 'EPHEMERAL_NO_STORE' },
   ]
 }
@@ -3991,7 +3962,6 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
   }
   let evidence = []
   let inventoryRequest
-  let graphProviderState = 'NOT_USED'
   const evidenceLimit = requestedChatEvidenceLimit(resolvedQuestion)
   if (route.selected_mode === 'GENERAL') {
     progress('RETRIEVAL', 'SKIPPED', 'RETRIEVAL_NOT_EXECUTED')
@@ -4016,21 +3986,8 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
       'chat',
     )
   }
-  if (route.selected_mode === 'GRAPH') {
-    try {
-      if (principal.role !== 'admin') {
-        graphProviderState = 'FILTERED_BY_TABLE_SCOPE'
-      } else {
-        const graphEvidence = await neo4jEvidence(resolvedQuestion)
-        evidence = [...evidence, ...graphEvidence].slice(0, 8)
-        graphProviderState = neo4j ? 'COMPLETED' : 'NOT_CONFIGURED'
-      }
-    } catch {
-      // DataHub lineage remains valid live graph evidence when the optional
-      // Neo4j projection is unavailable or its local credentials are stale.
-      graphProviderState = 'FAILED_OPEN'
-    }
-  }
+  // Main Chat GRAPH is DataHub-lineage-only until K7 introduces an authorized,
+  // release-pinned Knowledge Asset usage profile. It never reads generic Neo4j evidence here.
   if (route.selected_mode !== 'GENERAL') {
     progress('RETRIEVAL', 'COMPLETED', evidence.length
       ? `${route.selected_mode}_RETRIEVAL_COMPLETED`
@@ -4098,12 +4055,14 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
     ? answer.trim()
     : answer.replace(/\s*\[\d+\]/g, '').trim()
   progress('CITATION_VALIDATION', 'IN_PROGRESS', 'CITATION_VALIDATION_IN_PROGRESS')
-  progress('CITATION_VALIDATION', 'COMPLETED', 'DATAHUB_NEO4J_EVIDENCE_BOUND')
+  progress('CITATION_VALIDATION', 'COMPLETED', route.selected_mode === 'GRAPH'
+    ? 'DATAHUB_LINEAGE_EVIDENCE_BOUND'
+    : evidence.length ? 'AUTHORIZED_DATAHUB_EVIDENCE_BOUND' : 'NO_INTERNAL_CITATIONS_GENERAL_ANSWER')
   progress('PERSISTENCE', 'SKIPPED', 'EPHEMERAL_NO_STORE')
   return {
     answer: validatedAnswer,
     route,
-    workflow: completedChatWorkflow(route, evidence.length, rerankingState, graphProviderState),
+    workflow: completedChatWorkflow(route, evidence.length, rerankingState),
     evidence,
   }
 }

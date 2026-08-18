@@ -42,9 +42,9 @@ import { SafeMarkdown } from './SafeMarkdown'
 
 const modeOptions: ChatRouteOption[] = [
   { value: 'AUTO', label: '자동', description: '질문의 의도에 맞는 인가된 경로를 서버가 선택합니다.' },
-  { value: 'GENERAL', label: '일반', description: '인가된 카탈로그 검색과 일반 지식 fallback을 사용합니다.' },
+  { value: 'GENERAL', label: '일반', description: '메타데이터를 검색하지 않고 일반 질문에 답변합니다.' },
   { value: 'VECTOR', label: '벡터', description: '권한 필터 후 의미 기반 검색과 재정렬을 사용합니다.' },
-  { value: 'GRAPH', label: '그래프', description: 'Asset Graph 어댑터가 준비된 경우에만 경로를 탐색합니다.' },
+  { value: 'GRAPH', label: '그래프', description: '현재는 인가된 DataHub lineage만 탐색합니다.' },
 ]
 
 const maximumQuestionCharacters = 12_000
@@ -60,7 +60,7 @@ const routeReasonLabels: Record<ChatRouteDecision['reason'], string> = {
   EXPLICIT_SELECTION: '사용자 경로 선택',
   GRAPH_INTENT: '영향·계보 질문 감지',
   SEMANTIC_INTENT: '의미 검색 질문 감지',
-  GENERAL_DEFAULT: '일반 검색 기본 경로',
+  GENERAL_DEFAULT: '일반 대화 기본 경로',
 }
 
 const adapterStateLabels: Record<ChatRouteDecision['adapter_state'], string> = {
