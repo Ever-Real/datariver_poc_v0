@@ -147,6 +147,10 @@
   physical source-row reader. Current DEV also has no Knowledge Studio source manifest/secret root
   or running ingestion worker. DataHub metadata cannot be fabricated into A-Box rows, so no K5
   mutation was started and K6 remains `NOT_STARTED` by dependency gate.
+  The bounded decision rejects synchronous core/CAS row ingestion and recommends, only after
+  `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`, provisioning the already tracked ADR-0094 revision
+  `0081`/fixed-function/optional-worker contract behind a minimal Node facade. Legacy FastAPI does
+  not become an authority and no browser DSN/SQL/secret input is permitted.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
@@ -468,6 +472,12 @@ local credential + opaque server session
 - K5 is therefore `HOLD_KNOWLEDGE_ABOX_PERSISTENCE_DECISION`; no Product mutation, legacy FastAPI
   activation or K6 mutation was performed. Evidence:
   `.orchestration/evidence/DEV-KNOWLEDGE-K5-ABOX-ENTRY-GATE-AUDIT.md`.
+- The decision packet rejects putting physical-row job state into the existing core/CAS document.
+  The smallest coherent route is the repository's accepted ADR-0094 plane: existing revision
+  `0081`, fixed database functions, dedicated worker role/service Subject, deployment-owned
+  manifest/secret references and optional `knowledge-studio-ingestion` worker, exposed to the
+  authoritative Node Product only through a bounded fixed-function facade. Starting that runtime
+  is gated by `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`.
 
 ## Post-K1 Quality tab parity
 

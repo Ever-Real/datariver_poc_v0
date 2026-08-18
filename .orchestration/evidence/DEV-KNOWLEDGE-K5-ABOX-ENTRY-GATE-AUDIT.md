@@ -44,6 +44,40 @@
   manifest/secret and durable ingestion authority for the authoritative Node Product. That
   decision must not silently activate the legacy FastAPI runtime or add a second graph authority.
 
+## Bounded decision packet
+
+### Option A — reuse the Node core/CAS as a synchronous row-ingestion store
+
+- Rejected. The core/CAS can retain authored Draft, release and mapping documents, but it has no
+  durable claim/lease/fence, immutable source pin, attempt/event trail or atomic Changeset result
+  contract for physical rows.
+- Adding an API-request source scan or persisting raw/sample rows in the core document would
+  contradict ADR-0061 and ADR-0094. It would also create a second, weaker ingestion authority.
+
+### Option B — provision the already tracked ADR-0094 ingestion plane
+
+- Recommended only with explicit approval. The repository already contains revision `0081`, the
+  fixed database functions and models, the `knowledge-studio-ingestion-worker` implementation and
+  the optional `knowledge-studio-ingestion` Compose profile.
+- The authoritative browser/API remains the Node POC. A future bounded Node facade may issue and
+  read only the existing fixed-function command/result contract; it must not start the legacy
+  FastAPI application or accept DSNs, SQL, identifiers or credentials from the browser.
+- DEV provisioning is still a material runtime change: it requires the existing PostgreSQL
+  migration/roles, a dedicated service Subject, the immutable deployment-owned source manifest,
+  mounted secret references, an approved disposable read-only PostgreSQL source and the optional
+  worker/container. The current runtime has none of these inputs.
+- Rollback is to disable the optional profile/facade while retaining immutable evidence. It does
+  not delete jobs, events, attempts, receipts or Knowledge history.
+
+### Approval boundary
+
+- Approval ID: `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`.
+- Approval permits only the tracked ADR-0094 DEV plane and the smallest Node fixed-function facade
+  needed by the current Product. It does not permit a new table design, new ingestion framework,
+  legacy FastAPI authority, PREP/OPS mutation, business-data testing or destructive cleanup.
+- Until approval, K5 remains HOLD and K6 remains unstarted. This is an implementation/deployment
+  authority decision, not a request for a secret value.
+
 ## Independent read-only audit
 
 - Requested/effective model: Gemini 3.1 Pro High, plan/read-only.

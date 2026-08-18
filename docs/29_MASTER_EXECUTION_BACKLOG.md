@@ -132,6 +132,13 @@ projection seams, but no approved current Node physical-row reader or configured
 authority. K5 is `HOLD_KNOWLEDGE_ABOX_PERSISTENCE_DECISION`; K6 was not started. K5 through K9
 remain separate later slices.
 
+The bounded K5 decision rejects synchronous core/CAS row ingestion because it lacks the accepted
+claim/lease/fence/source-pin/attempt/Changeset authority. The recommended path, gated by
+`APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`, is to provision the already tracked ADR-0094 revision
+`0081` and optional worker in DEV and add only a fixed-function facade to the authoritative Node
+Product. This approval does not authorize a new schema/framework, legacy FastAPI authority,
+PREP/OPS mutation or business-data testing.
+
 ### Knowledge K2 audit/backlog receipts
 
 | ID | Status | Current decision |
