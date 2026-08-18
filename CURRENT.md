@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `8dc782a6b8d03ee90b935593294728d2244b03a5`
-- Deployed OCI revision: `8dc782a6b8d03ee90b935593294728d2244b03a5`
+- Current Product SHA: `cc15ebce4181ad7a72dae641eb52d4696ab8e686`
+- Deployed OCI revision: `cc15ebce4181ad7a72dae641eb52d4696ab8e686`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -40,6 +40,10 @@
   `691b889af35fbbe49b5e2850420f877aebf5ca56`
 - Quality primary-tab parity Product:
   `8dc782a6b8d03ee90b935593294728d2244b03a5`
+- Pre-K7 Main Chat DataHub-lineage boundary Product:
+  `601a7ec14fbaa9af2068671e6777206c96a3c19b`
+- General no-retrieval/general-answer Product:
+  `cc15ebce4181ad7a72dae641eb52d4696ab8e686`
 - Knowledge K1 exact identity/provenance Product:
   `afb95a45c45ae065223faa39c53278884c935f37`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
@@ -99,6 +103,11 @@
   Quality tabs share the exact Governance tab primitive while retaining Quality roving-keyboard,
   URL/deep-link, panel layout and authorization behavior. Quality Product scope remains
   `USER_FEATURE_DEFINITION_REQUIRED`; GX was not implemented by this UI-only slice.
+- Main Chat pre-K7 routing boundary: `COMPLETE_RUNTIME_VERIFIED` for DataHub-lineage-only Graph and
+  General no-retrieval/general-answer behavior. Graph no longer reads generic Neo4j evidence for
+  Admin or non-Admin, while K1 projection routes remain unchanged. Chat overall stays `PARTIAL`
+  because `fallback_mode` is still declarative and K7 authorized Knowledge Asset routing is not
+  implemented.
 - Knowledge K0 existing-implementation audit: `COMPLETE_SOURCE_RUNTIME_AUDIT`.
 - Knowledge K1 exact identity/provenance: `COMPLETE_RUNTIME_VERIFIED`. The current Node Product
   preserves exact provider Table and Column URNs, derives a deterministic graph/release-pinned
@@ -124,7 +133,7 @@
 4  모니터링                                → independent authorized read baseline
 5  등록관리                                → steward/admin only; overall PARTIAL
 6  거버넌스 — 정책·표준 문서 관리          → bounded CRUD/archive complete
-7  Chat                                    → General/Vector/AUTO complete; Graph partial
+7  Chat                                    → General/Vector/AUTO and pre-K7 DataHub lineage complete; fallback/K7 partial
 8  지식관리                                → K0 audited; K1 runtime complete; K2 Registry/version next
 9  품질관리                                → USER_FEATURE_DEFINITION_REQUIRED
 기술 Backlog                              → support/deployment details only
@@ -178,12 +187,14 @@ local credential + opaque server session
 ## Fresh validation
 
 - Current Product and deployed OCI are the exact same 40-character revision
-  `8dc782a6b8d03ee90b935593294728d2244b03a5`. A fresh independent Node POC Validator using Gemini
+  `cc15ebce4181ad7a72dae641eb52d4696ab8e686`. A fresh independent Node POC Validator using Gemini
   3.1 Pro High (High) returned `PASS` after recording the exact worktree/branch/HEAD, Node POC
-  authority, `/healthz=ok`, exact OCI equality and rerunning the current Quality 18/18 focused
-  tests. Legacy FastAPI and secret-bearing environment dumps were not used.
-- Node POC full suite: 108/108 PASS.
-- Frontend full suite: 87 files, 606/606 PASS on the final single-worker rerun. Four movable
+  authority, `/healthz=ok`, exact OCI equality and rerunning provider 21/21 plus Chat UI 22/22.
+  Legacy FastAPI and secret-bearing environment dumps were not used.
+- Node POC full stable serialized suite: 107/107 PASS. Two default-concurrency runs hit an isolated
+  safe provider-capability `ECONNRESET`; the exact test passed alone and failed parallel results
+  were rejected.
+- Frontend full suite: 87 files, 607/607 PASS on the final single-worker rerun. Four movable
   parallel navigation/timeout failures are recorded as `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS`;
   parallel partial results were rejected and are not completion evidence.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and

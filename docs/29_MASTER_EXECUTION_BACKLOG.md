@@ -25,7 +25,7 @@ an unsafe bypass, or a historical result from another commit.
 | Created | 2026-07-23, Asia/Seoul |
 | Branch / Phase 6E entry base / current published implementation | `dev` / `dba1186` / verified by the stable publication workflow |
 | Remote comparison | `dev-publish` requires local `dev` and `origin/dev` to resolve to the same exact commit after every publication |
-| Current controlled phase | Product `afb95a45c45ae065223faa39c53278884c935f37`: canonical menu and completed baselines remain verified; Knowledge K1 exact provider Table/Column URN → release-pinned entity → bounded Neo4j projection is runtime-verified at 2 nodes/1 edge/duplicate 0 with no-grant 403. Knowledge overall stays PARTIAL and K2 Registry/Asset/version lifecycle is next. Registration durability and GX assertion egress remain held/blocked as named. |
+| Current controlled phase | Product `cc15ebce4181ad7a72dae641eb52d4696ab8e686`: completed baselines remain verified; pre-K7 Main Chat Graph is bounded to authorized DataHub lineage for every role and General answers without metadata retrieval. Chat stays PARTIAL for actual fallback execution and K7 Knowledge Asset routing. Knowledge K1 remains frozen complete and K2 Registry/Asset/version lifecycle is next; Registration durability and GX assertion egress remain held/blocked as named. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## 2026-08-16 Node POC Account/Auth execution
@@ -42,7 +42,7 @@ local credential / opaque server session
 → feature operation
 ```
 
-Current Product boundary `afb95a45c45ae065223faa39c53278884c935f37` preserves the PHASE 1D-R
+Current Product boundary `cc15ebce4181ad7a72dae641eb52d4696ab8e686` preserves the PHASE 1D-R
 baseline and is validated through `.orchestration/evidence/DEV-MCL-RUNTIME-AUTOMATIC-DETECTION.md`,
 `.orchestration/evidence/DEV-PHASE1D-R-DETERMINISTIC-RESTART.md` and the preceding PHASE 1D
 evidence. The current Registration/support-service acceptance is recorded in
@@ -97,10 +97,16 @@ services remain technical detail rather than a top-level Product menu.
 | 4 | 모니터링 | independent authorized read baseline |
 | 5 | 등록관리 | mutation data_steward/admin only; provider apply/durability `PARTIAL` |
 | 6 | 거버넌스 — 정책·표준 문서 관리 | bounded read/create/DRAFT-update/archive complete |
-| 7 | Chat | General/Vector/AUTO complete; safe Graph partial |
+| 7 | Chat | General/Vector/AUTO and pre-K7 DataHub-lineage Graph complete; fallback execution/K7 partial |
 | 8 | 지식관리 | K0 audit complete; K1 exact identity/provenance runtime complete; K2 Registry/Asset/version lifecycle next |
 | 9 | 품질관리 | `USER_FEATURE_DEFINITION_REQUIRED`; GX technical gate separate |
 | — | 기술 Backlog | support services, deployment and target gates |
+
+### User feedback inbox
+
+| ID | Menu | Classification | Status | Request / application point |
+|---|---|---|---|---|
+| `CHANGE_MONITORING_LEDGER_SURFACE_RELOCATION` | 변경관리 / 모니터링 | `NEXT_SLICE_FEEDBACK` | `BACKLOG` | Move the authoritative ledger presentation into Change Management and remove overlapping summary content only after mapping current component and independent Monitoring-route consumers. Apply in a later Change Management UX slice without duplicating the server projection or client state. |
 
 Knowledge K0 found zero current Node Assets/drafts/releases/bindings, no verified Knowledge Neo4j
 projection, no current Knowledge Chat server handler and no MCP route/server/test. Historical Python
@@ -124,7 +130,7 @@ Korean dashboard use this user-facing order:
 | P3 | DEV support services | Airflow/MinIO `COMPLETE_RUNTIME_VERIFIED`; GX exact 1.19.1 seam `IMPLEMENTED_NOT_VERIFIED` because DataHub Assertion egress is absent |
 | P4 | Registration | Authorization/preparation, manual-metadata apply, one READY candidate-to-governed-CR command and authoritative `NOT_STARTED` apply-report `COMPLETE_RUNTIME_VERIFIED`; mutation roles are data_steward/admin only; overall `PARTIAL` for durable preparation/outbox/provider-apply, remaining typed surfaces and target gates; accepted minimal relational direction awaits schema approval |
 | P5 | Governance — policy/standard documents | `COMPLETE_RUNTIME_VERIFIED` for active-user read and data_steward/manager/admin create, DRAFT-version update and archive; viewer/developer mutation denied |
-| P6 | Chat | Preserve verified General/Vector/AUTO; refine routing, latency and safe Graph only |
+| P6 | Chat | General/Vector/AUTO and the pre-K7 DataHub-lineage-only Graph boundary are runtime-verified; actual fallback execution and K7 authorized Knowledge routing remain `PARTIAL` |
 | P7 | Knowledge / Quality | Knowledge K0 audited and K1 exact identity/provenance runtime-verified; K2 Registry/Asset/version next. Quality remains `USER_FEATURE_DEFINITION_REQUIRED` |
 | P8 | Admin | Minimum controls required by real features only; no generic IAM/configuration console |
 
