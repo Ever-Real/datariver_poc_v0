@@ -2588,7 +2588,10 @@ export function GraphBuilder({
       setStatus(`Typed T-Box 저장 완료 · version ${response.data.draft.version}`)
       return true
     } catch (error) {
-      if (error instanceof ApiError && error.problem.code === 'STATE_VERSION_STALE') {
+      if (
+        (error instanceof ApiError && error.problem.code === 'STATE_VERSION_STALE')
+        || (error instanceof Error && error.message === 'The core state version is stale.')
+      ) {
         setStatus('다른 세션의 변경사항과 충돌했습니다. 현재 편집 내용은 보존됩니다. 최신 Draft를 다시 불러온 뒤 저장하세요.')
       } else {
         setStatus(error instanceof Error ? error.message : 'T-Box 저장에 실패했습니다.')
