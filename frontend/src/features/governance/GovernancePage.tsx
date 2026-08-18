@@ -191,6 +191,7 @@ export function GovernancePage({
   client,
   requesterName,
   requesterEmail,
+  onNavigate,
   onStepUp,
   onPasswordReauth,
   onEnroll,
@@ -808,34 +809,46 @@ export function GovernancePage({
         </div>
       </div>
 
-      <section className="governance-status-overview" aria-label="현재 권한 창의 스키마별 변경요청 현황">
-        <header><span className="governance-kicker">CR Status Overview</span><small>현재 권한으로 열람 가능한 DataHub 스키마와 같은 서버 읽기 창의 요청을 결합합니다. 최대 100개 스키마와 시스템별 20명 담당자를 표시합니다.{overviewTruncated ? ' 추가 항목은 저사양 보호를 위해 생략되었습니다.' : ''}</small></header>
-        <div className="governance-status-scroll"><table><colgroup>{overviewColumnWidths.map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup><thead><tr><th>스키마</th><th>시스템</th><th>담당자</th><th>CR 전체</th><th>데이터셋별 미진행</th><th>접수완료</th><th>재검토</th><th>변경 / TEST</th><th>완료검토</th><th>완료</th></tr></thead><tbody>
-          {overview.length === 0 ? <tr><td colSpan={10}>{listLoading ? '스키마별 현황을 확인하는 중' : '현재 권한 범위에서 표시할 DataHub 스키마가 없습니다.'}</td></tr> : overview.map((row) => {
-            const expanded = expandedSchemas.has(schemaKey(row))
-            return <Fragment key={schemaKey(row)}>
-              <tr className="governance-schema-summary-row">
-                <td><button type="button" className="governance-schema-toggle" aria-expanded={expanded} onClick={() => toggleSchema(row)}><strong className="governance-overview-primary" title={row.schema_name}>{row.schema_name}</strong><small className="governance-overview-secondary" title={`${row.platform} · ${row.database_name}`}>{row.platform} · {row.database_name}</small></button></td>
-                <td><span className="governance-overview-primary" title={row.system_name ?? '시스템 미지정'}>{row.system_name ?? '시스템 미지정'}</span>{row.system_code ? <small className="governance-overview-secondary" title={row.system_code}>{row.system_code}</small> : null}</td>
-                <td><span className="governance-overview-primary" title={row.assignees.length ? `${row.assignees.length.toLocaleString()}명` : '미지정'}>{row.assignees.length ? `${row.assignees.length.toLocaleString()}명` : '미지정'}</span></td>
-                <td>{row.total_count.toLocaleString()}건</td><td>{row.pending_count.toLocaleString()}건</td><td>{row.received_count.toLocaleString()}건</td><td>{row.recheck_count.toLocaleString()}건</td><td>{row.testing_count.toLocaleString()}건</td><td>{row.final_review_count.toLocaleString()}건</td><td>{row.completed_count.toLocaleString()}건</td>
-              </tr>
-              {expanded && <tr className="governance-schema-assignees"><td colSpan={10}>{row.assignees.length ? <ul>{row.assignees.map((assignee) => <li key={`${assignee.subject_id}-${assignee.responsibility}`}><strong>{assignee.display_name}</strong> · {assignee.responsibility === 'DATA_STEWARD' ? 'Data Steward' : '개발자'} · 우선순위 {assignee.priority}</li>)}</ul> : '이 스키마에 활성 시스템 담당자가 아직 지정되지 않았습니다.'}</td></tr>}
-            </Fragment>
-          })}
-        </tbody></table></div>
+      <section className="governance-combined-overview panel" aria-labelledby="governance-combined-heading">
+        <header className="governance-combined-header">
+          <div>
+            <h2 id="governance-combined-heading">CR 및 감지 변경 현황</h2>
+            <p>CR 요청 상태를 조회하고 감지된 변경 사항과 CR을 연결합니다.</p>
+          </div>
+          <button type="button" className="button button-secondary" onClick={() => onNavigate?.('monitoring')}>
+            Monitoring 상세 현황
+          </button>
+        </header>
+
+        <div className="governance-status-overview" role="region" aria-label="현재 권한 창의 스키마별 변경요청 현황">
+          <header><span className="governance-kicker">CR Status Overview</span><small>현재 권한으로 열람 가능한 DataHub 스키마와 같은 서버 읽기 창의 요청을 결합합니다. 최대 100개 스키마와 시스템별 20명 담당자를 표시합니다.{overviewTruncated ? ' 추가 항목은 저사양 보호를 위해 생략되었습니다.' : ''}</small></header>
+          <div className="governance-status-scroll"><table><colgroup>{overviewColumnWidths.map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup><thead><tr><th>스키마</th><th>시스템</th><th>담당자</th><th>CR 전체</th><th>데이터셋별 미진행</th><th>접수완료</th><th>재검토</th><th>변경 / TEST</th><th>완료검토</th><th>완료</th></tr></thead><tbody>
+            {overview.length === 0 ? <tr><td colSpan={10}>{listLoading ? '스키마별 현황을 확인하는 중' : '현재 권한 범위에서 표시할 DataHub 스키마가 없습니다.'}</td></tr> : overview.map((row) => {
+              const expanded = expandedSchemas.has(schemaKey(row))
+              return <Fragment key={schemaKey(row)}>
+                <tr className="governance-schema-summary-row">
+                  <td><button type="button" className="governance-schema-toggle" aria-expanded={expanded} onClick={() => toggleSchema(row)}><strong className="governance-overview-primary" title={row.schema_name}>{row.schema_name}</strong><small className="governance-overview-secondary" title={`${row.platform} · ${row.database_name}`}>{row.platform} · {row.database_name}</small></button></td>
+                  <td><span className="governance-overview-primary" title={row.system_name ?? '시스템 미지정'}>{row.system_name ?? '시스템 미지정'}</span>{row.system_code ? <small className="governance-overview-secondary" title={row.system_code}>{row.system_code}</small> : null}</td>
+                  <td><span className="governance-overview-primary" title={row.assignees.length ? `${row.assignees.length.toLocaleString()}명` : '미지정'}>{row.assignees.length ? `${row.assignees.length.toLocaleString()}명` : '미지정'}</span></td>
+                  <td>{row.total_count.toLocaleString()}건</td><td>{row.pending_count.toLocaleString()}건</td><td>{row.received_count.toLocaleString()}건</td><td>{row.recheck_count.toLocaleString()}건</td><td>{row.testing_count.toLocaleString()}건</td><td>{row.final_review_count.toLocaleString()}건</td><td>{row.completed_count.toLocaleString()}건</td>
+                </tr>
+                {expanded && <tr className="governance-schema-assignees"><td colSpan={10}>{row.assignees.length ? <ul>{row.assignees.map((assignee) => <li key={`${assignee.subject_id}-${assignee.responsibility}`}><strong>{assignee.display_name}</strong> · {assignee.responsibility === 'DATA_STEWARD' ? 'Data Steward' : '개발자'} · 우선순위 {assignee.priority}</li>)}</ul> : '이 스키마에 활성 시스템 담당자가 아직 지정되지 않았습니다.'}</td></tr>}
+              </Fragment>
+            })}
+          </tbody></table></div>
+        </div>
+
+        <AssuranceNotice
+          error={listError}
+          onStepUp={onStepUp}
+          onPasswordReauth={onPasswordReauth}
+          onEnroll={onEnroll}
+          hardwareWebauthnEnabled={hardwareWebauthnEnabled}
+        />
+        <ErrorNotice error={listError} />
+
+        <DetectedChangeCrPanel client={client} changeRequests={requests} />
       </section>
-
-      <AssuranceNotice
-        error={listError}
-        onStepUp={onStepUp}
-        onPasswordReauth={onPasswordReauth}
-        onEnroll={onEnroll}
-        hardwareWebauthnEnabled={hardwareWebauthnEnabled}
-      />
-      <ErrorNotice error={listError} />
-
-      <DetectedChangeCrPanel client={client} changeRequests={requests} />
 
       <section className="governance-list-panel panel" aria-labelledby="governance-list-heading">
         <header>

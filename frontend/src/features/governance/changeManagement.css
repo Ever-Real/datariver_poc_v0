@@ -60,3 +60,35 @@
   font-weight: 800;
   line-height: 1.4;
 }
+
+.governance-combined-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.governance-combined-header h2,
+.governance-combined-header p {
+  margin: 0;
+}
+
+.governance-combined-header p {
+  margin-top: 4px;
+  color: var(--text-500);
+}
+
+.governance-combined-header .button {
+  flex: 0 0 auto;
+}
+
+@media (max-width: 640px) {
+  .governance-combined-header {
+    flex-direction: column;
+  }
+
+  .governance-combined-header .button {
+    width: 100%;
+  }
+}

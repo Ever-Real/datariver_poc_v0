@@ -231,6 +231,30 @@ async function openDetailAfterRender(
 }
 
 describe('GovernancePage', () => {
+  it('groups CR status and detected changes while keeping Monitoring independently navigable', async () => {
+    const onNavigate = vi.fn()
+    const request = vi.fn((path: string): Promise<unknown> => {
+      if (path === '/change-requests/summaries?limit=25') return Promise.resolve(summaryList([]))
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    render(<GovernancePage
+      client={apiClient(request)}
+      requesterName="Test Requester"
+      onNavigate={onNavigate}
+      onStepUp={vi.fn(() => Promise.resolve())}
+      onPasswordReauth={vi.fn(() => Promise.resolve())}
+      onEnroll={vi.fn(() => Promise.resolve())}
+    />)
+
+    const combined = screen.getByRole('region', { name: '현재 권한 창의 스키마별 변경요청 현황' })
+      .closest('.governance-combined-overview')
+    expect(combined).toHaveAccessibleName('CR 및 감지 변경 현황')
+    expect(within(combined as HTMLElement).getByTestId('detected-change-cr-panel')).toBeInTheDocument()
+    fireEvent.click(within(combined as HTMLElement).getByRole('button', { name: 'Monitoring 상세 현황' }))
+    expect(onNavigate).toHaveBeenCalledWith('monitoring')
+    expect(await screen.findByText('현재 권한 범위에서 조회 가능한 요청이 없습니다.')).toBeInTheDocument()
+  })
+
   it('distinguishes loading from an authorized empty window', async () => {
     const list = deferred<ReturnType<typeof summaryList>>()
     const request = vi.fn((): Promise<unknown> => list.promise)

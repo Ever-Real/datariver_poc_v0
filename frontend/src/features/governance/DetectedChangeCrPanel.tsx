@@ -199,7 +199,7 @@ export function DetectedChangeCrPanel({
   const allowedActions = detail?.event.data.allowed_link_actions ?? []
 
   return (
-    <section className="detected-change-cr panel" aria-labelledby="detected-change-cr-title" aria-busy={loading}>
+    <section className="detected-change-cr" aria-labelledby="detected-change-cr-title" aria-busy={loading}>
       <header className="detected-change-cr-header">
         <div>
           <span className="governance-kicker">Detected Change → CR</span>
