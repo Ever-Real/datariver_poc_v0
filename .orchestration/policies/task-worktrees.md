@@ -42,5 +42,12 @@
 - At milestone/gate close, perform a bounded orphan-session/terminal sweep. Preserve project
   services, required containers, branches, worktrees and untracked artifacts unless a separate
   explicit cleanup authorization exists.
+- The external Korean status dashboard at `127.0.0.1:39090` is a
+  `PERSISTENT_PROJECT_SERVICE`, not session-, worker- or terminal-owned state. Exclude its listener
+  and filesystem-backed state at `/Users/everreal/.local/state/datariver/status-dashboard` from
+  session/worker/terminal cleanup; it survives `CONTROL_PLANE` handoff and rollover and is stopped
+  only by explicit instruction. If its serving process must be restarted, detach it from the
+  initiating terminal and verify the existing dashboard files and listener without rewriting the
+  dashboard source data.
 - Long-lived context belongs in canonical memory/documents; it must not be represented by a growing
   collection of persistent agent sessions.
