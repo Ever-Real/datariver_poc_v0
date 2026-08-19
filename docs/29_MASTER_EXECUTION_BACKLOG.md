@@ -642,6 +642,14 @@ requirement → feature → API/tool → DB → UI → test → operations.
 
 ## Known controlled-document conflicts to resolve
 
+- [ ] `K5_PREP_RELATION_PROJECTION_REQUIRED`: one bounded published-release/source-row plan must
+  preview Node 2 / Relation 1, keep Neo4j Edge 0 before confirm, project and replay Node 2 /
+  distinct Edge 1, and preserve exact relation provenance. K5 Product status remains
+  `COMPLETE_RUNTIME_VERIFIED`; PREP deployment is blocked until focused runtime evidence passes.
+- [ ] `PREP_EXTERNAL_ENV_CONTRACT_RECHECK_REQUIRED`: on the actual PREP host, record the existing
+  stable absolute env/secret paths and prove they supply the reference-only
+  `POC_KNOWLEDGE_SOURCE_MANIFEST` contract. Never copy DEV `deploy/poc/.env`.
+
 - [ ] `docs/03_ARCHITECTURE.md` contains an obsolete claim that current Chat makes no model call.
 - [ ] `docs/04_FEATURE_SPEC.md` understates the current Bulk preparation worker while DataHub Bulk
   mutation remains genuinely absent.

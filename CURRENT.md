@@ -151,6 +151,12 @@
   the Node POC authoritative, stores only deployment-owned non-secret source references plus
   canonical row snapshots, and creates a DRAFT changeset receipt rather than a final Knowledge
   publication. K6 remains `NOT_STARTED`.
+- K5 PREP deployment readiness: `K5_PREP_DEPLOYMENT_NOT_READY`. A focused disposable relation
+  fixture produced separate Node 1 / Relation 0 previews for both valid endpoint mappings, so the
+  required combined Node 2 / Relation 1 preview/projection/replay path is not runtime-proven.
+  Product K5 remains complete; PREP mutation is blocked by `K5_PREP_RELATION_PROJECTION_REQUIRED`
+  and `PREP_EXTERNAL_ENV_CONTRACT_RECHECK_REQUIRED`. Evidence:
+  `.orchestration/evidence/DEV-KNOWLEDGE-K5-PREP-READINESS-GATE.md`.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
