@@ -3764,6 +3764,14 @@ class PocApiClient {
       return knowledgeTBox(draftId)
     }
 
+    const durableABoxPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/abox\/(previews|ingestions)(?:\/(cancel|retry))?$/)
+    if (durableABoxPath) {
+      const headers = new Headers(options.headers)
+      if (options.ifMatch) headers.set('If-Match', options.ifMatch)
+      if (options.idempotencyKey) headers.set('Idempotency-Key', options.idempotencyKey)
+      const query = url.searchParams.toString()
+      return gatewayRequestWithMeta(`/poc-api${path}${query ? `?${query}` : ''}`, { ...options, headers })
+    }
     const aboxPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/abox$/)
     if (aboxPath && method === 'GET') {
       const draftId = decodeURIComponent(aboxPath[1] ?? '')

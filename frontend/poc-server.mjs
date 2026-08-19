@@ -193,6 +193,30 @@ function tokenProvider(prefix, urlName, { allowMissingToken = false } = {}) {
 // flag is irrelevant in those environments and their secret-file contract is unchanged.
 const datahubAllowNoToken = enabled('POC_DATAHUB_ALLOW_NO_TOKEN')
 const datahub = tokenProvider('DATAHUB_GMS', 'DATAHUB_GMS_URL', { allowMissingToken: datahubAllowNoToken })
+const knowledgeSourceManifest = (() => {
+  const raw = process.env.POC_KNOWLEDGE_SOURCE_MANIFEST?.trim()
+  if (!raw) return new Map()
+  let value
+  try { value = JSON.parse(raw) } catch { throw new Error('POC_KNOWLEDGE_SOURCE_MANIFEST must be valid JSON.') }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('POC_KNOWLEDGE_SOURCE_MANIFEST must be an object keyed by exact DataHub Table URN.')
+  }
+  const entries = new Map()
+  for (const [assetUrn, item] of Object.entries(value)) {
+    if (!isCanonicalDatahubDatasetUrn(assetUrn) || !item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('POC_KNOWLEDGE_SOURCE_MANIFEST contains an invalid Table entry.')
+    }
+    const manifestRef = typeof item.manifest_ref === 'string' ? item.manifest_ref.trim() : ''
+    const sourceVersion = typeof item.source_version === 'string' ? item.source_version.trim() : ''
+    const secretRef = typeof item.secret_ref === 'string' ? item.secret_ref.trim() : ''
+    if (!manifestRef || manifestRef.length > 255 || !sourceVersion || sourceVersion.length > 255
+      || !secretRef || secretRef.length > 255) {
+      throw new Error('POC_KNOWLEDGE_SOURCE_MANIFEST entries require bounded manifest_ref/source_version/secret_ref.')
+    }
+    entries.set(assetUrn, Object.freeze({ manifestRef, sourceVersion, secretRef }))
+  }
+  return entries
+})()
 const datahubCacheScope = datahub ? sha256(datahub.url).slice(0, 16) : 'disabled'
 const datahubInventoryCacheKey = `datahub-inventory-v5:${datahubCacheScope}`
 const datahubInventoryStateScope = `catalog-inventory-v1:${datahubCacheScope}`
@@ -4735,6 +4759,19 @@ async function knowledgeProjectionScope(context, draftIdValue) {
     graphId,
     studioReleaseId,
     observedAt,
+    draftVersion: Number(draft.version),
+    tboxElements: Object.freeze(
+      (Array.isArray(draftBlockEntry?.[1]) ? draftBlockEntry[1] : [])
+        .flatMap((block) => Array.isArray(block?.elements) ? block.elements : [])
+        .map((element) => structuredClone(element)),
+    ),
+    sourceBindings: Object.freeze([...sourceBindings.entries()].map(([assetUrn, values]) => ({
+      assetUrn,
+      bindings: values.map((value) => ({
+        targetStableElementId: value.targetStableElementId,
+        rules: value.rules.map((rule) => structuredClone(rule)),
+      })),
+    }))),
     entities: Object.freeze([...entitiesById.values()]),
     relations: Object.freeze([...relationsById.values()]),
   })
@@ -4862,6 +4899,191 @@ function knowledgeProjectionReceipt(scope, audit, principal) {
     duplicate_count: audit.duplicateCount,
     provenance,
   }
+}
+
+function knowledgeABoxValue(row, fieldPath) {
+  if (!fieldPath) return undefined
+  const parts = fieldPath.split('.').filter(Boolean)
+  let value = row
+  for (const part of parts) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+    value = value[part]
+  }
+  return value
+}
+
+function knowledgeABoxRuleKind(rule, ordinal) {
+  const value = rule?.method ?? rule?.kind ?? rule?.mapping_kind
+  if (value === 'SUBJECT_ID' || value === 'PROPERTY' || value === 'RELATION') return value
+  return ordinal === 0 ? 'SUBJECT_ID' : 'PROPERTY'
+}
+
+async function knowledgeABoxPlan(context, draftId, targetStableElementId, sampleLimit = 5) {
+  if (knowledgeSourceManifest.size === 0) {
+    throw knowledgeProjectionError(503, 'SOURCE_MANIFEST_UNAVAILABLE', 'No deployment-owned Knowledge source manifest is configured.')
+  }
+  const scope = await knowledgeProjectionScope(context, draftId)
+  const selected = scope.sourceBindings
+    .flatMap((entry) => entry.bindings.map((binding) => ({ ...binding, assetUrn: entry.assetUrn })))
+    .filter((binding) => !targetStableElementId || binding.targetStableElementId === targetStableElementId)
+  if (selected.length !== 1) {
+    throw knowledgeProjectionError(409, 'KNOWLEDGE_MAPPING_TARGET_REQUIRED', 'Exactly one bounded source mapping target is required.')
+  }
+  const binding = selected[0]
+  const manifest = knowledgeSourceManifest.get(binding.assetUrn)
+  if (!manifest) throw knowledgeProjectionError(503, 'SOURCE_MANIFEST_ENTRY_UNAVAILABLE', 'The selected Table has no deployment-owned source manifest entry.')
+  const rows = await context.stateStore.readKnowledgeSourceRows(manifest.manifestRef, binding.assetUrn, manifest.sourceVersion)
+  if (!rows.length) throw knowledgeProjectionError(503, 'SOURCE_ROWS_UNAVAILABLE', 'The configured source has no bounded physical rows.')
+  const target = scope.tboxElements.find((element) => element?.stable_element_id === binding.targetStableElementId)
+  const targetClass = String(target?.canonical_name || target?.display_name || binding.targetStableElementId)
+  const rules = binding.rules.map((rule, ordinal) => ({ ...rule, _kind: knowledgeABoxRuleKind(rule, ordinal) }))
+  const subjectRule = rules.find((rule) => rule._kind === 'SUBJECT_ID')
+  if (!subjectRule?.source_field_path) throw knowledgeProjectionError(409, 'SUBJECT_ID_MAPPING_REQUIRED', 'A SUBJECT_ID mapping is required before preview or projection.')
+  const propertyRules = rules.filter((rule) => rule._kind === 'PROPERTY')
+  const rejected = rules.filter((rule) => rule._kind === 'RELATION').map((rule) => ({
+    reason: 'RELATION_MAPPING_UNAVAILABLE', source_field_path: rule.source_field_path ?? null,
+  }))
+  const unmapped = []
+  const nodes = []
+  for (const row of rows) {
+    const identity = knowledgeABoxValue(row.row_data, subjectRule.source_field_path)
+    if (identity === undefined || identity === null || String(identity).trim() === '') {
+      rejected.push({ row_key: row.row_key, reason: 'SUBJECT_ID_MISSING', source_field_path: subjectRule.source_field_path })
+      continue
+    }
+    const properties = {}
+    for (const rule of propertyRules) {
+      const value = knowledgeABoxValue(row.row_data, rule.source_field_path)
+      if (value === undefined) {
+        unmapped.push({ row_key: row.row_key, source_field_path: rule.source_field_path, target_stable_element_id: rule.target_stable_element_id })
+        continue
+      }
+      const targetElement = scope.tboxElements.find((element) => element?.stable_element_id === rule.target_stable_element_id)
+      const propertyName = String(targetElement?.canonical_name || targetElement?.display_name || rule.target_stable_element_id)
+      properties[propertyName] = value
+    }
+    const rowIdentity = String(identity)
+    nodes.push({
+      id: `knowledge:abox:${canonicalHash({ contract_version: 'KNOWLEDGE_ABOX_ROW_V1', graph_id: scope.graphId, studio_release_id: scope.studioReleaseId, source_urn: binding.assetUrn, row_key: row.row_key, row_identity: rowIdentity })}`,
+      type: targetClass,
+      identity: rowIdentity,
+      properties,
+      provenance: {
+        source_type: 'DETERMINISTIC_ENRICHER', source_urn: binding.assetUrn, source_row_key: row.row_key,
+        source_hash: row.source_hash, graph_id: scope.graphId, studio_release_id: scope.studioReleaseId,
+        tbox_version: scope.draftVersion, manifest_ref: manifest.manifestRef, secret_ref: manifest.secretRef,
+      },
+    })
+  }
+  const boundedNodes = Number.isSafeInteger(sampleLimit) ? nodes.slice(0, Math.max(1, Math.min(sampleLimit, 100))) : nodes.slice(0, 5)
+  return {
+    scope, manifest, binding, rows, nodes, edges: [], rejected, unmapped,
+    preview: {
+      status: 'READY', draft_version: scope.draftVersion, binding_version: Number(binding.version || 1),
+      pinned_tbox_version: scope.draftVersion, source: { asset_urn: binding.assetUrn, source_version: manifest.sourceVersion, manifest_ref: manifest.manifestRef },
+      sample_size: boundedNodes.length, node_count: nodes.length, relation_count: 0, dry_run: true,
+      graph: { nodes: boundedNodes, edges: [] }, rejected, unmapped,
+      evidence: nodes.slice(0, 100).map((node) => node.provenance),
+    },
+  }
+}
+
+async function writeKnowledgeABoxProjection(plan) {
+  await neo4jQuery(`
+    UNWIND $nodes AS entity
+    MERGE (node:KnowledgeABoxEntity {id: entity.id})
+    ON CREATE SET node.created_at = $observedAt
+    SET node.entity_type = entity.type,
+        node.identity = entity.identity,
+        node.properties = entity.properties,
+        node.graph_id = $graphId,
+        node.studio_release_id = $releaseId,
+        node.tbox_version = $tboxVersion,
+        node.source_urn = entity.provenance.source_urn,
+        node.source_row_key = entity.provenance.source_row_key,
+        node.source_hash = entity.provenance.source_hash,
+        node.provenance_source = entity.provenance.source_type,
+        node.observed_at = $observedAt
+    RETURN count(node)
+  `, { nodes: plan.nodes, graphId: plan.scope.graphId, releaseId: plan.scope.studioReleaseId, tboxVersion: plan.scope.draftVersion, observedAt: plan.scope.observedAt })
+  const rows = await neo4jQuery(`
+    MATCH (node:KnowledgeABoxEntity {graph_id: $graphId, studio_release_id: $releaseId})
+    WITH node.id AS identity, count(node) AS copies
+    RETURN sum(copies), sum(CASE WHEN copies > 1 THEN copies - 1 ELSE 0 END)
+  `, { graphId: plan.scope.graphId, releaseId: plan.scope.studioReleaseId })
+  const nodeCount = Number(rows[0]?.row?.[0] || 0)
+  const duplicateCount = Number(rows[0]?.row?.[1] || 0)
+  if (duplicateCount !== 0 || nodeCount !== plan.nodes.length) throw knowledgeProjectionError(502, 'KNOWLEDGE_ABOX_PROJECTION_INCOMPLETE', 'The bounded A-Box projection did not pass its deterministic read-back audit.')
+  return { nodeCount, edgeCount: 0, duplicateCount }
+}
+
+function knowledgeIngestionJobResponse(row) {
+  const preview = row.preview || {}
+  const result = row.result || {}
+  return {
+    id: row.job_id, draft_id: row.draft_id, graph_id: row.graph_id, studio_release_id: row.release_id,
+    requested_by: row.requested_by, state: row.state, progress_percent: row.state === 'PROJECTED' ? 100 : 50,
+    current_stage: row.state === 'PROJECTED' ? 'PROJECTED' : row.state, vector_target_count: 0,
+    attempt_count: 1, maximum_attempts: 1, result_changeset_id: result.changeset_id || null,
+    result_evidence_hash: result.evidence_hash || null, error_code: result.error_code || null,
+    allowed_actions: [], version: Number(row.version), created_at: row.created_at, updated_at: row.updated_at,
+    started_at: row.created_at, finished_at: row.state === 'PROJECTED' ? row.updated_at : null,
+    node_count: Number(result.node_count || preview.node_count || 0), edge_count: 0,
+    duplicate_count: Number(result.duplicate_count || 0), provenance: result.provenance || preview.evidence || [],
+    rejected: preview.rejected || [], unmapped: preview.unmapped || [], pinned_tbox_version: Number(row.tbox_version),
+  }
+}
+
+async function knowledgeABoxIngestionApi(request, response, url, context) {
+  const draftId = decodeURIComponent(url.pathname.match(/\/drafts\/([^/]+)\/abox\//)?.[1] || '')
+  const body = request.method === 'POST' ? await bodyJson(request) : {}
+  const target = request.method === 'POST' ? body.target_stable_element_id : url.searchParams.get('target_stable_element_id')
+  if (request.method === 'GET' && url.pathname.endsWith('/ingestions')) {
+    const jobs = await context.stateStore.listKnowledgeIngestionJobs(draftId)
+    return json(response, 200, { items: jobs.map(knowledgeIngestionJobResponse), page: { limit: 100 } })
+  }
+  const plan = await knowledgeABoxPlan(context, draftId, target || undefined, Number(body.sample_limit || url.searchParams.get('sample_limit') || 5))
+  const ifMatch = request.headers['if-match']
+  if (typeof ifMatch !== 'string' || ifMatch !== `"${plan.scope.draftVersion}"`) throw knowledgeProjectionError(412, 'DRAFT_VERSION_STALE', 'The pinned Draft version changed; refresh before continuing.')
+  if (url.pathname.endsWith('/previews')) {
+    const idempotencyKey = `preview:${draftId}:${plan.scope.studioReleaseId}:${plan.binding.targetStableElementId}:${plan.scope.draftVersion}`
+    const requestHash = canonicalHash(plan.preview)
+    let row = await context.stateStore.readKnowledgeIngestionJobByIdempotency(draftId, plan.scope.studioReleaseId, idempotencyKey)
+    if (!row) {
+      row = await context.stateStore.insertKnowledgeIngestionJob({
+        job_id: `knowledge-ingestion:${canonicalHash({ draftId, releaseId: plan.scope.studioReleaseId, idempotencyKey })}`,
+        draft_id: draftId, graph_id: plan.scope.graphId, release_id: plan.scope.studioReleaseId,
+        requested_by: context.principal.subjectId, source_asset_urn: plan.binding.assetUrn,
+        source_version: plan.manifest.sourceVersion, tbox_version: plan.scope.draftVersion,
+        idempotency_key: idempotencyKey, request_hash: requestHash, state: 'READY', preview: plan.preview, result: null,
+      })
+    }
+    return json(response, 200, { ...plan.preview, job_id: row.job_id, state: row.state }, { ETag: `"${row.version}"` })
+  }
+  if (!url.pathname.endsWith('/ingestions') || request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Knowledge A-Box ingestion supports bounded POST actions only.')
+  const idempotencyKey = request.headers['idempotency-key']
+  if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.length > 200) throw knowledgeProjectionError(428, 'IDEMPOTENCY_KEY_REQUIRED', 'A bounded Idempotency-Key is required.')
+  const existing = await context.stateStore.readKnowledgeIngestionJobByIdempotency(draftId, plan.scope.studioReleaseId, idempotencyKey.trim())
+  if (existing?.state === 'PROJECTED') return json(response, 200, knowledgeIngestionJobResponse(existing), { ETag: `"${existing.version}"` })
+  const previewIdempotency = `preview:${draftId}:${plan.scope.studioReleaseId}:${plan.binding.targetStableElementId}:${plan.scope.draftVersion}`
+  const previewRow = await context.stateStore.readKnowledgeIngestionJobByIdempotency(draftId, plan.scope.studioReleaseId, previewIdempotency)
+  if (!previewRow || previewRow.state !== 'READY') throw knowledgeProjectionError(409, 'PREVIEW_REQUIRED', 'A successful preview is required before confirmation.')
+  const requestHash = canonicalHash({ draftId, releaseId: plan.scope.studioReleaseId, sourceAssetUrn: plan.binding.assetUrn, tboxVersion: plan.scope.draftVersion, idempotencyKey: idempotencyKey.trim() })
+  let row = existing
+  if (!row) {
+    row = await context.stateStore.insertKnowledgeIngestionJob({
+      job_id: `knowledge-ingestion:${canonicalHash({ draftId, releaseId: plan.scope.studioReleaseId, idempotencyKey: idempotencyKey.trim() })}`,
+      draft_id: draftId, graph_id: plan.scope.graphId, release_id: plan.scope.studioReleaseId,
+      requested_by: context.principal.subjectId, source_asset_urn: plan.binding.assetUrn,
+      source_version: plan.manifest.sourceVersion, tbox_version: plan.scope.draftVersion,
+      idempotency_key: idempotencyKey.trim(), request_hash: requestHash, state: 'CONFIRMED', preview: plan.preview, result: null,
+    })
+  }
+  const audit = await writeKnowledgeABoxProjection(plan)
+  const provenance = plan.nodes.map((node) => node.provenance)
+  const result = { changeset_id: `knowledge-changeset:${canonicalHash({ jobId: row.job_id, tboxVersion: plan.scope.draftVersion })}`, changeset_state: 'DRAFT', evidence_hash: canonicalHash({ job_id: row.job_id, audit, provenance }), node_count: audit.nodeCount, edge_count: audit.edgeCount, duplicate_count: audit.duplicateCount, provenance }
+  row = await context.stateStore.updateKnowledgeIngestionJob(row.job_id, Number(row.version), 'PROJECTED', result)
+  return json(response, 201, knowledgeIngestionJobResponse(row), { ETag: `"${row.version}"` })
 }
 
 async function knowledgeProjectionApi(request, response, url, context) {
@@ -6327,6 +6549,9 @@ async function api(request, response, url, context) {
       'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(displayName)}`,
     })
     return response.end(object)
+  }
+  if (/^\/poc-api\/knowledge\/studio\/drafts\/[^/]+\/abox\/(previews|ingestions)$/.test(url.pathname)) {
+    return knowledgeABoxIngestionApi(request, response, url, context)
   }
   if (url.pathname === '/poc-api/knowledge/projections') {
     return knowledgeProjectionApi(request, response, url, context)

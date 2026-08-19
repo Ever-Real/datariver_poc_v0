@@ -312,6 +312,71 @@ const USER_TABLE_GRANT_SCHEMA = [
   `,
 ]
 
+// K5 is intentionally a small, POC-owned durable bridge. It stores only non-secret
+// execution/receipt metadata and a bounded disposable source-row fixture. It is not a
+// replacement for the canonical ADR-0094 Python plane or a general job framework.
+const KNOWLEDGE_INGESTION_SCHEMA = [
+  `
+    CREATE TABLE IF NOT EXISTS poc_knowledge_ingestion_jobs (
+      job_id text PRIMARY KEY,
+      draft_id text NOT NULL,
+      graph_id text NOT NULL,
+      release_id text NOT NULL,
+      requested_by text NOT NULL,
+      source_asset_urn text NOT NULL,
+      source_version text NOT NULL,
+      tbox_version integer NOT NULL,
+      idempotency_key text NOT NULL,
+      request_hash char(64) NOT NULL,
+      state text NOT NULL,
+      preview jsonb NOT NULL,
+      result jsonb,
+      version integer NOT NULL DEFAULT 1,
+      created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      UNIQUE (draft_id, release_id, idempotency_key),
+      CONSTRAINT ck_poc_knowledge_ingestion_job_hash CHECK (request_hash ~ '^[0-9a-f]{64}$'),
+      CONSTRAINT ck_poc_knowledge_ingestion_job_state CHECK (
+        state IN ('PREPARING', 'READY', 'CONFIRMED', 'DRAFT_CHANGESET_READY', 'PROJECTED', 'FAILED')
+      ),
+      CONSTRAINT ck_poc_knowledge_ingestion_job_versions CHECK (tbox_version > 0 AND version > 0),
+      CONSTRAINT ck_poc_knowledge_ingestion_job_bounds CHECK (
+        char_length(draft_id) BETWEEN 1 AND 255
+        AND char_length(graph_id) BETWEEN 1 AND 255
+        AND char_length(release_id) BETWEEN 1 AND 255
+        AND char_length(requested_by) BETWEEN 1 AND 255
+        AND char_length(source_asset_urn) BETWEEN 20 AND 4096
+        AND char_length(source_version) BETWEEN 1 AND 255
+        AND char_length(idempotency_key) BETWEEN 1 AND 200
+      )
+    )
+  `,
+  `
+    CREATE TABLE IF NOT EXISTS poc_knowledge_source_rows (
+      manifest_ref text NOT NULL,
+      asset_urn text NOT NULL,
+      source_version text NOT NULL,
+      row_key text NOT NULL,
+      row_data jsonb NOT NULL,
+      source_hash char(64) NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+      PRIMARY KEY (manifest_ref, row_key),
+      CONSTRAINT ck_poc_knowledge_source_row_hash CHECK (source_hash ~ '^[0-9a-f]{64}$'),
+      CONSTRAINT ck_poc_knowledge_source_row_bounds CHECK (
+        char_length(manifest_ref) BETWEEN 1 AND 255
+        AND char_length(asset_urn) BETWEEN 20 AND 4096
+        AND char_length(source_version) BETWEEN 1 AND 255
+        AND char_length(row_key) BETWEEN 1 AND 255
+        AND jsonb_typeof(row_data) = 'object'
+      )
+    )
+  `,
+  `
+    CREATE INDEX IF NOT EXISTS ix_poc_knowledge_source_rows_asset
+      ON poc_knowledge_source_rows (manifest_ref, asset_urn, source_version, row_key)
+  `,
+]
+
 export function createPocStateStore({ databasePool } = {}) {
   const databaseUrl = process.env.POC_DATABASE_URL?.trim()
   const databaseHost = process.env.POC_POSTGRES_HOST?.trim()
@@ -372,6 +437,7 @@ export function createPocStateStore({ databasePool } = {}) {
       for (const statement of CHANGE_HISTORY_SCHEMA) await pool.query(statement)
       for (const statement of LOCAL_AUTH_SCHEMA) await pool.query(statement)
       for (const statement of USER_TABLE_GRANT_SCHEMA) await pool.query(statement)
+      for (const statement of KNOWLEDGE_INGESTION_SCHEMA) await pool.query(statement)
     })()
     try {
       await startingDatabase
@@ -1973,6 +2039,76 @@ export function createPocStateStore({ databasePool } = {}) {
     if (!databasePool) pool = undefined
   }
 
+  async function requireKnowledgeDatabase() {
+    await startDatabase()
+    if (!pool) throw Object.assign(new Error('PostgreSQL is required for durable Knowledge ingestion.'), {
+      code: 'KNOWLEDGE_INGESTION_STORE_REQUIRED', statusCode: 503,
+    })
+    return pool
+  }
+
+  async function readKnowledgeSourceRows(manifestRef, assetUrn, sourceVersion) {
+    const db = await requireKnowledgeDatabase()
+    const result = await db.query(`
+      SELECT row_key, row_data, source_hash
+      FROM poc_knowledge_source_rows
+      WHERE manifest_ref = $1 AND asset_urn = $2 AND source_version = $3
+      ORDER BY row_key
+      LIMIT 1000
+    `, [manifestRef, assetUrn, sourceVersion])
+    return result.rows.map((row) => ({
+      row_key: row.row_key, row_data: row.row_data, source_hash: row.source_hash,
+    }))
+  }
+
+  async function readKnowledgeIngestionJobByIdempotency(draftId, releaseId, idempotencyKey) {
+    const db = await requireKnowledgeDatabase()
+    const result = await db.query(`
+      SELECT * FROM poc_knowledge_ingestion_jobs
+      WHERE draft_id = $1 AND release_id = $2 AND idempotency_key = $3
+    `, [draftId, releaseId, idempotencyKey])
+    return result.rows[0] ?? null
+  }
+
+  async function listKnowledgeIngestionJobs(draftId) {
+    const db = await requireKnowledgeDatabase()
+    const result = await db.query(`
+      SELECT * FROM poc_knowledge_ingestion_jobs
+      WHERE draft_id = $1 ORDER BY created_at DESC LIMIT 100
+    `, [draftId])
+    return result.rows
+  }
+
+  async function insertKnowledgeIngestionJob(job) {
+    const db = await requireKnowledgeDatabase()
+    const result = await db.query(`
+      INSERT INTO poc_knowledge_ingestion_jobs (
+        job_id, draft_id, graph_id, release_id, requested_by, source_asset_urn,
+        source_version, tbox_version, idempotency_key, request_hash, state, preview, result
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12::jsonb,$13::jsonb)
+      RETURNING *
+    `, [
+      job.job_id, job.draft_id, job.graph_id, job.release_id, job.requested_by,
+      job.source_asset_urn, job.source_version, job.tbox_version, job.idempotency_key,
+      job.request_hash, job.state, JSON.stringify(job.preview), JSON.stringify(job.result),
+    ])
+    return result.rows[0]
+  }
+
+  async function updateKnowledgeIngestionJob(jobId, expectedVersion, state, resultValue) {
+    const db = await requireKnowledgeDatabase()
+    const result = await db.query(`
+      UPDATE poc_knowledge_ingestion_jobs
+      SET state = $3, result = $4::jsonb, version = version + 1, updated_at = clock_timestamp()
+      WHERE job_id = $1 AND version = $2
+      RETURNING *
+    `, [jobId, expectedVersion, state, JSON.stringify(resultValue)])
+    if (!result.rows[0]) throw Object.assign(new Error('Knowledge ingestion job version changed.'), {
+      code: 'KNOWLEDGE_INGESTION_STALE', statusCode: 409,
+    })
+    return result.rows[0]
+  }
+
   return {
     read,
     readFeatureSecurityPolicy,
@@ -2009,6 +2145,11 @@ export function createPocStateStore({ databasePool } = {}) {
     appendChangeHistoryCrLink,
     readChangeHistoryCrLinkReplay,
     runChangeHistoryScheduler,
+    readKnowledgeSourceRows,
+    readKnowledgeIngestionJobByIdempotency,
+    listKnowledgeIngestionJobs,
+    insertKnowledgeIngestionJob,
+    updateKnowledgeIngestionJob,
     close,
     configured: { postgres: databaseConfigured, redis: Boolean(redisUrl) },
   }
