@@ -133,11 +133,13 @@ authority. K5 is `HOLD_KNOWLEDGE_ABOX_PERSISTENCE_DECISION`; K6 was not started.
 remain separate later slices.
 
 The bounded K5 decision rejects synchronous core/CAS row ingestion because it lacks the accepted
-claim/lease/fence/source-pin/attempt/Changeset authority. The recommended path, gated by
-`APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`, is to provision the already tracked ADR-0094 revision
-`0081` and optional worker in DEV and add only a fixed-function facade to the authoritative Node
-Product. This approval does not authorize a new schema/framework, legacy FastAPI authority,
-PREP/OPS mutation or business-data testing.
+claim/lease/fence/source-pin/attempt/Changeset authority. The user approved
+`APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`, but CONTROL_PLANE reclaim found that the authoritative
+Node POC has neither the canonical revision `0081` database/UUID IAM plane nor a fixed-function
+identity/schema adapter to it. The temporary memory-only mock was rejected. K5 is therefore
+`HOLD_KNOWLEDGE_ABOX_SCHEMA_EXPANSION`: a new POC job schema/identity mirror, direct row scan or
+legacy FastAPI authority is not inferred from the approval. Product/DB/Neo4j/container remained
+unchanged; K6 remains dependency-gated.
 
 The K6 read-only entry audit found a reusable separate Knowledge Chat UI and historical bounded
 GraphRAG implementation, but all four graph/release/snapshot/graphrag paths resolve to `NO_ROUTE`

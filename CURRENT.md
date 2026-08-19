@@ -461,7 +461,7 @@ local credential + opaque server session
   were revoked without changing the inspection admin.
 - Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K4-SOURCE-PROPOSAL-RUNTIME.md`.
 
-## Knowledge K5 A-Box entry gate
+## Knowledge K5 A-Box entry gate and CONTROL_PLANE reclaim
 
 - Existing typed bindings, Draft/release/CAS and the K1 release-pinned parameterized Neo4j
   projection are reusable seams, but K1 writes source Table/Column identities rather than physical
@@ -469,15 +469,24 @@ local credential + opaque server session
 - The current Node runtime has no approved bounded row reader; DEV has no source manifest/secret
   root and no running Knowledge Studio ingestion worker. The repository contract requires these
   inputs to fail closed instead of inventing sample rows.
-- K5 is therefore `HOLD_KNOWLEDGE_ABOX_PERSISTENCE_DECISION`; no Product mutation, legacy FastAPI
-  activation or K6 mutation was performed. Evidence:
-  `.orchestration/evidence/DEV-KNOWLEDGE-K5-ABOX-ENTRY-GATE-AUDIT.md`.
+- The user approved `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`. CONTROL_PLANE reclaim then found
+  that the temporary Gemini diff fabricated a memory-only preview and immediate success result;
+  those narrow hunks were dropped and no Product change was accepted.
 - The decision packet rejects putting physical-row job state into the existing core/CAS document.
   The smallest coherent route is the repository's accepted ADR-0094 plane: existing revision
   `0081`, fixed database functions, dedicated worker role/service Subject, deployment-owned
   manifest/secret references and optional `knowledge-studio-ingestion` worker, exposed to the
   authoritative Node Product only through a bounded fixed-function facade. Starting that runtime
-  is gated by `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`.
+  was gated by `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`.
+- The approval does not close the remaining runtime mismatch: ADR-0094 is implemented against the
+  canonical Python application database/UUID IAM model and creates a governed DRAFT Changeset,
+  while the authoritative Node POC runs only its separate POC state schema and K1 metadata
+  projection. No fixed-function identity/schema adapter, canonical DEV database, source manifest,
+  source-secret root or ingestion worker identity is configured for the Node Product.
+- K5 is now `HOLD_KNOWLEDGE_ABOX_SCHEMA_EXPANSION`. A POC-specific table/function set, identity
+  mirror, direct row scan or legacy FastAPI authority would exceed the approval. No Product,
+  database, Neo4j or container mutation was retained. Evidence:
+  `.orchestration/evidence/DEV-KNOWLEDGE-K5-CONTROL-PLANE-RECLAIM.md`.
 
 ## Knowledge K6 entry audit
 
