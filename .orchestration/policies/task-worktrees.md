@@ -15,6 +15,11 @@
 - No auto merge, no push/publication of task branches.
 - Notification sessions ([ACTION REQUIRED]) are UI/coordination surfaces, not Git worktrees unless they own files.
 - Preflight Check: Before any Task action, the worker must run `cd` to the exact assigned worktree, `pwd`, `git rev-parse HEAD`, `git branch --show-current`, and `git status`. If there is a mismatch, the worker must stop and notify the Controller. Do not scan parent/sibling/main checkout.
+- Canonical Product checkpoint invariant: local worktree `HEAD` is never assumed to be the
+  canonical Product checkpoint. Before validation, deployment, status reporting or handoff, verify
+  the exact Product SHA and deployed OCI revision against canonical `CURRENT.md`/Evidence lineage;
+  record repository/document HEAD separately. A later docs/evidence commit or untracked handoff
+  artifact must not silently replace the verified Product SHA.
 
 ## Handoff & Cleanup
 - Checkpoint/handoff required for completion.

@@ -1,4 +1,9 @@
-# DEV Knowledge K5 A-Box entry-gate audit
+# HISTORICAL — DEV Knowledge K5 A-Box entry-gate audit
+
+> This file records the historical K5 entry state at Product `fca4535cab544560bd06486dc363e6df0c6df27f`.
+> It is superseded by the durable Node bridge at Product `34af2b869d04fd96f4b9cd69f6eeed8729bafe28`,
+> whose current K5 status is `PARTIAL` with `K5_RELATION_PROJECTION_REQUIRED`. Do not use this
+> historical entry gate to request or repeat `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`.
 
 ## Scope
 

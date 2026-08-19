@@ -1,4 +1,8 @@
-# DEV Knowledge K6 entry audit
+# HISTORICAL — DEV Knowledge K6 entry audit
+
+> This audit was performed against the historical K5 entry Product `fca4535cab544560bd06486dc363e6df0c6df27f`.
+> It is stale for the current checkpoint and is superseded by Product `34af2b869d04fd96f4b9cd69f6eeed8729bafe28`,
+> K5 `PARTIAL` and blocker `K5_RELATION_PROJECTION_REQUIRED`. It is not current K6 authority.
 
 ## Scope
 
