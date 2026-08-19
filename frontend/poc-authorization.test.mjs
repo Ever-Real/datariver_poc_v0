@@ -92,7 +92,7 @@ test('accepts manager in the existing access document and projects MANAGER witho
 })
 
 test('covers every named Node API route with no unknown or ambiguous registry entry', () => {
-  assert.equal(POC_ROUTE_REGISTRY.length, 69)
+  assert.equal(POC_ROUTE_REGISTRY.length, 72)
   assert.equal(new Set(POC_ROUTE_REGISTRY.map((entry) => entry.id)).size, POC_ROUTE_REGISTRY.length)
   assert.deepEqual(Object.fromEntries(['ANONYMOUS', 'AUTHENTICATED', 'CAPABILITY_PROTECTED', 'INTERNAL_SERVICE', 'DISABLED'].map((classification) => [
     classification,
@@ -100,7 +100,7 @@ test('covers every named Node API route with no unknown or ambiguous registry en
   ])), {
     ANONYMOUS: 7,
     AUTHENTICATED: 2,
-    CAPABILITY_PROTECTED: 58,
+    CAPABILITY_PROTECTED: 61,
     INTERNAL_SERVICE: 1,
     DISABLED: 1,
   })
@@ -124,6 +124,9 @@ test('covers every named Node API route with no unknown or ambiguous registry en
     ['POST', '/api/v1/registration/bulk-preparations/execute', 'registration.execute.service'],
     ['POST', '/poc-api/knowledge/projections', 'knowledge.projections.create'],
     ['GET', '/poc-api/knowledge/projections', 'knowledge.projections.list'],
+    ['POST', '/poc-api/knowledge/studio/drafts/draft-1/abox/previews', 'knowledge.abox.preview'],
+    ['POST', '/poc-api/knowledge/studio/drafts/draft-1/abox/ingestions', 'knowledge.abox.ingestion.create'],
+    ['GET', '/poc-api/knowledge/studio/drafts/draft-1/abox/ingestions', 'knowledge.abox.ingestion.list'],
 
     ['PUT', '/poc-api/state/core', 'state.write'],
     ['GET', '/poc-api/datahub/asset', 'catalog.asset'],

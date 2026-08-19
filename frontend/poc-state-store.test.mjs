@@ -226,6 +226,7 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
   await store.appendChangeHistoryCapture(capture(10))
   const startupSql = database.statements.map((entry) => entry.sql).join('\n')
   const initSql = readFileSync(new URL('../deploy/poc/postgres-init/001-poc-state.sql', import.meta.url), 'utf8')
+  const knowledgeInitSql = readFileSync(new URL('../deploy/poc/postgres-init/002-poc-knowledge-ingestion.sql', import.meta.url), 'utf8')
   for (const table of [
     'poc_change_history_sources',
     'poc_change_history_ledger_events',
@@ -234,10 +235,14 @@ test('represents the same fresh and existing PostgreSQL change-history schema co
     'poc_local_credentials',
     'poc_local_sessions',
     'poc_user_table_grants',
+    'poc_knowledge_ingestion_jobs',
+    'poc_knowledge_source_rows',
   ]) {
     assert.match(startupSql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
-    assert.match(initSql, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
+    assert.match(`${initSql}\n${knowledgeInitSql}`, new RegExp(`CREATE TABLE IF NOT EXISTS ${table}`))
   }
+  assert.match(knowledgeInitSql, /^BEGIN;/)
+  assert.match(knowledgeInitSql, /COMMIT;\s*$/)
   for (const contract of [
     'PRIMARY KEY (source_identity_hash, topic_contract, source_partition)',
     'UNIQUE (source_identity_hash, source_event_identity, deterministic_ordinal)',

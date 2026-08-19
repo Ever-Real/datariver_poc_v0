@@ -84,6 +84,7 @@ function json(value: unknown) {
 
 function installGatewayMock() {
   let knowledgeProjectionReceipt: Record<string, unknown> | null = null
+  let knowledgeIngestionReceipt: Record<string, unknown> | null = null
   let coreState: Record<string, unknown> | null = null
   let coreVersion = 1
   let access: ChangeHistoryAccessDocument & { version: number } = {
@@ -389,6 +390,44 @@ function installGatewayMock() {
         items: knowledgeProjectionReceipt ? [knowledgeProjectionReceipt] : [],
         page: { limit: 100 },
       }))
+    }
+    if (/^\/poc-api\/knowledge\/studio\/drafts\/[^/]+\/abox\/previews$/.test(url.pathname)) {
+      return Promise.resolve(json({
+        job_id: 'knowledge-ingestion:preview-live-test',
+        status: 'READY',
+        draft_version: 4,
+        binding_version: 1,
+        target_stable_element_id: 'wafer-class',
+        pinned_tbox_version: 3,
+        node_count: 2,
+        relation_count: 0,
+        source: { asset_urn: liveAssets[0]!.id, source_version: 'source-v1', manifest_ref: 'live-test-v1' },
+        dry_run: true,
+        sample_size: 2,
+        graph: { nodes: [], edges: [] },
+        rejected: [],
+        unmapped: [],
+        evidence: [],
+        provenance: [],
+      }))
+    }
+    if (/^\/poc-api\/knowledge\/studio\/drafts\/[^/]+\/abox\/ingestions$/.test(url.pathname)) {
+      if ((options?.method ?? 'GET') === 'POST') {
+        const body = JSON.parse(typeof options?.body === 'string' ? options.body : '{}') as { preview_job_id?: string }
+        if (body.preview_job_id !== 'knowledge-ingestion:preview-live-test') throw new Error('Expected exact preview receipt')
+        knowledgeIngestionReceipt = {
+          id: 'knowledge-ingestion:live-test',
+          state: 'SUCCESS',
+          node_count: 2,
+          duplicate_count: 0,
+          result_evidence_hash: 'a'.repeat(64),
+          provenance: [{ source_type: 'DETERMINISTIC_ENRICHER' }],
+        }
+        return Promise.resolve(new Response(JSON.stringify(knowledgeIngestionReceipt), {
+          status: 201, headers: { 'Content-Type': 'application/json' },
+        }))
+      }
+      return Promise.resolve(json({ items: knowledgeIngestionReceipt ? [knowledgeIngestionReceipt] : [] }))
     }
     if (/^\/poc-api\/minio\/uploads\/[^/]+\/parts\/1$/.test(url.pathname)) {
       return Promise.resolve(new Response(null, { status: 200, headers: { ETag: '"poc-etag"' } }))
@@ -1531,6 +1570,12 @@ describe('POC live-provider compatibility adapter', () => {
       method: 'POST', body: JSON.stringify({ review_reason: 'K1 focused adapter verification' }),
     })
 
+    const preview = await client.request<{ job_id: string }>(
+      `/knowledge/studio/drafts/${draft.id}/abox/previews`, {
+        method: 'POST',
+        body: JSON.stringify({ target_stable_element_id: 'wafer-class', sample_limit: 5 }),
+      },
+    )
     const created = await client.request<{
       state: string
       node_count: number
@@ -1538,11 +1583,14 @@ describe('POC live-provider compatibility adapter', () => {
       provenance: Array<{ source_type: string }>
     }>(`/knowledge/studio/drafts/${draft.id}/abox/ingestions`, {
       method: 'POST',
-      body: JSON.stringify({}),
+      body: JSON.stringify({
+        preview_job_id: preview.job_id,
+        target_stable_element_id: 'wafer-class',
+      }),
       idempotencyKey: 'knowledge-k1-projection',
     })
     expect(created).toMatchObject({ state: 'SUCCESS', node_count: 2, duplicate_count: 0 })
-    expect(created.provenance[0]?.source_type).toBe('DATAHUB_SYNC')
+    expect(created.provenance[0]?.source_type).toBe('DETERMINISTIC_ENRICHER')
 
     const reloaded = await client.request<{
       items: Array<{ id: string; result_evidence_hash: string }>

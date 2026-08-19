@@ -1,5 +1,6 @@
 /* global Buffer, URL, fetch, process, structuredClone */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { createServer } from 'node:http'
 import { after, before, test } from 'node:test'
 import {
@@ -16,6 +17,7 @@ let forcedClassifierResponse
 let hideExactFromTextSearch
 let omitKnowledgeColumnUrn
 let forceKnowledgeNonTable
+let forceABoxNeo4jFailure
 let providerServer
 let pocServer
 let pocOrigin
@@ -33,6 +35,18 @@ function sendJson(response, value, status = 200, headers = {}) {
   const body = JSON.stringify(value)
   response.writeHead(status, { 'Content-Type': 'application/json', ...headers })
   response.end(body)
+}
+
+function canonicalTestJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalTestJson).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalTestJson(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function canonicalTestHash(value) {
+  return createHash('sha256').update(canonicalTestJson(value)).digest('hex')
 }
 
 function providerHandler(request, response) {
@@ -316,9 +330,21 @@ function providerHandler(request, response) {
       const payload = JSON.parse(body.toString('utf8'))
       const query = payload.statements?.[0]?.statement || ''
       const parameters = payload.statements?.[0]?.parameters || {}
-      if (query.includes('UNWIND $entities AS entity')) {
-        for (const entity of parameters.entities || []) knowledgeNeo4jNodes.set(entity.id, structuredClone(entity))
-        return sendJson(response, { errors: [], results: [{ data: [{ row: [(parameters.entities || []).length] }] }] })
+      if (query.includes('UNWIND $entities AS entity') || query.includes('UNWIND $nodes AS entity')) {
+        if (forceABoxNeo4jFailure && query.includes('KnowledgeABoxEntity')) {
+          return sendJson(response, { errors: [{ code: 'Neo.ClientError.Test', message: 'bounded test failure' }], results: [] })
+        }
+        const entities = parameters.entities || parameters.nodes || []
+        for (const entity of entities) knowledgeNeo4jNodes.set(entity.id, {
+          ...structuredClone(entity),
+          ...(query.includes('KnowledgeABoxEntity') ? {
+            graph_id: parameters.graphId,
+            studio_release_id: parameters.releaseId,
+            source_urn: entity.provenance?.source_urn,
+            target_stable_element_id: entity.stable_element_id,
+          } : {}),
+        })
+        return sendJson(response, { errors: [], results: [{ data: [{ row: [entities.length] }] }] })
       }
       if (query.includes('UNWIND $relations AS relationInput')) {
         for (const relation of parameters.relations || []) {
@@ -331,8 +357,13 @@ function providerHandler(request, response) {
       }
       if (query.includes('WITH node.id AS identity, count(node) AS copies')) {
         const nodes = [...knowledgeNeo4jNodes.values()].filter((node) => (
-          node.knowledge_graph_id === parameters.graphId
-          && node.knowledge_release_id === parameters.studioReleaseId
+          query.includes('KnowledgeABoxEntity')
+            ? node.graph_id === parameters.graphId
+              && node.studio_release_id === parameters.releaseId
+              && node.source_urn === parameters.sourceUrn
+              && node.target_stable_element_id === parameters.targetStableElementId
+            : node.knowledge_graph_id === parameters.graphId
+              && node.knowledge_release_id === parameters.studioReleaseId
         ))
         return sendJson(response, { errors: [], results: [{ data: [{ row: [nodes.length, 0] }] }] })
       }
@@ -400,6 +431,13 @@ before(async () => {
       { id: 'platform', label: 'Platform', url: `${providerOrigin}/dashboards/datariver`, height_px: 900 },
       { id: 'airflow', label: 'Airflow', url: `${providerOrigin}/dashboards/airflow`, height_px: 720 },
     ]),
+    POC_KNOWLEDGE_SOURCE_MANIFEST: JSON.stringify({
+      'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)': {
+        manifest_ref: 'k5-provider-test-v1',
+        source_version: 'provider-source-v1',
+        secret_ref: 'secret:provider-source',
+      },
+    }),
   })
   const { createPocStateStore } = await import('./poc-state-store.mjs?provider-contract-test')
   const module = await import('./poc-server.mjs?provider-contract-test')
@@ -1167,6 +1205,8 @@ test('projects release-pinned DataHub Table and Column identities idempotently a
       source_asset_id: tableUrn,
       target_stable_element_id: stableElementId,
       rules: [{ source_field_path: 'wafer_id', target_stable_element_id: stableElementId }],
+      tbox_version: 1,
+      version: 1,
     }]]],
   })
   const createProjection = () => fetch(`${pocOrigin}/poc-api/knowledge/projections`, {
@@ -1269,6 +1309,157 @@ test('projects release-pinned DataHub Table and Column identities idempotently a
       'feature-security-policy-v1',
       policySnapshot.value || approvedDefaultFeatureSecurityPolicy(),
     )
+  }
+})
+
+test('fences durable K5 preview confirmation, verifies source hashes, persists failures, and reauthorizes list reads', async () => {
+  const tableUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)'
+  const draftId = 'knowledge-k5-durable-draft'
+  const graphId = 'knowledge-k5-durable-graph'
+  const releaseId = 'knowledge-k5-durable-release'
+  const targetId = 'knowledge-k5-wafer-class'
+  const subjectId = 'provider-test-subject'
+  const coreSnapshot = await providerStateStore.read('core')
+  const accessSnapshot = await providerStateStore.read('change-history-access-v1')
+  const policySnapshot = await providerStateStore.read('feature-security-policy-v1')
+  const originalMethods = Object.fromEntries([
+    'readKnowledgeSourceRows', 'readKnowledgeIngestionJob', 'readKnowledgeIngestionJobByIdempotency',
+    'listKnowledgeIngestionJobs', 'insertKnowledgeIngestionJob', 'updateKnowledgeIngestionJob',
+  ].map((name) => [name, providerStateStore[name]]))
+  let sourceRows = [{ row_key: 'wafer-1', row_data: { wafer_id: 'W-001' } }, { row_key: 'wafer-2', row_data: { wafer_id: 'W-002' } }]
+    .map((row) => ({ ...row, source_hash: canonicalTestHash(row.row_data) }))
+  const jobs = new Map()
+  providerStateStore.readKnowledgeSourceRows = async () => structuredClone(sourceRows)
+  providerStateStore.readKnowledgeIngestionJob = async (jobId) => structuredClone(jobs.get(jobId) ?? null)
+  providerStateStore.readKnowledgeIngestionJobByIdempotency = async (requestedDraftId, requestedReleaseId, key) => (
+    structuredClone([...jobs.values()].find((row) => row.draft_id === requestedDraftId
+      && row.release_id === requestedReleaseId && row.idempotency_key === key) ?? null)
+  )
+  providerStateStore.listKnowledgeIngestionJobs = async (requestedDraftId) => structuredClone(
+    [...jobs.values()].filter((row) => row.draft_id === requestedDraftId && row.state !== 'READY'),
+  )
+  providerStateStore.insertKnowledgeIngestionJob = async (job) => {
+    const now = new Date().toISOString()
+    const row = { ...structuredClone(job), version: 1, created_at: now, updated_at: now }
+    jobs.set(row.job_id, row)
+    return structuredClone(row)
+  }
+  providerStateStore.updateKnowledgeIngestionJob = async (jobId, expectedVersion, state, result) => {
+    const current = jobs.get(jobId)
+    assert.equal(current?.version, expectedVersion)
+    const row = { ...current, state, result: structuredClone(result), version: expectedVersion + 1, updated_at: new Date().toISOString() }
+    jobs.set(jobId, row)
+    return structuredClone(row)
+  }
+  await providerStateStore.write('core', {
+    ...(coreSnapshot.value || {}),
+    knowledgeDrafts: [{
+      id: draftId, version: 7, state: 'PUBLISHED', materialized_graph_id: graphId,
+      published_studio_release_id: releaseId,
+    }],
+    knowledgeReleases: [{ id: releaseId, graph_id: graphId, state: 'ACTIVE' }],
+    knowledgeDraftBlocks: [[draftId, [{
+      id: 'knowledge-k5-tbox-block',
+      elements: [{ stable_element_id: targetId, kind: 'CLASS', canonical_name: 'Wafer' }],
+    }]]],
+    knowledgeDraftBindings: [[draftId, [{
+      id: 'knowledge-k5-binding', source_asset_id: tableUrn,
+      target_stable_element_id: targetId, tbox_version: 3, version: 2,
+      rules: [{ method: 'SUBJECT_ID', source_field_path: 'wafer_id', target_stable_element_id: targetId }],
+    }]]],
+  })
+  knowledgeNeo4jNodes.clear()
+  forceABoxNeo4jFailure = false
+  const previewRequest = () => fetch(`${pocOrigin}/poc-api/knowledge/studio/drafts/${draftId}/abox/previews`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'If-Match': '"7"' },
+    body: JSON.stringify({ target_stable_element_id: targetId, sample_limit: 5 }),
+  })
+  const confirmRequest = (previewJobId, idempotencyKey) => fetch(
+    `${pocOrigin}/poc-api/knowledge/studio/drafts/${draftId}/abox/ingestions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'If-Match': '"7"', 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ preview_job_id: previewJobId, target_stable_element_id: targetId }),
+    },
+  )
+  try {
+    const previewResponse = await previewRequest()
+    assert.equal(previewResponse.status, 200, await previewResponse.clone().text())
+    const preview = await previewResponse.json()
+    assert.equal(preview.pinned_tbox_version, 3)
+    assert.equal(preview.node_count, 2)
+    assert.equal(preview.relation_count, 0)
+    assert.equal(preview.provenance.length, 2)
+    assert.equal(knowledgeNeo4jNodes.size, 0)
+
+    const missingReceipt = await confirmRequest('', 'k5-missing-preview')
+    assert.equal(missingReceipt.status, 409)
+    assert.equal(knowledgeNeo4jNodes.size, 0)
+
+    const firstResponse = await confirmRequest(preview.job_id, 'k5-confirm-v1')
+    assert.equal(firstResponse.status, 201, await firstResponse.clone().text())
+    const first = await firstResponse.json()
+    assert.equal(first.state, 'SUCCESS')
+    assert.equal(first.current_stage, 'DRAFT_CHANGESET_READY')
+    assert.equal(first.node_count, 2)
+    assert.equal(first.duplicate_count, 0)
+    assert.equal(first.pinned_tbox_version, 3)
+
+    const replayResponse = await confirmRequest(preview.job_id, 'k5-confirm-v1')
+    assert.equal(replayResponse.status, 200, await replayResponse.clone().text())
+    const replay = await replayResponse.json()
+    assert.equal(replay.id, first.id)
+    assert.equal(replay.result_evidence_hash, first.result_evidence_hash)
+    assert.equal(replay.duplicate_count, 0)
+
+    const stalePreviewResponse = await previewRequest()
+    const stalePreview = await stalePreviewResponse.json()
+    sourceRows = [{ row_key: 'wafer-3', row_data: { wafer_id: 'W-003' } }]
+      .map((row) => ({ ...row, source_hash: canonicalTestHash(row.row_data) }))
+    const staleConfirmation = await confirmRequest(stalePreview.job_id, 'k5-confirm-stale')
+    assert.equal(staleConfirmation.status, 409)
+    assert.equal((await staleConfirmation.json()).code, 'PREVIEW_STALE')
+
+    sourceRows = [{ row_key: 'wafer-bad', row_data: { wafer_id: 'W-BAD' }, source_hash: '0'.repeat(64) }]
+    const badHash = await previewRequest()
+    assert.equal(badHash.status, 409)
+    assert.equal((await badHash.json()).code, 'SOURCE_HASH_MISMATCH')
+
+    sourceRows = [{ row_key: 'wafer-failure', row_data: { wafer_id: 'W-FAIL' } }]
+      .map((row) => ({ ...row, source_hash: canonicalTestHash(row.row_data) }))
+    const failurePreview = await (await previewRequest()).json()
+    forceABoxNeo4jFailure = true
+    const failedProjection = await confirmRequest(failurePreview.job_id, 'k5-confirm-failure')
+    assert.equal(failedProjection.status, 502)
+    forceABoxNeo4jFailure = false
+    const authorizedList = await fetch(`${pocOrigin}/poc-api/knowledge/studio/drafts/${draftId}/abox/ingestions`)
+    assert.equal(authorizedList.status, 200)
+    const items = (await authorizedList.json()).items
+    assert.equal(items.filter((item) => item.state === 'FAILED').length, 1)
+    assert.equal(items.some((item) => item.error_code === 'KNOWLEDGE_ABOX_PROJECTION_FAILED'), true)
+    assert.equal(items.some((item) => item.state === 'READY'), false)
+
+    const allowedPolicy = approvedDefaultFeatureSecurityPolicy()
+    allowedPolicy.cells.find((cell) => (
+      cell.feature === 'knowledge' && cell.role === 'manager' && cell.grade === 'credential'
+    )).allow = true
+    await providerStateStore.write('feature-security-policy-v1', allowedPolicy)
+    await providerStateStore.write('change-history-access-v1', {
+      schema_version: 1,
+      active_subject_id: subjectId,
+      users: [{ subject_id: subjectId, role: 'manager', active: true, max_security_grade: 'restricted', provider_owner_refs: [] }],
+      system_assignments: [],
+    })
+    const deniedList = await fetch(`${pocOrigin}/poc-api/knowledge/studio/drafts/${draftId}/abox/ingestions`)
+    assert.equal(deniedList.status, 403)
+    assert.equal((await deniedList.json()).code, 'KNOWLEDGE_TABLE_FORBIDDEN')
+  } finally {
+    forceABoxNeo4jFailure = false
+    knowledgeNeo4jNodes.clear()
+    Object.assign(providerStateStore, originalMethods)
+    await providerStateStore.write('core', coreSnapshot.value || {})
+    await providerStateStore.write('change-history-access-v1', accessSnapshot.value)
+    await providerStateStore.write('feature-security-policy-v1', policySnapshot.value || approvedDefaultFeatureSecurityPolicy())
   }
 })
 

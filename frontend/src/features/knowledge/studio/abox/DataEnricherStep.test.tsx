@@ -127,6 +127,44 @@ function binding(version: number) {
   }
 }
 
+function previewReceipt() {
+  return {
+    job_id: 'knowledge-ingestion:preview-receipt',
+    status: 'READY',
+    draft_version: 5,
+    binding_version: 1,
+    target_stable_element_id: 'class.employee',
+    pinned_tbox_version: 2,
+    node_count: 2,
+    relation_count: 0,
+    source: {
+      asset_urn: assetId,
+      source_version: 'source-v1',
+      manifest_ref: 'test-manifest-v1',
+    },
+    dry_run: true,
+    sample_size: 2,
+    graph: {
+      nodes: [],
+      edges: [],
+    },
+    rejected: [],
+    unmapped: [],
+    evidence: [],
+    provenance: [{
+      source_type: 'DETERMINISTIC_ENRICHER',
+      source_urn: assetId,
+      source_row_key: 'employee-1',
+      source_hash: 'a'.repeat(64),
+      graph_id: 'graph-1',
+      studio_release_id: 'release-1',
+      tbox_version: 2,
+      manifest_ref: 'test-manifest-v1',
+      secret_ref: 'secret:test-source',
+    }],
+  } as const
+}
+
 function ingestionJob(
   overrides: Partial<KnowledgeStudioIngestionJob> = {},
 ): KnowledgeStudioIngestionJob {
@@ -340,12 +378,8 @@ describe('DataEnricherStep', () => {
       }
       if (path.endsWith('/abox/previews') && init?.method === 'POST') {
         return Promise.resolve(json({
-          status: 'READY',
+          ...previewReceipt(),
           draft_version: 3,
-          binding_version: 1,
-          target_stable_element_id: 'class.employee',
-          dry_run: true,
-          sample_size: 2,
           graph: {
             nodes: [
               {
@@ -365,7 +399,6 @@ describe('DataEnricherStep', () => {
             ],
             edges: [],
           },
-          evidence: [],
         }, 200, '"3"'))
       }
       if (path.endsWith('/abox/preflight') && init?.method === 'POST') {
@@ -422,7 +455,7 @@ describe('DataEnricherStep', () => {
     })
   })
 
-  it('queues ingestion only from a PUBLISHED Studio Release and renders durable progress', async () => {
+  it('confirms an exact durable preview from a PUBLISHED Studio Release and renders the result', async () => {
     const publishedDraft = {
       ...draft(5),
       state: 'PUBLISHED',
@@ -432,7 +465,16 @@ describe('DataEnricherStep', () => {
       published_by: '019fa57b-52de-74c0-9f5e-06ae7b1bf3c9',
       published_at: '2026-07-29T00:59:00Z',
     }
-    const job = ingestionJob()
+    const job = ingestionJob({
+      state: 'SUCCESS',
+      progress_percent: 100,
+      current_stage: 'DRAFT_CHANGESET_READY',
+      result_changeset_id: 'knowledge-changeset:test',
+      result_evidence_hash: 'b'.repeat(64),
+      node_count: 2,
+      duplicate_count: 0,
+      finished_at: '2026-07-29T01:01:00Z',
+    })
     let queued = false
     const fetchMock = vi.fn<typeof fetch>((input, init) => {
       const path = requestUrl(input)
@@ -450,25 +492,42 @@ describe('DataEnricherStep', () => {
           bindings: [binding(1)],
         }, 200, '"5"'))
       }
+      if (path.includes(`/drafts/${draftId}/abox/sources?`)) {
+        return Promise.resolve(json({ items: [source], page: { limit: 25 } }))
+      }
+      if (path.endsWith(`/abox/sources/${assetId}`)) {
+        return Promise.resolve(json({ dataset: source, observed_at: '2026-07-28T04:00:00Z' }))
+      }
+      if (path.endsWith('/abox/previews') && init?.method === 'POST') {
+        return Promise.resolve(json(previewReceipt(), 200, '"1"'))
+      }
       return Promise.reject(new Error(`Unexpected request: ${path}`))
     })
     vi.stubGlobal('fetch', fetchMock)
     const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
     render(<DataEnricherStep client={client} draftId={draftId} onDraftUpdate={vi.fn()} />)
 
-    const runButton = await screen.findByRole('button', { name: 'Run Ingestion' })
-    expect(runButton).toBeEnabled()
+    fireEvent.click(await screen.findByLabelText('Employee, 2 properties · Mapped · DRAFT'))
+    await screen.findByRole('region', { name: 'Data Binding Panel' })
+    fireEvent.click(screen.getByRole('button', { name: 'Preview · Dry Run' }))
+    const previewDialog = await screen.findByRole('dialog', { name: 'Knowledge Graph Preview · Dry Run' })
+    fireEvent.click(within(previewDialog).getByRole('button', { name: '닫기' }))
+
+    const runButton = screen.getByRole('button', { name: 'Run Ingestion' })
+    await waitFor(() => expect(runButton).toBeEnabled())
     fireEvent.click(runButton)
 
     const progress = await screen.findByLabelText('A-Box Ingestion 진행 상태')
-    expect(within(progress).getByText('PENDING · QUEUED')).toBeInTheDocument()
-    expect(within(progress).getByText(/Vector 대상 1개/)).toBeInTheDocument()
-    expect(runButton).toBeDisabled()
+    expect(within(progress).getByText('SUCCESS · DRAFT_CHANGESET_READY')).toBeInTheDocument()
     const createCall = fetchMock.mock.calls.find(([input, init]) => (
       init?.method === 'POST' && requestUrl(input).endsWith('/abox/ingestions')
     ))
     expect(new Headers(createCall?.[1]?.headers).get('If-Match')).toBe('"5"')
     expect(new Headers(createCall?.[1]?.headers).get('Idempotency-Key')).toBeTruthy()
+    expect(JSON.parse(createCall?.[1]?.body as string)).toEqual({
+      preview_job_id: 'knowledge-ingestion:preview-receipt',
+      target_stable_element_id: 'class.employee',
+    })
   })
 
   it('keeps REVIEW read-only and publishes only after an exact reviewer pre-flight receipt', async () => {
@@ -560,7 +619,7 @@ describe('DataEnricherStep', () => {
 
     await screen.findByText(/Studio Release #1 발행 완료/)
     expect(screen.getByText('Studio: PUBLISHED')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: 'Run Ingestion' })).toBeEnabled()
+    expect(screen.getByRole('button', { name: 'Run Ingestion' })).toBeDisabled()
     const publishCall = fetchMock.mock.calls.find(([input]) => (
       requestUrl(input).endsWith('/publish')
     ))

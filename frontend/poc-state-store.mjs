@@ -2070,11 +2070,20 @@ export function createPocStateStore({ databasePool } = {}) {
     return result.rows[0] ?? null
   }
 
+  async function readKnowledgeIngestionJob(jobId) {
+    const db = await requireKnowledgeDatabase()
+    const result = await db.query(`
+      SELECT * FROM poc_knowledge_ingestion_jobs WHERE job_id = $1
+    `, [jobId])
+    return result.rows[0] ?? null
+  }
+
   async function listKnowledgeIngestionJobs(draftId) {
     const db = await requireKnowledgeDatabase()
     const result = await db.query(`
       SELECT * FROM poc_knowledge_ingestion_jobs
-      WHERE draft_id = $1 ORDER BY created_at DESC LIMIT 100
+      WHERE draft_id = $1 AND state <> 'READY'
+      ORDER BY created_at DESC LIMIT 100
     `, [draftId])
     return result.rows
   }
@@ -2146,6 +2155,7 @@ export function createPocStateStore({ databasePool } = {}) {
     readChangeHistoryCrLinkReplay,
     runChangeHistoryScheduler,
     readKnowledgeSourceRows,
+    readKnowledgeIngestionJob,
     readKnowledgeIngestionJobByIdempotency,
     listKnowledgeIngestionJobs,
     insertKnowledgeIngestionJob,

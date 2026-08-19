@@ -316,6 +316,10 @@ export interface KnowledgeStudioIngestionJob {
   updated_at: string
   started_at: string | null
   finished_at: string | null
+  node_count?: number
+  edge_count?: number
+  duplicate_count?: number
+  pinned_tbox_version?: number
 }
 
 export type KnowledgeStudioMappingMethod =
@@ -456,17 +460,39 @@ export interface KnowledgeStudioPreviewEdge {
 }
 
 export interface KnowledgeStudioPreview {
+  job_id: string
   status: 'READY' | 'INVALID' | 'UNAVAILABLE'
   draft_version: number
   binding_version?: number
   target_stable_element_id: string
+  pinned_tbox_version: number
+  node_count: number
+  relation_count: number
+  source: {
+    asset_urn: string
+    source_version: string
+    manifest_ref: string
+  }
   dry_run: true
   sample_size: number
   graph: {
     nodes: KnowledgeStudioPreviewNode[]
     edges: KnowledgeStudioPreviewEdge[]
   }
+  rejected: Array<{ row_key?: string; source_field_path?: string; reason: string }>
+  unmapped: Array<{ row_key: string; source_field_path: string; target_stable_element_id: string }>
   evidence: KnowledgeStudioValidationEvidence[]
+  provenance: Array<{
+    source_type: string
+    source_urn: string
+    source_row_key: string
+    source_hash: string
+    graph_id: string
+    studio_release_id: string
+    tbox_version: number
+    manifest_ref: string
+    secret_ref: string
+  }>
 }
 
 export interface KnowledgeStudioPreflight {
@@ -1115,6 +1141,8 @@ export async function createKnowledgeStudioIngestion(
   draftId: string,
   etag: string,
   idempotencyKey: string,
+  previewJobId: string,
+  targetStableElementId: string,
 ): Promise<KnowledgeStudioIngestionJob> {
   return client.request<KnowledgeStudioIngestionJob>(
     `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/ingestions`,
@@ -1123,6 +1151,10 @@ export async function createKnowledgeStudioIngestion(
       cache: 'no-store',
       ifMatch: etag,
       idempotencyKey,
+      body: JSON.stringify({
+        preview_job_id: previewJobId,
+        target_stable_element_id: targetStableElementId,
+      }),
     },
   )
 }

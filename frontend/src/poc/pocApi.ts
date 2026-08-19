@@ -3770,7 +3770,11 @@ class PocApiClient {
       if (options.ifMatch) headers.set('If-Match', options.ifMatch)
       if (options.idempotencyKey) headers.set('Idempotency-Key', options.idempotencyKey)
       const query = url.searchParams.toString()
-      return gatewayRequestWithMeta(`/poc-api${path}${query ? `?${query}` : ''}`, { ...options, headers })
+      const response = await gatewayRequestWithMeta(
+        `/poc-api${path}${query ? `?${query}` : ''}`,
+        { ...options, headers },
+      )
+      return response.data
     }
     const aboxPath = path.match(/^\/knowledge\/studio\/drafts\/([^/]+)\/abox$/)
     if (aboxPath && method === 'GET') {

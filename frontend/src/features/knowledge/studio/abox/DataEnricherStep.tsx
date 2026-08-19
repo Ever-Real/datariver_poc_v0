@@ -145,6 +145,7 @@ export function DataEnricherStep({
   const [saving, setSaving] = useState(false)
   const [previewLoading, setPreviewLoading] = useState(false)
   const [preview, setPreview] = useState<KnowledgeStudioPreview>()
+  const [previewOpen, setPreviewOpen] = useState(false)
   const [selectedPreviewNodeId, setSelectedPreviewNodeId] = useState<string | undefined>(
     cachedSession?.selectedPreviewNodeId,
   )
@@ -332,6 +333,8 @@ export function DataEnricherStep({
     targetId: string,
     binding?: KnowledgeStudioBinding,
   ) => {
+    setPreview(undefined)
+    setPreviewOpen(false)
     setSelectedTargetId(targetId)
     setSourceQuery('')
     setSourceResults([])
@@ -450,6 +453,8 @@ export function DataEnricherStep({
         : current)
       setConflict(undefined)
       setPreflight(undefined)
+      setPreview(undefined)
+      setPreviewOpen(false)
       setStatus(`Binding Draft 저장 완료 · version ${response.data.binding.version}`)
       return true
     } catch (error) {
@@ -533,6 +538,7 @@ export function DataEnricherStep({
         5,
       )
       setPreview(response.data)
+      setPreviewOpen(true)
       setSelectedPreviewNodeId(response.data.graph.nodes[0]?.id)
       setStatus(
         response.data.status === 'READY'
@@ -582,6 +588,9 @@ export function DataEnricherStep({
       !etag
       || abox?.draft.state !== 'PUBLISHED'
       || ingestionLoading
+      || !preview?.job_id
+      || !selectedTarget
+      || preview.target_stable_element_id !== selectedTarget.stable_element_id
       || ingestionJobs.some((job) => ACTIVE_INGESTION_STATES.has(job.state))
     ) return
     setIngestionLoading(true)
@@ -591,12 +600,14 @@ export function DataEnricherStep({
         draftId,
         etag,
         newKnowledgeStudioIdempotencyKey(),
+        preview.job_id,
+        selectedTarget.stable_element_id,
       )
       setIngestionJobs((current) => [job, ...current.filter((item) => item.id !== job.id)])
       setIngestionPollRevision((current) => current + 1)
       setStatus(
-        `A-Box Ingestion을 백그라운드 작업으로 접수했습니다. `
-        + `Vector 대상 ${job.vector_target_count}개 · ${job.state}`,
+        `확인한 Preview로 A-Box projection을 실행했습니다. `
+        + `Node ${job.node_count ?? 0}개 · ${job.state}`,
       )
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Ingestion 작업을 접수하지 못했습니다.')
@@ -820,6 +831,9 @@ export function DataEnricherStep({
   const canRunIngestion = Boolean(
     etag
     && draftState === 'PUBLISHED'
+    && preview?.job_id
+    && selectedTarget
+    && preview.target_stable_element_id === selectedTarget.stable_element_id
     && !ingestionLoading
     && !hasActiveIngestion,
   )
@@ -909,7 +923,9 @@ export function DataEnricherStep({
               ? 'Schema와 Mapping을 발행한 뒤에만 실제 A-Box Ingestion을 실행할 수 있습니다.'
               : hasActiveIngestion
                 ? '진행 중인 Ingestion이 끝난 뒤 새 작업을 실행할 수 있습니다.'
-                : '현재 Active Studio Release와 Embedding binding으로 백그라운드 작업을 접수합니다.'}
+                : !preview?.job_id
+                  ? '선택한 Mapping의 Preview를 먼저 확인해야 합니다.'
+                  : '확인한 exact Preview receipt로 bounded A-Box projection을 실행합니다.'}
             onClick={() => void runIngestion()}
           >
             <Play size={14} /> {ingestionLoading ? '접수 중…' : 'Run Ingestion'}
@@ -1457,19 +1473,19 @@ export function DataEnricherStep({
     </Dialog>
 
     <Dialog
-      open={Boolean(preview)}
+      open={previewOpen && Boolean(preview)}
       title="Knowledge Graph Preview · Dry Run"
       description="저장된 Mapping으로 실제 Row 샘플을 JSON Graph로 변환합니다. Neo4j에는 쓰지 않습니다."
       size="workspace"
       onRequestClose={() => {
-        setPreview(undefined)
+        setPreviewOpen(false)
         setSelectedPreviewNodeId(undefined)
       }}
       footer={<button
         type="button"
         className="button button-secondary"
         onClick={() => {
-          setPreview(undefined)
+          setPreviewOpen(false)
           setSelectedPreviewNodeId(undefined)
         }}
       >
@@ -1482,9 +1498,18 @@ export function DataEnricherStep({
             {preview.status} · {preview.sample_size} sampled rows
           </span>
           <span className="text-[10px] text-slate-500">
-            Draft {preview.draft_version} · Binding {preview.binding_version ?? '없음'}
+            Draft {preview.draft_version} · T-Box {preview.pinned_tbox_version}
+            {' · '}Binding {preview.binding_version ?? '없음'}
           </span>
         </header>
+        <section className="grid gap-2 rounded-enterprise border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-700 sm:grid-cols-2">
+          <span className="break-all"><strong>Source</strong> · {preview.source.asset_urn}</span>
+          <span><strong>예상 결과</strong> · Node {preview.node_count} · Relation {preview.relation_count}</span>
+          <span><strong>Rejected</strong> · {preview.rejected.length}</span>
+          <span><strong>Unmapped</strong> · {preview.unmapped.length}</span>
+          <span><strong>Provenance</strong> · {preview.provenance[0]?.source_type ?? '없음'}</span>
+          <span className="break-all"><strong>Manifest</strong> · {preview.source.manifest_ref}</span>
+        </section>
         {preview.graph.nodes.length > 0
           ? <div className="grid gap-4 lg:grid-cols-[minmax(520px,1.5fr)_minmax(260px,.7fr)]">
               <FlowCanvas

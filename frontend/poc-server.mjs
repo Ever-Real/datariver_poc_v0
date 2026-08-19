@@ -4669,7 +4669,11 @@ async function knowledgeProjectionScope(context, draftIdValue) {
       throw knowledgeProjectionError(409, 'KNOWLEDGE_MAPPING_RULE_REQUIRED', 'A Knowledge binding has no mapping rule.')
     }
     const collected = sourceBindings.get(tableUrn) ?? []
-    collected.push({ targetStableElementId, rules })
+    const tboxVersion = Number(binding.tbox_version)
+    if (!Number.isSafeInteger(tboxVersion) || tboxVersion < 1) {
+      throw knowledgeProjectionError(409, 'KNOWLEDGE_TBOX_VERSION_INVALID', 'A Knowledge binding has no valid pinned T-Box version.')
+    }
+    collected.push({ targetStableElementId, rules, tboxVersion, version: Number(binding.version || 1) })
     sourceBindings.set(tableUrn, collected)
   }
 
@@ -4769,6 +4773,8 @@ async function knowledgeProjectionScope(context, draftIdValue) {
       assetUrn,
       bindings: values.map((value) => ({
         targetStableElementId: value.targetStableElementId,
+        tboxVersion: value.tboxVersion,
+        version: value.version,
         rules: value.rules.map((rule) => structuredClone(rule)),
       })),
     }))),
@@ -4946,6 +4952,9 @@ async function knowledgeABoxPlan(context, draftId, targetStableElementId, sample
   const unmapped = []
   const nodes = []
   for (const row of rows) {
+    if (row.source_hash !== canonicalHash(row.row_data)) {
+      throw knowledgeProjectionError(409, 'SOURCE_HASH_MISMATCH', 'A materialized source row does not match its canonical SHA-256 receipt.')
+    }
     const identity = knowledgeABoxValue(row.row_data, subjectRule.source_field_path)
     if (identity === undefined || identity === null || String(identity).trim() === '') {
       rejected.push({ row_key: row.row_key, reason: 'SUBJECT_ID_MISSING', source_field_path: subjectRule.source_field_path })
@@ -4964,7 +4973,8 @@ async function knowledgeABoxPlan(context, draftId, targetStableElementId, sample
     }
     const rowIdentity = String(identity)
     nodes.push({
-      id: `knowledge:abox:${canonicalHash({ contract_version: 'KNOWLEDGE_ABOX_ROW_V1', graph_id: scope.graphId, studio_release_id: scope.studioReleaseId, source_urn: binding.assetUrn, row_key: row.row_key, row_identity: rowIdentity })}`,
+      id: `knowledge:abox:${canonicalHash({ contract_version: 'KNOWLEDGE_ABOX_ROW_V1', graph_id: scope.graphId, studio_release_id: scope.studioReleaseId, target_stable_element_id: binding.targetStableElementId, source_urn: binding.assetUrn, row_key: row.row_key, row_identity: rowIdentity })}`,
+      stable_element_id: binding.targetStableElementId,
       type: targetClass,
       identity: rowIdentity,
       properties,
@@ -4972,19 +4982,32 @@ async function knowledgeABoxPlan(context, draftId, targetStableElementId, sample
       provenance: {
         source_type: 'DETERMINISTIC_ENRICHER', source_urn: binding.assetUrn, source_row_key: row.row_key,
         source_hash: row.source_hash, graph_id: scope.graphId, studio_release_id: scope.studioReleaseId,
-        tbox_version: scope.draftVersion, manifest_ref: manifest.manifestRef, secret_ref: manifest.secretRef,
+        target_stable_element_id: binding.targetStableElementId,
+        tbox_version: binding.tboxVersion, manifest_ref: manifest.manifestRef, secret_ref: manifest.secretRef,
       },
     })
   }
   const boundedNodes = Number.isSafeInteger(sampleLimit) ? nodes.slice(0, Math.max(1, Math.min(sampleLimit, 100))) : nodes.slice(0, 5)
+  const validationEvidence = [
+    ...rejected.slice(0, 100).map((item) => ({
+      severity: 'ERROR', code: item.reason, location: item.row_key || item.source_field_path || 'mapping',
+      message: 'The source item is rejected and will not be projected.',
+    })),
+    ...unmapped.slice(0, 100).map((item) => ({
+      severity: 'WARNING', code: 'SOURCE_VALUE_UNMAPPED', location: `${item.row_key}:${item.source_field_path}`,
+      message: 'The source value has no mapped target Property and will be omitted.',
+    })),
+  ]
   return {
     scope, manifest, binding, rows, nodes, edges: [], rejected, unmapped,
     preview: {
-      status: 'READY', draft_version: scope.draftVersion, binding_version: Number(binding.version || 1),
-      pinned_tbox_version: scope.draftVersion, source: { asset_urn: binding.assetUrn, source_version: manifest.sourceVersion, manifest_ref: manifest.manifestRef },
+      status: 'READY', draft_version: scope.draftVersion, binding_version: binding.version,
+      target_stable_element_id: binding.targetStableElementId,
+      pinned_tbox_version: binding.tboxVersion, source: { asset_urn: binding.assetUrn, source_version: manifest.sourceVersion, manifest_ref: manifest.manifestRef },
       sample_size: boundedNodes.length, node_count: nodes.length, relation_count: 0, dry_run: true,
       graph: { nodes: boundedNodes, edges: [] }, rejected, unmapped,
-      evidence: nodes.slice(0, 100).map((node) => node.provenance),
+      evidence: validationEvidence,
+      provenance: nodes.slice(0, 100).map((node) => node.provenance),
     },
   }
 }
@@ -5000,18 +5023,29 @@ async function writeKnowledgeABoxProjection(plan) {
         node.graph_id = $graphId,
         node.studio_release_id = $releaseId,
         node.tbox_version = $tboxVersion,
+        node.target_stable_element_id = entity.stable_element_id,
         node.source_urn = entity.provenance.source_urn,
         node.source_row_key = entity.provenance.source_row_key,
         node.source_hash = entity.provenance.source_hash,
         node.provenance_source = entity.provenance.source_type,
         node.observed_at = $observedAt
     RETURN count(node)
-  `, { nodes: plan.nodes, graphId: plan.scope.graphId, releaseId: plan.scope.studioReleaseId, tboxVersion: plan.scope.draftVersion, observedAt: plan.scope.observedAt })
+  `, { nodes: plan.nodes, graphId: plan.scope.graphId, releaseId: plan.scope.studioReleaseId, tboxVersion: plan.binding.tboxVersion, observedAt: plan.scope.observedAt })
   const rows = await neo4jQuery(`
-    MATCH (node:KnowledgeABoxEntity {graph_id: $graphId, studio_release_id: $releaseId})
+    MATCH (node:KnowledgeABoxEntity {
+      graph_id: $graphId,
+      studio_release_id: $releaseId,
+      source_urn: $sourceUrn,
+      target_stable_element_id: $targetStableElementId
+    })
     WITH node.id AS identity, count(node) AS copies
     RETURN sum(copies), sum(CASE WHEN copies > 1 THEN copies - 1 ELSE 0 END)
-  `, { graphId: plan.scope.graphId, releaseId: plan.scope.studioReleaseId })
+  `, {
+    graphId: plan.scope.graphId,
+    releaseId: plan.scope.studioReleaseId,
+    sourceUrn: plan.binding.assetUrn,
+    targetStableElementId: plan.binding.targetStableElementId,
+  })
   const nodeCount = Number(rows[0]?.row?.[0] || 0)
   const duplicateCount = Number(rows[0]?.row?.[1] || 0)
   if (duplicateCount !== 0 || nodeCount !== plan.nodes.length) throw knowledgeProjectionError(502, 'KNOWLEDGE_ABOX_PROJECTION_INCOMPLETE', 'The bounded A-Box projection did not pass its deterministic read-back audit.')
@@ -5021,16 +5055,20 @@ async function writeKnowledgeABoxProjection(plan) {
 function knowledgeIngestionJobResponse(row) {
   const preview = row.preview || {}
   const result = row.result || {}
+  const publicState = row.state === 'PROJECTED' || row.state === 'DRAFT_CHANGESET_READY'
+    ? 'SUCCESS'
+    : row.state === 'FAILED' ? 'FAILED' : 'RUNNING'
+  const finished = publicState === 'SUCCESS' || publicState === 'FAILED'
   return {
     id: row.job_id, draft_id: row.draft_id, graph_id: row.graph_id, studio_release_id: row.release_id,
-    requested_by: row.requested_by, state: row.state, progress_percent: row.state === 'PROJECTED' ? 100 : 50,
-    current_stage: row.state === 'PROJECTED' ? 'PROJECTED' : row.state, vector_target_count: 0,
+    requested_by: row.requested_by, state: publicState, progress_percent: finished ? 100 : 50,
+    current_stage: publicState === 'SUCCESS' ? 'DRAFT_CHANGESET_READY' : row.state, vector_target_count: 0,
     attempt_count: 1, maximum_attempts: 1, result_changeset_id: result.changeset_id || null,
     result_evidence_hash: result.evidence_hash || null, error_code: result.error_code || null,
     allowed_actions: [], version: Number(row.version), created_at: row.created_at, updated_at: row.updated_at,
-    started_at: row.created_at, finished_at: row.state === 'PROJECTED' ? row.updated_at : null,
+    started_at: row.created_at, finished_at: finished ? row.updated_at : null,
     node_count: Number(result.node_count || preview.node_count || 0), edge_count: 0,
-    duplicate_count: Number(result.duplicate_count || 0), provenance: result.provenance || preview.evidence || [],
+    duplicate_count: Number(result.duplicate_count || 0), provenance: result.provenance || preview.provenance || [],
     rejected: preview.rejected || [], unmapped: preview.unmapped || [], pinned_tbox_version: Number(row.tbox_version),
   }
 }
@@ -5040,6 +5078,7 @@ async function knowledgeABoxIngestionApi(request, response, url, context) {
   const body = request.method === 'POST' ? await bodyJson(request) : {}
   const target = request.method === 'POST' ? body.target_stable_element_id : url.searchParams.get('target_stable_element_id')
   if (request.method === 'GET' && url.pathname.endsWith('/ingestions')) {
+    await knowledgeProjectionScope(context, draftId)
     const jobs = await context.stateStore.listKnowledgeIngestionJobs(draftId)
     return json(response, 200, { items: jobs.map(knowledgeIngestionJobResponse), page: { limit: 100 } })
   }
@@ -5047,44 +5086,86 @@ async function knowledgeABoxIngestionApi(request, response, url, context) {
   const ifMatch = request.headers['if-match']
   if (typeof ifMatch !== 'string' || ifMatch !== `"${plan.scope.draftVersion}"`) throw knowledgeProjectionError(412, 'DRAFT_VERSION_STALE', 'The pinned Draft version changed; refresh before continuing.')
   if (url.pathname.endsWith('/previews')) {
-    const idempotencyKey = `preview:${draftId}:${plan.scope.studioReleaseId}:${plan.binding.targetStableElementId}:${plan.scope.draftVersion}`
     const requestHash = canonicalHash(plan.preview)
+    const idempotencyKey = `preview:${canonicalHash({
+      draftId,
+      releaseId: plan.scope.studioReleaseId,
+      target: plan.binding.targetStableElementId,
+      tboxVersion: plan.binding.tboxVersion,
+      requestedBy: context.principal.subjectId,
+      requestHash,
+    })}`
     let row = await context.stateStore.readKnowledgeIngestionJobByIdempotency(draftId, plan.scope.studioReleaseId, idempotencyKey)
     if (!row) {
       row = await context.stateStore.insertKnowledgeIngestionJob({
         job_id: `knowledge-ingestion:${canonicalHash({ draftId, releaseId: plan.scope.studioReleaseId, idempotencyKey })}`,
         draft_id: draftId, graph_id: plan.scope.graphId, release_id: plan.scope.studioReleaseId,
         requested_by: context.principal.subjectId, source_asset_urn: plan.binding.assetUrn,
-        source_version: plan.manifest.sourceVersion, tbox_version: plan.scope.draftVersion,
+        source_version: plan.manifest.sourceVersion, tbox_version: plan.binding.tboxVersion,
         idempotency_key: idempotencyKey, request_hash: requestHash, state: 'READY', preview: plan.preview, result: null,
       })
     }
-    return json(response, 200, { ...plan.preview, job_id: row.job_id, state: row.state }, { ETag: `"${row.version}"` })
+    if (row.request_hash !== requestHash) throw knowledgeProjectionError(409, 'PREVIEW_RECEIPT_COLLISION', 'The durable preview receipt does not match this request.')
+    return json(response, 200, { ...row.preview, job_id: row.job_id, state: row.state }, { ETag: `"${row.version}"` })
   }
   if (!url.pathname.endsWith('/ingestions') || request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'Knowledge A-Box ingestion supports bounded POST actions only.')
   const idempotencyKey = request.headers['idempotency-key']
   if (typeof idempotencyKey !== 'string' || !idempotencyKey.trim() || idempotencyKey.length > 200) throw knowledgeProjectionError(428, 'IDEMPOTENCY_KEY_REQUIRED', 'A bounded Idempotency-Key is required.')
+  const previewJobId = requiredKnowledgeIdentity(body.preview_job_id, 'PREVIEW_JOB_ID_REQUIRED', 'The exact durable preview receipt must be confirmed.')
+  const previewRow = await context.stateStore.readKnowledgeIngestionJob(previewJobId)
+  const previewHash = canonicalHash(plan.preview)
+  if (!previewRow || previewRow.state !== 'READY'
+    || previewRow.draft_id !== draftId
+    || previewRow.graph_id !== plan.scope.graphId
+    || previewRow.release_id !== plan.scope.studioReleaseId
+    || previewRow.requested_by !== context.principal.subjectId
+    || previewRow.source_asset_urn !== plan.binding.assetUrn
+    || previewRow.source_version !== plan.manifest.sourceVersion
+    || Number(previewRow.tbox_version) !== plan.binding.tboxVersion
+    || previewRow.request_hash !== previewHash) {
+    throw knowledgeProjectionError(409, 'PREVIEW_STALE', 'The confirmed preview is missing, stale, or belongs to a different principal or source mapping.')
+  }
+  const requestHash = canonicalHash({
+    draftId,
+    graphId: plan.scope.graphId,
+    releaseId: plan.scope.studioReleaseId,
+    sourceAssetUrn: plan.binding.assetUrn,
+    sourceVersion: plan.manifest.sourceVersion,
+    tboxVersion: plan.binding.tboxVersion,
+    targetStableElementId: plan.binding.targetStableElementId,
+    previewJobId,
+    previewHash,
+  })
   const existing = await context.stateStore.readKnowledgeIngestionJobByIdempotency(draftId, plan.scope.studioReleaseId, idempotencyKey.trim())
+  if (existing && existing.request_hash !== requestHash) throw knowledgeProjectionError(409, 'IDEMPOTENCY_KEY_REUSED', 'The Idempotency-Key is already bound to a different confirmation request.')
   if (existing?.state === 'PROJECTED') return json(response, 200, knowledgeIngestionJobResponse(existing), { ETag: `"${existing.version}"` })
-  const previewIdempotency = `preview:${draftId}:${plan.scope.studioReleaseId}:${plan.binding.targetStableElementId}:${plan.scope.draftVersion}`
-  const previewRow = await context.stateStore.readKnowledgeIngestionJobByIdempotency(draftId, plan.scope.studioReleaseId, previewIdempotency)
-  if (!previewRow || previewRow.state !== 'READY') throw knowledgeProjectionError(409, 'PREVIEW_REQUIRED', 'A successful preview is required before confirmation.')
-  const requestHash = canonicalHash({ draftId, releaseId: plan.scope.studioReleaseId, sourceAssetUrn: plan.binding.assetUrn, tboxVersion: plan.scope.draftVersion, idempotencyKey: idempotencyKey.trim() })
+  if (existing?.state === 'FAILED') return json(response, 200, knowledgeIngestionJobResponse(existing), { ETag: `"${existing.version}"` })
   let row = existing
+  const created = !row
   if (!row) {
     row = await context.stateStore.insertKnowledgeIngestionJob({
       job_id: `knowledge-ingestion:${canonicalHash({ draftId, releaseId: plan.scope.studioReleaseId, idempotencyKey: idempotencyKey.trim() })}`,
       draft_id: draftId, graph_id: plan.scope.graphId, release_id: plan.scope.studioReleaseId,
       requested_by: context.principal.subjectId, source_asset_urn: plan.binding.assetUrn,
-      source_version: plan.manifest.sourceVersion, tbox_version: plan.scope.draftVersion,
+      source_version: plan.manifest.sourceVersion, tbox_version: plan.binding.tboxVersion,
       idempotency_key: idempotencyKey.trim(), request_hash: requestHash, state: 'CONFIRMED', preview: plan.preview, result: null,
     })
   }
-  const audit = await writeKnowledgeABoxProjection(plan)
-  const provenance = plan.nodes.map((node) => node.provenance)
-  const result = { changeset_id: `knowledge-changeset:${canonicalHash({ jobId: row.job_id, tboxVersion: plan.scope.draftVersion })}`, changeset_state: 'DRAFT', evidence_hash: canonicalHash({ job_id: row.job_id, audit, provenance }), node_count: audit.nodeCount, edge_count: audit.edgeCount, duplicate_count: audit.duplicateCount, provenance }
-  row = await context.stateStore.updateKnowledgeIngestionJob(row.job_id, Number(row.version), 'PROJECTED', result)
-  return json(response, 201, knowledgeIngestionJobResponse(row), { ETag: `"${row.version}"` })
+  try {
+    const audit = await writeKnowledgeABoxProjection(plan)
+    const provenance = plan.nodes.map((node) => node.provenance)
+    const result = { changeset_id: `knowledge-changeset:${canonicalHash({ jobId: row.job_id, tboxVersion: plan.binding.tboxVersion })}`, changeset_state: 'DRAFT', evidence_hash: canonicalHash({ job_id: row.job_id, audit, provenance }), node_count: audit.nodeCount, edge_count: audit.edgeCount, duplicate_count: audit.duplicateCount, provenance }
+    row = await context.stateStore.updateKnowledgeIngestionJob(row.job_id, Number(row.version), 'PROJECTED', result)
+    return json(response, created ? 201 : 200, knowledgeIngestionJobResponse(row), { ETag: `"${row.version}"` })
+  } catch (error) {
+    const errorCode = typeof error?.code === 'string' && error.code.length <= 100
+      ? error.code
+      : 'KNOWLEDGE_ABOX_PROJECTION_FAILED'
+    await context.stateStore.updateKnowledgeIngestionJob(row.job_id, Number(row.version), 'FAILED', {
+      changeset_state: 'DRAFT', error_code: errorCode,
+    })
+    throw error
+  }
 }
 
 async function knowledgeProjectionApi(request, response, url, context) {
