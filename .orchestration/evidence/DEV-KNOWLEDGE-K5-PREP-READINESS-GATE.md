@@ -4,7 +4,7 @@
   repeated, and K6 was not started.
 - Product / running DEV OCI: `34af2b869d04fd96f4b9cd69f6eeed8729bafe28` (exact); Web
   `/healthz` returned `ok` after cleanup and Web-only recreation.
-- K5 status remains `COMPLETE_RUNTIME_VERIFIED`. PREP gate status is
+- K5 status is `PARTIAL`; the preserved Node-only runtime slice remains verified. PREP gate status is
   `K5_PREP_DEPLOYMENT_NOT_READY`.
 
 ## Blocking relation projection result
@@ -22,7 +22,8 @@ and replay were intentionally not run: a Node 1 / Relation 0 execution would not
 relation path. Narrow contract inspection confirms the current bounded planner accepts exactly one
 source mapping target and emits an empty edge list. No K5 source repair was attempted in this gate.
 
-Backlog gate: `K5_PREP_RELATION_PROJECTION_REQUIRED` — implement one bounded release/source-row
+Next Product slice: `K5-R — Relation Projection Completion` with blocker
+`K5_RELATION_PROJECTION_REQUIRED` — implement one bounded release/source-row
 plan that resolves both relation endpoints, previews Node 2 / Relation 1, preserves exact relation
 provenance, and proves projection/replay Node 2 / distinct Edge 1. Rerun focused K5 tests and this
 single runtime fixture only; run full suites only if Product source changes.

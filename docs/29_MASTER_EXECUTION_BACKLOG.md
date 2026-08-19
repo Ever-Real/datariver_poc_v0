@@ -104,7 +104,7 @@ services remain technical detail rather than a top-level Product menu.
 | 5 | 등록관리 | mutation data_steward/admin only; provider apply/durability `PARTIAL` |
 | 6 | 거버넌스 — 정책·표준 문서 관리 | bounded read/create/DRAFT-update/archive complete |
 | 7 | Chat | General/Vector/AUTO and pre-K7 DataHub-lineage Graph complete; fallback execution/K7 partial |
-| 8 | 지식관리 | K0-K4 and K5 durable A-Box ingestion bridge `COMPLETE_RUNTIME_VERIFIED`; K6 not started |
+| 8 | 지식관리 | K0-K4 complete; K5 `PARTIAL` with node projection verified and K5-R relation projection blocked; K6 not started |
 | 9 | 품질관리 | `USER_FEATURE_DEFINITION_REQUIRED`; GX technical gate separate |
 | — | 기술 Backlog | support services, deployment and target gates |
 
@@ -642,10 +642,13 @@ requirement → feature → API/tool → DB → UI → test → operations.
 
 ## Known controlled-document conflicts to resolve
 
-- [ ] `K5_PREP_RELATION_PROJECTION_REQUIRED`: one bounded published-release/source-row plan must
-  preview Node 2 / Relation 1, keep Neo4j Edge 0 before confirm, project and replay Node 2 /
-  distinct Edge 1, and preserve exact relation provenance. K5 Product status remains
-  `COMPLETE_RUNTIME_VERIFIED`; PREP deployment is blocked until focused runtime evidence passes.
+- [ ] `K5-R — Relation Projection Completion` (`K5_RELATION_PROJECTION_REQUIRED`): exactly two
+  entities plus one valid T-Box relation must produce one bounded plan; preview Node 2 / Relation 1;
+  keep Neo4j Edge 0 before confirm; project Node 2 / Edge 1; replay Node 2 / distinct Edge 1;
+  preserve exact relation provenance; deny unauthorized access; and clean up the fixture. Reuse K1
+  identity/provenance. Add no table, service, queue, worker, generic graph engine or arbitrary
+  Cypher, and avoid changing migration 002. K5 is `PARTIAL`; deployment push, PREP pull, migration,
+  build/deploy and PREP write validation stay blocked until this focused gate passes.
 - [ ] `PREP_EXTERNAL_ENV_CONTRACT_RECHECK_REQUIRED`: on the actual PREP host, record the existing
   stable absolute env/secret paths and prove they supply the reference-only
   `POC_KNOWLEDGE_SOURCE_MANIFEST` contract. Never copy DEV `deploy/poc/.env`.

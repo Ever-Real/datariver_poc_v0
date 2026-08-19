@@ -1,5 +1,9 @@
 # DEV Knowledge K5 — Durable Ingestion Bridge Closeout
 
+> Status correction: this evidence proves the Node-only projection slice. The later bounded
+> relation gate could not create Node 2 / Relation 1, so overall K5 is `PARTIAL` with blocker
+> `K5_RELATION_PROJECTION_REQUIRED`. The runtime results below remain valid Node-projection evidence.
+
 - Scope: bounded Node POC A-Box preview/confirm/projection/replay only; K6 was not started.
 - Product SHA / deployed OCI: `34af2b869d04fd96f4b9cd69f6eeed8729bafe28` (exact);
   Web `http://127.0.0.1:39083/healthz` returned `ok` before and after Web-only restart.
@@ -36,4 +40,5 @@
   source, full-suite, exact SHA/OCI, browser, restart, Neo4j and cleanup evidence was captured.
 - Git push and PREP mutation were not performed.
 
-Status: `K5 COMPLETE_RUNTIME_VERIFIED`; `K6 NOT_STARTED`.
+Status: Node projection `COMPLETE_RUNTIME_VERIFIED`; overall `K5 PARTIAL`;
+blocker `K5_RELATION_PROJECTION_REQUIRED`; `K6 NOT_STARTED`.

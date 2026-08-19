@@ -143,18 +143,20 @@
   Class/Property proposals to the existing Draft/CAS state. Browser create→preview→apply→save→hard
   reload passed; Neo4j remained 5 nodes / 3 edges before and after, so A-Box growth was zero.
   Knowledge overall remains `PARTIAL`.
-- Knowledge K5 A-Box Enricher / Projection: `COMPLETE_RUNTIME_VERIFIED`. The Node POC uses two
+- Knowledge K5 A-Box Enricher / Projection: `PARTIAL`. The Node POC uses two
   additive bounded tables for source manifest rows and ingestion jobs, exact release/T-Box pinning,
   preview-before-write, parameterized deterministic MERGE, receipt provenance, replay idempotency,
   restart recovery and request-time authorization. Evidence:
   `.orchestration/evidence/DEV-KNOWLEDGE-K5-DURABLE-BRIDGE-CLOSEOUT.md`. The implementation keeps
   the Node POC authoritative, stores only deployment-owned non-secret source references plus
   canonical row snapshots, and creates a DRAFT changeset receipt rather than a final Knowledge
-  publication. K6 remains `NOT_STARTED`.
+  publication. Node projection is runtime-verified; relation projection is not implemented/proven
+  and cannot currently produce one bounded Node 2 / Relation 1 plan. Blocker:
+  `K5_RELATION_PROJECTION_REQUIRED`. K6 remains `NOT_STARTED`.
 - K5 PREP deployment readiness: `K5_PREP_DEPLOYMENT_NOT_READY`. A focused disposable relation
   fixture produced separate Node 1 / Relation 0 previews for both valid endpoint mappings, so the
   required combined Node 2 / Relation 1 preview/projection/replay path is not runtime-proven.
-  Product K5 remains complete; PREP mutation is blocked by `K5_PREP_RELATION_PROJECTION_REQUIRED`
+  Product K5 is `PARTIAL`; PREP mutation is blocked by `K5_RELATION_PROJECTION_REQUIRED`
   and `PREP_EXTERNAL_ENV_CONTRACT_RECHECK_REQUIRED`. Evidence:
   `.orchestration/evidence/DEV-KNOWLEDGE-K5-PREP-READINESS-GATE.md`.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
@@ -174,7 +176,7 @@
 5  등록관리                                → steward/admin only; overall PARTIAL
 6  거버넌스 — 정책·표준 문서 관리          → bounded CRUD/archive complete
 7  Chat                                    → General/Vector/AUTO and pre-K7 DataHub lineage complete; fallback/K7 partial
-8  지식관리                                → K0~K5 complete; K6 NOT_STARTED
+8  지식관리                                → K0~K4 complete; K5 PARTIAL (K5-R); K6 NOT_STARTED
 9  품질관리                                → USER_FEATURE_DEFINITION_REQUIRED
 기술 Backlog                              → support/deployment details only
 ```
