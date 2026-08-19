@@ -4968,6 +4968,7 @@ async function knowledgeABoxPlan(context, draftId, targetStableElementId, sample
       type: targetClass,
       identity: rowIdentity,
       properties,
+      properties_json: JSON.stringify(properties),
       provenance: {
         source_type: 'DETERMINISTIC_ENRICHER', source_urn: binding.assetUrn, source_row_key: row.row_key,
         source_hash: row.source_hash, graph_id: scope.graphId, studio_release_id: scope.studioReleaseId,
@@ -4995,7 +4996,7 @@ async function writeKnowledgeABoxProjection(plan) {
     ON CREATE SET node.created_at = $observedAt
     SET node.entity_type = entity.type,
         node.identity = entity.identity,
-        node.properties = entity.properties,
+        node.properties_json = entity.properties_json,
         node.graph_id = $graphId,
         node.studio_release_id = $releaseId,
         node.tbox_version = $tboxVersion,
