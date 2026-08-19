@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `fca4535cab544560bd06486dc363e6df0c6df27f`
-- Deployed OCI revision: `fca4535cab544560bd06486dc363e6df0c6df27f`
+- Current Product SHA: `93868fa1c1ff3d7c32fd760b79d58434ac9ae989`
+- Deployed OCI revision: `93868fa1c1ff3d7c32fd760b79d58434ac9ae989`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -141,12 +141,11 @@
   Class/Property proposals to the existing Draft/CAS state. Browser create→preview→apply→save→hard
   reload passed; Neo4j remained 5 nodes / 3 edges before and after, so A-Box growth was zero.
   Knowledge overall remains `PARTIAL`.
-- Knowledge K5 A-Box Enricher / Projection entry gate:
-  `HOLD_KNOWLEDGE_ABOX_PERSISTENCE_DECISION`. Existing Draft/release/CAS, bindings and K1
-  parameterized identity projection are reusable, but the authoritative Node POC has no approved
-  physical source-row reader. Current DEV also has no Knowledge Studio source manifest/secret root
-  or running ingestion worker. DataHub metadata cannot be fabricated into A-Box rows, so no K5
-  mutation was started and K6 remains `NOT_STARTED` by dependency gate.
+- Knowledge K5 A-Box Enricher / Projection: `COMPLETE_RUNTIME_VERIFIED`. The Node POC uses two
+  additive bounded tables for source manifest rows and ingestion jobs, exact release/T-Box pinning,
+  preview-before-write, parameterized deterministic MERGE, receipt provenance, replay idempotency,
+  restart recovery and request-time authorization. Evidence:
+  `.orchestration/evidence/DEV-KNOWLEDGE-K5-DURABLE-BRIDGE-CLOSEOUT.md`. K6 remains `NOT_STARTED`.
   The bounded decision rejects synchronous core/CAS row ingestion and recommends, only after
   `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`, provisioning the already tracked ADR-0094 revision
   `0081`/fixed-function/optional-worker contract behind a minimal Node facade. Legacy FastAPI does

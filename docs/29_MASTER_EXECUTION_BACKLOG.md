@@ -104,7 +104,7 @@ services remain technical detail rather than a top-level Product menu.
 | 5 | 등록관리 | mutation data_steward/admin only; provider apply/durability `PARTIAL` |
 | 6 | 거버넌스 — 정책·표준 문서 관리 | bounded read/create/DRAFT-update/archive complete |
 | 7 | Chat | General/Vector/AUTO and pre-K7 DataHub-lineage Graph complete; fallback execution/K7 partial |
-| 8 | 지식관리 | K0 audit, K1 identity/provenance, K2 Registry/version, K3 T-Box and K4 Source Proposal runtime complete; K5 physical-row authority is HOLD |
+| 8 | 지식관리 | K0-K4 and K5 durable A-Box ingestion bridge `COMPLETE_RUNTIME_VERIFIED`; K6 not started |
 | 9 | 품질관리 | `USER_FEATURE_DEFINITION_REQUIRED`; GX technical gate separate |
 | — | 기술 Backlog | support services, deployment and target gates |
 
