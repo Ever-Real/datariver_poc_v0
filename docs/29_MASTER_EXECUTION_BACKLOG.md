@@ -25,7 +25,7 @@ an unsafe bypass, or a historical result from another commit.
 | Created | 2026-07-23, Asia/Seoul |
 | Branch / Phase 6E entry base / current published implementation | `dev` / `dba1186` / verified by the stable publication workflow |
 | Remote comparison | `dev-publish` requires local `dev` and `origin/dev` to resolve to the same exact commit after every publication |
-| Current controlled phase | Product `fca4535cab544560bd06486dc363e6df0c6df27f`: completed baselines remain verified. K4 closes Catalog Table → typed T-Box Source Proposal. K5 is `HOLD_KNOWLEDGE_ABOX_PERSISTENCE_DECISION`: the authoritative Node POC has no approved physical source-row reader, DEV source manifest/secret root or running ingestion worker, and DataHub metadata is not row evidence. K6 is not started. Registration durability and GX assertion egress remain held/blocked as named. |
+| Current controlled phase | Product `34af2b869d04fd96f4b9cd69f6eeed8729bafe28`: completed baselines remain verified. K5 closes the bounded durable Node A-Box preview/confirm/projection/replay bridge with two additive tables and one migration. K6 is not started. Registration durability and GX assertion egress remain held/blocked as named. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## 2026-08-16 Node POC Account/Auth execution
@@ -127,25 +127,20 @@ history, soft archive, Chat exclusion and Viewer/direct-route negatives. Product
 closes K3 typed T-Box editing with actual browser save/reload, semantic warnings, lock, stale CAS,
 desktop/mobile and retained discard evidence. Product `fca4535c...` closes K4 canonical grade
 compatibility and Catalog Source Proposal with exact Dataset/SchemaField provenance, reload and
-zero A-Box/Neo4j growth. The K5 entry audit found reusable Draft/release/CAS, binding and K1
-projection seams, but no approved current Node physical-row reader or configured DEV ingestion
-authority. K5 is `HOLD_KNOWLEDGE_ABOX_PERSISTENCE_DECISION`; K6 was not started. K5 through K9
-remain separate later slices.
-
-The bounded K5 decision rejects synchronous core/CAS row ingestion because it lacks the accepted
-claim/lease/fence/source-pin/attempt/Changeset authority. The user approved
-`APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`, but CONTROL_PLANE reclaim found that the authoritative
-Node POC has neither the canonical revision `0081` database/UUID IAM plane nor a fixed-function
-identity/schema adapter to it. The temporary memory-only mock was rejected. K5 is therefore
-`HOLD_KNOWLEDGE_ABOX_SCHEMA_EXPANSION`: a new POC job schema/identity mirror, direct row scan or
-legacy FastAPI authority is not inferred from the approval. Product/DB/Neo4j/container remained
-unchanged; K6 remains dependency-gated.
+zero A-Box/Neo4j growth. Product `34af2b86...` closes K5 with the approved minimal Node-only durable
+bridge: two additive K5 tables, a tracked transactional migration, deployment-owned non-secret
+manifest references, canonical row hashes, exact release/T-Box/target pinning, durable preview and
+DRAFT changeset receipts, parameterized deterministic Neo4j MERGE, request-time authorization and
+restart recovery. Actual browser E2E produced Node 2 / Edge 0 / duplicate 0 on replay; no-grant
+scope was hidden with 403 and the disposable data/credentials were cleaned. No Python IAM/FastAPI
+authority, generic ingestion platform, service, queue or worker was introduced. K6 was not started.
 
 The K6 read-only entry audit found a reusable separate Knowledge Chat UI and historical bounded
 GraphRAG implementation, but all four graph/release/snapshot/graphrag paths resolve to `NO_ROUTE`
 in the authoritative Node Product. K1 source identities are not K5 instance evidence and general
-Chat or generic Neo4j cannot substitute. K6 remains `NOT_STARTED_DEPENDENCY_GATE` until K5 has a
-verified instance Release/projection; no K6 Product mutation was opened.
+Chat or generic Neo4j cannot substitute. K5 now provides a verified instance projection seam, but
+K6 remains `NOT_STARTED` until its own authorized Node routes are implemented and runtime-verified;
+no K6 Product mutation was opened.
 
 ### Knowledge K2 audit/backlog receipts
 
@@ -170,7 +165,7 @@ Korean dashboard use this user-facing order:
 | P4 | Registration | Authorization/preparation, manual-metadata apply, one READY candidate-to-governed-CR command and authoritative `NOT_STARTED` apply-report `COMPLETE_RUNTIME_VERIFIED`; mutation roles are data_steward/admin only; overall `PARTIAL` for durable preparation/outbox/provider-apply, remaining typed surfaces and target gates; accepted minimal relational direction awaits schema approval |
 | P5 | Governance — policy/standard documents | `COMPLETE_RUNTIME_VERIFIED` for active-user read and data_steward/manager/admin create, DRAFT-version update and archive; viewer/developer mutation denied |
 | P6 | Chat | General/Vector/AUTO and the pre-K7 DataHub-lineage-only Graph boundary are runtime-verified; actual fallback execution and K7 authorized Knowledge routing remain `PARTIAL` |
-| P7 | Knowledge / Quality | Knowledge K0 through K4 Source Proposal are runtime-verified; K5 A-Box is `HOLD_KNOWLEDGE_ABOX_PERSISTENCE_DECISION` because current Node DEV has no approved physical-row authority. K6 is not started. Quality remains `USER_FEATURE_DEFINITION_REQUIRED` |
+| P7 | Knowledge / Quality | Knowledge K0 through K5 durable A-Box ingestion are runtime-verified. K6 is not started. Quality remains `USER_FEATURE_DEFINITION_REQUIRED` |
 | P8 | Admin | Minimum controls required by real features only; no generic IAM/configuration console |
 
 Controlled execution DAG:

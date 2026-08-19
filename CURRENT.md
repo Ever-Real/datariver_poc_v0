@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `93868fa1c1ff3d7c32fd760b79d58434ac9ae989`
-- Deployed OCI revision: `93868fa1c1ff3d7c32fd760b79d58434ac9ae989`
+- Current Product SHA: `34af2b869d04fd96f4b9cd69f6eeed8729bafe28`
+- Deployed OCI revision: `34af2b869d04fd96f4b9cd69f6eeed8729bafe28`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -52,6 +52,8 @@
   `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`
 - Knowledge K4 Catalog Source Proposal Product:
   `fca4535cab544560bd06486dc363e6df0c6df27f`
+- Knowledge K5 durable A-Box ingestion Product:
+  `34af2b869d04fd96f4b9cd69f6eeed8729bafe28`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -145,11 +147,10 @@
   additive bounded tables for source manifest rows and ingestion jobs, exact release/T-Box pinning,
   preview-before-write, parameterized deterministic MERGE, receipt provenance, replay idempotency,
   restart recovery and request-time authorization. Evidence:
-  `.orchestration/evidence/DEV-KNOWLEDGE-K5-DURABLE-BRIDGE-CLOSEOUT.md`. K6 remains `NOT_STARTED`.
-  The bounded decision rejects synchronous core/CAS row ingestion and recommends, only after
-  `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`, provisioning the already tracked ADR-0094 revision
-  `0081`/fixed-function/optional-worker contract behind a minimal Node facade. Legacy FastAPI does
-  not become an authority and no browser DSN/SQL/secret input is permitted.
+  `.orchestration/evidence/DEV-KNOWLEDGE-K5-DURABLE-BRIDGE-CLOSEOUT.md`. The implementation keeps
+  the Node POC authoritative, stores only deployment-owned non-secret source references plus
+  canonical row snapshots, and creates a DRAFT changeset receipt rather than a final Knowledge
+  publication. K6 remains `NOT_STARTED`.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge and Quality/GX surfaces remain open.
 - PHASE 1E/1F: `BACKLOG`
@@ -167,7 +168,7 @@
 5  등록관리                                → steward/admin only; overall PARTIAL
 6  거버넌스 — 정책·표준 문서 관리          → bounded CRUD/archive complete
 7  Chat                                    → General/Vector/AUTO and pre-K7 DataHub lineage complete; fallback/K7 partial
-8  지식관리                                → K0~K4 complete; K5 source-reader/persistence decision HOLD
+8  지식관리                                → K0~K5 complete; K6 NOT_STARTED
 9  품질관리                                → USER_FEATURE_DEFINITION_REQUIRED
 기술 Backlog                              → support/deployment details only
 ```
@@ -460,32 +461,19 @@ local credential + opaque server session
   were revoked without changing the inspection admin.
 - Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K4-SOURCE-PROPOSAL-RUNTIME.md`.
 
-## Knowledge K5 A-Box entry gate and CONTROL_PLANE reclaim
+## Knowledge K5 durable A-Box ingestion closeout
 
-- Existing typed bindings, Draft/release/CAS and the K1 release-pinned parameterized Neo4j
-  projection are reusable seams, but K1 writes source Table/Column identities rather than physical
-  row instances.
-- The current Node runtime has no approved bounded row reader; DEV has no source manifest/secret
-  root and no running Knowledge Studio ingestion worker. The repository contract requires these
-  inputs to fail closed instead of inventing sample rows.
-- The user approved `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`. CONTROL_PLANE reclaim then found
-  that the temporary Gemini diff fabricated a memory-only preview and immediate success result;
-  those narrow hunks were dropped and no Product change was accepted.
-- The decision packet rejects putting physical-row job state into the existing core/CAS document.
-  The smallest coherent route is the repository's accepted ADR-0094 plane: existing revision
-  `0081`, fixed database functions, dedicated worker role/service Subject, deployment-owned
-  manifest/secret references and optional `knowledge-studio-ingestion` worker, exposed to the
-  authoritative Node Product only through a bounded fixed-function facade. Starting that runtime
-  was gated by `APPROVE_K5_CANONICAL_INGESTION_PLANE_DEV`.
-- The approval does not close the remaining runtime mismatch: ADR-0094 is implemented against the
-  canonical Python application database/UUID IAM model and creates a governed DRAFT Changeset,
-  while the authoritative Node POC runs only its separate POC state schema and K1 metadata
-  projection. No fixed-function identity/schema adapter, canonical DEV database, source manifest,
-  source-secret root or ingestion worker identity is configured for the Node Product.
-- K5 is now `HOLD_KNOWLEDGE_ABOX_SCHEMA_EXPANSION`. A POC-specific table/function set, identity
-  mirror, direct row scan or legacy FastAPI authority would exceed the approval. No Product,
-  database, Neo4j or container mutation was retained. Evidence:
-  `.orchestration/evidence/DEV-KNOWLEDGE-K5-CONTROL-PLANE-RECLAIM.md`.
+- Product `34af2b86...` closes the approved minimal Node bridge with exactly two additive K5 tables
+  and one tracked transactional migration. Existing Node subject/Asset/release identity, binding
+  CAS, request-time Table scope and K1 parameterized deterministic MERGE remain authoritative.
+- The UI pins the published T-Box version and exact target, creates a durable preview receipt,
+  requires explicit confirmation, projects a DRAFT changeset result and reloads durable receipts.
+  A Web restart preserved SUCCESS; replay produced Node 2 / Edge 0 / duplicate 0.
+- A no-grant manager received `403 KNOWLEDGE_TABLE_FORBIDDEN` without job/count/provenance leakage;
+  unpublished Draft projection returned `409 KNOWLEDGE_DRAFT_NOT_PUBLISHED`.
+- Cleanup removed exact disposable K5 graph/job/source data and disabled test credentials. No
+  FastAPI authority, generic ingestion platform, service, queue, worker or secret storage was added.
+  Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K5-DURABLE-BRIDGE-CLOSEOUT.md`.
 
 ## Knowledge K6 entry audit
 
@@ -495,9 +483,10 @@ local credential + opaque server session
 - The authoritative Node route registry resolves graph list, release list, release snapshot and
   release GraphRAG paths as `NO_ROUTE`; only the existing general Chat route is active. Historical
   FastAPI GraphRAG code is not a current runtime authority.
-- K1 source identities and K2 lifecycle records are reusable, but there is no verified K5 instance
-  Release to retrieve. K6 therefore remains `NOT_STARTED_DEPENDENCY_GATE`; it must not use generic
-  Neo4j traversal or general Chat as a substitute. Evidence:
+- K5 now supplies a verified release-pinned instance projection seam, but the four bounded Node
+  graph/release/snapshot/graphrag routes remain absent. K6 therefore remains `NOT_STARTED`; it must
+  implement and verify its own authorized routes and must not use generic Neo4j traversal or
+  general Chat as a substitute. Evidence:
   `.orchestration/evidence/DEV-KNOWLEDGE-K6-ENTRY-AUDIT.md`.
 
 ## Post-K1 Quality tab parity
