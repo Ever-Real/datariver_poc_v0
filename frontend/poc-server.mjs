@@ -3544,7 +3544,9 @@ function completedChatWorkflow(route, evidenceCount, rerankingState) {
     { stage: 'COMPOSITION', status: 'COMPLETED', detail_code: 'POC_LIVE_PROVIDER' },
     {
       stage: 'CITATION_VALIDATION', status: 'COMPLETED',
-      detail_code: route.selected_mode === 'GRAPH'
+      detail_code: route.knowledge_scope
+        ? 'AUTHORIZED_KNOWLEDGE_ASSET_EVIDENCE_BOUND'
+        : route.selected_mode === 'GRAPH'
         ? 'DATAHUB_LINEAGE_EVIDENCE_BOUND'
         : evidenceCount ? 'AUTHORIZED_DATAHUB_EVIDENCE_BOUND' : 'NO_INTERNAL_CITATIONS_GENERAL_ANSWER',
     },
@@ -4043,7 +4045,160 @@ async function semanticCatalogEvidence(question, limit, { summaryOnly = false } 
   })).then((items) => items.filter(Boolean))
 }
 
-async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, principal) {
+function normalizedKnowledgeRoutingText(value) {
+  return String(value).normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase()
+}
+
+function boundedKnowledgeDeliveryPolicy(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)
+    || typeof value.id !== 'string' || !value.id
+    || typeof value.graph_id !== 'string' || !value.graph_id
+    || typeof value.chat_enabled !== 'boolean'
+    || !Number.isSafeInteger(value.priority) || value.priority < 0 || value.priority > 1000
+    || !Number.isSafeInteger(value.version) || value.version < 1) return null
+  const termList = (items) => {
+    if (!Array.isArray(items) || items.length > 50) return null
+    const normalized = items.map((item) => (
+      typeof item === 'string' ? normalizedKnowledgeRoutingText(item) : ''
+    ))
+    if (normalized.some((term) => !term || term.length > 100)) return null
+    return [...new Set(normalized)]
+  }
+  const matchAnyTerms = termList(value.match_any_terms)
+  const matchAllTerms = termList(value.match_all_terms)
+  const excludedTerms = termList(value.excluded_terms)
+  if (!matchAnyTerms || !matchAllTerms || !excludedTerms
+    || (value.chat_enabled && !matchAnyTerms.length && !matchAllTerms.length)) return null
+  const positive = new Set([...matchAnyTerms, ...matchAllTerms])
+  if (excludedTerms.some((term) => positive.has(term))) return null
+  return Object.freeze({
+    id: value.id,
+    graphId: value.graph_id,
+    chatEnabled: value.chat_enabled,
+    priority: value.priority,
+    matchAnyTerms: Object.freeze(matchAnyTerms),
+    matchAllTerms: Object.freeze(matchAllTerms),
+    excludedTerms: Object.freeze(excludedTerms),
+    version: value.version,
+    hash: canonicalHash({
+      id: value.id,
+      graph_id: value.graph_id,
+      chat_enabled: value.chat_enabled,
+      priority: value.priority,
+      match_any_terms: matchAnyTerms,
+      match_all_terms: matchAllTerms,
+      excluded_terms: excludedTerms,
+      version: value.version,
+    }),
+  })
+}
+
+function knowledgeDeliveryPolicyMatches(policy, normalizedQuestion) {
+  return policy.chatEnabled
+    && !policy.excludedTerms.some((term) => normalizedQuestion.includes(term))
+    && policy.matchAllTerms.every((term) => normalizedQuestion.includes(term))
+    && (!policy.matchAnyTerms.length
+      || policy.matchAnyTerms.some((term) => normalizedQuestion.includes(term)))
+}
+
+async function knowledgeMainChatSelection(context, question) {
+  const normalizedQuestion = normalizedKnowledgeRoutingText(question)
+  const snapshot = await context.stateStore.read('core')
+  const core = snapshot.value && typeof snapshot.value === 'object' && !Array.isArray(snapshot.value)
+    ? snapshot.value
+    : {}
+  const candidates = (Array.isArray(core.knowledgeDeliveryPolicies) ? core.knowledgeDeliveryPolicies : [])
+    .slice(0, 100)
+    .map(boundedKnowledgeDeliveryPolicy)
+    .filter((policy) => policy && knowledgeDeliveryPolicyMatches(policy, normalizedQuestion))
+    .map((policy) => ({
+      policy,
+      specificity: policy.matchAnyTerms.length + policy.matchAllTerms.length + policy.excludedTerms.length,
+    }))
+    .sort((left, right) => right.policy.priority - left.policy.priority
+      || right.specificity - left.specificity
+      || left.policy.id.localeCompare(right.policy.id))
+  for (let offset = 0; offset < candidates.length;) {
+    const rank = candidates[offset]
+    const group = []
+    while (offset < candidates.length
+      && candidates[offset].policy.priority === rank.policy.priority
+      && candidates[offset].specificity === rank.specificity) {
+      group.push(candidates[offset])
+      offset += 1
+    }
+    const authorized = []
+    for (const candidate of group) {
+      try {
+        authorized.push({
+          ...candidate,
+          scope: await knowledgeChatScope(context, candidate.policy.graphId),
+        })
+      } catch (error) {
+        if (Number(error?.statusCode) !== 404 && error?.code !== 'KNOWLEDGE_GRAPH_NOT_FOUND') throw error
+      }
+    }
+    if (authorized.length > 1) return null
+    if (authorized.length === 1) return authorized[0]
+  }
+  return null
+}
+
+async function revalidateKnowledgeMainChatSelection(context, selection) {
+  const snapshot = await context.stateStore.read('core')
+  const core = snapshot.value && typeof snapshot.value === 'object' && !Array.isArray(snapshot.value)
+    ? snapshot.value
+    : {}
+  const current = (Array.isArray(core.knowledgeDeliveryPolicies) ? core.knowledgeDeliveryPolicies : [])
+    .find((item) => item?.id === selection.policy.id)
+  const policy = boundedKnowledgeDeliveryPolicy(current)
+  if (!policy || !policy.chatEnabled || policy.version !== selection.policy.version
+    || policy.hash !== selection.policy.hash || policy.graphId !== selection.scope.graphId) {
+    throw knowledgeProjectionError(409, 'KNOWLEDGE_CHAT_POLICY_STALE', 'The selected Knowledge routing policy changed before citation binding.')
+  }
+  const scope = await knowledgeChatScope(context, selection.scope.graphId, selection.scope.studioReleaseId)
+  if (scope.projectionEvidenceHash !== selection.scope.projectionEvidenceHash) {
+    throw knowledgeProjectionError(409, 'KNOWLEDGE_CHAT_PROJECTION_STALE', 'The selected Knowledge projection changed before citation binding.')
+  }
+}
+
+function knowledgeMainChatEvidence(selection, result) {
+  const classification = selection.scope.draft.classification === 'restricted'
+    ? 'RESTRICTED'
+    : selection.scope.draft.classification === 'credential' ? 'CONFIDENTIAL' : 'INTERNAL'
+  const common = {
+    classification,
+    dataset_kind: 'CATALOG',
+    domain: selection.scope.draft.domain_id ?? null,
+    extraction_method: 'K5_PROJECTED_RECEIPT',
+    retrieval_method: 'KNOWLEDGE_GRAPH_RAG',
+    asset_id: selection.scope.graphId,
+    asset_version: selection.scope.studioReleaseId,
+  }
+  return [
+    ...result.nodes.map((node) => ({
+      ...common,
+      id: `knowledge-node:${node.id}`,
+      name: node.properties?.name || node.entity_type || node.id,
+      provider_description: `${node.entity_type} ${JSON.stringify(node.properties)}`,
+      evidence_type: 'KNOWLEDGE_ASSET_NODE',
+      source_locator: node.provenance?.[0]?.source_locator || node.id,
+      source_version: node.provenance?.[0]?.source_version || selection.scope.projectionEvidenceHash,
+    })),
+    ...result.edges.map((edge) => ({
+      ...common,
+      id: `knowledge-relation:${edge.id}`,
+      name: edge.edge_type || edge.id,
+      provider_description: `${edge.source_id} -[${edge.edge_type}]-> ${edge.target_id}`,
+      evidence_type: 'KNOWLEDGE_ASSET_RELATION',
+      source_locator: edge.provenance?.[0]?.source_locator || edge.id,
+      source_version: edge.provenance?.[0]?.source_version || selection.scope.projectionEvidenceHash,
+    })),
+  ]
+}
+
+async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, context) {
+  const principal = context.principal
   const progress = (stage, status, detailCode) => {
     onWorkflow?.({ stage, status, detail_code: detailCode })
   }
@@ -4052,7 +4207,25 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
   progress('BUDGET_RESERVATION', 'SKIPPED', 'POC_NO_DURABLE_BUDGET')
   progress('ROUTING', 'IN_PROGRESS', 'ROUTING_IN_PROGRESS')
   const resolvedQuestion = await contextualizeChatQuestion(question, memory)
-  const route = await chatRoute(resolvedQuestion, requestedMode, principal)
+  let route = await chatRoute(resolvedQuestion, requestedMode, principal)
+  const knowledgeSelection = route.selected_mode === 'GRAPH'
+    ? await knowledgeMainChatSelection(context, resolvedQuestion)
+    : null
+  if (knowledgeSelection) {
+    route = {
+      ...route,
+      reason: 'KNOWLEDGE_ASSET_POLICY',
+      intent: 'KNOWLEDGE_RELATIONSHIP',
+      knowledge_scope: {
+        graph_id: knowledgeSelection.scope.graphId,
+        release_id: knowledgeSelection.scope.studioReleaseId,
+        asset_name: knowledgeSelection.scope.draft.name || knowledgeSelection.scope.graphId,
+        policy_id: knowledgeSelection.policy.id,
+        policy_version: knowledgeSelection.policy.version,
+        policy_hash: knowledgeSelection.policy.hash,
+      },
+    }
+  }
   progress('ROUTING', 'COMPLETED', `${route.selected_mode}_ROUTE_SELECTED`)
   if (route.adapter_state !== 'READY') {
     throw Object.assign(new Error(`${route.selected_mode} Chat route is not configured.`), { statusCode: 503 })
@@ -4071,6 +4244,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
     }
   }
   let evidence = []
+  let knowledgeAnswer
   let inventoryRequest
   const evidenceLimit = requestedChatEvidenceLimit(resolvedQuestion)
   if (route.selected_mode === 'GENERAL') {
@@ -4078,7 +4252,18 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
   } else {
     progress('RETRIEVAL', 'IN_PROGRESS', 'RETRIEVAL_IN_PROGRESS')
   }
-  if (datahub && route.selected_mode !== 'GENERAL') {
+  if (knowledgeSelection) {
+    const result = await knowledgeGraphRag(knowledgeSelection.scope, {
+      question: resolvedQuestion,
+      direction: 'BOTH',
+      edge_types: [],
+      maximum_hops: 3,
+      maximum_nodes: 20,
+    })
+    await revalidateKnowledgeMainChatSelection(context, knowledgeSelection)
+    evidence = knowledgeMainChatEvidence(knowledgeSelection, result)
+    knowledgeAnswer = result.answer
+  } else if (datahub && route.selected_mode !== 'GENERAL') {
     if (route.intent === 'CATALOG_INVENTORY') {
       const inventory = await datahubInventoryEvidence(resolvedQuestion, principal)
       inventoryRequest = inventory.request
@@ -4087,7 +4272,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
       evidence = await datahubChatEvidence(resolvedQuestion, route, evidenceLimit, principal)
     }
   }
-  if (route.selected_mode === 'GRAPH' && datahub) {
+  if (!knowledgeSelection && route.selected_mode === 'GRAPH' && datahub) {
     const exactResolved = evidence.some((item) => item.retrieval_method === 'CATALOG_EXACT')
     const candidateLimit = exactResolved || route.intent === 'MIXED_DISCOVERY_GRAPH' ? 3 : 1
     evidence = filterAssetsForPrincipal(
@@ -4096,8 +4281,6 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
       'chat',
     )
   }
-  // Main Chat GRAPH is DataHub-lineage-only until K7 introduces an authorized,
-  // release-pinned Knowledge Asset usage profile. It never reads generic Neo4j evidence here.
   if (route.selected_mode !== 'GENERAL') {
     progress('RETRIEVAL', 'COMPLETED', evidence.length
       ? `${route.selected_mode}_RETRIEVAL_COMPLETED`
@@ -4134,11 +4317,13 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
     extraction_method: item.extraction_method || 'DATAHUB_GMS',
     retrieval_method: item.retrieval_method || (rerankingState === 'COMPLETED' ? 'RERANKED' : route.selected_mode),
   }))
-  const context = evidence.map((item, index) => `[${index + 1}] (${item.evidence_type}) ${item.name}: ${item.description}`).join('\n')
+  const evidenceContext = evidence.map((item, index) => `[${index + 1}] (${item.evidence_type}) ${item.name}: ${item.description}`).join('\n')
   const conversationContext = chatMemoryText(memory)
   progress('COMPOSITION', 'IN_PROGRESS', 'COMPOSITION_IN_PROGRESS')
   let answer
-  if (route.selected_mode === 'GRAPH') {
+  if (knowledgeAnswer) {
+    answer = knowledgeAnswer
+  } else if (route.selected_mode === 'GRAPH') {
     // Directional relationships are already typed provider facts. Rendering
     // them deterministically avoids a slow model round trip and prevents the
     // composer from merging unrelated candidate graphs.
@@ -4152,7 +4337,7 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
       : 'Answer in Korean unless the user asks for another language. Give a complete, useful response only from the supplied authorization-filtered live DataHub metadata and catalog evidence. Prefer a short conclusion followed by relevant metadata, columns, quality/profile observations, or comparisons; use roughly 5 to 10 sentences when the evidence supports that detail, but do not pad the answer. Cite evidence numbers such as [1]. If one exact name resolves to multiple platforms, identify and compare every supplied exact asset instead of silently choosing one. State clearly which requested Catalog values are absent from the supplied evidence. Never invent an asset, field, metric, relationship, or inaccessible System. Bounded conversation memory is non-authoritative continuity text: it may resolve what the user means and may answer an explicit request to recall what the user or assistant said, clearly as conversation recall and without an evidence citation. It is never evidence for a current Catalog fact.'
     const compositionUserPrompt = generalRoute
       ? `Selected route: GENERAL\nCurrent question: ${question}\nResolved standalone question: ${resolvedQuestion}\n\nBounded conversation memory (non-authoritative):\n${conversationContext || '(none)'}`
-      : `Selected route: ${route.selected_mode}\nCurrent question: ${question}\nResolved standalone question: ${resolvedQuestion}\n\nBounded conversation memory (non-authoritative):\n${conversationContext || '(none)'}\n\nLive POC evidence:\n${context || '(no matching live evidence)'}`
+      : `Selected route: ${route.selected_mode}\nCurrent question: ${question}\nResolved standalone question: ${resolvedQuestion}\n\nBounded conversation memory (non-authoritative):\n${conversationContext || '(none)'}\n\nLive POC evidence:\n${evidenceContext || '(no matching live evidence)'}`
     const completion = await llmRequest(llm.chat, '/chat/completions', {
       model: llm.chat.model,
       stream: false,
@@ -4172,7 +4357,9 @@ async function liveChat(question, requestedMode = 'AUTO', onWorkflow, memory, pr
     ? answer.trim()
     : answer.replace(/\s*\[\d+\]/g, '').trim()
   progress('CITATION_VALIDATION', 'IN_PROGRESS', 'CITATION_VALIDATION_IN_PROGRESS')
-  progress('CITATION_VALIDATION', 'COMPLETED', route.selected_mode === 'GRAPH'
+  progress('CITATION_VALIDATION', 'COMPLETED', route.knowledge_scope
+    ? 'AUTHORIZED_KNOWLEDGE_ASSET_EVIDENCE_BOUND'
+    : route.selected_mode === 'GRAPH'
     ? 'DATAHUB_LINEAGE_EVIDENCE_BOUND'
     : evidence.length ? 'AUTHORIZED_DATAHUB_EVIDENCE_BOUND' : 'NO_INTERNAL_CITATIONS_GENERAL_ANSWER')
   progress('PERSISTENCE', 'SKIPPED', 'EPHEMERAL_NO_STORE')
@@ -7154,7 +7341,7 @@ async function api(request, response, url, context) {
     const mode = ['AUTO', 'GENERAL', 'VECTOR', 'GRAPH'].includes(body.mode) ? body.mode : 'AUTO'
     const memory = chatMemoryPayload(body.memory)
     if (!question.trim()) return problem(response, 400, 'QUESTION_REQUIRED', 'A non-empty question is required.')
-    return json(response, 200, await liveChat(question, mode, undefined, memory, context.principal))
+    return json(response, 200, await liveChat(question, mode, undefined, memory, context))
   }
   if (request.method === 'POST' && url.pathname === '/poc-api/llm/chat/compact') {
     const body = await bodyJson(request)
@@ -7180,7 +7367,7 @@ async function api(request, response, url, context) {
     })
     response.flushHeaders?.()
     try {
-      const result = await liveChat(question, mode, (step) => writeEventStream(response, 'workflow', step), memory, context.principal)
+      const result = await liveChat(question, mode, (step) => writeEventStream(response, 'workflow', step), memory, context)
       writeEventStream(response, 'result', result)
     } catch (error) {
       writeEventStream(response, 'error', {

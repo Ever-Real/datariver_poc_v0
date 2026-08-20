@@ -44,7 +44,7 @@ const modeOptions: ChatRouteOption[] = [
   { value: 'AUTO', label: '자동', description: '질문의 의도에 맞는 인가된 경로를 서버가 선택합니다.' },
   { value: 'GENERAL', label: '일반', description: '메타데이터를 검색하지 않고 일반 질문에 답변합니다.' },
   { value: 'VECTOR', label: '벡터', description: '권한 필터 후 의미 기반 검색과 재정렬을 사용합니다.' },
-  { value: 'GRAPH', label: '그래프', description: '현재는 인가된 DataHub lineage만 탐색합니다.' },
+  { value: 'GRAPH', label: '그래프', description: '인가된 Knowledge Asset 또는 DataHub lineage 관계를 탐색합니다.' },
 ]
 
 const maximumQuestionCharacters = 12_000
@@ -59,6 +59,7 @@ const modeLabels: Record<ChatMode, string> = {
 const routeReasonLabels: Record<ChatRouteDecision['reason'], string> = {
   EXPLICIT_SELECTION: '사용자 경로 선택',
   GRAPH_INTENT: '영향·계보 질문 감지',
+  KNOWLEDGE_ASSET_POLICY: '지식 Asset 정책 일치',
   SEMANTIC_INTENT: '의미 검색 질문 감지',
   GENERAL_DEFAULT: '일반 대화 기본 경로',
 }
@@ -78,6 +79,7 @@ const routeIntentLabels: Partial<Record<NonNullable<ChatRouteDecision['intent']>
   LINEAGE: '계보 조회',
   IMPACT_ANALYSIS: '영향도 분석',
   RELATIONSHIP: '관계 탐색',
+  KNOWLEDGE_RELATIONSHIP: '지식 Asset 관계 탐색',
   MIXED_DISCOVERY_GRAPH: '탐색 후 관계 분석',
   AMBIGUOUS: '추가 확인 필요',
 }
@@ -168,6 +170,10 @@ function evidenceKindLabel(kind: ChatEvidence['asset_kind']): string {
   if (kind === 'VIEW') return '뷰'
   if (kind === 'MATERIALIZED_VIEW') return '구체화 뷰'
   return '테이블'
+}
+
+function isKnowledgeEvidence(item: ChatEvidence): boolean {
+  return item.source_type.startsWith('KNOWLEDGE_ASSET_')
 }
 
 export function ChatPage({ client }: { client: ApiClient }) {
@@ -737,6 +743,12 @@ export function ChatPage({ client }: { client: ApiClient }) {
                       : ''}
                     {' · '}{adapterStateLabels[visibleAssistant.route.adapter_state]}
                   </small>
+                  {visibleAssistant.route.knowledge_scope && (
+                    <small>
+                      지식 Asset {visibleAssistant.route.knowledge_scope.asset_name}
+                      {' · '}version {visibleAssistant.route.knowledge_scope.release_id}
+                    </small>
+                  )}
                 </section>
               )}
               {providerPolicyUnavailable && (
@@ -761,11 +773,14 @@ export function ChatPage({ client }: { client: ApiClient }) {
                 <ol className="chat-evidence-list">
                   {visibleEvidence.map((item) => {
                     const description = evidenceDescriptionForDisplay(item.description)
+                    const knowledgeEvidence = isKnowledgeEvidence(item)
                     return (
                       <li key={item.chunk_id}>
                         <button
                           aria-label={`근거 ${item.rank} ${item.name} 상세 열기`}
+                          disabled={knowledgeEvidence}
                           onClick={(event) => {
+                            if (knowledgeEvidence) return
                             evidenceTriggerRef.current = event.currentTarget
                             setSelectedEvidenceAssetId(item.resource_id)
                           }}
@@ -774,8 +789,11 @@ export function ChatPage({ client }: { client: ApiClient }) {
                           <span className="chat-evidence-rank">#{item.rank}</span>
                           <span className="chat-evidence-copy">
                             <strong>{item.name}</strong>
-                            <small>{evidenceKindLabel(item.asset_kind)}</small>
+                            <small>{knowledgeEvidence ? '지식 그래프 근거' : evidenceKindLabel(item.asset_kind)}</small>
                             {description && <span>{description}</span>}
+                            {knowledgeEvidence && (
+                              <code className="break-all text-[10px] text-slate-500">{item.source_locator}</code>
+                            )}
                           </span>
                         </button>
                       </li>

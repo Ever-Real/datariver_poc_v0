@@ -1201,7 +1201,7 @@ export type ChatMode = 'AUTO' | 'GENERAL' | 'VECTOR' | 'GRAPH'
 export interface ChatRouteDecision {
   requested_mode: ChatMode
   selected_mode: ChatMode
-  reason: 'EXPLICIT_SELECTION' | 'GRAPH_INTENT' | 'SEMANTIC_INTENT' | 'GENERAL_DEFAULT'
+  reason: 'EXPLICIT_SELECTION' | 'GRAPH_INTENT' | 'KNOWLEDGE_ASSET_POLICY' | 'SEMANTIC_INTENT' | 'GENERAL_DEFAULT'
   adapter_state: 'READY' | 'UNAVAILABLE' | 'FAILED'
   intent?:
     | 'EXPLICIT_SELECTION'
@@ -1212,6 +1212,7 @@ export interface ChatRouteDecision {
     | 'LINEAGE'
     | 'IMPACT_ANALYSIS'
     | 'RELATIONSHIP'
+    | 'KNOWLEDGE_RELATIONSHIP'
     | 'MIXED_DISCOVERY_GRAPH'
     | 'AMBIGUOUS'
   confidence?: number
@@ -1220,6 +1221,14 @@ export interface ChatRouteDecision {
   semantic_retrieval_required?: boolean
   fallback_mode?: Exclude<ChatMode, 'AUTO'> | null
   clarification_required?: boolean
+  knowledge_scope?: {
+    graph_id: string
+    release_id: string
+    asset_name: string
+    policy_id: string
+    policy_version: number
+    policy_hash: string
+  }
 }
 
 export interface ChatWorkflowStep {

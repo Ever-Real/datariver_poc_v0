@@ -146,14 +146,67 @@ describe('ChatPage', () => {
     vi.restoreAllMocks()
   })
 
-  it('describes General as retrieval-free and pre-K7 Graph as DataHub lineage only', async () => {
+  it('describes General as retrieval-free and Graph as an authorized Knowledge or lineage route', async () => {
     const { client } = chatClient()
     render(<ChatPage client={client} />)
     await screen.findByText('주문 데이터')
 
     fireEvent.click(screen.getByRole('button', { name: '검색 경로' }))
     expect(screen.getByText('메타데이터를 검색하지 않고 일반 질문에 답변합니다.')).toBeInTheDocument()
-    expect(screen.getByText('현재는 인가된 DataHub lineage만 탐색합니다.')).toBeInTheDocument()
+    expect(screen.getByText('인가된 Knowledge Asset 또는 DataHub lineage 관계를 탐색합니다.')).toBeInTheDocument()
+  })
+
+  it('shows the pinned Knowledge Asset route and keeps graph evidence out of Catalog detail', async () => {
+    const knowledgeResponse: ChatResponse = {
+      ...response,
+      route: {
+        requested_mode: 'AUTO',
+        selected_mode: 'GRAPH',
+        reason: 'KNOWLEDGE_ASSET_POLICY',
+        intent: 'KNOWLEDGE_RELATIONSHIP',
+        adapter_state: 'READY',
+        knowledge_scope: {
+          graph_id: 'graph-1',
+          release_id: 'release-7',
+          asset_name: '품질 관계 지식',
+          policy_id: 'policy-1',
+          policy_version: 3,
+          policy_hash: 'b'.repeat(64),
+        },
+      },
+      evidence: [{
+        ...response.evidence[0]!,
+        chunk_id: 'knowledge-node-1',
+        resource_id: 'knowledge-node:node-1',
+        name: 'Wafer W-001',
+        source_type: 'KNOWLEDGE_ASSET_NODE',
+        source_locator: 'urn:li:dataset:(quality)#row=1',
+        source_version: 'release-7',
+        extraction_method: 'K5_PROJECTED_RECEIPT',
+        retrieval_method: 'KNOWLEDGE_GRAPH_RAG',
+      }],
+    }
+    const { client: baseClient } = chatClient()
+    const requestEventStream = vi.fn((path: string): Promise<unknown> => (
+      path === '/chat/query/stream'
+        ? Promise.resolve(knowledgeResponse)
+        : Promise.reject(new Error(`Unexpected stream request: ${path}`))
+    ))
+    render(<ChatPage client={{
+      request: (path: string, options?: RequestOptions) => baseClient.request(path, options),
+      requestEventStream,
+    } as unknown as ApiClient} />)
+    await screen.findByText('주문 데이터')
+    const question = screen.getByLabelText('카탈로그 질문')
+    fireEvent.change(question, { target: { value: '품질 관계를 알려줘' } })
+    fireEvent.keyDown(question, { key: 'Enter', code: 'Enter' })
+
+    expect(await screen.findByText(/지식 Asset 품질 관계 지식/)).toHaveTextContent('version release-7')
+    expect(screen.getByLabelText('서버 라우팅 결정')).toHaveTextContent('지식 Asset 관계 탐색')
+    const evidenceButton = screen.getByRole('button', { name: '근거 1 Wafer W-001 상세 열기' })
+    expect(evidenceButton).toBeDisabled()
+    expect(screen.getByText('지식 그래프 근거')).toBeInTheDocument()
+    expect(screen.queryByRole('dialog', { name: '근거 테이블 상세와 Lineage' })).not.toBeInTheDocument()
   })
 
   it('sends the selected route on Enter and renders only server-returned workflow and ranked evidence', async () => {

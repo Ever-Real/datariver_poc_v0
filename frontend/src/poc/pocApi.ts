@@ -388,6 +388,7 @@ const adminSystemSchemaScopes = new Map<string, Array<{
 let knowledgeDomains: Array<Record<string, unknown>> = []
 let knowledgeDrafts: Array<Record<string, unknown>> = []
 let knowledgeReleases: Array<Record<string, unknown>> = []
+let knowledgeDeliveryPolicies: Array<Record<string, unknown>> = []
 const knowledgeDraftBlocks = new Map<string, Array<Record<string, unknown>>>()
 const knowledgeDraftBindings = new Map<string, Array<Record<string, unknown>>>()
 let knowledgeIngestionJobs: Array<Record<string, unknown>> = []
@@ -693,9 +694,10 @@ function knowledgeAssetSummary(draft: Record<string, unknown>, release: Record<s
   const projectionState = latestJob?.state === 'SUCCESS' ? 'SHADOW_VERIFIED' : latestJob?.state ?? null
 
   const status = draft.state === 'PUBLISHED' ? 'ACTIVE' : draft.state === 'ARCHIVED' ? 'ARCHIVED' : 'DRAFT'
+  const graphId = String(draft.materialized_graph_id ?? draft.id)
 
   return {
-    id: String(draft.materialized_graph_id ?? draft.id),
+    id: graphId,
     draft_id: String(draft.id),
     slug: draft.endpoint_alias,
     name: draft.name,
@@ -719,8 +721,21 @@ function knowledgeAssetSummary(draft: Record<string, unknown>, release: Record<s
     created_at: draft.asset_created_at ?? draft.created_at,
     updated_at: draft.updated_at,
     version: draft.version,
-    delivery_policy: null,
+    delivery_policy: knowledgeDeliveryPolicies.find((item) => item.graph_id === graphId) ?? null,
   }
+}
+
+function normalizedKnowledgePolicyTerms(value: unknown, label: string): string[] {
+  if (!Array.isArray(value) || value.length > 50) {
+    throw new Error(`${label} 조건은 최대 50개까지 입력할 수 있습니다.`)
+  }
+  const normalized = value.map((item) => {
+    if (typeof item !== 'string') throw new Error(`${label} 조건은 문자열이어야 합니다.`)
+    const term = item.normalize('NFKC').trim().replace(/\s+/g, ' ').toLocaleLowerCase()
+    if (!term || term.length > 100) throw new Error(`${label} 조건은 1–100자여야 합니다.`)
+    return term
+  })
+  return [...new Set(normalized)]
 }
 
 function governanceActions(document: GovernanceDocumentSummary) {
@@ -1833,6 +1848,7 @@ class PocApiClient {
         if (Array.isArray(value.knowledgeDomains)) knowledgeDomains = value.knowledgeDomains as Array<Record<string, unknown>>
         if (Array.isArray(value.knowledgeDrafts)) knowledgeDrafts = value.knowledgeDrafts as Array<Record<string, unknown>>
         if (Array.isArray(value.knowledgeReleases)) knowledgeReleases = value.knowledgeReleases as Array<Record<string, unknown>>
+        if (Array.isArray(value.knowledgeDeliveryPolicies)) knowledgeDeliveryPolicies = value.knowledgeDeliveryPolicies as Array<Record<string, unknown>>
         if (Array.isArray(value.knowledgeIngestionJobs)) knowledgeIngestionJobs = value.knowledgeIngestionJobs as Array<Record<string, unknown>>
         if (Array.isArray(value.knowledgeProposalJobs)) knowledgeProposalJobs = value.knowledgeProposalJobs as Array<Record<string, unknown>>
         if (Array.isArray(value.knowledgeTBoxProposals)) knowledgeTBoxProposals = value.knowledgeTBoxProposals as Array<Record<string, unknown>>
@@ -1909,6 +1925,7 @@ class PocApiClient {
           knowledgeDomains,
           knowledgeDrafts,
           knowledgeReleases,
+          knowledgeDeliveryPolicies,
           knowledgeIngestionJobs,
           knowledgeProposalJobs,
           knowledgeTBoxProposals,
@@ -2017,7 +2034,7 @@ class PocApiClient {
           asset_kind: responseAssetKind(item.dataset_kind),
           description: responseString(item.provider_description ?? item.description, '') || null,
           source_type: responseString(item.evidence_type, 'CATALOG_ASSET'),
-          source_locator: responseString(item.external_urn ?? item.id, ''),
+          source_locator: responseString(item.source_locator ?? item.external_urn ?? item.id, ''),
           source_version: responseString(item.source_version, 'datahub-live'),
           content_hash: await sha256(JSON.stringify(item)),
           effective_from: new Date().toISOString(),
@@ -3948,6 +3965,79 @@ class PocApiClient {
       return assetPairs.filter((p) => p.publishedDraft && p.publishedDraft.state === 'PUBLISHED').map(({ publishedDraft: draft, release }) => ({ id: draft!.materialized_graph_id, slug: draft!.endpoint_alias, name: draft!.name, graph_type: 'CURATED_KNOWLEDGE', status: 'ACTIVE', classification: draft!.classification, domain_id: draft!.domain_id, domain_source_version: draft!.domain_source_version, domain_name: knowledgeDomains.find((item) => item.id === draft!.domain_id)?.display_name, active_release_id: release?.id, created_by: draft!.author_id, updated_by: draft!.published_by, created_at: draft!.created_at, updated_at: draft!.updated_at, version: draft!.version }))
     }
     if (path === '/knowledge/registry/assets') return { items: assetPairs.map(({ editableDraft, publishedDraft, release }) => knowledgeAssetSummary(editableDraft ?? publishedDraft!, release)), next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) }
+    const knowledgeDeliveryPolicyPath = path.match(/^\/knowledge\/registry\/assets\/([^/]+)\/delivery-policy$/)
+    if (knowledgeDeliveryPolicyPath && method === 'PUT') {
+      const graphId = decodeURIComponent(knowledgeDeliveryPolicyPath[1] ?? '')
+      const publishedDraft = knowledgeDrafts.find((item) => (
+        item.state === 'PUBLISHED' && String(item.materialized_graph_id) === graphId
+      ))
+      if (!publishedDraft?.published_studio_release_id) throw new Error('활성화된 지식 자산을 찾을 수 없습니다.')
+      const body = jsonBody(options)
+      const allowedKeys = new Set([
+        'api_enabled', 'chat_enabled', 'priority',
+        'match_any_terms', 'match_all_terms', 'excluded_terms',
+      ])
+      if (Object.keys(body).some((key) => !allowedKeys.has(key))) {
+        throw new Error('지원하지 않는 delivery policy 필드가 있습니다.')
+      }
+      if (typeof body.api_enabled !== 'boolean' || typeof body.chat_enabled !== 'boolean') {
+        throw new Error('API 및 Chat 활성화 값이 유효하지 않습니다.')
+      }
+      const priority = Number(body.priority)
+      if (!Number.isSafeInteger(priority) || priority < 0 || priority > 1000) {
+        throw new Error('우선순위는 0–1000 정수여야 합니다.')
+      }
+      const matchAnyTerms = normalizedKnowledgePolicyTerms(body.match_any_terms, 'ANY')
+      const matchAllTerms = normalizedKnowledgePolicyTerms(body.match_all_terms, 'ALL')
+      const excludedTerms = normalizedKnowledgePolicyTerms(body.excluded_terms, '제외')
+      if (body.chat_enabled && !matchAnyTerms.length && !matchAllTerms.length) {
+        throw new Error('Chat routing 활성화에는 하나 이상의 긍정 조건이 필요합니다.')
+      }
+      const positiveTerms = new Set([...matchAnyTerms, ...matchAllTerms])
+      if (excludedTerms.some((term) => positiveTerms.has(term))) {
+        throw new Error('긍정 조건과 제외 조건은 중복될 수 없습니다.')
+      }
+      const idempotencyKey = responseString(options.idempotencyKey, '').trim()
+      if (!idempotencyKey || idempotencyKey.length > 200) {
+        throw new Error('bounded Idempotency-Key가 필요합니다.')
+      }
+      const requestDocument = {
+        api_enabled: body.api_enabled,
+        chat_enabled: body.chat_enabled,
+        priority,
+        match_any_terms: matchAnyTerms,
+        match_all_terms: matchAllTerms,
+        excluded_terms: excludedTerms,
+      }
+      const requestHash = await sha256(JSON.stringify(requestDocument))
+      const existing = knowledgeDeliveryPolicies.find((item) => item.graph_id === graphId)
+      if (existing?.last_idempotency_key === idempotencyKey) {
+        if (existing.request_hash !== requestHash) throw new Error('Idempotency-Key가 다른 요청에 이미 사용되었습니다.')
+        return existing
+      }
+      const expectedVersion = requestIfMatch(options)
+      if (existing && expectedVersion !== String(existing.version)) throw new Error('데이터가 변경되었습니다.')
+      if (!existing && expectedVersion && expectedVersion !== '0') throw new Error('데이터가 변경되었습니다.')
+      const now = new Date().toISOString()
+      const policy = {
+        id: responseString(existing?.id, crypto.randomUUID()),
+        graph_id: graphId,
+        ...requestDocument,
+        version: Number(existing?.version ?? 0) + 1,
+        created_by: responseString(existing?.created_by, presentationSubjectId),
+        updated_by: presentationSubjectId,
+        created_at: responseString(existing?.created_at, now),
+        updated_at: now,
+        last_idempotency_key: idempotencyKey,
+        request_hash: requestHash,
+      }
+      knowledgeDeliveryPolicies = [
+        ...knowledgeDeliveryPolicies.filter((item) => item.graph_id !== graphId),
+        policy,
+      ]
+      await this.persistCore()
+      return policy
+    }
     const knowledgeRegistryPath = path.match(/^\/knowledge\/registry\/assets\/([^/]+)\/(detail|versions)$/)
     if (knowledgeRegistryPath) {
       const graphId = decodeURIComponent(knowledgeRegistryPath[1] ?? '')
@@ -4778,6 +4868,7 @@ export function resetPocMemory(): void {
   knowledgeDomains = []
   knowledgeDrafts = []
   knowledgeReleases = []
+  knowledgeDeliveryPolicies = []
   knowledgeIngestionJobs = []
   knowledgeProposalJobs = []
   knowledgeTBoxProposals = []

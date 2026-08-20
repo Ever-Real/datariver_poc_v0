@@ -1438,6 +1438,12 @@ test('fences durable K5 projection and serves its bounded authorized K6 relation
       ontology_version_id: 'knowledge-k5-ontology-v3', contract_hash: 'c'.repeat(64),
       published_by: 'knowledge-reviewer', published_at: '2026-08-20T00:00:00.000Z',
     }],
+    knowledgeDeliveryPolicies: [{
+      id: 'knowledge-k7-policy', graph_id: graphId, api_enabled: false, chat_enabled: true,
+      priority: 700, match_any_terms: ['bounded relation'], match_all_terms: ['관계'], excluded_terms: [],
+      version: 1, created_by: 'knowledge-reviewer', updated_by: 'knowledge-reviewer',
+      created_at: '2026-08-20T00:00:00.000Z', updated_at: '2026-08-20T00:00:00.000Z',
+    }],
     knowledgeDraftBlocks: [[draftId, [{
       id: 'knowledge-k5-tbox-block',
       elements: [
@@ -1609,6 +1615,25 @@ test('fences durable K5 projection and serves its bounded authorized K6 relation
     assert.equal(graphRag.citations.length, 3)
     assert.equal(graphRag.model_audit.prompt_version, 'knowledge-graphrag-v1')
     assert.ok(graphRag.citations.every((item) => item.source_locator.includes(tableUrn)))
+    const mainChatResponse = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'bounded relation 지식 관계의 lineage를 설명해줘', mode: 'AUTO' }),
+    })
+    assert.equal(mainChatResponse.status, 200, await mainChatResponse.clone().text())
+    const mainChat = await mainChatResponse.json()
+    assert.equal(mainChat.answer, 'Live provider answer [1]')
+    assert.equal(mainChat.route.reason, 'KNOWLEDGE_ASSET_POLICY')
+    assert.equal(mainChat.route.intent, 'KNOWLEDGE_RELATIONSHIP')
+    assert.equal(mainChat.route.knowledge_scope.graph_id, graphId)
+    assert.equal(mainChat.route.knowledge_scope.release_id, releaseId)
+    assert.equal(mainChat.route.knowledge_scope.policy_id, 'knowledge-k7-policy')
+    assert.equal(mainChat.evidence.filter((item) => item.evidence_type === 'KNOWLEDGE_ASSET_NODE').length, 2)
+    assert.equal(mainChat.evidence.filter((item) => item.evidence_type === 'KNOWLEDGE_ASSET_RELATION').length, 1)
+    assert.ok(mainChat.evidence.every((item) => item.source_locator.includes(tableUrn)))
+    assert.equal(
+      mainChat.workflow.find((step) => step.stage === 'CITATION_VALIDATION')?.detail_code,
+      'AUTHORIZED_KNOWLEDGE_ASSET_EVIDENCE_BOUND',
+    )
     const unsafeRequest = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases/${releaseId}/graphrag`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ question: '관계를 알려줘', cypher: 'MATCH (n) RETURN n' }),
@@ -1648,6 +1673,15 @@ test('fences durable K5 projection and serves its bounded authorized K6 relation
     assert.deepEqual(await hiddenGraphs.json(), [])
     const hiddenSnapshot = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot`)
     assert.equal(hiddenSnapshot.status, 404)
+    const hiddenMainChatResponse = await fetch(`${pocOrigin}/poc-api/llm/chat`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: 'bounded relation 지식 관계의 lineage를 설명해줘', mode: 'AUTO' }),
+    })
+    assert.equal(hiddenMainChatResponse.status, 200, await hiddenMainChatResponse.clone().text())
+    const hiddenMainChat = await hiddenMainChatResponse.json()
+    assert.equal(hiddenMainChat.route.knowledge_scope, undefined)
+    assert.notEqual(hiddenMainChat.route.reason, 'KNOWLEDGE_ASSET_POLICY')
+    assert.equal(hiddenMainChat.evidence.some((item) => String(item.evidence_type).startsWith('KNOWLEDGE_ASSET_')), false)
     await providerStateStore.write('change-history-access-v1', accessSnapshot.value)
     await providerStateStore.write('feature-security-policy-v1', policySnapshot.value || approvedDefaultFeatureSecurityPolicy())
 

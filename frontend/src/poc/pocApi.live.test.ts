@@ -8,6 +8,7 @@ import type {
   KnowledgeAssetOperationalDetail,
   KnowledgeAssetPage,
   KnowledgeAssetVersionHistoryPage,
+  KnowledgeDeliveryPolicy,
   SystemConfigurationEntry,
   SystemConfigurationTestResult,
   WorkspaceMembershipSummary,
@@ -1841,6 +1842,36 @@ describe('POC live-provider compatibility adapter', () => {
     expect(asset?.creator_name).toBe('live-test-admin')
     expect(asset?.editor_name).toBe('k2-independent-reviewer')
     expect(asset?.display_version).toBe(1)
+
+    const deliveryBody = JSON.stringify({
+      api_enabled: false,
+      chat_enabled: true,
+      priority: 700,
+      match_any_terms: ['품질 관계'],
+      match_all_terms: [],
+      excluded_terms: ['임시'],
+    })
+    const deliveryPolicy = await client.request<KnowledgeDeliveryPolicy>(
+      `/knowledge/registry/assets/${graphId}/delivery-policy`,
+      { method: 'PUT', body: deliveryBody, idempotencyKey: 'k7-policy-create' },
+    )
+    expect(deliveryPolicy.version).toBe(1)
+    expect(deliveryPolicy.graph_id).toBe(graphId)
+    expect(deliveryPolicy.match_any_terms).toEqual(['품질 관계'])
+    const replayedPolicy = await client.request<KnowledgeDeliveryPolicy>(
+      `/knowledge/registry/assets/${graphId}/delivery-policy`,
+      { method: 'PUT', body: deliveryBody, idempotencyKey: 'k7-policy-create' },
+    )
+    expect(replayedPolicy.version).toBe(1)
+    registry = await client.request<KnowledgeAssetPage>('/knowledge/registry/assets')
+    expect(registry.items.find((item) => item.id === graphId)?.delivery_policy?.id).toBe(deliveryPolicy.id)
+    await expect(client.request(
+      `/knowledge/registry/assets/${graphId}/delivery-policy`,
+      {
+        method: 'PUT', body: deliveryBody, ifMatch: '"0"',
+        idempotencyKey: 'k7-policy-stale',
+      },
+    )).rejects.toThrow('데이터가 변경되었습니다.')
 
     configureKnowledgeActor('k2-editor', 1)
     const editDraft = await client.request<{ id: string; version: number }>(`/knowledge/studio/drafts/from-asset/${graphId}`, {
