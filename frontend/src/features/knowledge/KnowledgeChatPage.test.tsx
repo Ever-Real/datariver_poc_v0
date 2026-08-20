@@ -16,6 +16,14 @@ const release: KnowledgeRelease = {
   published_at: '2026-07-20T08:00:00Z',
 }
 
+const nodeProvenance = [{
+  source_ref: 'urn:li:dataset:(urn:li:dataPlatform:postgres,FACTORY.QUALITY.wafer_events,PROD)',
+  source_locator: 'urn:li:dataset:(urn:li:dataPlatform:postgres,FACTORY.QUALITY.wafer_events,PROD)#row=W-001',
+  source_version: 'source-hash-1',
+  method: 'DETERMINISTIC_ENRICHER',
+  confidence: 1,
+}]
+
 describe('KnowledgeChatPage', () => {
   it('uses the release-scoped cited GraphRAG API and never routes a question to general chat', async () => {
     const request = vi.fn((path: string, options?: RequestInit) => {
@@ -28,7 +36,7 @@ describe('KnowledgeChatPage', () => {
         return Promise.resolve({
           release,
           filtered: false,
-          nodes: [{ id: 'tool-1', entity_type: 'Tool', properties: { name: 'ETCH-01' }, classification: 1, provenance: [] }],
+          nodes: [{ id: 'tool-1', entity_type: 'Tool', properties: { name: 'ETCH-01' }, classification: 1, provenance: nodeProvenance }],
           edges: [],
         })
       }
@@ -44,7 +52,7 @@ describe('KnowledgeChatPage', () => {
           answer: 'ETCH-01은 검증된 반도체 장비 노드입니다.',
           citations: [{ evidence_id: 'kg:release-1:tool-1', source_locator: 'report.pdf#page=3', source_version: 'hash-1', page_number: 3 }],
           model_audit: { provider: 'ollama', model: 'gemma4:latest', prompt_version: 'knowledge-graphrag-v1', tool_schema_version: 'knowledge-evidence-v1' },
-          nodes: [{ id: 'tool-1', entity_type: 'Tool', properties: { name: 'ETCH-01' }, classification: 1, provenance: [] }],
+          nodes: [{ id: 'tool-1', entity_type: 'Tool', properties: { name: 'ETCH-01' }, classification: 1, provenance: nodeProvenance }],
           edges: [],
         })
       }
@@ -57,15 +65,17 @@ describe('KnowledgeChatPage', () => {
     expect(screen.getByRole('button', { name: /Chat Test/ })).toHaveAttribute('aria-current', 'page')
     await screen.findByRole('option', { name: /ETCH-01/ })
     const evidenceGraph = screen.getByRole('region', { name: 'GraphRAG 근거 그래프' })
-    expect(await within(evidenceGraph).findByLabelText('ETCH-01, Tool · 근거 0')).toBeInTheDocument()
+    expect(await within(evidenceGraph).findByLabelText('ETCH-01, Tool · 근거 1')).toBeInTheDocument()
     expect(screen.getByText('1 nodes · 0 edges · 권한 내 bounded preview')).toBeInTheDocument()
-    fireEvent.click(within(evidenceGraph).getByLabelText('ETCH-01, Tool · 근거 0'))
+    fireEvent.click(within(evidenceGraph).getByLabelText('ETCH-01, Tool · 근거 1'))
     expect(screen.getByLabelText('시작 노드')).toHaveValue('tool-1')
     fireEvent.change(screen.getByLabelText('질문'), { target: { value: '연결 관계를 보여줘' } })
     fireEvent.click(screen.getByRole('button', { name: 'GraphRAG 질의' }))
 
     await screen.findByText('ETCH-01은 검증된 반도체 장비 노드입니다.')
     await screen.findByText('1 nodes · 0 edges · 답변 근거 경로')
+    fireEvent.click(screen.getByText('상세 provenance · 1건'))
+    expect(screen.getByText(/source version source-hash-1/)).toBeInTheDocument()
     await waitFor(() => expect(request).toHaveBeenCalledWith(
       '/knowledge/graphs/graph-1/releases/release-1/graphrag',
       expect.objectContaining({ method: 'POST' }),
@@ -73,7 +83,7 @@ describe('KnowledgeChatPage', () => {
     expect(request.mock.calls.some(([path]) => String(path).startsWith('/chat'))).toBe(false)
   })
 
-  it('uses semantic seed selection when no start node is selected and then shows cited evidence', async () => {
+  it('uses bounded keyword seed selection when no start node is selected and then shows cited evidence', async () => {
     const request = vi.fn((path: string, options?: RequestInit) => {
       if (path === '/knowledge/graphs') return Promise.resolve([{
         id: 'graph-1', slug: 'semiconductor', name: 'Semiconductor', graph_type: 'DOMAIN',
@@ -121,9 +131,9 @@ describe('KnowledgeChatPage', () => {
     expect(await screen.findByText('2 nodes · 1 edges · 권한 내 bounded preview · filtered')).toBeInTheDocument()
     expect(screen.getByLabelText('시작 노드')).toHaveValue('')
     expect(screen.getByRole('option', {
-      name: '자동 선택 · 의미 검색 또는 소형 그래프 bounded fallback',
+      name: '자동 선택 · 질문 키워드 기반 bounded seed',
     })).toBeInTheDocument()
-    expect(screen.getByText(/질문 의미 기반 또는 소형 그래프 bounded fallback/))
+    expect(screen.getByText(/질문 키워드로 bounded seed/))
       .toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('질문'), { target: { value: '식각 공정 장비는?' } })
     expect(screen.getByRole('button', { name: 'GraphRAG 질의' })).toBeEnabled()
@@ -131,7 +141,7 @@ describe('KnowledgeChatPage', () => {
 
     expect(await screen.findByText('질문 의미에 따라 ETCH-01이 근거로 선택됐습니다.')).toBeInTheDocument()
     expect(screen.getByText('1 nodes · 0 edges · 답변 근거 경로')).toBeInTheDocument()
-    expect(screen.getByText('자동 seed · 의미 검색 또는 소형 그래프 bounded fallback'))
+    expect(screen.getByText('자동 seed · 질문 키워드 기반 bounded selection'))
       .toBeInTheDocument()
     expect(request.mock.calls.some(([path]) => String(path).startsWith('/chat'))).toBe(false)
   })

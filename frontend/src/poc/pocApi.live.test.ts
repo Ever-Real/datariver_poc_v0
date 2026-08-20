@@ -8,7 +8,6 @@ import type {
   KnowledgeAssetOperationalDetail,
   KnowledgeAssetPage,
   KnowledgeAssetVersionHistoryPage,
-  KnowledgeGraph,
   SystemConfigurationEntry,
   SystemConfigurationTestResult,
   WorkspaceMembershipSummary,
@@ -389,6 +388,46 @@ function installGatewayMock() {
       return Promise.resolve(json({
         items: knowledgeProjectionReceipt ? [knowledgeProjectionReceipt] : [],
         page: { limit: 100 },
+      }))
+    }
+    if (url.pathname === '/poc-api/knowledge/graphs') {
+      return Promise.resolve(json([{
+        id: 'knowledge-k6-graph', slug: 'knowledge-k6', name: 'K6 verified Asset',
+        graph_type: 'CURATED_KNOWLEDGE', status: 'ACTIVE', classification: 'credential',
+        active_release_id: 'knowledge-k6-release', version: 3,
+      }]))
+    }
+    if (url.pathname === '/poc-api/knowledge/graphs/knowledge-k6-graph/releases') {
+      return Promise.resolve(json([{
+        id: 'knowledge-k6-release', graph_id: 'knowledge-k6-graph', release_no: 1,
+        ontology_version_id: 'knowledge-k6-tbox', content_hash: 'c'.repeat(64),
+        node_count: 2, edge_count: 1, published_by: 'knowledge-reviewer',
+        published_at: meta.observed_at,
+      }]))
+    }
+    if (url.pathname === '/poc-api/knowledge/graphs/knowledge-k6-graph/releases/knowledge-k6-release/snapshot') {
+      return Promise.resolve(json({
+        release: {
+          id: 'knowledge-k6-release', graph_id: 'knowledge-k6-graph', release_no: 1,
+          ontology_version_id: 'knowledge-k6-tbox', content_hash: 'c'.repeat(64),
+          node_count: 2, edge_count: 1, published_by: 'knowledge-reviewer',
+          published_at: meta.observed_at,
+        },
+        nodes: [{ id: 'node-a', entity_type: 'Wafer', properties: { name: 'W-001' }, classification: 1, provenance: [] }],
+        edges: [], filtered: true,
+      }))
+    }
+    if (url.pathname === '/poc-api/knowledge/graphs/knowledge-k6-graph/releases/knowledge-k6-release/graphrag') {
+      const body = JSON.parse(typeof options?.body === 'string' ? options.body : '{}') as { question?: string }
+      return Promise.resolve(json({
+        release: { id: 'knowledge-k6-release', graph_id: 'knowledge-k6-graph', release_no: 1 },
+        nodes: [{ id: 'node-a', entity_type: 'Wafer', properties: { name: 'W-001' }, classification: 1, provenance: [] }],
+        edges: [], truncated: false, answer: `bounded: ${body.question}`,
+        citations: [],
+        model_audit: {
+          provider: 'OPENAI_COMPATIBLE', model: 'live-test',
+          prompt_version: 'knowledge-graphrag-v1', tool_schema_version: 'knowledge-evidence-v1',
+        },
       }))
     }
     if (/^\/poc-api\/knowledge\/studio\/drafts\/[^/]+\/abox\/previews$/.test(url.pathname)) {
@@ -1599,6 +1638,32 @@ describe('POC live-provider compatibility adapter', () => {
     expect(reloaded.items[0]?.result_evidence_hash).toBe('a'.repeat(64))
   })
 
+  it('forwards Knowledge Chat list, pinned snapshot, and GraphRAG through the Node authority', async () => {
+    ;(globalThis as typeof globalThis & { __DATARIVER_POC_RUNTIME__?: Record<string, boolean> })
+      .__DATARIVER_POC_RUNTIME__ = { pocState: true }
+    const client = useStableApiClient()
+    const graphs = await client.request<Array<{ id: string }>>('/knowledge/graphs')
+    expect(graphs.map((item) => item.id)).toEqual(['knowledge-k6-graph'])
+    const releases = await client.request<Array<{ id: string }>>('/knowledge/graphs/knowledge-k6-graph/releases')
+    expect(releases.map((item) => item.id)).toEqual(['knowledge-k6-release'])
+    const snapshot = await client.request<{ nodes: Array<{ id: string }>; filtered: boolean }>(
+      '/knowledge/graphs/knowledge-k6-graph/releases/knowledge-k6-release/snapshot?maximum_nodes=200',
+    )
+    expect(snapshot).toMatchObject({ filtered: true, nodes: [{ id: 'node-a' }] })
+    const answer = await client.request<{ answer: string; model_audit: { prompt_version: string } }>(
+      '/knowledge/graphs/knowledge-k6-graph/releases/knowledge-k6-release/graphrag', {
+        method: 'POST', body: JSON.stringify({ question: '관계를 알려줘' }),
+      },
+    )
+    expect(answer.answer).toBe('bounded: 관계를 알려줘')
+    expect(answer.model_audit.prompt_version).toBe('knowledge-graphrag-v1')
+    const gatewayFetch = vi.mocked(fetch)
+    expect(gatewayFetch).toHaveBeenCalledWith(
+      '/poc-api/knowledge/graphs/knowledge-k6-graph/releases/knowledge-k6-release/graphrag',
+      expect.objectContaining({ method: 'POST' }),
+    )
+  })
+
   it('persists and validates the bounded K3 T-Box shape with draft fencing', async () => {
     ;(globalThis as typeof globalThis & { __DATARIVER_POC_RUNTIME__?: Record<string, boolean> })
       .__DATARIVER_POC_RUNTIME__ = { pocState: true }
@@ -1777,9 +1842,6 @@ describe('POC live-provider compatibility adapter', () => {
     expect(asset?.editor_name).toBe('k2-independent-reviewer')
     expect(asset?.display_version).toBe(1)
 
-    let graphs = await client.request<KnowledgeGraph[]>('/knowledge/graphs')
-    expect(graphs.find((graph) => graph.id === graphId)).toBeDefined()
-
     configureKnowledgeActor('k2-editor', 1)
     const editDraft = await client.request<{ id: string; version: number }>(`/knowledge/studio/drafts/from-asset/${graphId}`, {
       method: 'POST'
@@ -1805,9 +1867,11 @@ describe('POC live-provider compatibility adapter', () => {
       method: 'PATCH', body: JSON.stringify({ description: 'stale write' }), ifMatch: `"${initialEditVersion}"`,
     })).rejects.toThrow('데이터가 변경되었습니다.')
 
-    // ACTIVE remains in /knowledge/graphs during edit Draft
-    graphs = await client.request<KnowledgeGraph[]>('/knowledge/graphs')
-    expect(graphs.find((graph) => graph.id === graphId)).toBeDefined()
+    // The active Registry version remains authoritative while a new Draft is edited.
+    const activeVersions = await client.request<KnowledgeAssetVersionHistoryPage>(
+      `/knowledge/registry/assets/${graphId}/versions`,
+    )
+    expect(activeVersions.items.some((item) => item.status === 'ACTIVE')).toBe(true)
 
     const versions = await client.request<KnowledgeAssetVersionHistoryPage>(`/knowledge/registry/assets/${graphId}/versions`)
     expect(versions.items.length).toBeGreaterThanOrEqual(2)

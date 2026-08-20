@@ -25,7 +25,10 @@ import type {
   CapabilitiesResponse,
   ClassificationPolicySummary,
   GovernanceApplyReport,
+  KnowledgeGraph,
   KnowledgeAssetVersionHistoryItem,
+  KnowledgeRelease,
+  KnowledgeSnapshot,
   MonitoringConfiguration,
   PocAuthorization,
   PocCapability,
@@ -3938,7 +3941,12 @@ class PocApiClient {
     }
     const assetPairs = Array.from(groupedAssets.values())
 
-    if (path === '/knowledge/graphs') return assetPairs.filter((p) => p.publishedDraft && p.publishedDraft.state === 'PUBLISHED').map(({ publishedDraft: draft, release }) => ({ id: draft!.materialized_graph_id, slug: draft!.endpoint_alias, name: draft!.name, graph_type: 'CURATED_KNOWLEDGE', status: 'ACTIVE', classification: draft!.classification, domain_id: draft!.domain_id, domain_source_version: draft!.domain_source_version, domain_name: knowledgeDomains.find((item) => item.id === draft!.domain_id)?.display_name, active_release_id: release?.id, created_by: draft!.author_id, updated_by: draft!.published_by, created_at: draft!.created_at, updated_at: draft!.updated_at, version: draft!.version }))
+    if (path === '/knowledge/graphs') {
+      if (runtimeFlags().pocState) {
+        return gatewayRequest<KnowledgeGraph[]>('/poc-api/knowledge/graphs', { signal: options.signal })
+      }
+      return assetPairs.filter((p) => p.publishedDraft && p.publishedDraft.state === 'PUBLISHED').map(({ publishedDraft: draft, release }) => ({ id: draft!.materialized_graph_id, slug: draft!.endpoint_alias, name: draft!.name, graph_type: 'CURATED_KNOWLEDGE', status: 'ACTIVE', classification: draft!.classification, domain_id: draft!.domain_id, domain_source_version: draft!.domain_source_version, domain_name: knowledgeDomains.find((item) => item.id === draft!.domain_id)?.display_name, active_release_id: release?.id, created_by: draft!.author_id, updated_by: draft!.published_by, created_at: draft!.created_at, updated_at: draft!.updated_at, version: draft!.version }))
+    }
     if (path === '/knowledge/registry/assets') return { items: assetPairs.map(({ editableDraft, publishedDraft, release }) => knowledgeAssetSummary(editableDraft ?? publishedDraft!, release)), next_cursor: null, limit: Number(url.searchParams.get('limit') ?? 25) }
     const knowledgeRegistryPath = path.match(/^\/knowledge\/registry\/assets\/([^/]+)\/(detail|versions)$/)
     if (knowledgeRegistryPath) {
@@ -4040,16 +4048,31 @@ class PocApiClient {
     }
     const graphReleasesPath = path.match(/^\/knowledge\/graphs\/([^/]+)\/releases$/)
     if (graphReleasesPath) {
+      if (runtimeFlags().pocState) {
+        return gatewayRequest<KnowledgeRelease[]>(`/poc-api${path}`, { signal: options.signal })
+      }
       const graphId = decodeURIComponent(graphReleasesPath[1] ?? '')
       return knowledgeReleases.filter((item) => item.graph_id === graphId).map((item) => ({ id: item.id, graph_id: item.graph_id, release_no: item.release_no, ontology_version_id: item.ontology_version_id, content_hash: item.contract_hash, node_count: 0, edge_count: 0, published_by: POC_SUBJECT_ID, published_at: item.published_at, publisher_name: 'POC User', publisher_email: 'poc.user@local' }))
     }
     const graphSnapshotPath = path.match(/^\/knowledge\/graphs\/([^/]+)\/releases\/([^/]+)\/snapshot$/)
     if (graphSnapshotPath) {
+      if (runtimeFlags().pocState) {
+        return gatewayRequest<KnowledgeSnapshot>(`/poc-api${path}`, { signal: options.signal })
+      }
       const graphId = decodeURIComponent(graphSnapshotPath[1] ?? '')
       const releaseId = decodeURIComponent(graphSnapshotPath[2] ?? '')
       const release = knowledgeReleases.find((item) => item.graph_id === graphId && item.id === releaseId)
       if (!release) throw new Error('등록된 지식 그래프 릴리스가 없습니다.')
       return { release: { id: release.id, graph_id: graphId, release_no: release.release_no, ontology_version_id: release.ontology_version_id, content_hash: release.contract_hash, node_count: 0, edge_count: 0, published_by: POC_SUBJECT_ID, published_at: release.published_at }, nodes: [], edges: [], filtered: false }
+    }
+    const graphRagPath = path.match(/^\/knowledge\/graphs\/([^/]+)\/releases\/([^/]+)\/graphrag$/)
+    if (graphRagPath && method === 'POST') {
+      if (!runtimeFlags().pocState) throw new Error('지식 챗 답변은 배포된 Node runtime에서만 실행할 수 있습니다.')
+      return gatewayRequest(`/poc-api${path}`, {
+        method: 'POST',
+        body: options.body,
+        signal: options.signal,
+      })
     }
     if (/^\/knowledge\/graphs\/[^/]+\/changesets$/.test(path)) return []
 

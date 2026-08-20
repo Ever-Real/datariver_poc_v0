@@ -336,6 +336,46 @@ function providerHandler(request, response) {
       const payload = JSON.parse(body.toString('utf8'))
       const query = payload.statements?.[0]?.statement || ''
       const parameters = payload.statements?.[0]?.parameters || {}
+      if (query.includes('KNOWLEDGE_CHAT_NODES_V1')) {
+        const expected = parameters.nodeEvidence || []
+        const maximum = Number(parameters.maximumNodes || 200)
+        const nodes = [...knowledgeNeo4jNodes.values()]
+          .filter((node) => node.graph_id === parameters.graphId
+            && node.studio_release_id === parameters.releaseId
+            && expected.some((item) => item.source_urn === node.provenance?.source_urn
+              && item.source_row_key === node.provenance?.source_row_key
+              && item.source_hash === node.provenance?.source_hash
+              && item.target_stable_element_id === node.stable_element_id))
+          .sort((left, right) => left.id.localeCompare(right.id))
+          .slice(0, maximum)
+        return sendJson(response, { errors: [], results: [{ data: nodes.map((node) => ({ row: [
+          node.id, node.type, node.identity, node.properties_json, node.stable_element_id,
+          node.provenance.source_urn, node.provenance.source_row_key, node.provenance.source_hash,
+          node.provenance.source_type, node.provenance.tbox_version,
+        ] })) }] })
+      }
+      if (query.includes('KNOWLEDGE_CHAT_RELATIONS_V1')) {
+        const expected = parameters.relationEvidence || []
+        const nodeIds = new Set(parameters.nodeIds || [])
+        const relations = [...knowledgeNeo4jEdges.values()]
+          .filter((relation) => relation.graph_id === parameters.graphId
+            && relation.studio_release_id === parameters.releaseId
+            && nodeIds.has(relation.source_node_id)
+            && nodeIds.has(relation.target_node_id)
+            && expected.some((item) => item.source_urn === relation.provenance?.source_urn
+              && item.source_row_key === relation.provenance?.source_row_key
+              && item.source_hash === relation.provenance?.source_hash
+              && item.relation_stable_element_id === relation.stable_element_id
+              && item.source_node_id === relation.source_node_id
+              && item.target_node_id === relation.target_node_id))
+          .sort((left, right) => left.id.localeCompare(right.id))
+        return sendJson(response, { errors: [], results: [{ data: relations.map((relation) => ({ row: [
+          relation.id, relation.source_node_id, relation.target_node_id, relation.type,
+          relation.properties_json, relation.provenance.source_urn,
+          relation.provenance.source_row_key, relation.provenance.source_hash,
+          relation.provenance.source_type, relation.provenance.tbox_version,
+        ] })) }] })
+      }
       if (query.includes('UNWIND $entities AS entity') || query.includes('UNWIND $nodes AS entity')) {
         if (forceABoxNeo4jFailure && query.includes('KnowledgeABoxEntity')) {
           return sendJson(response, { errors: [{ code: 'Neo.ClientError.Test', message: 'bounded test failure' }], results: [] })
@@ -1341,7 +1381,7 @@ test('projects release-pinned DataHub Table and Column identities idempotently a
   }
 })
 
-test('fences durable K5 preview confirmation, verifies source hashes, persists failures, and reauthorizes list reads', async () => {
+test('fences durable K5 projection and serves its bounded authorized K6 relation evidence', async () => {
   const tableUrn = 'urn:li:dataset:(urn:li:dataPlatform:postgres,MANUFACTURING.QUALITY.wafer_events,PROD)'
   const draftId = 'knowledge-k5-durable-draft'
   const graphId = 'knowledge-k5-durable-graph'
@@ -1386,9 +1426,18 @@ test('fences durable K5 preview confirmation, verifies source hashes, persists f
     ...(coreSnapshot.value || {}),
     knowledgeDrafts: [{
       id: draftId, version: 7, state: 'PUBLISHED', materialized_graph_id: graphId,
-      published_studio_release_id: releaseId,
+      published_studio_release_id: releaseId, name: 'K6 bounded relation asset',
+      endpoint_alias: 'k6-bounded-relation', classification: 'credential',
+      domain_id: 'domain-quality', domain_source_version: '1',
+      author_id: 'knowledge-author', published_by: 'knowledge-reviewer',
+      created_at: '2026-08-20T00:00:00.000Z', updated_at: '2026-08-20T00:00:00.000Z',
+      published_at: '2026-08-20T00:00:00.000Z',
     }],
-    knowledgeReleases: [{ id: releaseId, graph_id: graphId, state: 'ACTIVE' }],
+    knowledgeReleases: [{
+      id: releaseId, graph_id: graphId, state: 'ACTIVE', release_no: 1,
+      ontology_version_id: 'knowledge-k5-ontology-v3', contract_hash: 'c'.repeat(64),
+      published_by: 'knowledge-reviewer', published_at: '2026-08-20T00:00:00.000Z',
+    }],
     knowledgeDraftBlocks: [[draftId, [{
       id: 'knowledge-k5-tbox-block',
       elements: [
@@ -1507,6 +1556,100 @@ test('fences durable K5 preview confirmation, verifies source hashes, persists f
     assert.equal(relationReplay.result_evidence_hash, relationResult.result_evidence_hash)
     assert.equal(relationReplay.edge_count, 1)
     assert.equal(knowledgeNeo4jEdges.size, 1)
+    for (const [jobId, job] of jobs) {
+      if (job.state === 'PROJECTED' && jobId !== relationResult.id) jobs.delete(jobId)
+    }
+
+    const knowledgePolicy = approvedDefaultFeatureSecurityPolicy()
+    knowledgePolicy.cells.find((cell) => (
+      cell.feature === 'knowledge' && cell.role === 'manager' && cell.grade === 'credential'
+    )).allow = true
+    await providerStateStore.write('feature-security-policy-v1', knowledgePolicy)
+    await providerStateStore.write('change-history-access-v1', {
+      schema_version: 1,
+      active_subject_id: subjectId,
+      users: [{
+        subject_id: subjectId, role: 'manager', active: true,
+        max_security_grade: 'restricted', provider_owner_refs: [],
+      }],
+      system_assignments: [],
+    })
+    await providerStateStore.applyUserTableGrantCommand({
+      subjectId, tableUrns: [tableUrn], action: 'GRANT', actorSubjectId: subjectId,
+      changedAt: '2026-08-20T01:00:00.000Z',
+    })
+    const graphsResponse = await fetch(`${pocOrigin}/poc-api/knowledge/graphs`)
+    assert.equal(graphsResponse.status, 200, await graphsResponse.clone().text())
+    const graphs = await graphsResponse.json()
+    assert.deepEqual(graphs.map((item) => item.id), [graphId])
+    assert.equal(graphs[0].active_release_id, releaseId)
+    const releasesResponse = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases`)
+    assert.equal(releasesResponse.status, 200, await releasesResponse.clone().text())
+    assert.deepEqual((await releasesResponse.json()).map((item) => item.id), [releaseId])
+    const snapshotResponse = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot`)
+    assert.equal(snapshotResponse.status, 200, await snapshotResponse.clone().text())
+    const snapshot = await snapshotResponse.json()
+    assert.equal(snapshot.nodes.length, 2)
+    assert.equal(snapshot.edges.length, 1)
+    assert.equal(snapshot.edges[0].source_id, relationPreview.graph.edges[0].source_node_id)
+    assert.equal(snapshot.edges[0].target_id, relationPreview.graph.edges[0].target_node_id)
+    const graphRagResponse = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases/${releaseId}/graphrag`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question: '두 지식 엔터티의 관계를 설명해줘',
+        start_node_id: snapshot.edges[0].source_id, direction: 'OUT', edge_types: [],
+        maximum_hops: 1, maximum_nodes: 8,
+      }),
+    })
+    assert.equal(graphRagResponse.status, 200, await graphRagResponse.clone().text())
+    const graphRag = await graphRagResponse.json()
+    assert.equal(graphRag.answer, 'Live provider answer [1]')
+    assert.equal(graphRag.nodes.length, 2)
+    assert.equal(graphRag.edges.length, 1)
+    assert.equal(graphRag.citations.length, 3)
+    assert.equal(graphRag.model_audit.prompt_version, 'knowledge-graphrag-v1')
+    assert.ok(graphRag.citations.every((item) => item.source_locator.includes(tableUrn)))
+    const unsafeRequest = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases/${releaseId}/graphrag`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ question: '관계를 알려줘', cypher: 'MATCH (n) RETURN n' }),
+    })
+    assert.equal(unsafeRequest.status, 400)
+    await providerStateStore.write('feature-security-policy-v1', approvedDefaultFeatureSecurityPolicy())
+    const policyHidden = await fetch(`${pocOrigin}/poc-api/knowledge/graphs`)
+    assert.equal(policyHidden.status, 200)
+    assert.deepEqual(await policyHidden.json(), [])
+    await providerStateStore.write('feature-security-policy-v1', knowledgePolicy)
+    await providerStateStore.write('change-history-access-v1', {
+      schema_version: 1,
+      active_subject_id: subjectId,
+      users: [{
+        subject_id: subjectId, role: 'manager', active: true,
+        max_security_grade: 'normal', provider_owner_refs: [],
+      }],
+      system_assignments: [],
+    })
+    const gradeHidden = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot`)
+    assert.equal(gradeHidden.status, 404)
+    await providerStateStore.write('change-history-access-v1', {
+      schema_version: 1,
+      active_subject_id: subjectId,
+      users: [{
+        subject_id: subjectId, role: 'manager', active: true,
+        max_security_grade: 'restricted', provider_owner_refs: [],
+      }],
+      system_assignments: [],
+    })
+    await providerStateStore.applyUserTableGrantCommand({
+      subjectId, tableUrns: [tableUrn], action: 'REMOVE', actorSubjectId: subjectId,
+      changedAt: '2026-08-20T01:01:00.000Z',
+    })
+    const hiddenGraphs = await fetch(`${pocOrigin}/poc-api/knowledge/graphs`)
+    assert.equal(hiddenGraphs.status, 200)
+    assert.deepEqual(await hiddenGraphs.json(), [])
+    const hiddenSnapshot = await fetch(`${pocOrigin}/poc-api/knowledge/graphs/${graphId}/releases/${releaseId}/snapshot`)
+    assert.equal(hiddenSnapshot.status, 404)
+    await providerStateStore.write('change-history-access-v1', accessSnapshot.value)
+    await providerStateStore.write('feature-security-policy-v1', policySnapshot.value || approvedDefaultFeatureSecurityPolicy())
 
     knowledgeNeo4jNodes.clear()
     knowledgeNeo4jEdges.clear()
@@ -1561,6 +1704,10 @@ test('fences durable K5 preview confirmation, verifies source hashes, persists f
     forceABoxNeo4jFailure = false
     knowledgeNeo4jNodes.clear()
     knowledgeNeo4jEdges.clear()
+    await providerStateStore.applyUserTableGrantCommand({
+      subjectId, tableUrns: [tableUrn], action: 'REMOVE', actorSubjectId: subjectId,
+      changedAt: '2026-08-20T01:02:00.000Z',
+    })
     Object.assign(providerStateStore, originalMethods)
     await providerStateStore.write('core', coreSnapshot.value || {})
     await providerStateStore.write('change-history-access-v1', accessSnapshot.value)

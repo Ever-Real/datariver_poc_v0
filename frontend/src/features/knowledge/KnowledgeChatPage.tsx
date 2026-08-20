@@ -241,7 +241,7 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
             <label>
               시작 노드
               <select value={nodeId} onChange={(event) => setNodeId(event.target.value)}>
-                <option value="">자동 선택 · 의미 검색 또는 소형 그래프 bounded fallback</option>
+                <option value="">자동 선택 · 질문 키워드 기반 bounded seed</option>
                 {(snapshot?.nodes ?? []).map((node) => (
                   <option key={node.id} value={node.id}>
                     {label(node.properties, node.id)} · {node.entity_type}
@@ -291,7 +291,7 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
             </button>
             <p className="knowledge-chat-security">
               <ShieldCheck size={14} />
-              시작 노드를 비우면 질문 의미 기반 또는 소형 그래프 bounded fallback으로
+              시작 노드를 비우면 권한 내 릴리스에서 질문 키워드로 bounded seed를
               선택합니다. 릴리스와 계정 권한은 서버에서 재검증하며 브라우저는 그래프 쿼리를
               직접 만들지 않습니다.
             </p>
@@ -383,7 +383,7 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
                       <strong>
                         {activeNode
                           ? label(activeNode.properties, activeNode.id)
-                          : '자동 seed · 의미 검색 또는 소형 그래프 bounded fallback'}
+                          : '자동 seed · 질문 키워드 기반 bounded selection'}
                       </strong>
                     </div>
                     {analysis.truncated && (
@@ -400,6 +400,26 @@ export function KnowledgeChatContent({ client }: { client: ApiClient }) {
                         </li>
                       ))}
                     </ul>
+                    <details className="knowledge-provenance-details">
+                      <summary>상세 provenance · {analysis.nodes.length + analysis.edges.length}건</summary>
+                      <div>
+                        {analysis.nodes.map((node) => node.provenance.map((source) => (
+                          <dl key={`${node.id}:${source.source_locator}`}>
+                            <dt>NODE · {node.id}</dt>
+                            <dd>{source.method} · {source.source_locator}</dd>
+                            <dd>source version {source.source_version}</dd>
+                          </dl>
+                        )))}
+                        {analysis.edges.map((edge) => edge.provenance.map((source) => (
+                          <dl key={`${edge.id}:${source.source_locator}`}>
+                            <dt>RELATION · {edge.id}</dt>
+                            <dd>{edge.source_id} → {edge.target_id}</dd>
+                            <dd>{source.method} · {source.source_locator}</dd>
+                            <dd>source version {source.source_version}</dd>
+                          </dl>
+                        )))}
+                      </div>
+                    </details>
                   </>
                 ) : (
                   <p className="knowledge-evidence-empty">응답과 함께 권한 내 근거가 표시됩니다.</p>

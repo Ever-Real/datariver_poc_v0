@@ -1699,6 +1699,53 @@
   font-size: 8px;
 }
 
+.knowledge-provenance-details {
+  margin: 0 10px 10px;
+  border: 1px solid #dce5eb;
+  border-radius: 9px;
+  color: #617686;
+  background: #f8fafb;
+  font-size: 8px;
+}
+
+.knowledge-provenance-details summary {
+  cursor: pointer;
+  padding: 8px;
+  color: var(--navy-900);
+  font-weight: 800;
+}
+
+.knowledge-provenance-details > div {
+  display: grid;
+  gap: 6px;
+  max-height: 240px;
+  overflow-y: auto;
+  border-top: 1px solid #e2e8ec;
+  padding: 8px;
+}
+
+.knowledge-provenance-details dl {
+  min-width: 0;
+  margin: 0;
+  border-radius: 7px;
+  padding: 7px;
+  background: #fff;
+}
+
+.knowledge-provenance-details dt,
+.knowledge-provenance-details dd {
+  overflow-wrap: anywhere;
+}
+
+.knowledge-provenance-details dt {
+  color: var(--navy-900);
+  font-weight: 800;
+}
+
+.knowledge-provenance-details dd {
+  margin: 3px 0 0;
+}
+
 .knowledge-evidence-empty {
   min-height: 170px;
   display: grid;
