@@ -6,6 +6,7 @@ import {
   cancelKnowledgeStudioTBoxProposalJob,
   cancelKnowledgeStudioIngestion,
   completeKnowledgeStudioSourceUpload,
+  createKnowledgeStudioRelationIngestion,
   createKnowledgeStudioDraft,
   createKnowledgeStudioEditDraft,
   createKnowledgeStudioTBoxAssetReleaseProposal,
@@ -22,6 +23,7 @@ import {
   preflightKnowledgeStudioABox,
   presignKnowledgeStudioSourceUploadPart,
   previewKnowledgeStudioBinding,
+  previewKnowledgeStudioRelation,
   publishKnowledgeStudioDraft,
   retryKnowledgeStudioTBoxProposalJob,
   retryKnowledgeStudioIngestion,
@@ -646,6 +648,30 @@ describe('Knowledge Studio API', () => {
     expect(new Headers(preflightCall?.[1]?.headers).get('If-Match')).toBe('"3"')
     expect(new Headers(preflightCall?.[1]?.headers).get('Idempotency-Key')).toBe('preflight-key')
     expect(preflightCall?.[1]?.body).toBeUndefined()
+  })
+
+  it('pins the bounded Relation preview and confirmation to one stable T-Box identity', async () => {
+    const fetchMock = vi.fn<typeof fetch>()
+      .mockResolvedValueOnce(jsonResponse({
+        status: 'READY', plan_mode: 'RELATION', relation_stable_element_id: 'relation.owns',
+      }, '"1"'))
+      .mockResolvedValueOnce(jsonResponse({ id: 'knowledge-ingestion:relation', state: 'SUCCESS' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+
+    await previewKnowledgeStudioRelation(client, 'draft-1', 'relation.owns', '"7"', 5)
+    await createKnowledgeStudioRelationIngestion(
+      client, 'draft-1', '"7"', 'relation-confirm-key', 'preview-1', 'relation.owns',
+    )
+
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string)).toEqual({
+      relation_stable_element_id: 'relation.owns', sample_limit: 5,
+    })
+    expect(new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('If-Match')).toBe('"7"')
+    expect(JSON.parse(fetchMock.mock.calls[1]?.[1]?.body as string)).toEqual({
+      preview_job_id: 'preview-1', relation_stable_element_id: 'relation.owns',
+    })
+    expect(new Headers(fetchMock.mock.calls[1]?.[1]?.headers).get('Idempotency-Key')).toBe('relation-confirm-key')
   })
 
   it('uses fenced idempotent maker-checker lifecycle commands', async () => {

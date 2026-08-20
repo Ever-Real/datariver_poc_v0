@@ -463,8 +463,12 @@ export interface KnowledgeStudioPreview {
   job_id: string
   status: 'READY' | 'INVALID' | 'UNAVAILABLE'
   draft_version: number
+  plan_mode?: 'NODE' | 'RELATION'
   binding_version?: number
-  target_stable_element_id: string
+  binding_versions?: Record<string, number>
+  target_stable_element_id: string | null
+  target_stable_element_ids?: string[]
+  relation_stable_element_id?: string | null
   pinned_tbox_version: number
   node_count: number
   relation_count: number
@@ -483,6 +487,7 @@ export interface KnowledgeStudioPreview {
   unmapped: Array<{ row_key: string; source_field_path: string; target_stable_element_id: string }>
   evidence: KnowledgeStudioValidationEvidence[]
   provenance: Array<{
+    entity_kind?: 'NODE' | 'RELATION'
     source_type: string
     source_urn: string
     source_row_key: string
@@ -492,6 +497,9 @@ export interface KnowledgeStudioPreview {
     tbox_version: number
     manifest_ref: string
     secret_ref: string
+    relation_stable_element_id?: string
+    source_node_id?: string
+    target_node_id?: string
   }>
 }
 
@@ -1159,6 +1167,29 @@ export async function createKnowledgeStudioIngestion(
   )
 }
 
+export async function createKnowledgeStudioRelationIngestion(
+  client: ApiClient,
+  draftId: string,
+  etag: string,
+  idempotencyKey: string,
+  previewJobId: string,
+  relationStableElementId: string,
+): Promise<KnowledgeStudioIngestionJob> {
+  return client.request<KnowledgeStudioIngestionJob>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/ingestions`,
+    {
+      method: 'POST',
+      cache: 'no-store',
+      ifMatch: etag,
+      idempotencyKey,
+      body: JSON.stringify({
+        preview_job_id: previewJobId,
+        relation_stable_element_id: relationStableElementId,
+      }),
+    },
+  )
+}
+
 export async function listKnowledgeStudioIngestions(
   client: ApiClient,
   draftId: string,
@@ -1348,6 +1379,27 @@ export async function previewKnowledgeStudioBinding(
       method: 'POST',
       body: JSON.stringify({
         target_stable_element_id: targetStableElementId,
+        sample_limit: sampleLimit,
+      }),
+      cache: 'no-store',
+      ifMatch: etag,
+    },
+  ))
+}
+
+export async function previewKnowledgeStudioRelation(
+  client: ApiClient,
+  draftId: string,
+  relationStableElementId: string,
+  etag: string,
+  sampleLimit = 5,
+): Promise<ApiResponse<KnowledgeStudioPreview>> {
+  return requireEtag(await client.requestWithMeta<KnowledgeStudioPreview>(
+    `/knowledge/studio/drafts/${encodeURIComponent(draftId)}/abox/previews`,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        relation_stable_element_id: relationStableElementId,
         sample_limit: sampleLimit,
       }),
       cache: 'no-store',

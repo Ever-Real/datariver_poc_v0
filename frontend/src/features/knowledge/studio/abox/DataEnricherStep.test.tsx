@@ -530,6 +530,108 @@ describe('DataEnricherStep', () => {
     })
   })
 
+  it('previews and confirms one bounded Relation from two same-source Class bindings', async () => {
+    const publishedDraft = {
+      ...draft(7),
+      state: 'PUBLISHED',
+      materialized_graph_id: 'graph-relation-1',
+      published_studio_release_id: 'release-relation-1',
+    }
+    const assetClassId = 'class.asset'
+    const relationId = 'relation.owns'
+    const assetBinding = {
+      ...binding(4),
+      id: 'binding-asset',
+      target_stable_element_id: assetClassId,
+      rules: [{
+        id: 'rule-asset-id', ordinal: 0, method: 'SUBJECT_ID', source_field_path: 'emp_nm',
+        target_stable_element_id: assetClassId, transform_id: 'IDENTITY', transform_version: '1',
+      }],
+    }
+    const relationPreview = {
+      ...previewReceipt(),
+      plan_mode: 'RELATION',
+      binding_version: undefined,
+      binding_versions: { 'class.employee': 1, [assetClassId]: 4 },
+      target_stable_element_id: null,
+      target_stable_element_ids: ['class.employee', assetClassId],
+      relation_stable_element_id: relationId,
+      node_count: 2,
+      relation_count: 1,
+      graph: {
+        nodes: [
+          { id: 'node-employee', stable_element_id: 'class.employee', type: 'Employee', identity: 'E-001', properties: {} },
+          { id: 'node-asset', stable_element_id: assetClassId, type: 'Asset', identity: 'A-001', properties: {} },
+        ],
+        edges: [{
+          id: 'edge-owns', stable_element_id: relationId, type: 'OWNS',
+          source_node_id: 'node-employee', target_node_id: 'node-asset', properties: {},
+        }],
+      },
+    }
+    const job = ingestionJob({
+      state: 'SUCCESS', current_stage: 'DRAFT_CHANGESET_READY', progress_percent: 100,
+      node_count: 2, edge_count: 1, duplicate_count: 0,
+    })
+    let queued = false
+    const fetchMock = vi.fn<typeof fetch>((input, init) => {
+      const path = requestUrl(input)
+      if (path.endsWith('/abox/ingestions') && init?.method === 'POST') {
+        queued = true
+        return Promise.resolve(json(job, 201))
+      }
+      if (path.includes('/abox/ingestions?') && !init?.method) {
+        return Promise.resolve(json({ items: queued ? [job] : [] }))
+      }
+      if (path.endsWith(`/drafts/${draftId}/abox`) && !init?.method) {
+        return Promise.resolve(json({
+          draft: publishedDraft,
+          tbox_elements: [
+            ...tboxElements,
+            { stable_element_id: assetClassId, kind: 'CLASS', canonical_name: 'Asset', display_name: 'Asset', ordinal: 3, version: 1 },
+            {
+              stable_element_id: relationId, kind: 'RELATION', canonical_name: 'OWNS', display_name: 'OWNS',
+              source_stable_element_id: 'class.employee', target_stable_element_id: assetClassId,
+              ordinal: 4, version: 1,
+            },
+          ],
+          bindings: [binding(1), assetBinding],
+        }, 200, '"7"'))
+      }
+      if (path.endsWith('/abox/previews') && init?.method === 'POST') {
+        return Promise.resolve(json(relationPreview, 200, '"1"'))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${path}`))
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    const client = new ApiClient('/api/v1', () => 'token', () => 'workspace')
+    render(<DataEnricherStep client={client} draftId={draftId} onDraftUpdate={vi.fn()} />)
+
+    const relationButton = await screen.findByRole('button', { name: 'Relation Preview · Dry Run' })
+    await waitFor(() => expect(relationButton).toBeEnabled())
+    fireEvent.click(relationButton)
+    const dialog = await screen.findByRole('dialog', { name: 'Knowledge Graph Preview · Dry Run' })
+    expect(within(dialog).getByText('예상 결과').parentElement).toHaveTextContent('Node 2 · Relation 1')
+    expect(dialog).toHaveTextContent(`Relation ${relationId}`)
+    fireEvent.click(within(dialog).getByRole('button', { name: '닫기' }))
+
+    const runButton = screen.getByRole('button', { name: 'Run Ingestion' })
+    await waitFor(() => expect(runButton).toBeEnabled())
+    fireEvent.click(runButton)
+    await screen.findByText(/Node 2개 · Relation 1개/)
+
+    const previewCall = fetchMock.mock.calls.find(([input]) => requestUrl(input).endsWith('/abox/previews'))
+    expect(JSON.parse(previewCall?.[1]?.body as string)).toEqual({
+      relation_stable_element_id: relationId, sample_limit: 5,
+    })
+    const confirmCall = fetchMock.mock.calls.find(([input, init]) => (
+      init?.method === 'POST' && requestUrl(input).endsWith('/abox/ingestions')
+    ))
+    expect(JSON.parse(confirmCall?.[1]?.body as string)).toEqual({
+      preview_job_id: 'knowledge-ingestion:preview-receipt', relation_stable_element_id: relationId,
+    })
+  })
+
   it('keeps REVIEW read-only and publishes only after an exact reviewer pre-flight receipt', async () => {
     const reviewerId = '019fa57b-52de-74c0-9f5e-06ae7b1bf3c9'
     const reviewedDraft = {

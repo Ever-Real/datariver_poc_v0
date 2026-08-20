@@ -22,6 +22,7 @@ import {
 import {
   cancelKnowledgeStudioIngestion,
   createKnowledgeStudioIngestion,
+  createKnowledgeStudioRelationIngestion,
   discardKnowledgeStudioDraft,
   getKnowledgeStudioABox,
   getKnowledgeStudioSource,
@@ -29,6 +30,7 @@ import {
   newKnowledgeStudioIdempotencyKey,
   preflightKnowledgeStudioABox,
   previewKnowledgeStudioBinding,
+  previewKnowledgeStudioRelation,
   publishKnowledgeStudioDraft,
   retryKnowledgeStudioIngestion,
   saveKnowledgeStudioBinding,
@@ -287,6 +289,19 @@ export function DataEnricherStep({
     ])),
     [abox?.bindings],
   )
+  const relationPlans = useMemo(() => elements.filter((element) => {
+    if (element.kind !== 'RELATION'
+      || !element.source_stable_element_id
+      || !element.target_stable_element_id) return false
+    const source = bindingByTarget.get(element.source_stable_element_id)
+    const target = bindingByTarget.get(element.target_stable_element_id)
+    return Boolean(
+      source
+      && target
+      && source.source_asset_id === target.source_asset_id
+      && source.tbox_version === target.tbox_version,
+    )
+  }), [bindingByTarget, elements])
   const actorId = subjectId ?? abox?.draft.author_id
   const isAuthor = Boolean(abox && actorId === abox.draft.author_id)
   const editable = Boolean(abox && isAuthor && abox.draft.state === 'DRAFT')
@@ -556,6 +571,32 @@ export function DataEnricherStep({
     }
   }
 
+  const openRelationPreview = async () => {
+    const relationPlan = relationPlans[0]
+    if (!etag || relationPlans.length !== 1 || !relationPlan) return
+    setPreviewLoading(true)
+    try {
+      const response = await previewKnowledgeStudioRelation(
+        client,
+        draftId,
+        relationPlan.stable_element_id,
+        etag,
+        5,
+      )
+      setPreview(response.data)
+      setPreviewOpen(true)
+      setSelectedPreviewNodeId(response.data.graph.nodes[0]?.id)
+      setStatus(
+        `Relation Dry-run 완료 · Node ${response.data.node_count}개 · `
+        + `Relation ${response.data.relation_count}개`,
+      )
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Knowledge Relation Preview에 실패했습니다.')
+    } finally {
+      setPreviewLoading(false)
+    }
+  }
+
   const runPreflight = async () => {
     if (!etag) return
     setPreflightLoading(true)
@@ -584,30 +625,42 @@ export function DataEnricherStep({
   }
 
   const runIngestion = async () => {
+    const relationPreview = preview?.plan_mode === 'RELATION'
+    const relationPlan = relationPlans.length === 1 ? relationPlans[0] : undefined
     if (
       !etag
       || abox?.draft.state !== 'PUBLISHED'
       || ingestionLoading
       || !preview?.job_id
-      || !selectedTarget
-      || preview.target_stable_element_id !== selectedTarget.stable_element_id
+      || (relationPreview
+        ? !relationPlan || preview.relation_stable_element_id !== relationPlan.stable_element_id
+        : !selectedTarget || preview.target_stable_element_id !== selectedTarget.stable_element_id)
       || ingestionJobs.some((job) => ACTIVE_INGESTION_STATES.has(job.state))
     ) return
     setIngestionLoading(true)
     try {
-      const job = await createKnowledgeStudioIngestion(
-        client,
-        draftId,
-        etag,
-        newKnowledgeStudioIdempotencyKey(),
-        preview.job_id,
-        selectedTarget.stable_element_id,
-      )
+      const job = relationPreview && relationPlan
+        ? await createKnowledgeStudioRelationIngestion(
+            client,
+            draftId,
+            etag,
+            newKnowledgeStudioIdempotencyKey(),
+            preview.job_id,
+            relationPlan.stable_element_id,
+          )
+        : await createKnowledgeStudioIngestion(
+            client,
+            draftId,
+            etag,
+            newKnowledgeStudioIdempotencyKey(),
+            preview.job_id,
+            selectedTarget!.stable_element_id,
+          )
       setIngestionJobs((current) => [job, ...current.filter((item) => item.id !== job.id)])
       setIngestionPollRevision((current) => current + 1)
       setStatus(
         `확인한 Preview로 A-Box projection을 실행했습니다. `
-        + `Node ${job.node_count ?? 0}개 · ${job.state}`,
+        + `Node ${job.node_count ?? 0}개 · Relation ${job.edge_count ?? 0}개 · ${job.state}`,
       )
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'Ingestion 작업을 접수하지 못했습니다.')
@@ -832,8 +885,10 @@ export function DataEnricherStep({
     etag
     && draftState === 'PUBLISHED'
     && preview?.job_id
-    && selectedTarget
-    && preview.target_stable_element_id === selectedTarget.stable_element_id
+    && (preview.plan_mode === 'RELATION'
+      ? relationPlans.length === 1
+        && preview.relation_stable_element_id === relationPlans[0]?.stable_element_id
+      : selectedTarget && preview.target_stable_element_id === selectedTarget.stable_element_id)
     && !ingestionLoading
     && !hasActiveIngestion,
   )
@@ -915,6 +970,22 @@ export function DataEnricherStep({
               Discard
             </button>
           )}
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={
+              draftState !== 'PUBLISHED'
+              || relationPlans.length !== 1
+              || previewLoading
+              || hasActiveIngestion
+            }
+            title={relationPlans.length === 1
+              ? '동일 source row의 두 Class binding과 선택된 T-Box Relation을 함께 미리 봅니다.'
+              : '정확히 하나의 bounded Relation과 동일 source의 두 Class binding이 필요합니다.'}
+            onClick={() => void openRelationPreview()}
+          >
+            {previewLoading ? '확인 중…' : 'Relation Preview · Dry Run'}
+          </button>
           <button
             type="button"
             className="button"
@@ -1499,7 +1570,9 @@ export function DataEnricherStep({
           </span>
           <span className="text-[10px] text-slate-500">
             Draft {preview.draft_version} · T-Box {preview.pinned_tbox_version}
-            {' · '}Binding {preview.binding_version ?? '없음'}
+            {' · '}{preview.plan_mode === 'RELATION'
+              ? `Relation ${preview.relation_stable_element_id}`
+              : `Binding ${preview.binding_version ?? '없음'}`}
           </span>
         </header>
         <section className="grid gap-2 rounded-enterprise border border-slate-200 bg-slate-50 p-3 text-[11px] text-slate-700 sm:grid-cols-2">

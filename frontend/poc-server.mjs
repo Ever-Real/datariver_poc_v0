@@ -4924,70 +4924,149 @@ function knowledgeABoxRuleKind(rule, ordinal) {
   return ordinal === 0 ? 'SUBJECT_ID' : 'PROPERTY'
 }
 
-async function knowledgeABoxPlan(context, draftId, targetStableElementId, sampleLimit = 5) {
+async function knowledgeABoxPlan(
+  context,
+  draftId,
+  { targetStableElementId, relationStableElementId } = {},
+  sampleLimit = 5,
+) {
   if (knowledgeSourceManifest.size === 0) {
     throw knowledgeProjectionError(503, 'SOURCE_MANIFEST_UNAVAILABLE', 'No deployment-owned Knowledge source manifest is configured.')
   }
   const scope = await knowledgeProjectionScope(context, draftId)
-  const selected = scope.sourceBindings
-    .flatMap((entry) => entry.bindings.map((binding) => ({ ...binding, assetUrn: entry.assetUrn })))
-    .filter((binding) => !targetStableElementId || binding.targetStableElementId === targetStableElementId)
-  if (selected.length !== 1) {
-    throw knowledgeProjectionError(409, 'KNOWLEDGE_MAPPING_TARGET_REQUIRED', 'Exactly one bounded source mapping target is required.')
+  if (targetStableElementId && relationStableElementId) {
+    throw knowledgeProjectionError(409, 'KNOWLEDGE_MAPPING_PLAN_AMBIGUOUS', 'Choose either one Class target or one Relation target.')
   }
-  const binding = selected[0]
-  const manifest = knowledgeSourceManifest.get(binding.assetUrn)
+  const allBindings = scope.sourceBindings
+    .flatMap((entry) => entry.bindings.map((binding) => ({ ...binding, assetUrn: entry.assetUrn })))
+  const relation = relationStableElementId
+    ? scope.tboxElements.find((element) => (
+      element?.kind === 'RELATION' && element?.stable_element_id === relationStableElementId
+    ))
+    : undefined
+  if (relationStableElementId && (!relation?.source_stable_element_id || !relation?.target_stable_element_id)) {
+    throw knowledgeProjectionError(409, 'KNOWLEDGE_RELATION_TARGET_INVALID', 'The selected Relation has no valid source and target Class identities.')
+  }
+  const relationTargetIds = relation
+    ? new Set([relation.source_stable_element_id, relation.target_stable_element_id])
+    : null
+  const selected = allBindings.filter((binding) => (
+    targetStableElementId
+      ? binding.targetStableElementId === targetStableElementId
+      : relationTargetIds?.has(binding.targetStableElementId)
+  ))
+  if ((!relation && selected.length !== 1) || (relation && selected.length !== 2)) {
+    throw knowledgeProjectionError(
+      409,
+      relation ? 'KNOWLEDGE_RELATION_BINDINGS_REQUIRED' : 'KNOWLEDGE_MAPPING_TARGET_REQUIRED',
+      relation
+        ? 'The bounded Relation plan requires exactly one source mapping for each endpoint Class.'
+        : 'Exactly one bounded source mapping target is required.',
+    )
+  }
+  const assetUrns = new Set(selected.map((binding) => binding.assetUrn))
+  const tboxVersions = new Set(selected.map((binding) => binding.tboxVersion))
+  if (assetUrns.size !== 1 || tboxVersions.size !== 1) {
+    throw knowledgeProjectionError(409, 'KNOWLEDGE_RELATION_SOURCE_MISMATCH', 'Relation endpoints must use the same exact source and pinned T-Box version.')
+  }
+  const sourceAssetUrn = selected[0].assetUrn
+  const tboxVersion = selected[0].tboxVersion
+  const manifest = knowledgeSourceManifest.get(sourceAssetUrn)
   if (!manifest) throw knowledgeProjectionError(503, 'SOURCE_MANIFEST_ENTRY_UNAVAILABLE', 'The selected Table has no deployment-owned source manifest entry.')
-  const rows = await context.stateStore.readKnowledgeSourceRows(manifest.manifestRef, binding.assetUrn, manifest.sourceVersion)
+  const rows = await context.stateStore.readKnowledgeSourceRows(manifest.manifestRef, sourceAssetUrn, manifest.sourceVersion)
   if (!rows.length) throw knowledgeProjectionError(503, 'SOURCE_ROWS_UNAVAILABLE', 'The configured source has no bounded physical rows.')
-  const target = scope.tboxElements.find((element) => element?.stable_element_id === binding.targetStableElementId)
-  const targetClass = String(target?.canonical_name || target?.display_name || binding.targetStableElementId)
-  const rules = binding.rules.map((rule, ordinal) => ({ ...rule, _kind: knowledgeABoxRuleKind(rule, ordinal) }))
-  const subjectRule = rules.find((rule) => rule._kind === 'SUBJECT_ID')
-  if (!subjectRule?.source_field_path) throw knowledgeProjectionError(409, 'SUBJECT_ID_MAPPING_REQUIRED', 'A SUBJECT_ID mapping is required before preview or projection.')
-  const propertyRules = rules.filter((rule) => rule._kind === 'PROPERTY')
-  const rejected = rules.filter((rule) => rule._kind === 'RELATION').map((rule) => ({
+  const bindingPlans = selected.map((binding) => {
+    const target = scope.tboxElements.find((element) => element?.stable_element_id === binding.targetStableElementId)
+    if (target?.kind !== 'CLASS') {
+      throw knowledgeProjectionError(409, 'KNOWLEDGE_CLASS_TARGET_REQUIRED', 'A bounded A-Box node mapping must target a T-Box Class.')
+    }
+    const rules = binding.rules.map((rule, ordinal) => ({ ...rule, _kind: knowledgeABoxRuleKind(rule, ordinal) }))
+    const subjectRule = rules.find((rule) => rule._kind === 'SUBJECT_ID')
+    if (!subjectRule?.source_field_path) throw knowledgeProjectionError(409, 'SUBJECT_ID_MAPPING_REQUIRED', 'A SUBJECT_ID mapping is required before preview or projection.')
+    return {
+      binding,
+      targetClass: String(target.canonical_name || target.display_name || binding.targetStableElementId),
+      subjectRule,
+      propertyRules: rules.filter((rule) => rule._kind === 'PROPERTY'),
+      unsupportedRules: rules.filter((rule) => rule._kind === 'RELATION'),
+    }
+  })
+  const rejected = bindingPlans.flatMap((entry) => entry.unsupportedRules.map((rule) => ({
     reason: 'RELATION_MAPPING_UNAVAILABLE', source_field_path: rule.source_field_path ?? null,
-  }))
+  })))
   const unmapped = []
   const nodes = []
   for (const row of rows) {
     if (row.source_hash !== canonicalHash(row.row_data)) {
       throw knowledgeProjectionError(409, 'SOURCE_HASH_MISMATCH', 'A materialized source row does not match its canonical SHA-256 receipt.')
     }
-    const identity = knowledgeABoxValue(row.row_data, subjectRule.source_field_path)
-    if (identity === undefined || identity === null || String(identity).trim() === '') {
-      rejected.push({ row_key: row.row_key, reason: 'SUBJECT_ID_MISSING', source_field_path: subjectRule.source_field_path })
-      continue
-    }
-    const properties = {}
-    for (const rule of propertyRules) {
-      const value = knowledgeABoxValue(row.row_data, rule.source_field_path)
-      if (value === undefined) {
-        unmapped.push({ row_key: row.row_key, source_field_path: rule.source_field_path, target_stable_element_id: rule.target_stable_element_id })
+    for (const entry of bindingPlans) {
+      const { binding, targetClass, subjectRule, propertyRules } = entry
+      const identity = knowledgeABoxValue(row.row_data, subjectRule.source_field_path)
+      if (identity === undefined || identity === null || String(identity).trim() === '') {
+        rejected.push({ row_key: row.row_key, reason: 'SUBJECT_ID_MISSING', source_field_path: subjectRule.source_field_path })
         continue
       }
-      const targetElement = scope.tboxElements.find((element) => element?.stable_element_id === rule.target_stable_element_id)
-      const propertyName = String(targetElement?.canonical_name || targetElement?.display_name || rule.target_stable_element_id)
-      properties[propertyName] = value
+      const properties = {}
+      for (const rule of propertyRules) {
+        const value = knowledgeABoxValue(row.row_data, rule.source_field_path)
+        if (value === undefined) {
+          unmapped.push({ row_key: row.row_key, source_field_path: rule.source_field_path, target_stable_element_id: rule.target_stable_element_id })
+          continue
+        }
+        const targetElement = scope.tboxElements.find((element) => element?.stable_element_id === rule.target_stable_element_id)
+        const propertyName = String(targetElement?.canonical_name || targetElement?.display_name || rule.target_stable_element_id)
+        properties[propertyName] = value
+      }
+      const rowIdentity = String(identity)
+      nodes.push({
+        id: `knowledge:abox:${canonicalHash({ contract_version: 'KNOWLEDGE_ABOX_ROW_V1', graph_id: scope.graphId, studio_release_id: scope.studioReleaseId, target_stable_element_id: binding.targetStableElementId, source_urn: binding.assetUrn, row_key: row.row_key, row_identity: rowIdentity })}`,
+        stable_element_id: binding.targetStableElementId,
+        type: targetClass,
+        identity: rowIdentity,
+        properties,
+        properties_json: JSON.stringify(properties),
+        provenance: {
+          entity_kind: 'NODE', source_type: 'DETERMINISTIC_ENRICHER', source_urn: binding.assetUrn,
+          source_row_key: row.row_key, source_hash: row.source_hash, graph_id: scope.graphId,
+          studio_release_id: scope.studioReleaseId, target_stable_element_id: binding.targetStableElementId,
+          tbox_version: binding.tboxVersion, manifest_ref: manifest.manifestRef, secret_ref: manifest.secretRef,
+        },
+      })
     }
-    const rowIdentity = String(identity)
-    nodes.push({
-      id: `knowledge:abox:${canonicalHash({ contract_version: 'KNOWLEDGE_ABOX_ROW_V1', graph_id: scope.graphId, studio_release_id: scope.studioReleaseId, target_stable_element_id: binding.targetStableElementId, source_urn: binding.assetUrn, row_key: row.row_key, row_identity: rowIdentity })}`,
-      stable_element_id: binding.targetStableElementId,
-      type: targetClass,
-      identity: rowIdentity,
-      properties,
-      properties_json: JSON.stringify(properties),
-      provenance: {
-        source_type: 'DETERMINISTIC_ENRICHER', source_urn: binding.assetUrn, source_row_key: row.row_key,
-        source_hash: row.source_hash, graph_id: scope.graphId, studio_release_id: scope.studioReleaseId,
-        target_stable_element_id: binding.targetStableElementId,
-        tbox_version: binding.tboxVersion, manifest_ref: manifest.manifestRef, secret_ref: manifest.secretRef,
-      },
-    })
   }
-  const boundedNodes = Number.isSafeInteger(sampleLimit) ? nodes.slice(0, Math.max(1, Math.min(sampleLimit, 100))) : nodes.slice(0, 5)
+  const nodesByRowAndTarget = new Map(nodes.map((node) => [
+    `${node.provenance.source_row_key}\u0000${node.stable_element_id}`,
+    node,
+  ]))
+  const edges = relation ? rows.flatMap((row) => {
+    const sourceNode = nodesByRowAndTarget.get(`${row.row_key}\u0000${relation.source_stable_element_id}`)
+    const targetNode = nodesByRowAndTarget.get(`${row.row_key}\u0000${relation.target_stable_element_id}`)
+    if (!sourceNode || !targetNode) return []
+    const relationType = String(relation.canonical_name || relation.display_name || relation.stable_element_id)
+    return [{
+      id: `knowledge:abox:relation:${canonicalHash({ contract_version: 'KNOWLEDGE_ABOX_RELATION_V1', graph_id: scope.graphId, studio_release_id: scope.studioReleaseId, relation_stable_element_id: relation.stable_element_id, source_node_id: sourceNode.id, target_node_id: targetNode.id, source_urn: sourceAssetUrn, row_key: row.row_key, source_hash: row.source_hash })}`,
+      stable_element_id: relation.stable_element_id,
+      type: relationType,
+      source_node_id: sourceNode.id,
+      target_node_id: targetNode.id,
+      properties: {},
+      properties_json: '{}',
+      provenance: {
+        entity_kind: 'RELATION', source_type: 'DETERMINISTIC_ENRICHER', source_urn: sourceAssetUrn,
+        source_row_key: row.row_key, source_hash: row.source_hash, graph_id: scope.graphId,
+        studio_release_id: scope.studioReleaseId, target_stable_element_id: relation.stable_element_id,
+        relation_stable_element_id: relation.stable_element_id, source_node_id: sourceNode.id,
+        target_node_id: targetNode.id, tbox_version: tboxVersion,
+        manifest_ref: manifest.manifestRef, secret_ref: manifest.secretRef,
+      },
+    }]
+  }) : []
+  const boundedRowKeys = new Set(rows
+    .slice(0, Number.isSafeInteger(sampleLimit) ? Math.max(1, Math.min(sampleLimit, 100)) : 5)
+    .map((row) => row.row_key))
+  const boundedNodes = nodes.filter((node) => boundedRowKeys.has(node.provenance.source_row_key))
+  const boundedEdges = edges.filter((edge) => boundedRowKeys.has(edge.provenance.source_row_key))
   const validationEvidence = [
     ...rejected.slice(0, 100).map((item) => ({
       severity: 'ERROR', code: item.reason, location: item.row_key || item.source_field_path || 'mapping',
@@ -4998,16 +5077,24 @@ async function knowledgeABoxPlan(context, draftId, targetStableElementId, sample
       message: 'The source value has no mapped target Property and will be omitted.',
     })),
   ]
+  const bindingVersions = Object.fromEntries(selected.map((binding) => [binding.targetStableElementId, binding.version]))
   return {
-    scope, manifest, binding, rows, nodes, edges: [], rejected, unmapped,
+    scope, manifest, binding: selected[0], bindings: selected, rows, nodes, edges, rejected, unmapped,
+    sourceAssetUrn, tboxVersion,
+    planIdentity: relation ? `relation:${relation.stable_element_id}` : `class:${selected[0].targetStableElementId}`,
     preview: {
-      status: 'READY', draft_version: scope.draftVersion, binding_version: binding.version,
-      target_stable_element_id: binding.targetStableElementId,
-      pinned_tbox_version: binding.tboxVersion, source: { asset_urn: binding.assetUrn, source_version: manifest.sourceVersion, manifest_ref: manifest.manifestRef },
-      sample_size: boundedNodes.length, node_count: nodes.length, relation_count: 0, dry_run: true,
-      graph: { nodes: boundedNodes, edges: [] }, rejected, unmapped,
+      status: 'READY', draft_version: scope.draftVersion,
+      plan_mode: relation ? 'RELATION' : 'NODE',
+      binding_version: relation ? undefined : selected[0].version,
+      binding_versions: bindingVersions,
+      target_stable_element_id: relation ? null : selected[0].targetStableElementId,
+      target_stable_element_ids: selected.map((binding) => binding.targetStableElementId).sort(),
+      relation_stable_element_id: relation?.stable_element_id ?? null,
+      pinned_tbox_version: tboxVersion, source: { asset_urn: sourceAssetUrn, source_version: manifest.sourceVersion, manifest_ref: manifest.manifestRef },
+      sample_size: boundedRowKeys.size, node_count: nodes.length, relation_count: edges.length, dry_run: true,
+      graph: { nodes: boundedNodes, edges: boundedEdges }, rejected, unmapped,
       evidence: validationEvidence,
-      provenance: nodes.slice(0, 100).map((node) => node.provenance),
+      provenance: [...nodes, ...edges].slice(0, 100).map((item) => item.provenance),
     },
   }
 }
@@ -5030,26 +5117,81 @@ async function writeKnowledgeABoxProjection(plan) {
         node.provenance_source = entity.provenance.source_type,
         node.observed_at = $observedAt
     RETURN count(node)
-  `, { nodes: plan.nodes, graphId: plan.scope.graphId, releaseId: plan.scope.studioReleaseId, tboxVersion: plan.binding.tboxVersion, observedAt: plan.scope.observedAt })
+  `, { nodes: plan.nodes, graphId: plan.scope.graphId, releaseId: plan.scope.studioReleaseId, tboxVersion: plan.tboxVersion, observedAt: plan.scope.observedAt })
+  if (plan.edges.length) {
+    await neo4jQuery(`
+      UNWIND $relations AS relationInput
+      MATCH (source:KnowledgeABoxEntity {
+        id: relationInput.source_node_id,
+        graph_id: $graphId,
+        studio_release_id: $releaseId
+      })
+      MATCH (target:KnowledgeABoxEntity {
+        id: relationInput.target_node_id,
+        graph_id: $graphId,
+        studio_release_id: $releaseId
+      })
+      MERGE (source)-[relation:KNOWLEDGE_RELATION {id: relationInput.id}]->(target)
+      ON CREATE SET relation.created_at = $observedAt
+      SET relation.relation_type = relationInput.type,
+          relation.target_stable_element_id = relationInput.stable_element_id,
+          relation.properties_json = relationInput.properties_json,
+          relation.graph_id = $graphId,
+          relation.studio_release_id = $releaseId,
+          relation.tbox_version = $tboxVersion,
+          relation.source_urn = relationInput.provenance.source_urn,
+          relation.source_row_key = relationInput.provenance.source_row_key,
+          relation.source_hash = relationInput.provenance.source_hash,
+          relation.provenance_source = relationInput.provenance.source_type,
+          relation.observed_at = $observedAt
+      RETURN count(relation)
+    `, {
+      relations: plan.edges, graphId: plan.scope.graphId, releaseId: plan.scope.studioReleaseId,
+      tboxVersion: plan.tboxVersion, observedAt: plan.scope.observedAt,
+    })
+  }
   const rows = await neo4jQuery(`
     MATCH (node:KnowledgeABoxEntity {
       graph_id: $graphId,
       studio_release_id: $releaseId,
-      source_urn: $sourceUrn,
-      target_stable_element_id: $targetStableElementId
+      source_urn: $sourceUrn
     })
+    WHERE node.target_stable_element_id IN $targetStableElementIds
     WITH node.id AS identity, count(node) AS copies
     RETURN sum(copies), sum(CASE WHEN copies > 1 THEN copies - 1 ELSE 0 END)
   `, {
     graphId: plan.scope.graphId,
     releaseId: plan.scope.studioReleaseId,
-    sourceUrn: plan.binding.assetUrn,
-    targetStableElementId: plan.binding.targetStableElementId,
+    sourceUrn: plan.sourceAssetUrn,
+    targetStableElementIds: plan.bindings.map((binding) => binding.targetStableElementId),
   })
   const nodeCount = Number(rows[0]?.row?.[0] || 0)
-  const duplicateCount = Number(rows[0]?.row?.[1] || 0)
-  if (duplicateCount !== 0 || nodeCount !== plan.nodes.length) throw knowledgeProjectionError(502, 'KNOWLEDGE_ABOX_PROJECTION_INCOMPLETE', 'The bounded A-Box projection did not pass its deterministic read-back audit.')
-  return { nodeCount, edgeCount: 0, duplicateCount }
+  const nodeDuplicateCount = Number(rows[0]?.row?.[1] || 0)
+  const relationRows = plan.edges.length ? await neo4jQuery(`
+    UNWIND $relations AS expected
+    OPTIONAL MATCH (source:KnowledgeABoxEntity)-[relation:KNOWLEDGE_RELATION {id: expected.id}]->(target:KnowledgeABoxEntity)
+    WITH expected,
+         count(relation) AS copies,
+         sum(CASE WHEN source.id = expected.source_node_id
+              AND target.id = expected.target_node_id
+              AND source.graph_id = $graphId
+              AND target.graph_id = $graphId
+              AND source.studio_release_id = $releaseId
+              AND target.studio_release_id = $releaseId
+           THEN 1 ELSE 0 END) AS exactCopies
+    RETURN sum(copies),
+           sum(CASE WHEN copies > 1 THEN copies - 1 ELSE 0 END),
+           sum(exactCopies)
+  `, { relations: plan.edges, graphId: plan.scope.graphId, releaseId: plan.scope.studioReleaseId }) : []
+  const edgeCount = Number(relationRows[0]?.row?.[0] || 0)
+  const edgeDuplicateCount = Number(relationRows[0]?.row?.[1] || 0)
+  const exactEdgeCount = Number(relationRows[0]?.row?.[2] || 0)
+  const duplicateCount = nodeDuplicateCount + edgeDuplicateCount
+  if (duplicateCount !== 0 || nodeCount !== plan.nodes.length
+    || edgeCount !== plan.edges.length || exactEdgeCount !== plan.edges.length) {
+    throw knowledgeProjectionError(502, 'KNOWLEDGE_ABOX_PROJECTION_INCOMPLETE', 'The bounded A-Box projection did not pass its deterministic read-back audit.')
+  }
+  return { nodeCount, edgeCount, duplicateCount }
 }
 
 function knowledgeIngestionJobResponse(row) {
@@ -5067,7 +5209,8 @@ function knowledgeIngestionJobResponse(row) {
     result_evidence_hash: result.evidence_hash || null, error_code: result.error_code || null,
     allowed_actions: [], version: Number(row.version), created_at: row.created_at, updated_at: row.updated_at,
     started_at: row.created_at, finished_at: finished ? row.updated_at : null,
-    node_count: Number(result.node_count || preview.node_count || 0), edge_count: 0,
+    node_count: Number(result.node_count || preview.node_count || 0),
+    edge_count: Number(result.edge_count || preview.relation_count || 0),
     duplicate_count: Number(result.duplicate_count || 0), provenance: result.provenance || preview.provenance || [],
     rejected: preview.rejected || [], unmapped: preview.unmapped || [], pinned_tbox_version: Number(row.tbox_version),
   }
@@ -5077,12 +5220,16 @@ async function knowledgeABoxIngestionApi(request, response, url, context) {
   const draftId = decodeURIComponent(url.pathname.match(/\/drafts\/([^/]+)\/abox\//)?.[1] || '')
   const body = request.method === 'POST' ? await bodyJson(request) : {}
   const target = request.method === 'POST' ? body.target_stable_element_id : url.searchParams.get('target_stable_element_id')
+  const relationTarget = request.method === 'POST' ? body.relation_stable_element_id : url.searchParams.get('relation_stable_element_id')
   if (request.method === 'GET' && url.pathname.endsWith('/ingestions')) {
     await knowledgeProjectionScope(context, draftId)
     const jobs = await context.stateStore.listKnowledgeIngestionJobs(draftId)
     return json(response, 200, { items: jobs.map(knowledgeIngestionJobResponse), page: { limit: 100 } })
   }
-  const plan = await knowledgeABoxPlan(context, draftId, target || undefined, Number(body.sample_limit || url.searchParams.get('sample_limit') || 5))
+  const plan = await knowledgeABoxPlan(context, draftId, {
+    targetStableElementId: target || undefined,
+    relationStableElementId: relationTarget || undefined,
+  }, Number(body.sample_limit || url.searchParams.get('sample_limit') || 5))
   const ifMatch = request.headers['if-match']
   if (typeof ifMatch !== 'string' || ifMatch !== `"${plan.scope.draftVersion}"`) throw knowledgeProjectionError(412, 'DRAFT_VERSION_STALE', 'The pinned Draft version changed; refresh before continuing.')
   if (url.pathname.endsWith('/previews')) {
@@ -5090,8 +5237,8 @@ async function knowledgeABoxIngestionApi(request, response, url, context) {
     const idempotencyKey = `preview:${canonicalHash({
       draftId,
       releaseId: plan.scope.studioReleaseId,
-      target: plan.binding.targetStableElementId,
-      tboxVersion: plan.binding.tboxVersion,
+      planIdentity: plan.planIdentity,
+      tboxVersion: plan.tboxVersion,
       requestedBy: context.principal.subjectId,
       requestHash,
     })}`
@@ -5100,8 +5247,8 @@ async function knowledgeABoxIngestionApi(request, response, url, context) {
       row = await context.stateStore.insertKnowledgeIngestionJob({
         job_id: `knowledge-ingestion:${canonicalHash({ draftId, releaseId: plan.scope.studioReleaseId, idempotencyKey })}`,
         draft_id: draftId, graph_id: plan.scope.graphId, release_id: plan.scope.studioReleaseId,
-        requested_by: context.principal.subjectId, source_asset_urn: plan.binding.assetUrn,
-        source_version: plan.manifest.sourceVersion, tbox_version: plan.binding.tboxVersion,
+        requested_by: context.principal.subjectId, source_asset_urn: plan.sourceAssetUrn,
+        source_version: plan.manifest.sourceVersion, tbox_version: plan.tboxVersion,
         idempotency_key: idempotencyKey, request_hash: requestHash, state: 'READY', preview: plan.preview, result: null,
       })
     }
@@ -5119,9 +5266,9 @@ async function knowledgeABoxIngestionApi(request, response, url, context) {
     || previewRow.graph_id !== plan.scope.graphId
     || previewRow.release_id !== plan.scope.studioReleaseId
     || previewRow.requested_by !== context.principal.subjectId
-    || previewRow.source_asset_urn !== plan.binding.assetUrn
+    || previewRow.source_asset_urn !== plan.sourceAssetUrn
     || previewRow.source_version !== plan.manifest.sourceVersion
-    || Number(previewRow.tbox_version) !== plan.binding.tboxVersion
+    || Number(previewRow.tbox_version) !== plan.tboxVersion
     || previewRow.request_hash !== previewHash) {
     throw knowledgeProjectionError(409, 'PREVIEW_STALE', 'The confirmed preview is missing, stale, or belongs to a different principal or source mapping.')
   }
@@ -5129,10 +5276,10 @@ async function knowledgeABoxIngestionApi(request, response, url, context) {
     draftId,
     graphId: plan.scope.graphId,
     releaseId: plan.scope.studioReleaseId,
-    sourceAssetUrn: plan.binding.assetUrn,
+    sourceAssetUrn: plan.sourceAssetUrn,
     sourceVersion: plan.manifest.sourceVersion,
-    tboxVersion: plan.binding.tboxVersion,
-    targetStableElementId: plan.binding.targetStableElementId,
+    tboxVersion: plan.tboxVersion,
+    planIdentity: plan.planIdentity,
     previewJobId,
     previewHash,
   })
@@ -5146,15 +5293,15 @@ async function knowledgeABoxIngestionApi(request, response, url, context) {
     row = await context.stateStore.insertKnowledgeIngestionJob({
       job_id: `knowledge-ingestion:${canonicalHash({ draftId, releaseId: plan.scope.studioReleaseId, idempotencyKey: idempotencyKey.trim() })}`,
       draft_id: draftId, graph_id: plan.scope.graphId, release_id: plan.scope.studioReleaseId,
-      requested_by: context.principal.subjectId, source_asset_urn: plan.binding.assetUrn,
-      source_version: plan.manifest.sourceVersion, tbox_version: plan.binding.tboxVersion,
+      requested_by: context.principal.subjectId, source_asset_urn: plan.sourceAssetUrn,
+      source_version: plan.manifest.sourceVersion, tbox_version: plan.tboxVersion,
       idempotency_key: idempotencyKey.trim(), request_hash: requestHash, state: 'CONFIRMED', preview: plan.preview, result: null,
     })
   }
   try {
     const audit = await writeKnowledgeABoxProjection(plan)
-    const provenance = plan.nodes.map((node) => node.provenance)
-    const result = { changeset_id: `knowledge-changeset:${canonicalHash({ jobId: row.job_id, tboxVersion: plan.binding.tboxVersion })}`, changeset_state: 'DRAFT', evidence_hash: canonicalHash({ job_id: row.job_id, audit, provenance }), node_count: audit.nodeCount, edge_count: audit.edgeCount, duplicate_count: audit.duplicateCount, provenance }
+    const provenance = [...plan.nodes, ...plan.edges].map((item) => item.provenance)
+    const result = { changeset_id: `knowledge-changeset:${canonicalHash({ jobId: row.job_id, tboxVersion: plan.tboxVersion })}`, changeset_state: 'DRAFT', evidence_hash: canonicalHash({ job_id: row.job_id, audit, provenance }), node_count: audit.nodeCount, edge_count: audit.edgeCount, duplicate_count: audit.duplicateCount, provenance }
     row = await context.stateStore.updateKnowledgeIngestionJob(row.job_id, Number(row.version), 'PROJECTED', result)
     return json(response, created ? 201 : 200, knowledgeIngestionJobResponse(row), { ETag: `"${row.version}"` })
   } catch (error) {

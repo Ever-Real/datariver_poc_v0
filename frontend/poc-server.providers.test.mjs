@@ -226,7 +226,13 @@ function providerHandler(request, response) {
                 glossaryTerms: { terms: [] },
               },
             },
-            { fieldPath: 'observed_at', nativeDataType: 'TIMESTAMP', description: 'Observed timestamp' },
+            {
+              fieldPath: 'observed_at', nativeDataType: 'TIMESTAMP', description: 'Observed timestamp',
+              schemaFieldEntity: {
+                urn: `urn:li:schemaField:(${payload.variables.urn},observed_at)`,
+                type: 'SCHEMA_FIELD', globalTags: { tags: [] }, glossaryTerms: { terms: [] },
+              },
+            },
           ] },
           editableSchemaMetadata: { editableSchemaFieldInfo: [{
             fieldPath: 'wafer_id', description: 'Curated wafer identifier',
@@ -346,6 +352,16 @@ function providerHandler(request, response) {
         })
         return sendJson(response, { errors: [], results: [{ data: [{ row: [entities.length] }] }] })
       }
+      if (query.includes('UNWIND $relations AS relationInput') && query.includes('KNOWLEDGE_RELATION')) {
+        for (const relation of parameters.relations || []) {
+          knowledgeNeo4jEdges.set(`abox\u0000${relation.id}`, {
+            ...structuredClone(relation),
+            graph_id: parameters.graphId,
+            studio_release_id: parameters.releaseId,
+          })
+        }
+        return sendJson(response, { errors: [], results: [{ data: [{ row: [(parameters.relations || []).length] }] }] })
+      }
       if (query.includes('UNWIND $relations AS relationInput')) {
         for (const relation of parameters.relations || []) {
           knowledgeNeo4jEdges.set(
@@ -361,11 +377,24 @@ function providerHandler(request, response) {
             ? node.graph_id === parameters.graphId
               && node.studio_release_id === parameters.releaseId
               && node.source_urn === parameters.sourceUrn
-              && node.target_stable_element_id === parameters.targetStableElementId
+              && (Array.isArray(parameters.targetStableElementIds)
+                ? parameters.targetStableElementIds.includes(node.target_stable_element_id)
+                : node.target_stable_element_id === parameters.targetStableElementId)
             : node.knowledge_graph_id === parameters.graphId
               && node.knowledge_release_id === parameters.studioReleaseId
         ))
         return sendJson(response, { errors: [], results: [{ data: [{ row: [nodes.length, 0] }] }] })
+      }
+      if (query.includes('sum(exactCopies)')) {
+        const relations = (parameters.relations || []).filter((expected) => {
+          const relation = knowledgeNeo4jEdges.get(`abox\u0000${expected.id}`)
+          return relation
+            && relation.graph_id === parameters.graphId
+            && relation.studio_release_id === parameters.releaseId
+            && relation.source_node_id === expected.source_node_id
+            && relation.target_node_id === expected.target_node_id
+        })
+        return sendJson(response, { errors: [], results: [{ data: [{ row: [relations.length, 0, relations.length] }] }] })
       }
       if (query.includes('RETURN count(relation)')) {
         const prefix = `${parameters.studioReleaseId}\u0000`
@@ -1318,6 +1347,8 @@ test('fences durable K5 preview confirmation, verifies source hashes, persists f
   const graphId = 'knowledge-k5-durable-graph'
   const releaseId = 'knowledge-k5-durable-release'
   const targetId = 'knowledge-k5-wafer-class'
+  const assetTargetId = 'knowledge-k5-asset-class'
+  const relationTargetId = 'knowledge-k5-owns-relation'
   const subjectId = 'provider-test-subject'
   const coreSnapshot = await providerStateStore.read('core')
   const accessSnapshot = await providerStateStore.read('change-history-access-v1')
@@ -1360,15 +1391,30 @@ test('fences durable K5 preview confirmation, verifies source hashes, persists f
     knowledgeReleases: [{ id: releaseId, graph_id: graphId, state: 'ACTIVE' }],
     knowledgeDraftBlocks: [[draftId, [{
       id: 'knowledge-k5-tbox-block',
-      elements: [{ stable_element_id: targetId, kind: 'CLASS', canonical_name: 'Wafer' }],
+      elements: [
+        { stable_element_id: targetId, kind: 'CLASS', canonical_name: 'Wafer' },
+        { stable_element_id: assetTargetId, kind: 'CLASS', canonical_name: 'Asset' },
+        {
+          stable_element_id: relationTargetId, kind: 'RELATION', canonical_name: 'OWNS',
+          source_stable_element_id: targetId, target_stable_element_id: assetTargetId,
+        },
+      ],
     }]]],
-    knowledgeDraftBindings: [[draftId, [{
-      id: 'knowledge-k5-binding', source_asset_id: tableUrn,
-      target_stable_element_id: targetId, tbox_version: 3, version: 2,
-      rules: [{ method: 'SUBJECT_ID', source_field_path: 'wafer_id', target_stable_element_id: targetId }],
-    }]]],
+    knowledgeDraftBindings: [[draftId, [
+      {
+        id: 'knowledge-k5-binding', source_asset_id: tableUrn,
+        target_stable_element_id: targetId, tbox_version: 3, version: 2,
+        rules: [{ method: 'SUBJECT_ID', source_field_path: 'wafer_id', target_stable_element_id: targetId }],
+      },
+      {
+        id: 'knowledge-k5-asset-binding', source_asset_id: tableUrn,
+        target_stable_element_id: assetTargetId, tbox_version: 3, version: 4,
+        rules: [{ method: 'SUBJECT_ID', source_field_path: 'observed_at', target_stable_element_id: assetTargetId }],
+      },
+    ]]],
   })
   knowledgeNeo4jNodes.clear()
+  knowledgeNeo4jEdges.clear()
   forceABoxNeo4jFailure = false
   const previewRequest = () => fetch(`${pocOrigin}/poc-api/knowledge/studio/drafts/${draftId}/abox/previews`, {
     method: 'POST',
@@ -1380,6 +1426,18 @@ test('fences durable K5 preview confirmation, verifies source hashes, persists f
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'If-Match': '"7"', 'Idempotency-Key': idempotencyKey },
       body: JSON.stringify({ preview_job_id: previewJobId, target_stable_element_id: targetId }),
+    },
+  )
+  const relationPreviewRequest = () => fetch(`${pocOrigin}/poc-api/knowledge/studio/drafts/${draftId}/abox/previews`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'If-Match': '"7"' },
+    body: JSON.stringify({ relation_stable_element_id: relationTargetId, sample_limit: 5 }),
+  })
+  const relationConfirmRequest = (previewJobId, idempotencyKey) => fetch(
+    `${pocOrigin}/poc-api/knowledge/studio/drafts/${draftId}/abox/ingestions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'If-Match': '"7"', 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ preview_job_id: previewJobId, relation_stable_element_id: relationTargetId }),
     },
   )
   try {
@@ -1411,6 +1469,47 @@ test('fences durable K5 preview confirmation, verifies source hashes, persists f
     assert.equal(replay.id, first.id)
     assert.equal(replay.result_evidence_hash, first.result_evidence_hash)
     assert.equal(replay.duplicate_count, 0)
+
+    knowledgeNeo4jNodes.clear()
+    knowledgeNeo4jEdges.clear()
+    sourceRows = [{ row_key: 'relation-1', row_data: { wafer_id: 'W-REL-001', observed_at: '2026-08-20T00:00:00Z' } }]
+      .map((row) => ({ ...row, source_hash: canonicalTestHash(row.row_data) }))
+    const relationPreviewResponse = await relationPreviewRequest()
+    assert.equal(relationPreviewResponse.status, 200, await relationPreviewResponse.clone().text())
+    const relationPreview = await relationPreviewResponse.json()
+    assert.equal(relationPreview.plan_mode, 'RELATION')
+    assert.equal(relationPreview.target_stable_element_id, null)
+    assert.equal(relationPreview.relation_stable_element_id, relationTargetId)
+    assert.equal(relationPreview.node_count, 2)
+    assert.equal(relationPreview.relation_count, 1)
+    assert.equal(relationPreview.graph.nodes.length, 2)
+    assert.equal(relationPreview.graph.edges.length, 1)
+    assert.equal(relationPreview.graph.edges[0].source_node_id, relationPreview.graph.nodes.find((node) => node.stable_element_id === targetId).id)
+    assert.equal(relationPreview.graph.edges[0].target_node_id, relationPreview.graph.nodes.find((node) => node.stable_element_id === assetTargetId).id)
+    assert.equal(relationPreview.provenance.filter((item) => item.entity_kind === 'RELATION').length, 1)
+    assert.equal(knowledgeNeo4jNodes.size, 0)
+    assert.equal(knowledgeNeo4jEdges.size, 0)
+
+    const relationResponse = await relationConfirmRequest(relationPreview.job_id, 'k5-relation-confirm-v1')
+    assert.equal(relationResponse.status, 201, await relationResponse.clone().text())
+    const relationResult = await relationResponse.json()
+    assert.equal(relationResult.node_count, 2)
+    assert.equal(relationResult.edge_count, 1)
+    assert.equal(relationResult.duplicate_count, 0)
+    assert.equal(relationResult.provenance.filter((item) => item.entity_kind === 'RELATION').length, 1)
+    assert.equal(knowledgeNeo4jNodes.size, 2)
+    assert.equal(knowledgeNeo4jEdges.size, 1)
+
+    const relationReplayResponse = await relationConfirmRequest(relationPreview.job_id, 'k5-relation-confirm-v1')
+    assert.equal(relationReplayResponse.status, 200, await relationReplayResponse.clone().text())
+    const relationReplay = await relationReplayResponse.json()
+    assert.equal(relationReplay.id, relationResult.id)
+    assert.equal(relationReplay.result_evidence_hash, relationResult.result_evidence_hash)
+    assert.equal(relationReplay.edge_count, 1)
+    assert.equal(knowledgeNeo4jEdges.size, 1)
+
+    knowledgeNeo4jNodes.clear()
+    knowledgeNeo4jEdges.clear()
 
     const stalePreviewResponse = await previewRequest()
     const stalePreview = await stalePreviewResponse.json()
@@ -1453,9 +1552,15 @@ test('fences durable K5 preview confirmation, verifies source hashes, persists f
     const deniedList = await fetch(`${pocOrigin}/poc-api/knowledge/studio/drafts/${draftId}/abox/ingestions`)
     assert.equal(deniedList.status, 403)
     assert.equal((await deniedList.json()).code, 'KNOWLEDGE_TABLE_FORBIDDEN')
+    const edgesBeforeDenied = knowledgeNeo4jEdges.size
+    const deniedRelationPreview = await relationPreviewRequest()
+    assert.equal(deniedRelationPreview.status, 403)
+    assert.equal((await deniedRelationPreview.json()).code, 'KNOWLEDGE_TABLE_FORBIDDEN')
+    assert.equal(knowledgeNeo4jEdges.size, edgesBeforeDenied)
   } finally {
     forceABoxNeo4jFailure = false
     knowledgeNeo4jNodes.clear()
+    knowledgeNeo4jEdges.clear()
     Object.assign(providerStateStore, originalMethods)
     await providerStateStore.write('core', coreSnapshot.value || {})
     await providerStateStore.write('change-history-access-v1', accessSnapshot.value)
