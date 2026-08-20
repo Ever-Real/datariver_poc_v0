@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`
-- Deployed OCI revision: `43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`
+- Current Product SHA: `137bbb331d1dfdb2eef518e3e1d30192adc1b796`
+- Deployed OCI revision: `137bbb331d1dfdb2eef518e3e1d30192adc1b796`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -54,8 +54,10 @@
   `fca4535cab544560bd06486dc363e6df0c6df27f`
 - Knowledge K5 durable Node A-Box ingestion Product:
   `34af2b869d04fd96f4b9cd69f6eeed8729bafe28`
-- Knowledge K5-R bounded Relation projection/current Product:
+- Knowledge K5-R bounded Relation projection Product:
   `43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`
+- Knowledge K6 bounded authorized Chat/current Product:
+  `137bbb331d1dfdb2eef518e3e1d30192adc1b796`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -155,7 +157,14 @@
   publication. The preserved Node path and the bounded Relation path are runtime-verified: preview
   Node 2 / Relation 1, confirm/replay Node 2 / Edge 1, distinct Edge 1, exact endpoint/version
   identity, deterministic provenance, immediate no-grant 403 and exact disposable cleanup passed.
-  `K5_RELATION_PROJECTION_REQUIRED` is resolved. K6 remains `NOT_STARTED`.
+  `K5_RELATION_PROJECTION_REQUIRED` is resolved. K5 remains a frozen completed prerequisite.
+- Knowledge K6 bounded authorized Chat: `COMPLETE_RUNTIME_VERIFIED`. Product `137bbb33...` reuses
+  only PUBLISHED/ACTIVE pinned releases, exact K5 `PROJECTED` receipts, request-time Table grant,
+  canonical grade and fixed Knowledge policy. Fixed parameterized Neo4j reads feed the existing
+  provider and return release/provenance citations; unauthorized Assets are absent from lists and
+  direct identity reads conceal with 404. A disposable non-Admin runtime proved exactly 3 nodes / 2
+  relations, simple and 2-hop answers, provider composition, reload, unsafe-input rejection,
+  immediate grant-removal concealment and cleanup to zero. K7 was not started.
 - K5 PREP deployment readiness: `K5_PREP_DEPLOYMENT_NOT_READY`. A focused disposable relation
   fixture previously exposed the missing relation path at Product `34af2b86...`; K5-R now closes
   that DEV Product gap. PREP was not mutated and remains blocked only by
@@ -178,7 +187,7 @@
 5  등록관리                                → steward/admin only; overall PARTIAL
 6  거버넌스 — 정책·표준 문서 관리          → bounded CRUD/archive complete
 7  Chat                                    → General/Vector/AUTO and pre-K7 DataHub lineage complete; fallback/K7 partial
-8  지식관리                                → K0~K4 complete; K5 PARTIAL (K5-R); K6 NOT_STARTED
+8  지식관리                                → K0~K6 complete; K7~K9 BACKLOG
 9  품질관리                                → USER_FEATURE_DEFINITION_REQUIRED
 기술 Backlog                              → support/deployment details only
 ```
@@ -231,12 +240,17 @@ local credential + opaque server session
 ## Fresh validation
 
 - Current Product and deployed OCI are the exact same 40-character revision
-  `43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`. The coordinator verified the authoritative Node POC
-  K5-R preview/confirm/projection/replay/provenance/authorization/cleanup chain and exact OCI label;
-  legacy FastAPI and secret-bearing environment dumps are not accepted.
-- Current K5-R focused regression: server 2/2 and frontend 23/23 PASS; lint, typecheck, production
-  POC build, Compose render and `git diff --check` PASS. A broad full suite was intentionally not
-  rerun for this bounded Relation-only slice.
+  `137bbb331d1dfdb2eef518e3e1d30192adc1b796`. The canonical K6 start remains Product
+  `43e74a0f...` / Evidence `9f70f616...`; Git ancestry proves the K6 Product descends from that K5
+  closeout. Legacy FastAPI and secret-bearing environment dumps are not accepted.
+- Current K6 focused regression: Node 30/30 and frontend 35/35 PASS; lint, typecheck, production POC
+  build, Compose render and `git diff --check` PASS. A broad full suite was intentionally not rerun
+  for this bounded K6-only slice.
+- Current K6 runtime: one authorized non-Admin, exact K5 receipt/release, 3 nodes / 2 relations,
+  simple 1-hop and 2-hop provider answers, exact provenance/citations, reload, unsafe-input 400,
+  grant-removal list hiding/direct 404 and exact disposable cleanup all PASS. The first bounded
+  fixture failure was a current DataHub Column identity mismatch, not a Product defect; the single
+  allowed retry reused an exact current K1 Column identity and passed.
 - Prior K5 Node full stable serialized suite: 109/109 PASS. Two historical default-concurrency runs hit an isolated
   safe provider-capability `ECONNRESET`; the exact test passed alone and failed parallel results
   were rejected.
@@ -486,19 +500,19 @@ local credential + opaque server session
   FastAPI authority, generic ingestion platform, service, queue, worker or secret storage was added.
   Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K5-DURABLE-BRIDGE-CLOSEOUT.md`.
 
-## Knowledge K6 entry audit
+## Knowledge K6 bounded authorized Chat closeout
 
-- The existing Knowledge Chat page has the intended separate conversation UI, Asset/release/start
-  node controls, bounded hop/direction inputs and cited graph evidence presentation. Its current
-  tests inject fixture responses and are not runtime proof.
-- The authoritative Node route registry resolves graph list, release list, release snapshot and
-  release GraphRAG paths as `NO_ROUTE`; only the existing general Chat route is active. Historical
-  FastAPI GraphRAG code is not a current runtime authority.
-- K5 now supplies a verified release-pinned instance projection seam, but the four bounded Node
-  graph/release/snapshot/graphrag routes remain absent. K6 therefore remains `NOT_STARTED`; it must
-  implement and verify its own authorized routes and must not use generic Neo4j traversal or
-  general Chat as a substitute. Evidence:
-  `.orchestration/evidence/DEV-KNOWLEDGE-K6-ENTRY-AUDIT.md`.
+- The earlier `fca4535...` K6 audit is historical and stale for the current checkpoint. The valid
+  entry gate was rerun from Product `43e74a0f...` / Evidence `9f70f616...`, where K5 was already
+  `COMPLETE_RUNTIME_VERIFIED`; PREP external-contract recheck is not a prerequisite for bounded DEV
+  K6 and remains a separate deployment gate.
+- Product `137bbb33...` adds only the four bounded Node list/release/snapshot/graphrag routes and the
+  existing separate Knowledge Chat UI adapter. It reuses K2 authorization, K5 release/receipt
+  authority, existing provider integration and fixed parameterized Neo4j reads; generic Chat and
+  raw Neo4j are not alternative authority paths.
+- Runtime proof passed exactly 3 nodes / 2 relations, simple and 2-hop questions, provider response,
+  release/provenance citations, reload, grant-removal concealment and zero disposable state.
+  Evidence: `.orchestration/evidence/DEV-KNOWLEDGE-K6-KNOWLEDGE-CHAT-RUNTIME.md`.
 
 ## Post-K1 Quality tab parity
 

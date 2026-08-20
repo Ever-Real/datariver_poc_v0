@@ -25,7 +25,7 @@ an unsafe bypass, or a historical result from another commit.
 | Created | 2026-07-23, Asia/Seoul |
 | Branch / Phase 6E entry base / current published implementation | `dev` / `dba1186` / verified by the stable publication workflow |
 | Remote comparison | `dev-publish` requires local `dev` and `origin/dev` to resolve to the same exact commit after every publication |
-| Current controlled phase | Product `43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`: completed baselines remain verified. K5 closes the bounded durable Node plus Relation A-Box preview/confirm/projection/replay bridge using the existing two tables and migration. K6 is not started. Registration durability and GX assertion egress remain held/blocked as named. |
+| Current controlled phase | Product `137bbb331d1dfdb2eef518e3e1d30192adc1b796`: completed baselines remain verified. K5 remains complete and K6 closes bounded authorized Knowledge Chat over exact projected receipts/releases. K7 is not started. Registration durability and GX assertion egress remain held/blocked as named. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## 2026-08-16 Node POC Account/Auth execution
@@ -104,7 +104,7 @@ services remain technical detail rather than a top-level Product menu.
 | 5 | 등록관리 | mutation data_steward/admin only; provider apply/durability `PARTIAL` |
 | 6 | 거버넌스 — 정책·표준 문서 관리 | bounded read/create/DRAFT-update/archive complete |
 | 7 | Chat | General/Vector/AUTO and pre-K7 DataHub-lineage Graph complete; fallback execution/K7 partial |
-| 8 | 지식관리 | K0-K5 `COMPLETE_RUNTIME_VERIFIED`; bounded Node and Relation projection verified; K6 not started |
+| 8 | 지식관리 | K0-K6 `COMPLETE_RUNTIME_VERIFIED`; K7-K9 not started |
 | 9 | 품질관리 | `USER_FEATURE_DEFINITION_REQUIRED`; GX technical gate separate |
 | — | 기술 Backlog | support services, deployment and target gates |
 
@@ -136,15 +136,15 @@ scope was hidden with 403 and the disposable data/credentials were cleaned. No P
 authority, generic ingestion platform, service, queue or worker was introduced. Product
 `43e74a0f...` completes K5-R by reusing that plane for one exact T-Box relation: preview Node 2 /
 Relation 1, confirm/replay Node 2 / distinct Edge 1, exact endpoint/version provenance, immediate
-no-grant 403 and exact disposable cleanup passed. K5 is now `COMPLETE_RUNTIME_VERIFIED`; K6 was not
-started.
+no-grant 403 and exact disposable cleanup passed. K5 is `COMPLETE_RUNTIME_VERIFIED`.
 
-The K6 read-only entry audit found a reusable separate Knowledge Chat UI and historical bounded
-GraphRAG implementation, but all four graph/release/snapshot/graphrag paths resolve to `NO_ROUTE`
-in the authoritative Node Product. K1 source identities are not K5 instance evidence and general
-Chat or generic Neo4j cannot substitute. K5 now provides a verified instance projection seam, but
-K6 remains `NOT_STARTED` until its own authorized Node routes are implemented and runtime-verified;
-no K6 Product mutation was opened.
+Product `137bbb33...` closes K6 from the canonical `43e74a0f...` / Evidence `9f70f616...` entry.
+The bounded Node graph/release/snapshot/graphrag routes reuse K2 authorization, exact K5
+`PROJECTED` receipts/releases, fixed parameterized Neo4j reads and the existing provider. Actual DEV
+runtime passed 3 Nodes / 2 Relations, simple and 2-hop answers, exact provenance/citations,
+grant-removal list hiding/direct 404 and cleanup 0. PREP external-contract recheck is not a bounded
+DEV K6 prerequisite; K7 was not started. Evidence:
+`.orchestration/evidence/DEV-KNOWLEDGE-K6-KNOWLEDGE-CHAT-RUNTIME.md`.
 
 ### Knowledge K2 audit/backlog receipts
 
@@ -169,7 +169,7 @@ Korean dashboard use this user-facing order:
 | P4 | Registration | Authorization/preparation, manual-metadata apply, one READY candidate-to-governed-CR command and authoritative `NOT_STARTED` apply-report `COMPLETE_RUNTIME_VERIFIED`; mutation roles are data_steward/admin only; overall `PARTIAL` for durable preparation/outbox/provider-apply, remaining typed surfaces and target gates; accepted minimal relational direction awaits schema approval |
 | P5 | Governance — policy/standard documents | `COMPLETE_RUNTIME_VERIFIED` for active-user read and data_steward/manager/admin create, DRAFT-version update and archive; viewer/developer mutation denied |
 | P6 | Chat | General/Vector/AUTO and the pre-K7 DataHub-lineage-only Graph boundary are runtime-verified; actual fallback execution and K7 authorized Knowledge routing remain `PARTIAL` |
-| P7 | Knowledge / Quality | Knowledge K0 through K5 durable A-Box ingestion are runtime-verified. K6 is not started. Quality remains `USER_FEATURE_DEFINITION_REQUIRED` |
+| P7 | Knowledge / Quality | Knowledge K0 through K6 bounded Knowledge Chat are runtime-verified. K7 is not started. Quality remains `USER_FEATURE_DEFINITION_REQUIRED` |
 | P8 | Admin | Minimum controls required by real features only; no generic IAM/configuration console |
 
 Controlled execution DAG:
@@ -651,6 +651,10 @@ requirement → feature → API/tool → DB → UI → test → operations.
   confirm; projection/replay Node 2 / distinct Edge 1; exact relation provenance; immediate
   no-grant 403; and exact fixture cleanup. K1 identity/provenance and migration 002 were reused.
   No table, service, queue, worker, generic graph engine or arbitrary Cypher was added.
+- [x] `K6 — bounded authorized Knowledge Chat`: Product `137bbb33...` reuses exact K5
+  `PROJECTED` receipt/release authority and current grant/grade/fixed policy. Actual runtime proved
+  3 Nodes / 2 Relations, simple and 2-hop provider answers, exact citations/provenance,
+  grant-removal concealment and disposable cleanup 0. K7 was not started.
 - [ ] `PREP_EXTERNAL_ENV_CONTRACT_RECHECK_REQUIRED`: on the actual PREP host, record the existing
   stable absolute env/secret paths and prove they supply the reference-only
   `POC_KNOWLEDGE_SOURCE_MANIFEST` contract. Never copy DEV `deploy/poc/.env`.

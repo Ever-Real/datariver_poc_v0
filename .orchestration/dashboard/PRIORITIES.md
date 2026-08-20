@@ -1,7 +1,7 @@
 # DataRiver 현재 제품 우선순위
 
 기준 Product SHA와 배포 OCI revision은
-`43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`로 일치한다. authoritative runtime은 Node POC이며
+`137bbb331d1dfdb2eef518e3e1d30192adc1b796`로 일치한다. authoritative runtime은 Node POC이며
 DEV Web은 `http://127.0.0.1:39083`에서 healthy다. 아래 상태는 현재 source/runtime 근거이며
 PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
@@ -83,17 +83,19 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
 ## 7. 지식관리
 
-- 현재 상태: `PARTIAL`; K0~K5 `COMPLETE_RUNTIME_VERIFIED`, K6 `NOT_STARTED`.
+- 현재 상태: `PARTIAL`; K0~K6 `COMPLETE_RUNTIME_VERIFIED`, K7~K9 `BACKLOG`.
 - 완료: exact Table/Column URN identity/provenance, Registry/version, typed T-Box, Catalog Source
   Proposal, 두 additive table의 durable A-Box preview/confirm/DRAFT changeset/projection/replay,
   request-time authorization, restart recovery와 disposable cleanup.
 - K5 결과: bounded Relation fixture에서 Preview Node 2 / Relation 1, confirm/replay Node 2 /
   distinct Edge 1, duplicate 0, exact endpoint/version provenance, no-grant `403`, exact cleanup,
   Product/OCI 일치.
-- 남은 작업: K6 Knowledge Chat, K7 Main Chat, K8 MCP, K9 Default Assets.
-- 다음 작업: 이번 closeout에서는 K6를 시작하지 않는다. 별도 승인/리소스에서 bounded Node
-  graph/release/snapshot/graphrag routes를 구현·검증한다.
-- 진행을 막는 문제: K5 없음. Knowledge 전체는 K6~K9 때문에 `PARTIAL`.
+- K6 결과: PUBLISHED/ACTIVE pinned release와 exact K5 `PROJECTED` receipt만 읽는 bounded
+  Knowledge Chat이 3 Nodes / 2 Relations, simple/2-hop provider answer, provenance/citation,
+  grant-removal list hiding/direct 404와 cleanup 0을 실제 DEV runtime에서 통과했다.
+- 남은 작업: K7 Main Chat, K8 MCP, K9 Default Assets.
+- 다음 작업: K7은 별도 유효 gate 전까지 시작하지 않고 현재 K6 closeout에서 STOP한다.
+- 진행을 막는 문제: K6 blocker 없음. Knowledge 전체는 K7~K9 때문에 `PARTIAL`.
 
 ## 8. 품질관리 — 사용자 추가 기능 정의 대기 / GX 준비
 
@@ -133,8 +135,8 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 ## 기술 상태 요약
 
 ```text
-Product / deployed OCI 43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8
-K5-R focused tests    server 2 / 2; frontend 23 / 23 PASS
+Product / deployed OCI 137bbb331d1dfdb2eef518e3e1d30192adc1b796
+K6 focused tests      Node 30 / 30; frontend 35 / 35 PASS
 Prior K5 full tests   Node 109 / 109; frontend 87 files, 617 / 617 PASS
 K5 tables/migrations  2 / 1
 new dependencies/services/containers/queues/workers/frameworks/capabilities = 0
