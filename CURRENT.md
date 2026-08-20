@@ -2,8 +2,8 @@
 
 ## Current baseline
 
-- Current Product SHA: `34af2b869d04fd96f4b9cd69f6eeed8729bafe28`
-- Deployed OCI revision: `34af2b869d04fd96f4b9cd69f6eeed8729bafe28`
+- Current Product SHA: `43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`
+- Deployed OCI revision: `43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`
 - PHASE 1A frozen Product: `618b9713059ba7e31b807ceae3b401766a313668`
 - PHASE 1B Product: `e13dbb4f8412937e1d60bd45f83e0e91dc3e91aa`
 - PHASE 1C-1 Product: `60f5f270a56130f2ed96236d9286d0903e3360db`
@@ -52,8 +52,10 @@
   `01e02acb9c75d52e11ff5fbb61c09e88146cfa49`
 - Knowledge K4 Catalog Source Proposal Product:
   `fca4535cab544560bd06486dc363e6df0c6df27f`
-- Knowledge K5 durable A-Box ingestion Product:
+- Knowledge K5 durable Node A-Box ingestion Product:
   `34af2b869d04fd96f4b9cd69f6eeed8729bafe28`
+- Knowledge K5-R bounded Relation projection/current Product:
+  `43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`
 - Web: healthy at canonical DEV origin `http://127.0.0.1:39083`
 - G1/G2 publication, PREP/OPS mutation and push were not performed.
 
@@ -143,21 +145,21 @@
   Class/Property proposals to the existing Draft/CAS state. Browser create→preview→apply→save→hard
   reload passed; Neo4j remained 5 nodes / 3 edges before and after, so A-Box growth was zero.
   Knowledge overall remains `PARTIAL`.
-- Knowledge K5 A-Box Enricher / Projection: `PARTIAL`. The Node POC uses two
+- Knowledge K5 A-Box Enricher / Projection: `COMPLETE_RUNTIME_VERIFIED`. The Node POC uses two
   additive bounded tables for source manifest rows and ingestion jobs, exact release/T-Box pinning,
   preview-before-write, parameterized deterministic MERGE, receipt provenance, replay idempotency,
   restart recovery and request-time authorization. Evidence:
-  `.orchestration/evidence/DEV-KNOWLEDGE-K5-DURABLE-BRIDGE-CLOSEOUT.md`. The implementation keeps
+  `.orchestration/evidence/DEV-KNOWLEDGE-K5R-RELATION-PROJECTION-CLOSEOUT.md`. The implementation keeps
   the Node POC authoritative, stores only deployment-owned non-secret source references plus
   canonical row snapshots, and creates a DRAFT changeset receipt rather than a final Knowledge
-  publication. Node projection is runtime-verified; relation projection is not implemented/proven
-  and cannot currently produce one bounded Node 2 / Relation 1 plan. Blocker:
-  `K5_RELATION_PROJECTION_REQUIRED`. K6 remains `NOT_STARTED`.
+  publication. The preserved Node path and the bounded Relation path are runtime-verified: preview
+  Node 2 / Relation 1, confirm/replay Node 2 / Edge 1, distinct Edge 1, exact endpoint/version
+  identity, deterministic provenance, immediate no-grant 403 and exact disposable cleanup passed.
+  `K5_RELATION_PROJECTION_REQUIRED` is resolved. K6 remains `NOT_STARTED`.
 - K5 PREP deployment readiness: `K5_PREP_DEPLOYMENT_NOT_READY`. A focused disposable relation
-  fixture produced separate Node 1 / Relation 0 previews for both valid endpoint mappings, so the
-  required combined Node 2 / Relation 1 preview/projection/replay path is not runtime-proven.
-  Product K5 is `PARTIAL`; PREP mutation is blocked by `K5_RELATION_PROJECTION_REQUIRED`
-  and `PREP_EXTERNAL_ENV_CONTRACT_RECHECK_REQUIRED`. Evidence:
+  fixture previously exposed the missing relation path at Product `34af2b86...`; K5-R now closes
+  that DEV Product gap. PREP was not mutated and remains blocked only by
+  `PREP_EXTERNAL_ENV_CONTRACT_RECHECK_REQUIRED`. Historical readiness evidence:
   `.orchestration/evidence/DEV-KNOWLEDGE-K5-PREP-READINESS-GATE.md`.
 - PHASE 1D overall: `PARTIAL` — graph provenance, provider-wide traversal/totals, deleted-grade,
   unbound Knowledge and Quality/GX surfaces remain open.
@@ -224,20 +226,21 @@ local credential + opaque server session
   switching to a disposable reviewer. The inspection account remains active/login-enabled,
   unlocked, failed attempts 0, role `admin`, grade `restricted`, with no Responsible System or Table
   grant. K4 validation did not change the account or credential; the current read-only observation
-  is zero active inspection-admin sessions. No validation cleanup may revoke or reconstruct it.
+  is one active inspection-admin session. No validation cleanup may revoke or reconstruct it.
 
 ## Fresh validation
 
 - Current Product and deployed OCI are the exact same 40-character revision
-  `fca4535cab544560bd06486dc363e6df0c6df27f`. A fresh independent Gemini 3.1 Pro High (High)
-  read-only Node POC Validator returned `PASS` for K4 after checking the authoritative root/HEAD,
-  exact OCI label, `/healthz`, K4 source boundaries and Node 108/108. The coordinator independently
-  verified the exact browser Proposal/apply/reload lifecycle and Neo4j non-mutation; legacy FastAPI
-  and secret-bearing environment dumps are not accepted.
-- Node POC full stable serialized suite: 108/108 PASS. Two historical default-concurrency runs hit an isolated
+  `43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`. The coordinator verified the authoritative Node POC
+  K5-R preview/confirm/projection/replay/provenance/authorization/cleanup chain and exact OCI label;
+  legacy FastAPI and secret-bearing environment dumps are not accepted.
+- Current K5-R focused regression: server 2/2 and frontend 23/23 PASS; lint, typecheck, production
+  POC build, Compose render and `git diff --check` PASS. A broad full suite was intentionally not
+  rerun for this bounded Relation-only slice.
+- Prior K5 Node full stable serialized suite: 109/109 PASS. Two historical default-concurrency runs hit an isolated
   safe provider-capability `ECONNRESET`; the exact test passed alone and failed parallel results
   were rejected.
-- Frontend full suite: 87 files, 617/617 PASS on the final single-worker rerun. Four movable
+- Prior K5 frontend full suite: 87 files, 617/617 PASS on the final single-worker rerun. Four movable
   parallel navigation/timeout failures are recorded as `FRONTEND_ASYNC_TEST_PARALLEL_FLAKINESS`;
   parallel partial results were rejected and are not completion evidence.
 - Lint, typecheck, POC/production build, exact POC image build, Compose render and

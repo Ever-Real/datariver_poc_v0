@@ -25,7 +25,7 @@ an unsafe bypass, or a historical result from another commit.
 | Created | 2026-07-23, Asia/Seoul |
 | Branch / Phase 6E entry base / current published implementation | `dev` / `dba1186` / verified by the stable publication workflow |
 | Remote comparison | `dev-publish` requires local `dev` and `origin/dev` to resolve to the same exact commit after every publication |
-| Current controlled phase | Product `34af2b869d04fd96f4b9cd69f6eeed8729bafe28`: completed baselines remain verified. K5 closes the bounded durable Node A-Box preview/confirm/projection/replay bridge with two additive tables and one migration. K6 is not started. Registration durability and GX assertion egress remain held/blocked as named. |
+| Current controlled phase | Product `43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`: completed baselines remain verified. K5 closes the bounded durable Node plus Relation A-Box preview/confirm/projection/replay bridge using the existing two tables and migration. K6 is not started. Registration durability and GX assertion egress remain held/blocked as named. |
 | Final artifact order | Feature → API → Data/ERD → Screen → `README.md` → `ARCHITECTURE.md` |
 
 ## 2026-08-16 Node POC Account/Auth execution
@@ -104,7 +104,7 @@ services remain technical detail rather than a top-level Product menu.
 | 5 | 등록관리 | mutation data_steward/admin only; provider apply/durability `PARTIAL` |
 | 6 | 거버넌스 — 정책·표준 문서 관리 | bounded read/create/DRAFT-update/archive complete |
 | 7 | Chat | General/Vector/AUTO and pre-K7 DataHub-lineage Graph complete; fallback execution/K7 partial |
-| 8 | 지식관리 | K0-K4 complete; K5 `PARTIAL` with node projection verified and K5-R relation projection blocked; K6 not started |
+| 8 | 지식관리 | K0-K5 `COMPLETE_RUNTIME_VERIFIED`; bounded Node and Relation projection verified; K6 not started |
 | 9 | 품질관리 | `USER_FEATURE_DEFINITION_REQUIRED`; GX technical gate separate |
 | — | 기술 Backlog | support services, deployment and target gates |
 
@@ -127,13 +127,17 @@ history, soft archive, Chat exclusion and Viewer/direct-route negatives. Product
 closes K3 typed T-Box editing with actual browser save/reload, semantic warnings, lock, stale CAS,
 desktop/mobile and retained discard evidence. Product `fca4535c...` closes K4 canonical grade
 compatibility and Catalog Source Proposal with exact Dataset/SchemaField provenance, reload and
-zero A-Box/Neo4j growth. Product `34af2b86...` closes K5 with the approved minimal Node-only durable
+zero A-Box/Neo4j growth. Product `34af2b86...` closes the approved minimal K5 Node-only durable
 bridge: two additive K5 tables, a tracked transactional migration, deployment-owned non-secret
 manifest references, canonical row hashes, exact release/T-Box/target pinning, durable preview and
 DRAFT changeset receipts, parameterized deterministic Neo4j MERGE, request-time authorization and
 restart recovery. Actual browser E2E produced Node 2 / Edge 0 / duplicate 0 on replay; no-grant
 scope was hidden with 403 and the disposable data/credentials were cleaned. No Python IAM/FastAPI
-authority, generic ingestion platform, service, queue or worker was introduced. K6 was not started.
+authority, generic ingestion platform, service, queue or worker was introduced. Product
+`43e74a0f...` completes K5-R by reusing that plane for one exact T-Box relation: preview Node 2 /
+Relation 1, confirm/replay Node 2 / distinct Edge 1, exact endpoint/version provenance, immediate
+no-grant 403 and exact disposable cleanup passed. K5 is now `COMPLETE_RUNTIME_VERIFIED`; K6 was not
+started.
 
 The K6 read-only entry audit found a reusable separate Knowledge Chat UI and historical bounded
 GraphRAG implementation, but all four graph/release/snapshot/graphrag paths resolve to `NO_ROUTE`
@@ -642,13 +646,11 @@ requirement → feature → API/tool → DB → UI → test → operations.
 
 ## Known controlled-document conflicts to resolve
 
-- [ ] `K5-R — Relation Projection Completion` (`K5_RELATION_PROJECTION_REQUIRED`): exactly two
-  entities plus one valid T-Box relation must produce one bounded plan; preview Node 2 / Relation 1;
-  keep Neo4j Edge 0 before confirm; project Node 2 / Edge 1; replay Node 2 / distinct Edge 1;
-  preserve exact relation provenance; deny unauthorized access; and clean up the fixture. Reuse K1
-  identity/provenance. Add no table, service, queue, worker, generic graph engine or arbitrary
-  Cypher, and avoid changing migration 002. K5 is `PARTIAL`; deployment push, PREP pull, migration,
-  build/deploy and PREP write validation stay blocked until this focused gate passes.
+- [x] `K5-R — Relation Projection Completion`: Product `43e74a0f...` produces one bounded plan for
+  exactly two entities and one valid T-Box relation; preview Node 2 / Relation 1; Neo4j Edge 0 before
+  confirm; projection/replay Node 2 / distinct Edge 1; exact relation provenance; immediate
+  no-grant 403; and exact fixture cleanup. K1 identity/provenance and migration 002 were reused.
+  No table, service, queue, worker, generic graph engine or arbitrary Cypher was added.
 - [ ] `PREP_EXTERNAL_ENV_CONTRACT_RECHECK_REQUIRED`: on the actual PREP host, record the existing
   stable absolute env/secret paths and prove they supply the reference-only
   `POC_KNOWLEDGE_SOURCE_MANIFEST` contract. Never copy DEV `deploy/poc/.env`.

@@ -1,7 +1,7 @@
 # DataRiver 현재 제품 우선순위
 
 기준 Product SHA와 배포 OCI revision은
-`34af2b869d04fd96f4b9cd69f6eeed8729bafe28`로 일치한다. authoritative runtime은 Node POC이며
+`43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8`로 일치한다. authoritative runtime은 Node POC이며
 DEV Web은 `http://127.0.0.1:39083`에서 healthy다. 아래 상태는 현재 source/runtime 근거이며
 PREP/OPS 또는 publication 결과를 추정하지 않는다.
 
@@ -87,8 +87,9 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 - 완료: exact Table/Column URN identity/provenance, Registry/version, typed T-Box, Catalog Source
   Proposal, 두 additive table의 durable A-Box preview/confirm/DRAFT changeset/projection/replay,
   request-time authorization, restart recovery와 disposable cleanup.
-- K5 결과: pinned T-Box `4`, Preview Node 2 / Relation 0, confirm/replay Node 2 / Edge 0 /
-  duplicate 0, no-grant `403`, unpublished Draft `409`, exact Product/OCI 일치.
+- K5 결과: bounded Relation fixture에서 Preview Node 2 / Relation 1, confirm/replay Node 2 /
+  distinct Edge 1, duplicate 0, exact endpoint/version provenance, no-grant `403`, exact cleanup,
+  Product/OCI 일치.
 - 남은 작업: K6 Knowledge Chat, K7 Main Chat, K8 MCP, K9 Default Assets.
 - 다음 작업: 이번 closeout에서는 K6를 시작하지 않는다. 별도 승인/리소스에서 bounded Node
   graph/release/snapshot/graphrag routes를 구현·검증한다.
@@ -132,9 +133,9 @@ PREP/OPS 또는 publication 결과를 추정하지 않는다.
 ## 기술 상태 요약
 
 ```text
-Product / deployed OCI 34af2b869d04fd96f4b9cd69f6eeed8729bafe28
-Node POC tests        109 / 109 PASS
-Frontend tests        87 files, 617 / 617 PASS
+Product / deployed OCI 43e74a0f4a6f696a64aa70ff8afeb681bf14c2d8
+K5-R focused tests    server 2 / 2; frontend 23 / 23 PASS
+Prior K5 full tests   Node 109 / 109; frontend 87 files, 617 / 617 PASS
 K5 tables/migrations  2 / 1
 new dependencies/services/containers/queues/workers/frameworks/capabilities = 0
 ```
