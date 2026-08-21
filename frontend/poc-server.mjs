@@ -5972,6 +5972,11 @@ async function mcpHandler(request, response, url, baseContext, mcpServiceToken, 
     return problem(response, err.statusCode || 401, err.code || 'UNAUTHORIZED', err.message)
   }
 
+  const credential = await baseContext.stateStore.readLocalCredential(mcpSubjectId)
+  if (!credential || credential.subjectId !== mcpSubjectId || credential.loginEnabled !== true || (credential.lockedUntil && Date.now() < new Date(credential.lockedUntil).getTime())) {
+    return problem(response, 401, 'SERVICE_AUTHENTICATION_FAILED', 'Valid service authentication is required.')
+  }
+
   const authentication = {
     subjectId: mcpSubjectId,
     tokenHash: 'mcp-service-session',

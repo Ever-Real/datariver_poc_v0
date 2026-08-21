@@ -1607,6 +1607,12 @@ test('MCP adapter bounded implementation', async () => {
   projection.access.value.users.push({ subject_id: mcpSubjectId, role: 'developer', active: true, provider_owner_refs: [] })
   projection.access.value.users.push({ subject_id: 'other', role: 'developer', active: true, provider_owner_refs: [] })
   let writeCalled = false
+  const mcpCredentials = new Map([
+    [mcpSubjectId, { subjectId: mcpSubjectId, loginEnabled: true, lockedUntil: null }],
+    ['inactive', { subjectId: 'inactive', loginEnabled: true, lockedUntil: null }],
+    ['disabled-sub', { subjectId: 'disabled-sub', loginEnabled: false, lockedUntil: null }],
+    ['locked-sub', { subjectId: 'locked-sub', loginEnabled: true, lockedUntil: new Date(Date.now() + 60000).toISOString() }]
+  ])
   const stateStore = {
     configured: { postgres: true, redis: false },
     async readChangeHistoryAccess() { return { access: structuredClone(projection.access), core: structuredClone(projection.core) } },
@@ -1614,6 +1620,7 @@ test('MCP adapter bounded implementation', async () => {
     async write() { writeCalled = true },
     async listUserTableGrants() { return [] },
     async readFeatureSecurityPolicy() { return null },
+    async readLocalCredential(subjectId) { return mcpCredentials.get(subjectId) || null },
   }
   const releaseFixture = (s) => ({ id: 'r1', graph_id: s.graphId, release_no: 1, ontology_version_id: 'o', content_hash: 'hash1', node_count: 1, edge_count: 1, published_by: 'p', published_at: '2026', publisher_name: null, publisher_email: null })
   const provFixture = [{ source_ref: 'sr1', source_locator: 'sl1', source_version: 'sv1', method: 'm1', confidence: 1 }]
@@ -1654,9 +1661,32 @@ test('MCP adapter bounded implementation', async () => {
   const srvUnknownSub = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub'), mcpServiceToken: mcpToken, mcpSubjectId: 'unknown', mcpWorkspaceId })
   await new Promise((resolve) => srvUnknownSub.listen(0, '127.0.0.1', resolve))
   const baseUnknownSub = `http://127.0.0.1:${srvUnknownSub.address().port}`
-  assert.equal((await (await fetch(`${baseUnknownSub}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${mcpToken}` }, body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }) })).json()).status, 403)
+  const rUnknownSub = await (await fetch(`${baseUnknownSub}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${mcpToken}` }, body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }) })).json()
+  assert.equal(rUnknownSub.status, 401)
+  assert.equal(rUnknownSub.code, 'SERVICE_AUTHENTICATION_FAILED')
+  assert.equal(rUnknownSub.detail, 'Valid service authentication is required.')
   srvUnknownSub.closeAllConnections()
   await new Promise((resolve) => srvUnknownSub.close(resolve))
+
+  const srvDisabledSub = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub'), mcpServiceToken: mcpToken, mcpSubjectId: 'disabled-sub', mcpWorkspaceId })
+  await new Promise((resolve) => srvDisabledSub.listen(0, '127.0.0.1', resolve))
+  const baseDisabledSub = `http://127.0.0.1:${srvDisabledSub.address().port}`
+  const rDisabledSub = await (await fetch(`${baseDisabledSub}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${mcpToken}` }, body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }) })).json()
+  assert.equal(rDisabledSub.status, 401)
+  assert.equal(rDisabledSub.code, 'SERVICE_AUTHENTICATION_FAILED')
+  assert.equal(rDisabledSub.detail, 'Valid service authentication is required.')
+  srvDisabledSub.closeAllConnections()
+  await new Promise((resolve) => srvDisabledSub.close(resolve))
+
+  const srvLockedSub = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub'), mcpServiceToken: mcpToken, mcpSubjectId: 'locked-sub', mcpWorkspaceId })
+  await new Promise((resolve) => srvLockedSub.listen(0, '127.0.0.1', resolve))
+  const baseLockedSub = `http://127.0.0.1:${srvLockedSub.address().port}`
+  const rLockedSub = await (await fetch(`${baseLockedSub}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${mcpToken}` }, body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }) })).json()
+  assert.equal(rLockedSub.status, 401)
+  assert.equal(rLockedSub.code, 'SERVICE_AUTHENTICATION_FAILED')
+  assert.equal(rLockedSub.detail, 'Valid service authentication is required.')
+  srvLockedSub.closeAllConnections()
+  await new Promise((resolve) => srvLockedSub.close(resolve))
 
   projection.access.value.users.push({ subject_id: 'inactive', role: 'developer', active: false, provider_owner_refs: [] })
   const srvInactiveSub = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub'), mcpServiceToken: mcpToken, mcpSubjectId: 'inactive', mcpWorkspaceId })
