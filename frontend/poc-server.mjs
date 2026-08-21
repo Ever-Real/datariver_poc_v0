@@ -5958,6 +5958,268 @@ async function knowledgeGraphRag(scope, body) {
   }
 }
 
+async function mcpHandler(request, response, url, baseContext, mcpServiceToken, mcpSubjectId, mcpWorkspaceId, mcpKnowledgeChatScope, mcpKnowledgeChatSnapshot, mcpKnowledgeGraphRag) {
+  if (request.method !== 'POST') return problem(response, 405, 'METHOD_NOT_ALLOWED', 'MCP requires POST.')
+  if (!mcpSubjectId || !mcpWorkspaceId) {
+    return problem(response, 503, 'MCP_SERVER_MISCONFIGURED', 'Dedicated MCP subject and workspace are required.')
+  }
+  if (url.searchParams.has('workspace') || url.searchParams.has('workspace_id') || request.headers['x-workspace-id']) {
+    return problem(response, 403, 'MCP_CALLER_OVERRIDE_REJECTED', 'MCP callers cannot override workspace.')
+  }
+  try {
+    exactServiceToken(request, mcpServiceToken, 'MCP_SERVICE_AUTH_NOT_CONFIGURED', 'MCP service authentication is not configured.')
+  } catch (err) {
+    return problem(response, err.statusCode || 401, err.code || 'UNAUTHORIZED', err.message)
+  }
+
+  const authentication = {
+    subjectId: mcpSubjectId,
+    tokenHash: 'mcp-service-session',
+    mustChangePassword: false,
+  }
+  const requestContext = await authenticatedRequestContext(baseContext, authentication)
+  const profile = authenticatedPocProfile(requestContext.accessUser)
+  if (profile.default_workspace_id !== mcpWorkspaceId) {
+    return problem(response, 403, 'MCP_WORKSPACE_MISMATCH', 'Configured MCP workspace does not match the subject default workspace.')
+  }
+  rejectProtectedAccessClaims(request, url)
+
+  let rpc
+  try {
+    rpc = await bodyJson(request)
+  } catch {
+    return json(response, 400, { jsonrpc: '2.0', error: { code: -32700, message: 'Parse error' }, id: null })
+  }
+  if (!rpc || typeof rpc !== 'object' || Array.isArray(rpc)) {
+    return json(response, 400, { jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id: null })
+  }
+  const envelopeKeys = Object.keys(rpc)
+  if (envelopeKeys.some((k) => !['jsonrpc', 'id', 'method', 'params'].includes(k))) {
+    return json(response, 400, { jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id: rpc.id ?? null })
+  }
+  if (rpc.jsonrpc !== '2.0' || typeof rpc.method !== 'string') {
+    return json(response, 400, { jsonrpc: '2.0', error: { code: -32600, message: 'Invalid Request' }, id: rpc.id ?? null })
+  }
+
+  const enforceRelease = (r, g, rel_id) => {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) throw new Error('Invalid')
+    try { exactBodyKeys(r, ['id', 'graph_id', 'release_no', 'ontology_version_id', 'content_hash', 'node_count', 'edge_count', 'published_by', 'published_at', 'publisher_name', 'publisher_email'], ['id', 'graph_id', 'release_no', 'ontology_version_id', 'content_hash', 'node_count', 'edge_count', 'published_by', 'published_at', 'publisher_name', 'publisher_email']) } catch { throw new Error('Invalid') }
+    if (typeof r.id !== 'string' || typeof r.graph_id !== 'string' || !Number.isSafeInteger(r.release_no) || typeof r.ontology_version_id !== 'string' || typeof r.content_hash !== 'string' || !Number.isSafeInteger(r.node_count) || !Number.isSafeInteger(r.edge_count) || typeof r.published_by !== 'string' || typeof r.published_at !== 'string' || (r.publisher_name !== null && typeof r.publisher_name !== 'string') || (r.publisher_email !== null && typeof r.publisher_email !== 'string')) throw new Error('Invalid')
+    if (r.graph_id !== g || r.id !== rel_id) throw new Error('Invalid')
+    return r
+  }
+  const enforceProvenance = (p) => {
+    if (!Array.isArray(p) || p.length !== 1 || !p[0] || typeof p[0] !== 'object' || Array.isArray(p[0])) throw new Error('Invalid')
+    try { exactBodyKeys(p[0], ['source_ref', 'source_locator', 'source_version', 'method', 'confidence'], ['source_ref', 'source_locator', 'source_version', 'method', 'confidence']) } catch { throw new Error('Invalid') }
+    if (typeof p[0].source_ref !== 'string' || typeof p[0].source_locator !== 'string' || typeof p[0].source_version !== 'string' || typeof p[0].method !== 'string' || typeof p[0].confidence !== 'number' || !Number.isFinite(p[0].confidence)) throw new Error('Invalid')
+    return p
+  }
+  const enforceNode = (n) => {
+    if (!n || typeof n !== 'object' || Array.isArray(n)) throw new Error('Invalid')
+    try { exactBodyKeys(n, ['id', 'entity_type', 'properties', 'classification', 'provenance'], ['id', 'entity_type', 'properties', 'classification', 'provenance']) } catch { throw new Error('Invalid') }
+    if (typeof n.id !== 'string' || typeof n.entity_type !== 'string' || !n.properties || typeof n.properties !== 'object' || Array.isArray(n.properties) || !Number.isSafeInteger(n.classification)) throw new Error('Invalid')
+    n.provenance = enforceProvenance(n.provenance)
+    return n
+  }
+  const enforceEdge = (e) => {
+    if (!e || typeof e !== 'object' || Array.isArray(e)) throw new Error('Invalid')
+    try { exactBodyKeys(e, ['id', 'source_id', 'target_id', 'edge_type', 'properties', 'classification', 'provenance'], ['id', 'source_id', 'target_id', 'edge_type', 'properties', 'classification', 'provenance']) } catch { throw new Error('Invalid') }
+    if (typeof e.id !== 'string' || typeof e.source_id !== 'string' || typeof e.target_id !== 'string' || typeof e.edge_type !== 'string' || !e.properties || typeof e.properties !== 'object' || Array.isArray(e.properties) || !Number.isSafeInteger(e.classification)) throw new Error('Invalid')
+    e.provenance = enforceProvenance(e.provenance)
+    return e
+  }
+  const enforceCitation = (c) => {
+    if (!c || typeof c !== 'object' || Array.isArray(c)) throw new Error('Invalid')
+    try { exactBodyKeys(c, ['evidence_id', 'source_locator', 'source_version', 'page_number'], ['evidence_id', 'source_locator', 'source_version', 'page_number']) } catch { throw new Error('Invalid') }
+    if (typeof c.evidence_id !== 'string' || typeof c.source_locator !== 'string' || typeof c.source_version !== 'string' || (c.page_number !== null && (typeof c.page_number !== 'number' || !Number.isFinite(c.page_number)))) throw new Error('Invalid')
+    return c
+  }
+  const enforceModelAudit = (m) => {
+    if (!m || typeof m !== 'object' || Array.isArray(m)) throw new Error('Invalid')
+    try { exactBodyKeys(m, ['provider', 'model', 'prompt_version', 'tool_schema_version'], ['provider', 'model', 'prompt_version', 'tool_schema_version']) } catch { throw new Error('Invalid') }
+    if (typeof m.provider !== 'string' || typeof m.model !== 'string' || typeof m.prompt_version !== 'string' || typeof m.tool_schema_version !== 'string') throw new Error('Invalid')
+    return m
+  }
+
+  const mcpResponse = async () => {
+    if (rpc.method === 'initialize') {
+      if (rpc.params !== undefined) throw { code: -32602, message: 'Invalid params' }
+      return { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'datariver-k8-mcp', version: '1.0.0' } }
+    }
+    if (rpc.method === 'tools/list') {
+      if (rpc.params !== undefined) throw { code: -32602, message: 'Invalid params' }
+      const releaseSchema = {
+        type: 'object',
+        properties: {
+          id: { type: 'string' }, graph_id: { type: 'string' }, release_no: { type: 'integer' },
+          ontology_version_id: { type: 'string' }, content_hash: { type: 'string' },
+          node_count: { type: 'integer' }, edge_count: { type: 'integer' },
+          published_by: { type: 'string' }, published_at: { type: 'string' },
+          publisher_name: { type: ['string', 'null'] }, publisher_email: { type: ['string', 'null'] }
+        },
+        additionalProperties: false,
+        required: ['id', 'graph_id', 'release_no', 'ontology_version_id', 'content_hash', 'node_count', 'edge_count', 'published_by', 'published_at', 'publisher_name', 'publisher_email']
+      }
+      const provenanceSchema = {
+        type: 'array',
+        items: {
+          type: 'object',
+          properties: { source_ref: { type: 'string' }, source_locator: { type: 'string' }, source_version: { type: 'string' }, method: { type: 'string' }, confidence: { type: 'number' } },
+          additionalProperties: false,
+          required: ['source_ref', 'source_locator', 'source_version', 'method', 'confidence']
+        },
+        minItems: 1,
+        maxItems: 1
+      }
+      const nodeSchema = {
+        type: 'object',
+        properties: { id: { type: 'string' }, entity_type: { type: 'string' }, properties: { type: 'object', additionalProperties: true }, classification: { type: 'integer' }, provenance: provenanceSchema },
+        additionalProperties: false,
+        required: ['id', 'entity_type', 'properties', 'classification', 'provenance']
+      }
+      const edgeSchema = {
+        type: 'object',
+        properties: { id: { type: 'string' }, source_id: { type: 'string' }, target_id: { type: 'string' }, edge_type: { type: 'string' }, properties: { type: 'object', additionalProperties: true }, classification: { type: 'integer' }, provenance: provenanceSchema },
+        additionalProperties: false,
+        required: ['id', 'source_id', 'target_id', 'edge_type', 'properties', 'classification', 'provenance']
+      }
+      return {
+        tools: [
+          {
+            name: 'knowledge_release_snapshot',
+            description: 'Exact-release snapshot operation',
+            inputSchema: {
+              type: 'object',
+              properties: { graph_id: { type: 'string' }, release_id: { type: 'string' }, maximum_nodes: { type: 'integer', minimum: 1, maximum: 200 } },
+              required: ['graph_id', 'release_id'],
+              additionalProperties: false,
+            },
+            outputSchema: {
+              type: 'object',
+              properties: {
+                release: releaseSchema,
+                nodes: { type: 'array', items: nodeSchema },
+                edges: { type: 'array', items: edgeSchema },
+                filtered: { type: 'boolean' }
+              },
+              additionalProperties: false,
+              required: ['release', 'nodes', 'edges', 'filtered']
+            }
+          },
+          {
+            name: 'knowledge_release_graphrag',
+            description: 'Exact-release GraphRAG operation',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                graph_id: { type: 'string' }, release_id: { type: 'string' }, question: { type: 'string', minLength: 2, maxLength: 4000 },
+                start_node_id: { type: 'string', maxLength: 255 }, direction: { type: 'string', enum: ['IN', 'OUT', 'BOTH'] },
+                edge_types: { type: 'array', items: { type: 'string', pattern: '^[A-Za-z][A-Za-z0-9_.:-]{0,99}$' }, maxItems: 10 },
+                maximum_hops: { type: 'integer', minimum: 1, maximum: 3 }, maximum_nodes: { type: 'integer', minimum: 1, maximum: 20 }
+              },
+              required: ['graph_id', 'release_id', 'question'],
+              additionalProperties: false,
+            },
+            outputSchema: {
+              type: 'object',
+              properties: {
+                release: releaseSchema,
+                nodes: { type: 'array', items: nodeSchema },
+                edges: { type: 'array', items: edgeSchema },
+                truncated: { type: 'boolean' },
+                answer: { type: 'string' },
+                citations: { type: 'array', items: { type: 'object', properties: { evidence_id: { type: 'string' }, source_locator: { type: 'string' }, source_version: { type: 'string' }, page_number: { type: ['number', 'null'] } }, additionalProperties: false, required: ['evidence_id', 'source_locator', 'source_version', 'page_number'] } },
+                model_audit: { type: 'object', properties: { provider: { type: 'string' }, model: { type: 'string' }, prompt_version: { type: 'string' }, tool_schema_version: { type: 'string' } }, additionalProperties: false, required: ['provider', 'model', 'prompt_version', 'tool_schema_version'] }
+              },
+              additionalProperties: false,
+              required: ['release', 'nodes', 'edges', 'truncated', 'answer', 'citations', 'model_audit']
+            }
+          }
+        ]
+      }
+    }
+    if (rpc.method === 'tools/call') {
+      const params = rpc.params
+      if (!params || typeof params !== 'object' || Array.isArray(params)) throw { code: -32602, message: 'Invalid params' }
+      try { exactBodyKeys(params, ['name', 'arguments'], ['name', 'arguments']) } catch { throw { code: -32602, message: 'Invalid params' } }
+      const toolName = params.name
+      const args = params.arguments
+      if (!args || typeof args !== 'object' || Array.isArray(args)) throw { code: -32602, message: 'Invalid params' }
+
+      if (toolName === 'knowledge_release_snapshot') {
+        try { exactBodyKeys(args, ['graph_id', 'release_id', 'maximum_nodes'], ['graph_id', 'release_id']) } catch { throw { code: -32602, message: 'Invalid params' } }
+        if (typeof args.graph_id !== 'string' || typeof args.release_id !== 'string') throw { code: -32602, message: 'Invalid params' }
+        const g = args.graph_id.trim()
+        const r = args.release_id.trim()
+        if (!g || !r) throw { code: -32602, message: 'Invalid params' }
+        if (args.maximum_nodes !== undefined && (!Number.isSafeInteger(args.maximum_nodes) || args.maximum_nodes < 1 || args.maximum_nodes > 200)) throw { code: -32602, message: 'Invalid params' }
+
+        assertPocRouteAuthorization(resolvePocRoute('GET', `/poc-api/knowledge/graphs/${g}/releases/${r}/snapshot`), requestContext.principal)
+        const scope = await mcpKnowledgeChatScope(requestContext, g, r)
+        const requested = args.maximum_nodes || 200
+        const result = await mcpKnowledgeChatSnapshot(scope, requested)
+
+        if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Invalid')
+        try { exactBodyKeys(result, ['release', 'nodes', 'edges', 'filtered'], ['release', 'nodes', 'edges', 'filtered']) } catch { throw new Error('Invalid') }
+        if (typeof result.filtered !== 'boolean' || !Array.isArray(result.nodes) || !Array.isArray(result.edges)) throw new Error('Invalid')
+        result.release = enforceRelease(result.release, g, r)
+        result.nodes.forEach(enforceNode)
+        result.edges.forEach(enforceEdge)
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result }
+      }
+      if (toolName === 'knowledge_release_graphrag') {
+        try { exactBodyKeys(args, ['graph_id', 'release_id', 'question', 'start_node_id', 'direction', 'edge_types', 'maximum_hops', 'maximum_nodes'], ['graph_id', 'release_id', 'question']) } catch { throw { code: -32602, message: 'Invalid params' } }
+        if (typeof args.graph_id !== 'string' || typeof args.release_id !== 'string' || typeof args.question !== 'string') throw { code: -32602, message: 'Invalid params' }
+        const g = args.graph_id.trim()
+        const r = args.release_id.trim()
+        const q = args.question.trim()
+        if (!g || !r || q.length < 2 || q.length > 4000) throw { code: -32602, message: 'Invalid params' }
+        if (args.start_node_id !== undefined && (typeof args.start_node_id !== 'string' || args.start_node_id.trim() === '' || args.start_node_id.length > 255)) throw { code: -32602, message: 'Invalid params' }
+        if (args.direction !== undefined && !['IN', 'OUT', 'BOTH'].includes(args.direction)) throw { code: -32602, message: 'Invalid params' }
+        if (args.edge_types !== undefined && (!Array.isArray(args.edge_types) || args.edge_types.length > 10 || args.edge_types.some((e) => typeof e !== 'string' || !/^[A-Za-z][A-Za-z0-9_.:-]{0,99}$/.test(e)))) throw { code: -32602, message: 'Invalid params' }
+        if (args.maximum_hops !== undefined && (!Number.isSafeInteger(args.maximum_hops) || args.maximum_hops < 1 || args.maximum_hops > 3)) throw { code: -32602, message: 'Invalid params' }
+        if (args.maximum_nodes !== undefined && (!Number.isSafeInteger(args.maximum_nodes) || args.maximum_nodes < 1 || args.maximum_nodes > 20)) throw { code: -32602, message: 'Invalid params' }
+
+        assertPocRouteAuthorization(resolvePocRoute('POST', `/poc-api/knowledge/graphs/${g}/releases/${r}/graphrag`), requestContext.principal)
+        const scope = await mcpKnowledgeChatScope(requestContext, g, r)
+        const result = await mcpKnowledgeGraphRag(scope, {
+          question: q,
+          start_node_id: args.start_node_id?.trim(),
+          direction: args.direction,
+          edge_types: args.edge_types,
+          maximum_hops: args.maximum_hops,
+          maximum_nodes: args.maximum_nodes
+        })
+
+        if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error('Invalid')
+        try { exactBodyKeys(result, ['release', 'nodes', 'edges', 'truncated', 'answer', 'citations', 'model_audit'], ['release', 'nodes', 'edges', 'truncated', 'answer', 'citations', 'model_audit']) } catch { throw new Error('Invalid') }
+        if (typeof result.truncated !== 'boolean' || typeof result.answer !== 'string' || !Array.isArray(result.nodes) || !Array.isArray(result.edges) || !Array.isArray(result.citations)) throw new Error('Invalid')
+        result.release = enforceRelease(result.release, g, r)
+        result.nodes.forEach(enforceNode)
+        result.edges.forEach(enforceEdge)
+        result.citations.forEach(enforceCitation)
+        result.model_audit = enforceModelAudit(result.model_audit)
+        return { content: [{ type: 'text', text: JSON.stringify(result) }], structuredContent: result }
+      }
+      throw { code: -32601, message: 'Method not found' }
+    }
+    throw { code: -32601, message: 'Method not found' }
+  }
+
+  try {
+    return json(response, 200, { jsonrpc: '2.0', result: await mcpResponse(), id: rpc.id ?? null })
+  } catch (error) {
+    if (error?.statusCode === 401 || error?.statusCode === 403 || error?.statusCode === 404) {
+      return problem(response, error.statusCode, error.code || 'POC_ERROR', error.message)
+    }
+    if (error?.statusCode === 400) {
+      return json(response, 200, { jsonrpc: '2.0', error: { code: -32602, message: error.message }, id: rpc.id ?? null })
+    }
+    const code = typeof error?.code === 'number' && typeof error?.message === 'string' && error.code !== -32603 ? error.code : -32603
+    return json(response, 200, { jsonrpc: '2.0', error: { code, message: code === -32603 ? 'Internal error' : error.message }, id: rpc.id ?? null })
+  }
+}
+
 async function knowledgeChatApi(request, response, url, context) {
   if (request.method === 'GET' && url.pathname === '/poc-api/knowledge/graphs') {
     const snapshot = await context.stateStore.read('core')
@@ -6102,7 +6364,7 @@ function authenticatedProfile(context, mustChangePassword) {
   }
 }
 
-function exactServiceToken(request, configuredToken) {
+function exactServiceToken(request, configuredToken, errorCode = 'AIRFLOW_SERVICE_AUTH_NOT_CONFIGURED', errorMessage = 'Airflow service authentication is not configured.') {
   if (typeof configuredToken !== 'string'
     || configuredToken.length < 32
     || configuredToken.length > 512
@@ -6110,7 +6372,7 @@ function exactServiceToken(request, configuredToken) {
       const codePoint = character.codePointAt(0)
       return codePoint === undefined || codePoint < 0x21 || codePoint > 0x7e
     })) {
-    throw accessError(503, 'AIRFLOW_SERVICE_AUTH_NOT_CONFIGURED', 'Airflow service authentication is not configured.')
+    throw accessError(503, errorCode, errorMessage)
   }
   const supplied = request.headers.authorization
   const expected = `Bearer ${configuredToken}`
@@ -7505,6 +7767,12 @@ export function createPocServer({
   stateStore,
   authenticator = unconfiguredPocAuthenticator(),
   airflowServiceToken = process.env.POC_AIRFLOW_SERVICE_TOKEN || '',
+  mcpServiceToken = process.env.POC_MCP_SERVICE_TOKEN || '',
+  mcpSubjectId = process.env.POC_MCP_SUBJECT_ID || '',
+  mcpWorkspaceId = process.env.POC_MCP_WORKSPACE_ID || '',
+  mcpKnowledgeChatScope = knowledgeChatScope,
+  mcpKnowledgeChatSnapshot = knowledgeChatSnapshot,
+  mcpKnowledgeGraphRag = knowledgeGraphRag,
   currentDatahubInventory: currentDatahubInventoryProvider = currentDatahubInventory,
   currentDatahubTables: currentDatahubTablesProvider = currentDatahubTables,
 } = {}) {
@@ -7543,6 +7811,9 @@ export function createPocServer({
         assertPocRouteAuthorization(resolvePocRoute(request.method, url.pathname))
         exactServiceToken(request, airflowServiceToken)
         return await api(request, response, url, baseContext)
+      }
+      if (url.pathname === '/api/v1/mcp') {
+        return await mcpHandler(request, response, url, baseContext, mcpServiceToken, mcpSubjectId, mcpWorkspaceId, mcpKnowledgeChatScope, mcpKnowledgeChatSnapshot, mcpKnowledgeGraphRag)
       }
       if (url.pathname === '/poc-api' || url.pathname.startsWith('/poc-api/')
         || url.pathname === '/api/v1' || url.pathname.startsWith('/api/v1/')) {

@@ -1596,3 +1596,220 @@ test('configured source hash matching no stored source fails closed with SOURCE_
     else process.env.POC_MCL_SOURCE_IDENTITY_HASH = saved
   }
 })
+
+test('MCP adapter bounded implementation', async () => {
+  const { createPocServer } = await import('./poc-server.mjs?mcp-full')
+  const mcpSubjectId = 'mcp-subject'
+  const mcpWorkspaceId = '00000000-0000-4000-8000-000000000061'
+  const otherWorkspaceId = '00000000-0000-4000-8000-000000000062'
+  const projection = makeChangeHistoryProjection({ sourceHashes: [], configuredCheckpointHash: null })
+  projection.access.value.active_subject_id = 'admin-sub'
+  projection.access.value.users.push({ subject_id: mcpSubjectId, role: 'developer', active: true, provider_owner_refs: [] })
+  projection.access.value.users.push({ subject_id: 'other', role: 'developer', active: true, provider_owner_refs: [] })
+  let writeCalled = false
+  const stateStore = {
+    configured: { postgres: true, redis: false },
+    async readChangeHistoryAccess() { return { access: structuredClone(projection.access), core: structuredClone(projection.core) } },
+    async readChangeHistoryProjection() { return structuredClone(projection) },
+    async write() { writeCalled = true },
+    async listUserTableGrants() { return [] },
+    async readFeatureSecurityPolicy() { return null },
+  }
+  const releaseFixture = (s) => ({ id: 'r1', graph_id: s.graphId, release_no: 1, ontology_version_id: 'o', content_hash: 'hash1', node_count: 1, edge_count: 1, published_by: 'p', published_at: '2026', publisher_name: null, publisher_email: null })
+  const provFixture = [{ source_ref: 'sr1', source_locator: 'sl1', source_version: 'sv1', method: 'm1', confidence: 1 }]
+  const nodeFixture = [{ id: 'n1', entity_type: 't1', properties: { p: 1 }, classification: 1, provenance: provFixture }]
+  const edgeFixture = [{ id: 'e1', source_id: 'n1', target_id: 'n2', edge_type: 'et1', properties: {}, classification: 1, provenance: provFixture }]
+
+  let lastScope = null
+  let lastArgs = null
+  const mcpKnowledgeChatScope = async (ctx, g, r) => {
+    lastScope = { principal: ctx.principal, graphId: g, studioReleaseId: r }
+    if (g === 'unauth') throw Object.assign(new Error('Nope'), { statusCode: 404, code: 'NOT_FOUND' })
+    if (g === 'fail') throw new Error('Secret error here')
+    return { graphId: g, studioReleaseId: r }
+  }
+  const mcpKnowledgeChatSnapshot = async (s) => {
+    if (s.graphId === 'extra') return { release: releaseFixture(s), nodes: nodeFixture, edges: edgeFixture, filtered: false, extraKey: 1 }
+    if (s.graphId === 'mismatch') return { release: releaseFixture({ graphId: 'wrong' }), nodes: nodeFixture, edges: edgeFixture, filtered: false }
+    return { release: releaseFixture(s), nodes: nodeFixture, edges: edgeFixture, filtered: false }
+  }
+  const mcpKnowledgeGraphRag = async (s, args) => {
+    lastArgs = args
+    if (s.graphId === 'malformed') return { release: releaseFixture(s), nodes: nodeFixture, edges: edgeFixture, truncated: 'yes', answer: `ans to ${args.question}`, citations: [{ evidence_id: 'e', source_locator: 'loc', source_version: 'v', page_number: null }], model_audit: { provider: 'p', model: 'm', prompt_version: 'pv', tool_schema_version: 'tv' } }
+    if (s.graphId === 'mismatch') return { release: releaseFixture({ graphId: 'wrong' }), nodes: nodeFixture, edges: edgeFixture, truncated: false, answer: `ans to ${args.question}`, citations: [{ evidence_id: 'e', source_locator: 'loc', source_version: 'v', page_number: null }], model_audit: { provider: 'p', model: 'm', prompt_version: 'pv', tool_schema_version: 'tv' } }
+    return { release: releaseFixture(s), nodes: nodeFixture, edges: edgeFixture, truncated: false, answer: `ans to ${args.question}`, citations: [{ evidence_id: 'e', source_locator: 'loc', source_version: 'v', page_number: null }], model_audit: { provider: 'p', model: 'm', prompt_version: 'pv', tool_schema_version: 'tv' } }
+  }
+  const mcpToken = 'A'.repeat(32)
+  const airflowToken = 'B'.repeat(32)
+  const rotatedToken = 'C'.repeat(32)
+
+  const srvMissing = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub') })
+  await new Promise((resolve) => srvMissing.listen(0, '127.0.0.1', resolve))
+  const baseMissing = `http://127.0.0.1:${srvMissing.address().port}`
+  const rMissing = await fetch(`${baseMissing}/api/v1/mcp`, { method: 'POST', body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }) })
+  assert.equal(rMissing.status, 503)
+  srvMissing.closeAllConnections()
+  await new Promise((resolve) => srvMissing.close(resolve))
+
+  const srvUnknownSub = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub'), mcpServiceToken: mcpToken, mcpSubjectId: 'unknown', mcpWorkspaceId })
+  await new Promise((resolve) => srvUnknownSub.listen(0, '127.0.0.1', resolve))
+  const baseUnknownSub = `http://127.0.0.1:${srvUnknownSub.address().port}`
+  assert.equal((await (await fetch(`${baseUnknownSub}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${mcpToken}` }, body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }) })).json()).status, 403)
+  srvUnknownSub.closeAllConnections()
+  await new Promise((resolve) => srvUnknownSub.close(resolve))
+
+  projection.access.value.users.push({ subject_id: 'inactive', role: 'developer', active: false, provider_owner_refs: [] })
+  const srvInactiveSub = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub'), mcpServiceToken: mcpToken, mcpSubjectId: 'inactive', mcpWorkspaceId })
+  await new Promise((resolve) => srvInactiveSub.listen(0, '127.0.0.1', resolve))
+  const baseInactiveSub = `http://127.0.0.1:${srvInactiveSub.address().port}`
+  assert.equal((await (await fetch(`${baseInactiveSub}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${mcpToken}` }, body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }) })).json()).status, 403)
+  srvInactiveSub.closeAllConnections()
+  await new Promise((resolve) => srvInactiveSub.close(resolve))
+
+  const srvWorkspaceMismatch = createPocServer({ stateStore, authenticator: testAuthenticator('admin-sub'), mcpServiceToken: mcpToken, mcpSubjectId, mcpWorkspaceId: otherWorkspaceId })
+  await new Promise((resolve) => srvWorkspaceMismatch.listen(0, '127.0.0.1', resolve))
+  const baseWorkspaceMismatch = `http://127.0.0.1:${srvWorkspaceMismatch.address().port}`
+  assert.equal((await (await fetch(`${baseWorkspaceMismatch}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${mcpToken}` }, body: JSON.stringify({ jsonrpc: '2.0', method: 'initialize', id: 1 }) })).json()).status, 403)
+  srvWorkspaceMismatch.closeAllConnections()
+  await new Promise((resolve) => srvWorkspaceMismatch.close(resolve))
+
+  const srv = createPocServer({
+    stateStore,
+    authenticator: { ...testAuthenticator('admin-sub'), assertOrigin() { throw new Error('Not allowed') } },
+    airflowServiceToken: airflowToken,
+    mcpServiceToken: mcpToken,
+    mcpSubjectId,
+    mcpWorkspaceId,
+    mcpKnowledgeChatScope,
+    mcpKnowledgeChatSnapshot,
+    mcpKnowledgeGraphRag,
+  })
+  await new Promise((resolve) => srv.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${srv.address().port}`
+  try {
+    const postJson = async (path, body, headers = {}) => {
+      const res = await fetch(`${base}${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) })
+      if (res.headers.get('content-type')?.includes('application/problem+json')) {
+        return { status: res.status, error: await res.json() }
+      }
+      return { status: res.status, body: await res.json() }
+    }
+    const req0 = { jsonrpc: '2.0', method: 'initialize', id: 1 }
+
+    assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'POST', body: JSON.stringify(req0) })).status, 401)
+    assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'POST', headers: { Authorization: 'Bearer bad' }, body: JSON.stringify(req0) })).status, 401)
+    assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${rotatedToken}` }, body: JSON.stringify(req0) })).status, 401)
+    assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'POST', headers: { Authorization: `Bearer ${airflowToken}` }, body: JSON.stringify(req0) })).status, 401)
+    assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'GET' })).status, 405)
+    assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'PUT' })).status, 405)
+
+    const h = { Authorization: `Bearer ${mcpToken}` }
+    assert.equal((await fetch(`${base}/api/v1/mcp?workspace_id=${otherWorkspaceId}`, { method: 'POST', headers: h, body: JSON.stringify(req0) })).status, 403)
+    assert.equal((await fetch(`${base}/api/v1/mcp?workspace=${otherWorkspaceId}`, { method: 'POST', headers: h, body: JSON.stringify(req0) })).status, 403)
+    assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'POST', headers: { ...h, 'x-workspace-id': otherWorkspaceId }, body: JSON.stringify(req0) })).status, 403)
+    assert.equal((await fetch(`${base}/api/v1/mcp`, { method: 'POST', headers: h, body: '{ malformed' })).status, 400)
+
+    const id0 = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'initialize', id: 0 }, h)
+    assert.equal(id0.body.id, 0)
+
+    const list = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/list', id: 2 }, h)
+    assert.equal(list.body.result.tools.length, 2)
+    assert.equal(list.body.result.tools[0].name, 'knowledge_release_snapshot')
+    assert.equal(list.body.result.tools[1].name, 'knowledge_release_graphrag')
+    assert.equal(list.body.result.tools[0].outputSchema.additionalProperties, false)
+    assert.equal(list.body.result.tools[1].outputSchema.additionalProperties, false)
+    const relSchema0 = list.body.result.tools[0].outputSchema.properties.release
+    const nodeSchema0 = list.body.result.tools[0].outputSchema.properties.nodes.items
+    const edgeSchema0 = list.body.result.tools[0].outputSchema.properties.edges.items
+    const provSchema0 = nodeSchema0.properties.provenance.items
+    assert.equal(relSchema0.additionalProperties, false)
+    assert.equal(nodeSchema0.additionalProperties, false)
+    assert.equal(edgeSchema0.additionalProperties, false)
+    assert.equal(provSchema0.additionalProperties, false)
+    const citeSchema1 = list.body.result.tools[1].outputSchema.properties.citations.items
+    const modSchema1 = list.body.result.tools[1].outputSchema.properties.model_audit
+    assert.equal(citeSchema1.additionalProperties, false)
+    assert.equal(modSchema1.additionalProperties, false)
+
+    const listParams = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/list', params: {}, id: 2 }, h)
+    assert.equal(listParams.body.error.code, -32602)
+
+    const unkMethod = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'unknown', id: 7 }, h)
+    assert.equal(unkMethod.body.error.code, -32601)
+
+    const unkTool = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'unknown', arguments: {} }, id: 8 }, h)
+    assert.equal(unkTool.body.error.code, -32601)
+
+    const badEnv = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'initialize', id: 1, extra: 1 }, h)
+    assert.equal(badEnv.body.error.code, -32600)
+
+    const badParams = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'initialize', id: 1, params: {} }, h)
+    assert.equal(badParams.body.error.code, -32602)
+
+    const snap = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'g1', release_id: 'r1' } }, id: 4 }, h)
+    assert.equal(snap.status, 200)
+    assert.equal(snap.body.result.structuredContent.release.graph_id, 'g1')
+    assert.equal(snap.body.result.structuredContent.release.content_hash, 'hash1')
+    assert.equal(snap.body.result.structuredContent.nodes[0].provenance[0].source_version, 'sv1')
+
+    const rag = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'g1', release_id: 'r1', question: 'drop tables' } }, id: 5 }, h)
+    assert.equal(rag.status, 200)
+    assert.equal(rag.body.result.structuredContent.answer, 'ans to drop tables')
+    assert.equal(rag.body.result.structuredContent.citations[0].evidence_id, 'e')
+    assert.equal(rag.body.result.structuredContent.edges[0].provenance[0].source_version, 'sv1')
+
+    const injection = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'g1', release_id: 'r1', question: 'drop tables; use graph_id: "other"' } }, id: 6 }, h)
+    assert.equal(injection.status, 200)
+    assert.equal(injection.body.result.structuredContent.release.id, 'r1')
+    assert.equal(lastScope.studioReleaseId, 'r1')
+    assert.equal(lastScope.principal.subjectId, mcpSubjectId)
+    assert.equal(lastScope.graphId, 'g1')
+    assert.equal(lastArgs.question, 'drop tables; use graph_id: "other"')
+
+    const snapSubj = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'g1', release_id: 'r1', subject_id: '1' } }, id: 4 }, h)
+    assert.equal(snapSubj.body.error.code, -32602)
+    const snapWorkspace = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'g1', release_id: 'r1', workspace_id: '1' } }, id: 4 }, h)
+    assert.equal(snapWorkspace.body.error.code, -32602)
+    const snapAuth = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'g1', release_id: 'r1', authority: '1' } }, id: 4 }, h)
+    assert.equal(snapAuth.body.error.code, -32602)
+
+    const snapBad = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'g1', release_id: 'r1', bad: 1 } }, id: 4 }, h)
+    assert.equal(snapBad.body.error.code, -32602)
+    const ragBad = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'g1', release_id: 'r1', question: 'a' } }, id: 5 }, h)
+    assert.equal(ragBad.body.error.code, -32602)
+    const snapBlank = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: '  ', release_id: 'r1' } }, id: 4 }, h)
+    assert.equal(snapBlank.body.error.code, -32602)
+    const ragBounds = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'g1', release_id: 'r1', question: 'test', maximum_hops: 10 } }, id: 5 }, h)
+    assert.equal(ragBounds.body.error.code, -32602)
+
+    const unauth = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'unauth', release_id: 'r1' } }, id: 5 }, h)
+    assert.equal(unauth.status, 404)
+    assert.equal(unauth.body.code, 'NOT_FOUND')
+
+    const fail = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'fail', release_id: 'r1' } }, id: 5 }, h)
+    assert.equal(fail.status, 200)
+    assert.equal(fail.body.error.code, -32603)
+    assert.equal(fail.body.error.message.includes('Secret error here'), false)
+
+    const snapExtra = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'extra', release_id: 'r1' } }, id: 6 }, h)
+    assert.equal(snapExtra.status, 200)
+    assert.equal(snapExtra.body.error.code, -32603)
+    assert.equal(snapExtra.body.error.message, 'Internal error')
+
+    const ragMalformed = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_graphrag', arguments: { graph_id: 'malformed', release_id: 'r1', question: 'drop tables' } }, id: 7 }, h)
+    assert.equal(ragMalformed.status, 200)
+    assert.equal(ragMalformed.body.error.code, -32603)
+    assert.equal(ragMalformed.body.error.message, 'Internal error')
+
+    const snapMismatch = await postJson('/api/v1/mcp', { jsonrpc: '2.0', method: 'tools/call', params: { name: 'knowledge_release_snapshot', arguments: { graph_id: 'mismatch', release_id: 'r1' } }, id: 8 }, h)
+    assert.equal(snapMismatch.status, 200)
+    assert.equal(snapMismatch.body.error.code, -32603)
+    assert.equal(snapMismatch.body.error.message, 'Internal error')
+
+    assert.equal(writeCalled, false)
+  } finally {
+    srv.closeAllConnections()
+    await new Promise((resolve, reject) => srv.close((e) => e ? reject(e) : resolve()))
+  }
+
+})
