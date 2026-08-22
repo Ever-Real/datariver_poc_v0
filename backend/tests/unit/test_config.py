@@ -1,4 +1,5 @@
 import socket
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -43,6 +44,38 @@ def settings(**overrides: object) -> Settings:
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)  # type: ignore[arg-type]
+
+
+def test_config_outside_development_reject() -> None:
+    with pytest.raises(ValueError, match="development-only"):
+        settings(
+            app_env="production",
+            knowledge_studio_intranet_publication_assurance_mode="INTRANET_DISTINCT_PRINCIPAL",
+            knowledge_studio_intranet_publisher_maker_subject_id=uuid4(),
+            knowledge_studio_intranet_publisher_checker_subject_id=uuid4(),
+        )
+
+
+def test_config_missing_same_ids_reject() -> None:
+    maker_id = uuid4()
+    with pytest.raises(ValueError, match="fixed maker ID"):
+        settings(
+            app_env="development",
+            knowledge_studio_intranet_publication_assurance_mode="INTRANET_DISTINCT_PRINCIPAL",
+        )
+    with pytest.raises(ValueError, match="fixed checker ID"):
+        settings(
+            app_env="development",
+            knowledge_studio_intranet_publication_assurance_mode="INTRANET_DISTINCT_PRINCIPAL",
+            knowledge_studio_intranet_publisher_maker_subject_id=maker_id,
+        )
+    with pytest.raises(ValueError, match="distinct principals"):
+        settings(
+            app_env="development",
+            knowledge_studio_intranet_publication_assurance_mode="INTRANET_DISTINCT_PRINCIPAL",
+            knowledge_studio_intranet_publisher_maker_subject_id=maker_id,
+            knowledge_studio_intranet_publisher_checker_subject_id=maker_id,
+        )
 
 
 def test_rejects_shared_cache_and_queue_endpoint() -> None:

@@ -56,6 +56,23 @@ def test_local_subject_rejects_conflicting_identity() -> None:
         _resolve_local_subject(fixed, identity, label="administrator")
 
 
+def test_local_subject_strict_fixed_id_rejects_cross_resolving_absent_fixed_id() -> None:
+    # A pre-existing non-K9 subject (e.g. Airflow or human admin)
+    identity = subject("http://localhost:8081/realms/datariver", "some-external-id")
+
+    # Fail if strict_fixed_id is True and the fixed ID is absent but external ID resolves.
+    with pytest.raises(RuntimeError, match="resolves to a different pre-existing subject"):
+        _resolve_local_subject(None, identity, label="K9 Publisher Maker", strict_fixed_id=True)
+
+
+def test_local_subject_non_strict_fixed_id_allows_cross_resolving_absent_fixed_id() -> None:
+    identity = subject("http://localhost:8081/realms/datariver", "some-external-id")
+
+    # Existing behavior for non-K9 subjects
+    result = _resolve_local_subject(None, identity, label="Other Service")
+    assert result is identity
+
+
 def test_local_human_memberships_always_receive_dashboard_read_actions() -> None:
     attributes = _local_human_membership_attributes(
         groups=("data-analysts",),

@@ -125,6 +125,56 @@
         }
       ],
       "defaultClientScopes": ["acr", "roles"]
+    },
+    {
+      "clientId": "datariver-k9-publisher-maker",
+      "name": "DataRiver K9 Publisher Maker",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "__K9_PUBLISHER_MAKER_CLIENT_SECRET__",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "datariver-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "datariver-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ],
+      "defaultClientScopes": ["basic", "acr"]
+    },
+    {
+      "clientId": "datariver-k9-publisher-checker",
+      "name": "DataRiver K9 Publisher Checker",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "__K9_PUBLISHER_CHECKER_CLIENT_SECRET__",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "implicitFlowEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "datariver-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "datariver-api",
+            "id.token.claim": "false",
+            "access.token.claim": "true"
+          }
+        }
+      ],
+      "defaultClientScopes": ["basic", "acr"]
     }
   ],
   "authenticationFlows": [

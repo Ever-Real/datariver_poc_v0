@@ -31,6 +31,8 @@ services:
       - keycloak_admin_password
       - airflow_client_secret
       - quality_dispatch_client_secret
+      - k9_publisher_maker_client_secret
+      - k9_publisher_checker_client_secret
       - keycloak_identity_admin_client_secret
       - keycloak_demo_password
     volumes:

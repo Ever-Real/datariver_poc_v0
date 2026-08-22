@@ -290,6 +290,11 @@ class Settings(BaseSettings):
         default=None,
         max_length=500,
     )
+    knowledge_studio_intranet_publication_assurance_mode: Literal[
+        "HARDWARE_WEBAUTHN", "INTRANET_DISTINCT_PRINCIPAL"
+    ] = "HARDWARE_WEBAUTHN"
+    knowledge_studio_intranet_publisher_maker_subject_id: UUID | None = None
+    knowledge_studio_intranet_publisher_checker_subject_id: UUID | None = None
     # Retired compatibility fields. True is rejected below and no runtime consumer
     # reads profile overlays; deployment Settings remain the sole live source.
     system_configuration_runtime_activation_enabled: bool = False
@@ -844,6 +849,27 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "The direct administrator password bypass cannot be combined with "
                     "enabled hardware WebAuthn."
+                )
+        if (
+            self.knowledge_studio_intranet_publication_assurance_mode
+            == "INTRANET_DISTINCT_PRINCIPAL"
+        ):
+            if self.app_env != "development":
+                raise ValueError("The intranet distinct-principal policy is development-only.")
+            if self.knowledge_studio_intranet_publisher_maker_subject_id is None:
+                raise ValueError(
+                    "The intranet distinct-principal policy requires a fixed maker ID."
+                )
+            if self.knowledge_studio_intranet_publisher_checker_subject_id is None:
+                raise ValueError(
+                    "The intranet distinct-principal policy requires a fixed checker ID."
+                )
+            if (
+                self.knowledge_studio_intranet_publisher_maker_subject_id
+                == self.knowledge_studio_intranet_publisher_checker_subject_id
+            ):
+                raise ValueError(
+                    "The intranet distinct-principal policy requires distinct principals."
                 )
         if "*" in self.app_cors_origins:
             raise ValueError("Wildcard CORS origins are not permitted.")

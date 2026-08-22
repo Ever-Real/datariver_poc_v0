@@ -13,6 +13,7 @@ import yaml  # type: ignore[import-untyped]
 
 from datariver.bootstrap import (
     LOCAL_DEMO_IDENTITIES,
+    LOCAL_K9_PUBLISHER_MAKER_SUBJECT_ID,
     LOCAL_KNOWLEDGE_INGESTION_EXTERNAL_SUBJECT,
     LOCAL_KNOWLEDGE_INGESTION_SUBJECT_ID,
     LOCAL_KNOWLEDGE_PROPOSAL_EXTERNAL_SUBJECT,
@@ -122,7 +123,9 @@ def test_local_demo_identities_match_keycloak_and_use_balanced_human_roles(
 
 
 def test_local_knowledge_ingestion_service_has_one_exact_machine_envelope() -> None:
-    services = {identity.subject_id: identity for identity in _local_service_identities()}
+    services = {
+        identity.subject_id: identity for identity in _local_service_identities(k9_enabled=False)
+    }
     ingestion = services[LOCAL_KNOWLEDGE_INGESTION_SUBJECT_ID]
 
     assert ingestion.external_subject == LOCAL_KNOWLEDGE_INGESTION_EXTERNAL_SUBJECT
@@ -135,7 +138,9 @@ def test_local_knowledge_ingestion_service_has_one_exact_machine_envelope() -> N
 
 
 def test_local_knowledge_proposal_service_has_one_exact_machine_envelope() -> None:
-    services = {identity.subject_id: identity for identity in _local_service_identities()}
+    services = {
+        identity.subject_id: identity for identity in _local_service_identities(k9_enabled=False)
+    }
     proposal = services[LOCAL_KNOWLEDGE_PROPOSAL_SUBJECT_ID]
 
     assert proposal.external_subject == LOCAL_KNOWLEDGE_PROPOSAL_EXTERNAL_SUBJECT
@@ -1200,3 +1205,72 @@ def test_knowledge_proposal_worker_uses_bounded_owner_only_tmpfs() -> None:
     assert "knowledge-proposal-spool" not in compose["volumes"]
     assert worker["read_only"] is True
     assert "no-new-privileges:true" in worker["security_opt"]
+
+
+def test_local_service_identities_default_compatibility() -> None:
+    # HARDWARE_WEBAUTHN mode does not load k9 states
+    services = _local_service_identities(k9_enabled=False)
+    assert not any(s.subject_id == LOCAL_K9_PUBLISHER_MAKER_SUBJECT_ID for s in services)
+
+
+def test_local_service_identities_intranet_missing_state_failure() -> None:
+    # INTRANET_DISTINCT_PRINCIPAL mode fails closed when k9 states are missing
+    with pytest.raises(RuntimeError, match="The local service identity state file is missing"):
+        _local_service_identities(k9_enabled=True)
+
+
+def test_local_service_identities_intranet_malformed_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_file = tmp_path / "local-service-identities.json"
+    state_file.write_text(
+        json.dumps({"k9_publisher_maker": "not-a-uuid", "k9_publisher_checker": "also-not-a-uuid"})
+    )
+
+    import datariver.bootstrap
+
+    monkeypatch.setattr(
+        datariver.bootstrap._local_k9_publisher_external_subjects, "__defaults__", (state_file,)
+    )
+
+    with pytest.raises(RuntimeError, match="The K9 publisher identities must be valid UUIDs"):
+        _local_service_identities(k9_enabled=True)
+
+
+def test_local_service_identities_intranet_collision_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_file = tmp_path / "local-service-identities.json"
+    human_id = "00000000-0000-4000-8000-000000000003"  # Assuming minjae.oh from demo identities
+    state_file.write_text(
+        json.dumps(
+            {
+                "k9_publisher_maker": human_id,
+                "k9_publisher_checker": "00000000-0000-4000-8000-000000000999",
+            }
+        )
+    )
+
+    import datariver.bootstrap
+
+    monkeypatch.setattr(
+        datariver.bootstrap._local_k9_publisher_external_subjects, "__defaults__", (state_file,)
+    )
+    monkeypatch.setattr(
+        datariver.bootstrap._local_demo_identities, "__defaults__", (tmp_path / "demo.json",)
+    )
+
+    def mock_demo_identities(
+        state_path: Path | None = None,
+    ) -> tuple[datariver.bootstrap.LocalDemoIdentity, ...]:
+        demos = list(datariver.bootstrap.LOCAL_DEMO_IDENTITIES)
+        from dataclasses import replace
+
+        if demos:
+            demos[0] = replace(demos[0], external_subject=human_id)
+        return tuple(demos)
+
+    monkeypatch.setattr(datariver.bootstrap, "_local_demo_identities", mock_demo_identities)
+
+    with pytest.raises(RuntimeError, match="K9 publisher service identities must not collide"):
+        _local_service_identities(k9_enabled=True)

@@ -508,8 +508,17 @@ def verify_multiarch_release_contract() -> None:
         "/run/secrets/airflow_client_secret",
         "clientId=datariver-quality-dispatch",
         "/run/secrets/quality_dispatch_client_secret",
+        "clientId=datariver-k9-publisher-maker",
+        "/run/secrets/k9_publisher_maker_client_secret",
+        "clientId=datariver-k9-publisher-checker",
+        "/run/secrets/k9_publisher_checker_client_secret",
         "datariver-api-audience",
         "__DATARIVER_SERVICE_IDENTITIES__",
+        '\'{"quality_dispatch":"%s","k9_publisher_maker":"%s","k9_publisher_checker":"%s"}\\n\'',
+        '[ "$k9_maker_user_id" = "$k9_checker_user_id" ]',
+        "K9 maker and checker identities must be distinct.",
+        '[ "$k9_maker_user_id" = "$demo_id" ] || [ "$k9_checker_user_id" = "$demo_id" ]',
+        "K9 publisher service identities must not collide with human identities.",
         "trap '\\''rm -f",
     ):
         if fragment not in keycloak_host_dev:
@@ -612,18 +621,25 @@ def verify_identity_assurance_contract() -> None:
     if not isinstance(web_client, dict):
         raise AssertionError("Keycloak realm has no datariver-web client")
     quality_dispatch_client = next(
-        (client for client in clients if client.get("clientId") == "datariver-quality-dispatch"),
+        (c for c in clients if c.get("clientId") == "datariver-quality-dispatch"),
         None,
     )
     if not isinstance(quality_dispatch_client, dict):
-        raise AssertionError("Keycloak realm has no dedicated Quality dispatch client")
+        raise AssertionError("datariver-quality-dispatch client missing")
     if (
         quality_dispatch_client.get("publicClient") is not False
         or quality_dispatch_client.get("serviceAccountsEnabled") is not True
         or quality_dispatch_client.get("standardFlowEnabled") is not False
         or quality_dispatch_client.get("directAccessGrantsEnabled") is not False
     ):
-        raise AssertionError("Quality dispatch client must be service-account-only")
+        raise AssertionError("datariver-quality-dispatch client has insecure defaults")
+
+    for mapper in quality_dispatch_client.get("protocolMappers", []):
+        if mapper.get("protocolMapper") == "oidc-audience-mapper":
+            break
+    else:
+        raise AssertionError("datariver-quality-dispatch missing audience mapper")
+
     quality_audiences: set[object] = set()
     for mapper in quality_dispatch_client.get("protocolMappers", []):
         if not isinstance(mapper, dict):
@@ -633,6 +649,40 @@ def verify_identity_assurance_contract() -> None:
             quality_audiences.add(mapper_config.get("included.client.audience"))
     if quality_audiences != {"datariver-api"}:
         raise AssertionError("Quality dispatch client must emit only the DataRiver API audience")
+
+    for client_id, secret_val in [
+        ("datariver-k9-publisher-maker", "__K9_PUBLISHER_MAKER_CLIENT_SECRET__"),
+        ("datariver-k9-publisher-checker", "__K9_PUBLISHER_CHECKER_CLIENT_SECRET__"),
+    ]:
+        client = next((c for c in clients if c.get("clientId") == client_id), None)
+        if not isinstance(client, dict):
+            raise AssertionError(f"{client_id} client missing")
+        if (
+            client.get("publicClient") is not False
+            or client.get("serviceAccountsEnabled") is not True
+            or client.get("standardFlowEnabled") is not False
+            or client.get("directAccessGrantsEnabled") is not False
+            or client.get("secret") != secret_val
+            or client.get("defaultClientScopes") != ["basic", "acr"]
+        ):
+            raise AssertionError(f"{client_id} client has insecure defaults or wrong secret")
+
+        for mapper in client.get("protocolMappers", []):
+            if mapper.get("protocolMapper") == "oidc-audience-mapper":
+                break
+        else:
+            raise AssertionError(f"{client_id} missing audience mapper")
+
+        audiences: set[object] = set()
+        for mapper in client.get("protocolMappers", []):
+            if not isinstance(mapper, dict):
+                continue
+            mapper_config = mapper.get("config")
+            if isinstance(mapper_config, dict):
+                audiences.add(mapper_config.get("included.client.audience"))
+        if audiences != {"datariver-api"}:
+            raise AssertionError(f"{client_id} client must emit only the DataRiver API audience")
+
     mapper_ids = {
         mapper.get("protocolMapper")
         for mapper in web_client.get("protocolMappers", [])

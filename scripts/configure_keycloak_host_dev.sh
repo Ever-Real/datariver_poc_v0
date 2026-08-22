@@ -163,6 +163,70 @@ docker exec "$container" bash -ec '
   fi
   unset quality_secret
   test -n "$quality_client_id"
+  k9_maker_client_id=$(
+    /opt/keycloak/bin/kcadm.sh get clients \
+      --config "$config" -r datariver \
+      -q clientId=datariver-k9-publisher-maker --fields id --format csv --noquotes
+  )
+  k9_maker_secret=$(cat /run/secrets/k9_publisher_maker_client_secret)
+  if [ -z "$k9_maker_client_id" ]; then
+    /opt/keycloak/bin/kcadm.sh create clients \
+      --config "$config" -r datariver \
+      -s clientId=datariver-k9-publisher-maker \
+      -s name="DataRiver K9 Publisher Maker" \
+      -s enabled=true -s publicClient=false \
+      -s standardFlowEnabled=false -s directAccessGrantsEnabled=false \
+      -s implicitFlowEnabled=false -s serviceAccountsEnabled=true \
+      -s "defaultClientScopes=[\"basic\",\"acr\"]" \
+      -s "secret=$k9_maker_secret" >/dev/null
+    k9_maker_client_id=$(
+      /opt/keycloak/bin/kcadm.sh get clients \
+        --config "$config" -r datariver \
+        -q clientId=datariver-k9-publisher-maker --fields id --format csv --noquotes
+    )
+  else
+    /opt/keycloak/bin/kcadm.sh update "clients/$k9_maker_client_id" \
+      --config "$config" -r datariver \
+      -s enabled=true -s publicClient=false \
+      -s standardFlowEnabled=false -s directAccessGrantsEnabled=false \
+      -s implicitFlowEnabled=false -s serviceAccountsEnabled=true \
+      -s "defaultClientScopes=[\"basic\",\"acr\"]" \
+      -s "secret=$k9_maker_secret" >/dev/null
+  fi
+  unset k9_maker_secret
+  test -n "$k9_maker_client_id"
+  k9_checker_client_id=$(
+    /opt/keycloak/bin/kcadm.sh get clients \
+      --config "$config" -r datariver \
+      -q clientId=datariver-k9-publisher-checker --fields id --format csv --noquotes
+  )
+  k9_checker_secret=$(cat /run/secrets/k9_publisher_checker_client_secret)
+  if [ -z "$k9_checker_client_id" ]; then
+    /opt/keycloak/bin/kcadm.sh create clients \
+      --config "$config" -r datariver \
+      -s clientId=datariver-k9-publisher-checker \
+      -s name="DataRiver K9 Publisher Checker" \
+      -s enabled=true -s publicClient=false \
+      -s standardFlowEnabled=false -s directAccessGrantsEnabled=false \
+      -s implicitFlowEnabled=false -s serviceAccountsEnabled=true \
+      -s "defaultClientScopes=[\"basic\",\"acr\"]" \
+      -s "secret=$k9_checker_secret" >/dev/null
+    k9_checker_client_id=$(
+      /opt/keycloak/bin/kcadm.sh get clients \
+        --config "$config" -r datariver \
+        -q clientId=datariver-k9-publisher-checker --fields id --format csv --noquotes
+    )
+  else
+    /opt/keycloak/bin/kcadm.sh update "clients/$k9_checker_client_id" \
+      --config "$config" -r datariver \
+      -s enabled=true -s publicClient=false \
+      -s standardFlowEnabled=false -s directAccessGrantsEnabled=false \
+      -s implicitFlowEnabled=false -s serviceAccountsEnabled=true \
+      -s "defaultClientScopes=[\"basic\",\"acr\"]" \
+      -s "secret=$k9_checker_secret" >/dev/null
+  fi
+  unset k9_checker_secret
+  test -n "$k9_checker_client_id"
   quality_mapper_ids=$(
     /opt/keycloak/bin/kcadm.sh get \
       "clients/$quality_client_id/protocol-mappers/models" \
@@ -191,11 +255,52 @@ docker exec "$container" bash -ec '
       -s "config={\"included.client.audience\":\"datariver-api\",\"id.token.claim\":\"false\",\"access.token.claim\":\"true\"}" \
       >/dev/null
   fi
+
+  for client_id in "$k9_maker_client_id" "$k9_checker_client_id"; do
+    mapper_ids=$(
+      /opt/keycloak/bin/kcadm.sh get \
+        "clients/$client_id/protocol-mappers/models" \
+        --config "$config" -r datariver --fields id --format csv --noquotes
+    )
+    set -- $mapper_ids
+    mapper_id=${1:-}
+    if [ -z "$mapper_id" ]; then
+      /opt/keycloak/bin/kcadm.sh create \
+        "clients/$client_id/protocol-mappers/models" \
+        --config "$config" -r datariver \
+        -s name=datariver-api-audience \
+        -s protocol=openid-connect \
+        -s protocolMapper=oidc-audience-mapper \
+        -s consentRequired=false \
+        -s "config={\"included.client.audience\":\"datariver-api\",\"id.token.claim\":\"false\",\"access.token.claim\":\"true\"}" \
+        >/dev/null
+    else
+      /opt/keycloak/bin/kcadm.sh update \
+        "clients/$client_id/protocol-mappers/models/$mapper_id" \
+        --config "$config" -r datariver \
+        -s name=datariver-api-audience \
+        -s protocol=openid-connect \
+        -s protocolMapper=oidc-audience-mapper \
+        -s consentRequired=false \
+        -s "config={\"included.client.audience\":\"datariver-api\",\"id.token.claim\":\"false\",\"access.token.claim\":\"true\"}" \
+        >/dev/null
+    fi
+  done
   quality_user_id=$(
     /opt/keycloak/bin/kcadm.sh get "clients/$quality_client_id/service-account-user" \
       --config "$config" -r datariver --fields id --format csv --noquotes
   )
   test -n "$quality_user_id"
+  k9_maker_user_id=$(
+    /opt/keycloak/bin/kcadm.sh get "clients/$k9_maker_client_id/service-account-user" \
+      --config "$config" -r datariver --fields id --format csv --noquotes
+  )
+  test -n "$k9_maker_user_id"
+  k9_checker_user_id=$(
+    /opt/keycloak/bin/kcadm.sh get "clients/$k9_checker_client_id/service-account-user" \
+      --config "$config" -r datariver --fields id --format csv --noquotes
+  )
+  test -n "$k9_checker_user_id"
   identity_client_id=$(
     /opt/keycloak/bin/kcadm.sh get clients \
       --config "$config" -r datariver \
@@ -284,7 +389,7 @@ EOF
   test -n "$minjae_id"
   printf "__DATARIVER_DEMO_IDENTITIES__%s|%s|%s\n" \
     "$jihoon_id" "$sua_id" "$minjae_id"
-  printf "__DATARIVER_SERVICE_IDENTITIES__%s\n" "$quality_user_id"
+  printf "__DATARIVER_SERVICE_IDENTITIES__%s|%s|%s\n" "$quality_user_id" "$k9_maker_user_id" "$k9_checker_user_id"
 ' -- "$web_origin"
 )
 
@@ -295,7 +400,7 @@ identity_state=$(
     sed -n 's/^__DATARIVER_DEMO_IDENTITIES__//p' |
     tail -n 1
 )
-quality_user_id=$(
+service_identity_state=$(
   printf '%s\n' "$sync_output" |
     sed -n 's/^__DATARIVER_SERVICE_IDENTITIES__//p' |
     tail -n 1
@@ -320,17 +425,32 @@ if [ -n "${extra:-}" ]; then
   echo "Keycloak returned an invalid local demo identity state." >&2
   exit 3
 fi
-case "$quality_user_id" in
-  ""|*[!0-9a-fA-F-]*)
-    echo "Keycloak returned an invalid Quality service identity id." >&2
+IFS="|" read -r quality_user_id k9_maker_user_id k9_checker_user_id extra_service <<EOF
+$service_identity_state
+EOF
+for user_id in "$quality_user_id" "$k9_maker_user_id" "$k9_checker_user_id"
+do
+  case "$user_id" in
+    ""|*[!0-9a-fA-F-]*)
+      echo "Keycloak returned an invalid service identity id." >&2
+      exit 3
+      ;;
+  esac
+  if [ "${#user_id}" -ne 36 ]; then
+    echo "Keycloak returned an invalid service identity id." >&2
     exit 3
-    ;;
-esac
-if [ "${#quality_user_id}" -ne 36 ]; then
-  echo "Keycloak returned an invalid Quality service identity id." >&2
+  fi
+done
+if [ "$k9_maker_user_id" = "$k9_checker_user_id" ]; then
+  echo "K9 maker and checker identities must be distinct." >&2
   exit 3
 fi
-
+for demo_id in "$jihoon_id" "$sua_id" "$minjae_id"; do
+  if [ "$k9_maker_user_id" = "$demo_id" ] || [ "$k9_checker_user_id" = "$demo_id" ]; then
+    echo "K9 publisher service identities must not collide with human identities." >&2
+    exit 3
+  fi
+done
 state_directory="$root/runtime/identity"
 state_file="$state_directory/local-demo-identities.json"
 state_tmp="$state_file.tmp.$$"
@@ -345,7 +465,7 @@ trap 'rm -f "$state_tmp" "$service_state_tmp"' EXIT HUP INT TERM
 )
 (
   umask 077
-  printf '{"quality_dispatch":"%s"}\n' "$quality_user_id" >"$service_state_tmp"
+  printf '{"quality_dispatch":"%s","k9_publisher_maker":"%s","k9_publisher_checker":"%s"}\n' "$quality_user_id" "$k9_maker_user_id" "$k9_checker_user_id" >"$service_state_tmp"
 )
 mv "$state_tmp" "$state_file"
 mv "$service_state_tmp" "$service_state_file"

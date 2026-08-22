@@ -44,6 +44,8 @@ LOCAL_QUALITY_DISPATCH_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000103")
 LOCAL_QUALITY_WORKER_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000104")
 LOCAL_KNOWLEDGE_INGESTION_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000108")
 LOCAL_KNOWLEDGE_PROPOSAL_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000109")
+LOCAL_K9_PUBLISHER_MAKER_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000110")
+LOCAL_K9_PUBLISHER_CHECKER_SUBJECT_ID = UUID("00000000-0000-4000-8000-000000000111")
 LOCAL_KEYCLOAK_SUBJECT = "00000000-0000-4000-8000-000000000001"
 LOCAL_KEYCLOAK_AIRFLOW_SUBJECT = "00000000-0000-4000-8000-000000000002"
 LOCAL_KEYCLOAK_QUALITY_DISPATCH_SUBJECT = "00000000-0000-4000-8000-000000000004"
@@ -196,9 +198,11 @@ def _local_quality_dispatch_external_subject(
         document = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise RuntimeError("The local service identity state file is invalid.") from error
-    if not isinstance(document, dict) or set(document) != {"quality_dispatch"}:
+    if not isinstance(document, dict) or not set(document).issubset(
+        {"quality_dispatch", "k9_publisher_maker", "k9_publisher_checker"}
+    ):
         raise RuntimeError("The local service identity state file is invalid.")
-    value = document["quality_dispatch"]
+    value = document.get("quality_dispatch")
     if not isinstance(value, str):
         raise RuntimeError("The local service identity state file is invalid.")
     try:
@@ -207,8 +211,57 @@ def _local_quality_dispatch_external_subject(
         raise RuntimeError("The local service identity state file is invalid.") from error
 
 
-def _local_service_identities() -> tuple[LocalServiceIdentity, ...]:
-    return (
+def _local_k9_publisher_external_subjects(
+    state_path: Path = LOCAL_SERVICE_IDENTITIES_PATH,
+) -> tuple[str, str]:
+    if not state_path.exists():
+        raise RuntimeError("The local service identity state file is missing.")
+    if not state_path.is_file() or state_path.stat().st_size > 1_024:
+        raise RuntimeError("The local service identity state file is invalid.")
+    try:
+        document = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("The local service identity state file is invalid.") from error
+
+    maker = document.get("k9_publisher_maker")
+    checker = document.get("k9_publisher_checker")
+
+    if not isinstance(maker, str) or not isinstance(checker, str):
+        raise RuntimeError("The K9 publisher identities are missing or invalid in the state file.")
+
+    try:
+        maker = str(UUID(maker))
+        checker = str(UUID(checker))
+    except ValueError as error:
+        raise RuntimeError("The K9 publisher identities must be valid UUIDs.") from error
+
+    if maker == checker:
+        raise RuntimeError("K9 publisher maker and checker identities must be distinct.")
+
+    demo_subjects = {d.external_subject for d in _local_demo_identities()}
+    if maker in demo_subjects or checker in demo_subjects:
+        raise RuntimeError(
+            "K9 publisher service identities must not collide with human identities."
+        )
+
+    known_services = {
+        _local_quality_dispatch_external_subject(),
+        LOCAL_QUALITY_WORKER_EXTERNAL_SUBJECT,
+        LOCAL_KNOWLEDGE_INGESTION_EXTERNAL_SUBJECT,
+        LOCAL_KNOWLEDGE_PROPOSAL_EXTERNAL_SUBJECT,
+    }
+    if maker in known_services or checker in known_services:
+        raise RuntimeError(
+            "K9 publisher service identities must not collide with other service identities."
+        )
+
+    return maker, checker
+
+
+def _local_service_identities(
+    k9_enabled: bool,
+) -> tuple[LocalServiceIdentity, ...]:
+    base = (
         LocalServiceIdentity(
             subject_id=LOCAL_QUALITY_DISPATCH_SUBJECT_ID,
             external_subject=_local_quality_dispatch_external_subject(),
@@ -242,6 +295,28 @@ def _local_service_identities() -> tuple[LocalServiceIdentity, ...]:
             bootstrap_contract="local-knowledge-studio-proposal-service-v1",
         ),
     )
+    if not k9_enabled:
+        return base
+    maker, checker = _local_k9_publisher_external_subjects()
+    return (
+        *base,
+        LocalServiceIdentity(
+            subject_id=LOCAL_K9_PUBLISHER_MAKER_SUBJECT_ID,
+            external_subject=maker,
+            display_name="DataRiver K9 Publisher Maker",
+            groups=("service-accounts", "k9-publisher-makers"),
+            allowed_actions=(Action.KG_CREATE, Action.KG_READ, Action.KG_EDIT),
+            bootstrap_contract="local-k9-publisher-maker-service-v1",
+        ),
+        LocalServiceIdentity(
+            subject_id=LOCAL_K9_PUBLISHER_CHECKER_SUBJECT_ID,
+            external_subject=checker,
+            display_name="DataRiver K9 Publisher Checker",
+            groups=("service-accounts", "k9-publisher-checkers"),
+            allowed_actions=(Action.KG_READ, Action.KG_REVIEW, Action.KG_PUBLISH),
+            bootstrap_contract="local-k9-publisher-checker-service-v1",
+        ),
+    )
 
 
 def _resolve_local_subject(
@@ -249,6 +324,7 @@ def _resolve_local_subject(
     identity_subject: SubjectModel | None,
     *,
     label: str,
+    strict_fixed_id: bool = False,
 ) -> SubjectModel | None:
     if (
         fixed_subject is not None
@@ -256,6 +332,10 @@ def _resolve_local_subject(
         and identity_subject is not fixed_subject
     ):
         raise RuntimeError(f"The local {label} identity belongs to another subject.")
+    if strict_fixed_id and fixed_subject is None and identity_subject is not None:
+        raise RuntimeError(
+            f"The local {label} identity resolves to a different pre-existing subject."
+        )
     return fixed_subject if fixed_subject is not None else identity_subject
 
 
@@ -408,7 +488,11 @@ async def bootstrap_local_identity() -> dict[str, object]:
                 airflow_membership.clearance = int(Classification.RESTRICTED)
                 airflow_membership.attributes = airflow_attributes
                 airflow_membership.active = True
-            for service_definition in _local_service_identities():
+            k9_enabled = (
+                settings.knowledge_studio_intranet_publication_assurance_mode
+                == "INTRANET_DISTINCT_PRINCIPAL"
+            )
+            for service_definition in _local_service_identities(k9_enabled=k9_enabled):
                 fixed_service_subject = await session.get(
                     SubjectModel,
                     service_definition.subject_id,
@@ -425,6 +509,7 @@ async def bootstrap_local_identity() -> dict[str, object]:
                     fixed_service_subject,
                     identity_service_subject,
                     label=service_definition.display_name,
+                    strict_fixed_id="k9-publisher" in service_definition.bootstrap_contract,
                 )
                 if service_subject is None:
                     service_subject = SubjectModel(

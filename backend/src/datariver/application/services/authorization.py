@@ -74,12 +74,20 @@ class AuthorizationService:
         engine: BuiltinPolicyEngine | None = None,
         development_admin_password_bypass_enabled: bool = False,
         development_governance_password_bypass_enabled: bool = False,
+        knowledge_studio_intranet_publication_assurance_mode: str = "HARDWARE_WEBAUTHN",
+        knowledge_studio_intranet_publisher_checker_subject_id: UUID | None = None,
     ) -> None:
         self._decision_writer = decision_writer
         self._engine = engine or BuiltinPolicyEngine()
         self._development_admin_password_bypass_enabled = development_admin_password_bypass_enabled
         self._development_governance_password_bypass_enabled = (
             development_governance_password_bypass_enabled
+        )
+        self._knowledge_studio_intranet_publication_assurance_mode = (
+            knowledge_studio_intranet_publication_assurance_mode
+        )
+        self._knowledge_studio_intranet_publisher_checker_subject_id = (
+            knowledge_studio_intranet_publisher_checker_subject_id
         )
 
     def is_entitled(
@@ -144,6 +152,23 @@ class AuthorizationService:
                         if action is Action.ADMIN_MANAGE
                         else "development-governance-admin-password-bypass-v1"
                     ),
+                ),
+                authentication_assurance=subject.authentication_assurance,
+                authentication_time=subject.authentication_time,
+            )
+        elif self._can_apply_knowledge_studio_intranet_publication_assurance(
+            subject=subject,
+            action=action,
+            decision=decision,
+            environment=environment,
+        ):
+            decision = Decision(
+                decision_id=decision.decision_id,
+                effect=Effect.ALLOW,
+                reason_codes=("INTRANET_DISTINCT_PRINCIPAL",),
+                policy_versions=(
+                    *decision.policy_versions,
+                    "intranet-studio-publication-assurance-v1",
                 ),
                 authentication_assurance=subject.authentication_assurance,
                 authentication_time=subject.authentication_time,
@@ -473,6 +498,30 @@ class AuthorizationService:
         ) or (
             self._development_governance_password_bypass_enabled
             and action in DEVELOPMENT_GOVERNANCE_PASSWORD_BYPASS_ACTIONS
+        )
+
+    def _can_apply_knowledge_studio_intranet_publication_assurance(
+        self,
+        *,
+        subject: SubjectAttributes,
+        action: Action,
+        decision: Decision,
+        environment: EnvironmentAttributes,
+    ) -> bool:
+        return (
+            self._knowledge_studio_intranet_publication_assurance_mode
+            == "INTRANET_DISTINCT_PRINCIPAL"
+            and action is Action.KG_PUBLISH
+            and subject.subject_id == self._knowledge_studio_intranet_publisher_checker_subject_id
+            and not decision.allowed
+            and bool(decision.reason_codes)
+            and set(decision.reason_codes).issubset(
+                {"PHISHING_RESISTANT_AUTH_REQUIRED", "HUMAN_ACTOR_REQUIRED"}
+            )
+            and subject.job_function == "SERVICE_ACCOUNT"
+            and subject.groups == frozenset({"service-accounts", "k9-publisher-checkers"})
+            and subject.allowed_actions
+            == frozenset({Action.KG_PUBLISH, Action.KG_REVIEW, Action.KG_READ})
         )
 
     async def can_review_quarantined_catalog(

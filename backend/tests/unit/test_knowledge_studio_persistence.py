@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 from uuid import UUID
 
 import pytest
@@ -1329,7 +1329,10 @@ def test_abox_idempotency_snapshot_round_trips_exact_draft_and_binding() -> None
 
 
 @pytest.mark.asyncio
-async def test_materialization_target_validates_managed_binding() -> None:
+@patch.object(SqlKnowledgeStudioStore, "_require_alias_available")
+async def test_materialization_target_validates_managed_binding(
+    mock_require_alias: AsyncMock,
+) -> None:
     from unittest.mock import AsyncMock, Mock
     from uuid import uuid4
 
@@ -1339,7 +1342,6 @@ async def test_materialization_target_validates_managed_binding() -> None:
     session = AsyncMock()
     session.add = Mock()
     store = SqlKnowledgeStudioStore(session)
-    store._require_alias_available = AsyncMock()
 
     workspace_id = uuid4()
     draft = KnowledgeStudioDraftModel(
@@ -1374,12 +1376,8 @@ async def test_materialization_target_validates_managed_binding() -> None:
     draft.accepted_proposal_hash = (
         "670ac1d49ab091debe23bc706cc479576af226ea55d73fa5ffd2c1a4993836d1"
     )
-    draft.source_contract_hash = (
-        "12cba3de9e71c2453d94c2f625839593d627ea60f6143097a49a9d3782a089d8"
-    )
-    draft.mapping_contract_hash = (
-        "ed3160311a3058f9e61bc8478b07175d96b6fe3c035b55fb4fe94455a6098e7f"
-    )
+    draft.source_contract_hash = "12cba3de9e71c2453d94c2f625839593d627ea60f6143097a49a9d3782a089d8"
+    draft.mapping_contract_hash = "ed3160311a3058f9e61bc8478b07175d96b6fe3c035b55fb4fe94455a6098e7f"
     graph, _release = await store._materialization_target(
         workspace_id=workspace_id, draft=draft, actor_id=uuid4()
     )
@@ -1471,8 +1469,11 @@ async def test_load_contract_and_verify_managed_binding() -> None:
     )
 
     contract = await store._load_contract(workspace_id=workspace_id, draft=draft, lock=False)
-    assert "managed_publication" in contract.contract_document
-    assert contract.contract_document["managed_publication"]["managed_intent"] == "metadata-lineage"
+    from typing import Any, cast
+
+    doc = cast(dict[str, Any], contract.contract_document)
+    assert "managed_publication" in doc
+    assert doc["managed_publication"]["managed_intent"] == "metadata-lineage"
 
     release = KnowledgeStudioReleaseModel(
         id=uuid4(),

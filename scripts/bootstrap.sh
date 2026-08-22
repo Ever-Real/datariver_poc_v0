@@ -417,6 +417,8 @@ ensure_random_secret airflow_db_password 32
 ensure_random_secret airflow_api_secret 48
 ensure_random_secret airflow_client_secret 32
 ensure_random_secret quality_dispatch_client_secret 32
+ensure_random_secret k9_publisher_maker_client_secret 32
+ensure_random_secret k9_publisher_checker_client_secret 32
 ensure_random_secret keycloak_identity_admin_client_secret 32
 ensure_random_secret airflow_admin_password 24
 ensure_random_secret keycloak_demo_password 18
@@ -475,10 +477,14 @@ ensure_random_secret s3_archive_secret_key 36
 demo_password=$(cat "$secrets_dir/keycloak_demo_password")
 airflow_client_secret=$(cat "$secrets_dir/airflow_client_secret")
 quality_dispatch_client_secret=$(cat "$secrets_dir/quality_dispatch_client_secret")
+k9_publisher_maker_client_secret=$(cat "$secrets_dir/k9_publisher_maker_client_secret")
+k9_publisher_checker_client_secret=$(cat "$secrets_dir/k9_publisher_checker_client_secret")
 identity_admin_client_secret=$(cat "$secrets_dir/keycloak_identity_admin_client_secret")
 escaped_demo_password=$(printf '%s' "$demo_password" | sed 's/[\/&]/\\&/g')
 escaped_airflow_client_secret=$(printf '%s' "$airflow_client_secret" | sed 's/[\/&]/\\&/g')
 escaped_quality_dispatch_client_secret=$(printf '%s' "$quality_dispatch_client_secret" | sed 's/[\/&]/\\&/g')
+escaped_k9_publisher_maker_client_secret=$(printf '%s' "$k9_publisher_maker_client_secret" | sed 's/[\/&]/\\&/g')
+escaped_k9_publisher_checker_client_secret=$(printf '%s' "$k9_publisher_checker_client_secret" | sed 's/[\/&]/\\&/g')
 escaped_identity_admin_client_secret=$(printf '%s' "$identity_admin_client_secret" | sed 's/[\/&]/\\&/g')
 web_public_origin=http://localhost:8080
 oidc_public_origin=http://localhost:8081
@@ -496,6 +502,8 @@ escaped_web_public_origin=$(printf '%s' "$web_public_origin" | sed 's/[\/&]/\\&/
 sed -e "s/__DEMO_PASSWORD__/$escaped_demo_password/g" \
   -e "s/__AIRFLOW_CLIENT_SECRET__/$escaped_airflow_client_secret/g" \
   -e "s/__QUALITY_DISPATCH_CLIENT_SECRET__/$escaped_quality_dispatch_client_secret/g" \
+  -e "s/__K9_PUBLISHER_MAKER_CLIENT_SECRET__/$escaped_k9_publisher_maker_client_secret/g" \
+  -e "s/__K9_PUBLISHER_CHECKER_CLIENT_SECRET__/$escaped_k9_publisher_checker_client_secret/g" \
   -e "s/__IDENTITY_ADMIN_CLIENT_SECRET__/$escaped_identity_admin_client_secret/g" \
   -e "s/__WEB_PUBLIC_ORIGIN__/$escaped_web_public_origin/g" \
   "$root/infra/keycloak/datariver-realm.template.json" \

@@ -76,6 +76,9 @@ class KnowledgeStudioService:
         schema_binding: ModelBinding | None = None,
         embedding_binding: ModelBinding | None = None,
         ingestion_sources: KnowledgeStudioIngestionSourceResolver | None = None,
+        intranet_assurance_mode: str = "HARDWARE_WEBAUTHN",
+        intranet_publisher_checker_subject_id: UUID | None = None,
+        intranet_publisher_maker_subject_id: UUID | None = None,
     ) -> None:
         self._store = store
         self._authorization = authorization
@@ -84,6 +87,9 @@ class KnowledgeStudioService:
         self._schema_binding = schema_binding
         self._embedding_binding = embedding_binding
         self._ingestion_sources = ingestion_sources
+        self._intranet_assurance_mode = intranet_assurance_mode
+        self._intranet_publisher_checker_subject_id = intranet_publisher_checker_subject_id
+        self._intranet_publisher_maker_subject_id = intranet_publisher_maker_subject_id
 
     async def list_domains(
         self,
@@ -1258,7 +1264,7 @@ class KnowledgeStudioService:
                 "mapping_contract_hash": (
                     "ed3160311a3058f9e61bc8478b07175d96b6fe3c035b55fb4fe94455a6098e7f"
                 ),
-            }
+            },
         }
         if managed_intent not in intent_map:
             raise ValidationError("Unknown managed intent.")
@@ -2089,7 +2095,11 @@ class KnowledgeStudioService:
         request_id: str,
     ) -> tuple[KnowledgeStudioDraftRecord, KnowledgeStudioReleaseRecord]:
         if subject.job_function == "SERVICE_ACCOUNT" or "service-accounts" in subject.groups:
-            raise ValidationError("Studio publication requires an independent human reviewer.")
+            if not (
+                self._intranet_assurance_mode == "INTRANET_DISTINCT_PRINCIPAL"
+                and subject.subject_id == self._intranet_publisher_checker_subject_id
+            ):
+                raise ValidationError("Studio publication requires an independent human reviewer.")
         draft = await self._store.get_draft(
             workspace_id=workspace_id,
             actor_id=subject.subject_id,
@@ -2099,6 +2109,12 @@ class KnowledgeStudioService:
             raise NotFoundError("The Knowledge Studio review Draft does not exist.")
         if draft.author_id == subject.subject_id:
             raise ConflictError("A Studio author cannot review or publish their own Draft.")
+        if self._intranet_assurance_mode == "INTRANET_DISTINCT_PRINCIPAL":
+            if subject.job_function == "SERVICE_ACCOUNT" or "service-accounts" in subject.groups:
+                if draft.author_id != self._intranet_publisher_maker_subject_id:
+                    raise ValidationError(
+                        "The intranet assurance exception requires the fixed maker principal."
+                    )
         review_resource = self._resource(
             resource_id=draft.draft_id,
             workspace_id=draft.workspace_id,

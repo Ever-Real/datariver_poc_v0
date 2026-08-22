@@ -196,6 +196,8 @@ def _service_components(
         development_admin_password_bypass_enabled=(
             administrator_context and container.settings.development_admin_password_bypass_enabled
         ),
+        knowledge_studio_intranet_publication_assurance_mode=container.settings.knowledge_studio_intranet_publication_assurance_mode,
+        knowledge_studio_intranet_publisher_checker_subject_id=container.settings.knowledge_studio_intranet_publisher_checker_subject_id,
     )
     index = SqlCatalogIndexReader(session)
     catalog = CatalogService(
@@ -228,6 +230,9 @@ def _service(request: Request, session: SessionDep) -> KnowledgeStudioService:
     return KnowledgeStudioService(
         store=store,
         authorization=authorization,
+        intranet_assurance_mode=request.app.state.settings.knowledge_studio_intranet_publication_assurance_mode,
+        intranet_publisher_checker_subject_id=request.app.state.settings.knowledge_studio_intranet_publisher_checker_subject_id,
+        intranet_publisher_maker_subject_id=request.app.state.settings.knowledge_studio_intranet_publisher_maker_subject_id,
         sources=sources,
     )
 
@@ -244,6 +249,9 @@ def _domain_administration_service(
     return KnowledgeStudioService(
         store=store,
         authorization=authorization,
+        intranet_assurance_mode=request.app.state.settings.knowledge_studio_intranet_publication_assurance_mode,
+        intranet_publisher_checker_subject_id=request.app.state.settings.knowledge_studio_intranet_publisher_checker_subject_id,
+        intranet_publisher_maker_subject_id=request.app.state.settings.knowledge_studio_intranet_publisher_maker_subject_id,
         sources=sources,
     )
 
@@ -294,6 +302,9 @@ def _runtime_service(request: Request, session: SessionDep) -> KnowledgeStudioSe
     return KnowledgeStudioService(
         store=store,
         authorization=authorization,
+        intranet_assurance_mode=request.app.state.settings.knowledge_studio_intranet_publication_assurance_mode,
+        intranet_publisher_checker_subject_id=request.app.state.settings.knowledge_studio_intranet_publisher_checker_subject_id,
+        intranet_publisher_maker_subject_id=request.app.state.settings.knowledge_studio_intranet_publisher_maker_subject_id,
         sources=sources,
         schema_assistant=runtime.assistant,
         schema_binding=runtime.binding,
@@ -310,6 +321,9 @@ def _ingestion_service(request: Request, session: SessionDep) -> KnowledgeStudio
     return KnowledgeStudioService(
         store=store,
         authorization=authorization,
+        intranet_assurance_mode=request.app.state.settings.knowledge_studio_intranet_publication_assurance_mode,
+        intranet_publisher_checker_subject_id=request.app.state.settings.knowledge_studio_intranet_publisher_checker_subject_id,
+        intranet_publisher_maker_subject_id=request.app.state.settings.knowledge_studio_intranet_publisher_maker_subject_id,
         sources=sources,
         embedding_binding=embedding_binding,
         ingestion_sources=(
@@ -1184,6 +1198,7 @@ async def create_managed_knowledge_studio_draft(
     )
     _set_draft_headers(response, record)
     return _draft_response(record)
+
 
 @router.post(
     "/drafts",

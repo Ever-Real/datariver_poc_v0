@@ -550,6 +550,10 @@ secrets:
     file: ./secrets/airflow_client_secret
   quality_dispatch_client_secret:
     file: ./secrets/quality_dispatch_client_secret
+  k9_publisher_maker_client_secret:
+    file: ./secrets/k9_publisher_maker_client_secret
+  k9_publisher_checker_client_secret:
+    file: ./secrets/k9_publisher_checker_client_secret
   keycloak_identity_admin_client_secret:
     file: ./secrets/keycloak_identity_admin_client_secret
   keycloak_demo_password:
