@@ -305,7 +305,13 @@ def _local_service_identities(
             external_subject=maker,
             display_name="DataRiver K9 Publisher Maker",
             groups=("service-accounts", "k9-publisher-makers"),
-            allowed_actions=(Action.KG_CREATE, Action.KG_READ, Action.KG_EDIT),
+            allowed_actions=(
+                Action.KG_CREATE,
+                Action.KG_READ,
+                Action.KG_EDIT,
+                Action.CATALOG_SEARCH,
+                Action.CATALOG_READ,
+            ),
             bootstrap_contract="local-k9-publisher-maker-service-v1",
         ),
         LocalServiceIdentity(

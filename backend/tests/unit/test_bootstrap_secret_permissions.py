@@ -1274,3 +1274,44 @@ def test_local_service_identities_intranet_collision_failure(
 
     with pytest.raises(RuntimeError, match="K9 publisher service identities must not collide"):
         _local_service_identities(k9_enabled=True)
+
+
+def test_local_service_identities_k9_publisher_actions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_file = tmp_path / "local-service-identities.json"
+    state_file.write_text(
+        json.dumps(
+            {
+                "k9_publisher_maker": "00000000-0000-4000-8000-000000000888",
+                "k9_publisher_checker": "00000000-0000-4000-8000-000000000999",
+            }
+        )
+    )
+
+    import datariver.bootstrap
+
+    monkeypatch.setattr(
+        datariver.bootstrap._local_k9_publisher_external_subjects, "__defaults__", (state_file,)
+    )
+
+    services = _local_service_identities(k9_enabled=True)
+    maker = next(s for s in services if s.subject_id == LOCAL_K9_PUBLISHER_MAKER_SUBJECT_ID)
+    checker = next(
+        s
+        for s in services
+        if s.subject_id == datariver.bootstrap.LOCAL_K9_PUBLISHER_CHECKER_SUBJECT_ID
+    )
+
+    assert set(maker.allowed_actions) == {
+        Action.KG_CREATE,
+        Action.KG_READ,
+        Action.KG_EDIT,
+        Action.CATALOG_SEARCH,
+        Action.CATALOG_READ,
+    }
+    assert set(checker.allowed_actions) == {
+        Action.KG_READ,
+        Action.KG_REVIEW,
+        Action.KG_PUBLISH,
+    }
