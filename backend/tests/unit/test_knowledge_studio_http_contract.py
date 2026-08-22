@@ -562,3 +562,49 @@ def test_managed_draft_request_hash_binds_intent() -> None:
     # 3. generic hash behavior remains its existing payload-only canonical hash
     generic_hash = canonical_json_hash(payload)
     assert hash1 != generic_hash
+
+
+def test_knowledge_studio_helpers_use_container_settings_not_app_state() -> None:
+    from unittest.mock import Mock, patch
+
+    from datariver.interfaces.http.routes.knowledge_studio import (
+        _domain_administration_service,
+        _ingestion_service,
+        _runtime_service,
+        _service,
+    )
+
+    # Setup mock request
+    request = Mock()
+    request.app.state = Mock(spec=["container"])  # specifically exclude "settings"
+
+    settings = Mock()
+    settings.knowledge_studio_intranet_publication_assurance_mode = "test_mode"
+    settings.knowledge_studio_intranet_publisher_checker_subject_id = "test_checker"
+    settings.knowledge_studio_intranet_publisher_maker_subject_id = "test_maker"
+    settings.knowledge_studio_ingestion_worker_enabled = False
+
+    container = Mock()
+    container.settings = settings
+    request.app.state.container = container
+
+    session = Mock()
+
+    with (
+        patch(
+            "datariver.interfaces.http.routes.knowledge_studio.build_knowledge_tbox_schema_runtime"
+        ),
+        patch(
+            "datariver.interfaces.http.routes.knowledge_studio.resolve_knowledge_runtime_bindings"
+        ),
+    ):
+        # Call helpers to ensure they don't access request.app.state.settings
+        service1 = _service(request, session)
+        service2 = _domain_administration_service(request, session)
+        service3 = _runtime_service(request, session)
+        service4 = _ingestion_service(request, session)
+
+        for srv in [service1, service2, service3, service4]:
+            assert srv._intranet_assurance_mode == "test_mode"
+            assert srv._intranet_publisher_checker_subject_id == "test_checker"
+            assert srv._intranet_publisher_maker_subject_id == "test_maker"
