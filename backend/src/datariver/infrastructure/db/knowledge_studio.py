@@ -4241,7 +4241,7 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                         "mapping_contract_hash": (
                             "ed3160311a3058f9e61bc8478b07175d96b6fe3c035b55fb4fe94455a6098e7f"
                         ),
-                    }
+                    },
                 }
                 if draft.managed_intent not in intent_map:
                     raise ConflictError("Incomplete or unknown managed intent.")
@@ -4742,8 +4742,11 @@ class SqlKnowledgeStudioStore(KnowledgeStudioStore):
                 model.workspace_id == workspace_id,
                 model.draft_id == draft_id,
             )
-            if lock:
-                statement = statement.with_for_update(read=True)
+            # Detail-row locking is redundant and safe to omit: the transaction already
+            # holds read locks on the parent `tbox_draft_elements` (and `studio_drafts`).
+            # TBox detail mutations are exclusively destructive replacements (DELETE/INSERT)
+            # bounded by those parent locks, so detail FOR SHARE is unnecessary and would
+            # improperly require Postgres UPDATE privileges.
             return tuple((await self._session.scalars(statement)).all())
 
         classes = await load_details(TBoxClassModel)

@@ -1510,3 +1510,53 @@ async def test_load_contract_and_verify_managed_binding() -> None:
         await store._verify_materialized_contract(
             workspace_id=workspace_id, studio_release=release, contract=contract
         )
+
+
+def test_tbox_element_records_lock_invariant() -> None:
+    # Ensure _load_tbox_element_records only locks the parent draft_elements
+    # and explicitly omits locking the detail tables (classes/properties/relationships).
+    # This ensures we don't need Postgres UPDATE privileges for FOR SHARE on detail tables.
+    import ast
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    ks_path = root / "backend/src/datariver/infrastructure/db/knowledge_studio.py"
+    source = ks_path.read_text()
+
+    tree = ast.parse(source)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_load_tbox_element_records":
+            # Find the elements_statement lock
+            found_elements_lock = False
+            for child in ast.walk(node):
+                if isinstance(child, ast.Assign):
+                    for target in child.targets:
+                        if isinstance(target, ast.Name) and target.id == "elements_statement":
+                            if (
+                                isinstance(child.value, ast.Call)
+                                and getattr(child.value.func, "attr", "") == "with_for_update"
+                            ):
+                                found_elements_lock = True
+
+            assert found_elements_lock, "Must lock tbox_draft_elements"
+
+            # Now verify the nested load_details function does not contain with_for_update
+            found_load_details = False
+            for child in ast.walk(node):
+                if isinstance(child, ast.AsyncFunctionDef) and child.name == "load_details":
+                    found_load_details = True
+                    for sub_child in ast.walk(child):
+                        if (
+                            isinstance(sub_child, ast.Call)
+                            and getattr(sub_child.func, "attr", "") == "with_for_update"
+                        ):
+                            raise AssertionError(
+                                "load_details must not use with_for_update to avoid "
+                                "FOR SHARE on detail tables"
+                            )
+
+            assert found_load_details, "Could not find load_details inner function"
+            return
+
+    raise AssertionError("Could not find _load_tbox_element_records")
